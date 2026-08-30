@@ -173,6 +173,11 @@ fn extract(df: &DataFrame, spec: &Spec) -> PolarsResult<SpecColumns> {
     })
 }
 
+/// One stream's per-row results for a chunk: `(row index, output)` pairs, where
+/// `None` is a skipped row. Fallible because a strict clock policy can refuse a
+/// row (`on_clock_reset = "error"`).
+type StreamRows = PolarsResult<Vec<(usize, Option<RowOut>)>>;
+
 /// Row-index partition by group key, in row order.
 fn group_indices(
     df: &DataFrame,
@@ -318,7 +323,7 @@ impl Bank {
                 let stream = taken.remove(key).expect("stream materialized above");
                 work.push((key, idx, stream));
             }
-            let rows: Vec<PolarsResult<Vec<(usize, Option<RowOut>)>>> = work
+            let rows: Vec<StreamRows> = work
                 .into_par_iter()
                 .map(|(_key, idx, stream)| {
                     let last = *idx.last().unwrap_or(&usize::MAX);
