@@ -1,0 +1,546 @@
+[
+  {
+    "diff": "--- crates/online-core/src/clock.rs\n+++ replace Decay::factor -> f64 with 0.0\n@@ -13,26 +13,17 @@\n     /// `factor = 0.5^(d_clock / halflife)`\n     Halflife(f64),\n     /// `factor = lam^d_clock` (with a row-count clock, `lam` per row).\n     Lam(f64),\n }\n \n impl Decay {\n     pub fn factor(&self, d_clock: f64) -> f64 {\n-        match *self {\n-            Decay::Halflife(h) => {\n-                if h.is_infinite() {\n-                    1.0\n-                } else {\n-                    0.5f64.powf(d_clock / h)\n-                }\n-            }\n-            Decay::Lam(l) => l.powf(d_clock),\n-        }\n+        0.0 /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n /// What to do when the raw clock delta is negative (docs/PLAN.md §3).\n #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]\n #[serde(rename_all = \"snake_case\")]\n pub enum OnClockReset {\n     /// Treat the delta as `max_dclock` (default).\n",
+    "file": "crates/online-core/src/clock.rs",
+    "function": {
+      "function_name": "Decay::factor",
+      "return_type": "-> f64",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 31
+        },
+        "start": {
+          "column": 5,
+          "line": 20
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/online-core/src/clock.rs:21:9: replace Decay::factor -> f64 with 0.0",
+    "package": "online-core",
+    "replacement": "0.0",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 30
+      },
+      "start": {
+        "column": 9,
+        "line": 21
+      }
+    }
+  },
+  {
+    "diff": "--- crates/online-core/src/clock.rs\n+++ replace Decay::factor -> f64 with 1.0\n@@ -13,26 +13,17 @@\n     /// `factor = 0.5^(d_clock / halflife)`\n     Halflife(f64),\n     /// `factor = lam^d_clock` (with a row-count clock, `lam` per row).\n     Lam(f64),\n }\n \n impl Decay {\n     pub fn factor(&self, d_clock: f64) -> f64 {\n-        match *self {\n-            Decay::Halflife(h) => {\n-                if h.is_infinite() {\n-                    1.0\n-                } else {\n-                    0.5f64.powf(d_clock / h)\n-                }\n-            }\n-            Decay::Lam(l) => l.powf(d_clock),\n-        }\n+        1.0 /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n /// What to do when the raw clock delta is negative (docs/PLAN.md §3).\n #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]\n #[serde(rename_all = \"snake_case\")]\n pub enum OnClockReset {\n     /// Treat the delta as `max_dclock` (default).\n",
+    "file": "crates/online-core/src/clock.rs",
+    "function": {
+      "function_name": "Decay::factor",
+      "return_type": "-> f64",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 31
+        },
+        "start": {
+          "column": 5,
+          "line": 20
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/online-core/src/clock.rs:21:9: replace Decay::factor -> f64 with 1.0",
+    "package": "online-core",
+    "replacement": "1.0",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 30
+      },
+      "start": {
+        "column": 9,
+        "line": 21
+      }
+    }
+  },
+  {
+    "diff": "--- crates/online-core/src/clock.rs\n+++ replace Decay::factor -> f64 with -1.0\n@@ -13,26 +13,17 @@\n     /// `factor = 0.5^(d_clock / halflife)`\n     Halflife(f64),\n     /// `factor = lam^d_clock` (with a row-count clock, `lam` per row).\n     Lam(f64),\n }\n \n impl Decay {\n     pub fn factor(&self, d_clock: f64) -> f64 {\n-        match *self {\n-            Decay::Halflife(h) => {\n-                if h.is_infinite() {\n-                    1.0\n-                } else {\n-                    0.5f64.powf(d_clock / h)\n-                }\n-            }\n-            Decay::Lam(l) => l.powf(d_clock),\n-        }\n+        -1.0 /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n /// What to do when the raw clock delta is negative (docs/PLAN.md §3).\n #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]\n #[serde(rename_all = \"snake_case\")]\n pub enum OnClockReset {\n     /// Treat the delta as `max_dclock` (default).\n",
+    "file": "crates/online-core/src/clock.rs",
+    "function": {
+      "function_name": "Decay::factor",
+      "return_type": "-> f64",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 31
+        },
+        "start": {
+          "column": 5,
+          "line": 20
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/online-core/src/clock.rs:21:9: replace Decay::factor -> f64 with -1.0",
+    "package": "online-core",
+    "replacement": "-1.0",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 30
+      },
+      "start": {
+        "column": 9,
+        "line": 21
+      }
+    }
+  },
+  {
+    "diff": "--- crates/online-core/src/clock.rs\n+++ replace / with % in Decay::factor\n@@ -18,17 +18,17 @@\n \n impl Decay {\n     pub fn factor(&self, d_clock: f64) -> f64 {\n         match *self {\n             Decay::Halflife(h) => {\n                 if h.is_infinite() {\n                     1.0\n                 } else {\n-                    0.5f64.powf(d_clock / h)\n+                    0.5f64.powf(d_clock % /* ~ changed by cargo-mutants ~ */ h)\n                 }\n             }\n             Decay::Lam(l) => l.powf(d_clock),\n         }\n     }\n }\n \n /// What to do when the raw clock delta is negative (docs/PLAN.md §3).\n",
+    "file": "crates/online-core/src/clock.rs",
+    "function": {
+      "function_name": "Decay::factor",
+      "return_type": "-> f64",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 31
+        },
+        "start": {
+          "column": 5,
+          "line": 20
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/online-core/src/clock.rs:26:41: replace / with % in Decay::factor",
+    "package": "online-core",
+    "replacement": "%",
+    "span": {
+      "end": {
+        "column": 42,
+        "line": 26
+      },
+      "start": {
+        "column": 41,
+        "line": 26
+      }
+    }
+  },
+  {
+    "diff": "--- crates/online-core/src/clock.rs\n+++ replace / with * in Decay::factor\n@@ -18,17 +18,17 @@\n \n impl Decay {\n     pub fn factor(&self, d_clock: f64) -> f64 {\n         match *self {\n             Decay::Halflife(h) => {\n                 if h.is_infinite() {\n                     1.0\n                 } else {\n-                    0.5f64.powf(d_clock / h)\n+                    0.5f64.powf(d_clock * /* ~ changed by cargo-mutants ~ */ h)\n                 }\n             }\n             Decay::Lam(l) => l.powf(d_clock),\n         }\n     }\n }\n \n /// What to do when the raw clock delta is negative (docs/PLAN.md §3).\n",
+    "file": "crates/online-core/src/clock.rs",
+    "function": {
+      "function_name": "Decay::factor",
+      "return_type": "-> f64",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 31
+        },
+        "start": {
+          "column": 5,
+          "line": 20
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/online-core/src/clock.rs:26:41: replace / with * in Decay::factor",
+    "package": "online-core",
+    "replacement": "*",
+    "span": {
+      "end": {
+        "column": 42,
+        "line": 26
+      },
+      "start": {
+        "column": 41,
+        "line": 26
+      }
+    }
+  },
+  {
+    "diff": "--- crates/online-core/src/clock.rs\n+++ replace ClockState::advance -> ClockAdvance with Default::default()\n@@ -106,84 +106,17 @@\n     /// into `pending` instead of being returned.\n     pub fn advance(\n         &mut self,\n         cfg: &ClockCfg,\n         clock: Option<f64>,\n         session: Option<u64>,\n         accept: bool,\n     ) -> ClockAdvance {\n-        let raw = match (clock, self.prev_clock) {\n-            (Some(c), Some(p)) => Some(c - p),\n-            (Some(_), None) => None, // first row of the stream\n-            (None, _) => {\n-                if self.started {\n-                    Some(1.0)\n-                } else {\n-                    None\n-                }\n-            }\n-        };\n-        let session_changed = match (session, self.prev_session) {\n-            (Some(s), Some(p)) => s != p,\n-            _ => false,\n-        };\n-\n-        let mut reset = false;\n-        let mut d = match raw {\n-            None => 0.0,\n-            Some(raw) => {\n-                if session_changed {\n-                    match cfg.session_gap {\n-                        Some(SessionGap::Reset) => {\n-                            reset = true;\n-                            0.0\n-                        }\n-                        Some(SessionGap::Gap(g)) => g.clamp(0.0, cfg.max_dclock),\n-                        None => raw.clamp(0.0, cfg.max_dclock),\n-                    }\n-                } else if raw < 0.0 {\n-                    match cfg.on_clock_reset {\n-                        OnClockReset::Max => cfg.max_dclock,\n-                        OnClockReset::Zero => 0.0,\n-                        OnClockReset::ResetState => {\n-                            reset = true;\n-                            0.0\n-                        }\n-                    }\n-                } else {\n-                    raw.min(cfg.max_dclock)\n-                }\n-            }\n-        };\n-\n-        if reset {\n-            self.pending = 0.0;\n-            d = 0.0;\n-        }\n-        self.prev_clock = clock;\n-        self.prev_session = session;\n-        self.started = true;\n-\n-        if accept {\n-            let total = self.pending + d;\n-            self.pending = 0.0;\n-            ClockAdvance {\n-                d_clock: total,\n-                reset,\n-                accepted: true,\n-            }\n-        } else {\n-            self.pending += d;\n-            ClockAdvance {\n-                d_clock: 0.0,\n-                reset,\n-                accepted: false,\n-            }\n-        }\n+        Default::default() /* ~ changed by cargo-mutants ~ */\n     }\n }\n \n #[cfg(test)]\n mod tests {\n     use super::*;\n \n     fn cfg(max: f64) -> ClockCfg {\n",
+    "file": "crates/online-core/src/clock.rs",
+    "function": {
+      "function_name": "ClockState::advance",
+      "return_type": "-> ClockAdvance",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 182
+        },
+        "start": {
+          "column": 5,
+          "line": 104
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "crates/online-core/src/clock.rs:114:9: replace ClockState::advance -> ClockAdvance with Default::default()",
+    "package": "online-core",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 10,
+        "line": 181
+      },
+      "start": {
+        "column": 9,
+        "line": 114
+      }
+    }
+  },
+  {
+    "diff": "--- crates/online-core/src/clock.rs\n+++ replace - with + in ClockState::advance\n@@ -107,17 +107,17 @@\n     pub fn advance(\n         &mut self,\n         cfg: &ClockCfg,\n         clock: Option<f64>,\n         session: Option<u64>,\n         accept: bool,\n     ) -> ClockAdvance {\n         let raw = match (clock, self.prev_clock) {\n-            (Some(c), Some(p)) => Some(c - p),\n+            (Some(c), Some(p)) => Some(c + /* ~ changed by cargo-mutants ~ */ p),\n             (Some(_), None) => None, // first row of the stream\n             (None, _) => {\n                 if self.started {\n                     Some(1.0)\n                 } else {\n                     None\n                 }\n             }\n",
+    "file": "crates/online-core/src/clock.rs",
+    "function": {
+      "function_name": "ClockState::advance",
+      "return_type": "-> ClockAdvance",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 182
+        },
+        "start": {
+          "column": 5,
+          "line": 104
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/online-core/src/clock.rs:115:42: replace - with + in ClockState::advance",
+    "package": "online-core",
+    "replacement": "+",
+    "span": {
+      "end": {
+        "column": 43,
+        "line": 115
+      },
+      "start": {
+        "column": 42,
+        "line": 115
+      }
+    }
+  },
+  {
+    "diff": "--- crates/online-core/src/clock.rs\n+++ replace - with / in ClockState::advance\n@@ -107,17 +107,17 @@\n     pub fn advance(\n         &mut self,\n         cfg: &ClockCfg,\n         clock: Option<f64>,\n         session: Option<u64>,\n         accept: bool,\n     ) -> ClockAdvance {\n         let raw = match (clock, self.prev_clock) {\n-            (Some(c), Some(p)) => Some(c - p),\n+            (Some(c), Some(p)) => Some(c / /* ~ changed by cargo-mutants ~ */ p),\n             (Some(_), None) => None, // first row of the stream\n             (None, _) => {\n                 if self.started {\n                     Some(1.0)\n                 } else {\n                     None\n                 }\n             }\n",
+    "file": "crates/online-core/src/clock.rs",
+    "function": {
+      "function_name": "ClockState::advance",
+      "return_type": "-> ClockAdvance",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 182
+        },
+        "start": {
+          "column": 5,
+          "line": 104
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/online-core/src/clock.rs:115:42: replace - with / in ClockState::advance",
+    "package": "online-core",
+    "replacement": "/",
+    "span": {
+      "end": {
+        "column": 43,
+        "line": 115
+      },
+      "start": {
+        "column": 42,
+        "line": 115
+      }
+    }
+  },
+  {
+    "diff": "--- crates/online-core/src/clock.rs\n+++ delete match arm (Some(s), Some(p)) in ClockState::advance\n@@ -118,17 +118,17 @@\n                 if self.started {\n                     Some(1.0)\n                 } else {\n                     None\n                 }\n             }\n         };\n         let session_changed = match (session, self.prev_session) {\n-            (Some(s), Some(p)) => s != p,\n+             /* ~ changed by cargo-mutants ~ */\n             _ => false,\n         };\n \n         let mut reset = false;\n         let mut d = match raw {\n             None => 0.0,\n             Some(raw) => {\n                 if session_changed {\n",
+    "file": "crates/online-core/src/clock.rs",
+    "function": {
+      "function_name": "ClockState::advance",
+      "return_type": "-> ClockAdvance",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 182
+        },
+        "start": {
+          "column": 5,
+          "line": 104
+        }
+      }
+    },
+    "genre": "MatchArm",
+    "name": "crates/online-core/src/clock.rs:126:13: delete match arm (Some(s), Some(p)) in ClockState::advance",
+    "package": "online-core",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 42,
+        "line": 126
+      },
+      "start": {
+        "column": 13,
+        "line": 126
+      }
+    }
+  },
+  {
+    "diff": "--- crates/online-core/src/clock.rs\n+++ replace != with == in ClockState::advance\n@@ -118,17 +118,17 @@\n                 if self.started {\n                     Some(1.0)\n                 } else {\n                     None\n                 }\n             }\n         };\n         let session_changed = match (session, self.prev_session) {\n-            (Some(s), Some(p)) => s != p,\n+            (Some(s), Some(p)) => s == /* ~ changed by cargo-mutants ~ */ p,\n             _ => false,\n         };\n \n         let mut reset = false;\n         let mut d = match raw {\n             None => 0.0,\n             Some(raw) => {\n                 if session_changed {\n",
+    "file": "crates/online-core/src/clock.rs",
+    "function": {
+      "function_name": "ClockState::advance",
+      "return_type": "-> ClockAdvance",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 182
+        },
+        "start": {
+          "column": 5,
+          "line": 104
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/online-core/src/clock.rs:126:37: replace != with == in ClockState::advance",
+    "package": "online-core",
+    "replacement": "==",
+    "span": {
+      "end": {
+        "column": 39,
+        "line": 126
+      },
+      "start": {
+        "column": 37,
+        "line": 126
+      }
+    }
+  },
+  {
+    "diff": "--- crates/online-core/src/clock.rs\n+++ replace < with == in ClockState::advance\n@@ -135,17 +135,17 @@\n                     match cfg.session_gap {\n                         Some(SessionGap::Reset) => {\n                             reset = true;\n                             0.0\n                         }\n                         Some(SessionGap::Gap(g)) => g.clamp(0.0, cfg.max_dclock),\n                         None => raw.clamp(0.0, cfg.max_dclock),\n                     }\n-                } else if raw < 0.0 {\n+                } else if raw == /* ~ changed by cargo-mutants ~ */ 0.0 {\n                     match cfg.on_clock_reset {\n                         OnClockReset::Max => cfg.max_dclock,\n                         OnClockReset::Zero => 0.0,\n                         OnClockReset::ResetState => {\n                             reset = true;\n                             0.0\n                         }\n                     }\n",
+    "file": "crates/online-core/src/clock.rs",
+    "function": {
+      "function_name": "ClockState::advance",
+      "return_type": "-> ClockAdvance",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 182
+        },
+        "start": {
+          "column": 5,
+          "line": 104
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/online-core/src/clock.rs:143:31: replace < with == in ClockState::advance",
+    "package": "online-core",
+    "replacement": "==",
+    "span": {
+      "end": {
+        "column": 32,
+        "line": 143
+      },
+      "start": {
+        "column": 31,
+        "line": 143
+      }
+    }
+  },
+  {
+    "diff": "--- crates/online-core/src/clock.rs\n+++ replace < with > in ClockState::advance\n@@ -135,17 +135,17 @@\n                     match cfg.session_gap {\n                         Some(SessionGap::Reset) => {\n                             reset = true;\n                             0.0\n                         }\n                         Some(SessionGap::Gap(g)) => g.clamp(0.0, cfg.max_dclock),\n                         None => raw.clamp(0.0, cfg.max_dclock),\n                     }\n-                } else if raw < 0.0 {\n+                } else if raw > /* ~ changed by cargo-mutants ~ */ 0.0 {\n                     match cfg.on_clock_reset {\n                         OnClockReset::Max => cfg.max_dclock,\n                         OnClockReset::Zero => 0.0,\n                         OnClockReset::ResetState => {\n                             reset = true;\n                             0.0\n                         }\n                     }\n",
+    "file": "crates/online-core/src/clock.rs",
+    "function": {
+      "function_name": "ClockState::advance",
+      "return_type": "-> ClockAdvance",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 182
+        },
+        "start": {
+          "column": 5,
+          "line": 104
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/online-core/src/clock.rs:143:31: replace < with > in ClockState::advance",
+    "package": "online-core",
+    "replacement": ">",
+    "span": {
+      "end": {
+        "column": 32,
+        "line": 143
+      },
+      "start": {
+        "column": 31,
+        "line": 143
+      }
+    }
+  },
+  {
+    "diff": "--- crates/online-core/src/clock.rs\n+++ replace < with <= in ClockState::advance\n@@ -135,17 +135,17 @@\n                     match cfg.session_gap {\n                         Some(SessionGap::Reset) => {\n                             reset = true;\n                             0.0\n                         }\n                         Some(SessionGap::Gap(g)) => g.clamp(0.0, cfg.max_dclock),\n                         None => raw.clamp(0.0, cfg.max_dclock),\n                     }\n-                } else if raw < 0.0 {\n+                } else if raw <= /* ~ changed by cargo-mutants ~ */ 0.0 {\n                     match cfg.on_clock_reset {\n                         OnClockReset::Max => cfg.max_dclock,\n                         OnClockReset::Zero => 0.0,\n                         OnClockReset::ResetState => {\n                             reset = true;\n                             0.0\n                         }\n                     }\n",
+    "file": "crates/online-core/src/clock.rs",
+    "function": {
+      "function_name": "ClockState::advance",
+      "return_type": "-> ClockAdvance",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 182
+        },
+        "start": {
+          "column": 5,
+          "line": 104
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/online-core/src/clock.rs:143:31: replace < with <= in ClockState::advance",
+    "package": "online-core",
+    "replacement": "<=",
+    "span": {
+      "end": {
+        "column": 32,
+        "line": 143
+      },
+      "start": {
+        "column": 31,
+        "line": 143
+      }
+    }
+  },
+  {
+    "diff": "--- crates/online-core/src/clock.rs\n+++ replace + with - in ClockState::advance\n@@ -159,17 +159,17 @@\n             self.pending = 0.0;\n             d = 0.0;\n         }\n         self.prev_clock = clock;\n         self.prev_session = session;\n         self.started = true;\n \n         if accept {\n-            let total = self.pending + d;\n+            let total = self.pending - /* ~ changed by cargo-mutants ~ */ d;\n             self.pending = 0.0;\n             ClockAdvance {\n                 d_clock: total,\n                 reset,\n                 accepted: true,\n             }\n         } else {\n             self.pending += d;\n",
+    "file": "crates/online-core/src/clock.rs",
+    "function": {
+      "function_name": "ClockState::advance",
+      "return_type": "-> ClockAdvance",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 182
+        },
+        "start": {
+          "column": 5,
+          "line": 104
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/online-core/src/clock.rs:167:38: replace + with - in ClockState::advance",
+    "package": "online-core",
+    "replacement": "-",
+    "span": {
+      "end": {
+        "column": 39,
+        "line": 167
+      },
+      "start": {
+        "column": 38,
+        "line": 167
+      }
+    }
+  },
+  {
+    "diff": "--- crates/online-core/src/clock.rs\n+++ replace + with * in ClockState::advance\n@@ -159,17 +159,17 @@\n             self.pending = 0.0;\n             d = 0.0;\n         }\n         self.prev_clock = clock;\n         self.prev_session = session;\n         self.started = true;\n \n         if accept {\n-            let total = self.pending + d;\n+            let total = self.pending * /* ~ changed by cargo-mutants ~ */ d;\n             self.pending = 0.0;\n             ClockAdvance {\n                 d_clock: total,\n                 reset,\n                 accepted: true,\n             }\n         } else {\n             self.pending += d;\n",
+    "file": "crates/online-core/src/clock.rs",
+    "function": {
+      "function_name": "ClockState::advance",
+      "return_type": "-> ClockAdvance",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 182
+        },
+        "start": {
+          "column": 5,
+          "line": 104
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/online-core/src/clock.rs:167:38: replace + with * in ClockState::advance",
+    "package": "online-core",
+    "replacement": "*",
+    "span": {
+      "end": {
+        "column": 39,
+        "line": 167
+      },
+      "start": {
+        "column": 38,
+        "line": 167
+      }
+    }
+  },
+  {
+    "diff": "--- crates/online-core/src/clock.rs\n+++ replace += with -= in ClockState::advance\n@@ -167,17 +167,17 @@\n             let total = self.pending + d;\n             self.pending = 0.0;\n             ClockAdvance {\n                 d_clock: total,\n                 reset,\n                 accepted: true,\n             }\n         } else {\n-            self.pending += d;\n+            self.pending -= /* ~ changed by cargo-mutants ~ */ d;\n             ClockAdvance {\n                 d_clock: 0.0,\n                 reset,\n                 accepted: false,\n             }\n         }\n     }\n }\n",
+    "file": "crates/online-core/src/clock.rs",
+    "function": {
+      "function_name": "ClockState::advance",
+      "return_type": "-> ClockAdvance",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 182
+        },
+        "start": {
+          "column": 5,
+          "line": 104
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/online-core/src/clock.rs:175:26: replace += with -= in ClockState::advance",
+    "package": "online-core",
+    "replacement": "-=",
+    "span": {
+      "end": {
+        "column": 28,
+        "line": 175
+      },
+      "start": {
+        "column": 26,
+        "line": 175
+      }
+    }
+  },
+  {
+    "diff": "--- crates/online-core/src/clock.rs\n+++ replace += with *= in ClockState::advance\n@@ -167,17 +167,17 @@\n             let total = self.pending + d;\n             self.pending = 0.0;\n             ClockAdvance {\n                 d_clock: total,\n                 reset,\n                 accepted: true,\n             }\n         } else {\n-            self.pending += d;\n+            self.pending *= /* ~ changed by cargo-mutants ~ */ d;\n             ClockAdvance {\n                 d_clock: 0.0,\n                 reset,\n                 accepted: false,\n             }\n         }\n     }\n }\n",
+    "file": "crates/online-core/src/clock.rs",
+    "function": {
+      "function_name": "ClockState::advance",
+      "return_type": "-> ClockAdvance",
+      "span": {
+        "end": {
+          "column": 6,
+          "line": 182
+        },
+        "start": {
+          "column": 5,
+          "line": 104
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "crates/online-core/src/clock.rs:175:26: replace += with *= in ClockState::advance",
+    "package": "online-core",
+    "replacement": "*=",
+    "span": {
+      "end": {
+        "column": 28,
+        "line": 175
+      },
+      "start": {
+        "column": 26,
+        "line": 175
+      }
+    }
+  }
+]

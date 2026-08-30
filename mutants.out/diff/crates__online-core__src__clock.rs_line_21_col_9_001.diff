@@ -1,0 +1,30 @@
+--- crates/online-core/src/clock.rs
++++ replace Decay::factor -> f64 with 1.0
+@@ -13,26 +13,17 @@
+     /// `factor = 0.5^(d_clock / halflife)`
+     Halflife(f64),
+     /// `factor = lam^d_clock` (with a row-count clock, `lam` per row).
+     Lam(f64),
+ }
+ 
+ impl Decay {
+     pub fn factor(&self, d_clock: f64) -> f64 {
+-        match *self {
+-            Decay::Halflife(h) => {
+-                if h.is_infinite() {
+-                    1.0
+-                } else {
+-                    0.5f64.powf(d_clock / h)
+-                }
+-            }
+-            Decay::Lam(l) => l.powf(d_clock),
+-        }
++        1.0 /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ /// What to do when the raw clock delta is negative (docs/PLAN.md §3).
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+ #[serde(rename_all = "snake_case")]
+ pub enum OnClockReset {
+     /// Treat the delta as `max_dclock` (default).

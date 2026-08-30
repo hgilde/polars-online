@@ -1,0 +1,15 @@
+crates/online-core/src/clock.rs:21:9: replace Decay::factor -> f64 with 0.0
+crates/online-core/src/clock.rs:26:41: replace / with * in Decay::factor
+crates/online-core/src/clock.rs:115:42: replace - with + in ClockState::advance
+crates/online-core/src/clock.rs:115:42: replace - with / in ClockState::advance
+crates/online-core/src/clock.rs:126:13: delete match arm (Some(s), Some(p)) in ClockState::advance
+crates/online-core/src/clock.rs:126:37: replace != with == in ClockState::advance
+crates/online-core/src/clock.rs:143:31: replace < with == in ClockState::advance
+crates/online-core/src/clock.rs:143:31: replace < with > in ClockState::advance
+crates/online-core/src/clock.rs:167:38: replace + with - in ClockState::advance
+crates/online-core/src/clock.rs:167:38: replace + with * in ClockState::advance
+crates/online-core/src/clock.rs:175:26: replace += with -= in ClockState::advance
+crates/online-core/src/clock.rs:175:26: replace += with *= in ClockState::advance
+crates/online-core/src/clock.rs:21:9: replace Decay::factor -> f64 with 1.0
+crates/online-core/src/clock.rs:21:9: replace Decay::factor -> f64 with -1.0
+crates/online-core/src/clock.rs:26:41: replace / with % in Decay::factor

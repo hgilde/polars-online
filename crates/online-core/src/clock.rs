@@ -234,6 +234,43 @@ mod tests {
         assert!(a.reset && a.d_clock == 0.0);
     }
 
+    /// A repeated clock value is a *zero* delta, not a backwards one: it must
+    /// not be routed through `on_clock_reset`. (Found by `cargo mutants`:
+    /// nothing here distinguished `raw < 0.0` from `raw <= 0.0`, and under the
+    /// default `Max` policy that is a whole `max_dclock` of spurious decay.)
+    #[test]
+    fn duplicate_clock_values_are_zero_deltas() {
+        for policy in [
+            OnClockReset::Max,
+            OnClockReset::Zero,
+            OnClockReset::ResetState,
+        ] {
+            let mut c = ClockState::new();
+            let cfg = ClockCfg {
+                max_dclock: 10.0,
+                on_clock_reset: policy,
+                session_gap: None,
+            };
+            assert_eq!(c.advance(&cfg, Some(5.0), None, true).d_clock, 0.0);
+            let a = c.advance(&cfg, Some(5.0), None, true);
+            assert_eq!(
+                a.d_clock, 0.0,
+                "{policy:?}: repeated clock must give delta 0"
+            );
+            assert!(
+                !a.reset,
+                "{policy:?}: a repeated clock must not reset state"
+            );
+            // and a genuinely backwards clock still is handled by the policy
+            let b = c.advance(&cfg, Some(4.0), None, true);
+            match policy {
+                OnClockReset::Max => assert_eq!(b.d_clock, 10.0),
+                OnClockReset::Zero => assert_eq!(b.d_clock, 0.0),
+                OnClockReset::ResetState => assert!(b.reset),
+            }
+        }
+    }
+
     #[test]
     fn session_gap_overrides_delta() {
         let mut c = ClockState::new();

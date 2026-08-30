@@ -1,0 +1,21 @@
+--- crates/online-core/src/clock.rs
++++ replace < with > in ClockState::advance
+@@ -135,17 +135,17 @@
+                     match cfg.session_gap {
+                         Some(SessionGap::Reset) => {
+                             reset = true;
+                             0.0
+                         }
+                         Some(SessionGap::Gap(g)) => g.clamp(0.0, cfg.max_dclock),
+                         None => raw.clamp(0.0, cfg.max_dclock),
+                     }
+-                } else if raw < 0.0 {
++                } else if raw > /* ~ changed by cargo-mutants ~ */ 0.0 {
+                     match cfg.on_clock_reset {
+                         OnClockReset::Max => cfg.max_dclock,
+                         OnClockReset::Zero => 0.0,
+                         OnClockReset::ResetState => {
+                             reset = true;
+                             0.0
+                         }
+                     }

@@ -1,0 +1,21 @@
+--- crates/online-core/src/clock.rs
++++ replace += with *= in ClockState::advance
+@@ -167,17 +167,17 @@
+             let total = self.pending + d;
+             self.pending = 0.0;
+             ClockAdvance {
+                 d_clock: total,
+                 reset,
+                 accepted: true,
+             }
+         } else {
+-            self.pending += d;
++            self.pending *= /* ~ changed by cargo-mutants ~ */ d;
+             ClockAdvance {
+                 d_clock: 0.0,
+                 reset,
+                 accepted: false,
+             }
+         }
+     }
+ }
