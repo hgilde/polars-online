@@ -1,13 +1,18 @@
 # Suggested enhancements
 
-Status as of 2026-08-30: all 17 tasks in `docs/PLAN.md` §11 are complete — seven
-models, three entry points with identical numerics, chunk invariance and
-out-of-sample-ness enforced by tests, release CI defined, defaults validated on
-public data. This document lists what *follows from* those goals but is not built:
-first the gaps against our own plan, then features our models are one step away
-from, then a comparison against [river](https://riverml.xyz) (the reference
-online-ML library) and [Pathway](https://pathway.com) (a Rust-engined live-data
-framework) — both what we should adopt and what we deliberately leave out.
+Status as of 2026-08-30: **all 17 tasks in `docs/PLAN.md` §11 and all 27
+enhancements below are complete.** Ten models (`ewridge`, `rls`, `lasso`,
+`kalman`, `huber`, `quantile`, `sgd`, `pa`, `ftrl`, `holt`) plus `ew_cov`, three
+entry points with identical numerics, chunk invariance and out-of-sample-ness
+enforced by tests, release CI defined, defaults validated on public data.
+
+This document lists what *followed from* those goals: first the gaps against our
+own plan, then features our models were one step away from, then a comparison
+against [river](https://riverml.xyz) (the reference online-ML library) and
+[Pathway](https://pathway.com) (a Rust-engined live-data framework) — both what
+we adopted and what we deliberately leave out. Everything marked **done** is
+implemented and tested; §4 is the standing list of what we will *not* build, and
+is the only part of this document still forward-looking.
 
 Priorities: **P1** = promised by PLAN.md or fixes a real sharp edge; **P2** =
 cheap and clearly goal-aligned; **P3** = worthwhile, larger.
