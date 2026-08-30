@@ -55,6 +55,7 @@ pub enum ModelState {
     Robust(Box<crate::Robust>),
     Ftrl(Box<crate::Ftrl>),
     EwCovModel(Box<crate::EwCovModel>),
+    Sgd(Box<crate::Sgd>),
 }
 
 #[derive(Debug, Error)]
@@ -81,6 +82,7 @@ impl ModelState {
             ModelState::Robust(_) => "robust",
             ModelState::Ftrl(_) => "ftrl",
             ModelState::EwCovModel(_) => "ew_cov",
+            ModelState::Sgd(_) => "sgd",
         }
     }
 }

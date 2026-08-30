@@ -36,6 +36,7 @@ __all__ = [
     "output_fields",
     "quantile",
     "rls",
+    "sgd",
 ]
 
 
@@ -395,3 +396,72 @@ def ew_cov(
     model: dict[str, Any] = {"type": "ew_cov", "stats": stats}
     # `targets` is required by the common-parameter schema but unused here.
     return _common(name, model, targets=[features[0]], features=features, **common)
+
+
+def sgd(
+    name: str,
+    *,
+    targets: list[str],
+    features: list[str],
+    loss: str = "squared",
+    huber_delta: float | None = None,
+    quantile: float | None = None,
+    eps: float | None = None,
+    learning_rate: float | None = None,
+    schedule: str = "constant",
+    power: float | None = None,
+    l2: float | None = None,
+    clip_gradient: float | None = None,
+    **common: Any,
+) -> dict[str, Any]:
+    """Stochastic gradient descent with pluggable losses (ENHANCEMENTS E16).
+
+    The cheap baseline: one gradient step per row, no solves, O(k) rather than
+    O(k^2). Also the only model here that takes **count targets**, via
+    ``loss="poisson"`` with a log link -- none of the exact solvers cover those.
+
+    With ``eta = z . b``, ``p = link(eta)`` and ``d = dL/d(eta)``:
+
+    ==================== ========= =========== ==============================
+    loss                 link      ``p``       ``d``
+    ==================== ========= =========== ==============================
+    squared              identity  ``eta``     ``p - y``
+    huber                identity  ``eta``     ``clamp(p - y, +/-delta)``
+    quantile             identity  ``eta``     ``1{y < p} - tau``
+    epsilon_insensitive  identity  ``eta``     0 inside the tube, else sign
+    poisson              log       ``exp(eta)``  ``p - y``
+    logistic             sigmoid   sigmoid     ``p - y``
+    ==================== ========= =========== ==============================
+
+    then ``g_i = d * z_i * w + l2 * b_i`` and ``b_i -= lr_i * g_i``.
+
+    ``schedule`` is ``constant``, ``inv_scaling`` (``lr / (1 + n_eff)**power``)
+    or ``adagrad`` (``lr / (sqrt(G_i) + 1e-8)``). AdaGrad's accumulator and
+    ``n_eff`` both decay on the model's clock, so an annealed or adapted rate
+    re-opens after a long gap instead of staying frozen.
+
+    ``clip_gradient`` defaults to ``1e3`` rather than being off. Identity-link
+    losses do not need it, but ``poisson`` does: ``p = exp(eta)``, so a row that
+    pushes ``eta`` up makes the next gradient exponentially larger and a
+    constant rate diverges within a few thousand rows (measured: the intercept
+    ran to -4e10 unclipped, and recovered the true value clipped). The cap does
+    not bind for ordinary squared-loss fits.
+
+    Note ``epsilon_insensitive`` has a sign-valued subgradient, so a constant
+    rate oscillates in a band around the optimum; use ``inv_scaling`` with it.
+    ``huber_delta`` here is in **target units**, unlike the ``huber`` model
+    where it is in units of the residual std.
+    """
+    model: dict[str, Any] = {
+        "type": "sgd",
+        "loss": loss,
+        "huber_delta": huber_delta,
+        "quantile": quantile,
+        "eps": eps,
+        "learning_rate": learning_rate,
+        "schedule": schedule,
+        "power": power,
+        "l2": l2,
+        "clip_gradient": clip_gradient,
+    }
+    return _common(name, model, targets=targets, features=features, **common)

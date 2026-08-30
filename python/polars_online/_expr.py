@@ -100,3 +100,8 @@ class OnlineNamespace:
         """
         spec = _spec.ew_cov("online", features=[self._target(), *others], **kwargs)
         return _run(spec, self._expr)
+
+    def sgd(self, features: list[str], **kwargs: Any) -> pl.Expr:
+        """SGD with pluggable losses over this column as the target."""
+        spec = _spec.sgd("online", targets=[self._target()], features=features, **kwargs)
+        return _run(spec, self._expr)

@@ -10,6 +10,7 @@ from polars_online._spec import (
     output_fields,
     quantile,
     rls,
+    sgd,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "output_fields",
     "quantile",
     "rls",
+    "sgd",
 ]

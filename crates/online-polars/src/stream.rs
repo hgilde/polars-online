@@ -3,8 +3,8 @@
 
 use online_core::{
     ClockState, Decay, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg,
-    FtrlLoss, Kalman, KalmanCfg, Lasso, LassoCfg, ModelState, OnlineModel, Rls, RlsCfg, Robust,
-    RobustCfg, RobustLoss, State, StateError,
+    FtrlLoss, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, ModelState, OnlineModel, Rls,
+    RlsCfg, Robust, RobustCfg, RobustLoss, Sgd, SgdCfg, SgdLoss, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +20,7 @@ pub enum AnyModel {
     Robust(Box<Robust>),
     Ftrl(Box<Ftrl>),
     EwCov(Box<EwCovModel>),
+    Sgd(Box<Sgd>),
 }
 
 impl AnyModel {
@@ -38,6 +39,7 @@ impl AnyModel {
             AnyModel::Robust(m) => m.step(x, y, d_clock, weight),
             AnyModel::Ftrl(m) => m.step(x, y, d_clock, weight),
             AnyModel::EwCov(m) => m.step(x, y, d_clock, weight),
+            AnyModel::Sgd(m) => m.step(x, y, d_clock, weight),
         }
     }
 
@@ -48,7 +50,11 @@ impl AnyModel {
             AnyModel::EwRidge(m) => m.solve_failures,
             AnyModel::Lasso(m) => m.solve_failures,
             AnyModel::Robust(m) => m.solve_failures,
-            AnyModel::Rls(_) | AnyModel::Kalman(_) | AnyModel::Ftrl(_) | AnyModel::EwCov(_) => 0,
+            AnyModel::Rls(_)
+            | AnyModel::Kalman(_)
+            | AnyModel::Ftrl(_)
+            | AnyModel::EwCov(_)
+            | AnyModel::Sgd(_) => 0,
         }
     }
 
@@ -61,6 +67,7 @@ impl AnyModel {
             AnyModel::Robust(m) => m.n_outputs(),
             AnyModel::Ftrl(m) => m.n_outputs(),
             AnyModel::EwCov(m) => m.n_outputs(),
+            AnyModel::Sgd(m) => m.n_outputs(),
         }
     }
 
@@ -77,6 +84,7 @@ impl AnyModel {
             AnyModel::Ftrl(m) => Some(m.coefficients()),
             // ew_cov has no coefficients: its outputs are the statistics.
             AnyModel::EwCov(_) => None,
+            AnyModel::Sgd(m) => Some(m.coefficients().to_vec()),
         }
     }
 
@@ -89,6 +97,7 @@ impl AnyModel {
             AnyModel::Robust(m) => m.state(),
             AnyModel::Ftrl(m) => m.state(),
             AnyModel::EwCov(m) => m.state(),
+            AnyModel::Sgd(m) => m.state(),
         }
     }
 
@@ -101,6 +110,7 @@ impl AnyModel {
             ModelState::Robust(_) => Ok(AnyModel::Robust(Box::new(Robust::restore(s)?))),
             ModelState::Ftrl(_) => Ok(AnyModel::Ftrl(Box::new(Ftrl::restore(s)?))),
             ModelState::EwCovModel(_) => Ok(AnyModel::EwCov(Box::new(EwCovModel::restore(s)?))),
+            ModelState::Sgd(_) => Ok(AnyModel::Sgd(Box::new(Sgd::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -325,6 +335,55 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::EwCov(Box::new(EwCovModel::new(cfg)?)))
         }
+        ModelKind::Sgd {
+            loss,
+            huber_delta,
+            quantile,
+            eps,
+            learning_rate,
+            schedule,
+            power,
+            l2,
+            clip_gradient,
+        } => {
+            let loss = match loss.as_deref().unwrap_or("squared") {
+                "squared" => SgdLoss::Squared,
+                "huber" => SgdLoss::Huber {
+                    delta: huber_delta.unwrap_or(1.0),
+                },
+                "quantile" => SgdLoss::Quantile {
+                    tau: quantile.ok_or("sgd: loss \"quantile\" needs a `quantile` level")?,
+                },
+                "epsilon_insensitive" => SgdLoss::EpsilonInsensitive {
+                    eps: eps.unwrap_or(0.1),
+                },
+                "poisson" => SgdLoss::Poisson,
+                "logistic" => SgdLoss::Logistic,
+                other => return Err(format!("unknown sgd loss {other:?}")),
+            };
+            let sched = match schedule.as_deref().unwrap_or("constant") {
+                "constant" => LearningRate::Constant,
+                "inv_scaling" => LearningRate::InvScaling {
+                    power: power.unwrap_or(0.5),
+                },
+                "adagrad" => LearningRate::AdaGrad,
+                other => return Err(format!("unknown sgd schedule {other:?}")),
+            };
+            let cfg = SgdCfg {
+                n_features: spec.k(),
+                n_targets: spec.m(),
+                add_intercept: spec.add_intercept,
+                decay,
+                loss,
+                learning_rate: learning_rate.unwrap_or(0.01),
+                schedule: sched,
+                l2: l2.unwrap_or(0.0),
+                min_periods: spec.min_periods_or_default(),
+                // Finite by default: see SgdCfg::clip_gradient.
+                clip_gradient: clip_gradient.unwrap_or(1e3),
+            };
+            Ok(AnyModel::Sgd(Box::new(Sgd::new(cfg)?)))
+        }
     }
 }
 
@@ -368,7 +427,8 @@ pub fn combo_labels(spec: &Spec) -> Vec<String> {
         | ModelKind::Huber { .. }
         | ModelKind::Quantile { .. }
         | ModelKind::Ftrl { .. }
-        | ModelKind::EwCov { .. } => vec![String::new()],
+        | ModelKind::EwCov { .. }
+        | ModelKind::Sgd { .. } => vec![String::new()],
         ModelKind::Lasso { lasso_path, .. } => {
             lasso_path.iter().map(|l| format!("__l{l}")).collect()
         }

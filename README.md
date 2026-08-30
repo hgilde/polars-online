@@ -208,6 +208,30 @@ IRLS reweighting on the ridge update, using each row's **prior** residual so the
 reweighting stays out-of-sample. Huber: `w = min(1, δσ/|r|)`. Quantile: the
 check-loss weights at level τ. Weights are per target, so `S` is per target here.
 
+### `sgd` — stochastic gradient descent, pluggable losses
+
+```
+eta = zᵀβ        p = link(eta)        gᵢ = (dL/d eta)·zᵢ·w + l2·βᵢ        βᵢ -= lrᵢ·gᵢ
+```
+
+| loss | link | `dL/d eta` |
+|---|---|---|
+| `squared` | identity | `p − y` |
+| `huber` | identity | `clamp(p − y, ±delta)` |
+| `quantile` | identity | `1{y < p} − τ` |
+| `epsilon_insensitive` | identity | 0 inside the tube, else `sign(p − y)` |
+| `poisson` | log | `p − y` |
+| `logistic` | sigmoid | `p − y` |
+
+O(k) per row and no solves — the cheap baseline, and the only model here that
+takes **count targets** (`loss="poisson"`). Learning rate is `constant`,
+`inv_scaling` (`lr/(1+n_eff)^power`) or `adagrad`; AdaGrad's accumulator decays
+on the clock, so an adapted rate re-opens after a long gap.
+
+`clip_gradient` defaults to `1e3` rather than off: with a log link one large
+count makes the next gradient exponentially bigger and a constant rate diverges.
+It does not bind for identity-link losses.
+
 ### `ew_cov` — exponentially weighted moments (no regression)
 
 ```

@@ -15,6 +15,7 @@ mod lasso;
 mod model;
 mod rls;
 mod robust;
+mod sgd;
 mod solve;
 
 pub use clock::{ClockAdvance, ClockCfg, ClockState, Decay, OnClockReset, SessionGap};
@@ -26,6 +27,7 @@ pub use lasso::{Lasso, LassoCfg};
 pub use model::{Extra, ModelState, OnlineModel, State, StateError, Step, check_schema};
 pub use rls::{Rls, RlsCfg};
 pub use robust::{Robust, RobustCfg, RobustLoss};
+pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::solve_spd;
 
 /// Version of the serialized model-state layout.

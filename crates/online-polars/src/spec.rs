@@ -187,6 +187,35 @@ pub enum ModelKind {
         #[serde(default)]
         stats: Option<Vec<String>>,
     },
+    /// Stochastic gradient descent with pluggable losses (ENHANCEMENTS E16).
+    /// O(k) per row, no solves, and the only model here that takes count
+    /// targets (via `loss = "poisson"`).
+    Sgd {
+        /// "squared" (default), "huber", "quantile", "epsilon_insensitive",
+        /// "poisson" or "logistic".
+        #[serde(default)]
+        loss: Option<String>,
+        /// Huber cut, in target units.
+        #[serde(default)]
+        huber_delta: Option<f64>,
+        #[serde(default)]
+        quantile: Option<f64>,
+        /// Width of the insensitive tube.
+        #[serde(default)]
+        eps: Option<f64>,
+        #[serde(default)]
+        learning_rate: Option<f64>,
+        /// "constant" (default), "inv_scaling" or "adagrad".
+        #[serde(default)]
+        schedule: Option<String>,
+        /// Exponent for `inv_scaling`.
+        #[serde(default)]
+        power: Option<f64>,
+        #[serde(default)]
+        l2: Option<f64>,
+        #[serde(default)]
+        clip_gradient: Option<f64>,
+    },
     Rls {
         /// Prior strength: `P0 = I / ridge`. Scalar only (baked into P0).
         #[serde(default)]
@@ -207,6 +236,7 @@ impl ModelKind {
             ModelKind::Quantile { .. } => "quantile",
             ModelKind::Ftrl { .. } => "ftrl",
             ModelKind::EwCov { .. } => "ew_cov",
+            ModelKind::Sgd { .. } => "sgd",
         }
     }
 }
@@ -375,6 +405,49 @@ impl Spec {
             }
         }
         match &self.model {
+            ModelKind::Sgd {
+                loss,
+                quantile,
+                learning_rate,
+                schedule,
+                ..
+            } => {
+                if let Some(l) = loss {
+                    const OK: [&str; 6] = [
+                        "squared",
+                        "huber",
+                        "quantile",
+                        "epsilon_insensitive",
+                        "poisson",
+                        "logistic",
+                    ];
+                    if !OK.contains(&l.as_str()) {
+                        return Err(format!(
+                            "spec {:?}: unknown sgd loss {l:?}; expected one of {}",
+                            self.name,
+                            OK.join(", ")
+                        ));
+                    }
+                    if l == "quantile" && quantile.is_none() {
+                        return Err(format!(
+                            "spec {:?}: sgd loss \"quantile\" needs a `quantile` level",
+                            self.name
+                        ));
+                    }
+                }
+                if let Some(sc) = schedule {
+                    if !["constant", "inv_scaling", "adagrad"].contains(&sc.as_str()) {
+                        return Err(format!(
+                            "spec {:?}: unknown sgd schedule {sc:?}; expected constant, \
+                             inv_scaling or adagrad",
+                            self.name
+                        ));
+                    }
+                }
+                if learning_rate.is_some_and(|v| v <= 0.0 || v.is_nan()) {
+                    return Err(format!("spec {:?}: learning_rate must be > 0", self.name));
+                }
+            }
             ModelKind::EwCov { stats } => {
                 if let Some(stats) = stats {
                     for st in stats {
