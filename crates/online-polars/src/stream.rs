@@ -26,6 +26,14 @@ pub enum AnyModel {
 }
 
 impl AnyModel {
+    /// Mix the main accumulators toward a long-run twin, where the model has
+    /// one (`session_shrink`). A no-op elsewhere.
+    pub fn blend_toward_long_run(&mut self) {
+        if let AnyModel::EwRidge(m) = self {
+            m.blend_toward_long_run();
+        }
+    }
+
     pub fn step(
         &mut self,
         x: &[f64],
@@ -147,6 +155,8 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             standardize,
             ridge_decay,
             coef0,
+            session_shrink,
+            long_halflife,
             solve_every,
             max_rows_between_solves,
         } => {
@@ -176,6 +186,8 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 feature_sets: fs,
                 standardize: *standardize,
                 ridge_decay: *ridge_decay,
+                session_shrink: *session_shrink,
+                long_halflife: *long_halflife,
                 coef0: coef0.clone(),
                 min_periods: spec.min_periods_or_default(),
                 solve_every: solve_every.unwrap_or_else(|| spec.solve_every_default(decay)),
@@ -639,6 +651,12 @@ impl Stream {
         }
         if adv.reset {
             self.reset_models(spec);
+        } else if adv.session_changed {
+            // A gentler alternative to resetting: revert partway toward the
+            // long-run relationship (ENHANCEMENTS E6).
+            for (_, m) in self.models.iter_mut() {
+                m.blend_toward_long_run();
+            }
         }
         if !accept {
             return Ok(None);

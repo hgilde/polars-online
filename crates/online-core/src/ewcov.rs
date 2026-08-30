@@ -274,6 +274,17 @@ impl EwCov {
         self.prior_scale *= lam;
     }
 
+    /// Overwrite the moments directly. Used when two accumulators are mixed
+    /// (see `EwRidge::blend_toward_long_run`); the caller is responsible for
+    /// the mixture being a valid set of weighted moments.
+    pub fn set_moments(&mut self, mean: &[f64], centered: &[f64], w_sum: f64) {
+        debug_assert_eq!(mean.len(), self.k);
+        debug_assert_eq!(centered.len(), self.k * self.k);
+        self.m.copy_from_slice(mean);
+        self.c.copy_from_slice(centered);
+        self.w_sum = w_sum;
+    }
+
     /// Age the accumulator without adding data (pure decay: means unchanged,
     /// only the effective count shrinks).
     pub fn decay(&mut self, lam: f64) {

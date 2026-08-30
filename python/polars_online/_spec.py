@@ -110,25 +110,40 @@ def ewridge(
     standardize: bool = False,
     ridge_decay: bool = False,
     coef0: list[list[float]] | None = None,
+    session_shrink: float | None = None,
+    long_halflife: float | None = None,
     solve_every: float | None = None,
     max_rows_between_solves: int | None = None,
     **common: Any,
 ) -> dict[str, Any]:
     """EW-ridge spec (docs/PLAN.md §4.1).
 
-    ``coef0`` shrinks toward a stated belief instead of toward zero, one vector
-    per target in the features' original units. **Whether the prior fades
-    depends on ``ridge_decay``**: ``S`` is a weighted *mean*, so a plain
-    ``ridge`` is a fixed per-observation penalty whose pull is permanent
-    ("always stay near this belief"); with ``ridge_decay`` the prior sits on the
-    decaying sum scale and fades as data arrives (the usual warm start, "begin
-    at yesterday's fit and let evidence take over").
+        ``coef0`` shrinks toward a stated belief instead of toward zero, one vector
+        per target in the features' original units. **Whether the prior fades
+        depends on ``ridge_decay``**: ``S`` is a weighted *mean*, so a plain
+        ``ridge`` is a fixed per-observation penalty whose pull is permanent
+        ("always stay near this belief"); with ``ridge_decay`` the prior sits on the
+        decaying sum scale and fades as data arrives (the usual warm start, "begin
+        at yesterday's fit and let evidence take over").
 
-    Math: EW means ``S = EW[x x^T]``, ``r_j = EW[x y_j]`` with per-row decay
-    ``0.5 ** (d_clock / halflife)``; coefficients solve
-    ``(S + ridge * D) beta_j = r_j`` (D = identity minus the intercept slot) on a
-    schedule (``solve_every`` clock units, default halflife/50). Predictions use
-    the last solved coefficients and the state *before* the row's update.
+    ``session_shrink`` is a middle option between ``session_gap`` and a full
+        reset (PLAN section 12 open question 1). A second accumulator tracks the
+        long-run relationship at ``long_halflife``, and on a session boundary the
+        two are mixed weight-respectingly::
+
+            W'  = (1-f) * W_fast + f * W_slow
+            S'  = ((1-f) * W_fast * S_fast + f * W_slow * S_slow) / W'
+
+        so ``0`` keeps today's fit, ``1`` reverts fully to the long run, and
+        anything between says "overnight, drift partway back". Unlike
+        ``session_gap`` this changes what the model *believes*, not just how
+        confident it is.
+
+        Math: EW means ``S = EW[x x^T]``, ``r_j = EW[x y_j]`` with per-row decay
+        ``0.5 ** (d_clock / halflife)``; coefficients solve
+        ``(S + ridge * D) beta_j = r_j`` (D = identity minus the intercept slot) on a
+        schedule (``solve_every`` clock units, default halflife/50). Predictions use
+        the last solved coefficients and the state *before* the row's update.
     """
     model: dict[str, Any] = {
         "type": "ew_ridge",
@@ -137,6 +152,8 @@ def ewridge(
         "standardize": standardize,
         "ridge_decay": ridge_decay,
         "coef0": coef0,
+        "session_shrink": session_shrink,
+        "long_halflife": long_halflife,
         "solve_every": solve_every,
         "max_rows_between_solves": max_rows_between_solves,
     }

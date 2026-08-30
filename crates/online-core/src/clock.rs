@@ -92,6 +92,10 @@ pub struct ClockAdvance {
     /// was negative: the caller must turn this into an error naming the row.
     /// Carries the offending raw delta.
     pub backwards: Option<f64>,
+    /// The session id differs from the previous row's. Reported separately
+    /// from `reset` so a caller can do something gentler than starting over —
+    /// see `session_shrink` (ENHANCEMENTS E6).
+    pub session_changed: bool,
 }
 
 /// Per-stream clock state. Serialized as part of a stream's saved state.
@@ -185,6 +189,7 @@ impl ClockState {
                 reset,
                 accepted: true,
                 backwards,
+                session_changed,
             }
         } else {
             self.pending += d;
@@ -193,6 +198,7 @@ impl ClockState {
                 reset,
                 accepted: false,
                 backwards,
+                session_changed,
             }
         }
     }
@@ -304,6 +310,21 @@ mod tests {
         let a = c.advance(&cfg, Some(4.0), None, true);
         assert_eq!(a.backwards, Some(-6.0));
         assert!(!a.reset, "the error policy must not silently reset");
+    }
+
+    #[test]
+    fn session_change_is_reported_separately_from_reset() {
+        let mut c = ClockState::new();
+        let cfg = ClockCfg {
+            max_dclock: 50.0,
+            session_gap: Some(SessionGap::Gap(5.0)),
+            ..Default::default()
+        };
+        assert!(!c.advance(&cfg, Some(0.0), Some(1), true).session_changed);
+        assert!(!c.advance(&cfg, Some(1.0), Some(1), true).session_changed);
+        let a = c.advance(&cfg, Some(2.0), Some(2), true);
+        assert!(a.session_changed, "a new session id should be reported");
+        assert!(!a.reset, "a gap is not a reset");
     }
 
     #[test]

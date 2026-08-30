@@ -94,6 +94,14 @@ pub enum ModelKind {
         /// per target of length `n_features + intercept`, in original units.
         #[serde(default)]
         coef0: Option<Vec<Vec<f64>>>,
+        /// On a session change, mix the accumulators this far toward a
+        /// slow-moving twin: 0 keeps today's fit, 1 reverts to the long run.
+        /// Needs `long_halflife`.
+        #[serde(default)]
+        session_shrink: Option<f64>,
+        /// Halflife of that twin.
+        #[serde(default)]
+        long_halflife: Option<f64>,
         #[serde(default)]
         solve_every: Option<f64>,
         #[serde(default)]
@@ -712,8 +720,28 @@ impl Spec {
             ModelKind::EwRidge {
                 feature_sets,
                 coef0,
+                session_shrink,
+                long_halflife,
                 ..
             } => {
+                if session_shrink.is_some_and(|f| !(0.0..=1.0).contains(&f)) {
+                    return Err(format!(
+                        "spec {:?}: session_shrink must be in [0, 1]",
+                        self.name
+                    ));
+                }
+                if session_shrink.is_some() && long_halflife.is_none() {
+                    return Err(format!(
+                        "spec {:?}: session_shrink needs long_halflife",
+                        self.name
+                    ));
+                }
+                if session_shrink.is_some() && self.session.is_none() {
+                    return Err(format!(
+                        "spec {:?}: session_shrink needs a `session` column to react to",
+                        self.name
+                    ));
+                }
                 if let Some(c) = coef0 {
                     let k_total = self.k() + usize::from(self.add_intercept);
                     if c.len() != self.m() || c.iter().any(|v| v.len() != k_total) {

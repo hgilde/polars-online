@@ -156,6 +156,7 @@ Every model takes the same stream parameters:
 | `max_dclock` | ceiling on the clock delta (required with `clock`) |
 | `on_clock_reset` | what a backwards clock means: `"max"` (default), `"zero"`, `"reset_state"`, or `"error"` to refuse it |
 | `session`, `session_gap` | on a session change, apply this delta (or `"reset"`) |
+| `session_shrink`, `long_halflife` | `ewridge` only: at a session change, mix partway back toward a slow-moving twin — changes what the model believes, where `session_gap` only changes how confident it is |
 | `weight` | row weight column |
 | `min_periods` | in `n_eff` units; outputs are null until reached. A list gives one threshold per target — warmup gates output, not learning |
 | `coef_every` | 0 = never; coefficients are also emitted on each chunk's last row |

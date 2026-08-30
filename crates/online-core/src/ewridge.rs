@@ -57,6 +57,29 @@ pub struct EwRidgeCfg {
     /// yesterday's fit and let evidence take over".
     #[serde(default)]
     pub coef0: Option<Vec<Vec<f64>>>,
+    /// Blend toward a slow-moving twin on a session change, instead of the
+    /// all-or-nothing choice between `session_gap` and a full reset
+    /// (ENHANCEMENTS E6, PLAN §12 open question 1).
+    ///
+    /// A second accumulator runs alongside the main one with `long_halflife`,
+    /// representing the long-run relationship. On a session boundary the two
+    /// are mixed, weight-respectingly, with the slow one taking share
+    /// `session_shrink`:
+    ///
+    /// ```text
+    /// W'  = (1−f)·W_fast + f·W_slow
+    /// S'  = ((1−f)·W_fast·S_fast + f·W_slow·S_slow) / W'
+    /// ```
+    ///
+    /// so `0` keeps today's fit, `1` reverts fully to the long run, and
+    /// anything between says "overnight, drift partway back". Unlike
+    /// `session_gap` this changes *what the model believes*, not merely how
+    /// confident it is.
+    #[serde(default)]
+    pub session_shrink: Option<f64>,
+    /// Halflife of the slow twin. Required by `session_shrink`.
+    #[serde(default)]
+    pub long_halflife: Option<f64>,
     /// Outputs are null until `n_eff` (before the row's update) reaches this.
     pub min_periods: f64,
     /// Solve cadence in clock units; <= 0 solves every row.
@@ -107,6 +130,21 @@ impl EwRidgeCfg {
         if self.ridge_decay && (self.standardize || self.n_combos() > 1) {
             return Err("ridge_decay is incompatible with standardize and grids".into());
         }
+        match (self.session_shrink, self.long_halflife) {
+            (Some(f), _) if !(0.0..=1.0).contains(&f) => {
+                return Err("session_shrink must be in [0, 1]".into());
+            }
+            (Some(_), None) => {
+                return Err("session_shrink needs long_halflife (the slow twin's decay)".into());
+            }
+            (None, Some(_)) => {
+                return Err("long_halflife has no effect without session_shrink".into());
+            }
+            (Some(_), Some(h)) if h <= 0.0 || h.is_nan() => {
+                return Err("long_halflife must be > 0".into());
+            }
+            _ => {}
+        }
         if let Some(c) = &self.coef0 {
             if c.len() != self.n_targets || c.iter().any(|v| v.len() != self.k_total()) {
                 return Err(format!(
@@ -128,6 +166,14 @@ impl EwRidgeCfg {
     }
 }
 
+/// The long-run twin's accumulators (see [`EwRidgeCfg::session_shrink`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct SlowState {
+    cov: EwCov,
+    wj: Vec<f64>,
+    r: Vec<Vec<f64>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EwRidge {
     cfg: EwRidgeCfg,
@@ -141,6 +187,10 @@ pub struct EwRidge {
     /// Last solved coefficients per output slot (target-major, then combo),
     /// each of length `k_total` (zeros outside a combo's feature set).
     beta: Option<Vec<Vec<f64>>>,
+    /// Slow-moving twin for `session_shrink`: the same statistics under
+    /// `long_halflife`, representing the long-run relationship.
+    #[serde(default)]
+    slow: Option<Box<SlowState>>,
     clock_since_solve: f64,
     rows_since_solve: u32,
     pub solve_failures: u64,
@@ -154,7 +204,15 @@ impl EwRidge {
         cfg.validate()?;
         let k_total = cfg.k_total();
         let m = cfg.n_targets;
+        let slow = cfg.session_shrink.map(|_| {
+            Box::new(SlowState {
+                cov: EwCov::new(k_total),
+                wj: vec![0.0; m],
+                r: vec![vec![0.0; k_total]; m],
+            })
+        });
         Ok(Self {
+            slow,
             cov: EwCov::new(k_total),
             wj: vec![0.0; m],
             r: vec![vec![0.0; k_total]; m],
@@ -184,6 +242,65 @@ impl EwRidge {
     /// Current coefficients per output slot, if solved.
     pub fn coefficients(&self) -> Option<&[Vec<f64>]> {
         self.beta.as_deref()
+    }
+
+    /// Mix the main accumulators toward the slow twin, as a session boundary
+    /// asks for (see [`EwRidgeCfg::session_shrink`]). A no-op when the twin is
+    /// not configured, or before it has seen anything.
+    /// Re-solve and return the first target's first slope. Test helper: after
+    /// a blend the coefficients are stale until the next solve.
+    #[cfg(test)]
+    pub(crate) fn coefficients_after_blend(&mut self) -> f64 {
+        self.solve();
+        self.coefficients().unwrap()[0][1]
+    }
+
+    pub fn blend_toward_long_run(&mut self) {
+        let Some(f) = self.cfg.session_shrink else {
+            return;
+        };
+        let Some(slow) = &self.slow else { return };
+        if f <= 0.0 {
+            return;
+        }
+        let k = self.cfg.k_total();
+
+        // Weight-respecting mixture of two weighted means.
+        let (wf, ws) = (self.cov.n_eff(), slow.cov.n_eff());
+        let w_new = (1.0 - f) * wf + f * ws;
+        if w_new > 0.0 {
+            let mut blended = EwCov::new(k);
+            let (af, as_) = ((1.0 - f) * wf / w_new, f * ws / w_new);
+            // EwCov holds means, so mix means directly and restore the weight
+            // by replaying a single synthetic observation is not possible;
+            // instead rebuild from the mixed moments.
+            let mixed_mean: Vec<f64> = (0..k)
+                .map(|i| af * self.cov.mean(i) + as_ * slow.cov.mean(i))
+                .collect();
+            let mut mixed_c = vec![0.0; k * k];
+            for i in 0..k {
+                for j in 0..k {
+                    // Mix raw second moments, then re-center on the mixed mean:
+                    // centered moments are not additive across differing means.
+                    let raw = af * self.cov.raw(i, j) + as_ * slow.cov.raw(i, j);
+                    mixed_c[i * k + j] = raw - mixed_mean[i] * mixed_mean[j];
+                }
+            }
+            blended.set_moments(&mixed_mean, &mixed_c, w_new);
+            self.cov = blended;
+        }
+
+        for j in 0..self.cfg.n_targets {
+            let (wf, ws) = (self.wj[j], slow.wj[j]);
+            let w_new = (1.0 - f) * wf + f * ws;
+            if w_new > 0.0 {
+                let (af, as_) = ((1.0 - f) * wf / w_new, f * ws / w_new);
+                for i in 0..k {
+                    self.r[j][i] = af * self.r[j][i] + as_ * slow.r[j][i];
+                }
+                self.wj[j] = w_new;
+            }
+        }
     }
 
     fn z(&mut self, x: &[f64]) {
@@ -452,6 +569,25 @@ impl OnlineModel for EwRidge {
         }
 
         // ---- update ----
+        // The slow twin sees the same rows under its own, longer halflife.
+        if let (Some(slow), Some(h)) = (self.slow.as_mut(), self.cfg.long_halflife) {
+            let slow_lam = Decay::Halflife(h).factor(d_clock);
+            slow.cov.update(&self.zbuf, slow_lam, weight);
+            for ((wj, r), yj) in slow.wj.iter_mut().zip(slow.r.iter_mut()).zip(y) {
+                match yj {
+                    Some(yj) => {
+                        let wj_new = slow_lam * *wj + weight;
+                        let a = slow_lam * *wj / wj_new;
+                        let b = weight / wj_new;
+                        for (ri, zi) in r.iter_mut().zip(&self.zbuf) {
+                            *ri = a * *ri + b * zi * yj;
+                        }
+                        *wj = wj_new;
+                    }
+                    None => *wj *= slow_lam,
+                }
+            }
+        }
         self.cov.update(&self.zbuf, lam, weight);
         for j in 0..m {
             match y[j] {
@@ -546,6 +682,8 @@ mod tests {
             standardize: false,
             ridge_decay: false,
             coef0: None,
+            session_shrink: None,
+            long_halflife: None,
             min_periods: (k + 1) as f64,
             solve_every: 0.0,
             max_rows_between_solves: 1,
@@ -663,6 +801,72 @@ mod tests {
             (b - 0.02).abs() < 5e-3,
             "expected ~0.02 in original units, got {b}"
         );
+    }
+
+    /// A session break should be able to revert partway toward the long run,
+    /// rather than only choosing between "carry on" and "start over".
+    #[test]
+    fn session_shrink_reverts_toward_the_long_run() {
+        // Long run: slope 1. Today: slope -1 for a while. After a session
+        // break with shrink f, the fit should sit between the two.
+        let build = |f: Option<f64>| {
+            let mut c = cfg(1, 1);
+            c.decay = Decay::Halflife(50.0);
+            c.session_shrink = f;
+            c.long_halflife = f.map(|_| 100_000.0);
+            c.min_periods = 0.0;
+            EwRidge::new(c).unwrap()
+        };
+        let run = |m: &mut EwRidge| {
+            let mut s = 91u64;
+            // a long history at slope +1
+            for i in 0..4000 {
+                let x = [lcg(&mut s)];
+                m.step(&x, &[Some(x[0])], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            // then a shorter stretch at slope -1
+            for _ in 0..300 {
+                let x = [lcg(&mut s)];
+                m.step(&x, &[Some(-x[0])], 1.0, 1.0);
+            }
+            m.coefficients().unwrap()[0][1]
+        };
+
+        let mut plain = build(None);
+        let before_plain = run(&mut plain);
+        let mut shrunk = build(Some(0.9));
+        let before_shrunk = run(&mut shrunk);
+        // Both have been dragged to roughly -1 by the recent regime.
+        assert!(before_plain < -0.5 && before_shrunk < -0.5);
+
+        // The session boundary reverts the shrinking one toward +1.
+        shrunk.blend_toward_long_run();
+        plain.blend_toward_long_run(); // no twin configured: a no-op
+        let after_shrunk = shrunk.coefficients_after_blend();
+        let after_plain = plain.coefficients_after_blend();
+
+        assert!(
+            (after_plain - before_plain).abs() < 1e-9,
+            "no twin configured should mean no change: {before_plain} -> {after_plain}"
+        );
+        assert!(
+            after_shrunk > before_shrunk + 0.5,
+            "shrink should pull back toward the long run: {before_shrunk} -> {after_shrunk}"
+        );
+    }
+
+    #[test]
+    fn session_shrink_config_is_validated() {
+        let mut c = cfg(1, 1);
+        c.session_shrink = Some(0.5);
+        assert!(EwRidge::new(c).is_err(), "shrink without long_halflife");
+        let mut c = cfg(1, 1);
+        c.long_halflife = Some(1000.0);
+        assert!(EwRidge::new(c).is_err(), "long_halflife without shrink");
+        let mut c = cfg(1, 1);
+        c.session_shrink = Some(1.5);
+        c.long_halflife = Some(1000.0);
+        assert!(EwRidge::new(c).is_err(), "shrink out of range");
     }
 
     #[test]

@@ -371,7 +371,9 @@ returns / volume / trade-count z-scores, targets = strictly future returns.
 
 ## 12. Open questions (not blocking)
 
-- Overnight handling beyond `session_gap` (e.g. partial state shrinkage toward a long-run prior).
+- ~~Overnight handling beyond `session_gap` (e.g. partial state shrinkage toward a long-run prior).~~
+  Answered: `session_shrink` + `long_halflife` mix the accumulators toward a
+  slow-moving twin at a session boundary (ENHANCEMENTS E6).
 - ~~Whether targets at long horizons need a different `min_periods` than short ones.~~
   Answered: `min_periods` accepts a list, one entry per target (ENHANCEMENTS E7).
 - Public intraday dataset choice for tests (stable URL, permissive licence).

@@ -568,3 +568,135 @@ class TestPerTargetMinPeriods:
     def test_negative_is_rejected(self):
         with pytest.raises(ValueError, match="min_periods must be >= 0"):
             po.spec.ewridge("m", targets=["y0"], features=["x0"], halflife=100.0, min_periods=-1.0)
+
+
+class TestSessionShrink:
+    """E6: revert partway toward the long run at a session boundary.
+
+    PLAN section 12's first open question. `session_gap` only changes how
+    *confident* the model is; this changes what it believes, by mixing the
+    accumulators with a slow-moving twin.
+    """
+
+    N1, N2, N3 = 4000, 300, 300
+
+    def _df(self):
+        rng = np.random.default_rng(0)
+        n = self.N1 + self.N2 + self.N3
+        x = rng.standard_normal(n)
+        # long run slope +1, then a stretch at -1, then a new session
+        y = np.concatenate([x[: self.N1], -x[self.N1 :]])
+        return pl.DataFrame(
+            {
+                "t": np.arange(float(n)),
+                "x0": x,
+                "y0": y,
+                "s": ["a"] * (self.N1 + self.N2) + ["b"] * self.N3,
+            }
+        )
+
+    def _coefs(self, **kw):
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y0"],
+            features=["x0"],
+            halflife=50.0,
+            clock="t",
+            max_dclock=5.0,
+            session="s",
+            session_gap=0.0,
+            min_periods=0.0,
+            max_rows_between_solves=1,
+            coef_every=1,
+            **kw,
+        )
+        out = po.ModelBank([spec]).fit_predict(self._df())
+        return np.array(out["m"].struct.field("coef").to_list(), dtype=float)
+
+    def _jump(self, **kw):
+        """How far the slope moves across the session boundary, against a
+        typical row-to-row move just before it."""
+        c = self._coefs(**kw)[:, 1]
+        i = self.N1 + self.N2
+        typical = float(np.median(np.abs(np.diff(c[i - 100 : i]))))
+        return abs(c[i] - c[i - 1]), typical
+
+    def test_zero_shrink_carries_the_recent_fit_through(self):
+        jump, typical = self._jump(session_shrink=0.0, long_halflife=1e5)
+        assert jump < 10 * typical, (
+            f"boundary move {jump} should look like an ordinary row ({typical})"
+        )
+
+    def test_shrink_reverts_toward_the_long_run(self):
+        c = self._coefs(session_shrink=0.9, long_halflife=1e5)
+        before, after = c[self.N1 + self.N2 - 1][1], c[self.N1 + self.N2][1]
+        assert before < -0.5, "the recent regime should have taken over first"
+        assert after > 0.5, f"the break should revert toward +1, got {after}"
+
+    def test_shrink_is_monotone(self):
+        after = {
+            f: self._coefs(session_shrink=f, long_halflife=1e5)[self.N1 + self.N2][1]
+            for f in (0.0, 0.3, 0.6, 0.9)
+        }
+        vals = [after[f] for f in (0.0, 0.3, 0.6, 0.9)]
+        assert vals == sorted(vals), f"more shrink should mean more reversion: {after}"
+
+    def test_absent_by_default(self):
+        jump, typical = self._jump()
+        assert jump < 10 * typical, "no shrink configured should mean no jump"
+
+    def test_shrink_produces_a_visible_jump(self):
+        jump, typical = self._jump(session_shrink=0.9, long_halflife=1e5)
+        assert jump > 100 * typical, (
+            f"a 0.9 shrink should move the fit far more than a row does ({jump} vs {typical})"
+        )
+
+    def test_chunk_invariance_and_save_load(self, tmp_path):
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y0"],
+            features=["x0"],
+            halflife=50.0,
+            clock="t",
+            max_dclock=5.0,
+            session="s",
+            session_gap=0.0,
+            session_shrink=0.5,
+            long_halflife=1e5,
+            min_periods=0.0,
+            max_rows_between_solves=1,
+        )
+        df = self._df().slice(0, 800)
+        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        bank = po.ModelBank([spec])
+        many = (
+            pl.concat([bank.fit_predict(df.slice(i, 97)) for i in range(0, df.height, 97)])
+            .select("m")
+            .unnest("m")
+        )
+        keep = [c for c in one.columns if not c.startswith("coef")]
+        assert one.select(keep).equals(many.select(keep), null_equal=True)
+
+        a = po.ModelBank([spec])
+        a.fit_predict(df.slice(0, 400))
+        p = tmp_path / "ss.state"
+        a.save(p)
+        b = po.ModelBank.load(p, specs=[spec])
+        rest = df.slice(400, 400)
+        assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
+
+    def test_config_is_validated(self):
+        base = dict(targets=["y0"], features=["x0"], halflife=50.0, session="s", session_gap=0.0)
+        with pytest.raises(ValueError, match="needs long_halflife"):
+            po.spec.ewridge("m", session_shrink=0.5, **base)
+        with pytest.raises(ValueError, match="must be in .0, 1."):
+            po.spec.ewridge("m", session_shrink=1.5, long_halflife=1e5, **base)
+        with pytest.raises(ValueError, match="needs a .session. column"):
+            po.spec.ewridge(
+                "m",
+                targets=["y0"],
+                features=["x0"],
+                halflife=50.0,
+                session_shrink=0.5,
+                long_halflife=1e5,
+            )

@@ -90,6 +90,8 @@ fn ewridge_cfg(standardize: bool, ridge: f64) -> EwRidgeCfg {
         feature_sets: vec![],
         standardize,
         ridge_decay: false,
+        session_shrink: None,
+        long_halflife: None,
         coef0: None,
         min_periods: 3.0,
         solve_every: 0.0,
