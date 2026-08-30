@@ -27,9 +27,12 @@ fn lcg(state: &mut u64) -> f64 {
     ((*state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
 }
 
-/// 60 rows of (x, y, d_clock, weight): two features, one null target and one
-/// clock gap, so the null policy and the decay both participate.
-fn stream() -> Vec<([f64; 2], [Option<f64>; 1], f64, f64)> {
+/// One row of the fixed stream: features, targets, clock delta, row weight.
+type Row = ([f64; 2], [Option<f64>; 1], f64, f64);
+
+/// 60 rows: two features, one null target and one clock gap, so the null
+/// policy and the decay both participate.
+fn stream() -> Vec<Row> {
     let mut s = 20240830u64;
     (0..60)
         .map(|i| {
@@ -62,7 +65,9 @@ fn signature<M: OnlineModel>(model: &mut M, pick: usize) -> Vec<f64> {
 
 fn check(name: &str, got: &[f64], want: &[f64]) {
     if std::env::var("PRINT_GOLDEN").is_ok() {
-        let vals: Vec<String> = got.iter().map(|v| format!("{v:.17e}")).collect();
+        // `{v:?}` prints the shortest representation that round-trips, which
+        // avoids clippy's excessive-precision lint on the embedded constants.
+        let vals: Vec<String> = got.iter().map(|v| format!("{v:?}")).collect();
         println!("GOLDEN {name}: &[{}];", vals.join(", "));
         return;
     }
@@ -204,42 +209,22 @@ fn ftrl_golden() {
 
 // --- generated; see the module docs ---
 const GOLDEN_EW_RIDGE: &[f64] = &[
-    2.39588108924485232e-1,
-    2.14531773946107673e0,
-    -7.94544205520078400e-2,
+    0.23958810892448523,
+    2.1453177394610767,
+    -0.07945442055200784,
 ];
-const GOLDEN_EW_RIDGE_STD: &[f64] = &[
-    2.40743326417265952e-1,
-    2.12904763810494213e0,
-    -7.71218469133519158e-2,
-];
+const GOLDEN_EW_RIDGE_STD: &[f64] = &[0.24074332641726595, 2.129047638104942, -0.07712184691335192];
 const GOLDEN_RLS: &[f64] = &[
-    2.43556191700186969e-1,
-    2.18445873223640374e0,
-    -6.70858657933088159e-2,
+    0.24355619170018697,
+    2.1844587322364037,
+    -0.06708586579330882,
 ];
-const GOLDEN_KALMAN: &[f64] = &[
-    -7.79120492640857365e-2,
-    2.03778563729990392e0,
-    1.65426985093325915e-2,
-];
-const GOLDEN_LASSO: &[f64] = &[
-    2.53590377579056336e-1,
-    2.09415648878595784e0,
-    -7.53706592404019826e-2,
-];
+const GOLDEN_KALMAN: &[f64] = &[-0.07791204926408574, 2.037785637299904, 0.01654269850933259];
+const GOLDEN_LASSO: &[f64] = &[0.25359037757905634, 2.094156488785958, -0.07537065924040198];
 const GOLDEN_HUBER: &[f64] = &[
-    2.47869005533625730e-1,
-    2.20470286513241431e0,
-    -6.44667571678081280e-2,
+    0.24786900553362573,
+    2.2047028651324143,
+    -0.06446675716780813,
 ];
-const GOLDEN_QUANTILE: &[f64] = &[
-    2.95107680765374525e-1,
-    2.23230316792043615e0,
-    -3.92757724497352773e-2,
-];
-const GOLDEN_FTRL: &[f64] = &[
-    4.94415742724353513e-1,
-    5.72007813320785208e-1,
-    4.64144880169150176e-1,
-];
+const GOLDEN_QUANTILE: &[f64] = &[0.2951076807653745, 2.232303167920436, -0.03927577244973528];
+const GOLDEN_FTRL: &[f64] = &[0.4944157427243535, 0.5720078133207852, 0.4641448801691502];

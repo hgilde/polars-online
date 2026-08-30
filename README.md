@@ -228,6 +228,7 @@ linearly.
 
 ```sh
 uv sync                                                # Python env (CPython 3.12)
+./scripts/gate.sh                                      # everything CI checks
 uv run cargo test --workspace                          # Rust tests
 uv run maturin develop --release -m crates/online-py/Cargo.toml
 uv run pytest                                          # Python tests
