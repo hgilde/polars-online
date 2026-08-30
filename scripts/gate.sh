@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# The full check gate, run before every commit. Exits non-zero on the first
-# failure and prints the actual diagnostics -- grepping this output for "FAILED"
-# hides compile and lint errors, which is how two broken commits got through.
+# The full check gate, run before every commit. Exits non-zero on any failure
+# and prints the actual diagnostics -- grepping this output for "FAILED" hides
+# compile and lint errors, which is how two broken commits got through.
+#
+# Diagnostics are printed *after* the status table, and the last line is always
+# a PASS/FAIL banner, so `./scripts/gate.sh | tail -N` still shows the verdict.
+# That matters because a pipe discards the exit status unless the caller sets
+# `pipefail` -- a third broken commit got through exactly that way. Prefer
+# running it unpiped, or chain with `&& git commit`.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source scripts/env.sh
 
-fail=0
+failed=()
+diagnostics=""
 step() {
     local name="$1"; shift
     printf '%-22s' "$name"
@@ -14,8 +21,10 @@ step() {
         echo "OK"
     else
         echo "FAILED"
-        echo "$out" | tail -25 | sed 's/^/    /'
-        fail=1
+        failed+=("$name")
+        diagnostics+="
+--- $name ---
+$(echo "$out" | tail -25 | sed 's/^/    /')"
     fi
 }
 
@@ -32,4 +41,10 @@ step "ruff check"   uv run ruff check .
 step "maturin develop" uv run maturin develop --release -m crates/online-py/Cargo.toml
 step "pytest"       uv run pytest -q
 
-exit "$fail"
+if [ ${#failed[@]} -eq 0 ]; then
+    echo "gate: PASS"
+    exit 0
+fi
+echo "$diagnostics"
+echo "gate: FAIL (${failed[*]})"
+exit 1
