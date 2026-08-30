@@ -26,6 +26,11 @@ def _pred_fields(df: pl.DataFrame, spec_name: str) -> list[str]:
     return [f.name for f in dtype.fields if f.name.startswith("pred_")]
 
 
+#: Column names :func:`unpack` produces. Input columns with these names are
+#: dropped rather than duplicated (the target's values come back as ``y``).
+RESERVED = ("slot", "target", "pred", "y")
+
+
 def unpack(
     df: pl.DataFrame,
     spec_name: str,
@@ -35,10 +40,13 @@ def unpack(
     """Long form: one row per (row, prediction slot).
 
     Returns ``slot`` (the struct field name), ``target`` (the target column it
-    predicts), ``pred``, ``y`` and every non-struct column of ``df``.
+    predicts), ``pred``, ``y`` and every other non-struct column of ``df``.
+    Input columns named like the output ones (see :data:`RESERVED`) are dropped
+    -- a target column called ``y`` would otherwise collide with the ``y``
+    output.
     """
     fields = _pred_fields(df, spec_name)
-    keep = [c for c, d in df.schema.items() if not isinstance(d, pl.Struct)]
+    keep = [c for c, d in df.schema.items() if not isinstance(d, pl.Struct) and c not in RESERVED]
     frames = []
     for slot in fields:
         target = _target_of(slot, df, targets)

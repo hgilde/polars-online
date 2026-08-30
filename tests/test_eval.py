@@ -121,3 +121,19 @@ def test_noise_target_gives_no_edge():
     m = po.eval.metrics(out, "m", targets=["y0"])
     assert abs(m["ic"][0]) < 0.06
     assert abs(m["hit_rate"][0] - 0.5) < 0.05
+
+
+def test_target_named_like_an_output_column_does_not_collide():
+    # A target column literally called "y" collided with unpack()'s own "y"
+    # output; reserved names are dropped from the passthrough columns instead.
+    df, _ = synthetic(seed=54, n_groups=1, n_rows=150, k=2, null_frac=0.0)
+    df = df.rename({"y0": "y"})
+    spec = po.spec.ewridge(
+        "m", targets=["y"], features=["x0", "x1"], halflife=200.0, min_periods=10.0
+    )
+    out = po.ModelBank([spec]).fit_predict(df)
+    m = po.eval.metrics(out, "m", targets=["y"])
+    assert m.height == 1
+    assert m["target"][0] == "y"
+    long = po.eval.unpack(out, "m", targets=["y"])
+    assert long.columns.count("y") == 1

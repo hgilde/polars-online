@@ -228,11 +228,31 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
 - [x] 13. Robust models (§4.5).
 - [x] 14. Logistic / FTRL (§4.6).
 - [x] 15. `online-cli`: TOML specs, parquet streaming in/out, progress, resume from state.
-- [ ] 16. CI: wheels + CLI binaries for macOS/Windows, cross-platform state test, Polars-latest
+- [x] 16. CI: wheels + CLI binaries for macOS/Windows, cross-platform state test, Polars-latest
       canary job. Benchmark script + numbers in README.
-- [ ] 17. README with the three usage modes and the math per model.
+- [x] 17. README with the three usage modes and the math per model.
 
 ## 11a. Decisions made while implementing
+
+**Tasks 15-17 (CLI, release CI, README), 2026-08-30.**
+
+- The streaming runner lives in `online-polars` (`RunConfig` / `run_config`), not
+  in the CLI crate, so the same code path is testable without spawning a process
+  and could back a Python streaming API later.
+- Output is written with polars' `BatchedWriter`: one row group per chunk, so
+  memory stays O(state + chunk) end to end.
+- The cross-OS state test (§9 class 7) is one test file driven by two env vars:
+  `ONLINE_WRITE_STATE` writes the hand-off artifact, `ONLINE_FOREIGN_STATE`
+  loads one. CI writes on macOS and reads on Windows and Linux; without the env
+  vars the test still checks the round trip locally, and `save_bytes` is
+  asserted deterministic (which is what makes the hand-off meaningful).
+- Benchmarks (Apple M-series, 200k rows, best of 3): ew_ridge 2.27M rows/s at
+  k=5, 1.59M at k=20, 0.75M at k=50; 10 targets cost ~1.5x one target (shared
+  S), while 5 halflives cost ~2.9x one (separate accumulators, as documented).
+  ftrl is the fastest model, kalman the slowest.
+- Fixed a real bug the README examples caught: `eval.unpack` collided when a
+  target column was literally named `y`; reserved output names are now dropped
+  from the passthrough columns.
 
 **Tasks 13-14 (robust + logistic), 2026-08-30.**
 

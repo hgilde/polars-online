@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Wheels + the CLI binary for the two deployment targets (docs/PLAN.md §10).
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bin: online
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: online.exe
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: online
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - run: uv sync
+
+      - name: build the wheel
+        run: uv run maturin build --release --out dist -m crates/online-py/Cargo.toml
+
+      - name: build the CLI
+        run: uv run cargo build --release -p online-cli
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}
+          path: dist/*.whl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: target/release/${{ matrix.bin }}
+
+  # docs/PLAN.md §9 class 7: a state written on macOS must load on Windows.
+  write-state:
+    name: write state (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync
+      - name: write the hand-off state
+        env:
+          ONLINE_WRITE_STATE: ${{ github.workspace }}/handoff.state
+        run: uv run cargo test -p online-polars --test state_portability
+      - uses: actions/upload-artifact@v4
+        with:
+          name: handoff-state
+          path: handoff.state
+          if-no-files-found: error
+
+  read-state:
+    name: read state (${{ matrix.os }})
+    needs: write-state
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync
+      - uses: actions/download-artifact@v5
+        with:
+          name: handoff-state
+      - name: load the macOS-written state and continue the stream
+        env:
+          ONLINE_FOREIGN_STATE: handoff.state
+        run: uv run cargo test -p online-polars --test state_portability
+
+  release:
+    name: publish the release
+    needs: [build, read-state]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+      - name: collect the files
+        run: |
+          mkdir -p release
+          find artifacts -name '*.whl' -exec cp {} release/ \;
+          for d in artifacts/cli-*; do
+            target="${d#artifacts/cli-}"
+            for f in "$d"/*; do
+              cp "$f" "release/$(basename "$f" .exe)-$target$([ "${f##*.}" = exe ] && echo .exe)"
+            done
+          done
+          ls -la release
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
