@@ -235,10 +235,12 @@ uv run python scripts/validate.py > docs/VALIDATION.md # re-run the [validate] e
 uv run python scripts/benchmark.py                     # throughput
 ```
 
-`cargo` runs via `uv run` because `online-py` builds against pyo3's
-`abi3-py312`, which needs a ≥3.12 interpreter at build time; `uv run` exports
-`VIRTUAL_ENV`, which pyo3's build script picks up. Plain `cargo test` also works
-if `PYO3_PYTHON` points at a 3.12+ interpreter.
+Prerequisites: [uv](https://docs.astral.sh/uv/) and a stable Rust toolchain
+([rustup](https://rustup.rs) installs to `~/.cargo/bin`; make sure that is on
+your `PATH`). `cargo` runs via `uv run` because `online-py` builds against
+pyo3's `abi3-py312`, which needs a ≥3.12 interpreter at build time; `uv run`
+exports `VIRTUAL_ENV`, which pyo3's build script picks up. Plain `cargo test`
+also works if `PYO3_PYTHON` points at a 3.12+ interpreter.
 
 Tests generate or download their own data — there are no data files in the repo.
 Downloads are cached under `.cache/` and skipped when offline.
