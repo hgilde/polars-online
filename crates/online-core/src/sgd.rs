@@ -313,7 +313,13 @@ impl OnlineModel for Sgd {
                 }
             }
         }
-        let n_eff = self.w_sum * lam;
+        // `n_eff` is the weight *before* this row's update and *before* its
+        // decay, which is the convention every other model reports and gates
+        // on (see `EwRidgeCfg::min_periods`). Decaying it here would make
+        // `min_periods` mean a slightly different number of rows for `sgd`
+        // than for `ewridge`, which is exactly the kind of quiet divergence
+        // the cross-model semantics suite exists to catch.
+        let n_eff = self.w_sum;
 
         let ready = n_eff >= self.cfg.min_periods;
         let mut pred = vec![f64::NAN; m];

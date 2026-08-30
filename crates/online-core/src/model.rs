@@ -57,6 +57,7 @@ pub enum ModelState {
     EwCovModel(Box<crate::EwCovModel>),
     Sgd(Box<crate::Sgd>),
     Pa(Box<crate::Pa>),
+    Holt(Box<crate::Holt>),
 }
 
 #[derive(Debug, Error)]
@@ -85,6 +86,7 @@ impl ModelState {
             ModelState::EwCovModel(_) => "ew_cov",
             ModelState::Sgd(_) => "sgd",
             ModelState::Pa(_) => "pa",
+            ModelState::Holt(_) => "holt",
         }
     }
 }

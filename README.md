@@ -146,6 +146,15 @@ stream. It deliberately does **not** provide:
   `on_clock_reset="error"` will say so;
 - **distributed execution** — one process, `rayon` across (spec × group).
 
+Those boundaries make the two compose rather than compete:
+[`examples/pathway_integration.py`](examples/pathway_integration.py) runs a
+`ModelBank` as a stateful operator inside a Pathway pipeline — Pathway does
+ingestion, event-time alignment and windowing; we do the model. Chunk
+invariance means the engine's batching cannot change the numbers, and
+`save_bytes`/`load_bytes` let a pipeline checkpoint carry the model state.
+Pathway is BSL-licensed and is *not* a dependency of this project; the example
+imports it lazily and runs its plain-batch path without it.
+
 ## Common parameters
 
 Every model takes the same stream parameters:
@@ -317,6 +326,31 @@ z_i += g_i − ((√(n_i + g_i²) − √n_i)/α)·β_i      n_i += g_i²
 With `loss="logistic"` (default) `pred` is a probability and `resid = y − p`;
 with `loss="squared"` it is the linear prediction, giving sparse linear
 regression with no solves — and L1 support, which `ewridge` does not have.
+
+### `holt` — Holt's linear trend (the baseline)
+
+The one model that takes no features at all: it extrapolates the target's own
+level and trend.
+
+```
+pred     = l + b·Δt
+l' = α·y + (1−α)·pred        b' = β·(l' − l)/Δt + (1−β)·b
+```
+
+`α` and `β` come from `level_halflife` and `trend_halflife` in clock units. The
+trend is per *clock unit*, so an irregular clock extrapolates the right
+distance. `coef` is `[level, trend]` per target;
+`trend_halflife=float("inf")` pins the trend at zero, leaving a plain EW level.
+
+```python
+po.spec.holt("baseline", targets=["y"], clock="t",
+             level_halflife=200.0, trend_halflife=2000.0)
+```
+
+There is no seasonal term, because a seasonal index is a `group_by` on the
+phase, which the bank already does. Use it to answer "how much is the
+regression actually adding?" — run it in the same bank as the real model and
+compare `sigma`, or let `emit_selected` choose between them.
 
 ## Performance
 

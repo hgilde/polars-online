@@ -30,6 +30,7 @@ __all__ = [
     "ew_cov",
     "ewridge",
     "ftrl",
+    "holt",
     "huber",
     "kalman",
     "lasso",
@@ -565,3 +566,42 @@ def pa(
     """
     model: dict[str, Any] = {"type": "pa", "mode": mode, "c": c, "eps": eps}
     return _common(name, model, targets=targets, features=features, **common)
+
+
+def holt(
+    name: str,
+    *,
+    targets: list[str],
+    level_halflife: float | None = None,
+    trend_halflife: float | None = None,
+    features: list[str] | None = None,
+    **common: Any,
+) -> dict[str, Any]:
+    """Holt's linear trend method (ENHANCEMENTS E25).
+
+    Level plus slope, **no features** -- the forecasting baseline a
+    feature-based model should have to beat. If a regression cannot outperform
+    "the series is going up at about this rate", the features are not earning
+    their place.
+
+    Per row, with clock delta ``d`` and halflife-derived rates
+    ``alpha = 1 - 0.5**(d/level_halflife)`` and likewise ``beta``::
+
+        pred = l + b * d                      (extrapolate d clock units ahead)
+        l'   = alpha * y + (1 - alpha) * pred
+        b'   = beta * (l' - l) / d + (1 - beta) * b
+
+    Deriving the rates from halflives keeps the parameter meaning identical to
+    every other model here, so an irregular clock forecasts the right distance
+    ahead instead of treating every row as one step. ``level_halflife``
+    defaults to the spec's ``halflife`` and ``trend_halflife`` to four times
+    that; ``trend_halflife=inf`` pins the trend, giving a plain EW level.
+
+    ``coef`` is ``[level, trend]`` per target -- the whole state.
+    """
+    model: dict[str, Any] = {
+        "type": "holt",
+        "level_halflife": level_halflife,
+        "trend_halflife": trend_halflife,
+    }
+    return _common(name, model, targets=targets, features=features or [], **common)

@@ -127,7 +127,9 @@ impl OnlineModel for Pa {
             self.zbuf.copy_from_slice(x);
         }
 
-        let n_eff = self.w_sum * lam;
+        // Before this row's update and before its decay -- the convention
+        // every model reports and gates on.
+        let n_eff = self.w_sum;
         let ready = n_eff >= self.cfg.min_periods;
         let sq_norm: f64 = self.zbuf.iter().map(|z| z * z).sum();
 

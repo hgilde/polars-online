@@ -3,9 +3,9 @@
 
 use online_core::{
     ClockState, Decay, EwAutoCorr, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl,
-    FtrlCfg, FtrlLoss, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, ModelState, OnlineModel,
-    P2Quantile, Pa, PaCfg, PaMode, PageHinkley, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, Sgd,
-    SgdCfg, SgdLoss, SlotMetrics, State, StateError,
+    FtrlCfg, FtrlLoss, Holt, HoltCfg, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, ModelState,
+    OnlineModel, P2Quantile, Pa, PaCfg, PaMode, PageHinkley, Rls, RlsCfg, Robust, RobustCfg,
+    RobustLoss, Sgd, SgdCfg, SgdLoss, SlotMetrics, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +23,7 @@ pub enum AnyModel {
     EwCov(Box<EwCovModel>),
     Sgd(Box<Sgd>),
     Pa(Box<Pa>),
+    Holt(Box<Holt>),
 }
 
 impl AnyModel {
@@ -51,6 +52,7 @@ impl AnyModel {
             AnyModel::EwCov(m) => m.step(x, y, d_clock, weight),
             AnyModel::Sgd(m) => m.step(x, y, d_clock, weight),
             AnyModel::Pa(m) => m.step(x, y, d_clock, weight),
+            AnyModel::Holt(m) => m.step(x, y, d_clock, weight),
         }
     }
 
@@ -66,7 +68,8 @@ impl AnyModel {
             | AnyModel::Ftrl(_)
             | AnyModel::EwCov(_)
             | AnyModel::Sgd(_)
-            | AnyModel::Pa(_) => 0,
+            | AnyModel::Pa(_)
+            | AnyModel::Holt(_) => 0,
         }
     }
 
@@ -81,6 +84,7 @@ impl AnyModel {
             AnyModel::EwCov(m) => m.n_outputs(),
             AnyModel::Sgd(m) => m.n_outputs(),
             AnyModel::Pa(m) => m.n_outputs(),
+            AnyModel::Holt(m) => m.n_outputs(),
         }
     }
 
@@ -99,6 +103,7 @@ impl AnyModel {
             AnyModel::EwCov(_) => None,
             AnyModel::Sgd(m) => Some(m.coefficients()),
             AnyModel::Pa(m) => Some(m.coefficients().to_vec()),
+            AnyModel::Holt(m) => Some(m.coefficients()),
         }
     }
 
@@ -113,6 +118,7 @@ impl AnyModel {
             AnyModel::EwCov(m) => m.state(),
             AnyModel::Sgd(m) => m.state(),
             AnyModel::Pa(m) => m.state(),
+            AnyModel::Holt(m) => m.state(),
         }
     }
 
@@ -127,6 +133,7 @@ impl AnyModel {
             ModelState::EwCovModel(_) => Ok(AnyModel::EwCov(Box::new(EwCovModel::restore(s)?))),
             ModelState::Sgd(_) => Ok(AnyModel::Sgd(Box::new(Sgd::restore(s)?))),
             ModelState::Pa(_) => Ok(AnyModel::Pa(Box::new(Pa::restore(s)?))),
+            ModelState::Holt(_) => Ok(AnyModel::Holt(Box::new(Holt::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -432,6 +439,24 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::Pa(Box::new(Pa::new(cfg)?)))
         }
+        ModelKind::Holt {
+            level_halflife,
+            trend_halflife,
+        } => {
+            // Default the level to the spec's own halflife, so `halflife` means
+            // the same thing here as it does for every other model.
+            let level = level_halflife.unwrap_or(match decay {
+                Decay::Halflife(h) => h,
+                Decay::Lam(l) => -std::f64::consts::LN_2 / l.ln(),
+            });
+            let cfg = HoltCfg {
+                n_targets: spec.m(),
+                level_halflife: level,
+                trend_halflife: trend_halflife.map_or(level * 4.0, |n| n.0),
+                min_periods: spec.min_periods_or_default(),
+            };
+            Ok(AnyModel::Holt(Box::new(Holt::new(cfg)?)))
+        }
     }
 }
 
@@ -477,7 +502,8 @@ pub fn combo_labels(spec: &Spec) -> Vec<String> {
         | ModelKind::Ftrl { .. }
         | ModelKind::EwCov { .. }
         | ModelKind::Sgd { .. }
-        | ModelKind::Pa { .. } => vec![String::new()],
+        | ModelKind::Pa { .. }
+        | ModelKind::Holt { .. } => vec![String::new()],
         ModelKind::Lasso { lasso_path, .. } => {
             lasso_path.iter().map(|l| format!("__l{l}")).collect()
         }

@@ -249,6 +249,18 @@ pub enum ModelKind {
         #[serde(default)]
         eps: Option<f64>,
     },
+    /// Holt's linear trend method (ENHANCEMENTS E25): level plus slope, no
+    /// features. The baseline a feature-based model should have to beat.
+    Holt {
+        /// Halflife of the level, in clock units. Defaults to the spec's own
+        /// `halflife`.
+        #[serde(default)]
+        level_halflife: Option<f64>,
+        /// Halflife of the trend; `"inf"` pins it, giving a plain EW level.
+        /// Defaults to four times the level halflife.
+        #[serde(default)]
+        trend_halflife: Option<Num>,
+    },
     Rls {
         /// Prior strength: `P0 = I / ridge`. Scalar only (baked into P0).
         #[serde(default)]
@@ -271,6 +283,7 @@ impl ModelKind {
             ModelKind::EwCov { .. } => "ew_cov",
             ModelKind::Sgd { .. } => "sgd",
             ModelKind::Pa { .. } => "pa",
+            ModelKind::Holt { .. } => "holt",
         }
     }
 }
@@ -488,11 +501,23 @@ impl Spec {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.targets.is_empty() || self.features.is_empty() {
-            return Err(format!(
-                "spec {:?}: targets and features must be non-empty",
-                self.name
-            ));
+        if self.targets.is_empty() {
+            return Err(format!("spec {:?}: targets must be non-empty", self.name));
+        }
+        // Holt has no features by construction; every other model needs at
+        // least one to regress on. Both directions are errors: silently
+        // ignoring features passed to Holt would look like they were used.
+        if matches!(self.model, ModelKind::Holt { .. }) {
+            if !self.features.is_empty() {
+                return Err(format!(
+                    "spec {:?}: holt takes no features (got {}); it extrapolates the \
+                     target's own level and trend. Use a regression model to use features.",
+                    self.name,
+                    self.features.len()
+                ));
+            }
+        } else if self.features.is_empty() {
+            return Err(format!("spec {:?}: features must be non-empty", self.name));
         }
         self.decays()?;
         self.clock_cfg()?;
@@ -571,6 +596,20 @@ impl Spec {
             }
         }
         match &self.model {
+            ModelKind::Holt {
+                level_halflife,
+                trend_halflife,
+            } => {
+                if level_halflife.is_some_and(|h| h <= 0.0 || h.is_nan()) {
+                    return Err(format!("spec {:?}: level_halflife must be > 0", self.name));
+                }
+                if trend_halflife.is_some_and(|h| h.0 <= 0.0 || h.0.is_nan()) {
+                    return Err(format!(
+                        "spec {:?}: trend_halflife must be > 0 (\"inf\" pins the trend)",
+                        self.name
+                    ));
+                }
+            }
             ModelKind::Pa { mode, c, eps } => {
                 if let Some(md) = mode {
                     if !["pa", "pa1", "pa2"].contains(&md.as_str()) {

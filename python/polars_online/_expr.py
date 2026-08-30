@@ -195,3 +195,12 @@ class OnlineNamespace:
             **kwargs,
         )
         return _run(spec, self._expr)
+
+    def holt(self, extra_targets: list[str] | None = None, **kwargs: Any) -> pl.Expr:
+        """Holt's linear trend over this column -- level plus slope, no features.
+
+        The only namespace method without a ``features`` argument, because the
+        model has none: it extrapolates this column's own level and trend.
+        """
+        spec = _spec.holt("online", targets=self._targets(extra_targets), **kwargs)
+        return _run(spec, self._expr)

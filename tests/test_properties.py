@@ -25,6 +25,9 @@ MODELS = [
     ("huber", {"max_rows_between_solves": 1}),
     ("quantile", {"quantile": 0.5, "max_rows_between_solves": 1}),
     ("ftrl", {}),
+    ("sgd", {"learning_rate": 0.01, "clip_gradient": 1e3}),
+    ("pa", {}),
+    ("holt", {"features": []}),
 ]
 IDS = [m[0] for m in MODELS]
 
@@ -146,12 +149,14 @@ class TestUniversalProperties:
     @given(df=streams())
     def test_feature_or_weight_null_means_all_outputs_null(self, model, extra, df):
         df = binarize(df, model)
-        out = po.ModelBank([build(model, extra)]).fit_predict(df)
-        skipped = (
-            df.select(pl.col("x0").is_null() | pl.col("x1").is_null() | pl.col("w").is_null())
-            .to_series()
-            .to_list()
-        )
+        spec = build(model, extra)
+        out = po.ModelBank([spec]).fit_predict(df)
+        # Only the columns this spec actually declares can skip a row -- holt
+        # reads no features, so an unused null column must not disturb it.
+        cond = pl.col("w").is_null()
+        for f in spec["features"]:
+            cond = cond | pl.col(f).is_null()
+        skipped = df.select(cond).to_series().to_list()
         neff = out["m"].struct.field("n_eff").to_list()
         for i, skip in enumerate(skipped):
             if skip:

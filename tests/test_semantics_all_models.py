@@ -27,6 +27,10 @@ MODELS = [
     ("huber", {"max_rows_between_solves": 1}),
     ("quantile", {"quantile": 0.5, "max_rows_between_solves": 1}),
     ("ftrl", {}),
+    ("sgd", {"learning_rate": 0.01}),
+    ("pa", {}),
+    # Holt is the one model with no features, so it opts out of the shared set.
+    ("holt", {"features": []}),
 ]
 IDS = [m[0] for m in MODELS]
 
@@ -62,6 +66,8 @@ def run(model, extra, df, **kw):
 @pytest.mark.parametrize(("model", "extra"), MODELS, ids=IDS)
 class TestNullPolicy:
     def test_feature_null_skips_the_row_entirely(self, model, extra):
+        if model == "holt":
+            pytest.skip("holt has no features")
         df = frame(binary=model == "ftrl")
         x = df["x0"].to_list()
         x[10] = None
@@ -216,7 +222,9 @@ class TestUniversalInvariants:
         kwargs = {k: v for k, v in spec["model"].items() if k != "type" and v is not None}
         kwargs.update(halflife=200.0, min_periods=2.0)
         expr = df.select(
-            getattr(pl.col("y0").online, model)(features=["x0", "x1"], **kwargs)
+            getattr(pl.col("y0").online, model)(**kwargs)
+            if model == "holt"
+            else getattr(pl.col("y0").online, model)(features=["x0", "x1"], **kwargs)
         ).unnest("y0")
         keep = [c for c in bank.columns if not c.startswith("coef")]
         assert bank.select(keep).equals(expr.select(keep), null_equal=True)
