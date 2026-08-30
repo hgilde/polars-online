@@ -124,7 +124,9 @@ fn a_v1_state_continues_the_stream_correctly() {
     let a = DataFrame::new(next.height(), expected).unwrap();
     let b = DataFrame::new(next.height(), got).unwrap();
     assert!(
-        a.unnest(["m"], None).unwrap().equals_missing(&b.unnest(["m"], None).unwrap()),
+        a.unnest(["m"], None)
+            .unwrap()
+            .equals_missing(&b.unnest(["m"], None).unwrap()),
         "a v1 state did not continue identically to a v2 one"
     );
 }
@@ -133,7 +135,7 @@ fn a_v1_state_continues_the_stream_correctly() {
 fn a_v1_state_round_trips_to_v2() {
     // Loading v1 and saving produces v2, which must then load as well.
     let spec = spec_from_fixture();
-    let restored = Bank::load_bytes(&bytes(), Some(&[spec.clone()])).unwrap();
+    let restored = Bank::load_bytes(&bytes(), Some(std::slice::from_ref(&spec))).unwrap();
     let upgraded = restored.save_bytes().unwrap();
     assert!(Bank::load_bytes(&upgraded, Some(&[spec])).is_ok());
     assert_ne!(upgraded, bytes(), "saving should write the current format");
@@ -148,5 +150,8 @@ fn a_corrupt_state_is_refused() {
         Bank::load_bytes(&raw[..raw.len() / 2], None).is_err(),
         "a truncated state should be refused"
     );
-    assert!(Bank::load_bytes(&[], None).is_err(), "an empty state should be refused");
+    assert!(
+        Bank::load_bytes(&[], None).is_err(),
+        "an empty state should be refused"
+    );
 }
