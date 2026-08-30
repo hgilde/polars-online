@@ -209,7 +209,7 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
 
 - [x] 1. Scaffold: workspace, four crates, `pyproject.toml`, `uv`, `maturin develop` builds an
       empty plugin, CI runs lint on all three OSes.
-- [ ] 2. `tests/data.py`: synthetic generator + public download + caching + offline skip.
+- [x] 2. `tests/data.py`: synthetic generator + public download + caching + offline skip.
       `tests/reference.py`: numpy EW-ridge and RLS oracles.
 - [ ] 3. `online-core`: `OnlineModel` trait, `Step`, clock/decay helper (`halflife`/`lam`,
       `max_dclock`, `on_clock_reset`, session gap), `EwCov` primitive. Unit tests.
