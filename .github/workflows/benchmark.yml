@@ -1,0 +1,41 @@
+# Throughput tracking (ENHANCEMENTS E11). Reported, never gating: a CI runner's
+# absolute numbers are not comparable to a workstation's, and a shared runner is
+# noisy enough that a hard threshold would fail for reasons unrelated to the
+# code. What this catches is a *large* regression, by writing the numbers into
+# the job summary where a reviewer sees them next to the diff.
+name: Benchmark
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  throughput:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - run: uv sync
+      - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+
+      - name: benchmark
+        run: |
+          {
+            echo "## Throughput"
+            echo
+            uv run python scripts/benchmark.py --rows 100000 --markdown
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: keep the numbers as an artifact
+        run: uv run python scripts/benchmark.py --rows 100000 --markdown > benchmark.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-${{ github.sha }}
+          path: benchmark.md

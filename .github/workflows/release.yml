@@ -120,3 +120,31 @@ jobs:
         with:
           files: release/*
           generate_release_notes: true
+
+  # Publishing is a separate, manually-approved job: a tag should be able to
+  # build and attach artifacts without also pushing to PyPI. Uses trusted
+  # publishing (OIDC), so there is no API token to store or rotate.
+  #
+  # Before the first run: claim the project name on PyPI and register this
+  # repository/workflow as a trusted publisher. The name `polars-online` has
+  # NOT been checked as available -- do that first (PLAN section 10).
+  publish:
+    name: publish to PyPI
+    needs: [build, read-state]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+      - name: collect the wheels
+        run: |
+          mkdir -p dist
+          find artifacts -name '*.whl' -exec cp {} dist/ \;
+          ls -la dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
