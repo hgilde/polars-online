@@ -221,7 +221,7 @@ impl Robust {
         }
         let s: Vec<f64> = (0..kf).map(|i| c[i * kf + i].max(0.0).sqrt()).collect();
         let keep: Vec<usize> = (0..kf)
-            .filter(|&i| c[i * kf + i] > 1e-10 * a[(i + off) * k + (i + off)].abs().max(1e-300))
+            .filter(|&i| crate::variance_is_usable(c[i * kf + i], a[(i + off) * k + (i + off)]))
             .collect();
         let kk = keep.len();
         let mut out = vec![0.0; k];

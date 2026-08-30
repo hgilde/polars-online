@@ -157,7 +157,11 @@ impl Lasso {
             .map(|i| {
                 let v = cov[i * k + i];
                 let raw = self.cov.raw(i + off, i + off).abs().max(1e-300);
-                if v > 1e-10 * raw { v.sqrt() } else { 0.0 }
+                if crate::variance_is_usable(v, raw) {
+                    v.sqrt()
+                } else {
+                    0.0
+                }
             })
             .collect();
         let mut c = vec![0.0; k * k];

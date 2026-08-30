@@ -1,0 +1,13 @@
+# Normalize line endings in the repository so a Windows checkout does not
+# introduce CRLF into files that are parsed as text (TOML configs read by the
+# CLI, shell scripts, Rust/Python sources). Tested by
+# tests/test_portability.py::TestConfigParsing.
+* text=auto eol=lf
+
+# Shell scripts must stay LF even on Windows checkouts.
+*.sh text eol=lf
+
+# Binary-ish files git should never touch.
+*.parquet binary
+*.png binary
+*.zip binary

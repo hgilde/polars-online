@@ -78,6 +78,15 @@ impl PyModelBank {
             .collect()
     }
 
+    /// Per spec, `{group_key_or_None: count}` of jittered/failed solves.
+    fn solve_failures(&self) -> Vec<Vec<(Option<String>, u64)>> {
+        self.inner
+            .solve_failures()
+            .into_iter()
+            .map(|per_spec| per_spec.into_iter().map(|(k, n)| (k.0, n)).collect())
+            .collect()
+    }
+
     fn spec_names(&self) -> Vec<String> {
         self.inner.specs().iter().map(|s| s.name.clone()).collect()
     }

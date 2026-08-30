@@ -38,6 +38,17 @@ impl AnyModel {
         }
     }
 
+    /// Cumulative count of jittered or failed factorizations (docs/PLAN.md §7).
+    /// Models that do not factorize (rls, kalman, ftrl) report 0.
+    pub fn solve_failures(&self) -> u64 {
+        match self {
+            AnyModel::EwRidge(m) => m.solve_failures,
+            AnyModel::Lasso(m) => m.solve_failures,
+            AnyModel::Robust(m) => m.solve_failures,
+            AnyModel::Rls(_) | AnyModel::Kalman(_) | AnyModel::Ftrl(_) => 0,
+        }
+    }
+
     pub fn n_outputs(&self) -> usize {
         match self {
             AnyModel::EwRidge(m) => m.n_outputs(),
@@ -332,6 +343,13 @@ pub struct Stream {
     pub clock: ClockState,
     pub models: Vec<(String, AnyModel)>,
     pub rows_seen: u64,
+}
+
+impl Stream {
+    /// Summed over this stream's model instances (one per halflife).
+    pub fn solve_failures(&self) -> u64 {
+        self.models.iter().map(|(_, m)| m.solve_failures()).sum()
+    }
 }
 
 /// Output of one row for one stream: `None` = skipped/emit-all-null.

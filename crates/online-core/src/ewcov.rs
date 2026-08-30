@@ -13,6 +13,24 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Is a centered variance large enough to standardize by, given the raw second
+/// moment it was computed from?
+///
+/// `var = E[x²] − m²` loses precision by cancellation when the mean is large
+/// relative to the spread: the absolute error is on the order of
+/// `f64::EPSILON * E[x²]`. The threshold is a small multiple of that noise
+/// floor, so a genuine variance is kept even when it sits on a large offset
+/// (a unit-variance feature around 1e6 has `var/raw ≈ 1e-12`, which is real),
+/// while a variance that has actually been destroyed by cancellation is
+/// rejected and the feature dropped from the solve.
+///
+/// A previous fixed `1e-10 * raw` threshold was ~450,000x the noise floor and
+/// silently discarded usable features at ordinary financial scales.
+#[inline]
+pub fn variance_is_usable(var: f64, raw_second_moment: f64) -> bool {
+    var > 64.0 * f64::EPSILON * raw_second_moment.abs().max(f64::MIN_POSITIVE)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EwCov {
     k: usize,

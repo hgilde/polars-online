@@ -237,6 +237,23 @@ impl Bank {
         &self.specs
     }
 
+    /// Jittered/failed factorizations so far, per spec, as `(group, count)`
+    /// pairs sorted by group (docs/PLAN.md §7: a solve never returns NaN
+    /// silently, so this is the only way to notice degenerate inputs).
+    pub fn solve_failures(&self) -> Vec<Vec<(GroupKey, u64)>> {
+        self.states
+            .iter()
+            .map(|hm| {
+                let mut v: Vec<(GroupKey, u64)> = hm
+                    .iter()
+                    .map(|(k, s)| (k.clone(), s.solve_failures()))
+                    .collect();
+                v.sort_by(|a, b| a.0.cmp(&b.0));
+                v
+            })
+            .collect()
+    }
+
     /// Run every spec over one chunk; returns one struct column per spec.
     /// Chunks must arrive in stream order within each group.
     pub fn fit_predict(&mut self, df: &DataFrame) -> PolarsResult<Vec<Column>> {

@@ -173,7 +173,11 @@ impl Kalman {
                 } else {
                     let v = self.cov.var(i);
                     let raw = self.cov.raw(i, i).abs().max(1e-300);
-                    if v > 1e-10 * raw { v.sqrt() } else { 1.0 }
+                    if crate::variance_is_usable(v, raw) {
+                        v.sqrt()
+                    } else {
+                        1.0
+                    }
                 }
             })
             .collect()

@@ -324,7 +324,7 @@ impl EwRidge {
         // up: the threshold is relative to the raw moment, since the centered
         // variance's cancellation noise scales with it (docs/PLAN.md §7).
         let keep: Vec<usize> = (0..kf)
-            .filter(|&i| c[i * kf + i] > 1e-10 * a[(i + 1) * kc + (i + 1)].max(1e-300))
+            .filter(|&i| crate::variance_is_usable(c[i * kf + i], a[(i + 1) * kc + (i + 1)]))
             .collect();
         let kk = keep.len();
         let mut out = vec![0.0; kc * m];
