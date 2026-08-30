@@ -105,3 +105,8 @@ class OnlineNamespace:
         """SGD with pluggable losses over this column as the target."""
         spec = _spec.sgd("online", targets=[self._target()], features=features, **kwargs)
         return _run(spec, self._expr)
+
+    def pa(self, features: list[str], **kwargs: Any) -> pl.Expr:
+        """Passive-aggressive regression over this column as the target."""
+        spec = _spec.pa("online", targets=[self._target()], features=features, **kwargs)
+        return _run(spec, self._expr)

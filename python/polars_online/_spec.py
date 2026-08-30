@@ -34,6 +34,7 @@ __all__ = [
     "kalman",
     "lasso",
     "output_fields",
+    "pa",
     "quantile",
     "rls",
     "sgd",
@@ -464,4 +465,42 @@ def sgd(
         "l2": l2,
         "clip_gradient": clip_gradient,
     }
+    return _common(name, model, targets=targets, features=features, **common)
+
+
+def pa(
+    name: str,
+    *,
+    targets: list[str],
+    features: list[str],
+    mode: str = "pa1",
+    c: float | None = None,
+    eps: float | None = None,
+    **common: Any,
+) -> dict[str, Any]:
+    """Passive-aggressive regression (ENHANCEMENTS E17; Crammer et al. 2006).
+
+    Each row poses a constraint -- "get within ``eps`` of this target" -- and the
+    update is the *smallest* change to the coefficients that satisfies it.
+    Passive when the constraint already holds, aggressive when it does not, and
+    there is no learning rate to tune. With ``p = z . b``,
+    ``loss = max(0, |y - p| - eps)`` and ``s = ||z||^2``::
+
+        pa    tau = loss / s                 (unbounded)
+        pa1   tau = min(c, loss / s)         (capped at c)
+        pa2   tau = loss / (s + 1 / (2c))    (damped by c)
+        b    += tau * sign(y - p) * z
+
+    The row weight scales ``tau``, so a half-weight row moves the fit half as
+    far.
+
+    **Decay note.** Unlike the other models, PA keeps no accumulators, so there
+    is nothing for the clock to decay: each step fully satisfies the current
+    row and older rows survive only through the coefficients they left behind.
+    ``n_eff`` still decays so ``min_periods`` means the same thing as
+    elsewhere, but the coefficients have no half-life. Prefer ``pa1``/``pa2``
+    (the default is ``pa1``) when outliers are possible: plain ``pa`` will move
+    the fit as far as it takes to satisfy a single bad row.
+    """
+    model: dict[str, Any] = {"type": "pa", "mode": mode, "c": c, "eps": eps}
     return _common(name, model, targets=targets, features=features, **common)

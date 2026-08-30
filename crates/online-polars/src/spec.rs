@@ -216,6 +216,19 @@ pub enum ModelKind {
         #[serde(default)]
         clip_gradient: Option<f64>,
     },
+    /// Passive-aggressive regression (ENHANCEMENTS E17). No learning rate:
+    /// each row's update is the smallest change that satisfies it.
+    Pa {
+        /// "pa1" (default), "pa" (unbounded) or "pa2" (damped).
+        #[serde(default)]
+        mode: Option<String>,
+        /// Aggressiveness cap. Ignored by "pa".
+        #[serde(default)]
+        c: Option<f64>,
+        /// Insensitive tube: rows already this close leave the fit alone.
+        #[serde(default)]
+        eps: Option<f64>,
+    },
     Rls {
         /// Prior strength: `P0 = I / ridge`. Scalar only (baked into P0).
         #[serde(default)]
@@ -237,6 +250,7 @@ impl ModelKind {
             ModelKind::Ftrl { .. } => "ftrl",
             ModelKind::EwCov { .. } => "ew_cov",
             ModelKind::Sgd { .. } => "sgd",
+            ModelKind::Pa { .. } => "pa",
         }
     }
 }
@@ -405,6 +419,22 @@ impl Spec {
             }
         }
         match &self.model {
+            ModelKind::Pa { mode, c, eps } => {
+                if let Some(md) = mode {
+                    if !["pa", "pa1", "pa2"].contains(&md.as_str()) {
+                        return Err(format!(
+                            "spec {:?}: unknown pa mode {md:?}; expected pa, pa1 or pa2",
+                            self.name
+                        ));
+                    }
+                }
+                if c.is_some_and(|v| v <= 0.0 || v.is_nan()) {
+                    return Err(format!("spec {:?}: pa c must be > 0", self.name));
+                }
+                if eps.is_some_and(|v| v < 0.0 || v.is_nan()) {
+                    return Err(format!("spec {:?}: pa eps must be >= 0", self.name));
+                }
+            }
             ModelKind::Sgd {
                 loss,
                 quantile,

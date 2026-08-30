@@ -3,8 +3,8 @@
 
 use online_core::{
     ClockState, Decay, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg,
-    FtrlLoss, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, ModelState, OnlineModel, Rls,
-    RlsCfg, Robust, RobustCfg, RobustLoss, Sgd, SgdCfg, SgdLoss, State, StateError,
+    FtrlLoss, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, ModelState, OnlineModel, Pa, PaCfg,
+    PaMode, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, Sgd, SgdCfg, SgdLoss, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +21,7 @@ pub enum AnyModel {
     Ftrl(Box<Ftrl>),
     EwCov(Box<EwCovModel>),
     Sgd(Box<Sgd>),
+    Pa(Box<Pa>),
 }
 
 impl AnyModel {
@@ -40,6 +41,7 @@ impl AnyModel {
             AnyModel::Ftrl(m) => m.step(x, y, d_clock, weight),
             AnyModel::EwCov(m) => m.step(x, y, d_clock, weight),
             AnyModel::Sgd(m) => m.step(x, y, d_clock, weight),
+            AnyModel::Pa(m) => m.step(x, y, d_clock, weight),
         }
     }
 
@@ -54,7 +56,8 @@ impl AnyModel {
             | AnyModel::Kalman(_)
             | AnyModel::Ftrl(_)
             | AnyModel::EwCov(_)
-            | AnyModel::Sgd(_) => 0,
+            | AnyModel::Sgd(_)
+            | AnyModel::Pa(_) => 0,
         }
     }
 
@@ -68,6 +71,7 @@ impl AnyModel {
             AnyModel::Ftrl(m) => m.n_outputs(),
             AnyModel::EwCov(m) => m.n_outputs(),
             AnyModel::Sgd(m) => m.n_outputs(),
+            AnyModel::Pa(m) => m.n_outputs(),
         }
     }
 
@@ -85,6 +89,7 @@ impl AnyModel {
             // ew_cov has no coefficients: its outputs are the statistics.
             AnyModel::EwCov(_) => None,
             AnyModel::Sgd(m) => Some(m.coefficients().to_vec()),
+            AnyModel::Pa(m) => Some(m.coefficients().to_vec()),
         }
     }
 
@@ -98,6 +103,7 @@ impl AnyModel {
             AnyModel::Ftrl(m) => m.state(),
             AnyModel::EwCov(m) => m.state(),
             AnyModel::Sgd(m) => m.state(),
+            AnyModel::Pa(m) => m.state(),
         }
     }
 
@@ -111,6 +117,7 @@ impl AnyModel {
             ModelState::Ftrl(_) => Ok(AnyModel::Ftrl(Box::new(Ftrl::restore(s)?))),
             ModelState::EwCovModel(_) => Ok(AnyModel::EwCov(Box::new(EwCovModel::restore(s)?))),
             ModelState::Sgd(_) => Ok(AnyModel::Sgd(Box::new(Sgd::restore(s)?))),
+            ModelState::Pa(_) => Ok(AnyModel::Pa(Box::new(Pa::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -384,6 +391,25 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::Sgd(Box::new(Sgd::new(cfg)?)))
         }
+        ModelKind::Pa { mode, c, eps } => {
+            let mode = match mode.as_deref().unwrap_or("pa1") {
+                "pa" => PaMode::Pa,
+                "pa1" => PaMode::Pa1,
+                "pa2" => PaMode::Pa2,
+                other => return Err(format!("unknown pa mode {other:?}")),
+            };
+            let cfg = PaCfg {
+                n_features: spec.k(),
+                n_targets: spec.m(),
+                add_intercept: spec.add_intercept,
+                decay,
+                mode,
+                c: c.unwrap_or(1.0),
+                eps: eps.unwrap_or(0.1),
+                min_periods: spec.min_periods_or_default(),
+            };
+            Ok(AnyModel::Pa(Box::new(Pa::new(cfg)?)))
+        }
     }
 }
 
@@ -428,7 +454,8 @@ pub fn combo_labels(spec: &Spec) -> Vec<String> {
         | ModelKind::Quantile { .. }
         | ModelKind::Ftrl { .. }
         | ModelKind::EwCov { .. }
-        | ModelKind::Sgd { .. } => vec![String::new()],
+        | ModelKind::Sgd { .. }
+        | ModelKind::Pa { .. } => vec![String::new()],
         ModelKind::Lasso { lasso_path, .. } => {
             lasso_path.iter().map(|l| format!("__l{l}")).collect()
         }

@@ -232,6 +232,20 @@ on the clock, so an adapted rate re-opens after a long gap.
 count makes the next gradient exponentially bigger and a constant rate diverges.
 It does not bind for identity-link losses.
 
+### `pa` — passive-aggressive regression
+
+```
+loss = max(0, |y − p| − eps)      s = ‖z‖²
+pa    τ = loss / s          pa1  τ = min(c, loss/s)      pa2  τ = loss / (s + 1/(2c))
+β    += τ · sign(y − p) · z
+```
+
+Each row poses a constraint and the update is the smallest change that
+satisfies it — no learning rate to tune. Note plain `pa` will move the fit as
+far as one bad row demands, so `pa1` is the default. PA keeps no accumulators,
+so unlike the other models its coefficients have no half-life; the clock only
+drives `n_eff`.
+
 ### `ew_cov` — exponentially weighted moments (no regression)
 
 ```
