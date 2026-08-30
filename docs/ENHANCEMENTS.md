@@ -92,7 +92,7 @@ Two consequences for this backlog:
 | # | P | Item |
 |---|---|---|
 | E26 | P3 | **A Pathway integration example, not a dependency.** Pathway supports stateful Python UDFs, so a `ModelBank` can run as an operator inside a Pathway pipeline: Pathway does ingestion, event-time alignment and windowing; we do the model. Worth an `examples/` script and a README paragraph. **Note the licence**: Pathway is BSL / "Other/Proprietary" while this project is Apache-2.0, so it must stay an optional example — never a required dependency, and not a dev-dependency in the default group. |
-| E27 | P3 | **Say what we do not do, in the README.** The clock semantics (`session`, `max_dclock`, `on_clock_reset`) are deliberately a *within-stream* facility, not a late-arrival or windowing policy. Readers arriving from a streaming-framework background will otherwise expect watermarks and tumbling windows here. One short "what this is not" section removes that expectation and points at Pathway/Polars. |
+| E27 | ~~P3~~ **done** | **Say what we do not do, in the README.** The clock semantics (`session`, `max_dclock`, `on_clock_reset`) are deliberately a *within-stream* facility, not a late-arrival or windowing policy. Readers arriving from a streaming-framework background will otherwise expect watermarks and tumbling windows here. One short "what this is not" section removes that expectation and points at Pathway/Polars. |
 
 ## 4. In river and Pathway, deliberately out of scope
 

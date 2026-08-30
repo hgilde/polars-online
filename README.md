@@ -110,6 +110,22 @@ po.eval.rolling_metrics(out, "ridge", clock="t", window=3600.0)     # per clock 
 po.eval.compare_specs(out, ["ridge", "kalman"])                     # one table, many specs
 ```
 
+## What this is not
+
+A model layer, not a stream-processing framework. It expects a frame that is
+already aligned and already ordered within each group, and it keeps O(state) per
+stream. It deliberately does **not** provide:
+
+- **connectors or ingestion** — feed it whatever Polars can read;
+- **event-time windowing, tumbling/sliding windows, asof or interval joins** —
+  build features with Polars expressions upstream, or with a streaming framework
+  such as [Pathway](https://pathway.com), whose Rust engine already does this;
+- **watermarks or late-arrival policy** — `clock`, `max_dclock`,
+  `on_clock_reset` and `session` describe *within-stream* time, not pipeline
+  lateness. A row that arrives out of order is a data error here, and
+  `on_clock_reset="error"` will say so;
+- **distributed execution** — one process, `rayon` across (spec × group).
+
 ## Common parameters
 
 Every model takes the same stream parameters:
