@@ -9,6 +9,7 @@
 mod clock;
 mod ewcov;
 mod ewridge;
+mod kalman;
 mod lasso;
 mod model;
 mod rls;
@@ -17,6 +18,7 @@ mod solve;
 pub use clock::{ClockAdvance, ClockCfg, ClockState, Decay, OnClockReset, SessionGap};
 pub use ewcov::EwCov;
 pub use ewridge::{EwRidge, EwRidgeCfg};
+pub use kalman::{Kalman, KalmanCfg};
 pub use lasso::{Lasso, LassoCfg};
 pub use model::{Extra, ModelState, OnlineModel, State, StateError, Step, check_schema};
 pub use rls::{Rls, RlsCfg};

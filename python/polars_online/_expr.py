@@ -9,7 +9,6 @@ recommended surface for grids.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +32,7 @@ def _run(spec: dict[str, Any], target_expr: pl.Expr) -> pl.Expr:
         plugin_path=_PLUGIN_PATH,
         function_name="online_run",
         args=args,
-        kwargs={"spec_json": json.dumps(spec)},
+        kwargs={"spec_json": _spec._json(spec)},
         is_elementwise=False,
         returns_scalar=False,
     )
@@ -67,4 +66,9 @@ class OnlineNamespace:
     def lasso(self, features: list[str], **kwargs: Any) -> pl.Expr:
         """Lasso path with online lambda selection over this column as target."""
         spec = _spec.lasso("online", targets=[self._target()], features=features, **kwargs)
+        return _run(spec, self._expr)
+
+    def kalman(self, features: list[str], **kwargs: Any) -> pl.Expr:
+        """Kalman / random-walk-beta filter over this column as the target."""
+        spec = _spec.kalman("online", targets=[self._target()], features=features, **kwargs)
         return _run(spec, self._expr)

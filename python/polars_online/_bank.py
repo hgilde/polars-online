@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -10,6 +9,7 @@ from typing import Any
 import polars as pl
 
 from polars_online import _polars_online as _native
+from polars_online._spec import _json
 
 __all__ = ["ModelBank"]
 
@@ -24,7 +24,7 @@ class ModelBank:
 
     def __init__(self, specs: Iterable[dict[str, Any]]) -> None:
         self.specs = list(specs)
-        self._native = _native.ModelBank(json.dumps(self.specs))
+        self._native = _native.ModelBank(_json(self.specs))
 
     def fit_predict(self, df: pl.DataFrame) -> pl.DataFrame:
         """One chunk in; the chunk plus one struct column per spec out."""
@@ -49,13 +49,13 @@ class ModelBank:
     @classmethod
     def load(cls, path: str | Path, specs: Iterable[dict[str, Any]] | None = None) -> ModelBank:
         """Load a saved bank. Passing ``specs`` asserts they match the file."""
-        specs_json = json.dumps(list(specs)) if specs is not None else None
+        specs_json = _json(list(specs)) if specs is not None else None
         native = _native.ModelBank.load(str(path), specs_json)
         return cls._wrap(native)
 
     @classmethod
     def load_bytes(cls, data: bytes, specs: Iterable[dict[str, Any]] | None = None) -> ModelBank:
-        specs_json = json.dumps(list(specs)) if specs is not None else None
+        specs_json = _json(list(specs)) if specs is not None else None
         native = _native.ModelBank.load_bytes(data, specs_json)
         return cls._wrap(native)
 

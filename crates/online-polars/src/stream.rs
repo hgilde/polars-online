@@ -2,8 +2,8 @@
 //! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
 
 use online_core::{
-    ClockState, Decay, EwRidge, EwRidgeCfg, Lasso, LassoCfg, ModelState, OnlineModel, Rls, RlsCfg,
-    State, StateError,
+    ClockState, Decay, EwRidge, EwRidgeCfg, Kalman, KalmanCfg, Lasso, LassoCfg, ModelState,
+    OnlineModel, Rls, RlsCfg, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +15,7 @@ pub enum AnyModel {
     EwRidge(Box<EwRidge>),
     Rls(Box<Rls>),
     Lasso(Box<Lasso>),
+    Kalman(Box<Kalman>),
 }
 
 impl AnyModel {
@@ -29,6 +30,7 @@ impl AnyModel {
             AnyModel::EwRidge(m) => m.step(x, y, d_clock, weight),
             AnyModel::Rls(m) => m.step(x, y, d_clock, weight),
             AnyModel::Lasso(m) => m.step(x, y, d_clock, weight),
+            AnyModel::Kalman(m) => m.step(x, y, d_clock, weight),
         }
     }
 
@@ -37,6 +39,7 @@ impl AnyModel {
             AnyModel::EwRidge(m) => m.n_outputs(),
             AnyModel::Rls(m) => m.n_outputs(),
             AnyModel::Lasso(m) => m.n_outputs(),
+            AnyModel::Kalman(m) => m.n_outputs(),
         }
     }
 
@@ -48,6 +51,7 @@ impl AnyModel {
             AnyModel::Lasso(m) => m
                 .coefficients()
                 .map(|b| b.iter().flat_map(|per_t| per_t.iter().cloned()).collect()),
+            AnyModel::Kalman(m) => Some(m.coefficients()),
         }
     }
 
@@ -56,6 +60,7 @@ impl AnyModel {
             AnyModel::EwRidge(m) => m.state(),
             AnyModel::Rls(m) => m.state(),
             AnyModel::Lasso(m) => m.state(),
+            AnyModel::Kalman(m) => m.state(),
         }
     }
 
@@ -64,6 +69,7 @@ impl AnyModel {
             ModelState::EwRidge(_) => Ok(AnyModel::EwRidge(Box::new(EwRidge::restore(s)?))),
             ModelState::Rls(_) => Ok(AnyModel::Rls(Box::new(Rls::restore(s)?))),
             ModelState::Lasso(_) => Ok(AnyModel::Lasso(Box::new(Lasso::restore(s)?))),
+            ModelState::Kalman(_) => Ok(AnyModel::Kalman(Box::new(Kalman::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -163,6 +169,27 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::Lasso(Box::new(Lasso::new(cfg)?)))
         }
+        ModelKind::Kalman {
+            coef_halflife,
+            q,
+            obs_var,
+            p0,
+            share_p,
+        } => {
+            let cfg = KalmanCfg {
+                n_features: spec.k(),
+                n_targets: spec.m(),
+                add_intercept: spec.add_intercept,
+                decay,
+                halflife: coef_halflife.to_vec(),
+                q: q.as_ref().map(|v| v.iter().map(|n| n.0).collect()),
+                obs_var: *obs_var,
+                p0: p0.unwrap_or(1.0),
+                share_p: *share_p,
+                min_periods: spec.min_periods_or_default(),
+            };
+            Ok(AnyModel::Kalman(Box::new(Kalman::new(cfg)?)))
+        }
     }
 }
 
@@ -201,7 +228,7 @@ pub fn combo_labels(spec: &Spec) -> Vec<String> {
             }
             out
         }
-        ModelKind::Rls { .. } => vec![String::new()],
+        ModelKind::Rls { .. } | ModelKind::Kalman { .. } => vec![String::new()],
         ModelKind::Lasso { lasso_path, .. } => {
             lasso_path.iter().map(|l| format!("__l{l}")).collect()
         }

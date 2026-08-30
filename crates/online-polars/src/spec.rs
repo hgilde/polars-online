@@ -9,20 +9,62 @@ fn default_true() -> bool {
     true
 }
 
+/// A float that also accepts the JSON strings `"inf"` / `"-inf"`, since JSON
+/// has no infinity literal and `halflife = inf` is meaningful (it pins a
+/// coefficient, docs/PLAN.md §4.4).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Num(pub f64);
+
+impl Serialize for Num {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        if self.0.is_finite() {
+            s.serialize_f64(self.0)
+        } else if self.0 == f64::INFINITY {
+            s.serialize_str("inf")
+        } else if self.0 == f64::NEG_INFINITY {
+            s.serialize_str("-inf")
+        } else {
+            s.serialize_str("nan")
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Num {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Num(f64),
+            Word(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Num(v) => Ok(Num(v)),
+            Raw::Word(w) => match w.to_ascii_lowercase().as_str() {
+                "inf" | "+inf" | "infinity" | "+infinity" => Ok(Num(f64::INFINITY)),
+                "-inf" | "-infinity" => Ok(Num(f64::NEG_INFINITY)),
+                "nan" => Ok(Num(f64::NAN)),
+                other => Err(serde::de::Error::custom(format!(
+                    "expected a number or \"inf\"/\"-inf\", got {other:?}"
+                ))),
+            },
+        }
+    }
+}
+
 /// A float or a list of floats (grids; `halflife` lists mean one accumulator
 /// per value, docs/PLAN.md §4.1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FloatOrList {
-    Float(f64),
-    List(Vec<f64>),
+    Float(Num),
+    List(Vec<Num>),
 }
 
 impl FloatOrList {
     pub fn to_vec(&self) -> Vec<f64> {
         match self {
-            FloatOrList::Float(f) => vec![*f],
-            FloatOrList::List(v) => v.clone(),
+            FloatOrList::Float(f) => vec![f.0],
+            FloatOrList::List(v) => v.iter().map(|n| n.0).collect(),
         }
     }
 }
@@ -71,6 +113,21 @@ pub enum ModelKind {
         #[serde(default)]
         cd_tol: Option<f64>,
     },
+    Kalman {
+        /// Per-factor coefficient halflife (scalar or one per slot, intercept
+        /// first). `inf` pins a coefficient. Note this is the COEFFICIENT
+        /// halflife; the spec-level `halflife` drives the standardization and
+        /// residual-variance statistics.
+        coef_halflife: FloatOrList,
+        #[serde(default)]
+        q: Option<Vec<Num>>,
+        #[serde(default)]
+        obs_var: Option<f64>,
+        #[serde(default)]
+        p0: Option<f64>,
+        #[serde(default)]
+        share_p: bool,
+    },
     Rls {
         /// Prior strength: `P0 = I / ridge`. Scalar only (baked into P0).
         #[serde(default)]
@@ -86,6 +143,7 @@ impl ModelKind {
             ModelKind::EwRidge { .. } => "ew_ridge",
             ModelKind::Rls { .. } => "rls",
             ModelKind::Lasso { .. } => "lasso",
+            ModelKind::Kalman { .. } => "kalman",
         }
     }
 }
@@ -223,6 +281,37 @@ impl Spec {
         self.decays()?;
         self.clock_cfg()?;
         match &self.model {
+            ModelKind::Kalman {
+                coef_halflife,
+                q,
+                obs_var,
+                p0,
+                ..
+            } => {
+                let k_total = self.k() + usize::from(self.add_intercept);
+                let hs = coef_halflife.to_vec();
+                if hs.len() != 1 && hs.len() != k_total {
+                    return Err(format!(
+                        "spec {:?}: coef_halflife must be scalar or length {k_total}",
+                        self.name
+                    ));
+                }
+                if hs.iter().any(|&h| h <= 0.0) {
+                    return Err(format!("spec {:?}: coef_halflife must be > 0", self.name));
+                }
+                if q.as_ref().is_some_and(|q| q.len() != k_total) {
+                    return Err(format!(
+                        "spec {:?}: q must have length {k_total}",
+                        self.name
+                    ));
+                }
+                if obs_var.is_some_and(|v| v <= 0.0) {
+                    return Err(format!("spec {:?}: obs_var must be > 0", self.name));
+                }
+                if p0.is_some_and(|v| v <= 0.0) {
+                    return Err(format!("spec {:?}: p0 must be > 0", self.name));
+                }
+            }
             ModelKind::Lasso {
                 lasso_path,
                 l1_ratio,

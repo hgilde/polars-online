@@ -3,11 +3,30 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 from polars_online._polars_online import spec_output_fields, validate_spec
 
-__all__ = ["ewridge", "lasso", "output_fields", "rls"]
+
+def _json(spec: dict[str, Any]) -> str:
+    """JSON has no infinity literal, but ``halflife=inf`` is meaningful (it pins
+    a coefficient), so non-finite floats are encoded as strings the Rust side
+    understands."""
+
+    def enc(v: Any) -> Any:
+        if isinstance(v, float) and not math.isfinite(v):
+            return "inf" if v > 0 else ("-inf" if v < 0 else "nan")
+        if isinstance(v, dict):
+            return {k: enc(x) for k, x in v.items()}
+        if isinstance(v, (list, tuple)):
+            return [enc(x) for x in v]
+        return v
+
+    return json.dumps(enc(spec))
+
+
+__all__ = ["ewridge", "kalman", "lasso", "output_fields", "rls"]
 
 
 def _common(
@@ -47,7 +66,7 @@ def _common(
         "coef_every": coef_every,
         "group": group,
     }
-    validate_spec(json.dumps(spec))
+    validate_spec(_json(spec))
     return spec
 
 
@@ -86,7 +105,7 @@ def ewridge(
 
 def output_fields(spec: dict[str, Any]) -> list[str]:
     """Struct field names this spec will produce, in order."""
-    return spec_output_fields(json.dumps(spec))
+    return spec_output_fields(_json(spec))
 
 
 def rls(
@@ -154,5 +173,54 @@ def lasso(
         "max_rows_between_solves": max_rows_between_solves,
         "max_cd_iters": max_cd_iters,
         "cd_tol": cd_tol,
+    }
+    return _common(name, model, targets=targets, features=features, **common)
+
+
+def kalman(
+    name: str,
+    *,
+    targets: list[str],
+    features: list[str],
+    coef_halflife: float | list[float],
+    q: list[float] | None = None,
+    obs_var: float | None = None,
+    p0: float | None = None,
+    share_p: bool = False,
+    **common: Any,
+) -> dict[str, Any]:
+    """Kalman / random-walk-beta dynamic linear model (docs/PLAN.md section 4.4).
+
+    State per target: coefficient mean ``b_j`` and covariance ``P_j``. Per row
+    (clock delta ``d``, row weight ``w``)::
+
+        P_j <- P_j + Q * d / w
+        s    = z' P_j z + R_j / w
+        k    = P_j z / s
+        b_j <- b_j + k (y_j - z' b_j)
+        P_j <- P_j - k z' P_j
+
+    Process noise is derived from a per-factor coefficient halflife on
+    standardized features: ``q_i = sigma^2 * (ln2 / h_i)^2`` (steady-state gain
+    matching with EW-RLS). ``coef_halflife`` is a scalar or one value per slot
+    (intercept first); ``inf`` pins that coefficient. An explicit ``q``
+    overrides the derivation. Observation noise is the EW residual variance
+    unless ``obs_var`` is given.
+
+    ``P`` is per target because the Riccati recursion depends on ``sigma^2_j``;
+    ``share_p=True`` keeps one ``P`` driven by the mean ``sigma^2`` across
+    targets (docs/PLAN.md marks this [validate]).
+
+    Note ``coef_halflife`` (how fast coefficients drift) is distinct from the
+    spec-level ``halflife``, which drives the standardization and residual
+    variance statistics.
+    """
+    model: dict[str, Any] = {
+        "type": "kalman",
+        "coef_halflife": coef_halflife,
+        "q": q,
+        "obs_var": obs_var,
+        "p0": p0,
+        "share_p": share_p,
     }
     return _common(name, model, targets=targets, features=features, **common)

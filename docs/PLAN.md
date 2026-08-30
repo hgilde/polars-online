@@ -222,7 +222,7 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
 - [x] 8. Expression plugin (`online.ewridge`) + expression≡bank test.
 - [x] 9. RLS (§4.2) + agreement test with EW-ridge at `solve_every`=1 row.
 - [x] 10. Lasso path + online λ selection (§4.3).
-- [ ] 11. Kalman (§4.4) with halflife-derived q; per-factor halflife; `inf` pinning.
+- [x] 11. Kalman (§4.4) with halflife-derived q; per-factor halflife; `inf` pinning.
 - [ ] 12. Evaluation harness (§8); run the solve-schedule experiment and every **[validate]**
       item on public data; record results in `docs/VALIDATION.md` and fix defaults.
 - [ ] 13. Robust models (§4.5).

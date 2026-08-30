@@ -51,6 +51,7 @@ pub enum ModelState {
     EwRidge(Box<crate::EwRidge>),
     Rls(Box<crate::Rls>),
     Lasso(Box<crate::Lasso>),
+    Kalman(Box<crate::Kalman>),
 }
 
 #[derive(Debug, Error)]
@@ -73,6 +74,7 @@ impl ModelState {
             ModelState::EwRidge(_) => "ew_ridge",
             ModelState::Rls(_) => "rls",
             ModelState::Lasso(_) => "lasso",
+            ModelState::Kalman(_) => "kalman",
         }
     }
 }
