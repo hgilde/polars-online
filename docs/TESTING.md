@@ -1,6 +1,6 @@
 # Test coverage and testing improvements
 
-Status as of 2026-08-30: **216 Rust tests + 598 pytest functions** (plus 2 opt-in
+Status as of 2026-08-30: **218 Rust tests + 598 pytest functions** (plus 2 opt-in
 soak tests), all green, run in CI on three OSes.
 
 Measured coverage (`./scripts/coverage.sh`): **96% of the Python package**, and
@@ -35,7 +35,7 @@ instead by the CLI integration tests through `run_config`) and
 | T-D2 property-based testing | **Done** — `tests/test_properties.py` (hypothesis) generates adversarial streams (mixed nulls, duplicate/long-gap clocks, ±1e8 values, zero weights, tiny groups) and asserts the universal invariants for all ten models, including the strongest one: **changing a row's own target never changes that row's own prediction** (out-of-sample by construction, hard rule 2). |
 | T-E11 soak | **Done** — 10M rows through one state in ~6.5s: `n_eff` stays bounded and does not drift between the start and end of the stream, the fit is still accurate, and a 2M-row state serializes to under 4KB (memory is O(state), not O(data)). Opt-in via `pytest -m soak`. |
 | T-D4 coverage | **Done** (reported, not gating) — `scripts/coverage.sh`; numbers above. |
-| T-D5 mutation re-run | **Done.** Run once the enhancement backlog was drained. **2616 mutants in 2h: 1899 caught, 501 missed, 175 timeouts, 41 unviable** — 19% missed, down from 31% (517/1645) despite the crate having grown by 60%. The misses were not scattered: they clustered almost perfectly on the code whose *only* tests live in `tests/*.py`, because `cargo mutants` runs `cargo test` and cannot see the Python suite. Nine commits of Rust-side oracles followed; see "What the mutation run actually found" below. |
+| T-D5 mutation re-run | **Done.** Run once the enhancement backlog was drained. **2616 mutants in 2h: 1899 caught, 501 missed, 175 timeouts, 41 unviable** — 19% missed, down from 31% (517/1645) despite the crate having grown by 60%. The misses were not scattered: they clustered almost perfectly on the code whose *only* tests live in `tests/*.py`, because `cargo mutants` runs `cargo test` and cannot see the Python suite. Eight commits of Rust-side oracles followed; see "What the mutation run actually found" below. |
 | T-D1 / Windows CI | **Blocked on credentials** — see "Windows and cross-platform" below. `origin` is `github.com/hgilde/polars-online` and 24 commits are ready, but this machine has no GitHub auth (no keychain entry, no SSH key, no token, no `gh`), so nothing has ever been pushed and **no CI job has ever run on Windows**. |
 
 This document assesses what the tests actually prove, then lists concrete
@@ -66,7 +66,7 @@ invisible to it.** That is already noted in `scripts/mutants.sh` as the reason
 for scoping the run to `online-core` — but the same blind spot applies *inside*
 `online-core` wherever a feature's only oracle is a Python test.
 
-Nine commits closed it, adding 65 Rust tests. The rule followed was to add an
+Eight commits closed it, taking `online-core`'s Rust tests from 151 to 218. The rule followed was to add an
 *oracle*, not a golden number: the recursion written out longhand beside the
 implementation (Holt, Page-Hinkley, `sigma2`), an equivalent model configured a
 different way (the slow twin against a standalone model at `long_halflife`;
