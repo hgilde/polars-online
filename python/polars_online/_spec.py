@@ -55,6 +55,8 @@ def _common(
     weight: str | None = None,
     min_periods: float | None = None,
     coef_every: int = 0,
+    emit_sigma: bool = False,
+    emit_resid_z: bool = False,
     group: str | None = None,
 ) -> dict[str, Any]:
     spec = {
@@ -73,6 +75,8 @@ def _common(
         "weight": weight,
         "min_periods": min_periods,
         "coef_every": coef_every,
+        "emit_sigma": emit_sigma,
+        "emit_resid_z": emit_resid_z,
         "group": group,
     }
     validate_spec(_json(spec))

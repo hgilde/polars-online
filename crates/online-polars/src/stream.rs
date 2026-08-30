@@ -336,6 +336,13 @@ pub struct StreamState {
     pub clock: ClockState,
     pub models: Vec<State>,
     pub rows_seen: u64,
+    /// EW mean squared out-of-sample residual, per model instance and output
+    /// slot. `#[serde(default)]` so state files written before this existed
+    /// still load (they simply restart the estimate).
+    #[serde(default)]
+    pub resid_var: Vec<Vec<f64>>,
+    #[serde(default)]
+    pub resid_w: Vec<Vec<f64>>,
 }
 
 /// Live per-stream state.
@@ -343,6 +350,16 @@ pub struct Stream {
     pub clock: ClockState,
     pub models: Vec<(String, AnyModel)>,
     pub rows_seen: u64,
+    /// Decay of each model instance, needed to age `resid_var` on the same
+    /// clock the model itself uses.
+    decays: Vec<Decay>,
+    /// EW mean squared out-of-sample residual per instance and slot, and its
+    /// weight sum. Kept here rather than in the models so that every model gets
+    /// the same definition: the models' own `sigma2` fields serve different
+    /// internal purposes (robust scaling, Kalman observation noise) and are not
+    /// all present or comparable.
+    resid_var: Vec<Vec<f64>>,
+    resid_w: Vec<Vec<f64>>,
 }
 
 impl Stream {
@@ -358,6 +375,12 @@ pub struct RowOut {
     pub pred: Vec<Vec<f64>>,
     /// `y_j - pred_slot`; NaN when the target is null or the pred not ready.
     pub resid: Vec<Vec<f64>>,
+    /// EW residual standard deviation per slot, from the state *before* this
+    /// row (so it is out-of-sample like everything else). NaN until there is
+    /// at least one residual.
+    pub sigma: Vec<Vec<f64>>,
+    /// `resid / sigma`, NaN wherever either is.
+    pub resid_z: Vec<Vec<f64>>,
     pub n_eff: Vec<f64>,
     pub coef: Option<Vec<Vec<Vec<f64>>>>,
     pub extra: Vec<Option<online_core::Extra>>,
@@ -365,9 +388,15 @@ pub struct RowOut {
 
 impl Stream {
     pub fn new(spec: &Spec) -> Result<Self, String> {
+        let models = build_models(spec)?;
+        let decays: Vec<Decay> = spec.decays()?.into_iter().map(|(_, d)| d).collect();
+        let slots: Vec<usize> = models.iter().map(|(_, m)| m.n_outputs()).collect();
         Ok(Self {
             clock: ClockState::new(),
-            models: build_models(spec)?,
+            resid_var: slots.iter().map(|&n| vec![0.0; n]).collect(),
+            resid_w: slots.iter().map(|&n| vec![0.0; n]).collect(),
+            models,
+            decays,
             rows_seen: 0,
         })
     }
@@ -377,30 +406,40 @@ impl Stream {
             clock: self.clock.clone(),
             models: self.models.iter().map(|(_, m)| m.state()).collect(),
             rows_seen: self.rows_seen,
+            resid_var: self.resid_var.clone(),
+            resid_w: self.resid_w.clone(),
         }
     }
 
     pub fn restore(spec: &Spec, saved: &StreamState) -> Result<Self, String> {
-        let fresh = build_models(spec)?;
-        if fresh.len() != saved.models.len() {
+        let mut stream = Stream::new(spec)?;
+        if stream.models.len() != saved.models.len() {
             return Err("saved state has a different number of model instances".into());
         }
-        let models = fresh
-            .into_iter()
+        let models = stream
+            .models
+            .drain(..)
             .zip(&saved.models)
             .map(|((suffix, _), st)| {
                 Ok((suffix, AnyModel::restore(st).map_err(|e| e.to_string())?))
             })
             .collect::<Result<Vec<_>, String>>()?;
-        Ok(Self {
-            clock: saved.clock.clone(),
-            models,
-            rows_seen: saved.rows_seen,
-        })
+        stream.models = models;
+        stream.clock = saved.clock.clone();
+        stream.rows_seen = saved.rows_seen;
+        // Written before these fields existed => start the estimate over.
+        if saved.resid_var.len() == stream.resid_var.len() {
+            stream.resid_var = saved.resid_var.clone();
+            stream.resid_w = saved.resid_w.clone();
+        }
+        Ok(stream)
     }
 
     fn reset_models(&mut self, spec: &Spec) {
         self.models = build_models(spec).expect("spec was already validated");
+        for v in self.resid_var.iter_mut().chain(self.resid_w.iter_mut()) {
+            v.iter_mut().for_each(|x| *x = 0.0);
+        }
     }
 
     /// Process one row. `emit_coef` forces a coefficient snapshot (last row of
@@ -440,7 +479,9 @@ impl Stream {
         let mut extra = Vec::with_capacity(self.models.len());
         let mut coef = if want_coef { Some(Vec::new()) } else { None };
         let m_targets = ys.len();
-        for (_, m) in self.models.iter_mut() {
+        let mut sigma = Vec::with_capacity(self.models.len());
+        let mut resid_z = Vec::with_capacity(self.models.len());
+        for (mi, (_, m)) in self.models.iter_mut().enumerate() {
             let step = m.step(&xs, &ys, adv.d_clock, w);
             let nc = step.pred.len() / m_targets;
             let r: Vec<f64> = step
@@ -452,8 +493,37 @@ impl Stream {
                     _ => f64::NAN,
                 })
                 .collect();
+
+            // sigma is read from the state BEFORE this row's residual is folded
+            // in, so `resid_z` is out-of-sample like the prediction it scales.
+            let lam = self.decays[mi].factor(adv.d_clock);
+            let vars = &mut self.resid_var[mi];
+            let wsum = &mut self.resid_w[mi];
+            let mut sig = vec![f64::NAN; r.len()];
+            let mut zs = vec![f64::NAN; r.len()];
+            for (slot, &ri) in r.iter().enumerate() {
+                if wsum[slot] > 0.0 {
+                    let sd = vars[slot].max(0.0).sqrt();
+                    sig[slot] = sd;
+                    if ri.is_finite() && sd > 0.0 {
+                        zs[slot] = ri / sd;
+                    }
+                }
+                if ri.is_finite() {
+                    let w_new = lam * wsum[slot] + w;
+                    if w_new > 0.0 {
+                        vars[slot] = (lam * wsum[slot] * vars[slot] + w * ri * ri) / w_new;
+                        wsum[slot] = w_new;
+                    }
+                } else {
+                    wsum[slot] *= lam;
+                }
+            }
+
             pred.push(step.pred);
             resid.push(r);
+            sigma.push(sig);
+            resid_z.push(zs);
             n_eff.push(step.n_eff);
             extra.push(step.extra);
             if let Some(c) = &mut coef {
@@ -463,6 +533,8 @@ impl Stream {
         Some(RowOut {
             pred,
             resid,
+            sigma,
+            resid_z,
             n_eff,
             coef,
             extra,

@@ -428,6 +428,20 @@ pub fn output_fields(spec: &Spec) -> Vec<String> {
                 fields.push(format!("resid_{t}{c}{suffix}"));
             }
         }
+        if spec.emit_sigma {
+            for t in &spec.targets {
+                for c in &combos {
+                    fields.push(format!("sigma_{t}{c}{suffix}"));
+                }
+            }
+        }
+        if spec.emit_resid_z {
+            for t in &spec.targets {
+                for c in &combos {
+                    fields.push(format!("resid_z_{t}{c}{suffix}"));
+                }
+            }
+        }
         fields.push(format!("n_eff{suffix}"));
         fields.push(format!("coef{suffix}"));
         if matches!(spec.model, crate::ModelKind::Lasso { .. }) {
@@ -448,6 +462,13 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
 
     let mut pred = vec![vec![None::<f64>; n]; n_models * m * nc];
     let mut resid = vec![vec![None::<f64>; n]; n_models * m * nc];
+    let n_extra = if spec.emit_sigma || spec.emit_resid_z {
+        n_models * m * nc
+    } else {
+        0
+    };
+    let mut sigma = vec![vec![None::<f64>; n]; n_extra];
+    let mut resid_z = vec![vec![None::<f64>; n]; n_extra];
     let mut n_eff = vec![vec![None::<f64>; n]; n_models];
     let mut coef: Vec<Vec<Option<Vec<f64>>>> = vec![vec![None; n]; n_models];
     let is_lasso = matches!(spec.model, crate::ModelKind::Lasso { .. });
@@ -461,6 +482,12 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
                 pred[mi * m * nc + slot][*i] = if v.is_nan() { None } else { Some(v) };
                 let r = out.resid[mi][slot];
                 resid[mi * m * nc + slot][*i] = if r.is_nan() { None } else { Some(r) };
+                if n_extra > 0 {
+                    let s = out.sigma[mi][slot];
+                    sigma[mi * m * nc + slot][*i] = if s.is_nan() { None } else { Some(s) };
+                    let z = out.resid_z[mi][slot];
+                    resid_z[mi * m * nc + slot][*i] = if z.is_nan() { None } else { Some(z) };
+                }
             }
             n_eff[mi][*i] = Some(out.n_eff[mi]);
             if let Some(c) = &out.coef {
@@ -490,6 +517,24 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
                     format!("resid_{t}{c}{suffix}").into(),
                     resid[mi * m * nc + slot].as_slice(),
                 ));
+            }
+        }
+        for (name, src) in [
+            ("sigma", (spec.emit_sigma, &sigma)),
+            ("resid_z", (spec.emit_resid_z, &resid_z)),
+        ] {
+            let (enabled, data) = src;
+            if !enabled {
+                continue;
+            }
+            for (t_i, t) in spec.targets.iter().enumerate() {
+                for (c_i, c) in combos.iter().enumerate() {
+                    let slot = t_i * nc + c_i;
+                    fields.push(Series::new(
+                        format!("{name}_{t}{c}{suffix}").into(),
+                        data[mi * m * nc + slot].as_slice(),
+                    ));
+                }
             }
         }
         fields.push(Series::new(

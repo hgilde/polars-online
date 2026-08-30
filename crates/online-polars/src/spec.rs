@@ -225,6 +225,15 @@ pub struct Spec {
     /// 0 = never; coefficients are also emitted on the last row of every chunk.
     #[serde(default)]
     pub coef_every: u32,
+    /// Emit `sigma_<slot>`: the EW standard deviation of this slot's
+    /// out-of-sample residuals, read from the state *before* each row. Off by
+    /// default because it widens the output struct.
+    #[serde(default)]
+    pub emit_sigma: bool,
+    /// Emit `resid_z_<slot>` = `resid / sigma`: how surprising this row was, in
+    /// units of the model's own recent error. Off by default.
+    #[serde(default)]
+    pub emit_resid_z: bool,
     /// ModelBank/CLI only; one state per key. The expression API uses `.over()`.
     #[serde(default)]
     pub group: Option<String>,
