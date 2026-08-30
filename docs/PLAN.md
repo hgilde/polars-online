@@ -345,6 +345,13 @@ returns / volume / trade-count z-scores, targets = strictly future returns.
   `ruff format --check`, `ruff check`. Test = `cargo test --workspace`, `maturin develop`,
   `pytest`. Wheel/binary release jobs are task 16.
 
+## 11b. Follow-on documents
+
+- `docs/ENHANCEMENTS.md` — plan-debt items (`ew_cov` surface, strict clock,
+  negative-weight validation, ...) and a feature comparison against river.
+- `docs/TESTING.md` — coverage scorecard against §9, found edge-case defects,
+  and the oracle/river cross-check backlog.
+
 ## 12. Open questions (not blocking)
 
 - Overnight handling beyond `session_gap` (e.g. partial state shrinkage toward a long-run prior).

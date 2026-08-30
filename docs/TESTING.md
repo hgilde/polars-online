@@ -1,0 +1,102 @@
+# Test coverage and testing improvements
+
+Status as of 2026-08-30: **61 Rust tests + 79 pytest functions (80 collected)**,
+all green, run in CI on three OSes. This document assesses what they actually
+prove, then lists concrete improvements — with emphasis on edge cases and on
+comparing behavior against reference implementations, including
+[river](https://riverml.xyz).
+
+## 1. What is covered today
+
+Scorecard against PLAN §9's eight test classes:
+
+| Class | Status |
+|---|---|
+| 1. Oracle agreement | **Partial.** `ewridge` and `rls` match `tests/reference.py` to 1e-9 (incl. multi-target, standardize, `lam` decay, row-count clock), and `rls ≡ ewridge(ridge_decay, solve_every=1)` to <1e-9. **But PLAN promised Kalman and lasso oracles too — `reference.py` still has only `compute_dclock`, `ewridge_ref`, `rls_ref`.** Kalman, lasso, huber/quantile and ftrl are anchored only by property tests. |
+| 2. Chunk invariance | Done: bitwise at the bank (1/7/400 chunks), expression, and CLI (`chunk_rows` sweep) levels; save/load mid-stream identical; the `coef` field is correctly excluded (chunk-dependent by design). |
+| 3. Out-of-sample by construction | Done: IC ≈ 0 on pure-noise targets asserted for ewridge, kalman, huber, ftrl; lasso selection prefers the all-zero penalty on noise; robust reweighting proven to use the *prior* residual. |
+| 4. Clock semantics | Done: cap, negative-delta (`max`/`zero`/`reset_state`), session gap and reset, first row, row-count clock, skipped-row decay folding, per-group independence. |
+| 5. Null policy & warmup | Done for feature/target/weight nulls and `min_periods` — for the tested models (ewridge, rls, kalman-adjacent paths). |
+| 6. Expression ≡ bank | Done for every model, incl. grids and `.over()`. |
+| 7. Cross-platform state | **Defined but never executed on real runners.** The test file and the macOS→Windows/Linux artifact hand-off exist in `release.yml`, but no workflow run has happened (no remote/tag yet). Locally only same-OS round-trip + byte-determinism are proven. |
+| 8. Benchmark | Done (`scripts/benchmark.py`, numbers in README). |
+
+**Do we compare edge cases against reference implementations?** Partially.
+Clock semantics, null policy, and warmup are cross-checked against the numpy
+oracles — but only along the `ewridge`/`rls` paths, since those are the only
+oracles that exist. Kalman/lasso/robust/ftrl edge behavior is anchored to
+nothing outside this repo. **We never compare against river at all.** And two
+live edge-case defects were found while writing this document (T-E3, T-E7
+below) — evidence the edge matrix has real holes, not hypothetical ones.
+
+## 2. Improvements
+
+Priorities: **P1** = closes a PLAN promise or covers a found defect; **P2** =
+meaningful new assurance; **P3** = infrastructure.
+
+### A. Close the oracle gaps (our own references)
+
+| # | P | Improvement |
+|---|---|---|
+| T-A1 | P1 | **`kalman_ref` in `tests/reference.py`** (promised by PLAN §9 class 1): plain numpy predict/update recursion with the same standardization-from-running-stats scheme; assert agreement to 1e-9 incl. per-factor halflife, `inf` pinning, explicit `q`, `share_p`, and the null-target path. |
+| T-A2 | P1 | **Lasso KKT verification** (implementation-independent, stronger than a second copy of coordinate descent): at every emitted coefficient snapshot, check the stationarity conditions on the standardized stats — `|c_i − Σ_j C_ij b_j| ≤ λ·l1_ratio + l2·|b_i|`-style bounds with equality (sign-matched) on active coordinates. Plus a small numpy CD `lasso_ref` for the pred path. |
+| T-A3 | P2 | **`huber_ref` / `quantile_ref`**: the IRLS reweighting is ~20 lines of numpy on top of `ewridge_ref`; assert 1e-9 agreement including the prior-residual weighting and per-target accumulators. |
+| T-A4 | P2 | **`ftrl_ref`**: direct numpy port of the McMahan recursion; assert 1e-12 agreement including decay, weights, and null targets. |
+| T-A5 | P2 | Run the **existing** edge-case tests (nulls, clock, warmup) through *every* model, parametrized, not just ewridge — the semantics are claimed to be model-independent; the tests should say so. |
+
+### B. Cross-checks against river (new `tests/test_river.py`)
+
+Add river as a dev-dependency; skip the module cleanly when it is not
+installed (same pattern as the offline skip). Two tiers:
+
+**Exact (tolerance ~1e-12, config pinned so the algorithms coincide):**
+
+| # | P | Comparison |
+|---|---|---|
+| T-R1 | P1 | **`ftrl` ≡ `river.optim.FTRLProximal`** driving `river.linear_model.LogisticRegression`: same α, β, l1, l2; our `add_intercept=False` vs their `intercept_lr=0`; unit weights; no decay. Same published recursion on both sides — any drift is a bug in one of us. Then extend with decay/weights on our side only, asserting we reduce to river when both are off. |
+| T-R2 | P2 | **Kalman(q=0, fixed `obs_var`) ≡ `river.linear_model.BayesianLinearRegression`** — *blocked on* the `standardize: false` Kalman switch (ENHANCEMENTS E19); once added, the recursions are the same rank-1 Bayesian update. |
+| T-R3 | P2 | **`EwCov` (λ=1, unit weights) ≡ `river.stats.Mean` / `Var` / `Cov` / `PearsonCorr`**: our mean-form accumulators with no decay are exact running moments; river's Welford implementations are the independent route to the same numbers. Also validates our raw-moment formulation against Welford on ordinary scales (see T-E9 for where it breaks). |
+
+**Statistical (tail agreement after warmup, tolerance stated per test):**
+
+| # | P | Comparison |
+|---|---|---|
+| T-R4 | P2 | **EW mean/var vs `river.stats.EWMean` / `EWVar`** with the mapping `fading_factor = 1 − 0.5^(1/halflife)` on a row-count clock. Warmups differ by construction (ours is exact weighted-mean warmup; river seeds from early points), so assert convergence of the two sequences, not equality — this *is* the edge-case comparison of warmup semantics, made explicit. |
+| T-R5 | P3 | **Quantile regression (intercept-only) vs `river.stats.Quantile`** (P² algorithm) on i.i.d. data: both should converge to the true quantile; assert both land within a shared CI. Guards our IRLS approximation against silent bias. |
+| T-R6 | P3 | **Huber vs `river.linear_model.LinearRegression(loss=optim.losses.Huber)`** under contamination: not numerically comparable (exact IRLS vs SGD), but both must recover the clean slope where OLS fails — same assertion, two libraries. |
+
+### C. Edge-case matrix to add
+
+Findings first — both verified against the current build:
+
+| # | P | Case | Current behavior → required |
+|---|---|---|---|
+| T-E1 | **P1** | **Negative weight value** | **Defect.** `EwCov::update` silently no-ops when `λW + w ≤ 0`, while the per-target `r_j` update runs with a negative denominator — `n_eff` pretends the row never happened while `r_j` is corrupted. Add validation (reject `w < 0`, ENHANCEMENTS E4) and a test pinning the chosen semantics for `w = 0` (pure decay, no observation). |
+| T-E2 | **P1** | **Null group key vs a group literally named `"<null>"`** | **Defect.** Both map to the string `"<null>"` and share one stream/state (verified: `n_eff` accumulates across them). Use a non-string sentinel (e.g. a dedicated enum key) and test null-group routing explicitly. |
+| T-E3 | P1 | ±inf in features / targets / weight | Currently: inf feature or weight skips the row, inf target is treated as null (verified for features). Correct — but untested and undocumented; pin all three with tests, incl. inf in the *clock* (currently only null/NaN clock errors). |
+| T-E4 | P1 | Mis-ordered chunks (clock goes backwards across a chunk boundary within a group) | Silently absorbed by `on_clock_reset` today. Test current behavior, then the strict mode (ENHANCEMENTS E3) once added. |
+| T-E5 | P2 | Degenerate solves in the **plain** (non-standardized) path: constant feature, exactly collinear features (`x1 = x0`) | The jitter fallback and previous-coefficient retention exist but only the standardized zero-variance path is tested. Assert finite outputs and that `solve_failures` increments (needs E5 to observe). |
+| T-E6 | P2 | Duplicate clock values (Δ=0 runs), `max_dclock = 0`, `halflife` far below the median Δ (λ ≈ 0 per row) | Assert: no NaN leakage, `n_eff ≈ w`, solves survive near-singular S via jitter. |
+| T-E7 | P2 | Minimal shapes: single-row groups, a group appearing in only one chunk, an empty chunk (`df.height() == 0`) fed to `fit_predict`, k=1/m=1 | Empty-chunk behavior is currently untested at the bank level (the CLI runner handles empty *input* only). |
+| T-E8 | P2 | Non-string group and session columns (ints, categoricals) and null session values | The cast-to-string path is exercised only with string columns; test int groups and that a null session change is detected (or defined not to be). |
+| T-E9 | P2 | **Large-offset cancellation**: features like `1e8 + noise` | Our raw-moment form computes `var = E[x²] − m²`, which loses ~half the mantissa at that scale, where river's Welford form does not. Test to characterize the loss and document the operating range — and if it matters for real data (prices are ~1e4–1e5), adopt Welford/centered updates in `EwCov` as the fix. |
+| T-E10 | P2 | Datetime-typed clock columns | Cast to f64 yields epoch *microseconds* — a halflife of "600" then means 600 µs, silently. Decide (reject non-float clocks, or document loudly) and test the decision. |
+| T-E11 | P3 | Long-stream soak: ~10⁷ rows through one state | Assert boundedness (`n_eff`, S entries), no drift vs. a mid-stream save/restore, and stable throughput — the stability claim behind mean-form accumulators (PLAN §7), currently asserted only by argument. |
+| T-E12 | P3 | Session change on the first row of a group; `coef_every = 1`; skipped row immediately before a save/load boundary (pending-delta serialization) | The last is likely covered *incidentally* by the null pattern in the invariance tests; make it a targeted test. |
+
+### D. Infrastructure
+
+| # | P | Improvement |
+|---|---|---|
+| T-D1 | P1 | **Actually run the release workflow once** (tag or `workflow_dispatch`): until then, class 7 (macOS-written state loaded on Windows) and the wheel builds are untested claims. Follow with a tolerance-based (not bitwise — BLAS/LLVM vectorization may differ) cross-OS *prediction* comparison in the same workflow. |
+| T-D2 | P2 | **Property-based testing**: `hypothesis` (Python) and/or `proptest` (Rust) generating adversarial streams — mixed nulls, dup/backwards clocks, constant features, weight extremes, tiny groups — asserting the universal invariants (chunk invariance, save/load equivalence, no non-finite outputs, null policy) for every model. This is the systematic version of section C. |
+| T-D3 | P2 | Determinism across parallelism: run the bank under `RAYON_NUM_THREADS=1` vs many; outputs must be identical (per-stream work is serial, so any diff is a bug). |
+| T-D4 | P3 | Coverage measurement (`cargo llvm-cov` + `pytest --cov`) with a reported (not gating) number, and a periodic `cargo mutants` pass on `online-core` — solver/decay arithmetic is exactly where mutation testing earns its keep. |
+
+## Suggested order
+
+1. T-E1, T-E2 (found defects, with their fixes), T-D1 (run the release CI once).
+2. T-A1–T-A4 (finish the oracle set PLAN promised), T-A5, T-E3–T-E5.
+3. T-R1, T-R3, T-R4 (river cross-checks that need no new features), then T-R2
+   behind the Kalman switch.
+4. T-D2/T-D3, remaining edge matrix, T-D4.
