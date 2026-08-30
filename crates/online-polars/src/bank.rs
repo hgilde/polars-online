@@ -318,7 +318,7 @@ impl Bank {
                 let stream = taken.remove(key).expect("stream materialized above");
                 work.push((key, idx, stream));
             }
-            let rows: Vec<Vec<(usize, Option<RowOut>)>> = work
+            let rows: Vec<PolarsResult<Vec<(usize, Option<RowOut>)>>> = work
                 .into_par_iter()
                 .map(|(_key, idx, stream)| {
                     let last = *idx.last().unwrap_or(&usize::MAX);
@@ -326,21 +326,34 @@ impl Bank {
                         .map(|&i| {
                             let x: Vec<Option<f64>> = sc.features.iter().map(|f| f[i]).collect();
                             let y: Vec<Option<f64>> = sc.targets.iter().map(|t| t[i]).collect();
-                            let out = stream.process_row(
-                                spec,
-                                cfg,
-                                &x,
-                                &y,
-                                sc.clock.as_ref().map(|c| c[i].unwrap()),
-                                sc.session.as_ref().map(|s| s[i]),
-                                sc.weight.as_ref().map(|w| w[i].unwrap_or(f64::NAN)),
-                                i == last,
-                            );
-                            (i, out)
+                            let out = stream
+                                .process_row(
+                                    spec,
+                                    cfg,
+                                    &x,
+                                    &y,
+                                    sc.clock.as_ref().map(|c| c[i].unwrap()),
+                                    sc.session.as_ref().map(|s| s[i]),
+                                    sc.weight.as_ref().map(|w| w[i].unwrap_or(f64::NAN)),
+                                    i == last,
+                                )
+                                .map_err(|raw| {
+                                    polars_err!(ComputeError:
+                                        "spec {:?}: clock column {:?} goes backwards by {} at \
+                                         row {} (on_clock_reset = \"error\"). Sort each group by \
+                                         the clock, or choose \"max\"/\"zero\"/\"reset_state\" \
+                                         to define what a backwards clock means.",
+                                        spec.name,
+                                        spec.clock.as_deref().unwrap_or("<row count>"),
+                                        -raw, i
+                                    )
+                                })?;
+                            Ok((i, out))
                         })
                         .collect()
                 })
                 .collect();
+            let rows = rows.into_iter().collect::<PolarsResult<Vec<_>>>()?;
             per_spec_rows.push(rows.into_iter().flatten().collect());
         }
 

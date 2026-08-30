@@ -1,6 +1,6 @@
 # Test coverage and testing improvements
 
-Status as of 2026-08-30: **61 Rust tests + 371 pytest functions** (plus 2 opt-in
+Status as of 2026-08-30: **62 Rust tests + 377 pytest functions** (plus 2 opt-in
 soak tests), all green, run in CI on three OSes.
 
 Measured coverage (`./scripts/coverage.sh`): **96% of the Python package**, and
@@ -114,7 +114,7 @@ Findings first — both verified against the current build:
 | T-E1 | ~~P1~~ **done** | **Negative weight value** | **Was a defect**, now fixed. `EwCov::update` silently no-opped when `λW + w ≤ 0` while the per-target `r_j` update ran with a negative denominator — in practice every later prediction went null. Finite negative weights are now rejected at extraction, naming the column, value and row; non-finite ones skip the row like any other non-finite input; `w = 0` is a legal pure-decay row. `EwCov::update` also debug-asserts the contract. |
 | T-E2 | ~~P1~~ **done** | **Null group key vs a group literally named `"<null>"`** | **Was a defect**, now fixed. Both mapped to the string `"<null>"` and shared one stream (verified: `n_eff` accumulated across them). Replaced by `GroupKey(Option<String>)`; bank files gained a `format_version` (now 2) and v1 files still load, since the key serializes transparently as its inner `Option`. |
 | T-E3 | ~~P1~~ **done** | ±inf in features / targets / weight / clock | Pinned: a non-finite feature or weight skips the row (clock still advances), a non-finite target is predict-only, a non-finite or null clock errors loudly. Plus a fuzz-ish test that outputs are never non-finite. |
-| T-E4 | ~~P1~~ **done** (current behavior) | Mis-ordered chunks (clock goes backwards across a chunk boundary within a group) | Pinned as-is: absorbed by `on_clock_reset`, indistinguishable from a genuine backwards clock. Strict mode remains ENHANCEMENTS E3; the invariance guard rail is tested alongside. |
+| T-E4 | ~~P1~~ **done** | Mis-ordered chunks (clock goes backwards across a chunk boundary within a group) | Both halves now covered: the absorbing policies are pinned as-is, and `on_clock_reset="error"` (ENHANCEMENTS E3, now implemented) catches a mis-sorted chunk boundary loudly. |
 | T-E5 | ~~P2~~ **done** | Degenerate solves in the **plain** path | Exactly collinear features drive the jitter fallback (107 jittered solves over 200 rows) with finite outputs throughout; a real ridge removes the need for jitter entirely; non-solving models report 0. Required implementing ENHANCEMENTS E5 first: `Bank::solve_failures()` / `ModelBank.solve_failures()` now expose the count per spec and group. |
 | T-E6 | ~~P2~~ **done** | Duplicate clock values, `max_dclock = 0`, `halflife` far below the typical Δ | Pinned: duplicate clock values are zero deltas (no decay); `max_dclock = 0` disables decay entirely; a halflife far below the delta makes every row effectively the first (`n_eff → 1`); no NaN leaks under extreme decay. |
 | T-E7 | ~~P2~~ **done** | Minimal shapes | An empty chunk is accepted and returns an empty frame with the output column; an empty chunk *between* real chunks changes nothing; single-row groups, a group appearing in only one chunk, and a one-feature/one-target spec all behave. |

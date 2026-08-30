@@ -456,15 +456,20 @@ impl Stream {
         // weight: None = no weight column; Some(NaN) = null value (skips the row)
         weight: Option<f64>,
         emit_coef: bool,
-    ) -> Option<RowOut> {
+    ) -> Result<Option<RowOut>, f64> {
         let accept = x.iter().all(|v| v.is_some_and(f64::is_finite))
             && weight.map(|w| w.is_finite()).unwrap_or(true);
         let adv = self.clock.advance(cfg, clock, session, accept);
+        // `on_clock_reset = "error"`: hand the offending delta back so the
+        // caller can name the row and column.
+        if let Some(raw) = adv.backwards {
+            return Err(raw);
+        }
         if adv.reset {
             self.reset_models(spec);
         }
         if !accept {
-            return None;
+            return Ok(None);
         }
         self.rows_seen += 1;
         let xs: Vec<f64> = x.iter().map(|v| v.unwrap()).collect();
@@ -530,7 +535,7 @@ impl Stream {
                 c.push(m.coefficients().unwrap_or_default());
             }
         }
-        Some(RowOut {
+        Ok(Some(RowOut {
             pred,
             resid,
             sigma,
@@ -538,6 +543,6 @@ impl Stream {
             n_eff,
             coef,
             extra,
-        })
+        }))
     }
 }

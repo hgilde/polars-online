@@ -42,6 +42,11 @@ pub enum OnClockReset {
     Zero,
     /// Reset the model state.
     ResetState,
+    /// Refuse the row. A backwards clock is usually a data bug — a mis-sorted
+    /// chunk, or rows from two streams interleaved — and the other policies
+    /// absorb it silently, producing plausible but wrong output. This makes it
+    /// loud (PLAN §5: "the bank asserts monotonicity ... and errors loudly").
+    Error,
 }
 
 /// Delta override applied on a session change.
@@ -83,6 +88,10 @@ pub struct ClockAdvance {
     pub reset: bool,
     /// Whether the row was accepted (mirrors the `accept` argument).
     pub accepted: bool,
+    /// Set when `on_clock_reset` is [`OnClockReset::Error`] and the raw delta
+    /// was negative: the caller must turn this into an error naming the row.
+    /// Carries the offending raw delta.
+    pub backwards: Option<f64>,
 }
 
 /// Per-stream clock state. Serialized as part of a stream's saved state.
@@ -128,6 +137,7 @@ impl ClockState {
         };
 
         let mut reset = false;
+        let mut backwards = None;
         let mut d = match raw {
             None => 0.0,
             Some(raw) => {
@@ -146,6 +156,10 @@ impl ClockState {
                         OnClockReset::Zero => 0.0,
                         OnClockReset::ResetState => {
                             reset = true;
+                            0.0
+                        }
+                        OnClockReset::Error => {
+                            backwards = Some(raw);
                             0.0
                         }
                     }
@@ -170,6 +184,7 @@ impl ClockState {
                 d_clock: total,
                 reset,
                 accepted: true,
+                backwards,
             }
         } else {
             self.pending += d;
@@ -177,6 +192,7 @@ impl ClockState {
                 d_clock: 0.0,
                 reset,
                 accepted: false,
+                backwards,
             }
         }
     }
@@ -269,6 +285,23 @@ mod tests {
                 OnClockReset::ResetState => assert!(b.reset),
             }
         }
+    }
+
+    #[test]
+    fn error_policy_reports_a_backwards_clock() {
+        let mut c = ClockState::new();
+        let cfg = ClockCfg {
+            max_dclock: 50.0,
+            on_clock_reset: OnClockReset::Error,
+            session_gap: None,
+        };
+        assert!(c.advance(&cfg, Some(0.0), None, true).backwards.is_none());
+        assert!(c.advance(&cfg, Some(10.0), None, true).backwards.is_none());
+        // a repeated value is a zero delta, not backwards
+        assert!(c.advance(&cfg, Some(10.0), None, true).backwards.is_none());
+        let a = c.advance(&cfg, Some(4.0), None, true);
+        assert_eq!(a.backwards, Some(-6.0));
+        assert!(!a.reset, "the error policy must not silently reset");
     }
 
     #[test]

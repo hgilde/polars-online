@@ -644,3 +644,86 @@ class TestPendingDeltaAcrossSaveLoad:
         )
         assert _f(out, "n_eff")[2] == 0.0
         assert _f(out, "n_eff")[3] == pytest.approx(1.0, rel=1e-12)
+
+
+class TestStrictClock:
+    """E3: `on_clock_reset="error"` refuses a backwards clock instead of
+    absorbing it.
+
+    PLAN section 5 says the bank "asserts monotonicity ... and errors loudly";
+    until this existed, a mis-sorted chunk was indistinguishable from a genuine
+    backwards clock and was silently routed through the decay policy.
+    """
+
+    def _df(self):
+        return pl.DataFrame(
+            {
+                "t": [0.0, 1.0, 2.0, 1.5, 3.0],
+                "x0": [1.0, 2.0, 3.0, 4.0, 5.0],
+                "y0": [1.0, 2.0, 3.0, 4.0, 5.0],
+            }
+        )
+
+    def _spec_for(self, policy, **kw):
+        return _spec(
+            clock="t",
+            max_dclock=10.0,
+            halflife=5.0,
+            on_clock_reset=policy,
+            min_periods=0.0,
+            **kw,
+        )
+
+    def test_error_policy_names_column_row_and_magnitude(self):
+        with pytest.raises(Exception) as exc:
+            _run(self._df(), self._spec_for("error"))
+        msg = str(exc.value)
+        assert '"t"' in msg and "row 3" in msg and "0.5" in msg
+        assert "sort" in msg.lower(), "the error should say how to fix it"
+
+    def test_other_policies_still_absorb_it(self):
+        neff = {
+            p: _f(_run(self._df(), self._spec_for(p)), "n_eff")
+            for p in ("max", "zero", "reset_state")
+        }
+        # each policy gives a genuinely different answer at the offending row
+        assert neff["reset_state"][3] == 0.0
+        assert neff["zero"][4] > neff["max"][4]
+
+    def test_error_policy_accepts_a_monotone_stream(self):
+        good = pl.DataFrame(
+            {"t": [0.0, 1.0, 2.0, 3.0], "x0": [1.0] * 4, "y0": [1.0, 2.0, 3.0, 4.0]}
+        )
+        out = _run(good, self._spec_for("error"))
+        assert _f(out, "n_eff")[0] == 0.0
+
+    def test_repeated_clock_values_are_not_an_error(self):
+        # A duplicate timestamp is a zero delta, not a backwards one.
+        dup = pl.DataFrame({"t": [0.0, 1.0, 1.0, 2.0], "x0": [1.0] * 4, "y0": [1.0, 2.0, 3.0, 4.0]})
+        out = _run(dup, self._spec_for("error"))
+        assert _f(out, "n_eff")[3] == pytest.approx(_f(out, "n_eff")[2] * 0.5 ** (0.0 / 5.0) + 1.0)
+
+    def test_catches_a_mis_sorted_chunk_boundary(self):
+        # The motivating case: chunks fed out of order. Under "max" this is
+        # silently absorbed (T-E4); under "error" it is caught.
+        a = pl.DataFrame({"t": [0.0, 1.0, 2.0], "x0": [1.0] * 3, "y0": [1.0, 2.0, 3.0]})
+        b = pl.DataFrame({"t": [0.5, 1.5], "x0": [1.0] * 2, "y0": [4.0, 5.0]})
+        spec = self._spec_for("error")
+        bank = po.ModelBank([spec])
+        bank.fit_predict(a)
+        with pytest.raises(Exception, match="goes backwards"):
+            bank.fit_predict(b)
+
+    def test_per_group_so_interleaved_groups_are_fine(self):
+        # Group clocks are independent: interleaving two ascending streams must
+        # not look backwards.
+        df = pl.DataFrame(
+            {
+                "g": ["a", "b", "a", "b"],
+                "t": [0.0, 100.0, 1.0, 101.0],
+                "x0": [1.0] * 4,
+                "y0": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
+        out = _run(df, self._spec_for("error", group="g"))
+        assert _f(out, "n_eff")[2] == pytest.approx(1.0)

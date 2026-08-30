@@ -108,7 +108,7 @@ Every model takes the same stream parameters:
 | `clock` | monotone **numeric** column (seconds, cumulative volume, …). `None` ⇒ row count. A temporal column is rejected — cast it first, e.g. `pl.col("ts").dt.epoch("s")` — because its internal representation would silently set the units of `halflife`, `max_dclock` and `session_gap` |
 | `halflife` / `lam` | decay in clock units; mutually exclusive. A list of halflives means one accumulator per value |
 | `max_dclock` | ceiling on the clock delta (required with `clock`) |
-| `on_clock_reset` | `"max"` (default), `"zero"`, `"reset_state"` for a backwards clock |
+| `on_clock_reset` | what a backwards clock means: `"max"` (default), `"zero"`, `"reset_state"`, or `"error"` to refuse it |
 | `session`, `session_gap` | on a session change, apply this delta (or `"reset"`) |
 | `weight` | row weight column |
 | `min_periods` | in `n_eff` units; outputs are null until reached |
