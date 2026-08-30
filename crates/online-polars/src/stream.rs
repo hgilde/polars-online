@@ -146,6 +146,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             feature_sets,
             standardize,
             ridge_decay,
+            coef0,
             solve_every,
             max_rows_between_solves,
         } => {
@@ -175,6 +176,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 feature_sets: fs,
                 standardize: *standardize,
                 ridge_decay: *ridge_decay,
+                coef0: coef0.clone(),
                 min_periods: spec.min_periods_or_default(),
                 solve_every: solve_every.unwrap_or_else(|| spec.solve_every_default(decay)),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),

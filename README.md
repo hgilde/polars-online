@@ -183,6 +183,11 @@ W_j' = λW_j + w                     r_j' = (λW_j·r_j + w·z·y_j) / W_j'
 solve:  (S + ridge·D) β_j = r_j     D = I minus the intercept slot
 ```
 
+`coef0` shrinks toward a stated belief rather than toward zero. Note that `S`
+is a weighted *mean*, so a plain `ridge` is a fixed per-observation penalty and
+its pull is **permanent**; the fading warm start ("start at yesterday's fit")
+is `ridge_decay`, where the prior sits on the decaying sum scale.
+
 O(k²) per row; Cholesky solves on a schedule (`solve_every` in clock units,
 default `halflife/50`). Ridge values and named `feature_sets` are expanded at
 solve time from the same accumulator, so grids are nearly free. With

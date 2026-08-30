@@ -90,6 +90,10 @@ pub enum ModelKind {
         standardize: bool,
         #[serde(default)]
         ridge_decay: bool,
+        /// Shrink toward these coefficients instead of toward zero, one vector
+        /// per target of length `n_features + intercept`, in original units.
+        #[serde(default)]
+        coef0: Option<Vec<Vec<f64>>>,
         #[serde(default)]
         solve_every: Option<f64>,
         #[serde(default)]
@@ -650,7 +654,21 @@ impl Spec {
                     }
                 }
             }
-            ModelKind::EwRidge { feature_sets, .. } => {
+            ModelKind::EwRidge {
+                feature_sets,
+                coef0,
+                ..
+            } => {
+                if let Some(c) = coef0 {
+                    let k_total = self.k() + usize::from(self.add_intercept);
+                    if c.len() != self.m() || c.iter().any(|v| v.len() != k_total) {
+                        return Err(format!(
+                            "spec {:?}: coef0 must be {} vectors of length {k_total}",
+                            self.name,
+                            self.m()
+                        ));
+                    }
+                }
                 if let Some(fs) = feature_sets {
                     for (name, cols) in fs {
                         for c in cols {

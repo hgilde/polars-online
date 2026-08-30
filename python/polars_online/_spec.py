@@ -105,11 +105,20 @@ def ewridge(
     feature_sets: dict[str, list[str]] | None = None,
     standardize: bool = False,
     ridge_decay: bool = False,
+    coef0: list[list[float]] | None = None,
     solve_every: float | None = None,
     max_rows_between_solves: int | None = None,
     **common: Any,
 ) -> dict[str, Any]:
     """EW-ridge spec (docs/PLAN.md §4.1).
+
+    ``coef0`` shrinks toward a stated belief instead of toward zero, one vector
+    per target in the features' original units. **Whether the prior fades
+    depends on ``ridge_decay``**: ``S`` is a weighted *mean*, so a plain
+    ``ridge`` is a fixed per-observation penalty whose pull is permanent
+    ("always stay near this belief"); with ``ridge_decay`` the prior sits on the
+    decaying sum scale and fades as data arrives (the usual warm start, "begin
+    at yesterday's fit and let evidence take over").
 
     Math: EW means ``S = EW[x x^T]``, ``r_j = EW[x y_j]`` with per-row decay
     ``0.5 ** (d_clock / halflife)``; coefficients solve
@@ -123,6 +132,7 @@ def ewridge(
         "feature_sets": list(feature_sets.items()) if feature_sets else None,
         "standardize": standardize,
         "ridge_decay": ridge_decay,
+        "coef0": coef0,
         "solve_every": solve_every,
         "max_rows_between_solves": max_rows_between_solves,
     }

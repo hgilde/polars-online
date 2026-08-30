@@ -43,6 +43,20 @@ pub struct EwRidgeCfg {
     /// Decaying sum-scale prior (classic RLS regularization). Incompatible with
     /// `standardize` and with grids; the intercept is penalized.
     pub ridge_decay: bool,
+    /// Shrink toward these coefficients instead of toward zero
+    /// (ENHANCEMENTS E15): the solve becomes `(S + ridge·D)β = r + ridge·D·β₀`.
+    /// One vector per target, each `k_total` long, in the features' original
+    /// units; the intercept slot is unpenalized and therefore ignored.
+    ///
+    /// **Whether the prior fades depends on `ridge_decay`, and the difference
+    /// matters.** `S` here is a weighted *mean*, not a sum, so it does not grow
+    /// with the sample: a plain `ridge` is a fixed per-observation penalty and
+    /// its pull toward `coef0` is **permanent** — "always stay near this
+    /// belief". With `ridge_decay` the prior sits on the sum scale and its
+    /// weight decays with the data, which is the usual warm start: "begin at
+    /// yesterday's fit and let evidence take over".
+    #[serde(default)]
+    pub coef0: Option<Vec<Vec<f64>>>,
     /// Outputs are null until `n_eff` (before the row's update) reaches this.
     pub min_periods: f64,
     /// Solve cadence in clock units; <= 0 solves every row.
@@ -92,6 +106,18 @@ impl EwRidgeCfg {
         }
         if self.ridge_decay && (self.standardize || self.n_combos() > 1) {
             return Err("ridge_decay is incompatible with standardize and grids".into());
+        }
+        if let Some(c) = &self.coef0 {
+            if c.len() != self.n_targets || c.iter().any(|v| v.len() != self.k_total()) {
+                return Err(format!(
+                    "coef0 must be {} vectors of length {}",
+                    self.n_targets,
+                    self.k_total()
+                ));
+            }
+            if c.iter().flatten().any(|v| !v.is_finite()) {
+                return Err("coef0 values must be finite".into());
+            }
         }
         for (name, idx) in &self.feature_sets {
             if idx.is_empty() || idx.iter().any(|&i| i >= self.n_features) {
@@ -225,11 +251,31 @@ impl EwRidge {
                 for v in b.iter_mut() {
                     *v *= w;
                 }
+                // Warm start: the prior enters on the same decaying sum scale,
+                // so its weight falls away as data accumulates.
+                if let Some(c0) = &self.cfg.coef0 {
+                    for j in 0..m {
+                        for (ai, &zi) in zidx.iter().enumerate() {
+                            b[j * kc + ai] += ps * ridge * c0[j][zi];
+                        }
+                    }
+                }
                 self.run_solve(&a, &b, kc, m)
             } else if !self.cfg.standardize {
                 let off = usize::from(self.cfg.add_intercept);
                 for i in off..kc {
                     a[i * kc + i] += ridge;
+                }
+                // Warm prior: shrink toward coef0 rather than toward zero, by
+                // moving the penalty's target into the right-hand side.
+                if let Some(c0) = &self.cfg.coef0 {
+                    for j in 0..m {
+                        for (ai, &zi) in zidx.iter().enumerate() {
+                            if ai >= off {
+                                b[j * kc + ai] += ridge * c0[j][zi];
+                            }
+                        }
+                    }
                 }
                 self.run_solve(&a, &b, kc, m)
             } else {
@@ -351,6 +397,11 @@ impl EwRidge {
                 let ybar = b[j * kc];
                 for (i2, &i) in keep.iter().enumerate() {
                     bsub[j * kk + i2] = (b[j * kc + i + 1] - mean(i + 1) * ybar) / s[i];
+                    // The prior lives in original units; on the standardized
+                    // scale a coefficient is beta * sd, so scale it in.
+                    if let Some(c0) = &self.cfg.coef0 {
+                        bsub[j * kk + i2] += ridge * c0[j][zidx[i + 1]] * s[i];
+                    }
                 }
             }
             let sol = self.run_solve(&asub, &bsub, kk, m)?;
@@ -494,10 +545,141 @@ mod tests {
             feature_sets: vec![],
             standardize: false,
             ridge_decay: false,
+            coef0: None,
             min_periods: (k + 1) as f64,
             solve_every: 0.0,
             max_rows_between_solves: 1,
         }
+    }
+
+    /// With `ridge_decay` the prior sits on the sum scale, so it starts the
+    /// fit and then fades: the usual warm start.
+    #[test]
+    fn coef0_with_ridge_decay_warms_the_start_then_fades() {
+        let mut c = cfg(2, 1);
+        c.ridge = vec![10.0];
+        c.ridge_decay = true;
+        c.standardize = false;
+        c.coef0 = Some(vec![vec![0.0, 5.0, -5.0]]);
+        c.min_periods = 0.0;
+        let mut m = EwRidge::new(c).unwrap();
+
+        // With no target seen yet the fit is essentially the prior. (Not
+        // exactly: the feature row itself has already entered S, which pulls a
+        // little even with no target.)
+        let mut s = 71u64;
+        let x0 = [lcg(&mut s), lcg(&mut s)];
+        m.step(&x0, &[None], 0.0, 1.0);
+        let early = m.coefficients().unwrap()[0].clone();
+        assert!(
+            (early[1] - 5.0).abs() < 0.5 && (early[2] + 5.0).abs() < 0.5,
+            "cold start should sit at the prior: {early:?}"
+        );
+
+        // With enough contradicting evidence it moves to the truth.
+        for i in 0..20000 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = 1.5 * x[0] - 0.5 * x[1];
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let late = m.coefficients().unwrap()[0].clone();
+        assert!(
+            (late[1] - 1.5).abs() < 0.05,
+            "prior did not wash out: {late:?}"
+        );
+        assert!((late[2] + 0.5).abs() < 0.05);
+    }
+
+    /// Without `ridge_decay` the pull is permanent, because `S` is a weighted
+    /// mean and never outgrows a fixed `ridge`. Worth pinning: it is the
+    /// opposite of the usual "the prior washes out" intuition.
+    #[test]
+    fn coef0_without_ridge_decay_pulls_forever() {
+        let mut c = cfg(1, 1);
+        c.ridge = vec![10.0];
+        c.coef0 = Some(vec![vec![0.0, 5.0]]);
+        c.min_periods = 0.0;
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 72u64;
+        for i in 0..50000 {
+            let x = [lcg(&mut s)];
+            m.step(&x, &[Some(1.5 * x[0])], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let b = m.coefficients().unwrap()[0][1];
+        assert!(
+            b > 3.0,
+            "a fixed ridge should keep pulling toward the prior forever, got {b}"
+        );
+    }
+
+    #[test]
+    fn coef0_shrinks_toward_the_prior_not_zero() {
+        // Same ridge, same data, different priors => the fits differ, and each
+        // sits between the data's answer and its own prior.
+        let run = |prior: Option<Vec<Vec<f64>>>| {
+            let mut c = cfg(1, 1);
+            c.ridge = vec![50.0];
+            c.coef0 = prior;
+            c.min_periods = 0.0;
+            let mut m = EwRidge::new(c).unwrap();
+            let mut s = 73u64;
+            for i in 0..200 {
+                let x = [lcg(&mut s)];
+                m.step(&x, &[Some(2.0 * x[0])], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            m.coefficients().unwrap()[0][1]
+        };
+        let toward_zero = run(None);
+        let toward_ten = run(Some(vec![vec![0.0, 10.0]]));
+        assert!(
+            toward_zero < 2.0,
+            "no prior should shrink toward 0: {toward_zero}"
+        );
+        assert!(
+            toward_ten > 2.0,
+            "a prior of 10 should pull up: {toward_ten}"
+        );
+    }
+
+    #[test]
+    fn coef0_works_with_standardization() {
+        // The prior is stated in original units; on badly scaled features the
+        // standardized path must still honour it.
+        let mut c = cfg(1, 1);
+        c.ridge = vec![1e6];
+        c.standardize = true;
+        c.coef0 = Some(vec![vec![0.0, 0.02]]);
+        c.min_periods = 0.0;
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 79u64;
+        for i in 0..500 {
+            let x = [100.0 * lcg(&mut s)];
+            let y = 0.05 * x[0];
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        // An overwhelming ridge pins the fit at the prior, in original units.
+        let b = m.coefficients().unwrap()[0][1];
+        assert!(
+            (b - 0.02).abs() < 5e-3,
+            "expected ~0.02 in original units, got {b}"
+        );
+    }
+
+    #[test]
+    fn coef0_shape_is_validated() {
+        let mut c = cfg(2, 1);
+        c.coef0 = Some(vec![vec![0.0, 1.0]]); // too short
+        assert!(EwRidge::new(c).is_err());
+        let mut c = cfg(2, 1);
+        c.coef0 = Some(vec![vec![0.0, 1.0, f64::NAN]]);
+        assert!(EwRidge::new(c).is_err());
+        // coef0 *is* allowed with ridge_decay -- that combination is the
+        // fading warm start -- so only the shape rules above are enforced.
+        let mut c = cfg(2, 1);
+        c.ridge_decay = true;
+        c.standardize = false;
+        c.coef0 = Some(vec![vec![0.0, 1.0, 2.0]]);
+        assert!(EwRidge::new(c).is_ok());
     }
 
     /// Deterministic pseudo-random stream (no external rng dependency).

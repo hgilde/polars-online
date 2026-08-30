@@ -413,6 +413,7 @@ mod tests {
             feature_sets: vec![],
             standardize: false,
             ridge_decay: false,
+            coef0: None,
             min_periods: 2.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
