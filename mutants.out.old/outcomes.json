@@ -8,7 +8,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 14.865186958,
+          "duration": 14.85627875,
           "process_status": "Success",
           "argv": [
             "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -20,7 +20,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.58783475,
+          "duration": 0.571251042,
           "process_status": "Success",
           "argv": [
             "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -71,7 +71,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 0.8209925,
+          "duration": 0.773123792,
           "process_status": "Success",
           "argv": [
             "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -83,7 +83,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.502335125,
+          "duration": 0.506954875,
           "process_status": {
             "Failure": 101
           },
@@ -136,7 +136,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 0.861363166,
+          "duration": 0.874301292,
           "process_status": "Success",
           "argv": [
             "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -148,7 +148,7 @@
         },
         {
           "phase": "Test",
-          "duration": 1.441352708,
+          "duration": 1.704838875,
           "process_status": {
             "Failure": 101
           },
@@ -201,7 +201,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 0.329894625,
+          "duration": 0.2888355,
           "process_status": {
             "Failure": 101
           },
@@ -255,7 +255,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 1.44624525,
+          "duration": 1.689034,
           "process_status": "Success",
           "argv": [
             "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -267,7 +267,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.852245667,
+          "duration": 0.60165725,
           "process_status": {
             "Failure": 101
           },
@@ -320,7 +320,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 1.338272583,
+          "duration": 1.528309917,
           "process_status": "Success",
           "argv": [
             "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -332,7 +332,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.985430833,
+          "duration": 0.796255209,
           "process_status": {
             "Failure": 101
           },
@@ -385,7 +385,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 1.303403542,
+          "duration": 1.346699208,
           "process_status": "Success",
           "argv": [
             "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -397,7 +397,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.778839667,
+          "duration": 0.568750709,
           "process_status": {
             "Failure": 101
           },
@@ -450,7 +450,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 1.564822167,
+          "duration": 1.172088583,
           "process_status": "Success",
           "argv": [
             "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -462,7 +462,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.564066625,
+          "duration": 0.628956334,
           "process_status": {
             "Failure": 101
           },
@@ -515,7 +515,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 1.241153291,
+          "duration": 1.361927791,
           "process_status": "Success",
           "argv": [
             "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -527,7 +527,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.562172917,
+          "duration": 0.553717459,
           "process_status": {
             "Failure": 101
           },
@@ -580,7 +580,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 1.273155708,
+          "duration": 1.201915542,
           "process_status": "Success",
           "argv": [
             "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -592,7 +592,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.550991708,
+          "duration": 0.496138667,
           "process_status": {
             "Failure": 101
           },
@@ -639,13 +639,13 @@
           "genre": "BinaryOperator"
         }
       },
-      "summary": "MissedMutant",
+      "summary": "CaughtMutant",
       "log_path": "log/crates__online-core__src__clock.rs_line_143_col_31_002.log",
       "diff_path": "diff/crates__online-core__src__clock.rs_line_143_col_31_002.diff",
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 0.825340542,
+          "duration": 0.757221542,
           "process_status": "Success",
           "argv": [
             "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -657,8 +657,10 @@
         },
         {
           "phase": "Test",
-          "duration": 0.731638292,
-          "process_status": "Success",
+          "duration": 0.571907208,
+          "process_status": {
+            "Failure": 101
+          },
           "argv": [
             "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
             "test",
@@ -708,7 +710,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 0.587539584,
+          "duration": 0.685848125,
           "process_status": "Success",
           "argv": [
             "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -720,7 +722,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.538989583,
+          "duration": 0.572308917,
           "process_status": {
             "Failure": 101
           },
@@ -773,7 +775,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 0.576973166,
+          "duration": 0.578137667,
           "process_status": "Success",
           "argv": [
             "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -785,7 +787,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.522380083,
+          "duration": 0.515082375,
           "process_status": {
             "Failure": 101
           },
@@ -838,7 +840,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 0.640367459,
+          "duration": 0.578638917,
           "process_status": "Success",
           "argv": [
             "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -850,7 +852,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.530685541,
+          "duration": 0.529556292,
           "process_status": {
             "Failure": 101
           },
@@ -903,7 +905,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 0.583442792,
+          "duration": 0.581579959,
           "process_status": "Success",
           "argv": [
             "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -915,7 +917,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.535108708,
+          "duration": 0.517693458,
           "process_status": {
             "Failure": 101
           },
@@ -968,7 +970,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 24.487973791,
+          "duration": 24.055272125,
           "process_status": "Success",
           "argv": [
             "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -980,72 +982,7 @@
         },
         {
           "phase": "Test",
-          "duration": 0.530728667,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--verbose",
-            "--package=online-core@0.1.0"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "crates/online-core/src/clock.rs:21:9: replace Decay::factor -> f64 with -1.0",
-          "package": "online-core",
-          "file": "crates/online-core/src/clock.rs",
-          "function": {
-            "function_name": "Decay::factor",
-            "return_type": "-> f64",
-            "span": {
-              "start": {
-                "line": 20,
-                "column": 5
-              },
-              "end": {
-                "line": 31,
-                "column": 6
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 21,
-              "column": 9
-            },
-            "end": {
-              "line": 30,
-              "column": 10
-            }
-          },
-          "replacement": "-1.0",
-          "genre": "FnValue"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/crates__online-core__src__clock.rs_line_21_col_9_002.log",
-      "diff_path": "diff/crates__online-core__src__clock.rs_line_21_col_9_002.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 25.940222167,
-          "process_status": "Success",
-          "argv": [
-            "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=online-core@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 0.463032209,
+          "duration": 0.508639875,
           "process_status": {
             "Failure": 101
           },
@@ -1098,7 +1035,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 27.406202208,
+          "duration": 26.116094041,
           "process_status": "Success",
           "argv": [
             "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
@@ -1110,7 +1047,72 @@
         },
         {
           "phase": "Test",
-          "duration": 0.512294166,
+          "duration": 0.517535375,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=online-core@0.1.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "crates/online-core/src/clock.rs:21:9: replace Decay::factor -> f64 with -1.0",
+          "package": "online-core",
+          "file": "crates/online-core/src/clock.rs",
+          "function": {
+            "function_name": "Decay::factor",
+            "return_type": "-> f64",
+            "span": {
+              "start": {
+                "line": 20,
+                "column": 5
+              },
+              "end": {
+                "line": 31,
+                "column": 6
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 21,
+              "column": 9
+            },
+            "end": {
+              "line": 30,
+              "column": 10
+            }
+          },
+          "replacement": "-1.0",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/crates__online-core__src__clock.rs_line_21_col_9_002.log",
+      "diff_path": "diff/crates__online-core__src__clock.rs_line_21_col_9_002.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 26.976275666,
+          "process_status": "Success",
+          "argv": [
+            "/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=online-core@0.1.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.458901333,
           "process_status": {
             "Failure": 101
           },
@@ -1125,12 +1127,12 @@
     }
   ],
   "total_mutants": 17,
-  "missed": 1,
-  "caught": 15,
+  "missed": 0,
+  "caught": 16,
   "timeout": 0,
   "unviable": 1,
   "success": 0,
-  "start_time": "2026-08-30T14:32:09.651499Z",
-  "end_time": "2026-08-30T14:32:55.346118Z",
+  "start_time": "2026-08-30T14:33:29.572929Z",
+  "end_time": "2026-08-30T14:34:14.657622Z",
   "cargo_mutants_version": "27.1.0"
 }

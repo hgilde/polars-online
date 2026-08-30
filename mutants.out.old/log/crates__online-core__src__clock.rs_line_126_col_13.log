@@ -33,8 +33,8 @@
        Fresh libm v0.2.16
        Fresh num-traits v0.2.19
        Fresh syn v2.0.119
-       Fresh rand_core v0.6.4
        Fresh bytemuck v1.25.2
+       Fresh rand_core v0.6.4
        Fresh rand v0.8.8
        Fresh crossbeam-utils v0.8.22
        Fresh num-complex v0.4.6
@@ -50,11 +50,11 @@
        Fresh pulp v0.22.3
        Fresh rayon-core v1.13.0
        Fresh thiserror-impl v1.0.69
+       Fresh byteorder v1.5.0
+       Fresh bitflags v2.13.1
        Fresh heck v0.5.0
        Fresh dyn-stack-macros v0.1.3
        Fresh either v1.18.0
-       Fresh bitflags v2.13.1
-       Fresh byteorder v1.5.0
        Fresh rayon v1.12.0
        Fresh dyn-stack v0.13.2
        Fresh enum-as-inner v0.6.1
@@ -69,18 +69,18 @@
        Fresh gemm-common v0.19.0
        Fresh nano-gemm-core v0.2.1
        Fresh getrandom v0.3.4
-       Fresh pest_meta v2.9.0
        Fresh zerocopy v0.8.56
+       Fresh pest_meta v2.9.0
        Fresh syn v3.0.4
-       Fresh ppv-lite86 v0.2.21
        Fresh pest_generator v2.9.0
+       Fresh ppv-lite86 v0.2.21
        Fresh rand_core v0.9.5
        Fresh num-integer v0.1.47
        Fresh num-bigint v0.4.8
        Fresh rand_chacha v0.9.0
        Fresh pest_derive v2.9.0
-       Fresh crossbeam-queue v0.3.13
        Fresh crossbeam-channel v0.5.16
+       Fresh crossbeam-queue v0.3.13
        Fresh equator-macro v0.4.2
        Fresh equator-macro v0.2.1
        Fresh equator v0.2.2
@@ -88,23 +88,23 @@
        Fresh crossbeam v0.8.4
        Fresh py_literal v0.4.0
        Fresh rand v0.9.5
+       Fresh nano-gemm-f64 v0.2.1
        Fresh nano-gemm-c32 v0.2.1
        Fresh nano-gemm-c64 v0.2.1
        Fresh nano-gemm-f32 v0.2.1
-       Fresh nano-gemm-f64 v0.2.1
        Fresh serde_core v1.0.229
        Fresh serde_derive v1.0.229
        Fresh gemm-f64 v0.19.0
-       Fresh gemm-c32 v0.19.0
        Fresh gemm-c64 v0.19.0
        Fresh gemm-f32 v0.19.0
+       Fresh gemm-c32 v0.19.0
        Fresh qd v0.8.0
-       Fresh generativity v1.2.1
        Fresh equator-macro v0.6.0
        Fresh atomic-wait v1.1.0
+       Fresh generativity v1.2.1
+       Fresh faer-traits v0.24.0
        Fresh spindle v0.2.6
        Fresh equator v0.6.0
-       Fresh faer-traits v0.24.0
        Fresh gemm v0.19.0
        Fresh serde v1.0.229
        Fresh nano-gemm v0.2.2
@@ -115,12 +115,12 @@
        Fresh faer v0.24.4
        Fresh rmp v0.8.15
        Fresh rmp-serde v1.3.1
-       Dirty online-core v0.1.0 (/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-XvIEG2.tmp/crates/online-core): the file `crates/online-core/src/clock.rs` has changed (1788100354.386710966s, 2s after last build at 1788100352.213844917s)
-   Compiling online-core v0.1.0 (/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-XvIEG2.tmp/crates/online-core)
-     Running `/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name online_core --edition=2024 crates/online-core/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked --forbid=unsafe_code --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=2cddee2a5cd3865b -C extra-filename=-f41f310313954398 --out-dir /private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-XvIEG2.tmp/target/debug/deps -C incremental=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-XvIEG2.tmp/target/debug/incremental -L dependency=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-XvIEG2.tmp/target/debug/deps --extern faer=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-XvIEG2.tmp/target/debug/deps/libfaer-e2203ff9ddb23b39.rmeta --extern serde=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-XvIEG2.tmp/target/debug/deps/libserde-75ed40aefdc41108.rmeta --extern thiserror=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-XvIEG2.tmp/target/debug/deps/libthiserror-0c7fe80d0d5d62dd.rmeta`
-     Running `/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name online_core --edition=2024 crates/online-core/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked --forbid=unsafe_code --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=fece7fae37409fbc -C extra-filename=-320c102427365a1c --out-dir /private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-XvIEG2.tmp/target/debug/deps -C incremental=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-XvIEG2.tmp/target/debug/incremental -L dependency=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-XvIEG2.tmp/target/debug/deps --extern faer=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-XvIEG2.tmp/target/debug/deps/libfaer-e2203ff9ddb23b39.rlib --extern rmp_serde=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-XvIEG2.tmp/target/debug/deps/librmp_serde-37cb619faf3b57fb.rlib --extern serde=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-XvIEG2.tmp/target/debug/deps/libserde-75ed40aefdc41108.rlib --extern thiserror=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-XvIEG2.tmp/target/debug/deps/libthiserror-0c7fe80d0d5d62dd.rlib`
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.23s
-  Executable `/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-XvIEG2.tmp/target/debug/deps/online_core-320c102427365a1c`
+       Dirty online-core v0.1.0 (/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-tdmZwQ.tmp/crates/online-core): the file `crates/online-core/src/clock.rs` has changed (1788100434.387645941s, 2s after last build at 1788100432.197616193s)
+   Compiling online-core v0.1.0 (/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-tdmZwQ.tmp/crates/online-core)
+     Running `/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name online_core --edition=2024 crates/online-core/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked --forbid=unsafe_code --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=2cddee2a5cd3865b -C extra-filename=-f41f310313954398 --out-dir /private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-tdmZwQ.tmp/target/debug/deps -C incremental=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-tdmZwQ.tmp/target/debug/incremental -L dependency=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-tdmZwQ.tmp/target/debug/deps --extern faer=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-tdmZwQ.tmp/target/debug/deps/libfaer-e2203ff9ddb23b39.rmeta --extern serde=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-tdmZwQ.tmp/target/debug/deps/libserde-75ed40aefdc41108.rmeta --extern thiserror=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-tdmZwQ.tmp/target/debug/deps/libthiserror-0c7fe80d0d5d62dd.rmeta`
+     Running `/Users/hgilde/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc --crate-name online_core --edition=2024 crates/online-core/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 -C split-debuginfo=unpacked --forbid=unsafe_code --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=fece7fae37409fbc -C extra-filename=-320c102427365a1c --out-dir /private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-tdmZwQ.tmp/target/debug/deps -C incremental=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-tdmZwQ.tmp/target/debug/incremental -L dependency=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-tdmZwQ.tmp/target/debug/deps --extern faer=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-tdmZwQ.tmp/target/debug/deps/libfaer-e2203ff9ddb23b39.rlib --extern rmp_serde=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-tdmZwQ.tmp/target/debug/deps/librmp_serde-37cb619faf3b57fb.rlib --extern serde=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-tdmZwQ.tmp/target/debug/deps/libserde-75ed40aefdc41108.rlib --extern thiserror=/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-tdmZwQ.tmp/target/debug/deps/libthiserror-0c7fe80d0d5d62dd.rlib`
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.31s
+  Executable `/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-tdmZwQ.tmp/target/debug/deps/online_core-320c102427365a1c`
 
 *** result: Success
 
@@ -144,66 +144,66 @@
        Fresh version_check v0.9.5
        Fresh crossbeam-deque v0.8.7
        Fresh paste v1.0.15
-       Fresh pulp-wasm-simd-flag v0.1.1
        Fresh reborrow v0.5.5
+       Fresh pulp-wasm-simd-flag v0.1.1
        Fresh pulp v0.22.3
        Fresh rayon-core v1.13.0
        Fresh thiserror-impl v1.0.69
-       Fresh heck v0.5.0
-       Fresh dyn-stack-macros v0.1.3
-       Fresh bitflags v2.13.1
        Fresh byteorder v1.5.0
        Fresh either v1.18.0
-       Fresh rayon v1.12.0
-       Fresh dyn-stack v0.13.2
+       Fresh dyn-stack-macros v0.1.3
+       Fresh heck v0.5.0
+       Fresh bitflags v2.13.1
        Fresh enum-as-inner v0.6.1
+       Fresh dyn-stack v0.13.2
+       Fresh rayon v1.12.0
        Fresh thiserror v1.0.69
        Fresh sysctl v0.6.0
        Fresh raw-cpuid v11.6.0
-       Fresh memchr v2.8.3
        Fresh seq-macro v0.3.6
+       Fresh memchr v2.8.3
        Fresh ucd-trie v0.1.7
        Fresh once_cell v1.21.4
        Fresh gemm-common v0.19.0
        Fresh pest v2.9.0
        Fresh nano-gemm-core v0.2.1
-       Fresh zerocopy v0.8.56
        Fresh getrandom v0.3.4
+       Fresh zerocopy v0.8.56
        Fresh pest_meta v2.9.0
        Fresh syn v3.0.4
        Fresh pest_generator v2.9.0
-       Fresh rand_core v0.9.5
        Fresh ppv-lite86 v0.2.21
+       Fresh rand_core v0.9.5
        Fresh num-integer v0.1.47
        Fresh num-bigint v0.4.8
        Fresh rand_chacha v0.9.0
        Fresh pest_derive v2.9.0
        Fresh crossbeam-queue v0.3.13
        Fresh crossbeam-channel v0.5.16
-       Fresh equator-macro v0.4.2
        Fresh equator-macro v0.2.1
-       Fresh equator v0.2.2
+       Fresh equator-macro v0.4.2
        Fresh equator v0.4.2
+       Fresh equator v0.2.2
        Fresh crossbeam v0.8.4
        Fresh py_literal v0.4.0
        Fresh rand v0.9.5
-       Fresh nano-gemm-f64 v0.2.1
        Fresh nano-gemm-c32 v0.2.1
-       Fresh nano-gemm-c64 v0.2.1
        Fresh nano-gemm-f32 v0.2.1
+       Fresh nano-gemm-c64 v0.2.1
+       Fresh nano-gemm-f64 v0.2.1
        Fresh serde_core v1.0.229
        Fresh serde_derive v1.0.229
-       Fresh gemm-c32 v0.19.0
-       Fresh gemm-f32 v0.19.0
        Fresh gemm-c64 v0.19.0
        Fresh gemm-f64 v0.19.0
+       Fresh gemm-c32 v0.19.0
+       Fresh gemm-f32 v0.19.0
        Fresh qd v0.8.0
+       Fresh atomic-wait v1.1.0
        Fresh generativity v1.2.1
        Fresh equator-macro v0.6.0
-       Fresh atomic-wait v1.1.0
-       Fresh spindle v0.2.6
        Fresh equator v0.6.0
        Fresh faer-traits v0.24.0
+       Fresh spindle v0.2.6
        Fresh gemm v0.19.0
        Fresh serde v1.0.229
        Fresh nano-gemm v0.2.2
@@ -214,65 +214,66 @@
        Fresh faer v0.24.4
        Fresh rmp v0.8.15
        Fresh rmp-serde v1.3.1
-       Fresh online-core v0.1.0 (/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-XvIEG2.tmp/crates/online-core)
+       Fresh online-core v0.1.0 (/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-tdmZwQ.tmp/crates/online-core)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
-     Running `/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-XvIEG2.tmp/target/debug/deps/online_core-320c102427365a1c`
+     Running `/private/var/folders/5r/77k2t1vx1n50m75ysyl_z0qc0000gn/T/cargo-mutants-polars-online-tdmZwQ.tmp/target/debug/deps/online_core-320c102427365a1c`
 
-running 48 tests
-test clock::tests::decay_factors ... ok
+running 49 tests
 test clock::tests::row_count_clock ... ok
 test clock::tests::skipped_rows_fold_into_pending ... ok
-test clock::tests::session_gap_overrides_delta ... FAILED
-test ewcov::tests::pure_decay_keeps_means ... ok
+test clock::tests::duplicate_clock_values_are_zero_deltas ... ok
+test clock::tests::decay_factors ... ok
 test clock::tests::caps_and_negative_deltas ... ok
+test ewcov::tests::pure_decay_keeps_means ... ok
 test ewcov::tests::matches_direct_computation ... ok
 test ewcov::tests::cov_and_var_are_centered ... ok
+test clock::tests::session_gap_overrides_delta ... FAILED
 test ewcov::tests::serde_roundtrip ... ok
-test ftrl::tests::state_roundtrip ... ok
 test ftrl::tests::predictions_are_probabilities ... ok
 test ewridge::tests::solve_schedule_staleness ... ok
-test ewridge::tests::null_target_is_predict_only ... ok
 test ewridge::tests::pred_is_out_of_sample_and_warmup_nan ... ok
-test ftrl::tests::learns_a_separable_rule ... ok
-test ftrl::tests::l1_shrinks_noise_features_and_can_zero_everything ... ok
-test ewridge::tests::zero_variance_feature_dropped_in_standardized_solve ... ok
-test ewridge::tests::state_roundtrip_continues_identically ... ok
+test ftrl::tests::state_roundtrip ... ok
+test ewridge::tests::null_target_is_predict_only ... ok
 test kalman::tests::explicit_q_overrides_halflife ... ok
-test ftrl::tests::forgets_on_the_clock ... ok
+test ewridge::tests::zero_variance_feature_dropped_in_standardized_solve ... ok
 test kalman::tests::null_target_is_predict_only ... ok
+test ftrl::tests::learns_a_separable_rule ... ok
 test kalman::tests::infinite_halflife_pins_the_coefficient ... ok
-test kalman::tests::share_p_keeps_one_covariance ... ok
 test kalman::tests::state_roundtrip ... ok
-test ftrl::tests::base_rate_is_learned_by_the_intercept ... ok
+test kalman::tests::share_p_keeps_one_covariance ... ok
+test ftrl::tests::forgets_on_the_clock ... ok
+test ewridge::tests::state_roundtrip_continues_identically ... ok
 test lasso::tests::large_penalty_zeroes_coefficients ... ok
+test ftrl::tests::l1_shrinks_noise_features_and_can_zero_everything ... ok
 test lasso::tests::elastic_net_shrinks_less_sparsely ... ok
-test rls::tests::recovers_static_beta ... ok
-test lasso::tests::state_roundtrip ... ok
 test model::tests::schema_check ... ok
-test rls::tests::null_target_is_predict_only ... ok
-test rls::tests::state_roundtrip ... ok
+test lasso::tests::state_roundtrip ... ok
 test lasso::tests::zero_penalty_matches_ols ... ok
 test kalman::tests::tracks_a_static_beta ... ok
-test robust::tests::rejects_bad_config ... ok
-test ewridge::tests::multi_target_and_grids ... ok
-test robust::tests::reweighting_uses_the_prior_residual_only ... ok
 test kalman::tests::tracks_a_drifting_beta_better_than_a_pinned_one ... ok
-test solve::tests::solves_well_conditioned ... ok
-test solve::tests::jitters_singular_matrix ... ok
+test rls::tests::null_target_is_predict_only ... ok
+test ftrl::tests::base_rate_is_learned_by_the_intercept ... ok
+test rls::tests::recovers_static_beta ... ok
 test ewridge::tests::standardize_matches_plain_when_ridge_tiny ... ok
-test robust::tests::state_roundtrip ... ok
+test rls::tests::state_roundtrip ... ok
+test robust::tests::rejects_bad_config ... ok
 test ewridge::tests::recovers_static_beta ... ok
+test ewridge::tests::multi_target_and_grids ... ok
+test rls::tests::agrees_with_ewridge_solved_every_row ... ok
+test solve::tests::jitters_singular_matrix ... ok
+test lasso::tests::selects_sparse_lambda_when_features_are_noise ... ok
+test solve::tests::solves_well_conditioned ... ok
+test robust::tests::reweighting_uses_the_prior_residual_only ... ok
+test robust::tests::state_roundtrip ... ok
 test robust::tests::huber_matches_least_squares_without_outliers ... ok
 test robust::tests::huber_resists_outliers_that_break_least_squares ... ok
-test rls::tests::agrees_with_ewridge_solved_every_row ... ok
-test lasso::tests::selects_sparse_lambda_when_features_are_noise ... ok
 test robust::tests::quantile_tracks_the_requested_quantile ... ok
 
 failures:
 
 ---- clock::tests::session_gap_overrides_delta stdout ----
 
-thread 'clock::tests::session_gap_overrides_delta' (5764623) panicked at crates/online-core/src/clock.rs:249:9:
+thread 'clock::tests::session_gap_overrides_delta' (5783881) panicked at crates/online-core/src/clock.rs:276:9:
 assertion `left == right` failed
   left: 50.0
  right: 7.5
@@ -282,7 +283,7 @@ note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 failures:
     clock::tests::session_gap_overrides_delta
 
-test result: FAILED. 47 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+test result: FAILED. 48 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
 
 error: test failed, to rerun pass `-p online-core --lib`
 
