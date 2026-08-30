@@ -213,8 +213,8 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       `tests/reference.py`: numpy EW-ridge and RLS oracles.
 - [x] 3. `online-core`: `OnlineModel` trait, `Step`, clock/decay helper (`halflife`/`lam`,
       `max_dclock`, `on_clock_reset`, session gap), `EwCov` primitive. Unit tests.
-- [ ] 4. EW-ridge (§4.1) single target, no grids; Cholesky via `faer`; solve schedule.
-- [ ] 5. Multi-target + `feature_sets` + `ridge` grid + standardization at solve time.
+- [x] 4. EW-ridge (§4.1) single target, no grids; Cholesky via `faer`; solve schedule.
+- [x] 5. Multi-target + `feature_sets` + `ridge` grid + standardization at solve time.
 - [ ] 6. `online-polars` model bank: column extraction, per-group state, rayon fan-out, chunk
       monotonicity check, save/load (msgpack, versioned).
 - [ ] 7. `online-py`: `ModelBank` class + `fit_predict`; pytest oracle, chunk-invariance, null,
@@ -233,6 +233,22 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
 - [ ] 17. README with the three usage modes and the math per model.
 
 ## 11a. Decisions made while implementing
+
+**Tasks 4-5 (EW-ridge), 2026-08-30.**
+
+- Grid combos are ordered target-major then (feature_set x ridge); output slots
+  `n_targets * n_combos`. Coefficient vectors are always full `k_total` length with
+  zeros outside a combo's feature set.
+- The forced solve "after any capped/session gap" is implemented as: the accumulated
+  clock-since-solve includes the gap, so any gap >= `solve_every` triggers a solve on
+  the next row. There is no separate force flag.
+- `sigma2_j` uses the first-combo (primary) prediction's residual.
+- ridge_decay (the decaying-prior / RLS-equivalent mode) refuses grids and
+  standardization at validation time.
+- Standardized solves drop a feature when its centered variance is < 1e-10 x its raw
+  second moment (cancellation noise scales with the raw moment).
+- Solve failure even after jitter keeps the previous coefficients and increments
+  `solve_failures` (never NaN silently).
 
 **Task 1 (scaffold), 2026-08-30.**
 

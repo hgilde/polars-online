@@ -8,11 +8,15 @@
 
 mod clock;
 mod ewcov;
+mod ewridge;
 mod model;
+mod solve;
 
 pub use clock::{ClockAdvance, ClockCfg, ClockState, Decay, OnClockReset, SessionGap};
 pub use ewcov::EwCov;
+pub use ewridge::{EwRidge, EwRidgeCfg};
 pub use model::{Extra, ModelState, OnlineModel, State, StateError, Step, check_schema};
+pub use solve::solve_spd;
 
 /// Version of the serialized model-state layout.
 ///
