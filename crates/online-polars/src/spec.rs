@@ -183,9 +183,13 @@ pub enum ModelKind {
     /// EW moments of the feature columns, no regression (docs/PLAN.md §4.7).
     /// `targets` is ignored; every column of interest goes in `features`.
     EwCov {
-        /// Any of "mean", "var", "std", "cov", "corr". Default: mean + std + corr.
+        /// Any of "mean", "var", "std", "cov", "corr", "partial_corr".
+        /// Default: mean + std + corr.
         #[serde(default)]
         stats: Option<Vec<String>>,
+        /// Prior for the tracked precision matrix, required by "partial_corr".
+        #[serde(default)]
+        precision_prior: Option<f64>,
     },
     /// Stochastic gradient descent with pluggable losses (ENHANCEMENTS E16).
     /// O(k) per row, no solves, and the only model here that takes count
@@ -510,23 +514,41 @@ impl Spec {
                     return Err(format!("spec {:?}: learning_rate must be > 0", self.name));
                 }
             }
-            ModelKind::EwCov { stats } => {
+            ModelKind::EwCov {
+                stats,
+                precision_prior,
+            } => {
+                const OK: [&str; 6] = ["mean", "var", "std", "cov", "corr", "partial_corr"];
                 if let Some(stats) = stats {
                     for st in stats {
-                        if !["mean", "var", "std", "cov", "corr"].contains(&st.as_str()) {
+                        if !OK.contains(&st.as_str()) {
                             return Err(format!(
-                                "spec {:?}: unknown ew_cov statistic {st:?}; expected one of \
-                                 mean, var, std, cov, corr",
-                                self.name
+                                "spec {:?}: unknown ew_cov statistic {st:?}; expected one of {}",
+                                self.name,
+                                OK.join(", ")
                             ));
                         }
                     }
-                    if self.k() < 2 && stats.iter().any(|st| st == "cov" || st == "corr") {
+                    let pairwise =
+                        |st: &String| st == "cov" || st == "corr" || st == "partial_corr";
+                    if self.k() < 2 && stats.iter().any(pairwise) {
                         return Err(format!(
-                            "spec {:?}: ew_cov cov/corr need at least two features",
+                            "spec {:?}: ew_cov cov/corr/partial_corr need at least two features",
                             self.name
                         ));
                     }
+                    if stats.iter().any(|st| st == "partial_corr") && precision_prior.is_none() {
+                        return Err(format!(
+                            "spec {:?}: ew_cov partial_corr needs `precision_prior`",
+                            self.name
+                        ));
+                    }
+                }
+                if precision_prior.is_some_and(|p| p <= 0.0 || !p.is_finite()) {
+                    return Err(format!(
+                        "spec {:?}: precision_prior must be finite and > 0",
+                        self.name
+                    ));
                 }
             }
             ModelKind::Ftrl {

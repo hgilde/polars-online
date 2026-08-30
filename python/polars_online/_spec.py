@@ -379,6 +379,7 @@ def ew_cov(
     *,
     features: list[str],
     stats: list[str] | None = None,
+    precision_prior: float | None = None,
     **common: Any,
 ) -> dict[str, Any]:
     """Exponentially weighted moments of the feature columns (docs/PLAN.md 4.7).
@@ -395,14 +396,25 @@ def ew_cov(
     ``corr_ij = cov_ij / sqrt(var_i var_j)``. One O(k^2) update per row, which
     replaces the O(k^2) *passes* a pure-Polars pairwise EW correlation needs.
 
-    ``stats`` selects which to emit, from ``mean``, ``var``, ``std``, ``cov``
-    and ``corr`` (default: mean, std, corr). Pairwise statistics are emitted for
-    each unordered pair ``i < j``, named after the columns
-    (``corr_x0_x1``). Values are read from the state *before* each row, so an
-    ``ew_cov`` output can be used as a feature for that same row without
-    leaking it.
+    ``stats`` selects which to emit, from ``mean``, ``var``, ``std``, ``cov``,
+    ``corr`` and ``partial_corr`` (default: mean, std, corr).
+    ``partial_corr`` is the correlation between two columns *controlling for
+    every other column*, read off the precision matrix as
+    ``-P_ij / sqrt(P_ii P_jj)``. It needs ``precision_prior``, which turns on a
+    Sherman-Morrison inverse maintained alongside the covariance (so no solve
+    per row); like RLS's ``P0`` the prior fades as data accumulates.
+
+    Pairwise statistics are emitted for each unordered pair ``i < j``, named
+    after the columns (``corr_x0_x1``, ``pcorr_x0_x1``).
+
+    Values are read from the state *before* each row, so an ``ew_cov`` output
+    can be used as a feature for that same row without leaking it.
     """
-    model: dict[str, Any] = {"type": "ew_cov", "stats": stats}
+    model: dict[str, Any] = {
+        "type": "ew_cov",
+        "stats": stats,
+        "precision_prior": precision_prior,
+    }
     # `targets` is required by the common-parameter schema but unused here.
     return _common(name, model, targets=[features[0]], features=features, **common)
 

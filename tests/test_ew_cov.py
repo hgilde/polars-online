@@ -161,3 +161,119 @@ class TestPlumbing:
     def test_pairwise_stats_need_two_columns(self):
         with pytest.raises(ValueError, match="at least two features"):
             _spec(features=("x0",), stats=["corr"])
+
+
+class TestPartialCorrelation:
+    """E2: `partial_corr`, backed by the Sherman-Morrison inverse.
+
+    The inverse is maintained incrementally alongside the covariance, so a
+    precision matrix costs no solve per row.
+    """
+
+    def _driver_data(self, n=20000, seed=0):
+        rng = np.random.default_rng(seed)
+        d = rng.standard_normal(n)
+        return pl.DataFrame(
+            {
+                "x0": d,
+                "x1": d + 0.1 * rng.standard_normal(n),
+                "x2": d + 0.1 * rng.standard_normal(n),
+            }
+        )
+
+    def _last(self, df, **kw):
+        spec = po.spec.ew_cov(
+            "c",
+            features=["x0", "x1", "x2"],
+            halflife=NO_DECAY,
+            min_periods=5.0,
+            **kw,
+        )
+        return po.ModelBank([spec]).fit_predict(df)["c"][-1]
+
+    def test_removes_a_spurious_link(self):
+        row = self._last(self._driver_data(), stats=["corr", "partial_corr"], precision_prior=1e-6)
+        # x1 and x2 are both driven by x0, so they correlate marginally...
+        assert row["corr_x1_x2"] > 0.9
+        # ...but not once x0 is controlled for
+        assert abs(row["pcorr_x1_x2"]) < 0.1
+        # and each child keeps its genuine link to the driver
+        assert abs(row["pcorr_x0_x1"]) > 0.5
+
+    def test_keeps_a_direct_link(self):
+        # A chain x0 -> x1 with x2 independent: pcorr(x0, x1) survives.
+        rng = np.random.default_rng(2)
+        n = 20000
+        x0 = rng.standard_normal(n)
+        df = pl.DataFrame(
+            {
+                "x0": x0,
+                "x1": 2 * x0 + rng.standard_normal(n),
+                "x2": rng.standard_normal(n),
+            }
+        )
+        row = self._last(df, stats=["partial_corr"], precision_prior=1e-6)
+        assert abs(row["pcorr_x0_x1"]) > 0.7
+        assert abs(row["pcorr_x0_x2"]) < 0.1
+
+    def test_is_bounded(self):
+        row = self._last(self._driver_data(seed=3), stats=["partial_corr"], precision_prior=1e-6)
+        for k, v in row.items():
+            if k.startswith("pcorr_"):
+                assert -1.0 <= v <= 1.0, f"{k} = {v}"
+
+    def test_field_names(self):
+        spec = po.spec.ew_cov(
+            "c",
+            features=["a", "b", "c"],
+            stats=["partial_corr"],
+            precision_prior=1e-6,
+            halflife=NO_DECAY,
+        )
+        assert po.spec.output_fields(spec) == [
+            "pcorr_a_b",
+            "pcorr_a_c",
+            "pcorr_b_c",
+            "n_eff",
+        ]
+
+    def test_requires_a_precision_prior(self):
+        with pytest.raises(ValueError, match="needs .precision_prior."):
+            po.spec.ew_cov("c", features=["x0", "x1"], stats=["partial_corr"], halflife=NO_DECAY)
+
+    def test_rejects_a_bad_prior(self):
+        with pytest.raises(ValueError, match="precision_prior"):
+            po.spec.ew_cov(
+                "c",
+                features=["x0", "x1"],
+                stats=["partial_corr"],
+                precision_prior=0.0,
+                halflife=NO_DECAY,
+            )
+
+    def test_chunk_invariance_and_save_load(self, tmp_path):
+        df = self._driver_data(n=400, seed=4)
+        spec = po.spec.ew_cov(
+            "c",
+            features=["x0", "x1", "x2"],
+            stats=["partial_corr"],
+            precision_prior=1e-4,
+            halflife=NO_DECAY,
+            min_periods=5.0,
+        )
+        one = po.ModelBank([spec]).fit_predict(df).select("c").unnest("c")
+        bank = po.ModelBank([spec])
+        many = (
+            pl.concat([bank.fit_predict(df.slice(i, 31)) for i in range(0, df.height, 31)])
+            .select("c")
+            .unnest("c")
+        )
+        assert one.equals(many, null_equal=True)
+
+        a = po.ModelBank([spec])
+        a.fit_predict(df.slice(0, 200))
+        p = tmp_path / "pc.state"
+        a.save(p)
+        b = po.ModelBank.load(p, specs=[spec])
+        rest = df.slice(200, 200)
+        assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)

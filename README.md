@@ -286,7 +286,9 @@ varᵢ = Sᵢᵢ − mᵢ²     covᵢⱼ = Sᵢⱼ − mᵢmⱼ             cor
 ```
 
 Running mean / variance / std / covariance / correlation of the columns you
-name, on the same clock as every model here. One O(k²) update per row, replacing
+name, on the same clock as every model here. With `precision_prior` set it also
+tracks the inverse by Sherman–Morrison, giving `partial_corr` — the correlation
+between two columns *controlling for all the others* — with no solve per row. One O(k²) update per row, replacing
 the O(k²) *passes* a pure-Polars pairwise EW correlation needs. Values are read
 from the state before each row, so an `ew_cov` output can be a feature for that
 same row without leaking it.

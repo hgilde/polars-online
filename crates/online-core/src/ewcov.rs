@@ -63,6 +63,22 @@ pub struct EwCov {
     /// EW **centered** co-moments, row-major `k*k`.
     #[serde(alias = "s")]
     c: Vec<f64>,
+    /// Optional Sherman-Morrison inverse of `M = C + s·prior·I`, row-major
+    /// `k*k` (docs/PLAN.md §4.7).
+    ///
+    /// The prior's scale `s` must decay by the *same* factor `a` the
+    /// co-moments do, not by `lam`, or the update is not rank-1:
+    /// `M' = a·C + a·b·δδᵀ + a·s·prior·I = a·(M + b·δδᵀ)`, hence
+    /// `M'⁻¹ = (1/a)·SM(M⁻¹, δ)`. Like RLS's `P₀`, this makes the prior fade as
+    /// data accumulates.
+    #[serde(default)]
+    inv: Option<Vec<f64>>,
+    /// Prior strength for the tracked inverse; `0` when no inverse is kept.
+    #[serde(default)]
+    inv_prior: f64,
+    /// Decaying scale on that prior (see `inv`).
+    #[serde(default)]
+    inv_scale: f64,
 }
 
 impl EwCov {
@@ -73,12 +89,65 @@ impl EwCov {
             prior_scale: 1.0,
             m: vec![0.0; k],
             c: vec![0.0; k * k],
+            inv: None,
+            inv_prior: 0.0,
+            inv_scale: 1.0,
         }
+    }
+
+    /// Same, but also maintaining `(C + s·prior·I)⁻¹` incrementally via
+    /// Sherman-Morrison, so a precision matrix is available without a solve.
+    ///
+    /// `prior` regularizes the inverse and must be `> 0`: the centered
+    /// co-moment matrix starts at zero and is singular until `k` independent
+    /// rows have been seen, so there is nothing to invert without it.
+    pub fn with_inverse(k: usize, prior: f64) -> Result<Self, String> {
+        if prior <= 0.0 || !prior.is_finite() {
+            return Err("EwCov::with_inverse: prior must be finite and > 0".into());
+        }
+        let mut ew = Self::new(k);
+        let mut inv = vec![0.0; k * k];
+        for i in 0..k {
+            inv[i * k + i] = 1.0 / prior;
+        }
+        ew.inv = Some(inv);
+        ew.inv_prior = prior;
+        ew.inv_scale = 1.0;
+        Ok(ew)
     }
 
     #[inline]
     pub fn k(&self) -> usize {
         self.k
+    }
+
+    /// Element of `(C + s·prior·I)⁻¹`, or `None` when no inverse is tracked.
+    #[inline]
+    pub fn inv(&self, i: usize, j: usize) -> Option<f64> {
+        self.inv.as_ref().map(|v| v[i * self.k + j])
+    }
+
+    pub fn has_inverse(&self) -> bool {
+        self.inv.is_some()
+    }
+
+    /// Current decaying scale on the inverse's prior (see the `inv` field).
+    pub fn inv_scale(&self) -> f64 {
+        self.inv_scale
+    }
+
+    /// Partial correlation between `i` and `j`, controlling for every other
+    /// column: `−P_ij / sqrt(P_ii · P_jj)` from the precision matrix `P`.
+    /// `None` when no inverse is tracked.
+    pub fn partial_corr(&self, i: usize, j: usize) -> Option<f64> {
+        let p = self.inv.as_ref()?;
+        let (pij, pii, pjj) = (p[i * self.k + j], p[i * self.k + i], p[j * self.k + j]);
+        let d = (pii * pjj).sqrt();
+        Some(if d > 0.0 {
+            (-pij / d).clamp(-1.0, 1.0)
+        } else {
+            f64::NAN
+        })
     }
 
     #[inline]
@@ -151,6 +220,53 @@ impl EwCov {
                 self.c[row + j] = a * self.c[row + j] + a * b * di * dj;
             }
         }
+        // Sherman-Morrison on the same rank-1 update, before the mean moves
+        // (the deviations above were taken against the old mean).
+        let k = self.k;
+        let prior = self.inv_prior;
+        // `d` is computed before the mutable borrow of `self.inv`.
+        let d: Vec<f64> = (0..k).map(|i| x[i] - self.m[i]).collect();
+        // `a == 0` only on the very first observation, when the whole history
+        // is discarded and the centered co-moments are exactly zero.
+        let first_observation = a <= 0.0;
+        let mut scale_factor = 1.0;
+        if let Some(inv) = &mut self.inv {
+            if first_observation {
+                // First observation: `a = 0` discards everything, so the
+                // centered co-moments are exactly zero and M is just the prior.
+                // There is no rank-1 step to take -- reinitialize instead of
+                // dividing by zero.
+                inv.iter_mut().for_each(|v| *v = 0.0);
+                for i in 0..k {
+                    inv[i * k + i] = 1.0 / prior;
+                }
+            } else {
+                let mut u = vec![0.0; k];
+                for (i, ui) in u.iter_mut().enumerate() {
+                    let row = i * k;
+                    *ui = (0..k).map(|j| inv[row + j] * d[j]).sum();
+                }
+                let dtu: f64 = d.iter().zip(&u).map(|(di, ui)| di * ui).sum();
+                let denom = 1.0 + b * dtu;
+                if denom.abs() > 1e-300 {
+                    let f = b / denom;
+                    for i in 0..k {
+                        let row = i * k;
+                        for j in 0..k {
+                            inv[row + j] = (inv[row + j] - f * u[i] * u[j]) / a;
+                        }
+                    }
+                    scale_factor = a;
+                }
+            }
+        }
+        if self.inv.is_some() {
+            self.inv_scale = if first_observation {
+                1.0
+            } else {
+                self.inv_scale * scale_factor
+            };
+        }
         for (mi, xi) in self.m.iter_mut().zip(x) {
             *mi += b * (xi - *mi);
         }
@@ -163,6 +279,53 @@ impl EwCov {
     pub fn decay(&mut self, lam: f64) {
         self.w_sum *= lam;
         self.prior_scale *= lam;
+    }
+
+    /// Reference inverse, recomputed from scratch by Gauss-Jordan. Used by the
+    /// tests to check the incremental one, and available for a caller that
+    /// wants a one-off precision matrix without paying for the tracking.
+    pub fn inverse_from_scratch(&self, prior: f64, prior_scale: f64) -> Option<Vec<f64>> {
+        let k = self.k;
+        let mut a = vec![0.0; k * 2 * k];
+        for i in 0..k {
+            for j in 0..k {
+                a[i * 2 * k + j] = self.c[i * k + j];
+            }
+            a[i * 2 * k + i] += prior * prior_scale;
+            a[i * 2 * k + k + i] = 1.0;
+        }
+        for col in 0..k {
+            let piv = (col..k).max_by(|&r1, &r2| {
+                a[r1 * 2 * k + col]
+                    .abs()
+                    .partial_cmp(&a[r2 * 2 * k + col].abs())
+                    .unwrap()
+            })?;
+            if a[piv * 2 * k + col].abs() < 1e-300 {
+                return None;
+            }
+            for j in 0..2 * k {
+                a.swap(col * 2 * k + j, piv * 2 * k + j);
+            }
+            let d = a[col * 2 * k + col];
+            for j in 0..2 * k {
+                a[col * 2 * k + j] /= d;
+            }
+            for r in 0..k {
+                if r != col {
+                    let f = a[r * 2 * k + col];
+                    for j in 0..2 * k {
+                        a[r * 2 * k + j] -= f * a[col * 2 * k + j];
+                    }
+                }
+            }
+        }
+        Some(
+            (0..k)
+                .flat_map(|i| (0..k).map(move |j| (i, j)))
+                .map(|(i, j)| a[i * 2 * k + k + j])
+                .collect(),
+        )
     }
 }
 
@@ -180,6 +343,9 @@ pub enum EwCovStat {
     Cov,
     /// Pearson correlation for each unordered pair `i < j`.
     Corr,
+    /// Partial correlation for each unordered pair, controlling for every other
+    /// column. Needs the tracked inverse (`precision_prior`).
+    PartialCorr,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -188,6 +354,10 @@ pub struct EwCovCfg {
     pub decay: crate::Decay,
     pub stats: Vec<EwCovStat>,
     pub min_periods: f64,
+    /// Prior for the tracked precision matrix. Required by
+    /// [`EwCovStat::PartialCorr`]; `None` skips the inverse entirely.
+    #[serde(default)]
+    pub precision_prior: Option<f64>,
 }
 
 impl EwCovCfg {
@@ -198,13 +368,17 @@ impl EwCovCfg {
         if self.stats.is_empty() {
             return Err("ew_cov: at least one statistic is required".into());
         }
-        if self.n_features < 2
-            && self
-                .stats
-                .iter()
-                .any(|s| matches!(s, EwCovStat::Cov | EwCovStat::Corr))
-        {
-            return Err("ew_cov: cov/corr need at least two columns".into());
+        let pairwise =
+            |s: &EwCovStat| matches!(s, EwCovStat::Cov | EwCovStat::Corr | EwCovStat::PartialCorr);
+        if self.n_features < 2 && self.stats.iter().any(pairwise) {
+            return Err("ew_cov: cov/corr/partial_corr need at least two columns".into());
+        }
+        if self.stats.contains(&EwCovStat::PartialCorr) && self.precision_prior.is_none() {
+            return Err(
+                "ew_cov: partial_corr needs `precision_prior` (it is computed from the \
+                 tracked precision matrix)"
+                    .into(),
+            );
         }
         Ok(())
     }
@@ -217,7 +391,7 @@ impl EwCovCfg {
             .iter()
             .map(|s| match s {
                 EwCovStat::Mean | EwCovStat::Var | EwCovStat::Std => k,
-                EwCovStat::Cov | EwCovStat::Corr => pairs,
+                EwCovStat::Cov | EwCovStat::Corr | EwCovStat::PartialCorr => pairs,
             })
             .sum()
     }
@@ -239,7 +413,10 @@ pub struct EwCovModel {
 impl EwCovModel {
     pub fn new(cfg: EwCovCfg) -> Result<Self, String> {
         cfg.validate()?;
-        let cov = EwCov::new(cfg.n_features);
+        let cov = match cfg.precision_prior {
+            Some(p) => EwCov::with_inverse(cfg.n_features, p)?,
+            None => EwCov::new(cfg.n_features),
+        };
         Ok(Self { cfg, cov })
     }
 
@@ -273,6 +450,13 @@ impl EwCovModel {
                         }
                     }
                 }
+                EwCovStat::PartialCorr => {
+                    for i in 0..names.len() {
+                        for j in (i + 1)..names.len() {
+                            out.push(format!("pcorr_{}_{}", names[i], names[j]));
+                        }
+                    }
+                }
             }
         }
         out
@@ -302,6 +486,13 @@ impl EwCovModel {
                             } else {
                                 f64::NAN
                             });
+                        }
+                    }
+                }
+                EwCovStat::PartialCorr => {
+                    for i in 0..k {
+                        for j in (i + 1)..k {
+                            out.push(self.cov.partial_corr(i, j).unwrap_or(f64::NAN));
                         }
                     }
                 }
@@ -441,6 +632,87 @@ mod tests {
         ew.decay(0.5);
         assert_eq!(ew.mean(0), m);
         assert!((ew.n_eff() - 0.5 * n).abs() < 1e-15);
+    }
+
+    #[test]
+    fn tracked_inverse_matches_a_from_scratch_solve() {
+        // The incremental Sherman-Morrison inverse must equal a direct
+        // inversion of the same matrix at every step, not just at the end.
+        let prior = 0.5;
+        let mut ew = EwCov::with_inverse(3, prior).unwrap();
+        let mut state = 7u64;
+        let mut lcg = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+        };
+        for step in 0..60 {
+            let x = [lcg(), lcg(), lcg() * 3.0];
+            ew.update(&x, 0.97, 0.5 + lcg().abs());
+            let want = ew
+                .inverse_from_scratch(prior, ew.inv_scale())
+                .expect("reference inverse should exist");
+            for i in 0..3 {
+                for j in 0..3 {
+                    let got = ew.inv(i, j).unwrap();
+                    assert!(
+                        (got - want[i * 3 + j]).abs() < 1e-6 * (1.0 + want[i * 3 + j].abs()),
+                        "step {step}, ({i},{j}): tracked {got}, direct {}",
+                        want[i * 3 + j]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn partial_correlation_detects_a_spurious_link() {
+        // x2 = x0 + x1 + noise. Marginally x0 and x2 correlate; controlling for
+        // x1 they still do, but x0 and x1 are independent both ways. The
+        // interesting case is the reverse: with a common driver, the marginal
+        // correlation is high and the partial one is not.
+        let mut ew = EwCov::with_inverse(3, 1e-6).unwrap();
+        let mut state = 11u64;
+        let mut lcg = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+        };
+        for _ in 0..20000 {
+            let driver = lcg();
+            // two children of one driver: correlated with each other only
+            // through it
+            let a = driver + 0.1 * lcg();
+            let b = driver + 0.1 * lcg();
+            ew.update(&[driver, a, b], 1.0, 1.0);
+        }
+        let marginal = ew.cov(1, 2) / (ew.var(1) * ew.var(2)).sqrt();
+        let partial = ew.partial_corr(1, 2).unwrap();
+        assert!(
+            marginal > 0.9,
+            "children should correlate marginally: {marginal}"
+        );
+        assert!(
+            partial.abs() < 0.2,
+            "controlling for the driver should remove it: {partial}"
+        );
+    }
+
+    #[test]
+    fn with_inverse_rejects_a_non_positive_prior() {
+        assert!(EwCov::with_inverse(2, 0.0).is_err());
+        assert!(EwCov::with_inverse(2, -1.0).is_err());
+        assert!(EwCov::with_inverse(2, f64::INFINITY).is_err());
+    }
+
+    #[test]
+    fn no_inverse_by_default() {
+        let ew = EwCov::new(2);
+        assert!(!ew.has_inverse());
+        assert!(ew.inv(0, 0).is_none());
+        assert!(ew.partial_corr(0, 1).is_none());
     }
 
     #[test]

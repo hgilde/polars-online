@@ -320,7 +320,10 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::Ftrl(Box::new(Ftrl::new(cfg)?)))
         }
-        ModelKind::EwCov { stats } => {
+        ModelKind::EwCov {
+            stats,
+            precision_prior,
+        } => {
             let names = stats
                 .clone()
                 .unwrap_or_else(|| vec!["mean".into(), "std".into(), "corr".into()]);
@@ -332,6 +335,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     "std" => Ok(EwCovStat::Std),
                     "cov" => Ok(EwCovStat::Cov),
                     "corr" => Ok(EwCovStat::Corr),
+                    "partial_corr" => Ok(EwCovStat::PartialCorr),
                     other => Err(format!("unknown ew_cov statistic {other:?}")),
                 })
                 .collect::<Result<Vec<_>, String>>()?;
@@ -340,6 +344,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 decay,
                 stats,
                 min_periods: spec.min_periods.unwrap_or(2.0),
+                precision_prior: *precision_prior,
             };
             Ok(AnyModel::EwCov(Box::new(EwCovModel::new(cfg)?)))
         }

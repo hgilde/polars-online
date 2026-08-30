@@ -479,7 +479,7 @@ pub fn output_fields(spec: &Spec) -> Vec<String> {
     let decays = spec.decays().expect("validated");
     // ew_cov is not a regression: its slots are named statistics, not
     // pred/resid pairs, and it has no targets or coefficients.
-    if let crate::ModelKind::EwCov { stats } = &spec.model {
+    if let crate::ModelKind::EwCov { stats, .. } = &spec.model {
         let names = stats
             .clone()
             .unwrap_or_else(|| vec!["mean".into(), "std".into(), "corr".into()]);
@@ -490,6 +490,7 @@ pub fn output_fields(spec: &Spec) -> Vec<String> {
                 "var" => online_core::EwCovStat::Var,
                 "std" => online_core::EwCovStat::Std,
                 "cov" => online_core::EwCovStat::Cov,
+                "partial_corr" => online_core::EwCovStat::PartialCorr,
                 _ => online_core::EwCovStat::Corr,
             })
             .collect();
