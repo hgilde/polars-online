@@ -296,3 +296,148 @@ def rls_ref(
         coef[i] = st["beta"].T
 
     return {"pred": pred, "resid": resid, "n_eff": n_eff, "coef": coef}
+
+
+def kalman_ref(
+    X: np.ndarray,
+    Y: np.ndarray,
+    dclock: np.ndarray,
+    w: np.ndarray,
+    reset: np.ndarray | None = None,
+    halflife: float = 500.0,
+    coef_halflife: float | list[float] = 100.0,
+    q: list[float] | None = None,
+    obs_var: float | None = None,
+    p0: float = 1.0,
+    share_p: bool = False,
+    add_intercept: bool = True,
+    min_periods: float = 10.0,
+) -> dict[str, np.ndarray]:
+    """Kalman / random-walk-beta oracle (docs/PLAN.md section 4.4).
+
+    Mirrors the core exactly, including the details that make it match:
+
+    - features are standardized with the EW stats *before* the row's update,
+      using scale 1 for the intercept slot and for near-zero-variance features
+      (centered variance <= 1e-10 * raw second moment);
+    - ``P += Q * d_clock`` happens before the gain, once per shared P;
+    - innovation variance is ``z' P z + sigma2 / w`` (row weight scales the
+      observation precision);
+    - ``sigma2_j`` is the EW variance of the *out-of-sample* residual, updated
+      only on rows where a prediction was emitted;
+    - the EW stats update last, so this row's z used the prior stats.
+
+    Coefficients come back in the ORIGINAL feature units.
+    """
+    n, k = X.shape
+    m = Y.shape[1]
+    off = 1 if add_intercept else 0
+    kt = k + off
+    if reset is None:
+        reset = np.zeros(n, dtype=bool)
+    hl = np.asarray(
+        [coef_halflife] * kt if np.isscalar(coef_halflife) else coef_halflife, dtype=float
+    )
+    if hl.size == 1:
+        hl = np.repeat(hl, kt)
+
+    pred = np.full((n, m), np.nan)
+    resid = np.full((n, m), np.nan)
+    n_eff = np.full(n, np.nan)
+    coef = np.full((n, m, kt), np.nan)
+
+    def init():
+        return {
+            "W": 0.0,
+            "mean": np.zeros(kt),
+            "raw": np.zeros((kt, kt)),
+            "beta": np.zeros((m, kt)),
+            "P": [np.eye(kt) * p0 for _ in range(1 if share_p else m)],
+            "sig2": np.zeros(m),
+            "wsig": np.zeros(m),
+            "wj": np.zeros(m),
+            "pending": 0.0,
+        }
+
+    st = init()
+    for i in range(n):
+        if reset[i]:
+            st = init()
+        if np.isnan(X[i]).any():
+            st["pending"] += dclock[i]
+            continue
+        z = np.concatenate(([1.0], X[i])) if add_intercept else X[i].copy()
+        d = dclock[i] + st["pending"]
+        st["pending"] = 0.0
+        lam = 0.5 ** (d / halflife)
+
+        # scales from the stats BEFORE this row
+        scales = np.ones(kt)
+        for j in range(off, kt):
+            var = st["raw"][j, j] - st["mean"][j] ** 2
+            raw = max(abs(st["raw"][j, j]), 1e-300)
+            scales[j] = np.sqrt(var) if var > 1e-10 * raw else 1.0
+        zs = np.ones(kt)
+        for j in range(off, kt):
+            zs[j] = (z[j] - st["mean"][j]) / scales[j]
+
+        n_eff[i] = st["W"]
+        ready = st["W"] >= min_periods
+        if ready:
+            for j in range(m):
+                if st["wj"][j] > 0.0:
+                    pred[i, j] = zs @ st["beta"][j]
+                    if not np.isnan(Y[i, j]):
+                        resid[i, j] = Y[i, j] - pred[i, j]
+
+        for j in range(m):
+            pi = 0 if share_p else j
+            if obs_var is not None:
+                sigma2 = obs_var
+            else:
+                s2 = st["sig2"].mean() if share_p else st["sig2"][j]
+                sigma2 = s2 if s2 > 0.0 else 1.0
+            if (not share_p) or j == 0:
+                qv = (
+                    np.asarray(q, dtype=float)
+                    if q is not None
+                    else np.where(np.isinf(hl), 0.0, sigma2 * (np.log(2.0) / hl) ** 2)
+                )
+                st["P"][pi] = st["P"][pi] + np.diag(qv * d)
+            if np.isnan(Y[i, j]):
+                st["wj"][j] *= lam
+                st["wsig"][j] *= lam
+                continue
+            if w[i] <= 0.0:
+                continue
+            pz = st["P"][pi] @ zs
+            s_inn = zs @ pz + sigma2 / w[i]
+            if s_inn > 0.0:
+                gain = pz / s_inn
+                err = Y[i, j] - zs @ st["beta"][j]
+                st["beta"][j] = st["beta"][j] + gain * err
+                st["P"][pi] = st["P"][pi] - np.outer(gain, pz)
+            if not np.isnan(pred[i, j]):
+                r = Y[i, j] - pred[i, j]
+                ws_new = lam * st["wsig"][j] + w[i]
+                st["sig2"][j] = (lam * st["wsig"][j] * st["sig2"][j] + w[i] * r * r) / ws_new
+                st["wsig"][j] = ws_new
+            st["wj"][j] = lam * st["wj"][j] + w[i]
+
+        # EW stats update last
+        W_new = lam * st["W"] + w[i]
+        a = lam * st["W"] / W_new
+        b = w[i] / W_new
+        st["mean"] = a * st["mean"] + b * z
+        st["raw"] = a * st["raw"] + b * np.outer(z, z)
+        st["W"] = W_new
+
+        # coefficients back in original units
+        for j in range(m):
+            c = np.zeros(kt)
+            c[off:] = st["beta"][j][off:] / scales[off:]
+            if add_intercept:
+                c[0] = st["beta"][j][0] - c[off:] @ st["mean"][off:]
+            coef[i, j] = c
+
+    return {"pred": pred, "resid": resid, "n_eff": n_eff, "coef": coef}

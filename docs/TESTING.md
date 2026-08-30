@@ -1,6 +1,6 @@
 # Test coverage and testing improvements
 
-Status as of 2026-08-30: **61 Rust tests + 105 pytest functions**, all green,
+Status as of 2026-08-30: **61 Rust tests + 123 pytest functions**, all green,
 run in CI on three OSes.
 
 **Progress on this document's own backlog** (updated as items land):
@@ -11,8 +11,8 @@ run in CI on three OSes.
 | T-E2 null group keys | **Done** — defect fixed: `GroupKey(Option<String>)` replaces the `"<null>"` string sentinel, so a null group is structurally distinct from a group named `"<null>"`. Bank files gained `format_version` (v2); v1 files still load because the key serializes transparently as its inner `Option`. `TestGroupKeys`, incl. save/load and integer group columns. |
 | T-E3 non-finite inputs | **Done** — `TestNonFinite` pins ±inf/NaN in features, targets, weights and the clock, plus "outputs are never non-finite". |
 | T-E4 mis-ordered chunks | **Done** — `TestClockOrdering` pins current behavior (a backwards delta across a chunk boundary goes through `on_clock_reset`, indistinguishable from real data), and guards that correctly ordered chunking stays invariant. The strict mode remains ENHANCEMENTS E3. |
-| T-A1 Kalman oracle | *in progress* |
-| T-A2 lasso KKT | *in progress* |
+| T-A1 Kalman oracle | **Done** — `kalman_ref` in `tests/reference.py`; agreement to 1e-9 (observed max 1.1e-15) across scalar and per-factor `coef_halflife`, `inf` pinning, explicit `q`, fixed `obs_var`/`p0`, multi-target with and without `share_p`, the null policy, and `add_intercept=False`. |
+| T-A2 lasso KKT | **Done** — `tests/test_oracles.py::TestLassoOptimality` checks stationarity/subgradient conditions on the model's own standardized stats (not a ported solver), across λ ∈ {0, 0.01, 0.1} × `l1_ratio` ∈ {1.0, 0.5}, plus path sparsity monotonicity and the intercept identity. |
 | T-D1 run release CI | **Blocked on a push** — `origin` exists (`github.com/hgilde/polars-online`) but nothing has been pushed; running the workflow needs an explicit go-ahead. |
  This document assesses what they actually
 prove, then lists concrete improvements — with emphasis on edge cases and on
@@ -25,7 +25,7 @@ Scorecard against PLAN §9's eight test classes:
 
 | Class | Status |
 |---|---|
-| 1. Oracle agreement | **Partial.** `ewridge` and `rls` match `tests/reference.py` to 1e-9 (incl. multi-target, standardize, `lam` decay, row-count clock), and `rls ≡ ewridge(ridge_decay, solve_every=1)` to <1e-9. **But PLAN promised Kalman and lasso oracles too — `reference.py` still has only `compute_dclock`, `ewridge_ref`, `rls_ref`.** Kalman, lasso, huber/quantile and ftrl are anchored only by property tests. |
+| 1. Oracle agreement | **Mostly done.** `ewridge` and `rls` match `tests/reference.py` to 1e-9 (incl. multi-target, standardize, `lam` decay, row-count clock), `rls ≡ ewridge(ridge_decay, solve_every=1)` to <1e-9, **Kalman matches `kalman_ref` to ~1e-15** across every configuration, and the **lasso is verified against its KKT conditions** rather than a ported solver. Remaining: huber/quantile (T-A3) and ftrl (T-A4) are still anchored only by property tests. |
 | 2. Chunk invariance | Done: bitwise at the bank (1/7/400 chunks), expression, and CLI (`chunk_rows` sweep) levels; save/load mid-stream identical; the `coef` field is correctly excluded (chunk-dependent by design). |
 | 3. Out-of-sample by construction | Done: IC ≈ 0 on pure-noise targets asserted for ewridge, kalman, huber, ftrl; lasso selection prefers the all-zero penalty on noise; robust reweighting proven to use the *prior* residual. |
 | 4. Clock semantics | Done: cap, negative-delta (`max`/`zero`/`reset_state`), session gap and reset, first row, row-count clock, skipped-row decay folding, per-group independence. |
@@ -51,8 +51,8 @@ meaningful new assurance; **P3** = infrastructure.
 
 | # | P | Improvement |
 |---|---|---|
-| T-A1 | P1 | **`kalman_ref` in `tests/reference.py`** (promised by PLAN §9 class 1): plain numpy predict/update recursion with the same standardization-from-running-stats scheme; assert agreement to 1e-9 incl. per-factor halflife, `inf` pinning, explicit `q`, `share_p`, and the null-target path. |
-| T-A2 | P1 | **Lasso KKT verification** (implementation-independent, stronger than a second copy of coordinate descent): at every emitted coefficient snapshot, check the stationarity conditions on the standardized stats — `|c_i − Σ_j C_ij b_j| ≤ λ·l1_ratio + l2·|b_i|`-style bounds with equality (sign-matched) on active coordinates. Plus a small numpy CD `lasso_ref` for the pred path. |
+| T-A1 | ~~P1~~ **done** | **`kalman_ref` in `tests/reference.py`** — plain numpy predict/update recursion mirroring the standardization-from-prior-stats scheme; agreement to 1e-9 (observed 1.1e-15) incl. per-factor halflife, `inf` pinning, explicit `q`, `obs_var`/`p0`, `share_p`, no-intercept, and the null-target path. Writing it confirmed several subtleties are load-bearing: scales come from the stats *before* the row, `Q·Δclock` is applied once per shared `P`, and the innovation variance carries `σ²/w`. |
+| T-A2 | ~~P1~~ **done** | **Lasso KKT verification** — at the emitted coefficient snapshot, stationarity is checked on the model's own standardized statistics (`g_i = c_i − (Cb)_i − l2·b_i` must equal `l1·sign(b_i)` where `b_i ≠ 0`, and satisfy `|g_i| ≤ l1` where it is zero), across λ × `l1_ratio` combinations, plus sparsity monotonicity along the path and the intercept identity. A numpy CD `lasso_ref` for the *pred* path is still open (would catch schedule/warm-start bugs the KKT check cannot see). |
 | T-A3 | P2 | **`huber_ref` / `quantile_ref`**: the IRLS reweighting is ~20 lines of numpy on top of `ewridge_ref`; assert 1e-9 agreement including the prior-residual weighting and per-target accumulators. |
 | T-A4 | P2 | **`ftrl_ref`**: direct numpy port of the McMahan recursion; assert 1e-12 agreement including decay, weights, and null targets. |
 | T-A5 | P2 | Run the **existing** edge-case tests (nulls, clock, warmup) through *every* model, parametrized, not just ewridge — the semantics are claimed to be model-independent; the tests should say so. |
