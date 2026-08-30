@@ -156,6 +156,21 @@ pub enum ModelKind {
         #[serde(default)]
         quantile_eps: Option<f64>,
     },
+    /// Online logistic regression via FTRL-proximal (docs/PLAN.md §4.6).
+    /// `pred` is a probability; `resid = y - p`.
+    Ftrl {
+        #[serde(default)]
+        alpha: Option<f64>,
+        #[serde(default)]
+        beta: Option<f64>,
+        #[serde(default)]
+        l1: Option<f64>,
+        #[serde(default)]
+        l2: Option<f64>,
+        /// Error on targets that are not 0/1 rather than clamping them.
+        #[serde(default)]
+        strict_binary: bool,
+    },
     Rls {
         /// Prior strength: `P0 = I / ridge`. Scalar only (baked into P0).
         #[serde(default)]
@@ -174,6 +189,7 @@ impl ModelKind {
             ModelKind::Kalman { .. } => "kalman",
             ModelKind::Huber { .. } => "huber",
             ModelKind::Quantile { .. } => "quantile",
+            ModelKind::Ftrl { .. } => "ftrl",
         }
     }
 }
@@ -311,6 +327,22 @@ impl Spec {
         self.decays()?;
         self.clock_cfg()?;
         match &self.model {
+            ModelKind::Ftrl {
+                alpha,
+                beta,
+                l1,
+                l2,
+                ..
+            } => {
+                if alpha.is_some_and(|a| a <= 0.0 || a.is_nan()) {
+                    return Err(format!("spec {:?}: ftrl alpha must be > 0", self.name));
+                }
+                for (name, v) in [("beta", beta), ("l1", l1), ("l2", l2)] {
+                    if v.is_some_and(|v| v < 0.0 || v.is_nan()) {
+                        return Err(format!("spec {:?}: ftrl {name} must be >= 0", self.name));
+                    }
+                }
+            }
             ModelKind::Huber { huber_delta, .. } => {
                 if huber_delta.is_some_and(|d| d <= 0.0 || d.is_nan()) {
                     return Err(format!("spec {:?}: huber_delta must be > 0", self.name));

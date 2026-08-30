@@ -53,6 +53,7 @@ pub enum ModelState {
     Lasso(Box<crate::Lasso>),
     Kalman(Box<crate::Kalman>),
     Robust(Box<crate::Robust>),
+    Ftrl(Box<crate::Ftrl>),
 }
 
 #[derive(Debug, Error)]
@@ -77,6 +78,7 @@ impl ModelState {
             ModelState::Lasso(_) => "lasso",
             ModelState::Kalman(_) => "kalman",
             ModelState::Robust(_) => "robust",
+            ModelState::Ftrl(_) => "ftrl",
         }
     }
 }

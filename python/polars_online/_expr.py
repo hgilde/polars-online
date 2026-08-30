@@ -82,3 +82,9 @@ class OnlineNamespace:
         """Quantile regression over this column as the target."""
         spec = _spec.quantile("online", targets=[self._target()], features=features, **kwargs)
         return _run(spec, self._expr)
+
+    def ftrl(self, features: list[str], **kwargs: Any) -> pl.Expr:
+        """Online logistic regression (FTRL-proximal) over this column as the
+        binary target. ``pred`` is a probability."""
+        spec = _spec.ftrl("online", targets=[self._target()], features=features, **kwargs)
+        return _run(spec, self._expr)

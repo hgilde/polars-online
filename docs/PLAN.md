@@ -226,13 +226,33 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
 - [x] 12. Evaluation harness (§8); run the solve-schedule experiment and every **[validate]**
       item on public data; record results in `docs/VALIDATION.md` and fix defaults.
 - [x] 13. Robust models (§4.5).
-- [ ] 14. Logistic / FTRL (§4.6).
+- [x] 14. Logistic / FTRL (§4.6).
 - [ ] 15. `online-cli`: TOML specs, parquet streaming in/out, progress, resume from state.
 - [ ] 16. CI: wheels + CLI binaries for macOS/Windows, cross-platform state test, Polars-latest
       canary job. Benchmark script + numbers in README.
 - [ ] 17. README with the three usage modes and the math per model.
 
 ## 11a. Decisions made while implementing
+
+**Tasks 13-14 (robust + logistic), 2026-08-30.**
+
+- The robust models expose two spec types, `huber` and `quantile`, over one core
+  `Robust` model (they differ only in the IRLS weight function).
+- `huber_delta` default 1.5 kept: a sweep is only meaningful against a
+  contamination model, and the unit test confirms 1.5 recovers the clean slope
+  under 3% gross outliers where least squares does not.
+- Quantile weights are scaled by the residual std so they are O(1) rather than
+  O(1/sigma); `quantile_eps` (default 1e-3, in units of that std) floors |r| so a
+  near-zero residual cannot produce an unbounded weight.
+- FTRL defaults `alpha=0.1, beta=1.0, l1=0.0, l2=1.0` kept (McMahan et al.).
+  Note FTRL's L1 zeroes a coordinate only while `|z_i| <= l1`, and `z_i` grows
+  with accumulated gradient, so a moderate `l1` shrinks rather than permanently
+  pins - the unit test asserts that behaviour, not exact sparsity.
+- **Gotcha worth knowing**: `solve_every` defaults to `halflife/50`, so a very
+  large `halflife` (e.g. 1e9, meaning "never forget") means the model solves
+  once and never again unless `max_rows_between_solves` is set. Left as-is
+  (it is the documented default), but every long-halflife test sets an explicit
+  cadence.
 
 **Task 12 (evaluation + [validate] items), 2026-08-30.**
 

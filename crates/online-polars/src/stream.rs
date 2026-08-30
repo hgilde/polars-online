@@ -2,8 +2,8 @@
 //! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
 
 use online_core::{
-    ClockState, Decay, EwRidge, EwRidgeCfg, Kalman, KalmanCfg, Lasso, LassoCfg, ModelState,
-    OnlineModel, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, State, StateError,
+    ClockState, Decay, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg, Kalman, KalmanCfg, Lasso, LassoCfg,
+    ModelState, OnlineModel, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +17,7 @@ pub enum AnyModel {
     Lasso(Box<Lasso>),
     Kalman(Box<Kalman>),
     Robust(Box<Robust>),
+    Ftrl(Box<Ftrl>),
 }
 
 impl AnyModel {
@@ -33,6 +34,7 @@ impl AnyModel {
             AnyModel::Lasso(m) => m.step(x, y, d_clock, weight),
             AnyModel::Kalman(m) => m.step(x, y, d_clock, weight),
             AnyModel::Robust(m) => m.step(x, y, d_clock, weight),
+            AnyModel::Ftrl(m) => m.step(x, y, d_clock, weight),
         }
     }
 
@@ -43,6 +45,7 @@ impl AnyModel {
             AnyModel::Lasso(m) => m.n_outputs(),
             AnyModel::Kalman(m) => m.n_outputs(),
             AnyModel::Robust(m) => m.n_outputs(),
+            AnyModel::Ftrl(m) => m.n_outputs(),
         }
     }
 
@@ -56,6 +59,7 @@ impl AnyModel {
                 .map(|b| b.iter().flat_map(|per_t| per_t.iter().cloned()).collect()),
             AnyModel::Kalman(m) => Some(m.coefficients()),
             AnyModel::Robust(m) => m.coefficients().map(|b| b.to_vec()),
+            AnyModel::Ftrl(m) => Some(m.coefficients()),
         }
     }
 
@@ -66,6 +70,7 @@ impl AnyModel {
             AnyModel::Lasso(m) => m.state(),
             AnyModel::Kalman(m) => m.state(),
             AnyModel::Robust(m) => m.state(),
+            AnyModel::Ftrl(m) => m.state(),
         }
     }
 
@@ -76,6 +81,7 @@ impl AnyModel {
             ModelState::Lasso(_) => Ok(AnyModel::Lasso(Box::new(Lasso::restore(s)?))),
             ModelState::Kalman(_) => Ok(AnyModel::Kalman(Box::new(Kalman::restore(s)?))),
             ModelState::Robust(_) => Ok(AnyModel::Robust(Box::new(Robust::restore(s)?))),
+            ModelState::Ftrl(_) => Ok(AnyModel::Ftrl(Box::new(Ftrl::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -243,6 +249,27 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::Robust(Box::new(Robust::new(cfg)?)))
         }
+        ModelKind::Ftrl {
+            alpha,
+            beta,
+            l1,
+            l2,
+            strict_binary,
+        } => {
+            let cfg = FtrlCfg {
+                n_features: spec.k(),
+                n_targets: spec.m(),
+                add_intercept: spec.add_intercept,
+                decay,
+                alpha: alpha.unwrap_or(0.1),
+                beta: beta.unwrap_or(1.0),
+                l1: l1.unwrap_or(0.0),
+                l2: l2.unwrap_or(1.0),
+                min_periods: spec.min_periods_or_default(),
+                strict_binary: *strict_binary,
+            };
+            Ok(AnyModel::Ftrl(Box::new(Ftrl::new(cfg)?)))
+        }
     }
 }
 
@@ -284,7 +311,8 @@ pub fn combo_labels(spec: &Spec) -> Vec<String> {
         ModelKind::Rls { .. }
         | ModelKind::Kalman { .. }
         | ModelKind::Huber { .. }
-        | ModelKind::Quantile { .. } => vec![String::new()],
+        | ModelKind::Quantile { .. }
+        | ModelKind::Ftrl { .. } => vec![String::new()],
         ModelKind::Lasso { lasso_path, .. } => {
             lasso_path.iter().map(|l| format!("__l{l}")).collect()
         }

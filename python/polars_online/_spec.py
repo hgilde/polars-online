@@ -26,7 +26,16 @@ def _json(spec: dict[str, Any]) -> str:
     return json.dumps(enc(spec))
 
 
-__all__ = ["ewridge", "huber", "kalman", "lasso", "output_fields", "quantile", "rls"]
+__all__ = [
+    "ewridge",
+    "ftrl",
+    "huber",
+    "kalman",
+    "lasso",
+    "output_fields",
+    "quantile",
+    "rls",
+]
 
 
 def _common(
@@ -292,5 +301,47 @@ def quantile(
         "solve_every": solve_every,
         "max_rows_between_solves": max_rows_between_solves,
         "quantile_eps": quantile_eps,
+    }
+    return _common(name, model, targets=targets, features=features, **common)
+
+
+def ftrl(
+    name: str,
+    *,
+    targets: list[str],
+    features: list[str],
+    alpha: float | None = None,
+    beta: float | None = None,
+    l1: float | None = None,
+    l2: float | None = None,
+    strict_binary: bool = False,
+    **common: Any,
+) -> dict[str, Any]:
+    """Online logistic regression via FTRL-proximal (docs/PLAN.md section 4.6).
+
+    For binary (0/1) targets. Per-coordinate adaptive learning rates following
+    McMahan et al. (2013), with the accumulators decayed on the same clock as
+    every other model here, so it forgets on the same schedule::
+
+        n_i  <- lam * n_i ;  z_i <- lam * z_i
+        b_i  = 0 if |z_i| <= l1 else
+               -(z_i - sign(z_i) l1) / ((beta + sqrt(n_i)) / alpha + l2)
+        p    = sigmoid(z . b)
+        g_i  = (p - y) * z_i * w
+        z_i += g_i - ((sqrt(n_i + g_i^2) - sqrt(n_i)) / alpha) * b_i
+        n_i += g_i^2
+
+    ``pred`` is the probability from the state *before* the update, so it is
+    out-of-sample like every other model, and ``resid = y - p``. Defaults
+    ``alpha=0.1, beta=1.0, l1=0.0, l2=1.0``. Non-0/1 targets are clamped into
+    [0, 1] unless ``strict_binary``, which skips them instead.
+    """
+    model: dict[str, Any] = {
+        "type": "ftrl",
+        "alpha": alpha,
+        "beta": beta,
+        "l1": l1,
+        "l2": l2,
+        "strict_binary": strict_binary,
     }
     return _common(name, model, targets=targets, features=features, **common)
