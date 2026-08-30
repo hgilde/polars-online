@@ -2,7 +2,8 @@
 //! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
 
 use online_core::{
-    ClockState, Decay, EwRidge, EwRidgeCfg, ModelState, OnlineModel, Rls, RlsCfg, State, StateError,
+    ClockState, Decay, EwRidge, EwRidgeCfg, Lasso, LassoCfg, ModelState, OnlineModel, Rls, RlsCfg,
+    State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +14,7 @@ use crate::spec::{FloatOrList, ModelKind, Spec};
 pub enum AnyModel {
     EwRidge(Box<EwRidge>),
     Rls(Box<Rls>),
+    Lasso(Box<Lasso>),
 }
 
 impl AnyModel {
@@ -26,6 +28,7 @@ impl AnyModel {
         match self {
             AnyModel::EwRidge(m) => m.step(x, y, d_clock, weight),
             AnyModel::Rls(m) => m.step(x, y, d_clock, weight),
+            AnyModel::Lasso(m) => m.step(x, y, d_clock, weight),
         }
     }
 
@@ -33,6 +36,7 @@ impl AnyModel {
         match self {
             AnyModel::EwRidge(m) => m.n_outputs(),
             AnyModel::Rls(m) => m.n_outputs(),
+            AnyModel::Lasso(m) => m.n_outputs(),
         }
     }
 
@@ -40,6 +44,10 @@ impl AnyModel {
         match self {
             AnyModel::EwRidge(m) => m.coefficients().map(|b| b.to_vec()),
             AnyModel::Rls(m) => Some(m.coefficients().to_vec()),
+            // Flattened to (target x path point) rows, matching the pred slots.
+            AnyModel::Lasso(m) => m
+                .coefficients()
+                .map(|b| b.iter().flat_map(|per_t| per_t.iter().cloned()).collect()),
         }
     }
 
@@ -47,6 +55,7 @@ impl AnyModel {
         match self {
             AnyModel::EwRidge(m) => m.state(),
             AnyModel::Rls(m) => m.state(),
+            AnyModel::Lasso(m) => m.state(),
         }
     }
 
@@ -54,6 +63,7 @@ impl AnyModel {
         match &s.model {
             ModelState::EwRidge(_) => Ok(AnyModel::EwRidge(Box::new(EwRidge::restore(s)?))),
             ModelState::Rls(_) => Ok(AnyModel::Rls(Box::new(Rls::restore(s)?))),
+            ModelState::Lasso(_) => Ok(AnyModel::Lasso(Box::new(Lasso::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -128,6 +138,31 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::Rls(Box::new(Rls::new(cfg)?)))
         }
+        ModelKind::Lasso {
+            lasso_path,
+            l1_ratio,
+            select_halflife,
+            solve_every,
+            max_rows_between_solves,
+            max_cd_iters,
+            cd_tol,
+        } => {
+            let cfg = LassoCfg {
+                n_features: spec.k(),
+                n_targets: spec.m(),
+                add_intercept: spec.add_intercept,
+                decay,
+                lasso_path: lasso_path.clone(),
+                l1_ratio: l1_ratio.unwrap_or(1.0),
+                select_halflife: *select_halflife,
+                min_periods: spec.min_periods_or_default(),
+                solve_every: solve_every.unwrap_or_else(|| spec.solve_every_default(decay)),
+                max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
+                max_cd_iters: max_cd_iters.unwrap_or(100),
+                cd_tol: cd_tol.unwrap_or(1e-10),
+            };
+            Ok(AnyModel::Lasso(Box::new(Lasso::new(cfg)?)))
+        }
     }
 }
 
@@ -167,6 +202,9 @@ pub fn combo_labels(spec: &Spec) -> Vec<String> {
             out
         }
         ModelKind::Rls { .. } => vec![String::new()],
+        ModelKind::Lasso { lasso_path, .. } => {
+            lasso_path.iter().map(|l| format!("__l{l}")).collect()
+        }
     }
 }
 

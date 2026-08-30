@@ -50,6 +50,7 @@ pub enum ModelState {
     EwCov(crate::EwCov),
     EwRidge(Box<crate::EwRidge>),
     Rls(Box<crate::Rls>),
+    Lasso(Box<crate::Lasso>),
 }
 
 #[derive(Debug, Error)]
@@ -71,6 +72,7 @@ impl ModelState {
             ModelState::EwCov(_) => "ew_cov",
             ModelState::EwRidge(_) => "ew_ridge",
             ModelState::Rls(_) => "rls",
+            ModelState::Lasso(_) => "lasso",
         }
     }
 }

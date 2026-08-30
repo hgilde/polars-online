@@ -221,7 +221,7 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       warmup, clock tests pass.
 - [x] 8. Expression plugin (`online.ewridge`) + expression≡bank test.
 - [x] 9. RLS (§4.2) + agreement test with EW-ridge at `solve_every`=1 row.
-- [ ] 10. Lasso path + online λ selection (§4.3).
+- [x] 10. Lasso path + online λ selection (§4.3).
 - [ ] 11. Kalman (§4.4) with halflife-derived q; per-factor halflife; `inf` pinning.
 - [ ] 12. Evaluation harness (§8); run the solve-schedule experiment and every **[validate]**
       item on public data; record results in `docs/VALIDATION.md` and fix defaults.

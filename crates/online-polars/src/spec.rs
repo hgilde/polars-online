@@ -53,6 +53,24 @@ pub enum ModelKind {
         #[serde(default)]
         max_rows_between_solves: Option<u32>,
     },
+    Lasso {
+        /// Decreasing penalties on standardized stats; required.
+        lasso_path: Vec<f64>,
+        /// 1.0 = lasso, < 1.0 = elastic net.
+        #[serde(default)]
+        l1_ratio: Option<f64>,
+        /// Halflife of the EW squared error used to select lambda.
+        #[serde(default)]
+        select_halflife: Option<f64>,
+        #[serde(default)]
+        solve_every: Option<f64>,
+        #[serde(default)]
+        max_rows_between_solves: Option<u32>,
+        #[serde(default)]
+        max_cd_iters: Option<u32>,
+        #[serde(default)]
+        cd_tol: Option<f64>,
+    },
     Rls {
         /// Prior strength: `P0 = I / ridge`. Scalar only (baked into P0).
         #[serde(default)]
@@ -67,6 +85,7 @@ impl ModelKind {
         match self {
             ModelKind::EwRidge { .. } => "ew_ridge",
             ModelKind::Rls { .. } => "rls",
+            ModelKind::Lasso { .. } => "lasso",
         }
     }
 }
@@ -204,6 +223,27 @@ impl Spec {
         self.decays()?;
         self.clock_cfg()?;
         match &self.model {
+            ModelKind::Lasso {
+                lasso_path,
+                l1_ratio,
+                ..
+            } => {
+                if lasso_path.is_empty() {
+                    return Err(format!(
+                        "spec {:?}: lasso_path must be non-empty",
+                        self.name
+                    ));
+                }
+                if !lasso_path.windows(2).all(|w| w[0] >= w[1]) {
+                    return Err(format!(
+                        "spec {:?}: lasso_path must be decreasing",
+                        self.name
+                    ));
+                }
+                if l1_ratio.is_some_and(|r| !(0.0..=1.0).contains(&r)) {
+                    return Err(format!("spec {:?}: l1_ratio must be in [0, 1]", self.name));
+                }
+            }
             ModelKind::Rls { ridge, coef0 } => {
                 if ridge.is_some_and(|r| r <= 0.0 || r.is_nan()) {
                     return Err(format!("spec {:?}: rls ridge must be > 0", self.name));

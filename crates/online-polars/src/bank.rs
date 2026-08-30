@@ -320,6 +320,11 @@ pub fn output_fields(spec: &Spec) -> Vec<String> {
         }
         fields.push(format!("n_eff{suffix}"));
         fields.push(format!("coef{suffix}"));
+        if matches!(spec.model, crate::ModelKind::Lasso { .. }) {
+            for t in &spec.targets {
+                fields.push(format!("lam_selected_{t}{suffix}"));
+            }
+        }
     }
     fields
 }
@@ -335,6 +340,8 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
     let mut resid = vec![vec![None::<f64>; n]; n_models * m * nc];
     let mut n_eff = vec![vec![None::<f64>; n]; n_models];
     let mut coef: Vec<Vec<Option<Vec<f64>>>> = vec![vec![None; n]; n_models];
+    let is_lasso = matches!(spec.model, crate::ModelKind::Lasso { .. });
+    let mut lam_sel = vec![vec![None::<f64>; n]; if is_lasso { n_models * m } else { 0 }];
 
     for (i, out) in rows {
         let Some(out) = out else { continue };
@@ -349,6 +356,13 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
             if let Some(c) = &out.coef {
                 let flat: Vec<f64> = c[mi].iter().flatten().copied().collect();
                 coef[mi][*i] = Some(flat);
+            }
+            if is_lasso {
+                if let Some(online_core::Extra::Lasso { lam_selected }) = &out.extra[mi] {
+                    for (t_i, l) in lam_selected.iter().enumerate() {
+                        lam_sel[mi * m + t_i][*i] = Some(*l);
+                    }
+                }
             }
         }
     }
@@ -385,6 +399,14 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
             }
         }
         fields.push(b.finish().into_series());
+        if is_lasso {
+            for (t_i, t) in spec.targets.iter().enumerate() {
+                fields.push(Series::new(
+                    format!("lam_selected_{t}{suffix}").into(),
+                    lam_sel[mi * m + t_i].as_slice(),
+                ));
+            }
+        }
     }
     let st = StructChunked::from_series(spec.name.as_str().into(), n, fields.iter())?;
     Ok(st.into_series().into())

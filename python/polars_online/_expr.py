@@ -63,3 +63,8 @@ class OnlineNamespace:
         """Recursive least squares over this column as the target."""
         spec = _spec.rls("online", targets=[self._target()], features=features, **kwargs)
         return _run(spec, self._expr)
+
+    def lasso(self, features: list[str], **kwargs: Any) -> pl.Expr:
+        """Lasso path with online lambda selection over this column as target."""
+        spec = _spec.lasso("online", targets=[self._target()], features=features, **kwargs)
+        return _run(spec, self._expr)
