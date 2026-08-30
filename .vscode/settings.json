@@ -10,12 +10,16 @@
     "PATH": "${env:HOME}/.cargo/bin:${env:HOME}/.local/bin:${env:PATH}"
   },
   "terminal.integrated.env.windows": {
-    "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:PATH}"
+    "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:USERPROFILE}\\.local\\bin;${env:PATH}"
   },
 
   "rust-analyzer.linkedProjects": ["Cargo.toml"],
   // online-py needs a >= 3.12 interpreter at build time (pyo3 abi3-py312).
-  "rust-analyzer.cargo.extraEnv": { "PYO3_PYTHON": "${workspaceFolder}/.venv/bin/python" },
+  // VIRTUAL_ENV rather than PYO3_PYTHON because this key cannot be made
+  // OS-specific: pyo3 resolves the venv to bin/python or Scripts\python.exe
+  // itself, so one value works on all three platforms where a hardcoded
+  // interpreter path would break Windows.
+  "rust-analyzer.cargo.extraEnv": { "VIRTUAL_ENV": "${workspaceFolder}/.venv" },
   "rust-analyzer.check.command": "clippy",
 
   "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",

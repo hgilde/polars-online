@@ -1,0 +1,10 @@
+crates/online-core/src/drift.rs:56:9: replace PageHinkley::statistic -> f64 with 0.0
+crates/online-core/src/drift.rs:56:9: replace PageHinkley::statistic -> f64 with 1.0
+crates/online-core/src/drift.rs:56:9: replace PageHinkley::statistic -> f64 with -1.0
+crates/online-core/src/drift.rs:56:18: replace - with / in PageHinkley::statistic
+crates/online-core/src/drift.rs:62:9: replace PageHinkley::update -> bool with false
+crates/online-core/src/drift.rs:62:12: delete ! in PageHinkley::update
+crates/online-core/src/drift.rs:65:16: replace += with *= in PageHinkley::update
+crates/online-core/src/drift.rs:66:38: replace / with % in PageHinkley::update
+crates/online-core/src/drift.rs:66:25: replace - with + in PageHinkley::update
+crates/online-core/src/drift.rs:66:25: replace - with / in PageHinkley::update

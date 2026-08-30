@@ -1,0 +1,21 @@
+--- crates/online-core/src/drift.rs
++++ replace - with / in PageHinkley::update
+@@ -59,17 +59,17 @@
+     /// Feed one error value. Returns true when drift is detected, and clears
+     /// the state so detection restarts from the new regime.
+     pub fn update(&mut self, e: f64) -> bool {
+         if !e.is_finite() {
+             return false;
+         }
+         self.n += 1.0;
+         self.mean += (e - self.mean) / self.n;
+-        self.cum += e - self.mean - self.delta;
++        self.cum += e / /* ~ changed by cargo-mutants ~ */ self.mean - self.delta;
+         if self.cum < self.min_cum {
+             self.min_cum = self.cum;
+         }
+         if self.statistic() > self.threshold {
+             self.reset();
+             true
+         } else {
+             false

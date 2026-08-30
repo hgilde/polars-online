@@ -1,0 +1,21 @@
+--- crates/online-core/src/clock.rs
++++ replace != with == in ClockState::advance
+@@ -131,17 +131,17 @@
+                 if self.started {
+                     Some(1.0)
+                 } else {
+                     None
+                 }
+             }
+         };
+         let session_changed = match (session, self.prev_session) {
+-            (Some(s), Some(p)) => s != p,
++            (Some(s), Some(p)) => s == /* ~ changed by cargo-mutants ~ */ p,
+             _ => false,
+         };
+ 
+         let mut reset = false;
+         let mut backwards = None;
+         let mut d = match raw {
+             None => 0.0,
+             Some(raw) => {

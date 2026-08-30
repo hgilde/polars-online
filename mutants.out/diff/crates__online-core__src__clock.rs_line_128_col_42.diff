@@ -1,0 +1,21 @@
+--- crates/online-core/src/clock.rs
++++ replace - with + in ClockState::advance
+@@ -120,17 +120,17 @@
+     pub fn advance(
+         &mut self,
+         cfg: &ClockCfg,
+         clock: Option<f64>,
+         session: Option<u64>,
+         accept: bool,
+     ) -> ClockAdvance {
+         let raw = match (clock, self.prev_clock) {
+-            (Some(c), Some(p)) => Some(c - p),
++            (Some(c), Some(p)) => Some(c + /* ~ changed by cargo-mutants ~ */ p),
+             (Some(_), None) => None, // first row of the stream
+             (None, _) => {
+                 if self.started {
+                     Some(1.0)
+                 } else {
+                     None
+                 }
+             }
