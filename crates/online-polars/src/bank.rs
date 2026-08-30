@@ -434,9 +434,73 @@ impl Bank {
     }
 }
 
+/// `ew_cov` output: one f64 column per statistic slot, plus `n_eff`.
+fn assemble_ew_cov(
+    spec: &Spec,
+    n: usize,
+    rows: &[(usize, Option<RowOut>)],
+) -> PolarsResult<Column> {
+    let names = output_fields(spec);
+    let per_model: usize = names.len() / spec.decays().expect("validated").len();
+    let n_slots = per_model - 1; // the trailing n_eff
+    let n_models = spec.decays().expect("validated").len();
+
+    let mut cols = vec![vec![None::<f64>; n]; n_models * n_slots];
+    let mut n_eff = vec![vec![None::<f64>; n]; n_models];
+    for (i, out) in rows {
+        let Some(out) = out else { continue };
+        for mi in 0..n_models {
+            for slot in 0..n_slots {
+                let v = out.pred[mi][slot];
+                cols[mi * n_slots + slot][*i] = if v.is_nan() { None } else { Some(v) };
+            }
+            n_eff[mi][*i] = Some(out.n_eff[mi]);
+        }
+    }
+    let mut fields: Vec<Series> = Vec::with_capacity(names.len());
+    let mut name_iter = names.iter();
+    for mi in 0..n_models {
+        for slot in 0..n_slots {
+            let name = name_iter.next().unwrap();
+            fields.push(Series::new(
+                name.as_str().into(),
+                cols[mi * n_slots + slot].as_slice(),
+            ));
+        }
+        let name = name_iter.next().unwrap();
+        fields.push(Series::new(name.as_str().into(), n_eff[mi].as_slice()));
+    }
+    let st = StructChunked::from_series(spec.name.as_str().into(), n, fields.iter())?;
+    Ok(st.into_series().into())
+}
+
 /// Output field names for a spec, in struct order (used by Python for dtypes).
 pub fn output_fields(spec: &Spec) -> Vec<String> {
     let decays = spec.decays().expect("validated");
+    // ew_cov is not a regression: its slots are named statistics, not
+    // pred/resid pairs, and it has no targets or coefficients.
+    if let crate::ModelKind::EwCov { stats } = &spec.model {
+        let names = stats
+            .clone()
+            .unwrap_or_else(|| vec!["mean".into(), "std".into(), "corr".into()]);
+        let kinds: Vec<online_core::EwCovStat> = names
+            .iter()
+            .map(|s| match s.as_str() {
+                "mean" => online_core::EwCovStat::Mean,
+                "var" => online_core::EwCovStat::Var,
+                "std" => online_core::EwCovStat::Std,
+                "cov" => online_core::EwCovStat::Cov,
+                _ => online_core::EwCovStat::Corr,
+            })
+            .collect();
+        let labels = online_core::EwCovModel::labels(&spec.features, &kinds);
+        let mut fields = Vec::new();
+        for (suffix, _) in &decays {
+            fields.extend(labels.iter().map(|l| format!("{l}{suffix}")));
+            fields.push(format!("n_eff{suffix}"));
+        }
+        return fields;
+    }
     let combos = combo_labels(spec);
     let mut fields = Vec::new();
     for (suffix, _) in &decays {
@@ -472,6 +536,9 @@ pub fn output_fields(spec: &Spec) -> Vec<String> {
 }
 
 fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsResult<Column> {
+    if matches!(spec.model, crate::ModelKind::EwCov { .. }) {
+        return assemble_ew_cov(spec, n, rows);
+    }
     let decays = spec.decays().expect("validated");
     let n_models = decays.len();
     let combos = combo_labels(spec);

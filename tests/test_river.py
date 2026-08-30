@@ -333,3 +333,77 @@ class TestHuber:
         assert abs(theirs_slope - 2.0) < abs(ols_slope - 2.0)
         # And the two robust fits should broadly agree.
         assert abs(ours_slope - theirs_slope) < 0.5
+
+
+class TestEwCovAgainstRiver:
+    """T-R3: with no decay, our mean-form accumulators are exact running
+    moments, and river computes the same quantities by a different route
+    (Welford updates). Any disagreement is a bug in one of us.
+
+    Unblocked by ENHANCEMENTS E1 (`ew_cov`), which made these statistics
+    reachable without fitting a regression.
+    """
+
+    NO_DECAY = float("inf")
+
+    def _data(self, n=2000, seed=17):
+        rng = np.random.default_rng(seed)
+        a = rng.standard_normal(n) * 3.0 + 1.0
+        b = 0.7 * a + rng.standard_normal(n)
+        return a, b
+
+    def _ours(self, a, b, stats):
+        df = pl.DataFrame({"x0": a, "x1": b})
+        spec = po.spec.ew_cov(
+            "c", features=["x0", "x1"], stats=stats, halflife=self.NO_DECAY, min_periods=2.0
+        )
+        out = po.ModelBank([spec]).fit_predict(df)
+        return {f.name: out["c"].struct.field(f.name).to_list()[-1] for f in out.schema["c"].fields}
+
+    def test_mean_and_var_match_river(self):
+        a, b = self._data()
+        ours = self._ours(a, b, ["mean", "var"])
+
+        m, v = stats.Mean(), stats.Var(ddof=0)
+        for x in a[:-1]:  # ours reports the state before the final row
+            m.update(float(x))
+            v.update(float(x))
+        assert ours["mean_x0"] == pytest.approx(m.get(), abs=1e-9)
+        assert ours["var_x0"] == pytest.approx(v.get(), abs=1e-9)
+
+    def test_covariance_matches_river(self):
+        a, b = self._data()
+        ours = self._ours(a, b, ["cov"])
+        c = stats.Cov(ddof=0)
+        for x, y in zip(a[:-1], b[:-1], strict=True):
+            c.update(float(x), float(y))
+        assert ours["cov_x0_x1"] == pytest.approx(c.get(), abs=1e-9)
+
+    def test_correlation_matches_river(self):
+        a, b = self._data()
+        ours = self._ours(a, b, ["corr"])
+        r = stats.PearsonCorr(ddof=0)
+        for x, y in zip(a[:-1], b[:-1], strict=True):
+            r.update(float(x), float(y))
+        assert ours["corr_x0_x1"] == pytest.approx(r.get(), abs=1e-9)
+
+    def test_where_the_raw_moment_form_loses_to_welford(self):
+        """Our accumulator derives variance as `E[x^2] - m^2`, river's Welford
+        form does not, so on a large offset ours degrades first. This records
+        the gap that ENHANCEMENTS E11b would close (see docs/TESTING.md T-E9)."""
+        rng = np.random.default_rng(19)
+        base = rng.standard_normal(4000)
+        errs = {}
+        for offset in (0.0, 1e6, 1e9):
+            a = base + offset
+            ours = self._ours(a, base, ["var"])["var_x0"]
+            v = stats.Var(ddof=0)
+            for x in a[:-1]:
+                v.update(float(x))
+            truth = base[:-1].var()
+            errs[offset] = (abs(ours - truth), abs(v.get() - truth))
+        # identical at ordinary scales
+        assert errs[0.0][0] == pytest.approx(errs[0.0][1], abs=1e-9)
+        # river is still exact at 1e9; ours has lost the variance entirely
+        assert errs[1e9][1] < 1e-3
+        assert errs[1e9][0] > 0.5

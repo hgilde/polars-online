@@ -2,8 +2,9 @@
 //! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
 
 use online_core::{
-    ClockState, Decay, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg, Kalman, KalmanCfg, Lasso, LassoCfg,
-    ModelState, OnlineModel, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, State, StateError,
+    ClockState, Decay, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg, Kalman,
+    KalmanCfg, Lasso, LassoCfg, ModelState, OnlineModel, Rls, RlsCfg, Robust, RobustCfg,
+    RobustLoss, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +19,7 @@ pub enum AnyModel {
     Kalman(Box<Kalman>),
     Robust(Box<Robust>),
     Ftrl(Box<Ftrl>),
+    EwCov(Box<EwCovModel>),
 }
 
 impl AnyModel {
@@ -35,6 +37,7 @@ impl AnyModel {
             AnyModel::Kalman(m) => m.step(x, y, d_clock, weight),
             AnyModel::Robust(m) => m.step(x, y, d_clock, weight),
             AnyModel::Ftrl(m) => m.step(x, y, d_clock, weight),
+            AnyModel::EwCov(m) => m.step(x, y, d_clock, weight),
         }
     }
 
@@ -45,7 +48,7 @@ impl AnyModel {
             AnyModel::EwRidge(m) => m.solve_failures,
             AnyModel::Lasso(m) => m.solve_failures,
             AnyModel::Robust(m) => m.solve_failures,
-            AnyModel::Rls(_) | AnyModel::Kalman(_) | AnyModel::Ftrl(_) => 0,
+            AnyModel::Rls(_) | AnyModel::Kalman(_) | AnyModel::Ftrl(_) | AnyModel::EwCov(_) => 0,
         }
     }
 
@@ -57,6 +60,7 @@ impl AnyModel {
             AnyModel::Kalman(m) => m.n_outputs(),
             AnyModel::Robust(m) => m.n_outputs(),
             AnyModel::Ftrl(m) => m.n_outputs(),
+            AnyModel::EwCov(m) => m.n_outputs(),
         }
     }
 
@@ -71,6 +75,8 @@ impl AnyModel {
             AnyModel::Kalman(m) => Some(m.coefficients()),
             AnyModel::Robust(m) => m.coefficients().map(|b| b.to_vec()),
             AnyModel::Ftrl(m) => Some(m.coefficients()),
+            // ew_cov has no coefficients: its outputs are the statistics.
+            AnyModel::EwCov(_) => None,
         }
     }
 
@@ -82,6 +88,7 @@ impl AnyModel {
             AnyModel::Kalman(m) => m.state(),
             AnyModel::Robust(m) => m.state(),
             AnyModel::Ftrl(m) => m.state(),
+            AnyModel::EwCov(m) => m.state(),
         }
     }
 
@@ -93,6 +100,7 @@ impl AnyModel {
             ModelState::Kalman(_) => Ok(AnyModel::Kalman(Box::new(Kalman::restore(s)?))),
             ModelState::Robust(_) => Ok(AnyModel::Robust(Box::new(Robust::restore(s)?))),
             ModelState::Ftrl(_) => Ok(AnyModel::Ftrl(Box::new(Ftrl::restore(s)?))),
+            ModelState::EwCovModel(_) => Ok(AnyModel::EwCov(Box::new(EwCovModel::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -281,6 +289,29 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::Ftrl(Box::new(Ftrl::new(cfg)?)))
         }
+        ModelKind::EwCov { stats } => {
+            let names = stats
+                .clone()
+                .unwrap_or_else(|| vec!["mean".into(), "std".into(), "corr".into()]);
+            let stats = names
+                .iter()
+                .map(|s| match s.as_str() {
+                    "mean" => Ok(EwCovStat::Mean),
+                    "var" => Ok(EwCovStat::Var),
+                    "std" => Ok(EwCovStat::Std),
+                    "cov" => Ok(EwCovStat::Cov),
+                    "corr" => Ok(EwCovStat::Corr),
+                    other => Err(format!("unknown ew_cov statistic {other:?}")),
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let cfg = EwCovCfg {
+                n_features: spec.k(),
+                decay,
+                stats,
+                min_periods: spec.min_periods.unwrap_or(2.0),
+            };
+            Ok(AnyModel::EwCov(Box::new(EwCovModel::new(cfg)?)))
+        }
     }
 }
 
@@ -323,7 +354,8 @@ pub fn combo_labels(spec: &Spec) -> Vec<String> {
         | ModelKind::Kalman { .. }
         | ModelKind::Huber { .. }
         | ModelKind::Quantile { .. }
-        | ModelKind::Ftrl { .. } => vec![String::new()],
+        | ModelKind::Ftrl { .. }
+        | ModelKind::EwCov { .. } => vec![String::new()],
         ModelKind::Lasso { lasso_path, .. } => {
             lasso_path.iter().map(|l| format!("__l{l}")).collect()
         }

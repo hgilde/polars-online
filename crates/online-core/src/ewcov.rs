@@ -139,6 +139,199 @@ impl EwCov {
     }
 }
 
+/// Which statistics an [`EwCovModel`] emits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EwCovStat {
+    /// EW mean of each column.
+    Mean,
+    /// EW variance of each column (centered).
+    Var,
+    /// EW standard deviation of each column.
+    Std,
+    /// Centered covariance for each unordered pair `i < j`.
+    Cov,
+    /// Pearson correlation for each unordered pair `i < j`.
+    Corr,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct EwCovCfg {
+    pub n_features: usize,
+    pub decay: crate::Decay,
+    pub stats: Vec<EwCovStat>,
+    pub min_periods: f64,
+}
+
+impl EwCovCfg {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.n_features == 0 {
+            return Err("ew_cov: at least one column is required".into());
+        }
+        if self.stats.is_empty() {
+            return Err("ew_cov: at least one statistic is required".into());
+        }
+        if self.n_features < 2
+            && self
+                .stats
+                .iter()
+                .any(|s| matches!(s, EwCovStat::Cov | EwCovStat::Corr))
+        {
+            return Err("ew_cov: cov/corr need at least two columns".into());
+        }
+        Ok(())
+    }
+
+    /// Number of output slots, in emission order.
+    pub fn n_outputs(&self) -> usize {
+        let k = self.n_features;
+        let pairs = k * (k - 1) / 2;
+        self.stats
+            .iter()
+            .map(|s| match s {
+                EwCovStat::Mean | EwCovStat::Var | EwCovStat::Std => k,
+                EwCovStat::Cov | EwCovStat::Corr => pairs,
+            })
+            .sum()
+    }
+}
+
+/// [`EwCov`] exposed as a model in its own right (docs/PLAN.md §4.7), so EW
+/// means, variances, covariances and correlations are available as outputs
+/// without fitting a regression. Replaces pure-Polars pairwise EW correlations,
+/// which cost O(k²) passes; this is one O(k²) update per row.
+///
+/// It has no targets: every column is a "feature", and the statistics are
+/// reported from the state *before* each row, like every prediction here.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct EwCovModel {
+    cfg: EwCovCfg,
+    cov: EwCov,
+}
+
+impl EwCovModel {
+    pub fn new(cfg: EwCovCfg) -> Result<Self, String> {
+        cfg.validate()?;
+        let cov = EwCov::new(cfg.n_features);
+        Ok(Self { cfg, cov })
+    }
+
+    pub fn cfg(&self) -> &EwCovCfg {
+        &self.cfg
+    }
+
+    pub fn n_eff(&self) -> f64 {
+        self.cov.n_eff()
+    }
+
+    /// Output slot labels, in emission order (used for field names).
+    pub fn labels(names: &[String], stats: &[EwCovStat]) -> Vec<String> {
+        let mut out = Vec::new();
+        for stat in stats {
+            match stat {
+                EwCovStat::Mean => out.extend(names.iter().map(|n| format!("mean_{n}"))),
+                EwCovStat::Var => out.extend(names.iter().map(|n| format!("var_{n}"))),
+                EwCovStat::Std => out.extend(names.iter().map(|n| format!("std_{n}"))),
+                EwCovStat::Cov => {
+                    for i in 0..names.len() {
+                        for j in (i + 1)..names.len() {
+                            out.push(format!("cov_{}_{}", names[i], names[j]));
+                        }
+                    }
+                }
+                EwCovStat::Corr => {
+                    for i in 0..names.len() {
+                        for j in (i + 1)..names.len() {
+                            out.push(format!("corr_{}_{}", names[i], names[j]));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn read(&self) -> Vec<f64> {
+        let k = self.cfg.n_features;
+        let mut out = Vec::with_capacity(self.cfg.n_outputs());
+        for stat in &self.cfg.stats {
+            match stat {
+                EwCovStat::Mean => (0..k).for_each(|i| out.push(self.cov.mean(i))),
+                EwCovStat::Var => (0..k).for_each(|i| out.push(self.cov.var(i))),
+                EwCovStat::Std => (0..k).for_each(|i| out.push(self.cov.var(i).sqrt())),
+                EwCovStat::Cov => {
+                    for i in 0..k {
+                        for j in (i + 1)..k {
+                            out.push(self.cov.cov(i, j));
+                        }
+                    }
+                }
+                EwCovStat::Corr => {
+                    for i in 0..k {
+                        for j in (i + 1)..k {
+                            let d = (self.cov.var(i) * self.cov.var(j)).sqrt();
+                            out.push(if d > 0.0 {
+                                (self.cov.cov(i, j) / d).clamp(-1.0, 1.0)
+                            } else {
+                                f64::NAN
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+impl crate::OnlineModel for EwCovModel {
+    fn step(&mut self, x: &[f64], _y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+        let n_eff = self.cov.n_eff();
+        // Statistics are read before this row is folded in, so an `ew_cov`
+        // column is usable as a feature for the same row without leaking it.
+        let pred = if n_eff >= self.cfg.min_periods {
+            self.read()
+        } else {
+            vec![f64::NAN; self.cfg.n_outputs()]
+        };
+        self.cov.update(x, self.cfg.decay.factor(d_clock), weight);
+        crate::Step {
+            pred,
+            coef: None,
+            n_eff,
+            extra: None,
+        }
+    }
+
+    fn state(&self) -> crate::State {
+        crate::State::new(crate::ModelState::EwCovModel(Box::new(self.clone())))
+    }
+
+    fn restore(s: &crate::State) -> Result<Self, crate::StateError> {
+        crate::check_schema(s)?;
+        match &s.model {
+            crate::ModelState::EwCovModel(m) => Ok((**m).clone()),
+            other => Err(crate::StateError::WrongModel {
+                expected: "ew_cov",
+                found: other.kind(),
+            }),
+        }
+    }
+
+    /// `ew_cov` has no targets; one nominal target carries all the slots.
+    fn n_targets(&self) -> usize {
+        1
+    }
+
+    fn n_features(&self) -> usize {
+        self.cfg.n_features
+    }
+
+    fn n_outputs(&self) -> usize {
+        self.cfg.n_outputs()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

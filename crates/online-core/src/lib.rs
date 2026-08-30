@@ -18,7 +18,7 @@ mod robust;
 mod solve;
 
 pub use clock::{ClockAdvance, ClockCfg, ClockState, Decay, OnClockReset, SessionGap};
-pub use ewcov::{EwCov, variance_is_usable};
+pub use ewcov::{EwCov, EwCovCfg, EwCovModel, EwCovStat, variance_is_usable};
 pub use ewridge::{EwRidge, EwRidgeCfg};
 pub use ftrl::{Ftrl, FtrlCfg};
 pub use kalman::{Kalman, KalmanCfg};

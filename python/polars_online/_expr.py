@@ -23,7 +23,10 @@ __all__ = ["OnlineNamespace"]
 
 
 def _run(spec: dict[str, Any], target_expr: pl.Expr) -> pl.Expr:
-    args: list[Any] = [target_expr]
+    # ew_cov has no target: its first feature *is* the calling column, so it
+    # must not be passed twice.
+    is_ew_cov = spec["model"]["type"] == "ew_cov"
+    args: list[Any] = [] if is_ew_cov else [target_expr]
     args += [pl.col(f) for f in spec["features"]]
     for col in (spec["clock"], spec["session"], spec["weight"]):
         if col is not None:
@@ -87,4 +90,13 @@ class OnlineNamespace:
         """Online logistic regression (FTRL-proximal) over this column as the
         binary target. ``pred`` is a probability."""
         spec = _spec.ftrl("online", targets=[self._target()], features=features, **kwargs)
+        return _run(spec, self._expr)
+
+    def ew_cov(self, others: list[str], **kwargs: Any) -> pl.Expr:
+        """EW moments of this column together with ``others``.
+
+        Unlike the model namespaces this one has no target: the column the
+        expression is called on becomes the first feature.
+        """
+        spec = _spec.ew_cov("online", features=[self._target(), *others], **kwargs)
         return _run(spec, self._expr)

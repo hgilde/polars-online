@@ -171,6 +171,13 @@ pub enum ModelKind {
         #[serde(default)]
         strict_binary: bool,
     },
+    /// EW moments of the feature columns, no regression (docs/PLAN.md §4.7).
+    /// `targets` is ignored; every column of interest goes in `features`.
+    EwCov {
+        /// Any of "mean", "var", "std", "cov", "corr". Default: mean + std + corr.
+        #[serde(default)]
+        stats: Option<Vec<String>>,
+    },
     Rls {
         /// Prior strength: `P0 = I / ridge`. Scalar only (baked into P0).
         #[serde(default)]
@@ -190,6 +197,7 @@ impl ModelKind {
             ModelKind::Huber { .. } => "huber",
             ModelKind::Quantile { .. } => "quantile",
             ModelKind::Ftrl { .. } => "ftrl",
+            ModelKind::EwCov { .. } => "ew_cov",
         }
     }
 }
@@ -336,6 +344,25 @@ impl Spec {
         self.decays()?;
         self.clock_cfg()?;
         match &self.model {
+            ModelKind::EwCov { stats } => {
+                if let Some(stats) = stats {
+                    for st in stats {
+                        if !["mean", "var", "std", "cov", "corr"].contains(&st.as_str()) {
+                            return Err(format!(
+                                "spec {:?}: unknown ew_cov statistic {st:?}; expected one of \
+                                 mean, var, std, cov, corr",
+                                self.name
+                            ));
+                        }
+                    }
+                    if self.k() < 2 && stats.iter().any(|st| st == "cov" || st == "corr") {
+                        return Err(format!(
+                            "spec {:?}: ew_cov cov/corr need at least two features",
+                            self.name
+                        ));
+                    }
+                }
+            }
             ModelKind::Ftrl {
                 alpha,
                 beta,

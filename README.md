@@ -189,6 +189,19 @@ IRLS reweighting on the ridge update, using each row's **prior** residual so the
 reweighting stays out-of-sample. Huber: `w = min(1, δσ/|r|)`. Quantile: the
 check-loss weights at level τ. Weights are per target, so `S` is per target here.
 
+### `ew_cov` — exponentially weighted moments (no regression)
+
+```
+W'   = λW + w        m'ᵢ = (λW·mᵢ + w·xᵢ) / W'      S'ᵢⱼ = (λW·Sᵢⱼ + w·xᵢxⱼ) / W'
+varᵢ = Sᵢᵢ − mᵢ²     covᵢⱼ = Sᵢⱼ − mᵢmⱼ             corrᵢⱼ = covᵢⱼ / √(varᵢ·varⱼ)
+```
+
+Running mean / variance / std / covariance / correlation of the columns you
+name, on the same clock as every model here. One O(k²) update per row, replacing
+the O(k²) *passes* a pure-Polars pairwise EW correlation needs. Values are read
+from the state before each row, so an `ew_cov` output can be a feature for that
+same row without leaking it.
+
 ### `ftrl` — online logistic regression
 
 FTRL-proximal (McMahan et al. 2013) for binary targets, with the accumulators

@@ -27,6 +27,7 @@ def _json(spec: dict[str, Any]) -> str:
 
 
 __all__ = [
+    "ew_cov",
     "ewridge",
     "ftrl",
     "huber",
@@ -349,3 +350,36 @@ def ftrl(
         "strict_binary": strict_binary,
     }
     return _common(name, model, targets=targets, features=features, **common)
+
+
+def ew_cov(
+    name: str,
+    *,
+    features: list[str],
+    stats: list[str] | None = None,
+    **common: Any,
+) -> dict[str, Any]:
+    """Exponentially weighted moments of the feature columns (docs/PLAN.md 4.7).
+
+    Not a regression: there are no targets and no coefficients, just running
+    statistics of the columns you name, decayed on the same clock as every
+    model here::
+
+        W'    = lam * W + w
+        m'_i  = (lam * W * m_i + w * x_i) / W'
+        S'_ij = (lam * W * S_ij + w * x_i x_j) / W'
+
+    with ``var_i = S_ii - m_i^2``, ``cov_ij = S_ij - m_i m_j`` and
+    ``corr_ij = cov_ij / sqrt(var_i var_j)``. One O(k^2) update per row, which
+    replaces the O(k^2) *passes* a pure-Polars pairwise EW correlation needs.
+
+    ``stats`` selects which to emit, from ``mean``, ``var``, ``std``, ``cov``
+    and ``corr`` (default: mean, std, corr). Pairwise statistics are emitted for
+    each unordered pair ``i < j``, named after the columns
+    (``corr_x0_x1``). Values are read from the state *before* each row, so an
+    ``ew_cov`` output can be used as a feature for that same row without
+    leaking it.
+    """
+    model: dict[str, Any] = {"type": "ew_cov", "stats": stats}
+    # `targets` is required by the common-parameter schema but unused here.
+    return _common(name, model, targets=[features[0]], features=features, **common)

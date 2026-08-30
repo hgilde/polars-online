@@ -1,6 +1,6 @@
 # Test coverage and testing improvements
 
-Status as of 2026-08-30: **62 Rust tests + 377 pytest functions** (plus 2 opt-in
+Status as of 2026-08-30: **71 Rust tests + 396 pytest functions** (plus 2 opt-in
 soak tests), all green, run in CI on three OSes.
 
 Measured coverage (`./scripts/coverage.sh`): **96% of the Python package**, and
@@ -95,7 +95,7 @@ installed (same pattern as the offline skip). Two tiers:
 |---|---|---|
 | T-R1 | ~~P1~~ **done** | **`ftrl` ≡ `river.optim.FTRLProximal`.** Compared at the level of the state recursion (river's optimizer driven by the same gradient sequence), which is exact to 1e-12; comparing the two *models* end to end is not exact, because river's `LogisticRegression` predicts with the previous step's proximal weights while we recompute from `z` at prediction time per McMahan Algorithm 1. That ordering difference is itself pinned by a test. |
 | T-R2 | P2 | **Kalman(q=0, fixed `obs_var`) ≡ `river.linear_model.BayesianLinearRegression`** — *blocked on* the `standardize: false` Kalman switch (ENHANCEMENTS E19); once added, the recursions are the same rank-1 Bayesian update. |
-| T-R3 | P2 | **`EwCov` (λ=1, unit weights) ≡ `river.stats.Mean` / `Var` / `Cov` / `PearsonCorr`**: our mean-form accumulators with no decay are exact running moments; river's Welford implementations are the independent route to the same numbers. Also validates our raw-moment formulation against Welford on ordinary scales (see T-E9 for where it breaks). |
+| T-R3 | ~~P2~~ **done** | **`EwCov` ≡ `river.stats.Mean` / `Var` / `Cov` / `PearsonCorr`** — exact agreement (1e-9) with no decay, reached via the new `ew_cov` surface (ENHANCEMENTS E1). The final test in that class also quantifies where the two diverge: at a 1e9 offset river's Welford form is still exact while our raw-moment form has lost the variance entirely, which is the gap E11b would close. |
 
 **Statistical (tail agreement after warmup, tolerance stated per test):**
 
