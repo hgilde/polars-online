@@ -72,3 +72,8 @@ jobs:
 
       - name: pytest
         run: uv run pytest
+
+      # Reported, never gating (docs/TESTING.md T-D4).
+      - name: coverage (python)
+        run: uv run pytest --cov=polars_online --cov-report=term -q
+        continue-on-error: true

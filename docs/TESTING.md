@@ -1,7 +1,16 @@
 # Test coverage and testing improvements
 
-Status as of 2026-08-30: **61 Rust tests + 293 pytest functions**, all green,
-run in CI on three OSes.
+Status as of 2026-08-30: **61 Rust tests + 335 pytest functions** (plus 2 opt-in
+soak tests), all green, run in CI on three OSes.
+
+Measured coverage (`./scripts/coverage.sh`): **96% of the Python package**, and
+**75% region / 73% line** of the Rust workspace. The Rust figure understates
+reality — `cargo llvm-cov` only sees what `cargo test` runs, so `online-py`
+(0%) and much of `online-polars` are exercised by the pytest suite through the
+compiled extension, invisible to the Rust instrumentation. The genuinely thin
+spots it does reveal are `online-cli/src/main.rs` (argument plumbing, covered
+instead by the CLI integration tests through `run_config`) and
+`online-core/src/robust.rs` (75%).
 
 **Progress on this document's own backlog** (updated as items land):
 
@@ -22,6 +31,9 @@ run in CI on three OSes.
 | T-E5–T-E10, T-E12 | **Done** — degenerate solves (collinear/constant features in the plain path, with `solve_failures` now observable), duplicate/zero/extreme clock deltas, empty chunks and minimal shapes, categorical groups and null session values, large-offset numerics, datetime/integer clocks, and the pending-delta-across-save/load case. **Found a second defect** (see T-E9 below). |
 | T-D3 thread determinism | **Done** — `tests/test_portability.py` runs the bank in subprocesses at `RAYON_NUM_THREADS=1` and `=8` and requires identical output. |
 | T-W3/T-W4/T-W6 (locally testable) | **Done** — CRLF and LF configs both parse through the CLI; Windows-style escaped paths and paths with spaces round-trip; the exact output field-name list (which embeds formatted floats) is pinned, plus a `.gitattributes` normalizing line endings so a Windows checkout cannot introduce CRLF. |
+| T-D2 property-based testing | **Done** — `tests/test_properties.py` (hypothesis) generates adversarial streams (mixed nulls, duplicate/long-gap clocks, ±1e8 values, zero weights, tiny groups) and asserts the universal invariants for all seven models, including the strongest one: **changing a row's own target never changes that row's own prediction** (out-of-sample by construction, hard rule 2). |
+| T-E11 soak | **Done** — 10M rows through one state in ~6.5s: `n_eff` stays bounded and does not drift between the start and end of the stream, the fit is still accurate, and a 2M-row state serializes to under 4KB (memory is O(state), not O(data)). Opt-in via `pytest -m soak`. |
+| T-D4 coverage | **Done** (reported, not gating) — `scripts/coverage.sh`; numbers above. |
 | T-D1 / Windows CI | **Blocked on credentials** — see "Windows and cross-platform" below. `origin` is `github.com/hgilde/polars-online` and 24 commits are ready, but this machine has no GitHub auth (no keychain entry, no SSH key, no token, no `gh`), so nothing has ever been pushed and **no CI job has ever run on Windows**. |
 
 This document assesses what the tests actually prove, then lists concrete
@@ -109,7 +121,7 @@ Findings first — both verified against the current build:
 | T-E8 | ~~P2~~ **done** | Non-string group and session columns, null session values | Integer and categorical group columns, integer session columns. A null session value **is** its own session: `a → null` and `null → a` both count as changes, `null → null` does not. That was previously undocumented; it is now pinned. |
 | T-E9 | ~~P2~~ **done, and it found a defect** | **Large-offset cancellation** | The zero-variance drop threshold was `1e-10 × raw second moment` — about 450,000× the actual cancellation noise floor — so a perfectly good unit-variance feature sitting on a **1e6 offset was silently dropped, coefficient exactly 0**. That is an ordinary financial scale. Replaced with `variance_is_usable()` (a small multiple of `eps × raw`), shared by all four solving models. Measured operating range now pinned by test: exact below 1e4, ~2e-3 error at 1e6, dropped (never NaN, never garbage) beyond ~1e7. Centered/Welford updates remain the deeper fix — now with a baseline to beat. |
 | T-E10 | ~~P2~~ **done** (behavior pinned) | Datetime-typed clock columns | Confirmed and pinned: a `Datetime` clock casts to epoch **microseconds**, so one minute is 6e7 clock units and a `halflife` of 600 means 600 µs. Integer clocks work as plain numbers. Whether to reject or auto-scale datetimes is a design decision left open; the surprise is now a test, not a trap. |
-| T-E11 | P3 | Long-stream soak: ~10⁷ rows through one state | Assert boundedness (`n_eff`, S entries), no drift vs. a mid-stream save/restore, and stable throughput — the stability claim behind mean-form accumulators (PLAN §7), currently asserted only by argument. |
+| T-E11 | ~~P3~~ **done** | Long-stream soak: 10⁷ rows through one state | `n_eff` bounded and non-drifting end-to-end, coefficients still accurate, 2M-row state under 4KB, resume still exact. Opt-in (`pytest -m soak`), ~6.5s. |
 | T-E12 | ~~P3~~ **done** | Pending-delta across a save/load boundary; session change on a group's first row | Both targeted now: splitting a stream exactly after a skipped row and resuming from state reproduces the unbroken run, and a group's first row is treated as first even when it also changes session. |
 
 ### D. Windows and cross-platform
@@ -138,9 +150,9 @@ can break that macOS never will.
 | # | P | Improvement |
 |---|---|---|
 | T-D1 | P1 **blocked** | **Actually run the workflows once.** Until then T-W1/T-W2 and the wheel builds are untested claims. *Blocked on GitHub credentials on this machine*: no keychain entry for github.com, no SSH key, no `GH_TOKEN`, and `gh` is not installed, so `git push` cannot authenticate. Unblock with any of `gh auth login` / an SSH key / a PAT — note the token needs the **`workflow` scope**, since this push adds `.github/workflows/`. |
-| T-D2 | P2 | **Property-based testing**: `hypothesis` (Python) and/or `proptest` (Rust) generating adversarial streams — mixed nulls, dup/backwards clocks, constant features, weight extremes, tiny groups — asserting the universal invariants (chunk invariance, save/load equivalence, no non-finite outputs, null policy) for every model. This is the systematic version of section C. |
+| T-D2 | ~~P2~~ **done** | **Property-based testing** (hypothesis) over generated adversarial streams, asserting for all seven models: chunk invariance under any chunk size, save/load transparency at any split, outputs finite-or-null, skipped rows report no `n_eff`, group independence, and that a row's own target never influences its own prediction. A Rust-side `proptest` pass on `online-core` remains possible but is largely redundant now. |
 | T-D3 | ~~P2~~ **done** | Determinism across parallelism: the bank is run in subprocesses at `RAYON_NUM_THREADS=1` and `=8` over six groups, and the outputs must be identical. |
-| T-D4 | P3 | Coverage measurement (`cargo llvm-cov` + `pytest --cov`) with a reported (not gating) number, and a periodic `cargo mutants` pass on `online-core` — solver/decay arithmetic is exactly where mutation testing earns its keep. |
+| T-D4 | ~~P3~~ **partly done** | Coverage is measured and reported by `scripts/coverage.sh` (96% Python, 75%/73% Rust with the caveat above). Still open: wiring it into CI as a reported number, and a periodic `cargo mutants` pass on `online-core` — solver/decay arithmetic is exactly where mutation testing earns its keep. |
 
 ## Suggested order
 
