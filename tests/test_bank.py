@@ -490,3 +490,81 @@ class TestWarmPriors:
                 halflife=100.0,
                 coef0=[[0.0, 1.0]],  # too short for 2 features + intercept
             )
+
+
+class TestPerTargetMinPeriods:
+    """E7: `min_periods` accepts one threshold per target.
+
+    A 5-minute-ahead target and a 1-day-ahead target rarely deserve the same
+    warmup. Warmup gates *output*, not learning.
+    """
+
+    def _out(self, min_periods, n=120):
+        rng = np.random.default_rng(0)
+        x = rng.standard_normal(n)
+        df = pl.DataFrame({"x0": x, "y0": 2 * x, "y1": -x})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y0", "y1"],
+            features=["x0"],
+            halflife=1e9,
+            min_periods=min_periods,
+            max_rows_between_solves=1,
+        )
+        return po.ModelBank([spec]).fit_predict(df)
+
+    @staticmethod
+    def _first(out, field):
+        vals = out["m"].struct.field(field).to_list()
+        return next((i for i, v in enumerate(vals) if v is not None), None)
+
+    def test_each_target_waits_for_its_own_threshold(self):
+        out = self._out([5.0, 50.0])
+        assert self._first(out, "pred_y0") == 6
+        assert self._first(out, "pred_y1") == 51
+
+    def test_a_scalar_still_applies_to_every_target(self):
+        out = self._out(20.0)
+        assert self._first(out, "pred_y0") == self._first(out, "pred_y1") == 21
+
+    def test_a_late_target_has_no_residual_or_sigma_either(self):
+        rng = np.random.default_rng(1)
+        n = 120
+        x = rng.standard_normal(n)
+        df = pl.DataFrame({"x0": x, "y0": 2 * x, "y1": -x})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y0", "y1"],
+            features=["x0"],
+            halflife=1e9,
+            min_periods=[5.0, 60.0],
+            max_rows_between_solves=1,
+            emit_sigma=True,
+        )
+        out = po.ModelBank([spec]).fit_predict(df)
+        for field in ("resid_y1", "sigma_y1"):
+            vals = out["m"].struct.field(field).to_list()
+            assert all(v is None for v in vals[:55]), f"{field} leaked during warmup"
+
+    def test_learning_is_not_gated_only_output(self):
+        # The late target's fit must be as good as if it had reported all along:
+        # the model still learned from the withheld rows.
+        gated = self._out([5.0, 60.0], n=400)
+        eager = self._out([5.0, 5.0], n=400)
+        assert gated["m"].struct.field("pred_y1").to_list()[-1] == pytest.approx(
+            eager["m"].struct.field("pred_y1").to_list()[-1]
+        )
+
+    def test_wrong_length_is_rejected(self):
+        with pytest.raises(ValueError, match="min_periods list has 3 entries"):
+            po.spec.ewridge(
+                "m",
+                targets=["y0", "y1"],
+                features=["x0"],
+                halflife=100.0,
+                min_periods=[1.0, 2.0, 3.0],
+            )
+
+    def test_negative_is_rejected(self):
+        with pytest.raises(ValueError, match="min_periods must be >= 0"):
+            po.spec.ewridge("m", targets=["y0"], features=["x0"], halflife=100.0, min_periods=-1.0)

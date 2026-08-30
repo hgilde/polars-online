@@ -345,7 +345,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 n_features: spec.k(),
                 decay,
                 stats,
-                min_periods: spec.min_periods.unwrap_or(2.0),
+                min_periods: spec.min_periods_per_target()[0].max(2.0),
                 precision_prior: *precision_prior,
             };
             Ok(AnyModel::EwCov(Box::new(EwCovModel::new(cfg)?)))
@@ -504,6 +504,8 @@ pub struct Stream {
     resid_w: Vec<Vec<f64>>,
     /// Page-Hinkley detectors per instance and slot, when `emit_drift` is on.
     drift: Vec<Vec<PageHinkley>>,
+    /// Warmup threshold per target (ENHANCEMENTS E7).
+    min_periods: Vec<f64>,
 }
 
 impl Stream {
@@ -511,6 +513,12 @@ impl Stream {
     pub fn solve_failures(&self) -> u64 {
         self.models.iter().map(|(_, m)| m.solve_failures()).sum()
     }
+}
+
+/// True when this target has not reached its own warmup threshold yet.
+#[inline]
+fn step_n_eff_below(n_eff: f64, min_periods: &[f64], target: usize) -> bool {
+    min_periods.get(target).is_some_and(|t| n_eff < *t)
 }
 
 /// Output of one row for one stream: `None` = skipped/emit-all-null.
@@ -551,6 +559,7 @@ impl Stream {
             resid_var: slots.iter().map(|&n| vec![0.0; n]).collect(),
             resid_w: slots.iter().map(|&n| vec![0.0; n]).collect(),
             drift,
+            min_periods: spec.min_periods_per_target(),
             models,
             decays,
             rows_seen: 0,
@@ -652,8 +661,20 @@ impl Stream {
         let mut drift = Vec::with_capacity(self.drift.len());
         let mut drift_seen = false;
         for (mi, (_, m)) in self.models.iter_mut().enumerate() {
-            let step = m.step(&xs, &ys, adv.d_clock, w);
+            let mut step = m.step(&xs, &ys, adv.d_clock, w);
             let nc = step.pred.len() / m_targets;
+
+            // Per-target warmup (ENHANCEMENTS E7). The model itself predicts
+            // once the *smallest* threshold is met; a slot whose own target is
+            // not ready is withheld here, before it can reach the residual,
+            // sigma, resid_z, drift or selection. Warmup gates output, not
+            // learning -- the model has already updated from this row.
+            for (slot, p) in step.pred.iter_mut().enumerate() {
+                if step_n_eff_below(step.n_eff, &self.min_periods, slot / nc) {
+                    *p = f64::NAN;
+                }
+            }
+
             let r: Vec<f64> = step
                 .pred
                 .iter()

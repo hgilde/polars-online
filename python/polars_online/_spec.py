@@ -56,7 +56,7 @@ def _common(
     session: str | None = None,
     session_gap: float | str | None = None,
     weight: str | None = None,
-    min_periods: float | None = None,
+    min_periods: float | list[float] | None = None,
     coef_every: int = 0,
     emit_sigma: bool = False,
     emit_resid_z: bool = False,

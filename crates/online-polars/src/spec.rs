@@ -290,7 +290,12 @@ pub struct Spec {
     #[serde(default)]
     pub weight: Option<String>,
     #[serde(default)]
-    pub min_periods: Option<f64>,
+    /// Warmup in `n_eff` units. A scalar applies to every target; a list gives
+    /// one threshold per target, in `targets` order (ENHANCEMENTS E7) — a
+    /// 5-minute-ahead target and a 1-day-ahead target rarely deserve the same
+    /// warmup. Warmup gates *output*, not learning: the model still updates
+    /// from rows whose predictions are withheld.
+    pub min_periods: Option<FloatOrList>,
     /// 0 = never; coefficients are also emitted on the last row of every chunk.
     #[serde(default)]
     pub coef_every: u32,
@@ -406,9 +411,26 @@ impl Spec {
         })
     }
 
+    /// Threshold per target, in `targets` order.
+    pub fn min_periods_per_target(&self) -> Vec<f64> {
+        match &self.min_periods {
+            None => vec![self.default_min_periods(); self.m()],
+            Some(FloatOrList::Float(v)) => vec![v.0; self.m()],
+            Some(FloatOrList::List(v)) => v.iter().map(|n| n.0).collect(),
+        }
+    }
+
+    fn default_min_periods(&self) -> f64 {
+        (self.k() + usize::from(self.add_intercept)) as f64
+    }
+
+    /// The threshold the *model* uses: the smallest across targets, so a model
+    /// starts predicting as soon as any target is ready. Per-target gating of
+    /// the reported values happens in the stream layer.
     pub fn min_periods_or_default(&self) -> f64 {
-        self.min_periods
-            .unwrap_or((self.k() + usize::from(self.add_intercept)) as f64)
+        self.min_periods_per_target()
+            .into_iter()
+            .fold(f64::INFINITY, f64::min)
     }
 
     /// Default solve cadence: halflife/50 (docs/PLAN.md §4.1, [validate]).
@@ -428,6 +450,18 @@ impl Spec {
         }
         self.decays()?;
         self.clock_cfg()?;
+        let mp = self.min_periods_per_target();
+        if mp.len() != self.m() {
+            return Err(format!(
+                "spec {:?}: min_periods list has {} entries but there are {} targets",
+                self.name,
+                mp.len(),
+                self.m()
+            ));
+        }
+        if mp.iter().any(|v| *v < 0.0 || v.is_nan()) {
+            return Err(format!("spec {:?}: min_periods must be >= 0", self.name));
+        }
         if let Some(a) = &self.drift_action {
             if !["flag", "reset"].contains(&a.as_str()) {
                 return Err(format!(
