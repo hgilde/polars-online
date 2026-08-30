@@ -246,6 +246,12 @@ pub struct Spec {
     /// units of the model's own recent error. Off by default.
     #[serde(default)]
     pub emit_resid_z: bool,
+    /// Emit `selected_<target>` and `pred_<target>__selected`: online model
+    /// selection across every grid slot for that target (ridge values, feature
+    /// sets and halflives), by lowest EW out-of-sample error. Generalizes the
+    /// lasso's `lam_selected`. Requires more than one slot per target.
+    #[serde(default)]
+    pub emit_selected: bool,
     /// ModelBank/CLI only; one state per key. The expression API uses `.over()`.
     #[serde(default)]
     pub group: Option<String>,
@@ -347,6 +353,22 @@ impl Spec {
         }
         self.decays()?;
         self.clock_cfg()?;
+        if self.emit_selected {
+            if matches!(self.model, ModelKind::EwCov { .. }) {
+                return Err(format!(
+                    "spec {:?}: emit_selected does not apply to ew_cov (it has no predictions)",
+                    self.name
+                ));
+            }
+            let n_slots = self.decays()?.len() * crate::combo_labels(self).len();
+            if n_slots < 2 {
+                return Err(format!(
+                    "spec {:?}: emit_selected needs more than one slot per target; add a \
+                     ridge/feature_set/halflife grid or a lasso path",
+                    self.name
+                ));
+            }
+        }
         match &self.model {
             ModelKind::EwCov { stats } => {
                 if let Some(stats) = stats {

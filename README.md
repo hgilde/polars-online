@@ -89,6 +89,19 @@ online --config examples/bank.toml --resume bank.state --save-state bank.state
 online --config examples/bank.toml --dry-run     # validate + print the output schema
 ```
 
+## Diagnostics and selection
+
+Three opt-in outputs, all derived from state the models already keep:
+
+| flag | adds | meaning |
+|---|---|---|
+| `emit_sigma` | `sigma_<slot>` | EW standard deviation of that slot's out-of-sample residuals |
+| `emit_resid_z` | `resid_z_<slot>` | `resid / sigma` — how surprising the row was, in units of the model's own recent error |
+| `emit_selected` | `selected_<t>`, `pred_<t>__selected` | online model selection across ridge values, feature sets and halflives, by lowest EW out-of-sample error |
+
+All three read from the state *before* each row, so they are out-of-sample like
+the predictions they describe.
+
 ## Evaluation
 
 ```python

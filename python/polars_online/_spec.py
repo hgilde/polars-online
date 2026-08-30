@@ -58,6 +58,7 @@ def _common(
     coef_every: int = 0,
     emit_sigma: bool = False,
     emit_resid_z: bool = False,
+    emit_selected: bool = False,
     group: str | None = None,
 ) -> dict[str, Any]:
     spec = {
@@ -78,6 +79,7 @@ def _common(
         "coef_every": coef_every,
         "emit_sigma": emit_sigma,
         "emit_resid_z": emit_resid_z,
+        "emit_selected": emit_selected,
         "group": group,
     }
     validate_spec(_json(spec))

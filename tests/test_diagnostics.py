@@ -175,3 +175,107 @@ class TestAllModels:
         b = po.ModelBank.load(p, specs=[spec])
         rest = df.slice(100, 100)
         assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
+
+
+class TestOnlineSelection:
+    """E13: `emit_selected` — online model selection across grid slots.
+
+    Generalizes the lasso's `lam_selected` to ridge values, feature sets and
+    halflives: for each target, pick the slot with the lowest EW out-of-sample
+    error so far (the `sigma` already tracked for E12) and emit that slot's
+    prediction plus its label.
+    """
+
+    def _grid_spec(self, **kw):
+        d = dict(
+            targets=["y0"],
+            features=["x0"],
+            ridge=[1e-8, 1.0, 1000.0],
+            halflife=300.0,
+            min_periods=20.0,
+            max_rows_between_solves=1,
+            emit_selected=True,
+        )
+        d.update(kw)
+        return po.spec.ewridge("m", **d)
+
+    def _selection(self, y, x, **kw):
+        out = po.ModelBank([self._grid_spec(**kw)]).fit_predict(pl.DataFrame({"x0": x, "y0": y}))
+        return out
+
+    def test_fields_are_appended_once_per_target(self):
+        spec = self._grid_spec(targets=["y0", "y1"])
+        fields = po.spec.output_fields(spec)
+        assert fields[-4:] == [
+            "pred_y0__selected",
+            "selected_y0",
+            "pred_y1__selected",
+            "selected_y1",
+        ]
+
+    def test_picks_the_light_ridge_on_a_strong_signal(self):
+        rng = np.random.default_rng(1)
+        n = 4000
+        x = rng.standard_normal(n)
+        out = self._selection(2 * x + 0.3 * rng.standard_normal(n), x)
+        sel = [s for s in out["m"].struct.field("selected_y0").to_list()[-1500:] if s]
+        assert sel.count("r0.00000001") / len(sel) > 0.9
+
+    def test_picks_shrinkage_on_pure_noise(self):
+        rng = np.random.default_rng(1)
+        n = 4000
+        x = rng.standard_normal(n)
+        out = self._selection(rng.standard_normal(n), x)
+        sel = [s for s in out["m"].struct.field("selected_y0").to_list()[-1500:] if s]
+        # the near-zero ridge fits the noise and must not dominate
+        assert sel.count("r0.00000001") / len(sel) < 0.2
+
+    def test_selected_prediction_equals_the_named_slot(self):
+        rng = np.random.default_rng(2)
+        n = 1000
+        x = rng.standard_normal(n)
+        out = self._selection(2 * x + rng.standard_normal(n), x)
+        st = out["m"].struct
+        names = st.field("selected_y0").to_list()
+        chosen = st.field("pred_y0__selected").to_list()
+        for i in (300, 600, 900):
+            assert names[i] is not None
+            assert chosen[i] == st.field(f"pred_y0__{names[i]}").to_list()[i]
+
+    def test_selects_across_halflives_too(self):
+        rng = np.random.default_rng(3)
+        n = 2000
+        x = rng.standard_normal(n)
+        spec = self._grid_spec(ridge=1e-6, halflife=[20.0, 2000.0])
+        out = po.ModelBank([spec]).fit_predict(
+            pl.DataFrame({"x0": x, "y0": 2 * x + 0.2 * rng.standard_normal(n)})
+        )
+        sel = {s for s in out["m"].struct.field("selected_y0").to_list() if s}
+        assert sel <= {"@h20", "@h2000"}
+        assert sel, "nothing was ever selected"
+
+    def test_requires_more_than_one_slot(self):
+        with pytest.raises(ValueError, match="more than one slot"):
+            po.spec.ewridge(
+                "m", targets=["y0"], features=["x0"], halflife=100.0, emit_selected=True
+            )
+
+    def test_rejected_for_ew_cov(self):
+        with pytest.raises(ValueError, match="does not apply to ew_cov"):
+            po.spec.ew_cov("c", features=["x0", "x1"], halflife=100.0, emit_selected=True)
+
+    def test_chunk_invariance(self):
+        rng = np.random.default_rng(4)
+        n = 300
+        x = rng.standard_normal(n)
+        df = pl.DataFrame({"x0": x, "y0": 2 * x + rng.standard_normal(n)})
+        spec = self._grid_spec()
+        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        bank = po.ModelBank([spec])
+        many = (
+            pl.concat([bank.fit_predict(df.slice(i, 29)) for i in range(0, df.height, 29)])
+            .select("m")
+            .unnest("m")
+        )
+        keep = [c for c in one.columns if not c.startswith("coef")]
+        assert one.select(keep).equals(many.select(keep), null_equal=True)

@@ -532,7 +532,32 @@ pub fn output_fields(spec: &Spec) -> Vec<String> {
             }
         }
     }
+    if spec.emit_selected {
+        for t in &spec.targets {
+            fields.push(format!("pred_{t}__selected"));
+            fields.push(format!("selected_{t}"));
+        }
+    }
     fields
+}
+
+/// Labels for every prediction slot of one target, across halflife instances
+/// and combos, in the order the slots appear.
+fn slot_labels(spec: &Spec) -> Vec<String> {
+    let decays = spec.decays().expect("validated");
+    let combos = combo_labels(spec);
+    let mut out = Vec::new();
+    for (suffix, _) in &decays {
+        for c in &combos {
+            let label = format!("{c}{suffix}");
+            out.push(if label.is_empty() {
+                "default".to_string()
+            } else {
+                label.trim_start_matches("__").to_string()
+            });
+        }
+    }
+    out
 }
 
 fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsResult<Column> {
@@ -583,6 +608,37 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
                 if let Some(online_core::Extra::Lasso { lam_selected }) = &out.extra[mi] {
                     for (t_i, l) in lam_selected.iter().enumerate() {
                         lam_sel[mi * m + t_i][*i] = Some(*l);
+                    }
+                }
+            }
+        }
+    }
+
+    // Online selection across every slot of a target: pick the slot with the
+    // lowest EW out-of-sample error so far (`sigma`, already tracked for E12),
+    // and emit that slot's prediction plus its label. Same idea as the lasso's
+    // `lam_selected`, generalized to ridge / feature-set / halflife grids.
+    let labels = slot_labels(spec);
+    let mut sel_pred = vec![vec![None::<f64>; n]; if spec.emit_selected { m } else { 0 }];
+    let mut sel_name = vec![vec![None::<&str>; n]; if spec.emit_selected { m } else { 0 }];
+    if spec.emit_selected {
+        for (i, out) in rows {
+            let Some(out) = out else { continue };
+            for t_i in 0..m {
+                let mut best: Option<(f64, usize, usize)> = None;
+                for mi in 0..n_models {
+                    for c_i in 0..nc {
+                        let s = out.sigma[mi][t_i * nc + c_i];
+                        if s.is_finite() && best.is_none_or(|(b, _, _)| s < b) {
+                            best = Some((s, mi, c_i));
+                        }
+                    }
+                }
+                if let Some((_, mi, c_i)) = best {
+                    let p = out.pred[mi][t_i * nc + c_i];
+                    if p.is_finite() {
+                        sel_pred[t_i][*i] = Some(p);
+                        sel_name[t_i][*i] = Some(labels[mi * nc + c_i].as_str());
                     }
                 }
             }
@@ -646,6 +702,18 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
                     lam_sel[mi * m + t_i].as_slice(),
                 ));
             }
+        }
+    }
+    if spec.emit_selected {
+        for (t_i, t) in spec.targets.iter().enumerate() {
+            fields.push(Series::new(
+                format!("pred_{t}__selected").into(),
+                sel_pred[t_i].as_slice(),
+            ));
+            fields.push(Series::new(
+                format!("selected_{t}").into(),
+                sel_name[t_i].as_slice(),
+            ));
         }
     }
     let st = StructChunked::from_series(spec.name.as_str().into(), n, fields.iter())?;
