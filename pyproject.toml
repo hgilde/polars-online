@@ -42,6 +42,12 @@ line-length = 100
 target-version = "py312"
 src = ["python", "tests"]
 
+[tool.ruff.format]
+# ruff also formats Python inside Markdown fences. Documentation examples are
+# laid out for reading (aligned comments, grouped keyword arguments), so the
+# formatter does not own them; `ruff check` still lints them.
+exclude = ["*.md"]
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
