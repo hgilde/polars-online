@@ -1037,6 +1037,74 @@ mod tests {
     }
 
     #[test]
+    fn standardize_without_intercept_matches_plain_when_ridge_tiny() {
+        // `solve_standardized` has a second, quite different branch for
+        // `add_intercept = false`: it scales by the *raw* second-moment
+        // diagonals rather than centering first. The invariance is the same --
+        // a diagonal rescale of the normal equations cannot move the solution
+        // when the penalty is negligible -- so a scaling applied in the wrong
+        // direction, or to only one of A, b and the unscaled result, shows up
+        // here. Features are deliberately on very different scales (~4 and
+        // ~0.003) so the scaling matrix is far from the identity.
+        let mut ca = cfg(2, 1);
+        ca.add_intercept = false;
+        ca.min_periods = 2.0;
+        // The invariance is exact only at ridge = 0: a penalty applies on the
+        // raw scale in one path and the standardized scale in the other, and
+        // the two feature scales here differ by ~1e3, so 1e-8 is enough to
+        // separate them at 1e-6.
+        ca.ridge = vec![1e-12];
+        let mut cb = ca.clone();
+        cb.standardize = true;
+        let mut ma = EwRidge::new(ca).unwrap();
+        let mut mb = EwRidge::new(cb).unwrap();
+        let mut s = 17u64;
+        for i in 0..300 {
+            let x = [4.0 + lcg(&mut s), 0.003 * lcg(&mut s)];
+            let y = 0.25 * x[0] - 40.0 * x[1] + 0.001 * lcg(&mut s);
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            ma.step(&x, &[Some(y)], d, 1.0);
+            mb.step(&x, &[Some(y)], d, 1.0);
+        }
+        let a = &ma.coefficients().unwrap()[0];
+        let b = &mb.coefficients().unwrap()[0];
+        assert_eq!(a.len(), 2, "no intercept slot when add_intercept is false");
+        for i in 0..2 {
+            assert!(
+                (a[i] - b[i]).abs() < 1e-6 * (1.0 + a[i].abs()),
+                "coef {i}: plain {} vs standardized {}",
+                a[i],
+                b[i]
+            );
+        }
+        // And it actually recovered the generating coefficients, so the
+        // agreement is not two paths being wrong the same way.
+        assert!((b[0] - 0.25).abs() < 1e-3, "{}", b[0]);
+        assert!((b[1] + 40.0).abs() < 1.0, "{}", b[1]);
+    }
+
+    #[test]
+    fn standardize_without_intercept_drops_a_zero_column() {
+        // The `s[i] > 0.0` guard in the no-intercept branch: a feature that is
+        // identically zero has zero raw second moment, so it cannot be scaled
+        // and must come out with a zero coefficient rather than a NaN.
+        let mut c = cfg(2, 1);
+        c.add_intercept = false;
+        c.standardize = true;
+        c.min_periods = 2.0;
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 19u64;
+        for i in 0..100 {
+            let x = [1.0 + lcg(&mut s), 0.0];
+            let y = 2.0 * x[0];
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let b = &m.coefficients().unwrap()[0];
+        assert_eq!(b[1], 0.0, "the all-zero feature must be dropped, not NaN");
+        assert!((b[0] - 2.0).abs() < 1e-6, "{}", b[0]);
+    }
+
+    #[test]
     fn zero_variance_feature_dropped_in_standardized_solve() {
         let mut c = cfg(2, 1);
         c.standardize = true;
