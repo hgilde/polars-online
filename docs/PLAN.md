@@ -225,7 +225,7 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
 - [x] 11. Kalman (§4.4) with halflife-derived q; per-factor halflife; `inf` pinning.
 - [x] 12. Evaluation harness (§8); run the solve-schedule experiment and every **[validate]**
       item on public data; record results in `docs/VALIDATION.md` and fix defaults.
-- [ ] 13. Robust models (§4.5).
+- [x] 13. Robust models (§4.5).
 - [ ] 14. Logistic / FTRL (§4.6).
 - [ ] 15. `online-cli`: TOML specs, parquet streaming in/out, progress, resume from state.
 - [ ] 16. CI: wheels + CLI binaries for macOS/Windows, cross-platform state test, Polars-latest

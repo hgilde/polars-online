@@ -26,7 +26,7 @@ def _json(spec: dict[str, Any]) -> str:
     return json.dumps(enc(spec))
 
 
-__all__ = ["ewridge", "kalman", "lasso", "output_fields", "rls"]
+__all__ = ["ewridge", "huber", "kalman", "lasso", "output_fields", "quantile", "rls"]
 
 
 def _common(
@@ -222,5 +222,75 @@ def kalman(
         "obs_var": obs_var,
         "p0": p0,
         "share_p": share_p,
+    }
+    return _common(name, model, targets=targets, features=features, **common)
+
+
+def huber(
+    name: str,
+    *,
+    targets: list[str],
+    features: list[str],
+    huber_delta: float | None = None,
+    ridge: float | None = None,
+    standardize: bool = False,
+    solve_every: float | None = None,
+    max_rows_between_solves: int | None = None,
+    **common: Any,
+) -> dict[str, Any]:
+    """Huber regression (docs/PLAN.md section 4.5).
+
+    IRLS reweighting on the ew_ridge update: each row's weight is scaled by the
+    robust weight of its *prior* residual, so it stays out-of-sample. With
+    ``d = huber_delta`` in units of the EW residual std ``s``::
+
+        w_robust = 1            if |r| <= d * s
+                 = d * s / |r|  otherwise
+
+    The weights are per target, so ``S`` is per target here (one accumulator
+    each), unlike ew_ridge which shares one. Default ``huber_delta`` is 1.5.
+    """
+    model: dict[str, Any] = {
+        "type": "huber",
+        "huber_delta": huber_delta,
+        "ridge": ridge,
+        "standardize": standardize,
+        "solve_every": solve_every,
+        "max_rows_between_solves": max_rows_between_solves,
+    }
+    return _common(name, model, targets=targets, features=features, **common)
+
+
+def quantile(
+    name: str,
+    *,
+    targets: list[str],
+    features: list[str],
+    quantile: float,
+    ridge: float | None = None,
+    standardize: bool = False,
+    solve_every: float | None = None,
+    max_rows_between_solves: int | None = None,
+    quantile_eps: float | None = None,
+    **common: Any,
+) -> dict[str, Any]:
+    """Quantile regression at level ``quantile`` (docs/PLAN.md section 4.5).
+
+    The IRLS weights of the check loss, applied to the prior residual::
+
+        w_robust = 2 * tau       * s / max(|r|, eps * s)   if r > 0
+                 = 2 * (1 - tau) * s / max(|r|, eps * s)   otherwise
+
+    ``quantile_eps`` floors |r| (in units of the EW residual std) so a
+    near-zero residual cannot produce an unbounded weight.
+    """
+    model: dict[str, Any] = {
+        "type": "quantile",
+        "quantile": quantile,
+        "ridge": ridge,
+        "standardize": standardize,
+        "solve_every": solve_every,
+        "max_rows_between_solves": max_rows_between_solves,
+        "quantile_eps": quantile_eps,
     }
     return _common(name, model, targets=targets, features=features, **common)

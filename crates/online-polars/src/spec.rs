@@ -128,6 +128,34 @@ pub enum ModelKind {
         #[serde(default)]
         share_p: bool,
     },
+    /// Huber regression (docs/PLAN.md §4.5).
+    Huber {
+        /// Cut point in units of the EW residual std. Default 1.5 [validate].
+        #[serde(default)]
+        huber_delta: Option<f64>,
+        #[serde(default)]
+        ridge: Option<f64>,
+        #[serde(default)]
+        standardize: bool,
+        #[serde(default)]
+        solve_every: Option<f64>,
+        #[serde(default)]
+        max_rows_between_solves: Option<u32>,
+    },
+    /// Quantile regression at level `quantile` (docs/PLAN.md §4.5).
+    Quantile {
+        quantile: f64,
+        #[serde(default)]
+        ridge: Option<f64>,
+        #[serde(default)]
+        standardize: bool,
+        #[serde(default)]
+        solve_every: Option<f64>,
+        #[serde(default)]
+        max_rows_between_solves: Option<u32>,
+        #[serde(default)]
+        quantile_eps: Option<f64>,
+    },
     Rls {
         /// Prior strength: `P0 = I / ridge`. Scalar only (baked into P0).
         #[serde(default)]
@@ -144,6 +172,8 @@ impl ModelKind {
             ModelKind::Rls { .. } => "rls",
             ModelKind::Lasso { .. } => "lasso",
             ModelKind::Kalman { .. } => "kalman",
+            ModelKind::Huber { .. } => "huber",
+            ModelKind::Quantile { .. } => "quantile",
         }
     }
 }
@@ -281,6 +311,23 @@ impl Spec {
         self.decays()?;
         self.clock_cfg()?;
         match &self.model {
+            ModelKind::Huber { huber_delta, .. } => {
+                if huber_delta.is_some_and(|d| d <= 0.0 || d.is_nan()) {
+                    return Err(format!("spec {:?}: huber_delta must be > 0", self.name));
+                }
+            }
+            ModelKind::Quantile {
+                quantile,
+                quantile_eps,
+                ..
+            } => {
+                if !(0.0 < *quantile && *quantile < 1.0) {
+                    return Err(format!("spec {:?}: quantile must be in (0, 1)", self.name));
+                }
+                if quantile_eps.is_some_and(|e| e <= 0.0) {
+                    return Err(format!("spec {:?}: quantile_eps must be > 0", self.name));
+                }
+            }
             ModelKind::Kalman {
                 coef_halflife,
                 q,

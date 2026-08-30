@@ -3,7 +3,7 @@
 
 use online_core::{
     ClockState, Decay, EwRidge, EwRidgeCfg, Kalman, KalmanCfg, Lasso, LassoCfg, ModelState,
-    OnlineModel, Rls, RlsCfg, State, StateError,
+    OnlineModel, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +16,7 @@ pub enum AnyModel {
     Rls(Box<Rls>),
     Lasso(Box<Lasso>),
     Kalman(Box<Kalman>),
+    Robust(Box<Robust>),
 }
 
 impl AnyModel {
@@ -31,6 +32,7 @@ impl AnyModel {
             AnyModel::Rls(m) => m.step(x, y, d_clock, weight),
             AnyModel::Lasso(m) => m.step(x, y, d_clock, weight),
             AnyModel::Kalman(m) => m.step(x, y, d_clock, weight),
+            AnyModel::Robust(m) => m.step(x, y, d_clock, weight),
         }
     }
 
@@ -40,6 +42,7 @@ impl AnyModel {
             AnyModel::Rls(m) => m.n_outputs(),
             AnyModel::Lasso(m) => m.n_outputs(),
             AnyModel::Kalman(m) => m.n_outputs(),
+            AnyModel::Robust(m) => m.n_outputs(),
         }
     }
 
@@ -52,6 +55,7 @@ impl AnyModel {
                 .coefficients()
                 .map(|b| b.iter().flat_map(|per_t| per_t.iter().cloned()).collect()),
             AnyModel::Kalman(m) => Some(m.coefficients()),
+            AnyModel::Robust(m) => m.coefficients().map(|b| b.to_vec()),
         }
     }
 
@@ -61,6 +65,7 @@ impl AnyModel {
             AnyModel::Rls(m) => m.state(),
             AnyModel::Lasso(m) => m.state(),
             AnyModel::Kalman(m) => m.state(),
+            AnyModel::Robust(m) => m.state(),
         }
     }
 
@@ -70,6 +75,7 @@ impl AnyModel {
             ModelState::Rls(_) => Ok(AnyModel::Rls(Box::new(Rls::restore(s)?))),
             ModelState::Lasso(_) => Ok(AnyModel::Lasso(Box::new(Lasso::restore(s)?))),
             ModelState::Kalman(_) => Ok(AnyModel::Kalman(Box::new(Kalman::restore(s)?))),
+            ModelState::Robust(_) => Ok(AnyModel::Robust(Box::new(Robust::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -190,6 +196,53 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::Kalman(Box::new(Kalman::new(cfg)?)))
         }
+        ModelKind::Huber {
+            huber_delta,
+            ridge,
+            standardize,
+            solve_every,
+            max_rows_between_solves,
+        } => {
+            let cfg = RobustCfg {
+                n_features: spec.k(),
+                n_targets: spec.m(),
+                add_intercept: spec.add_intercept,
+                decay,
+                loss: RobustLoss::Huber {
+                    delta: huber_delta.unwrap_or(1.5),
+                },
+                ridge: ridge.unwrap_or(1e-6),
+                standardize: *standardize,
+                min_periods: spec.min_periods_or_default(),
+                solve_every: solve_every.unwrap_or_else(|| spec.solve_every_default(decay)),
+                max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
+                quantile_eps: 1e-3,
+            };
+            Ok(AnyModel::Robust(Box::new(Robust::new(cfg)?)))
+        }
+        ModelKind::Quantile {
+            quantile,
+            ridge,
+            standardize,
+            solve_every,
+            max_rows_between_solves,
+            quantile_eps,
+        } => {
+            let cfg = RobustCfg {
+                n_features: spec.k(),
+                n_targets: spec.m(),
+                add_intercept: spec.add_intercept,
+                decay,
+                loss: RobustLoss::Quantile { tau: *quantile },
+                ridge: ridge.unwrap_or(1e-6),
+                standardize: *standardize,
+                min_periods: spec.min_periods_or_default(),
+                solve_every: solve_every.unwrap_or_else(|| spec.solve_every_default(decay)),
+                max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
+                quantile_eps: quantile_eps.unwrap_or(1e-3),
+            };
+            Ok(AnyModel::Robust(Box::new(Robust::new(cfg)?)))
+        }
     }
 }
 
@@ -228,7 +281,10 @@ pub fn combo_labels(spec: &Spec) -> Vec<String> {
             }
             out
         }
-        ModelKind::Rls { .. } | ModelKind::Kalman { .. } => vec![String::new()],
+        ModelKind::Rls { .. }
+        | ModelKind::Kalman { .. }
+        | ModelKind::Huber { .. }
+        | ModelKind::Quantile { .. } => vec![String::new()],
         ModelKind::Lasso { lasso_path, .. } => {
             lasso_path.iter().map(|l| format!("__l{l}")).collect()
         }

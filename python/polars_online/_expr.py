@@ -72,3 +72,13 @@ class OnlineNamespace:
         """Kalman / random-walk-beta filter over this column as the target."""
         spec = _spec.kalman("online", targets=[self._target()], features=features, **kwargs)
         return _run(spec, self._expr)
+
+    def huber(self, features: list[str], **kwargs: Any) -> pl.Expr:
+        """Huber regression over this column as the target."""
+        spec = _spec.huber("online", targets=[self._target()], features=features, **kwargs)
+        return _run(spec, self._expr)
+
+    def quantile(self, features: list[str], **kwargs: Any) -> pl.Expr:
+        """Quantile regression over this column as the target."""
+        spec = _spec.quantile("online", targets=[self._target()], features=features, **kwargs)
+        return _run(spec, self._expr)
