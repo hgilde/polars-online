@@ -53,12 +53,20 @@ pub enum ModelKind {
         #[serde(default)]
         max_rows_between_solves: Option<u32>,
     },
+    Rls {
+        /// Prior strength: `P0 = I / ridge`. Scalar only (baked into P0).
+        #[serde(default)]
+        ridge: Option<f64>,
+        #[serde(default)]
+        coef0: Option<Vec<Vec<f64>>>,
+    },
 }
 
 impl ModelKind {
     pub fn kind_name(&self) -> &'static str {
         match self {
             ModelKind::EwRidge { .. } => "ew_ridge",
+            ModelKind::Rls { .. } => "rls",
         }
     }
 }
@@ -196,6 +204,20 @@ impl Spec {
         self.decays()?;
         self.clock_cfg()?;
         match &self.model {
+            ModelKind::Rls { ridge, coef0 } => {
+                if ridge.is_some_and(|r| !(r > 0.0)) {
+                    return Err(format!("spec {:?}: rls ridge must be > 0", self.name));
+                }
+                let k_total = self.k() + usize::from(self.add_intercept);
+                if let Some(c) = coef0 {
+                    if c.len() != self.m() || c.iter().any(|v| v.len() != k_total) {
+                        return Err(format!(
+                            "spec {:?}: coef0 must be n_targets x (n_features + intercept)",
+                            self.name
+                        ));
+                    }
+                }
+            }
             ModelKind::EwRidge { feature_sets, .. } => {
                 if let Some(fs) = feature_sets {
                     for (name, cols) in fs {

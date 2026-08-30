@@ -58,3 +58,8 @@ class OnlineNamespace:
         ``polars_online.spec.ewridge`` minus name/targets/group."""
         spec = _spec.ewridge("online", targets=[self._target()], features=features, **kwargs)
         return _run(spec, self._expr)
+
+    def rls(self, features: list[str], **kwargs: Any) -> pl.Expr:
+        """Recursive least squares over this column as the target."""
+        spec = _spec.rls("online", targets=[self._target()], features=features, **kwargs)
+        return _run(spec, self._expr)

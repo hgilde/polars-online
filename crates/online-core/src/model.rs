@@ -49,6 +49,7 @@ impl State {
 pub enum ModelState {
     EwCov(crate::EwCov),
     EwRidge(Box<crate::EwRidge>),
+    Rls(Box<crate::Rls>),
 }
 
 #[derive(Debug, Error)]
@@ -69,6 +70,7 @@ impl ModelState {
         match self {
             ModelState::EwCov(_) => "ew_cov",
             ModelState::EwRidge(_) => "ew_ridge",
+            ModelState::Rls(_) => "rls",
         }
     }
 }

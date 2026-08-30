@@ -2,7 +2,7 @@
 //! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
 
 use online_core::{
-    ClockState, Decay, EwRidge, EwRidgeCfg, ModelState, OnlineModel, State, StateError,
+    ClockState, Decay, EwRidge, EwRidgeCfg, ModelState, OnlineModel, Rls, RlsCfg, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +12,7 @@ use crate::spec::{FloatOrList, ModelKind, Spec};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AnyModel {
     EwRidge(Box<EwRidge>),
+    Rls(Box<Rls>),
 }
 
 impl AnyModel {
@@ -24,30 +25,35 @@ impl AnyModel {
     ) -> online_core::Step {
         match self {
             AnyModel::EwRidge(m) => m.step(x, y, d_clock, weight),
+            AnyModel::Rls(m) => m.step(x, y, d_clock, weight),
         }
     }
 
     pub fn n_outputs(&self) -> usize {
         match self {
             AnyModel::EwRidge(m) => m.n_outputs(),
+            AnyModel::Rls(m) => m.n_outputs(),
         }
     }
 
     pub fn coefficients(&self) -> Option<Vec<Vec<f64>>> {
         match self {
             AnyModel::EwRidge(m) => m.coefficients().map(|b| b.to_vec()),
+            AnyModel::Rls(m) => Some(m.coefficients().to_vec()),
         }
     }
 
     pub fn state(&self) -> State {
         match self {
             AnyModel::EwRidge(m) => m.state(),
+            AnyModel::Rls(m) => m.state(),
         }
     }
 
     pub fn restore(s: &State) -> Result<Self, StateError> {
         match &s.model {
             ModelState::EwRidge(_) => Ok(AnyModel::EwRidge(Box::new(EwRidge::restore(s)?))),
+            ModelState::Rls(_) => Ok(AnyModel::Rls(Box::new(Rls::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -110,6 +116,18 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::EwRidge(Box::new(EwRidge::new(cfg)?)))
         }
+        ModelKind::Rls { ridge, coef0 } => {
+            let cfg = RlsCfg {
+                n_features: spec.k(),
+                n_targets: spec.m(),
+                add_intercept: spec.add_intercept,
+                decay,
+                ridge: ridge.unwrap_or(1.0),
+                coef0: coef0.clone(),
+                min_periods: spec.min_periods_or_default(),
+            };
+            Ok(AnyModel::Rls(Box::new(Rls::new(cfg)?)))
+        }
     }
 }
 
@@ -148,6 +166,7 @@ pub fn combo_labels(spec: &Spec) -> Vec<String> {
             }
             out
         }
+        ModelKind::Rls { .. } => vec![String::new()],
     }
 }
 

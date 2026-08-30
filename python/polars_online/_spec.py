@@ -7,7 +7,7 @@ from typing import Any
 
 from polars_online._polars_online import spec_output_fields, validate_spec
 
-__all__ = ["ewridge", "output_fields"]
+__all__ = ["ewridge", "output_fields", "rls"]
 
 
 def _common(
@@ -87,3 +87,27 @@ def ewridge(
 def output_fields(spec: dict[str, Any]) -> list[str]:
     """Struct field names this spec will produce, in order."""
     return spec_output_fields(json.dumps(spec))
+
+
+def rls(
+    name: str,
+    *,
+    targets: list[str],
+    features: list[str],
+    ridge: float | None = None,
+    coef0: list[list[float]] | None = None,
+    **common: Any,
+) -> dict[str, Any]:
+    """Recursive least squares spec (docs/PLAN.md section 4.2).
+
+    Math: maintains ``P = A^-1`` with ``A = sum of decayed w z z^T + ridge I``
+    via Sherman-Morrison, so coefficients update every row with no solve
+    staleness: ``g = P z / (1/w + z' P z)``,
+    ``beta_j += g (y_j - z' beta_j)``, ``P -= g (P z)'``. ``ridge`` sets
+    ``P0 = I / ridge`` and (unlike ew_ridge) penalizes the intercept.
+
+    Null policy deviation: a row with ANY null target is predict-only for all
+    targets, because P is shared across targets.
+    """
+    model: dict[str, Any] = {"type": "rls", "ridge": ridge, "coef0": coef0}
+    return _common(name, model, targets=targets, features=features, **common)
