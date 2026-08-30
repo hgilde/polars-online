@@ -312,6 +312,76 @@ mod tests {
     }
 
     #[test]
+    fn p2_is_accurate_on_skewed_data_that_forces_the_linear_fallback() {
+        // `adjust` prefers a parabolic prediction and falls back to linear
+        // when the parabola would break the markers' ordering -- the paper's
+        // condition. Uniform data rarely trips it, so the existing accuracy
+        // test leaves the fallback and its two directions unexercised. A
+        // heavy-tailed, strongly skewed stream trips it constantly.
+        for p in [0.05, 0.25, 0.5, 0.75, 0.95] {
+            let mut est = P2Quantile::new(p).unwrap();
+            let mut s = 23u64;
+            let mut all: Vec<f64> = Vec::new();
+            for i in 0..20000 {
+                // Exponential-ish tail, with periodic large excursions in both
+                // directions so both the upward and downward marker moves run.
+                let u = (lcg(&mut s) + 1.0) * 0.5;
+                let mut x = -(1.0 - u.min(1.0 - 1e-12)).ln();
+                if i % 97 == 0 {
+                    x *= 50.0;
+                }
+                if i % 89 == 0 {
+                    x = -x;
+                }
+                est.update(x);
+                all.push(x);
+            }
+            all.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let truth = all[((all.len() as f64) * p) as usize];
+            let got = est.get().unwrap();
+            let spread = all[all.len() - 1] - all[0];
+            assert!(
+                (got - truth).abs() < 0.02 * spread,
+                "p={p}: P2 said {got}, empirical {truth} (spread {spread})"
+            );
+        }
+    }
+
+    #[test]
+    fn p2_markers_stay_ordered_and_bracket_the_data() {
+        // The invariant the fallback exists to protect. If `adjust` ever moved
+        // a marker past its neighbour the estimate would be meaningless, and
+        // the accuracy tests would only notice if it happened to move far.
+        let mut est = P2Quantile::new(0.9).unwrap();
+        let mut s = 29u64;
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for i in 0..5000 {
+            let x = if i % 13 == 0 {
+                100.0 * lcg(&mut s)
+            } else {
+                lcg(&mut s)
+            };
+            est.update(x);
+            lo = lo.min(x);
+            hi = hi.max(x);
+            // The markers are only meaningful once the first five points have
+            // been sorted into them, which is also when `get` starts reporting.
+            if est.count < 5 {
+                continue;
+            }
+            for w in est.q.windows(2) {
+                assert!(w[0] <= w[1], "row {i}: markers out of order {:?}", est.q);
+            }
+            for w in est.n.windows(2) {
+                assert!(w[0] < w[1], "row {i}: positions out of order {:?}", est.n);
+            }
+            if let Some(q) = est.get() {
+                assert!(q >= lo && q <= hi, "row {i}: {q} outside [{lo}, {hi}]");
+            }
+        }
+    }
+
+    #[test]
     fn p2_costs_five_numbers_not_a_window() {
         // The point of P2: state is constant regardless of stream length.
         let mut est = P2Quantile::new(0.9).unwrap();
@@ -522,6 +592,46 @@ mod metric_tests {
             m.update(f64::NAN, y, 1.0, 1.0); // no prediction yet
         }
         assert!((m.ic().unwrap() - 1.0).abs() < 1e-6, "ic {:?}", m.ic());
+    }
+
+    #[test]
+    fn a_row_is_unscored_if_the_prediction_or_the_target_or_the_weight_is_missing() {
+        // Three independent reasons to skip, each of which must skip on its
+        // own: an OR here, not an AND.
+        for (pred, y, w) in [
+            (f64::NAN, 1.0, 1.0),
+            (f64::INFINITY, 1.0, 1.0),
+            (1.0, f64::NAN, 1.0),
+            (1.0, 1.0, 0.0),
+            (1.0, 1.0, -1.0),
+        ] {
+            let mut m = SlotMetrics::new();
+            let mut s = 31u64;
+            for _ in 0..500 {
+                let v = lcg(&mut s);
+                m.update(v, v, 1.0, 1.0);
+            }
+            let (ic, r2, hr) = (m.ic(), m.r2(), m.hit_rate());
+            m.update(pred, y, 1.0, w);
+            assert_eq!(m.ic(), ic, "({pred}, {y}, {w}) must not score");
+            assert_eq!(m.r2(), r2);
+            assert_eq!(m.hit_rate(), hr);
+        }
+
+        // A skipped row still ages the estimates: the effective weight shrinks
+        // even though the means do not move.
+        let mut m = SlotMetrics::new();
+        let mut s = 37u64;
+        for _ in 0..500 {
+            let v = lcg(&mut s);
+            m.update(v, v, 1.0, 1.0);
+        }
+        let before = m.hit_w;
+        m.update(f64::NAN, 1.0, 0.5, 1.0);
+        assert!(
+            (m.hit_w - before * 0.5).abs() < 1e-12,
+            "the weight must decay"
+        );
     }
 
     #[test]
