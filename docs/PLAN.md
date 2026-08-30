@@ -376,4 +376,10 @@ returns / volume / trade-count z-scores, targets = strictly future returns.
   slow-moving twin at a session boundary (ENHANCEMENTS E6).
 - ~~Whether targets at long horizons need a different `min_periods` than short ones.~~
   Answered: `min_periods` accepts a list, one entry per target (ENHANCEMENTS E7).
-- Public intraday dataset choice for tests (stable URL, permissive licence).
+- ~~Public intraday dataset choice for tests (stable URL, permissive licence).~~
+  Answered and in use: Binance's public daily kline dump
+  (`data.binance.vision`, BTCUSDT 1-minute bars) — stable per-day URLs, no
+  auth. `tests/data.py` downloads it on demand, caches under the gitignored
+  `.cache/`, and skips when offline, so hard rule 1 holds. It backs both the
+  reference comparisons and the defaults measured in `docs/VALIDATION.md`
+  (14,336 rows).
