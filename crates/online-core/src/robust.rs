@@ -402,6 +402,124 @@ mod tests {
     }
 
     #[test]
+    fn cfg_validation_rejects_each_bad_field() {
+        let huber = RobustLoss::Huber { delta: 1.5 };
+        let bad = |loss: RobustLoss, f: &dyn Fn(&mut RobustCfg), want: &str| {
+            let mut c = cfg(2, 1, loss);
+            f(&mut c);
+            match c.validate() {
+                Err(e) => assert!(e.contains(want), "wanted {want:?}, got {e:?}"),
+                Ok(()) => panic!("expected rejection mentioning {want:?}"),
+            }
+        };
+        bad(huber, &|c| c.n_features = 0, "must be >= 1");
+        bad(huber, &|c| c.n_targets = 0, "must be >= 1");
+
+        // delta is the crossover from squared to absolute loss.
+        for d in [0.0, -1.0, f64::NAN] {
+            bad(
+                huber,
+                &|c| c.loss = RobustLoss::Huber { delta: d },
+                "huber_delta",
+            );
+        }
+        cfg(2, 1, RobustLoss::Huber { delta: 1e-9 })
+            .validate()
+            .unwrap();
+
+        // The quantile is an open interval: 0 and 1 are not quantiles a
+        // weighted least-squares reformulation can represent.
+        for t in [0.0, 1.0, -0.1, 1.1, f64::NAN] {
+            bad(
+                huber,
+                &|c| c.loss = RobustLoss::Quantile { tau: t },
+                "quantile must be in",
+            );
+        }
+        for t in [1e-6, 0.5, 1.0 - 1e-6] {
+            cfg(2, 1, RobustLoss::Quantile { tau: t })
+                .validate()
+                .unwrap();
+        }
+
+        // ridge may be zero; quantile_eps may not (it divides).
+        bad(huber, &|c| c.ridge = -1e-9, "ridge must be >= 0");
+        let mut ok = cfg(2, 1, huber);
+        ok.ridge = 0.0;
+        ok.validate().unwrap();
+        bad(huber, &|c| c.quantile_eps = 0.0, "quantile_eps must be > 0");
+        bad(
+            huber,
+            &|c| c.quantile_eps = -1.0,
+            "quantile_eps must be > 0",
+        );
+    }
+
+    #[test]
+    fn n_eff_counts_observations_not_irls_weights() {
+        // The defect T-A5 found: the IRLS weights a quantile fit uses reach
+        // `2 / quantile_eps`, so counting them made `n_eff` -- and therefore
+        // `min_periods` -- meaningless. It must be the plain weighted
+        // observation count, identical to every other model's.
+        for loss in [
+            RobustLoss::Huber { delta: 1.5 },
+            RobustLoss::Quantile { tau: 0.5 },
+            RobustLoss::Quantile { tau: 0.9 },
+        ] {
+            let mut c = cfg(1, 1, loss);
+            c.decay = Decay::Halflife(20.0);
+            c.min_periods = 0.0;
+            let mut m = Robust::new(c).unwrap();
+            let mut want = 0.0;
+            for i in 0..30 {
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                let step = m.step(&[i as f64], &[Some(3.0 * i as f64)], d, 1.0);
+                assert!(
+                    (step.n_eff - want).abs() < 1e-12,
+                    "{loss:?} row {i}: {} vs {want}",
+                    step.n_eff
+                );
+                want = want * 0.5f64.powf(d / 20.0) + 1.0;
+            }
+            assert!(
+                want < 31.0,
+                "an observation count cannot exceed the row count"
+            );
+        }
+    }
+
+    #[test]
+    fn a_solve_failure_is_counted_and_the_previous_fit_is_kept() {
+        // Two perfectly collinear features with no ridge: the normal equations
+        // are singular. The model must keep its last good coefficients rather
+        // than emit NaN, and say so in `solve_failures`.
+        let mut c = cfg(2, 1, RobustLoss::Huber { delta: 1.5 });
+        c.ridge = 0.0;
+        c.add_intercept = true;
+        c.min_periods = 2.0;
+        let mut m = Robust::new(c).unwrap();
+        let mut s = 101u64;
+        for i in 0..40 {
+            let a = lcg(&mut s);
+            // x1 == x0, and the intercept is constant: rank deficient by two.
+            m.step(
+                &[a, a],
+                &[Some(2.0 * a + 1.0)],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let beta = m.coefficients().unwrap()[0].clone();
+        assert!(
+            beta.iter().all(|v| v.is_finite()),
+            "never NaN, even singular: {beta:?}"
+        );
+        // Either the jitter rescued it (counted) or the solve failed (counted);
+        // silently succeeding on a singular system is the outcome to rule out.
+        assert!(m.solve_failures > 0, "a singular solve must be recorded");
+    }
+
+    #[test]
     fn huber_resists_outliers_that_break_least_squares() {
         let mut hub = Robust::new(cfg(1, 1, RobustLoss::Huber { delta: 1.5 })).unwrap();
         let mut ols = EwRidge::new(EwRidgeCfg {
@@ -530,9 +648,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_config() {
-        assert!(Robust::new(cfg(1, 1, RobustLoss::Quantile { tau: 0.0 })).is_err());
-        assert!(Robust::new(cfg(1, 1, RobustLoss::Quantile { tau: 1.0 })).is_err());
-        assert!(Robust::new(cfg(1, 1, RobustLoss::Huber { delta: 0.0 })).is_err());
+    fn new_surfaces_the_validation_error() {
+        let e = Robust::new(cfg(1, 1, RobustLoss::Quantile { tau: 0.0 })).unwrap_err();
+        assert!(e.contains("quantile must be in"), "{e}");
     }
 }

@@ -248,6 +248,58 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cfg_validation_rejects_each_bad_field() {
+        let bad = |f: &dyn Fn(&mut RlsCfg), want: &str| {
+            let mut c = rls_cfg(2, 1, 100.0, 1.0);
+            f(&mut c);
+            match c.validate() {
+                Err(e) => assert!(e.contains(want), "wanted {want:?}, got {e:?}"),
+                Ok(()) => panic!("expected rejection mentioning {want:?}"),
+            }
+        };
+        bad(&|c| c.n_features = 0, "must be >= 1");
+        bad(&|c| c.n_targets = 0, "must be >= 1");
+        // ridge sets P0 = I/ridge, so zero would be an infinite prior variance.
+        bad(&|c| c.ridge = 0.0, "ridge must be > 0");
+        bad(&|c| c.ridge = -1.0, "ridge must be > 0");
+        bad(&|c| c.ridge = f64::NAN, "ridge must be > 0");
+        // coef0 is one vector per target, each of length k_total (2 + intercept).
+        bad(
+            &|c| c.coef0 = Some(vec![vec![0.0; 3], vec![0.0; 3]]),
+            "n_targets x k_total",
+        );
+        bad(
+            &|c| c.coef0 = Some(vec![vec![0.0; 2]]),
+            "n_targets x k_total",
+        );
+        let mut ok = rls_cfg(2, 1, 100.0, 1.0);
+        ok.coef0 = Some(vec![vec![1.0, 2.0, 3.0]]);
+        ok.validate().unwrap();
+        rls_cfg(2, 1, 100.0, 1.0).validate().unwrap();
+    }
+
+    #[test]
+    fn a_zero_weight_row_is_pure_decay() {
+        let mut m = Rls::new(rls_cfg(2, 1, 10.0, 1.0)).unwrap();
+        let mut s = 97u64;
+        for i in 0..40 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(
+                &x,
+                &[Some(x[0] - x[1])],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let beta = m.beta.clone();
+        let w = m.w_sum;
+        m.step(&[0.4, -0.2], &[Some(-500.0)], 1.0, 0.0);
+        assert_eq!(m.beta, beta, "weight 0 must not move the fit");
+        let lam = 0.5f64.powf(1.0 / 10.0);
+        assert!((m.w_sum - w * lam).abs() < 1e-12);
+    }
+
     /// docs/PLAN.md §9 class 1: RLS and EW-ridge with `solve_every` = 1 row and
     /// the matching decaying prior must agree to float precision.
     #[test]
@@ -321,12 +373,24 @@ mod tests {
             );
         }
         let before = m.beta.clone();
+        let (p_before, w_before) = (m.p.clone(), m.w_sum);
+        let lam = 0.5f64.powf(1.0 / 100.0);
         let st = m.step(&[0.5], &[Some(1.0), None], 1.0, 1.0);
         assert!(st.pred.iter().all(|p| p.is_finite()));
         assert_eq!(
             m.beta, before,
             "a null target must not update any coefficient"
         );
+        // RLS shares one inverse-information matrix across targets, so it
+        // cannot update some and not others -- but the row is not ignored: the
+        // weight advances and the forgetting factor still rescales P.
+        assert!((m.w_sum - (w_before * lam + 1.0)).abs() < 1e-12);
+        for (a, b) in m.p.iter().zip(&p_before) {
+            assert!(
+                (a - b / lam).abs() < 1e-9 * (1.0 + b.abs()),
+                "P must still be rescaled by the decay"
+            );
+        }
     }
 
     #[test]

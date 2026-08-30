@@ -228,6 +228,100 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cfg_validation_rejects_each_bad_field() {
+        let bad = |f: &dyn Fn(&mut PaCfg), want: &str| {
+            let mut c = cfg(2, PaMode::Pa1);
+            f(&mut c);
+            match c.validate() {
+                Err(e) => assert!(e.contains(want), "wanted {want:?}, got {e:?}"),
+                Ok(()) => panic!("expected rejection mentioning {want:?}"),
+            }
+        };
+        bad(&|c| c.n_features = 0, "must be >= 1");
+        bad(&|c| c.n_targets = 0, "must be >= 1");
+        // c is a divisor in PA-2 and a cap in PA-1, so zero is as bad as negative.
+        bad(&|c| c.c = 0.0, "c must be > 0");
+        bad(&|c| c.c = -1.0, "c must be > 0");
+        bad(&|c| c.c = f64::NAN, "c must be > 0");
+        // eps is an insensitivity band, so zero is legal (fit exactly).
+        bad(&|c| c.eps = -1e-9, "eps must be >= 0");
+        bad(&|c| c.eps = f64::NAN, "eps must be >= 0");
+        let mut ok = cfg(2, PaMode::Pa1);
+        ok.eps = 0.0;
+        ok.validate().unwrap();
+        cfg(2, PaMode::Pa1).validate().unwrap();
+    }
+
+    #[test]
+    fn the_three_modes_take_the_step_their_formula_prescribes() {
+        // tau is `loss / |z|^2` capped or damped by `c`, and the update is
+        // `beta += tau * sign(err) * z`. On the first learning row the state is
+        // known exactly, so each mode's step can be computed by hand.
+        let one_step = |mode: PaMode, c: f64, y: f64| {
+            let mut cfg = cfg(1, mode);
+            cfg.c = c;
+            cfg.eps = 0.1;
+            cfg.min_periods = 0.0;
+            let mut m = Pa::new(cfg).unwrap();
+            m.step(&[2.0], &[Some(y)], 0.0, 1.0);
+            m.coefficients()[0].clone()
+        };
+        // z = [1, 2] (intercept first), so |z|^2 = 5. beta starts at 0, so
+        // err = y and loss = |y| - eps.
+        let (y, sq_norm, eps) = (3.0, 5.0, 0.1);
+        let loss = y - eps;
+
+        let pa = one_step(PaMode::Pa, 1.0, y);
+        let tau = loss / sq_norm;
+        assert!((pa[0] - tau).abs() < 1e-12, "intercept {pa:?}");
+        assert!((pa[1] - 2.0 * tau).abs() < 1e-12, "slope {pa:?}");
+
+        // PA-1 caps tau at c: with c above the uncapped value nothing changes,
+        // with c below it the step is exactly c * z.
+        let pa1_loose = one_step(PaMode::Pa1, 10.0, y);
+        assert!(
+            (pa1_loose[1] - pa[1]).abs() < 1e-12,
+            "uncapped: {pa1_loose:?}"
+        );
+        let pa1_tight = one_step(PaMode::Pa1, 0.05, y);
+        assert!(
+            (pa1_tight[1] - 2.0 * 0.05).abs() < 1e-12,
+            "capped: {pa1_tight:?}"
+        );
+
+        // PA-2 damps the denominator by 1/(2c) rather than capping.
+        let c = 0.5;
+        let pa2 = one_step(PaMode::Pa2, c, y);
+        let tau2 = loss / (sq_norm + 0.5 / c);
+        assert!((pa2[1] - 2.0 * tau2).abs() < 1e-12, "{pa2:?}");
+        assert!(tau2 < tau, "PA-2 must take a smaller step than PA");
+
+        // The step follows the sign of the error.
+        let down = one_step(PaMode::Pa, 1.0, -y);
+        assert!((down[1] + pa[1]).abs() < 1e-12, "{down:?} vs {pa:?}");
+    }
+
+    #[test]
+    fn inside_the_insensitivity_band_nothing_moves() {
+        // `loss == 0.0 => continue`: an error smaller than eps leaves the
+        // coefficients untouched, which is the "passive" half of the name.
+        let mut c = cfg(1, PaMode::Pa);
+        c.eps = 1.0;
+        c.min_periods = 0.0;
+        let mut m = Pa::new(c).unwrap();
+        m.step(&[1.0], &[Some(5.0)], 0.0, 1.0);
+        let moved = m.coefficients()[0].clone();
+        assert!(moved[1] != 0.0, "the first row is outside the band");
+
+        // Now feed a row it already predicts to within eps.
+        let p: f64 = moved[0] + moved[1];
+        m.step(&[1.0], &[Some(p + 0.5)], 1.0, 1.0);
+        assert_eq!(m.coefficients()[0], moved, "inside the band: passive");
+        m.step(&[1.0], &[Some(p + 1.5)], 1.0, 1.0);
+        assert_ne!(m.coefficients()[0], moved, "outside the band: aggressive");
+    }
+
     fn fit(
         cfg: PaCfg,
         n: usize,
