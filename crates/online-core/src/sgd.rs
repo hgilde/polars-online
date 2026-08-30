@@ -426,6 +426,107 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cfg_validation_rejects_each_bad_field() {
+        let bad = |f: &dyn Fn(&mut SgdCfg), want: &str| {
+            let mut c = cfg(2, SgdLoss::Squared);
+            f(&mut c);
+            match c.validate() {
+                Err(e) => assert!(e.contains(want), "wanted {want:?}, got {e:?}"),
+                Ok(()) => panic!("expected rejection mentioning {want:?}"),
+            }
+        };
+        bad(&|c| c.n_features = 0, "must be >= 1");
+        bad(&|c| c.n_targets = 0, "must be >= 1");
+        bad(&|c| c.learning_rate = 0.0, "learning_rate must be > 0");
+        bad(&|c| c.learning_rate = f64::NAN, "learning_rate must be > 0");
+        bad(&|c| c.l2 = -1e-9, "l2 must be >= 0");
+        // clip_gradient is a magnitude bound, so inf disables it rather than
+        // being an error, but zero would clip everything to nothing.
+        bad(&|c| c.clip_gradient = 0.0, "clip_gradient must be > 0");
+        let mut ok = cfg(2, SgdLoss::Squared);
+        ok.clip_gradient = f64::INFINITY;
+        ok.validate().unwrap();
+
+        bad(&|c| c.loss = SgdLoss::Huber { delta: 0.0 }, "huber delta");
+        for t in [0.0, 1.0, 1.5] {
+            bad(
+                &|c| c.loss = SgdLoss::Quantile { tau: t },
+                "quantile must be in",
+            );
+        }
+        bad(
+            &|c| c.loss = SgdLoss::EpsilonInsensitive { eps: -1.0 },
+            "eps must be >= 0",
+        );
+        // eps = 0 is a legal (if pointless) epsilon-insensitive loss.
+        cfg(2, SgdLoss::EpsilonInsensitive { eps: 0.0 })
+            .validate()
+            .unwrap();
+
+        bad(
+            &|c| c.schedule = LearningRate::InvScaling { power: -0.1 },
+            "power must be >= 0",
+        );
+        let mut ok = cfg(2, SgdLoss::Squared);
+        ok.schedule = LearningRate::InvScaling { power: 0.0 };
+        ok.validate().unwrap();
+    }
+
+    #[test]
+    fn each_loss_has_the_gradient_it_claims() {
+        // `dloss` is dL/d(eta) and `link` maps eta to the prediction. Both are
+        // small and entirely arithmetic, and every model output depends on
+        // them, so they are checked directly rather than through a fit.
+        let m = |loss| Sgd::new(cfg(1, loss)).unwrap();
+
+        // Squared: the plain residual, in both directions.
+        assert_eq!(m(SgdLoss::Squared).dloss(3.0, 1.0), 2.0);
+        assert_eq!(m(SgdLoss::Squared).dloss(1.0, 3.0), -2.0);
+
+        // Huber: the residual, clipped symmetrically at delta.
+        let h = m(SgdLoss::Huber { delta: 1.5 });
+        assert_eq!(h.dloss(1.0, 0.0), 1.0, "inside the band: squared");
+        assert_eq!(h.dloss(9.0, 0.0), 1.5, "outside: clipped");
+        assert_eq!(h.dloss(-9.0, 0.0), -1.5);
+
+        // Quantile: a constant gradient whose sign depends on which side of
+        // the prediction the target fell, asymmetric except at tau = 0.5.
+        let q = m(SgdLoss::Quantile { tau: 0.9 });
+        assert_eq!(q.dloss(5.0, 1.0), 1.0 - 0.9, "over-predicted");
+        assert_eq!(q.dloss(1.0, 5.0), -0.9, "under-predicted");
+        let med = m(SgdLoss::Quantile { tau: 0.5 });
+        assert_eq!(
+            med.dloss(5.0, 1.0),
+            -med.dloss(1.0, 5.0),
+            "symmetric at 0.5"
+        );
+
+        // Epsilon-insensitive: exactly zero inside the tube.
+        let e = m(SgdLoss::EpsilonInsensitive { eps: 1.0 });
+        assert_eq!(e.dloss(0.5, 0.0), 0.0);
+        assert_eq!(e.dloss(1.0, 0.0), 0.0, "the boundary is inside");
+        assert!(e.dloss(3.0, 0.0) > 0.0);
+        assert!(e.dloss(-3.0, 0.0) < 0.0);
+
+        // Links. Squared and the robust losses are the identity; logistic and
+        // Poisson are not, and both must stay finite at extreme inputs.
+        assert_eq!(m(SgdLoss::Squared).link(-7.0), -7.0);
+        let lg = m(SgdLoss::Logistic);
+        assert_eq!(lg.link(0.0), 0.5);
+        for eta in [900.0, -900.0] {
+            let p = lg.link(eta);
+            assert!(
+                p.is_finite() && (0.0..=1.0).contains(&p),
+                "link({eta}) = {p}"
+            );
+        }
+        let po = m(SgdLoss::Poisson);
+        assert_eq!(po.link(0.0), 1.0);
+        assert!(po.link(1e9).is_finite(), "the exponent is clamped");
+        assert!(po.link(-1e9) > 0.0, "a rate is positive");
+    }
+
     /// The case scaling exists for: one feature in thousands, one in
     /// thousandths. A single learning rate cannot suit both.
     #[test]

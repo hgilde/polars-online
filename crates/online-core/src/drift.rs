@@ -96,6 +96,69 @@ mod tests {
     }
 
     #[test]
+    fn the_statistic_is_the_excess_above_its_low_water_mark() {
+        // Page-Hinkley written out: a running mean, a cumulative sum of
+        // (e - mean - delta), and the distance of that sum above the lowest
+        // value it has reached. Each piece is checked against a longhand
+        // recomputation, and `n` counts the observations since the last reset.
+        let (delta, threshold) = (0.05, 1e9); // never fires: measure, don't trip
+        let mut ph = PageHinkley::new(delta, threshold);
+        let (mut mean, mut cum, mut min_cum, mut n) = (0.0, 0.0, 0.0f64, 0.0);
+        let mut s = 7u64;
+        for i in 0..300 {
+            let e = (1.0 + 0.5 * lcg(&mut s)).abs();
+            assert!(!ph.update(e));
+            n += 1.0;
+            mean += (e - mean) / n;
+            cum += e - mean - delta;
+            min_cum = min_cum.min(cum);
+            assert!((ph.n() - n).abs() < 1e-12, "row {i}: n");
+            assert!(
+                (ph.statistic() - (cum - min_cum)).abs() < 1e-9,
+                "row {i}: {} vs {}",
+                ph.statistic(),
+                cum - min_cum
+            );
+            assert!(ph.statistic() >= 0.0, "row {i}: never negative");
+        }
+        assert!(
+            n > 0.0 && min_cum < 0.0,
+            "the low-water mark should have moved"
+        );
+    }
+
+    #[test]
+    fn a_non_finite_error_is_ignored_entirely() {
+        let mut ph = PageHinkley::new(0.05, 5.0);
+        let mut s = 11u64;
+        for _ in 0..50 {
+            ph.update((1.0 + 0.2 * lcg(&mut s)).abs());
+        }
+        let (n, stat) = (ph.n(), ph.statistic());
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(!ph.update(bad), "a non-finite error must not signal drift");
+        }
+        assert_eq!(ph.n(), n, "and must not count as an observation");
+        assert_eq!(ph.statistic(), stat);
+    }
+
+    #[test]
+    fn delta_sets_the_size_of_change_that_is_ignored() {
+        // The allowance subtracted from every observation: a drift smaller
+        // than delta must never accumulate, and a larger one must.
+        let run = |delta: f64, jump: f64| {
+            let mut ph = PageHinkley::new(delta, 5.0);
+            let mut s = 13u64;
+            for _ in 0..500 {
+                ph.update(1.0 + 0.05 * lcg(&mut s));
+            }
+            (0..3000).any(|_| ph.update(1.0 + jump + 0.05 * lcg(&mut s)))
+        };
+        assert!(!run(0.5, 0.1), "a jump well under delta must be absorbed");
+        assert!(run(0.01, 0.1), "a jump well over delta must be caught");
+    }
+
+    #[test]
     fn quiet_stream_does_not_drift() {
         let mut ph = PageHinkley::new(0.01, 5.0);
         let mut s = 1u64;
