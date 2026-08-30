@@ -2,10 +2,10 @@
 //! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
 
 use online_core::{
-    ClockState, Decay, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg,
-    FtrlLoss, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, ModelState, OnlineModel, Pa, PaCfg,
-    PaMode, PageHinkley, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, Sgd, SgdCfg, SgdLoss, State,
-    StateError,
+    ClockState, Decay, EwAutoCorr, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl,
+    FtrlCfg, FtrlLoss, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, ModelState, OnlineModel,
+    P2Quantile, Pa, PaCfg, PaMode, PageHinkley, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, Sgd,
+    SgdCfg, SgdLoss, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -497,6 +497,10 @@ pub struct StreamState {
     pub resid_w: Vec<Vec<f64>>,
     #[serde(default)]
     pub drift: Vec<Vec<PageHinkley>>,
+    #[serde(default)]
+    pub resid_q: Vec<Vec<Vec<P2Quantile>>>,
+    #[serde(default)]
+    pub autocorr: Vec<Vec<EwAutoCorr>>,
 }
 
 /// Live per-stream state.
@@ -518,6 +522,10 @@ pub struct Stream {
     drift: Vec<Vec<PageHinkley>>,
     /// Warmup threshold per target (ENHANCEMENTS E7).
     min_periods: Vec<f64>,
+    /// P² estimators per instance, slot and requested level (ENHANCEMENTS E23).
+    resid_q: Vec<Vec<Vec<P2Quantile>>>,
+    /// EW residual autocorrelation per instance and slot.
+    autocorr: Vec<Vec<EwAutoCorr>>,
 }
 
 impl Stream {
@@ -547,6 +555,10 @@ pub struct RowOut {
     pub resid_z: Vec<Vec<f64>>,
     /// Page-Hinkley drift flag per slot (empty when `emit_drift` is off).
     pub drift: Vec<Vec<bool>>,
+    /// `|resid|` quantiles per instance and slot, one entry per level.
+    pub resid_q: Vec<Vec<Vec<f64>>>,
+    /// EW residual autocorrelation per instance and slot.
+    pub autocorr: Vec<Vec<f64>>,
     pub n_eff: Vec<f64>,
     pub coef: Option<Vec<Vec<Vec<f64>>>>,
     pub extra: Vec<Option<online_core::Extra>>,
@@ -571,6 +583,22 @@ impl Stream {
             resid_var: slots.iter().map(|&n| vec![0.0; n]).collect(),
             resid_w: slots.iter().map(|&n| vec![0.0; n]).collect(),
             drift,
+            resid_q: match &spec.resid_quantiles {
+                Some(levels) => {
+                    let protos: Vec<P2Quantile> = levels
+                        .iter()
+                        .map(|q| P2Quantile::new(*q))
+                        .collect::<Result<_, _>>()?;
+                    slots.iter().map(|&n| vec![protos.clone(); n]).collect()
+                }
+                None => Vec::new(),
+            },
+            autocorr: if spec.emit_autocorr {
+                let proto = EwAutoCorr::new(spec.resid_autocorr_lag.unwrap_or(1))?;
+                slots.iter().map(|&n| vec![proto.clone(); n]).collect()
+            } else {
+                Vec::new()
+            },
             min_periods: spec.min_periods_per_target(),
             models,
             decays,
@@ -586,6 +614,8 @@ impl Stream {
             resid_var: self.resid_var.clone(),
             resid_w: self.resid_w.clone(),
             drift: self.drift.clone(),
+            resid_q: self.resid_q.clone(),
+            autocorr: self.autocorr.clone(),
         }
     }
 
@@ -613,6 +643,12 @@ impl Stream {
         if saved.drift.len() == stream.drift.len() {
             stream.drift = saved.drift.clone();
         }
+        if saved.resid_q.len() == stream.resid_q.len() {
+            stream.resid_q = saved.resid_q.clone();
+        }
+        if saved.autocorr.len() == stream.autocorr.len() {
+            stream.autocorr = saved.autocorr.clone();
+        }
         Ok(stream)
     }
 
@@ -623,6 +659,22 @@ impl Stream {
         }
         for d in self.drift.iter_mut() {
             d.iter_mut().for_each(PageHinkley::reset);
+        }
+        // Residual diagnostics restart with the model they describe.
+        let (levels, lag) = (spec.resid_quantiles.clone(), spec.resid_autocorr_lag);
+        if let Some(levels) = levels {
+            for per_slot in self.resid_q.iter_mut() {
+                for per_level in per_slot.iter_mut() {
+                    for (est, q) in per_level.iter_mut().zip(&levels) {
+                        *est = P2Quantile::new(*q).expect("validated");
+                    }
+                }
+            }
+        }
+        for per_slot in self.autocorr.iter_mut() {
+            for est in per_slot.iter_mut() {
+                *est = EwAutoCorr::new(lag.unwrap_or(1)).expect("validated");
+            }
         }
     }
 
@@ -678,6 +730,8 @@ impl Stream {
         let mut resid_z = Vec::with_capacity(self.models.len());
         let mut drift = Vec::with_capacity(self.drift.len());
         let mut drift_seen = false;
+        let mut resid_q = Vec::with_capacity(self.resid_q.len());
+        let mut autocorr = Vec::with_capacity(self.autocorr.len());
         for (mi, (_, m)) in self.models.iter_mut().enumerate() {
             let mut step = m.step(&xs, &ys, adv.d_clock, w);
             let nc = step.pred.len() / m_targets;
@@ -746,6 +800,35 @@ impl Stream {
                 drift.push(flags);
             }
 
+            // Residual diagnostics (ENHANCEMENTS E23), all read before the
+            // row's own residual is folded in, like sigma.
+            if !self.resid_q.is_empty() {
+                let ests = &mut self.resid_q[mi];
+                let mut row = Vec::with_capacity(ests.len());
+                for (slot, per_level) in ests.iter_mut().enumerate() {
+                    let mut vals = Vec::with_capacity(per_level.len());
+                    for est in per_level.iter_mut() {
+                        vals.push(est.get().unwrap_or(f64::NAN));
+                        if r[slot].is_finite() {
+                            est.update(r[slot].abs());
+                        }
+                    }
+                    row.push(vals);
+                }
+                resid_q.push(row);
+            }
+            if !self.autocorr.is_empty() {
+                let ests = &mut self.autocorr[mi];
+                let mut row = vec![f64::NAN; r.len()];
+                for (slot, est) in ests.iter_mut().enumerate() {
+                    row[slot] = est.get().unwrap_or(f64::NAN);
+                    if r[slot].is_finite() {
+                        est.update(r[slot], lam);
+                    }
+                }
+                autocorr.push(row);
+            }
+
             pred.push(step.pred);
             resid.push(r);
             sigma.push(sig);
@@ -769,6 +852,8 @@ impl Stream {
             sigma,
             resid_z,
             drift,
+            resid_q,
+            autocorr,
             n_eff,
             coef,
             extra,

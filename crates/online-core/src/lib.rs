@@ -19,6 +19,7 @@ mod rls;
 mod robust;
 mod sgd;
 mod solve;
+mod stats;
 
 pub use clock::{ClockAdvance, ClockCfg, ClockState, Decay, OnClockReset, SessionGap};
 pub use drift::PageHinkley;
@@ -33,6 +34,7 @@ pub use rls::{Rls, RlsCfg};
 pub use robust::{Robust, RobustCfg, RobustLoss};
 pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::solve_spd;
+pub use stats::{EwAutoCorr, P2Quantile};
 
 /// Version of the serialized model-state layout.
 ///

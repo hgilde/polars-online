@@ -112,3 +112,79 @@ class TestExpressionBehaviour:
         df, _ = synthetic(seed=18, n_groups=1, n_rows=10, k=1)
         with pytest.raises(Exception, match="mutually exclusive"):
             df.select(pl.col("y0").online.ewridge(features=["x0"], halflife=10.0, lam=0.9))
+
+
+class TestMultiTargetExpressions:
+    """E9: the expression namespace accepts extra targets.
+
+    Multi-target specs share one `X'X`, so fitting several horizons in one call
+    is much cheaper than one expression per target.
+    """
+
+    def test_matches_a_multi_target_bank(self):
+        df, _ = synthetic(seed=91, n_groups=2, n_rows=200, k=2, n_targets=2, null_frac=0.0)
+        kw = dict(
+            clock="t",
+            halflife=300.0,
+            max_dclock=50.0,
+            weight="w",
+            min_periods=5.0,
+            max_rows_between_solves=1,
+        )
+        expr = df.select(
+            pl.col("y0")
+            .online.ewridge(features=["x0", "x1"], extra_targets=["y1"], **kw)
+            .over("group")
+        ).unnest("y0")
+        bank = (
+            po.ModelBank(
+                [
+                    po.spec.ewridge(
+                        "m",
+                        targets=["y0", "y1"],
+                        features=["x0", "x1"],
+                        group="group",
+                        **kw,
+                    )
+                ]
+            )
+            .fit_predict(df)
+            .select("m")
+            .unnest("m")
+        )
+        _assert_same(bank, expr)
+
+    def test_works_for_every_model(self):
+        df, _ = synthetic(seed=92, n_groups=1, n_rows=150, k=2, n_targets=2, null_frac=0.0)
+        cases = [
+            ("ewridge", {"max_rows_between_solves": 1}),
+            ("rls", {"ridge": 1.0}),
+            ("kalman", {"coef_halflife": 100.0}),
+            ("huber", {"max_rows_between_solves": 1}),
+            ("sgd", {"learning_rate": 0.01}),
+            ("pa", {}),
+        ]
+        for model, extra in cases:
+            out = df.select(
+                getattr(pl.col("y0").online, model)(
+                    features=["x0", "x1"],
+                    extra_targets=["y1"],
+                    halflife=300.0,
+                    min_periods=5.0,
+                    **extra,
+                )
+            ).unnest("y0")
+            assert "pred_y0" in out.columns and "pred_y1" in out.columns, model
+
+    def test_duplicate_target_is_rejected(self):
+        df, _ = synthetic(seed=93, n_groups=1, n_rows=20, k=1, n_targets=2, null_frac=0.0)
+        with pytest.raises(Exception, match="already the target"):
+            df.select(
+                pl.col("y0").online.ewridge(features=["x0"], extra_targets=["y0"], halflife=100.0)
+            )
+        with pytest.raises(Exception, match="duplicates"):
+            df.select(
+                pl.col("y0").online.ewridge(
+                    features=["x0"], extra_targets=["y1", "y1"], halflife=100.0
+                )
+            )

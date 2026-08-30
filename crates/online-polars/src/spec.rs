@@ -316,6 +316,20 @@ pub struct Spec {
     /// units of the model's own recent error. Off by default.
     #[serde(default)]
     pub emit_resid_z: bool,
+    /// Emit `absresid_q<p>_<slot>` for each level in `resid_quantiles`: a P²
+    /// estimate of that quantile of `|resid|` (ENHANCEMENTS E23). Five numbers
+    /// per level, no window — a distribution-free interval where `sigma` only
+    /// gives a Gaussian one.
+    #[serde(default)]
+    pub resid_quantiles: Option<Vec<f64>>,
+    /// Emit `autocorr_<slot>`: EW lag-`resid_autocorr_lag` autocorrelation of
+    /// the out-of-sample residuals. A residual stream should look like noise;
+    /// autocorrelation is the classic sign that it does not.
+    #[serde(default)]
+    pub emit_autocorr: bool,
+    /// Lag for `emit_autocorr`. Default 1.
+    #[serde(default)]
+    pub resid_autocorr_lag: Option<usize>,
     /// Emit `drift_<slot>`: a Page-Hinkley detector on each slot's absolute
     /// out-of-sample residual, true on the row where a break is detected.
     /// Complements the halflife: decay forgets smoothly and always, drift
@@ -495,6 +509,29 @@ impl Spec {
         }
         if self.drift_threshold.is_some_and(|v| v <= 0.0 || v.is_nan()) {
             return Err(format!("spec {:?}: drift_threshold must be > 0", self.name));
+        }
+        if let Some(qs) = &self.resid_quantiles {
+            if qs.is_empty() {
+                return Err(format!(
+                    "spec {:?}: resid_quantiles must be non-empty",
+                    self.name
+                ));
+            }
+            if qs
+                .iter()
+                .any(|q| !(0.0..=1.0).contains(q) || *q == 0.0 || *q == 1.0)
+            {
+                return Err(format!(
+                    "spec {:?}: resid_quantiles must be strictly between 0 and 1",
+                    self.name
+                ));
+            }
+        }
+        if self.resid_autocorr_lag.is_some_and(|l| l == 0) {
+            return Err(format!(
+                "spec {:?}: resid_autocorr_lag must be >= 1",
+                self.name
+            ));
         }
         if self.average_eta.is_some_and(|v| v <= 0.0 || v.is_nan()) {
             return Err(format!("spec {:?}: average_eta must be > 0", self.name));

@@ -26,7 +26,13 @@ def _run(spec: dict[str, Any], target_expr: pl.Expr) -> pl.Expr:
     # ew_cov has no target: its first feature *is* the calling column, so it
     # must not be passed twice.
     is_ew_cov = spec["model"]["type"] == "ew_cov"
-    args: list[Any] = [] if is_ew_cov else [target_expr]
+    if is_ew_cov:
+        args: list[Any] = []
+    else:
+        # The calling expression supplies the first target; any `extra_targets`
+        # are ordinary columns. The order here must match `input_names` on the
+        # Rust side: targets, then features, then clock/session/weight.
+        args = [target_expr, *(pl.col(t) for t in spec["targets"][1:])]
     args += [pl.col(f) for f in spec["features"]]
     for col in (spec["clock"], spec["session"], spec["weight"]):
         if col is not None:
@@ -55,41 +61,106 @@ class OnlineNamespace:
             raise ValueError(msg)
         return name
 
-    def ewridge(self, features: list[str], **kwargs: Any) -> pl.Expr:
+    def _targets(self, extra: list[str] | None) -> list[str]:
+        """The calling column is the first target; `extra_targets` follow it.
+
+        Multi-target specs share one `X'X`, so fitting several horizons in one
+        call is much cheaper than one expression per target (ENHANCEMENTS E9).
+        """
+        first = self._target()
+        rest = list(extra or [])
+        if first in rest:
+            msg = f"online: {first!r} is already the target this expression is called on"
+            raise ValueError(msg)
+        if len(set(rest)) != len(rest):
+            msg = "online: extra_targets contains duplicates"
+            raise ValueError(msg)
+        return [first, *rest]
+
+    def ewridge(
+        self, features: list[str], extra_targets: list[str] | None = None, **kwargs: Any
+    ) -> pl.Expr:
         """EW-ridge over this column as the target. Same parameters as
         ``polars_online.spec.ewridge`` minus name/targets/group."""
-        spec = _spec.ewridge("online", targets=[self._target()], features=features, **kwargs)
+        spec = _spec.ewridge(
+            "online",
+            targets=self._targets(extra_targets),
+            features=features,
+            **kwargs,
+        )
         return _run(spec, self._expr)
 
-    def rls(self, features: list[str], **kwargs: Any) -> pl.Expr:
+    def rls(
+        self, features: list[str], extra_targets: list[str] | None = None, **kwargs: Any
+    ) -> pl.Expr:
         """Recursive least squares over this column as the target."""
-        spec = _spec.rls("online", targets=[self._target()], features=features, **kwargs)
+        spec = _spec.rls(
+            "online",
+            targets=self._targets(extra_targets),
+            features=features,
+            **kwargs,
+        )
         return _run(spec, self._expr)
 
-    def lasso(self, features: list[str], **kwargs: Any) -> pl.Expr:
+    def lasso(
+        self, features: list[str], extra_targets: list[str] | None = None, **kwargs: Any
+    ) -> pl.Expr:
         """Lasso path with online lambda selection over this column as target."""
-        spec = _spec.lasso("online", targets=[self._target()], features=features, **kwargs)
+        spec = _spec.lasso(
+            "online",
+            targets=self._targets(extra_targets),
+            features=features,
+            **kwargs,
+        )
         return _run(spec, self._expr)
 
-    def kalman(self, features: list[str], **kwargs: Any) -> pl.Expr:
+    def kalman(
+        self, features: list[str], extra_targets: list[str] | None = None, **kwargs: Any
+    ) -> pl.Expr:
         """Kalman / random-walk-beta filter over this column as the target."""
-        spec = _spec.kalman("online", targets=[self._target()], features=features, **kwargs)
+        spec = _spec.kalman(
+            "online",
+            targets=self._targets(extra_targets),
+            features=features,
+            **kwargs,
+        )
         return _run(spec, self._expr)
 
-    def huber(self, features: list[str], **kwargs: Any) -> pl.Expr:
+    def huber(
+        self, features: list[str], extra_targets: list[str] | None = None, **kwargs: Any
+    ) -> pl.Expr:
         """Huber regression over this column as the target."""
-        spec = _spec.huber("online", targets=[self._target()], features=features, **kwargs)
+        spec = _spec.huber(
+            "online",
+            targets=self._targets(extra_targets),
+            features=features,
+            **kwargs,
+        )
         return _run(spec, self._expr)
 
-    def quantile(self, features: list[str], **kwargs: Any) -> pl.Expr:
+    def quantile(
+        self, features: list[str], extra_targets: list[str] | None = None, **kwargs: Any
+    ) -> pl.Expr:
         """Quantile regression over this column as the target."""
-        spec = _spec.quantile("online", targets=[self._target()], features=features, **kwargs)
+        spec = _spec.quantile(
+            "online",
+            targets=self._targets(extra_targets),
+            features=features,
+            **kwargs,
+        )
         return _run(spec, self._expr)
 
-    def ftrl(self, features: list[str], **kwargs: Any) -> pl.Expr:
+    def ftrl(
+        self, features: list[str], extra_targets: list[str] | None = None, **kwargs: Any
+    ) -> pl.Expr:
         """Online logistic regression (FTRL-proximal) over this column as the
         binary target. ``pred`` is a probability."""
-        spec = _spec.ftrl("online", targets=[self._target()], features=features, **kwargs)
+        spec = _spec.ftrl(
+            "online",
+            targets=self._targets(extra_targets),
+            features=features,
+            **kwargs,
+        )
         return _run(spec, self._expr)
 
     def ew_cov(self, others: list[str], **kwargs: Any) -> pl.Expr:
@@ -101,12 +172,26 @@ class OnlineNamespace:
         spec = _spec.ew_cov("online", features=[self._target(), *others], **kwargs)
         return _run(spec, self._expr)
 
-    def sgd(self, features: list[str], **kwargs: Any) -> pl.Expr:
+    def sgd(
+        self, features: list[str], extra_targets: list[str] | None = None, **kwargs: Any
+    ) -> pl.Expr:
         """SGD with pluggable losses over this column as the target."""
-        spec = _spec.sgd("online", targets=[self._target()], features=features, **kwargs)
+        spec = _spec.sgd(
+            "online",
+            targets=self._targets(extra_targets),
+            features=features,
+            **kwargs,
+        )
         return _run(spec, self._expr)
 
-    def pa(self, features: list[str], **kwargs: Any) -> pl.Expr:
+    def pa(
+        self, features: list[str], extra_targets: list[str] | None = None, **kwargs: Any
+    ) -> pl.Expr:
         """Passive-aggressive regression over this column as the target."""
-        spec = _spec.pa("online", targets=[self._target()], features=features, **kwargs)
+        spec = _spec.pa(
+            "online",
+            targets=self._targets(extra_targets),
+            features=features,
+            **kwargs,
+        )
         return _run(spec, self._expr)

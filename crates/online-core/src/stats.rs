@@ -1,0 +1,322 @@
+//! Streaming scalar statistics (docs/ENHANCEMENTS.md E23).
+//!
+//! Two diagnostics that complement `EwCov`'s moments and answer questions a
+//! standard deviation cannot:
+//!
+//! - [`P2Quantile`] — the P² algorithm (Jain & Chambanis, 1985). Tracks a
+//!   quantile in **five numbers**, no window and no sorting, which makes
+//!   distribution-free intervals affordable on a stream. A residual
+//!   distribution with fat tails has a 99th percentile far above `2.33·σ`, and
+//!   only a quantile estimate will say so.
+//! - [`EwAutoCorr`] — exponentially weighted lag-`k` autocorrelation. Residual
+//!   autocorrelation is the classic sign that a model is mis-specified: an
+//!   out-of-sample residual stream should look like noise, and does not when a
+//!   feature is missing or the decay is too slow.
+
+use serde::{Deserialize, Serialize};
+
+/// P² quantile estimator: five markers, updated per observation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct P2Quantile {
+    p: f64,
+    /// Marker heights, ascending.
+    q: [f64; 5],
+    /// Marker positions (1-based, as in the paper).
+    n: [f64; 5],
+    /// Desired marker positions.
+    np: [f64; 5],
+    /// Increments for the desired positions.
+    dn: [f64; 5],
+    count: usize,
+}
+
+impl P2Quantile {
+    /// `p` is the quantile level in (0, 1).
+    pub fn new(p: f64) -> Result<Self, String> {
+        if !(0.0..=1.0).contains(&p) || p == 0.0 || p == 1.0 {
+            return Err("P2Quantile: p must be in (0, 1)".into());
+        }
+        Ok(Self {
+            p,
+            q: [0.0; 5],
+            n: [1.0, 2.0, 3.0, 4.0, 5.0],
+            np: [1.0, 1.0 + 2.0 * p, 1.0 + 4.0 * p, 3.0 + 2.0 * p, 5.0],
+            dn: [0.0, p / 2.0, p, (1.0 + p) / 2.0, 1.0],
+            count: 0,
+        })
+    }
+
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    /// The estimate, or `None` until five observations have been seen.
+    pub fn get(&self) -> Option<f64> {
+        (self.count >= 5).then_some(self.q[2])
+    }
+
+    /// Parabolic prediction, falling back to linear when it would break the
+    /// ordering of the markers (the paper's condition).
+    fn adjust(&mut self, i: usize, d: f64) {
+        let d_sign = if d >= 0.0 { 1.0 } else { -1.0 };
+        let (qm, q0, qp) = (self.q[i - 1], self.q[i], self.q[i + 1]);
+        let (nm, n0, np_) = (self.n[i - 1], self.n[i], self.n[i + 1]);
+        let parabolic = q0
+            + d_sign / (np_ - nm)
+                * ((n0 - nm + d_sign) * (qp - q0) / (np_ - n0)
+                    + (np_ - n0 - d_sign) * (q0 - qm) / (n0 - nm));
+        self.q[i] = if qm < parabolic && parabolic < qp {
+            parabolic
+        } else if d_sign > 0.0 {
+            q0 + (qp - q0) / (np_ - n0)
+        } else {
+            q0 - (qm - q0) / (nm - n0)
+        };
+        self.n[i] += d_sign;
+    }
+
+    pub fn update(&mut self, x: f64) {
+        if !x.is_finite() {
+            return;
+        }
+        if self.count < 5 {
+            self.q[self.count] = x;
+            self.count += 1;
+            if self.count == 5 {
+                self.q.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            }
+            return;
+        }
+        self.count += 1;
+
+        // Which cell does x fall into, and stretch the ends if it is outside.
+        let k = if x < self.q[0] {
+            self.q[0] = x;
+            0
+        } else if x >= self.q[4] {
+            self.q[4] = x;
+            3
+        } else {
+            (0..4)
+                .find(|&i| self.q[i] <= x && x < self.q[i + 1])
+                .unwrap_or(3)
+        };
+
+        for i in (k + 1)..5 {
+            self.n[i] += 1.0;
+        }
+        for i in 0..5 {
+            self.np[i] += self.dn[i];
+        }
+
+        for i in 1..4 {
+            let d = self.np[i] - self.n[i];
+            if (d >= 1.0 && self.n[i + 1] - self.n[i] > 1.0)
+                || (d <= -1.0 && self.n[i - 1] - self.n[i] < -1.0)
+            {
+                self.adjust(i, d);
+            }
+        }
+    }
+}
+
+/// Exponentially weighted lag-`k` autocorrelation of a stream.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EwAutoCorr {
+    lag: usize,
+    /// Recent values, most recent last; length `lag + 1` once warm.
+    buf: Vec<f64>,
+    w: f64,
+    mean: f64,
+    /// EW second moments of (x_t, x_{t-lag}) around their shared mean.
+    var: f64,
+    cross: f64,
+}
+
+impl EwAutoCorr {
+    pub fn new(lag: usize) -> Result<Self, String> {
+        if lag == 0 {
+            return Err("EwAutoCorr: lag must be >= 1".into());
+        }
+        Ok(Self {
+            lag,
+            buf: Vec::with_capacity(lag + 1),
+            w: 0.0,
+            mean: 0.0,
+            var: 0.0,
+            cross: 0.0,
+        })
+    }
+
+    /// `None` until a lagged pair has been seen.
+    pub fn get(&self) -> Option<f64> {
+        (self.w > 0.0 && self.var > 0.0).then(|| (self.cross / self.var).clamp(-1.0, 1.0))
+    }
+
+    /// One observation with decay factor `lam`.
+    ///
+    /// A single mean and variance are used for both legs of the pair, which is
+    /// the standard simplification for a stationary series and keeps the result
+    /// in [−1, 1] by construction.
+    pub fn update(&mut self, x: f64, lam: f64) {
+        if !x.is_finite() {
+            return;
+        }
+        self.buf.push(x);
+        if self.buf.len() > self.lag + 1 {
+            self.buf.remove(0);
+        }
+
+        let w_new = lam * self.w + 1.0;
+        let (a, b) = (lam * self.w / w_new, 1.0 / w_new);
+        let d = x - self.mean;
+        self.var = a * self.var + a * b * d * d;
+        if self.buf.len() == self.lag + 1 {
+            let lagged = self.buf[0];
+            self.cross = a * self.cross + a * b * d * (lagged - self.mean);
+        } else {
+            self.cross *= a;
+        }
+        self.mean += b * d;
+        self.w = w_new;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lcg(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (*state >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    #[test]
+    fn p2_matches_the_empirical_quantile() {
+        for p in [0.1, 0.5, 0.9, 0.99] {
+            let mut est = P2Quantile::new(p).unwrap();
+            let mut s = 3u64;
+            let mut all: Vec<f64> = Vec::new();
+            for _ in 0..20000 {
+                let x = lcg(&mut s) * 10.0;
+                est.update(x);
+                all.push(x);
+            }
+            all.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let truth = all[((all.len() as f64) * p) as usize];
+            let got = est.get().unwrap();
+            assert!(
+                (got - truth).abs() < 0.3,
+                "p={p}: P2 said {got}, empirical {truth}"
+            );
+        }
+    }
+
+    #[test]
+    fn p2_costs_five_numbers_not_a_window() {
+        // The point of P2: state is constant regardless of stream length.
+        let mut est = P2Quantile::new(0.9).unwrap();
+        let mut s = 5u64;
+        for _ in 0..100_000 {
+            est.update(lcg(&mut s));
+        }
+        let bytes = rmp_serde::to_vec(&est).unwrap();
+        assert!(bytes.len() < 300, "state grew to {} bytes", bytes.len());
+    }
+
+    /// The reason to track a quantile rather than infer one from sigma: on a
+    /// fat-tailed stream a Gaussian interval is simply the wrong number, and
+    /// the error is not even in a predictable direction. Here 0.5%
+    /// contamination inflates sigma enormously while barely moving the 99th
+    /// percentile, so `mean + 2.33·sd` overshoots by an order of magnitude.
+    #[test]
+    fn p2_tracks_a_fat_tailed_quantile_where_sigma_cannot() {
+        let mut est = P2Quantile::new(0.99).unwrap();
+        let mut s = 7u64;
+        let (mut sum, mut sq, mut n) = (0.0, 0.0, 0.0);
+        let mut all = Vec::new();
+        for i in 0..50000 {
+            let x = if i % 200 == 0 { 100.0 } else { lcg(&mut s) };
+            est.update(x);
+            all.push(x);
+            sum += x;
+            sq += x * x;
+            n += 1.0;
+        }
+        all.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let truth = all[(all.len() as f64 * 0.99) as usize];
+        let sd = (sq / n - (sum / n).powi(2)).sqrt();
+        let gaussian_99 = sum / n + 2.33 * sd;
+
+        let p2_err = (est.get().unwrap() - truth).abs();
+        let gaussian_err = (gaussian_99 - truth).abs();
+        assert!(
+            p2_err < 0.5,
+            "P2 should track the empirical quantile: {p2_err}"
+        );
+        assert!(
+            gaussian_err > 10.0 * p2_err.max(1e-9),
+            "the Gaussian guess ({gaussian_99}) should be far off the truth ({truth})"
+        );
+    }
+
+    #[test]
+    fn p2_is_none_before_five_points() {
+        let mut est = P2Quantile::new(0.5).unwrap();
+        for i in 0..4 {
+            est.update(i as f64);
+            assert!(est.get().is_none());
+        }
+        est.update(5.0);
+        assert!(est.get().is_some());
+    }
+
+    #[test]
+    fn p2_rejects_bad_levels() {
+        assert!(P2Quantile::new(0.0).is_err());
+        assert!(P2Quantile::new(1.0).is_err());
+    }
+
+    #[test]
+    fn autocorr_is_near_zero_for_noise() {
+        let mut ac = EwAutoCorr::new(1).unwrap();
+        let mut s = 11u64;
+        for _ in 0..20000 {
+            ac.update(lcg(&mut s) - 0.5, 0.999);
+        }
+        assert!(ac.get().unwrap().abs() < 0.1, "got {:?}", ac.get());
+    }
+
+    #[test]
+    fn autocorr_detects_a_persistent_series() {
+        // An AR(1) with phi = 0.8 must show a strong positive lag-1.
+        let mut ac = EwAutoCorr::new(1).unwrap();
+        let mut s = 13u64;
+        let mut prev = 0.0;
+        for _ in 0..40000 {
+            prev = 0.8 * prev + (lcg(&mut s) - 0.5);
+            ac.update(prev, 0.9995);
+        }
+        let got = ac.get().unwrap();
+        assert!(
+            got > 0.6,
+            "AR(1) phi=0.8 should show strong lag-1, got {got}"
+        );
+    }
+
+    #[test]
+    fn autocorr_detects_alternation() {
+        let mut ac = EwAutoCorr::new(1).unwrap();
+        for i in 0..20000 {
+            ac.update(if i % 2 == 0 { 1.0 } else { -1.0 }, 0.999);
+        }
+        assert!(ac.get().unwrap() < -0.9, "got {:?}", ac.get());
+    }
+
+    #[test]
+    fn autocorr_rejects_lag_zero() {
+        assert!(EwAutoCorr::new(0).is_err());
+    }
+}

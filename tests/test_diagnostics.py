@@ -532,3 +532,133 @@ class TestModelAveraging:
         )
         keep = [c for c in one.columns if not c.startswith("coef")]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
+
+
+class TestResidualDistribution:
+    """E23: P² quantiles of |resid| and residual autocorrelation.
+
+    `sigma` describes a Gaussian; these describe the distribution that is
+    actually there, and whether the residual stream still looks like noise.
+    """
+
+    def _fit(self, df, **kw):
+        d = dict(
+            targets=["y0"],
+            features=["x0"],
+            halflife=500.0,
+            min_periods=20.0,
+            max_rows_between_solves=1,
+        )
+        d.update(kw)
+        return po.ModelBank([po.spec.ewridge("m", **d)]).fit_predict(df)
+
+    @staticmethod
+    def _last(out, name):
+        return out["m"].struct.field(name).to_list()[-1]
+
+    def _fat_tailed(self, n=8000, seed=0):
+        rng = np.random.default_rng(seed)
+        x = rng.standard_normal(n)
+        noise = np.where(
+            rng.random(n) < 0.01, 50 * rng.standard_normal(n), 0.3 * rng.standard_normal(n)
+        )
+        return pl.DataFrame({"x0": x, "y0": 2 * x + noise})
+
+    def test_fields_are_opt_in_and_named_by_level(self):
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y0"],
+            features=["x0"],
+            halflife=100.0,
+            resid_quantiles=[0.5, 0.99],
+            emit_autocorr=True,
+        )
+        fields = po.spec.output_fields(spec)
+        assert "absresid_q0.5_y0" in fields
+        assert "absresid_q0.99_y0" in fields
+        assert "autocorr_y0" in fields
+        plain = po.spec.ewridge("m", targets=["y0"], features=["x0"], halflife=100.0)
+        assert not any(
+            f.startswith(("absresid_", "autocorr_")) for f in po.spec.output_fields(plain)
+        )
+
+    def test_quantiles_describe_the_bulk_where_sigma_cannot(self):
+        out = self._fit(self._fat_tailed(), emit_sigma=True, resid_quantiles=[0.5, 0.99])
+        sigma = self._last(out, "sigma_y0")
+        med = self._last(out, "absresid_q0.5_y0")
+        # 1% gross outliers inflate sigma far above a typical residual, which is
+        # exactly why a quantile is worth tracking separately.
+        assert med < sigma / 3, f"median |resid| {med} vs sigma {sigma}"
+
+    def test_quantiles_are_ordered(self):
+        out = self._fit(self._fat_tailed(), resid_quantiles=[0.25, 0.5, 0.9])
+        vals = [self._last(out, f"absresid_q{q}_y0") for q in (0.25, 0.5, 0.9)]
+        assert vals == sorted(vals), vals
+
+    def test_quantile_matches_the_empirical_one(self):
+        rng = np.random.default_rng(3)
+        n = 20000
+        x = rng.standard_normal(n)
+        df = pl.DataFrame({"x0": x, "y0": 2 * x + rng.standard_normal(n)})
+        out = self._fit(df, halflife=1e9, resid_quantiles=[0.9])
+        r = np.abs(np.array(out["m"].struct.field("resid_y0").to_list(), dtype=float))
+        truth = np.nanquantile(r[np.isfinite(r)], 0.9)
+        assert self._last(out, "absresid_q0.9_y0") == pytest.approx(truth, rel=0.15)
+
+    def test_autocorr_is_near_zero_for_a_well_specified_model(self):
+        rng = np.random.default_rng(4)
+        n = 20000
+        x = rng.standard_normal(n)
+        df = pl.DataFrame({"x0": x, "y0": 2 * x + rng.standard_normal(n)})
+        out = self._fit(df, emit_autocorr=True)
+        assert abs(self._last(out, "autocorr_y0")) < 0.1
+
+    def test_autocorr_flags_a_missing_feature(self):
+        # A slow-moving omitted driver leaves autocorrelated residuals, which is
+        # the classic sign of mis-specification.
+        rng = np.random.default_rng(5)
+        n = 20000
+        x = rng.standard_normal(n)
+        omitted = np.cumsum(rng.standard_normal(n)) * 0.05
+        df = pl.DataFrame({"x0": x, "y0": 2 * x + omitted + 0.1 * rng.standard_normal(n)})
+        out = self._fit(df, emit_autocorr=True, halflife=2000.0)
+        assert self._last(out, "autocorr_y0") > 0.3, "an omitted driver should show up"
+
+    def test_chunk_invariance_and_save_load(self, tmp_path):
+        df = self._fat_tailed(n=600, seed=6)
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y0"],
+            features=["x0"],
+            halflife=500.0,
+            min_periods=20.0,
+            max_rows_between_solves=1,
+            resid_quantiles=[0.5, 0.9],
+            emit_autocorr=True,
+        )
+        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        bank = po.ModelBank([spec])
+        many = (
+            pl.concat([bank.fit_predict(df.slice(i, 61)) for i in range(0, df.height, 61)])
+            .select("m")
+            .unnest("m")
+        )
+        keep = [c for c in one.columns if not c.startswith("coef")]
+        assert one.select(keep).equals(many.select(keep), null_equal=True)
+
+        a = po.ModelBank([spec])
+        a.fit_predict(df.slice(0, 300))
+        p = tmp_path / "q.state"
+        a.save(p)
+        b = po.ModelBank.load(p, specs=[spec])
+        rest = df.slice(300, 300)
+        assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
+
+    def test_bad_config_rejected(self):
+        base = dict(targets=["y0"], features=["x0"], halflife=100.0)
+        with pytest.raises(ValueError, match="strictly between 0 and 1"):
+            po.spec.ewridge("m", resid_quantiles=[0.0], **base)
+        with pytest.raises(ValueError, match="non-empty"):
+            po.spec.ewridge("m", resid_quantiles=[], **base)
+        with pytest.raises(ValueError, match="resid_autocorr_lag"):
+            po.spec.ewridge("m", emit_autocorr=True, resid_autocorr_lag=0, **base)

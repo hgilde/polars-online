@@ -181,8 +181,32 @@ class TestOutputSchemaStability:
             "lam_selected_y0",
         ]
 
-    def test_names_match_the_realized_struct(self):
-        # The declared schema and the produced struct must agree exactly.
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {},
+            {"emit_sigma": True, "emit_resid_z": True},
+            {"emit_selected": True, "emit_averaged": True},
+            {"emit_drift": True},
+            {"resid_quantiles": [0.5, 0.99], "emit_autocorr": True},
+            {
+                "emit_sigma": True,
+                "emit_resid_z": True,
+                "emit_drift": True,
+                "emit_selected": True,
+                "emit_averaged": True,
+                "resid_quantiles": [0.1, 0.9],
+                "emit_autocorr": True,
+            },
+        ],
+        ids=["plain", "sigma+z", "selected+avg", "drift", "quantiles+autocorr", "all"],
+    )
+    def test_names_match_the_realized_struct(self, extra):
+        # The declared schema and the produced struct must agree exactly, for
+        # every combination of optional outputs. They diverged once, when an
+        # output was added to the assembler but not to `output_fields`: the
+        # expression plugin takes its dtype from the declaration, so such a
+        # divergence breaks `.over()` while the bank keeps working.
         spec = po.spec.ewridge(
             "m",
             targets=["y0"],
@@ -190,6 +214,8 @@ class TestOutputSchemaStability:
             ridge=[1e-6, 0.5],
             halflife=50.0,
             min_periods=2.0,
+            max_rows_between_solves=1,
+            **extra,
         )
         out = po.ModelBank([spec]).fit_predict(_frame().drop("g"))
         assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)

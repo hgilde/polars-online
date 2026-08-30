@@ -525,6 +525,22 @@ pub fn output_fields(spec: &Spec) -> Vec<String> {
                 }
             }
         }
+        if let Some(levels) = &spec.resid_quantiles {
+            for q in levels {
+                for t in &spec.targets {
+                    for c in &combos {
+                        fields.push(format!("absresid_q{q}_{t}{c}{suffix}"));
+                    }
+                }
+            }
+        }
+        if spec.emit_autocorr {
+            for t in &spec.targets {
+                for c in &combos {
+                    fields.push(format!("autocorr_{t}{c}{suffix}"));
+                }
+            }
+        }
         if spec.emit_drift {
             for t in &spec.targets {
                 for c in &combos {
@@ -598,6 +614,14 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
         0
     };
     let mut drift = vec![vec![None::<bool>; n]; n_drift];
+    let n_levels = spec.resid_quantiles.as_ref().map_or(0, Vec::len);
+    let mut rq = vec![vec![None::<f64>; n]; n_levels * n_models * m * nc];
+    let n_ac = if spec.emit_autocorr {
+        n_models * m * nc
+    } else {
+        0
+    };
+    let mut ac = vec![vec![None::<f64>; n]; n_ac];
     let mut n_eff = vec![vec![None::<f64>; n]; n_models];
     let mut coef: Vec<Vec<Option<Vec<f64>>>> = vec![vec![None; n]; n_models];
     let is_lasso = matches!(spec.model, crate::ModelKind::Lasso { .. });
@@ -613,6 +637,15 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
                 resid[mi * m * nc + slot][*i] = if r.is_nan() { None } else { Some(r) };
                 if n_drift > 0 {
                     drift[mi * m * nc + slot][*i] = Some(out.drift[mi][slot]);
+                }
+                for li in 0..n_levels {
+                    let v = out.resid_q[mi][slot][li];
+                    let idx = (li * n_models + mi) * m * nc + slot;
+                    rq[idx][*i] = if v.is_nan() { None } else { Some(v) };
+                }
+                if n_ac > 0 {
+                    let v = out.autocorr[mi][slot];
+                    ac[mi * m * nc + slot][*i] = if v.is_nan() { None } else { Some(v) };
                 }
                 if n_extra > 0 {
                     let s = out.sigma[mi][slot];
@@ -737,6 +770,31 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
                     fields.push(Series::new(
                         format!("{name}_{t}{c}{suffix}").into(),
                         data[mi * m * nc + slot].as_slice(),
+                    ));
+                }
+            }
+        }
+        if let Some(levels) = &spec.resid_quantiles {
+            for (li, q) in levels.iter().enumerate() {
+                for (t_i, t) in spec.targets.iter().enumerate() {
+                    for (c_i, c) in combos.iter().enumerate() {
+                        let slot = t_i * nc + c_i;
+                        let idx = (li * n_models + mi) * m * nc + slot;
+                        fields.push(Series::new(
+                            format!("absresid_q{q}_{t}{c}{suffix}").into(),
+                            rq[idx].as_slice(),
+                        ));
+                    }
+                }
+            }
+        }
+        if spec.emit_autocorr {
+            for (t_i, t) in spec.targets.iter().enumerate() {
+                for (c_i, c) in combos.iter().enumerate() {
+                    let slot = t_i * nc + c_i;
+                    fields.push(Series::new(
+                        format!("autocorr_{t}{c}{suffix}").into(),
+                        ac[mi * m * nc + slot].as_slice(),
                     ));
                 }
             }
