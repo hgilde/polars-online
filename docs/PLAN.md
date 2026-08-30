@@ -217,7 +217,7 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
 - [x] 5. Multi-target + `feature_sets` + `ridge` grid + standardization at solve time.
 - [x] 6. `online-polars` model bank: column extraction, per-group state, rayon fan-out, chunk
       monotonicity check, save/load (msgpack, versioned).
-- [ ] 7. `online-py`: `ModelBank` class + `fit_predict`; pytest oracle, chunk-invariance, null,
+- [x] 7. `online-py`: `ModelBank` class + `fit_predict`; pytest oracle, chunk-invariance, null,
       warmup, clock tests pass.
 - [ ] 8. Expression plugin (`online.ewridge`) + expression≡bank test.
 - [ ] 9. RLS (§4.2) + agreement test with EW-ridge at `solve_every`=1 row.

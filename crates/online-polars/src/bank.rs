@@ -230,7 +230,7 @@ impl Bank {
                                 &y,
                                 sc.clock.as_ref().map(|c| c[i].unwrap()),
                                 sc.session.as_ref().map(|s| s[i]),
-                                sc.weight.as_ref().and_then(|w| w[i]),
+                                sc.weight.as_ref().map(|w| w[i].unwrap_or(f64::NAN)),
                                 i == last,
                             );
                             (i, out)

@@ -228,6 +228,7 @@ impl Stream {
         y: &[Option<f64>],
         clock: Option<f64>,
         session: Option<u64>,
+        // weight: None = no weight column; Some(NaN) = null value (skips the row)
         weight: Option<f64>,
         emit_coef: bool,
     ) -> Option<RowOut> {
