@@ -236,8 +236,11 @@ uv run python scripts/benchmark.py                     # throughput
 ```
 
 Prerequisites: [uv](https://docs.astral.sh/uv/) and a stable Rust toolchain
-([rustup](https://rustup.rs) installs to `~/.cargo/bin`; make sure that is on
-your `PATH`). `cargo` runs via `uv run` because `online-py` builds against
+([rustup](https://rustup.rs)). Both install outside the default `PATH` on some
+machines — `source scripts/env.sh` fixes that for a shell, and
+`.vscode/settings.json` does it for VS Code's integrated terminal.
+
+`cargo` runs via `uv run` because `online-py` builds against
 pyo3's `abi3-py312`, which needs a ≥3.12 interpreter at build time; `uv run`
 exports `VIRTUAL_ENV`, which pyo3's build script picks up. Plain `cargo test`
 also works if `PYO3_PYTHON` points at a 3.12+ interpreter.

@@ -1,0 +1,31 @@
+{
+  // rustup installs to ~/.cargo/bin and uv to ~/.local/bin; neither is on the
+  // default PATH of a login shell on every machine. Putting them here means an
+  // integrated terminal can run `cargo` and `uv` with no per-machine setup.
+  // The equivalent for a plain shell is `source scripts/env.sh`.
+  "terminal.integrated.env.osx": {
+    "PATH": "${env:HOME}/.cargo/bin:${env:HOME}/.local/bin:${env:PATH}"
+  },
+  "terminal.integrated.env.linux": {
+    "PATH": "${env:HOME}/.cargo/bin:${env:HOME}/.local/bin:${env:PATH}"
+  },
+  "terminal.integrated.env.windows": {
+    "PATH": "${env:USERPROFILE}\\.cargo\\bin;${env:PATH}"
+  },
+
+  "rust-analyzer.linkedProjects": ["Cargo.toml"],
+  // online-py needs a >= 3.12 interpreter at build time (pyo3 abi3-py312).
+  "rust-analyzer.cargo.extraEnv": { "PYO3_PYTHON": "${workspaceFolder}/.venv/bin/python" },
+  "rust-analyzer.check.command": "clippy",
+
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": ["tests"],
+
+  "[rust]": { "editor.formatOnSave": true },
+  "[python]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "charliermarsh.ruff"
+  },
+  "files.watcherExclude": { "**/target/**": true, "**/.venv/**": true }
+}
