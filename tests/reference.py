@@ -441,3 +441,248 @@ def kalman_ref(
             coef[i, j] = c
 
     return {"pred": pred, "resid": resid, "n_eff": n_eff, "coef": coef}
+
+
+def _robust_weight(resid: float, sigma: float, loss: str, delta: float, tau: float, eps: float):
+    """Robust IRLS weight of a *prior* residual (docs/PLAN.md section 4.5)."""
+    s = sigma if sigma > 0.0 else 1.0
+    if loss == "huber":
+        cut = delta * s
+        a = abs(resid)
+        return 1.0 if (a <= cut or a == 0.0) else cut / a
+    floor = eps * s
+    a = max(abs(resid), floor)
+    side = tau if resid > 0.0 else 1.0 - tau
+    # scaled by s so the weights are O(1) rather than O(1/s)
+    return 2.0 * side * s / a
+
+
+def robust_ref(
+    X: np.ndarray,
+    Y: np.ndarray,
+    dclock: np.ndarray,
+    w: np.ndarray,
+    reset: np.ndarray | None = None,
+    halflife: float = 300.0,
+    loss: str = "huber",
+    huber_delta: float = 1.5,
+    quantile: float = 0.5,
+    quantile_eps: float = 1e-3,
+    ridge: float = 1e-6,
+    standardize: bool = False,
+    add_intercept: bool = True,
+    min_periods: float | None = None,
+) -> dict[str, np.ndarray]:
+    """Huber / quantile oracle (docs/PLAN.md section 4.5).
+
+    IRLS on top of the EW-ridge accumulators: each row's weight is scaled by the
+    robust weight of its *prior* residual, so the reweighting is out-of-sample.
+    Because the weights are per target, ``S`` is per target here (unlike
+    ew_ridge, which shares one). Two details that matter for agreement:
+
+    - the robust weight scales the accumulator update, but ``sigma2_j`` is
+      updated with the *raw* row weight, so the scale estimate is not itself
+      shrunk by the reweighting;
+    - a row whose robust weight is zero still decays the accumulator.
+    """
+    n, k = X.shape
+    m = Y.shape[1]
+    off = 1 if add_intercept else 0
+    kt = k + off
+    if min_periods is None:
+        min_periods = float(kt)
+    if reset is None:
+        reset = np.zeros(n, dtype=bool)
+
+    pred = np.full((n, m), np.nan)
+    resid = np.full((n, m), np.nan)
+    n_eff = np.full(n, np.nan)
+    coef = np.full((n, m, kt), np.nan)
+
+    def init():
+        return {
+            "W": np.zeros(m),
+            "mean": [np.zeros(kt) for _ in range(m)],
+            "raw": [np.zeros((kt, kt)) for _ in range(m)],
+            "wj": np.zeros(m),
+            "r": [np.zeros(kt) for _ in range(m)],
+            "sig2": np.zeros(m),
+            "wsig": np.zeros(m),
+            # EW count of observations under the RAW row weights: the
+            # accumulators are scaled by the IRLS weights, the count is not.
+            "w_raw": 0.0,
+            "beta": None,
+            "pending": 0.0,
+        }
+
+    st = init()
+    for i in range(n):
+        if reset[i]:
+            st = init()
+        if np.isnan(X[i]).any():
+            st["pending"] += dclock[i]
+            continue
+        z = np.concatenate(([1.0], X[i])) if add_intercept else X[i].copy()
+        d = dclock[i] + st["pending"]
+        st["pending"] = 0.0
+        lam = 0.5 ** (d / halflife)
+
+        n_eff[i] = st["w_raw"]
+        ready = st["w_raw"] >= min_periods and st["beta"] is not None
+        if ready:
+            for j in range(m):
+                if st["wj"][j] > 0.0:
+                    pred[i, j] = z @ st["beta"][j]
+                    if not np.isnan(Y[i, j]):
+                        resid[i, j] = Y[i, j] - pred[i, j]
+
+        for j in range(m):
+            if np.isnan(Y[i, j]):
+                st["W"][j] *= lam
+                st["wj"][j] *= lam
+                st["wsig"][j] *= lam
+                continue
+            sigma = np.sqrt(max(st["sig2"][j], 0.0))
+            w_rob = (
+                _robust_weight(
+                    Y[i, j] - pred[i, j], sigma, loss, huber_delta, quantile, quantile_eps
+                )
+                if not np.isnan(pred[i, j])
+                else 1.0
+            )
+            ww = w[i] * w_rob
+            if ww <= 0.0:
+                st["W"][j] *= lam
+                st["wj"][j] *= lam
+                continue
+            W_new = lam * st["W"][j] + ww
+            a, b = lam * st["W"][j] / W_new, ww / W_new
+            st["mean"][j] = a * st["mean"][j] + b * z
+            st["raw"][j] = a * st["raw"][j] + b * np.outer(z, z)
+            st["W"][j] = W_new
+
+            wj_new = lam * st["wj"][j] + ww
+            aj, bj = lam * st["wj"][j] / wj_new, ww / wj_new
+            st["r"][j] = aj * st["r"][j] + bj * z * Y[i, j]
+            st["wj"][j] = wj_new
+
+            if not np.isnan(pred[i, j]):
+                rr = Y[i, j] - pred[i, j]
+                ws_new = lam * st["wsig"][j] + w[i]
+                st["sig2"][j] = (lam * st["wsig"][j] * st["sig2"][j] + w[i] * rr * rr) / ws_new
+                st["wsig"][j] = ws_new
+
+        st["w_raw"] = lam * st["w_raw"] + w[i]
+
+        beta = np.zeros((m, kt))
+        for j in range(m):
+            if st["wj"][j] > 0.0:
+                beta[j] = _solve_ridge(
+                    st["raw"][j],
+                    st["r"][j],
+                    st["W"][j],
+                    ridge,
+                    add_intercept,
+                    standardize,
+                    False,
+                    1.0,
+                )
+        st["beta"] = beta
+        coef[i] = beta
+
+    return {"pred": pred, "resid": resid, "n_eff": n_eff, "coef": coef}
+
+
+def ftrl_ref(
+    X: np.ndarray,
+    Y: np.ndarray,
+    dclock: np.ndarray,
+    w: np.ndarray,
+    reset: np.ndarray | None = None,
+    halflife: float = float("inf"),
+    alpha: float = 0.1,
+    beta: float = 1.0,
+    l1: float = 0.0,
+    l2: float = 1.0,
+    add_intercept: bool = True,
+    min_periods: float = 10.0,
+    strict_binary: bool = False,
+) -> dict[str, np.ndarray]:
+    """FTRL-proximal logistic oracle (docs/PLAN.md section 4.6, McMahan 2013).
+
+    Note the decay is applied to ``n`` and ``z`` *before* the proximal weights
+    are computed, so a row's prediction already reflects its own elapsed clock.
+    """
+    n, k = X.shape
+    m = Y.shape[1]
+    off = 1 if add_intercept else 0
+    kt = k + off
+    if reset is None:
+        reset = np.zeros(n, dtype=bool)
+
+    pred = np.full((n, m), np.nan)
+    resid = np.full((n, m), np.nan)
+    n_eff = np.full(n, np.nan)
+    coef = np.full((n, m, kt), np.nan)
+
+    def init():
+        return {
+            "n": np.zeros((m, kt)),
+            "z": np.zeros((m, kt)),
+            "w_sum": 0.0,
+            "pending": 0.0,
+        }
+
+    def weights(st, j):
+        out = np.zeros(kt)
+        for i in range(kt):
+            zi = st["z"][j, i]
+            if abs(zi) > l1:
+                out[i] = -(zi - np.sign(zi) * l1) / ((beta + np.sqrt(st["n"][j, i])) / alpha + l2)
+        return out
+
+    st = init()
+    for i in range(n):
+        if reset[i]:
+            st = init()
+        if np.isnan(X[i]).any():
+            st["pending"] += dclock[i]
+            continue
+        z = np.concatenate(([1.0], X[i])) if add_intercept else X[i].copy()
+        d = dclock[i] + st["pending"]
+        st["pending"] = 0.0
+        lam = 0.5 ** (d / halflife) if np.isfinite(halflife) else 1.0
+
+        if lam != 1.0:
+            st["n"] *= lam
+            st["z"] *= lam
+
+        n_eff[i] = st["w_sum"]
+        ready = st["w_sum"] >= min_periods
+
+        for j in range(m):
+            b = weights(st, j)
+            coef[i, j] = b
+            p = 1.0 / (1.0 + np.exp(-(z @ b)))
+            if ready:
+                pred[i, j] = p
+                if not np.isnan(Y[i, j]):
+                    resid[i, j] = Y[i, j] - p
+            if np.isnan(Y[i, j]) or w[i] <= 0.0:
+                continue
+            yb = Y[i, j]
+            if strict_binary:
+                if yb not in (0.0, 1.0):
+                    continue
+            else:
+                yb = min(max(yb, 0.0), 1.0)
+            err = p - yb
+            for ii in range(kt):
+                g = err * z[ii] * w[i]
+                n_new = st["n"][j, ii] + g * g
+                s = (np.sqrt(n_new) - np.sqrt(st["n"][j, ii])) / alpha
+                st["z"][j, ii] += g - s * b[ii]
+                st["n"][j, ii] = n_new
+        st["w_sum"] = lam * st["w_sum"] + w[i]
+
+    return {"pred": pred, "resid": resid, "n_eff": n_eff, "coef": coef}

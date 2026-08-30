@@ -1,6 +1,6 @@
 # Test coverage and testing improvements
 
-Status as of 2026-08-30: **61 Rust tests + 134 pytest functions**, all green,
+Status as of 2026-08-30: **61 Rust tests + 257 pytest functions**, all green,
 run in CI on three OSes.
 
 **Progress on this document's own backlog** (updated as items land):
@@ -16,6 +16,9 @@ run in CI on three OSes.
 | T-R1 FTRL vs river | **Done** — `tests/test_river.py`. Driven by the same gradient sequence, river's `optim.FTRLProximal` and our model agree on the z/n recursion to 1e-12, row for row, with and without L1. Also pinned: **river's `LogisticRegression` predicts with the previous step's proximal weights**, while we follow McMahan Algorithm 1 and recompute from `z` at prediction time — a real semantic difference, now a test rather than a surprise. |
 | T-R4 EW moments vs river | **Done** — and it found a second convention difference: ours is the *bias-corrected* weighted mean (divides by accumulated weight, exact from the first row), river's `EWMean` is the un-normalized EWMA seeded at its first value, which stays anchored near that seed during warmup. Both the closed-form match and the convergence in the limit are asserted. |
 | T-R5 / T-R6 quantile, Huber | **Done** (statistical tier) — our IRLS quantile lands near the empirical quantile alongside river's P² estimator; our Huber and river's SGD-Huber both beat least squares under 3% contamination and agree with each other. |
+| T-A3 huber/quantile oracles | **Done** — `robust_ref` in `tests/reference.py`; agreement to ~1e-13 across `huber_delta` ∈ {0.5, 1.5, 10}, τ ∈ {0.1, 0.5, 0.9}, nulls, multi-target and standardized solves. |
+| T-A4 ftrl oracle | **Done** — `ftrl_ref`; agreement to ~1e-16 with and without clock decay, across `l1` ∈ {0, 0.5, 5}, custom α/β/l2, no-intercept and null targets. |
+| T-A5 semantics across all models | **Done** — `tests/test_semantics_all_models.py` runs null policy, warmup, clock semantics and the universal invariants (chunk invariance, save/load, group independence, expression ≡ bank, no non-finite outputs) against **all seven models**. **It found a real defect**: the robust models were reporting `n_eff` as the sum of *IRLS weights* rather than observations, so a quantile spec showed `n_eff ≈ 1001` after three rows (quantile weights reach `2/quantile_eps` ≈ 2000×) and `min_periods` was effectively inert. Fixed: `Robust` now tracks a raw-weight observation count for `n_eff`/`min_periods` while the accumulators keep using the robust weights. |
 | T-D1 / Windows CI | **Blocked on credentials** — see "Windows and cross-platform" below. `origin` is `github.com/hgilde/polars-online` and 24 commits are ready, but this machine has no GitHub auth (no keychain entry, no SSH key, no token, no `gh`), so nothing has ever been pushed and **no CI job has ever run on Windows**. |
 
 This document assesses what the tests actually prove, then lists concrete
@@ -62,9 +65,9 @@ meaningful new assurance; **P3** = infrastructure.
 |---|---|---|
 | T-A1 | ~~P1~~ **done** | **`kalman_ref` in `tests/reference.py`** — plain numpy predict/update recursion mirroring the standardization-from-prior-stats scheme; agreement to 1e-9 (observed 1.1e-15) incl. per-factor halflife, `inf` pinning, explicit `q`, `obs_var`/`p0`, `share_p`, no-intercept, and the null-target path. Writing it confirmed several subtleties are load-bearing: scales come from the stats *before* the row, `Q·Δclock` is applied once per shared `P`, and the innovation variance carries `σ²/w`. |
 | T-A2 | ~~P1~~ **done** | **Lasso KKT verification** — at the emitted coefficient snapshot, stationarity is checked on the model's own standardized statistics (`g_i = c_i − (Cb)_i − l2·b_i` must equal `l1·sign(b_i)` where `b_i ≠ 0`, and satisfy `|g_i| ≤ l1` where it is zero), across λ × `l1_ratio` combinations, plus sparsity monotonicity along the path and the intercept identity. A numpy CD `lasso_ref` for the *pred* path is still open (would catch schedule/warm-start bugs the KKT check cannot see). |
-| T-A3 | P2 | **`huber_ref` / `quantile_ref`**: the IRLS reweighting is ~20 lines of numpy on top of `ewridge_ref`; assert 1e-9 agreement including the prior-residual weighting and per-target accumulators. |
-| T-A4 | P2 | **`ftrl_ref`**: direct numpy port of the McMahan recursion; assert 1e-12 agreement including decay, weights, and null targets. |
-| T-A5 | P2 | Run the **existing** edge-case tests (nulls, clock, warmup) through *every* model, parametrized, not just ewridge — the semantics are claimed to be model-independent; the tests should say so. |
+| T-A3 | ~~P2~~ **done** | **`robust_ref`** covers both Huber and quantile; agreement ~1e-13. Two details proved load-bearing while writing it: the robust weight scales the accumulator update but **not** the `sigma2_j` update (otherwise the scale estimate shrinks itself), and a zero robust weight still decays the accumulator. |
+| T-A4 | ~~P2~~ **done** | **`ftrl_ref`**; agreement ~1e-16. The decay is applied to `n` and `z` *before* the proximal weights are computed, so a row's prediction already reflects its own elapsed clock. |
+| T-A5 | ~~P2~~ **done** | Null policy, warmup, clock semantics and the universal invariants are now parametrized over all seven models, with the genuinely model-specific deviations named in the module docstring rather than skipped silently (`rls` predict-only on any null target; `lasso` slot naming; `ftrl` probabilities). **Found the robust `n_eff` defect** described above. |
 
 ### B. Cross-checks against river (new `tests/test_river.py`)
 

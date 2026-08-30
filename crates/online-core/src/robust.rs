@@ -94,6 +94,13 @@ pub struct Robust {
     /// EW residual variance per target (drives the robust scale).
     sig2: Vec<f64>,
     wsig: Vec<f64>,
+    /// EW count of *observations* using the raw row weights, i.e. ignoring the
+    /// IRLS reweighting. This is what `n_eff` and `min_periods` mean everywhere
+    /// else, so the robust models report it too: the accumulators are scaled by
+    /// the robust weights, but the observation count must not be. (Quantile
+    /// weights can reach `2 / quantile_eps`, so counting them would inflate
+    /// `n_eff` by ~1000x and make `min_periods` meaningless.)
+    w_raw: f64,
     beta: Option<Vec<Vec<f64>>>,
     clock_since_solve: f64,
     rows_since_solve: u32,
@@ -113,6 +120,7 @@ impl Robust {
             r: vec![vec![0.0; k]; m],
             sig2: vec![0.0; m],
             wsig: vec![0.0; m],
+            w_raw: 0.0,
             beta: None,
             clock_since_solve: 0.0,
             rows_since_solve: 0,
@@ -130,10 +138,9 @@ impl Robust {
         &self.sig2
     }
 
-    /// `n_eff` reported for the model: the first target's accumulator (all
-    /// targets see the same rows, only the robust weights differ).
+    /// EW count of observations under the raw row weights (see [`Self::w_raw`]).
     pub fn n_eff(&self) -> f64 {
-        self.cov[0].n_eff()
+        self.w_raw
     }
 
     pub fn coefficients(&self) -> Option<&[Vec<f64>]> {
@@ -264,7 +271,7 @@ impl OnlineModel for Robust {
         }
 
         // ---- predict (state before the update) ----
-        let n_eff = self.cov[0].n_eff();
+        let n_eff = self.w_raw;
         let ready = n_eff >= self.cfg.min_periods && self.beta.is_some();
         let mut pred = vec![f64::NAN; m];
         if ready {
@@ -313,12 +320,14 @@ impl OnlineModel for Robust {
             }
         }
 
+        self.w_raw = lam * self.w_raw + weight;
+
         self.clock_since_solve += d_clock;
         self.rows_since_solve += 1;
         let due = self.cfg.solve_every <= 0.0
             || self.clock_since_solve >= self.cfg.solve_every
             || self.rows_since_solve >= self.cfg.max_rows_between_solves
-            || (self.beta.is_none() && self.cov[0].n_eff() >= self.cfg.min_periods);
+            || (self.beta.is_none() && self.w_raw >= self.cfg.min_periods);
         if due {
             self.solve();
         }

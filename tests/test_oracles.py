@@ -14,7 +14,7 @@ import pytest
 
 import polars_online as po
 from data import synthetic
-from reference import kalman_ref
+from reference import ftrl_ref, kalman_ref, robust_ref
 
 MAXD = 50.0
 
@@ -304,3 +304,189 @@ def test_intercept_matches_the_weighted_means():
 
 def test_pl_is_importable():
     assert pl.__version__
+
+
+class TestRobustOracles:
+    """T-A3: Huber and quantile vs `tests/reference.py::robust_ref`."""
+
+    def _compare(self, df, k=2, targets=("y0",), model="huber", ref_kw=None, **spec_kw):
+        x, dc, w = _arrays(df, k)
+        y = np.column_stack([df[t].to_numpy() for t in targets])
+        ref = robust_ref(
+            x,
+            y,
+            dc,
+            w,
+            halflife=300.0,
+            loss="huber" if model == "huber" else "quantile",
+            min_periods=5.0,
+            **(ref_kw or {}),
+        )
+        spec = getattr(po.spec, model)(
+            "m",
+            targets=list(targets),
+            features=[f"x{j}" for j in range(k)],
+            clock="t",
+            max_dclock=MAXD,
+            weight="w",
+            halflife=300.0,
+            min_periods=5.0,
+            max_rows_between_solves=1,
+            **spec_kw,
+        )
+        out = po.ModelBank([spec]).fit_predict(df)
+        for j, t in enumerate(targets):
+            _close(
+                out["m"].struct.field(f"pred_{t}").to_numpy().astype(float),
+                ref["pred"][:, j],
+                what=f"pred_{t}",
+            )
+            _close(
+                out["m"].struct.field(f"resid_{t}").to_numpy().astype(float),
+                ref["resid"][:, j],
+                what=f"resid_{t}",
+            )
+        _close(
+            out["m"].struct.field("n_eff").to_numpy().astype(float),
+            ref["n_eff"],
+            what="n_eff",
+        )
+
+    def test_huber(self):
+        df, _ = synthetic(seed=91, n_groups=1, n_rows=250, k=2, null_frac=0.0)
+        self._compare(df)
+
+    @pytest.mark.parametrize("delta", [0.5, 1.5, 10.0])
+    def test_huber_delta_values(self, delta):
+        df, _ = synthetic(seed=92, n_groups=1, n_rows=250, k=2, null_frac=0.0)
+        self._compare(df, ref_kw={"huber_delta": delta}, huber_delta=delta)
+
+    @pytest.mark.parametrize("tau", [0.1, 0.5, 0.9])
+    def test_quantile_levels(self, tau):
+        df, _ = synthetic(seed=93, n_groups=1, n_rows=250, k=2, null_frac=0.0)
+        self._compare(df, model="quantile", ref_kw={"quantile": tau}, quantile=tau)
+
+    def test_with_nulls(self):
+        # The reweighting interacts with the null policy (a null target must not
+        # advance that target's accumulator), so it gets an oracle comparison.
+        df, _ = synthetic(seed=94, n_groups=1, n_rows=300, k=2, null_frac=0.05)
+        self._compare(df)
+
+    def test_multi_target_has_independent_accumulators(self):
+        df, _ = synthetic(seed=95, n_groups=1, n_rows=250, k=2, n_targets=2, null_frac=0.0)
+        self._compare(df, targets=("y0", "y1"))
+
+    def test_standardized_solve(self):
+        df, _ = synthetic(seed=96, n_groups=1, n_rows=250, k=2, null_frac=0.0)
+        self._compare(df, ref_kw={"standardize": True}, standardize=True)
+
+
+class TestFtrlOracle:
+    """T-A4: FTRL vs `tests/reference.py::ftrl_ref`."""
+
+    def _binary(self, seed=5, n=400):
+        rng = np.random.default_rng(seed)
+        x0, x1 = rng.standard_normal(n), rng.standard_normal(n)
+        p = 1.0 / (1.0 + np.exp(-(1.5 * x0 - 0.5 * x1)))
+        return pl.DataFrame(
+            {
+                "x0": x0,
+                "x1": x1,
+                "y0": (rng.random(n) < p).astype(float),
+                "w": rng.uniform(0.5, 1.5, n),
+                "t": np.cumsum(rng.exponential(5.0, n)),
+            }
+        )
+
+    def _compare(self, df, **kw):
+        n = df.height
+        x = np.column_stack([df["x0"].to_numpy(), df["x1"].to_numpy()])
+        dc = np.zeros(n)
+        dc[1:] = np.clip(np.diff(df["t"].to_numpy()), 0.0, 30.0)
+        ref = ftrl_ref(
+            x,
+            df["y0"].to_numpy().reshape(-1, 1),
+            dc,
+            df["w"].to_numpy(),
+            min_periods=10.0,
+            **kw,
+        )
+        spec = po.spec.ftrl(
+            "m",
+            targets=["y0"],
+            features=["x0", "x1"],
+            clock="t",
+            max_dclock=30.0,
+            weight="w",
+            min_periods=10.0,
+            halflife=kw.get("halflife", float("inf")),
+            alpha=kw.get("alpha"),
+            beta=kw.get("beta"),
+            l1=kw.get("l1"),
+            l2=kw.get("l2"),
+            add_intercept=kw.get("add_intercept", True),
+        )
+        out = po.ModelBank([spec]).fit_predict(df)
+        _close(
+            out["m"].struct.field("pred_y0").to_numpy().astype(float),
+            ref["pred"][:, 0],
+            tol=1e-12,
+            what="pred",
+        )
+        _close(
+            out["m"].struct.field("resid_y0").to_numpy().astype(float),
+            ref["resid"][:, 0],
+            tol=1e-12,
+            what="resid",
+        )
+
+    def test_no_decay(self):
+        self._compare(self._binary())
+
+    def test_with_clock_decay(self):
+        self._compare(self._binary(seed=6), halflife=200.0)
+
+    @pytest.mark.parametrize("l1", [0.0, 0.5, 5.0])
+    def test_l1_values(self, l1):
+        self._compare(self._binary(seed=7), l1=l1)
+
+    def test_alpha_beta_l2(self):
+        self._compare(self._binary(seed=8), alpha=0.5, beta=0.1, l2=3.0)
+
+    def test_no_intercept(self):
+        self._compare(self._binary(seed=9), add_intercept=False)
+
+    def test_null_targets(self):
+        df = self._binary(seed=10)
+        y = df["y0"].to_list()
+        y[50] = None
+        y[51] = None
+        df = df.with_columns(y0=pl.Series(y, dtype=pl.Float64))
+        n = df.height
+        x = np.column_stack([df["x0"].to_numpy(), df["x1"].to_numpy()])
+        dc = np.zeros(n)
+        dc[1:] = np.clip(np.diff(df["t"].to_numpy()), 0.0, 30.0)
+        ref = ftrl_ref(
+            x,
+            df["y0"].to_numpy().astype(float).reshape(-1, 1),
+            dc,
+            df["w"].to_numpy(),
+            min_periods=10.0,
+        )
+        spec = po.spec.ftrl(
+            "m",
+            targets=["y0"],
+            features=["x0", "x1"],
+            clock="t",
+            max_dclock=30.0,
+            weight="w",
+            min_periods=10.0,
+            halflife=float("inf"),
+        )
+        out = po.ModelBank([spec]).fit_predict(df)
+        _close(
+            out["m"].struct.field("pred_y0").to_numpy().astype(float),
+            ref["pred"][:, 0],
+            tol=1e-12,
+            what="pred with nulls",
+        )
