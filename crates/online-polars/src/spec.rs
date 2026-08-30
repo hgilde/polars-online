@@ -205,7 +205,7 @@ impl Spec {
         self.clock_cfg()?;
         match &self.model {
             ModelKind::Rls { ridge, coef0 } => {
-                if ridge.is_some_and(|r| !(r > 0.0)) {
+                if ridge.is_some_and(|r| r <= 0.0 || r.is_nan()) {
                     return Err(format!("spec {:?}: rls ridge must be > 0", self.name));
                 }
                 let k_total = self.k() + usize::from(self.add_intercept);
