@@ -327,11 +327,17 @@ def ftrl(
     loss: str = "logistic",
     **common: Any,
 ) -> dict[str, Any]:
-    """Online logistic regression via FTRL-proximal (docs/PLAN.md section 4.6).
+    """Online regression via FTRL-proximal (docs/PLAN.md section 4.6).
 
-    For binary (0/1) targets. Per-coordinate adaptive learning rates following
-    McMahan et al. (2013), with the accumulators decayed on the same clock as
-    every other model here, so it forgets on the same schedule::
+    ``loss="logistic"`` (default) for binary (0/1) targets, where ``pred`` is a
+    probability; ``loss="squared"`` for continuous targets, where ``pred`` is
+    the linear prediction. The two differ only in the link -- the gradient is
+    ``(p - y) * z`` either way -- so the squared loss gives sparse linear
+    regression with no solves, and L1 support that ``ew_ridge`` does not have.
+
+    Per-coordinate adaptive learning rates following McMahan et al. (2013),
+    with the accumulators decayed on the same clock as every other model here,
+    so it forgets on the same schedule::
 
         n_i  <- lam * n_i ;  z_i <- lam * z_i
         b_i  = 0 if |z_i| <= l1 else

@@ -232,7 +232,9 @@ p   = sigmoid(zᵀβ)     g_i = (p − y)·z_i·w
 z_i += g_i − ((√(n_i + g_i²) − √n_i)/α)·β_i      n_i += g_i²
 ```
 
-`pred` is a probability and `resid = y − p`.
+With `loss="logistic"` (default) `pred` is a probability and `resid = y − p`;
+with `loss="squared"` it is the linear prediction, giving sparse linear
+regression with no solves — and L1 support, which `ewridge` does not have.
 
 ## Performance
 
