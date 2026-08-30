@@ -81,7 +81,20 @@ bank.save("bank.state")                    # versioned msgpack, portable across 
 bank = po.ModelBank.load("bank.state", specs=[spec])
 ```
 
-### 3. CLI
+### 3. Streaming runner (Python or CLI)
+
+The same O(state + chunk) parquet→parquet path, from Python:
+
+```python
+po.run(
+    input="ticks.parquet", output="fitted.parquet",
+    specs=[spec], chunk_rows=100_000, save_state="bank.state",
+)                                    # -> {"rows": ..., "chunks": ...}
+
+po.run("bank.toml", input="today.parquet")   # keywords override the config
+```
+
+or from the CLI:
 
 ```sh
 online --config examples/bank.toml

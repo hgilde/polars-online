@@ -92,6 +92,21 @@ impl PyModelBank {
     }
 }
 
+/// Stream a parquet file through a bank, parquet in -> parquet out
+/// (ENHANCEMENTS E8). Config comes in as JSON; returns `(rows, chunks)`.
+///
+/// The GIL is released for the whole run, so this does not block other Python
+/// threads while a large file streams.
+#[pyfunction]
+fn run_config(py: Python<'_>, config_json: &str) -> PyResult<(usize, usize)> {
+    let cfg: online_polars::RunConfig = serde_json::from_str(config_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid run config: {e}")))?;
+    let stats = py
+        .detach(|| online_polars::run_config(&cfg, |_| {}))
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok((stats.rows, stats.chunks))
+}
+
 /// Validate a single spec (raises ValueError with the reason).
 #[pyfunction]
 fn validate_spec(spec_json: &str) -> PyResult<()> {
@@ -130,6 +145,7 @@ fn _polars_online(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(native_version, m)?)?;
     m.add_function(wrap_pyfunction!(schema_version, m)?)?;
     m.add_function(wrap_pyfunction!(validate_spec, m)?)?;
+    m.add_function(wrap_pyfunction!(run_config, m)?)?;
     m.add_function(wrap_pyfunction!(spec_output_fields, m)?)?;
     Ok(())
 }
