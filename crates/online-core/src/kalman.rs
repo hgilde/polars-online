@@ -53,6 +53,20 @@ pub struct KalmanCfg {
     pub p0: f64,
     pub share_p: bool,
     pub min_periods: f64,
+    /// Standardize features internally before filtering (default).
+    ///
+    /// On by default because the halflife-derived process noise
+    /// `q_i = sigma^2 (ln2/h_i)^2` is only comparable across features on a
+    /// common scale. Turn it off when the features are already on a sensible
+    /// scale and you want the filter to operate on them directly — that makes
+    /// this exactly a Bayesian linear regression (with `q = 0` and a fixed
+    /// `obs_var`), which is how it is cross-checked against river.
+    #[serde(default = "default_true")]
+    pub standardize: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl KalmanCfg {
@@ -162,10 +176,14 @@ impl Kalman {
 
     /// Feature scales used for standardization: sd for features, 1 for the
     /// intercept slot. Zero-variance features get scale 1 (their standardized
-    /// value is then their centered value, i.e. 0).
+    /// value is then their centered value, i.e. 0). All ones when
+    /// `standardize` is off.
     fn scales(&self) -> Vec<f64> {
         let k = self.cfg.k_total();
         let off = usize::from(self.cfg.add_intercept);
+        if !self.cfg.standardize {
+            return vec![1.0; k];
+        }
         (0..k)
             .map(|i| {
                 if i < off {
@@ -185,6 +203,9 @@ impl Kalman {
 
     /// Coefficients in the ORIGINAL feature units, per target.
     pub fn coefficients(&self) -> Vec<Vec<f64>> {
+        if !self.cfg.standardize {
+            return self.beta.clone();
+        }
         let k = self.cfg.k_total();
         let off = usize::from(self.cfg.add_intercept);
         let s = self.scales();
@@ -256,7 +277,9 @@ impl OnlineModel for Kalman {
         // Standardized regressors from the stats BEFORE this row's update.
         let s = self.scales();
         for (i, zs) in self.zs.iter_mut().enumerate() {
-            *zs = if i < off {
+            *zs = if !self.cfg.standardize {
+                self.zbuf[i]
+            } else if i < off {
                 1.0
             } else {
                 (self.zbuf[i] - self.cov.mean(i)) / s[i]
@@ -408,6 +431,60 @@ mod tests {
             p0: 1.0,
             share_p: false,
             min_periods: 10.0,
+            standardize: true,
+        }
+    }
+
+    /// With `standardize = false`, `q = 0` and a fixed `obs_var`, the filter is
+    /// exactly a Bayesian linear regression: coefficients converge to the ridge
+    /// solution with penalty `obs_var / p0`.
+    #[test]
+    fn unstandardized_with_no_process_noise_is_bayesian_regression() {
+        let (p0, obs_var) = (10.0, 0.25);
+        let mut m = Kalman::new(KalmanCfg {
+            n_features: 2,
+            n_targets: 1,
+            add_intercept: false,
+            decay: Decay::Halflife(f64::INFINITY),
+            halflife: vec![f64::INFINITY],
+            q: Some(vec![0.0, 0.0]),
+            obs_var: Some(obs_var),
+            p0,
+            share_p: false,
+            min_periods: 0.0,
+            standardize: false,
+        })
+        .unwrap();
+        // Accumulate the normal equations alongside, then compare with the
+        // closed-form ridge solution (obs_var / p0 is the implied penalty).
+        let mut s = 55u64;
+        let (mut xtx, mut xty) = ([[0.0f64; 2]; 2], [0.0f64; 2]);
+        for i in 0..400 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = 1.25 * x[0] - 0.5 * x[1];
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            for a in 0..2 {
+                xty[a] += x[a] * y;
+                for b in 0..2 {
+                    xtx[a][b] += x[a] * x[b];
+                }
+            }
+        }
+        let lam = obs_var / p0;
+        let (a, b, c, d) = (xtx[0][0] + lam, xtx[0][1], xtx[1][0], xtx[1][1] + lam);
+        let det = a * d - b * c;
+        let want = [
+            (d * xty[0] - b * xty[1]) / det,
+            (-c * xty[0] + a * xty[1]) / det,
+        ];
+        let got = &m.coefficients()[0];
+        for i in 0..2 {
+            assert!(
+                (got[i] - want[i]).abs() < 1e-9,
+                "coef {i}: {} vs ridge closed form {}",
+                got[i],
+                want[i]
+            );
         }
     }
 

@@ -152,6 +152,7 @@ fn kalman_golden() {
         p0: 1.0,
         share_p: false,
         min_periods: 3.0,
+        standardize: true,
     })
     .unwrap();
     check("kalman", &signature(&mut m, 0), GOLDEN_KALMAN);

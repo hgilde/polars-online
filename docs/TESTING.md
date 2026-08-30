@@ -1,6 +1,6 @@
 # Test coverage and testing improvements
 
-Status as of 2026-08-30: **71 Rust tests + 396 pytest functions** (plus 2 opt-in
+Status as of 2026-08-30: **72 Rust tests + 400 pytest functions** (plus 2 opt-in
 soak tests), all green, run in CI on three OSes.
 
 Measured coverage (`./scripts/coverage.sh`): **96% of the Python package**, and
@@ -94,7 +94,7 @@ installed (same pattern as the offline skip). Two tiers:
 | # | P | Comparison |
 |---|---|---|
 | T-R1 | ~~P1~~ **done** | **`ftrl` ≡ `river.optim.FTRLProximal`.** Compared at the level of the state recursion (river's optimizer driven by the same gradient sequence), which is exact to 1e-12; comparing the two *models* end to end is not exact, because river's `LogisticRegression` predicts with the previous step's proximal weights while we recompute from `z` at prediction time per McMahan Algorithm 1. That ordering difference is itself pinned by a test. |
-| T-R2 | P2 | **Kalman(q=0, fixed `obs_var`) ≡ `river.linear_model.BayesianLinearRegression`** — *blocked on* the `standardize: false` Kalman switch (ENHANCEMENTS E19); once added, the recursions are the same rank-1 Bayesian update. |
+| T-R2 | ~~P2~~ **done** | **Kalman(q=0, fixed `obs_var`, `standardize=False`) ≡ `river.linear_model.BayesianLinearRegression`** — exact to 3.6e-15 across three (alpha, beta) settings, mapping `p0 = 1/alpha` and `obs_var = 1/beta`. Includes a guard that turning standardization on breaks the match, so the switch cannot silently become a no-op. |
 | T-R3 | ~~P2~~ **done** | **`EwCov` ≡ `river.stats.Mean` / `Var` / `Cov` / `PearsonCorr`** — exact agreement (1e-9) with no decay, reached via the new `ew_cov` surface (ENHANCEMENTS E1). The final test in that class also quantifies where the two diverge: at a 1e9 offset river's Welford form is still exact while our raw-moment form has lost the variance entirely, which is the gap E11b would close. |
 
 **Statistical (tail agreement after warmup, tolerance stated per test):**

@@ -127,6 +127,10 @@ pub enum ModelKind {
         p0: Option<f64>,
         #[serde(default)]
         share_p: bool,
+        /// Standardize features internally (default true). Off makes the filter
+        /// a plain Bayesian linear regression on the features' own scale.
+        #[serde(default = "default_true")]
+        standardize: bool,
     },
     /// Huber regression (docs/PLAN.md §4.5).
     Huber {

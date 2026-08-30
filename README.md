@@ -183,6 +183,11 @@ features: `q_i = σ²(ln2 / h_i)²`, which matches the steady-state gain of EW-R
 `coef_halflife` may be a scalar or one value per slot; `inf` pins a coefficient.
 Observation noise defaults to the EW residual variance.
 
+Standardization is internal and on by default (the halflife-derived `q` is only
+comparable across features on a common scale). With `standardize=False`, `q=0`
+and a fixed `obs_var`, this is exactly a Bayesian linear regression — it
+reproduces river's `BayesianLinearRegression` to 3.6e-15.
+
 ### `huber` / `quantile` — robust regression
 
 IRLS reweighting on the ridge update, using each row's **prior** residual so the

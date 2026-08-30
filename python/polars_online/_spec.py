@@ -201,6 +201,7 @@ def kalman(
     obs_var: float | None = None,
     p0: float | None = None,
     share_p: bool = False,
+    standardize: bool = True,
     **common: Any,
 ) -> dict[str, Any]:
     """Kalman / random-walk-beta dynamic linear model (docs/PLAN.md section 4.4).
@@ -236,6 +237,7 @@ def kalman(
         "obs_var": obs_var,
         "p0": p0,
         "share_p": share_p,
+        "standardize": standardize,
     }
     return _common(name, model, targets=targets, features=features, **common)
 

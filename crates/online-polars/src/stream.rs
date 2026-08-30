@@ -206,6 +206,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             obs_var,
             p0,
             share_p,
+            standardize,
         } => {
             let cfg = KalmanCfg {
                 n_features: spec.k(),
@@ -218,6 +219,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 p0: p0.unwrap_or(1.0),
                 share_p: *share_p,
                 min_periods: spec.min_periods_or_default(),
+                standardize: *standardize,
             };
             Ok(AnyModel::Kalman(Box::new(Kalman::new(cfg)?)))
         }
