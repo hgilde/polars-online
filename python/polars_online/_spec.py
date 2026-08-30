@@ -324,6 +324,7 @@ def ftrl(
     l1: float | None = None,
     l2: float | None = None,
     strict_binary: bool = False,
+    loss: str = "logistic",
     **common: Any,
 ) -> dict[str, Any]:
     """Online logistic regression via FTRL-proximal (docs/PLAN.md section 4.6).
@@ -352,6 +353,7 @@ def ftrl(
         "l1": l1,
         "l2": l2,
         "strict_binary": strict_binary,
+        "loss": loss,
     }
     return _common(name, model, targets=targets, features=features, **common)
 

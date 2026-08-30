@@ -203,9 +203,29 @@ fn ftrl_golden() {
         l2: 1.0,
         min_periods: 3.0,
         strict_binary: false,
+        loss: FtrlLoss::Logistic,
     })
     .unwrap();
     check("ftrl", &signature(&mut m, 0), GOLDEN_FTRL);
+}
+
+#[test]
+fn ftrl_squared_golden() {
+    let mut m = Ftrl::new(FtrlCfg {
+        n_features: 2,
+        n_targets: 1,
+        add_intercept: true,
+        decay: Decay::Halflife(40.0),
+        alpha: 0.5,
+        beta: 1.0,
+        l1: 0.05,
+        l2: 0.01,
+        min_periods: 3.0,
+        strict_binary: false,
+        loss: FtrlLoss::Squared,
+    })
+    .unwrap();
+    check("ftrl_squared", &signature(&mut m, 0), GOLDEN_FTRL_SQUARED);
 }
 
 // --- generated; see the module docs ---
@@ -228,4 +248,9 @@ const GOLDEN_HUBER: &[f64] = &[
     -0.06446675716780813,
 ];
 const GOLDEN_QUANTILE: &[f64] = &[0.2951076807653745, 2.232303167920436, -0.03927577244973528];
+const GOLDEN_FTRL_SQUARED: &[f64] = &[
+    0.31690964540626376,
+    1.6128031168738046,
+    -0.053001920184771734,
+];
 const GOLDEN_FTRL: &[f64] = &[0.4944157427243535, 0.5720078133207852, 0.4641448801691502];

@@ -172,8 +172,13 @@ pub enum ModelKind {
         #[serde(default)]
         l2: Option<f64>,
         /// Error on targets that are not 0/1 rather than clamping them.
+        /// Logistic loss only.
         #[serde(default)]
         strict_binary: bool,
+        /// "logistic" (default, binary targets, `pred` is a probability) or
+        /// "squared" (continuous targets, sparse linear regression).
+        #[serde(default)]
+        loss: Option<String>,
     },
     /// EW moments of the feature columns, no regression (docs/PLAN.md §4.7).
     /// `targets` is ignored; every column of interest goes in `features`.

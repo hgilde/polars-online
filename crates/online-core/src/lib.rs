@@ -20,7 +20,7 @@ mod solve;
 pub use clock::{ClockAdvance, ClockCfg, ClockState, Decay, OnClockReset, SessionGap};
 pub use ewcov::{EwCov, EwCovCfg, EwCovModel, EwCovStat, variance_is_usable};
 pub use ewridge::{EwRidge, EwRidgeCfg};
-pub use ftrl::{Ftrl, FtrlCfg};
+pub use ftrl::{Ftrl, FtrlCfg, FtrlLoss};
 pub use kalman::{Kalman, KalmanCfg};
 pub use lasso::{Lasso, LassoCfg};
 pub use model::{Extra, ModelState, OnlineModel, State, StateError, Step, check_schema};

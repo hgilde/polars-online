@@ -34,6 +34,7 @@ instead by the CLI integration tests through `run_config`) and
 | T-D2 property-based testing | **Done** — `tests/test_properties.py` (hypothesis) generates adversarial streams (mixed nulls, duplicate/long-gap clocks, ±1e8 values, zero weights, tiny groups) and asserts the universal invariants for all seven models, including the strongest one: **changing a row's own target never changes that row's own prediction** (out-of-sample by construction, hard rule 2). |
 | T-E11 soak | **Done** — 10M rows through one state in ~6.5s: `n_eff` stays bounded and does not drift between the start and end of the stream, the fit is still accurate, and a 2M-row state serializes to under 4KB (memory is O(state), not O(data)). Opt-in via `pytest -m soak`. |
 | T-D4 coverage | **Done** (reported, not gating) — `scripts/coverage.sh`; numbers above. |
+| T-D5 mutation re-run | **Deferred on purpose.** A full pass is ~1645 mutants / ~1 hour, and it is only meaningful against settled code — re-running it while models and outputs are still being added just measures a moving target. Run `./scripts/mutants.sh` once the enhancement backlog is drained, and expect the golden tests to have absorbed most of the earlier 517 misses (measured: `robust.rs` 162 → 42). |
 | T-D1 / Windows CI | **Blocked on credentials** — see "Windows and cross-platform" below. `origin` is `github.com/hgilde/polars-online` and 24 commits are ready, but this machine has no GitHub auth (no keychain entry, no SSH key, no token, no `gh`), so nothing has ever been pushed and **no CI job has ever run on Windows**. |
 
 This document assesses what the tests actually prove, then lists concrete
@@ -158,6 +159,8 @@ can break that macOS never will.
 
 Done so far: T-E1–T-E4, T-A1, T-A2, T-R1, T-R4–T-R6.
 
+0. **T-D5** — re-run the full mutation pass once the feature work settles;
+   deliberately deferred until then.
 1. **T-D1 → T-W1, T-W2** — push and run the workflows. This is the single
    largest untested area (a whole supported platform) and it gates T-W3–T-W9.
 2. **T-A3, T-A4** — finish the oracle set PLAN §9 class 1 promised, so

@@ -2,9 +2,9 @@
 //! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
 
 use online_core::{
-    ClockState, Decay, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg, Kalman,
-    KalmanCfg, Lasso, LassoCfg, ModelState, OnlineModel, Rls, RlsCfg, Robust, RobustCfg,
-    RobustLoss, State, StateError,
+    ClockState, Decay, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg,
+    FtrlLoss, Kalman, KalmanCfg, Lasso, LassoCfg, ModelState, OnlineModel, Rls, RlsCfg, Robust,
+    RobustCfg, RobustLoss, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -276,7 +276,17 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             l1,
             l2,
             strict_binary,
+            loss,
         } => {
+            let loss = match loss.as_deref() {
+                None | Some("logistic") => FtrlLoss::Logistic,
+                Some("squared") => FtrlLoss::Squared,
+                Some(other) => {
+                    return Err(format!(
+                        "unknown ftrl loss {other:?}; expected \"logistic\" or \"squared\""
+                    ));
+                }
+            };
             let cfg = FtrlCfg {
                 n_features: spec.k(),
                 n_targets: spec.m(),
@@ -288,6 +298,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 l2: l2.unwrap_or(1.0),
                 min_periods: spec.min_periods_or_default(),
                 strict_binary: *strict_binary,
+                loss,
             };
             Ok(AnyModel::Ftrl(Box::new(Ftrl::new(cfg)?)))
         }

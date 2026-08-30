@@ -1,9 +1,17 @@
-//! Online logistic regression via FTRL-proximal (docs/PLAN.md §4.6).
+//! Online regression via FTRL-proximal (docs/PLAN.md §4.6).
 //!
-//! For binary targets (direction, "signal accurate now"). Per-coordinate
-//! adaptive learning rates, following McMahan et al. (2013), with the
-//! accumulators decayed by the same clock as every other model here so it
+//! Per-coordinate adaptive learning rates following McMahan et al. (2013), with
+//! the accumulators decayed by the same clock as every other model here so it
 //! forgets on the same schedule.
+//!
+//! Two losses, which differ only in the link and the gradient:
+//!
+//! - [`FtrlLoss::Logistic`] for binary targets (direction, "signal accurate
+//!   now"): `p = sigmoid(z·b)` and `g = (p − y)·z`. `pred` is a probability.
+//! - [`FtrlLoss::Squared`] for continuous targets: `p = z·b` and the same
+//!   `g = (p − y)·z`. This is the sparse linear regression river gets from
+//!   `optim.FTRLProximal` with a squared loss — cheap (no solves) and L1-capable
+//!   where `ew_ridge` is not.
 //!
 //! Per row (`z` includes the intercept when configured, `p` the predicted
 //! probability, `g_i = (p - y) * z_i * w` the gradient):
@@ -29,6 +37,17 @@ use serde::{Deserialize, Serialize};
 use crate::Decay;
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
 
+/// Which loss the FTRL updates follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FtrlLoss {
+    /// Binary targets; `pred` is a probability in [0, 1].
+    #[default]
+    Logistic,
+    /// Continuous targets; `pred` is the linear prediction.
+    Squared,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FtrlCfg {
     pub n_features: usize,
@@ -42,8 +61,11 @@ pub struct FtrlCfg {
     pub l1: f64,
     pub l2: f64,
     pub min_periods: f64,
-    /// Reject targets that are not 0/1 instead of clamping them.
+    /// Reject targets that are not 0/1 instead of clamping them. Logistic only.
     pub strict_binary: bool,
+    /// Logistic (default) or squared loss.
+    #[serde(default)]
+    pub loss: FtrlLoss,
 }
 
 impl FtrlCfg {
@@ -60,6 +82,9 @@ impl FtrlCfg {
         }
         if self.beta < 0.0 || self.l1 < 0.0 || self.l2 < 0.0 {
             return Err("ftrl: beta, l1 and l2 must be >= 0".into());
+        }
+        if self.strict_binary && self.loss == FtrlLoss::Squared {
+            return Err("ftrl: strict_binary applies to the logistic loss only".into());
         }
         Ok(())
     }
@@ -172,8 +197,13 @@ impl OnlineModel for Ftrl {
             for i in 0..k {
                 self.coef[i] = self.weight(j, i);
             }
-            let logit: f64 = self.zbuf.iter().zip(&self.coef).map(|(z, b)| z * b).sum();
-            let p = sigmoid(logit);
+            let raw: f64 = self.zbuf.iter().zip(&self.coef).map(|(z, b)| z * b).sum();
+            // The two losses share everything but the link; the gradient is
+            // `(p - y) * z` either way.
+            let p = match self.cfg.loss {
+                FtrlLoss::Logistic => sigmoid(raw),
+                FtrlLoss::Squared => raw,
+            };
             if ready {
                 pred[j] = p;
             }
@@ -181,13 +211,15 @@ impl OnlineModel for Ftrl {
             if weight <= 0.0 {
                 continue;
             }
-            let yb = if self.cfg.strict_binary {
-                if yj != 0.0 && yj != 1.0 {
-                    continue; // caller asked for strictness: skip, do not learn
+            let yb = match self.cfg.loss {
+                FtrlLoss::Squared => yj,
+                FtrlLoss::Logistic if self.cfg.strict_binary => {
+                    if yj != 0.0 && yj != 1.0 {
+                        continue; // caller asked for strictness: skip, do not learn
+                    }
+                    yj
                 }
-                yj
-            } else {
-                yj.clamp(0.0, 1.0)
+                FtrlLoss::Logistic => yj.clamp(0.0, 1.0),
             };
             let err = p - yb;
             for i in 0..k {
@@ -259,7 +291,69 @@ mod tests {
             l2: 1.0,
             min_periods: 10.0,
             strict_binary: false,
+            loss: FtrlLoss::Logistic,
         }
+    }
+
+    #[test]
+    fn squared_loss_fits_a_continuous_target() {
+        let mut c = cfg(2, 1);
+        c.loss = FtrlLoss::Squared;
+        c.alpha = 0.5;
+        c.l2 = 0.01;
+        c.min_periods = 5.0;
+        let mut m = Ftrl::new(c).unwrap();
+        let mut s = 97u64;
+        let mut last = 0.0;
+        for i in 0..20000 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = 1.5 * x[0] - 0.5 * x[1];
+            let st = m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            if i > 19000 && st.pred[0].is_finite() {
+                last = (y - st.pred[0]).abs();
+            }
+        }
+        assert!(
+            last < 0.15,
+            "squared-loss FTRL did not converge: |err| {last}"
+        );
+        let b = &m.coefficients()[0];
+        assert!((b[1] - 1.5).abs() < 0.2, "slope0 {}", b[1]);
+        assert!((b[2] + 0.5).abs() < 0.2, "slope1 {}", b[2]);
+    }
+
+    #[test]
+    fn squared_loss_predictions_are_not_probabilities() {
+        // The logistic link would squash these into [0, 1]; the squared loss
+        // must not.
+        let mut c = cfg(1, 1);
+        c.loss = FtrlLoss::Squared;
+        c.alpha = 0.5;
+        c.l2 = 0.01;
+        c.min_periods = 2.0;
+        let mut m = Ftrl::new(c).unwrap();
+        let mut s = 98u64;
+        let mut seen_big = false;
+        for i in 0..5000 {
+            let x = [lcg(&mut s)];
+            let y = 20.0 * x[0];
+            let st = m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            if st.pred[0] > 1.5 {
+                seen_big = true;
+            }
+        }
+        assert!(
+            seen_big,
+            "squared-loss predictions were squashed into [0, 1]"
+        );
+    }
+
+    #[test]
+    fn strict_binary_is_rejected_for_the_squared_loss() {
+        let mut c = cfg(1, 1);
+        c.loss = FtrlLoss::Squared;
+        c.strict_binary = true;
+        assert!(Ftrl::new(c).is_err());
     }
 
     #[test]
