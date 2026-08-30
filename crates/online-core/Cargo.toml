@@ -1,0 +1,16 @@
+[package]
+name = "online-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Streaming / online regression models. Pure Rust, no Polars dependency."
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+faer.workspace = true
+serde.workspace = true
+thiserror.workspace = true

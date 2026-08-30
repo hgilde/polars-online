@@ -1,0 +1,21 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.so
+*.pyd
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# Test data cache (hard rule 1: no data files in the repo)
+.cache/
+
+# macOS
+.DS_Store

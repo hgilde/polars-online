@@ -1,0 +1,48 @@
+[build-system]
+requires = ["maturin>=1.15,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "polars-online"
+version = "0.1.0"
+description = "Streaming / online regression models for Polars"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+authors = [{ name = "Hans Gilde" }]
+dependencies = [
+    # Pinned: MUST match the `polars` pin in the workspace Cargo.toml.
+    # py-polars 1.44.1 <-> rust polars 0.55.1 <-> pyo3-polars 0.28
+    "polars==1.44.1",
+]
+
+[project.urls]
+Repository = "https://github.com/hgilde/polars-online"
+
+[tool.maturin]
+manifest-path = "crates/online-py/Cargo.toml"
+module-name = "polars_online._polars_online"
+python-source = "python"
+features = ["pyo3/extension-module"]
+
+[dependency-groups]
+dev = [
+    "maturin>=1.15,<2.0",
+    "pytest>=8.3",
+    "ruff>=0.14",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["python", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["polars_online"]

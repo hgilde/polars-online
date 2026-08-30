@@ -1,0 +1,24 @@
+[package]
+name = "online-py"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "pyo3 + pyo3-polars bindings: expression plugin and ModelBank."
+
+[lib]
+name = "_polars_online"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+online-core.workspace = true
+online-polars.workspace = true
+polars.workspace = true
+# `extension-module` is NOT enabled here: it would break plain `cargo build`/`cargo test`
+# (no libpython to link against). maturin turns it on via `features` in pyproject.toml.
+pyo3 = { workspace = true, features = ["abi3-py312"] }
+# "lazy" is not optional here: pyo3-polars/derive turns on polars-plan/python, and only
+# polars-lazy/python propagates that to polars-mem-engine (otherwise it fails to compile).
+pyo3-polars = { workspace = true, features = ["derive", "lazy", "dtype-struct"] }
+serde.workspace = true

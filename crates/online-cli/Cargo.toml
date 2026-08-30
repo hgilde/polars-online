@@ -1,0 +1,18 @@
+[package]
+name = "online-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "parquet in -> parquet out runner for online-polars model banks."
+
+[[bin]]
+name = "online"
+path = "src/main.rs"
+
+[dependencies]
+online-polars.workspace = true
+clap.workspace = true
+serde.workspace = true
+toml.workspace = true

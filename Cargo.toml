@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/online-core",
+    "crates/online-polars",
+    "crates/online-cli",
+    "crates/online-py",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/hgilde/polars-online"
+
+[workspace.dependencies]
+online-core = { path = "crates/online-core", version = "0.1.0" }
+online-polars = { path = "crates/online-polars", version = "0.1.0" }
+
+# Polars version is pinned and MUST match the `polars` pin in pyproject.toml.
+# rust polars 0.55.2  <->  py-polars 1.44.1  <->  pyo3-polars 0.28
+# "object" is required because pyo3-polars/derive pulls polars-plan, which turns on
+# polars-core/object; without it polars-ops fails to compile (non-exhaustive DataType match).
+polars = { version = "=0.55.2", default-features = false, features = ["object"] }
+pyo3 = "0.29"
+pyo3-polars = "0.28"
+
+faer = "0.24"
+rayon = "1.12"
+rmp-serde = "1.3"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2"
+clap = { version = "4.6", features = ["derive"] }
+toml = "1.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
