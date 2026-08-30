@@ -260,6 +260,7 @@ mod tests {
             OnClockReset::Max,
             OnClockReset::Zero,
             OnClockReset::ResetState,
+            OnClockReset::Error,
         ] {
             let mut c = ClockState::new();
             let cfg = ClockCfg {
@@ -283,6 +284,7 @@ mod tests {
                 OnClockReset::Max => assert_eq!(b.d_clock, 10.0),
                 OnClockReset::Zero => assert_eq!(b.d_clock, 0.0),
                 OnClockReset::ResetState => assert!(b.reset),
+                OnClockReset::Error => assert_eq!(b.backwards, Some(-1.0)),
             }
         }
     }
