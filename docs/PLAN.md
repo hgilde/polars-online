@@ -215,7 +215,7 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       `max_dclock`, `on_clock_reset`, session gap), `EwCov` primitive. Unit tests.
 - [x] 4. EW-ridge (§4.1) single target, no grids; Cholesky via `faer`; solve schedule.
 - [x] 5. Multi-target + `feature_sets` + `ridge` grid + standardization at solve time.
-- [ ] 6. `online-polars` model bank: column extraction, per-group state, rayon fan-out, chunk
+- [x] 6. `online-polars` model bank: column extraction, per-group state, rayon fan-out, chunk
       monotonicity check, save/load (msgpack, versioned).
 - [ ] 7. `online-py`: `ModelBank` class + `fit_predict`; pytest oracle, chunk-invariance, null,
       warmup, clock tests pass.

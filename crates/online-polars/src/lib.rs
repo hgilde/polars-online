@@ -1,20 +1,11 @@
-//! Polars-side plumbing: column extraction, per-group state, the chunk-fed model bank
-//! and versioned msgpack save/load.
-//!
-//! See `docs/PLAN.md` §5. Scaffold only: the bank lands in task 6.
+//! Polars-side plumbing: column extraction, per-group state, the chunk-fed model
+//! bank and versioned msgpack save/load (docs/PLAN.md §5).
 
-/// Re-exported so downstream crates pin one copy of the core.
+mod bank;
+mod spec;
+mod stream;
+
+pub use bank::{Bank, output_fields};
 pub use online_core;
-
-#[cfg(test)]
-mod tests {
-    /// Guards against two copies of `online-core` being linked in: the re-export and the
-    /// direct dependency must be the same crate, hence the same constant.
-    #[test]
-    fn links_against_core() {
-        assert_eq!(
-            super::online_core::SCHEMA_VERSION,
-            online_core::SCHEMA_VERSION
-        );
-    }
-}
+pub use spec::{FloatOrList, ModelKind, SessionGapSpec, Spec};
+pub use stream::{AnyModel, RowOut, Stream, StreamState, build_models, combo_labels};
