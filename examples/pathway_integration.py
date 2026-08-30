@@ -61,7 +61,9 @@ class BankOperator:
     a streaming engine, and both are enforced by this project's own tests:
 
     * chunking never changes the numbers, so however the engine batches the
-      stream, the output is the same;
+      stream, the predictions are the same (`coef` is the one field that
+      differs, because it is snapshotted on each chunk's last row -- a
+      reporting cadence, not a computed value);
     * `save_bytes()` / `load_bytes()` round-trip exactly, so the engine's
       snapshotting can checkpoint the model along with everything else.
     """

@@ -24,3 +24,10 @@ build/
 example-input.parquet
 example-output.parquet
 bank.state
+
+# Tool output, not source. The findings that matter are summarized in
+# docs/TESTING.md; the raw logs are regenerable and large.
+mutants.out/
+mutants.out.old/
+.coverage
+lcov.info

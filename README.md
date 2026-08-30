@@ -27,7 +27,11 @@ df.with_columns(
 - **Predictions are out-of-sample by construction.** Every row is predicted from
   the state *before* that row's target is folded in. Nothing here can leak.
 - **Chunk invariance.** Feeding a stream as 1 chunk or 1000 chunks produces
-  bit-identical output, and so does saving state mid-stream and resuming.
+  bit-identical output, and so does saving state mid-stream and resuming. The
+  one exception is `coef`, which is a *reporting* cadence rather than a
+  computed value: it is snapshotted every `coef_every` rows **and** on each
+  chunk's last row, so smaller chunks report it more often. Every other field
+  is identical.
 
 Both are enforced by tests, not just intended.
 
