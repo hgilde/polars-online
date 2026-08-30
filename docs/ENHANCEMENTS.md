@@ -6,7 +6,8 @@ out-of-sample-ness enforced by tests, release CI defined, defaults validated on
 public data. This document lists what *follows from* those goals but is not built:
 first the gaps against our own plan, then features our models are one step away
 from, then a comparison against [river](https://riverml.xyz) (the reference
-online-ML library) — both what we should adopt and what we deliberately leave out.
+online-ML library) and [Pathway](https://pathway.com) (a Rust-engined live-data
+framework) — both what we should adopt and what we deliberately leave out.
 
 Priorities: **P1** = promised by PLAN.md or fixes a real sharp edge; **P2** =
 cheap and clearly goal-aligned; **P3** = worthwhile, larger.
@@ -59,7 +60,41 @@ clock-ordered financial event streams) and our architecture (models behind
 | E24 | P3 | `preprocessing.AdaptiveStandardScaler`, `TargetStandardScaler` | We standardize *inside* solves; SGD/FTRL-family models (E16/E18) would benefit from explicit running input/target scaling as a spec option. |
 | E25 | P3 | `time_series.HoltWinters` | An intercept-only level(+trend) model — i.e. EW mean with trend — as a forecasting baseline. SNARIMAX-style lag features are better served by Polars expressions upstream; only the recursive level/trend state needs a model. |
 
-## 4. In river, deliberately out of scope
+## 3b. Pathway — a capability check
+
+[Pathway](https://pathway.com) (`pathway` 0.32.1) is the other reference to keep
+in view: a live-data framework with a **Rust engine** (differential dataflow)
+under a Python API. Since it is already Rust, the goal is not to reimplement any
+of it — it is to know where the boundary is so we do not grow a second, worse
+copy of what it does well.
+
+What it actually contains (verified against the package metadata and the
+`python/pathway/stdlib` tree, not from memory):
+
+| Pathway area | Contents | Relation to us |
+|---|---|---|
+| `stdlib/temporal` | `asof_join`, `asof_now_join`, `interval_join`, tumbling/sliding/session `window`, `window_join`, `temporal_behavior` (lateness/cutoff policies) | **Theirs.** This is the event-time plumbing *upstream* of a model: aligning a feature to an event, bucketing, handling late arrivals across a pipeline. We take an already-aligned, already-ordered frame. |
+| Connectors | Kafka, CDC, S3, filesystem, streaming outputs | **Theirs.** We are parquet-in/parquet-out plus whatever Polars reads. |
+| Engine | Incremental recomputation, multi-worker, exactly-once persistence for a whole pipeline | **Theirs.** Ours is a different shape: one O(state) recursion per stream, with `save`/`load` of *model* state only. |
+| `stdlib/ml` | LSH kNN index, LSH clustering, HMM, fuzzy-join helpers | Disjoint. Nothing in the online-linear-model family; kNN and clustering are on our own out-of-scope list below for the same memory reasons. |
+| `stdlib/statistical`, `stdlib/stateful`, `stdlib/ordered` | interpolation, deduplication, row diffing | Disjoint and small. |
+
+**Conclusion: essentially no model overlap, real overlap on the layer above.**
+Pathway has no online regression — no EW-ridge/RLS/Kalman/lasso analogue — so
+nothing in our model backlog is redundant with it. Conversely, everything in the
+"deliberately out of scope" list below that is *pipeline*-shaped (windowing,
+temporal joins, ingestion, distributed execution, late-arrival policy) now has a
+named answer: use Pathway, or Polars expressions upstream, rather than growing
+spec parameters for it.
+
+Two consequences for this backlog:
+
+| # | P | Item |
+|---|---|---|
+| E26 | P3 | **A Pathway integration example, not a dependency.** Pathway supports stateful Python UDFs, so a `ModelBank` can run as an operator inside a Pathway pipeline: Pathway does ingestion, event-time alignment and windowing; we do the model. Worth an `examples/` script and a README paragraph. **Note the licence**: Pathway is BSL / "Other/Proprietary" while this project is Apache-2.0, so it must stay an optional example — never a required dependency, and not a dev-dependency in the default group. |
+| E27 | P3 | **Say what we do not do, in the README.** The clock semantics (`session`, `max_dclock`, `on_clock_reset`) are deliberately a *within-stream* facility, not a late-arrival or windowing policy. Readers arriving from a streaming-framework background will otherwise expect watermarks and tumbling windows here. One short "what this is not" section removes that expectation and points at Pathway/Polars. |
+
+## 4. In river and Pathway, deliberately out of scope
 
 Listed so the omission is a decision, not an oversight. These conflict with the
 library's shape (deterministic linear-family models, O(k²) state, exact
@@ -79,6 +114,11 @@ save/resume, three numerics-identical surfaces) rather than merely being work:
   composition layer; duplicating it inside specs would fork the API.
 - **Imbalanced-learning wrappers, text models, generic sketches**: no use case
   in the stated goals.
+- **Event-time windowing, temporal/asof joins, connectors, late-arrival
+  policy, distributed execution** (Pathway's `stdlib/temporal` and engine): a
+  different layer, already implemented in Rust by someone else. Feed us an
+  aligned, ordered frame — from Polars expressions or from Pathway — rather
+  than teaching specs to window.
 
 ## Suggested order
 
