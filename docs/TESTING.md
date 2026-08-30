@@ -1,6 +1,6 @@
 # Test coverage and testing improvements
 
-Status as of 2026-08-30: **61 Rust tests + 123 pytest functions**, all green,
+Status as of 2026-08-30: **61 Rust tests + 134 pytest functions**, all green,
 run in CI on three OSes.
 
 **Progress on this document's own backlog** (updated as items land):
@@ -13,6 +13,9 @@ run in CI on three OSes.
 | T-E4 mis-ordered chunks | **Done** — `TestClockOrdering` pins current behavior (a backwards delta across a chunk boundary goes through `on_clock_reset`, indistinguishable from real data), and guards that correctly ordered chunking stays invariant. The strict mode remains ENHANCEMENTS E3. |
 | T-A1 Kalman oracle | **Done** — `kalman_ref` in `tests/reference.py`; agreement to 1e-9 (observed max 1.1e-15) across scalar and per-factor `coef_halflife`, `inf` pinning, explicit `q`, fixed `obs_var`/`p0`, multi-target with and without `share_p`, the null policy, and `add_intercept=False`. |
 | T-A2 lasso KKT | **Done** — `tests/test_oracles.py::TestLassoOptimality` checks stationarity/subgradient conditions on the model's own standardized stats (not a ported solver), across λ ∈ {0, 0.01, 0.1} × `l1_ratio` ∈ {1.0, 0.5}, plus path sparsity monotonicity and the intercept identity. |
+| T-R1 FTRL vs river | **Done** — `tests/test_river.py`. Driven by the same gradient sequence, river's `optim.FTRLProximal` and our model agree on the z/n recursion to 1e-12, row for row, with and without L1. Also pinned: **river's `LogisticRegression` predicts with the previous step's proximal weights**, while we follow McMahan Algorithm 1 and recompute from `z` at prediction time — a real semantic difference, now a test rather than a surprise. |
+| T-R4 EW moments vs river | **Done** — and it found a second convention difference: ours is the *bias-corrected* weighted mean (divides by accumulated weight, exact from the first row), river's `EWMean` is the un-normalized EWMA seeded at its first value, which stays anchored near that seed during warmup. Both the closed-form match and the convergence in the limit are asserted. |
+| T-R5 / T-R6 quantile, Huber | **Done** (statistical tier) — our IRLS quantile lands near the empirical quantile alongside river's P² estimator; our Huber and river's SGD-Huber both beat least squares under 3% contamination and agree with each other. |
 | T-D1 run release CI | **Blocked on a push** — `origin` exists (`github.com/hgilde/polars-online`) but nothing has been pushed; running the workflow needs an explicit go-ahead. |
  This document assesses what they actually
 prove, then lists concrete improvements — with emphasis on edge cases and on
@@ -34,13 +37,19 @@ Scorecard against PLAN §9's eight test classes:
 | 7. Cross-platform state | **Defined but never executed on real runners.** The test file and the macOS→Windows/Linux artifact hand-off exist in `release.yml`, but no workflow run has happened (no remote/tag yet). Locally only same-OS round-trip + byte-determinism are proven. |
 | 8. Benchmark | Done (`scripts/benchmark.py`, numbers in README). |
 
-**Do we compare edge cases against reference implementations?** Partially.
-Clock semantics, null policy, and warmup are cross-checked against the numpy
-oracles — but only along the `ewridge`/`rls` paths, since those are the only
-oracles that exist. Kalman/lasso/robust/ftrl edge behavior is anchored to
-nothing outside this repo. **We never compare against river at all.** And two
-live edge-case defects were found while writing this document (T-E3, T-E7
-below) — evidence the edge matrix has real holes, not hypothetical ones.
+**Do we compare edge cases against reference implementations?** Now yes, for
+most of the surface. Clock semantics, null policy and warmup are cross-checked
+against the numpy oracles along the `ewridge`, `rls` and `kalman` paths; the
+lasso is checked against its own optimality conditions; and `tests/test_river.py`
+compares FTRL, EW moments, quantile and Huber behavior against river. Still
+anchored only by property tests: huber/quantile and ftrl at the *numeric* level
+(T-A3, T-A4).
+
+Writing this document found two live defects (T-E1, T-E2, both since fixed),
+and the river work found two convention differences worth knowing about — river
+predicts FTRL one proximal step behind the paper, and its `EWMean` is
+un-normalized where ours is bias-corrected. Neither is a bug in either library,
+but code that assumes they agree during warmup is wrong.
 
 ## 2. Improvements
 
@@ -66,7 +75,7 @@ installed (same pattern as the offline skip). Two tiers:
 
 | # | P | Comparison |
 |---|---|---|
-| T-R1 | P1 | **`ftrl` ≡ `river.optim.FTRLProximal`** driving `river.linear_model.LogisticRegression`: same α, β, l1, l2; our `add_intercept=False` vs their `intercept_lr=0`; unit weights; no decay. Same published recursion on both sides — any drift is a bug in one of us. Then extend with decay/weights on our side only, asserting we reduce to river when both are off. |
+| T-R1 | ~~P1~~ **done** | **`ftrl` ≡ `river.optim.FTRLProximal`.** Compared at the level of the state recursion (river's optimizer driven by the same gradient sequence), which is exact to 1e-12; comparing the two *models* end to end is not exact, because river's `LogisticRegression` predicts with the previous step's proximal weights while we recompute from `z` at prediction time per McMahan Algorithm 1. That ordering difference is itself pinned by a test. |
 | T-R2 | P2 | **Kalman(q=0, fixed `obs_var`) ≡ `river.linear_model.BayesianLinearRegression`** — *blocked on* the `standardize: false` Kalman switch (ENHANCEMENTS E19); once added, the recursions are the same rank-1 Bayesian update. |
 | T-R3 | P2 | **`EwCov` (λ=1, unit weights) ≡ `river.stats.Mean` / `Var` / `Cov` / `PearsonCorr`**: our mean-form accumulators with no decay are exact running moments; river's Welford implementations are the independent route to the same numbers. Also validates our raw-moment formulation against Welford on ordinary scales (see T-E9 for where it breaks). |
 
@@ -74,9 +83,9 @@ installed (same pattern as the offline skip). Two tiers:
 
 | # | P | Comparison |
 |---|---|---|
-| T-R4 | P2 | **EW mean/var vs `river.stats.EWMean` / `EWVar`** with the mapping `fading_factor = 1 − 0.5^(1/halflife)` on a row-count clock. Warmups differ by construction (ours is exact weighted-mean warmup; river seeds from early points), so assert convergence of the two sequences, not equality — this *is* the edge-case comparison of warmup semantics, made explicit. |
-| T-R5 | P3 | **Quantile regression (intercept-only) vs `river.stats.Quantile`** (P² algorithm) on i.i.d. data: both should converge to the true quantile; assert both land within a shared CI. Guards our IRLS approximation against silent bias. |
-| T-R6 | P3 | **Huber vs `river.linear_model.LinearRegression(loss=optim.losses.Huber)`** under contamination: not numerically comparable (exact IRLS vs SGD), but both must recover the clean slope where OLS fails — same assertion, two libraries. |
+| T-R4 | ~~P2~~ **done** | **EW mean/var vs `river.stats.EWMean` / `EWVar`**, mapping `fading_factor = 1 − 0.5^(1/halflife)`. Confirmed the conventions differ: ours divides by the accumulated weight (exact weighted mean from row 1), river's is `m += f·(x − m)` seeded at its first value. They converge in the limit (asserted) but disagree sharply during warmup (asserted, with the closed form). |
+| T-R5 | ~~P3~~ **done** | **Quantile regression (intercept-only) vs `river.stats.Quantile`** (P² algorithm) at τ ∈ {0.25, 0.5, 0.75}: both land near the empirical quantile. |
+| T-R6 | ~~P3~~ **done** | **Huber vs `river.linear_model.LinearRegression(loss=optim.losses.Huber)`** under 3% contamination: both beat least squares on the clean slope, and agree with each other. |
 
 ### C. Edge-case matrix to add
 

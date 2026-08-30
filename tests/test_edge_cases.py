@@ -183,11 +183,17 @@ class TestClockOrdering:
         a, b = self._frames()
         spec = _spec(clock="t", max_dclock=4.0, halflife=1.0, on_clock_reset="max")
         bank = po.ModelBank([spec])
-        bank.fit_predict(a)
+        out_a = bank.fit_predict(a)
         out_b = bank.fit_predict(b)
-        # delta was capped to max_dclock (4) => decay 0.5**4 applied, not a reset
-        assert _f(out_b, "n_eff")[0] == pytest.approx(3.0 * 0.5**4 + 0.0, abs=1e-9) or True
-        assert _f(out_b, "n_eff")[0] < 3.0
+        # n_eff is reported before the row's update, so chunk b's first row
+        # still shows the count carried over from chunk a...
+        w_after_a = 0.5 * _f(out_a, "n_eff")[2] + 1.0  # = 1.75
+        assert _f(out_b, "n_eff")[0] == pytest.approx(w_after_a, rel=1e-12)
+        # ...and the capped delta shows up in the next row: the backwards jump
+        # (0.5 - 2.0) was clamped to max_dclock = 4, giving decay 0.5**4, not a
+        # reset (which would give 1.0) and not a zero delta (which would give
+        # w_after_a + 1).
+        assert _f(out_b, "n_eff")[1] == pytest.approx(w_after_a * 0.5**4 + 1.0, rel=1e-12)
 
     def test_reset_state_variant_restarts_the_stream(self):
         a, b = self._frames()
