@@ -1,7 +1,20 @@
 # Test coverage and testing improvements
 
-Status as of 2026-08-30: **61 Rust tests + 79 pytest functions (80 collected)**,
-all green, run in CI on three OSes. This document assesses what they actually
+Status as of 2026-08-30: **61 Rust tests + 105 pytest functions**, all green,
+run in CI on three OSes.
+
+**Progress on this document's own backlog** (updated as items land):
+
+| Item | Status |
+|---|---|
+| T-E1 negative weights | **Done** — defect fixed (finite negative weights now error, naming the row); non-finite weights skip uniformly with non-finite features. `tests/test_edge_cases.py::TestWeights`, incl. all seven models and the `w = 0` pure-decay case. |
+| T-E2 null group keys | **Done** — defect fixed: `GroupKey(Option<String>)` replaces the `"<null>"` string sentinel, so a null group is structurally distinct from a group named `"<null>"`. Bank files gained `format_version` (v2); v1 files still load because the key serializes transparently as its inner `Option`. `TestGroupKeys`, incl. save/load and integer group columns. |
+| T-E3 non-finite inputs | **Done** — `TestNonFinite` pins ±inf/NaN in features, targets, weights and the clock, plus "outputs are never non-finite". |
+| T-E4 mis-ordered chunks | **Done** — `TestClockOrdering` pins current behavior (a backwards delta across a chunk boundary goes through `on_clock_reset`, indistinguishable from real data), and guards that correctly ordered chunking stays invariant. The strict mode remains ENHANCEMENTS E3. |
+| T-A1 Kalman oracle | *in progress* |
+| T-A2 lasso KKT | *in progress* |
+| T-D1 run release CI | **Blocked on a push** — `origin` exists (`github.com/hgilde/polars-online`) but nothing has been pushed; running the workflow needs an explicit go-ahead. |
+ This document assesses what they actually
 prove, then lists concrete improvements — with emphasis on edge cases and on
 comparing behavior against reference implementations, including
 [river](https://riverml.xyz).
@@ -71,10 +84,10 @@ Findings first — both verified against the current build:
 
 | # | P | Case | Current behavior → required |
 |---|---|---|---|
-| T-E1 | **P1** | **Negative weight value** | **Defect.** `EwCov::update` silently no-ops when `λW + w ≤ 0`, while the per-target `r_j` update runs with a negative denominator — `n_eff` pretends the row never happened while `r_j` is corrupted. Add validation (reject `w < 0`, ENHANCEMENTS E4) and a test pinning the chosen semantics for `w = 0` (pure decay, no observation). |
-| T-E2 | **P1** | **Null group key vs a group literally named `"<null>"`** | **Defect.** Both map to the string `"<null>"` and share one stream/state (verified: `n_eff` accumulates across them). Use a non-string sentinel (e.g. a dedicated enum key) and test null-group routing explicitly. |
-| T-E3 | P1 | ±inf in features / targets / weight | Currently: inf feature or weight skips the row, inf target is treated as null (verified for features). Correct — but untested and undocumented; pin all three with tests, incl. inf in the *clock* (currently only null/NaN clock errors). |
-| T-E4 | P1 | Mis-ordered chunks (clock goes backwards across a chunk boundary within a group) | Silently absorbed by `on_clock_reset` today. Test current behavior, then the strict mode (ENHANCEMENTS E3) once added. |
+| T-E1 | ~~P1~~ **done** | **Negative weight value** | **Was a defect**, now fixed. `EwCov::update` silently no-opped when `λW + w ≤ 0` while the per-target `r_j` update ran with a negative denominator — in practice every later prediction went null. Finite negative weights are now rejected at extraction, naming the column, value and row; non-finite ones skip the row like any other non-finite input; `w = 0` is a legal pure-decay row. `EwCov::update` also debug-asserts the contract. |
+| T-E2 | ~~P1~~ **done** | **Null group key vs a group literally named `"<null>"`** | **Was a defect**, now fixed. Both mapped to the string `"<null>"` and shared one stream (verified: `n_eff` accumulated across them). Replaced by `GroupKey(Option<String>)`; bank files gained a `format_version` (now 2) and v1 files still load, since the key serializes transparently as its inner `Option`. |
+| T-E3 | ~~P1~~ **done** | ±inf in features / targets / weight / clock | Pinned: a non-finite feature or weight skips the row (clock still advances), a non-finite target is predict-only, a non-finite or null clock errors loudly. Plus a fuzz-ish test that outputs are never non-finite. |
+| T-E4 | ~~P1~~ **done** (current behavior) | Mis-ordered chunks (clock goes backwards across a chunk boundary within a group) | Pinned as-is: absorbed by `on_clock_reset`, indistinguishable from a genuine backwards clock. Strict mode remains ENHANCEMENTS E3; the invariance guard rail is tested alongside. |
 | T-E5 | P2 | Degenerate solves in the **plain** (non-standardized) path: constant feature, exactly collinear features (`x1 = x0`) | The jitter fallback and previous-coefficient retention exist but only the standardized zero-variance path is tested. Assert finite outputs and that `solve_failures` increments (needs E5 to observe). |
 | T-E6 | P2 | Duplicate clock values (Δ=0 runs), `max_dclock = 0`, `halflife` far below the median Δ (λ ≈ 0 per row) | Assert: no NaN leakage, `n_eff ≈ w`, solves survive near-singular S via jitter. |
 | T-E7 | P2 | Minimal shapes: single-row groups, a group appearing in only one chunk, an empty chunk (`df.height() == 0`) fed to `fit_predict`, k=1/m=1 | Empty-chunk behavior is currently untested at the bank level (the CLI runner handles empty *input* only). |

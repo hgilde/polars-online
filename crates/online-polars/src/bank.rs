@@ -12,6 +12,47 @@ use serde::{Deserialize, Serialize};
 use crate::spec::Spec;
 use crate::stream::{RowOut, Stream, StreamState, combo_labels};
 
+/// One stream's group key. A null group value is its own key, distinct from any
+/// string a user might have in the column — notably the literal `"<null>"`,
+/// which the earlier string sentinel collided with.
+///
+/// Serialized transparently as its inner `Option<String>` (msgpack `nil` or a
+/// string), so bank state files written before this type existed (plain string
+/// keys) still load, as `Some(..)`. The one thing such a file cannot express is
+/// the difference between a null group and a group literally named `"<null>"`;
+/// it is read as the literal, which is the likelier intent.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct GroupKey(pub Option<String>);
+
+impl GroupKey {
+    /// The single key used when a spec has no `group` column.
+    pub fn ungrouped() -> Self {
+        GroupKey(Some(String::new()))
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+}
+
+impl std::fmt::Display for GroupKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Some(s) => write!(f, "{s}"),
+            None => write!(f, "<null group>"),
+        }
+    }
+}
+
+/// Bank state-file layout version, independent of `online_core::SCHEMA_VERSION`
+/// (which versions the *model* state). Version 2 made group keys nullable;
+/// version 1 files still load (see [`GroupKey`]).
+const BANK_FORMAT_VERSION: u32 = 2;
+
+fn default_format_version() -> u32 {
+    1
+}
+
 /// Stable, platform-independent 64-bit hash for session-change detection.
 fn fnv1a(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
@@ -79,7 +120,27 @@ fn extract(df: &DataFrame, spec: &Spec) -> PolarsResult<SpecColumns> {
         None => None,
     };
     let weight = match &spec.weight {
-        Some(c) => Some(f64_column(df, c)?),
+        Some(c) => {
+            let v = f64_column(df, c)?;
+            // A negative weight is never meaningful for a weighted mean, and
+            // silently letting one through corrupts the accumulators (the EW
+            // count and the per-target cross moments disagree about whether the
+            // row happened). Non-finite weights are a different case, handled
+            // uniformly with non-finite features: they mean "no information for
+            // this row" and skip it (docs/PLAN.md §3), so only a *finite*
+            // negative weight is an error.
+            if let Some(i) = v
+                .iter()
+                .position(|x| x.is_some_and(|f| f.is_finite() && f < 0.0))
+            {
+                polars_bail!(ComputeError:
+                    "spec {:?}: weight column {:?} has a negative value ({}) at row {}; \
+                     weights must be >= 0 (use null to skip a row)",
+                    spec.name, c, v[i].unwrap(), i
+                );
+            }
+            Some(v)
+        }
         None => None,
     };
     Ok(SpecColumns {
@@ -95,18 +156,18 @@ fn extract(df: &DataFrame, spec: &Spec) -> PolarsResult<SpecColumns> {
 fn group_indices(
     df: &DataFrame,
     group: &Option<String>,
-) -> PolarsResult<Vec<(String, Vec<usize>)>> {
+) -> PolarsResult<Vec<(GroupKey, Vec<usize>)>> {
     match group {
-        None => Ok(vec![(String::new(), (0..df.height()).collect())]),
+        None => Ok(vec![(GroupKey::ungrouped(), (0..df.height()).collect())]),
         Some(g) => {
             let s = df
                 .column(g)?
                 .as_materialized_series()
                 .cast(&DataType::String)?;
-            let mut order: Vec<String> = Vec::new();
-            let mut map: HashMap<String, Vec<usize>> = HashMap::new();
+            let mut order: Vec<GroupKey> = Vec::new();
+            let mut map: HashMap<GroupKey, Vec<usize>> = HashMap::new();
             for (i, v) in s.str()?.iter().enumerate() {
-                let key = v.unwrap_or("<null>").to_string();
+                let key = GroupKey(v.map(str::to_string));
                 map.entry(key.clone()).or_insert_with(|| {
                     order.push(key.clone());
                     Vec::new()
@@ -129,17 +190,21 @@ const BANK_MAGIC: &str = "polars-online-bank";
 #[derive(Serialize, Deserialize)]
 struct BankFile {
     magic: String,
+    /// Bank file layout (see [`BANK_FORMAT_VERSION`]). Absent in v1 files.
+    #[serde(default = "default_format_version")]
+    format_version: u32,
+    /// Model state layout (`online_core::SCHEMA_VERSION`).
     schema_version: u32,
     package_version: String,
     specs: Vec<Spec>,
     /// Per spec: (group key, stream state) pairs.
-    states: Vec<Vec<(String, StreamState)>>,
+    states: Vec<Vec<(GroupKey, StreamState)>>,
 }
 
 pub struct Bank {
     specs: Vec<Spec>,
     clock_cfgs: Vec<ClockCfg>,
-    states: Vec<HashMap<String, Stream>>,
+    states: Vec<HashMap<GroupKey, Stream>>,
 }
 
 impl Bank {
@@ -181,7 +246,7 @@ impl Bank {
             .iter()
             .map(|s| extract(df, s))
             .collect::<PolarsResult<_>>()?;
-        let groups: Vec<Vec<(String, Vec<usize>)>> = self
+        let groups: Vec<Vec<(GroupKey, Vec<usize>)>> = self
             .specs
             .iter()
             .map(|s| group_indices(df, &s.group))
@@ -209,8 +274,8 @@ impl Bank {
             let sc = &cols[si];
             let spec_groups = &groups[si];
             // Pull each group's stream out so rayon tasks own disjoint &mut.
-            let mut work: Vec<(&String, &Vec<usize>, &mut Stream)> = Vec::new();
-            let mut taken: HashMap<&String, &mut Stream> = hm.iter_mut().collect();
+            let mut work: Vec<(&GroupKey, &Vec<usize>, &mut Stream)> = Vec::new();
+            let mut taken: HashMap<&GroupKey, &mut Stream> = hm.iter_mut().collect();
             for (key, idx) in spec_groups {
                 let stream = taken.remove(key).expect("stream materialized above");
                 work.push((key, idx, stream));
@@ -251,6 +316,7 @@ impl Bank {
     pub fn save_bytes(&self) -> Result<Vec<u8>, String> {
         let file = BankFile {
             magic: BANK_MAGIC.to_string(),
+            format_version: BANK_FORMAT_VERSION,
             schema_version: online_core::SCHEMA_VERSION,
             package_version: env!("CARGO_PKG_VERSION").to_string(),
             specs: self.specs.clone(),
@@ -258,7 +324,7 @@ impl Bank {
                 .states
                 .iter()
                 .map(|hm| {
-                    let mut v: Vec<(String, StreamState)> =
+                    let mut v: Vec<(GroupKey, StreamState)> =
                         hm.iter().map(|(k, s)| (k.clone(), s.save())).collect();
                     v.sort_by(|a, b| a.0.cmp(&b.0));
                     v
@@ -272,6 +338,12 @@ impl Bank {
         let file: BankFile = rmp_serde::from_slice(bytes).map_err(|e| e.to_string())?;
         if file.magic != BANK_MAGIC {
             return Err("not a polars-online bank state file".into());
+        }
+        if file.format_version > BANK_FORMAT_VERSION {
+            return Err(format!(
+                "bank state file format version {} is newer than this build supports ({})",
+                file.format_version, BANK_FORMAT_VERSION
+            ));
         }
         if file.schema_version != online_core::SCHEMA_VERSION {
             return Err(format!(

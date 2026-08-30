@@ -81,8 +81,21 @@ impl EwCov {
 
     /// One observation with decay factor `lam` (from [`crate::Decay::factor`])
     /// and row weight `w`. O(k^2), allocation-free.
+    ///
+    /// `w` must be `>= 0`: these are weighted means, and a negative weight has
+    /// no meaning here. Callers are expected to reject negative weights at the
+    /// boundary (`online-polars` does, naming the offending row); a negative one
+    /// reaching this far is a bug, so it is caught in debug builds and treated
+    /// as a no-op in release rather than corrupting the accumulator.
     pub fn update(&mut self, x: &[f64], lam: f64, w: f64) {
         debug_assert_eq!(x.len(), self.k);
+        debug_assert!(
+            w >= 0.0,
+            "EwCov::update requires a non-negative weight, got {w}"
+        );
+        if w < 0.0 {
+            return;
+        }
         let w_new = lam * self.w_sum + w;
         if w_new <= 0.0 {
             return;
