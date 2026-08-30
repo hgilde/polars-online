@@ -61,6 +61,10 @@ def _common(
     emit_sigma: bool = False,
     emit_resid_z: bool = False,
     emit_selected: bool = False,
+    emit_drift: bool = False,
+    drift_delta: float | None = None,
+    drift_threshold: float | None = None,
+    drift_action: str = "flag",
     group: str | None = None,
 ) -> dict[str, Any]:
     spec = {
@@ -82,6 +86,10 @@ def _common(
         "emit_sigma": emit_sigma,
         "emit_resid_z": emit_resid_z,
         "emit_selected": emit_selected,
+        "emit_drift": emit_drift,
+        "drift_delta": drift_delta,
+        "drift_threshold": drift_threshold,
+        "drift_action": drift_action,
         "group": group,
     }
     validate_spec(_json(spec))

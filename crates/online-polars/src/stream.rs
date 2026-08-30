@@ -4,7 +4,8 @@
 use online_core::{
     ClockState, Decay, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg,
     FtrlLoss, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, ModelState, OnlineModel, Pa, PaCfg,
-    PaMode, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, Sgd, SgdCfg, SgdLoss, State, StateError,
+    PaMode, PageHinkley, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, Sgd, SgdCfg, SgdLoss, State,
+    StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -475,6 +476,8 @@ pub struct StreamState {
     pub resid_var: Vec<Vec<f64>>,
     #[serde(default)]
     pub resid_w: Vec<Vec<f64>>,
+    #[serde(default)]
+    pub drift: Vec<Vec<PageHinkley>>,
 }
 
 /// Live per-stream state.
@@ -492,6 +495,8 @@ pub struct Stream {
     /// all present or comparable.
     resid_var: Vec<Vec<f64>>,
     resid_w: Vec<Vec<f64>>,
+    /// Page-Hinkley detectors per instance and slot, when `emit_drift` is on.
+    drift: Vec<Vec<PageHinkley>>,
 }
 
 impl Stream {
@@ -513,6 +518,8 @@ pub struct RowOut {
     pub sigma: Vec<Vec<f64>>,
     /// `resid / sigma`, NaN wherever either is.
     pub resid_z: Vec<Vec<f64>>,
+    /// Page-Hinkley drift flag per slot (empty when `emit_drift` is off).
+    pub drift: Vec<Vec<bool>>,
     pub n_eff: Vec<f64>,
     pub coef: Option<Vec<Vec<Vec<f64>>>>,
     pub extra: Vec<Option<online_core::Extra>>,
@@ -523,10 +530,20 @@ impl Stream {
         let models = build_models(spec)?;
         let decays: Vec<Decay> = spec.decays()?.into_iter().map(|(_, d)| d).collect();
         let slots: Vec<usize> = models.iter().map(|(_, m)| m.n_outputs()).collect();
+        let drift = if spec.emit_drift {
+            let d = PageHinkley::new(
+                spec.drift_delta.unwrap_or(0.5),
+                spec.drift_threshold.unwrap_or(20.0),
+            );
+            slots.iter().map(|&n| vec![d.clone(); n]).collect()
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             clock: ClockState::new(),
             resid_var: slots.iter().map(|&n| vec![0.0; n]).collect(),
             resid_w: slots.iter().map(|&n| vec![0.0; n]).collect(),
+            drift,
             models,
             decays,
             rows_seen: 0,
@@ -540,6 +557,7 @@ impl Stream {
             rows_seen: self.rows_seen,
             resid_var: self.resid_var.clone(),
             resid_w: self.resid_w.clone(),
+            drift: self.drift.clone(),
         }
     }
 
@@ -564,6 +582,9 @@ impl Stream {
             stream.resid_var = saved.resid_var.clone();
             stream.resid_w = saved.resid_w.clone();
         }
+        if saved.drift.len() == stream.drift.len() {
+            stream.drift = saved.drift.clone();
+        }
         Ok(stream)
     }
 
@@ -571,6 +592,9 @@ impl Stream {
         self.models = build_models(spec).expect("spec was already validated");
         for v in self.resid_var.iter_mut().chain(self.resid_w.iter_mut()) {
             v.iter_mut().for_each(|x| *x = 0.0);
+        }
+        for d in self.drift.iter_mut() {
+            d.iter_mut().for_each(PageHinkley::reset);
         }
     }
 
@@ -618,6 +642,8 @@ impl Stream {
         let m_targets = ys.len();
         let mut sigma = Vec::with_capacity(self.models.len());
         let mut resid_z = Vec::with_capacity(self.models.len());
+        let mut drift = Vec::with_capacity(self.drift.len());
+        let mut drift_seen = false;
         for (mi, (_, m)) in self.models.iter_mut().enumerate() {
             let step = m.step(&xs, &ys, adv.d_clock, w);
             let nc = step.pred.len() / m_targets;
@@ -657,6 +683,23 @@ impl Stream {
                 }
             }
 
+            // Drift is monitored on |resid| scaled by the slot's own EW
+            // residual std, so `drift_delta` means the same thing whatever the
+            // target's units. Rows with no residual are skipped, not treated as
+            // zero error.
+            if !self.drift.is_empty() {
+                let dets = &mut self.drift[mi];
+                let mut flags = vec![false; r.len()];
+                for (slot, &ri) in r.iter().enumerate() {
+                    let scale = sig[slot];
+                    if ri.is_finite() && scale.is_finite() && scale > 0.0 {
+                        flags[slot] = dets[slot].update(ri.abs() / scale);
+                        drift_seen |= flags[slot];
+                    }
+                }
+                drift.push(flags);
+            }
+
             pred.push(step.pred);
             resid.push(r);
             sigma.push(sig);
@@ -667,11 +710,19 @@ impl Stream {
                 c.push(m.coefficients().unwrap_or_default());
             }
         }
+        // `drift_action = "reset"`: a detected break restarts this stream's
+        // models, the same path a clock reset takes. The flags for this row are
+        // still reported, so the reset is visible rather than silent.
+        if drift_seen && spec.drift_action.as_deref() == Some("reset") {
+            self.reset_models(spec);
+        }
+
         Ok(Some(RowOut {
             pred,
             resid,
             sigma,
             resid_z,
+            drift,
             n_eff,
             coef,
             extra,

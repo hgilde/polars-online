@@ -7,6 +7,7 @@
 //! See `docs/PLAN.md` §2 and §4.
 
 mod clock;
+mod drift;
 mod ewcov;
 mod ewridge;
 mod ftrl;
@@ -20,6 +21,7 @@ mod sgd;
 mod solve;
 
 pub use clock::{ClockAdvance, ClockCfg, ClockState, Decay, OnClockReset, SessionGap};
+pub use drift::PageHinkley;
 pub use ewcov::{EwCov, EwCovCfg, EwCovModel, EwCovStat, variance_is_usable};
 pub use ewridge::{EwRidge, EwRidgeCfg};
 pub use ftrl::{Ftrl, FtrlCfg, FtrlLoss};

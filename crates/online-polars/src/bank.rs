@@ -524,6 +524,13 @@ pub fn output_fields(spec: &Spec) -> Vec<String> {
                 }
             }
         }
+        if spec.emit_drift {
+            for t in &spec.targets {
+                for c in &combos {
+                    fields.push(format!("drift_{t}{c}{suffix}"));
+                }
+            }
+        }
         fields.push(format!("n_eff{suffix}"));
         fields.push(format!("coef{suffix}"));
         if matches!(spec.model, crate::ModelKind::Lasso { .. }) {
@@ -579,6 +586,12 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
     };
     let mut sigma = vec![vec![None::<f64>; n]; n_extra];
     let mut resid_z = vec![vec![None::<f64>; n]; n_extra];
+    let n_drift = if spec.emit_drift {
+        n_models * m * nc
+    } else {
+        0
+    };
+    let mut drift = vec![vec![None::<bool>; n]; n_drift];
     let mut n_eff = vec![vec![None::<f64>; n]; n_models];
     let mut coef: Vec<Vec<Option<Vec<f64>>>> = vec![vec![None; n]; n_models];
     let is_lasso = matches!(spec.model, crate::ModelKind::Lasso { .. });
@@ -592,6 +605,9 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
                 pred[mi * m * nc + slot][*i] = if v.is_nan() { None } else { Some(v) };
                 let r = out.resid[mi][slot];
                 resid[mi * m * nc + slot][*i] = if r.is_nan() { None } else { Some(r) };
+                if n_drift > 0 {
+                    drift[mi * m * nc + slot][*i] = Some(out.drift[mi][slot]);
+                }
                 if n_extra > 0 {
                     let s = out.sigma[mi][slot];
                     sigma[mi * m * nc + slot][*i] = if s.is_nan() { None } else { Some(s) };
@@ -674,6 +690,17 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
                     fields.push(Series::new(
                         format!("{name}_{t}{c}{suffix}").into(),
                         data[mi * m * nc + slot].as_slice(),
+                    ));
+                }
+            }
+        }
+        if spec.emit_drift {
+            for (t_i, t) in spec.targets.iter().enumerate() {
+                for (c_i, c) in combos.iter().enumerate() {
+                    let slot = t_i * nc + c_i;
+                    fields.push(Series::new(
+                        format!("drift_{t}{c}{suffix}").into(),
+                        drift[mi * m * nc + slot].as_slice(),
                     ));
                 }
             }

@@ -295,6 +295,24 @@ pub struct Spec {
     /// units of the model's own recent error. Off by default.
     #[serde(default)]
     pub emit_resid_z: bool,
+    /// Emit `drift_<slot>`: a Page-Hinkley detector on each slot's absolute
+    /// out-of-sample residual, true on the row where a break is detected.
+    /// Complements the halflife: decay forgets smoothly and always, drift
+    /// detection notices a break and says so.
+    #[serde(default)]
+    pub emit_drift: bool,
+    /// Change magnitude the drift detector tolerates before accumulating,
+    /// in units of the slot's own EW residual std. Default 0.5.
+    #[serde(default)]
+    pub drift_delta: Option<f64>,
+    /// Accumulated excess that counts as drift. Default 20.
+    #[serde(default)]
+    pub drift_threshold: Option<f64>,
+    /// What a detection does besides setting the flag: `"flag"` (default) or
+    /// `"reset"`, which restarts this stream's models the way a clock reset
+    /// does.
+    #[serde(default)]
+    pub drift_action: Option<String>,
     /// Emit `selected_<target>` and `pred_<target>__selected`: online model
     /// selection across every grid slot for that target (ridge values, feature
     /// sets and halflives), by lowest EW out-of-sample error. Generalizes the
@@ -402,6 +420,20 @@ impl Spec {
         }
         self.decays()?;
         self.clock_cfg()?;
+        if let Some(a) = &self.drift_action {
+            if !["flag", "reset"].contains(&a.as_str()) {
+                return Err(format!(
+                    "spec {:?}: drift_action must be \"flag\" or \"reset\"",
+                    self.name
+                ));
+            }
+        }
+        if self.drift_delta.is_some_and(|v| v < 0.0 || v.is_nan()) {
+            return Err(format!("spec {:?}: drift_delta must be >= 0", self.name));
+        }
+        if self.drift_threshold.is_some_and(|v| v <= 0.0 || v.is_nan()) {
+            return Err(format!("spec {:?}: drift_threshold must be > 0", self.name));
+        }
         if self.emit_selected {
             if matches!(self.model, ModelKind::EwCov { .. }) {
                 return Err(format!(

@@ -279,3 +279,116 @@ class TestOnlineSelection:
         )
         keep = [c for c in one.columns if not c.startswith("coef")]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
+
+
+class TestDriftDetection:
+    """E20: `emit_drift` — Page-Hinkley on each slot's absolute out-of-sample
+    residual, scaled by that slot's own EW residual std.
+
+    Decay and drift detection answer different questions: a halflife forgets
+    smoothly and always, a detector notices a *break* and says so.
+    """
+
+    def _df(self, n=6000, flip_at=3000, seed=0, noise=0.2):
+        rng = np.random.default_rng(seed)
+        x = rng.standard_normal(n)
+        sign = np.where(np.arange(n) < flip_at, 1.0, -1.0)
+        return pl.DataFrame({"x0": x, "y0": sign * 2 * x + noise * rng.standard_normal(n)})
+
+    def _spec(self, **kw):
+        d = dict(
+            targets=["y0"],
+            features=["x0"],
+            halflife=1e5,
+            min_periods=20.0,
+            max_rows_between_solves=1,
+            emit_drift=True,
+        )
+        d.update(kw)
+        return po.spec.ewridge("m", **d)
+
+    def _flags(self, df, **kw):
+        out = po.ModelBank([self._spec(**kw)]).fit_predict(df)
+        vals = out["m"].struct.field("drift_y0").fill_null(False).to_list()  # noqa: FBT003
+        return np.array([bool(v) for v in vals]), out
+
+    def test_field_is_opt_in(self):
+        plain = po.spec.ewridge("m", targets=["y0"], features=["x0"], halflife=100.0)
+        assert not any(f.startswith("drift_") for f in po.spec.output_fields(plain))
+        assert "drift_y0" in po.spec.output_fields(self._spec())
+
+    def test_detects_a_regime_flip_quickly(self):
+        flags, _ = self._flags(self._df(flip_at=3000))
+        hits = np.flatnonzero(flags)
+        assert len(hits) >= 1, "no drift detected across a sign flip"
+        after = hits[hits >= 3000]
+        assert len(after) >= 1
+        assert after[0] - 3000 < 100, f"took {after[0] - 3000} rows to notice"
+
+    def test_no_false_positives_on_a_stationary_stream(self):
+        rng = np.random.default_rng(1)
+        n = 8000
+        x = rng.standard_normal(n)
+        df = pl.DataFrame({"x0": x, "y0": 2 * x + 0.2 * rng.standard_normal(n)})
+        flags, _ = self._flags(df)
+        assert flags.sum() == 0, f"{flags.sum()} false positives on a stationary stream"
+
+    def test_threshold_trades_sensitivity_for_noise(self):
+        df = self._df()
+        eager, _ = self._flags(df, drift_threshold=2.0)
+        patient, _ = self._flags(df, drift_threshold=200.0)
+        assert eager.sum() >= patient.sum()
+
+    def test_delta_absorbs_small_shifts(self):
+        df = self._df()
+        tolerant, _ = self._flags(df, drift_delta=50.0)
+        assert tolerant.sum() == 0, "a huge delta should absorb everything"
+
+    def test_reset_action_restarts_the_model(self):
+        df = self._df(flip_at=3000)
+        flags, out = self._flags(df, drift_action="reset")
+        hits = np.flatnonzero(flags)
+        assert len(hits) >= 1
+        n_eff = out["m"].struct.field("n_eff").to_numpy().astype(float)
+        # n_eff climbs monotonically unless something resets it
+        assert n_eff[hits[0] + 1] < n_eff[hits[0]], "the reset did not take effect"
+
+    def test_flag_action_leaves_the_model_running(self):
+        df = self._df(flip_at=3000)
+        flags, out = self._flags(df, drift_action="flag")
+        n_eff = out["m"].struct.field("n_eff").to_numpy().astype(float)
+        hits = np.flatnonzero(flags)
+        assert len(hits) >= 1
+        assert n_eff[hits[0] + 1] > n_eff[hits[0]], "flag-only should not reset"
+
+    def test_chunk_invariance(self):
+        df = self._df(n=600, flip_at=300)
+        spec = self._spec()
+        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        bank = po.ModelBank([spec])
+        many = (
+            pl.concat([bank.fit_predict(df.slice(i, 47)) for i in range(0, df.height, 47)])
+            .select("m")
+            .unnest("m")
+        )
+        keep = [c for c in one.columns if not c.startswith("coef")]
+        assert one.select(keep).equals(many.select(keep), null_equal=True)
+
+    def test_survives_save_load(self, tmp_path):
+        df = self._df(n=600, flip_at=300)
+        spec = self._spec()
+        a = po.ModelBank([spec])
+        a.fit_predict(df.slice(0, 300))
+        p = tmp_path / "d.state"
+        a.save(p)
+        b = po.ModelBank.load(p, specs=[spec])
+        rest = df.slice(300, 300)
+        assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
+
+    def test_bad_config_rejected(self):
+        with pytest.raises(ValueError, match="drift_action"):
+            self._spec(drift_action="explode")
+        with pytest.raises(ValueError, match="drift_threshold"):
+            self._spec(drift_threshold=0.0)
+        with pytest.raises(ValueError, match="drift_delta"):
+            self._spec(drift_delta=-1.0)
