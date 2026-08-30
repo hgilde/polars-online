@@ -843,6 +843,113 @@ mod tests {
     }
 
     #[test]
+    fn the_from_scratch_inverse_really_inverts() {
+        // `tracked_inverse_matches_a_from_scratch_solve` uses this as its
+        // reference, so it has to be checked against something else -- the
+        // definition. A · A⁻¹ = I, where A = C + s·prior·I.
+        let (prior, k) = (0.5, 3usize);
+        let mut ew = EwCov::with_inverse(k, prior).unwrap();
+        let mut s = 103u64;
+        for _ in 0..80 {
+            let x = [lcg(&mut s), 2.0 + lcg(&mut s), 10.0 * lcg(&mut s)];
+            ew.update(&x, 0.97, 0.5 + lcg(&mut s).abs());
+        }
+        let scale = ew.inv_scale();
+        let inv = ew.inverse_from_scratch(prior, scale).unwrap();
+        for i in 0..k {
+            for j in 0..k {
+                let mut acc = 0.0;
+                for m in 0..k {
+                    let a_im = ew.cov(i, m) + if i == m { prior * scale } else { 0.0 };
+                    acc += a_im * inv[m * k + j];
+                }
+                let want = f64::from(i == j);
+                assert!(
+                    (acc - want).abs() < 1e-9,
+                    "(A A^-1)[{i}][{j}] = {acc}, want {want}"
+                );
+            }
+        }
+        // A singular matrix with no prior has no inverse to report.
+        let mut flat = EwCov::new(2);
+        for _ in 0..10 {
+            flat.update(&[1.0, 2.0], 1.0, 1.0);
+        }
+        assert!(
+            flat.inverse_from_scratch(0.0, 1.0).is_none(),
+            "a rank-deficient matrix with no prior cannot be inverted"
+        );
+    }
+
+    #[test]
+    fn with_inverse_starts_at_the_prior_and_only_accepts_a_usable_one() {
+        // Before any data the precision matrix is I/prior exactly: there is no
+        // rank-1 step to take on the first row, which is the case the
+        // Sherman-Morrison recursion cannot express.
+        let prior = 4.0;
+        let ew = EwCov::with_inverse(3, prior).unwrap();
+        assert_eq!(ew.inv_scale(), 1.0);
+        for i in 0..3 {
+            for j in 0..3 {
+                let want = if i == j { 1.0 / prior } else { 0.0 };
+                assert_eq!(ew.inv(i, j), Some(want), "({i},{j})");
+            }
+        }
+        assert!(ew.has_inverse());
+        assert!(!EwCov::new(3).has_inverse());
+        assert_eq!(EwCov::new(3).inv(0, 0), None);
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(EwCov::with_inverse(3, bad).is_err(), "prior {bad}");
+        }
+    }
+
+    #[test]
+    fn partial_corr_is_the_textbook_formula_on_the_precision_matrix() {
+        // -P_ij / sqrt(P_ii P_jj), against a precision matrix obtained the
+        // other way (Gauss-Jordan), so the formula and the tracking cannot
+        // agree by both being wrong.
+        let (prior, k) = (1e-4, 4usize);
+        let mut ew = EwCov::with_inverse(k, prior).unwrap();
+        let mut s = 107u64;
+        for _ in 0..300 {
+            let a = lcg(&mut s);
+            let b = lcg(&mut s);
+            // A genuine conditional structure, so the values are not all ~0.
+            let x = [a, b, a + b + 0.3 * lcg(&mut s), 0.5 * lcg(&mut s)];
+            ew.update(&x, 0.99, 1.0);
+        }
+        let p = ew.inverse_from_scratch(prior, ew.inv_scale()).unwrap();
+        for i in 0..k {
+            for j in 0..k {
+                let want = -p[i * k + j] / (p[i * k + i] * p[j * k + j]).sqrt();
+                let got = ew.partial_corr(i, j).unwrap();
+                assert!(
+                    (got - want.clamp(-1.0, 1.0)).abs() < 1e-6,
+                    "pcorr({i},{j}) = {got}, want {want}"
+                );
+            }
+            // A column against itself is -1 by the formula's own definition;
+            // callers only ask for i != j, but it must not be NaN.
+            assert!(ew.partial_corr(i, i).unwrap().is_finite());
+        }
+        // Symmetric, and always a correlation. Only to ~1e-9: the tracked
+        // inverse is built by rank-1 updates, which accumulate rounding
+        // differently for (i,j) and (j,i), and a small prior on a nearly
+        // singular matrix amplifies that. The formula itself is exact.
+        for i in 0..k {
+            for j in 0..k {
+                let (a, b) = (
+                    ew.partial_corr(i, j).unwrap(),
+                    ew.partial_corr(j, i).unwrap(),
+                );
+                assert!((a - b).abs() < 1e-9, "asymmetric at ({i},{j}): {a} vs {b}");
+                assert!((-1.0..=1.0).contains(&a), "({i},{j}) = {a}");
+            }
+        }
+        assert_eq!(EwCov::new(2).partial_corr(0, 1), None, "no inverse tracked");
+    }
+
+    #[test]
     fn tracked_inverse_matches_a_from_scratch_solve() {
         // The incremental Sherman-Morrison inverse must equal a direct
         // inversion of the same matrix at every step, not just at the end.
@@ -906,13 +1013,6 @@ mod tests {
             partial.abs() < 0.2,
             "controlling for the driver should remove it: {partial}"
         );
-    }
-
-    #[test]
-    fn with_inverse_rejects_a_non_positive_prior() {
-        assert!(EwCov::with_inverse(2, 0.0).is_err());
-        assert!(EwCov::with_inverse(2, -1.0).is_err());
-        assert!(EwCov::with_inverse(2, f64::INFINITY).is_err());
     }
 
     #[test]

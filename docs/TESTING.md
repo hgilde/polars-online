@@ -1,6 +1,6 @@
 # Test coverage and testing improvements
 
-Status as of 2026-08-30: **151 Rust tests + 591 pytest functions** (plus 2 opt-in
+Status as of 2026-08-30: **216 Rust tests + 598 pytest functions** (plus 2 opt-in
 soak tests), all green, run in CI on three OSes.
 
 Measured coverage (`./scripts/coverage.sh`): **96% of the Python package**, and
@@ -35,12 +35,61 @@ instead by the CLI integration tests through `run_config`) and
 | T-D2 property-based testing | **Done** — `tests/test_properties.py` (hypothesis) generates adversarial streams (mixed nulls, duplicate/long-gap clocks, ±1e8 values, zero weights, tiny groups) and asserts the universal invariants for all ten models, including the strongest one: **changing a row's own target never changes that row's own prediction** (out-of-sample by construction, hard rule 2). |
 | T-E11 soak | **Done** — 10M rows through one state in ~6.5s: `n_eff` stays bounded and does not drift between the start and end of the stream, the fit is still accurate, and a 2M-row state serializes to under 4KB (memory is O(state), not O(data)). Opt-in via `pytest -m soak`. |
 | T-D4 coverage | **Done** (reported, not gating) — `scripts/coverage.sh`; numbers above. |
-| T-D5 mutation re-run | **Deferred on purpose.** A full pass is ~1645 mutants / ~1 hour, and it is only meaningful against settled code — re-running it while models and outputs are still being added just measures a moving target. The backlog **is** now drained (all 27 enhancements done), so the full pass is running; results below when it finishes. Expect the golden tests to have absorbed most of the earlier 517 misses (measured: `robust.rs` 162 → 42). |
+| T-D5 mutation re-run | **Done.** Run once the enhancement backlog was drained. **2616 mutants in 2h: 1899 caught, 501 missed, 175 timeouts, 41 unviable** — 19% missed, down from 31% (517/1645) despite the crate having grown by 60%. The misses were not scattered: they clustered almost perfectly on the code whose *only* tests live in `tests/*.py`, because `cargo mutants` runs `cargo test` and cannot see the Python suite. Nine commits of Rust-side oracles followed; see "What the mutation run actually found" below. |
 | T-D1 / Windows CI | **Blocked on credentials** — see "Windows and cross-platform" below. `origin` is `github.com/hgilde/polars-online` and 24 commits are ready, but this machine has no GitHub auth (no keychain entry, no SSH key, no token, no `gh`), so nothing has ever been pushed and **no CI job has ever run on Windows**. |
 
 This document assesses what the tests actually prove, then lists concrete
 improvements — with emphasis on edge cases and on comparing behavior against
 reference implementations, including [river](https://riverml.xyz).
+
+## 0. What the mutation run actually found
+
+The headline number (501 of 2616 mutants surviving) is less interesting than
+its shape. Grouped by function, the survivors were:
+
+| Function | Missed | Why |
+|---|---|---|
+| shape and state accessors (`n_eff`, `n_targets`, `n_features`, `sigma2`, `coefficients`, `kind`) | 81 | asserted nowhere in Rust, in any model |
+| `<Lasso as OnlineModel>::step` + `Lasso::solve` + `standardized` | 66 | KKT verification lives in `tests/test_lasso.py` |
+| `EwRidge::blend_toward_long_run` | 54 | `session_shrink` is tested only from Python |
+| `<EwRidge as OnlineModel>::step` + `solve` + `run_solve` | 54 | the slow twin, `sigma2`, and the solve schedule |
+| `EwRidge::solve_standardized` | 53 | the `add_intercept = false` branch had no test at all |
+| `*Cfg::validate` (seven models) | 34 | rejections are asserted in `tests/test_edge_cases.py` |
+| `EwCovModel::read` / `labels` / `n_outputs` | 26 | `ew_cov` is reachable only through the Polars layer |
+| `<Holt as OnlineModel>::step` | 19 | brand new, and its tests checked outcomes not arithmetic |
+| `Kalman::pred_var` + `<Kalman as OnlineModel>::step` | 17 | surfaced only as `emit_sigma` / spec options |
+| `EwCov::partial_corr` / `with_inverse` / `inverse_from_scratch` | 15 | E2's Sherman–Morrison inverse, exposed only as a statistic |
+
+One cause explains nearly all of it: **`cargo mutants` runs `cargo test`, so
+everything proven only by the pytest suite through the compiled extension is
+invisible to it.** That is already noted in `scripts/mutants.sh` as the reason
+for scoping the run to `online-core` — but the same blind spot applies *inside*
+`online-core` wherever a feature's only oracle is a Python test.
+
+Nine commits closed it, adding 65 Rust tests. The rule followed was to add an
+*oracle*, not a golden number: the recursion written out longhand beside the
+implementation (Holt, Page-Hinkley, `sigma2`), an equivalent model configured a
+different way (the slow twin against a standalone model at `long_halflife`;
+the standardized solve against the plain one at zero penalty), the optimality
+conditions of the problem being solved (the lasso's KKT conditions), or the
+definition of the statistic (`read` against a recomputation from the raw rows).
+
+Four real defects surfaced in the process, all in code the behavioural tests
+were happy with:
+
+- `sgd` and `pa` reported `n_eff` with the current row's decay already applied,
+  so `min_periods` meant a different number of rows for them than for every
+  other model;
+- `EwCovModel::n_targets` returned 1 for a model that regresses nothing;
+- `blend_toward_long_run` had lost its doc comment to a `#[cfg(test)]` helper
+  inserted between the comment and the function;
+- `coef0` misconfiguration reported "coef0 must be 1 vectors of length 3".
+
+Two classes of survivor were left alone deliberately. **Equivalent mutants**
+cannot be killed by any test — `Ftrl::weight`'s `zz < 0.0` sign branch is only
+reachable when `zz == 0`, which the `|zz| <= l1` guard above it has already
+returned on. And **`--timeout` survivors** (175 of them) are mutations that
+make a loop spin; the harness detects them, but each costs 20s of the run.
 
 ## 1. What is covered today
 
