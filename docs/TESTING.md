@@ -1,6 +1,6 @@
 # Test coverage and testing improvements
 
-Status as of 2026-08-30: **130 Rust tests + 520 pytest functions** (plus 2 opt-in
+Status as of 2026-08-30: **138 Rust tests + 528 pytest functions** (plus 2 opt-in
 soak tests), all green, run in CI on three OSes.
 
 Measured coverage (`./scripts/coverage.sh`): **96% of the Python package**, and

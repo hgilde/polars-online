@@ -113,6 +113,7 @@ Three opt-in outputs, all derived from state the models already keep:
 | `emit_selected` | `selected_<t>`, `pred_<t>__selected` | online model selection across ridge values, feature sets and halflives, by lowest EW out-of-sample error |
 | `emit_averaged` | `pred_<t>__averaged` | `softmax(−eta · EW error)` blend over the same slots — hedges where `emit_selected` commits |
 | `emit_drift` | `drift_<slot>` | Page-Hinkley break detection on the residual stream; `drift_action="reset"` also restarts the stream |
+| `emit_metrics` | `ic_<slot>`, `r2_<slot>`, `hit_rate_<slot>` | the same numbers `po.eval` computes, but kept in O(state) beside the model |
 | `resid_quantiles` | `absresid_q<p>_<slot>` | P² quantiles of \|resid\| — a distribution-free interval where `sigma` gives a Gaussian one |
 | `emit_autocorr` | `autocorr_<slot>` | EW residual autocorrelation; non-zero means the model is mis-specified |
 

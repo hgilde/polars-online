@@ -5,7 +5,7 @@ use online_core::{
     ClockState, Decay, EwAutoCorr, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl,
     FtrlCfg, FtrlLoss, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, ModelState, OnlineModel,
     P2Quantile, Pa, PaCfg, PaMode, PageHinkley, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, Sgd,
-    SgdCfg, SgdLoss, State, StateError,
+    SgdCfg, SgdLoss, SlotMetrics, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -501,6 +501,8 @@ pub struct StreamState {
     pub resid_q: Vec<Vec<Vec<P2Quantile>>>,
     #[serde(default)]
     pub autocorr: Vec<Vec<EwAutoCorr>>,
+    #[serde(default)]
+    pub metrics: Vec<Vec<SlotMetrics>>,
 }
 
 /// Live per-stream state.
@@ -526,6 +528,8 @@ pub struct Stream {
     resid_q: Vec<Vec<Vec<P2Quantile>>>,
     /// EW residual autocorrelation per instance and slot.
     autocorr: Vec<Vec<EwAutoCorr>>,
+    /// Evaluation metrics per instance and slot (ENHANCEMENTS E22).
+    metrics: Vec<Vec<SlotMetrics>>,
 }
 
 impl Stream {
@@ -559,6 +563,8 @@ pub struct RowOut {
     pub resid_q: Vec<Vec<Vec<f64>>>,
     /// EW residual autocorrelation per instance and slot.
     pub autocorr: Vec<Vec<f64>>,
+    /// `(ic, r2, hit_rate)` per slot, NaN where not yet available.
+    pub metrics: Vec<Vec<(f64, f64, f64)>>,
     pub n_eff: Vec<f64>,
     pub coef: Option<Vec<Vec<Vec<f64>>>>,
     pub extra: Vec<Option<online_core::Extra>>,
@@ -599,6 +605,11 @@ impl Stream {
             } else {
                 Vec::new()
             },
+            metrics: if spec.emit_metrics {
+                slots.iter().map(|&n| vec![SlotMetrics::new(); n]).collect()
+            } else {
+                Vec::new()
+            },
             min_periods: spec.min_periods_per_target(),
             models,
             decays,
@@ -616,6 +627,7 @@ impl Stream {
             drift: self.drift.clone(),
             resid_q: self.resid_q.clone(),
             autocorr: self.autocorr.clone(),
+            metrics: self.metrics.clone(),
         }
     }
 
@@ -649,6 +661,9 @@ impl Stream {
         if saved.autocorr.len() == stream.autocorr.len() {
             stream.autocorr = saved.autocorr.clone();
         }
+        if saved.metrics.len() == stream.metrics.len() {
+            stream.metrics = saved.metrics.clone();
+        }
         Ok(stream)
     }
 
@@ -675,6 +690,9 @@ impl Stream {
             for est in per_slot.iter_mut() {
                 *est = EwAutoCorr::new(lag.unwrap_or(1)).expect("validated");
             }
+        }
+        for per_slot in self.metrics.iter_mut() {
+            per_slot.iter_mut().for_each(|m| *m = SlotMetrics::new());
         }
     }
 
@@ -732,6 +750,7 @@ impl Stream {
         let mut drift_seen = false;
         let mut resid_q = Vec::with_capacity(self.resid_q.len());
         let mut autocorr = Vec::with_capacity(self.autocorr.len());
+        let mut metrics = Vec::with_capacity(self.metrics.len());
         for (mi, (_, m)) in self.models.iter_mut().enumerate() {
             let mut step = m.step(&xs, &ys, adv.d_clock, w);
             let nc = step.pred.len() / m_targets;
@@ -829,6 +848,23 @@ impl Stream {
                 autocorr.push(row);
             }
 
+            // Metrics are read before this row is scored, like every other
+            // diagnostic here, so they never include the row they describe.
+            if !self.metrics.is_empty() {
+                let ms = &mut self.metrics[mi];
+                let mut row = Vec::with_capacity(ms.len());
+                for (slot, met) in ms.iter_mut().enumerate() {
+                    row.push((
+                        met.ic().unwrap_or(f64::NAN),
+                        met.r2().unwrap_or(f64::NAN),
+                        met.hit_rate().unwrap_or(f64::NAN),
+                    ));
+                    let yj = ys[slot / nc].unwrap_or(f64::NAN);
+                    met.update(step.pred[slot], yj, lam, w);
+                }
+                metrics.push(row);
+            }
+
             pred.push(step.pred);
             resid.push(r);
             sigma.push(sig);
@@ -854,6 +890,7 @@ impl Stream {
             drift,
             resid_q,
             autocorr,
+            metrics,
             n_eff,
             coef,
             extra,

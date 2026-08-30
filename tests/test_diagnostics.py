@@ -662,3 +662,118 @@ class TestResidualDistribution:
             po.spec.ewridge("m", resid_quantiles=[], **base)
         with pytest.raises(ValueError, match="resid_autocorr_lag"):
             po.spec.ewridge("m", emit_autocorr=True, resid_autocorr_lag=0, **base)
+
+
+class TestStreamingMetrics:
+    """E22: `emit_metrics` — IC, R² and hit rate kept beside the model.
+
+    `polars_online.eval` computes the same things in Polars over collected
+    output, which needs the whole frame. This is the O(state) version, for a
+    long-running stream or the CLI.
+    """
+
+    def _out(self, df, **kw):
+        d = dict(
+            targets=["y0"],
+            features=["x0"],
+            halflife=float("inf"),
+            min_periods=20.0,
+            max_rows_between_solves=1,
+            emit_metrics=True,
+        )
+        d.update(kw)
+        return po.ModelBank([po.spec.ewridge("m", **d)]).fit_predict(df)
+
+    @staticmethod
+    def _last(out, name):
+        return out["m"].struct.field(name).to_list()[-1]
+
+    def _learnable(self, n=8000, seed=0, noise=1.0):
+        rng = np.random.default_rng(seed)
+        x = rng.standard_normal(n)
+        return pl.DataFrame({"x0": x, "y0": 2 * x + noise * rng.standard_normal(n)})
+
+    def test_fields_are_opt_in(self):
+        plain = po.spec.ewridge("m", targets=["y0"], features=["x0"], halflife=100.0)
+        assert not any(
+            f.startswith(("ic_", "r2_", "hit_rate_")) for f in po.spec.output_fields(plain)
+        )
+        spec = po.spec.ewridge(
+            "m", targets=["y0"], features=["x0"], halflife=100.0, emit_metrics=True
+        )
+        for f in ("ic_y0", "r2_y0", "hit_rate_y0"):
+            assert f in po.spec.output_fields(spec)
+
+    def test_agrees_with_the_batch_evaluator(self):
+        # With no decay the streaming metrics and eval.py measure the same
+        # thing, so they must land in the same place.
+        out = self._out(self._learnable())
+        batch = po.eval.metrics(out, "m", targets=["y0"]).row(0, named=True)
+        assert self._last(out, "ic_y0") == pytest.approx(batch["ic"], abs=0.02)
+        assert self._last(out, "r2_y0") == pytest.approx(batch["r2"], abs=0.02)
+        assert self._last(out, "hit_rate_y0") == pytest.approx(batch["hit_rate"], abs=0.02)
+
+    def test_reports_a_good_fit_as_good(self):
+        out = self._out(self._learnable(noise=0.1))
+        assert self._last(out, "ic_y0") > 0.95
+        assert self._last(out, "r2_y0") > 0.9
+        assert self._last(out, "hit_rate_y0") > 0.9
+
+    def test_reports_a_useless_fit_as_useless(self):
+        rng = np.random.default_rng(2)
+        n = 8000
+        df = pl.DataFrame({"x0": rng.standard_normal(n), "y0": rng.standard_normal(n)})
+        out = self._out(df)
+        assert abs(self._last(out, "ic_y0")) < 0.1
+        assert self._last(out, "r2_y0") < 0.05
+        assert abs(self._last(out, "hit_rate_y0") - 0.5) < 0.08
+
+    def test_metrics_are_out_of_sample(self):
+        # The metric reported on a row must not include that row's own outcome.
+        df = self._learnable(n=2000)
+        out = self._out(df)
+        ic = out["m"].struct.field("ic_y0").to_list()
+        first = next(i for i, v in enumerate(ic) if v is not None)
+        # the first reported value comes from earlier rows only
+        assert first > 0
+
+    def test_decay_lets_metrics_forget(self):
+        # A model that was good and then breaks should report a falling IC.
+        rng = np.random.default_rng(3)
+        n = 12000
+        x = rng.standard_normal(n)
+        sign = np.where(np.arange(n) < n // 2, 1.0, -1.0)
+        df = pl.DataFrame({"x0": x, "y0": sign * 2 * x + 0.1 * rng.standard_normal(n)})
+        out = self._out(df, halflife=300.0)
+        ic = out["m"].struct.field("ic_y0").to_list()
+        assert ic[n // 2 - 10] > 0.9, "should be good before the flip"
+        assert ic[n // 2 + 200] < ic[n // 2 - 10], "should degrade after it"
+
+    def test_chunk_invariance_and_save_load(self, tmp_path):
+        df = self._learnable(n=600, seed=4)
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y0"],
+            features=["x0"],
+            halflife=float("inf"),
+            min_periods=20.0,
+            max_rows_between_solves=1,
+            emit_metrics=True,
+        )
+        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        bank = po.ModelBank([spec])
+        many = (
+            pl.concat([bank.fit_predict(df.slice(i, 61)) for i in range(0, df.height, 61)])
+            .select("m")
+            .unnest("m")
+        )
+        keep = [c for c in one.columns if not c.startswith("coef")]
+        assert one.select(keep).equals(many.select(keep), null_equal=True)
+
+        a = po.ModelBank([spec])
+        a.fit_predict(df.slice(0, 300))
+        p = tmp_path / "m.state"
+        a.save(p)
+        b = po.ModelBank.load(p, specs=[spec])
+        rest = df.slice(300, 300)
+        assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)

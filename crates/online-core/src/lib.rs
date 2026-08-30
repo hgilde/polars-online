@@ -34,7 +34,7 @@ pub use rls::{Rls, RlsCfg};
 pub use robust::{Robust, RobustCfg, RobustLoss};
 pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::solve_spd;
-pub use stats::{EwAutoCorr, P2Quantile};
+pub use stats::{EwAutoCorr, P2Quantile, SlotMetrics};
 
 /// Version of the serialized model-state layout.
 ///

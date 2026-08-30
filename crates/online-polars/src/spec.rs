@@ -316,6 +316,14 @@ pub struct Spec {
     /// units of the model's own recent error. Off by default.
     #[serde(default)]
     pub emit_resid_z: bool,
+    /// Emit `ic_<slot>`, `r2_<slot>` and `hit_rate_<slot>`: exponentially
+    /// weighted evaluation metrics kept beside the model (ENHANCEMENTS E22).
+    /// `polars_online.eval` computes the same things in Polars over collected
+    /// output, which needs the whole frame; this is the O(state) version, so a
+    /// long-running stream or the CLI can report how the fit is doing without
+    /// keeping the rows.
+    #[serde(default)]
+    pub emit_metrics: bool,
     /// Emit `absresid_q<p>_<slot>` for each level in `resid_quantiles`: a P²
     /// estimate of that quantile of `|resid|` (ENHANCEMENTS E23). Five numbers
     /// per level, no window — a distribution-free interval where `sigma` only

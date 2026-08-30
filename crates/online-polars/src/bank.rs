@@ -525,6 +525,15 @@ pub fn output_fields(spec: &Spec) -> Vec<String> {
                 }
             }
         }
+        if spec.emit_metrics {
+            for name in ["ic", "r2", "hit_rate"] {
+                for t in &spec.targets {
+                    for c in &combos {
+                        fields.push(format!("{name}_{t}{c}{suffix}"));
+                    }
+                }
+            }
+        }
         if let Some(levels) = &spec.resid_quantiles {
             for q in levels {
                 for t in &spec.targets {
@@ -614,6 +623,12 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
         0
     };
     let mut drift = vec![vec![None::<bool>; n]; n_drift];
+    let n_met = if spec.emit_metrics {
+        n_models * m * nc
+    } else {
+        0
+    };
+    let mut met = vec![vec![vec![None::<f64>; n]; n_met]; 3];
     let n_levels = spec.resid_quantiles.as_ref().map_or(0, Vec::len);
     let mut rq = vec![vec![None::<f64>; n]; n_levels * n_models * m * nc];
     let n_ac = if spec.emit_autocorr {
@@ -637,6 +652,13 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
                 resid[mi * m * nc + slot][*i] = if r.is_nan() { None } else { Some(r) };
                 if n_drift > 0 {
                     drift[mi * m * nc + slot][*i] = Some(out.drift[mi][slot]);
+                }
+                if n_met > 0 {
+                    let (ic, r2, hr) = out.metrics[mi][slot];
+                    let idx = mi * m * nc + slot;
+                    for (k, v) in [ic, r2, hr].into_iter().enumerate() {
+                        met[k][idx][*i] = if v.is_nan() { None } else { Some(v) };
+                    }
                 }
                 for li in 0..n_levels {
                     let v = out.resid_q[mi][slot][li];
@@ -771,6 +793,19 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
                         format!("{name}_{t}{c}{suffix}").into(),
                         data[mi * m * nc + slot].as_slice(),
                     ));
+                }
+            }
+        }
+        if spec.emit_metrics {
+            for (k, name) in ["ic", "r2", "hit_rate"].into_iter().enumerate() {
+                for (t_i, t) in spec.targets.iter().enumerate() {
+                    for (c_i, c) in combos.iter().enumerate() {
+                        let slot = t_i * nc + c_i;
+                        fields.push(Series::new(
+                            format!("{name}_{t}{c}{suffix}").into(),
+                            met[k][mi * m * nc + slot].as_slice(),
+                        ));
+                    }
                 }
             }
         }

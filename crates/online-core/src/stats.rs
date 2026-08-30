@@ -182,6 +182,103 @@ impl EwAutoCorr {
     }
 }
 
+/// Exponentially weighted evaluation metrics for one prediction slot
+/// (docs/ENHANCEMENTS.md E22).
+///
+/// `eval.py` computes the same quantities in Polars over collected output,
+/// which is right for analysis but needs the whole frame. This is the O(state)
+/// version: it lives beside the model, so a long-running stream and the CLI can
+/// report how the fit is doing without keeping the rows.
+///
+/// All three are exponentially weighted on the model's own clock:
+///
+/// ```text
+/// ic       = corr(pred, y)
+/// r2       = 1 − EW[(y − pred)²] / EW[(y − ȳ)²]
+/// hit_rate = EW mean of 1{sign(pred) = sign(y)}, over rows where y ≠ 0
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlotMetrics {
+    /// Joint moments of (pred, y).
+    joint: crate::EwCov,
+    /// EW mean squared error and its weight.
+    mse: f64,
+    /// EW hit rate and its weight (rows with `y == 0` are excluded).
+    hits: f64,
+    hit_w: f64,
+}
+
+impl Default for SlotMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SlotMetrics {
+    pub fn new() -> Self {
+        Self {
+            joint: crate::EwCov::new(2),
+            mse: 0.0,
+            hits: 0.0,
+            hit_w: 0.0,
+        }
+    }
+
+    /// EW count of scored rows.
+    pub fn n_eff(&self) -> f64 {
+        self.joint.n_eff()
+    }
+
+    /// Information coefficient: the correlation between prediction and target.
+    pub fn ic(&self) -> Option<f64> {
+        let d = (self.joint.var(0) * self.joint.var(1)).sqrt();
+        (d > 0.0).then(|| (self.joint.cov(0, 1) / d).clamp(-1.0, 1.0))
+    }
+
+    /// Out-of-sample R², against the EW mean of the target.
+    ///
+    /// Negative values are normal and meaningful: they say the model is doing
+    /// worse than predicting the running mean.
+    pub fn r2(&self) -> Option<f64> {
+        let var_y = self.joint.var(1);
+        (var_y > 0.0).then(|| 1.0 - self.mse / var_y)
+    }
+
+    /// Fraction of rows where the prediction had the target's sign.
+    pub fn hit_rate(&self) -> Option<f64> {
+        (self.hit_w > 0.0).then_some(self.hits)
+    }
+
+    /// Score one row. `lam` is the model's decay factor for this row.
+    pub fn update(&mut self, pred: f64, y: f64, lam: f64, w: f64) {
+        if !pred.is_finite() || !y.is_finite() || w <= 0.0 {
+            // Age the estimates but do not score: a row with no prediction is
+            // not evidence of a bad one. The means themselves are unchanged;
+            // only the effective counts shrink.
+            self.joint.decay(lam);
+            self.hit_w *= lam;
+            return;
+        }
+        self.joint.update(&[pred, y], lam, w);
+
+        // Reuse the joint accumulator's own weights for the MSE, so every
+        // metric here is averaged identically. After the update above,
+        // `n_eff = lam·W_old + w`, so `(n_eff − w)/n_eff` is exactly the weight
+        // EwCov gave the history and `w/n_eff` the weight it gave this row.
+        let denom = self.joint.n_eff();
+        if denom > 0.0 {
+            let e = y - pred;
+            self.mse = ((denom - w) * self.mse + w * e * e) / denom;
+        }
+        if y != 0.0 {
+            let hw = lam * self.hit_w + w;
+            let hit = f64::from(pred.signum() == y.signum());
+            self.hits = (lam * self.hit_w * self.hits + w * hit) / hw;
+            self.hit_w = hw;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,5 +415,118 @@ mod tests {
     #[test]
     fn autocorr_rejects_lag_zero() {
         assert!(EwAutoCorr::new(0).is_err());
+    }
+}
+
+#[cfg(test)]
+mod metric_tests {
+    use super::*;
+
+    fn lcg(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((*state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    }
+
+    #[test]
+    fn a_perfect_prediction_scores_perfectly() {
+        let mut m = SlotMetrics::new();
+        let mut s = 3u64;
+        for _ in 0..5000 {
+            let y = lcg(&mut s);
+            m.update(y, y, 1.0, 1.0);
+        }
+        assert!((m.ic().unwrap() - 1.0).abs() < 1e-9);
+        assert!((m.r2().unwrap() - 1.0).abs() < 1e-9);
+        assert!((m.hit_rate().unwrap() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn an_uninformative_prediction_scores_at_chance() {
+        let mut m = SlotMetrics::new();
+        let mut s = 5u64;
+        for _ in 0..40000 {
+            m.update(lcg(&mut s), lcg(&mut s), 1.0, 1.0);
+        }
+        assert!(m.ic().unwrap().abs() < 0.05, "ic {:?}", m.ic());
+        assert!(m.r2().unwrap() < 0.05, "r2 {:?}", m.r2());
+        assert!(
+            (m.hit_rate().unwrap() - 0.5).abs() < 0.05,
+            "hit {:?}",
+            m.hit_rate()
+        );
+    }
+
+    #[test]
+    fn predicting_the_mean_scores_zero_r2() {
+        let mut m = SlotMetrics::new();
+        let mut s = 7u64;
+        for _ in 0..40000 {
+            m.update(0.0, lcg(&mut s), 1.0, 1.0);
+        }
+        assert!(m.r2().unwrap().abs() < 0.05, "r2 {:?}", m.r2());
+    }
+
+    #[test]
+    fn a_worse_than_mean_prediction_scores_negative_r2() {
+        let mut m = SlotMetrics::new();
+        let mut s = 11u64;
+        for _ in 0..20000 {
+            let y = lcg(&mut s);
+            m.update(-2.0 * y, y, 1.0, 1.0);
+        }
+        assert!(m.r2().unwrap() < -1.0, "r2 {:?}", m.r2());
+    }
+
+    #[test]
+    fn a_sign_flip_shows_up_as_negative_ic_and_low_hit_rate() {
+        let mut m = SlotMetrics::new();
+        let mut s = 13u64;
+        for _ in 0..20000 {
+            let y = lcg(&mut s);
+            m.update(-y, y, 1.0, 1.0);
+        }
+        assert!((m.ic().unwrap() + 1.0).abs() < 1e-9);
+        assert!(m.hit_rate().unwrap() < 1e-9);
+    }
+
+    #[test]
+    fn decay_lets_it_forget_an_old_regime() {
+        let mut m = SlotMetrics::new();
+        let mut s = 17u64;
+        let lam = 0.99;
+        for _ in 0..3000 {
+            let y = lcg(&mut s);
+            m.update(-y, y, lam, 1.0); // wrong sign
+        }
+        assert!(m.hit_rate().unwrap() < 0.1);
+        for _ in 0..3000 {
+            let y = lcg(&mut s);
+            m.update(y, y, lam, 1.0); // now right
+        }
+        assert!(
+            m.hit_rate().unwrap() > 0.9,
+            "did not forget: {:?}",
+            m.hit_rate()
+        );
+    }
+
+    #[test]
+    fn unscored_rows_are_ignored_not_counted_as_zero() {
+        let mut m = SlotMetrics::new();
+        let mut s = 19u64;
+        for _ in 0..2000 {
+            let y = lcg(&mut s);
+            m.update(y, y, 1.0, 1.0);
+            m.update(f64::NAN, y, 1.0, 1.0); // no prediction yet
+        }
+        assert!((m.ic().unwrap() - 1.0).abs() < 1e-6, "ic {:?}", m.ic());
+    }
+
+    #[test]
+    fn nothing_is_reported_before_any_row() {
+        let m = SlotMetrics::new();
+        assert!(m.ic().is_none() && m.r2().is_none() && m.hit_rate().is_none());
     }
 }
