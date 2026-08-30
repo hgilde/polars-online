@@ -227,7 +227,7 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       item on public data; record results in `docs/VALIDATION.md` and fix defaults.
 - [x] 13. Robust models (§4.5).
 - [x] 14. Logistic / FTRL (§4.6).
-- [ ] 15. `online-cli`: TOML specs, parquet streaming in/out, progress, resume from state.
+- [x] 15. `online-cli`: TOML specs, parquet streaming in/out, progress, resume from state.
 - [ ] 16. CI: wheels + CLI binaries for macOS/Windows, cross-platform state test, Polars-latest
       canary job. Benchmark script + numbers in README.
 - [ ] 17. README with the three usage modes and the math per model.

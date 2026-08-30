@@ -1978,6 +1978,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "online-polars",
+ "polars",
  "serde",
  "toml",
 ]
@@ -1998,6 +1999,7 @@ version = "0.1.0"
 dependencies = [
  "online-core",
  "polars",
+ "polars-utils",
  "rayon",
  "rmp-serde",
  "serde",

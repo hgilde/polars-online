@@ -10,6 +10,7 @@ description = "Polars-side plumbing for online-core: chunk-fed model bank over D
 [dependencies]
 online-core.workspace = true
 polars = { workspace = true, features = ["lazy", "dtype-struct", "parquet"] }
+polars-utils = "=0.55.2"
 rayon.workspace = true
 rmp-serde.workspace = true
 serde.workspace = true

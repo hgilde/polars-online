@@ -1,0 +1,48 @@
+# Example model bank for the `online` CLI:
+#   cargo run -p online-cli -- --config examples/bank.toml
+#
+# Generate a matching input with:
+#   uv run python scripts/make_example_parquet.py
+
+input = "example-input.parquet"
+output = "example-output.parquet"
+chunk_rows = 50_000
+# load_state = "bank.state"     # resume a previous run
+save_state = "bank.state"
+
+# EW-ridge over three features, one state per `group`, decayed on a
+# seconds-valued clock with a 5-minute cap and a session-boundary gap.
+[[specs]]
+name = "ridge"
+targets = ["y"]
+features = ["x0", "x1", "x2"]
+clock = "t"
+halflife = 600.0
+max_dclock = 300.0
+session = "session"
+session_gap = 1800.0
+weight = "w"
+group = "group"
+min_periods = 20.0
+coef_every = 1000
+
+[specs.model]
+type = "ew_ridge"
+ridge = [1e-6, 0.1]
+standardize = true
+
+# The same stream through a Kalman filter, coefficients drifting with a
+# 1-hour halflife.
+[[specs]]
+name = "kalman"
+targets = ["y"]
+features = ["x0", "x1", "x2"]
+clock = "t"
+halflife = 600.0
+max_dclock = 300.0
+group = "group"
+min_periods = 20.0
+
+[specs.model]
+type = "kalman"
+coef_halflife = 3600.0

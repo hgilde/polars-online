@@ -19,3 +19,8 @@ build/
 
 # macOS
 .DS_Store
+
+# CLI example artifacts
+example-input.parquet
+example-output.parquet
+bank.state
