@@ -1987,6 +1987,7 @@ name = "online-core"
 version = "0.1.0"
 dependencies = [
  "faer",
+ "rmp-serde",
  "serde",
  "thiserror 2.0.20",
 ]

@@ -211,7 +211,7 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       empty plugin, CI runs lint on all three OSes.
 - [x] 2. `tests/data.py`: synthetic generator + public download + caching + offline skip.
       `tests/reference.py`: numpy EW-ridge and RLS oracles.
-- [ ] 3. `online-core`: `OnlineModel` trait, `Step`, clock/decay helper (`halflife`/`lam`,
+- [x] 3. `online-core`: `OnlineModel` trait, `Step`, clock/decay helper (`halflife`/`lam`,
       `max_dclock`, `on_clock_reset`, session gap), `EwCov` primitive. Unit tests.
 - [ ] 4. EW-ridge (§4.1) single target, no grids; Cholesky via `faer`; solve schedule.
 - [ ] 5. Multi-target + `feature_sets` + `ridge` grid + standardization at solve time.
