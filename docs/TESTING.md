@@ -16,11 +16,11 @@ run in CI on three OSes.
 | T-R1 FTRL vs river | **Done** — `tests/test_river.py`. Driven by the same gradient sequence, river's `optim.FTRLProximal` and our model agree on the z/n recursion to 1e-12, row for row, with and without L1. Also pinned: **river's `LogisticRegression` predicts with the previous step's proximal weights**, while we follow McMahan Algorithm 1 and recompute from `z` at prediction time — a real semantic difference, now a test rather than a surprise. |
 | T-R4 EW moments vs river | **Done** — and it found a second convention difference: ours is the *bias-corrected* weighted mean (divides by accumulated weight, exact from the first row), river's `EWMean` is the un-normalized EWMA seeded at its first value, which stays anchored near that seed during warmup. Both the closed-form match and the convergence in the limit are asserted. |
 | T-R5 / T-R6 quantile, Huber | **Done** (statistical tier) — our IRLS quantile lands near the empirical quantile alongside river's P² estimator; our Huber and river's SGD-Huber both beat least squares under 3% contamination and agree with each other. |
-| T-D1 run release CI | **Blocked on a push** — `origin` exists (`github.com/hgilde/polars-online`) but nothing has been pushed; running the workflow needs an explicit go-ahead. |
- This document assesses what they actually
-prove, then lists concrete improvements — with emphasis on edge cases and on
-comparing behavior against reference implementations, including
-[river](https://riverml.xyz).
+| T-D1 / Windows CI | **Blocked on credentials** — see "Windows and cross-platform" below. `origin` is `github.com/hgilde/polars-online` and 24 commits are ready, but this machine has no GitHub auth (no keychain entry, no SSH key, no token, no `gh`), so nothing has ever been pushed and **no CI job has ever run on Windows**. |
+
+This document assesses what the tests actually prove, then lists concrete
+improvements — with emphasis on edge cases and on comparing behavior against
+reference implementations, including [river](https://riverml.xyz).
 
 ## 1. What is covered today
 
@@ -100,25 +100,54 @@ Findings first — both verified against the current build:
 | T-E5 | P2 | Degenerate solves in the **plain** (non-standardized) path: constant feature, exactly collinear features (`x1 = x0`) | The jitter fallback and previous-coefficient retention exist but only the standardized zero-variance path is tested. Assert finite outputs and that `solve_failures` increments (needs E5 to observe). |
 | T-E6 | P2 | Duplicate clock values (Δ=0 runs), `max_dclock = 0`, `halflife` far below the median Δ (λ ≈ 0 per row) | Assert: no NaN leakage, `n_eff ≈ w`, solves survive near-singular S via jitter. |
 | T-E7 | P2 | Minimal shapes: single-row groups, a group appearing in only one chunk, an empty chunk (`df.height() == 0`) fed to `fit_predict`, k=1/m=1 | Empty-chunk behavior is currently untested at the bank level (the CLI runner handles empty *input* only). |
-| T-E8 | P2 | Non-string group and session columns (ints, categoricals) and null session values | The cast-to-string path is exercised only with string columns; test int groups and that a null session change is detected (or defined not to be). |
+| T-E8 | P2 (partly done) | Non-string group and session columns (ints, categoricals) and null session values | Integer group columns are covered (`TestGroupKeys::test_integer_group_column`). Still open: categorical/enum group columns, and session columns that are non-string or contain nulls — a null session value currently hashes a sentinel, so it is *not* treated as a session change; that is untested and undocumented either way. |
 | T-E9 | P2 | **Large-offset cancellation**: features like `1e8 + noise` | Our raw-moment form computes `var = E[x²] − m²`, which loses ~half the mantissa at that scale, where river's Welford form does not. Test to characterize the loss and document the operating range — and if it matters for real data (prices are ~1e4–1e5), adopt Welford/centered updates in `EwCov` as the fix. |
 | T-E10 | P2 | Datetime-typed clock columns | Cast to f64 yields epoch *microseconds* — a halflife of "600" then means 600 µs, silently. Decide (reject non-float clocks, or document loudly) and test the decision. |
 | T-E11 | P3 | Long-stream soak: ~10⁷ rows through one state | Assert boundedness (`n_eff`, S entries), no drift vs. a mid-stream save/restore, and stable throughput — the stability claim behind mean-form accumulators (PLAN §7), currently asserted only by argument. |
 | T-E12 | P3 | Session change on the first row of a group; `coef_every = 1`; skipped row immediately before a save/load boundary (pending-delta serialization) | The last is likely covered *incidentally* by the null pattern in the invariance tests; make it a targeted test. |
 
-### D. Infrastructure
+### D. Windows and cross-platform
+
+Windows is a **stated deployment target** (CLAUDE.md: "Dev on macOS (arm64);
+deploy on macOS and Windows"), and it is the least-verified part of the project:
+no CI job has ever executed there. Running the workflows is the prerequisite,
+but "run CI" is not itself a test plan — these are the specific things Windows
+can break that macOS never will.
+
+| # | P | Case | Why it can differ on Windows |
+|---|---|---|---|
+| T-W1 | **P1** | **Run `ci.yml` on `windows-latest` at all** | `cargo test --workspace`, `maturin develop`, and all 134 pytest functions have never executed on Windows. Everything below is speculative until this runs once. |
+| T-W2 | **P1** | **Cross-OS state hand-off** (`release.yml`: write on macOS, load on Windows/Linux) | PLAN §9 class 7 and hard rule 5. The msgpack payload has no host-dependent parts *by construction*, and `save_bytes` is asserted deterministic locally — but that is an argument, not a test. |
+| T-W3 | P1 | **Path handling through the CLI**: backslash separators, drive letters, UNC paths, and spaces in paths, in both the TOML `input`/`output`/`load_state`/`save_state` fields and the `--input`/`--output` overrides | `PlRefPath::try_from_pathbuf` normalizes Windows paths (polars has explicit `normalize_windows_path` logic); TOML string escaping means `"C:\data\x.parquet"` needs doubling or a literal string. Neither is exercised. |
+| T-W4 | P2 | **CRLF line endings in the TOML config** and in any file read as text | The repo has no `.gitattributes`, so git may check out configs with CRLF on Windows. `toml` handles it, but the example config and any doc snippets should be proven to parse as checked out. |
+| T-W5 | P2 | **Binary/artifact naming**: `online.exe` vs `online` | `release.yml` already branches on this in its matrix, but the collect-and-rename step is written in bash with `${f##*.}` and runs only on ubuntu; it has never processed a real `online.exe` artifact. |
+| T-W6 | P2 | **Float formatting in output field names** | Combo labels are built with `format!("{r}")` on f64 (e.g. `pred_y__r0.000001`). Rust's float `Display` is locale-independent, so this *should* be identical everywhere — but the field names are part of the public schema and a divergence would silently break `expression ≡ bank`. Assert the exact field-name list on every OS. |
+| T-W7 | P2 | **Numeric reproducibility across OS/CPU** | Predictions should match macOS to a tolerance, not bitwise: different LLVM vectorization and BLAS paths can reorder floating-point operations. Compare a fixed synthetic run's outputs across the CI matrix with a stated tolerance (~1e-12 relative), which also detects a genuinely divergent algorithm. |
+| T-W8 | P3 | **Filesystem behavior**: case-insensitivity, `MAX_PATH`, file locking on rewrite | The bank writes state with `std::fs::write` and the runner opens the output parquet with `File::create`; a still-open reader on Windows makes rewriting fail where POSIX allows it. Relevant to `--resume` loops. |
+| T-W9 | P3 | **`scripts/env.sh` has no Windows equivalent** | Windows contributors get `PATH` from `.vscode/settings.json` only; a PowerShell counterpart (or documenting `uv run` as the sole entry point) closes the gap. |
+
+### E. Infrastructure
 
 | # | P | Improvement |
 |---|---|---|
-| T-D1 | P1 | **Actually run the release workflow once** (tag or `workflow_dispatch`): until then, class 7 (macOS-written state loaded on Windows) and the wheel builds are untested claims. Follow with a tolerance-based (not bitwise — BLAS/LLVM vectorization may differ) cross-OS *prediction* comparison in the same workflow. |
+| T-D1 | P1 **blocked** | **Actually run the workflows once.** Until then T-W1/T-W2 and the wheel builds are untested claims. *Blocked on GitHub credentials on this machine*: no keychain entry for github.com, no SSH key, no `GH_TOKEN`, and `gh` is not installed, so `git push` cannot authenticate. Unblock with any of `gh auth login` / an SSH key / a PAT — note the token needs the **`workflow` scope**, since this push adds `.github/workflows/`. |
 | T-D2 | P2 | **Property-based testing**: `hypothesis` (Python) and/or `proptest` (Rust) generating adversarial streams — mixed nulls, dup/backwards clocks, constant features, weight extremes, tiny groups — asserting the universal invariants (chunk invariance, save/load equivalence, no non-finite outputs, null policy) for every model. This is the systematic version of section C. |
 | T-D3 | P2 | Determinism across parallelism: run the bank under `RAYON_NUM_THREADS=1` vs many; outputs must be identical (per-stream work is serial, so any diff is a bug). |
 | T-D4 | P3 | Coverage measurement (`cargo llvm-cov` + `pytest --cov`) with a reported (not gating) number, and a periodic `cargo mutants` pass on `online-core` — solver/decay arithmetic is exactly where mutation testing earns its keep. |
 
 ## Suggested order
 
-1. T-E1, T-E2 (found defects, with their fixes), T-D1 (run the release CI once).
-2. T-A1–T-A4 (finish the oracle set PLAN promised), T-A5, T-E3–T-E5.
-3. T-R1, T-R3, T-R4 (river cross-checks that need no new features), then T-R2
-   behind the Kalman switch.
-4. T-D2/T-D3, remaining edge matrix, T-D4.
+Done so far: T-E1–T-E4, T-A1, T-A2, T-R1, T-R4–T-R6.
+
+1. **T-D1 → T-W1, T-W2** — push and run the workflows. This is the single
+   largest untested area (a whole supported platform) and it gates T-W3–T-W9.
+2. **T-A3, T-A4** — finish the oracle set PLAN §9 class 1 promised, so
+   huber/quantile and ftrl stop being anchored only by property tests.
+   **T-A5** — parametrize the null/clock/warmup tests across all seven models.
+3. **T-E5–T-E8** — degenerate solves, duplicate/zero clock deltas, empty chunks
+   and minimal shapes, categorical/null session columns.
+4. **T-D3** (rayon determinism — cheap, and a real risk with the fan-out),
+   **T-D2** (property-based testing, which subsumes much of section C),
+   then T-E9–T-E12 and T-D4.
+5. **T-R2, T-R3** last: both are blocked on enhancements (Kalman
+   `standardize: false`, and exposing `EwCov` to Python).
