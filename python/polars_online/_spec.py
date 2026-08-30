@@ -472,6 +472,7 @@ def sgd(
     power: float | None = None,
     l2: float | None = None,
     clip_gradient: float | None = None,
+    scale_features: bool = False,
     **common: Any,
 ) -> dict[str, Any]:
     """Stochastic gradient descent with pluggable losses (ENHANCEMENTS E16).
@@ -523,6 +524,7 @@ def sgd(
         "power": power,
         "l2": l2,
         "clip_gradient": clip_gradient,
+        "scale_features": scale_features,
     }
     return _common(name, model, targets=targets, features=features, **common)
 

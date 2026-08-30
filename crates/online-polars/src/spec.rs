@@ -231,6 +231,10 @@ pub enum ModelKind {
         l2: Option<f64>,
         #[serde(default)]
         clip_gradient: Option<f64>,
+        /// Standardize features against their running moments before the
+        /// gradient step, unscaling the coefficients on the way out.
+        #[serde(default)]
+        scale_features: bool,
     },
     /// Passive-aggressive regression (ENHANCEMENTS E17). No learning rate:
     /// each row's update is the smallest change that satisfies it.

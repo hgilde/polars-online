@@ -75,6 +75,16 @@ pub struct SgdCfg {
     /// Ridge penalty added to the gradient. The intercept is never penalized.
     pub l2: f64,
     pub min_periods: f64,
+    /// Standardize features against their own running moments before the
+    /// gradient step (ENHANCEMENTS E24), unscaling the coefficients on the way
+    /// out so they stay in the caller's units.
+    ///
+    /// Gradient methods are the ones that need this: a single learning rate has
+    /// to suit every coordinate, so a feature measured in thousands and one
+    /// measured in basis points cannot both converge. The exact solvers do not
+    /// care (they standardize inside the solve, or not at all).
+    #[serde(default)]
+    pub scale_features: bool,
     /// Cap on `|gradient|` before the step. **Finite by default** (`1e3` via the
     /// spec layer), not because ordinary losses need it but because a log-link
     /// loss does: with `Poisson`, `p = exp(eta)`, so one row that pushes `eta`
@@ -131,6 +141,9 @@ impl SgdCfg {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sgd {
     cfg: SgdCfg,
+    /// Running feature moments, when `scale_features` is on.
+    #[serde(default)]
+    scaler: Option<crate::EwCov>,
     /// Coefficients per target.
     beta: Vec<Vec<f64>>,
     /// AdaGrad accumulators per target (empty for the other schedules).
@@ -150,7 +163,9 @@ impl Sgd {
         } else {
             Vec::new()
         };
+        let scaler = cfg.scale_features.then(|| crate::EwCov::new(k));
         Ok(Self {
+            scaler,
             beta: vec![vec![0.0; k]; m],
             g2,
             w_sum: 0.0,
@@ -163,8 +178,56 @@ impl Sgd {
         &self.cfg
     }
 
-    pub fn coefficients(&self) -> &[Vec<f64>] {
-        &self.beta
+    /// Coefficients in the caller's units. With `scale_features` the model
+    /// fits on standardized inputs, so they are unscaled here and the intercept
+    /// absorbs the shift.
+    pub fn coefficients(&self) -> Vec<Vec<f64>> {
+        let Some(sc) = &self.scaler else {
+            return self.beta.clone();
+        };
+        let k = self.cfg.k_total();
+        let off = usize::from(self.cfg.add_intercept);
+        let scales = self.scales();
+        self.beta
+            .iter()
+            .map(|b| {
+                let mut c = vec![0.0; k];
+                for i in off..k {
+                    c[i] = b[i] / scales[i];
+                }
+                if self.cfg.add_intercept {
+                    let mut b0 = b[0];
+                    for (i, ci) in c.iter().enumerate().skip(off) {
+                        b0 -= ci * sc.mean(i);
+                    }
+                    c[0] = b0;
+                }
+                c
+            })
+            .collect()
+    }
+
+    /// Per-slot scale: the running sd for features, 1 for the intercept and for
+    /// a feature with no spread yet.
+    fn scales(&self) -> Vec<f64> {
+        let k = self.cfg.k_total();
+        let off = usize::from(self.cfg.add_intercept);
+        match &self.scaler {
+            None => vec![1.0; k],
+            Some(sc) => (0..k)
+                .map(|i| {
+                    if i < off {
+                        return 1.0;
+                    }
+                    let v = sc.var(i);
+                    if crate::variance_is_usable(v, sc.raw(i, i)) {
+                        v.sqrt()
+                    } else {
+                        1.0
+                    }
+                })
+                .collect(),
+        }
     }
 
     pub fn n_eff(&self) -> f64 {
@@ -226,6 +289,22 @@ impl OnlineModel for Sgd {
             self.zbuf.copy_from_slice(x);
         }
 
+        // Standardize against the moments from BEFORE this row, so the scaling
+        // cannot see the row it is scaling (ENHANCEMENTS E24). The raw values
+        // are kept to update the scaler afterwards.
+        let raw_z: Vec<f64> = if self.scaler.is_some() {
+            self.zbuf.clone()
+        } else {
+            Vec::new()
+        };
+        if let Some(sc) = &self.scaler {
+            let means: Vec<f64> = (0..k).map(|i| sc.mean(i)).collect();
+            let scales = self.scales();
+            for (i, z) in self.zbuf.iter_mut().enumerate().skip(off) {
+                *z = (*z - means[i]) / scales[i];
+            }
+        }
+
         // Decay first, so a long gap re-opens an annealed or adapted rate.
         if lam != 1.0 {
             for g in self.g2.iter_mut() {
@@ -272,6 +351,9 @@ impl OnlineModel for Sgd {
                 };
                 self.beta[j][i] -= lr * g;
             }
+        }
+        if let Some(sc) = &mut self.scaler {
+            sc.update(&raw_z, lam, weight);
         }
         self.w_sum = lam * self.w_sum + weight;
 
@@ -334,7 +416,79 @@ mod tests {
             l2: 0.0,
             min_periods: 5.0,
             clip_gradient: 1e12,
+            scale_features: false,
         }
+    }
+
+    /// The case scaling exists for: one feature in thousands, one in
+    /// thousandths. A single learning rate cannot suit both.
+    #[test]
+    fn scaling_rescues_badly_scaled_features() {
+        let run = |scale: bool| {
+            let mut c = cfg(2, SgdLoss::Squared);
+            c.scale_features = scale;
+            c.learning_rate = 0.01;
+            c.min_periods = 0.0;
+            let mut m = Sgd::new(c).unwrap();
+            let mut s = 61u64;
+            for i in 0..20000 {
+                let x = [1000.0 * lcg(&mut s), 0.001 * lcg(&mut s)];
+                let y = 0.002 * x[0] + 900.0 * x[1];
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            m.coefficients()[0].clone()
+        };
+        let plain = run(false);
+        let scaled = run(true);
+        let err = |b: &[f64]| (b[1] - 0.002).abs() / 0.002 + (b[2] - 900.0).abs() / 900.0;
+        assert!(
+            err(&scaled) < err(&plain),
+            "scaled {scaled:?} should beat unscaled {plain:?} (truth [_, 0.002, 900])"
+        );
+        assert!(err(&scaled) < 0.2, "scaled fit still poor: {scaled:?}");
+    }
+
+    #[test]
+    fn scaling_reports_coefficients_in_the_callers_units() {
+        let mut c = cfg(1, SgdLoss::Squared);
+        c.scale_features = true;
+        c.learning_rate = 0.1;
+        c.min_periods = 0.0;
+        let mut m = Sgd::new(c).unwrap();
+        let mut s = 63u64;
+        for i in 0..20000 {
+            let x = [500.0 + 100.0 * lcg(&mut s)];
+            let y = 0.05 * x[0] + 3.0;
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let b = &m.coefficients()[0];
+        assert!(
+            (b[1] - 0.05).abs() < 5e-3,
+            "slope in original units: {}",
+            b[1]
+        );
+        assert!(
+            (b[0] - 3.0).abs() < 1.0,
+            "intercept absorbs the shift: {}",
+            b[0]
+        );
+    }
+
+    #[test]
+    fn scaling_is_out_of_sample() {
+        // The scaler must not see the row it is scaling: an enormous first row
+        // should not be normalized away by its own magnitude.
+        let mut c = cfg(1, SgdLoss::Squared);
+        c.scale_features = true;
+        c.min_periods = 0.0;
+        let mut m = Sgd::new(c).unwrap();
+        let before = m.coefficients()[0].clone();
+        m.step(&[1e6], &[Some(1.0)], 0.0, 1.0);
+        assert_ne!(
+            m.coefficients()[0],
+            before,
+            "the row should still have moved the fit"
+        );
     }
 
     /// Runs a stream and returns the final coefficients.

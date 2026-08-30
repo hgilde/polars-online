@@ -204,3 +204,73 @@ class TestPlumbing:
             _spec(learning_rate=0.0)
         with pytest.raises(ValueError, match="needs a .quantile. level"):
             _spec(loss="quantile")
+
+
+class TestFeatureScaling:
+    """E24: `scale_features` standardizes inputs against their running moments.
+
+    Gradient methods are the ones that need it: a single learning rate has to
+    suit every coordinate, so a feature in thousands and one in thousandths
+    cannot both converge. The exact solvers do not care.
+    """
+
+    def _fit(self, scale):
+        rng = np.random.default_rng(0)
+        n = 20000
+        x0 = 1000.0 * rng.standard_normal(n)
+        x1 = 0.001 * rng.standard_normal(n)
+        df = pl.DataFrame({"x0": x0, "x1": x1, "y0": 0.002 * x0 + 900.0 * x1})
+        spec = po.spec.sgd(
+            "m",
+            targets=["y0"],
+            features=["x0", "x1"],
+            learning_rate=0.01,
+            halflife=float("inf"),
+            min_periods=0.0,
+            scale_features=scale,
+            coef_every=1,
+        )
+        out = po.ModelBank([spec]).fit_predict(df)
+        return np.array(out["m"].struct.field("coef").to_list()[-1], dtype=float)
+
+    @staticmethod
+    def _rel_err(c):
+        return abs(c[1] - 0.002) / 0.002 + abs(c[2] - 900.0) / 900.0
+
+    def test_rescues_badly_scaled_features(self):
+        plain, scaled = self._fit(False), self._fit(True)
+        assert self._rel_err(scaled) < self._rel_err(plain)
+        assert self._rel_err(scaled) < 0.2, f"scaled fit still poor: {scaled}"
+
+    def test_coefficients_come_back_in_original_units(self):
+        c = self._fit(True)
+        assert c[1] == pytest.approx(0.002, rel=0.15)
+        assert c[2] == pytest.approx(900.0, rel=0.15)
+
+    def test_off_by_default(self):
+        spec = po.spec.sgd("m", targets=["y0"], features=["x0"], halflife=100.0, learning_rate=0.01)
+        assert spec["model"]["scale_features"] is False
+
+    def test_chunk_invariance(self):
+        rng = np.random.default_rng(3)
+        n = 400
+        x0 = 100.0 * rng.standard_normal(n)
+        df = pl.DataFrame({"x0": x0, "x1": rng.standard_normal(n), "y0": 0.01 * x0})
+        spec = po.spec.sgd(
+            "m",
+            targets=["y0"],
+            features=["x0", "x1"],
+            learning_rate=0.05,
+            halflife=float("inf"),
+            min_periods=5.0,
+            scale_features=True,
+        )
+        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        bank = po.ModelBank([spec])
+        many = (
+            pl.concat([bank.fit_predict(df.slice(i, 37)) for i in range(0, df.height, 37)])
+            .select("m")
+            .unnest("m")
+        )
+        keep = [c for c in one.columns if not c.startswith("coef")]
+        assert one.select(keep).equals(many.select(keep), null_equal=True)

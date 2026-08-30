@@ -97,7 +97,7 @@ impl AnyModel {
             AnyModel::Ftrl(m) => Some(m.coefficients()),
             // ew_cov has no coefficients: its outputs are the statistics.
             AnyModel::EwCov(_) => None,
-            AnyModel::Sgd(m) => Some(m.coefficients().to_vec()),
+            AnyModel::Sgd(m) => Some(m.coefficients()),
             AnyModel::Pa(m) => Some(m.coefficients().to_vec()),
         }
     }
@@ -372,6 +372,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             power,
             l2,
             clip_gradient,
+            scale_features,
         } => {
             let loss = match loss.as_deref().unwrap_or("squared") {
                 "squared" => SgdLoss::Squared,
@@ -408,6 +409,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 min_periods: spec.min_periods_or_default(),
                 // Finite by default: see SgdCfg::clip_gradient.
                 clip_gradient: clip_gradient.unwrap_or(1e3),
+                scale_features: *scale_features,
             };
             Ok(AnyModel::Sgd(Box::new(Sgd::new(cfg)?)))
         }

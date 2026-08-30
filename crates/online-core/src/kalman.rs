@@ -170,6 +170,43 @@ impl Kalman {
         &self.sig2
     }
 
+    /// Predictive variance of the *last* prediction, per target:
+    /// `zᵀ P_j z + R_j` — parameter uncertainty plus observation noise
+    /// (ENHANCEMENTS E12).
+    ///
+    /// This is the piece `sigma` alone cannot give. `sigma` is the spread of
+    /// realized errors; this also knows how unsure the filter is about its own
+    /// coefficients, so it is wide during warmup and after a gap, and narrows
+    /// as evidence accumulates. Only Kalman tracks `P`, so only Kalman can
+    /// report it exactly.
+    pub fn pred_var(&self) -> Vec<f64> {
+        let k = self.cfg.k_total();
+        (0..self.cfg.n_targets)
+            .map(|j| {
+                let pi = if self.cfg.share_p { 0 } else { j };
+                let p = &self.p[pi];
+                let mut quad = 0.0;
+                for i in 0..k {
+                    let row = i * k;
+                    let mut acc = 0.0;
+                    for jj in 0..k {
+                        acc += p[row + jj] * self.zs[jj];
+                    }
+                    quad += self.zs[i] * acc;
+                }
+                let r = self.cfg.obs_var.unwrap_or_else(|| {
+                    let s2 = if self.cfg.share_p {
+                        self.sig2.iter().sum::<f64>() / self.cfg.n_targets as f64
+                    } else {
+                        self.sig2[j]
+                    };
+                    if s2 > 0.0 { s2 } else { f64::NAN }
+                });
+                quad + r
+            })
+            .collect()
+    }
+
     pub fn n_eff(&self) -> f64 {
         self.cov.n_eff()
     }
@@ -578,6 +615,47 @@ mod tests {
                 .iter()
                 .all(|c| c.iter().all(|v| v.is_finite()))
         );
+    }
+
+    /// Predictive variance must start wide and narrow with evidence — that is
+    /// the whole reason to report it alongside `sigma`.
+    #[test]
+    fn predictive_variance_narrows_with_evidence() {
+        let mut m = Kalman::new(cfg(2, 1, vec![f64::INFINITY])).unwrap();
+        let mut s = 44u64;
+        let mut early = 0.0;
+        let mut late = 0.0;
+        for i in 0..3000 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = 2.0 * x[0] - x[1] + 0.1 * lcg(&mut s);
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            if i == 20 {
+                early = m.pred_var()[0];
+            }
+            if i == 2999 {
+                late = m.pred_var()[0];
+            }
+        }
+        assert!(early.is_finite() && late.is_finite());
+        assert!(
+            late < early,
+            "predictive variance should narrow: {early} -> {late}"
+        );
+    }
+
+    #[test]
+    fn predictive_variance_exceeds_the_observation_noise() {
+        // It is parameter uncertainty PLUS noise, so it can never be smaller
+        // than the noise alone.
+        let mut c = cfg(2, 1, vec![f64::INFINITY]);
+        c.obs_var = Some(0.25);
+        let mut m = Kalman::new(c).unwrap();
+        let mut s = 46u64;
+        for i in 0..500 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(&x, &[Some(x[0])], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            assert!(m.pred_var()[0] >= 0.25 - 1e-12);
+        }
     }
 
     #[test]
