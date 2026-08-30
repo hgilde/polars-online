@@ -111,6 +111,7 @@ Three opt-in outputs, all derived from state the models already keep:
 | `emit_sigma` | `sigma_<slot>` | EW standard deviation of that slot's out-of-sample residuals |
 | `emit_resid_z` | `resid_z_<slot>` | `resid / sigma` — how surprising the row was, in units of the model's own recent error |
 | `emit_selected` | `selected_<t>`, `pred_<t>__selected` | online model selection across ridge values, feature sets and halflives, by lowest EW out-of-sample error |
+| `emit_averaged` | `pred_<t>__averaged` | `softmax(−eta · EW error)` blend over the same slots — hedges where `emit_selected` commits |
 | `emit_drift` | `drift_<slot>` | Page-Hinkley break detection on the residual stream; `drift_action="reset"` also restarts the stream |
 
 All read from the state *before* each row, so they are out-of-sample like the

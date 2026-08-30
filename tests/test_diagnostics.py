@@ -392,3 +392,143 @@ class TestDriftDetection:
             self._spec(drift_threshold=0.0)
         with pytest.raises(ValueError, match="drift_delta"):
             self._spec(drift_delta=-1.0)
+
+
+class TestModelAveraging:
+    """E14: `emit_averaged` — exponentially weighted forecaster over grid slots.
+
+    The soft counterpart of `emit_selected`: weights are
+    `softmax(-eta * EW squared error)`, so averaging hedges where selection
+    commits.
+    """
+
+    SLOTS = ["pred_y0__r0.00000001", "pred_y0__r1", "pred_y0__r100"]
+
+    def _run(self, n=4000, seed=1, noise=3.0, **kw):
+        rng = np.random.default_rng(seed)
+        x = rng.standard_normal(n)
+        df = pl.DataFrame({"x0": x, "y0": 2 * x + noise * rng.standard_normal(n)})
+        d = dict(
+            targets=["y0"],
+            features=["x0"],
+            ridge=[1e-8, 1.0, 100.0],
+            halflife=500.0,
+            min_periods=20.0,
+            max_rows_between_solves=1,
+            emit_selected=True,
+            emit_averaged=True,
+        )
+        d.update(kw)
+        out = po.ModelBank([po.spec.ewridge("m", **d)]).fit_predict(df)
+        return out, df
+
+    @staticmethod
+    def _f(out, name):
+        return out["m"].struct.field(name).to_numpy().astype(float)
+
+    def test_field_is_opt_in(self):
+        plain = po.spec.ewridge(
+            "m", targets=["y0"], features=["x0"], ridge=[1e-6, 1.0], halflife=100.0
+        )
+        assert "pred_y0__averaged" not in po.spec.output_fields(plain)
+
+    def test_is_a_convex_combination_of_the_slots(self):
+        out, _ = self._run()
+        avg = self._f(out, "pred_y0__averaged")
+        slots = np.array([self._f(out, s) for s in self.SLOTS])
+        m = np.isfinite(avg) & np.isfinite(slots).all(axis=0)
+        assert m.sum() > 1000
+        assert (avg[m] >= slots[:, m].min(axis=0) - 1e-9).all()
+        assert (avg[m] <= slots[:, m].max(axis=0) + 1e-9).all()
+
+    def test_large_eta_reproduces_selection(self):
+        out, _ = self._run(average_eta=1e6)
+        avg, sel = self._f(out, "pred_y0__averaged"), self._f(out, "pred_y0__selected")
+        m = np.isfinite(avg) & np.isfinite(sel)
+        assert np.max(np.abs(avg[m] - sel[m])) < 1e-9
+
+    def test_small_eta_is_the_equal_weight_mean(self):
+        out, _ = self._run(average_eta=1e-6)
+        avg = self._f(out, "pred_y0__averaged")
+        mean = np.mean([self._f(out, s) for s in self.SLOTS], axis=0)
+        m = np.isfinite(avg) & np.isfinite(mean)
+        assert np.max(np.abs(avg[m] - mean[m])) < 1e-4
+
+    def test_beats_the_worst_slot(self):
+        out, df = self._run()
+        y = df["y0"].to_numpy()
+
+        def mse(name):
+            p = self._f(out, name)
+            m = np.isfinite(p)
+            return float(np.mean((p[m] - y[m]) ** 2))
+
+        worst = max(mse(s) for s in self.SLOTS)
+        assert mse("pred_y0__averaged") < worst
+
+    def test_hedges_when_the_best_slot_changes(self):
+        # A regime switch flips which ridge is best. Selection whipsaws;
+        # averaging should not be far behind, and must beat the slot that is
+        # wrong for half the stream.
+        rng = np.random.default_rng(7)
+        n = 8000
+        x = rng.standard_normal(n)
+        noise = np.where(np.arange(n) < n // 2, 0.1, 6.0)
+        df = pl.DataFrame({"x0": x, "y0": 2 * x + noise * rng.standard_normal(n)})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y0"],
+            features=["x0"],
+            ridge=[1e-8, 100.0],
+            halflife=300.0,
+            min_periods=20.0,
+            max_rows_between_solves=1,
+            emit_averaged=True,
+        )
+        out = po.ModelBank([spec]).fit_predict(df)
+        y = df["y0"].to_numpy()
+
+        def mse(name):
+            p = out["m"].struct.field(name).to_numpy().astype(float)
+            m = np.isfinite(p)
+            return float(np.mean((p[m] - y[m]) ** 2))
+
+        assert mse("pred_y0__averaged") < mse("pred_y0__r100")
+
+    def test_rejected_for_ew_cov(self):
+        with pytest.raises(ValueError, match="does not apply to ew_cov"):
+            po.spec.ew_cov("c", features=["x0", "x1"], halflife=100.0, emit_averaged=True)
+
+    def test_bad_eta_rejected(self):
+        with pytest.raises(ValueError, match="average_eta"):
+            po.spec.ewridge(
+                "m",
+                targets=["y0"],
+                features=["x0"],
+                ridge=[1e-6, 1.0],
+                halflife=100.0,
+                emit_averaged=True,
+                average_eta=0.0,
+            )
+
+    def test_chunk_invariance(self):
+        out, df = self._run(n=300)
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y0"],
+            features=["x0"],
+            ridge=[1e-8, 1.0, 100.0],
+            halflife=500.0,
+            min_periods=20.0,
+            max_rows_between_solves=1,
+            emit_averaged=True,
+        )
+        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        bank = po.ModelBank([spec])
+        many = (
+            pl.concat([bank.fit_predict(df.slice(i, 29)) for i in range(0, df.height, 29)])
+            .select("m")
+            .unnest("m")
+        )
+        keep = [c for c in one.columns if not c.startswith("coef")]
+        assert one.select(keep).equals(many.select(keep), null_equal=True)

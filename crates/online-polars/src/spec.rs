@@ -326,6 +326,18 @@ pub struct Spec {
     /// does.
     #[serde(default)]
     pub drift_action: Option<String>,
+    /// Emit `pred_<target>__averaged`: an exponentially weighted average of
+    /// every slot's prediction, with weights `softmax(−eta · EW squared
+    /// error)` (ENHANCEMENTS E14). The soft counterpart of `emit_selected`:
+    /// averaging hedges where selection commits, which is usually the better
+    /// trade when several slots are close.
+    #[serde(default)]
+    pub emit_averaged: bool,
+    /// Sharpness of the averaging weights. Large values approach
+    /// `emit_selected`'s argmin; small values approach an equal-weight mean.
+    /// Default 1.
+    #[serde(default)]
+    pub average_eta: Option<f64>,
     /// Emit `selected_<target>` and `pred_<target>__selected`: online model
     /// selection across every grid slot for that target (ridge values, feature
     /// sets and halflives), by lowest EW out-of-sample error. Generalizes the
@@ -475,6 +487,15 @@ impl Spec {
         }
         if self.drift_threshold.is_some_and(|v| v <= 0.0 || v.is_nan()) {
             return Err(format!("spec {:?}: drift_threshold must be > 0", self.name));
+        }
+        if self.average_eta.is_some_and(|v| v <= 0.0 || v.is_nan()) {
+            return Err(format!("spec {:?}: average_eta must be > 0", self.name));
+        }
+        if self.emit_averaged && matches!(self.model, ModelKind::EwCov { .. }) {
+            return Err(format!(
+                "spec {:?}: emit_averaged does not apply to ew_cov (it has no predictions)",
+                self.name
+            ));
         }
         if self.emit_selected {
             if matches!(self.model, ModelKind::EwCov { .. }) {

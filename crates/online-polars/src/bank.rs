@@ -546,6 +546,11 @@ pub fn output_fields(spec: &Spec) -> Vec<String> {
             fields.push(format!("selected_{t}"));
         }
     }
+    if spec.emit_averaged {
+        for t in &spec.targets {
+            fields.push(format!("pred_{t}__averaged"));
+        }
+    }
     fields
 }
 
@@ -638,6 +643,47 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
     let labels = slot_labels(spec);
     let mut sel_pred = vec![vec![None::<f64>; n]; if spec.emit_selected { m } else { 0 }];
     let mut sel_name = vec![vec![None::<&str>; n]; if spec.emit_selected { m } else { 0 }];
+    let mut avg_pred = vec![vec![None::<f64>; n]; if spec.emit_averaged { m } else { 0 }];
+    if spec.emit_averaged {
+        // Exponentially weighted forecaster: weight each slot by
+        // exp(-eta * EW squared error), normalized. `sigma` is that error's
+        // square root, already tracked for E12, so this costs one pass.
+        let eta = spec.average_eta.unwrap_or(1.0);
+        for (i, out) in rows {
+            let Some(out) = out else { continue };
+            for (t_i, avg_t) in avg_pred.iter_mut().enumerate() {
+                // Subtract the best loss before exponentiating, so the weights
+                // are identical but nothing overflows.
+                let mut best = f64::INFINITY;
+                for mi in 0..n_models {
+                    for c_i in 0..nc {
+                        let s = out.sigma[mi][t_i * nc + c_i];
+                        if s.is_finite() && out.pred[mi][t_i * nc + c_i].is_finite() {
+                            best = best.min(s * s);
+                        }
+                    }
+                }
+                if !best.is_finite() {
+                    continue;
+                }
+                let (mut num, mut den) = (0.0, 0.0);
+                for mi in 0..n_models {
+                    for c_i in 0..nc {
+                        let slot = t_i * nc + c_i;
+                        let (s, p) = (out.sigma[mi][slot], out.pred[mi][slot]);
+                        if s.is_finite() && p.is_finite() {
+                            let wgt = (-eta * (s * s - best)).exp();
+                            num += wgt * p;
+                            den += wgt;
+                        }
+                    }
+                }
+                if den > 0.0 {
+                    avg_t[*i] = Some(num / den);
+                }
+            }
+        }
+    }
     if spec.emit_selected {
         for (i, out) in rows {
             let Some(out) = out else { continue };
@@ -741,6 +787,14 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
             fields.push(Series::new(
                 format!("selected_{t}").into(),
                 sel_name[t_i].as_slice(),
+            ));
+        }
+    }
+    if spec.emit_averaged {
+        for (t_i, t) in spec.targets.iter().enumerate() {
+            fields.push(Series::new(
+                format!("pred_{t}__averaged").into(),
+                avg_pred[t_i].as_slice(),
             ));
         }
     }
