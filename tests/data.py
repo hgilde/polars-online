@@ -19,9 +19,10 @@ import polars as pl
 CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache"
 
 # Binance's public data dump: stable URLs, no auth, permissive terms.
-_PUBLIC_URL = (
-    "https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1m/BTCUSDT-1m-2024-01-02.zip"
+_PUBLIC_URL_FMT = (
+    "https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1m/BTCUSDT-1m-{date}.zip"
 )
+_DEFAULT_DATES = ("2024-01-02",)
 _KLINE_COLS = [
     "open_time",
     "open",
@@ -108,18 +109,13 @@ def synthetic(
     return df, betas
 
 
-def public_intraday() -> pl.DataFrame:
-    """One day of BTCUSDT 1-minute bars from Binance's public dump, cached.
-
-    Raises ``RuntimeError("offline")`` when the download fails; test callers turn
-    that into a skip via :func:`public_intraday_or_skip`.
-    """
+def _one_day(date: str) -> pl.DataFrame:
     CACHE_DIR.mkdir(exist_ok=True)
-    cached = CACHE_DIR / "BTCUSDT-1m-2024-01-02.parquet"
+    cached = CACHE_DIR / f"BTCUSDT-1m-{date}.parquet"
     if cached.exists():
         return pl.read_parquet(cached)
     try:
-        with urllib.request.urlopen(_PUBLIC_URL, timeout=30) as resp:
+        with urllib.request.urlopen(_PUBLIC_URL_FMT.format(date=date), timeout=30) as resp:
             raw = resp.read()
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise RuntimeError("offline") from e
@@ -144,6 +140,17 @@ def public_intraday() -> pl.DataFrame:
     )
     df.write_parquet(cached)
     return df
+
+
+def public_intraday(dates: tuple[str, ...] = _DEFAULT_DATES) -> pl.DataFrame:
+    """BTCUSDT 1-minute bars from Binance's public dump, cached per day.
+
+    ``dates`` are ``YYYY-MM-DD`` strings; days are concatenated in order, so the
+    clock stays monotone. Raises ``RuntimeError("offline")`` when a download
+    fails; test callers turn that into a skip via :func:`public_intraday_or_skip`.
+    """
+    frames = [_one_day(d) for d in dates]
+    return pl.concat(frames).sort("t")
 
 
 def public_intraday_or_skip() -> pl.DataFrame:

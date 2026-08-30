@@ -9,6 +9,7 @@ Three entry points share one Rust core (see ``docs/PLAN.md``):
 
 from polars_online import (
     _expr,  # noqa: F401  (registers the namespace)
+    eval,
     spec,
 )
 from polars_online._bank import ModelBank
@@ -16,4 +17,4 @@ from polars_online._polars_online import native_version, schema_version
 
 __version__ = "0.1.0"
 
-__all__ = ["ModelBank", "__version__", "native_version", "schema_version", "spec"]
+__all__ = ["ModelBank", "__version__", "eval", "native_version", "schema_version", "spec"]

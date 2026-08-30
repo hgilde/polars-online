@@ -223,7 +223,7 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
 - [x] 9. RLS (§4.2) + agreement test with EW-ridge at `solve_every`=1 row.
 - [x] 10. Lasso path + online λ selection (§4.3).
 - [x] 11. Kalman (§4.4) with halflife-derived q; per-factor halflife; `inf` pinning.
-- [ ] 12. Evaluation harness (§8); run the solve-schedule experiment and every **[validate]**
+- [x] 12. Evaluation harness (§8); run the solve-schedule experiment and every **[validate]**
       item on public data; record results in `docs/VALIDATION.md` and fix defaults.
 - [ ] 13. Robust models (§4.5).
 - [ ] 14. Logistic / FTRL (§4.6).
@@ -233,6 +233,34 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
 - [ ] 17. README with the three usage modes and the math per model.
 
 ## 11a. Decisions made while implementing
+
+**Task 12 (evaluation + [validate] items), 2026-08-30.**
+
+Full numbers in `docs/VALIDATION.md` (regenerate with
+`uv run python scripts/validate.py > docs/VALIDATION.md`). Data: 10 days of
+BTCUSDT 1-minute bars (14,336 rows) from Binance's public dump, features = past
+returns / volume / trade-count z-scores, targets = strictly future returns.
+
+- **`solve_every` = halflife/50 is confirmed as the default.** Sweeping
+  halflife/d for d in {1, 5, 10, 50, 200, 1000}: d = 50 gives the lowest MSE
+  (1.16172e-06). Solving every row (d = 1) is *worse*, not better -- the extra
+  responsiveness is noise. Kept as-is.
+- **`standardize` default (false for ridge) confirmed**: on this data plain and
+  standardized ridge are within 0.3% MSE of each other, so the default stays
+  off for ridge (cheaper) and on for lasso (required by the algorithm).
+- **`l1_ratio`: no evidence elastic net is needed.** At matched penalties,
+  l1_ratio 1.0 / 0.5 / 0.1 are within ~1% MSE. The parameter is kept (it is
+  ~free) but the default stays 1.0 = pure lasso.
+- **Kalman `share_p`: not recommended as a default.** With two targets of very
+  different noise levels, sharing P helped the short-horizon target slightly
+  (-0.049 vs -0.060 R2) but hurt the long-horizon one (-0.085 vs -0.011 R2).
+  Default stays `share_p = false`; it remains available.
+- Solve-schedule sweeps really are free: 6 schedules over 14k rows in 0.06s,
+  because they share one accumulator.
+- `tests/data.py` now downloads N days (`public_intraday(dates)`), cached per
+  day, so the validation set is 10x bigger than one day.
+- Note: negative out-of-sample R2 on this data is expected and not a bug -- a
+  1-minute crypto return is close to unpredictable from these features.
 
 **Tasks 4-5 (EW-ridge), 2026-08-30.**
 
