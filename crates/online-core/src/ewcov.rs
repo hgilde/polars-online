@@ -591,6 +591,200 @@ mod tests {
         (wsum, m, s)
     }
 
+    fn lcg(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((*state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    }
+
+    fn model_cfg(k: usize, stats: Vec<EwCovStat>) -> EwCovCfg {
+        EwCovCfg {
+            n_features: k,
+            decay: crate::Decay::Halflife(f64::INFINITY),
+            stats,
+            min_periods: 2.0,
+            precision_prior: None,
+        }
+    }
+
+    #[test]
+    fn model_cfg_validation_rejects_each_bad_field() {
+        use EwCovStat::*;
+        let err = |c: EwCovCfg, want: &str| match c.validate() {
+            Err(e) => assert!(e.contains(want), "wanted {want:?}, got {e:?}"),
+            Ok(()) => panic!("expected rejection mentioning {want:?}"),
+        };
+
+        err(model_cfg(0, vec![Mean]), "at least one column");
+        err(model_cfg(2, vec![]), "at least one statistic");
+
+        // Per-column stats are fine with a single column; pairwise ones are not.
+        model_cfg(1, vec![Mean, Var, Std]).validate().unwrap();
+        for s in [Cov, Corr] {
+            err(model_cfg(1, vec![s]), "at least two columns");
+        }
+        let mut one_pcorr = model_cfg(1, vec![PartialCorr]);
+        one_pcorr.precision_prior = Some(1e-6);
+        err(one_pcorr, "at least two columns");
+
+        // partial_corr is read off the tracked precision matrix, which only
+        // exists when a prior is configured.
+        err(model_cfg(3, vec![PartialCorr]), "precision_prior");
+        let mut with_prior = model_cfg(3, vec![PartialCorr]);
+        with_prior.precision_prior = Some(1e-6);
+        with_prior.validate().unwrap();
+
+        model_cfg(2, vec![Mean, Var, Std, Cov, Corr])
+            .validate()
+            .unwrap();
+    }
+
+    #[test]
+    fn n_outputs_and_labels_agree_slot_for_slot() {
+        // `n_outputs` sizes the output buffer, `labels` names the fields and
+        // `read` fills them: all three must walk the stats in the same order
+        // and produce the same count, or a field ends up named after another
+        // statistic's value.
+        use EwCovStat::*;
+        let names: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        for stats in [
+            vec![Mean],
+            vec![Var],
+            vec![Std],
+            vec![Cov],
+            vec![Corr],
+            vec![Mean, Var, Std, Cov, Corr],
+            vec![Corr, Mean],
+        ] {
+            let mut c = model_cfg(3, stats.clone());
+            c.precision_prior = Some(1e-6);
+            let labels = EwCovModel::labels(&names, &stats);
+            assert_eq!(c.n_outputs(), labels.len(), "{stats:?}");
+
+            let mut m = EwCovModel::new(c).unwrap();
+            let mut s = 31u64;
+            for i in 0..40 {
+                let x = [lcg(&mut s), lcg(&mut s), lcg(&mut s)];
+                crate::OnlineModel::step(&mut m, &x, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            let vals = m.read();
+            assert_eq!(vals.len(), labels.len(), "{stats:?}");
+
+            // Spot-check that the label describes the value under it.
+            for (label, v) in labels.iter().zip(&vals) {
+                if label.starts_with("var_") || label.starts_with("std_") {
+                    assert!(*v >= 0.0, "{label} = {v}");
+                }
+                if label.starts_with("corr_") {
+                    assert!((-1.0..=1.0).contains(v), "{label} = {v}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn labels_name_the_pair_in_column_order() {
+        use EwCovStat::*;
+        let names: Vec<String> = ["x", "y", "z"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            EwCovModel::labels(&names, &[Mean]),
+            ["mean_x", "mean_y", "mean_z"]
+        );
+        assert_eq!(
+            EwCovModel::labels(&names, &[Var]),
+            ["var_x", "var_y", "var_z"]
+        );
+        assert_eq!(
+            EwCovModel::labels(&names, &[Std]),
+            ["std_x", "std_y", "std_z"]
+        );
+        // Upper triangle only, and never a self-pair.
+        assert_eq!(
+            EwCovModel::labels(&names, &[Cov]),
+            ["cov_x_y", "cov_x_z", "cov_y_z"]
+        );
+        assert_eq!(
+            EwCovModel::labels(&names, &[Corr]),
+            ["corr_x_y", "corr_x_z", "corr_y_z"]
+        );
+        assert_eq!(
+            EwCovModel::labels(&names, &[PartialCorr]),
+            ["pcorr_x_y", "pcorr_x_z", "pcorr_y_z"]
+        );
+        // Stats concatenate in the order given, not a canonical order.
+        assert_eq!(
+            EwCovModel::labels(&names, &[Corr, Mean]).first().unwrap(),
+            "corr_x_y"
+        );
+    }
+
+    #[test]
+    fn read_returns_the_statistic_each_slot_claims() {
+        // `read` is the one place the statistics are actually computed rather
+        // than accumulated: var vs std vs corr all come off the same moments,
+        // so a slot filled from the wrong one is invisible to the accumulator
+        // tests. Each is checked against the definition.
+        use EwCovStat::*;
+        let stats = vec![Mean, Var, Std, Cov, Corr];
+        let mut m = EwCovModel::new(model_cfg(2, stats)).unwrap();
+        let mut s = 37u64;
+        let mut xs = Vec::new();
+        for i in 0..80 {
+            let a = lcg(&mut s);
+            let x = [3.0 + a, 10.0 - 2.0 * a + 0.5 * lcg(&mut s)];
+            crate::OnlineModel::step(&mut m, &x, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            xs.push(x.to_vec());
+        }
+        let v = m.read();
+        let (mean0, mean1) = (v[0], v[1]);
+        let (var0, var1) = (v[2], v[3]);
+        let (std0, std1) = (v[4], v[5]);
+        let cov01 = v[6];
+        let corr01 = v[7];
+
+        // Against an unweighted recomputation (halflife is infinite here).
+        let n = xs.len() as f64;
+        let m0: f64 = xs.iter().map(|x| x[0]).sum::<f64>() / n;
+        let m1: f64 = xs.iter().map(|x| x[1]).sum::<f64>() / n;
+        let c01: f64 = xs.iter().map(|x| (x[0] - m0) * (x[1] - m1)).sum::<f64>() / n;
+        let v0: f64 = xs.iter().map(|x| (x[0] - m0).powi(2)).sum::<f64>() / n;
+        let v1: f64 = xs.iter().map(|x| (x[1] - m1).powi(2)).sum::<f64>() / n;
+
+        assert!((mean0 - m0).abs() < 1e-10, "{mean0} vs {m0}");
+        assert!((mean1 - m1).abs() < 1e-10, "{mean1} vs {m1}");
+        assert!((var0 - v0).abs() < 1e-10, "{var0} vs {v0}");
+        assert!((var1 - v1).abs() < 1e-10);
+        assert!((std0 - v0.sqrt()).abs() < 1e-10, "std is sqrt(var)");
+        assert!((std1 - v1.sqrt()).abs() < 1e-10);
+        assert!((cov01 - c01).abs() < 1e-10, "{cov01} vs {c01}");
+        assert!(
+            (corr01 - c01 / (v0 * v1).sqrt()).abs() < 1e-10,
+            "corr is cov / (std*std)"
+        );
+        // The relationship is strongly negative, so a sign error is visible.
+        assert!(corr01 < -0.9, "{corr01}");
+    }
+
+    #[test]
+    fn corr_is_nan_not_infinite_when_a_column_is_constant() {
+        use EwCovStat::*;
+        let mut m = EwCovModel::new(model_cfg(2, vec![Corr, Var])).unwrap();
+        let mut s = 41u64;
+        for i in 0..40 {
+            crate::OnlineModel::step(
+                &mut m,
+                &[lcg(&mut s), 5.0],
+                &[],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let v = m.read();
+        assert!(v[0].is_nan(), "corr against a constant column: {}", v[0]);
+        assert_eq!(v[2], 0.0, "a constant column has exactly zero variance");
+    }
+
     #[test]
     fn matches_direct_computation() {
         let xs: Vec<Vec<f64>> = (0..40)

@@ -148,8 +148,9 @@ impl EwRidgeCfg {
         if let Some(c) = &self.coef0 {
             if c.len() != self.n_targets || c.iter().any(|v| v.len() != self.k_total()) {
                 return Err(format!(
-                    "coef0 must be {} vectors of length {}",
+                    "coef0 must be {} vector{} of length {}",
                     self.n_targets,
+                    if self.n_targets == 1 { "" } else { "s" },
                     self.k_total()
                 ));
             }
@@ -244,9 +245,6 @@ impl EwRidge {
         self.beta.as_deref()
     }
 
-    /// Mix the main accumulators toward the slow twin, as a session boundary
-    /// asks for (see [`EwRidgeCfg::session_shrink`]). A no-op when the twin is
-    /// not configured, or before it has seen anything.
     /// Re-solve and return the first target's first slope. Test helper: after
     /// a blend the coefficients are stale until the next solve.
     #[cfg(test)]
@@ -255,6 +253,9 @@ impl EwRidge {
         self.coefficients().unwrap()[0][1]
     }
 
+    /// Mix the main accumulators toward the slow twin, as a session boundary
+    /// asks for (see [`EwRidgeCfg::session_shrink`]). A no-op when the twin is
+    /// not configured, or before it has seen anything.
     pub fn blend_toward_long_run(&mut self) {
         let Some(f) = self.cfg.session_shrink else {
             return;
@@ -1034,6 +1035,440 @@ mod tests {
                 b[i]
             );
         }
+    }
+
+    /// A model with a slow twin, fed `n` rows of a deterministic stream.
+    fn blended_pair(shrink: f64) -> EwRidge {
+        let mut c = cfg(2, 1);
+        c.session_shrink = Some(shrink);
+        c.long_halflife = Some(400.0);
+        c.decay = Decay::Halflife(20.0);
+        c.min_periods = 3.0;
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 23u64;
+        for i in 0..200 {
+            let x = [lcg(&mut s), 0.5 + lcg(&mut s)];
+            // A relationship that flips halfway, so fast and slow genuinely
+            // disagree by the time the session boundary arrives.
+            let sign = if i < 100 { 1.0 } else { -1.0 };
+            let y = sign * (2.0 * x[0] - x[1]);
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        m
+    }
+
+    #[test]
+    fn the_slow_twin_is_the_same_model_at_the_long_halflife() {
+        // The twin's accumulators are updated by a second copy of the update
+        // block inside `step`, which nothing else reaches. The oracle is the
+        // obvious one: a standalone model configured at `long_halflife` and
+        // fed the same rows must end up with identical statistics.
+        let mut c = cfg(2, 1);
+        c.session_shrink = Some(0.4);
+        c.long_halflife = Some(300.0);
+        c.decay = Decay::Halflife(15.0);
+        c.min_periods = 3.0;
+
+        let mut twin_cfg = cfg(2, 1);
+        twin_cfg.decay = Decay::Halflife(300.0);
+        twin_cfg.min_periods = 3.0;
+
+        let mut m = EwRidge::new(c).unwrap();
+        let mut reference = EwRidge::new(twin_cfg).unwrap();
+        let mut s = 43u64;
+        for i in 0..150 {
+            let x = [lcg(&mut s), 2.0 + lcg(&mut s)];
+            // Every fourth row has a null target and an irregular gap, so the
+            // twin's null branch (`*wj *= slow_lam`) is exercised too.
+            let y = if i % 4 == 3 {
+                None
+            } else {
+                Some(1.5 * x[0] - 0.5 * x[1])
+            };
+            let d = if i == 0 { 0.0 } else { 1.0 + (i % 3) as f64 };
+            m.step(&x, &[y], d, 1.0);
+            reference.step(&x, &[y], d, 1.0);
+        }
+
+        let slow = m.slow.as_ref().unwrap();
+        let k = m.cfg.k_total();
+        assert!((slow.cov.n_eff() - reference.cov.n_eff()).abs() < 1e-9);
+        for i in 0..k {
+            assert!(
+                (slow.cov.mean(i) - reference.cov.mean(i)).abs() < 1e-9,
+                "mean {i}"
+            );
+            for j in 0..k {
+                assert!((slow.cov.cov(i, j) - reference.cov.cov(i, j)).abs() < 1e-9);
+            }
+        }
+        assert!((slow.wj[0] - reference.wj[0]).abs() < 1e-9);
+        for i in 0..k {
+            assert!((slow.r[0][i] - reference.r[0][i]).abs() < 1e-9, "r[{i}]");
+        }
+        // And it is genuinely slower than the fast side, or the test would
+        // pass with the twin wired to the wrong decay.
+        assert!(
+            slow.cov.n_eff() > 3.0 * m.cov.n_eff(),
+            "{} vs {}",
+            slow.cov.n_eff(),
+            m.cov.n_eff()
+        );
+    }
+
+    #[test]
+    fn residual_variance_is_the_ew_mean_of_squared_out_of_sample_errors() {
+        // `sigma2` is only surfaced through the Polars layer, so nothing in
+        // this crate pinned its recursion. It is an EW mean on the model's own
+        // clock, over the *predicted* residual -- and rows before the first
+        // prediction contribute nothing.
+        let mut c = cfg(1, 1);
+        c.decay = Decay::Halflife(25.0);
+        c.min_periods = 3.0;
+        let mut m = EwRidge::new(c).unwrap();
+
+        let (mut want, mut wsig) = (0.0, 0.0);
+        let mut s = 47u64;
+        for i in 0..120 {
+            let x = [lcg(&mut s)];
+            let y = 2.0 * x[0] + 0.3 * lcg(&mut s);
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            let lam = 0.5f64.powf(d / 25.0);
+            let p = m.step(&x, &[Some(y)], d, 1.0).pred[0];
+            if p.is_finite() {
+                let resid = y - p;
+                let ws_new = lam * wsig + 1.0;
+                want = (lam * wsig * want + resid * resid) / ws_new;
+                wsig = ws_new;
+            }
+            assert!(
+                (m.sigma2()[0] - want).abs() < 1e-12,
+                "row {i}: {} vs {want}",
+                m.sigma2()[0]
+            );
+        }
+        // The weight saturates at 1/(1 - lam) ~ 36.6 for this halflife.
+        assert!(
+            wsig > 30.0,
+            "the recursion should have run, not been skipped"
+        );
+        assert!(
+            want > 0.0 && want < 1.0,
+            "plausible residual variance: {want}"
+        );
+    }
+
+    #[test]
+    fn null_targets_decay_the_residual_variance_weight_without_adding_to_it() {
+        // The `None` arm decays `wj` and `wsig` but must not fold a residual
+        // in -- otherwise a gap in the target inflates or freezes sigma.
+        let mut c = cfg(1, 1);
+        c.decay = Decay::Halflife(10.0);
+        c.min_periods = 2.0;
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 53u64;
+        for i in 0..60 {
+            let x = [lcg(&mut s)];
+            m.step(
+                &x,
+                &[Some(2.0 * x[0] + 0.1)],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let (sig, w, wj) = (m.sigma2()[0], m.wsig[0], m.wj[0]);
+        assert!(sig > 0.0 && w > 0.0);
+
+        let lam = 0.5f64.powf(3.0 / 10.0);
+        m.step(&[0.5], &[None], 3.0, 1.0);
+        assert_eq!(m.sigma2()[0], sig, "a null target must not move sigma2");
+        assert!((m.wsig[0] - w * lam).abs() < 1e-12, "but its weight decays");
+        assert!((m.wj[0] - wj * lam).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_solve_schedule_controls_when_coefficients_move() {
+        // Almost every test here solves on every row, which masks the three
+        // clauses of the `due` condition. Each is checked on its own.
+        let coefs = |c: EwRidgeCfg, ds: &[f64]| {
+            let mut m = EwRidge::new(c).unwrap();
+            let mut s = 59u64;
+            let mut out = Vec::new();
+            for (i, &d) in ds.iter().enumerate() {
+                let x = [lcg(&mut s)];
+                m.step(&x, &[Some(3.0 * x[0])], if i == 0 { 0.0 } else { d }, 1.0);
+                out.push(m.coefficients().map(|b| b[0][1]));
+            }
+            out
+        };
+        let ones = vec![1.0; 24];
+
+        // Row-counted. `solve_every = 0` means "every row" and short-circuits
+        // the rest of the condition, so the row cap is only visible with a
+        // clock schedule that will not fire.
+        let mut c = cfg(1, 1);
+        c.min_periods = 2.0;
+        c.solve_every = 1e9;
+        c.max_rows_between_solves = 5;
+        let by_rows = coefs(c, &ones);
+        let changes: Vec<usize> = by_rows
+            .windows(2)
+            .enumerate()
+            .filter(|(_, w)| w[0] != w[1])
+            .map(|(i, _)| i + 1)
+            .collect();
+        // First solve as soon as min_periods is met, then strictly every 5
+        // accepted rows: nothing in between, and it does not stop.
+        assert_eq!(changes, vec![1, 6, 11, 16, 21], "24 rows, cap of 5");
+
+        // Clock-counted: the same stream on a clock that advances 2 per row
+        // must solve half as often when `solve_every` is 4.
+        let mut c = cfg(1, 1);
+        c.min_periods = 2.0;
+        c.max_rows_between_solves = u32::MAX;
+        c.solve_every = 4.0;
+        let slow = coefs(c, &[2.0; 24]);
+        let n_slow = slow.windows(2).filter(|w| w[0] != w[1]).count();
+
+        let mut c = cfg(1, 1);
+        c.min_periods = 2.0;
+        c.max_rows_between_solves = u32::MAX;
+        c.solve_every = 0.0; // 0 means "every row"
+        let every = coefs(c, &ones);
+        let n_every = every.windows(2).filter(|w| w[0] != w[1]).count();
+        assert!(
+            n_slow < n_every,
+            "solve_every should throttle: {n_slow} vs {n_every}"
+        );
+
+        // The first solve is not throttled: it happens as soon as min_periods
+        // is met, however long the schedule says to wait.
+        let mut c = cfg(1, 1);
+        c.min_periods = 3.0;
+        c.max_rows_between_solves = u32::MAX;
+        c.solve_every = 1e9;
+        let first = coefs(c, &ones);
+        assert!(
+            first.iter().take(6).any(|b| b.is_some()),
+            "the first solve must not wait for the schedule"
+        );
+    }
+
+    #[test]
+    fn cfg_validation_rejects_each_bad_field() {
+        // One case per rejection in `EwRidgeCfg::validate`, each matched on the
+        // message so a mutation that reports the wrong reason is caught too --
+        // and each accompanied by the nearest *valid* config, so a validator
+        // that rejects everything cannot pass either.
+        let bad = |f: &dyn Fn(&mut EwRidgeCfg), want: &str| {
+            let mut c = cfg(2, 1);
+            f(&mut c);
+            match c.validate() {
+                Err(e) => assert!(e.contains(want), "wanted {want:?}, got {e:?}"),
+                Ok(()) => panic!("expected rejection mentioning {want:?}"),
+            }
+        };
+        let good = |f: &dyn Fn(&mut EwRidgeCfg)| {
+            let mut c = cfg(2, 1);
+            f(&mut c);
+            c.validate().expect("should be accepted");
+        };
+
+        bad(&|c| c.n_features = 0, "must be >= 1");
+        bad(&|c| c.n_targets = 0, "must be >= 1");
+        bad(&|c| c.ridge = vec![], "at least one value");
+
+        // ridge_decay alone is fine; it is the combination that is refused.
+        good(&|c| c.ridge_decay = true);
+        bad(
+            &|c| {
+                c.ridge_decay = true;
+                c.standardize = true;
+            },
+            "incompatible",
+        );
+        bad(
+            &|c| {
+                c.ridge_decay = true;
+                c.ridge = vec![1e-6, 1.0];
+            },
+            "incompatible",
+        );
+
+        bad(&|c| c.session_shrink = Some(-0.1), "in [0, 1]");
+        bad(&|c| c.session_shrink = Some(1.5), "in [0, 1]");
+        bad(&|c| c.session_shrink = Some(0.5), "needs long_halflife");
+        bad(&|c| c.long_halflife = Some(100.0), "no effect without");
+        bad(
+            &|c| {
+                c.session_shrink = Some(0.5);
+                c.long_halflife = Some(0.0);
+            },
+            "must be > 0",
+        );
+        bad(
+            &|c| {
+                c.session_shrink = Some(0.5);
+                c.long_halflife = Some(f64::NAN);
+            },
+            "must be > 0",
+        );
+        good(&|c| {
+            c.session_shrink = Some(0.0);
+            c.long_halflife = Some(100.0);
+        });
+        good(&|c| {
+            c.session_shrink = Some(1.0);
+            c.long_halflife = Some(100.0);
+        });
+
+        // coef0 is one vector per target, each of length k_total (2 + intercept).
+        bad(
+            &|c| c.coef0 = Some(vec![vec![0.0; 3], vec![0.0; 3]]),
+            "1 vector of",
+        );
+        bad(&|c| c.coef0 = Some(vec![vec![0.0; 2]]), "length 3");
+        bad(
+            &|c| c.coef0 = Some(vec![vec![0.0, 0.0, f64::NAN]]),
+            "finite",
+        );
+        bad(
+            &|c| c.coef0 = Some(vec![vec![0.0, 0.0, f64::INFINITY]]),
+            "finite",
+        );
+        good(&|c| c.coef0 = Some(vec![vec![1.0, 2.0, 3.0]]));
+
+        bad(
+            &|c| c.feature_sets = vec![("a".into(), vec![])],
+            "out-of-range",
+        );
+        bad(
+            &|c| c.feature_sets = vec![("a".into(), vec![2])],
+            "out-of-range",
+        );
+        good(&|c| c.feature_sets = vec![("a".into(), vec![0]), ("b".into(), vec![0, 1])]);
+
+        cfg(2, 1).validate().expect("the baseline config is valid");
+    }
+
+    #[test]
+    fn blend_is_the_weight_respecting_mixture() {
+        // Every arithmetic step of `blend_toward_long_run` is checked against
+        // the same quantities recomputed by hand from the pre-blend state, so
+        // a factor applied to the wrong side, a missing re-centering, or a
+        // swapped index all show up.
+        let f = 0.3;
+        let mut m = blended_pair(f);
+        let before = m.clone();
+        let slow = before.slow.as_ref().unwrap();
+        let k = m.cfg.k_total();
+
+        let (wf, ws) = (before.cov.n_eff(), slow.cov.n_eff());
+        assert!(wf > 0.0 && ws > wf, "the slow twin should hold more weight");
+        let w_new = (1.0 - f) * wf + f * ws;
+        let (af, as_) = ((1.0 - f) * wf / w_new, f * ws / w_new);
+
+        m.blend_toward_long_run();
+
+        assert!((m.cov.n_eff() - w_new).abs() < 1e-12);
+        for i in 0..k {
+            let want = af * before.cov.mean(i) + as_ * slow.cov.mean(i);
+            assert!(
+                (m.cov.mean(i) - want).abs() < 1e-12,
+                "mean {i}: {} vs {want}",
+                m.cov.mean(i)
+            );
+        }
+        for i in 0..k {
+            for j in 0..k {
+                // Raw moments mix linearly; the centered moment must then be
+                // re-derived against the *mixed* mean, not either input's.
+                let raw = af * before.cov.raw(i, j) + as_ * slow.cov.raw(i, j);
+                let want = raw - m.cov.mean(i) * m.cov.mean(j);
+                assert!(
+                    (m.cov.cov(i, j) - want).abs() < 1e-10,
+                    "cov {i},{j}: {} vs {want}",
+                    m.cov.cov(i, j)
+                );
+            }
+        }
+        for j in 0..m.cfg.n_targets {
+            let (wf, ws) = (before.wj[j], slow.wj[j]);
+            let w_new = (1.0 - f) * wf + f * ws;
+            let (af, as_) = ((1.0 - f) * wf / w_new, f * ws / w_new);
+            assert!((m.wj[j] - w_new).abs() < 1e-12);
+            for i in 0..k {
+                let want = af * before.r[j][i] + as_ * slow.r[j][i];
+                assert!((m.r[j][i] - want).abs() < 1e-12, "r[{j}][{i}]");
+            }
+        }
+    }
+
+    #[test]
+    fn blend_endpoints_are_identity_and_full_replacement() {
+        // f = 0 must not touch the state; f = 1 must land exactly on the twin.
+        let mut zero = blended_pair(0.0);
+        let before = zero.clone();
+        zero.blend_toward_long_run();
+        assert_eq!(zero, before, "session_shrink = 0 must be a no-op");
+
+        let mut one = blended_pair(1.0);
+        let slow = one.slow.clone().unwrap();
+        one.blend_toward_long_run();
+        let k = one.cfg.k_total();
+        assert!((one.cov.n_eff() - slow.cov.n_eff()).abs() < 1e-12);
+        for i in 0..k {
+            assert!(
+                (one.cov.mean(i) - slow.cov.mean(i)).abs() < 1e-12,
+                "mean {i}"
+            );
+        }
+        for j in 0..one.cfg.n_targets {
+            assert!((one.wj[j] - slow.wj[j]).abs() < 1e-12);
+            for i in 0..k {
+                assert!((one.r[j][i] - slow.r[j][i]).abs() < 1e-12, "r[{j}][{i}]");
+            }
+        }
+    }
+
+    #[test]
+    fn blend_without_a_twin_is_a_no_op() {
+        // No `session_shrink` at all: there is no twin to blend with, and the
+        // method must return before touching anything.
+        let mut c = cfg(2, 1);
+        c.min_periods = 3.0;
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 29u64;
+        for i in 0..50 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(&x, &[Some(x[0])], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        assert!(m.slow.is_none());
+        let before = m.clone();
+        m.blend_toward_long_run();
+        assert_eq!(m, before);
+    }
+
+    #[test]
+    fn blend_moves_the_fit_toward_the_long_run_relationship() {
+        // The point of the feature, not just its arithmetic: the last session
+        // ran at the opposite sign to the long run, and blending must pull the
+        // fit back -- monotonically in the shrink parameter.
+        let slope = |f: f64| {
+            let mut m = blended_pair(f);
+            m.blend_toward_long_run();
+            m.coefficients_after_blend()
+        };
+        let (none, half, full) = (slope(0.0), slope(0.5), slope(1.0));
+        assert!(none < 0.0, "the last session was negative: {none}");
+        assert!(
+            full > none,
+            "the long run should pull it up: {full} vs {none}"
+        );
+        assert!(
+            none < half && half < full,
+            "reversion should be monotone: {none} < {half} < {full}"
+        );
     }
 
     #[test]

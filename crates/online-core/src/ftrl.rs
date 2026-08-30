@@ -279,6 +279,57 @@ mod tests {
         ((*state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
     }
 
+    #[test]
+    fn cfg_validation_rejects_each_bad_field() {
+        // One case per rejection in `FtrlCfg::validate`, matched on the message,
+        // each paired with the nearest accepted config so a validator that
+        // refuses everything fails too.
+        let bad = |f: &dyn Fn(&mut FtrlCfg), want: &str| {
+            let mut c = cfg(2, 1);
+            f(&mut c);
+            match c.validate() {
+                Err(e) => assert!(e.contains(want), "wanted {want:?}, got {e:?}"),
+                Ok(()) => panic!("expected rejection mentioning {want:?}"),
+            }
+        };
+        let good = |f: &dyn Fn(&mut FtrlCfg)| {
+            let mut c = cfg(2, 1);
+            f(&mut c);
+            c.validate().expect("should be accepted");
+        };
+
+        bad(&|c| c.n_features = 0, "must be >= 1");
+        bad(&|c| c.n_targets = 0, "must be >= 1");
+
+        // alpha divides the learning rate, so zero is as fatal as negative.
+        bad(&|c| c.alpha = 0.0, "alpha must be > 0");
+        bad(&|c| c.alpha = -1.0, "alpha must be > 0");
+        good(&|c| c.alpha = 1e-9);
+
+        // beta/l1/l2 may be zero -- only negative is meaningless.
+        bad(&|c| c.beta = -1e-9, "must be >= 0");
+        bad(&|c| c.l1 = -1e-9, "must be >= 0");
+        bad(&|c| c.l2 = -1e-9, "must be >= 0");
+        good(&|c| {
+            c.beta = 0.0;
+            c.l1 = 0.0;
+            c.l2 = 0.0;
+        });
+
+        // strict_binary checks that y is 0/1, which the squared loss does not require.
+        bad(
+            &|c| {
+                c.strict_binary = true;
+                c.loss = FtrlLoss::Squared;
+            },
+            "logistic loss only",
+        );
+        good(&|c| c.strict_binary = true);
+        good(&|c| c.loss = FtrlLoss::Squared);
+
+        cfg(2, 1).validate().expect("the baseline config is valid");
+    }
+
     fn cfg(k: usize, m: usize) -> FtrlCfg {
         FtrlCfg {
             n_features: k,

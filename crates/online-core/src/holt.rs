@@ -177,6 +177,13 @@ impl OnlineModel for Holt {
 mod tests {
     use super::*;
 
+    fn lcg(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((*state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    }
+
     fn cfg(level: f64, trend: f64) -> HoltCfg {
         HoltCfg {
             n_targets: 1,
@@ -194,6 +201,213 @@ mod tests {
             preds.push(step.pred[0]);
         }
         (preds, m)
+    }
+
+    /// The recursion written out longhand, against an irregular clock, so the
+    /// test cannot share a mistake with the implementation.
+    fn reference(cfg: &HoltCfg, ys: &[f64], ds: &[f64]) -> (Vec<f64>, f64, f64, f64) {
+        let (mut level, mut trend, mut w_sum) = (0.0, 0.0, 0.0);
+        let mut seen = false;
+        let mut preds = Vec::new();
+        for (&y, &d) in ys.iter().zip(ds) {
+            let decay = 0.5f64.powf(d / cfg.level_halflife);
+            let alpha = 1.0 - decay;
+            let beta = if cfg.trend_halflife.is_infinite() {
+                0.0
+            } else {
+                1.0 - 0.5f64.powf(d / cfg.trend_halflife)
+            };
+            if !seen {
+                level = y;
+                seen = true;
+                preds.push(f64::NAN);
+            } else {
+                let p = level + trend * d;
+                preds.push(if w_sum >= cfg.min_periods {
+                    p
+                } else {
+                    f64::NAN
+                });
+                let prev = level;
+                level = alpha * y + (1.0 - alpha) * p;
+                if beta > 0.0 && d > 0.0 {
+                    trend = beta * ((level - prev) / d) + (1.0 - beta) * trend;
+                }
+            }
+            w_sum = w_sum * decay + 1.0;
+        }
+        (preds, level, trend, w_sum)
+    }
+
+    #[test]
+    fn every_step_matches_the_recursion_written_out() {
+        // Pins each arithmetic step: the extrapolation distance, the level
+        // blend, the per-clock-unit slope, the trend blend, and the decayed
+        // weight -- on a clock whose gaps vary, so `d` cannot cancel out.
+        let ds = [0.0, 1.0, 0.25, 7.0, 1.0, 1.0, 0.5, 13.0, 2.0, 1.0, 1.0, 3.0];
+        let mut s = 5u64;
+        let ys: Vec<f64> = (0..ds.len())
+            .map(|i| 3.0 + 0.8 * i as f64 + lcg(&mut s))
+            .collect();
+        let c = HoltCfg {
+            n_targets: 1,
+            level_halflife: 4.0,
+            trend_halflife: 9.0,
+            min_periods: 2.5,
+        };
+        let (want_pred, want_level, want_trend, want_w) = reference(&c, &ys, &ds);
+
+        let mut m = Holt::new(c).unwrap();
+        for (i, (&y, &d)) in ys.iter().zip(&ds).enumerate() {
+            let step = m.step(&[], &[Some(y)], d, 1.0);
+            match (step.pred[0].is_nan(), want_pred[i].is_nan()) {
+                (true, true) => {}
+                (false, false) => assert!(
+                    (step.pred[0] - want_pred[i]).abs() < 1e-12,
+                    "row {i}: {} vs {}",
+                    step.pred[0],
+                    want_pred[i]
+                ),
+                _ => panic!("row {i}: {} vs {}", step.pred[0], want_pred[i]),
+            }
+        }
+        assert!((m.level()[0] - want_level).abs() < 1e-12);
+        assert!((m.trend()[0] - want_trend).abs() < 1e-12);
+        assert!((m.n_eff() - want_w).abs() < 1e-12);
+        assert_eq!(m.coefficients(), vec![vec![want_level, want_trend]]);
+    }
+
+    #[test]
+    fn n_eff_decays_on_the_clock_and_gates_output() {
+        let c = HoltCfg {
+            n_targets: 1,
+            level_halflife: 10.0,
+            trend_halflife: 40.0,
+            min_periods: 3.0,
+        };
+        let mut m = Holt::new(c).unwrap();
+        assert_eq!(m.n_eff(), 0.0, "nothing seen yet");
+
+        // n_eff is the weight before the row, so it lags the row count by one.
+        let mut want = 0.0;
+        for i in 0..6 {
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            let step = m.step(&[], &[Some(i as f64)], d, 1.0);
+            assert!((step.n_eff - want).abs() < 1e-12, "row {i}");
+            assert_eq!(
+                step.pred[0].is_nan(),
+                want < 3.0,
+                "row {i}: gated at n_eff = {want}"
+            );
+            want = want * 0.5f64.powf(d / 10.0) + 1.0;
+        }
+
+        // A long gap decays it rather than resetting it.
+        let before = m.n_eff();
+        m.step(&[], &[Some(99.0)], 100.0, 1.0);
+        let after = m.n_eff();
+        assert!(
+            (after - (before * 0.5f64.powf(10.0) + 1.0)).abs() < 1e-12,
+            "{before} -> {after}"
+        );
+    }
+
+    #[test]
+    fn a_zero_gap_leaves_the_trend_alone() {
+        // With d = 0 the observed slope would divide by zero, so the trend must
+        // be held; the level still updates, but alpha is 0 at d = 0, so the
+        // repeated timestamp changes nothing at all.
+        let c = cfg(5.0, 20.0);
+        let mut m = Holt::new(c).unwrap();
+        for i in 0..30 {
+            m.step(
+                &[],
+                &[Some(2.0 * i as f64)],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let (l, t) = (m.level()[0], m.trend()[0]);
+        assert!(t > 0.5, "there should be a trend to preserve: {t}");
+        m.step(&[], &[Some(-1000.0)], 0.0, 1.0);
+        assert_eq!(m.trend()[0], t, "a zero gap must not move the trend");
+        assert_eq!(m.level()[0], l, "alpha is 0 at d = 0");
+    }
+
+    #[test]
+    fn targets_are_independent() {
+        // `n_targets` and the per-target loop: two targets with unrelated
+        // series must not contaminate each other, and both must be reported.
+        let c = HoltCfg {
+            n_targets: 2,
+            level_halflife: 8.0,
+            trend_halflife: 30.0,
+            min_periods: 0.0,
+        };
+        let mut m = Holt::new(c).unwrap();
+        for i in 0..600 {
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            let (a, b) = (10.0 + 3.0 * i as f64, 500.0 - 1.0 * i as f64);
+            m.step(&[], &[Some(a), Some(b)], d, 1.0);
+        }
+        let coef = m.coefficients();
+        assert_eq!(coef.len(), 2, "one [level, trend] pair per target");
+        assert_eq!(coef[0].len(), 2);
+        assert!(
+            (coef[0][1] - 3.0).abs() < 0.05,
+            "target 0 trend {}",
+            coef[0][1]
+        );
+        assert!(
+            (coef[1][1] + 1.0).abs() < 0.05,
+            "target 1 trend {}",
+            coef[1][1]
+        );
+        assert!(coef[0][0] > 1000.0, "levels are far apart: {}", coef[0][0]);
+        assert!(
+            coef[1][0] < 0.0,
+            "target 1 has fallen below zero: {}",
+            coef[1][0]
+        );
+    }
+
+    #[test]
+    fn a_null_target_predicts_without_learning() {
+        // The `let Some(yj) = y[j] else { continue }` arm: prediction still
+        // happens, state does not move -- which is what makes the output
+        // out-of-sample.
+        let mut m = Holt::new(cfg(6.0, 25.0)).unwrap();
+        for i in 0..40 {
+            m.step(
+                &[],
+                &[Some(1.0 + 2.0 * i as f64)],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let (l, t) = (m.level()[0], m.trend()[0]);
+        let step = m.step(&[], &[None], 1.0, 1.0);
+        assert!((step.pred[0] - (l + t)).abs() < 1e-12, "still extrapolates");
+        assert_eq!(m.level()[0], l);
+        assert_eq!(m.trend()[0], t);
+    }
+
+    #[test]
+    fn a_zero_weight_row_is_pure_decay() {
+        let mut m = Holt::new(cfg(6.0, 25.0)).unwrap();
+        for i in 0..40 {
+            m.step(
+                &[],
+                &[Some(1.0 + 2.0 * i as f64)],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let (l, t, w) = (m.level()[0], m.trend()[0], m.n_eff());
+        m.step(&[], &[Some(-500.0)], 1.0, 0.0);
+        assert_eq!(m.level()[0], l, "weight 0 must not fold the row in");
+        assert_eq!(m.trend()[0], t);
+        assert!((m.n_eff() - w * 0.5f64.powf(1.0 / 6.0)).abs() < 1e-12);
     }
 
     #[test]
