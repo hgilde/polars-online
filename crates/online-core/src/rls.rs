@@ -46,7 +46,7 @@ impl RlsCfg {
         if self.n_features == 0 || self.n_targets == 0 {
             return Err("n_features and n_targets must be >= 1".into());
         }
-        if !(self.ridge > 0.0) {
+        if self.ridge <= 0.0 || self.ridge.is_nan() {
             return Err("rls: ridge must be > 0 (it sets P0 = I / ridge)".into());
         }
         if let Some(c) = &self.coef0 {
@@ -136,13 +136,8 @@ impl OnlineModel for Rls {
         let ready = n_eff >= self.cfg.min_periods && self.seen;
         let mut pred = vec![f64::NAN; m];
         if ready {
-            for j in 0..m {
-                pred[j] = self
-                    .zbuf
-                    .iter()
-                    .zip(&self.beta[j])
-                    .map(|(z, b)| z * b)
-                    .sum();
+            for (p, beta) in pred.iter_mut().zip(&self.beta) {
+                *p = self.zbuf.iter().zip(beta).map(|(z, b)| z * b).sum();
             }
         }
 
@@ -173,17 +168,12 @@ impl OnlineModel for Rls {
                 for i in 0..k {
                     self.gain[i] = self.pz[i] / denom;
                 }
-                for j in 0..m {
-                    let yj = y[j].unwrap();
-                    let pred_now: f64 = self
-                        .zbuf
-                        .iter()
-                        .zip(&self.beta[j])
-                        .map(|(z, b)| z * b)
-                        .sum();
+                for (beta, yj) in self.beta.iter_mut().zip(y) {
+                    let yj = yj.unwrap();
+                    let pred_now: f64 = self.zbuf.iter().zip(beta.iter()).map(|(z, b)| z * b).sum();
                     let err = yj - pred_now;
-                    for i in 0..k {
-                        self.beta[j][i] += self.gain[i] * err;
+                    for (b, g) in beta.iter_mut().zip(&self.gain) {
+                        *b += g * err;
                     }
                 }
                 // P <- P - g (P z)^T   (symmetric rank-1 downdate)
