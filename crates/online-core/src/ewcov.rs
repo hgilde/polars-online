@@ -3,13 +3,25 @@
 //! and exposed on its own as `online.ew_cov()`.
 //!
 //! All statistics are stored as weighted *means* (not sums), which keeps them
-//! bounded under arbitrarily long runs (docs/PLAN.md §7):
+//! bounded under arbitrarily long runs (docs/PLAN.md §7), and the second
+//! moments are kept **centered** (a weighted Welford update) rather than raw:
 //!
 //! ```text
-//! W'    = lam * W + w
-//! m'_i  = (lam * W * m_i + w * x_i) / W'
-//! S'_ij = (lam * W * S_ij + w * x_i x_j) / W'
+//! W'     = lam * W + w
+//! a      = lam * W / W'        b = w / W'        (a + b = 1)
+//! delta  = x - m
+//! m'     = m + b * delta
+//! C'_ij  = a * C_ij + a * b * delta_i * delta_j
 //! ```
+//!
+//! Centered updates matter because the earlier raw form derived the variance as
+//! `E[x²] − m²`, and that subtraction loses precision when the mean is large
+//! relative to the spread: a unit-variance feature around 1e8 has
+//! `var/E[x²] ≈ 1e-16`, so the variance was destroyed entirely. With this form
+//! the variance is accurate at any offset (see `docs/TESTING.md` T-E9 and the
+//! river cross-check in `tests/test_river.py`). [`EwCov::raw`] reconstructs the
+//! raw moment as `C_ij + m_i m_j` for the callers that genuinely need it (the
+//! uncentered normal equations).
 
 use serde::{Deserialize, Serialize};
 
@@ -26,9 +38,17 @@ use serde::{Deserialize, Serialize};
 ///
 /// A previous fixed `1e-10 * raw` threshold was ~450,000x the noise floor and
 /// silently discarded usable features at ordinary financial scales.
+///
+/// Since [`EwCov`] switched to centered (Welford) updates the variance no
+/// longer suffers cancellation, so the only question left is whether the
+/// feature is genuinely constant — which gives *exactly* zero, because every
+/// deviation from the running mean is exactly zero. The `raw_second_moment`
+/// argument is kept for callers and for the doc trail, but is no longer used to
+/// scale the threshold: doing so is what silently dropped usable features
+/// sitting on a large offset.
 #[inline]
-pub fn variance_is_usable(var: f64, raw_second_moment: f64) -> bool {
-    var > 64.0 * f64::EPSILON * raw_second_moment.abs().max(f64::MIN_POSITIVE)
+pub fn variance_is_usable(var: f64, _raw_second_moment: f64) -> bool {
+    var > 0.0 && var.is_finite()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -40,8 +60,9 @@ pub struct EwCov {
     prior_scale: f64,
     /// EW mean vector, length `k`.
     m: Vec<f64>,
-    /// EW mean of `x x^T`, row-major `k*k` (raw second moment, NOT centered).
-    s: Vec<f64>,
+    /// EW **centered** co-moments, row-major `k*k`.
+    #[serde(alias = "s")]
+    c: Vec<f64>,
 }
 
 impl EwCov {
@@ -51,7 +72,7 @@ impl EwCov {
             w_sum: 0.0,
             prior_scale: 1.0,
             m: vec![0.0; k],
-            s: vec![0.0; k * k],
+            c: vec![0.0; k * k],
         }
     }
 
@@ -75,26 +96,25 @@ impl EwCov {
         self.m[i]
     }
 
-    /// Raw (uncentered) second moment `E_w[x_i x_j]`.
+    /// Raw (uncentered) second moment `E_w[x_i x_j]`, reconstructed from the
+    /// centered co-moment. Use [`Self::cov`] wherever a *centered* quantity is
+    /// wanted: going through `raw` and subtracting the means again reintroduces
+    /// exactly the cancellation this representation avoids.
     #[inline]
     pub fn raw(&self, i: usize, j: usize) -> f64 {
-        self.s[i * self.k + j]
+        self.c[i * self.k + j] + self.m[i] * self.m[j]
     }
 
-    /// Centered covariance `E_w[x_i x_j] - m_i m_j`.
+    /// Centered covariance, held directly.
     #[inline]
     pub fn cov(&self, i: usize, j: usize) -> f64 {
-        self.raw(i, j) - self.m[i] * self.m[j]
+        self.c[i * self.k + j]
     }
 
     /// Centered variance, floored at zero against rounding.
     #[inline]
     pub fn var(&self, i: usize) -> f64 {
         self.cov(i, i).max(0.0)
-    }
-
-    pub fn raw_matrix(&self) -> &[f64] {
-        &self.s
     }
 
     /// One observation with decay factor `lam` (from [`crate::Decay::factor`])
@@ -118,14 +138,21 @@ impl EwCov {
         if w_new <= 0.0 {
             return;
         }
-        let a = lam * self.w_sum / w_new; // weight of the old mean
+        let a = lam * self.w_sum / w_new; // weight of the old statistics
         let b = w / w_new; // weight of the new point
-        for i in 0..self.k {
-            self.m[i] = a * self.m[i] + b * x[i];
-            let row = i * self.k;
-            for j in 0..self.k {
-                self.s[row + j] = a * self.s[row + j] + b * x[i] * x[j];
+        // Weighted Welford: co-moments are updated from the deviations against
+        // the OLD mean, then the mean is advanced.
+        let k = self.k;
+        for i in 0..k {
+            let di = x[i] - self.m[i];
+            let row = i * k;
+            for (j, mj) in self.m.iter().enumerate().take(k) {
+                let dj = x[j] - mj;
+                self.c[row + j] = a * self.c[row + j] + a * b * di * dj;
             }
+        }
+        for (mi, xi) in self.m.iter_mut().zip(x) {
+            *mi += b * (xi - *mi);
         }
         self.w_sum = w_new;
         self.prior_scale *= lam;

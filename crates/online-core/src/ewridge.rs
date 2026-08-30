@@ -233,7 +233,7 @@ impl EwRidge {
                 }
                 self.run_solve(&a, &b, kc, m)
             } else {
-                self.solve_standardized(&a, &b, kc, m, ridge)
+                self.solve_standardized(&zidx, &b, kc, m, ridge)
             };
 
             if let Some(sol) = solved {
@@ -269,17 +269,24 @@ impl EwRidge {
 
     /// Standardized solve on one combo's sub-block. `a` is the raw-moment
     /// sub-matrix (intercept row 0 when configured), `b` the per-target rhs.
+    /// `zidx` maps this combo's slots to accumulator indices, so the centered
+    /// statistics can be read from `EwCov` directly rather than re-derived from
+    /// raw moments (which would reintroduce the cancellation the centered
+    /// representation exists to avoid).
     fn solve_standardized(
         &mut self,
-        a: &[f64],
+        zidx: &[usize],
         b: &[f64],
         kc: usize,
         m: usize,
         ridge: f64,
     ) -> Option<Vec<f64>> {
         if !self.cfg.add_intercept {
-            // Scale by raw second-moment diagonals.
-            let s: Vec<f64> = (0..kc).map(|i| a[i * kc + i].max(0.0).sqrt()).collect();
+            // No intercept: scale by the raw second-moment diagonals (there is
+            // no centering here, so no cancellation either).
+            let s: Vec<f64> = (0..kc)
+                .map(|i| self.cov.raw(zidx[i], zidx[i]).max(0.0).sqrt())
+                .collect();
             // No centering here, so no cancellation: any strictly positive raw
             // moment is usable.
             let keep: Vec<usize> = (0..kc).filter(|&i| s[i] > 0.0).collect();
@@ -290,7 +297,7 @@ impl EwRidge {
             let mut asub = vec![0.0; kk * kk];
             for (i2, &i) in keep.iter().enumerate() {
                 for (j2, &j) in keep.iter().enumerate() {
-                    asub[i2 * kk + j2] = a[i * kc + j] / (s[i] * s[j]);
+                    asub[i2 * kk + j2] = self.cov.raw(zidx[i], zidx[j]) / (s[i] * s[j]);
                 }
                 asub[i2 * kk + i2] += ridge;
             }
@@ -312,19 +319,22 @@ impl EwRidge {
         // With intercept: center, scale to correlation form, solve, unscale,
         // recover the intercept. Feature slots are 1..kc.
         let kf = kc - 1;
-        let mean = |i: usize| a[i * kc]; // column 0 of the raw moments = means
+        // Materialized up front: the solve below borrows `self` mutably.
+        let means: Vec<f64> = zidx.iter().map(|&z| self.cov.mean(z)).collect();
+        let mean = |i: usize| means[i];
         let mut c = vec![0.0; kf * kf];
         for i in 0..kf {
             for j in 0..kf {
-                c[i * kf + j] = a[(i + 1) * kc + (j + 1)] - mean(i + 1) * mean(j + 1);
+                c[i * kf + j] = self.cov.cov(zidx[i + 1], zidx[j + 1]);
             }
         }
         let s: Vec<f64> = (0..kf).map(|i| c[i * kf + i].max(0.0).sqrt()).collect();
-        // ~Zero-variance features are dropped (coefficient 0) rather than blowing
-        // up: the threshold is relative to the raw moment, since the centered
-        // variance's cancellation noise scales with it (docs/PLAN.md §7).
+        // A genuinely constant feature is dropped (coefficient 0) rather than
+        // blowing up; with centered accumulators its variance is exactly zero.
         let keep: Vec<usize> = (0..kf)
-            .filter(|&i| crate::variance_is_usable(c[i * kf + i], a[(i + 1) * kc + (i + 1)]))
+            .filter(|&i| {
+                crate::variance_is_usable(c[i * kf + i], self.cov.raw(zidx[i + 1], zidx[i + 1]))
+            })
             .collect();
         let kk = keep.len();
         let mut out = vec![0.0; kc * m];

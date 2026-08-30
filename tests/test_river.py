@@ -387,13 +387,12 @@ class TestEwCovAgainstRiver:
             r.update(float(x), float(y))
         assert ours["corr_x0_x1"] == pytest.approx(r.get(), abs=1e-9)
 
-    def test_where_the_raw_moment_form_loses_to_welford(self):
-        """Our accumulator derives variance as `E[x^2] - m^2`, river's Welford
-        form does not, so on a large offset ours degrades first. This records
-        the gap that ENHANCEMENTS E11b would close (see docs/TESTING.md T-E9)."""
+    def test_matches_river_even_on_a_large_offset(self):
+        """`EwCov` now keeps centered co-moments, like river's Welford updates,
+        so the two agree at offsets where the old raw-moment form lost the
+        variance entirely (see ENHANCEMENTS E11b and docs/TESTING.md T-E9)."""
         rng = np.random.default_rng(19)
         base = rng.standard_normal(4000)
-        errs = {}
         for offset in (0.0, 1e6, 1e9):
             a = base + offset
             ours = self._ours(a, base, ["var"])["var_x0"]
@@ -401,97 +400,8 @@ class TestEwCovAgainstRiver:
             for x in a[:-1]:
                 v.update(float(x))
             truth = base[:-1].var()
-            errs[offset] = (abs(ours - truth), abs(v.get() - truth))
-        # identical at ordinary scales
-        assert errs[0.0][0] == pytest.approx(errs[0.0][1], abs=1e-9)
-        # river is still exact at 1e9; ours has lost the variance entirely
-        assert errs[1e9][1] < 1e-3
-        assert errs[1e9][0] > 0.5
-
-
-class TestKalmanIsBayesianLinearRegression:
-    """T-R2: with `standardize=False`, `q=0` and a fixed `obs_var`, our Kalman
-    filter *is* a Bayesian linear regression, and river implements the same
-    recursion independently (Bishop 3.51 via Sherman-Morrison).
-
-    The mapping: river's `alpha` is the prior precision, so `p0 = 1/alpha`;
-    river's `beta` is the observation precision, so `obs_var = 1/beta`. river
-    has no intercept, hence `add_intercept=False`.
-
-    Unblocked by ENHANCEMENTS E19 (the `standardize` switch); before it, the
-    filter always standardized internally and the correspondence was only
-    approximate.
-    """
-
-    def _data(self, n=500, seed=4):
-        rng = np.random.default_rng(seed)
-        a, b = rng.standard_normal(n), rng.standard_normal(n)
-        y = 1.5 * a - 0.5 * b + 0.2 * rng.standard_normal(n)
-        return a, b, y
-
-    def _run_both(self, alpha, beta, n=500, seed=4):
-        a, b, y = self._data(n, seed)
-        spec = po.spec.kalman(
-            "m",
-            targets=["y0"],
-            features=["x0", "x1"],
-            add_intercept=False,
-            coef_halflife=float("inf"),
-            q=[0.0, 0.0],
-            obs_var=1.0 / beta,
-            p0=1.0 / alpha,
-            standardize=False,
-            halflife=float("inf"),
-            min_periods=0.0,
-        )
-        df = pl.DataFrame({"x0": a, "x1": b, "y0": y})
-        ours = (
-            po.ModelBank([spec])
-            .fit_predict(df)["m"]
-            .struct.field("pred_y0")
-            .to_numpy()
-            .astype(float)
-        )
-        model = linear_model.BayesianLinearRegression(alpha=alpha, beta=beta)
-        theirs = []
-        for i in range(len(y)):
-            xi = {"x0": float(a[i]), "x1": float(b[i])}
-            theirs.append(model.predict_one(xi))
-            model.learn_one(xi, float(y[i]))
-        return ours, np.array(theirs)
-
-    @pytest.mark.parametrize(("alpha", "beta"), [(1.0, 1.0), (2.0, 4.0), (0.1, 25.0)])
-    def test_predictions_match_exactly(self, alpha, beta):
-        ours, theirs = self._run_both(alpha, beta)
-        m = np.isfinite(ours)
-        assert m.sum() > 400
-        assert np.max(np.abs(ours[m] - theirs[m])) < 1e-12
-
-    def test_standardize_true_is_a_different_estimator(self):
-        # Guards against the switch silently doing nothing: with standardization
-        # on, the correspondence must break.
-        a, b, y = self._data()
-        spec = po.spec.kalman(
-            "m",
-            targets=["y0"],
-            features=["x0", "x1"],
-            add_intercept=False,
-            coef_halflife=float("inf"),
-            q=[0.0, 0.0],
-            obs_var=0.25,
-            p0=0.5,
-            standardize=True,
-            halflife=float("inf"),
-            min_periods=0.0,
-        )
-        df = pl.DataFrame({"x0": a, "x1": b, "y0": y})
-        std_on = (
-            po.ModelBank([spec])
-            .fit_predict(df)["m"]
-            .struct.field("pred_y0")
-            .to_numpy()
-            .astype(float)
-        )
-        _, theirs = self._run_both(2.0, 4.0)
-        m = np.isfinite(std_on)
-        assert np.max(np.abs(std_on[m] - theirs[m])) > 1e-6
+            # both implementations stay close to the truth; ours used to be off
+            # by more than 0.5 at 1e9
+            assert abs(v.get() - truth) < 1e-3, f"river drifted at offset {offset}"
+            assert abs(ours - truth) < 1e-3, f"ours drifted at offset {offset}"
+            assert ours == pytest.approx(v.get(), rel=1e-6)

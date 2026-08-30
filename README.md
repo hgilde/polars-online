@@ -139,8 +139,9 @@ target's update.
 ## Models
 
 All accumulators are exponentially weighted **means**, not sums, which keeps them
-bounded over arbitrarily long runs. `z` denotes `[1, x]` when an intercept is
-configured.
+bounded over arbitrarily long runs, and second moments are kept **centered** (a
+weighted Welford update) so the variance is accurate even when features sit on a
+large offset. `z` denotes `[1, x]` when an intercept is configured.
 
 ### `ewridge` — EW ridge on sufficient statistics (the workhorse)
 

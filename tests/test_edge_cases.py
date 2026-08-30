@@ -430,17 +430,17 @@ class TestColumnTypes:
 
 
 class TestNumericalScale:
-    """T-E9: large-offset cancellation in the raw-moment accumulator.
+    """T-E9: large-offset behaviour of the accumulator.
 
-    `EwCov` stores `E[x]` and `E[x x^T]` and derives the variance as
-    `E[x^2] - m^2`. That subtraction loses precision when the mean is large
-    relative to the spread: the error is of order `eps * E[x^2]`. These tests
-    pin the resulting operating range, so a future switch to centered (Welford)
-    updates has a baseline to beat.
+    `EwCov` keeps **centered** co-moments (a weighted Welford update), so the
+    variance no longer comes from the cancellation-prone `E[x^2] - m^2`. These
+    tests pin the resulting operating range. The numbers in the comments are the
+    errors the previous raw-moment form produced, kept so a regression is
+    obvious.
     """
 
-    @pytest.mark.parametrize("offset", [0.0, 1e4, 1e6])
-    def test_standardized_solve_survives_realistic_offsets(self, offset):
+    @pytest.mark.parametrize("offset", [0.0, 1e4, 1e6, 1e8, 1e10])
+    def test_standardized_solve_survives_large_offsets(self, offset):
         rng = np.random.default_rng(5)
         n = 2000
         a = rng.standard_normal(n)
@@ -452,47 +452,50 @@ class TestNumericalScale:
                 features=["x0", "x1"],
                 standardize=True,
                 ridge=1e-10,
-                halflife=1e9,
+                halflife=float("inf"),
                 min_periods=10.0,
             ),
         )
         coef = np.array(_f(out, "coef")[-1], dtype=float)
-        # Precision degrades with the offset, roughly as eps * offset^2 / var.
-        tol = {0.0: 1e-6, 1e4: 1e-3, 1e6: 0.2}[offset]
+        # The raw-moment form needed 0.2 at 1e6 and dropped the features
+        # entirely beyond ~1e7; centered updates hold to ~1e-6 at 1e10.
+        tol = 1e-6
         assert coef[1] == pytest.approx(2.0, abs=tol), f"offset {offset}: {coef}"
         assert coef[2] == pytest.approx(-1.0, abs=tol), f"offset {offset}: {coef}"
 
-    def test_operating_range_of_the_raw_moment_form(self):
-        """Records where cancellation starts to bite, and that beyond it the
-        feature is *dropped* (coefficient exactly 0) rather than returning
-        noise -- which is the guarantee we actually make (docs/PLAN.md 7)."""
+    def test_operating_range(self):
+        """Records the accuracy at each scale. Previous (raw-moment) errors are
+        in the comments; the assertions are the current guarantees."""
         rng = np.random.default_rng(6)
         n = 5000
         a = rng.standard_normal(n)
         err = {}
         for offset in (0.0, 1e4, 1e6, 1e8, 1e10):
             df = pl.DataFrame({"x0": a + offset, "y0": 3.0 * a})
-            out = _run(df, _spec(standardize=True, ridge=0.0, halflife=1e9, min_periods=10.0))
+            out = _run(
+                df,
+                _spec(
+                    standardize=True,
+                    ridge=0.0,
+                    halflife=float("inf"),
+                    min_periods=10.0,
+                ),
+            )
             coef = np.array(_f(out, "coef")[-1], dtype=float)
             err[offset] = abs(coef[1] - 3.0)
 
-        # Exact at ordinary scales, degraded but usable around 1e6.
-        assert err[0.0] < 1e-9
-        assert err[1e4] < 1e-4
-        assert err[1e6] < 0.05
-        # Beyond ~1e7 the centered variance is below the cancellation noise
-        # floor, so the feature is dropped: the coefficient is exactly zero,
-        # never NaN and never a garbage value.
-        for offset in (1e8, 1e10):
-            df = pl.DataFrame({"x0": a + offset, "y0": 3.0 * a})
-            out = _run(df, _spec(standardize=True, ridge=0.0, halflife=1e9, min_periods=10.0))
-            coef = np.array(_f(out, "coef")[-1], dtype=float)
-            assert coef[1] == 0.0, f"offset {offset} should drop the feature, got {coef[1]}"
-            preds = np.array([v for v in _f(out, "pred_y0") if v is not None], dtype=float)
-            assert np.isfinite(preds).all()
+        assert err[0.0] < 1e-12  # was 1.8e-14
+        assert err[1e4] < 1e-10  # was 3.7e-06
+        assert err[1e6] < 1e-8  # was 2.0e-03
+        assert err[1e8] < 1e-6  # was: feature dropped entirely
+        assert err[1e10] < 1e-4  # was: feature dropped entirely
+        # and accuracy still degrades monotonically with the offset, so a
+        # future regression to a cancellation-prone form shows up here
+        assert err[0.0] <= err[1e6] <= err[1e10]
 
     def test_a_genuinely_constant_feature_is_still_dropped(self):
-        # The relaxed threshold must not start accepting real constants.
+        # Centered updates give a constant feature *exactly* zero variance, so
+        # it is dropped without needing a fuzzy threshold.
         n = 500
         rng = np.random.default_rng(7)
         a = rng.standard_normal(n)
@@ -503,12 +506,31 @@ class TestNumericalScale:
                 features=["x0", "x1"],
                 standardize=True,
                 ridge=1e-10,
-                halflife=1e9,
+                halflife=float("inf"),
                 min_periods=10.0,
             ),
         )
         coef = np.array(_f(out, "coef")[-1], dtype=float)
         assert coef[2] == 0.0, "a constant feature must be dropped"
+        assert coef[1] == pytest.approx(2.0, abs=1e-6)
+
+    def test_a_constant_feature_on_a_large_offset_is_also_dropped(self):
+        n = 500
+        rng = np.random.default_rng(8)
+        a = rng.standard_normal(n)
+        df = pl.DataFrame({"x0": a, "x1": np.full(n, 1e9), "y0": 2.0 * a})
+        out = _run(
+            df,
+            _spec(
+                features=["x0", "x1"],
+                standardize=True,
+                ridge=1e-10,
+                halflife=float("inf"),
+                min_periods=10.0,
+            ),
+        )
+        coef = np.array(_f(out, "coef")[-1], dtype=float)
+        assert coef[2] == 0.0
         assert coef[1] == pytest.approx(2.0, abs=1e-6)
 
 

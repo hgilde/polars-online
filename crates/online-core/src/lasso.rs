@@ -147,17 +147,19 @@ impl Lasso {
         let k = self.cfg.n_features;
         let off = usize::from(self.cfg.add_intercept);
         let mean: Vec<f64> = (0..k).map(|i| self.cov.mean(i + off)).collect();
+        // Centered co-moments come straight from the accumulator; deriving them
+        // as raw - mean*mean would reintroduce the cancellation the Welford
+        // representation exists to avoid.
         let mut cov = vec![0.0; k * k];
         for i in 0..k {
             for j in 0..k {
-                cov[i * k + j] = self.cov.raw(i + off, j + off) - mean[i] * mean[j];
+                cov[i * k + j] = self.cov.cov(i + off, j + off);
             }
         }
         let s: Vec<f64> = (0..k)
             .map(|i| {
                 let v = cov[i * k + i];
-                let raw = self.cov.raw(i + off, i + off).abs().max(1e-300);
-                if crate::variance_is_usable(v, raw) {
+                if crate::variance_is_usable(v, self.cov.raw(i + off, i + off)) {
                     v.sqrt()
                 } else {
                     0.0

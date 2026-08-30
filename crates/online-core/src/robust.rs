@@ -183,7 +183,7 @@ impl Robust {
             let b: Vec<f64> = self.r[j].clone();
             if self.cfg.standardize {
                 // Same scheme as EwRidge::solve_standardized, single target.
-                if let Some(sol) = self.solve_standardized(&a, &b, k, j) {
+                if let Some(sol) = self.solve_standardized(&b, k, j) {
                     beta[j] = sol;
                     continue;
                 }
@@ -209,19 +209,24 @@ impl Robust {
         self.rows_since_solve = 0;
     }
 
-    fn solve_standardized(&mut self, a: &[f64], b: &[f64], k: usize, j: usize) -> Option<Vec<f64>> {
+    /// Centered statistics are read from this target's accumulator directly
+    /// rather than re-derived from raw moments (see `EwCov`'s module docs).
+    fn solve_standardized(&mut self, b: &[f64], k: usize, j: usize) -> Option<Vec<f64>> {
         let off = usize::from(self.cfg.add_intercept);
         let kf = k - off;
-        let mean = |i: usize| self.cov[j].mean(i);
+        // Materialized up front: the solve below borrows `self` mutably.
+        let means: Vec<f64> = (0..k).map(|i| self.cov[j].mean(i)).collect();
+        let mean = |i: usize| means[i];
         let mut c = vec![0.0; kf * kf];
         for i in 0..kf {
             for jj in 0..kf {
-                c[i * kf + jj] = a[(i + off) * k + (jj + off)] - mean(i + off) * mean(jj + off);
+                c[i * kf + jj] = self.cov[j].cov(i + off, jj + off);
             }
         }
         let s: Vec<f64> = (0..kf).map(|i| c[i * kf + i].max(0.0).sqrt()).collect();
+        let raws: Vec<f64> = (0..kf).map(|i| self.cov[j].raw(i + off, i + off)).collect();
         let keep: Vec<usize> = (0..kf)
-            .filter(|&i| crate::variance_is_usable(c[i * kf + i], a[(i + off) * k + (i + off)]))
+            .filter(|&i| crate::variance_is_usable(c[i * kf + i], raws[i]))
             .collect();
         let kk = keep.len();
         let mut out = vec![0.0; k];
