@@ -234,6 +234,23 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
 
 ## 11a. Decisions made while implementing
 
+**Clock dtype decision, 2026-08-30.**
+
+`clock` must be a **numeric** column; temporal dtypes (`Datetime`, `Date`,
+`Duration`, `Time`) are rejected with an error naming the column, its dtype and
+the fix. Casting a temporal column to f64 exposes its internal representation,
+so identical wall-clock data yields deltas differing by 10^3-10^6 depending only
+on the column's time unit, and `halflife` / `max_dclock` / `session_gap` inherit
+those units. `halflife = 600` against a microsecond-backed `Datetime` therefore
+meant 600 microseconds: every row decays to nothing and the output is finite,
+non-null, plausible-looking garbage — the worst failure shape available, since
+none of the existing guards catch it. Rejecting costs one expression at the call
+site (`pl.col("ts").dt.epoch("s")`) and makes the intended scale explicit,
+consistent with the null-clock error and hard-rule bias toward loud failure.
+Auto-converting to seconds was considered and declined: it would make the
+meaning of `halflife` depend on the input dtype, which is the same class of
+implicitness that caused the problem.
+
 **Tasks 15-17 (CLI, release CI, README), 2026-08-30.**
 
 - The streaming runner lives in `online-polars` (`RunConfig` / `run_config`), not

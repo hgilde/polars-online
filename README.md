@@ -105,7 +105,7 @@ Every model takes the same stream parameters:
 |---|---|
 | `targets`, `features` | column names; ≥1 target, shared `X'X` across targets |
 | `add_intercept` | default `True` |
-| `clock` | monotone f64 column (seconds, cumulative volume, …). `None` ⇒ row count |
+| `clock` | monotone **numeric** column (seconds, cumulative volume, …). `None` ⇒ row count. A temporal column is rejected — cast it first, e.g. `pl.col("ts").dt.epoch("s")` — because its internal representation would silently set the units of `halflife`, `max_dclock` and `session_gap` |
 | `halflife` / `lam` | decay in clock units; mutually exclusive. A list of halflives means one accumulator per value |
 | `max_dclock` | ceiling on the clock delta (required with `clock`) |
 | `on_clock_reset` | `"max"` (default), `"zero"`, `"reset_state"` for a backwards clock |

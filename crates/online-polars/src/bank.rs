@@ -93,6 +93,27 @@ fn extract(df: &DataFrame, spec: &Spec) -> PolarsResult<SpecColumns> {
         .collect::<PolarsResult<Vec<_>>>()?;
     let clock = match &spec.clock {
         Some(c) => {
+            // A temporal clock column is refused rather than cast. Casting one
+            // to f64 exposes its *internal representation*, so the same 60
+            // seconds becomes 60_000 / 60_000_000 / 60_000_000_000 clock units
+            // depending only on whether the column is Datetime(ms/us/ns), and a
+            // Date becomes 1 unit per day. `halflife`, `max_dclock` and
+            // `session_gap` all live in those units, so `halflife = 600` on a
+            // microsecond column silently means 600 microseconds: every row
+            // decays to nothing and the output is plausible-looking garbage
+            // with no error. Making the user cast is one expression and makes
+            // the intended scale explicit (docs/TESTING.md T-E10).
+            let dtype = df.column(c)?.dtype().clone();
+            if dtype.is_temporal() {
+                polars_bail!(ComputeError:
+                    "spec {:?}: clock column {:?} has dtype {}; a temporal clock would be \
+                     read as its internal representation (e.g. epoch microseconds), so \
+                     halflife/max_dclock/session_gap would silently be in those units. \
+                     Cast it to the scale you mean, e.g. \
+                     pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64), and use that column.",
+                    spec.name, c, dtype, c
+                );
+            }
             let v = f64_column(df, c)?;
             if let Some(i) = v.iter().position(|x| x.is_none_or(|f| !f.is_finite())) {
                 polars_bail!(ComputeError:

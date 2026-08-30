@@ -513,21 +513,64 @@ class TestNumericalScale:
 
 
 class TestClockColumnTypes:
-    """T-E10: what a non-float clock column means."""
+    """T-E10: which dtypes are allowed as a clock column.
 
-    def test_datetime_clock_is_microseconds(self):
-        # Pins the surprise: a Datetime column casts to epoch MICROseconds, so
-        # halflife is in microseconds too. 60 seconds apart = 6e7 clock units.
+    A temporal column is **rejected**, not cast. Casting one to f64 exposes its
+    internal representation, so the same 60 seconds becomes 60_000 /
+    60_000_000 / 60_000_000_000 clock units depending only on whether the
+    column is `Datetime(ms/us/ns)`, and a `Date` becomes 1 unit per day.
+    `halflife`, `max_dclock` and `session_gap` all live in those units, so
+    `halflife=600` on a microsecond column would silently mean 600
+    microseconds -- every row decays to nothing and the output is
+    plausible-looking garbage with no error.
+    """
+
+    @pytest.mark.parametrize("unit", ["ms", "us", "ns"])
+    def test_datetime_clock_is_rejected(self, unit):
         ts = pl.datetime_range(
             pl.datetime(2024, 1, 1), pl.datetime(2024, 1, 1, 0, 3), interval="1m", eager=True
+        ).cast(pl.Datetime(time_unit=unit))
+        df = pl.DataFrame(
+            {"t": ts, "x0": np.arange(float(len(ts))), "y0": np.arange(float(len(ts)))}
+        )
+        with pytest.raises(Exception, match="temporal clock"):
+            _run(df, _spec(clock="t", max_dclock=1e12, halflife=600.0))
+
+    def test_date_and_duration_clocks_are_rejected(self):
+        ts = pl.datetime_range(
+            pl.datetime(2024, 1, 1), pl.datetime(2024, 1, 4), interval="1d", eager=True
+        )
+        n = len(ts)
+        for col in (ts.dt.date(), ts - ts[0]):
+            df = pl.DataFrame({"t": col, "x0": np.arange(float(n)), "y0": np.arange(float(n))})
+            with pytest.raises(Exception, match="temporal clock"):
+                _run(df, _spec(clock="t", max_dclock=1e12, halflife=600.0))
+
+    def test_the_error_names_the_column_dtype_and_the_fix(self):
+        ts = pl.datetime_range(
+            pl.datetime(2024, 1, 1), pl.datetime(2024, 1, 1, 0, 2), interval="1m", eager=True
         )
         df = pl.DataFrame(
             {"t": ts, "x0": np.arange(float(len(ts))), "y0": np.arange(float(len(ts)))}
         )
-        out = _run(df, _spec(clock="t", max_dclock=1e12, halflife=6e7, min_periods=0.0))
-        neff = _f(out, "n_eff")
-        # one minute = 6e7 us = exactly one halflife
-        assert neff[2] == pytest.approx(0.5 * 1.0 + 1.0, rel=1e-9)
+        with pytest.raises(Exception) as exc:
+            _run(df, _spec(clock="t", max_dclock=1e12, halflife=600.0))
+        msg = str(exc.value)
+        assert '"t"' in msg, "the offending column should be named"
+        assert "datetime" in msg.lower(), "the dtype should be named"
+        assert "dt.epoch" in msg, "the error should show the fix"
+
+    def test_the_documented_fix_works(self):
+        ts = pl.datetime_range(
+            pl.datetime(2024, 1, 1), pl.datetime(2024, 1, 1, 0, 3), interval="1m", eager=True
+        )
+        n = len(ts)
+        df = pl.DataFrame(
+            {"t": ts, "x0": np.arange(float(n)), "y0": np.arange(float(n))}
+        ).with_columns(t_s=pl.col("t").dt.epoch("s").cast(pl.Float64))
+        # halflife 60 now genuinely means 60 seconds, i.e. one bar.
+        out = _run(df, _spec(clock="t_s", max_dclock=1e6, halflife=60.0))
+        assert _f(out, "n_eff")[2] == pytest.approx(0.5 * 1.0 + 1.0, rel=1e-12)
 
     def test_integer_clock_column(self):
         df = pl.DataFrame(
@@ -535,6 +578,12 @@ class TestClockColumnTypes:
         )
         out = _run(df, _spec(clock="t", max_dclock=100.0, halflife=10.0, min_periods=0.0))
         assert _f(out, "n_eff")[2] == pytest.approx(0.5 + 1.0, rel=1e-12)
+
+    def test_float_and_integer_clocks_agree(self):
+        a = pl.DataFrame({"t": [0, 60, 120, 180], "x0": np.arange(4.0), "y0": np.arange(4.0)})
+        b = a.with_columns(t=pl.col("t").cast(pl.Float64))
+        spec = _spec(clock="t", max_dclock=1e6, halflife=600.0, min_periods=0.0)
+        assert _run(a, spec).drop("t").equals(_run(b, spec).drop("t"), null_equal=True)
 
 
 class TestPendingDeltaAcrossSaveLoad:

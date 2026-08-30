@@ -1,6 +1,6 @@
 # Test coverage and testing improvements
 
-Status as of 2026-08-30: **61 Rust tests + 335 pytest functions** (plus 2 opt-in
+Status as of 2026-08-30: **61 Rust tests + 341 pytest functions** (plus 2 opt-in
 soak tests), all green, run in CI on three OSes.
 
 Measured coverage (`./scripts/coverage.sh`): **96% of the Python package**, and
@@ -120,7 +120,7 @@ Findings first — both verified against the current build:
 | T-E7 | ~~P2~~ **done** | Minimal shapes | An empty chunk is accepted and returns an empty frame with the output column; an empty chunk *between* real chunks changes nothing; single-row groups, a group appearing in only one chunk, and a one-feature/one-target spec all behave. |
 | T-E8 | ~~P2~~ **done** | Non-string group and session columns, null session values | Integer and categorical group columns, integer session columns. A null session value **is** its own session: `a → null` and `null → a` both count as changes, `null → null` does not. That was previously undocumented; it is now pinned. |
 | T-E9 | ~~P2~~ **done, and it found a defect** | **Large-offset cancellation** | The zero-variance drop threshold was `1e-10 × raw second moment` — about 450,000× the actual cancellation noise floor — so a perfectly good unit-variance feature sitting on a **1e6 offset was silently dropped, coefficient exactly 0**. That is an ordinary financial scale. Replaced with `variance_is_usable()` (a small multiple of `eps × raw`), shared by all four solving models. Measured operating range now pinned by test: exact below 1e4, ~2e-3 error at 1e6, dropped (never NaN, never garbage) beyond ~1e7. Centered/Welford updates remain the deeper fix — now with a baseline to beat. |
-| T-E10 | ~~P2~~ **done** (behavior pinned) | Datetime-typed clock columns | Confirmed and pinned: a `Datetime` clock casts to epoch **microseconds**, so one minute is 6e7 clock units and a `halflife` of 600 means 600 µs. Integer clocks work as plain numbers. Whether to reject or auto-scale datetimes is a design decision left open; the surprise is now a test, not a trap. |
+| T-E10 | ~~P2~~ **done, decision taken** | Datetime-typed clock columns | Was a silent trap: a temporal clock cast to f64 exposes its internal representation, so the same 60 seconds is 60e3 / 60e6 / 60e9 units for `Datetime(ms/us/ns)` and 1 unit per day for `Date` — meaning `halflife=600` on a microsecond column silently meant 600 µs, decaying every row to nothing and producing plausible-looking garbage with no error. **Decision: reject.** Temporal clock columns now error, naming the column, its dtype and the fix (`pl.col("ts").dt.epoch("s")`). Numeric clocks (int and float) are unchanged and are asserted to agree with each other. |
 | T-E11 | ~~P3~~ **done** | Long-stream soak: 10⁷ rows through one state | `n_eff` bounded and non-drifting end-to-end, coefficients still accurate, 2M-row state under 4KB, resume still exact. Opt-in (`pytest -m soak`), ~6.5s. |
 | T-E12 | ~~P3~~ **done** | Pending-delta across a save/load boundary; session change on a group's first row | Both targeted now: splitting a stream exactly after a skipped row and resuming from state reproduces the unbroken run, and a group's first row is treated as first even when it also changes session. |
 
