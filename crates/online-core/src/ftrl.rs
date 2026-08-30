@@ -280,6 +280,98 @@ mod tests {
     }
 
     #[test]
+    fn sigmoid_is_stable_at_both_extremes() {
+        // The two branches are algebraically identical, so only the extremes
+        // distinguish them: taking the wrong one at a large magnitude gives
+        // inf/inf = NaN rather than saturating.
+        for v in [800.0, 80.0, 1.0, 0.0, -1.0, -80.0, -800.0] {
+            let p = sigmoid(v);
+            assert!(p.is_finite(), "sigmoid({v}) = {p}");
+            assert!((0.0..=1.0).contains(&p), "sigmoid({v}) = {p}");
+        }
+        assert_eq!(sigmoid(0.0), 0.5);
+        assert_eq!(sigmoid(800.0), 1.0);
+        assert_eq!(sigmoid(-800.0), 0.0);
+        // Symmetric about zero.
+        for v in [0.3, 2.0, 17.0] {
+            assert!((sigmoid(v) + sigmoid(-v) - 1.0).abs() < 1e-15, "{v}");
+        }
+    }
+
+    #[test]
+    fn strict_binary_skips_a_non_binary_target_instead_of_clamping_it() {
+        // Two policies for a target outside {0, 1}: clamp it (the default) or
+        // refuse to learn from it. The difference is only visible in the state
+        // afterwards, since both still predict.
+        let fit = |strict: bool, y: f64| {
+            let mut c = cfg(2, 1);
+            c.strict_binary = strict;
+            c.min_periods = 0.0;
+            let mut m = Ftrl::new(c).unwrap();
+            for i in 0..20 {
+                m.step(
+                    &[1.0, -1.0],
+                    &[Some(1.0)],
+                    if i == 0 { 0.0 } else { 1.0 },
+                    1.0,
+                );
+            }
+            let before = m.zz[0].clone();
+            m.step(&[1.0, -1.0], &[Some(y)], 1.0, 1.0);
+            (before, m.zz[0].clone())
+        };
+
+        let (before, after) = fit(true, 0.7);
+        assert_eq!(before, after, "strict_binary must not learn from y = 0.7");
+        let (before, after) = fit(false, 0.7);
+        assert_ne!(before, after, "the default clamps and learns");
+
+        // Values inside {0, 1} are learned from under either policy.
+        let (before, after) = fit(true, 0.0);
+        assert_ne!(before, after, "y = 0 is binary and must be learned from");
+
+        // Out-of-range values are clamped rather than extrapolated.
+        let (_, clamped) = fit(false, 5.0);
+        let (_, at_one) = fit(false, 1.0);
+        assert_eq!(clamped, at_one, "y = 5 must behave exactly like y = 1");
+    }
+
+    #[test]
+    fn the_row_weight_scales_the_gradient() {
+        // `g = err * z * weight`: a row at weight w must move the state as far
+        // as w rows of weight 1 would in the linear (squared-loss) case.
+        let run = |w: f64, reps: usize| {
+            let mut c = cfg(1, 1);
+            c.loss = FtrlLoss::Squared;
+            c.min_periods = 0.0;
+            c.l1 = 0.0;
+            c.l2 = 0.0;
+            let mut m = Ftrl::new(c).unwrap();
+            for _ in 0..reps {
+                m.step(&[1.0], &[Some(1.0)], 0.0, w);
+            }
+            m.zz[0][0]
+        };
+        // Zero weight is a no-op.
+        assert_eq!(run(0.0, 5), 0.0);
+        // A heavier row moves further than a lighter one, in the same direction.
+        let (light, heavy) = (run(1.0, 1), run(4.0, 1));
+        assert!(heavy.abs() > light.abs(), "{heavy} vs {light}");
+        assert_eq!(heavy.signum(), light.signum());
+        // And exactly four times as far on the first row, where the state is
+        // still zero so the gradient is linear in the weight.
+        assert!((heavy - 4.0 * light).abs() < 1e-12, "{heavy} vs {light}");
+    }
+
+    #[test]
+    fn shape_accessors_report_the_configured_shape() {
+        let m = Ftrl::new(cfg(3, 2)).unwrap();
+        assert_eq!(OnlineModel::n_features(&m), 3);
+        assert_eq!(OnlineModel::n_targets(&m), 2);
+        assert_eq!(m.cfg().k_total(), 4, "3 features plus an intercept");
+    }
+
+    #[test]
     fn cfg_validation_rejects_each_bad_field() {
         // One case per rejection in `FtrlCfg::validate`, matched on the message,
         // each paired with the nearest accepted config so a validator that

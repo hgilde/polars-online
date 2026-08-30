@@ -472,6 +472,169 @@ mod tests {
         }
     }
 
+    /// Feed a deterministic stream, returning the fitted filter.
+    fn fit(cfg: KalmanCfg, n: usize, seed: u64) -> Kalman {
+        let m = cfg.n_targets;
+        let mut model = Kalman::new(cfg).unwrap();
+        let mut s = seed;
+        for i in 0..n {
+            let x = [lcg(&mut s), 0.5 + lcg(&mut s)];
+            let ys: Vec<Option<f64>> = (0..m)
+                .map(|j| Some((j as f64 + 1.0) * (2.0 * x[0] - x[1]) + 0.1 * lcg(&mut s)))
+                .collect();
+            model.step(&x, &ys, if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        model
+    }
+
+    #[test]
+    fn pred_var_is_the_quadratic_form_plus_observation_noise() {
+        // `pred_var` is surfaced only through the Polars layer, so its
+        // arithmetic had no test in this crate. It is z' P z + R, and both
+        // halves are checked: the quadratic form against a longhand loop over
+        // the stored covariance, and R against the configured or inferred
+        // observation noise.
+        let mut c = cfg(2, 1, vec![100.0]);
+        c.obs_var = Some(0.25);
+        c.min_periods = 3.0;
+        let m = fit(c, 80, 61);
+        let k = m.cfg.k_total();
+
+        let mut want = 0.0;
+        for i in 0..k {
+            for j in 0..k {
+                want += m.zs[i] * m.p[0][i * k + j] * m.zs[j];
+            }
+        }
+        want += 0.25;
+        let got = m.pred_var()[0];
+        assert!((got - want).abs() < 1e-12, "{got} vs {want}");
+        assert!(got > 0.25, "must exceed the observation noise: {got}");
+
+        // Without a configured obs_var it falls back to the tracked residual
+        // variance of that target.
+        let mut c = cfg(2, 1, vec![100.0]);
+        c.min_periods = 3.0;
+        let m = fit(c, 80, 61);
+        let got = m.pred_var()[0];
+        assert!(got > m.sigma2()[0], "{got} vs {}", m.sigma2()[0]);
+    }
+
+    #[test]
+    fn share_p_shares_one_covariance_and_averages_the_noise() {
+        // With `share_p` the process step runs once rather than once per
+        // target, one covariance is kept, and the inferred observation noise
+        // is the mean across targets rather than each target's own.
+        let mut shared = cfg(2, 2, vec![100.0]);
+        shared.share_p = true;
+        shared.min_periods = 3.0;
+        let ms = fit(shared, 200, 71);
+        assert_eq!(ms.p.len(), 1, "one covariance for all targets");
+        // Both targets read the same P, so their pred_var differs only through
+        // ... nothing: z is shared too. They must be identical.
+        let pv = ms.pred_var();
+        assert!((pv[0] - pv[1]).abs() < 1e-12, "{pv:?}");
+        // And that shared noise is the mean of the per-target residual
+        // variances, which here differ by construction (target 1 is 2x target 0).
+        let s2 = ms.sigma2();
+        assert!(s2[1] > 2.0 * s2[0], "targets differ: {s2:?}");
+        let mean = s2.iter().sum::<f64>() / 2.0;
+        let quad = pv[0] - mean;
+        assert!(
+            quad > 0.0 && quad < mean,
+            "R should be the mean: {pv:?} {s2:?}"
+        );
+
+        let mut separate = cfg(2, 2, vec![100.0]);
+        separate.min_periods = 3.0;
+        let msep = fit(separate, 200, 71);
+        assert_eq!(msep.p.len(), 2, "one covariance per target");
+        let pv2 = msep.pred_var();
+        assert!(
+            (pv2[0] - pv2[1]).abs() > 1e-6,
+            "unshared targets should differ: {pv2:?}"
+        );
+    }
+
+    #[test]
+    fn a_null_target_decays_its_weights_and_leaves_the_filter_alone() {
+        let mut c = cfg(2, 1, vec![100.0]);
+        c.decay = Decay::Halflife(10.0);
+        c.min_periods = 3.0;
+        let mut m = Kalman::new(c).unwrap();
+        let mut s = 73u64;
+        for i in 0..60 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(
+                &x,
+                &[Some(x[0] - x[1])],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let beta = m.beta[0].clone();
+        let (wj, wsig, sig2) = (m.wj[0], m.wsig[0], m.sig2[0]);
+
+        let lam = 0.5f64.powf(4.0 / 10.0);
+        m.step(&[0.3, -0.2], &[None], 4.0, 1.0);
+        assert_eq!(m.beta[0], beta, "no target, no correction");
+        assert_eq!(m.sig2[0], sig2);
+        assert!((m.wj[0] - wj * lam).abs() < 1e-12);
+        assert!((m.wsig[0] - wsig * lam).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_zero_weight_row_does_not_correct_the_filter() {
+        let mut c = cfg(2, 1, vec![100.0]);
+        c.min_periods = 3.0;
+        let mut m = Kalman::new(c).unwrap();
+        let mut s = 79u64;
+        for i in 0..60 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(
+                &x,
+                &[Some(x[0] - x[1])],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let beta = m.beta[0].clone();
+        m.step(&[0.3, -0.2], &[Some(-500.0)], 1.0, 0.0);
+        assert_eq!(m.beta[0], beta, "weight 0 must not move the coefficients");
+    }
+
+    #[test]
+    fn residual_variance_is_the_ew_mean_of_squared_out_of_sample_errors() {
+        let mut c = cfg(1, 1, vec![f64::INFINITY]);
+        c.decay = Decay::Halflife(25.0);
+        c.min_periods = 3.0;
+        c.standardize = false;
+        c.obs_var = Some(0.5);
+        let mut m = Kalman::new(c).unwrap();
+
+        let (mut want, mut wsig) = (0.0, 0.0);
+        let mut s = 83u64;
+        for i in 0..120 {
+            let x = [lcg(&mut s)];
+            let y = 2.0 * x[0] + 0.3 * lcg(&mut s);
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            let lam = 0.5f64.powf(d / 25.0);
+            let p = m.step(&x, &[Some(y)], d, 1.0).pred[0];
+            if p.is_finite() {
+                let resid = y - p;
+                let ws_new = lam * wsig + 1.0;
+                want = (lam * wsig * want + resid * resid) / ws_new;
+                wsig = ws_new;
+            }
+            assert!(
+                (m.sigma2()[0] - want).abs() < 1e-12,
+                "row {i}: {} vs {want}",
+                m.sigma2()[0]
+            );
+        }
+        assert!(wsig > 30.0 && want > 0.0);
+    }
+
     /// With `standardize = false`, `q = 0` and a fixed `obs_var`, the filter is
     /// exactly a Bayesian linear regression: coefficients converge to the ridge
     /// solution with penalty `obs_var / p0`.

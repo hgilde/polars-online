@@ -430,6 +430,181 @@ mod tests {
         }
     }
 
+    /// Feed a deterministic stream with `k` informative features.
+    fn fit(cfg: LassoCfg, n: usize, seed: u64) -> (Lasso, Vec<(Vec<f64>, f64)>) {
+        let k = cfg.n_features;
+        let mut m = Lasso::new(cfg).unwrap();
+        let mut s = seed;
+        let mut rows = Vec::new();
+        for i in 0..n {
+            let x: Vec<f64> = (0..k).map(|_| lcg(&mut s)).collect();
+            let y = 1.5 * x[0] - 0.75 * x[1] + 0.25 + 0.05 * lcg(&mut s);
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            rows.push((x, y));
+        }
+        (m, rows)
+    }
+
+    #[test]
+    fn every_path_point_satisfies_the_kkt_conditions() {
+        // The coordinate descent is checked against the optimality conditions
+        // of the problem it claims to solve, rather than against a golden
+        // number: for the objective 1/2 b'Cb - d'b + l1|b|_1 + l2/2 |b|^2, at
+        // the optimum the gradient g = Cb - d + l2 b satisfies g_i = -l1 sign(b_i)
+        // on the active set and |g_i| <= l1 off it. This is the same check the
+        // Python suite makes; having it here makes the solver's arithmetic
+        // visible to `cargo test`, and so to mutation testing.
+        for l1_ratio in [1.0, 0.5] {
+            let mut c = cfg(4, 1, vec![0.5, 0.1, 0.01]);
+            c.l1_ratio = l1_ratio;
+            c.cd_tol = 1e-14;
+            c.max_cd_iters = 2000;
+            let (m, _) = fit(c.clone(), 500, 11);
+
+            // Rebuild the standardized normal equations the solver works in.
+            let k = c.n_features;
+            let off = usize::from(c.add_intercept);
+            let s: Vec<f64> = (0..k).map(|i| m.cov.cov(i + off, i + off).sqrt()).collect();
+            let beta = m.coefficients().unwrap();
+            for (li, &lam) in c.lasso_path.iter().enumerate() {
+                let (l1, l2) = (lam * c.l1_ratio, lam * (1.0 - c.l1_ratio));
+                // Back to the scaled parameterization the objective is in.
+                let b: Vec<f64> = (0..k).map(|i| beta[0][li][i + off] * s[i]).collect();
+                for i in 0..k {
+                    let mut g = 0.0;
+                    for jj in 0..k {
+                        g += m.cov.cov(i + off, jj + off) / (s[i] * s[jj]) * b[jj];
+                    }
+                    let d_i = (m.r[0][i + off] - m.cov.mean(i + off) * m.r[0][0]) / s[i];
+                    g -= d_i;
+                    g += l2 * b[i];
+                    if b[i].abs() > 1e-9 {
+                        assert!(
+                            (g + l1 * b[i].signum()).abs() < 1e-6,
+                            "lam {lam} ratio {l1_ratio} coef {i}: active KKT {g}"
+                        );
+                    } else {
+                        assert!(
+                            g.abs() <= l1 + 1e-6,
+                            "lam {lam} ratio {l1_ratio} coef {i}: inactive KKT {g} > {l1}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_path_is_monotone_in_sparsity_and_shrinkage() {
+        // A larger penalty can only zero more coefficients and shrink the rest;
+        // the path must be ordered, which pins the direction of every
+        // soft-threshold comparison.
+        let c = cfg(6, 1, vec![1.0, 0.3, 0.1, 0.03, 0.0]);
+        let (m, _) = fit(c.clone(), 600, 13);
+        let beta = &m.coefficients().unwrap()[0];
+        let nnz: Vec<usize> = beta
+            .iter()
+            .map(|b| b[1..].iter().filter(|v| v.abs() > 1e-9).count())
+            .collect();
+        for w in nnz.windows(2) {
+            assert!(
+                w[0] <= w[1],
+                "sparsity should relax along the path: {nnz:?}"
+            );
+        }
+        assert!(
+            nnz[0] < nnz[nnz.len() - 1],
+            "the path must do something: {nnz:?}"
+        );
+
+        // The strongest signal's magnitude grows as the penalty falls.
+        let mags: Vec<f64> = beta.iter().map(|b| b[1].abs()).collect();
+        for w in mags.windows(2) {
+            assert!(w[0] <= w[1] + 1e-9, "shrinkage should relax: {mags:?}");
+        }
+        assert!((mags[mags.len() - 1] - 1.5).abs() < 0.05, "{mags:?}");
+    }
+
+    #[test]
+    fn the_intercept_is_recovered_from_the_centered_fit() {
+        // The features are centered before the solve, so the intercept is
+        // reconstructed as mean(y) - sum(b_i mean(x_i)) rather than fitted.
+        let mut c = cfg(2, 1, vec![0.0]);
+        c.min_periods = 3.0;
+        let (m, rows) = fit(c, 500, 17);
+        let b = &m.coefficients().unwrap()[0][0];
+        let n = rows.len() as f64;
+        let ybar: f64 = rows.iter().map(|(_, y)| y).sum::<f64>() / n;
+        let xbar: Vec<f64> = (0..2)
+            .map(|i| rows.iter().map(|(x, _)| x[i]).sum::<f64>() / n)
+            .collect();
+        let want = ybar - b[1] * xbar[0] - b[2] * xbar[1];
+        assert!((b[0] - want).abs() < 1e-6, "{} vs {want}", b[0]);
+    }
+
+    #[test]
+    fn lambda_selection_tracks_the_out_of_sample_error() {
+        // `sel_err` is an EW mean of each path point's squared OOS error and
+        // `lam_selected` reports the argmin. Both are checked against the
+        // predictions the model itself emitted, so a selection reading the
+        // wrong slot, or the wrong direction of the comparison, is caught.
+        let mut c = cfg(3, 1, vec![1.0, 0.05, 0.0]);
+        c.min_periods = 4.0;
+        c.select_halflife = Some(f64::INFINITY);
+        let np = c.n_lambdas();
+        let mut m = Lasso::new(c).unwrap();
+
+        let mut sums = vec![0.0; np];
+        let mut count = 0.0;
+        let mut s = 19u64;
+        for i in 0..400 {
+            let x = [lcg(&mut s), lcg(&mut s), lcg(&mut s)];
+            let y = 2.0 * x[0] + 0.02 * lcg(&mut s);
+            let step = m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            if step.pred[0].is_finite() {
+                count += 1.0;
+                for (li, sum) in sums.iter_mut().enumerate() {
+                    *sum += (y - step.pred[li]).powi(2);
+                }
+            }
+        }
+        assert!(count > 100.0);
+        // An infinite select_halflife makes the EW mean a plain mean.
+        for (li, sum) in sums.iter().enumerate() {
+            assert!(
+                (m.sel_err[0][li] - sum / count).abs() < 1e-9,
+                "path point {li}: {} vs {}",
+                m.sel_err[0][li],
+                sum / count
+            );
+        }
+        let best = (0..np)
+            .min_by(|&a, &b| sums[a].partial_cmp(&sums[b]).unwrap())
+            .unwrap();
+        assert_eq!(m.sel_idx[0], best, "selection must be the argmin: {sums:?}");
+        assert_eq!(m.lam_selected(), vec![m.cfg.lasso_path[best]]);
+        // Only one feature matters, so the heaviest penalty must not win.
+        assert!(
+            best > 0,
+            "a penalty of 1.0 should not be selected: {sums:?}"
+        );
+    }
+
+    #[test]
+    fn a_null_target_and_a_zero_weight_row_only_decay() {
+        let mut c = cfg(2, 1, vec![0.0]);
+        c.decay = Decay::Halflife(10.0);
+        c.min_periods = 3.0;
+        let (mut m, _) = fit(c, 60, 23);
+        let (wj, r, sel_w) = (m.wj[0], m.r[0].clone(), m.sel_w[0]);
+
+        let lam = 0.5f64.powf(2.0 / 10.0);
+        m.step(&[0.5, -0.5], &[None], 2.0, 1.0);
+        assert!((m.wj[0] - wj * lam).abs() < 1e-12, "null decays wj");
+        assert_eq!(m.r[0], r, "and leaves the cross-moments alone");
+        assert!((m.sel_w[0] - sel_w * lam).abs() < 1e-12);
+    }
+
     #[test]
     fn zero_penalty_matches_ols() {
         // lambda = 0 => the lasso solution is the OLS solution.
