@@ -35,6 +35,12 @@ dependencies = [
     "polars==1.44.1",
 ]
 
+# `gram()` is the only thing that needs numpy, so it is an extra rather than a
+# dependency: polars does not require numpy, and one optional accessor is no
+# reason to put it on every install.
+[project.optional-dependencies]
+numpy = ["numpy>=1.24"]
+
 [project.urls]
 Repository = "https://github.com/hgilde/polars-online"
 Changelog = "https://github.com/hgilde/polars-online/blob/main/CHANGELOG.md"

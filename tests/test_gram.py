@@ -178,3 +178,25 @@ class TestShape:
             seen.append(bank.gram("m")[0]["n_eff"])
         assert seen == sorted(seen)
         assert seen[-1] == pytest.approx(2000, rel=1e-6)
+
+
+def test_missing_numpy_says_what_to_do(monkeypatch):
+    """numpy is an extra, not a dependency, so the failure has to be
+    actionable rather than a bare ModuleNotFoundError from an inner import."""
+    import builtins
+
+    df, _ = stream(n=200)
+    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=100.0, min_periods=3.0)
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df)
+
+    real_import = builtins.__import__
+
+    def no_numpy(name, *a, **kw):
+        if name == "numpy":
+            raise ModuleNotFoundError("No module named 'numpy'")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", no_numpy)
+    with pytest.raises(ModuleNotFoundError, match=r"polars-online\[numpy\]"):
+        bank.gram("m")

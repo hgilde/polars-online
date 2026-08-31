@@ -89,9 +89,20 @@ class ModelBank:
         This is not a speed claim: for a single batch Gram over materialized
         data, BLAS ``dgemm`` is blocked, vectorized, and comfortably faster.
 
-        ``spec`` is a spec name or index. Requires numpy.
+        ``spec`` is a spec name or index.
+
+        Requires numpy, which is *not* a dependency of this package -- polars
+        does not require it either, and one optional accessor is no reason to
+        put it on every install. ``pip install polars-online[numpy]`` adds it.
         """
-        import numpy as np
+        try:
+            import numpy as np
+        except ModuleNotFoundError as e:  # pragma: no cover - exercised by a stub
+            msg = (
+                "ModelBank.gram() returns numpy arrays, and numpy is not installed. "
+                "Install it with `pip install numpy` or `pip install polars-online[numpy]`."
+            )
+            raise ModuleNotFoundError(msg) from e
 
         names = self._native.spec_names()
         idx = names.index(spec) if isinstance(spec, str) else spec
