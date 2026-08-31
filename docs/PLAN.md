@@ -389,6 +389,18 @@ produced the E23 declared-vs-realized defect and the reason a guard test exists
 for it. Proposed, none implemented; two items are recorded as deliberately
 deferred and four approaches as rejected.
 
+## 11d. Release readiness and API stability
+
+[`docs/RELEASE-READINESS.md`](RELEASE-READINESS.md): what is left before the
+repo goes public (workflow permissions, SHA-pinned actions, whether the Rust
+crates are published, branch protection, a history scan), and how to keep the
+API promisable. The finding worth acting on is that **the output field names
+are the largest and least-guarded part of the API** — users index
+`pred_y__r0.000001@h100` by string, and exactly one spec shape is currently
+pinned. The proposal is one API snapshot test covering symbols, signatures with
+defaults, and `output_fields()` across a matrix of spec shapes, so every API
+change becomes a reviewable diff. Proposed, not implemented.
+
 ## 12. Open questions (not blocking)
 
 - ~~Overnight handling beyond `session_gap` (e.g. partial state shrinkage toward a long-run prior).~~
