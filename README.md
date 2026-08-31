@@ -179,7 +179,12 @@ Every model takes the same stream parameters:
 | `group` | bank/CLI only; one state per key (the expression API uses `.over()`) |
 
 Per-row decay is `λ = 0.5 ** (Δclock / halflife)`, and `n_eff` is the
-exponentially weighted observation count under the same decay.
+exponentially weighted observation count under the same decay. It is the weight
+of the state that produced *this row's* prediction — measured before the row's
+own update and before its own decay — so it is `0` on a stream's first row and
+lags the row count by one. Every model reports it the same way, which is what
+makes `min_periods` mean the same thing across a bank. It saturates at
+`1 / (1 − λ)` rather than growing with the stream.
 
 **Null policy.** A null in any feature (or the weight) skips the row entirely:
 outputs are null, no update happens, but the clock still advances. A null in
