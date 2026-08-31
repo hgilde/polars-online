@@ -379,6 +379,16 @@ integration layer cost 3–5× the model arithmetic and capped thread scaling at
 6.2× scaling**, with every golden number unchanged. Three of the eight items
 were closed by measuring and *rejecting* the change; §5 there records why.
 
+## 11c. Simplification review
+
+[`docs/SIMPLIFICATION.md`](SIMPLIFICATION.md) (S1–S6): a post-performance read
+for complexity that can go without costing features, speed or stability. The
+one that matters is S1 — the output schema's ordering is written out twice, in
+`output_fields()` and again in `assemble()`, which is the duplication that
+produced the E23 declared-vs-realized defect and the reason a guard test exists
+for it. Proposed, none implemented; two items are recorded as deliberately
+deferred and four approaches as rejected.
+
 ## 12. Open questions (not blocking)
 
 - ~~Overnight handling beyond `session_gap` (e.g. partial state shrinkage toward a long-run prior).~~
