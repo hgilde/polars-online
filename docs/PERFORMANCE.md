@@ -184,16 +184,35 @@ that moves a golden number is wrong by definition.
   `Spec`/plan keyed by the kwargs JSON, so 1000 `.over()` groups parse once;
   skip re-validation per group. Re-measure after P1 — the remaining gap should
   be per-group extraction only. Target: within 1.3× of the bank at 1000 groups.</details>
-- [ ] **P6 — Runner pipelining.** `run_config` currently alternates
+- [x] **P6 — Runner pipelining.** *Done.* The runner alternated
+  read-chunk / compute-and-write-chunk. A reader thread now fills a
+  `sync_channel(1)`, so chunk *n+1* is decoded while chunk *n* is fitted and
+  written — one chunk of lookahead, so memory stays O(chunk), and order is
+  preserved by construction (one reader, FIFO), which matters because chunks
+  must reach the bank in stream order. Measured on 3M rows × 20 features × 32
+  groups through the CLI: **2.17 s → 1.76 s (1.23×)**.
+  <details><summary>original plan</summary> `run_config` currently alternates
   read-chunk / compute-chunk. Double-buffer with a bounded channel (read row
   group *n+1* while computing *n*); parquet decode is already internally
   parallel, so this overlaps the two pools. Target: CLI wall time ≤
-  max(io, compute) + ε on a large file.
-- [ ] **P7 — Build flags, measured not assumed.** Try `lto = "fat"` and (CLI
+  max(io, compute) + ε on a large file.</details>
+- [x] **P7 — Build flags: measured, and both rejected.** `lto = "fat"` moved
+  the six `core_bench` cases by +3.2%, +1.3%, −1.2%, −1.0%, −2.1%, +0.4% — a
+  wash, against a build that is already slow, so it fails the ≥3% bar the plan
+  set. `-C target-cpu=native` was −3% at k=20 and within noise elsewhere, and
+  would make wheels non-portable for nothing. Both stay off; `lto = "thin"`,
+  `codegen-units = 1` remains.
+
+  Manual SIMD is also unnecessary, and the throughput curve is the evidence:
+  the co-moment update is O(k²), so k=5 → k=20 is 12.3× the arithmetic but only
+  2.1× the time, and k=5 → k=50 is 72× the arithmetic for 6.0× the time. Per
+  element, wider is *cheaper* — which is what auto-vectorized inner loops look
+  like. There is nothing here for hand-written intrinsics to recover.
+  <details><summary>original plan</summary> Try `lto = "fat"` and (CLI
   and local dev only, never wheels) `-C target-cpu=native`; keep each only if
   ≥ 3% on `core_bench`. Verify the k-loops in `ewcov::update` auto-vectorize
   (`cargo asm` spot check) before considering any manual SIMD — at k ≤ 50 the
-  compiler usually already does this.
+  compiler usually already does this.</details>
 - [ ] **P8 — Re-baseline and lock.** Re-run `core_bench`, the timing matrix,
   scaling and `scripts/benchmark.py`; update this file and the README table;
   extend `benchmark.yml`'s job summary with the scaling row so the CI history

@@ -87,17 +87,58 @@ pub fn run_config(cfg: &RunConfig, mut progress: impl FnMut(RunStats)) -> Polars
     // the output is written incrementally and memory stays O(chunk).
     let mut writer: Option<polars::io::parquet::write::BatchedWriter<BufWriter<File>>> = None;
     let mut stats = RunStats::default();
-    let mut offset: i64 = 0;
-    loop {
-        let chunk = lf
-            .clone()
-            .slice(offset, cfg.chunk_rows as IdxSize)
-            .collect()?;
+
+    // Read chunk n+1 while chunk n is being fitted and written
+    // (docs/PERFORMANCE.md P6). The channel holds one chunk, so the reader
+    // stays exactly one ahead and memory is still O(chunk) rather than O(data).
+    // Order is preserved by construction -- a single reader on a FIFO -- which
+    // matters because chunks must reach the bank in stream order.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<PolarsResult<DataFrame>>(1);
+    let reader_lf = lf.clone();
+    let chunk_rows = cfg.chunk_rows;
+    let reader = std::thread::spawn(move || {
+        let mut offset: i64 = 0;
+        loop {
+            match reader_lf
+                .clone()
+                .slice(offset, chunk_rows as IdxSize)
+                .collect()
+            {
+                Ok(df) => {
+                    let height = df.height();
+                    if height == 0 || tx.send(Ok(df)).is_err() || height < chunk_rows {
+                        break;
+                    }
+                    offset += height as i64;
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    break;
+                }
+            }
+        }
+    });
+
+    let mut result: PolarsResult<()> = Ok(());
+    for chunk in rx {
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => {
+                result = Err(e);
+                break;
+            }
+        };
         if chunk.height() == 0 {
             break;
         }
         let height = chunk.height();
-        let cols = bank.fit_predict(&chunk)?;
+        let cols = match bank.fit_predict(&chunk) {
+            Ok(c) => c,
+            Err(e) => {
+                result = Err(e);
+                break;
+            }
+        };
         let mut out = chunk;
         for c in cols {
             out.with_column(c)?;
@@ -115,12 +156,11 @@ pub fn run_config(cfg: &RunConfig, mut progress: impl FnMut(RunStats)) -> Polars
 
         stats.rows += height;
         stats.chunks += 1;
-        offset += height as i64;
         progress(stats);
-        if height < cfg.chunk_rows {
-            break;
-        }
     }
+    // Drop the receiver first so a reader still blocked on `send` wakes up.
+    let _ = reader.join();
+    result?;
     if let Some(w) = writer {
         w.finish()?;
     } else {
