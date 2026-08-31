@@ -37,3 +37,14 @@ toml = "1.1"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+# Measured on the shipped wheel: 65.2 -> 49.5 MB installed (-24%), download
+# 18 -> 17 MB (compression already handles a symbol table well, so the win is
+# on disk, which is what matters in a container or a lambda layer).
+# `strip = "debuginfo"` was measured too and changes nothing: a release build
+# carries no debug info to begin with.
+#
+# What it costs: `RUST_BACKTRACE=1` frames lose their names. Panic *messages*
+# survive -- pyo3 turns a panic into `PanicException` carrying the message
+# string, which lives in the binary, not the symbol table -- so the diagnostic
+# that names the bug is intact and only the frame list goes.
+strip = "symbols"

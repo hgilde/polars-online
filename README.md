@@ -43,7 +43,10 @@ uv run maturin develop --release -m crates/online-py/Cargo.toml
 ```
 
 Wheels and CLI binaries for macOS, Windows and Linux are attached to each
-release.
+release. The wheel is ~17 MB to download and ~50 MB installed: it statically
+links the Rust half of Polars, so nothing beyond `polars` itself has to be
+present at run time. `numpy` is an optional extra, needed only by
+`ModelBank.gram()`.
 
 ## The three usage modes
 
