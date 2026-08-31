@@ -267,41 +267,38 @@ can break that macOS never will.
 
 ## What is left
 
-Everything in this document is done except the items below, and all of them
-have the same single blocker.
+The blocker this section used to describe — *nothing has ever been pushed, no
+CI job has ever run on any platform* — is gone. As of 2026-08-31 the repo is
+pushed, and CI has run on all three platforms.
 
-**Nothing has ever been pushed.** `origin` is `github.com/hgilde/polars-online`
-and the branch is many commits ahead, but this machine has no GitHub
-credentials — no keychain entry for github.com, no SSH key, no `GH_TOKEN`, and
-`gh` is not installed — so `git push` cannot authenticate and **no CI job has
-ever run, on any platform.** Unblock with `gh auth login`, an SSH key, or a
-personal access token; note that the token needs the **`workflow` scope**,
-because the first push adds `.github/workflows/`.
+**Cleared:**
 
-That gates, in order:
+- **T-D1** — the workflows have run. What they claimed is now measured, and
+  three of the claims were wrong: see `docs/RELEASE-READINESS.md` for the
+  Linux `ld` SIGBUS (disk, not memory), the cache that never saved, and the
+  disk exhaustion *inside* the cache restore.
+- **T-W1** — `cargo test`, `maturin develop` and pytest have all executed on
+  Windows: **712 passed, 1 failed** on `d6158aa`, down from 9 failures. Every
+  one of the nine was a test bug, not a library bug — cp1252 encoding,
+  `str(WindowsPath)` backslashes, a hardcoded POSIX `PATH`, a bash-only test.
+- **T-W7** — the 126 committed golden pipeline outputs compared at 1e-12 on
+  Windows, so the golden comparison is genuinely cross-platform now.
+- **T-W5**, **T-W3b**, **T-W8**, **T-W2** — all executed as part of that run.
 
-1. **T-D1** — run the workflows once. Until this happens, everything the CI
-   config claims is an untested assertion, including the Linux and macOS jobs.
-2. **T-W1** — `cargo test`, `maturin develop` and the pytest suite have never
-   executed on Windows. A whole supported platform is unverified. What is left
-   behind it is narrower than it looks, because each of these now has its
-   *mechanism* built and only needs a runner to execute it:
-   **T-W7** (`tests/test_golden_pipeline.py` compares 126 committed pipeline
-   outputs at 1e-12 — the comparison becomes a cross-platform one for free);
-   **T-W5**'s remaining half (does the Windows job produce an `online.exe` at
-   all? — the rename that consumes it is already tested);
-   **T-W3b** (drive-letter and UNC *resolution*; escaped paths and paths with
-   spaces already round-trip); and **T-W8** (file locking on rewrite, which has
-   no analogue to test against on a POSIX filesystem).
-3. **T-W2** — cross-OS state hand-off. The msgpack payload has no
-   host-dependent parts *by construction* and `save_bytes` is asserted
-   deterministic locally, but that is an argument, not a test.
-4. **PyPI** — the name is **available**: `pypi.org/pypi/polars-online/json` and
-   the underscore spelling both return 404 (checked 2026-08-30). What remains
-   is registering this repository and workflow as a trusted publisher, which
-   needs the account. `release.yml`'s `publish` job is gated behind a `pypi`
-   environment, so a tag can build and attach artifacts without publishing
-   until that is done.
+**The one open item, and it is a real one:**
+
+- The tenth Windows failure — a `UnicodeEncodeError` in
+  `examples/pathway_integration.py` — was fixed and pinned by a test, but
+  **the fix has never run on Windows.** The cost policy took Windows off push
+  (see the COST POLICY comment in `ci.yml`), so the next Windows result comes
+  from the Monday schedule, or from a manual `workflow_dispatch` — which also
+  pulls in macOS at 10x, so the schedule is much the cheaper way to find out.
+  Until then, treat Windows as *green-except-one-known-fix-unverified*.
+
+- **PyPI** — the name is still free (both spellings, re-checked 2026-08-31).
+  What remains is registering this repository and workflow as a trusted
+  publisher, which needs the account, and deciding the `polars==1.44.1` pin
+  question recorded in `docs/RELEASE-READINESS.md`.
 
 Two things are worth doing periodically rather than once:
 
