@@ -236,10 +236,16 @@ That gates, in order:
 1. **T-D1** — run the workflows once. Until this happens, everything the CI
    config claims is an untested assertion, including the Linux and macOS jobs.
 2. **T-W1** — `cargo test`, `maturin develop` and the pytest suite have never
-   executed on Windows. A whole supported platform is unverified, and T-W3b,
-   T-W3b, T-W7 and T-W8 are all speculative until it runs once, and T-W5's
-   remaining half (does the Windows job produce an `online.exe` at all?) with
-   them.
+   executed on Windows. A whole supported platform is unverified. What is left
+   behind it is narrower than it looks, because each of these now has its
+   *mechanism* built and only needs a runner to execute it:
+   **T-W7** (`tests/test_golden_pipeline.py` compares 126 committed pipeline
+   outputs at 1e-12 — the comparison becomes a cross-platform one for free);
+   **T-W5**'s remaining half (does the Windows job produce an `online.exe` at
+   all? — the rename that consumes it is already tested);
+   **T-W3b** (drive-letter and UNC *resolution*; escaped paths and paths with
+   spaces already round-trip); and **T-W8** (file locking on rewrite, which has
+   no analogue to test against on a POSIX filesystem).
 3. **T-W2** — cross-OS state hand-off. The msgpack payload has no
    host-dependent parts *by construction* and `save_bytes` is asserted
    deterministic locally, but that is an argument, not a test.

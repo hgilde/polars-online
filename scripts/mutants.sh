@@ -3,6 +3,12 @@
 #
 #   ./scripts/mutants.sh                      # the whole crate (slow: ~2600 mutants)
 #   ./scripts/mutants.sh crates/online-core/src/clock.rs   # one file (~1 min)
+#   ./scripts/mutants.sh --iterate            # only what the last run did not catch
+#   ./scripts/mutants.sh --in-diff <(git diff main...)     # only code a diff touches
+#
+# Prefer the last two for follow-ups. A full pass is only worth it after a batch
+# of feature work; `--iterate` answers "did the survivors close?" for a tenth of
+# the cost, and `--in-diff` answers "is this branch covered?".
 #
 # What it does: makes one small change to the source (flip an operator, replace
 # a function body with a constant), rebuilds, and reruns the tests. A mutant
@@ -25,5 +31,13 @@ source scripts/env.sh
 # with four jobs competing. Raise it if a legitimate test is ever misreported as
 # a timeout.
 args=(--package online-core -j 4 --minimum-test-timeout 10)
-for f in "$@"; do args+=(--file "$f"); done
+# Anything starting with `-` is a cargo-mutants flag; a bare word is a file to
+# scope to. That keeps the common `./scripts/mutants.sh some/file.rs` working
+# while allowing `--iterate` and `--in-diff` through.
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -*) args+=("$1"); shift; if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then args+=("$1"); shift; fi ;;
+        *)  args+=(--file "$1"); shift ;;
+    esac
+done
 cargo mutants "${args[@]}"
