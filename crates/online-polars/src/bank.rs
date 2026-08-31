@@ -360,25 +360,32 @@ impl Bank {
             }
         }
 
-        // Simpler: process per spec, groups in parallel within the spec.
+        // One flat task pool over (spec x group), not a loop of per-spec pools
+        // (docs/PERFORMANCE.md P2). A bank of N single-group specs used to run
+        // on one core at a time; now every stream in the bank is one task.
         let specs = &self.specs;
         let cfgs = &self.clock_cfgs;
-        let mut per_spec_rows: Vec<Vec<ChunkOut>> = Vec::with_capacity(specs.len());
+        // Each task owns a disjoint `&mut Stream`, so the borrow checker needs
+        // them pulled out of the maps up front.
+        let mut work: Vec<(usize, &Vec<usize>, &mut Stream)> = Vec::new();
         for (si, hm) in self.states.iter_mut().enumerate() {
-            let spec = &specs[si];
-            let cfg = &cfgs[si];
-            let sc = &cols[si];
-            let spec_groups = &groups[si];
-            // Pull each group's stream out so rayon tasks own disjoint &mut.
-            let mut work: Vec<(&GroupKey, &Vec<usize>, &mut Stream)> = Vec::new();
             let mut taken: HashMap<&GroupKey, &mut Stream> = hm.iter_mut().collect();
-            for (key, idx) in spec_groups {
+            for (key, idx) in &groups[si] {
                 let stream = taken.remove(key).expect("stream materialized above");
-                work.push((key, idx, stream));
+                work.push((si, idx, stream));
             }
-            let rows: Vec<StreamRows> = work
-                .into_par_iter()
-                .map(|(_key, idx, stream)| {
+        }
+        // Longest stream first: with a few big groups and many small ones,
+        // starting the big ones last leaves cores idle at the tail.
+        work.sort_by_key(|(_, idx, _)| std::cmp::Reverse(idx.len()));
+
+        let done: Vec<(usize, StreamRows)> = work
+            .into_par_iter()
+            .map(|(si, idx, stream)| {
+                let spec = &specs[si];
+                let cfg = &cfgs[si];
+                let sc = &cols[si];
+                let r = (|| {
                     let mut out =
                         ChunkOut::new(spec, stream.n_models(), stream.n_slots(), idx.len());
                     stream
@@ -405,9 +412,14 @@ impl Bank {
                             )
                         })?;
                     Ok(out)
-                })
-                .collect();
-            per_spec_rows.push(rows.into_iter().collect::<PolarsResult<Vec<_>>>()?);
+                })();
+                (si, r)
+            })
+            .collect();
+
+        let mut per_spec_rows: Vec<Vec<ChunkOut>> = (0..specs.len()).map(|_| Vec::new()).collect();
+        for (si, r) in done {
+            per_spec_rows[si].push(r?);
         }
         let t_process = t2.elapsed();
         let t3 = std::time::Instant::now();
@@ -713,7 +725,7 @@ fn assemble(spec: &Spec, n: usize, chunks: &[ChunkOut]) -> PolarsResult<Column> 
     let some_if_finite = |v: f64| if v.is_nan() { None } else { Some(v) };
     for ch in chunks {
         let nr = ch.rows.len();
-        let per = ch.n_models * ch.n_slots * nr;
+        let block = ch.n_slots * nr;
         for (ri, &i) in ch.rows.iter().enumerate() {
             if !ch.processed[ri] {
                 continue;
@@ -728,13 +740,16 @@ fn assemble(spec: &Spec, n: usize, chunks: &[ChunkOut]) -> PolarsResult<Column> 
                         drift[dst][i] = Some(ch.drift[at]);
                     }
                     if n_met > 0 {
+                        // Model-major: instance mi owns 3 contiguous blocks.
+                        let mbase = mi * 3 * block + slot * nr + ri;
                         for (k, met_k) in met.iter_mut().enumerate() {
-                            met_k[dst][i] = some_if_finite(ch.metrics[k * per + at]);
+                            met_k[dst][i] = some_if_finite(ch.metrics[mbase + k * block]);
                         }
                     }
                     for li in 0..n_levels {
+                        let qbase = mi * n_levels * block + li * block + slot * nr + ri;
                         rq[(li * n_models + mi) * m * nc + slot][i] =
-                            some_if_finite(ch.resid_q[li * per + at]);
+                            some_if_finite(ch.resid_q[qbase]);
                     }
                     if n_ac > 0 {
                         ac[dst][i] = some_if_finite(ch.autocorr[at]);

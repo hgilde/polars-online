@@ -119,13 +119,28 @@ that moves a golden number is wrong by definition.
   buffer per stream. This deletes the per-row allocations of (2) and most of
   `assemble`'s scatter. Target: k=20 single stream ≥ 3.5M rows/s (from 1.31M);
   grouped scaling ≥ 7× at 10 threads (from 3.2×).</details>
-- [ ] **P2 — One flat task pool.** Fan out over (spec × group × model-instance)
+- [x] **P2 — One flat task pool.** *Done, both halves.* **(spec × group):**
+  the per-spec loop of per-spec rayon pools became one pool over every stream
+  in the bank, longest-first so a few big groups do not strand cores at the
+  tail. Measured on 8 single-group specs: **783.8 → 238.8 ms (3.3×)**, where
+  before only one spec ran at a time. **(× instance):** `process_chunk` is now
+  two passes — one serial walk deciding the clock schedule (which depends only
+  on the clock and the input columns, never on the models), then the instances
+  over the whole chunk. Instances share nothing but that schedule, so a
+  five-halflife grid on one stream is five independent recursions:
+  **458,500 → 1,000,341 rows/s (2.2×)**. The exception is
+  `drift_action = "reset"`, where a break in any instance resets all of them
+  within a row; that case keeps row-major order, and both paths call the same
+  `run_instance`, so there is one copy of the arithmetic. Cost: ~5% on the
+  already-parallel grouped case (4.74M → 4.54M at 10 threads) for the extra
+  plan pass. Golden numbers unchanged.
+  <details><summary>original plan</summary> Fan out over (spec × group × model-instance)
   in a single `par_iter`, not per-spec loops: a bank of N single-group specs
   currently uses one core; a grid on one stream uses one core. Instances need
   their per-instance diagnostics (`resid_var`, `drift`, …) split into a
   per-instance struct so rayon tasks own disjoint `&mut` — mechanical, the
   indexing is already `[mi]`-major. Target: 5-halflife single stream ≥ 4×
-  itself; N-spec banks scale with specs.
+  itself; N-spec banks scale with specs.</details>
 - [x] **P3 — Extraction and grouping without materialization.** *Done.*
   Columns extract to plain `Vec<f64>` with **NaN for null** instead of
   `Vec<Option<f64>>` — half the bytes, no per-value branch, and a `memcpy` via

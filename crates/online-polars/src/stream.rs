@@ -561,12 +561,7 @@ pub struct Stream {
     /// Row scratch, reused for the life of the stream so the chunk loop
     /// allocates nothing (docs/PERFORMANCE.md P1). `pred_buf` catches the
     /// `Vec` a model's `Step` hands back, so the next `step` can refill it.
-    xs: Vec<f64>,
-    ys: Vec<Option<f64>>,
-    r_buf: Vec<f64>,
-    sig_buf: Vec<f64>,
-    zs_buf: Vec<f64>,
-    pred_buf: Vec<f64>,
+    scratch: Vec<Scratch>,
 }
 
 impl Stream {
@@ -618,9 +613,9 @@ pub struct ChunkOut {
     pub sigma: Vec<f64>,
     pub resid_z: Vec<f64>,
     pub autocorr: Vec<f64>,
-    /// `(ic, r2, hit_rate)` interleaved: `3 * n_models * n_slots * n_rows`.
+    /// `(ic, r2, hit_rate)`, model-major: `n_models * 3 * n_slots * n_rows`.
     pub metrics: Vec<f64>,
-    /// `n_levels * n_models * n_slots * n_rows`.
+    /// Model-major: `n_models * n_levels * n_slots * n_rows`.
     pub resid_q: Vec<f64>,
     pub drift: Vec<bool>,
     /// `n_models * n_rows`.
@@ -728,12 +723,7 @@ impl Stream {
             models,
             decays,
             rows_seen: 0,
-            xs: Vec::new(),
-            ys: Vec::new(),
-            r_buf: Vec::new(),
-            sig_buf: Vec::new(),
-            zs_buf: Vec::new(),
-            pred_buf: Vec::new(),
+            scratch: slots.iter().map(|_| Scratch::default()).collect(),
         })
     }
 
@@ -787,43 +777,20 @@ impl Stream {
         Ok(stream)
     }
 
-    fn reset_models(&mut self, spec: &Spec) {
-        self.models = build_models(spec).expect("spec was already validated");
-        for v in self.resid_var.iter_mut().chain(self.resid_w.iter_mut()) {
-            v.iter_mut().for_each(|x| *x = 0.0);
-        }
-        for d in self.drift.iter_mut() {
-            d.iter_mut().for_each(PageHinkley::reset);
-        }
-        // Residual diagnostics restart with the model they describe.
-        let (levels, lag) = (spec.resid_quantiles.clone(), spec.resid_autocorr_lag);
-        if let Some(levels) = levels {
-            for per_slot in self.resid_q.iter_mut() {
-                for per_level in per_slot.iter_mut() {
-                    for (est, q) in per_level.iter_mut().zip(&levels) {
-                        *est = P2Quantile::new(*q).expect("validated");
-                    }
-                }
-            }
-        }
-        for per_slot in self.autocorr.iter_mut() {
-            for est in per_slot.iter_mut() {
-                *est = EwAutoCorr::new(lag.unwrap_or(1)).expect("validated");
-            }
-        }
-        for per_slot in self.metrics.iter_mut() {
-            per_slot.iter_mut().for_each(|m| *m = SlotMetrics::new());
-        }
-    }
-
     /// Process this stream's rows of one chunk, writing into flat per-slot
-    /// buffers (docs/PERFORMANCE.md P1).
+    /// buffers (docs/PERFORMANCE.md P1, P2).
     ///
-    /// `idx` is this stream's absolute row indices in row order. The loop
-    /// allocates nothing: features, targets and the per-slot temporaries all
-    /// live in scratch buffers owned by the stream and reused across rows.
-    /// Coefficients are snapshotted every `coef_every` accepted rows and on
-    /// the chunk's last row.
+    /// Two passes. The first walks the rows advancing the clock and deciding
+    /// which are accepted -- that depends only on the clock and the input
+    /// columns, never on the models. The second runs each model instance over
+    /// the whole chunk, and because instances share nothing but that schedule,
+    /// they run **in parallel**: a five-halflife grid on a single stream is
+    /// five independent recursions rather than one serial loop.
+    ///
+    /// The one exception is `drift_action = "reset"`, where a break detected by
+    /// any instance resets all of them, so instances are coupled *within a
+    /// row*. That case keeps row-major order. Both paths call the same
+    /// [`run_instance`], so there is one implementation of the arithmetic.
     ///
     /// On a backwards clock under `on_clock_reset = "error"`, returns the raw
     /// delta and the absolute row it happened at, for the caller to name.
@@ -842,233 +809,417 @@ impl Stream {
     ) -> Result<(), (f64, usize)> {
         let n_rows = idx.len();
         out.rows.extend_from_slice(idx);
+
+        // ---- pass 1: the clock schedule, models untouched ----
         let last = idx.last().copied();
+        let mut plans: Vec<RowPlan> = Vec::with_capacity(n_rows);
         for (ri, &i) in idx.iter().enumerate() {
-            self.process_one(
-                spec,
-                cfg,
-                features,
-                targets,
-                clock.map(|c| c[i]),
-                session.map(|s| s[i]),
-                weight.map(|w| w[i]),
-                i,
-                Some(i) == last,
+            // Null arrives as NaN from extraction, so one `is_finite` covers both.
+            let w = weight.map(|w| w[i]);
+            let accept = features.iter().all(|f| f[i].is_finite())
+                && w.map(|w| w.is_finite()).unwrap_or(true);
+            let adv = self
+                .clock
+                .advance(cfg, clock.map(|c| c[i]), session.map(|s| s[i]), accept);
+            // `on_clock_reset = "error"`: hand the offending delta back so the
+            // caller can name the row and column.
+            if let Some(raw) = adv.backwards {
+                return Err((raw, i));
+            }
+            if accept {
+                self.rows_seen += 1;
+                out.processed[ri] = true;
+            }
+            let want_coef = accept
+                && (Some(i) == last
+                    || (spec.coef_every > 0 && self.rows_seen % u64::from(spec.coef_every) == 0));
+            plans.push(RowPlan {
                 ri,
-                n_rows,
-                out,
-            )
-            .map_err(|raw| (raw, i))?;
+                i,
+                d_clock: adv.d_clock,
+                reset: adv.reset,
+                blend: !adv.reset && adv.session_changed,
+                accept,
+                want_coef,
+                w: w.unwrap_or(1.0),
+            });
         }
+
+        // ---- pass 2: the instances ----
+        let drift_resets = spec.drift_action.as_deref() == Some("reset");
+        let coupled = !self.drift.is_empty() && drift_resets;
+        // `min_periods` is read by every instance; move it out so the split
+        // below can borrow the rest of `self` mutably.
+        let min_periods = std::mem::take(&mut self.min_periods);
+        let mut insts = self.split_instances(spec, out, n_rows);
+        if coupled && insts.len() > 1 {
+            for pi in 0..plans.len() {
+                let mut seen = false;
+                for inst in insts.iter_mut() {
+                    // false: the caller resets every instance below, once all
+                    // of them have seen this row.
+                    seen |= run_instance(
+                        inst,
+                        &plans[pi..=pi],
+                        features,
+                        targets,
+                        &min_periods,
+                        false,
+                    );
+                }
+                if seen {
+                    insts.iter_mut().for_each(Instance::reset);
+                }
+            }
+        } else if insts.len() > 1 {
+            use rayon::prelude::*;
+            // Only reached when instances are independent, which (given
+            // `coupled` above) means `drift_action` is not "reset".
+            insts.par_iter_mut().for_each(|inst| {
+                run_instance(inst, &plans, features, targets, &min_periods, false);
+            });
+        } else if let Some(inst) = insts.first_mut() {
+            // One instance: a drift reset has nothing to coordinate with, so
+            // it resets itself inline at the row that fired.
+            run_instance(inst, &plans, features, targets, &min_periods, drift_resets);
+        }
+        drop(insts);
+        self.min_periods = min_periods;
         Ok(())
     }
 
-    /// One row of [`Self::process_chunk`], writing into `out` at `ri`.
-    #[allow(clippy::too_many_arguments)]
-    fn process_one(
-        &mut self,
-        spec: &Spec,
-        cfg: &online_core::ClockCfg,
-        features: &[Vec<f64>],
-        targets: &[Vec<f64>],
-        clock: Option<f64>,
-        session: Option<u64>,
-        // weight: None = no weight column; Some(NaN) = null value (skips the row)
-        weight: Option<f64>,
-        i: usize,
-        emit_coef: bool,
-        ri: usize,
+    /// Split per-instance state and output into disjoint pieces, so instances
+    /// can run concurrently. Every `ChunkOut` buffer is laid out model-major,
+    /// which is what makes an instance's region one contiguous slice; the
+    /// state vectors are already `[mi]`-indexed.
+    fn split_instances<'a>(
+        &'a mut self,
+        spec: &'a Spec,
+        out: &'a mut ChunkOut,
         n_rows: usize,
-        out: &mut ChunkOut,
-    ) -> Result<(), f64> {
-        // Null arrives as NaN from extraction, so one `is_finite` covers both.
-        let accept = features.iter().all(|f| f[i].is_finite())
-            && weight.map(|w| w.is_finite()).unwrap_or(true);
-        let adv = self.clock.advance(cfg, clock, session, accept);
-        // `on_clock_reset = "error"`: hand the offending delta back so the
-        // caller can name the row and column.
-        if let Some(raw) = adv.backwards {
-            return Err(raw);
+    ) -> Vec<Instance<'a>> {
+        let n = self.models.len();
+        let block = out.n_slots * n_rows;
+        let n_targets = if n == 0 || n_rows == 0 || out.lam_selected.is_empty() {
+            0
+        } else {
+            out.lam_selected.len() / (n * n_rows)
+        };
+
+        let mut drift = self.drift.iter_mut();
+        let mut resid_q = self.resid_q.iter_mut();
+        let mut autocorr = self.autocorr.iter_mut();
+        let mut metrics = self.metrics.iter_mut();
+        let mut o_pred = out.pred.chunks_mut(block.max(1));
+        let mut o_resid = out.resid.chunks_mut(block.max(1));
+        let mut o_sigma = out.sigma.chunks_mut(block.max(1));
+        let mut o_resid_z = out.resid_z.chunks_mut(block.max(1));
+        let mut o_autocorr = out.autocorr.chunks_mut(block.max(1));
+        let mut o_metrics = out.metrics.chunks_mut((3 * block).max(1));
+        let mut o_resid_q = out.resid_q.chunks_mut((out.n_levels * block).max(1));
+        let mut o_drift = out.drift.chunks_mut(block.max(1));
+        let mut o_n_eff = out.n_eff.chunks_mut(n_rows.max(1));
+        let mut o_lam = out.lam_selected.chunks_mut((n_targets * n_rows).max(1));
+        let mut o_coef = out.coef.iter_mut();
+
+        let n_slots = out.n_slots;
+        let mut models = self.models.iter_mut();
+        let mut decays = self.decays.iter();
+        let mut resid_var = self.resid_var.iter_mut();
+        let mut resid_w = self.resid_w.iter_mut();
+        let mut scratch = self.scratch.iter_mut();
+
+        // Pulled in lockstep: each iterator yields disjoint `&mut`s, so every
+        // Instance owns its own piece of everything.
+        (0..n)
+            .enumerate()
+            .map(|(mi, _)| Instance {
+                spec,
+                mi,
+                model: &mut models.next().expect("one per instance").1,
+                decay: *decays.next().expect("one per instance"),
+                resid_var: resid_var.next().expect("one per instance"),
+                resid_w: resid_w.next().expect("one per instance"),
+                drift: drift.next(),
+                resid_q: resid_q.next(),
+                autocorr: autocorr.next(),
+                metrics: metrics.next(),
+                scratch: scratch.next().expect("one per instance"),
+                n_slots,
+                n_rows,
+                o_pred: o_pred.next().unwrap_or_default(),
+                o_resid: o_resid.next().unwrap_or_default(),
+                o_sigma: o_sigma.next().unwrap_or_default(),
+                o_resid_z: o_resid_z.next().unwrap_or_default(),
+                o_autocorr: o_autocorr.next().unwrap_or_default(),
+                o_metrics: o_metrics.next().unwrap_or_default(),
+                o_resid_q: o_resid_q.next().unwrap_or_default(),
+                o_drift: o_drift.next().unwrap_or_default(),
+                o_n_eff: o_n_eff.next().unwrap_or_default(),
+                o_lam: o_lam.next().unwrap_or_default(),
+                o_coef: o_coef.next().expect("one per instance"),
+            })
+            .collect()
+    }
+}
+
+/// What pass 1 decided about one row, so pass 2 can replay it per instance
+/// without touching the clock again.
+struct RowPlan {
+    /// Position within the chunk (index into the output buffers).
+    ri: usize,
+    /// Absolute row in the DataFrame (index into the input columns).
+    i: usize,
+    d_clock: f64,
+    reset: bool,
+    blend: bool,
+    accept: bool,
+    want_coef: bool,
+    w: f64,
+}
+
+/// Per-row scratch, one set per model instance so instances can run
+/// concurrently without sharing buffers.
+#[derive(Default)]
+pub struct Scratch {
+    xs: Vec<f64>,
+    ys: Vec<Option<f64>>,
+    r: Vec<f64>,
+    sig: Vec<f64>,
+    zs: Vec<f64>,
+}
+
+/// One model instance's state and its disjoint slice of the chunk output.
+struct Instance<'a> {
+    /// For rebuilding this instance on a reset -- the spec is the only
+    /// description of a pristine model, and `mi` picks this one out of it.
+    spec: &'a Spec,
+    mi: usize,
+    model: &'a mut AnyModel,
+    decay: Decay,
+    resid_var: &'a mut Vec<f64>,
+    resid_w: &'a mut Vec<f64>,
+    drift: Option<&'a mut Vec<PageHinkley>>,
+    resid_q: Option<&'a mut Vec<Vec<P2Quantile>>>,
+    autocorr: Option<&'a mut Vec<EwAutoCorr>>,
+    metrics: Option<&'a mut Vec<SlotMetrics>>,
+    scratch: &'a mut Scratch,
+    n_slots: usize,
+    n_rows: usize,
+    o_pred: &'a mut [f64],
+    o_resid: &'a mut [f64],
+    o_sigma: &'a mut [f64],
+    o_resid_z: &'a mut [f64],
+    o_autocorr: &'a mut [f64],
+    o_metrics: &'a mut [f64],
+    o_resid_q: &'a mut [f64],
+    o_drift: &'a mut [bool],
+    o_n_eff: &'a mut [f64],
+    o_lam: &'a mut [f64],
+    o_coef: &'a mut Vec<Option<Vec<f64>>>,
+}
+
+impl Instance<'_> {
+    /// Restart this instance: the same thing a clock reset or a drift break
+    /// does, applied to one instance rather than the whole stream.
+    fn reset(&mut self) {
+        let spec = self.spec;
+        *self.model = build_models(spec)
+            .expect("spec was already validated")
+            .swap_remove(self.mi)
+            .1;
+        self.resid_var.iter_mut().for_each(|v| *v = 0.0);
+        self.resid_w.iter_mut().for_each(|v| *v = 0.0);
+        if let Some(d) = self.drift.as_deref_mut() {
+            d.iter_mut().for_each(PageHinkley::reset);
         }
-        if adv.reset {
-            self.reset_models(spec);
-        } else if adv.session_changed {
+        // Residual diagnostics restart with the model they describe.
+        if let (Some(q), Some(levels)) = (self.resid_q.as_deref_mut(), &spec.resid_quantiles) {
+            for per_level in q.iter_mut() {
+                for (est, lvl) in per_level.iter_mut().zip(levels) {
+                    *est = P2Quantile::new(*lvl).expect("validated");
+                }
+            }
+        }
+        if let Some(a) = self.autocorr.as_deref_mut() {
+            let lag = spec.resid_autocorr_lag.unwrap_or(1);
+            a.iter_mut()
+                .for_each(|e| *e = EwAutoCorr::new(lag).expect("validated"));
+        }
+        if let Some(m) = self.metrics.as_deref_mut() {
+            m.iter_mut().for_each(|s| *s = SlotMetrics::new());
+        }
+    }
+}
+
+/// Run one model instance over a run of rows. Returns whether any drift
+/// detector fired, which is all the caller needs to decide about a reset.
+///
+/// This is the whole per-row arithmetic, and the only copy of it: the parallel
+/// path calls it once per instance with every row, the drift-coupled path once
+/// per instance per row.
+fn run_instance(
+    inst: &mut Instance<'_>,
+    plans: &[RowPlan],
+    features: &[Vec<f64>],
+    targets: &[Vec<f64>],
+    min_periods: &[f64],
+    // `drift_action = "reset"` with nothing else to coordinate with: restart
+    // *at the row that fired*, not at the end of the chunk, or the rest of the
+    // chunk keeps learning from the regime the detector just rejected.
+    reset_on_drift: bool,
+) -> bool {
+    let mut drift_seen = false;
+    let n_rows = inst.n_rows;
+    let block = inst.n_slots * n_rows;
+    for plan in plans {
+        if plan.reset {
+            inst.reset();
+        } else if plan.blend {
             // A gentler alternative to resetting: revert partway toward the
             // long-run relationship (ENHANCEMENTS E6).
-            for (_, m) in self.models.iter_mut() {
-                m.blend_toward_long_run();
-            }
+            inst.model.blend_toward_long_run();
         }
-        if !accept {
-            return Ok(());
+        if !plan.accept {
+            continue;
         }
-        out.processed[ri] = true;
-        self.rows_seen += 1;
-        // Scratch, reused across rows: the hot loop must not allocate.
-        self.xs.clear();
-        self.xs.extend(features.iter().map(|f| f[i]));
-        self.ys.clear();
-        self.ys
+        let (i, ri, w) = (plan.i, plan.ri, plan.w);
+        let sc = &mut *inst.scratch;
+        sc.xs.clear();
+        sc.xs.extend(features.iter().map(|f| f[i]));
+        sc.ys.clear();
+        sc.ys
             .extend(targets.iter().map(|t| Some(t[i]).filter(|f| f.is_finite())));
-        let xs = std::mem::take(&mut self.xs);
-        let ys = std::mem::take(&mut self.ys);
-        let w = weight.unwrap_or(1.0);
+        let m_targets = sc.ys.len();
 
-        let want_coef =
-            emit_coef || (spec.coef_every > 0 && self.rows_seen % u64::from(spec.coef_every) == 0);
-        let m_targets = ys.len();
-        let mut drift_seen = false;
-        for (mi, (_, m)) in self.models.iter_mut().enumerate() {
-            let mut step = m.step(&xs, &ys, adv.d_clock, w);
-            let nc = step.pred.len() / m_targets;
+        let mut step = inst.model.step(&sc.xs, &sc.ys, plan.d_clock, w);
+        let n_slots = step.pred.len();
+        // `ew_cov` has no targets; its slots are statistics, so every one
+        // maps to "target 0" for the warmup check.
+        let nc = n_slots.checked_div(m_targets).unwrap_or(1);
 
-            // Per-target warmup (ENHANCEMENTS E7). The model itself predicts
-            // once the *smallest* threshold is met; a slot whose own target is
-            // not ready is withheld here, before it can reach the residual,
-            // sigma, resid_z, drift or selection. Warmup gates output, not
-            // learning -- the model has already updated from this row.
-            for (slot, p) in step.pred.iter_mut().enumerate() {
-                if step_n_eff_below(step.n_eff, &self.min_periods, slot / nc) {
-                    *p = f64::NAN;
-                }
+        // Per-target warmup (ENHANCEMENTS E7). The model itself predicts once
+        // the *smallest* threshold is met; a slot whose own target is not ready
+        // is withheld here, before it can reach the residual, sigma, resid_z,
+        // drift or selection. Warmup gates output, not learning -- the model
+        // has already updated from this row.
+        for (slot, p) in step.pred.iter_mut().enumerate() {
+            if step_n_eff_below(step.n_eff, min_periods, slot / nc) {
+                *p = f64::NAN;
             }
-
-            // Scratch, sized once for the widest model and reused.
-            let n_slots = step.pred.len();
-            let r = &mut self.r_buf;
-            let sig = &mut self.sig_buf;
-            let zs = &mut self.zs_buf;
-            r.clear();
-            r.extend(
-                step.pred
-                    .iter()
-                    .enumerate()
-                    .map(|(slot, p)| match ys[slot / nc] {
-                        Some(yj) if p.is_finite() => yj - p,
-                        _ => f64::NAN,
-                    }),
-            );
-            sig.clear();
-            sig.resize(n_slots, f64::NAN);
-            zs.clear();
-            zs.resize(n_slots, f64::NAN);
-
-            // sigma is read from the state BEFORE this row's residual is folded
-            // in, so `resid_z` is out-of-sample like the prediction it scales.
-            let lam = self.decays[mi].factor(adv.d_clock);
-            let vars = &mut self.resid_var[mi];
-            let wsum = &mut self.resid_w[mi];
-            for (slot, &rv) in r.iter().enumerate() {
-                if wsum[slot] > 0.0 {
-                    let sd = vars[slot].max(0.0).sqrt();
-                    sig[slot] = sd;
-                    if rv.is_finite() && sd > 0.0 {
-                        zs[slot] = rv / sd;
-                    }
-                }
-                if rv.is_finite() {
-                    let w_new = lam * wsum[slot] + w;
-                    if w_new > 0.0 {
-                        vars[slot] = (lam * wsum[slot] * vars[slot] + w * rv * rv) / w_new;
-                        wsum[slot] = w_new;
-                    }
-                } else {
-                    wsum[slot] *= lam;
-                }
-            }
-
-            // ---- write this model's row into the flat buffers ----
-            let base = (mi * out.n_slots) * n_rows + ri;
-            for (slot, (&p, &rv)) in step.pred.iter().zip(r.iter()).enumerate() {
-                let at = base + slot * n_rows;
-                out.pred[at] = p;
-                out.resid[at] = rv;
-            }
-            if !out.sigma.is_empty() {
-                for (slot, (&s, &z)) in sig.iter().zip(zs.iter()).enumerate().take(n_slots) {
-                    let at = base + slot * n_rows;
-                    out.sigma[at] = s;
-                    out.resid_z[at] = z;
-                }
-            }
-
-            // Drift is monitored on |resid| scaled by the slot's own EW
-            // residual std, so `drift_delta` means the same thing whatever the
-            // target's units. Rows with no residual are skipped, not treated as
-            // zero error.
-            if !self.drift.is_empty() {
-                let dets = &mut self.drift[mi];
-                for (slot, &rv) in r.iter().enumerate() {
-                    let scale = sig[slot];
-                    if rv.is_finite() && scale.is_finite() && scale > 0.0 {
-                        let flag = dets[slot].update(rv.abs() / scale);
-                        out.drift[base + slot * n_rows] = flag;
-                        drift_seen |= flag;
-                    }
-                }
-            }
-
-            // Residual diagnostics (ENHANCEMENTS E23), all read before the
-            // row's own residual is folded in, like sigma.
-            if !self.resid_q.is_empty() {
-                let ests = &mut self.resid_q[mi];
-                let per = out.n_models * out.n_slots * n_rows;
-                for (slot, per_level) in ests.iter_mut().enumerate() {
-                    for (li, est) in per_level.iter_mut().enumerate() {
-                        out.resid_q[li * per + base + slot * n_rows] =
-                            est.get().unwrap_or(f64::NAN);
-                        if r[slot].is_finite() {
-                            est.update(r[slot].abs());
-                        }
-                    }
-                }
-            }
-            if !self.autocorr.is_empty() {
-                let ests = &mut self.autocorr[mi];
-                for (slot, est) in ests.iter_mut().enumerate() {
-                    out.autocorr[base + slot * n_rows] = est.get().unwrap_or(f64::NAN);
-                    if r[slot].is_finite() {
-                        est.update(r[slot], lam);
-                    }
-                }
-            }
-
-            // Metrics are read before this row is scored, like every other
-            // diagnostic here, so they never include the row they describe.
-            if !self.metrics.is_empty() {
-                let ms = &mut self.metrics[mi];
-                let per = out.n_models * out.n_slots * n_rows;
-                for (slot, met) in ms.iter_mut().enumerate() {
-                    let at = base + slot * n_rows;
-                    out.metrics[at] = met.ic().unwrap_or(f64::NAN);
-                    out.metrics[per + at] = met.r2().unwrap_or(f64::NAN);
-                    out.metrics[2 * per + at] = met.hit_rate().unwrap_or(f64::NAN);
-                    let yj = ys[slot / nc].unwrap_or(f64::NAN);
-                    met.update(step.pred[slot], yj, lam, w);
-                }
-            }
-
-            out.n_eff[mi * n_rows + ri] = step.n_eff;
-            if let Some(online_core::Extra::Lasso { lam_selected }) = &step.extra {
-                for (t_i, l) in lam_selected.iter().enumerate() {
-                    out.lam_selected[(mi * m_targets + t_i) * n_rows + ri] = *l;
-                }
-            }
-            if want_coef {
-                let c = m.coefficients().unwrap_or_default();
-                out.coef[mi][ri] = Some(c.into_iter().flatten().collect());
-            }
-            // Hand the scratch back for the next row/model.
-            self.pred_buf = step.pred;
         }
-        // `drift_action = "reset"`: a detected break restarts this stream's
-        // models, the same path a clock reset takes. The flags for this row are
-        // still reported, so the reset is visible rather than silent.
-        if drift_seen && spec.drift_action.as_deref() == Some("reset") {
-            self.reset_models(spec);
+
+        sc.r.clear();
+        sc.r.extend(step.pred.iter().enumerate().map(|(slot, p)| {
+            match sc.ys.get(slot / nc).copied().flatten() {
+                Some(yj) if p.is_finite() => yj - p,
+                _ => f64::NAN,
+            }
+        }));
+        sc.sig.clear();
+        sc.sig.resize(n_slots, f64::NAN);
+        sc.zs.clear();
+        sc.zs.resize(n_slots, f64::NAN);
+
+        // sigma is read from the state BEFORE this row's residual is folded in,
+        // so `resid_z` is out-of-sample like the prediction it scales.
+        let lam = inst.decay.factor(plan.d_clock);
+        for (slot, &rv) in sc.r.iter().enumerate() {
+            if inst.resid_w[slot] > 0.0 {
+                let sd = inst.resid_var[slot].max(0.0).sqrt();
+                sc.sig[slot] = sd;
+                if rv.is_finite() && sd > 0.0 {
+                    sc.zs[slot] = rv / sd;
+                }
+            }
+            if rv.is_finite() {
+                let w_new = lam * inst.resid_w[slot] + w;
+                if w_new > 0.0 {
+                    inst.resid_var[slot] =
+                        (lam * inst.resid_w[slot] * inst.resid_var[slot] + w * rv * rv) / w_new;
+                    inst.resid_w[slot] = w_new;
+                }
+            } else {
+                inst.resid_w[slot] *= lam;
+            }
         }
-        self.xs = xs;
-        self.ys = ys;
-        Ok(())
+
+        for (slot, (&p, &rv)) in step.pred.iter().zip(sc.r.iter()).enumerate() {
+            let at = slot * n_rows + ri;
+            inst.o_pred[at] = p;
+            inst.o_resid[at] = rv;
+        }
+        if !inst.o_sigma.is_empty() {
+            for (slot, (&s, &z)) in sc.sig.iter().zip(sc.zs.iter()).enumerate() {
+                let at = slot * n_rows + ri;
+                inst.o_sigma[at] = s;
+                inst.o_resid_z[at] = z;
+            }
+        }
+
+        // Drift is monitored on |resid| scaled by the slot's own EW residual
+        // std, so `drift_delta` means the same thing whatever the target's
+        // units. Rows with no residual are skipped, not treated as zero error.
+        let mut row_drift = false;
+        if let Some(dets) = inst.drift.as_deref_mut() {
+            for (slot, &rv) in sc.r.iter().enumerate() {
+                let scale = sc.sig[slot];
+                if rv.is_finite() && scale.is_finite() && scale > 0.0 {
+                    let flag = dets[slot].update(rv.abs() / scale);
+                    inst.o_drift[slot * n_rows + ri] = flag;
+                    row_drift |= flag;
+                }
+            }
+            drift_seen |= row_drift;
+        }
+
+        // Residual diagnostics (ENHANCEMENTS E23), all read before the row's
+        // own residual is folded in, like sigma.
+        if let Some(ests) = inst.resid_q.as_deref_mut() {
+            for (slot, per_level) in ests.iter_mut().enumerate() {
+                for (li, est) in per_level.iter_mut().enumerate() {
+                    inst.o_resid_q[li * block + slot * n_rows + ri] = est.get().unwrap_or(f64::NAN);
+                    if sc.r[slot].is_finite() {
+                        est.update(sc.r[slot].abs());
+                    }
+                }
+            }
+        }
+        if let Some(ests) = inst.autocorr.as_deref_mut() {
+            for (slot, est) in ests.iter_mut().enumerate() {
+                inst.o_autocorr[slot * n_rows + ri] = est.get().unwrap_or(f64::NAN);
+                if sc.r[slot].is_finite() {
+                    est.update(sc.r[slot], lam);
+                }
+            }
+        }
+
+        // Metrics are read before this row is scored, like every other
+        // diagnostic here, so they never include the row they describe.
+        if let Some(ms) = inst.metrics.as_deref_mut() {
+            for (slot, met) in ms.iter_mut().enumerate() {
+                let at = slot * n_rows + ri;
+                inst.o_metrics[at] = met.ic().unwrap_or(f64::NAN);
+                inst.o_metrics[block + at] = met.r2().unwrap_or(f64::NAN);
+                inst.o_metrics[2 * block + at] = met.hit_rate().unwrap_or(f64::NAN);
+                let yj = sc.ys.get(slot / nc).copied().flatten().unwrap_or(f64::NAN);
+                met.update(step.pred[slot], yj, lam, w);
+            }
+        }
+
+        inst.o_n_eff[ri] = step.n_eff;
+        if let Some(online_core::Extra::Lasso { lam_selected }) = &step.extra {
+            for (t_i, l) in lam_selected.iter().enumerate() {
+                inst.o_lam[t_i * n_rows + ri] = *l;
+            }
+        }
+        if plan.want_coef {
+            let c = inst.model.coefficients().unwrap_or_default();
+            inst.o_coef[ri] = Some(c.into_iter().flatten().collect());
+        }
+        if reset_on_drift && row_drift {
+            inst.reset();
+        }
     }
+    drift_seen
 }
