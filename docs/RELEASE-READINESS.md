@@ -176,6 +176,36 @@ applied to the names.
 It also subsumes the current single-shape field-name test, and would have
 caught the E23 declared-vs-realized divergence from the other direction.
 
+## CI cost: where the 80 minutes went
+
+Measured from step timings on runs 33398135931 and 33406764631, not guessed.
+A cold Windows `test` job:
+
+| step | Windows | Linux |
+|---|---|---|
+| `uv sync` (compiles the extension, release) | 39m | 18m |
+| `cargo test` (compiles the workspace, debug) | 29m | 10m |
+| `maturin develop --release` | **31s** | **18m** |
+| `pytest` | 11m | 5m |
+
+Three findings:
+
+1. **The cache never existed.** Every Windows run logged `No cache found.`
+   rust-cache skips its save step when the job fails, and the Windows job had
+   never once passed -- so each red run discarded ~70 minutes of compilation
+   and the next started cold. `cache-on-failure: true` breaks the cycle.
+2. **Linux compiled release twice.** The `lld` step wrote rustflags into
+   `.cargo/config.toml` *after* `uv sync` had already built the extension.
+   Rustflags are part of cargo's fingerprint, so `maturin develop --release`
+   rebuilt everything -- 18 minutes, against Windows' 31 seconds for the same
+   step with a valid fingerprint. Moved the step before `uv sync`.
+3. **Two full compiles are inherent**, not waste: `uv sync` produces the
+   release extension that pytest imports, `cargo test` the debug test binaries.
+   Only caching helps here.
+
+Defender exclusions were added for the Windows build (best-effort, cannot fail
+the job); their effect is confounded with the cache landing in the same run.
+
 ## API usability round (pre-users window)
 
 Reviewed by using the API as a naive user; the findings and what was done:

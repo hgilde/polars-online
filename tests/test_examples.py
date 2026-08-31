@@ -5,6 +5,7 @@ claim the reader trusts. These are the only tests that exercise the files the
 README points people at, end to end and unmodified.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -21,9 +22,43 @@ def _without_coef(out):
 
 
 def _run(args, **kw):
+    # `capture_output` makes the child's stdout a pipe, and a piped Python on
+    # Windows encodes with the locale codec (cp1252), not UTF-8 -- so printing
+    # a Polars frame, whose table borders are box-drawing characters, dies with
+    # UnicodeEncodeError before the example can finish. We already decode the
+    # child as UTF-8 here; PYTHONIOENCODING makes it encode as UTF-8 too, so
+    # both ends of the pipe agree.
+    # Ours wins over both the ambient environment and the caller's: every
+    # caller here decodes as UTF-8, so the guarantee is unconditional.
+    env = {**os.environ, **kw.pop("env", {}), "PYTHONIOENCODING": "utf-8"}
     return subprocess.run(
-        args, capture_output=True, text=True, encoding="utf-8", cwd=str(REPO), check=False, **kw
+        args,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=str(REPO),
+        check=False,
+        env=env,
+        **kw,
     )
+
+
+def test_run_forces_utf8_on_the_child():
+    """Guards the fix for a Windows-only CI failure that cost two full cycles.
+
+    Every example here prints a Polars frame, whose table borders are
+    box-drawing characters. Under `capture_output` the child writes to a pipe,
+    and a piped Python encodes with the locale codec -- cp1252 on the Windows
+    runners -- so the example died with UnicodeEncodeError while macOS and
+    Linux, both UTF-8 locales, saw nothing. Asserting the child's encoding
+    directly is what makes that regression visible on every platform.
+    """
+    r = _run(
+        [sys.executable, "-c", "import sys; print(sys.stdout.encoding)"],
+        env={"PYTHONIOENCODING": "cp1252"},
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip().lower() == "utf-8"
 
 
 class TestPathwayExample:
