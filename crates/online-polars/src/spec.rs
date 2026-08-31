@@ -230,7 +230,10 @@ pub enum ModelKind {
         #[serde(default)]
         l2: Option<f64>,
         #[serde(default)]
-        clip_gradient: Option<f64>,
+        /// `Num`, not `f64`: the documented way to disable clipping is
+        /// `inf`, and JSON cannot carry Infinity as a number -- `Num` accepts
+        /// the string "inf", exactly as the halflife fields do.
+        clip_gradient: Option<Num>,
         /// Standardize features against their running moments before the
         /// gradient step, unscaling the coefficients on the way out.
         #[serde(default)]
@@ -518,6 +521,42 @@ impl Spec {
             }
         } else if self.features.is_empty() {
             return Err(format!("spec {:?}: features must be non-empty", self.name));
+        }
+        // A duplicated column silently splits its coefficient across identical
+        // slots on an exactly singular system (the jitter fallback rescues the
+        // solve, so nothing else complains), and a duplicated target collides
+        // in the output struct. Both are always mistakes.
+        for (label, cols) in [("features", &self.features), ("targets", &self.targets)] {
+            let mut seen = std::collections::HashSet::new();
+            if let Some(dup) = cols.iter().find(|c| !seen.insert(c.as_str())) {
+                return Err(format!(
+                    "spec {:?}: {label} lists {dup:?} more than once",
+                    self.name
+                ));
+            }
+        }
+        // A target used as a feature reads the *current row's* target to
+        // predict that same row: perfect leakage, measured as corr(pred, y)
+        // = 1.0. Hard rule 2 (out-of-sample by construction) protects the
+        // target as target; this is the other door, and it must be locked --
+        // it is exactly the accident a long column list invites, and the
+        // resulting backtest looks wonderful right up until deployment.
+        //
+        // `ew_cov` is exempt *by design*, not oversight: it predicts nothing.
+        // Its "targets" mirror its columns for plumbing, and its statistics
+        // are read from the state BEFORE each row, which is what makes an
+        // ew_cov output safe to use as a same-row feature (E1).
+        let is_ew_cov = matches!(self.model, ModelKind::EwCov { .. });
+        if let Some(leak) = (!is_ew_cov)
+            .then(|| self.features.iter().find(|f| self.targets.contains(f)))
+            .flatten()
+        {
+            return Err(format!(
+                "spec {:?}: {leak:?} is both a target and a feature; a feature is read \
+                 from the current row, so this would predict the target with itself \
+                 (use a lagged copy of the column if you mean its past values)",
+                self.name
+            ));
         }
         self.decays()?;
         self.clock_cfg()?;

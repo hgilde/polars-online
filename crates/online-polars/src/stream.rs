@@ -415,7 +415,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 l2: l2.unwrap_or(0.0),
                 min_periods: spec.min_periods_or_default(),
                 // Finite by default: see SgdCfg::clip_gradient.
-                clip_gradient: clip_gradient.unwrap_or(1e3),
+                clip_gradient: clip_gradient.map_or(1e3, |n| n.0),
                 scale_features: *scale_features,
             };
             Ok(AnyModel::Sgd(Box::new(Sgd::new(cfg)?)))

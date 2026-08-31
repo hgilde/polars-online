@@ -16,7 +16,10 @@ fn parse_specs(specs_json: &str) -> PyResult<Vec<Spec>> {
 
 /// Chunk-fed model bank: feed ordered chunks, get the input chunk back with one
 /// struct column appended per spec. Memory is O(state), not O(data).
-#[pyclass(name = "ModelBank")]
+// `module` matters for pickle: `__reduce__` hands back `ModelBank.load_bytes`,
+// and pickle serializes that by qualified name -- which fails while the class
+// claims to live in `builtins` (pyo3's default).
+#[pyclass(name = "ModelBank", module = "polars_online._polars_online")]
 struct PyModelBank {
     inner: Bank,
 }
@@ -67,6 +70,18 @@ impl PyModelBank {
         let specs = specs_json.map(parse_specs).transpose()?;
         let inner = Bank::load_bytes(bytes, specs.as_deref()).map_err(PyValueError::new_err)?;
         Ok(Self { inner })
+    }
+
+    /// Pickle and `copy.deepcopy` support, routed through the same versioned
+    /// msgpack as `save_bytes`/`load_bytes` -- the state file already carries
+    /// the specs, so one blob reconstructs the whole bank. Production users
+    /// reach for pickle without asking (multiprocessing, joblib, caching), and
+    /// "cannot pickle" is a worse answer than reusing the serialization that
+    /// is already tested for exact resume.
+    fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, (Vec<u8>,))> {
+        let bytes = self.inner.save_bytes().map_err(PyValueError::new_err)?;
+        let loader = py.get_type::<PyModelBank>().getattr("load_bytes")?;
+        Ok((loader, (bytes,)))
     }
 
     /// Output struct field names per spec (in order), for schema inspection.

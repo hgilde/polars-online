@@ -530,7 +530,7 @@ fn assemble_ew_cov(spec: &Spec, n: usize, chunks: &[ChunkOut]) -> PolarsResult<C
             for mi in 0..n_models {
                 for slot in 0..n_slots {
                     let v = ch.pred[ChunkOut::at(ch.n_slots, nr, mi, slot, ri)];
-                    cols[mi * n_slots + slot][i] = if v.is_nan() { None } else { Some(v) };
+                    cols[mi * n_slots + slot][i] = v.is_finite().then_some(v);
                 }
                 n_eff[mi][i] = Some(ch.n_eff[mi * nr + ri]);
             }
@@ -724,7 +724,10 @@ fn assemble(spec: &Spec, n: usize, chunks: &[ChunkOut]) -> PolarsResult<Column> 
     // Scatter the flat per-chunk buffers into per-column vectors. NaN is null
     // for every numeric output; `processed` is what distinguishes a skipped row
     // (all null, including the bool `drift`) from one that produced NaN.
-    let some_if_finite = |v: f64| if v.is_nan() { None } else { Some(v) };
+    // The contract is finite-or-null. NaN is the models' own null encoding,
+    // but a diverged model can also reach exact +/-inf, and `is_nan` alone
+    // would hand that to the user.
+    let some_if_finite = |v: f64| v.is_finite().then_some(v);
     for ch in chunks {
         let nr = ch.rows.len();
         let block = ch.n_slots * nr;
