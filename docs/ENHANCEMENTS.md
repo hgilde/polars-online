@@ -11,8 +11,9 @@ own plan, then features our models were one step away from, then a comparison
 against [river](https://riverml.xyz) (the reference online-ML library) and
 [Pathway](https://pathway.com) (a Rust-engined live-data framework) — both what
 we adopted and what we deliberately leave out. Everything marked **done** is
-implemented and tested; §4 is the standing list of what we will *not* build, and
-is the only part of this document still forward-looking.
+implemented and tested. §4 is the standing list of what we will *not* build and
+§5 the two candidates the river audit left undecided — those are the only
+forward-looking parts.
 
 Priorities: **P1** = promised by PLAN.md or fixes a real sharp edge; **P2** =
 cheap and clearly goal-aligned; **P3** = worthwhile, larger.
@@ -103,7 +104,14 @@ Two consequences for this backlog:
 
 Listed so the omission is a decision, not an oversight. These conflict with the
 library's shape (deterministic linear-family models, O(k²) state, exact
-save/resume, three numerics-identical surfaces) rather than merely being work:
+save/resume, three numerics-identical surfaces) rather than merely being work.
+
+**Audited against river 0.26.1's actual module list**, not from memory — 40
+top-level modules, of which this project overlaps `linear_model`, `time_series`,
+`drift`, `anomaly`, `covariance`, `stats`, `metrics`, `optim` and
+`preprocessing`. The audit found seven exclusions that were being made in
+practice without being written down; they are now in the list below, and the
+two items it found that are arguably *in* scope are in §5.
 
 - **Trees and forests** (`tree.HoeffdingTreeRegressor`, `forest.ARFRegressor`,
   SGT): unbounded/adaptive state, nondeterministic under resampling, no clean
@@ -119,18 +127,70 @@ save/resume, three numerics-identical surfaces) rather than merely being work:
   composition layer; duplicating it inside specs would fork the API.
 - **Imbalanced-learning wrappers, text models, generic sketches**: no use case
   in the stated goals.
+- **Momentum-family optimizers** (`optim.Adam`, `RMSProp`, `Momentum`, `Nadam`,
+  `AdaDelta`, `AdaMax`, `AMSGrad`, `AdaBound`, `NesterovMomentum`, `Averager`,
+  `Newton`): each carries extra per-coefficient state with no clean
+  clock-decay semantics — what does a momentum buffer mean after a six-hour
+  gap? `sgd` offers the three schedules that do have an answer (constant,
+  `inv_scaling` on `n_eff`, AdaGrad, all decayed on the model's clock).
+- **`drift.KSWIN`**: a Kolmogorov–Smirnov test over a sliding window, so
+  O(window) memory. Same reason as `neighbors`. `PageHinkley` (E20) is the
+  O(state) detector; `ADWIN` is also excluded, being adaptive-window.
+- **Shrinkage covariance estimators** (`covariance.LedoitWolfCovariance`,
+  `OASCovariance`, `ShrunkCovariance`): their shrinkage intensity is estimated
+  from the whole sample, which has no streaming form that keeps our exactness
+  guarantee. `covariance.EwaCovariance` / `EwaPrecision` — the two that *do* —
+  are what `ew_cov` and its Sherman–Morrison inverse (E1/E2) already are.
+- **Automatic feature selection** (`feature_selection.SelectKBest`,
+  `VarianceThreshold`, `PoissonInclusion`): E13 selects among feature sets the
+  caller *names*, which keeps the output schema fixed and declarable. Selection
+  that changes the feature set per row cannot have a static schema, which the
+  expression plugin requires.
+- **Non-linear anomaly detectors** (`anomaly.HalfSpaceTrees`, `LODA`,
+  `LocalOutlierFactor`, `OneClassSVM`): not the linear family, and the tree and
+  window-based ones carry the memory problem too. `GaussianScorer` is covered by
+  E21, and `StandardAbsoluteDeviation`'s robust-scale role by E23's P² quantiles
+  of the absolute residual.
+- **Encoders, imputers and projections** (`preprocessing.OneHotEncoder`,
+  `StatImputer`, `FeatureHasher`, the random projectors, `MinMax`/`MaxAbs`/
+  `Robust` scalers): Polars expressions upstream. E24 implements the two that
+  have to be *inside* the model to be out-of-sample — `AdaptiveStandardScaler`
+  and `TargetStandardScaler` — because they read statistics from before the row.
 - **Event-time windowing, temporal/asof joins, connectors, late-arrival
   policy, distributed execution** (Pathway's `stdlib/temporal` and engine): a
   different layer, already implemented in Rust by someone else. Feed us an
   aligned, ordered frame — from Polars expressions or from Pathway — rather
   than teaching specs to window.
 
-## Suggested order
+## 5. Open candidates from the river audit
 
-1. Sharp edges and plan debts: E4 (negative weights), E3 (strict clock), E1/E2
-   (`ew_cov`), E5 (`solve_failures`).
-2. Highest value per line: E21 (residual z-score), E12 (predictive variance),
-   E13 (grid selection), E18 (FTRL regression).
-3. New surface area: E16/E17 (SGD/PA + Poisson), E19 + Kalman `standardize`
-   switch, E20 (drift), E8 (Python runner), E6 (session shrinkage).
-4. The rest as demand appears.
+Everything numbered E1–E27 is implemented. These two are the only things the
+audit of river 0.26.1 turned up that are arguably *in* scope rather than
+excluded, and neither has been built or decided on.
+
+PLAN §4.6 scopes classification to **binary**, and `ftrl` covers the logistic
+case. river has three more binary linear classifiers, and two of them would be
+a loss function rather than a model:
+
+| # | P | Candidate | Cost, and the argument against |
+|---|---|---|---|
+| E28 | P3 | **`linear_model.Perceptron` and `PAClassifier`** — the perceptron is `sgd` with a hinge-at-zero loss, and `PAClassifier` is `pa` with a hinge loss. Both are a `match` arm in an existing model, not new state, and both would inherit the clock decay, chunk invariance and save/resume for free. | Neither gives calibrated probabilities, which is what `ftrl`'s logistic loss is for and what a financial signal usually wants. They win only where the margin matters more than the probability. Cheap, but "cheap" is not a use case. |
+| E29 | P3 | **`linear_model.ALMAClassifier` and `AdPredictor`** — an approximate large-margin classifier, and a Bayesian probit model for click-through rates. | Real new state and real new mathematics, for a use case (CTR) outside the stated one. `AdPredictor`'s per-weight Gaussian posterior overlaps what `kalman` already provides for regression. |
+
+Neither is recommended without a use case; they are listed so that "we do not
+have a perceptron" is a recorded decision rather than an oversight.
+
+## What was verified against river, and what was not
+
+Six correspondences are checked numerically in `tests/test_river.py` (T-R1–T-R6):
+FTRL's z/n recursion to 1e-12, Kalman ≡ `BayesianLinearRegression` to 3.6e-15,
+`EwCov` ≡ river's Welford `Mean`/`Var`/`Cov`/`PearsonCorr` exactly, the EW
+mean/var convention difference stated in closed form, and the quantile and
+Huber models agreeing statistically.
+
+river's own test suite is **not** ported and should not be: it would be testing
+river. Two of those six tests exist specifically to pin places where the two
+libraries legitimately *disagree* — river's `LogisticRegression` predicts one
+proximal step behind McMahan Algorithm 1, and river's `EWMean` is an
+un-normalized EWMA seeded at its first value where ours is the bias-corrected
+weighted mean. Both are asserted, so neither can be mistaken for a bug later.
