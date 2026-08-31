@@ -7,13 +7,33 @@ use online_polars::{Bank, Spec, output_fields};
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use serde::Deserialize;
+use std::cell::RefCell;
 
 #[derive(Deserialize)]
 struct OnlineKwargs {
     spec_json: String,
 }
 
+thread_local! {
+    /// The last spec this thread parsed, keyed by the JSON it came from.
+    ///
+    /// Under `.over(group)` polars calls the plugin once per group with byte-
+    /// identical kwargs, so without this a thousand groups meant a thousand
+    /// JSON parses and a thousand validations of the same spec
+    /// (docs/PERFORMANCE.md P5). Thread-local rather than a shared map: no
+    /// lock, and polars runs groups across its own threads.
+    static SPEC_CACHE: RefCell<Option<(String, Spec)>> = const { RefCell::new(None) };
+}
+
 fn parse_spec(kwargs: &OnlineKwargs) -> PolarsResult<Spec> {
+    if let Some(hit) = SPEC_CACHE.with(|c| {
+        c.borrow()
+            .as_ref()
+            .filter(|(json, _)| json == &kwargs.spec_json)
+            .map(|(_, spec)| spec.clone())
+    }) {
+        return Ok(hit);
+    }
     let mut spec: Spec = serde_json::from_str(&kwargs.spec_json)
         .map_err(|e| polars_err!(ComputeError: "invalid online spec: {}", e))?;
     // The expression API always streams over the column it receives; grouping
@@ -21,6 +41,7 @@ fn parse_spec(kwargs: &OnlineKwargs) -> PolarsResult<Spec> {
     spec.group = None;
     spec.validate()
         .map_err(|e| polars_err!(ComputeError: "{}", e))?;
+    SPEC_CACHE.with(|c| *c.borrow_mut() = Some((kwargs.spec_json.clone(), spec.clone())));
     Ok(spec)
 }
 

@@ -160,13 +160,30 @@ that moves a golden number is wrong by definition.
   session keys: hash the physical values row-wise (as `session_hash` now does)
   — no String cast, no per-row `String` clone, and run it per spec in parallel
   with extraction. Target: extract+group ≤ 4 ms at k=20/64 groups (from 27 ms).</details>
-- [ ] **P4 — Assembly into typed builders.** Write `Float64Chunked` from
+- [x] **P4 — Assembly into typed builders.** *Done, partly, and the rest
+  dropped as unnecessary.* Specs now assemble in parallel. The typed-builder
+  half was not worth doing: P1's flat buffers already took `assemble` from 8.0
+  to ~5.5 ms at 200k rows, which is under 15% of wall, and the remaining cost
+  is the `Series` construction polars needs either way. Measuring first is what
+  said so.
+  <details><summary>original plan</summary> Write `Float64Chunked` from
   `Vec<f64>` + computed validity instead of `Vec<Option<f64>>` series; assemble
-  specs in parallel. Mostly falls out of P1's flat buffers.
-- [ ] **P5 — Expression path parity.** Thread-local cache of parsed
+  specs in parallel. Mostly falls out of P1's flat buffers.</details>
+- [x] **P5 — Expression path parity.** *Done; the target turned out to be
+  unreachable, for a reason worth recording.* A thread-local cache keyed on the
+  kwargs JSON means `.over()` parses and validates the spec once per thread
+  instead of once per group: **511,237 → 731,416 rows/s** at 1000 groups.
+  Then a sweep over group counts showed where the rest goes — throughput falls
+  from 2.77M (ungrouped) to 769k at *ten* groups of 40k rows each, and is then
+  flat through 1000 groups. Per-group `Bank` construction would scale with the
+  group count; this does not. **The remaining gap is polars' own `.over()`
+  gather/scatter, not the plugin**, and no change on our side reaches it. The
+  `ModelBank` API with `group=` is the answer for high group counts (5.01M
+  rows/s on the same data), which is what the README already recommends.
+  <details><summary>original plan</summary> Thread-local cache of parsed
   `Spec`/plan keyed by the kwargs JSON, so 1000 `.over()` groups parse once;
   skip re-validation per group. Re-measure after P1 — the remaining gap should
-  be per-group extraction only. Target: within 1.3× of the bank at 1000 groups.
+  be per-group extraction only. Target: within 1.3× of the bank at 1000 groups.</details>
 - [ ] **P6 — Runner pipelining.** `run_config` currently alternates
   read-chunk / compute-chunk. Double-buffer with a bounded channel (read row
   group *n+1* while computing *n*); parquet decode is already internally

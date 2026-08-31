@@ -424,10 +424,12 @@ impl Bank {
         let t_process = t2.elapsed();
         let t3 = std::time::Instant::now();
 
-        let mut out = Vec::with_capacity(specs.len());
-        for (si, spec) in specs.iter().enumerate() {
-            out.push(assemble(spec, n, &per_spec_rows[si])?);
-        }
+        // Specs assemble independently (docs/PERFORMANCE.md P4).
+        let out: Vec<Column> = specs
+            .par_iter()
+            .zip(per_spec_rows.par_iter())
+            .map(|(spec, rows)| assemble(spec, n, rows))
+            .collect::<PolarsResult<_>>()?;
         if timing {
             let t_assemble = t3.elapsed();
             let total = t0.elapsed();
