@@ -84,13 +84,12 @@ jobs:
   # the disk fills under an mmap'd write, prone to SIGBUS rather than a clean
   # ENOSPC.
   #
-  # Both plausible causes are addressed, because they are cheap and
-  # independently worth doing, and `df -h` is printed either side so the next
-  # failure says which one it was:
-  #   * disk  -- the runner image ships ~25GB of Android SDK, .NET and GHC that
-  #              this build never touches;
-  #   * memory-- lld links large Rust binaries in a fraction of BFD's peak RSS,
-  #              and considerably faster.
+  # The `df -h` instrumentation answered it: **it was disk.** The runner starts
+  # with 9.3 GB free (72G, 88% used) against a ~20 GB debug build of this
+  # workspace, so `ld` took SIGBUS on an mmap write to a full filesystem rather
+  # than a clean ENOSPC. Removing the unused Android SDK, .NET and GHC recovers
+  # 21 GB (9.3 -> 30 GB free) and the build passes. `lld` stays because it also
+  # links large Rust binaries faster and in less RSS, but it was not the fix.
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
