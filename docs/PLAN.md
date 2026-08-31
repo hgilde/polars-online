@@ -371,12 +371,13 @@ returns / volume / trade-count z-scores, targets = strictly future returns.
 
 ## 11b. Performance plan
 
-Measured baseline and the parallelism/speed task list live in
-[`docs/PERFORMANCE.md`](PERFORMANCE.md) (P1–P8): the integration layer costs
-3–5× the model arithmetic and caps thread scaling at 3.2×/10 cores; the plan
-removes per-row allocation, flattens the rayon fan-out to
-(spec × group × instance), and borrows columns instead of materializing them.
-Same rules as §11: tick tasks there, commit per task with the number.
+**Done — P1 through P8.** See [`docs/PERFORMANCE.md`](PERFORMANCE.md): the
+integration layer cost 3–5× the model arithmetic and capped thread scaling at
+3.2× on ten cores. Removing per-row allocation, flattening the rayon fan-out to
+(spec × group × instance), extracting columns as `f64`-with-NaN instead of
+`Option<f64>`, and pipelining the runner took it to **2.0–2.8× throughput and
+6.2× scaling**, with every golden number unchanged. Three of the eight items
+were closed by measuring and *rejecting* the change; §5 there records why.
 
 ## 12. Open questions (not blocking)
 

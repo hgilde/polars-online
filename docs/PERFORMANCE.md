@@ -1,8 +1,15 @@
 # Performance: measurements and the parallelism plan
 
-Status as of 2026-08-31: baseline measured, plan defined, nothing below
-implemented yet. Tick tasks here as they land (CLAUDE.md rule 7 applies — one
-commit per task, `P<n>` in the message).
+Status as of 2026-08-31: **P1–P8 all done.** Headline, against the baseline in
+§1: **2.8× single stream at k=5, 2.0× at k=20, 2.0× on grouped data, 2.1× on a
+single-stream grid, 3.9× on a multi-spec bank, 1.23× on the CLI end to end**,
+and thread scaling from 3.2× to 6.2× on ten performance cores. Every golden
+number is unchanged throughout — that was the contract.
+
+Two plan items were closed by *rejecting* them on measurement rather than
+building them (P4's typed builders, P7's build flags), and P5 found its target
+unreachable for a reason outside this codebase. Those are written up where they
+sit, and §5 collects everything rejected.
 
 Machine for every number in this file: Apple M-series, 10 performance + 4
 efficiency cores, release build (thin LTO, `codegen-units = 1`), single
@@ -213,19 +220,89 @@ that moves a golden number is wrong by definition.
   ≥ 3% on `core_bench`. Verify the k-loops in `ewcov::update` auto-vectorize
   (`cargo asm` spot check) before considering any manual SIMD — at k ≤ 50 the
   compiler usually already does this.</details>
-- [ ] **P8 — Re-baseline and lock.** Re-run `core_bench`, the timing matrix,
+- [x] **P8 — Re-baseline and lock.** *Done.* All of §1's measurements re-run
+  on an idle machine and written up in §4; the README's throughput table
+  regenerated from `scripts/benchmark.py`, with a note that grouped data now
+  scales rather than merely working. `benchmark.yml` gains the scaling row so
+  CI history carries it.
+  <details><summary>original plan</summary> Re-run `core_bench`, the timing matrix,
   scaling and `scripts/benchmark.py`; update this file and the README table;
   extend `benchmark.yml`'s job summary with the scaling row so the CI history
-  carries it. Golden tests must be untouched throughout.
+  carries it. Golden tests must be untouched throughout.</details>
 
-**Rejected, with reasons** — so the omission is a decision (the ENHANCEMENTS
-§4 convention): custom global allocator in the Python extension (Python and
-polars own that arena; revisit only if post-P1 profiles still show allocator
-time — the CLI could adopt mimalloc independently); GPU/BLAS batching (k ≤ 50
-solves are too small to amortize a dispatch); speculative/parallel prefix tricks
-for the recursion itself (breaks exactness, see (7)).
+**Rejected, with reasons:** see §5, which records what was rejected up
+front and what was rejected after measuring.
 
-## 4. Bugs found by this review
+## 4. Where it ended up
+
+Same machine, same build, same scripts as §1.
+
+| case | before | after | |
+|---|---|---|---|
+| k=5, 1 group | 2,093,719 | 4,980,607 | 2.4× |
+| k=20, 1 group | 1,308,792 | 2,634,627 | 2.0× |
+| k=20, 64 groups | 2,601,719 | 5,132,169 | 2.0× |
+| single stream, 5-halflife grid | 458,500 | 955,662 | 2.1× |
+| 8 specs × 1 group (wall) | 783.8 ms | 201.7 ms | 3.9× |
+| CLI, 3M rows × 20 feat × 32 groups | 2.17 s | 1.76 s | 1.23× |
+| expression, 1000 groups | 511,237 | 727,089 | 1.4× |
+
+Sections at k=20 / 64 groups: extract 13.0 → 1.7 ms, group 15.3 → 4.6 ms,
+process 40.6 → 26.7 ms, assemble 8.0 → 6.0 ms.
+
+Thread scaling, 400k rows, k=20, 64 groups:
+
+| threads | before | after |
+|---|---|---|
+| 1 | 435,792 | 719,320 |
+| 2 | 702,049 | 1,303,530 |
+| 4 | 1,021,413 | 2,335,795 |
+| 8 | 1,363,018 | 3,881,813 |
+| 10 | 1,414,097 (3.2×) | 4,478,262 (**6.2×**) |
+
+**What now limits it.** At k=20 on a single stream the bank reaches 2.63M rows/s
+against the pure core's 5.73M, so the plumbing costs ~2.2× rather than the
+original ~4.4×. What remains is the per-row gather of features into the scratch
+buffer and the `Step` the model returns — real work at this point, not
+bookkeeping. The recursion inside one instance stays sequential by construction
+(§2 item 7); everything around it is now parallel.
+
+## 5. Rejected, and why
+
+Recorded so each omission is a decision. The first three were rejected up
+front; the last three were rejected *after* measuring, which is the more
+useful kind.
+
+- **A custom global allocator in the Python extension.** Python and polars own
+  that arena; swapping it under them is a compatibility risk for a benefit P1
+  already took by removing the allocations instead of making them cheaper. The
+  CLI could adopt mimalloc independently if a profile ever justifies it.
+- **GPU or BLAS batching for the solves.** At k ≤ 50 a solve is microseconds;
+  dispatch would cost more than the work, and `solve_every` has already made
+  solving 6% of the k=20 budget.
+- **Parallelizing the recursion itself** (speculative execution, parallel
+  prefix over the decay). Row *i*'s state depends on row *i−1* exactly, and
+  every approximation trades the exactness that chunk invariance and
+  out-of-sample-ness are built on. Not a speed/complexity trade — a correctness
+  one.
+- **Typed-builder assembly (part of P4).** Measured first: P1's flat buffers had
+  already taken `assemble` to ~5.5 ms of a 39 ms chunk, and the rest is `Series`
+  construction polars needs anyway. Not worth the code.
+- **`lto = "fat"` and `-C target-cpu=native` (P7).** Measured: +3.2%, +1.3%,
+  −1.2%, −1.0%, −2.1%, +0.4% across the six `core_bench` cases for fat LTO — a
+  wash against a slower build; and −3% at k=20 for `target-cpu=native`, which
+  would also cost wheel portability. Both fail the ≥3% bar the plan set for
+  itself.
+- **Manual SIMD in the co-moment update.** The throughput curve rules it out
+  without a disassembler: the update is O(k²), so k=5 → k=20 is 12.3× the
+  arithmetic for 2.1× the time and k=5 → k=50 is 72× for 6.0×. Per element the
+  wide cases are cheaper, which is what auto-vectorized loops look like.
+- **Chasing polars' `.over()` overhead (P5's target).** Throughput drops from
+  2.77M to 769k between one group and *ten*, then stays flat to 1000 — so it is
+  the gather/scatter, not per-group setup, and not reachable from a plugin.
+  `ModelBank(group=...)` is the supported answer at 5.0M rows/s.
+
+## 7. Bugs found by this review
 
 - **Null-session sentinel collision** (fixed alongside this document): null
   session values were hashed as the string `"\0<null>"`, so a session literally

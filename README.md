@@ -368,20 +368,29 @@ Apple M-series, single process, best of 3, 200k rows per run
 
 | configuration | notes | rows/sec |
 |---|---|---|
-| `ewridge` k=5 | 1 target, 1 halflife | 2,267,481 |
-| `ewridge` k=20 | 1 target, 1 halflife | 1,586,467 |
-| `ewridge` k=50 | 1 target, 1 halflife | 750,719 |
-| `ewridge` k=20 | 10 targets | 1,044,468 |
-| `ewridge` k=20 | 5 halflives | 549,760 |
-| `rls` | k=20, 1 target | 1,517,571 |
-| `kalman` | k=20, 1 target | 906,601 |
-| `lasso` | k=20, 1 target (3-point path) | 1,091,575 |
-| `huber` | k=20, 1 target | 1,562,718 |
-| `ftrl` | k=20, 1 target | 1,770,600 |
+| `ewridge` k=5 | 1 target, 1 halflife | 5,823,285 |
+| `ewridge` k=20 | 1 target, 1 halflife | 2,775,086 |
+| `ewridge` k=50 | 1 target, 1 halflife | 846,000 |
+| `ewridge` k=20 | 10 targets | 1,391,097 |
+| `ewridge` k=20 | 5 halflives | 1,328,381 |
+| `rls` | k=20, 1 target | 3,131,992 |
+| `kalman` | k=20, 1 target | 1,345,525 |
+| `lasso` | k=20, 1 target (3-point path) | 1,503,706 |
+| `huber` | k=20, 1 target | 2,852,545 |
+| `ftrl` | k=20, 1 target | 4,814,801 |
 
 Targets share one `S` accumulator, so 10 targets cost far less than 10× one.
-Each halflife in a grid is its own accumulator, so those do scale roughly
-linearly.
+Each halflife in a grid is its own accumulator, but they run in parallel, so a
+5-halflife grid costs about 2× one rather than 5×.
+
+**Grouped data goes wider.** One state per group is one rayon task, so
+throughput rises with the group count rather than falling: **5.1M rows/s** at
+k=20 over 64 groups, scaling 6.2× from one thread to ten. A bank of several
+specs is one flat task pool too — eight single-group specs over 300k rows take
+202 ms, against 1.2 s if they ran one at a time.
+
+Where the time goes, and what to reach for, is in
+[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
 
 ## Development
 

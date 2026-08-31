@@ -31,6 +31,12 @@ jobs:
             echo "## Throughput"
             echo
             uv run python scripts/benchmark.py --rows 100000 --markdown
+            echo
+            echo "## Thread scaling (k=20, 64 groups)"
+            echo
+            # Throughput alone hides a change that serializes the fan-out: it
+            # looks fine on one thread and costs 4x on ten (docs/PERFORMANCE.md P8).
+            uv run python scripts/scaling_bench.py --rows 200000 --markdown
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: keep the numbers as an artifact
