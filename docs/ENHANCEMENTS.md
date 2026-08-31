@@ -11,9 +11,9 @@ own plan, then features our models were one step away from, then a comparison
 against [river](https://riverml.xyz) (the reference online-ML library) and
 [Pathway](https://pathway.com) (a Rust-engined live-data framework) — both what
 we adopted and what we deliberately leave out. Everything marked **done** is
-implemented and tested. §4 is the standing list of what we will *not* build and
-§5 the two candidates the river audit left undecided — those are the only
-forward-looking parts.
+implemented and tested. The forward-looking parts are §4 (the standing list of
+what we will *not* build), §5 (two candidates the river audit left undecided)
+and §6 (one accessor the accumulators are missing).
 
 Priorities: **P1** = promised by PLAN.md or fixes a real sharp edge; **P2** =
 cheap and clearly goal-aligned; **P3** = worthwhile, larger.
@@ -179,6 +179,36 @@ a loss function rather than a model:
 
 Neither is recommended without a use case; they are listed so that "we do not
 have a perceptron" is a recorded decision rather than an oversight.
+
+## 6. Reaching the accumulators directly
+
+| # | P | Enhancement |
+|---|---|---|
+| E30 | P2 | **Export the EW Gram matrix and cross-moments as arrays.** `EwCov` maintains the centred `k × k` co-moment matrix and `EwRidge` the per-target cross-moment vector `r`; every solve reads them. Nothing exposes them to a caller. The only route today is `ew_cov`, which emits *pairwise* statistics as struct fields — the right shape at `k = 4` (6 columns) and the wrong one at `k = 400` (**79,800** columns). Proposed: `ModelBank.gram(spec, group=None) -> (G, b, scales)` returning numpy arrays, plus the Rust equivalent. |
+
+**Why this is worth having.** The accumulators are the expensive part and they are
+already exact, already centred (E11b), already decayed on the model's clock with
+session and `max_dclock` handling, and already resumable. Anyone who wants to do
+something *other than* our solve with them — a custom penalty, an information
+criterion, a conditioning diagnostic (`cond(G)`, a scree plot), forward stepwise or
+an orthogonal matching pursuit over `G`, or simply to check a fit by hand — currently
+cannot, and has to recompute `X'X` from raw data in a second pass.
+
+**What it is not.** Not a speed claim: for a *single* batch Gram matrix over
+materialised data, BLAS `dgemm` is blocked and vectorised and beats an O(k²)-per-row
+streaming update comfortably. The value is that the matrix comes from **one pass over
+data that is never materialised**, at every point in the stream rather than at one, and
+that it is the same matrix the deployed model solves against — so an analysis built on
+it cannot silently disagree with the model it is analysing.
+
+**Cost:** small. The data is already in the right layout; this is an accessor, a copy
+into a contiguous array, and tests that it agrees with a from-scratch
+`X'X` on the same rows — which is a check `ewcov.rs` already performs internally
+(`tracked_inverse_matches_a_from_scratch_solve` follows the same pattern).
+
+**Open question:** whether to return the standardised or raw form. `EwRidge` solves
+standardised and unscales on the way out, so both are available; returning `scales`
+alongside `G` lets the caller choose without a second call.
 
 ## What was verified against river, and what was not
 
