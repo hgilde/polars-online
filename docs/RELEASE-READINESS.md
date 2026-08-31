@@ -84,7 +84,9 @@ commit's diff.
 
 It did find one thing worth acting on: two *local* refs —
 `backup-before-email-rewrite` and filter-branch's `refs/original/refs/heads/main`
-— still held the 100 pre-rewrite commits authored as the maintainer's personal address. Not
+— still held the 100 pre-rewrite commits authored under the maintainer's
+personal address (not reproduced here: this file is about to be public, and
+writing the address down would undo the removal it describes). Not
 pushed, and their content is byte-identical to `main`, so their only remaining
 property was the email that was deliberately removed. `git push --all` or
 `--mirror` would have published exactly that. Both deleted and the reflog
@@ -205,6 +207,45 @@ Three findings:
 
 Defender exclusions were added for the Windows build (best-effort, cannot fail
 the job); their effect is confounded with the cache landing in the same run.
+
+## Going public (2026-08-31)
+
+Decision: go public now rather than at v0.1.0. The Actions quota below forced
+the timing, but the repo was already prepared for it (R1-R3, R6).
+
+Pre-flight audit, all of it verified rather than assumed:
+
+- **No credentials** in HEAD or in any of the 1,528 objects in history.
+- **No data files ever committed** (hard rule 1) — 282 distinct paths have
+  existed across all history; none is a `.csv`/`.parquet`/`.npy`/etc.
+- **Every author and committer is a noreply address.** The earlier rewrite
+  holds; the two local refs that still carried the old one are gone.
+- **One leak found and scrubbed**: this very file quoted the maintainer's
+  personal address, in the paragraph describing its removal from history.
+  Redacting HEAD was not enough — the address lived in one commit's diff *and*
+  its message — so the eleven commits from that point to the tip were rewritten
+  and force-pushed. The tree hash of the tip is byte-identical before and
+  after, which is the proof that nothing but the address changed. Deliberately
+  not naming the old commit here: a public file saying "the address is in
+  commit `abc1234`" is a signpost to it, which is the same mistake in a
+  different form.
+
+  What a rewrite cannot reach: a commit stays retrievable by full SHA for as
+  long as *any* ref on the remote holds it, and pull-request refs
+  (`refs/pull/N/head`) are kept by GitHub even after the branch is deleted and
+  the PR is closed. Getting those collected requires GitHub Support — or, on a
+  repository this young, deleting and recreating it.
+- `publish = false` on all four crates; LICENSE ships in the sdist; only
+  `.vscode/settings.json` and the (untracked, gitignored) `mutants.out/` show
+  up as machine-local, and the former is portable (`${env:HOME}`).
+- Added `CODE_OF_CONDUCT.md` — the last missing community health file. Its
+  enforcement channel is GitHub private reporting, deliberately not an email,
+  for the same reason as `SECURITY.md`.
+
+CI changes that go with it: the full three-OS matrix on every push and pull
+request, and `paths-ignore` deleted. That flag does not come back even as an
+optimisation — if CI becomes a required status check, a doc-only pull request
+would never run it and never become mergeable.
 
 ## Actions quota: exhausted on day one (2026-08-31)
 

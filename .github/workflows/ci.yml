@@ -1,26 +1,20 @@
 name: CI
 
-# Runner minutes are metered while this repo is private, and they are not
-# metered evenly: macOS bills at 10x and Windows at 2x the Linux rate, so a
-# full 3-OS run costs roughly 200 billed minutes against a 2,000/month budget.
+# The repo is public, so Actions is unmetered and the full matrix runs on every
+# push and pull request. While it was private the metering was severe -- macOS
+# bills at 10x and Windows at 2x -- and this file carried a `paths-ignore` and
+# a macOS-only-on-schedule matrix to survive a 2,000 minute budget. Both are
+# gone; see docs/RELEASE-READINESS.md for what that cost and why.
 #
-# Push therefore runs ubuntu + windows -- Linux because it is nearly free,
-# Windows because it is the platform we cannot test locally and the one most
-# likely to break. macOS is covered by `./scripts/gate.sh` on the maintainer's
-# own machine before every commit, so on CI it runs weekly, on demand, and on
-# release tags rather than on every push. Doc-only pushes skip CI entirely.
-#
-# When the repo goes public, Actions minutes stop being metered: drop the
-# `paths-ignore`, put `macos-latest` back in the push matrix, and delete this
-# comment.
+# `paths-ignore` in particular does not come back if CI is ever a required
+# status check: a doc-only pull request would then never run the check, and
+# never become mergeable.
 on:
   push:
     branches: [main]
-    paths-ignore: ["**.md", "docs/**", "LICENSE", ".gitignore"]
   pull_request:
-    paths-ignore: ["**.md", "docs/**", "LICENSE", ".gitignore"]
   schedule:
-    - cron: "23 5 * * 1" # Mondays: the full matrix, macOS included
+    - cron: "23 5 * * 1"
   workflow_dispatch:
 
 # Least privilege: no token scope by default, granted per job. This matters more
@@ -50,13 +44,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS only on the weekly run and on manual dispatch (see the note
-        # above `on:`); it bills at 10x and is the one platform covered
-        # locally. Written as "opt in on schedule/dispatch", not "opt out on
-        # push": the earlier `event_name == 'push'` form silently gave macOS to
-        # every *pull request* too, and one dependabot PR spent 830 of the
-        # month's 2,000 billed minutes on four macOS jobs.
-        os: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest", "windows-latest"]') }}
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: dtolnay/rust-toolchain@stable
@@ -108,13 +96,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS only on the weekly run and on manual dispatch (see the note
-        # above `on:`); it bills at 10x and is the one platform covered
-        # locally. Written as "opt in on schedule/dispatch", not "opt out on
-        # push": the earlier `event_name == 'push'` form silently gave macOS to
-        # every *pull request* too, and one dependabot PR spent 830 of the
-        # month's 2,000 billed minutes on four macOS jobs.
-        os: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest", "windows-latest"]') }}
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: dtolnay/rust-toolchain@stable
