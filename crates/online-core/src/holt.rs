@@ -133,6 +133,9 @@ impl OnlineModel for Holt {
             }
             let prev_level = self.level[j];
             self.level[j] = alpha * yj + (1.0 - alpha) * p;
+            // `d_clock > 0.0` cannot be the deciding condition -- beta is
+            // `1 - 0.5^(d/halflife)`, which is 0 whenever d is -- but it is the
+            // guard that names why the division below is safe, so both stay.
             if beta > 0.0 && d_clock > 0.0 {
                 let observed_slope = (self.level[j] - prev_level) / d_clock;
                 self.trend[j] = beta * observed_slope + (1.0 - beta) * self.trend[j];
@@ -310,6 +313,31 @@ mod tests {
             (after - (before * 0.5f64.powf(10.0) + 1.0)).abs() < 1e-12,
             "{before} -> {after}"
         );
+    }
+
+    #[test]
+    fn the_level_is_seeded_only_by_a_usable_first_row() {
+        // Two independent reasons a row cannot seed the level: the target is
+        // not a number, or the row carries no weight. Either alone must leave
+        // the model unseeded, still predicting nothing.
+        for (y, w) in [
+            (Some(f64::NAN), 1.0),
+            (Some(f64::INFINITY), 1.0),
+            (None, 1.0),
+            (Some(5.0), 0.0),
+            (Some(5.0), -1.0),
+        ] {
+            let mut m = Holt::new(cfg(10.0, 40.0)).unwrap();
+            let step = m.step(&[], &[y], 0.0, w);
+            assert!(step.pred[0].is_nan(), "({y:?}, {w}) must not predict");
+            assert!(!m.seen[0], "({y:?}, {w}) must not seed the level");
+            assert_eq!(m.level()[0], 0.0);
+
+            // A usable row afterwards still seeds it, at its own value.
+            m.step(&[], &[Some(9.0)], 1.0, 1.0);
+            assert!(m.seen[0]);
+            assert_eq!(m.level()[0], 9.0, "the first usable row seeds the level");
+        }
     }
 
     #[test]

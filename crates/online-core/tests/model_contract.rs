@@ -42,7 +42,16 @@ struct Report {
     roundtrips: bool,
 }
 
-fn probe<M: OnlineModel>(mut m: M, targets: usize) -> Report {
+/// `n_eff_of` reads the model's own `n_eff()` accessor, which is inherent
+/// rather than part of the trait, so it has to be handed in. The accessor's
+/// value read before a row must equal the `n_eff` that row reports: they are
+/// the same number, and reporting two different ones would make `min_periods`
+/// mean something different from what a caller inspecting the model sees.
+fn probe_with<M: OnlineModel>(
+    mut m: M,
+    targets: usize,
+    n_eff_of: Option<&dyn Fn(&M) -> f64>,
+) -> Report {
     let kind = m.state().model.kind();
     let mut n_eff = vec![];
     let mut s = 20260830u64;
@@ -57,7 +66,15 @@ fn probe<M: OnlineModel>(mut m: M, targets: usize) -> Report {
     };
 
     for i in 0..40 {
+        let before = n_eff_of.map(|f| f(&m));
         let step = row(&mut m, &mut s, if i == 0 { 0.0 } else { 1.0 });
+        if let Some(before) = before {
+            assert!(
+                (before - step.n_eff).abs() < 1e-12,
+                "row {i}: accessor said {before}, the step reported {}",
+                step.n_eff
+            );
+        }
         if matches!(i, 0..=2) {
             n_eff.push(step.n_eff);
         }
@@ -159,7 +176,8 @@ fn ew_ridge() {
         solve_every: 0.0,
         max_rows_between_solves: 1,
     };
-    check(&probe(EwRidge::new(cfg).unwrap(), 2), "ew_ridge", 2, 2);
+    let r = probe_with(EwRidge::new(cfg).unwrap(), 2, Some(&EwRidge::n_eff));
+    check(&r, "ew_ridge", 2, 2);
 }
 
 #[test]
@@ -173,7 +191,8 @@ fn rls() {
         coef0: None,
         min_periods: 3.0,
     };
-    check(&probe(Rls::new(cfg).unwrap(), 2), "rls", 2, 1);
+    let r = probe_with(Rls::new(cfg).unwrap(), 2, Some(&Rls::n_eff));
+    check(&r, "rls", 2, 1);
 }
 
 #[test]
@@ -192,7 +211,8 @@ fn lasso() {
         max_cd_iters: 100,
         cd_tol: 1e-10,
     };
-    check(&probe(Lasso::new(cfg).unwrap(), 1), "lasso", 1, 2);
+    let r = probe_with(Lasso::new(cfg).unwrap(), 1, Some(&Lasso::n_eff));
+    check(&r, "lasso", 1, 2);
 }
 
 #[test]
@@ -210,7 +230,8 @@ fn kalman() {
         min_periods: 3.0,
         standardize: true,
     };
-    check(&probe(Kalman::new(cfg).unwrap(), 2), "kalman", 2, 1);
+    let r = probe_with(Kalman::new(cfg).unwrap(), 2, Some(&Kalman::n_eff));
+    check(&r, "kalman", 2, 1);
 }
 
 #[test]
@@ -232,7 +253,8 @@ fn robust() {
             max_rows_between_solves: 1,
             quantile_eps: 1e-3,
         };
-        check(&probe(Robust::new(cfg).unwrap(), 2), "robust", 2, 1);
+        let r = probe_with(Robust::new(cfg).unwrap(), 2, Some(&Robust::n_eff));
+        check(&r, "robust", 2, 1);
     }
 }
 
@@ -251,7 +273,8 @@ fn ftrl() {
         strict_binary: false,
         loss: FtrlLoss::Squared,
     };
-    check(&probe(Ftrl::new(cfg).unwrap(), 2), "ftrl", 2, 1);
+    let r = probe_with(Ftrl::new(cfg).unwrap(), 2, Some(&Ftrl::n_eff));
+    check(&r, "ftrl", 2, 1);
 }
 
 #[test]
@@ -269,7 +292,8 @@ fn sgd() {
         scale_features: false,
         min_periods: 3.0,
     };
-    check(&probe(Sgd::new(cfg).unwrap(), 2), "sgd", 2, 1);
+    let r = probe_with(Sgd::new(cfg).unwrap(), 2, Some(&Sgd::n_eff));
+    check(&r, "sgd", 2, 1);
 }
 
 #[test]
@@ -284,7 +308,8 @@ fn pa() {
         eps: 0.1,
         min_periods: 3.0,
     };
-    check(&probe(Pa::new(cfg).unwrap(), 2), "pa", 2, 1);
+    let r = probe_with(Pa::new(cfg).unwrap(), 2, Some(&Pa::n_eff));
+    check(&r, "pa", 2, 1);
 }
 
 #[test]
@@ -296,7 +321,7 @@ fn holt() {
         min_periods: 3.0,
     };
     // Holt reads no features, so it is the one model whose `n_features` is 0.
-    let r = probe(Holt::new(cfg).unwrap(), 2);
+    let r = probe_with(Holt::new(cfg).unwrap(), 2, Some(&Holt::n_eff));
     assert_eq!(r.n_features, 0, "holt takes no features");
     assert_eq!(r.kind, "holt");
     assert_eq!(r.n_targets, 2);
@@ -327,7 +352,7 @@ fn ew_cov_model() {
         2 + 2 + 1,
         "mean and var per column, one pair"
     );
-    let r = probe(m, 0);
+    let r = probe_with(m, 0, Some(&EwCovModel::n_eff));
     assert_eq!(r.kind, "ew_cov");
     assert_eq!(r.pred_len, r.n_outputs);
     assert_eq!(r.n_eff[0], 0.0);
