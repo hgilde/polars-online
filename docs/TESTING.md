@@ -203,7 +203,7 @@ can break that macOS never will.
 | T-W3 | P1 (partly) | **Path handling through the CLI** — escaped Windows-style paths and paths with spaces are now tested through the CLI on any OS; actual resolution on Windows still needs a runner. |
 | T-W3b | P1 | ~~Original~~ **Path handling through the CLI**: backslash separators, drive letters, UNC paths, and spaces in paths, in both the TOML `input`/`output`/`load_state`/`save_state` fields and the `--input`/`--output` overrides | `PlRefPath::try_from_pathbuf` normalizes Windows paths (polars has explicit `normalize_windows_path` logic); TOML string escaping means `"C:\data\x.parquet"` needs doubling or a literal string. Neither is exercised. |
 | T-W4 | ~~P2~~ **mitigated + tested locally** | **CRLF line endings in the TOML config** — a `.gitattributes` now normalizes to LF on checkout, and the CLI is tested against both CRLF and LF configs. | The repo has no `.gitattributes`, so git may check out configs with CRLF on Windows. `toml` handles it, but the example config and any doc snippets should be proven to parse as checked out. |
-| T-W5 | P2 | **Binary/artifact naming**: `online.exe` vs `online` | `release.yml` already branches on this in its matrix, but the collect-and-rename step is written in bash with `${f##*.}` and runs only on ubuntu; it has never processed a real `online.exe` artifact. |
+| T-W5 | ~~P2~~ **tested locally** | **Binary/artifact naming**: `online.exe` vs `online` — `tests/test_release_packaging.py` stages what `download-artifact` leaves behind (one directory per matrix job, two of them holding a file called plain `online`) and runs the workflow's own bash against it. The shell is *extracted from `release.yml`*, not copied, so editing the workflow changes what the test runs — verified by breaking the workflow and watching three tests fail. Pinned: exactly the Windows artifact keeps `.exe`, the two unix binaries do not collapse onto one name, contents are copied not just renamed, and the PyPI job's `dist/` collects wheels only. What still needs a runner is whether the Windows job produces `online.exe` in the first place. |
 | T-W6 | ~~P2~~ **pinned locally** | **Float formatting in output field names** — the exact 52-field name list for a grid spec is asserted, so a platform divergence fails loudly. | Combo labels are built with `format!("{r}")` on f64 (e.g. `pred_y__r0.000001`). Rust's float `Display` is locale-independent, so this *should* be identical everywhere — but the field names are part of the public schema and a divergence would silently break `expression ≡ bank`. Assert the exact field-name list on every OS. |
 | T-W7 | P2 | **Numeric reproducibility across OS/CPU** | Predictions should match macOS to a tolerance, not bitwise: different LLVM vectorization and BLAS paths can reorder floating-point operations. Compare a fixed synthetic run's outputs across the CI matrix with a stated tolerance (~1e-12 relative), which also detects a genuinely divergent algorithm. |
 | T-W8 | P3 | **Filesystem behavior**: case-insensitivity, `MAX_PATH`, file locking on rewrite | The bank writes state with `std::fs::write` and the runner opens the output parquet with `File::create`; a still-open reader on Windows makes rewriting fail where POSIX allows it. Relevant to `--resume` loops. |
@@ -237,14 +237,18 @@ That gates, in order:
    config claims is an untested assertion, including the Linux and macOS jobs.
 2. **T-W1** — `cargo test`, `maturin develop` and the pytest suite have never
    executed on Windows. A whole supported platform is unverified, and T-W3b,
-   T-W5, T-W7 and T-W8 are all speculative until it runs once.
+   T-W3b, T-W7 and T-W8 are all speculative until it runs once, and T-W5's
+   remaining half (does the Windows job produce an `online.exe` at all?) with
+   them.
 3. **T-W2** — cross-OS state hand-off. The msgpack payload has no
    host-dependent parts *by construction* and `save_bytes` is asserted
    deterministic locally, but that is an argument, not a test.
-4. **PyPI** — the name `polars-online` has not been checked for availability,
-   and the repo is not registered as a trusted publisher. `release.yml`'s
-   `publish` job is gated behind a `pypi` environment, so a tag can build
-   artifacts without publishing until that is done.
+4. **PyPI** — the name is **available**: `pypi.org/pypi/polars-online/json` and
+   the underscore spelling both return 404 (checked 2026-08-30). What remains
+   is registering this repository and workflow as a trusted publisher, which
+   needs the account. `release.yml`'s `publish` job is gated behind a `pypi`
+   environment, so a tag can build and attach artifacts without publishing
+   until that is done.
 
 Two things are worth doing periodically rather than once:
 
