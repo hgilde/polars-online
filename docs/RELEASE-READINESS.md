@@ -267,19 +267,34 @@ rustflags before any compile — and both are pinned by
 
 Extrapolated from the observed timings, private-repo push:
 
-| | before | after (measured) |
+| | before | after |
 |---|---:|---:|
 | lint | 3 OSes, full build — ~235 billed | Linux, no build — **2** |
-| test | 3 OSes — ~706 billed | Linux — ~30 (est.) |
-| **per push** | **~940** | **~35** |
+| test | 3 OSes — ~706 billed | Linux — **26** |
+| **per push** | **~940** | **28** |
 
-Measured on the first run under the policy: **lint finished in 1m25s**, of
-which `uv sync --no-install-project` was **3 seconds** against 18 minutes for
-the sync that built the extension, and a warm cache brought clippy to 42
-seconds. Two billed minutes for the whole job.
+All measured, on the first fully green run (33419911742). **A 34x reduction**:
+roughly 107 pushes a month against Pro's 3,000, where the config this replaced
+allowed three.
 
-`test` is still an estimate — its first two runs under the new config died on
-the disk bug above.
+Where the two fixes landed, step by step:
+
+| step | before | after |
+|---|---:|---:|
+| `free disk` | ran after the cache | 14 GB → 34 GB free, *then* `Cache restored successfully` |
+| `uv sync` (lint) | 18 min | **3 s** |
+| `cargo test` | 9m46s cold | **4m56s** warm |
+| `maturin develop --release` | 18 min | **3 s** |
+
+`maturin develop --release` going from 18 minutes to 3 seconds is the
+rustflags fingerprint fix, exactly as predicted: it now reuses the release
+build `uv sync` already did instead of invalidating and repeating it.
+
+The remaining cost is `uv sync` in the `test` job at 13m29s, which builds that
+release extension. rust-cache deliberately discards workspace crates' own
+artifacts to keep the cache small, so our four crates recompile each run.
+`cache-workspace-crates` would address it; not pursued, because 28 billed
+minutes a push is no longer the constraint.
 
 The policy is enforced by `tests/test_ci_cost_policy.py`, not by comments: it
 parses the workflows and asserts that the matrix fallback is the cheap branch,
