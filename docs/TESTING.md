@@ -1,6 +1,6 @@
 # Test coverage and testing improvements
 
-Status as of 2026-08-30: **218 Rust tests + 598 pytest functions** (plus 2 opt-in
+Status as of 2026-08-30: **230 Rust tests + 649 pytest functions** (plus 2 opt-in
 soak tests), all green, run in CI on three OSes.
 
 Measured coverage (`./scripts/coverage.sh`): **96% of the Python package**, and
@@ -16,6 +16,7 @@ instead by the CLI integration tests through `run_config`) and
 
 | Item | Status |
 |---|---|
+| Declared schema checked for every model | **Done** — `test_names_match_the_realized_struct_for_every_model` extends the E23 guard from `ewridge` alone to all ten models times three output combinations, plus `ew_cov` separately. The optional outputs are assembled in the stream layer and so generalize, but each model contributes its own prediction and coefficient slots, and `sgd`, `pa`, `holt` and `ew_cov` all postdate the original test. |
 | Hard rule 1 is enforced, not remembered | **Done** — `tests/test_repo_hygiene.py` fails if a data file, a large file, or generated tool output is tracked, if `.cache/`/`target/`/`mutants.out/` stop being gitignored, or if a file the build needs is missing from what `git archive` (a fresh clone, an sdist) would produce. Written after 136 files of `cargo mutants` output sat tracked for several commits, swept in by a `git add -A`, with nothing complaining. Verified to fire, not just to pass. |
 | Examples are executed | **Done** — `tests/test_examples.py` runs everything under `examples/` unmodified: the Pathway operator example end to end (plain-batch path, since Pathway is BSL and not a dependency — asserted by checking it appears in no dependency group), and `examples/bank.toml` through the real CLI for `--dry-run`, a full run, and `--resume` from the state the run wrote. A documented example that no longer works is worse than none, and until now nothing ran either file. **It found a documentation defect**: the README's chunk-invariance guarantee said "bit-identical output" with no exception, but `coef` is snapshotted on each chunk's last row as well as every `coef_every` rows, so smaller chunks report it more often. The guarantee now names that exception; every computed field is still bit-identical. |
 | T-E1 negative weights | **Done** — defect fixed (finite negative weights now error, naming the row); non-finite weights skip uniformly with non-finite features. `tests/test_edge_cases.py::TestWeights`, incl. all seven models and the `w = 0` pure-decay case. |
