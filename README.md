@@ -504,6 +504,31 @@ name, every default, every signature — is pinned by
 `tests/test_api_surface.py` against a checked-in snapshot, so a change is a
 reviewable diff and a version bump, never a silent rename of your columns.
 
+**You never have to construct these strings.** `output_index` gives every
+field with the machine values its name encodes, so selection is a filter, not
+string formatting:
+
+```python
+idx = po.spec.output_index(spec)
+name = idx.filter(
+    (pl.col("kind") == "pred") & (pl.col("target") == "y")
+    & (pl.col("ridge") == 0.5) & (pl.col("halflife") == 500.0)
+)["field"].item()          # -> "pred_y__r0.5@h500", resolved for you
+out["m"].struct.field(name)
+```
+
+`coef_index(spec)` does the same for the flat `coef` list — one row per
+position, mapping it to (target, combo, term):
+
+```python
+pos = po.spec.coef_index(spec).filter(
+    (pl.col("term") == "x1") & (pl.col("ridge") == 0.5)
+)["position"].item()
+```
+
+Both come from the same Rust code that renders the names, so they cannot
+drift from the strings.
+
 One sharp edge to know: a *target named* `y__r0.5` produces the same field
 string as a ridge grid on `y` would. Nothing breaks — the struct is still
 well-formed — but if you parse field names downstream, avoid `__` and `@` in

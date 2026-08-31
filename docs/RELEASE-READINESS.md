@@ -176,6 +176,33 @@ applied to the names.
 It also subsumes the current single-shape field-name test, and would have
 caught the E23 declared-vs-realized divergence from the other direction.
 
+## API usability round (pre-users window)
+
+Reviewed by using the API as a naive user; the findings and what was done:
+
+- **String construction was the API's worst ergonomic** — reaching a grid slot
+  meant hand-building `pred_y__r0.5@h500`, i.e. mentally reimplementing the
+  float rendering. **Fixed**: `spec.output_index()` returns every field with
+  the machine values its name encodes (kind, target, halflife/lam, ridge,
+  feature_set, lasso λ, quantile level, ew_cov columns), produced by the same
+  Rust code that renders the names. Selection becomes a Polars filter.
+- **`coef` was an unmapped flat list.** **Fixed**: `spec.coef_index()` maps
+  each position to (target, combo, term), derived from `output_index` so it
+  cannot drift; verified by recovering known coefficients by position.
+- **Our own `eval.unpack` parsed names heuristically** ("longest match wins").
+  **Fixed**: an optional `spec=` argument resolves slot→target exactly through
+  the index; the heuristic remains only for callers with a frame but no spec.
+- **`min_periods` defaults sensibly** (first prediction at ~k+2) — verified,
+  nothing to do.
+- **Reviewed and deliberately kept**: `fit_predict`'s name (sklearn readers may
+  expect in-sample fit-then-predict; ours is predict-then-update, which is
+  strictly better for them — a docstring note suffices, and the fused call *is*
+  the out-of-sample guarantee); the eight `emit_*` booleans (discoverable in
+  signatures, unlike a stringly `outputs=[...]` list); spec dicts rather than
+  spec objects (JSON-ready, printable, and validation already happens at
+  construction); wide struct output rather than a native long format
+  (`eval.unpack` already provides long form on demand).
+
 ## Policy to write down
 
 Short, in the README and CONTRIBUTING:

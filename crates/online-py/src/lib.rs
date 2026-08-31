@@ -133,6 +133,19 @@ fn validate_spec(spec_json: &str) -> PyResult<()> {
         .map_err(PyValueError::new_err)
 }
 
+/// The output index as JSON: one object per field with the machine values its
+/// name encodes (kind, target, halflife/lam, ridge, feature_set, lambda,
+/// quantile, columns). JSON keeps the FFI trivial; the Python side turns it
+/// into a DataFrame.
+#[pyfunction]
+fn spec_output_index(spec_json: &str) -> PyResult<String> {
+    let spec: Spec = serde_json::from_str(spec_json)
+        .map_err(|e| PyValueError::new_err(format!("invalid spec: {e}")))?;
+    spec.validate().map_err(PyValueError::new_err)?;
+    serde_json::to_string(&online_polars::output_index(&spec))
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
 /// Output field names for a spec, without building a bank.
 #[pyfunction]
 fn spec_output_fields(spec_json: &str) -> PyResult<Vec<String>> {
@@ -162,5 +175,6 @@ fn _polars_online(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(validate_spec, m)?)?;
     m.add_function(wrap_pyfunction!(run_config, m)?)?;
     m.add_function(wrap_pyfunction!(spec_output_fields, m)?)?;
+    m.add_function(wrap_pyfunction!(spec_output_index, m)?)?;
     Ok(())
 }

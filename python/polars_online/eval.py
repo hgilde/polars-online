@@ -35,6 +35,7 @@ def unpack(
     df: pl.DataFrame,
     spec_name: str,
     *,
+    spec: dict | None = None,
     targets: Sequence[str] | None = None,
 ) -> pl.DataFrame:
     """Long form: one row per (row, prediction slot).
@@ -44,12 +45,30 @@ def unpack(
     Input columns named like the output ones (see :data:`RESERVED`) are dropped
     -- a target column called ``y`` would otherwise collide with the ``y``
     output.
+
+    Pass ``spec`` to resolve each slot's target exactly (via
+    :func:`polars_online.spec.output_index`); without it a name-based heuristic
+    is used, which can misattribute a target whose name embeds another's.
     """
     fields = _pred_fields(df, spec_name)
     keep = [c for c, d in df.schema.items() if not isinstance(d, pl.Struct) and c not in RESERVED]
+    # With the spec in hand, the slot -> target mapping comes from
+    # `output_index` -- the same Rust code that named the fields -- instead of
+    # the heuristic name-parsing below, which exists only for callers who have
+    # a frame but no spec.
+    exact: dict[str, str] = {}
+    if spec is not None:
+        from polars_online import spec as _spec_mod
+
+        idx = _spec_mod.output_index(spec)
+        exact = {
+            r["field"]: r["target"]
+            for r in idx.filter(pl.col("kind") == "pred").iter_rows(named=True)
+            if r["target"] is not None
+        }
     frames = []
     for slot in fields:
-        target = _target_of(slot, df, targets)
+        target = exact.get(slot) or _target_of(slot, df, targets)
         frames.append(
             df.select(
                 *keep,

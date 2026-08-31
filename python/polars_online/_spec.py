@@ -6,7 +6,9 @@ import json
 import math
 from typing import Any
 
-from polars_online._polars_online import spec_output_fields, validate_spec
+import polars as pl
+
+from polars_online._polars_online import spec_output_fields, spec_output_index, validate_spec
 
 
 def _json(spec: dict[str, Any]) -> str:
@@ -172,6 +174,101 @@ def ewridge(
 def output_fields(spec: dict[str, Any]) -> list[str]:
     """Struct field names this spec will produce, in order."""
     return spec_output_fields(_json(spec))
+
+
+def output_index(spec: dict[str, Any]) -> pl.DataFrame:
+    """Every output field with the machine values its name encodes.
+
+    One row per struct field, in order: ``field``, ``kind`` (``pred``,
+    ``resid``, ``sigma``, ``n_eff``, ``coef``, ...), ``target``, ``halflife``
+    (or ``lam``), ``ridge``, ``feature_set``, ``lambda`` (lasso path point),
+    ``quantile``, and ``columns`` (the pair an ``ew_cov`` statistic is over).
+
+    This is how to reach a field **without constructing its name** -- the
+    string grammar (``pred_y__r0.5@h500``) stays an implementation detail::
+
+        idx = po.spec.output_index(spec)
+        name = idx.filter(
+            (pl.col("kind") == "pred")
+            & (pl.col("target") == "y")
+            & (pl.col("ridge") == 0.5)
+            & (pl.col("halflife") == 500.0)
+        )["field"].item()
+        out["m"].struct.field(name)
+
+    Produced by the same Rust code that renders the names, so the metadata can
+    never drift from the strings.
+    """
+    rows = json.loads(spec_output_index(_json(spec)))
+    return pl.DataFrame(
+        rows,
+        schema={
+            "field": pl.String,
+            "kind": pl.String,
+            "target": pl.String,
+            "halflife": pl.Float64,
+            "lam": pl.Float64,
+            "ridge": pl.Float64,
+            "feature_set": pl.String,
+            "lambda": pl.Float64,
+            "quantile": pl.Float64,
+            "columns": pl.List(pl.String),
+        },
+    )
+
+
+def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
+    """The layout of each ``coef`` list, one row per position.
+
+    ``coef`` is flat: (target x combo) slots, each contributing its terms in
+    order. This maps ``position`` -> (``target``, combo metadata, ``term``),
+    where ``term`` is ``"intercept"``, a feature name, or -- for ``holt`` --
+    ``"level"`` / ``"trend"``::
+
+        ci = po.spec.coef_index(spec)
+        pos = ci.filter(
+            (pl.col("target") == "y") & (pl.col("ridge") == 0.5)
+            & (pl.col("term") == "x1")
+        )["position"].item()
+        slope = out["m"].struct.field("coef@h100").list.get(pos)
+
+    Derived from :func:`output_index` (the slot order comes from the same Rust
+    code that renders the names), never from parsing strings.
+    """
+    idx = output_index(spec)
+    model = spec.get("model", {}).get("type")
+    if model == "ew_cov":
+        msg = "ew_cov emits statistics, not coefficients"
+        raise ValueError(msg)
+    if model == "holt":
+        terms = ["level", "trend"]
+    else:
+        terms = (["intercept"] if spec.get("add_intercept", True) else []) + list(
+            spec.get("features", [])
+        )
+    # One instance's slot order, exactly as the pred fields declare it.
+    one = idx.filter(pl.col("kind") == "pred")
+    first = one.row(0, named=True)
+    slots = one.filter(
+        (pl.col("halflife").eq_missing(first["halflife"]))
+        & (pl.col("lam").eq_missing(first["lam"]))
+    )
+    rows = []
+    pos = 0
+    for slot in slots.iter_rows(named=True):
+        for term in terms:
+            rows.append(
+                {
+                    "position": pos,
+                    "target": slot["target"],
+                    "ridge": slot["ridge"],
+                    "feature_set": slot["feature_set"],
+                    "lambda": slot["lambda"],
+                    "term": term,
+                }
+            )
+            pos += 1
+    return pl.DataFrame(rows)
 
 
 def rls(

@@ -460,8 +460,25 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
     }
 }
 
+/// One grid combo: the rendered label plus the machine values it encodes, so
+/// metadata can never drift from the string (docs/RELEASE-READINESS.md).
+#[derive(Debug, Clone, Default)]
+pub struct Combo {
+    /// Rendered suffix ("" when there is only one combo).
+    pub label: String,
+    pub ridge: Option<f64>,
+    pub feature_set: Option<String>,
+    /// Lasso path point.
+    pub lambda: Option<f64>,
+}
+
 /// Combo labels per model instance ("" when there is only one combo).
 pub fn combo_labels(spec: &Spec) -> Vec<String> {
+    combos(spec).into_iter().map(|c| c.label).collect()
+}
+
+/// The combos with their machine values.
+pub fn combos(spec: &Spec) -> Vec<Combo> {
     match &spec.model {
         ModelKind::EwRidge {
             ridge,
@@ -471,7 +488,7 @@ pub fn combo_labels(spec: &Spec) -> Vec<String> {
             let nr = ridge.as_ref().map(|r| r.to_vec().len()).unwrap_or(1);
             let nf = feature_sets.as_ref().map(|f| f.len()).unwrap_or(0).max(1);
             if nr * nf == 1 {
-                return vec![String::new()];
+                return vec![Combo::default()];
             }
             let ridges = ridge
                 .as_ref()
@@ -484,12 +501,18 @@ pub fn combo_labels(spec: &Spec) -> Vec<String> {
             let mut out = Vec::new();
             for f in &fs_names {
                 for r in &ridges {
-                    out.push(if nf == 1 {
+                    let label = if nf == 1 {
                         format!("__r{}", crate::spec::num_label(*r))
                     } else if nr == 1 {
                         format!("__{f}")
                     } else {
                         format!("__{f}_r{}", crate::spec::num_label(*r))
+                    };
+                    out.push(Combo {
+                        label,
+                        ridge: Some(*r),
+                        feature_set: (nf > 1).then(|| f.clone()),
+                        lambda: None,
                     });
                 }
             }
@@ -503,10 +526,15 @@ pub fn combo_labels(spec: &Spec) -> Vec<String> {
         | ModelKind::EwCov { .. }
         | ModelKind::Sgd { .. }
         | ModelKind::Pa { .. }
-        | ModelKind::Holt { .. } => vec![String::new()],
+        | ModelKind::Holt { .. } => vec![Combo::default()],
         ModelKind::Lasso { lasso_path, .. } => lasso_path
             .iter()
-            .map(|l| format!("__l{}", crate::spec::num_label(*l)))
+            .map(|l| Combo {
+                label: format!("__l{}", crate::spec::num_label(*l)),
+                ridge: None,
+                feature_set: None,
+                lambda: Some(*l),
+            })
             .collect(),
     }
 }

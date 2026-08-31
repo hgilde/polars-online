@@ -40,6 +40,8 @@
   group = None
 
 [spec constructors]  # keyword names AND defaults are API
+  coef_index:
+    spec
   ew_cov:
     name
     features
@@ -112,6 +114,8 @@
     cd_tol = None
     common
   output_fields:
+    spec
+  output_index:
     spec
   pa:
     name

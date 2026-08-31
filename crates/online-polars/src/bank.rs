@@ -568,8 +568,76 @@ fn assemble_ew_cov(spec: &Spec, n: usize, chunks: &[ChunkOut]) -> PolarsResult<C
     Ok(st.into_series().into())
 }
 
+/// One output field with the machine values its name encodes.
+///
+/// This is the antidote to string formatting as API: a caller filters this
+/// table for `kind == "pred" && target == "y" && ridge == Some(0.5)` instead
+/// of constructing `"pred_y__r0.5@h500"` by hand — which would require
+/// reimplementing `num_label`'s float rendering. Produced by the same code
+/// that renders the names, so the two cannot drift.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FieldMeta {
+    pub field: String,
+    /// pred / resid / sigma / resid_z / ic / r2 / hit_rate / absresid_q /
+    /// autocorr / drift / n_eff / coef / lam_selected / selected /
+    /// pred_selected / pred_averaged — or an `ew_cov` statistic name.
+    pub kind: String,
+    pub target: Option<String>,
+    /// The instance's decay, as configured (present even when the suffix is
+    /// empty because there is a single instance).
+    pub halflife: Option<f64>,
+    pub lam: Option<f64>,
+    pub ridge: Option<f64>,
+    pub feature_set: Option<String>,
+    /// Lasso path point.
+    pub lambda: Option<f64>,
+    /// Quantile level (`absresid_q*` fields).
+    pub quantile: Option<f64>,
+    /// Columns an `ew_cov` statistic is over.
+    pub columns: Option<Vec<String>>,
+}
+
+impl FieldMeta {
+    fn new(field: String, kind: &str) -> Self {
+        Self {
+            field,
+            kind: kind.to_string(),
+            target: None,
+            halflife: None,
+            lam: None,
+            ridge: None,
+            feature_set: None,
+            lambda: None,
+            quantile: None,
+            columns: None,
+        }
+    }
+    fn decay(mut self, d: &online_core::Decay) -> Self {
+        match d {
+            online_core::Decay::Halflife(h) => self.halflife = Some(*h),
+            online_core::Decay::Lam(l) => self.lam = Some(*l),
+        }
+        self
+    }
+    fn target(mut self, t: &str) -> Self {
+        self.target = Some(t.to_string());
+        self
+    }
+    fn combo(mut self, c: &crate::stream::Combo) -> Self {
+        self.ridge = c.ridge;
+        self.feature_set = c.feature_set.clone();
+        self.lambda = c.lambda;
+        self
+    }
+}
+
 /// Output field names for a spec, in struct order (used by Python for dtypes).
 pub fn output_fields(spec: &Spec) -> Vec<String> {
+    output_index(spec).into_iter().map(|m| m.field).collect()
+}
+
+/// Every output field with its metadata, in struct order.
+pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
     let decays = spec.decays().expect("validated");
     // ew_cov is not a regression: its slots are named statistics, not
     // pred/resid pairs, and it has no targets or coefficients.
@@ -589,33 +657,68 @@ pub fn output_fields(spec: &Spec) -> Vec<String> {
             })
             .collect();
         let labels = online_core::EwCovModel::labels(&spec.features, &kinds);
+        // Statistic kind and the columns it is over, in label order: the same
+        // walk `labels` makes (per stat: each column, or each i<j pair).
+        let mut meta: Vec<(String, Vec<String>)> = Vec::new();
+        for (name, kind) in names.iter().zip(&kinds) {
+            match kind {
+                online_core::EwCovStat::Mean
+                | online_core::EwCovStat::Var
+                | online_core::EwCovStat::Std => {
+                    for col in &spec.features {
+                        meta.push((name.clone(), vec![col.clone()]));
+                    }
+                }
+                _ => {
+                    for i in 0..spec.features.len() {
+                        for j in (i + 1)..spec.features.len() {
+                            meta.push((
+                                name.clone(),
+                                vec![spec.features[i].clone(), spec.features[j].clone()],
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        debug_assert_eq!(meta.len(), labels.len());
         let mut fields = Vec::new();
-        for (suffix, _) in &decays {
-            fields.extend(labels.iter().map(|l| format!("{l}{suffix}")));
-            fields.push(format!("n_eff{suffix}"));
+        for (suffix, d) in &decays {
+            for (l, (kind, cols)) in labels.iter().zip(&meta) {
+                let mut m = FieldMeta::new(format!("{l}{suffix}"), kind).decay(d);
+                m.columns = Some(cols.clone());
+                fields.push(m);
+            }
+            fields.push(FieldMeta::new(format!("n_eff{suffix}"), "n_eff").decay(d));
         }
         return fields;
     }
-    let combos = combo_labels(spec);
+    let combos = crate::stream::combos(spec);
     let mut fields = Vec::new();
-    for (suffix, _) in &decays {
+    for (suffix, d) in &decays {
+        let mk = |kind: &str, t: &str, c: &crate::stream::Combo| {
+            FieldMeta::new(format!("{kind}_{t}{}{suffix}", c.label), kind)
+                .decay(d)
+                .target(t)
+                .combo(c)
+        };
         for t in &spec.targets {
             for c in &combos {
-                fields.push(format!("pred_{t}{c}{suffix}"));
-                fields.push(format!("resid_{t}{c}{suffix}"));
+                fields.push(mk("pred", t, c));
+                fields.push(mk("resid", t, c));
             }
         }
         if spec.emit_sigma {
             for t in &spec.targets {
                 for c in &combos {
-                    fields.push(format!("sigma_{t}{c}{suffix}"));
+                    fields.push(mk("sigma", t, c));
                 }
             }
         }
         if spec.emit_resid_z {
             for t in &spec.targets {
                 for c in &combos {
-                    fields.push(format!("resid_z_{t}{c}{suffix}"));
+                    fields.push(mk("resid_z", t, c));
                 }
             }
         }
@@ -623,7 +726,7 @@ pub fn output_fields(spec: &Spec) -> Vec<String> {
             for name in ["ic", "r2", "hit_rate"] {
                 for t in &spec.targets {
                     for c in &combos {
-                        fields.push(format!("{name}_{t}{c}{suffix}"));
+                        fields.push(mk(name, t, c));
                     }
                 }
             }
@@ -632,10 +735,17 @@ pub fn output_fields(spec: &Spec) -> Vec<String> {
             for q in levels {
                 for t in &spec.targets {
                     for c in &combos {
-                        fields.push(format!(
-                            "absresid_q{}_{t}{c}{suffix}",
-                            crate::spec::num_label(*q)
-                        ));
+                        let name = format!(
+                            "absresid_q{}_{t}{}{suffix}",
+                            crate::spec::num_label(*q),
+                            c.label
+                        );
+                        let mut m = FieldMeta::new(name, "absresid_q")
+                            .decay(d)
+                            .target(t)
+                            .combo(c);
+                        m.quantile = Some(*q);
+                        fields.push(m);
                     }
                 }
             }
@@ -643,34 +753,38 @@ pub fn output_fields(spec: &Spec) -> Vec<String> {
         if spec.emit_autocorr {
             for t in &spec.targets {
                 for c in &combos {
-                    fields.push(format!("autocorr_{t}{c}{suffix}"));
+                    fields.push(mk("autocorr", t, c));
                 }
             }
         }
         if spec.emit_drift {
             for t in &spec.targets {
                 for c in &combos {
-                    fields.push(format!("drift_{t}{c}{suffix}"));
+                    fields.push(mk("drift", t, c));
                 }
             }
         }
-        fields.push(format!("n_eff{suffix}"));
-        fields.push(format!("coef{suffix}"));
+        fields.push(FieldMeta::new(format!("n_eff{suffix}"), "n_eff").decay(d));
+        fields.push(FieldMeta::new(format!("coef{suffix}"), "coef").decay(d));
         if matches!(spec.model, crate::ModelKind::Lasso { .. }) {
             for t in &spec.targets {
-                fields.push(format!("lam_selected_{t}{suffix}"));
+                fields.push(
+                    FieldMeta::new(format!("lam_selected_{t}{suffix}"), "lam_selected")
+                        .decay(d)
+                        .target(t),
+                );
             }
         }
     }
     if spec.emit_selected {
         for t in &spec.targets {
-            fields.push(format!("pred_{t}__selected"));
-            fields.push(format!("selected_{t}"));
+            fields.push(FieldMeta::new(format!("pred_{t}__selected"), "pred_selected").target(t));
+            fields.push(FieldMeta::new(format!("selected_{t}"), "selected").target(t));
         }
     }
     if spec.emit_averaged {
         for t in &spec.targets {
-            fields.push(format!("pred_{t}__averaged"));
+            fields.push(FieldMeta::new(format!("pred_{t}__averaged"), "pred_averaged").target(t));
         }
     }
     fields

@@ -6,7 +6,7 @@ mod runner;
 mod spec;
 mod stream;
 
-pub use bank::{Bank, GroupKey, output_fields};
+pub use bank::{Bank, FieldMeta, GroupKey, output_fields, output_index};
 pub use online_core;
 pub use runner::{RunConfig, RunStats, run_config};
 pub use spec::{FloatOrList, ModelKind, Num, SessionGapSpec, Spec};
