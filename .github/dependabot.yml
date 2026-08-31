@@ -1,0 +1,21 @@
+# Actions are pinned to commit SHAs (a tag can be repointed by whoever owns the
+# action, which is the usual supply-chain foothold). Pinning without automation
+# just means permanently stale actions, so Dependabot proposes the bumps and CI
+# decides whether they are safe.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+
+  # Rust and Python dependencies are deliberately *not* automated. `polars` is
+  # pinned exactly and must stay in lockstep with the Rust side (see the
+  # README's "Versioning and the Polars pin"); a bot bumping either half in
+  # isolation would produce a build that cannot work. `polars-canary.yml` is
+  # how that pin moves instead.

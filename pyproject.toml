@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "Streaming / online regression models for Polars"
 readme = "README.md"
 license = "Apache-2.0"
+# PEP 639. Without this the sdist ships without a licence file at all, which
+# Apache-2.0 requires a distribution to carry, and which packagers check for.
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 authors = [{ name = "Hans Gilde" }]
 dependencies = [

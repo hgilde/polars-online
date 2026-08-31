@@ -17,7 +17,7 @@ platforms plus an sdist and PyPI trusted publishing, the name `polars-online`
 verified free, and a test suite that is the repo's strongest argument (230 Rust
 + ~680 pytest, with golden and hardening layers).
 
-## R1 — Least-privilege workflow permissions *(do first; security)*
+## R1 — Least-privilege workflow permissions — **done**
 
 None of the four workflows sets a top-level `permissions:` block, so every job
 inherits the repository default. `release.yml` correctly narrows two jobs
@@ -31,7 +31,7 @@ Fix: `permissions: {}` at the top of every workflow, granting per job only what
 that job uses (`contents: read` for checkout, and the two `release.yml` grants
 that already exist).
 
-## R2 — Pin actions to commit SHAs
+## R2 — Pin actions to commit SHAs — **done**
 
 All nine third-party actions are pinned to mutable tags (`@v5`, `@v2`,
 `@release/v1`). A tag can be repointed by whoever owns the action. For a
@@ -42,22 +42,25 @@ Fix: pin to full SHAs with the version in a trailing comment, and add
 Dependabot (`.github/dependabot.yml`, `package-ecosystem: github-actions`) so
 they still get updated — pinning without automation just means stale actions.
 
-## R3 — Decide whether the Rust crates are published
+## R3 — Rust crates: not published — **done**
 
 No crate sets `publish`, so `cargo publish` would happily push `online-core`,
 `online-polars`, `online-cli` and `online-py` to crates.io. That is four more
 public APIs to maintain, and `online-py` in particular is meaningless outside
 the wheel.
 
-Two coherent answers:
-- **Python only** (recommended for 0.1.0): add `publish = false` to all four,
-  and say in the README that the Rust crates are an implementation detail.
-- **Publish `online-core`** deliberately — it is genuinely reusable (no Polars
-  dependency, no `unsafe`, exhaustively tested) — and mark the other three
-  `publish = false`.
+**Decided: Python only.** All four now carry `publish = false`. Verified
+rather than assumed — the wheel builds from path dependencies, and a
+clean-venv install of the sdist compiles the Rust from source and runs both the
+`ModelBank` and the expression plugin, so nothing needs to reach crates.io.
+Revisit for `online-core` alone if it is ever wanted standalone.
 
-Doing nothing is the bad option, because it leaves the choice to whoever next
-runs `cargo publish`.
+**That verification found a real packaging defect**: the sdist shipped with no
+`LICENSE` at all. Apache-2.0 requires the licence to accompany a distribution
+and packagers check for it. Fixed with PEP 639 `license-files` under
+`[project]` — note `[tool.maturin] license-files` is silently ignored — and the
+licence now lands in the sdist and in the wheel's
+`.dist-info/licenses/LICENSE`.
 
 ## R4 — Repository settings *(needs the web UI; not scriptable from here)*
 
@@ -73,12 +76,19 @@ runs `cargo publish`.
 Do not make it public with a red badge. As of now Windows and Linux fixes are
 in flight; macOS was green on the first run. Flip only after a full run passes.
 
-## R6 — A history scan for anything that should not be public
+## R6 — History scan — **done, and it found something**
 
-100 commits, none of which should contain a secret, but "should" is not
-"checked". `gitleaks detect` or a `git log -p | grep -iE 'password|token|
-secret|-----BEGIN'` pass before flipping, since making a repo public
-retroactively exposes every commit, not just the tip.
+Done. **No key, token or credential pattern anywhere in the history**, and no
+occurrence of the maintainer's personal email in any file's content or any
+commit's diff.
+
+It did find one thing worth acting on: two *local* refs —
+`backup-before-email-rewrite` and filter-branch's `refs/original/refs/heads/main`
+— still held the 100 pre-rewrite commits authored as the maintainer's personal address. Not
+pushed, and their content is byte-identical to `main`, so their only remaining
+property was the email that was deliberately removed. `git push --all` or
+`--mirror` would have published exactly that. Both deleted and the reflog
+expired; no ref now carries the address.
 
 ---
 

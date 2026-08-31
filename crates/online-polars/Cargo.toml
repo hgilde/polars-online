@@ -7,6 +7,16 @@ license.workspace = true
 repository.workspace = true
 description = "Polars-side plumbing for online-core: chunk-fed model bank over DataFrames."
 
+
+# Not published to crates.io. The Python wheel is the deliverable, and it is
+# built from this workspace by maturin with these as *path* dependencies -- the
+# sdist vendors them, so `pip install` from source needs nothing from the
+# registry (verified: a clean-venv sdist install compiles and runs). Publishing
+# would commit us to a second public API surface for no user-facing gain.
+# Revisit for `online-core` alone if it is ever wanted standalone: it has no
+# Polars dependency, no `unsafe`, and is exhaustively tested.
+publish = false
+
 [dependencies]
 online-core.workspace = true
 polars = { workspace = true, features = ["lazy", "dtype-struct", "parquet"] }
