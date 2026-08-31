@@ -1,12 +1,24 @@
 # docs/PLAN.md §10: Polars is pinned, so breakage in a new release is invisible
 # until someone upgrades. This job tries the latest Polars on a schedule and
 # opens nothing on its own -- a failure here is the notification.
+#
+# It is also how the pin gets widened. The pyo3-polars coupling is negotiated
+# rather than fragile (see the README's *Versioning and the Polars pin*), so
+# "is it safe to relax `polars==`?" is an empirical question: if this job stays
+# green across a few Polars releases, the constraint becomes a range in a minor
+# release. That only works if a red canary means *Polars broke us* and nothing
+# else -- so this job has to be as reliable as CI, not less.
 name: Polars canary
 
 on:
   schedule:
     - cron: "17 6 * * 1" # Mondays, 06:17 UTC
   workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
 
 jobs:
   latest-polars:
@@ -16,6 +28,23 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: astral-sh/setup-uv@v7
+
+      # Same treatment as ci.yml's test job. Without it this job would fail
+      # every Monday on `ld terminated with signal 7` -- linking this
+      # workspace's ~10 polars-laden test binaries exhausts the runner -- and a
+      # canary that cries wolf weekly is worse than no canary, because the
+      # signal it exists to carry gets ignored.
+      - name: free disk and use a leaner linker
+        run: |
+          echo "--- disk before ---"; df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost /usr/local/.ghcup || true
+          echo "--- disk after ---"; df -h /
+          free -m || true
+          sudo apt-get install -y --no-install-recommends lld
+          mkdir -p .cargo
+          printf '[target.x86_64-unknown-linux-gnu]\nrustflags = ["-C", "link-arg=-fuse-ld=lld"]\n' \
+            >> .cargo/config.toml
 
       - name: unpin polars (Rust and Python)
         shell: bash

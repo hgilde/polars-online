@@ -179,6 +179,27 @@ so the opportunity is not forgotten.
 
 ---
 
+## S7 — One composite action for the Linux runner prep
+
+**Problem.** The "free disk and use a leaner linker" step is now duplicated
+verbatim in `ci.yml` and `polars-canary.yml` — ~10 lines of `rm -rf`,
+`apt-get install lld` and a `.cargo/config.toml` append. It exists because
+linking this workspace's ~10 polars-laden test binaries exhausts a stock GitHub
+runner; any future workflow that runs `cargo test --workspace` on Linux needs
+it too, and forgetting is a confusing failure rather than an obvious one.
+
+**Fix.** `.github/actions/linux-build-prep/action.yml` as a composite action,
+used by both.
+
+**Risk.** Low. The counter-argument: two call sites is the classic threshold
+where extracting is arguable, and a composite action is a third file to find
+when debugging CI. **Worth doing at the third caller, or now if the release
+workflow ends up needing it too.**
+
+**Expected:** ~10 lines and one class of "why did the new workflow break?".
+
+---
+
 ## Considered and rejected
 
 - **Replacing `faer` with a hand-rolled Cholesky.** Solves are k ≤ ~65, and a
