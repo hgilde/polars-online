@@ -401,6 +401,15 @@ pinned. The proposal is one API snapshot test covering symbols, signatures with
 defaults, and `output_fields()` across a matrix of spec shapes, so every API
 change becomes a reviewable diff. Proposed, not implemented.
 
+## 11e. Beyond O(state)
+
+[`docs/BEYOND-O-STATE.md`](BEYOND-O-STATE.md): what a relaxed memory bound would
+unlock, checked against crates.io so "nobody has built this" is evidence rather than
+assumption. Three strong candidates (adaptive conformal prediction, frequent-directions
+sketching, rolling-window regression), three weak, and Hoeffding trees left to MOA on
+purpose. Survey only — nothing proposed. The one condition attached: a relaxed bound
+would have to become a *stated, tested* property, not a habit.
+
 ## 12. Open questions (not blocking)
 
 - ~~Overnight handling beyond `session_gap` (e.g. partial state shrinkage toward a long-run prior).~~

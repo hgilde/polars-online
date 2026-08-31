@@ -186,6 +186,12 @@ have a perceptron" is a recorded decision rather than an oversight.
 |---|---|---|
 | E30 | P2 | **Export the EW Gram matrix and cross-moments as arrays.** `EwCov` maintains the centred `k × k` co-moment matrix and `EwRidge` the per-target cross-moment vector `r`; every solve reads them. Nothing exposes them to a caller. The only route today is `ew_cov`, which emits *pairwise* statistics as struct fields — the right shape at `k = 4` (6 columns) and the wrong one at `k = 400` (**79,800** columns). Proposed: `ModelBank.gram(spec, group=None) -> (G, b, scales)` returning numpy arrays, plus the Rust equivalent. |
 
+**Related:** [`docs/BEYOND-O-STATE.md`](BEYOND-O-STATE.md) surveys what becomes
+possible if the `O(state)` memory rule is relaxed to `O(window)` or a sketch bound —
+six candidates that are genuinely absent from Rust and C++, of which adaptive conformal
+prediction is the strongest. None is proposed for implementation; the survey exists so
+the question has an answer that is not "no, because §4 says so".
+
 **Why this is worth having.** The accumulators are the expensive part and they are
 already exact, already centred (E11b), already decayed on the model's clock with
 session and `max_dclock` handling, and already resumable. Anyone who wants to do
