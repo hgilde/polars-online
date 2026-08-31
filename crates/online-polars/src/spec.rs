@@ -15,6 +15,73 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Num(pub f64);
 
+/// A number rendered for a **field name** (`__r{ridge}`, `@h{halflife}`,
+/// `absresid_q{level}`, `__l{lambda}`).
+///
+/// Rust's `Display` for `f64` never uses scientific notation, so a perfectly
+/// legal `ridge = 1e-300` produced a **311-character field name** (three
+/// hundred zeros). Values outside [1e-6, 1e7) render as compact scientific
+/// (`1e-300`, `2.5e8`) instead; everything inside renders exactly as before,
+/// so no existing name changes.
+///
+/// These strings are **public API** — users index the output struct by them —
+/// and this function is deliberately the only place the rendering lives.
+/// `tests/test_api_surface.py` pins the results, so a change here (or a change
+/// in rustc's float formatting, which has happened historically) fails a test
+/// instead of silently renaming users' columns.
+#[cfg(test)]
+mod num_label_tests {
+    use super::num_label;
+
+    #[test]
+    fn ordinary_values_render_exactly_as_before() {
+        // The compact form must not change any name the suite already pins.
+        assert_eq!(num_label(1e-6), "0.000001");
+        assert_eq!(num_label(1e-7 * 10.0), "0.000001");
+        assert_eq!(num_label(0.1), "0.1");
+        assert_eq!(num_label(0.5), "0.5");
+        assert_eq!(num_label(100.0), "100");
+        assert_eq!(num_label(250.5), "250.5");
+        assert_eq!(num_label(3200.0), "3200");
+        assert_eq!(num_label(0.0), "0");
+    }
+
+    #[test]
+    fn extreme_values_render_compactly() {
+        // The bug this exists for: 1e-300 was a 311-character field name.
+        assert_eq!(num_label(1e-300), "1e-300");
+        assert_eq!(num_label(2.5e8), "2.5e8");
+        assert_eq!(num_label(1e7), "1e7");
+        assert_eq!(num_label(1e9), "1e9");
+        assert_eq!(num_label(-1e-300), "-1e-300");
+        assert!(num_label(1e-300).len() < 10);
+    }
+
+    #[test]
+    fn the_thresholds_are_where_the_doc_says() {
+        // Just inside: plain. Just outside: scientific.
+        assert_eq!(num_label(1e-6), "0.000001");
+        assert_eq!(num_label(9.999e-7), "9.999e-7");
+        assert_eq!(num_label(9_999_999.0), "9999999");
+        assert_eq!(num_label(1e7), "1e7");
+    }
+}
+
+pub fn num_label(v: f64) -> String {
+    let a = v.abs();
+    if v != 0.0 && v.is_finite() && !(1e-6..1e7).contains(&a) {
+        // `{:e}` gives `1e-300` / `2.5e8`; normalize the `e0` exponent Rust
+        // emits for values that just crossed the threshold.
+        let s = format!("{v:e}");
+        match s.strip_suffix("e0") {
+            Some(t) => t.to_string(),
+            None => s,
+        }
+    } else {
+        format!("{v}")
+    }
+}
+
 impl Serialize for Num {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         if self.0.is_finite() {
@@ -435,7 +502,7 @@ impl Spec {
                 } else {
                     Ok(hs
                         .iter()
-                        .map(|&h| (format!("@h{h}"), Decay::Halflife(h)))
+                        .map(|&h| (format!("@h{}", num_label(h)), Decay::Halflife(h)))
                         .collect())
                 }
             }

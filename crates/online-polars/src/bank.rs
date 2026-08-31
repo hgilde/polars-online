@@ -1,7 +1,7 @@
 //! The chunk-fed model bank (docs/PLAN.md §5): column extraction, per-group
 //! state, rayon fan-out over (spec x group), versioned msgpack save/load.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use online_core::ClockCfg;
@@ -288,6 +288,21 @@ impl Bank {
             crate::stream::build_models(s)?;
             if !names.insert(s.name.clone()) {
                 return Err(format!("duplicate spec name {:?}", s.name));
+            }
+            // The rendered field names are the user's handle on every output;
+            // a duplicate inside one struct would otherwise surface much later
+            // as a confusing polars error. Cannot happen with today's grammar
+            // (targets are deduplicated and every suffix applies uniformly),
+            // so this is a tripwire for future grammar changes, not a code
+            // path with a known trigger.
+            let fields = output_fields(s);
+            let mut seen_fields = HashSet::with_capacity(fields.len());
+            if let Some(dup) = fields.into_iter().find(|f| !seen_fields.insert(f.clone())) {
+                return Err(format!(
+                    "spec {:?}: two outputs render to the same field name {dup:?}; \
+                     rename a target or grid label to disambiguate",
+                    s.name
+                ));
             }
         }
         let clock_cfgs = specs
@@ -617,7 +632,10 @@ pub fn output_fields(spec: &Spec) -> Vec<String> {
             for q in levels {
                 for t in &spec.targets {
                     for c in &combos {
-                        fields.push(format!("absresid_q{q}_{t}{c}{suffix}"));
+                        fields.push(format!(
+                            "absresid_q{}_{t}{c}{suffix}",
+                            crate::spec::num_label(*q)
+                        ));
                     }
                 }
             }
@@ -921,7 +939,8 @@ fn assemble(spec: &Spec, n: usize, chunks: &[ChunkOut]) -> PolarsResult<Column> 
                         let slot = t_i * nc + c_i;
                         let idx = (li * n_models + mi) * m * nc + slot;
                         fields.push(Series::new(
-                            format!("absresid_q{q}_{t}{c}{suffix}").into(),
+                            format!("absresid_q{}_{t}{c}{suffix}", crate::spec::num_label(*q))
+                                .into(),
                             rq[idx].as_slice(),
                         ));
                     }

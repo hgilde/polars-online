@@ -484,6 +484,31 @@ widen the pin?" into a question answered by evidence rather than by caution: if
 the canary passes across a few Polars releases, the constraint widens to a
 range in a minor release.
 
+### Output field names are part of the API
+
+You index the result struct by strings — `out["m"].struct.field("pred_y")` —
+so the names are a contract, not a detail. The grammar:
+
+```
+pred_{target}{combo}{instance}     combo    = ""            single ridge, no feature sets
+resid_{target}{combo}{instance}             | __r{ridge}     ridge grid
+sigma_{target}{combo}{instance}             | __{set}        feature sets, single ridge
+absresid_q{level}_{target}...               | __{set}_r{ridge}
+n_eff{instance}                    instance = ""            single halflife
+coef{instance}                              | @h{halflife}   halflife grid
+```
+
+Numbers render as plain decimals in `[1e-6, 1e7)` (`0.000001`, `250.5`) and as
+compact scientific outside it (`1e-300`, `2.5e8`). The whole grammar — every
+name, every default, every signature — is pinned by
+`tests/test_api_surface.py` against a checked-in snapshot, so a change is a
+reviewable diff and a version bump, never a silent rename of your columns.
+
+One sharp edge to know: a *target named* `y__r0.5` produces the same field
+string as a ridge grid on `y` would. Nothing breaks — the struct is still
+well-formed — but if you parse field names downstream, avoid `__` and `@` in
+target names and feature-set labels.
+
 ### This package's own versioning
 
 Semantic versioning. While pre-1.0 the **minor** version carries breaking

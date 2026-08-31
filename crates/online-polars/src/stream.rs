@@ -485,11 +485,11 @@ pub fn combo_labels(spec: &Spec) -> Vec<String> {
             for f in &fs_names {
                 for r in &ridges {
                     out.push(if nf == 1 {
-                        format!("__r{r}")
+                        format!("__r{}", crate::spec::num_label(*r))
                     } else if nr == 1 {
                         format!("__{f}")
                     } else {
-                        format!("__{f}_r{r}")
+                        format!("__{f}_r{}", crate::spec::num_label(*r))
                     });
                 }
             }
@@ -504,9 +504,10 @@ pub fn combo_labels(spec: &Spec) -> Vec<String> {
         | ModelKind::Sgd { .. }
         | ModelKind::Pa { .. }
         | ModelKind::Holt { .. } => vec![String::new()],
-        ModelKind::Lasso { lasso_path, .. } => {
-            lasso_path.iter().map(|l| format!("__l{l}")).collect()
-        }
+        ModelKind::Lasso { lasso_path, .. } => lasso_path
+            .iter()
+            .map(|l| format!("__l{}", crate::spec::num_label(*l)))
+            .collect(),
     }
 }
 

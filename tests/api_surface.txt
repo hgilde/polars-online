@@ -1,0 +1,445 @@
+# polars-online public API surface. Regenerate: UPDATE_API_SURFACE=1 pytest
+
+[package]
+  ModelBank
+  __version__
+  eval
+  native_version
+  run
+  schema_version
+  spec
+  schema_version = 1
+
+[common parameters]  # every constructor accepts these via **common
+  targets
+  features
+  add_intercept = True
+  clock = None
+  halflife = None
+  lam = None
+  max_dclock = None
+  on_clock_reset = 'max'
+  session = None
+  session_gap = None
+  weight = None
+  min_periods = None
+  coef_every = 0
+  emit_sigma = False
+  emit_resid_z = False
+  emit_selected = False
+  emit_averaged = False
+  average_eta = None
+  emit_metrics = False
+  resid_quantiles = None
+  emit_autocorr = False
+  resid_autocorr_lag = None
+  emit_drift = False
+  drift_delta = None
+  drift_threshold = None
+  drift_action = 'flag'
+  group = None
+
+[spec constructors]  # keyword names AND defaults are API
+  ew_cov:
+    name
+    features
+    stats = None
+    precision_prior = None
+    common
+  ewridge:
+    name
+    targets
+    features
+    ridge = None
+    feature_sets = None
+    standardize = False
+    ridge_decay = False
+    coef0 = None
+    session_shrink = None
+    long_halflife = None
+    solve_every = None
+    max_rows_between_solves = None
+    common
+  ftrl:
+    name
+    targets
+    features
+    alpha = None
+    beta = None
+    l1 = None
+    l2 = None
+    strict_binary = False
+    loss = 'logistic'
+    common
+  holt:
+    name
+    targets
+    level_halflife = None
+    trend_halflife = None
+    features = None
+    common
+  huber:
+    name
+    targets
+    features
+    huber_delta = None
+    ridge = None
+    standardize = False
+    solve_every = None
+    max_rows_between_solves = None
+    common
+  kalman:
+    name
+    targets
+    features
+    coef_halflife
+    q = None
+    obs_var = None
+    p0 = None
+    share_p = False
+    standardize = True
+    common
+  lasso:
+    name
+    targets
+    features
+    lasso_path
+    l1_ratio = None
+    select_halflife = None
+    solve_every = None
+    max_rows_between_solves = None
+    max_cd_iters = None
+    cd_tol = None
+    common
+  output_fields:
+    spec
+  pa:
+    name
+    targets
+    features
+    mode = 'pa1'
+    c = None
+    eps = None
+    common
+  quantile:
+    name
+    targets
+    features
+    quantile
+    ridge = None
+    standardize = False
+    solve_every = None
+    max_rows_between_solves = None
+    quantile_eps = None
+    common
+  rls:
+    name
+    targets
+    features
+    ridge = None
+    coef0 = None
+    common
+  sgd:
+    name
+    targets
+    features
+    loss = 'squared'
+    huber_delta = None
+    quantile = None
+    eps = None
+    learning_rate = None
+    schedule = 'constant'
+    power = None
+    l2 = None
+    clip_gradient = None
+    scale_features = False
+    common
+
+[ModelBank]
+  __reduce__
+  fit_predict
+  fit_predict_batches
+  load
+  load_bytes
+  output_fields
+  save
+  save_bytes
+  solve_failures
+
+[expression namespace]  # pl.col(...).online.<method>
+  ew_cov
+  ewridge
+  ftrl
+  holt
+  huber
+  kalman
+  lasso
+  pa
+  quantile
+  rls
+  sgd
+
+[output field grammar]  # the strings users index the output struct by
+  ewridge minimal:
+    pred_y
+    resid_y
+    n_eff
+    coef
+  ewridge full grid, every output:
+    pred_y__a_r0.000001@h100
+    resid_y__a_r0.000001@h100
+    pred_y__a_r0.5@h100
+    resid_y__a_r0.5@h100
+    pred_y__b_r0.000001@h100
+    resid_y__b_r0.000001@h100
+    pred_y__b_r0.5@h100
+    resid_y__b_r0.5@h100
+    pred_z__a_r0.000001@h100
+    resid_z__a_r0.000001@h100
+    pred_z__a_r0.5@h100
+    resid_z__a_r0.5@h100
+    pred_z__b_r0.000001@h100
+    resid_z__b_r0.000001@h100
+    pred_z__b_r0.5@h100
+    resid_z__b_r0.5@h100
+    sigma_y__a_r0.000001@h100
+    sigma_y__a_r0.5@h100
+    sigma_y__b_r0.000001@h100
+    sigma_y__b_r0.5@h100
+    sigma_z__a_r0.000001@h100
+    sigma_z__a_r0.5@h100
+    sigma_z__b_r0.000001@h100
+    sigma_z__b_r0.5@h100
+    resid_z_y__a_r0.000001@h100
+    resid_z_y__a_r0.5@h100
+    resid_z_y__b_r0.000001@h100
+    resid_z_y__b_r0.5@h100
+    resid_z_z__a_r0.000001@h100
+    resid_z_z__a_r0.5@h100
+    resid_z_z__b_r0.000001@h100
+    resid_z_z__b_r0.5@h100
+    ic_y__a_r0.000001@h100
+    ic_y__a_r0.5@h100
+    ic_y__b_r0.000001@h100
+    ic_y__b_r0.5@h100
+    ic_z__a_r0.000001@h100
+    ic_z__a_r0.5@h100
+    ic_z__b_r0.000001@h100
+    ic_z__b_r0.5@h100
+    r2_y__a_r0.000001@h100
+    r2_y__a_r0.5@h100
+    r2_y__b_r0.000001@h100
+    r2_y__b_r0.5@h100
+    r2_z__a_r0.000001@h100
+    r2_z__a_r0.5@h100
+    r2_z__b_r0.000001@h100
+    r2_z__b_r0.5@h100
+    hit_rate_y__a_r0.000001@h100
+    hit_rate_y__a_r0.5@h100
+    hit_rate_y__b_r0.000001@h100
+    hit_rate_y__b_r0.5@h100
+    hit_rate_z__a_r0.000001@h100
+    hit_rate_z__a_r0.5@h100
+    hit_rate_z__b_r0.000001@h100
+    hit_rate_z__b_r0.5@h100
+    absresid_q0.05_y__a_r0.000001@h100
+    absresid_q0.05_y__a_r0.5@h100
+    absresid_q0.05_y__b_r0.000001@h100
+    absresid_q0.05_y__b_r0.5@h100
+    absresid_q0.05_z__a_r0.000001@h100
+    absresid_q0.05_z__a_r0.5@h100
+    absresid_q0.05_z__b_r0.000001@h100
+    absresid_q0.05_z__b_r0.5@h100
+    absresid_q0.95_y__a_r0.000001@h100
+    absresid_q0.95_y__a_r0.5@h100
+    absresid_q0.95_y__b_r0.000001@h100
+    absresid_q0.95_y__b_r0.5@h100
+    absresid_q0.95_z__a_r0.000001@h100
+    absresid_q0.95_z__a_r0.5@h100
+    absresid_q0.95_z__b_r0.000001@h100
+    absresid_q0.95_z__b_r0.5@h100
+    autocorr_y__a_r0.000001@h100
+    autocorr_y__a_r0.5@h100
+    autocorr_y__b_r0.000001@h100
+    autocorr_y__b_r0.5@h100
+    autocorr_z__a_r0.000001@h100
+    autocorr_z__a_r0.5@h100
+    autocorr_z__b_r0.000001@h100
+    autocorr_z__b_r0.5@h100
+    drift_y__a_r0.000001@h100
+    drift_y__a_r0.5@h100
+    drift_y__b_r0.000001@h100
+    drift_y__b_r0.5@h100
+    drift_z__a_r0.000001@h100
+    drift_z__a_r0.5@h100
+    drift_z__b_r0.000001@h100
+    drift_z__b_r0.5@h100
+    n_eff@h100
+    coef@h100
+    pred_y__a_r0.000001@h500
+    resid_y__a_r0.000001@h500
+    pred_y__a_r0.5@h500
+    resid_y__a_r0.5@h500
+    pred_y__b_r0.000001@h500
+    resid_y__b_r0.000001@h500
+    pred_y__b_r0.5@h500
+    resid_y__b_r0.5@h500
+    pred_z__a_r0.000001@h500
+    resid_z__a_r0.000001@h500
+    pred_z__a_r0.5@h500
+    resid_z__a_r0.5@h500
+    pred_z__b_r0.000001@h500
+    resid_z__b_r0.000001@h500
+    pred_z__b_r0.5@h500
+    resid_z__b_r0.5@h500
+    sigma_y__a_r0.000001@h500
+    sigma_y__a_r0.5@h500
+    sigma_y__b_r0.000001@h500
+    sigma_y__b_r0.5@h500
+    sigma_z__a_r0.000001@h500
+    sigma_z__a_r0.5@h500
+    sigma_z__b_r0.000001@h500
+    sigma_z__b_r0.5@h500
+    resid_z_y__a_r0.000001@h500
+    resid_z_y__a_r0.5@h500
+    resid_z_y__b_r0.000001@h500
+    resid_z_y__b_r0.5@h500
+    resid_z_z__a_r0.000001@h500
+    resid_z_z__a_r0.5@h500
+    resid_z_z__b_r0.000001@h500
+    resid_z_z__b_r0.5@h500
+    ic_y__a_r0.000001@h500
+    ic_y__a_r0.5@h500
+    ic_y__b_r0.000001@h500
+    ic_y__b_r0.5@h500
+    ic_z__a_r0.000001@h500
+    ic_z__a_r0.5@h500
+    ic_z__b_r0.000001@h500
+    ic_z__b_r0.5@h500
+    r2_y__a_r0.000001@h500
+    r2_y__a_r0.5@h500
+    r2_y__b_r0.000001@h500
+    r2_y__b_r0.5@h500
+    r2_z__a_r0.000001@h500
+    r2_z__a_r0.5@h500
+    r2_z__b_r0.000001@h500
+    r2_z__b_r0.5@h500
+    hit_rate_y__a_r0.000001@h500
+    hit_rate_y__a_r0.5@h500
+    hit_rate_y__b_r0.000001@h500
+    hit_rate_y__b_r0.5@h500
+    hit_rate_z__a_r0.000001@h500
+    hit_rate_z__a_r0.5@h500
+    hit_rate_z__b_r0.000001@h500
+    hit_rate_z__b_r0.5@h500
+    absresid_q0.05_y__a_r0.000001@h500
+    absresid_q0.05_y__a_r0.5@h500
+    absresid_q0.05_y__b_r0.000001@h500
+    absresid_q0.05_y__b_r0.5@h500
+    absresid_q0.05_z__a_r0.000001@h500
+    absresid_q0.05_z__a_r0.5@h500
+    absresid_q0.05_z__b_r0.000001@h500
+    absresid_q0.05_z__b_r0.5@h500
+    absresid_q0.95_y__a_r0.000001@h500
+    absresid_q0.95_y__a_r0.5@h500
+    absresid_q0.95_y__b_r0.000001@h500
+    absresid_q0.95_y__b_r0.5@h500
+    absresid_q0.95_z__a_r0.000001@h500
+    absresid_q0.95_z__a_r0.5@h500
+    absresid_q0.95_z__b_r0.000001@h500
+    absresid_q0.95_z__b_r0.5@h500
+    autocorr_y__a_r0.000001@h500
+    autocorr_y__a_r0.5@h500
+    autocorr_y__b_r0.000001@h500
+    autocorr_y__b_r0.5@h500
+    autocorr_z__a_r0.000001@h500
+    autocorr_z__a_r0.5@h500
+    autocorr_z__b_r0.000001@h500
+    autocorr_z__b_r0.5@h500
+    drift_y__a_r0.000001@h500
+    drift_y__a_r0.5@h500
+    drift_y__b_r0.000001@h500
+    drift_y__b_r0.5@h500
+    drift_z__a_r0.000001@h500
+    drift_z__a_r0.5@h500
+    drift_z__b_r0.000001@h500
+    drift_z__b_r0.5@h500
+    n_eff@h500
+    coef@h500
+    pred_y__selected
+    selected_y
+    pred_z__selected
+    selected_z
+    pred_y__averaged
+    pred_z__averaged
+  float rendering at the extremes:
+    pred_y__r1e-300@h100
+    resid_y__r1e-300@h100
+    pred_y__r0.5@h100
+    resid_y__r0.5@h100
+    n_eff@h100
+    coef@h100
+    pred_y__r1e-300@h1e9
+    resid_y__r1e-300@h1e9
+    pred_y__r0.5@h1e9
+    resid_y__r0.5@h1e9
+    n_eff@h1e9
+    coef@h1e9
+  lasso path:
+    pred_y__l0.1
+    resid_y__l0.1
+    pred_y__l0
+    resid_y__l0
+    n_eff
+    coef
+    lam_selected_y
+  rls minimal:
+    pred_y
+    resid_y
+    n_eff
+    coef
+  kalman minimal:
+    pred_y
+    resid_y
+    n_eff
+    coef
+  huber minimal:
+    pred_y
+    resid_y
+    n_eff
+    coef
+  quantile minimal:
+    pred_y
+    resid_y
+    n_eff
+    coef
+  sgd minimal:
+    pred_y
+    resid_y
+    n_eff
+    coef
+  pa minimal:
+    pred_y
+    resid_y
+    n_eff
+    coef
+  ftrl minimal:
+    pred_y
+    resid_y
+    n_eff
+    coef
+  holt minimal:
+    pred_y
+    resid_y
+    n_eff
+    coef
+  ew_cov minimal:
+    mean_x0
+    mean_x1
+    var_x0
+    var_x1
+    std_x0
+    std_x1
+    cov_x0_x1
+    corr_x0_x1
+    n_eff

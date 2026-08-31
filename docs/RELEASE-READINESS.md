@@ -128,9 +128,27 @@ msgpack, `SCHEMA_VERSION` plus a bank `format_version`, a frozen v1 fixture,
 and a documented rule (hard rule 5) to keep a previous-version loader. This is
 the model the rest should follow.
 
-## S — The mechanism: one API snapshot test
+## S — The mechanism: one API snapshot test — **done**
 
-The concrete proposal, and the highest-value item in this document.
+Implemented as `tests/test_api_surface.py` against `tests/api_surface.txt`
+(416 lines): every public symbol, every constructor signature *including
+defaults* (the shared `**common` parameters listed once, explicitly), the
+expression namespace, `schema_version`, and `output_fields()` across a
+14-case matrix covering every model, the full grid/emit combinations, and the
+float-rendering extremes. Regenerate with `UPDATE_API_SURFACE=1`; verified to
+fail loudly (with a unified diff and "needs a version bump" in the message) on
+a simulated rename.
+
+Building it found and fixed two things: a legal `ridge = 1e-300` produced a
+**311-character field name** (Rust's float `Display` never uses scientific
+notation) — numbers outside `[1e-6, 1e7)` now render compactly (`1e-300`),
+chosen so no existing name changed, with the rendering centralized in one
+`num_label()` function instead of seven scattered `format!` sites; and a
+grammar ambiguity (a target literally named `y__r0.5` renders identically to a
+grid field) — documented in the README with a duplicate-name tripwire in
+`Bank::new`, rather than banned, since it cannot corrupt a struct.
+
+The original proposal, for reference:
 
 A single test that renders the entire public surface to text and compares it to
 a checked-in file:

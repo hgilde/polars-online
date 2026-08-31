@@ -219,7 +219,7 @@ class TestOnlineSelection:
         x = rng.standard_normal(n)
         out = self._selection(2 * x + 0.3 * rng.standard_normal(n), x)
         sel = [s for s in out["m"].struct.field("selected_y0").to_list()[-1500:] if s]
-        assert sel.count("r0.00000001") / len(sel) > 0.9
+        assert sel.count("r1e-8") / len(sel) > 0.9
 
     def test_picks_shrinkage_on_pure_noise(self):
         rng = np.random.default_rng(1)
@@ -228,7 +228,7 @@ class TestOnlineSelection:
         out = self._selection(rng.standard_normal(n), x)
         sel = [s for s in out["m"].struct.field("selected_y0").to_list()[-1500:] if s]
         # the near-zero ridge fits the noise and must not dominate
-        assert sel.count("r0.00000001") / len(sel) < 0.2
+        assert sel.count("r1e-8") / len(sel) < 0.2
 
     def test_selected_prediction_equals_the_named_slot(self):
         rng = np.random.default_rng(2)
@@ -402,7 +402,7 @@ class TestModelAveraging:
     commits.
     """
 
-    SLOTS = ["pred_y0__r0.00000001", "pred_y0__r1", "pred_y0__r100"]
+    SLOTS = ["pred_y0__r1e-8", "pred_y0__r1", "pred_y0__r100"]
 
     def _run(self, n=4000, seed=1, noise=3.0, **kw):
         rng = np.random.default_rng(seed)
