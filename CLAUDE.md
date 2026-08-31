@@ -54,6 +54,15 @@ cargo run -p online-cli -- --config examples/bank.toml
    on any layout change and keep a loader for the previous version.
 6. No `unsafe` in `online-core`. f64 everywhere.
 7. Commit after each completed task in `docs/PLAN.md`, with the task number in the message.
+8. **`n_eff` means the same thing in every model**: the accumulated weight *before* this
+   row's update and *before* its own decay. That is what makes `min_periods` portable
+   across a bank. `sgd` and `pa` once applied the row's decay first, so `min_periods`
+   quietly meant a different number of rows for them; `crates/online-core/tests/model_contract.rs`
+   now checks every model against the same recursion.
+9. **A zero-weight row is legal** and means "advance the clock, learn nothing" — including
+   as the *first* row of a stream, where `lam*w_sum + w` is 0 and the mean-form update's
+   `a` and `b` are both 0/0. Guard every such division; an unguarded one poisons the state
+   with a NaN that never washes out.
 
 ## Style
 
