@@ -220,6 +220,72 @@ class TestOutputSchemaStability:
         out = po.ModelBank([spec]).fit_predict(_frame().drop("g"))
         assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
 
+    #: Every model, with whatever it needs to be constructible. `ew_cov` has no
+    #: targets and `holt` no features, so both are given explicitly.
+    _ALL_MODELS = [
+        ("ewridge", {"features": ["x0", "x1"]}),
+        ("rls", {"features": ["x0", "x1"], "ridge": 1.0}),
+        ("kalman", {"features": ["x0", "x1"], "coef_halflife": 100.0}),
+        ("lasso", {"features": ["x0", "x1"], "lasso_path": [0.1, 0.0]}),
+        ("huber", {"features": ["x0", "x1"]}),
+        ("quantile", {"features": ["x0", "x1"], "quantile": 0.5}),
+        ("ftrl", {"features": ["x0", "x1"]}),
+        ("sgd", {"features": ["x0", "x1"], "learning_rate": 0.01}),
+        ("pa", {"features": ["x0", "x1"]}),
+        ("holt", {}),
+    ]
+
+    @pytest.mark.parametrize(("model", "kw"), _ALL_MODELS, ids=[m for m, _ in _ALL_MODELS])
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {},
+            {"emit_sigma": True, "emit_resid_z": True, "emit_drift": True},
+            {"resid_quantiles": [0.5], "emit_autocorr": True, "emit_metrics": True},
+        ],
+        ids=["plain", "sigma+z+drift", "quantiles+autocorr+metrics"],
+    )
+    def test_names_match_the_realized_struct_for_every_model(self, model, kw, extra):
+        """The same guard as above, across every model rather than just
+        `ewridge`.
+
+        The optional outputs are assembled in the stream layer, but each model
+        contributes its own prediction and coefficient slots, so a model added
+        after `output_fields` was written can declare a different schema from
+        the one it produces -- and the expression plugin, which takes its dtype
+        from the declaration, would break on it while the bank kept working.
+        `sgd`, `pa`, `holt` and `ew_cov` all postdate that test.
+        """
+        spec = getattr(po.spec, model)(
+            "m",
+            targets=["y0"],
+            halflife=50.0,
+            min_periods=2.0,
+            **kw,
+            **extra,
+        )
+        out = po.ModelBank([spec]).fit_predict(_frame().drop("g"))
+        assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
+
+    @pytest.mark.parametrize(
+        "extra",
+        [{}, {"emit_sigma": True}, {"emit_metrics": True}],
+        ids=["plain", "sigma", "metrics"],
+    )
+    def test_ew_cov_names_match_the_realized_struct(self, extra):
+        """`ew_cov` is the one model with no targets, so its declared schema is
+        built from the statistics and column pairs rather than from targets."""
+        spec = po.spec.ew_cov(
+            "m",
+            features=["x0", "x1"],
+            stats=["mean", "var", "std", "cov", "corr"],
+            halflife=50.0,
+            min_periods=2.0,
+            **extra,
+        )
+        out = po.ModelBank([spec]).fit_predict(_frame().drop("g"))
+        assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
+
 
 class TestConfigParsing:
     """T-W3/T-W4: the CLI reads a TOML config as text. Windows checkouts can
