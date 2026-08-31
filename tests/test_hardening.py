@@ -15,6 +15,7 @@ that class of bug loud:
 * parameter ranges at their edges rather than their comfortable middles.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -167,7 +168,11 @@ class TestKitchenSinkAtScale:
                 [sys.executable, str(script), str(data), str(REPO / "tests")],
                 capture_output=True,
                 text=True,
-                env={"RAYON_NUM_THREADS": threads, "PATH": "/usr/bin:/bin"},
+                encoding="utf-8",
+                # Inherit the environment and override only the thread count.
+                # A hardcoded POSIX PATH left the child with no resolvable
+                # interpreter on Windows.
+                env={**os.environ, "RAYON_NUM_THREADS": threads},
                 cwd=str(REPO),
                 check=True,
             )

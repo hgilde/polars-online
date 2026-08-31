@@ -54,6 +54,7 @@ def _tracked() -> list[Path]:
         cwd=REPO,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
     )
     return [Path(p) for p in out.stdout.split("\0") if p]
@@ -109,7 +110,11 @@ def test_a_clean_checkout_has_what_the_build_needs(tracked):
     """`git archive` is what a fresh clone or an sdist sees. Anything the build
     reads must be in it -- a file that only exists in this working tree would
     make CI and every other machine fail in a way that is invisible here."""
-    names = {str(p) for p in tracked}
+    # `as_posix()`, not `str()`: git always reports forward slashes, while
+    # `str(WindowsPath(...))` gives backslashes, so this compared
+    # "python\\polars_online\\__init__.py" against a forward-slash literal and
+    # declared a tracked file missing. Caught by the first Windows CI run.
+    names = {p.as_posix() for p in tracked}
     for needed in [
         "Cargo.toml",
         "Cargo.lock",

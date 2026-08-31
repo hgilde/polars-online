@@ -401,7 +401,7 @@ class TestReadmeExamples:
     copy-paste them, and a typo there outlives any release."""
 
     def test_python_blocks_compile(self):
-        text = (REPO / "README.md").read_text()
+        text = (REPO / "README.md").read_text(encoding="utf-8")
         blocks, in_block, buf = [], False, []
         for line in text.splitlines():
             if line.strip().startswith("```python"):

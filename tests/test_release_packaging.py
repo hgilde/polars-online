@@ -11,11 +11,24 @@ drift and keep passing.
 """
 
 import re
+import shutil
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
 import pytest
+
+# The step under test is a `run:` block that executes only on the workflow's
+# ubuntu job. Running it needs a POSIX shell with `find`, `basename` and
+# `${f##*.}`; Git Bash on a Windows runner has a different `find` on PATH and
+# fails for reasons that say nothing about the workflow. Skipping here loses no
+# coverage — Linux and macOS both run it, and it is Linux that executes it for
+# real.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None,
+    reason="the release step is bash-on-ubuntu; a Windows shell tests nothing real",
+)
 
 REPO = Path(__file__).resolve().parent.parent
 WORKFLOW = REPO / ".github" / "workflows" / "release.yml"
@@ -30,7 +43,7 @@ WHEEL = "polars_online-0.1.0-cp312-abi3-macosx_11_0_arm64.whl"
 
 def _step_script(name: str) -> str:
     """The `run:` block of the named step, dedented to a runnable script."""
-    text = WORKFLOW.read_text()
+    text = WORKFLOW.read_text(encoding="utf-8")
     m = re.search(
         rf"^(\s*)- name: {re.escape(name)}\n\1  run: \|\n(?P<body>(?:\1    .*\n|\n)+)",
         text,
@@ -59,6 +72,7 @@ def _collect(cwd) -> list[str]:
         cwd=str(cwd),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     assert res.returncode == 0, res.stderr
@@ -105,6 +119,7 @@ def test_the_publish_job_collects_only_wheels(staged):
         cwd=str(staged),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     assert res.returncode == 0, res.stderr

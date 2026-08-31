@@ -38,6 +38,7 @@ def regenerated():
         [sys.executable, str(REPO / "scripts" / "validate.py")],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=str(REPO),
         check=False,
     )
@@ -46,7 +47,7 @@ def regenerated():
 
 
 def test_the_committed_document_is_what_the_code_produces(regenerated):
-    want = _normalize(DOC.read_text())
+    want = _normalize(DOC.read_text(encoding="utf-8"))
     got = _normalize(regenerated)
     if want == got:
         return

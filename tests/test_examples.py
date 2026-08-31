@@ -21,7 +21,9 @@ def _without_coef(out):
 
 
 def _run(args, **kw):
-    return subprocess.run(args, capture_output=True, text=True, cwd=str(REPO), check=False, **kw)
+    return subprocess.run(
+        args, capture_output=True, text=True, encoding="utf-8", cwd=str(REPO), check=False, **kw
+    )
 
 
 class TestPathwayExample:
@@ -62,7 +64,7 @@ class TestPathwayExample:
     def test_pathway_is_not_a_dependency(self):
         """The licence separation is a property of the packaging, so assert it
         there rather than trusting the comment in the example."""
-        pyproject = (REPO / "pyproject.toml").read_text()
+        pyproject = (REPO / "pyproject.toml").read_text(encoding="utf-8")
         assert "pathway" not in pyproject
 
 

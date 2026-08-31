@@ -39,6 +39,7 @@ def run(rows: int, threads: int) -> float:
         [sys.executable, "-c", WORKLOAD.format(rows=rows)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=env,
         check=True,
     )
