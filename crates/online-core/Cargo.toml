@@ -17,3 +17,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 rmp-serde.workspace = true
+# Tests only: a readable way to feed a config that omits a `#[serde(default)]`
+# field, which is what a state file written before that field existed looks like.
+serde_json = "1"
+

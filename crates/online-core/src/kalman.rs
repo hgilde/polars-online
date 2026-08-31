@@ -488,6 +488,98 @@ mod tests {
     }
 
     #[test]
+    fn cfg_validation_rejects_each_bad_field() {
+        let bad = |f: &dyn Fn(&mut KalmanCfg), want: &str| {
+            let mut c = cfg(2, 1, vec![100.0]);
+            f(&mut c);
+            match c.validate() {
+                Err(e) => assert!(e.contains(want), "wanted {want:?}, got {e:?}"),
+                Ok(()) => panic!("expected rejection mentioning {want:?}"),
+            }
+        };
+        let good = |f: &dyn Fn(&mut KalmanCfg)| {
+            let mut c = cfg(2, 1, vec![100.0]);
+            f(&mut c);
+            c.validate().expect("should be accepted");
+        };
+
+        bad(&|c| c.n_features = 0, "must be >= 1");
+        bad(&|c| c.n_targets = 0, "must be >= 1");
+
+        // `q` is the process noise per slot: one entry per coefficient,
+        // including the intercept, and zero means "pinned".
+        bad(&|c| c.q = Some(vec![0.0; 2]), "length 3");
+        bad(&|c| c.q = Some(vec![0.0, 0.0, -1e-9]), "must be >= 0");
+        good(&|c| c.q = Some(vec![0.0; 3]));
+
+        // Without `q`, the halflives are broadcast: one value, or one per slot.
+        bad(&|c| c.halflife = vec![1.0, 2.0], "length 1 or 3");
+        bad(&|c| c.halflife = vec![0.0], "must be > 0");
+        bad(&|c| c.halflife = vec![-1.0], "must be > 0");
+        good(&|c| c.halflife = vec![f64::INFINITY]);
+        good(&|c| c.halflife = vec![1.0, 2.0, 3.0]);
+
+        // p0 is the prior variance and obs_var the measurement noise; both
+        // divide, so neither may be zero. obs_var may be absent (inferred).
+        bad(&|c| c.p0 = 0.0, "p0 must be > 0");
+        bad(&|c| c.p0 = -1.0, "p0 must be > 0");
+        bad(&|c| c.obs_var = Some(0.0), "obs_var must be > 0");
+        bad(&|c| c.obs_var = Some(-1.0), "obs_var must be > 0");
+        good(&|c| c.obs_var = None);
+        good(&|c| c.obs_var = Some(1e-9));
+
+        cfg(2, 1, vec![100.0]).validate().unwrap();
+    }
+
+    #[test]
+    fn standardize_defaults_to_on_when_a_state_file_omits_it() {
+        // `#[serde(default = "default_true")]`: a state written before the
+        // field existed must load with standardization on, which is the
+        // behaviour that state was produced under. Defaulting to `false`
+        // instead would silently change every restored model's numbers.
+        let json = r#"{
+            "n_features": 2, "n_targets": 1, "add_intercept": true,
+            "decay": {"Halflife": 200.0}, "halflife": [100.0], "q": null,
+            "obs_var": null, "p0": 1.0, "share_p": false, "min_periods": 10.0
+        }"#;
+        let cfg: KalmanCfg = serde_json::from_str(json).expect("should load without the field");
+        assert!(cfg.standardize, "the omitted field must default to true");
+    }
+
+    #[test]
+    fn coefficients_are_reported_in_the_callers_units() {
+        // The filter works on standardized, centered features; `coefficients`
+        // has to undo both -- divide by the scale, then unshift the intercept
+        // by the feature means -- or the numbers a caller reads are not the
+        // ones their data is in.
+        // A coefficient halflife rather than a pinned one, so the filter keeps
+        // re-learning as the standardization stats settle. With `q = 0` and a
+        // near-zero observation noise it would instead converge in a handful of
+        // rows, locking its betas into the standardized space of the first few
+        // rows while `coefficients` unscales with the current stats -- which is
+        // why the Bayesian-regression correspondence test turns standardization
+        // off rather than working around it.
+        let mut c = cfg(2, 1, vec![500.0]);
+        c.min_periods = 3.0;
+        let mut m = Kalman::new(c).unwrap();
+        let mut s = 149u64;
+        // Features on very different scales and far from zero, so a missing
+        // unscale or a missing unshift is unmistakable.
+        for i in 0..20_000 {
+            let x = [500.0 + 10.0 * lcg(&mut s), 0.01 * lcg(&mut s)];
+            let y = 12.0 + 0.25 * x[0] - 800.0 * x[1];
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let b = &m.coefficients()[0];
+        assert!((b[1] - 0.25).abs() < 0.02, "slope 0: {}", b[1]);
+        assert!((b[2] + 800.0).abs() < 10.0, "slope 1: {}", b[2]);
+        // The intercept carries the accumulated slope error times mean(x0), so
+        // it is the loosest of the three -- but it must be near 12, not near
+        // the ~137 that dropping the unshift would give.
+        assert!((b[0] - 12.0).abs() < 12.0, "intercept: {}", b[0]);
+    }
+
+    #[test]
     fn pred_var_is_the_quadratic_form_plus_observation_noise() {
         // `pred_var` is surfaced only through the Polars layer, so its
         // arithmetic had no test in this crate. It is z' P z + R, and both
