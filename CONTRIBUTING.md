@@ -87,3 +87,10 @@ measurement said so; that is a good outcome, not a failed one.
 - Reference the task ID where there is one (`P3`, `E12`, `T-W5`).
 - Update the relevant doc in the same commit: `docs/PLAN.md`,
   `docs/ENHANCEMENTS.md`, `docs/TESTING.md`, `docs/PERFORMANCE.md`.
+
+## Licensing of contributions
+
+This project is Apache-2.0, and contributions follow the standard
+inbound = outbound convention: by submitting a pull request you agree that your
+contribution is licensed under Apache-2.0, per §5 of the license. There is no
+CLA to sign and no DCO bot; the pull request itself is the record.

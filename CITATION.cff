@@ -1,0 +1,16 @@
+# Citation metadata (https://citation-file-format.github.io).
+# GitHub renders this as a "Cite this repository" button.
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "polars-online: streaming online regression models for Polars"
+type: software
+authors:
+  - family-names: Gilde
+    given-names: Hans
+license: Apache-2.0
+repository-code: "https://github.com/hgilde/polars-online"
+keywords:
+  - online learning
+  - streaming
+  - regression
+  - polars

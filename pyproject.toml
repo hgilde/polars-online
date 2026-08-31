@@ -13,6 +13,22 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 authors = [{ name = "Hans Gilde" }]
+keywords = ["polars", "online-learning", "streaming", "regression", "time-series", "kalman", "ewma"]
+# No License :: classifier -- PEP 639: `license` above is the SPDX expression,
+# and mixing the two is deprecated.
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Typing :: Typed",
+]
 dependencies = [
     # Pinned: MUST match the `polars` pin in the workspace Cargo.toml.
     # py-polars 1.44.1 <-> rust polars 0.55.1 <-> pyo3-polars 0.28
@@ -21,6 +37,8 @@ dependencies = [
 
 [project.urls]
 Repository = "https://github.com/hgilde/polars-online"
+Changelog = "https://github.com/hgilde/polars-online/blob/main/CHANGELOG.md"
+Issues = "https://github.com/hgilde/polars-online/issues"
 
 [tool.maturin]
 manifest-path = "crates/online-py/Cargo.toml"

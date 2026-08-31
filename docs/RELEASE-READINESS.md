@@ -303,6 +303,66 @@ timeout, and that macOS is reachable only by dispatch, schedule, or the repo
 being public. A comment could not stop the 830-minute mistake; that test would
 have.
 
+## Open-source preparation: the full sweep (2026-08-31)
+
+Everything checked or done beyond the two standing items (delete/recreate as
+public; no release tag while private).
+
+**The license question, answered.** Apache-2.0 is among the most
+corporate-friendly licenses there is: closed-source use, modification, and
+internal or commercial redistribution are all permitted with no obligation to
+share source. A company using it must keep the license text and copyright
+notices with any *redistribution* (purely internal use triggers nothing in
+practice) and state significant changes if shipping modified copies. Its §3
+patent grant is the reason many corporate counsel *prefer* it to MIT: every
+contributor grants an express patent license, with termination only for a
+party that sues over the covered code. It appears on effectively every
+corporate allowlist, unlike GPL/AGPL (commonly banned) or MPL (often
+case-by-case review).
+
+The license of the *artifact* matters as much as the repo's, because the wheel
+statically links its whole Rust dependency tree. Audited via `cargo metadata`:
+**453 external crates, zero copyleft obligations** — everything is
+MIT/Apache-2.0/BSD/ISC/Zlib/Unicode/BSL-1.0 (Boost, not Business Source). The
+only crate mentioning LGPL (`r-efi`) is `MIT OR Apache-2.0 OR LGPL`, and OR
+means MIT applies. The single Python runtime dependency, `polars`, is MIT.
+
+**Deliberately no NOTICE file**: Apache-2.0 §4(d) makes a NOTICE file
+propagate to every downstream redistribution. Not shipping one is a kindness
+to corporate users; the LICENSE carries the attribution.
+
+**Done in this sweep:**
+
+- PyPI metadata filled in: classifiers (no `License ::` classifier — PEP 639
+  deprecates mixing it with `license`), keywords, Changelog and Issues URLs.
+  `twine check` passes on both sdist and wheel; the wheel carries
+  `dist-info/licenses/LICENSE`; the name is **free on PyPI** (both spellings,
+  checked 2026-08-31).
+- `CONTRIBUTING.md` now states inbound = outbound (Apache-2.0 §5): no CLA, no
+  DCO bot, the PR is the record.
+- `CITATION.cff` added — GitHub renders a "Cite this repository" button.
+- LICENSE verified as the canonical verbatim text (the `[yyyy] [name]` on its
+  line 189 is the appendix's how-to-apply instructions, not an unfilled
+  template).
+
+**Remaining, in the web UI after recreation** (nothing else blocks):
+
+1. Settings → Code security: Dependabot alerts + security updates, secret
+   scanning + push protection, **private vulnerability reporting** (both
+   SECURITY.md and CODE_OF_CONDUCT.md point at it).
+2. Description + topics; branch protection on `main` last.
+3. README badges (CI, license) — only render once public, add then.
+
+**The one decision to make before first PyPI publish** (not before going
+public): the runtime dependency is `polars==1.44.1`, exact. In a *published
+library* an exact pin means a user cannot upgrade polars, or install anything
+else that wants a different polars, without breaking resolution. The FFI
+mechanism itself is version-negotiated (see "Versioning and the Polars pin" in
+the README) and would reject a true mismatch cleanly, so a bounded range like
+`>=1.44,<2` with the tested version documented is defensible. Status: still
+"investigate first", per the earlier decision — but it gates publishing, not
+visibility.
+
 ## Going public (2026-08-31)
 
 Decision: go public now rather than at v0.1.0. The Actions quota below forced
