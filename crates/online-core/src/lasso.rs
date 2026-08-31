@@ -337,7 +337,10 @@ impl OnlineModel for Lasso {
         self.cov.update(&self.zbuf, lam_decay, weight);
         for ((wj, r), yj) in self.wj.iter_mut().zip(self.r.iter_mut()).zip(y) {
             match yj {
-                Some(yj) => {
+                // See `EwRidge`'s copy of this update: `wj_new == 0` is a
+                // zero-weight row before any weighted one, where `a` and `b`
+                // are both 0/0 and the NaN would never wash out.
+                Some(yj) if lam_decay * *wj + weight > 0.0 => {
                     let wj_new = lam_decay * *wj + weight;
                     let a = lam_decay * *wj / wj_new;
                     let b = weight / wj_new;
@@ -346,6 +349,7 @@ impl OnlineModel for Lasso {
                     }
                     *wj = wj_new;
                 }
+                Some(_) => {}
                 None => *wj *= lam_decay,
             }
         }

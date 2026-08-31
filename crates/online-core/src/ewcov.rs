@@ -843,6 +843,90 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "non-negative weight")]
+    fn a_negative_weight_is_a_caller_error() {
+        // The bank rejects negative weights upstream (T-E1), naming the row.
+        // Reaching here means that check was bypassed, so this is a
+        // `debug_assert`: loud in tests, and a silent no-op in release rather
+        // than corrupted state. Only the assertion is testable -- the release
+        // path's `if w < 0.0 { return }` is unreachable in a debug build.
+        let mut ew = EwCov::new(2);
+        ew.update(&[1.0, 2.0], 1.0, -0.5);
+    }
+
+    #[test]
+    fn an_emptied_accumulator_does_not_divide_by_its_own_zero_weight() {
+        // lam = 0 with weight 0 leaves no weight at all; the next update must
+        // notice rather than produce NaN.
+        let mut empty = EwCov::new(2);
+        empty.update(&[1.0, 2.0], 0.0, 0.0);
+        assert_eq!(empty.n_eff(), 0.0);
+        assert!(empty.mean(0).is_finite() && empty.mean(1).is_finite());
+        empty.update(&[3.0, 4.0], 1.0, 1.0);
+        assert_eq!(empty.mean(0), 3.0, "the first real row seeds the mean");
+        assert_eq!(empty.n_eff(), 1.0);
+    }
+
+    #[test]
+    fn decay_shrinks_the_weight_and_the_prior_scale_but_not_the_means() {
+        // `decay` is the pure-ageing path a skipped row takes. The prior scale
+        // must ride along, or the tracked inverse's prior stops matching the
+        // co-moments it is regularizing.
+        let prior = 0.25;
+        let mut ew = EwCov::with_inverse(2, prior).unwrap();
+        let mut s = 109u64;
+        for _ in 0..50 {
+            ew.update(&[lcg(&mut s), 1.0 + lcg(&mut s)], 0.99, 1.0);
+        }
+        let (m0, m1) = (ew.mean(0), ew.mean(1));
+        let (c01, w, ps) = (ew.cov(0, 1), ew.n_eff(), ew.prior_scale());
+
+        ew.decay(0.5);
+        assert_eq!(ew.mean(0), m0, "means are unchanged by pure decay");
+        assert_eq!(ew.mean(1), m1);
+        assert_eq!(ew.cov(0, 1), c01, "so are the centered co-moments");
+        assert!((ew.n_eff() - w * 0.5).abs() < 1e-12, "the weight halves");
+        assert!(
+            (ew.prior_scale() - ps * 0.5).abs() < 1e-12,
+            "so does the prior"
+        );
+    }
+
+    #[test]
+    fn k_reports_the_configured_width() {
+        for k in [1usize, 2, 7] {
+            assert_eq!(EwCov::new(k).k(), k);
+            assert_eq!(EwCov::with_inverse(k, 1.0).unwrap().k(), k);
+        }
+    }
+
+    #[test]
+    fn the_model_withholds_statistics_until_min_periods() {
+        use crate::OnlineModel;
+        let mut c = model_cfg(2, vec![EwCovStat::Mean, EwCovStat::Corr]);
+        c.min_periods = 5.0;
+        let mut m = EwCovModel::new(c).unwrap();
+        let mut s = 113u64;
+        for i in 0..10 {
+            let step = m.step(
+                &[lcg(&mut s), lcg(&mut s)],
+                &[],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+            // n_eff is the weight before this row, so it reaches 5 on row 5.
+            let want_ready = i >= 5;
+            assert_eq!(
+                step.pred.iter().all(|v| v.is_finite()),
+                want_ready,
+                "row {i}: n_eff = {}, min_periods = 5",
+                step.n_eff
+            );
+            assert_eq!(m.n_eff(), step.n_eff + 1.0, "row {i}: n_eff accessor");
+        }
+    }
+
+    #[test]
     fn the_from_scratch_inverse_really_inverts() {
         // `tracked_inverse_matches_a_from_scratch_solve` uses this as its
         // reference, so it has to be checked against something else -- the

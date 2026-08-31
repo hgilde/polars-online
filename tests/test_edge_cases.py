@@ -14,7 +14,7 @@ INF = float("inf")
 
 
 #: Models with no solve schedule (they update every row by construction).
-_NO_SOLVE_SCHEDULE = {"rls", "kalman", "ftrl"}
+_NO_SOLVE_SCHEDULE = {"rls", "kalman", "ftrl", "sgd", "pa", "holt"}
 
 
 def _spec(model="ewridge", **kw):
@@ -70,6 +70,53 @@ class TestWeights:
         # The zero-weight row contributes nothing, so the final prediction is
         # the same as if its target had been null.
         assert _f(out, "pred_y0")[2] == _f(skipped, "pred_y0")[2]
+
+    @pytest.mark.parametrize(
+        ("model", "extra"),
+        [
+            ("ewridge", {}),
+            ("rls", {}),
+            ("kalman", {"coef_halflife": 100.0}),
+            ("lasso", {"lasso_path": [0.0]}),
+            ("huber", {}),
+            ("quantile", {"quantile": 0.5}),
+            ("ftrl", {}),
+            ("sgd", {"learning_rate": 0.01}),
+            ("pa", {}),
+            ("holt", {"features": []}),
+        ],
+    )
+    def test_leading_zero_weight_rows_do_not_disable_the_model(self, model, extra):
+        """A zero-weight row *before any weighted row* used to poison `ewridge`
+        and `lasso` permanently.
+
+        Their per-target mean-form update computed `a = lam*wj / (lam*wj + w)`,
+        which is 0/0 when nothing has ever carried weight. The NaN never washed
+        out -- `wj` stayed NaN, `NaN > 0.0` is false, and the model silently
+        stopped predicting for the rest of the stream. Found by a Rust unit
+        test for the analogous guard in `blend_toward_long_run`; every other
+        model already guarded it.
+        """
+        n = 20
+        base = dict(
+            t=np.arange(float(n)),
+            x0=np.linspace(1.0, 2.0, n),
+            y0=np.linspace(2.0, 4.0, n),
+        )
+        spec = _spec(
+            model, weight="w", clock="t", max_dclock=5.0, halflife=50.0, min_periods=2.0, **extra
+        )
+        lead = _run(pl.DataFrame({**base, "w": [0.0] * 3 + [1.0] * (n - 3)}), spec)
+        none = _run(pl.DataFrame({**base, "w": [1.0] * n}), spec)
+
+        field = next(f.name for f in lead.schema["m"].fields if f.name.startswith("pred_y0"))
+        finite = lambda out: [  # noqa: E731
+            v for v in _f(out, field) if v is not None and np.isfinite(v)
+        ]
+        good = finite(lead)
+        assert good, f"{model}: three zero-weight rows disabled the model entirely"
+        # Three rows of warmup are lost to the zero weights, and no more.
+        assert len(good) == len(finite(none)) - 3, f"{model}: {len(good)} vs {len(finite(none))}"
 
     def test_null_weight_skips_the_row(self):
         df = pl.DataFrame({"x0": [1.0, 2.0, 3.0], "y0": [1.0, 2.0, 3.0], "w": [1.0, None, 1.0]})

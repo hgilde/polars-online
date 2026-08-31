@@ -74,8 +74,18 @@ the standardized solve against the plain one at zero penalty), the optimality
 conditions of the problem being solved (the lasso's KKT conditions), or the
 definition of the statistic (`read` against a recomputation from the raw rows).
 
-Four real defects surfaced in the process, all in code the behavioural tests
-were happy with:
+Five real defects surfaced in the process, all in code the behavioural tests
+were happy with. The most serious was a **zero-weight row at the head of a
+stream permanently disabling `ewridge` and `lasso`**: their per-target mean-form
+update computes `a = lam·wj / (lam·wj + w)`, which is 0/0 when nothing has ever
+carried weight, and the NaN never washed out — `wj` stayed NaN, `NaN > 0.0` is
+false, and the model silently stopped predicting for the rest of the stream.
+Every other model already guarded it, and so did `EwCov::update` two lines
+away. It was found indirectly: a Rust unit test for the analogous guard in
+`blend_toward_long_run` failed, which pointed at the same shape in `step`.
+`tests/test_edge_cases.py::TestWeights` now checks it for all ten models.
+
+The other four:
 
 - `sgd` and `pa` reported `n_eff` with the current row's decay already applied,
   so `min_periods` meant a different number of rows for them than for every

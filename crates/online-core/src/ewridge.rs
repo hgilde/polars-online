@@ -576,7 +576,10 @@ impl OnlineModel for EwRidge {
             slow.cov.update(&self.zbuf, slow_lam, weight);
             for ((wj, r), yj) in slow.wj.iter_mut().zip(slow.r.iter_mut()).zip(y) {
                 match yj {
-                    Some(yj) => {
+                    // `wj_new == 0` means this row carries no weight and none
+                    // has ever been carried, so there is nothing to blend and
+                    // `a`/`b` would both be 0/0. Same guard as `EwCov::update`.
+                    Some(yj) if slow_lam * *wj + weight > 0.0 => {
                         let wj_new = slow_lam * *wj + weight;
                         let a = slow_lam * *wj / wj_new;
                         let b = weight / wj_new;
@@ -585,6 +588,7 @@ impl OnlineModel for EwRidge {
                         }
                         *wj = wj_new;
                     }
+                    Some(_) => {}
                     None => *wj *= slow_lam,
                 }
             }
@@ -592,7 +596,13 @@ impl OnlineModel for EwRidge {
         self.cov.update(&self.zbuf, lam, weight);
         for j in 0..m {
             match y[j] {
-                Some(yj) => {
+                // `wj_new == 0` means this row carries no weight and none has
+                // ever been carried -- a zero-weight row at the head of a
+                // stream. `a` and `b` would both be 0/0, and the NaN would
+                // never wash out: `wj` stays NaN, `NaN > 0.0` is false, and the
+                // model silently stops predicting forever. Same guard as
+                // `EwCov::update` already has.
+                Some(yj) if lam * self.wj[j] + weight > 0.0 => {
                     let wj_new = lam * self.wj[j] + weight;
                     let a = lam * self.wj[j] / wj_new;
                     let b = weight / wj_new;
@@ -602,14 +612,15 @@ impl OnlineModel for EwRidge {
                     self.wj[j] = wj_new;
                     // EW residual variance from the primary (first-combo) pred.
                     let p = pred[j * nc];
-                    if p.is_finite() {
+                    let ws_new = lam * self.wsig[j] + weight;
+                    if p.is_finite() && ws_new > 0.0 {
                         let resid = yj - p;
-                        let ws_new = lam * self.wsig[j] + weight;
                         self.sig2[j] =
                             (lam * self.wsig[j] * self.sig2[j] + weight * resid * resid) / ws_new;
                         self.wsig[j] = ws_new;
                     }
                 }
+                Some(_) => {}
                 None => {
                     self.wj[j] *= lam;
                     self.wsig[j] *= lam;
@@ -1429,6 +1440,34 @@ mod tests {
                 assert!((one.r[j][i] - slow.r[j][i]).abs() < 1e-12, "r[{j}][{i}]");
             }
         }
+    }
+
+    #[test]
+    fn blend_before_any_data_is_a_no_op() {
+        // The other half of the doc comment's promise: a no-op when the twin
+        // is not configured, *or before it has seen anything*. With both sides
+        // at zero weight the mixture's denominator is zero, and the guard has
+        // to catch that rather than divide.
+        let mut c = cfg(2, 1);
+        c.session_shrink = Some(0.5);
+        c.long_halflife = Some(200.0);
+        let mut m = EwRidge::new(c).unwrap();
+        assert!(m.slow.is_some());
+        let before = m.clone();
+        m.blend_toward_long_run();
+        assert_eq!(m, before, "nothing seen yet: nothing to blend");
+        for i in 0..m.cfg.k_total() {
+            assert!(m.cov.mean(i).is_finite(), "and no NaN got in");
+        }
+
+        // Still safe on a session boundary that arrives with a session's worth
+        // of zero-weight rows behind it.
+        for _ in 0..5 {
+            m.step(&[1.0, 2.0], &[Some(3.0)], 1.0, 0.0);
+        }
+        let before = m.clone();
+        m.blend_toward_long_run();
+        assert_eq!(m, before, "zero-weight rows carry no weight to blend");
     }
 
     #[test]
