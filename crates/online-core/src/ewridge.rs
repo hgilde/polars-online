@@ -1023,15 +1023,22 @@ mod tests {
         // solve are algebraically identical (ridge ~ 0), so they must agree
         // tightly. (On badly scaled data they diverge because the raw normal
         // equations are ill-conditioned -- which is why standardize exists.)
-        let ca = cfg(2, 1);
-        let mut cb = cfg(2, 1);
+        // Ridge is dropped to 1e-12 and the feature scales are put ~1e3 apart,
+        // so the centering and scaling matrices are far from the identity and
+        // an operation applied in the wrong direction cannot hide inside the
+        // tolerance. The invariance is exact only at ridge = 0, because the
+        // penalty lands on the raw scale in one path and the standardized
+        // scale in the other.
+        let mut ca = cfg(2, 1);
+        ca.ridge = vec![1e-12];
+        let mut cb = ca.clone();
         cb.standardize = true;
         let mut ma = EwRidge::new(ca).unwrap();
         let mut mb = EwRidge::new(cb).unwrap();
         let mut s = 11u64;
         for i in 0..300 {
-            let x = [2.0 + lcg(&mut s), 3.0 * lcg(&mut s)];
-            let y = 0.5 * x[0] - 1.5 * x[1] + 0.01 * lcg(&mut s);
+            let x = [400.0 + 3.0 * lcg(&mut s), 0.002 * lcg(&mut s)];
+            let y = 7.0 + 0.5 * x[0] - 300.0 * x[1] + 0.001 * lcg(&mut s);
             let d = if i == 0 { 0.0 } else { 1.0 };
             ma.step(&x, &[Some(y)], d, 1.0);
             mb.step(&x, &[Some(y)], d, 1.0);
@@ -1040,12 +1047,19 @@ mod tests {
         let b = &mb.coefficients().unwrap()[0];
         for i in 0..3 {
             assert!(
-                (a[i] - b[i]).abs() < 1e-6 * (1.0 + a[i].abs()), // ridge applies on different scales
-                "coef {i}: {} vs {}",
+                (a[i] - b[i]).abs() < 1e-6 * (1.0 + a[i].abs()),
+                "coef {i}: plain {} vs standardized {}",
                 a[i],
                 b[i]
             );
         }
+        // And the standardized path recovered the generating relationship, so
+        // the agreement is not two paths failing the same way. The intercept is
+        // reconstructed from the centered fit, which is the step most easily
+        // lost.
+        assert!((b[0] - 7.0).abs() < 0.1, "intercept {}", b[0]);
+        assert!((b[1] - 0.5).abs() < 1e-3, "slope 0 {}", b[1]);
+        assert!((b[2] + 300.0).abs() < 5.0, "slope 1 {}", b[2]);
     }
 
     /// A model with a slow twin, fed `n` rows of a deterministic stream.
@@ -1066,6 +1080,109 @@ mod tests {
             m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
         }
         m
+    }
+
+    #[test]
+    fn coef0_solves_the_ridge_problem_it_claims_to() {
+        // With `coef0 = c`, the penalty shrinks toward `c` rather than zero:
+        //     beta = (C + rI)^-1 (d + r c)
+        // on the centered accumulators, with the intercept recovered after.
+        // The existing coef0 tests check the *direction* of the pull; this
+        // pins the closed form, computed by hand from the model's own state.
+        let (r, c0) = (0.7, vec![vec![0.0, 3.0, -2.0]]);
+        let mut cfg_ = cfg(2, 1);
+        cfg_.ridge = vec![r];
+        cfg_.coef0 = Some(c0.clone());
+        cfg_.min_periods = 3.0;
+        let mut m = EwRidge::new(cfg_).unwrap();
+        let mut s = 127u64;
+        for i in 0..200 {
+            let x = [lcg(&mut s), 0.5 + lcg(&mut s)];
+            let y = 1.0 + 2.0 * x[0] - x[1] + 0.05 * lcg(&mut s);
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+
+        // The 2x2 penalized normal equations on the centered moments.
+        let (c00, c01, c11) = (m.cov.cov(1, 1), m.cov.cov(1, 2), m.cov.cov(2, 2));
+        // d_i = E[x_i y] - E[x_i] E[y], from the tracked cross-moment means.
+        let d0 = m.r[0][1] - m.cov.mean(1) * m.r[0][0];
+        let d1 = m.r[0][2] - m.cov.mean(2) * m.r[0][0];
+        let (a00, a11) = (c00 + r, c11 + r);
+        let (rhs0, rhs1) = (d0 + r * c0[0][1], d1 + r * c0[0][2]);
+        let det = a00 * a11 - c01 * c01;
+        let want = [
+            (rhs0 * a11 - c01 * rhs1) / det,
+            (a00 * rhs1 - c01 * rhs0) / det,
+        ];
+
+        let got = &m.coefficients().unwrap()[0];
+        for i in 0..2 {
+            assert!(
+                (got[i + 1] - want[i]).abs() < 1e-9 * (1.0 + want[i].abs()),
+                "slope {i}: {} vs {}",
+                got[i + 1],
+                want[i]
+            );
+        }
+        // The intercept is reconstructed, not fitted: mean(y) - b'mean(x).
+        let want0 = m.r[0][0] - got[1] * m.cov.mean(1) - got[2] * m.cov.mean(2);
+        assert!((got[0] - want0).abs() < 1e-9, "{} vs {want0}", got[0]);
+
+        // An overwhelming penalty must land on coef0 exactly.
+        let mut cfg_ = cfg(2, 1);
+        cfg_.ridge = vec![1e12];
+        cfg_.coef0 = Some(c0.clone());
+        cfg_.min_periods = 3.0;
+        let mut m = EwRidge::new(cfg_).unwrap();
+        let mut s = 131u64;
+        for i in 0..100 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(&x, &[Some(x[0])], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let got = &m.coefficients().unwrap()[0];
+        assert!((got[1] - 3.0).abs() < 1e-3, "slope 0 -> coef0: {}", got[1]);
+        assert!((got[2] + 2.0).abs() < 1e-3, "slope 1 -> coef0: {}", got[2]);
+    }
+
+    #[test]
+    fn a_singular_solve_is_counted_and_the_previous_fit_is_kept() {
+        // `run_solve` records both outcomes: a solve rescued by jitter and a
+        // total failure. Two perfectly collinear features with no ridge give
+        // a rank-deficient system; the model must never emit NaN and must say
+        // that something went wrong.
+        let mut c = cfg(2, 1);
+        c.ridge = vec![0.0];
+        c.min_periods = 2.0;
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 137u64;
+        for i in 0..40 {
+            let a = lcg(&mut s);
+            m.step(
+                &[a, a],
+                &[Some(2.0 * a + 1.0)],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        assert!(m.solve_failures > 0, "a singular solve must be recorded");
+        let beta = &m.coefficients().unwrap()[0];
+        assert!(beta.iter().all(|v| v.is_finite()), "never NaN: {beta:?}");
+
+        // A well-conditioned stream records nothing.
+        let mut c = cfg(2, 1);
+        c.min_periods = 2.0;
+        let mut ok = EwRidge::new(c).unwrap();
+        let mut s = 139u64;
+        for i in 0..40 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            ok.step(
+                &x,
+                &[Some(x[0] - x[1])],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        assert_eq!(ok.solve_failures, 0, "a healthy fit must record no failure");
     }
 
     #[test]
