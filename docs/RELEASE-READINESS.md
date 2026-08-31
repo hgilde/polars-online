@@ -208,6 +208,58 @@ Three findings:
 Defender exclusions were added for the Windows build (best-effort, cannot fail
 the job); their effect is confounded with the cache landing in the same run.
 
+## What was unexpectedly expensive (2026-08-31)
+
+A full review of every cost driver after the quota ran out, ordered by what it
+actually cost. Numbers are observed job durations with GitHub's per-job
+round-up and the OS multipliers (macOS 10x, Windows 2x).
+
+| # | Cause | Cost | Status |
+|---|---|---|---|
+| 1 | macOS on every pull request — the matrix's *fallback* branch was the expensive one | 830 min (37%) | fixed, and pinned by a test |
+| 2 | rust-cache never saved: it skips its post step on failure, and the Windows job never passed | ~70 min/run recompiled | `cache-on-failure: true` |
+| 3 | `lint` ran on three OSes to check formatting | 220 min | Linux only, always |
+| 4 | `lint`'s `uv sync` built the extension it never imports | 18 min Linux, 39 Windows, per run | `--no-install-project` |
+| 5 | Linux compiled release twice: `lld` rustflags written *after* `uv sync` invalidated its build | 18 min/run | linker step moved before the sync |
+| 6 | No `timeout-minutes` on any job in any workflow | up to 720 billed min for one hung Windows job | every job bounded |
+| 7 | No concurrency group on `polars-canary` or `release` | pays for superseded runs | added (release *queues*, see below) |
+| 8 | A cancelled run still bills for what it used | 55 min run cancelled at 12:44 was billed | inherent; `cancel-in-progress` limits how often |
+
+Two things were examined and deliberately left alone:
+
+- **Two full compiles per `test` job** — `uv sync` produces the release
+  extension pytest imports, `cargo test` the debug binaries. Different
+  profiles, genuinely different artifacts. Only caching helps.
+- **`release.yml` does not cancel superseded runs.** It is the one workflow
+  where cancelling costs more than it saves: the run being cancelled may be
+  midway through uploading wheels or publishing to PyPI. It queues instead.
+
+**Watch out for `release.yml`.** It is tag-triggered and untouched by the
+policy above: three macOS jobs plus Windows across a six-target wheel matrix.
+At 10x, one release tag could plausibly cost most of a month's allowance while
+the repo is private. Do not cut a release tag before going public.
+
+### What a push costs now
+
+Extrapolated from the observed timings, private-repo push:
+
+| | before | after |
+|---|---:|---:|
+| lint | 3 OSes, full build — ~235 billed | Linux, no build — ~10 |
+| test | 3 OSes — ~706 billed | Linux, no double compile — ~30 |
+| **per push** | **~940** | **~40** |
+
+That is the difference between three pushes and roughly seventy-five per
+month on Pro's 3,000. The cache should improve it further, but that remains
+**unverified** — no run has been allowed to start since it was configured.
+
+The policy is enforced by `tests/test_ci_cost_policy.py`, not by comments: it
+parses the workflows and asserts that the matrix fallback is the cheap branch,
+that lint stays on Linux and never builds the extension, that every job has a
+timeout, and that macOS is reachable only by dispatch, schedule, or the repo
+being public. A comment could not stop the 830-minute mistake; that test would
+have.
+
 ## Going public (2026-08-31)
 
 Decision: go public now rather than at v0.1.0. The Actions quota below forced

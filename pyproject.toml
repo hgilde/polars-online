@@ -35,6 +35,9 @@ dev = [
     "numpy>=2.5.2",
     "pytest>=8.3",
     "pytest-cov>=7.1.0",
+    # For tests/test_ci_cost_policy.py: the workflows are parsed and asserted
+    # on, so the policy that bounds the CI bill is enforced, not just commented.
+    "pyyaml>=6.0",
     "river>=0.26.1",
     "ruff>=0.14",
 ]

@@ -9,6 +9,14 @@ on:
 # once the repo is public, when a fork's pull request can trigger these.
 permissions: {}
 
+# Releases queue, they do not cancel. `cancel-in-progress: true` everywhere
+# else saves money by throwing away superseded work; here the "superseded" run
+# may be halfway through uploading wheels or publishing to PyPI, and a
+# half-published release costs far more than the runner minutes it saves.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -19,6 +27,7 @@ jobs:
   sdist:
     name: build the sdist
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -46,6 +55,7 @@ jobs:
   build:
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     permissions:
       contents: read
     strategy:
@@ -121,6 +131,7 @@ jobs:
   write-state:
     name: write state (macOS)
     runs-on: macos-latest
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
@@ -143,6 +154,7 @@ jobs:
     name: read state (${{ matrix.os }})
     needs: write-state
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     permissions:
       contents: read
     strategy:
@@ -168,6 +180,7 @@ jobs:
     needs: [sdist, build, read-state]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       # creating the GitHub release and uploading its assets
       contents: write
@@ -203,6 +216,7 @@ jobs:
     needs: [sdist, build, read-state]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: pypi
     permissions:
       # PyPI trusted publishing (OIDC). This job does not check out, so it

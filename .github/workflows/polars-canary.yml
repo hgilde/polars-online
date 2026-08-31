@@ -19,6 +19,11 @@ on:
 # once the repo is public, when a fork's pull request can trigger these.
 permissions: {}
 
+# A second canary tells you nothing the first will not; do not pay for both.
+concurrency:
+  group: canary-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -28,6 +33,7 @@ jobs:
   latest-polars:
     name: build and test against the latest Polars
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:

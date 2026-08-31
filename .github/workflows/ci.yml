@@ -1,18 +1,33 @@
 name: CI
 
-# The repo is public, so Actions is unmetered and the full matrix runs on every
-# push and pull request. While it was private the metering was severe -- macOS
-# bills at 10x and Windows at 2x -- and this file carried a `paths-ignore` and
-# a macOS-only-on-schedule matrix to survive a 2,000 minute budget. Both are
-# gone; see docs/RELEASE-READINESS.md for what that cost and why.
+# COST POLICY. Actions minutes are metered while this repo is private, and not
+# evenly: macOS bills at 10x and Windows at 2x. This repo spent 2,270 billed
+# minutes in a single day (docs/RELEASE-READINESS.md) -- more than the Free
+# tier's entire month, and three quarters of Pro's 3,000 -- so the matrix is
+# deliberately small and *widens by itself* when the repo goes public:
 #
-# `paths-ignore` in particular does not come back if CI is ever a required
-# status check: a doc-only pull request would then never run the check, and
-# never become mergeable.
+#   private, push / pull_request  ->  ubuntu only
+#   private, weekly schedule      ->  ubuntu + windows
+#   private, manual dispatch      ->  all three (an explicit human decision)
+#   public, anything              ->  all three
+#
+# The switch is `github.event.repository.private`, tested with `!= false` so a
+# missing field -- an event whose payload has no repository -- falls to the
+# CHEAP side rather than the expensive one. tests/test_ci_cost_policy.py pins
+# every clause of this, because the previous version of this expression read
+# `event_name == 'push' && cheap || expensive` and so quietly handed the full
+# macOS matrix to every pull request: 830 billed minutes, 37% of the month, on
+# one dependabot PR.
+#
+# `paths-ignore` stays until the repo is public. It must be gone before CI
+# becomes a required status check, or a doc-only pull request never runs the
+# check and never becomes mergeable.
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md", "docs/**", "LICENSE", ".gitignore"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**", "LICENSE", ".gitignore"]
   schedule:
     - cron: "23 5 * * 1"
   workflow_dispatch:
@@ -36,15 +51,16 @@ env:
 # abi3-py312, which needs an interpreter >= 3.12 at build time. `uv run` puts the
 # project's 3.12 venv on VIRTUAL_ENV, which is what pyo3's build script picks up.
 jobs:
+  # Linux only, public or not. `cargo fmt`, `clippy` and `ruff` inspect source,
+  # not platform behaviour, so the other two runners were re-checking a result
+  # that cannot differ -- 35 minutes a run on Windows (70 billed) for nothing.
+  # Anything genuinely platform-specific still has to compile in `test`, which
+  # does run everywhere.
   lint:
-    name: lint (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: dtolnay/rust-toolchain@stable
@@ -62,17 +78,26 @@ jobs:
         with:
           enable-cache: true
 
-      - run: uv sync
+      # --no-install-project skips building the extension, which lint never
+      # imports; that build is the single most expensive step in the job (18
+      # min on Linux, 39 on Windows). UV_NO_SYNC then stops `uv run` from
+      # silently reinstalling it.
+      - run: uv sync --no-install-project
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
         run: uv run cargo clippy --workspace --all-targets -- -D warnings
-
+        env:
+          UV_NO_SYNC: "1"
       - name: ruff format
         run: uv run ruff format --check .
+        env:
+          UV_NO_SYNC: "1"
       - name: ruff check
         run: uv run ruff check .
+        env:
+          UV_NO_SYNC: "1"
 
   # The first-ever CI run died here with `ld terminated with signal 7 [Bus
   # error]` on ubuntu, on two test binaries linking one second apart. That is
@@ -93,10 +118,21 @@ jobs:
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # See COST POLICY at the top. Reads: public -> all three; else manual
+        # dispatch -> all three; else weekly -> add Windows, the platform that
+        # cannot be checked locally; else (push, pull_request) -> Linux only.
+        os: >-
+          ${{ github.event.repository.private == false
+              && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]')
+           || github.event_name == 'workflow_dispatch'
+              && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]')
+           || github.event_name == 'schedule'
+              && fromJSON('["ubuntu-latest", "windows-latest"]')
+           || fromJSON('["ubuntu-latest"]') }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: dtolnay/rust-toolchain@stable
