@@ -206,6 +206,38 @@ Three findings:
 Defender exclusions were added for the Windows build (best-effort, cannot fail
 the job); their effect is confounded with the cache landing in the same run.
 
+## Actions quota: exhausted on day one (2026-08-31)
+
+The push of `1a52267` did not run. All four jobs failed in ~2s with *"The job
+was not started because recent account payments have failed or your spending
+limit needs to be increased."* That is the Actions allowance, not the workflow.
+
+Summed from job durations across every run this repo has ever had -- all of
+them today -- with GitHub's per-job round-up and OS multipliers:
+
+| runner | jobs | raw min | x | billed |
+|---|---:|---:|---:|---:|
+| windows-latest | 12 | 565 | 2 | **1130** |
+| macos-latest | 4 | 83 | 10 | **830** |
+| ubuntu-latest | 14 | 310 | 1 | 310 |
+| | | | | **2270** vs a 2,000/mo allowance |
+
+Two things went wrong:
+
+- **macOS leaked onto pull requests.** The matrix read
+  `event_name == 'push' && [ubuntu,windows] || [ubuntu,macos,windows]`, so
+  anything that was not a push -- every PR -- got the full matrix. One
+  dependabot PR spent 830 minutes, 37% of the month, on four macOS jobs, while
+  the comment above it claimed macOS ran "weekly, on demand, and on release
+  tags". Now written as opt-in on `schedule`/`workflow_dispatch`.
+- **Windows ran cold every time** (see the section above): 12 jobs averaging 47
+  raw minutes each. `cache-on-failure` should cut this sharply, but it has not
+  been observed yet -- no run since has been allowed to start.
+
+The allowance resets at the start of the billing month. The structural fix is
+going public: Actions is unmetered on public repositories, which removes this
+constraint entirely and is already the plan for v0.1.0.
+
 ## API usability round (pre-users window)
 
 Reviewed by using the API as a naive user; the findings and what was done:

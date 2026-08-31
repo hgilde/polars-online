@@ -52,8 +52,11 @@ jobs:
       matrix:
         # macOS only on the weekly run and on manual dispatch (see the note
         # above `on:`); it bills at 10x and is the one platform covered
-        # locally.
-        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest", "windows-latest"]') || fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') }}
+        # locally. Written as "opt in on schedule/dispatch", not "opt out on
+        # push": the earlier `event_name == 'push'` form silently gave macOS to
+        # every *pull request* too, and one dependabot PR spent 830 of the
+        # month's 2,000 billed minutes on four macOS jobs.
+        os: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest", "windows-latest"]') }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: dtolnay/rust-toolchain@stable
@@ -107,8 +110,11 @@ jobs:
       matrix:
         # macOS only on the weekly run and on manual dispatch (see the note
         # above `on:`); it bills at 10x and is the one platform covered
-        # locally.
-        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest", "windows-latest"]') || fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') }}
+        # locally. Written as "opt in on schedule/dispatch", not "opt out on
+        # push": the earlier `event_name == 'push'` form silently gave macOS to
+        # every *pull request* too, and one dependabot PR spent 830 of the
+        # month's 2,000 billed minutes on four macOS jobs.
+        os: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest", "windows-latest"]') }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: dtolnay/rust-toolchain@stable
