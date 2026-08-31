@@ -144,7 +144,7 @@ that moves a golden number is wrong by definition.
   `Vec<Option<f64>>`; null-free fast path is a borrow, not a copy. Group and
   session keys: hash the physical values row-wise (as `session_hash` now does)
   — no String cast, no per-row `String` clone, and run it per spec in parallel
-  with extraction. Target: extract+group ≤ 4 ms at k=20/64 groups (from 27 ms).
+  with extraction. Target: extract+group ≤ 4 ms at k=20/64 groups (from 27 ms).</details>
 - [ ] **P4 — Assembly into typed builders.** Write `Float64Chunked` from
   `Vec<f64>` + computed validity instead of `Vec<Option<f64>>` series; assemble
   specs in parallel. Mostly falls out of P1's flat buffers.
