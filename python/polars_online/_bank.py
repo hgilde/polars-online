@@ -36,6 +36,82 @@ class ModelBank:
         for chunk in batches:
             yield self.fit_predict(chunk)
 
+    def gram(self, spec: str | int, group: str | None = None) -> list[dict[str, Any]]:
+        """The EW accumulators behind a spec's fit, per group and instance.
+
+        Returns one dict per (group, decay instance) with:
+
+        ``group``, ``instance``
+            The group key (``None`` when ungrouped) and the instance's field
+            suffix (``"@h500"``, or ``""`` for a single instance).
+        ``n_eff``
+            Accumulated weight behind these moments.
+        ``means``
+            EW column means, shape ``(k,)``.
+        ``comoments``
+            **Centered** co-moments, shape ``(k, k)`` -- the EW analogue of a
+            centered ``X'X / n``. Centered is what makes it accurate at large
+            offsets (E11b).
+        ``cross_moments``
+            Per-target **uncentered** cross-moments ``E[z*y]``, shape
+            ``(n_targets, k)``. Empty for ``ew_cov``.
+        ``target_weights``
+            Per-target accumulated weight, shape ``(n_targets,)``. Differs from
+            ``n_eff`` when targets have different null patterns.
+
+        The two moment forms differ, and mixing them gives a silently wrong
+        answer rather than an error, so the bridging identity is worth stating
+        plainly::
+
+            raw = comoments + np.outer(means, means)
+            raw @ beta[t] == cross_moments[t]     # up to the ridge term
+
+        Values are in the features' original units. The intercept, when the
+        spec has one, is column 0: a constant 1, so it has zero variance in
+        ``comoments`` and ``raw[0] == means``.
+
+        Only models that keep a co-moment matrix report -- ``ewridge``,
+        ``lasso`` and ``ew_cov``. The others yield nothing: ``rls`` and
+        ``kalman`` track an inverse, and the gradient models keep no second
+        moment at all.
+
+        **Why this exists** (ENHANCEMENTS E30): the accumulators are the
+        expensive part, and they are already exact, centered, decayed on the
+        model's own clock with session and ``max_dclock`` handling, and
+        resumable. Anyone wanting to do something *other than* our solve with
+        them -- a custom penalty, an information criterion, ``cond(G)``, a
+        scree plot, forward stepwise, orthogonal matching pursuit, or simply
+        to check a fit by hand -- previously had to recompute ``X'X`` from raw
+        data in a second pass. These come from one pass over data that is
+        never materialized, at every point in the stream rather than one, and
+        they are the same matrices the deployed model solves against.
+
+        This is not a speed claim: for a single batch Gram over materialized
+        data, BLAS ``dgemm`` is blocked, vectorized, and comfortably faster.
+
+        ``spec`` is a spec name or index. Requires numpy.
+        """
+        import numpy as np
+
+        names = self._native.spec_names()
+        idx = names.index(spec) if isinstance(spec, str) else spec
+        out = []
+        for g, instance, k, n_eff, means, como, cross, tw in self._native.gram(idx, group):
+            out.append(
+                {
+                    "group": g,
+                    "instance": instance,
+                    "n_eff": n_eff,
+                    "means": np.asarray(means),
+                    "comoments": np.asarray(como).reshape(k, k),
+                    "cross_moments": np.asarray(cross).reshape(len(cross), k)
+                    if cross
+                    else np.zeros((0, k)),
+                    "target_weights": np.asarray(tw),
+                }
+            )
+        return out
+
     def solve_failures(self) -> dict[str, dict[str | None, int]]:
         """Jittered or failed matrix factorizations so far, per spec and group.
 

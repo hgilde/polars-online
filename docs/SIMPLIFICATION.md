@@ -1,8 +1,42 @@
 # Simplification review
 
-Status as of 2026-08-31: **proposed, none implemented.** A read of the codebase
-after the P1–P8 performance work, looking for complexity that can go without
-costing features, performance, stability, or any stated goal.
+Status as of 2026-08-31: **S1, S2, S3 and S4 are done. S5 and S6 are declined
+on their own stated grounds; S7 has not met its own bar.** A read of the
+codebase after the P1–P8 performance work, looking for complexity that can go
+without costing features, performance, stability, or any stated goal.
+
+Outcome, measured rather than asserted:
+
+- `bank.rs` 1,134 → 1,113 lines, and its `format!` calls 28 → 17. The line
+  count understates it: `assemble`'s ~120-line emission tail became a 25-line
+  `match` on the schema, and `assemble_ew_cov` (38 lines) is gone, against
+  ~90 lines of new descriptor and `SpecDerived` that exist once instead of
+  twice.
+- `AnyModel::` mentions 73 → 53.
+- Throughput unchanged: k=5 **5.62M rows/s** (baseline 4.98M), k=20 **2.80M**
+  (baseline 2.63M) — no regression, and the golden suites did not move.
+- All 770 Python tests and the full Rust suite pass, including the 126
+  committed golden pipeline outputs at 1e-12 and the 156-field kitchen sink,
+  which is the test that would catch a stride error.
+
+**S5 — declined.** Its own entry says it "is a simplification only if it also
+reads better", and taking `&mut Vec<f64>` scratch through `solve_spd` makes the
+signature worse, not better, for allocations that `docs/PERFORMANCE.md` §5
+already measured as noise beside the O(k³) factorization.
+
+**S6 — still deferred**, on its own terms: it changes the state file layout and
+so needs a `SCHEMA_VERSION` bump plus a second frozen fixture. Worth doing the
+next time that version has to move anyway; not worth moving it for an internal
+tidy.
+
+**S7 — bar not met.** It set its own threshold at "the third caller, or now if
+the release workflow ends up needing it too". There are still two callers, and
+`release.yml` builds per-target wheels rather than the full test workspace, so
+it does not need the step. Re-checked for divergence, which is the real risk:
+`polars-canary.yml` has no cache step, so it never had the disk-before-cache
+bug `ci.yml` did, and its ordering is correct.
+
+---
 
 The bar each item has to clear:
 

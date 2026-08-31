@@ -26,6 +26,31 @@ pub enum AnyModel {
     Holt(Box<Holt>),
 }
 
+/// Bind the boxed model of whichever variant `$self` is, then run `$body`.
+///
+/// Only for the methods that are the *same* call on every variant. Three of
+/// `AnyModel`'s six are not — `solve_failures` groups the models that never
+/// factorize, `coefficients` reshapes per model, and `restore` matches on
+/// `ModelState` rather than on `Self` — and those stay written out, because a
+/// macro that needed a per-variant escape hatch would be harder to read than
+/// the match it replaced (docs/SIMPLIFICATION.md S3).
+macro_rules! dispatch {
+    ($self:expr, $m:ident => $body:expr) => {
+        match $self {
+            AnyModel::EwRidge($m) => $body,
+            AnyModel::Rls($m) => $body,
+            AnyModel::Lasso($m) => $body,
+            AnyModel::Kalman($m) => $body,
+            AnyModel::Robust($m) => $body,
+            AnyModel::Ftrl($m) => $body,
+            AnyModel::EwCov($m) => $body,
+            AnyModel::Sgd($m) => $body,
+            AnyModel::Pa($m) => $body,
+            AnyModel::Holt($m) => $body,
+        }
+    };
+}
+
 impl AnyModel {
     /// Mix the main accumulators toward a long-run twin, where the model has
     /// one (`session_shrink`). A no-op elsewhere.
@@ -42,18 +67,7 @@ impl AnyModel {
         d_clock: f64,
         weight: f64,
     ) -> online_core::Step {
-        match self {
-            AnyModel::EwRidge(m) => m.step(x, y, d_clock, weight),
-            AnyModel::Rls(m) => m.step(x, y, d_clock, weight),
-            AnyModel::Lasso(m) => m.step(x, y, d_clock, weight),
-            AnyModel::Kalman(m) => m.step(x, y, d_clock, weight),
-            AnyModel::Robust(m) => m.step(x, y, d_clock, weight),
-            AnyModel::Ftrl(m) => m.step(x, y, d_clock, weight),
-            AnyModel::EwCov(m) => m.step(x, y, d_clock, weight),
-            AnyModel::Sgd(m) => m.step(x, y, d_clock, weight),
-            AnyModel::Pa(m) => m.step(x, y, d_clock, weight),
-            AnyModel::Holt(m) => m.step(x, y, d_clock, weight),
-        }
+        dispatch!(self, m => m.step(x, y, d_clock, weight))
     }
 
     /// Cumulative count of jittered or failed factorizations (docs/PLAN.md §7).
@@ -74,18 +88,7 @@ impl AnyModel {
     }
 
     pub fn n_outputs(&self) -> usize {
-        match self {
-            AnyModel::EwRidge(m) => m.n_outputs(),
-            AnyModel::Rls(m) => m.n_outputs(),
-            AnyModel::Lasso(m) => m.n_outputs(),
-            AnyModel::Kalman(m) => m.n_outputs(),
-            AnyModel::Robust(m) => m.n_outputs(),
-            AnyModel::Ftrl(m) => m.n_outputs(),
-            AnyModel::EwCov(m) => m.n_outputs(),
-            AnyModel::Sgd(m) => m.n_outputs(),
-            AnyModel::Pa(m) => m.n_outputs(),
-            AnyModel::Holt(m) => m.n_outputs(),
-        }
+        dispatch!(self, m => m.n_outputs())
     }
 
     pub fn coefficients(&self) -> Option<Vec<Vec<f64>>> {
@@ -108,18 +111,7 @@ impl AnyModel {
     }
 
     pub fn state(&self) -> State {
-        match self {
-            AnyModel::EwRidge(m) => m.state(),
-            AnyModel::Rls(m) => m.state(),
-            AnyModel::Lasso(m) => m.state(),
-            AnyModel::Kalman(m) => m.state(),
-            AnyModel::Robust(m) => m.state(),
-            AnyModel::Ftrl(m) => m.state(),
-            AnyModel::EwCov(m) => m.state(),
-            AnyModel::Sgd(m) => m.state(),
-            AnyModel::Pa(m) => m.state(),
-            AnyModel::Holt(m) => m.state(),
-        }
+        dispatch!(self, m => m.state())
     }
 
     pub fn restore(s: &State) -> Result<Self, StateError> {

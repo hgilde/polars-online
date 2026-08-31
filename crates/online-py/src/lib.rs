@@ -19,6 +19,19 @@ fn parse_specs(specs_json: &str) -> PyResult<Vec<Spec>> {
 // `module` matters for pickle: `__reduce__` hands back `ModelBank.load_bytes`,
 // and pickle serializes that by qualified name -- which fails while the class
 // claims to live in `builtins` (pyo3's default).
+/// `(group, instance, k, n_eff, means, comoments, cross_moments, target_weights)`
+/// — the flat shape `ModelBank.gram` reshapes into numpy arrays.
+type GramRow = (
+    Option<String>,
+    String,
+    usize,
+    f64,
+    Vec<f64>,
+    Vec<f64>,
+    Vec<Vec<f64>>,
+    Vec<f64>,
+);
+
 #[pyclass(name = "ModelBank", module = "polars_online._polars_online")]
 struct PyModelBank {
     inner: Bank,
@@ -100,6 +113,32 @@ impl PyModelBank {
             .into_iter()
             .map(|per_spec| per_spec.into_iter().map(|(k, n)| (k.0, n)).collect())
             .collect()
+    }
+
+    /// The EW accumulators behind a spec's fit (ENHANCEMENTS E30), as flat
+    /// tuples the Python layer reshapes into numpy arrays:
+    /// `(group, instance, k, n_eff, means, comoments, cross_moments,
+    /// target_weights)`.
+    #[pyo3(signature = (spec, group=None))]
+    fn gram(&self, spec: usize, group: Option<&str>) -> PyResult<Vec<GramRow>> {
+        Ok(self
+            .inner
+            .gram(spec, group)
+            .map_err(PyValueError::new_err)?
+            .into_iter()
+            .map(|g| {
+                (
+                    g.group.0,
+                    g.instance,
+                    g.k,
+                    g.n_eff,
+                    g.means,
+                    g.comoments,
+                    g.cross_moments,
+                    g.target_weights,
+                )
+            })
+            .collect())
     }
 
     fn spec_names(&self) -> Vec<String> {

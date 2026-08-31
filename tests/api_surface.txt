@@ -163,6 +163,7 @@
   __reduce__
   fit_predict
   fit_predict_batches
+  gram
   load
   load_bytes
   output_fields

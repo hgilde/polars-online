@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::spec::Spec;
-use crate::stream::{ChunkOut, Stream, StreamState, combo_labels};
+use crate::stream::{AnyModel, ChunkOut, Stream, StreamState, combo_labels};
 
 /// One stream's group key. A null group value is its own key, distinct from any
 /// string a user might have in the column — notably the literal `"<null>"`,
@@ -254,6 +254,42 @@ fn group_indices(
     }
 }
 
+/// One instance's EW accumulators, as returned by [`Bank::gram`].
+///
+/// Values are in the features' original units. `comoments` is **centered**
+/// (E11b, which is what makes it accurate at large offsets); `cross_moments`
+/// is **uncentered**, because that is the form the solve consumes. The two
+/// are bridged by one identity, and getting it wrong is a silent wrong
+/// answer rather than an error:
+///
+/// ```text
+/// raw[i][j] = comoments[i*k+j] + means[i]*means[j]
+/// raw · beta[t] = cross_moments[t]        (up to the ridge term)
+/// ```
+///
+/// The intercept, when the spec has one, is column 0: a constant 1, so it has
+/// zero variance in `comoments` and `raw[0][j] == means[j]`.
+#[derive(Debug, Clone)]
+pub struct Gram {
+    pub group: GroupKey,
+    /// The decay instance's suffix (`"@h500"`, or `""` for a single instance).
+    pub instance: String,
+    /// Columns, including the intercept when the spec has one.
+    pub k: usize,
+    /// Accumulated weight behind these moments.
+    pub n_eff: f64,
+    /// EW column means, length `k`.
+    pub means: Vec<f64>,
+    /// Centered co-moments, row-major `k*k`.
+    pub comoments: Vec<f64>,
+    /// Per-target centered cross-moments, each `k` long. Empty for `ew_cov`.
+    /// Per-target uncentered cross-moments, each `k` long. Empty for
+    /// `ew_cov`.
+    pub cross_moments: Vec<Vec<f64>>,
+    /// Per-target accumulated weight. Empty for `ew_cov`.
+    pub target_weights: Vec<f64>,
+}
+
 const BANK_MAGIC: &str = "polars-online-bank";
 
 #[derive(Serialize, Deserialize)]
@@ -273,7 +309,51 @@ struct BankFile {
 pub struct Bank {
     specs: Vec<Spec>,
     clock_cfgs: Vec<ClockCfg>,
+    derived: Vec<SpecDerived>,
     states: Vec<HashMap<GroupKey, Stream>>,
+}
+
+/// Everything `assemble` needs that follows from the `Spec` alone.
+///
+/// These used to be recomputed per chunk — `decays()` four times, `combos()`
+/// three, each re-running the validation that already passed at construction
+/// and each allocating (docs/SIMPLIFICATION.md S4). At the default 100k-row
+/// chunk that was noise; a caller feeding 1k-row chunks paid it 100x more
+/// often. Computed once here, it is not paid at all.
+pub struct SpecDerived {
+    /// Every output field, in struct order, with the buffer each reads from.
+    schema: Vec<FieldMeta>,
+    /// Grid-slot labels, for `emit_selected`'s `selected_<t>` column.
+    slot_labels: Vec<String>,
+    n_models: usize,
+    /// Combos per target.
+    nc: usize,
+    /// Targets.
+    m: usize,
+    /// Slots one instance owns: `m * nc`, or the statistic count for `ew_cov`.
+    per_model: usize,
+}
+
+impl SpecDerived {
+    fn new(spec: &Spec) -> Self {
+        let schema = output_index(spec);
+        let n_models = spec.decays().expect("validated").len();
+        let nc = crate::stream::combos(spec).len();
+        let m = spec.m();
+        let per_model = if matches!(spec.model, crate::ModelKind::EwCov { .. }) {
+            schema.iter().filter(|f| f.kind != "n_eff").count() / n_models
+        } else {
+            m * nc
+        };
+        Self {
+            schema,
+            slot_labels: slot_labels(spec),
+            n_models,
+            nc,
+            m,
+            per_model,
+        }
+    }
 }
 
 impl Bank {
@@ -309,10 +389,12 @@ impl Bank {
             .iter()
             .map(|s| s.clock_cfg())
             .collect::<Result<Vec<_>, _>>()?;
+        let derived = specs.iter().map(SpecDerived::new).collect();
         let states = specs.iter().map(|_| HashMap::new()).collect();
         Ok(Self {
             specs,
             clock_cfgs,
+            derived,
             states,
         })
     }
@@ -336,6 +418,68 @@ impl Bank {
                 v
             })
             .collect()
+    }
+
+    /// The EW accumulators behind a spec's fit, per group and decay instance
+    /// (docs/ENHANCEMENTS.md E30).
+    ///
+    /// Returns one [`Gram`] per (group, instance), sorted by group then by the
+    /// spec's halflife order. `spec` is an index into [`Self::specs`].
+    ///
+    /// The point is that these are the *same* matrices the deployed model
+    /// solves against, at any point in the stream, from a single pass over data
+    /// that is never materialized — so an analysis built on them cannot
+    /// silently disagree with the model it is analysing. What they are not is a
+    /// speed claim: for one batch Gram over materialized data, BLAS `dgemm`
+    /// wins comfortably.
+    ///
+    /// Only the models that keep a co-moment matrix report: `ewridge`, `lasso`
+    /// and `ew_cov`. Everything else yields an empty vector, because there is
+    /// no such matrix to hand back — `rls` and `kalman` track an inverse, and
+    /// the gradient models track no second moment at all.
+    pub fn gram(&self, spec: usize, group: Option<&str>) -> Result<Vec<Gram>, String> {
+        let states = self
+            .states
+            .get(spec)
+            .ok_or_else(|| format!("spec index {spec} out of range"))?;
+        let mut keys: Vec<&GroupKey> = match group {
+            Some(g) => states.keys().filter(|k| k.as_str() == Some(g)).collect(),
+            None => states.keys().collect(),
+        };
+        keys.sort();
+        let mut out = Vec::new();
+        for key in keys {
+            let stream = &states[key];
+            for (label, model) in &stream.models {
+                let (cov, cross, weights) = match model {
+                    AnyModel::EwRidge(m) => (
+                        m.cov(),
+                        m.cross_moments().to_vec(),
+                        m.target_weights().to_vec(),
+                    ),
+                    AnyModel::Lasso(m) => (
+                        m.cov(),
+                        m.cross_moments().to_vec(),
+                        m.target_weights().to_vec(),
+                    ),
+                    // No targets, so no cross-moments: the matrix is the whole
+                    // output.
+                    AnyModel::EwCov(m) => (m.cov(), Vec::new(), Vec::new()),
+                    _ => continue,
+                };
+                out.push(Gram {
+                    group: key.clone(),
+                    instance: label.clone(),
+                    k: cov.k(),
+                    n_eff: cov.n_eff(),
+                    means: cov.means().to_vec(),
+                    comoments: cov.comoments().to_vec(),
+                    cross_moments: cross,
+                    target_weights: weights,
+                });
+            }
+        }
+        Ok(out)
     }
 
     /// Run every spec over one chunk; returns one struct column per spec.
@@ -379,6 +523,7 @@ impl Bank {
         // (docs/PERFORMANCE.md P2). A bank of N single-group specs used to run
         // on one core at a time; now every stream in the bank is one task.
         let specs = &self.specs;
+        let derived = &self.derived;
         let cfgs = &self.clock_cfgs;
         // Each task owns a disjoint `&mut Stream`, so the borrow checker needs
         // them pulled out of the maps up front.
@@ -442,8 +587,9 @@ impl Bank {
         // Specs assemble independently (docs/PERFORMANCE.md P4).
         let out: Vec<Column> = specs
             .par_iter()
+            .zip(derived.par_iter())
             .zip(per_spec_rows.par_iter())
-            .map(|(spec, rows)| assemble(spec, n, rows))
+            .map(|((spec, d), rows)| assemble(spec, d, n, rows))
             .collect::<PolarsResult<_>>()?;
         if timing {
             let t_assemble = t3.elapsed();
@@ -528,46 +674,6 @@ impl Bank {
 }
 
 /// `ew_cov` output: one f64 column per statistic slot, plus `n_eff`.
-fn assemble_ew_cov(spec: &Spec, n: usize, chunks: &[ChunkOut]) -> PolarsResult<Column> {
-    let names = output_fields(spec);
-    let per_model: usize = names.len() / spec.decays().expect("validated").len();
-    let n_slots = per_model - 1; // the trailing n_eff
-    let n_models = spec.decays().expect("validated").len();
-
-    let mut cols = vec![vec![None::<f64>; n]; n_models * n_slots];
-    let mut n_eff = vec![vec![None::<f64>; n]; n_models];
-    for ch in chunks {
-        let nr = ch.rows.len();
-        for (ri, &i) in ch.rows.iter().enumerate() {
-            if !ch.processed[ri] {
-                continue;
-            }
-            for mi in 0..n_models {
-                for slot in 0..n_slots {
-                    let v = ch.pred[ChunkOut::at(ch.n_slots, nr, mi, slot, ri)];
-                    cols[mi * n_slots + slot][i] = v.is_finite().then_some(v);
-                }
-                n_eff[mi][i] = Some(ch.n_eff[mi * nr + ri]);
-            }
-        }
-    }
-    let mut fields: Vec<Series> = Vec::with_capacity(names.len());
-    let mut name_iter = names.iter();
-    for mi in 0..n_models {
-        for slot in 0..n_slots {
-            let name = name_iter.next().unwrap();
-            fields.push(Series::new(
-                name.as_str().into(),
-                cols[mi * n_slots + slot].as_slice(),
-            ));
-        }
-        let name = name_iter.next().unwrap();
-        fields.push(Series::new(name.as_str().into(), n_eff[mi].as_slice()));
-    }
-    let st = StructChunked::from_series(spec.name.as_str().into(), n, fields.iter())?;
-    Ok(st.into_series().into())
-}
-
 /// One output field with the machine values its name encodes.
 ///
 /// This is the antidote to string formatting as API: a caller filters this
@@ -595,6 +701,38 @@ pub struct FieldMeta {
     pub quantile: Option<f64>,
     /// Columns an `ew_cov` statistic is over.
     pub columns: Option<Vec<String>>,
+    /// Which assembled buffer, and where in it, this field's values come from.
+    /// Private and not serialized: it is how `assemble` walks this schema
+    /// instead of rebuilding the same nested loops with its own `format!`
+    /// calls (docs/SIMPLIFICATION.md S1).
+    #[serde(skip)]
+    src: Source,
+}
+
+/// The buffer a field's values are scattered into, with the index into it.
+/// One variant per buffer `assemble` allocates.
+#[derive(Debug, Clone, Default, PartialEq)]
+enum Source {
+    /// Assigned before the field is pushed; never observed.
+    #[default]
+    Unset,
+    Pred(usize),
+    Resid(usize),
+    Sigma(usize),
+    ResidZ(usize),
+    Drift(usize),
+    /// `(which of ic/r2/hit_rate, index)`.
+    Metric(usize, usize),
+    Quantile(usize),
+    Autocorr(usize),
+    NEff(usize),
+    Coef(usize),
+    LamSelected(usize),
+    SelPred(usize),
+    SelName(usize),
+    AvgPred(usize),
+    /// An `ew_cov` statistic, which rides in the `pred` buffer.
+    Stat(usize),
 }
 
 impl FieldMeta {
@@ -610,7 +748,12 @@ impl FieldMeta {
             lambda: None,
             quantile: None,
             columns: None,
+            src: Source::Unset,
         }
+    }
+    fn src(mut self, src: Source) -> Self {
+        self.src = src;
+        self
     }
     fn decay(mut self, d: &online_core::Decay) -> Self {
         match d {
@@ -682,109 +825,148 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
             }
         }
         debug_assert_eq!(meta.len(), labels.len());
+        let n_slots = labels.len();
         let mut fields = Vec::new();
-        for (suffix, d) in &decays {
-            for (l, (kind, cols)) in labels.iter().zip(&meta) {
-                let mut m = FieldMeta::new(format!("{l}{suffix}"), kind).decay(d);
+        for (mi, (suffix, d)) in decays.iter().enumerate() {
+            for (slot, (l, (kind, cols))) in labels.iter().zip(&meta).enumerate() {
+                let mut m = FieldMeta::new(format!("{l}{suffix}"), kind)
+                    .decay(d)
+                    .src(Source::Stat(mi * n_slots + slot));
                 m.columns = Some(cols.clone());
                 fields.push(m);
             }
-            fields.push(FieldMeta::new(format!("n_eff{suffix}"), "n_eff").decay(d));
+            fields.push(
+                FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                    .decay(d)
+                    .src(Source::NEff(mi)),
+            );
         }
         return fields;
     }
     let combos = crate::stream::combos(spec);
+    let (nc, m, n_models) = (combos.len(), spec.m(), decays.len());
+    let n_levels = spec.resid_quantiles.as_ref().map_or(0, Vec::len);
     let mut fields = Vec::new();
-    for (suffix, d) in &decays {
-        let mk = |kind: &str, t: &str, c: &crate::stream::Combo| {
+    for (mi, (suffix, d)) in decays.iter().enumerate() {
+        // `dst` is the flat (instance, target, combo) index every per-slot
+        // buffer in `assemble` is laid out by. Computing it here, once, is
+        // what lets `assemble` be a walk over this vector instead of the same
+        // nested loops written a second time.
+        let mk = |kind: &str, t: &str, c: &crate::stream::Combo, src: Source| {
             FieldMeta::new(format!("{kind}_{t}{}{suffix}", c.label), kind)
                 .decay(d)
                 .target(t)
                 .combo(c)
+                .src(src)
         };
-        for t in &spec.targets {
-            for c in &combos {
-                fields.push(mk("pred", t, c));
-                fields.push(mk("resid", t, c));
+        let dst = |t_i: usize, c_i: usize| mi * m * nc + t_i * nc + c_i;
+        for (t_i, t) in spec.targets.iter().enumerate() {
+            for (c_i, c) in combos.iter().enumerate() {
+                fields.push(mk("pred", t, c, Source::Pred(dst(t_i, c_i))));
+                fields.push(mk("resid", t, c, Source::Resid(dst(t_i, c_i))));
             }
         }
         if spec.emit_sigma {
-            for t in &spec.targets {
-                for c in &combos {
-                    fields.push(mk("sigma", t, c));
+            for (t_i, t) in spec.targets.iter().enumerate() {
+                for (c_i, c) in combos.iter().enumerate() {
+                    fields.push(mk("sigma", t, c, Source::Sigma(dst(t_i, c_i))));
                 }
             }
         }
         if spec.emit_resid_z {
-            for t in &spec.targets {
-                for c in &combos {
-                    fields.push(mk("resid_z", t, c));
+            for (t_i, t) in spec.targets.iter().enumerate() {
+                for (c_i, c) in combos.iter().enumerate() {
+                    fields.push(mk("resid_z", t, c, Source::ResidZ(dst(t_i, c_i))));
                 }
             }
         }
         if spec.emit_metrics {
-            for name in ["ic", "r2", "hit_rate"] {
-                for t in &spec.targets {
-                    for c in &combos {
-                        fields.push(mk(name, t, c));
+            for (k, name) in ["ic", "r2", "hit_rate"].into_iter().enumerate() {
+                for (t_i, t) in spec.targets.iter().enumerate() {
+                    for (c_i, c) in combos.iter().enumerate() {
+                        fields.push(mk(name, t, c, Source::Metric(k, dst(t_i, c_i))));
                     }
                 }
             }
         }
         if let Some(levels) = &spec.resid_quantiles {
-            for q in levels {
-                for t in &spec.targets {
-                    for c in &combos {
+            for (li, q) in levels.iter().enumerate() {
+                for (t_i, t) in spec.targets.iter().enumerate() {
+                    for (c_i, c) in combos.iter().enumerate() {
                         let name = format!(
                             "absresid_q{}_{t}{}{suffix}",
                             crate::spec::num_label(*q),
                             c.label
                         );
-                        let mut m = FieldMeta::new(name, "absresid_q")
+                        let idx = (li * n_models + mi) * m * nc + t_i * nc + c_i;
+                        let mut f = FieldMeta::new(name, "absresid_q")
                             .decay(d)
                             .target(t)
-                            .combo(c);
-                        m.quantile = Some(*q);
-                        fields.push(m);
+                            .combo(c)
+                            .src(Source::Quantile(idx));
+                        f.quantile = Some(*q);
+                        fields.push(f);
                     }
                 }
             }
         }
         if spec.emit_autocorr {
-            for t in &spec.targets {
-                for c in &combos {
-                    fields.push(mk("autocorr", t, c));
+            for (t_i, t) in spec.targets.iter().enumerate() {
+                for (c_i, c) in combos.iter().enumerate() {
+                    fields.push(mk("autocorr", t, c, Source::Autocorr(dst(t_i, c_i))));
                 }
             }
         }
         if spec.emit_drift {
-            for t in &spec.targets {
-                for c in &combos {
-                    fields.push(mk("drift", t, c));
+            for (t_i, t) in spec.targets.iter().enumerate() {
+                for (c_i, c) in combos.iter().enumerate() {
+                    fields.push(mk("drift", t, c, Source::Drift(dst(t_i, c_i))));
                 }
             }
         }
-        fields.push(FieldMeta::new(format!("n_eff{suffix}"), "n_eff").decay(d));
-        fields.push(FieldMeta::new(format!("coef{suffix}"), "coef").decay(d));
+        fields.push(
+            FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                .decay(d)
+                .src(Source::NEff(mi)),
+        );
+        fields.push(
+            FieldMeta::new(format!("coef{suffix}"), "coef")
+                .decay(d)
+                .src(Source::Coef(mi)),
+        );
         if matches!(spec.model, crate::ModelKind::Lasso { .. }) {
-            for t in &spec.targets {
+            for (t_i, t) in spec.targets.iter().enumerate() {
                 fields.push(
                     FieldMeta::new(format!("lam_selected_{t}{suffix}"), "lam_selected")
                         .decay(d)
-                        .target(t),
+                        .target(t)
+                        .src(Source::LamSelected(mi * m + t_i)),
                 );
             }
         }
     }
+    let _ = n_levels;
     if spec.emit_selected {
-        for t in &spec.targets {
-            fields.push(FieldMeta::new(format!("pred_{t}__selected"), "pred_selected").target(t));
-            fields.push(FieldMeta::new(format!("selected_{t}"), "selected").target(t));
+        for (t_i, t) in spec.targets.iter().enumerate() {
+            fields.push(
+                FieldMeta::new(format!("pred_{t}__selected"), "pred_selected")
+                    .target(t)
+                    .src(Source::SelPred(t_i)),
+            );
+            fields.push(
+                FieldMeta::new(format!("selected_{t}"), "selected")
+                    .target(t)
+                    .src(Source::SelName(t_i)),
+            );
         }
     }
     if spec.emit_averaged {
-        for t in &spec.targets {
-            fields.push(FieldMeta::new(format!("pred_{t}__averaged"), "pred_averaged").target(t));
+        for (t_i, t) in spec.targets.iter().enumerate() {
+            fields.push(
+                FieldMeta::new(format!("pred_{t}__averaged"), "pred_averaged")
+                    .target(t)
+                    .src(Source::AvgPred(t_i)),
+            );
         }
     }
     fields
@@ -809,44 +991,40 @@ fn slot_labels(spec: &Spec) -> Vec<String> {
     out
 }
 
-fn assemble(spec: &Spec, n: usize, chunks: &[ChunkOut]) -> PolarsResult<Column> {
-    if matches!(spec.model, crate::ModelKind::EwCov { .. }) {
-        return assemble_ew_cov(spec, n, chunks);
-    }
-    let decays = spec.decays().expect("validated");
-    let n_models = decays.len();
-    let combos = combo_labels(spec);
-    let nc = combos.len();
-    let m = spec.m();
+fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> PolarsResult<Column> {
+    let SpecDerived {
+        schema,
+        slot_labels: labels,
+        n_models,
+        nc,
+        m,
+        per_model,
+    } = d;
+    let (n_models, nc, m, per_model) = (*n_models, *nc, *m, *per_model);
+    // `ew_cov` emits named statistics rather than pred/resid pairs, and has no
+    // targets or coefficients — but its values ride in the same `pred` buffer
+    // and the schema says so (`Source::Stat`), so one assembler covers both
+    // (docs/SIMPLIFICATION.md S2). Only `pred` and `n_eff` are populated for
+    // it; every other buffer is length zero and never indexed.
+    let is_ew_cov = matches!(spec.model, crate::ModelKind::EwCov { .. });
+    let reg = if is_ew_cov { 0 } else { n_models * m * nc };
 
-    let mut pred = vec![vec![None::<f64>; n]; n_models * m * nc];
-    let mut resid = vec![vec![None::<f64>; n]; n_models * m * nc];
+    let mut pred = vec![vec![None::<f64>; n]; n_models * per_model];
+    let mut resid = vec![vec![None::<f64>; n]; reg];
     let n_extra = if spec.emit_sigma || spec.emit_resid_z {
-        n_models * m * nc
+        reg
     } else {
         0
     };
     let mut sigma = vec![vec![None::<f64>; n]; n_extra];
     let mut resid_z = vec![vec![None::<f64>; n]; n_extra];
-    let n_drift = if spec.emit_drift {
-        n_models * m * nc
-    } else {
-        0
-    };
+    let n_drift = if spec.emit_drift { reg } else { 0 };
     let mut drift = vec![vec![None::<bool>; n]; n_drift];
-    let n_met = if spec.emit_metrics {
-        n_models * m * nc
-    } else {
-        0
-    };
+    let n_met = if spec.emit_metrics { reg } else { 0 };
     let mut met = vec![vec![vec![None::<f64>; n]; n_met]; 3];
     let n_levels = spec.resid_quantiles.as_ref().map_or(0, Vec::len);
-    let mut rq = vec![vec![None::<f64>; n]; n_levels * n_models * m * nc];
-    let n_ac = if spec.emit_autocorr {
-        n_models * m * nc
-    } else {
-        0
-    };
+    let mut rq = vec![vec![None::<f64>; n]; n_levels * reg];
+    let n_ac = if spec.emit_autocorr { reg } else { 0 };
     let mut ac = vec![vec![None::<f64>; n]; n_ac];
     let mut n_eff = vec![vec![None::<f64>; n]; n_models];
     let mut coef: Vec<Vec<Option<Vec<f64>>>> = vec![vec![None; n]; n_models];
@@ -868,10 +1046,13 @@ fn assemble(spec: &Spec, n: usize, chunks: &[ChunkOut]) -> PolarsResult<Column> 
                 continue;
             }
             for mi in 0..n_models {
-                for slot in 0..m * nc {
+                for slot in 0..per_model {
                     let at = ChunkOut::at(ch.n_slots, nr, mi, slot, ri);
-                    let dst = mi * m * nc + slot;
+                    let dst = mi * per_model + slot;
                     pred[dst][i] = some_if_finite(ch.pred[at]);
+                    if is_ew_cov {
+                        continue;
+                    }
                     resid[dst][i] = some_if_finite(ch.resid[at]);
                     if n_drift > 0 {
                         drift[dst][i] = Some(ch.drift[at]);
@@ -914,7 +1095,6 @@ fn assemble(spec: &Spec, n: usize, chunks: &[ChunkOut]) -> PolarsResult<Column> 
     // lowest EW out-of-sample error so far (`sigma`, already tracked for E12),
     // and emit that slot's prediction plus its label. Same idea as the lasso's
     // `lam_selected`, generalized to ridge / feature-set / halflife grids.
-    let labels = slot_labels(spec);
     let mut sel_pred = vec![vec![None::<f64>; n]; if spec.emit_selected { m } else { 0 }];
     let mut sel_name = vec![vec![None::<&str>; n]; if spec.emit_selected { m } else { 0 }];
     let mut avg_pred = vec![vec![None::<f64>; n]; if spec.emit_averaged { m } else { 0 }];
@@ -1000,134 +1180,41 @@ fn assemble(spec: &Spec, n: usize, chunks: &[ChunkOut]) -> PolarsResult<Column> 
         }
     }
 
-    let mut fields: Vec<Series> = Vec::new();
-    for (mi, (suffix, _)) in decays.iter().enumerate() {
-        for (t_i, t) in spec.targets.iter().enumerate() {
-            for (c_i, c) in combos.iter().enumerate() {
-                let slot = t_i * nc + c_i;
-                fields.push(Series::new(
-                    format!("pred_{t}{c}{suffix}").into(),
-                    pred[mi * m * nc + slot].as_slice(),
-                ));
-                fields.push(Series::new(
-                    format!("resid_{t}{c}{suffix}").into(),
-                    resid[mi * m * nc + slot].as_slice(),
-                ));
-            }
-        }
-        for (name, src) in [
-            ("sigma", (spec.emit_sigma, &sigma)),
-            ("resid_z", (spec.emit_resid_z, &resid_z)),
-        ] {
-            let (enabled, data) = src;
-            if !enabled {
-                continue;
-            }
-            for (t_i, t) in spec.targets.iter().enumerate() {
-                for (c_i, c) in combos.iter().enumerate() {
-                    let slot = t_i * nc + c_i;
-                    fields.push(Series::new(
-                        format!("{name}_{t}{c}{suffix}").into(),
-                        data[mi * m * nc + slot].as_slice(),
-                    ));
-                }
-            }
-        }
-        if spec.emit_metrics {
-            for (k, name) in ["ic", "r2", "hit_rate"].into_iter().enumerate() {
-                for (t_i, t) in spec.targets.iter().enumerate() {
-                    for (c_i, c) in combos.iter().enumerate() {
-                        let slot = t_i * nc + c_i;
-                        fields.push(Series::new(
-                            format!("{name}_{t}{c}{suffix}").into(),
-                            met[k][mi * m * nc + slot].as_slice(),
-                        ));
+    // The schema is written once, in `output_index`, which also records where
+    // each field's values live. Emission is a walk over it: no second copy of
+    // the ordering, no `format!` here at all, and no way for the declared
+    // schema and the realized struct to disagree (docs/SIMPLIFICATION.md S1 —
+    // that divergence is exactly what defect E23 was).
+    let mut fields: Vec<Series> = Vec::with_capacity(schema.len());
+    for f in schema {
+        let name: PlSmallStr = f.field.as_str().into();
+        fields.push(match f.src {
+            Source::Pred(i) | Source::Stat(i) => Series::new(name, pred[i].as_slice()),
+            Source::Resid(i) => Series::new(name, resid[i].as_slice()),
+            Source::Sigma(i) => Series::new(name, sigma[i].as_slice()),
+            Source::ResidZ(i) => Series::new(name, resid_z[i].as_slice()),
+            Source::Drift(i) => Series::new(name, drift[i].as_slice()),
+            Source::Metric(k, i) => Series::new(name, met[k][i].as_slice()),
+            Source::Quantile(i) => Series::new(name, rq[i].as_slice()),
+            Source::Autocorr(i) => Series::new(name, ac[i].as_slice()),
+            Source::NEff(i) => Series::new(name, n_eff[i].as_slice()),
+            Source::LamSelected(i) => Series::new(name, lam_sel[i].as_slice()),
+            Source::SelPred(i) => Series::new(name, sel_pred[i].as_slice()),
+            Source::SelName(i) => Series::new(name, sel_name[i].as_slice()),
+            Source::AvgPred(i) => Series::new(name, avg_pred[i].as_slice()),
+            Source::Coef(i) => {
+                let mut b =
+                    ListPrimitiveChunkedBuilder::<Float64Type>::new(name, n, 8, DataType::Float64);
+                for v in &coef[i] {
+                    match v {
+                        Some(flat) => b.append_slice(flat),
+                        None => b.append_null(),
                     }
                 }
+                b.finish().into_series()
             }
-        }
-        if let Some(levels) = &spec.resid_quantiles {
-            for (li, q) in levels.iter().enumerate() {
-                for (t_i, t) in spec.targets.iter().enumerate() {
-                    for (c_i, c) in combos.iter().enumerate() {
-                        let slot = t_i * nc + c_i;
-                        let idx = (li * n_models + mi) * m * nc + slot;
-                        fields.push(Series::new(
-                            format!("absresid_q{}_{t}{c}{suffix}", crate::spec::num_label(*q))
-                                .into(),
-                            rq[idx].as_slice(),
-                        ));
-                    }
-                }
-            }
-        }
-        if spec.emit_autocorr {
-            for (t_i, t) in spec.targets.iter().enumerate() {
-                for (c_i, c) in combos.iter().enumerate() {
-                    let slot = t_i * nc + c_i;
-                    fields.push(Series::new(
-                        format!("autocorr_{t}{c}{suffix}").into(),
-                        ac[mi * m * nc + slot].as_slice(),
-                    ));
-                }
-            }
-        }
-        if spec.emit_drift {
-            for (t_i, t) in spec.targets.iter().enumerate() {
-                for (c_i, c) in combos.iter().enumerate() {
-                    let slot = t_i * nc + c_i;
-                    fields.push(Series::new(
-                        format!("drift_{t}{c}{suffix}").into(),
-                        drift[mi * m * nc + slot].as_slice(),
-                    ));
-                }
-            }
-        }
-        fields.push(Series::new(
-            format!("n_eff{suffix}").into(),
-            n_eff[mi].as_slice(),
-        ));
-        let mut b = ListPrimitiveChunkedBuilder::<Float64Type>::new(
-            format!("coef{suffix}").into(),
-            n,
-            8,
-            DataType::Float64,
-        );
-        for v in &coef[mi] {
-            match v {
-                Some(flat) => b.append_slice(flat),
-                None => b.append_null(),
-            }
-        }
-        fields.push(b.finish().into_series());
-        if is_lasso {
-            for (t_i, t) in spec.targets.iter().enumerate() {
-                fields.push(Series::new(
-                    format!("lam_selected_{t}{suffix}").into(),
-                    lam_sel[mi * m + t_i].as_slice(),
-                ));
-            }
-        }
-    }
-    if spec.emit_selected {
-        for (t_i, t) in spec.targets.iter().enumerate() {
-            fields.push(Series::new(
-                format!("pred_{t}__selected").into(),
-                sel_pred[t_i].as_slice(),
-            ));
-            fields.push(Series::new(
-                format!("selected_{t}").into(),
-                sel_name[t_i].as_slice(),
-            ));
-        }
-    }
-    if spec.emit_averaged {
-        for (t_i, t) in spec.targets.iter().enumerate() {
-            fields.push(Series::new(
-                format!("pred_{t}__averaged").into(),
-                avg_pred[t_i].as_slice(),
-            ));
-        }
+            Source::Unset => unreachable!("every field is given a source in output_index"),
+        });
     }
     let st = StructChunked::from_series(spec.name.as_str().into(), n, fields.iter())?;
     Ok(st.into_series().into())

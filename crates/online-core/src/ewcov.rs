@@ -182,6 +182,24 @@ impl EwCov {
 
     /// Centered variance, floored at zero against rounding.
     #[inline]
+    /// The full centered co-moment matrix, row-major `k*k` — the EW analogue
+    /// of the centered `X'X / n`.
+    ///
+    /// This is the accumulator every solve reads, exposed so a caller can do
+    /// something *other than* our solve with it: a custom penalty, an
+    /// information criterion, `cond(G)`, a scree plot, forward stepwise or
+    /// orthogonal matching pursuit — none of which needs a second pass over
+    /// data that was never materialized (docs/ENHANCEMENTS.md E30).
+    pub fn comoments(&self) -> &[f64] {
+        &self.c
+    }
+
+    /// The EW mean vector, length `k`. Pairs with [`Self::comoments`]: the
+    /// uncentered second moment is `c[i*k+j] + m[i]*m[j]`.
+    pub fn means(&self) -> &[f64] {
+        &self.m
+    }
+
     pub fn var(&self, i: usize) -> f64 {
         self.cov(i, i).max(0.0)
     }
@@ -429,6 +447,13 @@ impl EwCovModel {
             None => EwCov::new(cfg.n_features),
         };
         Ok(Self { cfg, cov })
+    }
+
+    /// The accumulator itself, for callers that want the whole matrix rather
+    /// than the pairwise statistics (docs/ENHANCEMENTS.md E30). At `k = 400`
+    /// the pairwise form is 79,800 struct fields; this is one `k*k` array.
+    pub fn cov(&self) -> &EwCov {
+        &self.cov
     }
 
     pub fn cfg(&self) -> &EwCovCfg {

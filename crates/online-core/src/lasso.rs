@@ -137,6 +137,30 @@ impl Lasso {
             .collect()
     }
 
+    /// The feature accumulator (docs/ENHANCEMENTS.md E30). See
+    /// [`EwCov::comoments`].
+    pub fn cov(&self) -> &EwCov {
+        &self.cov
+    }
+
+    /// Per-target **uncentered** cross-moments `r[t]`, each `k_total` long:
+    /// the EW mean of `z·y_t`, where `z` is the feature row with the intercept
+    /// slot as a constant 1.
+    ///
+    /// Uncentered deliberately — it is what the solve consumes, paired with
+    /// the *raw* second moment. Mixing it with the centered
+    /// [`EwCov::comoments`] silently gives the wrong coefficients; the
+    /// identity that holds is
+    /// `(comoments + means⊗means) · beta == cross_moments`.
+    pub fn cross_moments(&self) -> &[Vec<f64>] {
+        &self.r
+    }
+
+    /// Per-target accumulated weight behind [`Self::cross_moments`].
+    pub fn target_weights(&self) -> &[f64] {
+        &self.wj
+    }
+
     pub fn n_eff(&self) -> f64 {
         self.cov.n_eff()
     }
