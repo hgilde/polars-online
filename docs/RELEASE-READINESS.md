@@ -239,19 +239,47 @@ policy above: three macOS jobs plus Windows across a six-target wheel matrix.
 At 10x, one release tag could plausibly cost most of a month's allowance while
 the repo is private. Do not cut a release tag before going public.
 
+### The ubuntu `test` failure was not infrastructure
+
+Twice the Ubuntu test job died ~90 seconds in, *inside* `Swatinem/rust-cache`,
+with no step conclusion and a log blob that 404s. It looked like a flaky
+runner. It was not: the check-runs annotations API had the real error.
+
+```
+System.IO.IOException: No space left on device
+```
+
+The runner could not write its own diagnostic log, which is why no log was
+ever uploaded. The Ubuntu image starts with 9.3 GB free; the saved
+`v0-rust-test-Linux-x64` cache is 1 GB compressed and expands well past that.
+The step that recovers 21 GB ran *after* the cache restore.
+
+It only started failing once a cache existed to restore — every earlier run
+logged `No cache found.` and sailed past. So the symptom appeared at the exact
+moment the cache fix started working, which is what made it look unrelated.
+
+Fixed by moving the disk-freeing step ahead of the cache restore. That step now
+has two independent reasons to be where it is — disk before the restore,
+rustflags before any compile — and both are pinned by
+`tests/test_ci_cost_policy.py`.
+
 ### What a push costs now
 
 Extrapolated from the observed timings, private-repo push:
 
-| | before | after |
+| | before | after (measured) |
 |---|---:|---:|
-| lint | 3 OSes, full build — ~235 billed | Linux, no build — ~10 |
-| test | 3 OSes — ~706 billed | Linux, no double compile — ~30 |
-| **per push** | **~940** | **~40** |
+| lint | 3 OSes, full build — ~235 billed | Linux, no build — **2** |
+| test | 3 OSes — ~706 billed | Linux — ~30 (est.) |
+| **per push** | **~940** | **~35** |
 
-That is the difference between three pushes and roughly seventy-five per
-month on Pro's 3,000. The cache should improve it further, but that remains
-**unverified** — no run has been allowed to start since it was configured.
+Measured on the first run under the policy: **lint finished in 1m25s**, of
+which `uv sync --no-install-project` was **3 seconds** against 18 minutes for
+the sync that built the extension, and a warm cache brought clippy to 42
+seconds. Two billed minutes for the whole job.
+
+`test` is still an estimate — its first two runs under the new config died on
+the disk bug above.
 
 The policy is enforced by `tests/test_ci_cost_policy.py`, not by comments: it
 parses the workflows and asserts that the matrix fallback is the cheap branch,

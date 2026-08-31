@@ -136,23 +136,19 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          # A cold Windows job spends ~70 of its ~80 minutes compiling, and by
-          # default rust-cache skips its save step when the job fails -- so a
-          # single red test threw away the whole compile and the next run
-          # started cold again. Every Windows run to date logged "No cache
-          # found." Build artifacts from a failed test run are still valid.
-          cache-on-failure: true
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
-        with:
-          enable-cache: true
-
-      # Before `uv sync`, which compiles the extension: rustflags are part of
-      # cargo's fingerprint, so writing them afterwards invalidated that build
-      # and made `maturin develop --release` recompile the workspace from
-      # scratch -- 18 minutes of pure duplication on every Linux run (Windows,
-      # with no such step, finishes the same maturin build in 31 seconds).
+      # MUST precede the cache restore. The Ubuntu image starts with 9.3 GB
+      # free, and the restored `target/` does not fit: the job died with
+      # "No space left on device" *inside* rust-cache, so hard that the runner
+      # could not write its own log -- which is why it looked like flaky
+      # infrastructure until the annotations API gave up the real error. It
+      # only began failing once a cache existed to restore. Removing the unused
+      # Android SDK, .NET and GHC recovers 21 GB.
+      #
+      # It must also precede `uv sync`, for a different reason: rustflags are
+      # part of cargo's fingerprint, so writing them later invalidated that
+      # build and made `maturin develop --release` recompile the workspace --
+      # 18 minutes of duplication, against Windows' 31 seconds for the same
+      # step. One position satisfies both.
       - name: free disk and use a leaner linker (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -166,13 +162,26 @@ jobs:
           printf '[target.x86_64-unknown-linux-gnu]\nrustflags = ["-C", "link-arg=-fuse-ld=lld"]\n' \
             >> .cargo/config.toml
 
-      # Real-time scanning inspects every one of the ~100k files a cargo build
-      # writes. Best-effort: never fail the job over it.
+      # Also before the cache: real-time scanning inspects every file the
+      # restore unpacks and every one of the ~100k a cargo build writes.
+      # Best-effort; never fail the job over it.
       - name: exclude the build from Defender (Windows)
         if: runner.os == 'Windows'
         continue-on-error: true
         run: |
           Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE","$env:USERPROFILE\.cargo","$env:USERPROFILE\.rustup"
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          # A cold Windows job spends ~70 of its ~80 minutes compiling, and by
+          # default rust-cache skips its save step when the job fails -- so a
+          # single red test threw away the whole compile and the next run
+          # started cold again. Every Windows run to date logged "No cache
+          # found." Build artifacts from a failed test run are still valid.
+          cache-on-failure: true
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          enable-cache: true
 
       - run: uv sync
 

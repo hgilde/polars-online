@@ -113,6 +113,49 @@ class TestTheMatrixDefaultsToCheap:
                 )
 
 
+class TestStepOrderingThatHasAlreadyBrokenCI:
+    """Two ordering bugs cost real runs; both are invisible to YAML linting."""
+
+    @staticmethod
+    def _index(job, predicate):
+        for i, step in enumerate(CI["jobs"][job]["steps"]):
+            if predicate(f"{step.get('name', '')} {step.get('uses', '')}"):
+                return i
+        return None
+
+    def test_disk_is_freed_before_the_cache_is_restored(self):
+        """The Ubuntu image starts with 9.3 GB free and the restored target/
+        does not fit: the job died with "No space left on device" inside
+        rust-cache, too hard to even write its own log."""
+        free = self._index("test", lambda t: "free disk" in t)
+        cache = self._index("test", lambda t: "rust-cache" in t)
+        assert free is not None and cache is not None
+        assert free < cache, "disk must be freed before the cache is restored"
+
+    def test_rustflags_are_set_before_anything_compiles(self):
+        """Rustflags are part of cargo's fingerprint. Written after `uv sync`
+        they invalidated its build and made `maturin develop --release`
+        recompile the workspace: 18 minutes, every Linux run."""
+        free = self._index("test", lambda t: "free disk" in t)
+        sync = self._index("test", lambda t: False)
+        for i, step in enumerate(CI["jobs"]["test"]["steps"]):
+            if "uv sync" in str(step.get("run", "")):
+                sync = i
+                break
+        assert free is not None and sync is not None
+        assert free < sync, "the linker config must be written before any build"
+
+    def test_the_cache_survives_a_failing_job(self):
+        """rust-cache skips its save step on failure by default. The Windows
+        job never passed, so ~70 minutes of compilation was discarded on every
+        run and the next one started cold -- a cycle that could not break
+        itself."""
+        for job in ("lint", "test"):
+            for step in CI["jobs"][job]["steps"]:
+                if "rust-cache" in str(step.get("uses", "")):
+                    assert step.get("with", {}).get("cache-on-failure") is True, job
+
+
 class TestDocOnlyPushesAreFree:
     @pytest.mark.parametrize("trigger", ["push", "pull_request"])
     def test_paths_ignore_present_while_private(self, trigger):
