@@ -449,9 +449,37 @@ class TestColumnTypes:
         )
         assert _f(out, "n_eff")[2] == 0.0, "the session change should have reset"
 
+    def test_a_session_named_like_the_null_sentinel_is_not_null(self):
+        """The T-E2 bug one layer down, fixed: null sessions were hashed as the
+        sentinel string "\\0<null>", so a session literally named that shared a
+        session with null -- moving between them was invisibly *not* a change.
+        Now null is distinct from every string, and the sentinel-named session
+        behaves like any other."""
+        df = pl.DataFrame(
+            {
+                "t": [0.0, 1.0, 2.0, 3.0],
+                "session": ["\0<null>", None, "\0<null>", None],
+                "x0": [1.0, 2.0, 3.0, 4.0],
+                "y0": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
+        out = _run(
+            df,
+            _spec(
+                clock="t",
+                max_dclock=10.0,
+                session="session",
+                session_gap="reset",
+                min_periods=0.0,
+            ),
+        )
+        # Every row changes session, so n_eff must reset at every boundary.
+        assert _f(out, "n_eff") == [0.0, 0.0, 0.0, 0.0], _f(out, "n_eff")
+
     def test_null_session_value_is_its_own_session(self):
-        # Pins current behavior: a null session hashes a distinct sentinel, so
-        # null -> "a" and "a" -> null both count as session changes.
+        # Pins current behavior: a null session is its own session, distinct
+        # from every string, so null -> "a" and "a" -> null both count as
+        # session changes.
         df = pl.DataFrame(
             {
                 "t": [0.0, 1.0, 2.0, 3.0],

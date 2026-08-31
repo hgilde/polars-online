@@ -63,6 +63,30 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     h
 }
 
+/// The hash a null session value carries. Kept as the hash of the historical
+/// sentinel string so that saved states resume with no spurious session change
+/// -- `prev_session` stores these hashes, and a resumed stream compares its
+/// next row against the stored value.
+fn null_session_hash() -> u64 {
+    fnv1a(b"\0<null>")
+}
+
+/// Session values are compared by 64-bit hash (`ClockState.prev_session`). A
+/// null is its own session, and must be distinct from *every* string -- the
+/// T-E2 bug, one layer down: hashing null as a sentinel string made a session
+/// literally named `"\0<null>"` indistinguishable from null, silently sharing
+/// one session with it. Any string that lands on the null hash (the sentinel
+/// itself, or a 2^-64 accident) is nudged to a neighbouring value instead.
+fn session_hash(v: Option<&str>) -> u64 {
+    match v {
+        None => null_session_hash(),
+        Some(s) => {
+            let h = fnv1a(s.as_bytes());
+            if h == null_session_hash() { h ^ 1 } else { h }
+        }
+    }
+}
+
 /// Columns extracted once per (spec, chunk).
 struct SpecColumns {
     features: Vec<Vec<Option<f64>>>,
@@ -131,12 +155,7 @@ fn extract(df: &DataFrame, spec: &Spec) -> PolarsResult<SpecColumns> {
                 .column(c)?
                 .as_materialized_series()
                 .cast(&DataType::String)?;
-            Some(
-                s.str()?
-                    .iter()
-                    .map(|v| fnv1a(v.unwrap_or("\0<null>").as_bytes()))
-                    .collect(),
-            )
+            Some(s.str()?.iter().map(session_hash).collect())
         }
         None => None,
     };
@@ -283,17 +302,25 @@ impl Bank {
     /// Run every spec over one chunk; returns one struct column per spec.
     /// Chunks must arrive in stream order within each group.
     pub fn fit_predict(&mut self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
+        // Section timings to stderr when ONLINE_TIMING is set; costs one env
+        // read per chunk. This is how docs/PERFORMANCE.md's numbers are made.
+        let timing = std::env::var_os("ONLINE_TIMING").is_some();
+        let t0 = std::time::Instant::now();
         let n = df.height();
         let cols: Vec<SpecColumns> = self
             .specs
             .iter()
             .map(|s| extract(df, s))
             .collect::<PolarsResult<_>>()?;
+        let t_extract = t0.elapsed();
+        let t1 = std::time::Instant::now();
         let groups: Vec<Vec<(GroupKey, Vec<usize>)>> = self
             .specs
             .iter()
             .map(|s| group_indices(df, &s.group))
             .collect::<PolarsResult<_>>()?;
+        let t_group = t1.elapsed();
+        let t2 = std::time::Instant::now();
 
         // Materialize missing streams, then fan out over (spec x group).
         for (si, spec) in self.specs.iter().enumerate() {
@@ -361,10 +388,26 @@ impl Bank {
             let rows = rows.into_iter().collect::<PolarsResult<Vec<_>>>()?;
             per_spec_rows.push(rows.into_iter().flatten().collect());
         }
+        let t_process = t2.elapsed();
+        let t3 = std::time::Instant::now();
 
         let mut out = Vec::with_capacity(specs.len());
         for (si, spec) in specs.iter().enumerate() {
             out.push(assemble(spec, n, &per_spec_rows[si])?);
+        }
+        if timing {
+            let t_assemble = t3.elapsed();
+            let total = t0.elapsed();
+            eprintln!(
+                "ONLINE_TIMING rows={n} extract={:.1}ms group={:.1}ms process={:.1}ms \
+                 assemble={:.1}ms total={:.1}ms ({:.0} rows/s)",
+                t_extract.as_secs_f64() * 1e3,
+                t_group.as_secs_f64() * 1e3,
+                t_process.as_secs_f64() * 1e3,
+                t_assemble.as_secs_f64() * 1e3,
+                total.as_secs_f64() * 1e3,
+                n as f64 / total.as_secs_f64()
+            );
         }
         Ok(out)
     }

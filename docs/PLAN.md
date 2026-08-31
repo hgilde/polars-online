@@ -369,6 +369,15 @@ returns / volume / trade-count z-scores, targets = strictly future returns.
 - `docs/TESTING.md` — coverage scorecard against §9, found edge-case defects,
   and the oracle/river cross-check backlog.
 
+## 11b. Performance plan
+
+Measured baseline and the parallelism/speed task list live in
+[`docs/PERFORMANCE.md`](PERFORMANCE.md) (P1–P8): the integration layer costs
+3–5× the model arithmetic and caps thread scaling at 3.2×/10 cores; the plan
+removes per-row allocation, flattens the rayon fan-out to
+(spec × group × instance), and borrows columns instead of materializing them.
+Same rules as §11: tick tasks there, commit per task with the number.
+
 ## 12. Open questions (not blocking)
 
 - ~~Overnight handling beyond `session_gap` (e.g. partial state shrinkage toward a long-run prior).~~
