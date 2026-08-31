@@ -38,7 +38,7 @@ instead by the CLI integration tests through `run_config`) and
 | T-D2 property-based testing | **Done** — `tests/test_properties.py` (hypothesis) generates adversarial streams (mixed nulls, duplicate/long-gap clocks, ±1e8 values, zero weights, tiny groups) and asserts the universal invariants for all ten models, including the strongest one: **changing a row's own target never changes that row's own prediction** (out-of-sample by construction, hard rule 2). |
 | T-E11 soak | **Done** — 10M rows through one state in ~6.5s: `n_eff` stays bounded and does not drift between the start and end of the stream, the fit is still accurate, and a 2M-row state serializes to under 4KB (memory is O(state), not O(data)). Opt-in via `pytest -m soak`. |
 | T-D4 coverage | **Done** (reported, not gating) — `scripts/coverage.sh`; numbers above. |
-| T-D5 mutation re-run | **Done.** Run once the enhancement backlog was drained. **2616 mutants in 2h: 1899 caught, 501 missed, 175 timeouts, 41 unviable** — 19% missed, down from 31% (517/1645) despite the crate having grown by 60%. The misses were not scattered: they clustered almost perfectly on the code whose *only* tests live in `tests/*.py`, because `cargo mutants` runs `cargo test` and cannot see the Python suite. Eight commits of Rust-side oracles followed; see "What the mutation run actually found" below. |
+| T-D5 mutation re-run | **Done, three passes.** Run 1 (before the follow-up work): **2616 mutants, 501 missed**. Run 2 (after): 104 missed — but see the warning below, that number was wrong. Run 3 (`--iterate`, 690 mutants in 14 min on an idle machine): **217 missed**, the honest current figure. 8.3% surviving, down from 31% (517/1645) at the first-ever pass, despite the crate having grown by 60%. The misses were not scattered: they clustered almost perfectly on the code whose *only* tests live in `tests/*.py`, because `cargo mutants` runs `cargo test` and cannot see the Python suite. Eight commits of Rust-side oracles followed; see "What the mutation run actually found" below. |
 | T-D1 / Windows CI | **Blocked on credentials** — see "Windows and cross-platform" below. `origin` is `github.com/hgilde/polars-online` and 24 commits are ready, but this machine has no GitHub auth (no keychain entry, no SSH key, no token, no `gh`), so nothing has ever been pushed and **no CI job has ever run on Windows**. |
 
 This document assesses what the tests actually prove, then lists concrete
@@ -98,11 +98,54 @@ The other four:
   inserted between the comment and the function;
 - `coef0` misconfiguration reported "coef0 must be 1 vectors of length 3".
 
-Two classes of survivor were left alone deliberately. **Equivalent mutants**
-cannot be killed by any test — `Ftrl::weight`'s `zz < 0.0` sign branch is only
-reachable when `zz == 0`, which the `|zz| <= l1` guard above it has already
-returned on. And **`--timeout` survivors** (175 of them) are mutations that
-make a loop spin; the harness detects them, but each costs 20s of the run.
+**Equivalent mutants** were left alone deliberately: they cannot be killed by
+any test. `Ftrl::weight`'s `zz < 0.0` sign branch is only reachable when
+`zz == 0`, which the `|zz| <= l1` guard above it has already returned on; and in
+Holt's `beta > 0.0 && d_clock > 0.0`, the second test can never decide, because
+beta is `1 - 0.5^(d/halflife)`, zero exactly when d is. Both now say so in the
+source, so the next reader does not re-derive it.
+
+### Do not run anything else while a mutation pass is going
+
+Run 2 reported 104 survivors and 425 timeouts, and this document said 104 for
+several commits. It was wrong by a factor of two. Run 3 (`--iterate`) re-tested
+exactly those on an otherwise idle machine and found **132 of the "timeouts"
+were ordinary survivors** — the tests had passed, they had just taken longer
+than the ceiling because `./scripts/gate.sh` was running concurrently (cargo
+build, cargo test, maturin, pytest, repeatedly, on the same four cores).
+cargo-mutants counts a timeout separately from a miss, so the contention did not
+look like an error. It looked like good news.
+
+Two rules follow:
+
+- **Let the machine be idle.** A mutation pass and a build loop cannot share a
+  laptop without corrupting the classification.
+- **Treat a large timeout count as a failed run, not a result.** Run 1: 175
+  timeouts of 2616. Run 2, under load: 425. Run 3, idle: 18 of 690. Above a few
+  percent, the numbers underneath are not trustworthy.
+
+`--minimum-test-timeout 10` in `scripts/mutants.sh` makes a pass faster but
+*more* sensitive to this, not less: right for an idle machine, wrong for a busy
+one.
+
+### Where the 217 stand now
+
+| file | run 1 | run 3 |
+|---|---|---|
+| lasso.rs | 83 | 50 |
+| stats.rs | 5 | 45 |
+| ewridge.rs | 178 | 42 |
+| robust.rs | 16 | 27 |
+| sgd.rs | 15 | 15 |
+| kalman.rs | 32 | 10 |
+| ewcov.rs | 75 | 10 |
+| everything else | 97 | 18 |
+
+Three files went *up*, which is the same measurement artifact in reverse: their
+run-1 figures were themselves depressed by timeouts. `stats.rs` is the clearest
+case — 45 survivors in `P2Quantile` and `SlotMetrics`, both of which are loops
+whose mutations spin. They are the obvious next batch of work, and the same rule
+applies: add an oracle, not a golden number.
 
 ## 1. What is covered today
 
