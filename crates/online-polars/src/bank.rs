@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::spec::Spec;
-use crate::stream::{RowOut, Stream, StreamState, combo_labels};
+use crate::stream::{ChunkOut, Stream, StreamState, combo_labels};
 
 /// One stream's group key. A null group value is its own key, distinct from any
 /// string a user might have in the column — notably the literal `"<null>"`,
@@ -192,10 +192,9 @@ fn extract(df: &DataFrame, spec: &Spec) -> PolarsResult<SpecColumns> {
     })
 }
 
-/// One stream's per-row results for a chunk: `(row index, output)` pairs, where
-/// `None` is a skipped row. Fallible because a strict clock policy can refuse a
-/// row (`on_clock_reset = "error"`).
-type StreamRows = PolarsResult<Vec<(usize, Option<RowOut>)>>;
+/// One stream's flat output buffers for a chunk. Fallible because a strict
+/// clock policy can refuse a row (`on_clock_reset = "error"`).
+type StreamRows = PolarsResult<ChunkOut>;
 
 /// Row-index partition by group key, in row order.
 fn group_indices(
@@ -337,7 +336,7 @@ impl Bank {
         // Simpler: process per spec, groups in parallel within the spec.
         let specs = &self.specs;
         let cfgs = &self.clock_cfgs;
-        let mut per_spec_rows: Vec<Vec<(usize, Option<RowOut>)>> = Vec::with_capacity(specs.len());
+        let mut per_spec_rows: Vec<Vec<ChunkOut>> = Vec::with_capacity(specs.len());
         for (si, hm) in self.states.iter_mut().enumerate() {
             let spec = &specs[si];
             let cfg = &cfgs[si];
@@ -353,40 +352,35 @@ impl Bank {
             let rows: Vec<StreamRows> = work
                 .into_par_iter()
                 .map(|(_key, idx, stream)| {
-                    let last = *idx.last().unwrap_or(&usize::MAX);
-                    idx.iter()
-                        .map(|&i| {
-                            let x: Vec<Option<f64>> = sc.features.iter().map(|f| f[i]).collect();
-                            let y: Vec<Option<f64>> = sc.targets.iter().map(|t| t[i]).collect();
-                            let out = stream
-                                .process_row(
-                                    spec,
-                                    cfg,
-                                    &x,
-                                    &y,
-                                    sc.clock.as_ref().map(|c| c[i].unwrap()),
-                                    sc.session.as_ref().map(|s| s[i]),
-                                    sc.weight.as_ref().map(|w| w[i].unwrap_or(f64::NAN)),
-                                    i == last,
-                                )
-                                .map_err(|raw| {
-                                    polars_err!(ComputeError:
-                                        "spec {:?}: clock column {:?} goes backwards by {} at \
-                                         row {} (on_clock_reset = \"error\"). Sort each group by \
-                                         the clock, or choose \"max\"/\"zero\"/\"reset_state\" \
-                                         to define what a backwards clock means.",
-                                        spec.name,
-                                        spec.clock.as_deref().unwrap_or("<row count>"),
-                                        -raw, i
-                                    )
-                                })?;
-                            Ok((i, out))
-                        })
-                        .collect()
+                    let mut out =
+                        ChunkOut::new(spec, stream.n_models(), stream.n_slots(), idx.len());
+                    stream
+                        .process_chunk(
+                            spec,
+                            cfg,
+                            &sc.features,
+                            &sc.targets,
+                            sc.clock.as_deref(),
+                            sc.session.as_deref(),
+                            sc.weight.as_deref(),
+                            idx,
+                            &mut out,
+                        )
+                        .map_err(|(raw, i)| {
+                            polars_err!(ComputeError:
+                                "spec {:?}: clock column {:?} goes backwards by {} at \
+                                 row {} (on_clock_reset = \"error\"). Sort each group by \
+                                 the clock, or choose \"max\"/\"zero\"/\"reset_state\" \
+                                 to define what a backwards clock means.",
+                                spec.name,
+                                spec.clock.as_deref().unwrap_or("<row count>"),
+                                -raw, i
+                            )
+                        })?;
+                    Ok(out)
                 })
                 .collect();
-            let rows = rows.into_iter().collect::<PolarsResult<Vec<_>>>()?;
-            per_spec_rows.push(rows.into_iter().flatten().collect());
+            per_spec_rows.push(rows.into_iter().collect::<PolarsResult<Vec<_>>>()?);
         }
         let t_process = t2.elapsed();
         let t3 = std::time::Instant::now();
@@ -478,11 +472,7 @@ impl Bank {
 }
 
 /// `ew_cov` output: one f64 column per statistic slot, plus `n_eff`.
-fn assemble_ew_cov(
-    spec: &Spec,
-    n: usize,
-    rows: &[(usize, Option<RowOut>)],
-) -> PolarsResult<Column> {
+fn assemble_ew_cov(spec: &Spec, n: usize, chunks: &[ChunkOut]) -> PolarsResult<Column> {
     let names = output_fields(spec);
     let per_model: usize = names.len() / spec.decays().expect("validated").len();
     let n_slots = per_model - 1; // the trailing n_eff
@@ -490,14 +480,19 @@ fn assemble_ew_cov(
 
     let mut cols = vec![vec![None::<f64>; n]; n_models * n_slots];
     let mut n_eff = vec![vec![None::<f64>; n]; n_models];
-    for (i, out) in rows {
-        let Some(out) = out else { continue };
-        for mi in 0..n_models {
-            for slot in 0..n_slots {
-                let v = out.pred[mi][slot];
-                cols[mi * n_slots + slot][*i] = if v.is_nan() { None } else { Some(v) };
+    for ch in chunks {
+        let nr = ch.rows.len();
+        for (ri, &i) in ch.rows.iter().enumerate() {
+            if !ch.processed[ri] {
+                continue;
             }
-            n_eff[mi][*i] = Some(out.n_eff[mi]);
+            for mi in 0..n_models {
+                for slot in 0..n_slots {
+                    let v = ch.pred[ChunkOut::at(ch.n_slots, nr, mi, slot, ri)];
+                    cols[mi * n_slots + slot][i] = if v.is_nan() { None } else { Some(v) };
+                }
+                n_eff[mi][i] = Some(ch.n_eff[mi * nr + ri]);
+            }
         }
     }
     let mut fields: Vec<Series> = Vec::with_capacity(names.len());
@@ -641,9 +636,9 @@ fn slot_labels(spec: &Spec) -> Vec<String> {
     out
 }
 
-fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsResult<Column> {
+fn assemble(spec: &Spec, n: usize, chunks: &[ChunkOut]) -> PolarsResult<Column> {
     if matches!(spec.model, crate::ModelKind::EwCov { .. }) {
-        return assemble_ew_cov(spec, n, rows);
+        return assemble_ew_cov(spec, n, chunks);
     }
     let decays = spec.decays().expect("validated");
     let n_models = decays.len();
@@ -685,49 +680,51 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
     let is_lasso = matches!(spec.model, crate::ModelKind::Lasso { .. });
     let mut lam_sel = vec![vec![None::<f64>; n]; if is_lasso { n_models * m } else { 0 }];
 
-    for (i, out) in rows {
-        let Some(out) = out else { continue };
-        for mi in 0..n_models {
-            for slot in 0..m * nc {
-                let v = out.pred[mi][slot];
-                pred[mi * m * nc + slot][*i] = if v.is_nan() { None } else { Some(v) };
-                let r = out.resid[mi][slot];
-                resid[mi * m * nc + slot][*i] = if r.is_nan() { None } else { Some(r) };
-                if n_drift > 0 {
-                    drift[mi * m * nc + slot][*i] = Some(out.drift[mi][slot]);
-                }
-                if n_met > 0 {
-                    let (ic, r2, hr) = out.metrics[mi][slot];
-                    let idx = mi * m * nc + slot;
-                    for (k, v) in [ic, r2, hr].into_iter().enumerate() {
-                        met[k][idx][*i] = if v.is_nan() { None } else { Some(v) };
+    // Scatter the flat per-chunk buffers into per-column vectors. NaN is null
+    // for every numeric output; `processed` is what distinguishes a skipped row
+    // (all null, including the bool `drift`) from one that produced NaN.
+    let some_if_finite = |v: f64| if v.is_nan() { None } else { Some(v) };
+    for ch in chunks {
+        let nr = ch.rows.len();
+        let per = ch.n_models * ch.n_slots * nr;
+        for (ri, &i) in ch.rows.iter().enumerate() {
+            if !ch.processed[ri] {
+                continue;
+            }
+            for mi in 0..n_models {
+                for slot in 0..m * nc {
+                    let at = ChunkOut::at(ch.n_slots, nr, mi, slot, ri);
+                    let dst = mi * m * nc + slot;
+                    pred[dst][i] = some_if_finite(ch.pred[at]);
+                    resid[dst][i] = some_if_finite(ch.resid[at]);
+                    if n_drift > 0 {
+                        drift[dst][i] = Some(ch.drift[at]);
+                    }
+                    if n_met > 0 {
+                        for (k, met_k) in met.iter_mut().enumerate() {
+                            met_k[dst][i] = some_if_finite(ch.metrics[k * per + at]);
+                        }
+                    }
+                    for li in 0..n_levels {
+                        rq[(li * n_models + mi) * m * nc + slot][i] =
+                            some_if_finite(ch.resid_q[li * per + at]);
+                    }
+                    if n_ac > 0 {
+                        ac[dst][i] = some_if_finite(ch.autocorr[at]);
+                    }
+                    if n_extra > 0 {
+                        sigma[dst][i] = some_if_finite(ch.sigma[at]);
+                        resid_z[dst][i] = some_if_finite(ch.resid_z[at]);
                     }
                 }
-                for li in 0..n_levels {
-                    let v = out.resid_q[mi][slot][li];
-                    let idx = (li * n_models + mi) * m * nc + slot;
-                    rq[idx][*i] = if v.is_nan() { None } else { Some(v) };
+                n_eff[mi][i] = Some(ch.n_eff[mi * nr + ri]);
+                if let Some(c) = &ch.coef[mi][ri] {
+                    coef[mi][i] = Some(c.clone());
                 }
-                if n_ac > 0 {
-                    let v = out.autocorr[mi][slot];
-                    ac[mi * m * nc + slot][*i] = if v.is_nan() { None } else { Some(v) };
-                }
-                if n_extra > 0 {
-                    let s = out.sigma[mi][slot];
-                    sigma[mi * m * nc + slot][*i] = if s.is_nan() { None } else { Some(s) };
-                    let z = out.resid_z[mi][slot];
-                    resid_z[mi * m * nc + slot][*i] = if z.is_nan() { None } else { Some(z) };
-                }
-            }
-            n_eff[mi][*i] = Some(out.n_eff[mi]);
-            if let Some(c) = &out.coef {
-                let flat: Vec<f64> = c[mi].iter().flatten().copied().collect();
-                coef[mi][*i] = Some(flat);
-            }
-            if is_lasso {
-                if let Some(online_core::Extra::Lasso { lam_selected }) = &out.extra[mi] {
-                    for (t_i, l) in lam_selected.iter().enumerate() {
-                        lam_sel[mi * m + t_i][*i] = Some(*l);
+                if is_lasso {
+                    for t_i in 0..m {
+                        lam_sel[mi * m + t_i][i] =
+                            some_if_finite(ch.lam_selected[(mi * m + t_i) * nr + ri]);
                     }
                 }
             }
@@ -747,59 +744,77 @@ fn assemble(spec: &Spec, n: usize, rows: &[(usize, Option<RowOut>)]) -> PolarsRe
         // exp(-eta * EW squared error), normalized. `sigma` is that error's
         // square root, already tracked for E12, so this costs one pass.
         let eta = spec.average_eta.unwrap_or(1.0);
-        for (i, out) in rows {
-            let Some(out) = out else { continue };
-            for (t_i, avg_t) in avg_pred.iter_mut().enumerate() {
-                // Subtract the best loss before exponentiating, so the weights
-                // are identical but nothing overflows.
-                let mut best = f64::INFINITY;
-                for mi in 0..n_models {
-                    for c_i in 0..nc {
-                        let s = out.sigma[mi][t_i * nc + c_i];
-                        if s.is_finite() && out.pred[mi][t_i * nc + c_i].is_finite() {
-                            best = best.min(s * s);
-                        }
-                    }
-                }
-                if !best.is_finite() {
+        for ch in chunks {
+            let nr = ch.rows.len();
+            for (ri, &i) in ch.rows.iter().enumerate() {
+                if !ch.processed[ri] {
                     continue;
                 }
-                let (mut num, mut den) = (0.0, 0.0);
-                for mi in 0..n_models {
-                    for c_i in 0..nc {
-                        let slot = t_i * nc + c_i;
-                        let (s, p) = (out.sigma[mi][slot], out.pred[mi][slot]);
-                        if s.is_finite() && p.is_finite() {
-                            let wgt = (-eta * (s * s - best)).exp();
-                            num += wgt * p;
-                            den += wgt;
+                let sig =
+                    |mi: usize, slot: usize| ch.sigma[ChunkOut::at(ch.n_slots, nr, mi, slot, ri)];
+                let prd =
+                    |mi: usize, slot: usize| ch.pred[ChunkOut::at(ch.n_slots, nr, mi, slot, ri)];
+                for (t_i, avg_t) in avg_pred.iter_mut().enumerate() {
+                    // Subtract the best loss before exponentiating, so the
+                    // weights are identical but nothing overflows.
+                    let mut best = f64::INFINITY;
+                    for mi in 0..n_models {
+                        for c_i in 0..nc {
+                            let s = sig(mi, t_i * nc + c_i);
+                            if s.is_finite() && prd(mi, t_i * nc + c_i).is_finite() {
+                                best = best.min(s * s);
+                            }
                         }
                     }
-                }
-                if den > 0.0 {
-                    avg_t[*i] = Some(num / den);
+                    if !best.is_finite() {
+                        continue;
+                    }
+                    let (mut num, mut den) = (0.0, 0.0);
+                    for mi in 0..n_models {
+                        for c_i in 0..nc {
+                            let slot = t_i * nc + c_i;
+                            let (s, p) = (sig(mi, slot), prd(mi, slot));
+                            if s.is_finite() && p.is_finite() {
+                                let wgt = (-eta * (s * s - best)).exp();
+                                num += wgt * p;
+                                den += wgt;
+                            }
+                        }
+                    }
+                    if den > 0.0 {
+                        avg_t[i] = Some(num / den);
+                    }
                 }
             }
         }
     }
     if spec.emit_selected {
-        for (i, out) in rows {
-            let Some(out) = out else { continue };
-            for t_i in 0..m {
-                let mut best: Option<(f64, usize, usize)> = None;
-                for mi in 0..n_models {
-                    for c_i in 0..nc {
-                        let s = out.sigma[mi][t_i * nc + c_i];
-                        if s.is_finite() && best.is_none_or(|(b, _, _)| s < b) {
-                            best = Some((s, mi, c_i));
+        for ch in chunks {
+            let nr = ch.rows.len();
+            for (ri, &i) in ch.rows.iter().enumerate() {
+                if !ch.processed[ri] {
+                    continue;
+                }
+                let sig =
+                    |mi: usize, slot: usize| ch.sigma[ChunkOut::at(ch.n_slots, nr, mi, slot, ri)];
+                let prd =
+                    |mi: usize, slot: usize| ch.pred[ChunkOut::at(ch.n_slots, nr, mi, slot, ri)];
+                for t_i in 0..m {
+                    let mut best: Option<(f64, usize, usize)> = None;
+                    for mi in 0..n_models {
+                        for c_i in 0..nc {
+                            let s = sig(mi, t_i * nc + c_i);
+                            if s.is_finite() && best.is_none_or(|(b, _, _)| s < b) {
+                                best = Some((s, mi, c_i));
+                            }
                         }
                     }
-                }
-                if let Some((_, mi, c_i)) = best {
-                    let p = out.pred[mi][t_i * nc + c_i];
-                    if p.is_finite() {
-                        sel_pred[t_i][*i] = Some(p);
-                        sel_name[t_i][*i] = Some(labels[mi * nc + c_i].as_str());
+                    if let Some((_, mi, c_i)) = best {
+                        let p = prd(mi, t_i * nc + c_i);
+                        if p.is_finite() {
+                            sel_pred[t_i][i] = Some(p);
+                            sel_name[t_i][i] = Some(labels[mi * nc + c_i].as_str());
+                        }
                     }
                 }
             }

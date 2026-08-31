@@ -99,13 +99,26 @@ guarantees (out-of-sample, chunk invariance) bit-for-bit — the golden tests
 (`golden.rs`, `test_golden_pipeline.py`) are the regression net, and any task
 that moves a golden number is wrong by definition.
 
-- [ ] **P1 — Columnar hot path.** Replace per-row `RowOut` with
+- [x] **P1 — Columnar hot path.** *Done.* `RowOut` (a struct of ~11 `Vec`s per
+  row) is replaced by `ChunkOut`: flat slot-major `Vec<f64>` buffers, one
+  allocation per output column per (stream, chunk), with `processed` marking
+  skipped rows and NaN meaning null. `Stream::process_chunk` owns the row loop
+  and reuses scratch (`xs`, `ys`, `r_buf`, `sig_buf`, `zs_buf`, and `pred_buf`
+  catching the `Vec` each `Step` hands back), so the loop allocates nothing.
+  Measured: **k=5 single stream 2.09M → 5.12M rows/s, k=20 1.31M → 2.40M,
+  k=20/64 groups 2.60M → 3.32M**; the `process` section fell 87.6 → 30.7 ms
+  (k=5) and 133.6 → 67.1 ms (k=20). Thread scaling went **3.2× → 4.8×** at 10
+  threads (628k → 2.99M rows/s). Short of the ≥3.5M and ≥7× targets, and the
+  reason is now visible in the sections: at 64 groups the serial `extract`
+  (11.6 ms) and `group` (15.2 ms) are 44% of wall, so P3 is what unlocks the
+  rest. Every golden number unchanged.
+  <details><summary>original plan</summary> Replace per-row `RowOut` with
   `Stream::process_chunk`: the stream walks its row indices writing directly
   into preallocated flat output buffers (one `Vec<f64>` per output slot per
   chunk, NaN as null, bitmaps built at assembly). Reuse one scratch `xs`/`ys`
   buffer per stream. This deletes the per-row allocations of (2) and most of
   `assemble`'s scatter. Target: k=20 single stream ≥ 3.5M rows/s (from 1.31M);
-  grouped scaling ≥ 7× at 10 threads (from 3.2×).
+  grouped scaling ≥ 7× at 10 threads (from 3.2×).</details>
 - [ ] **P2 — One flat task pool.** Fan out over (spec × group × model-instance)
   in a single `par_iter`, not per-spec loops: a bank of N single-group specs
   currently uses one core; a grid on one stream uses one core. Instances need

@@ -558,12 +558,36 @@ pub struct Stream {
     autocorr: Vec<Vec<EwAutoCorr>>,
     /// Evaluation metrics per instance and slot (ENHANCEMENTS E22).
     metrics: Vec<Vec<SlotMetrics>>,
+    /// Row scratch, reused for the life of the stream so the chunk loop
+    /// allocates nothing (docs/PERFORMANCE.md P1). `pred_buf` catches the
+    /// `Vec` a model's `Step` hands back, so the next `step` can refill it.
+    xs: Vec<f64>,
+    ys: Vec<Option<f64>>,
+    r_buf: Vec<f64>,
+    sig_buf: Vec<f64>,
+    zs_buf: Vec<f64>,
+    pred_buf: Vec<f64>,
 }
 
 impl Stream {
     /// Summed over this stream's model instances (one per halflife).
     pub fn solve_failures(&self) -> u64 {
         self.models.iter().map(|(_, m)| m.solve_failures()).sum()
+    }
+
+    /// Model instances in this stream (one per halflife).
+    pub fn n_models(&self) -> usize {
+        self.models.len()
+    }
+
+    /// Output slots per instance. Instances of one spec differ only in decay,
+    /// so they all report the same count; the max is that count.
+    pub fn n_slots(&self) -> usize {
+        self.models
+            .iter()
+            .map(|(_, m)| m.n_outputs())
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -573,29 +597,91 @@ fn step_n_eff_below(n_eff: f64, min_periods: &[f64], target: usize) -> bool {
     min_periods.get(target).is_some_and(|t| n_eff < *t)
 }
 
-/// Output of one row for one stream: `None` = skipped/emit-all-null.
-pub struct RowOut {
-    /// Per model instance, per output slot (NaN = null).
-    pub pred: Vec<Vec<f64>>,
-    /// `y_j - pred_slot`; NaN when the target is null or the pred not ready.
-    pub resid: Vec<Vec<f64>>,
-    /// EW residual standard deviation per slot, from the state *before* this
-    /// row (so it is out-of-sample like everything else). NaN until there is
-    /// at least one residual.
-    pub sigma: Vec<Vec<f64>>,
-    /// `resid / sigma`, NaN wherever either is.
-    pub resid_z: Vec<Vec<f64>>,
-    /// Page-Hinkley drift flag per slot (empty when `emit_drift` is off).
-    pub drift: Vec<Vec<bool>>,
-    /// `|resid|` quantiles per instance and slot, one entry per level.
-    pub resid_q: Vec<Vec<Vec<f64>>>,
-    /// EW residual autocorrelation per instance and slot.
-    pub autocorr: Vec<Vec<f64>>,
-    /// `(ic, r2, hit_rate)` per slot, NaN where not yet available.
-    pub metrics: Vec<Vec<(f64, f64, f64)>>,
+/// Flat output buffers for one (stream, chunk) task (docs/PERFORMANCE.md P1).
+///
+/// One allocation per output *column* for the whole chunk, rather than the
+/// ~11 `Vec`s per row the previous `RowOut` needed. Every numeric buffer is
+/// `n_slots * n_rows`, slot-major, so a slot's values are contiguous and the
+/// scatter into the final column is a straight walk. NaN is null.
+///
+/// `processed` distinguishes "this row was skipped" from "this row produced a
+/// NaN", which matters only for `drift` (a bool, with no NaN to spare) and for
+/// `n_eff`, which is otherwise always finite.
+pub struct ChunkOut {
+    /// Absolute row indices this task wrote, in order.
+    pub rows: Vec<usize>,
+    /// Per row: false = skipped, every output is null.
+    pub processed: Vec<bool>,
+    /// `n_models * n_slots * n_rows` unless noted; NaN = null.
+    pub pred: Vec<f64>,
+    pub resid: Vec<f64>,
+    pub sigma: Vec<f64>,
+    pub resid_z: Vec<f64>,
+    pub autocorr: Vec<f64>,
+    /// `(ic, r2, hit_rate)` interleaved: `3 * n_models * n_slots * n_rows`.
+    pub metrics: Vec<f64>,
+    /// `n_levels * n_models * n_slots * n_rows`.
+    pub resid_q: Vec<f64>,
+    pub drift: Vec<bool>,
+    /// `n_models * n_rows`.
     pub n_eff: Vec<f64>,
-    pub coef: Option<Vec<Vec<Vec<f64>>>>,
-    pub extra: Vec<Option<online_core::Extra>>,
+    /// `n_models * n_targets * n_rows`, lasso only.
+    pub lam_selected: Vec<f64>,
+    /// Emitted on a cadence rather than every row, so it stays boxed:
+    /// `[model][row]`.
+    pub coef: Vec<Vec<Option<Vec<f64>>>>,
+    /// Slot counts this layout was built for.
+    pub n_models: usize,
+    pub n_slots: usize,
+    pub n_levels: usize,
+}
+
+impl ChunkOut {
+    /// Buffers for `n_rows` rows of one stream, all null until written.
+    pub fn new(spec: &Spec, n_models: usize, n_slots: usize, n_rows: usize) -> Self {
+        let per = n_models * n_slots * n_rows;
+        let on = |flag: bool| if flag { per } else { 0 };
+        let n_levels = spec.resid_quantiles.as_ref().map_or(0, Vec::len);
+        let is_lasso = matches!(spec.model, crate::ModelKind::Lasso { .. });
+        // `sigma` is also the loss that `emit_selected` and `emit_averaged`
+        // rank slots by (E13/E14 reuse E12's tracked error), so it has to be
+        // materialized for them even when it is not itself an output field.
+        let extras =
+            spec.emit_sigma || spec.emit_resid_z || spec.emit_selected || spec.emit_averaged;
+        Self {
+            rows: Vec::with_capacity(n_rows),
+            processed: vec![false; n_rows],
+            pred: vec![f64::NAN; per],
+            resid: vec![f64::NAN; per],
+            sigma: vec![f64::NAN; on(extras)],
+            resid_z: vec![f64::NAN; on(extras)],
+            autocorr: vec![f64::NAN; on(spec.emit_autocorr)],
+            metrics: vec![f64::NAN; 3 * on(spec.emit_metrics)],
+            resid_q: vec![f64::NAN; n_levels * per],
+            drift: vec![false; on(spec.emit_drift)],
+            n_eff: vec![f64::NAN; n_models * n_rows],
+            lam_selected: vec![
+                f64::NAN;
+                if is_lasso {
+                    n_models * spec.m() * n_rows
+                } else {
+                    0
+                }
+            ],
+            coef: vec![vec![None; n_rows]; n_models],
+            n_models,
+            n_slots,
+            n_levels,
+        }
+    }
+
+    /// Offset of `(model, slot)` at row `ri`, in any `n_models * n_slots *
+    /// n_rows` buffer. The single place the layout is spelled out; the writer
+    /// in `process_one` and the reader in `assemble` both go through it.
+    #[inline]
+    pub fn at(n_slots: usize, n_rows: usize, mi: usize, slot: usize, ri: usize) -> usize {
+        (mi * n_slots + slot) * n_rows + ri
+    }
 }
 
 impl Stream {
@@ -642,6 +728,12 @@ impl Stream {
             models,
             decays,
             rows_seen: 0,
+            xs: Vec::new(),
+            ys: Vec::new(),
+            r_buf: Vec::new(),
+            sig_buf: Vec::new(),
+            zs_buf: Vec::new(),
+            pred_buf: Vec::new(),
         })
     }
 
@@ -724,22 +816,73 @@ impl Stream {
         }
     }
 
-    /// Process one row. `emit_coef` forces a coefficient snapshot (last row of
-    /// chunk); `coef_every` counts accepted rows.
+    /// Process this stream's rows of one chunk, writing into flat per-slot
+    /// buffers (docs/PERFORMANCE.md P1).
+    ///
+    /// `idx` is this stream's absolute row indices in row order. The loop
+    /// allocates nothing: features, targets and the per-slot temporaries all
+    /// live in scratch buffers owned by the stream and reused across rows.
+    /// Coefficients are snapshotted every `coef_every` accepted rows and on
+    /// the chunk's last row.
+    ///
+    /// On a backwards clock under `on_clock_reset = "error"`, returns the raw
+    /// delta and the absolute row it happened at, for the caller to name.
     #[allow(clippy::too_many_arguments)]
-    pub fn process_row(
+    pub fn process_chunk(
         &mut self,
         spec: &Spec,
         cfg: &online_core::ClockCfg,
-        x: &[Option<f64>],
-        y: &[Option<f64>],
+        features: &[Vec<Option<f64>>],
+        targets: &[Vec<Option<f64>>],
+        clock: Option<&[Option<f64>]>,
+        session: Option<&[u64]>,
+        weight: Option<&[Option<f64>]>,
+        idx: &[usize],
+        out: &mut ChunkOut,
+    ) -> Result<(), (f64, usize)> {
+        let n_rows = idx.len();
+        out.rows.extend_from_slice(idx);
+        let last = idx.last().copied();
+        for (ri, &i) in idx.iter().enumerate() {
+            let w_raw = weight.map(|w| w[i].unwrap_or(f64::NAN));
+            self.process_one(
+                spec,
+                cfg,
+                features,
+                targets,
+                clock.map(|c| c[i].expect("clock nulls rejected at extraction")),
+                session.map(|s| s[i]),
+                w_raw,
+                i,
+                Some(i) == last,
+                ri,
+                n_rows,
+                out,
+            )
+            .map_err(|raw| (raw, i))?;
+        }
+        Ok(())
+    }
+
+    /// One row of [`Self::process_chunk`], writing into `out` at `ri`.
+    #[allow(clippy::too_many_arguments)]
+    fn process_one(
+        &mut self,
+        spec: &Spec,
+        cfg: &online_core::ClockCfg,
+        features: &[Vec<Option<f64>>],
+        targets: &[Vec<Option<f64>>],
         clock: Option<f64>,
         session: Option<u64>,
         // weight: None = no weight column; Some(NaN) = null value (skips the row)
         weight: Option<f64>,
+        i: usize,
         emit_coef: bool,
-    ) -> Result<Option<RowOut>, f64> {
-        let accept = x.iter().all(|v| v.is_some_and(f64::is_finite))
+        ri: usize,
+        n_rows: usize,
+        out: &mut ChunkOut,
+    ) -> Result<(), f64> {
+        let accept = features.iter().all(|f| f[i].is_some_and(f64::is_finite))
             && weight.map(|w| w.is_finite()).unwrap_or(true);
         let adv = self.clock.advance(cfg, clock, session, accept);
         // `on_clock_reset = "error"`: hand the offending delta back so the
@@ -757,28 +900,24 @@ impl Stream {
             }
         }
         if !accept {
-            return Ok(None);
+            return Ok(());
         }
+        out.processed[ri] = true;
         self.rows_seen += 1;
-        let xs: Vec<f64> = x.iter().map(|v| v.unwrap()).collect();
-        let ys: Vec<Option<f64>> = y.iter().map(|v| v.filter(|f| f.is_finite())).collect();
+        // Scratch, reused across rows: the hot loop must not allocate.
+        self.xs.clear();
+        self.xs.extend(features.iter().map(|f| f[i].unwrap()));
+        self.ys.clear();
+        self.ys
+            .extend(targets.iter().map(|t| t[i].filter(|f| f.is_finite())));
+        let xs = std::mem::take(&mut self.xs);
+        let ys = std::mem::take(&mut self.ys);
         let w = weight.unwrap_or(1.0);
 
         let want_coef =
             emit_coef || (spec.coef_every > 0 && self.rows_seen % u64::from(spec.coef_every) == 0);
-        let mut pred = Vec::with_capacity(self.models.len());
-        let mut resid = Vec::with_capacity(self.models.len());
-        let mut n_eff = Vec::with_capacity(self.models.len());
-        let mut extra = Vec::with_capacity(self.models.len());
-        let mut coef = if want_coef { Some(Vec::new()) } else { None };
         let m_targets = ys.len();
-        let mut sigma = Vec::with_capacity(self.models.len());
-        let mut resid_z = Vec::with_capacity(self.models.len());
-        let mut drift = Vec::with_capacity(self.drift.len());
         let mut drift_seen = false;
-        let mut resid_q = Vec::with_capacity(self.resid_q.len());
-        let mut autocorr = Vec::with_capacity(self.autocorr.len());
-        let mut metrics = Vec::with_capacity(self.metrics.len());
         for (mi, (_, m)) in self.models.iter_mut().enumerate() {
             let mut step = m.step(&xs, &ys, adv.d_clock, w);
             let nc = step.pred.len() / m_targets;
@@ -794,39 +933,62 @@ impl Stream {
                 }
             }
 
-            let r: Vec<f64> = step
-                .pred
-                .iter()
-                .enumerate()
-                .map(|(slot, p)| match ys[slot / nc] {
-                    Some(yj) if p.is_finite() => yj - p,
-                    _ => f64::NAN,
-                })
-                .collect();
+            // Scratch, sized once for the widest model and reused.
+            let n_slots = step.pred.len();
+            let r = &mut self.r_buf;
+            let sig = &mut self.sig_buf;
+            let zs = &mut self.zs_buf;
+            r.clear();
+            r.extend(
+                step.pred
+                    .iter()
+                    .enumerate()
+                    .map(|(slot, p)| match ys[slot / nc] {
+                        Some(yj) if p.is_finite() => yj - p,
+                        _ => f64::NAN,
+                    }),
+            );
+            sig.clear();
+            sig.resize(n_slots, f64::NAN);
+            zs.clear();
+            zs.resize(n_slots, f64::NAN);
 
             // sigma is read from the state BEFORE this row's residual is folded
             // in, so `resid_z` is out-of-sample like the prediction it scales.
             let lam = self.decays[mi].factor(adv.d_clock);
             let vars = &mut self.resid_var[mi];
             let wsum = &mut self.resid_w[mi];
-            let mut sig = vec![f64::NAN; r.len()];
-            let mut zs = vec![f64::NAN; r.len()];
-            for (slot, &ri) in r.iter().enumerate() {
+            for (slot, &rv) in r.iter().enumerate() {
                 if wsum[slot] > 0.0 {
                     let sd = vars[slot].max(0.0).sqrt();
                     sig[slot] = sd;
-                    if ri.is_finite() && sd > 0.0 {
-                        zs[slot] = ri / sd;
+                    if rv.is_finite() && sd > 0.0 {
+                        zs[slot] = rv / sd;
                     }
                 }
-                if ri.is_finite() {
+                if rv.is_finite() {
                     let w_new = lam * wsum[slot] + w;
                     if w_new > 0.0 {
-                        vars[slot] = (lam * wsum[slot] * vars[slot] + w * ri * ri) / w_new;
+                        vars[slot] = (lam * wsum[slot] * vars[slot] + w * rv * rv) / w_new;
                         wsum[slot] = w_new;
                     }
                 } else {
                     wsum[slot] *= lam;
+                }
+            }
+
+            // ---- write this model's row into the flat buffers ----
+            let base = (mi * out.n_slots) * n_rows + ri;
+            for (slot, (&p, &rv)) in step.pred.iter().zip(r.iter()).enumerate() {
+                let at = base + slot * n_rows;
+                out.pred[at] = p;
+                out.resid[at] = rv;
+            }
+            if !out.sigma.is_empty() {
+                for (slot, (&s, &z)) in sig.iter().zip(zs.iter()).enumerate().take(n_slots) {
+                    let at = base + slot * n_rows;
+                    out.sigma[at] = s;
+                    out.resid_z[at] = z;
                 }
             }
 
@@ -836,72 +998,68 @@ impl Stream {
             // zero error.
             if !self.drift.is_empty() {
                 let dets = &mut self.drift[mi];
-                let mut flags = vec![false; r.len()];
-                for (slot, &ri) in r.iter().enumerate() {
+                for (slot, &rv) in r.iter().enumerate() {
                     let scale = sig[slot];
-                    if ri.is_finite() && scale.is_finite() && scale > 0.0 {
-                        flags[slot] = dets[slot].update(ri.abs() / scale);
-                        drift_seen |= flags[slot];
+                    if rv.is_finite() && scale.is_finite() && scale > 0.0 {
+                        let flag = dets[slot].update(rv.abs() / scale);
+                        out.drift[base + slot * n_rows] = flag;
+                        drift_seen |= flag;
                     }
                 }
-                drift.push(flags);
             }
 
             // Residual diagnostics (ENHANCEMENTS E23), all read before the
             // row's own residual is folded in, like sigma.
             if !self.resid_q.is_empty() {
                 let ests = &mut self.resid_q[mi];
-                let mut row = Vec::with_capacity(ests.len());
+                let per = out.n_models * out.n_slots * n_rows;
                 for (slot, per_level) in ests.iter_mut().enumerate() {
-                    let mut vals = Vec::with_capacity(per_level.len());
-                    for est in per_level.iter_mut() {
-                        vals.push(est.get().unwrap_or(f64::NAN));
+                    for (li, est) in per_level.iter_mut().enumerate() {
+                        out.resid_q[li * per + base + slot * n_rows] =
+                            est.get().unwrap_or(f64::NAN);
                         if r[slot].is_finite() {
                             est.update(r[slot].abs());
                         }
                     }
-                    row.push(vals);
                 }
-                resid_q.push(row);
             }
             if !self.autocorr.is_empty() {
                 let ests = &mut self.autocorr[mi];
-                let mut row = vec![f64::NAN; r.len()];
                 for (slot, est) in ests.iter_mut().enumerate() {
-                    row[slot] = est.get().unwrap_or(f64::NAN);
+                    out.autocorr[base + slot * n_rows] = est.get().unwrap_or(f64::NAN);
                     if r[slot].is_finite() {
                         est.update(r[slot], lam);
                     }
                 }
-                autocorr.push(row);
             }
 
             // Metrics are read before this row is scored, like every other
             // diagnostic here, so they never include the row they describe.
             if !self.metrics.is_empty() {
                 let ms = &mut self.metrics[mi];
-                let mut row = Vec::with_capacity(ms.len());
+                let per = out.n_models * out.n_slots * n_rows;
                 for (slot, met) in ms.iter_mut().enumerate() {
-                    row.push((
-                        met.ic().unwrap_or(f64::NAN),
-                        met.r2().unwrap_or(f64::NAN),
-                        met.hit_rate().unwrap_or(f64::NAN),
-                    ));
+                    let at = base + slot * n_rows;
+                    out.metrics[at] = met.ic().unwrap_or(f64::NAN);
+                    out.metrics[per + at] = met.r2().unwrap_or(f64::NAN);
+                    out.metrics[2 * per + at] = met.hit_rate().unwrap_or(f64::NAN);
                     let yj = ys[slot / nc].unwrap_or(f64::NAN);
                     met.update(step.pred[slot], yj, lam, w);
                 }
-                metrics.push(row);
             }
 
-            pred.push(step.pred);
-            resid.push(r);
-            sigma.push(sig);
-            resid_z.push(zs);
-            n_eff.push(step.n_eff);
-            extra.push(step.extra);
-            if let Some(c) = &mut coef {
-                c.push(m.coefficients().unwrap_or_default());
+            out.n_eff[mi * n_rows + ri] = step.n_eff;
+            if let Some(online_core::Extra::Lasso { lam_selected }) = &step.extra {
+                for (t_i, l) in lam_selected.iter().enumerate() {
+                    out.lam_selected[(mi * m_targets + t_i) * n_rows + ri] = *l;
+                }
             }
+            if want_coef {
+                let c = m.coefficients().unwrap_or_default();
+                out.coef[mi][ri] = Some(c.into_iter().flatten().collect());
+            }
+            // Hand the scratch back for the next row/model.
+            self.pred_buf = step.pred;
         }
         // `drift_action = "reset"`: a detected break restarts this stream's
         // models, the same path a clock reset takes. The flags for this row are
@@ -909,19 +1067,8 @@ impl Stream {
         if drift_seen && spec.drift_action.as_deref() == Some("reset") {
             self.reset_models(spec);
         }
-
-        Ok(Some(RowOut {
-            pred,
-            resid,
-            sigma,
-            resid_z,
-            drift,
-            resid_q,
-            autocorr,
-            metrics,
-            n_eff,
-            coef,
-            extra,
-        }))
+        self.xs = xs;
+        self.ys = ys;
+        Ok(())
     }
 }
