@@ -301,6 +301,75 @@ class TestConfigParsing:
             **kw,
         )
 
+    def test_an_unescaped_windows_path_is_rejected_with_a_usable_hint(self, tmp_path):
+        """The first Windows CI run ever attempted failed here.
+
+        `input = "C:\\Users\\me\\in.parquet"` is invalid TOML -- `\\U` starts a
+        unicode escape -- and TOML's own message is "too few unicode value
+        digits", which says nothing about paths. The CLI now names the three
+        ways to write it. Checked on every OS, because the mistake is about
+        the *config text*, not about the host: a Linux user writing a Windows
+        path in a config hits it too, and this is the test that would have
+        caught it before a Windows runner existed.
+        """
+        cfg = tmp_path / "unescaped.toml"
+        cfg.write_text(
+            'input = "C:\\Users\\me\\in.parquet"\n'
+            'output = "C:\\Users\\me\\out.parquet"\n'
+            "\n[[specs]]\n"
+            'name = "m"\n'
+            'targets = ["y"]\n'
+            'features = ["x0"]\n'
+            "halflife = 100.0\n"
+            "min_periods = 5.0\n"
+            "\n[specs.model]\n"
+            'type = "ew_ridge"\n'
+            "ridge = 1e-6\n"
+        )
+        res = self._cli(["--config", str(cfg), "--dry-run"])
+        assert res.returncode != 0, "invalid TOML must not be accepted"
+        err = res.stdout + res.stderr
+        assert "hint:" in err, f"no hint offered:\n{err}"
+        # All three escapes the hint recommends must be named.
+        assert "literal string" in err
+        assert "backslashes doubled" in err
+        assert "forward slashes" in err
+
+    @pytest.mark.parametrize("escape", ["literal", "doubled", "forward"])
+    def test_each_documented_windows_path_form_parses(self, tmp_path, escape):
+        """The hint is only useful if all three forms it recommends work."""
+        src = tmp_path / "in.parquet"
+        pl.DataFrame({"x0": [1.0, 2.0, 3.0], "y": [1.0, 2.0, 3.0]}).write_parquet(src)
+        out = tmp_path / "out.parquet"
+        raw_in, raw_out = str(src), str(out)
+        if escape == "literal":
+            lines = f"input = '{raw_in}'\noutput = '{raw_out}'\n"
+        elif escape == "doubled":
+            lines = (
+                f'input = "{raw_in.replace(chr(92), chr(92) * 2)}"\n'
+                f'output = "{raw_out.replace(chr(92), chr(92) * 2)}"\n'
+            )
+        else:
+            lines = (
+                f'input = "{raw_in.replace(chr(92), "/")}"\n'
+                f'output = "{raw_out.replace(chr(92), "/")}"\n'
+            )
+        cfg = tmp_path / f"{escape}.toml"
+        cfg.write_text(
+            lines + "\n[[specs]]\n"
+            'name = "m"\n'
+            'targets = ["y"]\n'
+            'features = ["x0"]\n'
+            "halflife = 100.0\n"
+            "min_periods = 1.0\n"
+            "\n[specs.model]\n"
+            'type = "ew_ridge"\n'
+            "ridge = 1e-6\n"
+        )
+        res = self._cli(["--config", str(cfg)])
+        assert res.returncode == 0, f"{escape} form rejected:\n{res.stdout}{res.stderr}"
+        assert out.exists()
+
     @pytest.mark.parametrize("newline", ["\n", "\r\n"])
     def test_config_parses_with_either_line_ending(self, tmp_path, newline):
         toml = newline.join(

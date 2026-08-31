@@ -62,8 +62,21 @@ fn run() -> Result<(), String> {
     let cli = Cli::parse();
     let text = std::fs::read_to_string(&cli.config)
         .map_err(|e| format!("reading {}: {e}", cli.config.display()))?;
-    let mut cfg: RunConfig =
-        toml::from_str(&text).map_err(|e| format!("parsing {}: {e}", cli.config.display()))?;
+    let mut cfg: RunConfig = toml::from_str(&text).map_err(|e| {
+        // A Windows path in a TOML basic string is the most common way this
+        // fails, and TOML's own message ("too few unicode value digits", from
+        // reading `\U` in `C:\Users\...` as an escape) gives no hint why.
+        let backslash_hint = if text.contains('\\') {
+            "\n\nhint: a backslash starts an escape sequence in a TOML basic string, so a \
+             Windows path needs one of:\n  \
+             input = 'C:\\data\\in.parquet'     # literal string (single quotes), no escaping\n  \
+             input = \"C:\\\\data\\\\in.parquet\"   # basic string, backslashes doubled\n  \
+             input = \"C:/data/in.parquet\"      # forward slashes work on Windows too"
+        } else {
+            ""
+        };
+        format!("parsing {}: {e}{backslash_hint}", cli.config.display())
+    })?;
 
     if let Some(p) = cli.input {
         cfg.input = p;

@@ -100,6 +100,16 @@ po.run("bank.toml", input="today.parquet")   # keywords override the config
 
 or from the CLI:
 
+**Paths on Windows.** A backslash starts an escape sequence in a TOML basic
+string, so `input = "C:\data\in.parquet"` is a parse error, not a path. Any of
+these works:
+
+```toml
+input = 'C:\data\in.parquet'      # literal string (single quotes), no escaping
+input = "C:\\data\\in.parquet"    # basic string, backslashes doubled
+input = "C:/data/in.parquet"      # forward slashes are fine on Windows
+```
+
 ```sh
 online --config examples/bank.toml
 online --config examples/bank.toml --resume bank.state --save-state bank.state

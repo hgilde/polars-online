@@ -47,6 +47,17 @@ fn write_input(path: &Path, n: usize) -> PolarsResult<()> {
     Ok(())
 }
 
+/// A path as a TOML **basic** string: backslashes doubled.
+///
+/// Without this the test wrote `input = "C:\Users\runner\..."` on Windows,
+/// where TOML reads `\U` as the start of a unicode escape and fails with
+/// "too few unicode value digits". That is TOML behaving correctly and the
+/// caller being wrong -- the same trap any Windows user hand-writing a config
+/// falls into, which is why `main.rs` now says so in the error.
+fn toml_path(p: &Path) -> String {
+    p.display().to_string().replace('\\', "\\\\")
+}
+
 fn config(input: &Path, output: &Path, chunk_rows: usize) -> RunConfig {
     let toml = format!(
         r#"
@@ -70,10 +81,10 @@ type = "ew_ridge"
 ridge = 1e-6
 max_rows_between_solves = 1
 "#,
-        input.display(),
-        output.display()
+        toml_path(input),
+        toml_path(output)
     );
-    toml::from_str(&toml).unwrap()
+    toml::from_str(&toml).unwrap_or_else(|e| panic!("test wrote invalid TOML: {e}\n{toml}"))
 }
 
 fn read_preds(path: &Path) -> PolarsResult<Vec<Option<f64>>> {
