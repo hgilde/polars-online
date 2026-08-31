@@ -1,9 +1,26 @@
 name: CI
 
+# Runner minutes are metered while this repo is private, and they are not
+# metered evenly: macOS bills at 10x and Windows at 2x the Linux rate, so a
+# full 3-OS run costs roughly 200 billed minutes against a 2,000/month budget.
+#
+# Push therefore runs ubuntu + windows -- Linux because it is nearly free,
+# Windows because it is the platform we cannot test locally and the one most
+# likely to break. macOS is covered by `./scripts/gate.sh` on the maintainer's
+# own machine before every commit, so on CI it runs weekly, on demand, and on
+# release tags rather than on every push. Doc-only pushes skip CI entirely.
+#
+# When the repo goes public, Actions minutes stop being metered: drop the
+# `paths-ignore`, put `macos-latest` back in the push matrix, and delete this
+# comment.
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md", "docs/**", "LICENSE", ".gitignore"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**", "LICENSE", ".gitignore"]
+  schedule:
+    - cron: "23 5 * * 1" # Mondays: the full matrix, macOS included
   workflow_dispatch:
 
 concurrency:
@@ -13,6 +30,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Incremental compilation is pure disk cost in CI: every job starts cold, so
+  # nothing is ever reused, and the artifacts are large.
+  CARGO_INCREMENTAL: 0
 
 # `cargo` is invoked through `uv run` everywhere: online-py is built with pyo3's
 # abi3-py312, which needs an interpreter >= 3.12 at build time. `uv run` puts the
@@ -24,7 +44,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # macOS only on the weekly run and on manual dispatch (see the note
+        # above `on:`); it bills at 10x and is the one platform covered
+        # locally.
+        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest", "windows-latest"]') || fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -47,13 +70,31 @@ jobs:
       - name: ruff check
         run: uv run ruff check .
 
+  # The first-ever CI run died here with `ld terminated with signal 7 [Bus
+  # error]` on ubuntu, on two test binaries linking one second apart. That is
+  # resource exhaustion during concurrent linking, not a code fault: this
+  # workspace links polars into ~10 separate test binaries, and GNU ld (the
+  # default `cc` linker on the Ubuntu image) is both memory-hungry and, when
+  # the disk fills under an mmap'd write, prone to SIGBUS rather than a clean
+  # ENOSPC.
+  #
+  # Both plausible causes are addressed, because they are cheap and
+  # independently worth doing, and `df -h` is printed either side so the next
+  # failure says which one it was:
+  #   * disk  -- the runner image ships ~25GB of Android SDK, .NET and GHC that
+  #              this build never touches;
+  #   * memory-- lld links large Rust binaries in a fraction of BFD's peak RSS,
+  #              and considerably faster.
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # macOS only on the weekly run and on manual dispatch (see the note
+        # above `on:`); it bills at 10x and is the one platform covered
+        # locally.
+        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest", "windows-latest"]') || fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -64,8 +105,25 @@ jobs:
 
       - run: uv sync
 
+      - name: free disk and use a leaner linker (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          echo "--- disk before ---"; df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost /usr/local/.ghcup || true
+          echo "--- disk after ---"; df -h /
+          free -m || true
+          sudo apt-get install -y --no-install-recommends lld
+          mkdir -p .cargo
+          printf '[target.x86_64-unknown-linux-gnu]\nrustflags = ["-C", "link-arg=-fuse-ld=lld"]\n' \
+            >> .cargo/config.toml
+
       - name: cargo test
         run: uv run cargo test --workspace
+
+      - name: disk after the build
+        if: always() && runner.os == 'Linux'
+        run: df -h /
 
       - name: build the extension
         run: uv run maturin develop --release -m crates/online-py/Cargo.toml

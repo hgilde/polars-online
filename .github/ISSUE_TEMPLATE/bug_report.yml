@@ -1,0 +1,40 @@
+name: Bug report
+description: Something produces the wrong numbers, errors, or hangs.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two properties are guaranteed by construction, so a violation of either
+        is a bug rather than a question — please say so if you have hit one:
+        **out-of-sample predictions** (a row is predicted before its own target
+        is used) and **chunk invariance** (chunking never changes the output,
+        `coef` excepted).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: >
+        Ideally a self-contained script. Please generate the data rather than
+        attaching a file — a seeded `numpy` generator is perfect, and this repo
+        has no data files by policy.
+      render: python
+    validations: { required: true }
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Output of `python -c "import polars, polars_online, sys; print(sys.version, polars.__version__, polars_online.__version__)"`
+    validations: { required: true }
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: macOS 15 arm64 / Ubuntu 24.04 x86_64 / Windows 11 x64
+    validations: { required: true }

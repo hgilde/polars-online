@@ -421,17 +421,72 @@ Downloads are cached under `.cache/` and skipped when offline.
 - Design and task list: [`docs/PLAN.md`](docs/PLAN.md)
 - Measured defaults: [`docs/VALIDATION.md`](docs/VALIDATION.md)
 
-## Version pins
+## Versioning and the Polars pin
 
-`polars` is pinned in two places that must stay in sync (`Cargo.toml` and
-`pyproject.toml`); a test asserts they agree.
+### What is pinned, and why
 
-| py-polars | rust polars | pyo3-polars | pyo3 |
-|---|---|---|---|
-| 1.44.1 | 0.55.2 | 0.28 | 0.29 |
+`polars` is pinned **exactly**, in two places that must stay in sync
+(`Cargo.toml` and `pyproject.toml`); a test asserts they agree.
 
-A scheduled CI job builds against the latest Polars so breakage shows up early.
+| py-polars | rust polars | pyo3-polars | pyo3 | Python |
+|---|---|---|---|---|
+| 1.44.1 | 0.55.2 | 0.28 | 0.29 | ≥ 3.12 (`abi3-py312`) |
+
+This is stricter than the mechanism strictly requires, and it is worth being
+precise about why, because "pinned" usually implies "fragile" and here it does
+not.
+
+Both the expression plugin and `ModelBank` move data across the boundary
+through the **Arrow C Data Interface** — `SeriesExport` is a `#[repr(C)]`
+struct of `ArrowSchema` and `ArrowArray` pointers, the same cross-language ABI
+pyarrow and DuckDB use. `PyDataFrame` is not special-cased: it extracts
+column-by-column as `PySeries`, each through `import_series`. This package does
+*not* use `PyExpr` or `PyLazyFrame`, which are the genuinely version-sensitive
+types that cross as serialized query plans.
+
+That ABI is **negotiated, not assumed**. The plugin exports
+`_polars_plugin_get_version()`, and Polars checks it at load time:
+
+```
+ComputeError: this polars engine doesn't support plugin version: 0-1
+```
+
+**So a mismatched Polars is a clear error, not a crash.** There is even a
+dedicated check for layout drift (*"This Polars' version has a different
+'binary/string' layout"*). The pin exists so you never see those messages, not
+because something worse waits behind them.
+
+### What the pin costs you
+
+`polars-online` cannot currently be installed alongside a different `polars`.
+If your environment requires, say, `polars>=1.45`, the resolver will refuse.
+There is no workaround other than matching the pin.
+
+At the time of writing, **1.44.1 is the latest Polars release**, so nothing is
+excluded today.
+
+### How the pin will move
+
+A scheduled CI job (`.github/workflows/polars-canary.yml`) unpins both
+`Cargo.toml` and `pyproject.toml` weekly and runs the whole suite against the
+newest Polars. A failure there is the notification. That turns "is it safe to
+widen the pin?" into a question answered by evidence rather than by caution: if
+the canary passes across a few Polars releases, the constraint widens to a
+range in a minor release.
+
+### This package's own versioning
+
+Semantic versioning. While pre-1.0 the **minor** version carries breaking
+changes, so pin `~=0.1.0` if you need stability. Widening the Polars
+constraint would be a minor release; narrowing it is breaking and would be a
+major one. See [`CHANGELOG.md`](CHANGELOG.md).
+
+Wheels are published for macOS (arm64 and x86_64), Windows x64, and Linux x64
+and aarch64 in both glibc and musl flavours. `abi3-py312` means one wheel per
+platform covers 3.12, 3.13, 3.14 and later. An sdist is published too; building
+from it needs a Rust toolchain.
 
 ## License
 
-Apache-2.0.
+Apache-2.0. See [CONTRIBUTING.md](CONTRIBUTING.md) to make changes,
+[SECURITY.md](SECURITY.md) to report a vulnerability.

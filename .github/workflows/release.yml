@@ -9,9 +9,36 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Wheels + the CLI binary for the two deployment targets (docs/PLAN.md §10).
+  # A source distribution, so a platform with no wheel above can still build
+  # from source (it needs a Rust toolchain, which is exactly why the wheel
+  # matrix is wide).
+  sdist:
+    name: build the sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist -m crates/online-py/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  # Wheels + the CLI binary (docs/PLAN.md §10).
+  #
+  # The matrix is about what a user gets from `pip install`. A platform missing
+  # here falls back to the sdist, which means the user needs a Rust toolchain --
+  # the single most common way a pyo3 package fails to be "easily installable".
+  # So it covers Intel and Apple-silicon macOS, Windows x64, and Linux x64 and
+  # aarch64 in both glibc and musl flavours (aarch64 for Graviton and for Docker
+  # on Apple silicon; musl for Alpine images).
+  #
+  # `abi3-py312` means one wheel per platform serves 3.12, 3.13, 3.14 and up,
+  # rather than one per interpreter version.
   build:
-    name: build (${{ matrix.os }})
+    name: build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -20,11 +47,27 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             bin: online
+            cli: true
+          - os: macos-13 # the last Intel runner
+            target: x86_64-apple-darwin
+            bin: online
+            cli: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bin: online.exe
+            cli: true
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            manylinux: auto
+            bin: online
+            cli: true
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            manylinux: auto
+            bin: online
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            manylinux: musllinux_1_2
             bin: online
     steps:
       - uses: actions/checkout@v5
@@ -36,10 +79,23 @@ jobs:
 
       - run: uv sync
 
+      # maturin-action supplies the manylinux/musllinux container and the
+      # cross-compilation toolchain; on macOS and Windows it is a thin wrapper
+      # over the same `maturin build`.
       - name: build the wheel
-        run: uv run maturin build --release --out dist -m crates/online-py/Cargo.toml
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux || 'auto' }}
+          args: --release --out dist -m crates/online-py/Cargo.toml
+          sccache: "true"
 
+      # Only on targets the runner builds natively. The cross-compiled Linux
+      # wheels (aarch64, musl) ship without a prebuilt CLI; `cargo install
+      # online-cli` covers those, and the wheel is the artifact that matters
+      # for `pip install`.
       - name: build the CLI
+        if: matrix.cli
         run: uv run cargo build --release -p online-cli
 
       - uses: actions/upload-artifact@v4
@@ -48,6 +104,7 @@ jobs:
           path: dist/*.whl
 
       - uses: actions/upload-artifact@v4
+        if: matrix.cli
         with:
           name: cli-${{ matrix.target }}
           path: target/release/${{ matrix.bin }}
@@ -96,7 +153,7 @@ jobs:
 
   release:
     name: publish the release
-    needs: [build, read-state]
+    needs: [sdist, build, read-state]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
@@ -108,7 +165,7 @@ jobs:
       - name: collect the files
         run: |
           mkdir -p release
-          find artifacts -name '*.whl' -exec cp {} release/ \;
+          find artifacts \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp {} release/ \;
           for d in artifacts/cli-*; do
             target="${d#artifacts/cli-}"
             for f in "$d"/*; do
@@ -130,7 +187,7 @@ jobs:
   # NOT been checked as available -- do that first (PLAN section 10).
   publish:
     name: publish to PyPI
-    needs: [build, read-state]
+    needs: [sdist, build, read-state]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     environment: pypi
@@ -143,7 +200,7 @@ jobs:
       - name: collect the wheels
         run: |
           mkdir -p dist
-          find artifacts -name '*.whl' -exec cp {} dist/ \;
+          find artifacts \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp {} dist/ \;
           ls -la dist
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:

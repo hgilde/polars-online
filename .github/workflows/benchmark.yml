@@ -5,11 +5,17 @@
 # the job summary where a reviewer sees them next to the diff.
 name: Benchmark
 
+# Reported, never gating -- a shared runner is too noisy for a threshold. That
+# makes it a poor use of metered minutes on every push, so it runs weekly and
+# on demand. Put `push:` back when the repo is public.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  schedule:
+    - cron: "41 5 * * 1" # Mondays, before the weekly CI
   workflow_dispatch:
+
+concurrency:
+  group: benchmark-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   throughput:

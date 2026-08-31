@@ -1,0 +1,32 @@
+name: Feature request
+description: A model, output, or capability that is missing.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check **`docs/ENHANCEMENTS.md` §4** first — it lists what this
+        project deliberately does *not* do and why (trees, neighbours,
+        windowing, distributed execution, momentum optimizers, and more). If
+        your request is there, the interesting discussion is whether the reason
+        still holds, so please argue with the reason rather than restating the
+        request.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that you cannot do today?
+    validations: { required: true }
+  - type: textarea
+    id: shape
+    attributes:
+      label: What it would look like
+      description: >
+        If it is a model, the update equations. If it is an output, the field
+        name and what it means. Anything in `online-core` must be O(state), not
+        O(data), and must not break out-of-sample-ness or chunk invariance.
+  - type: textarea
+    id: prior
+    attributes:
+      label: Prior art
+      description: Does river, statsmodels, or another library have this? How does theirs behave?
