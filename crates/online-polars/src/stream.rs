@@ -832,11 +832,11 @@ impl Stream {
         &mut self,
         spec: &Spec,
         cfg: &online_core::ClockCfg,
-        features: &[Vec<Option<f64>>],
-        targets: &[Vec<Option<f64>>],
-        clock: Option<&[Option<f64>]>,
+        features: &[Vec<f64>],
+        targets: &[Vec<f64>],
+        clock: Option<&[f64]>,
         session: Option<&[u64]>,
-        weight: Option<&[Option<f64>]>,
+        weight: Option<&[f64]>,
         idx: &[usize],
         out: &mut ChunkOut,
     ) -> Result<(), (f64, usize)> {
@@ -844,15 +844,14 @@ impl Stream {
         out.rows.extend_from_slice(idx);
         let last = idx.last().copied();
         for (ri, &i) in idx.iter().enumerate() {
-            let w_raw = weight.map(|w| w[i].unwrap_or(f64::NAN));
             self.process_one(
                 spec,
                 cfg,
                 features,
                 targets,
-                clock.map(|c| c[i].expect("clock nulls rejected at extraction")),
+                clock.map(|c| c[i]),
                 session.map(|s| s[i]),
-                w_raw,
+                weight.map(|w| w[i]),
                 i,
                 Some(i) == last,
                 ri,
@@ -870,8 +869,8 @@ impl Stream {
         &mut self,
         spec: &Spec,
         cfg: &online_core::ClockCfg,
-        features: &[Vec<Option<f64>>],
-        targets: &[Vec<Option<f64>>],
+        features: &[Vec<f64>],
+        targets: &[Vec<f64>],
         clock: Option<f64>,
         session: Option<u64>,
         // weight: None = no weight column; Some(NaN) = null value (skips the row)
@@ -882,7 +881,8 @@ impl Stream {
         n_rows: usize,
         out: &mut ChunkOut,
     ) -> Result<(), f64> {
-        let accept = features.iter().all(|f| f[i].is_some_and(f64::is_finite))
+        // Null arrives as NaN from extraction, so one `is_finite` covers both.
+        let accept = features.iter().all(|f| f[i].is_finite())
             && weight.map(|w| w.is_finite()).unwrap_or(true);
         let adv = self.clock.advance(cfg, clock, session, accept);
         // `on_clock_reset = "error"`: hand the offending delta back so the
@@ -906,10 +906,10 @@ impl Stream {
         self.rows_seen += 1;
         // Scratch, reused across rows: the hot loop must not allocate.
         self.xs.clear();
-        self.xs.extend(features.iter().map(|f| f[i].unwrap()));
+        self.xs.extend(features.iter().map(|f| f[i]));
         self.ys.clear();
         self.ys
-            .extend(targets.iter().map(|t| t[i].filter(|f| f.is_finite())));
+            .extend(targets.iter().map(|t| Some(t[i]).filter(|f| f.is_finite())));
         let xs = std::mem::take(&mut self.xs);
         let ys = std::mem::take(&mut self.ys);
         let w = weight.unwrap_or(1.0);

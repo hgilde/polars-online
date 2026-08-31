@@ -88,20 +88,36 @@ fn session_hash(v: Option<&str>) -> u64 {
 }
 
 /// Columns extracted once per (spec, chunk).
+///
+/// Plain `f64` with **NaN for null**, not `Option<f64>` (docs/PERFORMANCE.md
+/// P3): half the bytes, no per-value branch, and a memcpy instead of an
+/// element-wise walk for a null-free column. Sound because every consumer
+/// already collapses the two — a feature or weight is accepted only when it
+/// `is_finite()`, so null and NaN both skip the row, and a target is taken
+/// only when finite, so null and NaN are both "no target". The clock is the
+/// one column where null is an *error*, and that is checked at extraction.
 struct SpecColumns {
-    features: Vec<Vec<Option<f64>>>,
-    targets: Vec<Vec<Option<f64>>>,
-    clock: Option<Vec<Option<f64>>>,
+    features: Vec<Vec<f64>>,
+    targets: Vec<Vec<f64>>,
+    clock: Option<Vec<f64>>,
     session: Option<Vec<u64>>,
-    weight: Option<Vec<Option<f64>>>,
+    weight: Option<Vec<f64>>,
 }
 
-fn f64_column(df: &DataFrame, name: &str) -> PolarsResult<Vec<Option<f64>>> {
+/// Values as `f64`, null as NaN. Zero-copy-ish for the common case: a
+/// null-free contiguous Float64 column is a `memcpy`.
+fn f64_column(df: &DataFrame, name: &str) -> PolarsResult<Vec<f64>> {
     let s = df
         .column(name)?
         .as_materialized_series()
         .cast(&DataType::Float64)?;
-    Ok(s.f64()?.iter().collect())
+    let ca = s.f64()?;
+    if ca.null_count() == 0 {
+        if let Ok(slice) = ca.cont_slice() {
+            return Ok(slice.to_vec());
+        }
+    }
+    Ok(ca.iter().map(|v| v.unwrap_or(f64::NAN)).collect())
 }
 
 fn extract(df: &DataFrame, spec: &Spec) -> PolarsResult<SpecColumns> {
@@ -139,7 +155,9 @@ fn extract(df: &DataFrame, spec: &Spec) -> PolarsResult<SpecColumns> {
                 );
             }
             let v = f64_column(df, c)?;
-            if let Some(i) = v.iter().position(|x| x.is_none_or(|f| !f.is_finite())) {
+            // Nulls arrive as NaN, which this rejects along with inf: a clock
+            // with no value has no defined delta either way.
+            if let Some(i) = v.iter().position(|f| !f.is_finite()) {
                 polars_bail!(ComputeError:
                     "spec {:?}: clock column {:?} has a null/non-finite value at row {}",
                     spec.name, c, i
@@ -169,14 +187,11 @@ fn extract(df: &DataFrame, spec: &Spec) -> PolarsResult<SpecColumns> {
             // uniformly with non-finite features: they mean "no information for
             // this row" and skip it (docs/PLAN.md §3), so only a *finite*
             // negative weight is an error.
-            if let Some(i) = v
-                .iter()
-                .position(|x| x.is_some_and(|f| f.is_finite() && f < 0.0))
-            {
+            if let Some(i) = v.iter().position(|f| f.is_finite() && *f < 0.0) {
                 polars_bail!(ComputeError:
                     "spec {:?}: weight column {:?} has a negative value ({}) at row {}; \
                      weights must be >= 0 (use null to skip a row)",
-                    spec.name, c, v[i].unwrap(), i
+                    spec.name, c, v[i], i
                 );
             }
             Some(v)
@@ -197,6 +212,14 @@ fn extract(df: &DataFrame, spec: &Spec) -> PolarsResult<SpecColumns> {
 type StreamRows = PolarsResult<ChunkOut>;
 
 /// Row-index partition by group key, in row order.
+///
+/// Keyed on a 64-bit hash of the string value rather than on the string
+/// itself, so the per-row cost is a hash rather than a `String` allocation and
+/// two more clones (docs/PERFORMANCE.md P3). The `GroupKey` is materialized
+/// once per distinct group, not once per row -- and it is still the *value*
+/// that is stored and serialized, so state files are unaffected. A 64-bit
+/// collision would merge two groups; the same 2^-64 exposure the session hash
+/// already documents.
 fn group_indices(
     df: &DataFrame,
     group: &Option<String>,
@@ -208,23 +231,25 @@ fn group_indices(
                 .column(g)?
                 .as_materialized_series()
                 .cast(&DataType::String)?;
-            let mut order: Vec<GroupKey> = Vec::new();
-            let mut map: HashMap<GroupKey, Vec<usize>> = HashMap::new();
+            let mut order: Vec<(GroupKey, Vec<usize>)> = Vec::new();
+            let mut slot_of: HashMap<u64, usize> = HashMap::new();
             for (i, v) in s.str()?.iter().enumerate() {
-                let key = GroupKey(v.map(str::to_string));
-                map.entry(key.clone()).or_insert_with(|| {
-                    order.push(key.clone());
-                    Vec::new()
-                });
-                map.get_mut(&key).unwrap().push(i);
+                let h = match v {
+                    None => null_session_hash(),
+                    Some(v) => {
+                        let h = fnv1a(v.as_bytes());
+                        if h == null_session_hash() { h ^ 1 } else { h }
+                    }
+                };
+                match slot_of.get(&h) {
+                    Some(&slot) => order[slot].1.push(i),
+                    None => {
+                        slot_of.insert(h, order.len());
+                        order.push((GroupKey(v.map(str::to_string)), vec![i]));
+                    }
+                }
             }
-            Ok(order
-                .into_iter()
-                .map(|k| {
-                    let idx = map.remove(&k).unwrap();
-                    (k, idx)
-                })
-                .collect())
+            Ok(order)
         }
     }
 }
@@ -306,16 +331,18 @@ impl Bank {
         let timing = std::env::var_os("ONLINE_TIMING").is_some();
         let t0 = std::time::Instant::now();
         let n = df.height();
+        // Independent per spec, and each is a full pass over its columns, so
+        // they run in parallel with each other (docs/PERFORMANCE.md P3).
         let cols: Vec<SpecColumns> = self
             .specs
-            .iter()
+            .par_iter()
             .map(|s| extract(df, s))
             .collect::<PolarsResult<_>>()?;
         let t_extract = t0.elapsed();
         let t1 = std::time::Instant::now();
         let groups: Vec<Vec<(GroupKey, Vec<usize>)>> = self
             .specs
-            .iter()
+            .par_iter()
             .map(|s| group_indices(df, &s.group))
             .collect::<PolarsResult<_>>()?;
         let t_group = t1.elapsed();

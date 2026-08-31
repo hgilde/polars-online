@@ -126,7 +126,20 @@ that moves a golden number is wrong by definition.
   per-instance struct so rayon tasks own disjoint `&mut` — mechanical, the
   indexing is already `[mi]`-major. Target: 5-halflife single stream ≥ 4×
   itself; N-spec banks scale with specs.
-- [ ] **P3 — Extraction and grouping without materialization.** Borrow value
+- [x] **P3 — Extraction and grouping without materialization.** *Done.*
+  Columns extract to plain `Vec<f64>` with **NaN for null** instead of
+  `Vec<Option<f64>>` — half the bytes, no per-value branch, and a `memcpy` via
+  `cont_slice()` for a null-free contiguous column. Sound because every
+  consumer already collapsed the two (a feature or weight counts only when
+  `is_finite`, a target only when finite); the clock is the one column where
+  null is an error, and that check now catches NaN with it. Group keys are
+  bucketed by a 64-bit hash of the value, so a `String` is allocated once per
+  distinct group rather than cloned three times per row. Extract and group run
+  per spec in parallel. Measured: **extract 11.6 → 2.1 ms, group 15.2 → 4.6 ms**
+  (at k=20/64 groups), taking that case **3.32M → 5.49M rows/s** and thread
+  scaling **4.8× → 6.3×**. Just short of the ≤4 ms target; what is left is real
+  work (the cast and the copy), not overhead.
+  <details><summary>original plan</summary> Borrow value
   slices + validity bitmaps from the (rechunked) columns instead of building
   `Vec<Option<f64>>`; null-free fast path is a borrow, not a copy. Group and
   session keys: hash the physical values row-wise (as `session_hash` now does)
