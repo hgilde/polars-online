@@ -217,21 +217,38 @@ can break that macOS never will.
 | T-D3 | ~~P2~~ **done** | Determinism across parallelism: the bank is run in subprocesses at `RAYON_NUM_THREADS=1` and `=8` over six groups, and the outputs must be identical. |
 | T-D4 | ~~P3~~ **done** | Coverage: `scripts/coverage.sh` reports 96% Python, 75%/73% Rust (caveat above); CI reports the Python figure non-gating. **Mutation testing** (`scripts/mutants.sh`) has now been run in full over `online-core`: **1645 mutants, 517 missed / 1104 caught / 24 unviable**. The misses concentrated exactly where the Rust unit tests lean on the *Python* oracle suite, which `cargo test` cannot see — `robust.rs` 68% missed, `kalman.rs` 38%, `ewridge.rs` 36%. Fixed with `crates/online-core/tests/golden.rs`: one fixed 60-row stream per model with the exact expected predictions embedded, which pins the arithmetic against any mutation. Measured effect on the worst file: **`robust.rs` went from 162 missed / 77 caught to 42 / 197**, a 74% reduction from one test. The residue is mostly accessors (`n_features -> 0`) and validation-branch comparisons, which are low value. Still open: re-running the full pass to get the new headline number, and making it periodic in CI. |
 
-## Suggested order
+## What is left
 
-Done so far: T-E1–T-E4, T-A1, T-A2, T-R1, T-R4–T-R6.
+Everything in this document is done except the items below, and all of them
+have the same single blocker.
 
-0. **T-D5** — re-run the full mutation pass once the feature work settles;
-   deliberately deferred until then.
-1. **T-D1 → T-W1, T-W2** — push and run the workflows. This is the single
-   largest untested area (a whole supported platform) and it gates T-W3–T-W9.
-2. **T-A3, T-A4** — finish the oracle set PLAN §9 class 1 promised, so
-   huber/quantile and ftrl stop being anchored only by property tests.
-   **T-A5** — parametrize the null/clock/warmup tests across all seven models.
-3. **T-E5–T-E8** — degenerate solves, duplicate/zero clock deltas, empty chunks
-   and minimal shapes, categorical/null session columns.
-4. **T-D3** (rayon determinism — cheap, and a real risk with the fan-out),
-   **T-D2** (property-based testing, which subsumes much of section C),
-   then T-E9–T-E12 and T-D4.
-5. **T-R2, T-R3** last: both are blocked on enhancements (Kalman
-   `standardize: false`, and exposing `EwCov` to Python).
+**Nothing has ever been pushed.** `origin` is `github.com/hgilde/polars-online`
+and the branch is many commits ahead, but this machine has no GitHub
+credentials — no keychain entry for github.com, no SSH key, no `GH_TOKEN`, and
+`gh` is not installed — so `git push` cannot authenticate and **no CI job has
+ever run, on any platform.** Unblock with `gh auth login`, an SSH key, or a
+personal access token; note that the token needs the **`workflow` scope**,
+because the first push adds `.github/workflows/`.
+
+That gates, in order:
+
+1. **T-D1** — run the workflows once. Until this happens, everything the CI
+   config claims is an untested assertion, including the Linux and macOS jobs.
+2. **T-W1** — `cargo test`, `maturin develop` and the pytest suite have never
+   executed on Windows. A whole supported platform is unverified, and T-W3b,
+   T-W5, T-W7 and T-W8 are all speculative until it runs once.
+3. **T-W2** — cross-OS state hand-off. The msgpack payload has no
+   host-dependent parts *by construction* and `save_bytes` is asserted
+   deterministic locally, but that is an argument, not a test.
+4. **PyPI** — the name `polars-online` has not been checked for availability,
+   and the repo is not registered as a trusted publisher. `release.yml`'s
+   `publish` job is gated behind a `pypi` environment, so a tag can build
+   artifacts without publishing until that is done.
+
+Two things are worth doing periodically rather than once:
+
+- **`./scripts/mutants.sh`** after a batch of feature work. The first two runs
+  are described in §0; the pattern to watch for is a cluster of survivors in
+  one function, which almost always means its only oracle lives in the Python
+  suite.
+- **`./scripts/coverage.sh`**, reported and never gating.
