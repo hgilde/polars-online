@@ -7,6 +7,25 @@ use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
 use pyo3_polars::{PyDataFrame, PySeries};
 
+/// Route this extension's allocations through the allocator py-polars is
+/// using, imported from its `polars.polars._allocator` capsule (falling back
+/// to the system allocator when it is absent).
+///
+/// **This is not what makes the two copies of Polars safe** — that is the
+/// Arrow C Data Interface. Every `Series` crossing the boundary travels as a
+/// `SeriesExport`: a `#[repr(C)]` struct of `ArrowSchema`/`ArrowArray`
+/// pointers carrying a `release` callback *into the binary that produced it*.
+/// Each side therefore frees its own memory with its own allocator, and no
+/// Rust `DataFrame`, no `Drop` impl and no raw buffer ownership ever crosses.
+/// Verified against py-polars 1.28.1 through 1.44.1.
+///
+/// What this does buy: one allocator arena in the process instead of two.
+/// Polars uses jemalloc on Linux and mimalloc on Windows, so without this our
+/// allocations came from a second, independent heap that could neither reuse
+/// nor return pages to the first.
+#[global_allocator]
+static ALLOC: pyo3_polars::PolarsAllocator = pyo3_polars::PolarsAllocator::new();
+
 mod expr;
 
 fn parse_specs(specs_json: &str) -> PyResult<Vec<Spec>> {

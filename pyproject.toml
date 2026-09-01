@@ -30,9 +30,23 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # Pinned: MUST match the `polars` pin in the workspace Cargo.toml.
-    # py-polars 1.44.1 <-> rust polars 0.55.1 <-> pyo3-polars 0.28
-    "polars==1.44.1",
+    # A *range*, not the exact pin this used to be. The Rust side still pins
+    # `polars = "=0.55.2"` in Cargo.toml, and the wheel links it statically --
+    # but that copy never meets the user's. Data crosses on the Arrow C Data
+    # Interface, so the two are independent, and an exact pin here only blocked
+    # dependency resolution for anyone who wanted a different polars.
+    #
+    # The floor is measured, not guessed: 1.28.0 and below fail on
+    # `PySeries._export` (added in 1.28.1) with a clean AttributeError, and
+    # 1.26.0 additionally refuses to load the plugin. 1.28.1 through 1.44.1 all
+    # pass both paths with identical numbers. `docs/RELEASE-READINESS.md` has
+    # the matrix and the command to reproduce it.
+    #
+    # The ceiling is a bet that 1.x keeps the interface, hedged two ways: the
+    # plugin ABI is version-negotiated and refuses to load rather than
+    # misbehave, and `polars-canary.yml` runs the suite against the latest
+    # polars weekly.
+    "polars>=1.28.1,<2",
 ]
 
 # `gram()` is the only thing that needs numpy, so it is an extra rather than a

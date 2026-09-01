@@ -267,6 +267,28 @@ buffer and the `Step` the model returns — real work at this point, not
 bookkeeping. The recursion inside one instance stays sequential by construction
 (§2 item 7); everything around it is now parallel.
 
+## 6. The allocator (2026-08-31)
+
+Found while answering "won't two copies of Polars in one process go wrong?".
+The answer is no — the Arrow C Data Interface keeps each side freeing its own
+memory — but the investigation turned up that pyo3-polars ships
+`PolarsAllocator`, which routes a plugin's allocations through py-polars' own
+allocator, and we were not installing it. Two allocator arenas in one process,
+neither able to reuse the other's pages.
+
+One line, `#[global_allocator]`, reproducible across repeated runs:
+
+| case | before | after | |
+|---|---:|---:|---:|
+| ew_ridge k=5 | 5.62M rows/s | **8.02M** | +43% |
+| ew_ridge k=20 | 2.80M | **3.26M** | +16% |
+| ew_ridge k=50 | 855k | **900k** | +5% |
+
+The gradient is the tell: largest at small `k`, where per-chunk allocation is a
+big share of the work, and smallest at `k=50`, where the O(k³) solve dominates
+and the allocator barely matters. Performance was not the reason for the
+change; it is the reason it is recorded here.
+
 ## 5. Rejected, and why
 
 Recorded so each omission is a decision. The first three were rejected up

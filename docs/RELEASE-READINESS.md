@@ -353,15 +353,81 @@ to corporate users; the LICENSE carries the attribution.
 2. Description + topics; branch protection on `main` last.
 3. README badges (CI, license) — only render once public, add then.
 
-**The one decision to make before first PyPI publish** (not before going
-public): the runtime dependency is `polars==1.44.1`, exact. In a *published
-library* an exact pin means a user cannot upgrade polars, or install anything
-else that wants a different polars, without breaking resolution. The FFI
-mechanism itself is version-negotiated (see "Versioning and the Polars pin" in
-the README) and would reject a true mismatch cleanly, so a bounded range like
-`>=1.44,<2` with the tested version documented is defensible. Status: still
-"investigate first", per the earlier decision — but it gates publishing, not
-visibility.
+## The Polars pin, and the two copies of Polars (2026-08-31)
+
+Two related worries, both worth answering with evidence rather than
+architecture talk, because both sound alarming and only one is real.
+
+### "Statically linking Polars will break users on other versions"
+
+It does the opposite, and the range is measured. Every wheel carries its own
+Rust Polars 0.55.2; it never meets the user's. Data crosses on the **Arrow C
+Data Interface** (`SeriesExport`: a `#[repr(C)]` struct of
+`ArrowSchema`/`ArrowArray` pointers), which is a language-independent ABI.
+
+Tested one wheel against 17 py-polars releases, both entry points, checking
+values and not just absence of exceptions:
+
+| py-polars | `ModelBank` | expression plugin |
+|---|---|---|
+| 1.26.0 | `AttributeError` | `ComputeError: error loading dynamic library` |
+| 1.27.1 | `AttributeError` | OK |
+| 1.28.0 | *bug in polars itself* (`NameError: PySeries`) | — |
+| **1.28.1 – 1.44.1** | **OK** | **OK** |
+
+Identical numbers everywhere it works, and both failure modes are clean named
+exceptions — no segfault, no silent wrong answer. The floor is
+`PySeries._export`, which pyo3-polars calls and py-polars added in 1.28.1.
+
+So the exact pin was protecting nothing the ABI does not already protect, and
+it blocked resolution for anyone wanting a different polars. Now
+`polars>=1.28.1,<2`. Reproduce with:
+
+```sh
+uv venv /tmp/v && uv pip install --python /tmp/v/bin/python --no-deps dist/*.whl
+uv pip install --python /tmp/v/bin/python 'polars==1.28.1'
+```
+
+The ceiling is a bet that 1.x keeps the interface, hedged twice: the plugin ABI
+is version-negotiated and refuses to load rather than misbehave, and
+`polars-canary.yml` runs the suite against the latest polars weekly.
+
+### "A frame allocated by one binary and freed by the other"
+
+The genuinely dangerous version of the question, and the reason the C Data
+Interface is the right mechanism: a `SeriesExport` carries a `release`
+callback **into the binary that produced it**, so each side frees its own
+memory with its own allocator. No Rust `DataFrame`, no `Drop` impl and no raw
+buffer ownership ever crosses. Confirmed in `polars-ffi` 0.55.2's source
+(`import_series` goes through Arrow's `import_array`), and stress-tested: 300
+round-trips of 5,000-row frames, plus 50 outputs deliberately outliving the
+inputs they came from — clean.
+
+It did surface a real gap. pyo3-polars ships `PolarsAllocator`, which routes a
+plugin's allocations through py-polars' own allocator via its
+`polars.polars._allocator` capsule, and **we were not installing it**. Not a
+correctness bug, for the reason above — but it meant two allocator arenas in
+one process, neither able to reuse the other's pages. Installing it cost one
+line and **gained 16–43% throughput** (see `docs/PERFORMANCE.md` §6), which was
+not the reason for doing it.
+
+### "Why not dynamically link Polars?"
+
+There is nothing to link against. py-polars' runtime is a 189 MB binary that
+exports **33 dynamic symbols**: three `PyInit_*` module entry points and a
+handful of incidental C symbols from vendored blake3 and crc libraries. Zero
+Polars Rust symbols.
+
+Even if they were exported, Rust has no stable ABI — symbol names are mangled
+with a hash over the compiler version, crate version, features and the entire
+dependency graph. Binding to them would demand a bit-identical toolchain and
+dependency graph to the py-polars wheel, break on every polars patch release
+and every rustc bump, and be *far* tighter coupling than static linking. The
+1.28.1–1.44.1 range above exists precisely because we do not do that.
+
+The stable interface already exists and we already use it: the Arrow C Data
+Interface. In the sense that matters, this *is* the dynamic interop — through a
+versioned C ABI rather than through Rust symbols.
 
 ## Going public (2026-08-31)
 

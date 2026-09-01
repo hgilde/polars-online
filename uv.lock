@@ -352,7 +352,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "numpy", marker = "extra == 'numpy'", specifier = ">=1.24" },
-    { name = "polars", specifier = "==1.44.1" },
+    { name = "polars", specifier = ">=1.28.1,<2" },
 ]
 provides-extras = ["numpy"]
 

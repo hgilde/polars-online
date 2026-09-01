@@ -443,7 +443,14 @@ Downloads are cached under `.cache/` and skipped when offline.
 
 | py-polars | rust polars | pyo3-polars | pyo3 | Python |
 |---|---|---|---|---|
-| 1.44.1 | 0.55.2 | 0.28 | 0.29 | ≥ 3.12 (`abi3-py312`) |
+| **>= 1.28.1, < 2** (built and tested against 1.44.1) | 0.55.2 | 0.28 | 0.29 | ≥ 3.12 (`abi3-py312`) |
+
+The *Rust* pin is exact and the wheel links it statically; the *runtime*
+requirement is a range, because the two copies of Polars never meet. One wheel
+was tested against 17 py-polars releases: 1.28.1 through 1.44.1 pass both entry
+points with identical numbers, and below that the failure is a clean
+`AttributeError` on `PySeries._export` rather than anything subtle. The matrix
+is in `docs/RELEASE-READINESS.md`.
 
 This is stricter than the mechanism strictly requires, and it is worth being
 precise about why, because "pinned" usually implies "fragile" and here it does
