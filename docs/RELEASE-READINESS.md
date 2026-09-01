@@ -453,7 +453,48 @@ function pointers:
 So the dynamic interop is real; it is just at the C level, where there is an
 ABI to rely on, instead of at the Rust level, where there is not.
 
-**A trap worth knowing about (3).** `polars.polars` is *not* an importable
+**And it is a designed, versioned contract — not an improvised one.** Worth
+spelling out, because "they dlsym a C function" undersells it:
+
+- `polars_ffi` exports `MAJOR: u16 = 0` and `MINOR: u16 = 1`.
+  `_polars_plugin_get_version()` packs them into a `u32` as
+  `(major << 16) | minor`.
+- The loader in `polars-plan` reads that *before making any other call* and
+  **branches on MAJOR**: `if major == 0 { use polars_ffi::version_0::*; … }`.
+  The module is literally named `version_0`. When the calling convention
+  changes, polars adds `version_1` and a second branch, and plugins built
+  against the old one keep working. Multi-version support is built in, not
+  hoped for.
+- The call itself is pure C:
+  `extern "C" fn(*const SeriesExport, usize, *const u8, usize, *mut SeriesExport, *const CallerContext)`.
+- The payload is the **Arrow C Data Interface** — a formal cross-language
+  specification with its own stability guarantees and ownership protocol, the
+  same one DuckDB, pyarrow and cuDF interoperate through.
+
+That is the textbook way to cross a binary boundary you cannot recompile: drop
+to C, version the contract explicitly, and let each side own its own memory.
+The 1.28.1–1.44.1 range is the evidence that it works.
+
+**What Rust genuinely cannot offer here**, and why nobody ships this
+differently. Rust has no stable ABI, and its symbol names say so out loud. One
+method from our own crate:
+
+```
+_RNCNCNvMs_NtCskWXLaxruzD7_11online_core6kalmanNtB8_6Kalman8pred_var00Ba_
+                 ^^^^^^^^^^^^ crate disambiguator
+```
+
+`CskWXLaxruzD7_` is a hash over the crate's name, version, features and
+`-C metadata` — change any of them and every one of the 3,097 mangled symbols
+in that one small rlib gets a new name. `crate-type = ["dylib"]` *does* exist
+and does preserve the Rust ABI — rustc uses it for `librustc_driver.so` — but
+it requires the identical compiler and dependency graph on both sides, which is
+why rustup ships matched toolchain components instead of letting you mix them.
+That is workable inside one build; it is not workable between two wheels
+published months apart by different people.
+
+**The one part that genuinely is fragile is (3), and it is pyo3-polars' own
+choice rather than anything about the plugin ABI.** `polars.polars` is *not* an importable
 submodule — `importlib.import_module` raises — it is an **attribute** of the
 `polars` package aliasing the real runtime module, currently
 `_polars_runtime_32._polars_runtime`. `PyCapsule_Import` walks dotted names by
