@@ -580,8 +580,9 @@ pub struct Stream {
     /// Evaluation metrics per instance and slot (ENHANCEMENTS E22).
     metrics: Vec<Vec<SlotMetrics>>,
     /// Row scratch, reused for the life of the stream so the chunk loop
-    /// allocates nothing (docs/PERFORMANCE.md P1). `pred_buf` catches the
-    /// `Vec` a model's `Step` hands back, so the next `step` can refill it.
+    /// itself allocates nothing (docs/PERFORMANCE.md P1). The `pred` `Vec`
+    /// inside each `Step` is the one per-row allocation left, and it is cheap
+    /// (docs/IMPROVEMENTS.md P2).
     scratch: Vec<Scratch>,
 }
 

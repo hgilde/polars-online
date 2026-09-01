@@ -58,7 +58,7 @@ streams. Output is a struct column.
 ```python
 out = df.with_columns(
     pl.col("y").online.ewridge(
-        features=["x0", "x1"],
+        features=["x0", "x1", pl.col("y").shift(1).alias("y_lag")],
         clock="t", halflife=600.0, max_dclock=300.0,
         session="session", session_gap=1800.0,
     ).over("group").alias("fit")
@@ -66,8 +66,11 @@ out = df.with_columns(
 out.select(pl.col("fit").struct.field("pred_y"), pl.col("fit").struct.field("n_eff"))
 ```
 
-Grids are allowed but produce wide structs; the bank is the better surface for
-grids.
+Features are column names or named expressions; under `.over` an expression is
+evaluated per group, so the lag above never crosses a group boundary. Groups
+run in parallel (the inputs travel as one packed struct, which is the polars
+path that spreads groups over threads — see docs/PERFORMANCE.md P5). Grids are
+allowed but produce wide structs; the bank is the better surface for grids.
 
 ### 2. `ModelBank` (chunk-fed)
 
@@ -400,7 +403,8 @@ Each halflife in a grid is its own accumulator, but they run in parallel, so a
 throughput rises with the group count rather than falling: **5.1M rows/s** at
 k=20 over 64 groups, scaling 6.2× from one thread to ten. A bank of several
 specs is one flat task pool too — eight single-group specs over 300k rows take
-202 ms, against 1.2 s if they ran one at a time.
+202 ms, against 1.2 s if they ran one at a time. The expression plugin under
+`.over(group)` parallelizes the same way: 6.4M rows/s at k=20 over 1000 groups.
 
 Where the time goes, and what to reach for, is in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).

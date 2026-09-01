@@ -188,3 +188,60 @@ class TestMultiTargetExpressions:
                     features=["x0"], extra_targets=["y1", "y1"], halflife=100.0
                 )
             )
+
+
+class TestExpressionFeatures:
+    """Features may be expressions, not only column names (docs/IMPROVEMENTS.md
+    U1). Under ``.over(group)`` they are evaluated per group, so a lag of the
+    target stays inside its group -- the natural way to write an AR term."""
+
+    def test_lagged_expression_equals_a_materialized_lag(self):
+        df, _ = synthetic(seed=21, n_groups=3, n_rows=200, k=2)
+        lagged = df.with_columns(pl.col("y0").shift(1).over("group").alias("y0_lag"))
+        bank = _bank_out(lagged, ["x0", "y0_lag"])
+        expr = df.select(
+            pl.col("y0")
+            .online.ewridge(features=["x0", pl.col("y0").shift(1).alias("y0_lag")], **COMMON)
+            .over("group")
+        ).unnest("y0")
+        _assert_same(expr, bank)
+        assert "coef" in expr.columns
+
+    def test_expression_without_a_name_is_rejected(self):
+        df, _ = synthetic(seed=22, n_groups=1, n_rows=20, k=1)
+        with pytest.raises(ValueError, match="determinable output name"):
+            pl.col("y0").online.ewridge(features=[pl.col("^x.*$")], halflife=100.0)
+        # `.alias` settles it -- and the feature name is the alias.
+        out = df.select(
+            pl.col("y0").online.ewridge(
+                features=[(pl.col("x0") * pl.col("x0")).alias("x0_sq")],
+                halflife=100.0,
+                min_periods=2.0,
+            )
+        ).unnest("y0")
+        assert "pred_y0" in out.columns
+
+    def test_non_feature_type_is_rejected(self):
+        with pytest.raises(TypeError, match="column names or expressions"):
+            pl.col("y0").online.ewridge(features=[3], halflife=100.0)
+
+    def test_column_used_twice_does_not_collide(self):
+        # The packed struct names its fields positionally, so the same column
+        # can serve two roles (here feature and weight) without a duplicate
+        # field name.
+        df, _ = synthetic(seed=23, n_groups=2, n_rows=100, k=2)
+        df = df.with_columns(pl.col("x1").abs().alias("x1"))
+        kw = {**COMMON, "weight": "x1"}
+        expr = df.select(
+            pl.col("y0").online.ewridge(features=["x0", "x1"], **kw).over("group")
+        ).unnest("y0")
+        _assert_same(expr, _bank_out(df, ["x0", "x1"], **kw))
+
+    def test_ew_cov_accepts_expressions(self):
+        df, _ = synthetic(seed=24, n_groups=2, n_rows=100, k=2)
+        out = df.select(
+            pl.col("x0")
+            .online.ew_cov([pl.col("x1").shift(1).alias("x1_lag")], halflife=50.0, min_periods=3.0)
+            .over("group")
+        ).unnest("x0")
+        assert any(c.startswith("cov") or c.startswith("corr") for c in out.columns), out.columns

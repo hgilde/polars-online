@@ -110,8 +110,10 @@ that moves a golden number is wrong by definition.
   row) is replaced by `ChunkOut`: flat slot-major `Vec<f64>` buffers, one
   allocation per output column per (stream, chunk), with `processed` marking
   skipped rows and NaN meaning null. `Stream::process_chunk` owns the row loop
-  and reuses scratch (`xs`, `ys`, `r_buf`, `sig_buf`, `zs_buf`, and `pred_buf`
-  catching the `Vec` each `Step` hands back), so the loop allocates nothing.
+  and reuses scratch (`xs`, `ys`, `r_buf`, `sig_buf`, `zs_buf`), so the loop
+  itself allocates nothing. (The `pred` `Vec` inside each `Step` is still
+  allocated per row — see §4; measured at 14 ns against a 95 ns non-solve
+  step in docs/IMPROVEMENTS.md P2, and left alone.)
   Measured: **k=5 single stream 2.09M → 5.12M rows/s, k=20 1.31M → 2.40M,
   k=20/64 groups 2.60M → 3.32M**; the `process` section fell 87.6 → 30.7 ms
   (k=5) and 133.6 → 67.1 ms (k=20). Thread scaling went **3.2× → 4.8×** at 10
@@ -187,6 +189,13 @@ that moves a golden number is wrong by definition.
   gather/scatter, not the plugin**, and no change on our side reaches it. The
   `ModelBank` API with `group=` is the answer for high group counts (5.01M
   rows/s on the same data), which is what the README already recommends.
+  **Revisited (docs/IMPROVEMENTS.md P1): the conclusion above was wrong.** The
+  gap was not gather/scatter but polars evaluating a *multi-input* group-aware
+  function group by group on one thread (`apply_multiple_group_aware` in
+  polars-expr has no parallel branch; the single-input path does). Packing
+  every input column into one struct moved the plugin onto the parallel path:
+  **4.2M → 21.4M rows/s** at 1000 groups (k=5, 2M rows) and **0.94M → 6.4M**
+  on the k=20 table above — at parity with, or ahead of, the bank.
   <details><summary>original plan</summary> Thread-local cache of parsed
   `Spec`/plan keyed by the kwargs JSON, so 1000 `.over()` groups parse once;
   skip re-validation per group. Re-measure after P1 — the remaining gap should
@@ -322,10 +331,10 @@ useful kind.
   without a disassembler: the update is O(k²), so k=5 → k=20 is 12.3× the
   arithmetic for 2.1× the time and k=5 → k=50 is 72× for 6.0×. Per element the
   wide cases are cheaper, which is what auto-vectorized loops look like.
-- **Chasing polars' `.over()` overhead (P5's target).** Throughput drops from
-  2.77M to 769k between one group and *ten*, then stays flat to 1000 — so it is
-  the gather/scatter, not per-group setup, and not reachable from a plugin.
-  `ModelBank(group=...)` is the supported answer at 5.0M rows/s.
+- ~~**Chasing polars' `.over()` overhead (P5's target).**~~ Reopened and
+  closed by docs/IMPROVEMENTS.md P1: the "flat from ten groups on" curve was
+  the signature of serial per-group evaluation, and one packed struct input
+  puts the plugin on polars' parallel path. See P5 above.
 
 ## 7. Bugs found by this review
 

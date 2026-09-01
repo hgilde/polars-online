@@ -2,6 +2,7 @@
 //! full spec in kwargs. It runs a single spec over the whole column it receives,
 //! so `.over(group)` gives per-group streams. The implementation is the bank
 //! itself (group = None), which makes expression ≡ bank true by construction.
+//! All input columns arrive packed in one struct (see [`online_run`]).
 
 use online_polars::{Bank, Spec, output_fields};
 use polars::prelude::*;
@@ -21,7 +22,7 @@ thread_local! {
     /// identical kwargs, so without this a thousand groups meant a thousand
     /// JSON parses and a thousand validations of the same spec
     /// (docs/PERFORMANCE.md P5). Thread-local rather than a shared map: no
-    /// lock, and polars runs groups across its own threads.
+    /// lock, and polars spreads the groups across its own threads.
     static SPEC_CACHE: RefCell<Option<(String, Spec)>> = const { RefCell::new(None) };
 }
 
@@ -64,8 +65,8 @@ fn online_output(_input_fields: &[Field], kwargs: OnlineKwargs) -> PolarsResult<
     ))
 }
 
-/// Column names the plugin's positional inputs carry, in the order
-/// `python/polars_online/_expr.py` passes them: targets, features, then any of
+/// Column names the packed input's fields carry, in the order
+/// `python/polars_online/_expr.py` packs them: targets, features, then any of
 /// clock / session / weight that the spec uses. Polars strips input names, so
 /// they are reattached here.
 fn input_names(spec: &Spec) -> Vec<&str> {
@@ -85,22 +86,39 @@ fn input_names(spec: &Spec) -> Vec<&str> {
     names
 }
 
+/// The plugin takes **one** input: a struct whose fields are the spec's
+/// columns in [`input_names`] order. One packed input rather than one input
+/// per column because of how polars evaluates a group-aware function under
+/// `.over(group)`: the multi-input path (`apply_multiple_group_aware`) walks
+/// the groups one after another on a single thread, while the single-input
+/// path runs them through rayon. Packing turned 1000 groups from 4.2 M rows/s
+/// into 21 M rows/s (docs/IMPROVEMENTS.md P1).
 #[polars_expr(output_type_func_with_kwargs=online_output)]
 fn online_run(inputs: &[Series], kwargs: OnlineKwargs) -> PolarsResult<Series> {
     let spec = parse_spec(&kwargs)?;
     let names = input_names(&spec);
-    if inputs.len() != names.len() {
+    let [packed] = inputs else {
         polars_bail!(ComputeError:
-            "online: expected {} input columns for this spec, got {}",
-            names.len(), inputs.len()
+            "online: expected one struct input (the packed columns), got {} inputs",
+            inputs.len()
+        );
+    };
+    let fields = packed.struct_()?.fields_as_series();
+    if fields.len() != names.len() {
+        polars_bail!(ComputeError:
+            "online: expected {} packed input columns for this spec, got {}",
+            names.len(), fields.len()
         );
     }
-    let height = inputs.first().map(|s| s.len()).unwrap_or(0);
-    let columns: Vec<Column> = inputs
-        .iter()
-        .zip(&names)
-        .map(|(s, name)| s.clone().with_name((*name).into()).into())
-        .collect();
+    let height = packed.len();
+    // One column can serve two roles (a feature that is also the weight, say);
+    // the bank reads by name, so the frame needs each name once.
+    let mut columns: Vec<Column> = Vec::with_capacity(names.len());
+    for (s, name) in fields.into_iter().zip(&names) {
+        if columns.iter().all(|c| c.name() != name) {
+            columns.push(s.with_name((*name).into()).into());
+        }
+    }
     let df = DataFrame::new(height, columns)?;
     let mut bank = Bank::new(vec![spec]).map_err(|e| polars_err!(ComputeError: "{}", e))?;
     let mut cols = bank.fit_predict(&df)?;

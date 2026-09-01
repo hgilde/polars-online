@@ -97,14 +97,22 @@ class TestNothingLeaksAcrossTheBoundary:
 
     def test_plugin_over_groups(self):
         """The one case with a real one-time step (~6 MB of thread stacks and
-        arena), which is exactly why the primitive tolerates a step."""
+        arena), which is exactly why the primitive tolerates a step.
+
+        Since the groups run across polars' thread pool (docs/IMPROVEMENTS.md
+        P1) every worker thread grows its own arena, and that takes ~600
+        iterations to level off rather than 40: measured 10 → 5 → 4 → 0 KB/iter
+        over successive blocks, then flat or falling. The longer warmup is
+        that ramp; the assertion is unchanged.
+        """
         df = frame().with_columns(g=pl.Series(np.arange(1500) % 50))
         assert_plateaus(
             lambda: df.with_columns(
                 pl.col("y")
                 .online.ewridge(features=["x0"], halflife=50.0, min_periods=2.0)
                 .over("g")
-            )
+            ),
+            warmup=600,
         )
 
     def test_multi_chunk_input(self):
