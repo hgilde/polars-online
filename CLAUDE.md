@@ -77,37 +77,43 @@ cargo run -p online-cli -- --config examples/bank.toml
     If a change would statically link a library that is not already linked,
     stop and ask. This includes vendoring a C library through a `-sys` crate.
 
-**Standing exception, already raised and unresolved (2026-08-31).** Everything
-in this workspace is statically linked today, and it is not a choice that was
-made:
+**Raised and resolved (2026-08-31): static linking here is what Polars
+prescribes, not a shortcut.** Checked against Polars' own documentation rather
+than reasoned about:
 
-- A Python extension module must be a `cdylib` — the Reference: "used when
-  compiling a dynamic library to be loaded from another language" — and a
-  `cdylib` statically links its Rust dependency graph by construction.
-- **Zero of our 453 dependencies publishes a `dylib` target.** 419 are plain
-  `lib` (rlib). Not polars, not faer, not serde, not pyo3. `crate-type` is
-  declared by the crate being published, so this cannot be overridden
-  downstream, and near-nothing on crates.io publishes a dylib.
-- py-polars exports **no Rust symbols at all** — 33 on macOS, 32 on Linux, none
-  mangled — so there is nothing to bind to even in principle, and Rust has no
-  stable ABI to bind with.
+- The [User Guide](https://docs.pola.rs/user-guide/plugins/expr_plugins/) calls
+  expression plugins "the preferred way to create user defined functions... The
+  Polars engine will **dynamically link your function at runtime**". The dynamic
+  link is the engine `dlopen`-ing our `cdylib`; the plugin itself carries its
+  own Polars. The pyo3-polars README says so outright: "The plugin functions are
+  **compiled separately**."
+- Their canonical `Cargo.toml` is ours: `crate-type = ["cdylib"]`, a plain
+  `polars` dependency, `pyo3` with `abi3`, `pyo3-polars` with `derive`.
+- Their canonical `lib.rs` opens with
+  `#[global_allocator] static ALLOC: PolarsAllocator = PolarsAllocator::new();`
+  — **this is prescribed, not an optimisation.** It is the mechanism that keeps
+  allocation coherent between the two copies of Polars, and the reason a
+  statically linked plugin is safe rather than a double-free waiting to happen.
+  Without it we silently ran on a second heap (and 43% slower).
 
-The one part under our control was tested rather than assumed: building
-`online-core` and `online-polars` as dylibs and adding `-C prefer-dynamic`
-*does* work, and the extension then links `libonline_core.dylib` and
-`libonline_polars.dylib` dynamically. It was **not** adopted, and the reasons
-belong with the rule so nobody re-litigates it from scratch:
+So rule 12 is satisfied for the plugin: it *is* the Rust-native way, because
+Polars' extension mechanism is a `dlopen`ed C ABI by design, and nothing on
+crates.io publishes a `dylib` to link against anyway (0 of our 453
+dependencies; `crate-type` is the publisher's choice).
 
-- It also drags in `libstd-<hash>.dylib`, a **toolchain-version-pinned** copy of
-  the Rust standard library that exists only inside a rustup install. Shipping
-  that in a wheel means shipping libstd and matching the exact rustc forever.
-- It saves nothing: polars stays statically inside whichever dylib uses it,
-  because polars is rlib-only. The bytes move, they do not shrink.
-- It multiplies the artifacts a wheel must carry and the rpaths it must wire,
-  per platform, for components that are always versioned and shipped together.
+13. **Know which of the two interfaces a change rides on.** Polars supports two,
+    and only one carries a guarantee:
+    - **Expression plugin** (`online.ewridge(...)`) — the supported path, with a
+      MAJOR/MINOR handshake the loader checks before its first call.
+    - **PyO3 extension types** (`PyDataFrame`/`PySeries`, i.e. `ModelBank`) —
+      the README states these "are however only provided for convenience and
+      **do not have stability guarantees** beyond that the latest definitions
+      should work for the latest version of Polars."
 
-Revisit if polars ever ships a `dylib` target. Until then, "do not statically
-link" is achievable for *new* dependencies only, which is what rule 12 asks.
+    `polars>=1.28.1,<2` in `pyproject.toml` is therefore *measured* for both
+    paths but *guaranteed* for neither below the latest — see
+    `docs/RELEASE-READINESS.md`. Treat a `ModelBank` break on a new Polars as
+    expected maintenance, not a surprise, and check that path first.
 
 ## Style
 

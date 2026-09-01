@@ -392,6 +392,23 @@ The ceiling is a bet that 1.x keeps the interface, hedged twice: the plugin ABI
 is version-negotiated and refuses to load rather than misbehave, and
 `polars-canary.yml` runs the suite against the latest polars weekly.
 
+**Correction, after reading what Polars actually promises.** The table above is
+*measured*, and the two paths do not carry the same weight of guarantee:
+
+- The **expression plugin** is the supported mechanism, with a MAJOR/MINOR
+  handshake the loader checks before its first call.
+- **`ModelBank` is not.** pyo3-polars' README: the `PyDataFrame`/`PySeries`
+  types "are however only provided for convenience and **do not have stability
+  guarantees beyond that the latest definitions should work for the latest
+  version of Polars**." That is exactly the `PySeries._export` call whose
+  absence sets our 1.28.1 floor.
+
+The range stays, because it is measured across 17 releases with identical
+numbers and the failure mode is a loud `AttributeError` rather than a wrong
+answer — but it is our empirical claim, not Polars'. A `ModelBank` break on a
+new Polars is expected maintenance; check that path before suspecting the
+plugin.
+
 ### "A frame allocated by one binary and freed by the other"
 
 The genuinely dangerous version of the question, and the reason the C Data
@@ -403,13 +420,24 @@ buffer ownership ever crosses. Confirmed in `polars-ffi` 0.55.2's source
 round-trips of 5,000-row frames, plus 50 outputs deliberately outliving the
 inputs they came from — clean.
 
-It did surface a real gap. pyo3-polars ships `PolarsAllocator`, which routes a
-plugin's allocations through py-polars' own allocator via its
-`polars.polars._allocator` capsule, and **we were not installing it**. Not a
-correctness bug, for the reason above — but it meant two allocator arenas in
-one process, neither able to reuse the other's pages. Installing it cost one
-line and **gained 16–43% throughput** (see `docs/PERFORMANCE.md` §6), which was
-not the reason for doing it.
+It did surface a real gap, and a bigger one than first written up here.
+pyo3-polars ships `PolarsAllocator`, which routes a plugin's allocations
+through py-polars' own allocator via its `polars.polars._allocator` capsule,
+and **we were not installing it**. This was first recorded as a performance
+nicety. It is not: Polars' own canonical plugin example opens with
+
+```rust
+use pyo3_polars::PolarsAllocator;
+#[global_allocator]
+static ALLOC: PolarsAllocator = PolarsAllocator::new();
+```
+
+so it is **part of the prescribed setup** — the piece that keeps allocation
+coherent between the two copies of Polars, and a large part of why a
+statically linked plugin is safe rather than a latent double-free. We had been
+running on a second, independent heap. Installing it also **gained 16–43%
+throughput** (`docs/PERFORMANCE.md` §6), which was not the reason for doing
+it.
 
 ### "Why not dynamically link Polars?"
 
