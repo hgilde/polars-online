@@ -541,7 +541,9 @@ pos = po.spec.coef_index(spec).filter(
 ```
 
 Both come from the same Rust code that renders the names, so they cannot
-drift from the strings.
+drift from the strings. The index also carries each field's `dtype` (`f64`,
+`bool` for `drift_*`, `str` for `selected_*`, `list[f64]` for `coef`), which
+is the declaration the expression plugin makes to polars.
 
 One sharp edge to know: a *target named* `y__r0.5` produces the same field
 string as a ridge grid on `y` would. Nothing breaks — the struct is still

@@ -245,3 +245,69 @@ class TestExpressionFeatures:
             .over("group")
         ).unnest("x0")
         assert any(c.startswith("cov") or c.startswith("corr") for c in out.columns), out.columns
+
+
+class TestEveryEmitFlagThroughThePlugin:
+    """docs/IMPROVEMENTS.md C1: the plugin declares its output struct up
+    front and polars checks the declaration against what the bank realizes,
+    so every field dtype has to be right -- `drift_*` is bool and
+    `selected_*` is str, which a name-prefix rule once declared as f64. Each
+    flag runs through `.over()` and must match the bank."""
+
+    CASES = [
+        {"emit_sigma": True},
+        {"emit_resid_z": True},
+        {"emit_selected": True, "ridge": [1e-6, 1.0]},
+        {"emit_averaged": True, "ridge": [1e-6, 1.0]},
+        {"emit_metrics": True},
+        {"resid_quantiles": [0.5, 0.9]},
+        {"emit_autocorr": True},
+        {"emit_drift": True},
+        {"emit_drift": True, "drift_action": "reset"},
+        {"emit_selected": True, "emit_drift": True, "halflife": [100.0, 300.0]},
+    ]
+
+    @pytest.mark.parametrize("kw", CASES, ids=[",".join(c) for c in CASES])
+    def test_matches_the_bank(self, kw):
+        df, _ = synthetic(seed=31, n_groups=2, n_rows=150, k=2)
+        feats = ["x0", "x1"]
+        expr = _expr_out(df, feats, **kw)
+        bank = _bank_out(df, feats, **kw)
+        assert expr.schema == bank.schema
+        # Non-float fields are compared as-is; `_assert_same` is for floats.
+        for c in expr.columns:
+            if expr.schema[c] in (pl.Boolean, pl.String):
+                assert expr[c].equals(bank[c]), c
+        floats = [c for c in expr.columns if expr.schema[c] == pl.Float64]
+        _assert_same(expr.select(floats), bank.select(floats))
+
+    def test_declared_dtypes_are_the_index(self):
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y0"],
+            features=["x0"],
+            halflife=100.0,
+            ridge=[1e-6, 1.0],
+            emit_selected=True,
+            emit_drift=True,
+        )
+        idx = po.spec.output_index(spec)
+        assert set(idx["dtype"]) == {"f64", "bool", "str", "list[f64]"}
+        df, _ = synthetic(seed=32, n_groups=1, n_rows=60, k=1)
+        out = df.select(
+            pl.col("y0").online.ewridge(
+                features=["x0"],
+                halflife=100.0,
+                ridge=[1e-6, 1.0],
+                emit_selected=True,
+                emit_drift=True,
+            )
+        ).unnest("y0")
+        as_polars = {
+            "f64": pl.Float64,
+            "bool": pl.Boolean,
+            "str": pl.String,
+            "list[f64]": pl.List(pl.Float64),
+        }
+        declared = {f: as_polars[d] for f, d in zip(idx["field"], idx["dtype"], strict=True)}
+        assert dict(out.schema) == declared

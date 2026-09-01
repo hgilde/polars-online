@@ -4,7 +4,7 @@
 //! itself (group = None), which makes expression ≡ bank true by construction.
 //! All input columns arrive packed in one struct (see [`online_run`]).
 
-use online_polars::{Bank, Spec, output_fields};
+use online_polars::{Bank, Spec, output_index};
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use serde::Deserialize;
@@ -46,18 +46,13 @@ fn parse_spec(kwargs: &OnlineKwargs) -> PolarsResult<Spec> {
     Ok(spec)
 }
 
+/// The declared output struct. Polars checks it against what the bank
+/// realizes, so both come from the same descriptor: `FieldMeta::dtype`.
 fn online_output(_input_fields: &[Field], kwargs: OnlineKwargs) -> PolarsResult<Field> {
     let spec = parse_spec(&kwargs)?;
-    let fields: Vec<Field> = output_fields(&spec)
-        .into_iter()
-        .map(|name| {
-            let dtype = if name.starts_with("coef") {
-                DataType::List(Box::new(DataType::Float64))
-            } else {
-                DataType::Float64
-            };
-            Field::new(name.into(), dtype)
-        })
+    let fields: Vec<Field> = output_index(&spec)
+        .iter()
+        .map(|f| Field::new(f.field.as_str().into(), f.dtype()))
         .collect();
     Ok(Field::new(
         spec.name.as_str().into(),

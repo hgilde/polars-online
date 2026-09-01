@@ -701,6 +701,13 @@ pub struct FieldMeta {
     pub quantile: Option<f64>,
     /// Columns an `ew_cov` statistic is over.
     pub columns: Option<Vec<String>>,
+    /// The polars dtype the field is materialized with, as its string form
+    /// (`f64`, `bool`, `str`, `list[f64]`). Set from `src`, so it is the same
+    /// table `assemble` fills the buffers from; the expression plugin declares
+    /// its output struct from [`FieldMeta::dtype`] (docs/IMPROVEMENTS.md C1 —
+    /// a name-prefix guess there once declared `drift_*` as `f64` while the
+    /// bank produced `bool`, and polars refused the struct).
+    pub dtype: String,
     /// Which assembled buffer, and where in it, this field's values come from.
     /// Private and not serialized: it is how `assemble` walks this schema
     /// instead of rebuilding the same nested loops with its own `format!`
@@ -748,12 +755,25 @@ impl FieldMeta {
             lambda: None,
             quantile: None,
             columns: None,
+            dtype: String::new(),
             src: Source::Unset,
         }
     }
     fn src(mut self, src: Source) -> Self {
         self.src = src;
+        self.dtype = self.dtype().to_string();
         self
+    }
+
+    /// The dtype `assemble` materializes this field with.
+    pub fn dtype(&self) -> DataType {
+        match self.src {
+            Source::Drift(_) => DataType::Boolean,
+            Source::SelName(_) => DataType::String,
+            Source::Coef(_) => DataType::List(Box::new(DataType::Float64)),
+            Source::Unset => unreachable!("every field is given a source in output_index"),
+            _ => DataType::Float64,
+        }
     }
     fn decay(mut self, d: &online_core::Decay) -> Self {
         match d {

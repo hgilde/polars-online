@@ -182,7 +182,8 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
     One row per struct field, in order: ``field``, ``kind`` (``pred``,
     ``resid``, ``sigma``, ``n_eff``, ``coef``, ...), ``target``, ``halflife``
     (or ``lam``), ``ridge``, ``feature_set``, ``lambda`` (lasso path point),
-    ``quantile``, and ``columns`` (the pair an ``ew_cov`` statistic is over).
+    ``quantile``, ``columns`` (the pair an ``ew_cov`` statistic is over), and
+    ``dtype`` (``f64``, ``bool``, ``str`` or ``list[f64]``).
 
     This is how to reach a field **without constructing its name** -- the
     string grammar (``pred_y__r0.5@h500``) stays an implementation detail::
@@ -213,6 +214,7 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
             "lambda": pl.Float64,
             "quantile": pl.Float64,
             "columns": pl.List(pl.String),
+            "dtype": pl.String,
         },
     )
 
