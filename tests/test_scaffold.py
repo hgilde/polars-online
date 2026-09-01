@@ -45,3 +45,28 @@ def test_the_declared_range_brackets_what_we_build_against() -> None:
     floor, ceiling = re.match(r">=([\d.]+),<(\d+)", req.group(1)).groups()
     assert floor == SUPPORTED_FLOOR
     assert _ver(SUPPORTED_FLOOR) <= _ver(BUILT_AGAINST) < (int(ceiling), 0, 0)
+
+
+def test_the_allocator_capsule_pyo3_polars_imports_still_resolves() -> None:
+    """A tripwire for a silent 43% throughput loss.
+
+    `pyo3_polars::PolarsAllocator` routes this extension's allocations through
+    py-polars' allocator by importing the capsule `polars.polars._allocator`,
+    and **falls back to the system allocator without erroring** if that name
+    stops resolving. Measured A/B/A, having it is worth +43% at k=5, so losing
+    it would be invisible and expensive.
+
+    The name is fragile in a non-obvious way: `polars.polars` is not an
+    importable submodule (`import_module` raises), it is an *attribute* of the
+    `polars` package aliasing the real runtime module -- currently
+    `_polars_runtime_32._polars_runtime`. `PyCapsule_Import` walks dotted names
+    by import-then-getattr, which is why it works at all. This asserts the
+    resolution path rather than the module's name, since the alias target is
+    polars' business and has already changed once.
+    """
+    native = getattr(pl, "polars", None)
+    assert native is not None, "polars no longer exposes `polars.polars`"
+    assert hasattr(native, "_allocator"), (
+        "the `polars.polars._allocator` capsule is gone; pyo3-polars' "
+        "PolarsAllocator is now silently falling back to the system allocator"
+    )

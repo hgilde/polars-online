@@ -413,21 +413,54 @@ not the reason for doing it.
 
 ### "Why not dynamically link Polars?"
 
-There is nothing to link against. py-polars' runtime is a 189 MB binary that
-exports **33 dynamic symbols**: three `PyInit_*` module entry points and a
-handful of incidental C symbols from vendored blake3 and crc libraries. Zero
-Polars Rust symbols.
+Worth stating precisely, because "there is no dynamic link" is too strong and
+the truth is more interesting: **nothing links dynamically against Polars' Rust
+API, but three Rust→Rust bindings are resolved at runtime — all of them across
+a C ABI.**
 
-Even if they were exported, Rust has no stable ABI — symbol names are mangled
-with a hash over the compiler version, crate version, features and the entire
-dependency graph. Binding to them would demand a bit-identical toolchain and
-dependency graph to the py-polars wheel, break on every polars patch release
-and every rustc bump, and be *far* tighter coupling than static linking. The
-1.28.1–1.44.1 range above exists precisely because we do not do that.
+What is *not* dynamically linked. Verified on both sides:
 
-The stable interface already exists and we already use it: the Arrow C Data
-Interface. In the sense that matters, this *is* the dynamic interop — through a
-versioned C ABI rather than through Rust symbols.
+- py-polars' runtime is a 189 MB binary exporting **33 dynamic symbols**: three
+  `PyInit_*` entry points, plus incidental C symbols from vendored blake3 and
+  crc libraries. **Zero Polars Rust symbols** — there is nothing to bind to.
+- Our extension is a `cdylib`, which statically links its whole Rust graph by
+  construction. `otool -L` shows it linking only system frameworks, libc++,
+  libiconv and libSystem, and of its 298 undefined symbols (104 CPython C API,
+  27 macOS frameworks, the rest libc/libc++) **none** is Polars- or
+  Arrow-related.
+
+And it could not work anyway: Rust has no stable ABI. Symbol names carry a hash
+over the compiler version, crate version, features and the entire dependency
+graph, so binding to them would demand a bit-identical toolchain and dependency
+graph to the py-polars wheel, and break on every polars patch release and every
+rustc bump. That is *far* tighter coupling than static linking — the
+1.28.1–1.44.1 range above exists precisely because we do not do it.
+
+What *is* resolved dynamically, Rust to Rust, all through C-compatible
+function pointers:
+
+1. **The plugin entry points.** py-polars `dlopen`s our `.so` and `dlsym`s
+   `_polars_plugin_online_run`, `_polars_plugin_field_online_run`,
+   `_polars_plugin_get_version` and `_polars_plugin_get_last_error_message`.
+   That is py-polars calling into our Rust at runtime.
+2. **The `release` callbacks inside every `SeriesExport`** — a function pointer
+   into the *producing* binary, invoked by the consumer. This is what makes two
+   copies of Polars safe rather than a double-free.
+3. **The allocator capsule.** `PyCapsule_Import("polars.polars._allocator")`
+   hands us a struct of four function pointers into py-polars' binary, which
+   then serve every allocation this extension makes.
+
+So the dynamic interop is real; it is just at the C level, where there is an
+ABI to rely on, instead of at the Rust level, where there is not.
+
+**A trap worth knowing about (3).** `polars.polars` is *not* an importable
+submodule — `importlib.import_module` raises — it is an **attribute** of the
+`polars` package aliasing the real runtime module, currently
+`_polars_runtime_32._polars_runtime`. `PyCapsule_Import` walks dotted names by
+import-then-getattr, which is the only reason the lookup succeeds. And
+`PolarsAllocator` **falls back to the system allocator without erroring** when
+it fails, so a rename would cost 43% throughput silently. `test_scaffold.py`
+asserts the resolution path for exactly that reason.
 
 ## Going public (2026-08-31)
 

@@ -276,7 +276,10 @@ memory — but the investigation turned up that pyo3-polars ships
 allocator, and we were not installing it. Two allocator arenas in one process,
 neither able to reuse the other's pages.
 
-One line, `#[global_allocator]`, reproducible across repeated runs:
+One line, `#[global_allocator]`. Attributed by A/B/A on an otherwise identical
+tree, because two changes had landed between the first two measurements and the
+gain was too large to assign by assumption: **5,716,246 → 8,165,418 →
+5,614,830** rows/s at k=5, bounding machine drift at ~2%.
 
 | case | before | after | |
 |---|---:|---:|---:|
