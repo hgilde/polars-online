@@ -231,6 +231,19 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
 - [x] 16. CI: wheels + CLI binaries for macOS/Windows, cross-platform state test, Polars-latest
       canary job. Benchmark script + numbers in README.
 - [x] 17. README with the three usage modes and the math per model.
+- [ ] 18. **Weekly native leak check in CI — after the repo is public.** Add
+      `scripts/leakcheck.sh` to a scheduled Linux job (valgrind, with CPython's
+      suppression file) and to the weekly macOS run (`leaks`). Deliberately
+      deferred, not forgotten: it is worthless on a budget, because valgrind is
+      roughly 50x slower than the suite and macOS bills at 10x, and the whole
+      2,000-minute month went in a single day while the repo was private
+      (`docs/RELEASE-READINESS.md`). Once Actions is unmetered the cost is
+      irrelevant and the value is real — `tests/test_ffi_memory.py` can only
+      see a leak large enough to move RSS, whereas `leaks`/valgrind find
+      unreachable blocks of any size. **Trigger: the repo going public.** Both
+      currently report clean, so the job starts from a known-good baseline;
+      wire it as reported-not-gating first (like the benchmark job), since
+      valgrind on CPython is noisy until the suppressions are tuned.
 
 ## 11a. Decisions made while implementing
 
