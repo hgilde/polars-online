@@ -265,6 +265,51 @@ can break that macOS never will.
 | T-D3 | ~~P2~~ **done** | Determinism across parallelism: the bank is run in subprocesses at `RAYON_NUM_THREADS=1` and `=8` over six groups, and the outputs must be identical. |
 | T-D4 | ~~P3~~ **done** | Coverage: `scripts/coverage.sh` reports 96% Python, 75%/73% Rust (caveat above); CI reports the Python figure non-gating. **Mutation testing** (`scripts/mutants.sh`) has now been run in full over `online-core`: **1645 mutants, 517 missed / 1104 caught / 24 unviable**. The misses concentrated exactly where the Rust unit tests lean on the *Python* oracle suite, which `cargo test` cannot see — `robust.rs` 68% missed, `kalman.rs` 38%, `ewridge.rs` 36%. Fixed with `crates/online-core/tests/golden.rs`: one fixed 60-row stream per model with the exact expected predictions embedded, which pins the arithmetic against any mutation. Measured effect on the worst file: **`robust.rs` went from 162 missed / 77 caught to 42 / 197**, a 74% reduction from one test. The residue is mostly accessors (`n_features -> 0`) and validation-branch comparisons, which are low value. Still open: re-running the full pass to get the new headline number, and making it periodic in CI. |
 
+## FFI memory and crash safety (2026-08-31)
+
+Two copies of Polars live in this process and data crosses on the Arrow C Data
+Interface, where a `SeriesExport` carries a `release` callback back into the
+binary that produced it. Nothing else in the suite would notice if that
+contract were broken: a leak is invisible and a double-free is a crash that
+takes pytest with it. `tests/test_ffi_memory.py` (16 tests, ~5 s) covers it.
+
+**The assertion is "plateaus", not "does not grow."** Allocators do not return
+pages eagerly, rayon spawns workers lazily, and Polars caches the loaded
+plugin. Measured: our `.over()` costs a one-time **+6 MB** and is then flat
+across 1,800 iterations (per-block deltas +0.7, −0.9, +1.1, −0.3, −0.3),
+whereas native Polars `.over()` slowly *returns* memory. A naive "RSS must not
+grow" test would have failed on that step forever. So `assert_plateaus`
+discards the first block and compares the rest against each other: a step
+passes, a slope fails.
+
+Covered: repeated `fit_predict`; bank churn; the expression plugin; `.over()`
+across groups; multi-chunk inputs (a chunked Series exports one `ArrowArray`
+per chunk, each needing release); sliced frames that share their parent's
+buffers; **both error paths**; outputs outliving their inputs; and state
+round-trips.
+
+Crash cases run in a **subprocess with `faulthandler`**, so a segfault is a
+failed assertion with a native traceback instead of a dead test session: GC of
+frames mid-flight, repeated reference/dereference with refcount checks,
+reference cycles holding a bank, empty/single-row/all-null frames, both FFI
+paths interleaved while each holds the other's exports, and pickle round-trips.
+
+`scripts/leakcheck.sh` goes further than RSS can — `leaks` on macOS walks the
+heap for unreachable blocks, valgrind on Linux. Current result on 300
+iterations of both paths plus the error path: **0 leaks for 0 total leaked
+bytes.** Not in `gate.sh`: it needs a live process and valgrind is ~50x slower.
+Run it after touching `crates/online-py` or the extraction path.
+
+Two findings worth recording, neither a leak:
+
+- The error paths are clean. The sharper one is the plugin: the engine has
+  already exported the inputs when our function returns an error, so releasing
+  them happens on a path that only runs when something has gone wrong.
+- A **String feature column is silently parsed back to f64**, and a
+  non-numeric one becomes all-nulls rather than raising. Consistent with the
+  null policy and not a memory issue, but it means `pytest.raises` on a String
+  column does not fire — a Categorical is the dtype that is genuinely refused.
+
 ## What is left
 
 The blocker this section used to describe — *nothing has ever been pushed, no
