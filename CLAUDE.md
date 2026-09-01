@@ -64,6 +64,51 @@ cargo run -p online-cli -- --config examples/bank.toml
    `a` and `b` are both 0/0. Guard every such division; an unguarded one poisons the state
    with a NaN that never washes out.
 
+## Linking
+
+10. **Use the Rust API the way Rust intends, and check the docs rather than
+    recalling them.** The Reference is installed locally:
+    `$(rustc --print sysroot)/share/doc/rust/html/reference/linkage.html`.
+11. **Prefer the Rust-native way to connect Rust components.** That is
+    `crate-type = "dylib"` plus `-C prefer-dynamic`, not a hand-rolled C shim.
+    The compiler consumes a dependency in exactly two forms — `rlib` or
+    `dylib` — and which are available is the *publishing* crate's choice.
+12. **Do not add static linking of anything new without raising it first.**
+    If a change would statically link a library that is not already linked,
+    stop and ask. This includes vendoring a C library through a `-sys` crate.
+
+**Standing exception, already raised and unresolved (2026-08-31).** Everything
+in this workspace is statically linked today, and it is not a choice that was
+made:
+
+- A Python extension module must be a `cdylib` — the Reference: "used when
+  compiling a dynamic library to be loaded from another language" — and a
+  `cdylib` statically links its Rust dependency graph by construction.
+- **Zero of our 453 dependencies publishes a `dylib` target.** 419 are plain
+  `lib` (rlib). Not polars, not faer, not serde, not pyo3. `crate-type` is
+  declared by the crate being published, so this cannot be overridden
+  downstream, and near-nothing on crates.io publishes a dylib.
+- py-polars exports **no Rust symbols at all** — 33 on macOS, 32 on Linux, none
+  mangled — so there is nothing to bind to even in principle, and Rust has no
+  stable ABI to bind with.
+
+The one part under our control was tested rather than assumed: building
+`online-core` and `online-polars` as dylibs and adding `-C prefer-dynamic`
+*does* work, and the extension then links `libonline_core.dylib` and
+`libonline_polars.dylib` dynamically. It was **not** adopted, and the reasons
+belong with the rule so nobody re-litigates it from scratch:
+
+- It also drags in `libstd-<hash>.dylib`, a **toolchain-version-pinned** copy of
+  the Rust standard library that exists only inside a rustup install. Shipping
+  that in a wheel means shipping libstd and matching the exact rustc forever.
+- It saves nothing: polars stays statically inside whichever dylib uses it,
+  because polars is rlib-only. The bytes move, they do not shrink.
+- It multiplies the artifacts a wheel must carry and the rpaths it must wire,
+  per platform, for components that are always versioned and shipped together.
+
+Revisit if polars ever ships a `dylib` target. Until then, "do not statically
+link" is achievable for *new* dependencies only, which is what rule 12 asks.
+
 ## Style
 
 - Rust: `cargo fmt`, `cargo clippy -D warnings`. Small files, one model per file.
