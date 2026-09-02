@@ -28,6 +28,18 @@ class ModelBank:
 
     def fit_predict(self, df: pl.DataFrame) -> pl.DataFrame:
         """One chunk in; the chunk plus one struct column per spec out."""
+        if not isinstance(df, pl.DataFrame):
+            # A LazyFrame is the common slip, and the attribute error it used to
+            # produce named an internal method.
+            if isinstance(df, pl.LazyFrame):
+                msg = (
+                    "ModelBank.fit_predict takes a DataFrame, not a LazyFrame: collect it "
+                    "first (lf.collect()), or feed it in chunks with "
+                    "fit_predict_batches(lf.collect_batches())"
+                )
+            else:
+                msg = f"ModelBank.fit_predict takes a polars DataFrame, got {type(df).__name__}"
+            raise TypeError(msg)
         outs = self._native.fit_predict(df)
         return df.with_columns([pl.Series(s) for s in outs])
 

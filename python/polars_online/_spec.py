@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import math
+import numbers
+import types
+import typing
+from collections.abc import Callable
 from typing import Any
 
 import polars as pl
@@ -15,13 +20,21 @@ def _json(spec: dict[str, Any]) -> str:
     """JSON has no infinity literal, but ``halflife=inf`` is meaningful (it pins
     a coefficient), so infinities are encoded as strings the Rust side
     understands. A NaN is never meaningful in a spec and is refused here, by
-    parameter name, rather than by the JSON offset serde would report."""
+    parameter name, rather than by the JSON offset serde would report. NumPy
+    scalars are plain numbers here (``json`` alone refuses them)."""
 
     def enc(v: Any, key: str) -> Any:
-        if isinstance(v, float) and not math.isfinite(v):
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, numbers.Integral):
+            return int(v)
+        if isinstance(v, numbers.Real):
+            v = float(v)
             if math.isnan(v):
                 raise ValueError(f"spec {json.dumps(spec.get('name'))}: {key} must not be NaN")
-            return "inf" if v > 0 else "-inf"
+            if math.isinf(v):
+                return "inf" if v > 0 else "-inf"
+            return v
         if isinstance(v, dict):
             return {k: enc(x, k) for k, x in v.items()}
         if isinstance(v, (list, tuple)):
@@ -29,6 +42,120 @@ def _json(spec: dict[str, Any]) -> str:
         return v
 
     return json.dumps(enc(spec, "spec"))
+
+
+# The builders' annotations are the contract, and these two functions read
+# them, so a wrong shape is reported by parameter name ("halflife must be a
+# number or a list of numbers, got str '10'") before anything is serialized.
+# The Rust side checks the same things, but serde cannot name the field once it
+# is inside the model's tagged union, and "expected f64" with no name is not
+# much of a message.
+
+
+def _matches(v: Any, hint: Any) -> bool:
+    origin = typing.get_origin(hint)
+    if origin in (types.UnionType, typing.Union):
+        return any(_matches(v, a) for a in typing.get_args(hint))
+    if hint is type(None):
+        return v is None
+    if origin is list:
+        (inner,) = typing.get_args(hint)
+        return isinstance(v, (list, tuple)) and all(_matches(x, inner) for x in v)
+    if origin is dict:
+        key, val = typing.get_args(hint)
+        return isinstance(v, dict) and all(
+            _matches(k, key) and _matches(x, val) for k, x in v.items()
+        )
+    if hint is bool:
+        return isinstance(v, bool)
+    if hint is float:
+        return isinstance(v, numbers.Real) and not isinstance(v, bool)
+    if hint is int:
+        return isinstance(v, numbers.Integral) and not isinstance(v, bool)
+    if hint is str:
+        return isinstance(v, str)
+    return True  # an annotation this does not read; the Rust side still checks
+
+
+def _describe(hint: Any, plural: bool = False) -> str:
+    origin = typing.get_origin(hint)
+    if origin in (types.UnionType, typing.Union):
+        parts = [_describe(a, plural) for a in typing.get_args(hint) if a is not type(None)]
+        return " or ".join(parts)
+    if origin is list:
+        (inner,) = typing.get_args(hint)
+        return ("lists of " if plural else "a list of ") + _describe(inner, plural=True)
+    if origin is dict:
+        key, val = typing.get_args(hint)
+        return f"a dict of {_describe(key)} -> {_describe(val)}"
+    nouns = {float: ("a number", "numbers"), int: ("an int", "ints")}
+    nouns |= {bool: ("a bool", "bools"), str: ("a str", "strs")}
+    one, many = nouns.get(hint, (str(hint), str(hint)))
+    return many if plural else one
+
+
+def _got(v: Any) -> str:
+    r = repr(v)
+    return f"{type(v).__name__} {r if len(r) <= 60 else r[:57] + '...'}"
+
+
+# The parameters whose Rust type admits ``inf`` (``Num`` / ``FloatOrList``
+# rather than ``f64``): no decay, no ceiling, a pinned coefficient, no clip.
+# Everywhere else an infinity is refused here by name, because once it is
+# inside the model's tagged union serde can only say `expected f64`. Keyed by
+# builder because ``ridge`` is a grid for ``ewridge`` and a plain float for
+# ``huber``; ``"*"`` is the shared parameters. tests/test_error_messages.py
+# checks this table against the Rust side.
+_INF_OK: dict[str, frozenset[str]] = {
+    "*": frozenset({"halflife", "min_periods", "max_dclock", "session_gap"}),
+    "ewridge": frozenset({"ridge"}),
+    "kalman": frozenset({"coef_halflife", "q"}),
+    "sgd": frozenset({"clip_gradient"}),
+    "holt": frozenset({"trend_halflife"}),
+}
+
+
+def _finite(value: Any) -> bool:
+    if isinstance(value, (list, tuple)):
+        return all(_finite(x) for x in value)
+    if isinstance(value, numbers.Real) and not isinstance(value, bool):
+        return not math.isinf(value)
+    return True
+
+
+def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
+    """Check each keyword against ``fn``'s annotations (and ``_common``'s for
+    the shared parameters) so a wrong shape names the parameter."""
+    skip = {"return", "common"}
+    own = {k: v for k, v in typing.get_type_hints(fn).items() if k not in skip}
+    shared = typing.get_type_hints(_common)
+    shared = {k: v for k, v in shared.items() if k not in {"return", "name", "model"}}
+    inf_ok = _INF_OK["*"] | _INF_OK.get(fn.__name__, frozenset())
+
+    @functools.wraps(fn)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        name = args[0] if args else kwargs.get("name")
+        if not isinstance(name, str):
+            raise TypeError(f"spec name must be a str, got {_got(name)}")
+        who = f"spec {json.dumps(name)}"
+        for key, value in kwargs.items():
+            if key == "name":
+                continue
+            hint = own.get(key, shared.get(key))
+            if hint is None:
+                raise TypeError(
+                    f"{who}: {fn.__name__}() got an unexpected keyword argument {key!r}"
+                )
+            if not _matches(value, hint):
+                raise TypeError(f"{who}: {key} must be {_describe(hint)}, got {_got(value)}")
+            # Every int parameter is a count (u32 on the Rust side).
+            if _matches(value, int) and int in (hint, *typing.get_args(hint)) and value < 0:
+                raise ValueError(f"{who}: {key} must be >= 0, got {value}")
+            if key not in inf_ok and not _finite(value):
+                raise ValueError(f"{who}: {key} must be finite, got {_got(value)}")
+        return fn(*args, **kwargs)
+
+    return wrapper
 
 
 __all__ = [
@@ -114,6 +241,7 @@ def _common(
     return spec
 
 
+@_checked
 def ewridge(
     name: str,
     *,
@@ -276,6 +404,7 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
+@_checked
 def rls(
     name: str,
     *,
@@ -304,6 +433,7 @@ def rls(
     return _common(name, model, targets=targets, features=features, **common)
 
 
+@_checked
 def lasso(
     name: str,
     *,
@@ -349,6 +479,7 @@ def lasso(
     return _common(name, model, targets=targets, features=features, **common)
 
 
+@_checked
 def kalman(
     name: str,
     *,
@@ -400,6 +531,7 @@ def kalman(
     return _common(name, model, targets=targets, features=features, **common)
 
 
+@_checked
 def huber(
     name: str,
     *,
@@ -435,6 +567,7 @@ def huber(
     return _common(name, model, targets=targets, features=features, **common)
 
 
+@_checked
 def quantile(
     name: str,
     *,
@@ -470,6 +603,7 @@ def quantile(
     return _common(name, model, targets=targets, features=features, **common)
 
 
+@_checked
 def ftrl(
     name: str,
     *,
@@ -520,6 +654,7 @@ def ftrl(
     return _common(name, model, targets=targets, features=features, **common)
 
 
+@_checked
 def ew_cov(
     name: str,
     *,
@@ -562,10 +697,17 @@ def ew_cov(
         "stats": stats,
         "precision_prior": precision_prior,
     }
+    if "targets" in common:
+        msg = (
+            f"spec {json.dumps(name)}: ew_cov() takes no targets; its statistics are over "
+            "the features"
+        )
+        raise TypeError(msg)
     # `targets` is required by the common-parameter schema but unused here.
     return _common(name, model, targets=[features[0]], features=features, **common)
 
 
+@_checked
 def sgd(
     name: str,
     *,
@@ -637,6 +779,7 @@ def sgd(
     return _common(name, model, targets=targets, features=features, **common)
 
 
+@_checked
 def pa(
     name: str,
     *,
@@ -678,6 +821,7 @@ def pa(
     return _common(name, model, targets=targets, features=features, **common)
 
 
+@_checked
 def holt(
     name: str,
     *,

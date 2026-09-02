@@ -70,6 +70,15 @@ REJECTED = [
         dict(halflife=10.0, quantile=0.5, ridge=-1e-3),
         "ridge must be finite and >= 0",
     ),
+    # A plain f64 on the Rust side: refused in Python by name (IMPROVEMENTS U2).
+    (po.spec.quantile, dict(halflife=10.0, quantile=0.5, ridge=INF), "ridge must be finite"),
+    (po.spec.rls, dict(halflife=10.0, ridge=INF), "ridge must be finite"),
+    (
+        po.spec.kalman,
+        dict(halflife=10.0, coef_halflife=10.0, obs_var=INF),
+        "obs_var must be finite",
+    ),
+    (po.spec.ewridge, dict(halflife=10.0, solve_every=INF), "solve_every must be finite"),
     (
         po.spec.quantile,
         dict(halflife=10.0, quantile=0.5, quantile_eps=NAN),

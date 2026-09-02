@@ -181,13 +181,13 @@ Every model takes the same stream parameters:
 
 | parameter | meaning |
 |---|---|
-| `targets`, `features` | column names; ≥1 target, shared `X'X` across targets |
+| `targets`, `features` | column names; ≥1 target, shared `X'X` across targets. Columns must be numeric (Boolean counts): a String column is refused, not cast to null |
 | `add_intercept` | default `True` |
 | `clock` | monotone **numeric** column (seconds, cumulative volume, …). `None` ⇒ row count. A temporal column is rejected — cast it first, e.g. `pl.col("ts").dt.epoch("s")` — because its internal representation would silently set the units of `halflife`, `max_dclock` and `session_gap` |
 | `halflife` / `lam` | decay in clock units; mutually exclusive. A list of halflives means one accumulator per value |
 | `max_dclock` | ceiling on the clock delta (required with `clock`); `0` disables decay, `inf` removes the ceiling |
 | `on_clock_reset` | what a backwards clock means: `"max"` (default), `"zero"`, `"reset_state"`, or `"error"` to refuse the chunk — the bank is left as it was, so the corrected chunk can be fed |
-| `session`, `session_gap` | on a session change, apply this delta (or `"reset"`) |
+| `session`, `session_gap` | on a session change, apply this delta (`"reset"` resets the state, `inf` never applies it) |
 | `session_shrink`, `long_halflife` | `ewridge` only: at a session change, mix partway back toward a slow-moving twin — changes what the model believes, where `session_gap` only changes how confident it is |
 | `weight` | row weight column |
 | `min_periods` | in `n_eff` units; outputs are null until reached. A list gives one threshold per target — warmup gates output, not learning |
@@ -209,6 +209,12 @@ target's update. NaN, ±inf and any magnitude above `1e100` count as null —
 sentinels like `f64::MAX` never reach a model, and every model is tested to
 keep a finite state and go on learning through anything below that bound
 (`docs/IMPROVEMENTS.md` C2).
+
+**Mistakes are named.** A builder checks each keyword against its own type
+hints, so `halflife="10"` says `spec "m": halflife must be a number or a list
+of numbers, got str '10'`; a missing column says which spec wanted it, in what
+role, and what the frame has; a spec named like an input column is refused
+rather than silently replacing it (`docs/IMPROVEMENTS.md` U2).
 
 ## Models
 

@@ -132,14 +132,13 @@ class TestNothingLeaksAcrossTheBoundary:
 
     def test_the_bank_error_path_still_releases(self):
         """The likeliest leak site in any FFI: a call that fails *after* the
-        frame has crossed. A Categorical is the right trigger -- every other
-        column imports cleanly first, and it is one of the few dtypes that is
-        genuinely refused (a String feature is parsed back to f64, and a
-        non-numeric one becomes nulls, so neither raises)."""
+        frame has crossed. A Categorical feature is the trigger: every column
+        imports cleanly first, then the dtype check refuses it
+        (docs/IMPROVEMENTS.md U2)."""
         bad = frame().with_columns(x1=pl.col("x1").cast(pl.String).cast(pl.Categorical))
 
         def raises():
-            with pytest.raises(ValueError, match="categorical"):
+            with pytest.raises(ValueError, match="has dtype cat; it must be numeric"):
                 po.ModelBank([SPEC]).fit_predict(bad)
 
         assert_plateaus(raises)
@@ -152,7 +151,7 @@ class TestNothingLeaksAcrossTheBoundary:
         bad = frame().with_columns(c=pl.col("x1").cast(pl.String).cast(pl.Categorical))
 
         def raises():
-            with pytest.raises(pl.exceptions.ComputeError, match="categorical"):
+            with pytest.raises(pl.exceptions.ComputeError, match="it must be numeric"):
                 bad.with_columns(
                     pl.col("y").online.ewridge(features=["c"], halflife=50.0, min_periods=2.0)
                 )

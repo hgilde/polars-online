@@ -4,6 +4,7 @@
 
 use online_core::{ClockCfg, Decay, OnClockReset, SessionGap};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 fn default_true() -> bool {
     true
@@ -136,35 +137,107 @@ impl Serialize for Num {
     }
 }
 
+impl Num {
+    /// The spellings of the non-finite values accepted in place of a number.
+    fn from_word(w: &str) -> Option<Num> {
+        match w.to_ascii_lowercase().as_str() {
+            "inf" | "+inf" | "infinity" | "+infinity" => Some(Num(f64::INFINITY)),
+            "-inf" | "-infinity" => Some(Num(f64::NEG_INFINITY)),
+            "nan" => Some(Num(f64::NAN)),
+            _ => None,
+        }
+    }
+}
+
+// Hand-written visitors rather than `#[serde(untagged)]`: an untagged enum
+// that matches nothing reports "data did not match any variant of untagged
+// enum FloatOrList", which names a Rust type and not what was expected. A
+// visitor says `invalid type: string "10", expected a number or a list of
+// numbers ("inf" allowed)`, and does so for JSON, TOML and the msgpack state
+// file alike (all three are self-describing, so `deserialize_any` is exactly
+// what the untagged form used underneath).
+
+struct NumVisitor;
+
+impl serde::de::Visitor<'_> for NumVisitor {
+    type Value = Num;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a number or \"inf\"/\"-inf\"")
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Num, E> {
+        Ok(Num(v))
+    }
+
+    fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Num, E> {
+        Ok(Num(v as f64))
+    }
+
+    fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Num, E> {
+        Ok(Num(v as f64))
+    }
+
+    fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Num, E> {
+        Num::from_word(v).ok_or_else(|| E::invalid_value(serde::de::Unexpected::Str(v), &self))
+    }
+}
+
 impl<'de> Deserialize<'de> for Num {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Raw {
-            Num(f64),
-            Word(String),
-        }
-        match Raw::deserialize(d)? {
-            Raw::Num(v) => Ok(Num(v)),
-            Raw::Word(w) => match w.to_ascii_lowercase().as_str() {
-                "inf" | "+inf" | "infinity" | "+infinity" => Ok(Num(f64::INFINITY)),
-                "-inf" | "-infinity" => Ok(Num(f64::NEG_INFINITY)),
-                "nan" => Ok(Num(f64::NAN)),
-                other => Err(serde::de::Error::custom(format!(
-                    "expected a number or \"inf\"/\"-inf\", got {other:?}"
-                ))),
-            },
-        }
+        d.deserialize_any(NumVisitor)
     }
 }
 
 /// A float or a list of floats (grids; `halflife` lists mean one accumulator
 /// per value, docs/PLAN.md §4.1).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum FloatOrList {
     Float(Num),
     List(Vec<Num>),
+}
+
+impl<'de> Deserialize<'de> for FloatOrList {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = FloatOrList;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a number or a list of numbers (\"inf\" allowed)")
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<FloatOrList, E> {
+                Ok(FloatOrList::Float(Num(v)))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<FloatOrList, E> {
+                Ok(FloatOrList::Float(Num(v as f64)))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<FloatOrList, E> {
+                Ok(FloatOrList::Float(Num(v as f64)))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<FloatOrList, E> {
+                Num::from_word(v)
+                    .map(FloatOrList::Float)
+                    .ok_or_else(|| E::invalid_value(serde::de::Unexpected::Str(v), &self))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                seq: A,
+            ) -> Result<FloatOrList, A::Error> {
+                Vec::<Num>::deserialize(serde::de::value::SeqAccessDeserializer::new(seq))
+                    .map(FloatOrList::List)
+            }
+        }
+
+        d.deserialize_any(V)
+    }
 }
 
 impl FloatOrList {
@@ -177,11 +250,49 @@ impl FloatOrList {
 }
 
 /// `session_gap`: clock units, or "reset".
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum SessionGapSpec {
     Gap(f64),
     Word(String),
+}
+
+impl<'de> Deserialize<'de> for SessionGapSpec {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+
+        impl serde::de::Visitor<'_> for V {
+            type Value = SessionGapSpec;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a gap in clock units (\"inf\" for never) or the word \"reset\"")
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<SessionGapSpec, E> {
+                Ok(SessionGapSpec::Gap(v))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<SessionGapSpec, E> {
+                Ok(SessionGapSpec::Gap(v as f64))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<SessionGapSpec, E> {
+                Ok(SessionGapSpec::Gap(v as f64))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<SessionGapSpec, E> {
+                if v == "reset" {
+                    Ok(SessionGapSpec::Word(v.to_string()))
+                } else if let Some(n) = Num::from_word(v) {
+                    Ok(SessionGapSpec::Gap(n.0))
+                } else {
+                    Err(E::invalid_value(serde::de::Unexpected::Str(v), &self))
+                }
+            }
+        }
+
+        d.deserialize_any(V)
+    }
 }
 
 /// Model choice + model-specific params (docs/PLAN.md §4).

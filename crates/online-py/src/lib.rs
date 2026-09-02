@@ -3,7 +3,7 @@
 //! serialized by the thin wrapper in `python/polars_online/`).
 
 use online_polars::{Bank, Spec};
-use pyo3::exceptions::{PyIOError, PyValueError};
+use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3_polars::{PyDataFrame, PySeries};
 
@@ -28,9 +28,33 @@ static ALLOC: pyo3_polars::PolarsAllocator = pyo3_polars::PolarsAllocator::new()
 
 mod expr;
 
+/// Parse a spec (or a list of them) from the JSON the Python builders emit.
+///
+/// The error names the field, not a JSON offset: `targets="y"` reads
+/// `invalid spec: targets: invalid type: string "y", expected a sequence`
+/// rather than `... at line 1 column 42` (docs/IMPROVEMENTS.md U2).
+pub(crate) fn from_json<T: serde::de::DeserializeOwned>(json: &str) -> Result<T, String> {
+    let mut de = serde_json::Deserializer::from_str(json);
+    serde_path_to_error::deserialize(&mut de).map_err(|e| {
+        let path = e.path().to_string();
+        // serde_json appends " at line L column C" to every message; the
+        // path replaces it.
+        let inner = e.into_inner().to_string();
+        let msg = inner
+            .rsplit_once(" at line ")
+            .map_or(inner.as_str(), |(m, _)| m)
+            .to_string();
+        let at = if path == "." {
+            String::new()
+        } else {
+            format!("{path}: ")
+        };
+        format!("invalid spec: {at}{msg}")
+    })
+}
+
 fn parse_specs(specs_json: &str) -> PyResult<Vec<Spec>> {
-    serde_json::from_str(specs_json)
-        .map_err(|e| PyValueError::new_err(format!("invalid spec: {e}")))
+    from_json(specs_json).map_err(PyValueError::new_err)
 }
 
 /// Chunk-fed model bank: feed ordered chunks, get the input chunk back with one
@@ -56,6 +80,16 @@ struct PyModelBank {
     inner: Bank,
 }
 
+/// The error for a bank reached from a second thread while `fit_predict` is
+/// running on the first (the GIL is released for the run).
+fn busy(what: &str) -> PyErr {
+    PyRuntimeError::new_err(format!(
+        "ModelBank.{what}: the bank is running fit_predict on another thread; a bank \
+         is one ordered stream and cannot be used concurrently. Wait for the call to \
+         return, or give each thread its own bank."
+    ))
+}
+
 #[pymethods]
 impl PyModelBank {
     #[new]
@@ -66,10 +100,18 @@ impl PyModelBank {
     }
 
     /// Run all specs over one chunk; returns the output struct columns only.
-    fn fit_predict(&mut self, py: Python<'_>, df: PyDataFrame) -> PyResult<Vec<PySeries>> {
+    ///
+    /// The GIL is released for the run, so a second thread can reach this
+    /// method while the first is inside it. The borrow refuses it -- a bank is
+    /// one ordered stream and cannot be fed from two places at once -- and the
+    /// refusal says so, rather than pyo3's "Already borrowed".
+    fn fit_predict(slf: &Bound<'_, Self>, df: PyDataFrame) -> PyResult<Vec<PySeries>> {
+        let mut this = slf.try_borrow_mut().map_err(|_| busy("fit_predict"))?;
+        let bank = &mut this.inner;
         let df = df.into();
-        let cols = py
-            .detach(|| self.inner.fit_predict(&df))
+        let cols = slf
+            .py()
+            .detach(|| bank.fit_predict(&df))
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(cols
             .into_iter()
@@ -77,14 +119,16 @@ impl PyModelBank {
             .collect())
     }
 
-    fn save(&self, path: &str) -> PyResult<()> {
-        self.inner
+    fn save(slf: &Bound<'_, Self>, path: &str) -> PyResult<()> {
+        let this = slf.try_borrow().map_err(|_| busy("save"))?;
+        this.inner
             .save(std::path::Path::new(path))
             .map_err(PyIOError::new_err)
     }
 
-    fn save_bytes(&self) -> PyResult<Vec<u8>> {
-        self.inner.save_bytes().map_err(PyValueError::new_err)
+    fn save_bytes(slf: &Bound<'_, Self>) -> PyResult<Vec<u8>> {
+        let this = slf.try_borrow().map_err(|_| busy("save_bytes"))?;
+        this.inner.save_bytes().map_err(PyValueError::new_err)
     }
 
     #[staticmethod]
@@ -110,9 +154,10 @@ impl PyModelBank {
     /// reach for pickle without asking (multiprocessing, joblib, caching), and
     /// "cannot pickle" is a worse answer than reusing the serialization that
     /// is already tested for exact resume.
-    fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, (Vec<u8>,))> {
-        let bytes = self.inner.save_bytes().map_err(PyValueError::new_err)?;
-        let loader = py.get_type::<PyModelBank>().getattr("load_bytes")?;
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<(Bound<'py, PyAny>, (Vec<u8>,))> {
+        let this = slf.try_borrow().map_err(|_| busy("pickle"))?;
+        let bytes = this.inner.save_bytes().map_err(PyValueError::new_err)?;
+        let loader = slf.py().get_type::<PyModelBank>().getattr("load_bytes")?;
         Ok((loader, (bytes,)))
     }
 
@@ -172,8 +217,8 @@ impl PyModelBank {
 /// threads while a large file streams.
 #[pyfunction]
 fn run_config(py: Python<'_>, config_json: &str) -> PyResult<(usize, usize)> {
-    let cfg: online_polars::RunConfig = serde_json::from_str(config_json)
-        .map_err(|e| PyValueError::new_err(format!("invalid run config: {e}")))?;
+    let cfg: online_polars::RunConfig = from_json(config_json)
+        .map_err(|e| PyValueError::new_err(e.replacen("invalid spec", "invalid run config", 1)))?;
     let stats = py
         .detach(|| online_polars::run_config(&cfg, |_| {}))
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -183,8 +228,7 @@ fn run_config(py: Python<'_>, config_json: &str) -> PyResult<(usize, usize)> {
 /// Validate a single spec (raises ValueError with the reason).
 #[pyfunction]
 fn validate_spec(spec_json: &str) -> PyResult<()> {
-    let spec: Spec = serde_json::from_str(spec_json)
-        .map_err(|e| PyValueError::new_err(format!("invalid spec: {e}")))?;
+    let spec: Spec = from_json(spec_json).map_err(PyValueError::new_err)?;
     spec.validate().map_err(PyValueError::new_err)?;
     online_polars::build_models(&spec)
         .map(|_| ())
@@ -197,8 +241,7 @@ fn validate_spec(spec_json: &str) -> PyResult<()> {
 /// into a DataFrame.
 #[pyfunction]
 fn spec_output_index(spec_json: &str) -> PyResult<String> {
-    let spec: Spec = serde_json::from_str(spec_json)
-        .map_err(|e| PyValueError::new_err(format!("invalid spec: {e}")))?;
+    let spec: Spec = from_json(spec_json).map_err(PyValueError::new_err)?;
     spec.validate().map_err(PyValueError::new_err)?;
     serde_json::to_string(&online_polars::output_index(&spec))
         .map_err(|e| PyValueError::new_err(e.to_string()))
@@ -207,8 +250,7 @@ fn spec_output_index(spec_json: &str) -> PyResult<String> {
 /// Output field names for a spec, without building a bank.
 #[pyfunction]
 fn spec_output_fields(spec_json: &str) -> PyResult<Vec<String>> {
-    let spec: Spec = serde_json::from_str(spec_json)
-        .map_err(|e| PyValueError::new_err(format!("invalid spec: {e}")))?;
+    let spec: Spec = from_json(spec_json).map_err(PyValueError::new_err)?;
     spec.validate().map_err(PyValueError::new_err)?;
     Ok(online_polars::output_fields(&spec))
 }

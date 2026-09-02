@@ -442,7 +442,10 @@ refused under `on_clock_reset="error"` leaving the bank untouched (C3),
 parameters that used to run and produce garbage refused by name (C4), and
 the one T4 found: covariance-form `rls` and `ew_cov`'s tracked inverse die of
 cancellation on a single extreme row, so `rls` is now in square-root (QR)
-form and the precision matrix is solved on demand (C5, schema 2). The rest is
+form and the precision matrix is solved on demand (C5, schema 2), and error
+messages that name the spec, the parameter or the column and its role — the
+builders check their own annotations, the parser names the path, and a
+non-numeric column is refused rather than cast to null (U2). The rest is
 proposed with its measurements next to it.
 
 ## 12. Open questions (not blocking)

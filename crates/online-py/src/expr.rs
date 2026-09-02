@@ -35,8 +35,8 @@ fn parse_spec(kwargs: &OnlineKwargs) -> PolarsResult<Spec> {
     }) {
         return Ok(hit);
     }
-    let mut spec: Spec = serde_json::from_str(&kwargs.spec_json)
-        .map_err(|e| polars_err!(ComputeError: "invalid online spec: {}", e))?;
+    let mut spec: Spec =
+        crate::from_json(&kwargs.spec_json).map_err(|e| polars_err!(ComputeError: "{}", e))?;
     // The expression API always streams over the column it receives; grouping
     // is polars' job via `.over()`.
     spec.group = None;

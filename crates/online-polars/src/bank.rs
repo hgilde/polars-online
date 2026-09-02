@@ -104,13 +104,36 @@ struct SpecColumns {
     weight: Option<Vec<f64>>,
 }
 
+/// A column lookup that says which spec asked and what it asked for. Polars'
+/// own `not found: "x"` names neither, and in a bank of ten specs that is the
+/// difference between a fix and a search.
+fn column<'a>(df: &'a DataFrame, spec: &Spec, role: &str, name: &str) -> PolarsResult<&'a Column> {
+    df.column(name).map_err(|_| {
+        let have: Vec<&str> = df.get_column_names().iter().map(|n| n.as_str()).collect();
+        polars_err!(ColumnNotFound:
+            "spec {:?}: {} column {:?} not found; the frame has columns {:?}",
+            spec.name, role, name, have
+        )
+    })
+}
+
 /// Values as `f64`, null as NaN. Zero-copy-ish for the common case: a
 /// null-free contiguous Float64 column is a `memcpy`.
-fn f64_column(df: &DataFrame, name: &str) -> PolarsResult<Vec<f64>> {
-    let s = df
-        .column(name)?
-        .as_materialized_series()
-        .cast(&DataType::Float64)?;
+///
+/// Only numeric, Boolean and Null columns are accepted. Anything else would be
+/// cast non-strictly, and a String column of numbers-as-text (or of anything)
+/// becomes all-null: every prediction null and no error to say why.
+fn f64_column(df: &DataFrame, spec: &Spec, role: &str, name: &str) -> PolarsResult<Vec<f64>> {
+    let col = column(df, spec, role, name)?;
+    let dtype = col.dtype();
+    if !(dtype.is_numeric() || matches!(dtype, DataType::Boolean | DataType::Null)) {
+        polars_bail!(ComputeError:
+            "spec {:?}: {} column {:?} has dtype {}; it must be numeric \
+             (cast it, e.g. pl.col({:?}).cast(pl.Float64))",
+            spec.name, role, name, dtype, name
+        );
+    }
+    let s = col.as_materialized_series().cast(&DataType::Float64)?;
     let ca = s.f64()?;
     if ca.null_count() == 0 {
         if let Ok(slice) = ca.cont_slice() {
@@ -120,16 +143,30 @@ fn f64_column(df: &DataFrame, name: &str) -> PolarsResult<Vec<f64>> {
     Ok(ca.iter().map(|v| v.unwrap_or(f64::NAN)).collect())
 }
 
+/// A session or group key as strings. Any dtype with a string form is a key
+/// (ints, dates and categoricals included); a nested one is refused by name.
+fn key_column(df: &DataFrame, spec: &Spec, role: &str, name: &str) -> PolarsResult<Series> {
+    let col = column(df, spec, role, name)?;
+    col.as_materialized_series()
+        .cast(&DataType::String)
+        .map_err(|e| {
+            polars_err!(ComputeError:
+                "spec {:?}: {} column {:?} has dtype {}, which cannot be used as a key: {}",
+                spec.name, role, name, col.dtype(), e
+            )
+        })
+}
+
 fn extract(df: &DataFrame, spec: &Spec) -> PolarsResult<SpecColumns> {
     let features = spec
         .features
         .iter()
-        .map(|c| f64_column(df, c))
+        .map(|c| f64_column(df, spec, "feature", c))
         .collect::<PolarsResult<Vec<_>>>()?;
     let targets = spec
         .targets
         .iter()
-        .map(|c| f64_column(df, c))
+        .map(|c| f64_column(df, spec, "target", c))
         .collect::<PolarsResult<Vec<_>>>()?;
     let clock = match &spec.clock {
         Some(c) => {
@@ -143,7 +180,7 @@ fn extract(df: &DataFrame, spec: &Spec) -> PolarsResult<SpecColumns> {
             // decays to nothing and the output is plausible-looking garbage
             // with no error. Making the user cast is one expression and makes
             // the intended scale explicit (docs/TESTING.md T-E10).
-            let dtype = df.column(c)?.dtype().clone();
+            let dtype = column(df, spec, "clock", c)?.dtype().clone();
             if dtype.is_temporal() {
                 polars_bail!(ComputeError:
                     "spec {:?}: clock column {:?} has dtype {}; a temporal clock would be \
@@ -154,7 +191,7 @@ fn extract(df: &DataFrame, spec: &Spec) -> PolarsResult<SpecColumns> {
                     spec.name, c, dtype, c
                 );
             }
-            let v = f64_column(df, c)?;
+            let v = f64_column(df, spec, "clock", c)?;
             // Nulls arrive as NaN, which this rejects along with inf: a clock
             // with no value has no defined delta either way.
             if let Some(i) = v.iter().position(|f| !f.is_finite()) {
@@ -169,17 +206,14 @@ fn extract(df: &DataFrame, spec: &Spec) -> PolarsResult<SpecColumns> {
     };
     let session = match &spec.session {
         Some(c) => {
-            let s = df
-                .column(c)?
-                .as_materialized_series()
-                .cast(&DataType::String)?;
+            let s = key_column(df, spec, "session", c)?;
             Some(s.str()?.iter().map(session_hash).collect())
         }
         None => None,
     };
     let weight = match &spec.weight {
         Some(c) => {
-            let v = f64_column(df, c)?;
+            let v = f64_column(df, spec, "weight", c)?;
             // A negative weight is never meaningful for a weighted mean, and
             // silently letting one through corrupts the accumulators (the EW
             // count and the per-target cross moments disagree about whether the
@@ -234,17 +268,11 @@ fn backwards_clock(spec: &Spec, raw: f64, row: usize) -> PolarsError {
 /// that is stored and serialized, so state files are unaffected. A 64-bit
 /// collision would merge two groups; the same 2^-64 exposure the session hash
 /// already documents.
-fn group_indices(
-    df: &DataFrame,
-    group: &Option<String>,
-) -> PolarsResult<Vec<(GroupKey, Vec<usize>)>> {
-    match group {
+fn group_indices(df: &DataFrame, spec: &Spec) -> PolarsResult<Vec<(GroupKey, Vec<usize>)>> {
+    match &spec.group {
         None => Ok(vec![(GroupKey::ungrouped(), (0..df.height()).collect())]),
         Some(g) => {
-            let s = df
-                .column(g)?
-                .as_materialized_series()
-                .cast(&DataType::String)?;
+            let s = key_column(df, spec, "group", g)?;
             let mut order: Vec<(GroupKey, Vec<usize>)> = Vec::new();
             let mut slot_of: HashMap<u64, usize> = HashMap::new();
             for (i, v) in s.str()?.iter().enumerate() {
@@ -504,6 +532,20 @@ impl Bank {
         let timing = std::env::var_os("ONLINE_TIMING").is_some();
         let t0 = std::time::Instant::now();
         let n = df.height();
+        // Outputs are attached with `with_column`, which replaces a column of
+        // the same name, so a spec named like an input would silently eat the
+        // input (the Python bank and the CLI runner both attach that way).
+        if let Some(spec) = self
+            .specs
+            .iter()
+            .find(|s| df.get_column_index(&s.name).is_some())
+        {
+            polars_bail!(Duplicate:
+                "spec {:?} has the same name as an input column; the output struct \
+                 would replace it. Rename the spec.",
+                spec.name
+            );
+        }
         // Independent per spec, and each is a full pass over its columns, so
         // they run in parallel with each other (docs/PERFORMANCE.md P3).
         let cols: Vec<SpecColumns> = self
@@ -516,7 +558,7 @@ impl Bank {
         let groups: Vec<Vec<(GroupKey, Vec<usize>)>> = self
             .specs
             .par_iter()
-            .map(|s| group_indices(df, &s.group))
+            .map(|s| group_indices(df, s))
             .collect::<PolarsResult<_>>()?;
         let t_group = t1.elapsed();
         let t2 = std::time::Instant::now();

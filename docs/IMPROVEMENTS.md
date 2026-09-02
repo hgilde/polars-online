@@ -264,28 +264,59 @@ it must be determinable and unique — `.alias` settles it), and under
 `.over(group)` it is evaluated per group, so a lag stays inside its group.
 Falls out of P1: the packed struct carries expressions as easily as columns.
 
-### U2 — error messages that do not name the problem — *proposed*
+### U2 — error messages that do not name the problem — *done*
 
-Collected from the probes:
+Collected from the probes, before and after:
 
-| what happened | message |
-|---|---|
-| feature column missing | `not found: "nope" not found` |
-| `targets="y"` (string, not list) | `invalid spec: invalid type: string "y", expected a sequence at line 1 column 42` |
-| `halflife="10"` | `invalid spec: data did not match any variant of untagged enum FloatOrList at line 1 column 334` |
-| `quantile=[0.5]` (list, expects float) | `invalid spec: invalid type: sequence, expected f64 at line 1 column 175` |
-| `fit_predict(lazy_frame)` | `AttributeError: 'LazyFrame' object has no attribute 'get_columns'` |
-| String target column | no error; every prediction null |
-| spec named like an input column | no error; the input column is silently replaced |
-| two threads calling `fit_predict` | `RuntimeError: Already borrowed` |
+| what happened | before | after |
+|---|---|---|
+| feature column missing | `not found: "nope" not found` | `spec "m": feature column "nope" not found; the frame has columns ["t", "x0", "y", "s"]` |
+| `targets="y"` (string, not list) | `invalid spec: invalid type: string "y", expected a sequence at line 1 column 42` | `spec "m": targets must be a list of strs, got str 'y'` |
+| `halflife="10"` | `... did not match any variant of untagged enum FloatOrList at line 1 column 334` | `spec "m": halflife must be a number or a list of numbers, got str '10'` |
+| `quantile=[0.5]` (list, expects float) | `invalid spec: invalid type: sequence, expected f64 at line 1 column 175` | `spec "m": quantile must be a number, got list [0.5]` |
+| `solve_every=inf` | `invalid type: string "inf", expected f64 at line 1 column 300` | `spec "m": solve_every must be finite, got float inf` |
+| `coef_every=-1` | `invalid value: integer -1, expected u32 at line 1 column 250` | `spec "m": coef_every must be >= 0, got -1` |
+| `fit_predict(lazy_frame)` | `AttributeError: 'LazyFrame' object has no attribute 'get_columns'` | `TypeError: ... collect it first (lf.collect()), or feed it in chunks with fit_predict_batches(lf.collect_batches())` |
+| String target column | no error; every prediction null | `spec "m": target column "s" has dtype str; it must be numeric (cast it, e.g. pl.col("s").cast(pl.Float64))` |
+| List column as group key | `cannot cast List type (inner: 'Float64', to: 'String')` | `spec "m": group column "l" has dtype list[f64], which cannot be used as a key: ...` |
+| spec named like an input column | no error; the input column silently replaced | `spec "y" has the same name as an input column; the output struct would replace it. Rename the spec.` |
+| two threads calling `fit_predict` | `RuntimeError: Already borrowed` | `RuntimeError: ModelBank.fit_predict: the bank is running fit_predict on another thread; a bank is one ordered stream ...` |
+| `np.float64` / `np.int64` parameters | `Object of type float64 is not JSON serializable` | accepted |
 
-Fix: column lookups name the spec, the role and the frame's columns;
-non-numeric feature/target/weight/clock columns are rejected with the dtype;
-the Python builders check list-vs-scalar shapes before serializing so the
-message names the parameter rather than a JSON offset; `fit_predict` says
-"collect the LazyFrame first"; a spec name colliding with an input column is
-rejected at bank construction; concurrent `fit_predict` says the bank is
-already running on another thread.
+What was done, and where each message comes from:
+
+- **Builders check their own annotations.** `_checked` (in
+  `python/polars_online/_spec.py`) wraps every `po.spec.*` builder and
+  compares each keyword with the function's type hints (and `_common`'s for
+  the shared parameters): shape, sign for the count parameters, and
+  finiteness for everything the Rust side parses as a plain `f64`. The hints
+  are the contract, so a new parameter is checked by writing its annotation.
+  The table of parameters that *do* admit `inf` (`_INF_OK`: no decay, no
+  ceiling, a pinned coefficient, no clip) is checked against the Rust side by
+  `tests/test_error_messages.py::test_the_inf_table_matches_the_rust_side`,
+  which feeds `"inf"` straight to the parser for every float parameter of
+  every builder.
+- **The Rust parser names the path.** `serde_path_to_error` gives
+  `invalid spec: [0].halflife[1]: ...` for a hand-built dict. It cannot see
+  inside the model's `#[serde(tag = "type")]` union (serde buffers the
+  content), which is exactly why the shape checks live in Python.
+- **The untagged enums got visitors.** `FloatOrList`, `SessionGapSpec` and
+  `Num` now say what they expect (`expected a number or a list of numbers
+  ("inf" allowed)`) instead of `data did not match any variant of untagged
+  enum FloatOrList` -- in JSON, in the CLI's TOML, and in the state file, all
+  three of which are self-describing. `session_gap = "inf"` (never) is now
+  accepted, since the visitor reads the same words as `Num`.
+- **Column lookups carry the spec and the role** (`column`, `f64_column`,
+  `key_column` in `crates/online-polars/src/bank.rs`), and `f64_column`
+  accepts only numeric, Boolean and Null dtypes: anything else was cast
+  non-strictly, and a String column of anything became all-null predictions
+  with no error.
+- **`Bank::fit_predict` refuses a spec named like an input column**, since
+  both the Python bank and the CLI runner attach outputs with `with_column`.
+- **`PyModelBank` borrows explicitly** (`try_borrow_mut` / `try_borrow`) so
+  a second thread gets a sentence rather than pyo3's "Already borrowed";
+  `fit_predict` releases the GIL, so this is reachable.
+- `ModelBank.fit_predict` checks for a `DataFrame` first.
 
 ### U3 — `ModelBank` ergonomics — *proposed*
 
