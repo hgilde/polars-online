@@ -4,7 +4,7 @@ Streaming / online regression models for [Polars](https://pola.rs). A Rust core
 exposed three ways with identical numerics:
 
 1. **an expression plugin** — `pl.col("y").online.ewridge(...)`, with `.over(group)`,
-   for a frame in memory;
+   for a frame in memory (polars hands it the whole column, so it is O(data));
 2. **a chunk-fed `ModelBank`** — holds O(state), not O(data) — and, as a plan,
    **`lf.online.fit_predict(specs)`**: a `LazyFrame` that streams through the
    bank when it runs, so a query stays O(chunk);
@@ -32,6 +32,48 @@ spec = po.spec.ewridge("ridge", targets=["ret"], features=["signal_a", "signal_b
    .filter(pl.col("ridge").struct.field("n_eff") > 100)
    .sink_parquet("fitted.parquet"))           # O(chunk) end to end
 ```
+
+## Which spelling streams
+
+One model, one set of numbers — but **the syntax decides the memory**, because
+it decides where the model sits in polars' plan. Peak footprint on the same
+file, `ewridge` with 20 features, parquet in and out:
+
+| what you write | 3M rows | 12M rows | |
+|---|---:|---:|---|
+| `df.with_columns(pl.col("y").online.ewridge(...))` | 2.0 GB | **7.3 GB** | **O(data)** — a frame in memory |
+| `lf.online.fit_predict([spec])` | 0.90 GB | 1.35 GB | **O(chunk)** — a query over a stream |
+| `for chunk in lf.collect_batches(): bank.fit_predict(chunk)` | 0.80 GB | 1.24 GB | O(state + chunk) — your own loop |
+| `po.run(input=..., output=...)`, `online --config` | 0.95 / 0.73 GB | 1.41 / 0.75 GB | O(state + chunk) — file in, file out |
+
+The bottom three rows are flat, and what growth they show is the allocator
+holding freed pages rather than live data: told to release them, all three sit
+at 0.74–0.86 GB at 12M rows, nearly all of it polars' parquet read-ahead
+(0.31–0.46 GB with `POLARS_ROW_GROUP_PREFETCH_SIZE=1`). The first row is live
+data, and it grows with the file.
+
+**Wrapping the expression in a lazy query does not make it stream.** Polars
+hands a user expression its whole column — in the in-memory engine by
+definition, and in the streaming engine because a plugin is a
+`columnar-function` node: collect the input, call once, re-emit. So this pair
+is 7.3 GB against 1.35 GB, not a matter of taste:
+
+```python
+lf.with_columns(                                   # O(data): the stream is collected
+    pl.col("ret").online.ewridge(                  #   first, then the plugin is called
+        features=["signal_a"], clock="ts", halflife=600.0, max_dclock=300.0,
+    ).over("bond_id")
+).sink_parquet("fitted.parquet")
+
+lf.online.fit_predict([spec]).sink_parquet("fitted.parquet")   # O(chunk): the bank is a
+                                                               #   source the engine pulls
+```
+
+Use the expression when the frame is already in memory — it is the shortest
+thing to write and the numbers are identical. Use the plan for a stream.
+Everything after the bank — filters, joins, group-bys, sinks — is polars' own
+and streams as polars streams it. All of it measured in
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md) §11.
 
 ## Two guarantees
 
@@ -88,18 +130,17 @@ run in parallel (the inputs travel as one packed struct, which is the polars
 path that spreads groups over threads — see docs/PERFORMANCE.md P5). Grids are
 allowed but produce wide structs; the bank is the better surface for grids.
 
-**This is the in-memory surface.** Polars calls the plugin once with the
-whole column, so its memory is O(data), and putting it in a `LazyFrame` with
-`collect(engine="streaming")` or `sink_parquet` does not change that: the
-streaming engine has no streaming node for a user expression — a plugin is a
-`columnar-function` node, which collects its input, calls once, and re-emits
-(the engine's own `rolling`, `ewm_*` and `cum_*` get dedicated windowed
-nodes; nothing a user writes does). Measured: 2.0 GB at 3M rows, 7.3 GB at
-12M, in either engine. For a stream, write the same thing as a plan —
-`lf.online.fit_predict([spec])`, next section — which is the bank as a
-polars source and stays O(chunk): 0.78 GB at 12M rows, and flat
-(docs/PERFORMANCE.md §11, which also explains the number a Python process
-reports).
+**This is the in-memory surface** (*Which spelling streams*, above). Polars
+calls the plugin once with the whole column, so its memory is O(data), and
+putting it in a `LazyFrame` with `collect(engine="streaming")` or
+`sink_parquet` does not change that: the streaming engine has no streaming
+node for a user expression — a plugin is a `columnar-function` node, which
+collects its input, calls once, and re-emits (the engine's own `rolling`,
+`ewm_*` and `cum_*` get dedicated windowed nodes; nothing a user writes
+does). For a stream, write the same thing as a plan —
+`lf.online.fit_predict([spec])`, next section — which is the bank as a polars
+source and stays O(chunk) (docs/PERFORMANCE.md §11, which also explains the
+number a Python process reports).
 
 ### 2. `ModelBank` (chunk-fed)
 
@@ -592,7 +633,8 @@ row groups whatever the file's length, and `POLARS_ROW_GROUP_PREFETCH_SIZE=1`
 takes the CLI to 0.15 GB at the same speed. Measured flat from 3M to 12M
 rows in docs/PERFORMANCE.md §11, `lf.online.fit_predict` included (0.78 GB
 live at 12M rows, 0.37 GB with the prefetch at 1). The expression plugin is
-the O(data) surface.
+the O(data) surface — *Which spelling streams*, at the top, is the whole
+comparison in one table.
 
 Where the time goes, and what to reach for, is in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
