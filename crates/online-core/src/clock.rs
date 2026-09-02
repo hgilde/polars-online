@@ -124,6 +124,23 @@ impl ClockState {
     /// Advance by one row. `clock = None` means a row-count clock (delta 1).
     /// `accept = false` marks a skipped (feature-null) row: its delta is folded
     /// into `pending` instead of being returned.
+    ///
+    /// ```
+    /// use online_core::{ClockCfg, ClockState, OnClockReset};
+    ///
+    /// let cfg = ClockCfg { max_dclock: 60.0, on_clock_reset: OnClockReset::Max, session_gap: None };
+    /// let mut clock = ClockState::new();
+    /// // The first row of a stream has nothing to be a delta from.
+    /// assert_eq!(clock.advance(&cfg, Some(1000.0), None, true).d_clock, 0.0);
+    /// assert_eq!(clock.advance(&cfg, Some(1010.0), None, true).d_clock, 10.0);
+    /// // A skipped row still moves the clock: its 5 units are carried into
+    /// // the next accepted row's delta.
+    /// assert!(!clock.advance(&cfg, Some(1015.0), None, false).accepted);
+    /// assert_eq!(clock.advance(&cfg, Some(1020.0), None, true).d_clock, 10.0);
+    /// // A gap is capped at `max_dclock`, so a weekend does not decay the
+    /// // state to nothing.
+    /// assert_eq!(clock.advance(&cfg, Some(1e6), None, true).d_clock, 60.0);
+    /// ```
     pub fn advance(
         &mut self,
         cfg: &ClockCfg,

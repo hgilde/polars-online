@@ -425,11 +425,33 @@ the same file takes 10 ms. So `cargo run` paid it on every call.
 directly. The eleven CLI tests went from 33.1 s to 3.6 s, of which 2.7 s is
 the one launch the session still pays; the whole suite from 64 s to 31 s.
 
-### T2 — zero Rust doc tests — *proposed*
+### T2 — zero Rust doc tests — *done*
 
-`cargo test --doc` compiles nothing. The public core API (`EwRidge`,
-`OnlineModel::step`, `Step`) gets examples that are the first thing a Rust
-user reads and that break when the API changes.
+`cargo test --doc` compiled nothing. Four examples now run under it, each
+the first thing a Rust reader of that item sees and each asserting the
+property the prose claims:
+
+- **`online_core`** (crate root): `EwRidge` on `y = 1 + 2x` -- `pred` is
+  NaN exactly while `Step::n_eff < min_periods`, converges to the line, and
+  `restore(&model.state())` produces a model whose next `Step` equals the
+  original's.
+- **`OnlineModel`**: `Holt` with a missing target predicts without learning,
+  and a zero-weight row with a target of `1e9` leaves the coefficients
+  untouched (hard rule 9).
+- **`ClockState::advance`**: the first row's delta is 0, a skipped row's
+  delta is carried into the next accepted row, and a gap is capped at
+  `max_dclock`.
+- **`online_polars`** (crate root): a `Spec` from JSON, `Bank::fit_predict`
+  with `pred_y` null until `min_periods` and correct after, and a bank
+  loaded from `save_bytes` giving output identical to the one it was saved
+  from.
+
+`cargo test --workspace` already ran doc tests, so the gate and CI pick
+them up without a change. The first draft of the bank example asserted
+`pred_y` to `1e-6` and failed at `2e-6`: the ridge penalizes mean-form
+moments (`S` is an EW mean, not a sum, so the penalty does not fade with
+the sample), and on O(1) features `ridge = 1e-6` is a `2e-6` bias -- the
+kind of thing an example that runs teaches and one that does not cannot.
 
 ### T3 — emit-flag matrix through the expression path — *done with C1*
 

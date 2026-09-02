@@ -133,6 +133,33 @@ pub const INPUT_BOUND: f64 = 1e100;
 /// means predict-only for target j; `d_clock` is already capped/gap-adjusted
 /// (see [`crate::ClockState`]); `weight >= 0` scales the row, and `0` means
 /// "advance the clock, learn nothing".
+///
+/// ```
+/// use online_core::{Holt, HoltCfg, OnlineModel};
+///
+/// // Holt's linear trend has no features, so `x` is empty.
+/// let mut model = Holt::new(HoltCfg {
+///     n_targets: 1,
+///     level_halflife: 2.0,
+///     trend_halflife: 4.0,
+///     min_periods: 3.0,
+/// })?;
+/// for t in 0..60 {
+///     model.step(&[], &[Some(t as f64)], 1.0, 1.0);
+/// }
+///
+/// // A missing target is predict-only: the forecast extrapolates one clock
+/// // unit ahead and nothing is learned from the row.
+/// let step = model.step(&[], &[None], 1.0, 1.0);
+/// assert!((step.pred[0] - 60.0).abs() < 1e-3);
+///
+/// // A zero weight advances the clock and learns nothing, however wild the
+/// // target: the coefficients (here `[level, trend]`) do not move.
+/// let before = model.coefficients();
+/// model.step(&[], &[Some(1e9)], 1.0, 0.0);
+/// assert_eq!(model.coefficients(), before);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub trait OnlineModel: Sized {
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step;
     fn state(&self) -> State;
