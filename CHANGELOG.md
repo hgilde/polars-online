@@ -53,6 +53,15 @@ carries breaking changes.
 
 ### Fixed
 
+- **The runner (`po.run` and the CLI) no longer panics on a parquet with
+  more than one row group.** A chunk that spanned a row-group boundary
+  arrived as a multi-chunk frame, the bank's outputs are single-chunk, and
+  the batched parquet writer handed arrow a record batch of mismatched arrays
+  (`RecordBatch requires all its arrays to have an equal number of rows`).
+  Polars writes 262,144-row groups by default, so any file longer than
+  `chunk_rows` was affected; the tests had written every input in one row
+  group. The chunks are now aligned before writing.
+
 - **`coef` is null, never an empty list, before a model's first solve.** Rows
   between `coef_every` snapshots were already null; warmup rows were an empty
   list, which made `coef.list.get(position)` — the documented way to read one

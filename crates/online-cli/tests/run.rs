@@ -15,8 +15,17 @@ fn tmp(name: &str) -> PathBuf {
     p
 }
 
-/// Deterministic two-group stream written to parquet.
+/// Deterministic two-group stream written to parquet, one row group.
 fn write_input(path: &Path, n: usize) -> PolarsResult<()> {
+    write_input_in_row_groups(path, n, None)
+}
+
+/// The same stream in row groups of `row_group_size` rows.
+fn write_input_in_row_groups(
+    path: &Path,
+    n: usize,
+    row_group_size: Option<usize>,
+) -> PolarsResult<()> {
     let mut s = 2024u64;
     let mut lcg = move || {
         s = s
@@ -43,7 +52,9 @@ fn write_input(path: &Path, n: usize) -> PolarsResult<()> {
     let mut df = df!(
         "group" => group, "t" => t, "x0" => x0, "x1" => x1, "y" => y, "w" => w
     )?;
-    ParquetWriter::new(std::fs::File::create(path)?).finish(&mut df)?;
+    ParquetWriter::new(std::fs::File::create(path)?)
+        .with_row_group_size(row_group_size)
+        .finish(&mut df)?;
     Ok(())
 }
 
@@ -111,6 +122,38 @@ fn streams_parquet_and_is_chunk_invariant() {
     assert_eq!(read_preds(&out_a).unwrap(), read_preds(&out_b).unwrap());
 
     for p in [&input, &out_a, &out_b] {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// A chunk that straddles a row-group boundary is a multi-chunk frame, and
+/// the bank's outputs are single-chunk. The batched parquet writer walks the
+/// columns' chunks in lockstep and only `debug_assert`s that they line up:
+/// here (a debug build) that assertion fired; in release the mismatch was a
+/// panic inside arrow's record-batch constructor -- on every file whose row
+/// groups were not a multiple of `chunk_rows`.
+#[test]
+fn row_groups_need_not_align_with_chunk_rows() {
+    let aligned = tmp("rg-one.parquet");
+    let split = tmp("rg-50.parquet");
+    write_input(&aligned, 1000).unwrap();
+    write_input_in_row_groups(&split, 1000, Some(50)).unwrap();
+
+    let out_a = tmp("rg-one-out.parquet");
+    let out_b = tmp("rg-50-out.parquet");
+    let sa = run_config(&config(&aligned, &out_a, 80), |_| {}).unwrap();
+    let sb = run_config(&config(&split, &out_b, 80), |_| {}).unwrap();
+
+    assert_eq!((sa.rows, sa.chunks), (1000, 13));
+    assert_eq!((sb.rows, sb.chunks), (1000, 13));
+    assert_eq!(read_preds(&out_a).unwrap(), read_preds(&out_b).unwrap());
+    let df = ParquetReader::new(std::fs::File::open(&out_b).unwrap())
+        .finish()
+        .unwrap();
+    assert_eq!(df.height(), 1000);
+    assert_eq!(df.column("y").unwrap().null_count(), 0);
+
+    for p in [&aligned, &split, &out_a, &out_b] {
         let _ = std::fs::remove_file(p);
     }
 }

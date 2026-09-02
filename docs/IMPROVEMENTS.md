@@ -8,7 +8,8 @@ script, a measurement, or a failing call — and the decision is recorded next
 to it. Items are numbered by axis: **C** correctness, **P** performance,
 **U** usability, **X** extensibility, **T** testing. Status per item:
 *done*, *proposed*, or *rejected* (with the reason). C6 onward are a second
-pass, made after the first one was closed.
+pass, made after the first one was closed; C7 was found later, by the E32
+benchmark.
 
 Machine for every number: Apple M-series, 10 performance + 4 efficiency
 cores, release build, the same setup as docs/PERFORMANCE.md.
@@ -252,6 +253,35 @@ alone and litters nothing; a symlink is written through, not replaced), the
 runner test above, and `test_an_interrupted_save_keeps_the_last_good_state`,
 which is the RLIMIT_FSIZE reproduction in a subprocess. Each was mutated back
 to `fs::write` / `File::create` once, and each failed.
+
+### C7 — the runner panicked on any parquet with more than one row group — *done*
+
+Found on 2026-09-02 by the E32 benchmark, whose first run was the 3M-row
+parquet from docs/PERFORMANCE.md through `po.run(chunk_rows=100_000)`:
+`PanicException: RecordBatch requires all its arrays to have an equal number
+of rows`, from inside polars-arrow. Minimal reproduction: 1000 rows written
+with `row_group_size=50`, run with `chunk_rows=80`. Polars writes 262,144-row
+groups by default, so every real file with more rows than one `chunk_rows`
+hit this; the tests had not, because each wrote its input in a single row
+group.
+
+The cause is a chunk boundary that is not a row-group boundary. The reader
+thread `slice`s the scan per chunk, and a slice that spans two row groups
+comes back with two arrow chunks per column; the bank's output columns are
+one chunk each; `with_column` attaches them as they are. The batched parquet
+writer then walks the columns' chunks in lockstep — `DataFrame::iter_chunks`
+— which only `debug_assert`s that the chunks line up, so a release build
+handed arrow a record batch of mismatched arrays and arrow refused, by
+panic. Fixed with one call, `out.align_chunks_par()` before `write_batch`,
+which rechunks only when the chunks disagree and is a no-op otherwise; no
+measurable cost on the aligned path, and the misaligned path was a crash.
+
+Tests: `test_runner::test_row_groups_need_not_align_with_chunk_rows` (the
+reproduction through `po.run`, output held equal to `ModelBank.fit_predict`
+of the whole frame) and `row_groups_need_not_align_with_chunk_rows` in
+`crates/online-cli/tests/run.rs`, which is the same file in `cargo test`,
+where the debug assertion fires instead of the arrow panic. Both fail with
+the alignment removed.
 
 ## 2. Performance
 

@@ -169,3 +169,31 @@ def test_bad_spec_is_reported(tmp_path):
     bad["features"] = ["does_not_exist"]
     with pytest.raises(ValueError, match="does_not_exist"):
         po.run(input=src, output=dst, specs=[bad])
+
+
+def test_row_groups_need_not_align_with_chunk_rows(tmp_path):
+    """A chunk that spans a parquet row-group boundary arrives as a multi-chunk
+    frame; the bank's outputs are single-chunk. Writing the two together used
+    to panic in the arrow record-batch writer ("RecordBatch requires all its
+    arrays to have an equal number of rows") -- on every file whose row groups
+    were not a multiple of `chunk_rows`, which is any file polars writes with
+    its default 262144-row groups read with a smaller `chunk_rows`."""
+    src, dst = tmp_path / "in.parquet", tmp_path / "out.parquet"
+    n = 1000
+    rng = np.random.default_rng(1)
+    x0 = rng.standard_normal(n)
+    df = pl.DataFrame(
+        {
+            "t": np.arange(float(n)),
+            "x0": x0,
+            "y": 2 * x0 + 0.1 * rng.standard_normal(n),
+            "g": np.where(np.arange(n) % 2 == 0, "a", "b"),
+        }
+    )
+    df.write_parquet(src, row_group_size=50)
+    stats = po.run(input=src, output=dst, specs=[_spec()], chunk_rows=80)
+    assert stats == {"rows": n, "chunks": 13}
+    out = pl.read_parquet(dst)
+    assert out.drop("ridge").equals(df)
+    from_bank = po.ModelBank([_spec()]).fit_predict(df)["ridge"].struct.field("pred_y")
+    assert out["ridge"].struct.field("pred_y").to_list() == from_bank.to_list()

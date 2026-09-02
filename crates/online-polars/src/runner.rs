@@ -176,6 +176,13 @@ pub fn run_config(cfg: &RunConfig, mut progress: impl FnMut(RunStats)) -> Polars
         for c in cols {
             out.with_column(c)?;
         }
+        // A chunk that spans a row-group boundary arrives as several arrow
+        // chunks per column; the bank's columns are one chunk each. The
+        // batched writer walks the columns' chunks in lockstep and only
+        // `debug_assert`s that they line up, so in release the mismatch
+        // surfaced as a panic in the arrow record-batch constructor. Align
+        // them (a no-op when they already do).
+        out.align_chunks_par();
         let w = match &mut writer {
             Some(w) => w,
             None => {
