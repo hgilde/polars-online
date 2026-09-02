@@ -218,7 +218,15 @@ class ModelBank:
         return dict(zip(self._native.spec_names(), self._native.output_fields(), strict=True))
 
     def save(self, path: str | Path) -> None:
-        """Versioned msgpack state; loads on any supported OS."""
+        """Versioned msgpack state; loads on any supported OS.
+
+        Written to a temporary sibling and renamed into place, so an
+        interrupted save leaves the previous state where it was rather than
+        truncating it (docs/IMPROVEMENTS.md C6). The rename is preceded by a
+        filesystem sync, which is what a resumable file costs: ~4 ms on macOS,
+        against ~0.5 ms for serializing 500 groups. Save every chunk and the
+        sync dominates; save every hundredth and it disappears.
+        """
         self._native.save(str(path))
 
     def save_bytes(self) -> bytes:

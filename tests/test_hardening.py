@@ -427,6 +427,33 @@ class TestRunnerErrorPaths:
         with pytest.raises(Exception, match="negative"):
             po.run(input=src, output=tmp_path / "out.parquet", specs=[spec], chunk_rows=500)
 
+    def test_a_failed_run_leaves_the_previous_output_intact(self, tmp_path):
+        """The output is written to a temporary and renamed into place, so a
+        run that dies on chunk eight does not replace yesterday's output with
+        seven chunks and no footer (IMPROVEMENTS C6)."""
+        n = 5000
+        rng = np.random.default_rng(7)
+        good = pl.DataFrame({"x0": rng.standard_normal(n), "y0": rng.standard_normal(n)})
+        src, out = tmp_path / "in.parquet", tmp_path / "out.parquet"
+        good.write_parquet(src)
+        po.run(input=src, output=out, specs=[self._spec()], chunk_rows=500)
+        before = out.read_bytes()
+
+        w = np.ones(n)
+        w[3777] = -2.0
+        bad = good.with_columns(pl.Series("w", w))
+        bad.write_parquet(src)
+        spec = po.spec.ewridge(
+            "m", targets=["y0"], features=["x0"], halflife=100.0, min_periods=3.0, weight="w"
+        )
+        with pytest.raises(Exception, match="negative"):
+            po.run(input=src, output=out, specs=[spec], chunk_rows=500)
+
+        assert out.read_bytes() == before, "the failed run overwrote the good output"
+        assert pl.read_parquet(out).height == n
+        assert [p.name for p in tmp_path.iterdir()] != [], "sanity"
+        assert not [p for p in tmp_path.iterdir() if ".tmp" in p.name], "temporary left behind"
+
 
 class TestExpressionSpecCache:
     """P5 added a thread-local parsed-spec cache keyed by the kwargs JSON. Two

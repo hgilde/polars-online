@@ -7,7 +7,8 @@ below was reproduced against the code before it was written down — a probe
 script, a measurement, or a failing call — and the decision is recorded next
 to it. Items are numbered by axis: **C** correctness, **P** performance,
 **U** usability, **X** extensibility, **T** testing. Status per item:
-*done*, *proposed*, or *rejected* (with the reason).
+*done*, *proposed*, or *rejected* (with the reason). C6 onward are a second
+pass, made after the first one was closed.
 
 Machine for every number: Apple M-series, 10 performance + 4 efficiency
 cores, release build, the same setup as docs/PERFORMANCE.md.
@@ -208,6 +209,49 @@ refuses any NaN by parameter name (`spec "m": lam must not be NaN`) instead
 of letting serde report a JSON column offset. `tests/test_spec_validation.py`
 is the table: every refused value, its message, and the legal neighbour that
 still runs.
+
+### C6 — an interrupted save destroys the last good state — *done*
+
+Second pass, after everything above was closed. `Bank::save` was
+`std::fs::write`, which truncates the destination and then writes into it, so
+an interrupted save loses the file it was updating. Reproduced with
+`RLIMIT_FSIZE` set to a third of the state size (a full disk or a quota,
+deterministically): the save raises `File too large`, the state file goes from
+221,612 bytes to 73,870, and loading it fails with "failed to fill whole
+buffer". Both errors are clean — the C2 hardening holds — but the state is
+gone, and for the `--resume` loop the CLI documents, that is the stream
+starting over. A crashed process is the *reason* the file exists.
+
+Fixed in `crates/online-polars/src/atomic.rs`: write a temporary sibling,
+`sync_all`, rename over the destination. Rust's `fs::rename` is documented to
+replace an existing destination on both target platforms (`rename` on Unix,
+`MoveFileExW` on Windows), and a rename either happens or does not, so a
+reader sees the whole old file or the whole new one. The temporary is a
+sibling because a rename cannot cross a filesystem, and carries the pid so two
+processes saving to one path do not share it; `Drop` removes it on any error
+path. A symlink destination is resolved first, because `fs::write` followed it
+and a rename would replace it — atomicity is the only thing that changed.
+
+The sync is not free, and on macOS it is the expensive one: std's `sync_all`
+is `fcntl(F_FULLFSYNC)` — so is `sync_data`, so there is no cheaper honest
+option — which flushes the drive's own cache. Measured on 396 KiB: write 0.10
+ms, `+fsync` 0.13 ms, `+F_FULLFSYNC` 4.02 ms, so a 500-group save goes from
+0.5 ms to 5.0 ms. Kept anyway, and documented at the call site: a state file
+that is not there after a power loss is not a state file, and a caller saving
+after every small chunk can save less often.
+
+The CLI's output parquet got the same treatment, since it is the same
+mistake: it was written straight to `--output`, so a run that died on chunk
+eight replaced yesterday's output with seven chunks and no footer. Now the
+run publishes with a rename after the footer is written, and a failed run
+leaves the previous output byte-identical (`test_a_failed_run_leaves_the
+_previous_output_intact`).
+
+Tests: two unit tests in `atomic.rs` (a failed write leaves the destination
+alone and litters nothing; a symlink is written through, not replaced), the
+runner test above, and `test_an_interrupted_save_keeps_the_last_good_state`,
+which is the RLIMIT_FSIZE reproduction in a subprocess. Each was mutated back
+to `fs::write` / `File::create` once, and each failed.
 
 ## 2. Performance
 

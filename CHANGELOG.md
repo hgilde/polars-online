@@ -7,7 +7,17 @@ carries breaking changes.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **State and output files are written atomically** — a temporary sibling,
+  then a rename into place. `ModelBank.save` used to truncate the destination
+  and write into it, so an interrupted save (a kill, a full disk, a quota)
+  left a truncated file *and* destroyed the last good state; a `--resume` loop
+  then started the stream over. The CLI's output parquet is published the same
+  way, so a run that fails halfway leaves the previous output intact instead
+  of a headless parquet under its name. Saving now costs a filesystem sync
+  (~4 ms on macOS, where `sync_all` is `F_FULLFSYNC`); save less often if that
+  matters more than surviving a crash.
 
 ## [0.1.0] — unreleased
 

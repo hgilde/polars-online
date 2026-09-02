@@ -19,6 +19,7 @@ Both are now spec-validation errors, pinned below.
 """
 
 import copy
+import os
 import pickle
 import threading
 from pathlib import Path
@@ -28,6 +29,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from test_ffi_memory import run_isolated
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -269,6 +271,45 @@ class TestParameterExtremes:
         np.testing.assert_allclose(ca, cb, rtol=1e-6)
 
 
+#: Run by `test_an_interrupted_save_keeps_the_last_good_state` in a fresh
+#: interpreter. `STATE_PATH` is substituted; the soft file-size limit makes
+#: the second save fail partway through, the way a full disk would.
+SAVE_INTERRUPTED = """
+import os, resource, signal
+import numpy as np, polars as pl, polars_online as po
+
+path = STATE_PATH
+rng = np.random.default_rng(0)
+df = pl.DataFrame({
+    "x0": rng.standard_normal(2000),
+    "y0": rng.standard_normal(2000),
+    "g": [f"g{i % 200}" for i in range(2000)],
+})
+bank = po.ModelBank([po.spec.ewridge("m", targets=["y0"], features=["x0"],
+                                     halflife=50.0, group="g")])
+bank.fit_predict(df)
+bank.save(path)
+good = open(path, "rb").read()
+
+signal.signal(signal.SIGXFSZ, signal.SIG_IGN)   # EFBIG instead of a kill
+resource.setrlimit(resource.RLIMIT_FSIZE, (len(good) // 3, resource.RLIM_INFINITY))
+bank.fit_predict(df)
+try:
+    bank.save(path)
+except Exception as e:
+    assert path in str(e), f"the error does not name the file: {e}"
+else:
+    raise AssertionError("the save reported success under a file-size limit")
+resource.setrlimit(resource.RLIMIT_FSIZE, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+
+assert open(path, "rb").read() == good, "the failed save damaged the state"
+po.ModelBank.load(path)          # and it still resumes
+left = [f for f in os.listdir(os.path.dirname(path)) if ".tmp" in f]
+assert not left, f"temporary left behind: {left}"
+print("ok")
+"""
+
+
 class TestSerializationRobustness:
     """State bytes are the resume path; a corrupt file must be an error, never
     a panic or worse. (`SECURITY.md` already says to treat state like pickle;
@@ -318,6 +359,18 @@ class TestSerializationRobustness:
             cut = int(rng.integers(0, len(blob)))
             with pytest.raises(Exception, match="."):
                 po.ModelBank.load_bytes(blob[:cut])
+
+    @pytest.mark.skipif(os.name != "posix", reason="RLIMIT_FSIZE is POSIX")
+    def test_an_interrupted_save_keeps_the_last_good_state(self, tmp_path):
+        """`save` used to be `fs::write`, which truncates the destination and
+        then writes into it: a kill, a full disk or a quota left a truncated
+        file *and* took the last good state with it, so a resume loop started
+        the stream over (IMPROVEMENTS C6). RLIMIT_FSIZE reproduces exactly
+        that, deterministically. In a subprocess, because the limit is
+        process-wide and would otherwise apply to pytest's own writing."""
+        path = tmp_path / "state.msgpack"
+        r = run_isolated(SAVE_INTERRUPTED.replace("STATE_PATH", repr(str(path))))
+        assert "ok" in r.stdout
 
     def test_pickle_and_deepcopy_resume_exactly(self):
         df = _df(n=1000)

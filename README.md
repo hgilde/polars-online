@@ -92,7 +92,7 @@ for chunk in lf.collect_batches():        # never materializes the whole stream
     out = bank.fit_predict(chunk)
     ...
 
-bank.save("bank.state")                    # versioned msgpack, portable across OSes
+bank.save("bank.state")                    # atomic: temp file, then rename
 bank = po.ModelBank.load("bank.state", specs=[spec])
 ```
 

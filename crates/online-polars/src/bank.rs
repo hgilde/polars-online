@@ -789,9 +789,13 @@ impl Bank {
         Ok(bank)
     }
 
+    /// Write the state to `path`, atomically: a temporary sibling, then a
+    /// rename over the destination (`crate::atomic`). An interrupted save
+    /// used to leave a truncated file and take the last good state with it,
+    /// which is a resume loop starting the stream over.
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let bytes = self.save_bytes()?;
-        std::fs::write(path, bytes).map_err(|e| e.to_string())
+        crate::atomic::write(path, &bytes).map_err(|e| format!("{}: {e}", path.display()))
     }
 
     pub fn load(path: &Path, expected_specs: Option<&[Spec]>) -> Result<Self, String> {

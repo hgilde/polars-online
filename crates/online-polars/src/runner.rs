@@ -12,8 +12,15 @@ use polars::prelude::*;
 use polars_utils::pl_path::PlRefPath;
 use serde::{Deserialize, Serialize};
 
+use crate::atomic::AtomicFile;
 use crate::bank::Bank;
 use crate::spec::Spec;
+
+/// Writing the output through a temporary is filesystem work, and polars'
+/// error type is what the runner returns.
+fn io_err(e: std::io::Error) -> PolarsError {
+    polars_err!(ComputeError: "{}", e)
+}
 
 /// A run description, deserialized from TOML by the CLI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -119,6 +126,7 @@ pub fn run_config(cfg: &RunConfig, mut progress: impl FnMut(RunStats)) -> Polars
         }
     });
 
+    let mut pending: Option<AtomicFile> = None;
     let mut result: PolarsResult<()> = Ok(());
     for chunk in rx {
         let chunk = match chunk {
@@ -146,7 +154,13 @@ pub fn run_config(cfg: &RunConfig, mut progress: impl FnMut(RunStats)) -> Polars
         let w = match &mut writer {
             Some(w) => w,
             None => {
-                let file = File::create(&cfg.output)?;
+                // Written to a temporary and renamed into place at the end
+                // (`crate::atomic`), so a run that fails halfway leaves the
+                // previous output where it was instead of a headless parquet
+                // under its name. `AtomicFile`'s `Drop` removes the
+                // temporary on the way out.
+                let (file, p) = AtomicFile::create(&cfg.output).map_err(io_err)?;
+                pending = Some(p);
                 let schema = out.schema();
                 writer = Some(ParquetWriter::new(BufWriter::new(file)).batched(schema)?);
                 writer.as_mut().unwrap()
@@ -170,7 +184,13 @@ pub fn run_config(cfg: &RunConfig, mut progress: impl FnMut(RunStats)) -> Polars
         for c in cols {
             empty.with_column(c)?;
         }
-        ParquetWriter::new(BufWriter::new(File::create(&cfg.output)?)).finish(&mut empty)?;
+        let (file, p) = AtomicFile::create(&cfg.output).map_err(io_err)?;
+        pending = Some(p);
+        ParquetWriter::new(BufWriter::new(file)).finish(&mut empty)?;
+    }
+    // The output is complete, footer and all; publish it under its own name.
+    if let Some(p) = pending {
+        p.commit().map_err(io_err)?;
     }
 
     if let Some(p) = &cfg.save_state {

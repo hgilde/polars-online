@@ -38,6 +38,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+mod atomic;
 mod bank;
 mod runner;
 mod spec;
