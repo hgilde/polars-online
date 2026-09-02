@@ -11,7 +11,9 @@ usable three ways with identical numerics:
 1. **Expression plugin** — `pl.col("y").online.<model>(...)`, in-memory / lazy, with `.over(group)`.
 2. **Python ModelBank** — chunk-fed, `fit_predict(chunk)` over `LazyFrame.collect_batches()`;
    memory is O(state), not O(data).
-3. **Rust CLI** — same bank, parquet in → parquet out, TOML config, for Windows deployment.
+3. **Streaming runner** — same bank as a read → fit → write pipeline, memory O(state + chunk):
+   `po.run(...)` from Python (any source py-polars can stream, parquet / ipc / csv / ndjson out),
+   or the Rust `online` CLI (the same formats, TOML config, no Python) for deployment.
 
 Layers 2 and 3 share `online-polars`; all three share `online-core`.
 
@@ -242,7 +244,8 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       item on public data; record results in `docs/VALIDATION.md` and fix defaults.
 - [x] 13. Robust models (§4.5).
 - [x] 14. Logistic / FTRL (§4.6).
-- [x] 15. `online-cli`: TOML specs, parquet streaming in/out, progress, resume from state.
+- [x] 15. `online-cli`: TOML specs, streaming in/out (parquet, ipc, csv, ndjson — ENHANCEMENTS
+      E32), progress, resume from state.
 - [x] 16. CI: wheels + CLI binaries for macOS/Windows, cross-platform state test, Polars-latest
       canary job. Benchmark script + numbers in README.
 - [x] 17. README with the three usage modes and the math per model.
@@ -283,9 +286,15 @@ implicitness that caused the problem.
 
 - The streaming runner lives in `online-polars` (`RunConfig` / `run_config`), not
   in the CLI crate, so the same code path is testable without spawning a process
-  and could back a Python streaming API later.
-- Output is written with polars' `BatchedWriter`: one row group per chunk, so
-  memory stays O(state + chunk) end to end.
+  and could back a Python streaming API later. (It did: E8, and E32 on
+  2026-09-02 made the reader pluggable — `run(bank, Input::Lazy(plan) |
+  Input::Batches(frames), Output::File | Output::Batches, ..)` — so `po.run`
+  reads with py-polars and hands frames in, and any of parquet / ipc / csv /
+  ndjson goes in or out. The Python API is not bound to parquet, and neither
+  is the Rust one; only the CLI's inputs are files, because it is a binary.)
+- Output is written with polars' batched writers: one row group (or record
+  batch, or slice of text) per chunk, so memory stays O(state + chunk) end to
+  end.
 - The cross-OS state test (§9 class 7) is one test file driven by two env vars:
   `ONLINE_WRITE_STATE` writes the hand-off artifact, `ONLINE_FOREIGN_STATE`
   loads one. CI writes on macOS and reads on Windows and Linux; without the env

@@ -111,8 +111,8 @@ fn streams_parquet_and_is_chunk_invariant() {
 
     let out_a = tmp("a.parquet");
     let out_b = tmp("b.parquet");
-    let sa = run_config(&config(&input, &out_a, 5000), |_| {}).unwrap();
-    let sb = run_config(&config(&input, &out_b, 137), |_| {}).unwrap();
+    let sa = run_config(&config(&input, &out_a, 5000), |_| Ok(())).unwrap();
+    let sb = run_config(&config(&input, &out_b, 137), |_| Ok(())).unwrap();
 
     assert_eq!(sa.rows, 2000);
     assert_eq!(sb.rows, 2000);
@@ -141,8 +141,8 @@ fn row_groups_need_not_align_with_chunk_rows() {
 
     let out_a = tmp("rg-one-out.parquet");
     let out_b = tmp("rg-50-out.parquet");
-    let sa = run_config(&config(&aligned, &out_a, 80), |_| {}).unwrap();
-    let sb = run_config(&config(&split, &out_b, 80), |_| {}).unwrap();
+    let sa = run_config(&config(&aligned, &out_a, 80), |_| Ok(())).unwrap();
+    let sb = run_config(&config(&split, &out_b, 80), |_| Ok(())).unwrap();
 
     assert_eq!((sa.rows, sa.chunks), (1000, 13));
     assert_eq!((sb.rows, sb.chunks), (1000, 13));
@@ -165,7 +165,7 @@ fn resume_from_state_continues_the_stream() {
 
     // Reference: the whole file in one go.
     let full_out = tmp("resume-full.parquet");
-    run_config(&config(&input, &full_out, 100_000), |_| {}).unwrap();
+    run_config(&config(&input, &full_out, 100_000), |_| Ok(())).unwrap();
     let full = read_preds(&full_out).unwrap();
 
     // Split the input in two, run the first half, save, resume on the second.
@@ -189,12 +189,12 @@ fn resume_from_state_continues_the_stream() {
     let out_a = tmp("resume-out-a.parquet");
     let mut cfg_a = config(&half_a, &out_a, 100_000);
     cfg_a.save_state = Some(state.clone());
-    run_config(&cfg_a, |_| {}).unwrap();
+    run_config(&cfg_a, |_| Ok(())).unwrap();
 
     let out_b = tmp("resume-out-b.parquet");
     let mut cfg_b = config(&half_b, &out_b, 100_000);
     cfg_b.load_state = Some(state.clone());
-    run_config(&cfg_b, |_| {}).unwrap();
+    run_config(&cfg_b, |_| Ok(())).unwrap();
 
     let mut resumed = read_preds(&out_a).unwrap();
     resumed.extend(read_preds(&out_b).unwrap());
@@ -227,12 +227,12 @@ fn resume_rejects_mismatched_specs() {
 
     let mut cfg = config(&input, &out, 100_000);
     cfg.save_state = Some(state.clone());
-    run_config(&cfg, |_| {}).unwrap();
+    run_config(&cfg, |_| Ok(())).unwrap();
 
     let mut other = config(&input, &out, 100_000);
     other.load_state = Some(state.clone());
     other.specs[0].halflife = Some(online_polars::FloatOrList::Float(online_polars::Num(999.0)));
-    let err = run_config(&other, |_| {}).unwrap_err().to_string();
+    let err = run_config(&other, |_| Ok(())).unwrap_err().to_string();
     assert!(err.contains("do not match"), "{err}");
 
     for p in [&input, &state, &out] {

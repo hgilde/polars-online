@@ -444,3 +444,67 @@ product. The learning path itself did not move — `scripts/benchmark.py` gives
 8.99M / 3.60M / 990k rows/s at k=5/20/50 against §8's 8.96M / 3.62M / 961k —
 because the only change on it is that `ewridge`'s `step` now gets its
 prediction from `predict` instead of an inlined copy of the same loop.
+
+## 10. The runner: every format, every source (E32, 2026-09-02)
+
+The runner is a three-stage pipeline — a reader thread, the bank on the
+calling thread, a writer thread — with one chunk in flight per stage. E32
+made the reader pluggable: `Input::Lazy` is a polars plan read by the
+streaming engine in `chunk_rows` batches (the CLI, Rust callers), and
+`Input::Batches` is an iterator of frames the caller already has, which is
+how `po.run` feeds it: py-polars reads (`collect_batches`), Rust fits and
+writes. Measured on the P6 file — 3M rows × 20 features × 32 groups, `ewridge`
+k=20 with a clock, weights and `min_periods`, `chunk_rows=100k`, best of 3,
+through `po.run`:
+
+| input → output (same format) | rows sorted by clock (groups interleaved) | rows sorted by group |
+|---|---:|---:|
+| parquet | 0.71 s | 2.15 s |
+| ipc | 0.59 s | 2.05 s |
+| csv | 0.90 s | 2.15 s |
+| ndjson | 1.14 s | 2.33 s |
+
+`ONLINE_TIMING=1` prints one line per run beside the per-chunk ones —
+`read_wait` and `write_wait` are the bank thread's slack, `writer_busy` the
+writer's own time — and it says where each case sits:
+
+- **Interleaved groups are I/O-bound, and the I/O is overlapped.** parquet:
+  `read_wait=0.07s bank=0.67s write_wait=0.00s writer_busy=0.66s total=0.77s`
+  — the parquet writer is as busy as the bank and hidden behind it. ipc:
+  `writer_busy=0.11s`, total 0.62 s, the floor. csv:
+  `bank=0.70s write_wait=0.13s writer_busy=0.86s` — the one write-bound case;
+  the CSV *reader* (`read_wait=0.02s`) is no longer the problem. ndjson: the
+  bank reads 1.04 s against 0.64 s alone, because the parallel NDJSON
+  serializer competes for the same rayon pool as the bank's per-group tasks
+  — contention, not a defect, and the total still beats serial.
+- **Group-sorted rows are bank-bound in every format**: `bank=2.07s` of
+  2.16 s, `read_wait=0.05s`. A 100k chunk of group-sorted rows holds one or
+  two groups, so the bank's per-group parallelism has nothing to spread —
+  the same file interleaved is 3× faster through the same code. The fix is
+  a chunk that spans many groups: `chunk_rows=500_000` takes the sorted
+  parquet from 2.15 s to **1.01 s**. The trade is memory (three chunks in
+  flight), which is what `chunk_rows` was always for.
+
+**Why py-polars reads for the Python path.** The first cut scanned in Rust
+for every caller. On the CSV that was 1.72 s with `read_wait=1.06s`: the
+bank sat waiting for the parser. polars-io's SIMD CSV parser is behind a
+feature that needs a nightly compiler; py-polars' wheels have it and a
+stable toolchain cannot, so the Rust-side `scan_csv` was ~6× slower than
+`pl.scan_csv` on the same file. Reading with py-polars and handing frames
+across (per-series Arrow C FFI export — cheap, though it rechunks, so a
+120-chunk CSV batch arrives single-chunk; the bank is ~10% slower on
+multi-chunk frames anyway) took the CSV run to 0.90 s and, as a side
+effect, gave `po.run` every source py-polars can stream: globs, cloud URLs,
+a query with a filter or a UDF, a `DataFrame`, an iterable of frames. The
+GIL is released for the run and reacquired only to take each batch. The CLI
+still scans in Rust, so on a stable toolchain **a large CSV is faster
+through `po.run` than through `online`**; parquet and ipc are the same
+either way.
+
+**Writers.** Parquet through `BatchedWriter` with parallel page encoding —
+one row group per chunk, so 30 row groups regardless of the input's layout.
+IPC batched, one record batch per chunk. CSV batched, structs flattened to
+`<spec>.<field>` and lists to JSON text (`format!("{v}")`, shortest
+round-trip, so `str.json_decode` gives the bits back). NDJSON serialized in
+parallel slices of each chunk and written in order. Output goes through a
+temporary sibling and a rename, as `save` does.

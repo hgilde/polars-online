@@ -4,6 +4,9 @@
 # Generate a matching input with:
 #   uv run python scripts/make_example_parquet.py
 
+# Paths in parquet, ipc, csv or ndjson, told from the extension; a path
+# that does not say (a `.dat`, a stream) needs `input_format = "ipc"` /
+# `output_format = "csv"`, or --input-format / --output-format.
 input = "example-input.parquet"
 output = "example-output.parquet"
 chunk_rows = 50_000

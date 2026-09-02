@@ -5,7 +5,8 @@ exposed three ways with identical numerics:
 
 1. **an expression plugin** — `pl.col("y").online.ewridge(...)`, with `.over(group)`;
 2. **a chunk-fed `ModelBank`** — memory is O(state), not O(data);
-3. **a standalone CLI** — parquet in, parquet out, config from TOML.
+3. **a streaming runner** — `po.run(...)` or the standalone `online` CLI:
+   parquet, ipc, csv or ndjson in and out, config from TOML.
 
 Built for ordered event data (one stream per group) that does not fit in memory:
 irregular clocks, session breaks, gaps, nulls, and per-group state.
@@ -90,7 +91,8 @@ bank = po.ModelBank([spec])
 
 for chunk in lf.collect_batches():        # never materializes the whole stream
     out = bank.fit_predict(chunk)
-    ...
+    ...                                    # (or po.run(input=lf, output=...) -- §3: the same
+                                           #  loop, pipelined, written straight to a file)
 
 bank.save("bank.state")                    # atomic: temp file, then rename
 bank = po.ModelBank.load("bank.state", specs=[spec])
@@ -111,7 +113,9 @@ bank.drop_groups(stale["group"])           # they start cold if they reappear
 
 ### 3. Streaming runner (Python or CLI)
 
-The same O(state + chunk) parquet→parquet path, from Python:
+The same bank as a three-stage pipeline — read, fit, write, one chunk in
+flight per stage — so memory is O(state + chunk) however long the stream is.
+From Python:
 
 ```python
 po.run(
@@ -119,12 +123,51 @@ po.run(
     specs=[spec], chunk_rows=100_000, save_state="bank.state",
 )                                    # -> {"rows": ..., "chunks": ...}
 
-po.run("bank.toml", input="today.parquet")   # keywords override the config
+po.run("bank.toml", input="today.csv")       # keywords override the config
 po.run(input="today.parquet", output="scored.parquet", specs=[spec],
        load_state="bank.state", predict=True)  # serve: score against the state, learn nothing
 ```
 
-or from the CLI:
+`input` is anything py-polars can stream: a path in **parquet, ipc, csv or
+ndjson** (told from the extension, or named with `input_format=`; globs and
+cloud URLs as `pl.scan_*` takes them), a `LazyFrame` — any query, with
+whatever scan options it needs — a `DataFrame`, or an iterable of frames in
+stream order (a database cursor, a socket, a generator). `output` is a path in
+any of the four formats. Every source and format gives the numbers
+`ModelBank` gives on the same rows; the tests hold each of them to it.
+
+```python
+po.run(input=pl.scan_parquet("ticks.parquet").filter(pl.col("bond_id") != "b9"),
+       output="fitted.arrow", specs=[spec])          # a query: streamed, never collected
+po.run(input=(chunk for chunk in lf.collect_batches()), output="fitted.ndjson",
+       specs=[spec], progress=lambda rows, chunks: print(rows))  # any iterable of frames
+```
+
+`keep_columns=[...]` selects input columns before the bank sees them (and
+before the scan reads them); `progress(rows, chunks)` is called after each
+chunk, and raising in it stops the run. The output is written through a
+temporary and renamed into place, so a run that fails leaves the previous
+file where it was. CSV cannot hold the bank's struct columns, so there each
+spec's struct is flattened to `<spec>.<field>` columns and a list field
+(`coef`) becomes a JSON string — `pl.col("ridge.coef").str.json_decode(pl.List(pl.Float64))`
+reads it back bit-exact.
+
+Or from the CLI, for deployments with no Python — one binary, one TOML:
+
+```sh
+online --config examples/bank.toml
+online --config examples/bank.toml --resume bank.state --save-state bank.state
+online --config examples/bank.toml --resume bank.state --predict --input today.parquet
+online --config examples/bank.toml --input ticks.csv --output scored.ndjson
+online --config examples/bank.toml --input feed.dat --input-format ipc
+online --config examples/bank.toml --dry-run     # validate + print the output schema
+```
+
+`--predict` scores against the resumed state and learns nothing; one TOML
+serves both runs, since the flag drops the config's `save_state`. The CLI
+reads with polars' own scanners, which on a stable toolchain lack the SIMD
+CSV parser py-polars' wheels have (`docs/PERFORMANCE.md`); for a large CSV,
+`po.run` is the faster of the two.
 
 **Paths on Windows.** A backslash starts an escape sequence in a TOML basic
 string, so `input = "C:\data\in.parquet"` is a parse error, not a path. Any of
@@ -136,15 +179,10 @@ input = "C:\\data\\in.parquet"    # basic string, backslashes doubled
 input = "C:/data/in.parquet"      # forward slashes are fine on Windows
 ```
 
-```sh
-online --config examples/bank.toml
-online --config examples/bank.toml --resume bank.state --save-state bank.state
-online --config examples/bank.toml --resume bank.state --predict --input today.parquet
-online --config examples/bank.toml --dry-run     # validate + print the output schema
-```
-
-`--predict` scores against the resumed state and learns nothing; one TOML
-serves both runs, since the flag drops the config's `save_state`.
+The same pipeline is the Rust API: `online_polars::run_config` for a
+`RunConfig` (what the CLI and a TOML describe), `run_config_on` with an
+`Input::Lazy(LazyFrame)` or `Input::Batches` of frames the caller already
+has, and `run` with an `Output::Batches` callback instead of a file.
 
 ## Diagnostics and selection
 

@@ -262,19 +262,121 @@ impl PyModelBank {
     }
 }
 
-/// Stream a parquet file through a bank, parquet in -> parquet out
-/// (ENHANCEMENTS E8). Config comes in as JSON; returns `(rows, chunks)`.
-///
-/// The GIL is released for the whole run, so this does not block other Python
-/// threads while a large file streams.
+/// The name of the format `path`'s extension says it is, or a `ValueError`
+/// naming the extensions the runner knows. One extension table, in Rust.
 #[pyfunction]
-fn run_config(py: Python<'_>, config_json: &str) -> PyResult<(usize, usize)> {
+fn format_of_path(path: &str) -> PyResult<&'static str> {
+    online_polars::Format::from_path(std::path::Path::new(path))
+        .map(|f| f.name())
+        .map_err(PyValueError::new_err)
+}
+
+/// The runner's format names, in the order the docs list them.
+#[pyfunction]
+fn formats() -> Vec<&'static str> {
+    online_polars::Format::ALL
+        .iter()
+        .map(|f| f.name())
+        .collect()
+}
+
+/// The runner's `chunk_rows` when a config does not say.
+#[pyfunction]
+fn default_chunk_rows() -> usize {
+    online_polars::DEFAULT_CHUNK_ROWS
+}
+
+/// A Python exception raised inside the run -- by the frames iterator or the
+/// progress callback -- kept whole, so the caller gets its `KeyboardInterrupt`
+/// or `ZeroDivisionError` back rather than a `ValueError` with its text.
+/// The run itself only sees a `PolarsError` and stops.
+#[derive(Clone, Default)]
+struct PyFailure(std::sync::Arc<std::sync::Mutex<Option<PyErr>>>);
+
+impl PyFailure {
+    fn set(&self, e: PyErr) -> polars::prelude::PolarsError {
+        let mut slot = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let text = e.to_string();
+        slot.get_or_insert(e);
+        polars::prelude::PolarsError::ComputeError(text.into())
+    }
+
+    fn take(&self) -> Option<PyErr> {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).take()
+    }
+}
+
+/// Frames from a Python iterator, pulled on the runner's reader thread. The
+/// GIL is held for the `__next__` call and the frame's export, and released
+/// while the runner works; py-polars' own batch iterators release it
+/// themselves while they wait for the engine, so a plan with Python UDFs
+/// in it makes progress too.
+struct PyFrames {
+    iter: Py<pyo3::types::PyIterator>,
+    failure: PyFailure,
+}
+
+impl Iterator for PyFrames {
+    type Item = polars::prelude::PolarsResult<polars::prelude::DataFrame>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        Python::attach(|py| {
+            let item = self.iter.bind(py).clone().next()?;
+            Some(
+                item.and_then(|obj| obj.extract::<PyDataFrame>())
+                    .map(|df| df.0)
+                    .map_err(|e| self.failure.set(e)),
+            )
+        })
+    }
+}
+
+/// Stream frames through a bank and write the output file the config names
+/// (ENHANCEMENTS E8, E32). Config comes in as JSON; `frames` is an iterator
+/// of `polars.DataFrame`s in stream order -- `polars_online.run` makes it
+/// with py-polars' `collect_batches`, so the reading is py-polars' -- and
+/// `schema` an empty frame with their schema, for a stream with no frames.
+/// `progress`, if given, is called with `(rows, chunks)` after each chunk;
+/// raising in it ends the run without publishing the output. Returns
+/// `(rows, chunks)`.
+///
+/// The GIL is released for the run: the iterator and the callback take it
+/// back for their calls only.
+#[pyfunction]
+#[pyo3(signature = (config_json, frames, schema, progress=None))]
+fn run_config_frames(
+    py: Python<'_>,
+    config_json: &str,
+    frames: &Bound<'_, PyAny>,
+    schema: PyDataFrame,
+    progress: Option<Py<PyAny>>,
+) -> PyResult<(usize, usize)> {
     let cfg: online_polars::RunConfig = from_json(config_json)
         .map_err(|e| PyValueError::new_err(e.replacen("invalid spec", "invalid run config", 1)))?;
-    let stats = py
-        .detach(|| online_polars::run_config(&cfg, |_| {}))
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok((stats.rows, stats.chunks))
+    let failure = PyFailure::default();
+    let frames = PyFrames {
+        iter: frames.try_iter()?.unbind(),
+        failure: failure.clone(),
+    };
+    let input = online_polars::Input::Batches {
+        frames: Box::new(frames),
+        schema: schema.0.schema().as_ref().clone(),
+    };
+    let report = |s: online_polars::RunStats| match &progress {
+        None => Ok(()),
+        Some(cb) => Python::attach(|py| {
+            cb.call1(py, (s.rows, s.chunks))
+                .map(|_| ())
+                .map_err(|e| failure.set(e))
+        }),
+    };
+    let result = py.detach(|| online_polars::run_config_on(&cfg, input, report));
+    match result {
+        Ok(stats) => Ok((stats.rows, stats.chunks)),
+        Err(e) => Err(failure
+            .take()
+            .unwrap_or_else(|| PyValueError::new_err(e.to_string()))),
+    }
 }
 
 /// Validate a single spec (raises ValueError with the reason).
@@ -334,7 +436,10 @@ fn _polars_online(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(schema_version, m)?)?;
     m.add_function(wrap_pyfunction!(model_kinds, m)?)?;
     m.add_function(wrap_pyfunction!(validate_spec, m)?)?;
-    m.add_function(wrap_pyfunction!(run_config, m)?)?;
+    m.add_function(wrap_pyfunction!(run_config_frames, m)?)?;
+    m.add_function(wrap_pyfunction!(format_of_path, m)?)?;
+    m.add_function(wrap_pyfunction!(formats, m)?)?;
+    m.add_function(wrap_pyfunction!(default_chunk_rows, m)?)?;
     m.add_function(wrap_pyfunction!(spec_output_fields, m)?)?;
     m.add_function(wrap_pyfunction!(spec_output_index, m)?)?;
     Ok(())

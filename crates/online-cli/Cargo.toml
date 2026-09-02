@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "parquet in -> parquet out runner for online-polars model banks."
+description = "Streaming runner for online-polars model banks: parquet, ipc, csv or ndjson in and out, TOML config."
 
 # Not published to crates.io. The Python wheel is the deliverable, and it is
 # built from this workspace by maturin with these as *path* dependencies -- the
@@ -28,4 +28,4 @@ serde.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
-polars = { workspace = true, features = ["parquet", "lazy", "dtype-struct"] }
+polars = { workspace = true, features = ["parquet", "ipc", "csv", "json", "lazy", "dtype-struct"] }

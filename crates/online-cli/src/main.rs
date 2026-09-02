@@ -1,17 +1,31 @@
-//! `online` — run a model bank over a parquet stream, config from TOML
-//! (docs/PLAN.md §11 task 15).
+//! `online` — run a model bank over a stream of rows, config from TOML
+//! (docs/PLAN.md §11 task 15). Reads and writes parquet, ipc, csv and ndjson,
+//! each told from its extension or named with `--input-format` /
+//! `--output-format`.
 //!
 //! ```sh
 //! online --config examples/bank.toml
 //! online --config examples/bank.toml --input other.parquet --resume state.msgpack
 //! online --config examples/bank.toml --input today.parquet --resume state.msgpack --predict
+//! online --config examples/bank.toml --input ticks.csv --output scored.ndjson
 //! ```
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use online_polars::{RunConfig, run_config};
+use online_polars::{Format, RunConfig, run_config};
+
+/// A `--input-format` / `--output-format` value: one of `Format::ALL` by name.
+fn parse_format(s: &str) -> Result<Format, String> {
+    Format::ALL
+        .into_iter()
+        .find(|f| f.name() == s)
+        .ok_or_else(|| {
+            let names: Vec<&str> = Format::ALL.iter().map(|f| f.name()).collect();
+            format!("`{s}` is not a format; one of {}", names.join(", "))
+        })
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "online", version, about, long_about = None)]
@@ -27,6 +41,16 @@ struct Cli {
     /// Override the config's `output`.
     #[arg(long)]
     output: Option<PathBuf>,
+
+    /// How to read the input (parquet, ipc, csv, ndjson); its extension
+    /// decides when unset. Overrides the config's `input_format`.
+    #[arg(long, value_parser = parse_format)]
+    input_format: Option<Format>,
+
+    /// How to write the output (parquet, ipc, csv, ndjson); its extension
+    /// decides when unset. Overrides the config's `output_format`.
+    #[arg(long, value_parser = parse_format)]
+    output_format: Option<Format>,
 
     /// Override the config's `chunk_rows`.
     #[arg(long)]
@@ -91,6 +115,12 @@ fn run() -> Result<(), String> {
     if let Some(p) = cli.output {
         cfg.output = p;
     }
+    if let Some(f) = cli.input_format {
+        cfg.input_format = Some(f);
+    }
+    if let Some(f) = cli.output_format {
+        cfg.output_format = Some(f);
+    }
     if let Some(n) = cli.chunk_rows {
         cfg.chunk_rows = n;
     }
@@ -109,6 +139,9 @@ fn run() -> Result<(), String> {
         cfg.save_state = Some(p);
     }
     cfg.validate()?;
+    // `validate` leaves the input to the run; a dry run wants to know now.
+    let input_format = cfg.input_format()?;
+    let output_format = cfg.output_format()?;
 
     if cli.dry_run {
         println!("config OK: {} spec(s)", cfg.specs.len());
@@ -118,8 +151,12 @@ fn run() -> Result<(), String> {
                 println!("    {}.{f}", spec.name);
             }
         }
-        println!("input:  {}", cfg.input.display());
-        println!("output: {}", cfg.output.display());
+        println!("input:  {} ({})", cfg.input.display(), input_format.name());
+        println!(
+            "output: {} ({})",
+            cfg.output.display(),
+            output_format.name()
+        );
         println!("chunk_rows: {}", cfg.chunk_rows);
         if cfg.predict {
             println!("mode: predict (score against the loaded state, learn nothing)");
@@ -132,6 +169,7 @@ fn run() -> Result<(), String> {
         if !quiet {
             eprint!("\r{} rows in {} chunks", s.rows, s.chunks);
         }
+        Ok(())
     })
     .map_err(|e| e.to_string())?;
     if !quiet {

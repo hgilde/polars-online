@@ -46,6 +46,9 @@ mod stream;
 
 pub use bank::{Bank, FieldMeta, GroupKey, output_fields, output_index};
 pub use online_core;
-pub use runner::{RunConfig, RunStats, run_config};
+pub use runner::{
+    DEFAULT_CHUNK_ROWS, Format, Input, Output, RunConfig, RunOptions, RunStats, run, run_config,
+    run_config_on,
+};
 pub use spec::{FloatOrList, ModelKind, Num, SessionGapSpec, Spec};
 pub use stream::{AnyModel, ChunkOut, Stream, StreamState, build_models, combo_labels};

@@ -592,6 +592,7 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     out = df.hstack(scored.select("ridge", "kalman")).hstack(graded.select("m"))
     for name in ("ticks.parquet", "today.parquet"):
         df.write_parquet(tmp_path / name)
+    df.write_csv(tmp_path / "today.csv")
     (tmp_path / "bank.toml").write_text(
         'input = "ticks.parquet"\noutput = "fitted.parquet"\n\n'
         '[[specs]]\nname = "ridge"\ntargets = ["y"]\nfeatures = ["x0"]\n'

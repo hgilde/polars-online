@@ -25,6 +25,30 @@ carries breaking changes.
 - **`OnlineModel::predict`** (Rust, `online-core`): the step without the
   step, implemented by every model and held to `predict == step` row by row
   in `tests/model_contract.rs`.
+- **The runner reads and writes parquet, ipc, csv and ndjson**, told from
+  the extension (`.parquet`/`.pq`, `.ipc`/`.arrow`/`.feather`, `.csv`,
+  `.ndjson`/`.jsonl`) or named with `input_format=` / `output_format=` (TOML
+  keys of the same names, CLI `--input-format` / `--output-format`). CSV
+  cannot hold the bank's struct columns, so there each spec is flattened to
+  `<spec>.<field>` columns and `coef` is a JSON list;
+  `pl.col("ridge.coef").str.json_decode(pl.List(pl.Float64))` reads it back
+  bit-exact.
+- **`po.run(input=...)` takes any source py-polars can stream**: a path
+  (globs and cloud URLs as `pl.scan_*` takes them), a `LazyFrame` — any query,
+  including one with a Python UDF — a `DataFrame`, or any iterable of
+  `DataFrame`s in stream order. The reading is py-polars' own
+  (`collect_batches`), so a CSV streams through the wheel's SIMD parser;
+  frames handed in are taken as they come, `chunk_rows` chunking what polars
+  reads. Also `keep_columns=` to select input columns before the bank (and
+  before the scan reads them), and `progress(rows, chunks)`, called after
+  each chunk; an exception raised in it or in the input iterator surfaces as
+  itself and no output is published.
+- **Rust:** `online_polars::run(bank, Input, Output, RunOptions, progress)`
+  is the pipeline the CLI and `po.run` share — `Input::Lazy(LazyFrame)` or
+  `Input::Batches { frames, schema }` in, `Output::File { path, format }` or
+  `Output::Batches(callback)` out — with `run_config_on(cfg, Input, ..)` for
+  a `RunConfig` over an input the caller already has, `Format`
+  (`from_path`, `scan`, `name`, `ALL`) and `DEFAULT_CHUNK_ROWS`.
 
 ### Changed
 
@@ -36,6 +60,11 @@ carries breaking changes.
   through `coefficients()`.
 - The busy-bank message now says the bank "is in use on another thread" and
   that concurrent `predict` calls are fine.
+- **Rust runner API:** `run_lazy` is `run` and takes an `Input`; the progress
+  closure returns `PolarsResult<()>` (an `Err` stops the run) instead of
+  `()`; the native module's `run_config` is `run_config_frames` (the Python
+  side reads, Rust fits and writes). `po.run`'s signature and TOML keys are
+  unchanged, with the new keywords optional.
 - **`rls` is 20% faster at k=20 and 57% faster at k=50** (model arithmetic;
   1.63M → 1.93M rows/s through the bank at k=20). The per-row
   back-substitution summed each row in the one order that serialized it on

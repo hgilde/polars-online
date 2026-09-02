@@ -4,7 +4,7 @@ Three entry points share one Rust core (see ``docs/PLAN.md``):
 
 1. an expression plugin -- ``pl.col("y").online.<model>(...)``;
 2. :class:`ModelBank`, chunk-fed, memory O(state) not O(data);
-3. :func:`run`, or the ``online`` CLI: parquet in -> parquet out.
+3. :func:`run`, or the ``online`` CLI: parquet, ipc, csv or ndjson in and out.
 """
 
 from polars_online import (

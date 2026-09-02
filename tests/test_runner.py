@@ -1,7 +1,10 @@
-"""E8: `polars_online.run` — the streaming parquet runner from Python.
+"""E8 / E32: `polars_online.run` — the streaming runner from Python.
 
-Same code path as the `online` CLI (`online_polars::run_config`), so memory is
-O(state + chunk) rather than O(data), without spawning a process.
+The same pipeline as the `online` CLI (`online_polars::run`), reading with
+py-polars: a path in any of the four formats, a LazyFrame, a DataFrame or an
+iterable of frames goes in and any format comes out, with memory O(state +
+chunk) rather than O(data) and no process spawned. Every source and format is
+held to the numbers `ModelBank` gives on the same rows.
 """
 
 import numpy as np
@@ -10,18 +13,41 @@ import pytest
 
 import polars_online as po
 
+# format name -> the extension `run` tells it from (one of each format's).
+FORMATS = {"parquet": "parquet", "ipc": "arrow", "csv": "csv", "ndjson": "jsonl"}
 
-def _write(path, n=20000, seed=0):
+
+def _frame(n=20000, seed=0) -> pl.DataFrame:
     rng = np.random.default_rng(seed)
     x0 = rng.standard_normal(n)
-    pl.DataFrame(
+    return pl.DataFrame(
         {
             "t": np.arange(float(n)),
             "x0": x0,
             "y": 2 * x0 + 0.1 * rng.standard_normal(n),
             "g": np.where(np.arange(n) % 2 == 0, "a", "b"),
         }
-    ).write_parquet(path)
+    )
+
+
+def _write(path, n=20000, seed=0):
+    _frame(n, seed).write_parquet(path)
+
+
+def _save(df: pl.DataFrame, path, fmt: str) -> None:
+    getattr(df, f"write_{fmt}")(path)
+
+
+def _load(path, fmt: str) -> pl.DataFrame:
+    return getattr(pl, f"read_{fmt}")(path)
+
+
+def _preds(df: pl.DataFrame) -> list:
+    return df["ridge"].struct.field("pred_y").to_list()
+
+
+def _bank_preds(df: pl.DataFrame, **kw) -> list:
+    return _preds(po.ModelBank([_spec(**kw)]).fit_predict(df))
 
 
 def _spec(**kw):
@@ -84,7 +110,8 @@ def test_save_and_resume(tmp_path):
 def test_matches_the_model_bank(tmp_path):
     src, dst = tmp_path / "in.parquet", tmp_path / "out.parquet"
     _write(src, n=3000)
-    po.run(input=src, output=dst, specs=[_spec()])
+    stats = po.run(input=src, output=dst, specs=[_spec()])
+    assert stats == {"rows": 3000, "chunks": 1}, "the default chunk_rows is 100k"
     from_runner = pl.read_parquet(dst)["ridge"].struct.field("pred_y").to_list()
     from_bank = (
         po.ModelBank([_spec()])
@@ -197,3 +224,200 @@ def test_row_groups_need_not_align_with_chunk_rows(tmp_path):
     assert out.drop("ridge").equals(df)
     from_bank = po.ModelBank([_spec()]).fit_predict(df)["ridge"].struct.field("pred_y")
     assert out["ridge"].struct.field("pred_y").to_list() == from_bank.to_list()
+
+
+# ---------------------------------------------------------------------------
+# E32: any source, any format (docs/ENHANCEMENTS.md).
+
+
+@pytest.mark.parametrize("fmt", list(FORMATS))
+def test_every_input_format_gives_the_banks_numbers(tmp_path, fmt):
+    df = _frame(n=3000)
+    src, dst = tmp_path / f"in.{FORMATS[fmt]}", tmp_path / "out.parquet"
+    _save(df, src, fmt)
+    stats = po.run(input=src, output=dst, specs=[_spec()], chunk_rows=1000)
+    assert stats == {"rows": 3000, "chunks": 3}
+    out = pl.read_parquet(dst)
+    assert _preds(out) == _bank_preds(df)
+    # The input columns come through as they were, text formats included.
+    assert out.drop("ridge").equals(df)
+
+
+@pytest.mark.parametrize("fmt", list(FORMATS))
+def test_every_output_format_carries_the_banks_columns(tmp_path, fmt):
+    """One chunk, so `ModelBank.fit_predict` on the whole frame is the very
+    same computation -- `coef` included, which is also snapshotted on each
+    chunk's last row."""
+    df = _frame(n=3000)
+    src, dst = tmp_path / "in.parquet", tmp_path / f"out.{FORMATS[fmt]}"
+    df.write_parquet(src)
+    po.run(input=src, output=dst, specs=[_spec(coef_every=7)], chunk_rows=3000)
+    want = po.ModelBank([_spec(coef_every=7)]).fit_predict(df)["ridge"]
+    out = _load(dst, fmt)
+    if fmt == "csv":
+        # CSV has no structs: `<spec>.<field>` columns, lists as JSON text.
+        assert out.columns == [
+            *df.columns,
+            *(f"ridge.{f}" for f in ("pred_y", "resid_y", "n_eff", "coef")),
+        ]
+        assert out["ridge.pred_y"].to_list() == want.struct.field("pred_y").to_list()
+        coef = out["ridge.coef"].str.json_decode(pl.List(pl.Float64))
+        assert 300 < coef.null_count() < 3000, "rows between snapshots are null, not []"
+        assert coef.to_list() == want.struct.field("coef").to_list(), "not bit-exact"
+        return
+    assert out.columns == [*df.columns, "ridge"]
+    assert out.schema["ridge"].fields == want.dtype.fields
+    assert out["ridge"].equals(want, null_equal=True)
+
+
+def test_a_frame_a_plan_and_frames_equal_the_path(tmp_path):
+    df = _frame(n=2500)
+    src = tmp_path / "in.parquet"
+    df.write_parquet(src)
+
+    def frames():
+        for i in range(0, 2500, 400):
+            yield df.slice(i, 400)
+
+    # source -> the chunks it arrives in: `chunk_rows` for what polars reads,
+    # the frames themselves for what is handed in.
+    sources = {
+        "path": (src, 3),
+        "plan": (pl.scan_parquet(src), 3),
+        "frame": (df, 3),
+        "list": ([df.slice(0, 1000), df.slice(1000)], 2),
+        "generator": (frames(), 7),
+    }
+    want = _bank_preds(df)
+    for name, (source, chunks) in sources.items():
+        dst = tmp_path / f"{name}.parquet"
+        stats = po.run(input=source, output=dst, specs=[_spec()], chunk_rows=1000)
+        assert stats == {"rows": 2500, "chunks": chunks}, name
+        assert _preds(pl.read_parquet(dst)) == want, name
+
+
+@pytest.mark.filterwarnings("ignore::polars.exceptions.PolarsInefficientMapWarning")
+def test_a_query_streams_through(tmp_path):
+    """Any plan: here a filter and a Python UDF (deliberately -- it needs the
+    GIL on polars' threads while the runner is inside Rust)."""
+    src, dst = tmp_path / "in.parquet", tmp_path / "out.parquet"
+    _write(src, n=2000)
+    query = (
+        pl.scan_parquet(src)
+        .filter(pl.col("g") == "a")
+        .with_columns(x2=pl.col("x0").map_elements(lambda v: 2.0 * v, return_dtype=pl.Float64))
+    )
+    kw = dict(features=["x2"], group=None)
+    stats = po.run(input=query, output=dst, specs=[_spec(**kw)], chunk_rows=300)
+    assert stats == {"rows": 1000, "chunks": 4}
+    assert _preds(pl.read_parquet(dst)) == _bank_preds(query.collect(), **kw)
+
+
+def test_progress_is_called_after_every_chunk(tmp_path):
+    src, dst = tmp_path / "in.parquet", tmp_path / "out.parquet"
+    _write(src, n=2500)
+    calls = []
+    po.run(
+        input=src,
+        output=dst,
+        specs=[_spec()],
+        chunk_rows=1000,
+        progress=lambda r, c: calls.append((r, c)),
+    )
+    assert calls == [(1000, 1), (2000, 2), (2500, 3)]
+    with pytest.raises(TypeError, match="callable"):
+        po.run(input=src, output=dst, specs=[_spec()], progress="yes")  # type: ignore[arg-type]
+
+
+class _Stop(Exception):
+    pass
+
+
+def test_raising_in_progress_stops_the_run_and_keeps_the_old_output(tmp_path):
+    src, dst = tmp_path / "in.parquet", tmp_path / "out.parquet"
+    _write(src, n=2500)
+    dst.write_bytes(b"previous")
+
+    def progress(rows, chunks):
+        if chunks == 2:
+            raise _Stop(rows)
+
+    with pytest.raises(_Stop, match="2000"):
+        po.run(input=src, output=dst, specs=[_spec()], chunk_rows=1000, progress=progress)
+    assert dst.read_bytes() == b"previous", "a failed run must not publish"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["in.parquet", "out.parquet"], "temp left"
+
+
+def test_raising_in_the_frames_surfaces_as_itself(tmp_path):
+    df = _frame(n=1000)
+    dst = tmp_path / "out.parquet"
+
+    def frames():
+        yield df.slice(0, 500)
+        yield df.slice(500, 500 // 0)
+
+    with pytest.raises(ZeroDivisionError):
+        po.run(input=frames(), output=dst, specs=[_spec()])
+    assert not dst.exists()
+
+
+def test_non_frames_are_rejected(tmp_path):
+    df = _frame(n=100)
+    dst = tmp_path / "out.parquet"
+    with pytest.raises(TypeError, match="must be polars DataFrames, got int"):
+        po.run(input=[1, 2], output=dst, specs=[_spec()])
+    with pytest.raises(TypeError, match="got dict"):
+        po.run(input=[df, {"t": 1}], output=dst, specs=[_spec()])
+    assert not dst.exists()
+    with pytest.raises(ValueError, match="no frames"):
+        po.run(input=[], output=dst, specs=[_spec()])
+    with pytest.raises(ValueError, match="needs an input"):
+        po.run(output=dst, specs=[_spec()])
+    with pytest.raises(FileNotFoundError):
+        po.run(input=tmp_path / "missing.parquet", output=dst, specs=[_spec()])
+
+
+def test_an_empty_input_writes_the_schema(tmp_path):
+    df = _frame(n=100)
+    for name, source in {"frame": df.clear(), "plan": df.lazy().filter(pl.lit(False))}.items():
+        dst = tmp_path / f"{name}.parquet"
+        assert po.run(input=source, output=dst, specs=[_spec()]) == {"rows": 0, "chunks": 0}
+        out = pl.read_parquet(dst)
+        assert out.height == 0 and out.columns == [*df.columns, "ridge"], name
+        assert "pred_y" in [f.name for f in out.schema["ridge"].fields], name
+    csv = tmp_path / "empty.csv"
+    po.run(input=df.clear(), output=csv, specs=[_spec()])
+    assert pl.read_csv(csv).columns == [
+        *df.columns,
+        "ridge.pred_y",
+        "ridge.resid_y",
+        "ridge.n_eff",
+        "ridge.coef",
+    ]
+
+
+def test_keep_columns_selects_the_input(tmp_path):
+    df = _frame(n=1000).with_columns(junk=pl.lit("x"))
+    src = tmp_path / "in.parquet"
+    df.write_parquet(src)
+    want = _bank_preds(df.drop("junk"))
+    for name, source in {"path": src, "frames": [df.slice(0, 600), df.slice(600)]}.items():
+        dst = tmp_path / f"{name}.parquet"
+        po.run(input=source, output=dst, specs=[_spec()], keep_columns=["t", "x0", "y", "g"])
+        out = pl.read_parquet(dst)
+        assert out.columns == ["t", "x0", "y", "g", "ridge"], name
+        assert _preds(out) == want, name
+
+
+def test_an_unknown_extension_needs_the_format_named(tmp_path):
+    df = _frame(n=500)
+    src, dst = tmp_path / "in.dat", tmp_path / "out.bin"
+    df.write_parquet(src)
+    with pytest.raises(ValueError, match="cannot tell the format of .*in.dat"):
+        po.run(input=src, output=tmp_path / "out.parquet", specs=[_spec()])
+    with pytest.raises(
+        ValueError, match="input_format 'xml' is not one of parquet, ipc, csv, ndjson"
+    ):
+        po.run(input=src, input_format="xml", output=dst, specs=[_spec()])
+    po.run(input=src, input_format="parquet", output=dst, output_format="csv", specs=[_spec()])
+    assert pl.read_csv(dst)["ridge.pred_y"].to_list() == _bank_preds(df)

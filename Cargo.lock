@@ -1600,6 +1600,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonpath_lib_polars_vendor"
+version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4bd9354947622f7471ff713eacaabdb683ccb13bba4edccaab9860abf480b7d"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2043,6 +2054,8 @@ version = "0.1.0"
 dependencies = [
  "online-core",
  "polars",
+ "polars-arrow",
+ "polars-parquet",
  "polars-utils",
  "rayon",
  "rmp-serde",
@@ -2418,6 +2431,7 @@ dependencies = [
  "polars-compute",
  "polars-core",
  "polars-io",
+ "polars-json",
  "polars-ops",
  "polars-plan",
  "polars-row",
@@ -2483,6 +2497,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "simd-json",
  "simdutf8",
  "tokio",
  "zmij",
@@ -2526,6 +2541,7 @@ dependencies = [
  "polars-core",
  "polars-expr",
  "polars-io",
+ "polars-json",
  "polars-mem-engine",
  "polars-ops",
  "polars-plan",
@@ -2549,6 +2565,7 @@ dependencies = [
  "polars-error",
  "polars-expr",
  "polars-io",
+ "polars-json",
  "polars-ops",
  "polars-plan",
  "polars-time",
@@ -2595,6 +2612,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "hex",
  "indexmap",
+ "jsonpath_lib_polars_vendor",
  "libm",
  "memchr",
  "num-traits",
@@ -2603,12 +2621,14 @@ dependencies = [
  "polars-compute",
  "polars-core",
  "polars-error",
+ "polars-json",
  "polars-schema",
  "polars-utils",
  "rayon",
  "regex",
  "regex-syntax",
  "serde",
+ "serde_json",
  "strum_macros",
  "unicode-normalization",
  "unicode-reverse",
@@ -2685,6 +2705,7 @@ dependencies = [
  "polars-error",
  "polars-ffi",
  "polars-io",
+ "polars-json",
  "polars-ops",
  "polars-parquet",
  "polars-time",
@@ -2778,6 +2799,7 @@ dependencies = [
  "polars-error",
  "polars-expr",
  "polars-io",
+ "polars-json",
  "polars-mem-engine",
  "polars-ooc",
  "polars-ops",
@@ -2788,6 +2810,7 @@ dependencies = [
  "pyo3",
  "rayon",
  "recursive",
+ "serde_json",
  "slotmap",
  "tokio",
  "uuid",
@@ -3629,6 +3652,7 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",
