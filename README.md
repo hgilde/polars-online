@@ -4,7 +4,7 @@ Streaming / online regression models for [Polars](https://pola.rs). A Rust core
 exposed three ways with identical numerics:
 
 1. **an expression plugin** — `pl.col("y").online.ewridge(...)`, with `.over(group)`;
-2. **a chunk-fed `ModelBank`** — memory is O(state), not O(data);
+2. **a chunk-fed `ModelBank`** — holds O(state), not O(data);
 3. **a streaming runner** — `po.run(...)` or the standalone `online` CLI:
    parquet, ipc, csv or ndjson in and out, config from TOML.
 
@@ -83,8 +83,11 @@ and `collect(engine="streaming")` does not change that: polars' streaming
 engine has no streaming node for a user expression — a plugin is a
 `columnar-function` node, which collects its input, calls once, and re-emits
 (the engine's own `rolling`, `ewm_*` and `cum_*` get dedicated windowed
-nodes; nothing a user writes does). For data that does not fit, the surfaces
-are the bank and the runner below, which hold O(state).
+nodes; nothing a user writes does). Measured: 2.0 GB at 3M rows, 7.3 GB at
+12M. For data that does not fit, the surfaces are the bank and the runner
+below, which hold O(state): measured flat from 3M to 12M rows, 0.75 GB in
+the CLI and nearly all of it polars' parquet read-ahead (docs/PERFORMANCE.md
+§11, which also explains the number a Python process reports).
 
 ### 2. `ModelBank` (chunk-fed)
 
@@ -537,6 +540,14 @@ fourteen. A bank of several specs is one flat task pool too — eight
 single-group specs over 300k rows take 118 ms, against 685 ms if they ran one
 at a time. The expression plugin under `.over(group)` parallelizes the same
 way: 12.2M rows/s at k=20 over 1000 groups.
+
+**Memory.** The bank and the runner hold the state, the chunks in flight
+(three, so `chunk_rows` is the knob) and whatever polars' reader prefetches:
+on a 14-thread machine the parquet reader front-loads ~0.7 GB of decoded
+row groups whatever the file's length, and `POLARS_ROW_GROUP_PREFETCH_SIZE=1`
+takes the CLI to 0.15 GB at the same speed. Measured flat from 3M to 12M
+rows in docs/PERFORMANCE.md §11. The expression plugin is the O(data)
+surface.
 
 Where the time goes, and what to reach for, is in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).

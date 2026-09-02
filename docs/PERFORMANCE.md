@@ -570,3 +570,75 @@ IPC batched, one record batch per chunk. CSV batched, structs flattened to
 round-trip, so `str.json_decode` gives the bits back). NDJSON serialized in
 parallel slices of each chunk and written in order. Output goes through a
 temporary sibling and a rename, as `save` does.
+
+## 11. Memory: which surface is O(data) (2026-09-02)
+
+The claim on the README's first line is that the bank and the runner run on
+data that does not fit in memory. §10's note that the plugin is O(data)
+raised the question of whether everything is. Measured, on the §10 file and
+the same file doubled and quadrupled by appending itself with the clock
+shifted — same 32 groups, so the state is identical and only the data
+grows — `ewridge` k=20 with clock, weights and `min_periods`, parquet in,
+parquet out, `chunk_rows=100k`, 14 threads:
+
+| peak physical footprint | 3M rows (0.54 GB parquet, 0.59 GB in memory) | 6M rows | 12M rows |
+|---|---:|---:|---:|
+| plugin, `sink_parquet(engine="streaming")` (`collect` is the same) | 1.98 GB | 3.73 GB | 7.35 GB |
+| `online` CLI | 0.73 GB | 0.72 GB | 0.75 GB |
+| `po.run` | 0.95 GB | 1.29 GB | 1.41 GB |
+| `ModelBank` loop over `collect_batches` | 0.80 GB | 1.09 GB | 1.24 GB |
+| `po.run`, jemalloc told to release freed pages at once | — | 0.87 GB | 0.86 GB |
+| `ModelBank` loop, the same | — | 0.73 GB | 0.74 GB |
+| `online` CLI, `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | — | — | 0.15 GB |
+| `po.run` / bank loop, prefetch 1 and pages released | — | — | 0.46 GB / 0.31 GB |
+
+**The plugin is O(data); nothing else is.** The plugin's footprint is over 3×
+the frame at every size and its time is linear (3.2 / 6.7 / 14.4 s), and
+the streaming engine does not help because a plugin expression is a
+`columnar-function` node, which collects its input (§10). The CLI is flat
+at 0.73 GB from 3M to 12M rows. `po.run` and the bank loop *report* a
+creeping number, and the creep is the allocator, not live data: the
+extension allocates through py-polars' jemalloc, which keeps freed pages
+for ten seconds (`dirty_decay_ms`), longer than these runs, so the peak is
+the high-water mark of everything ever allocated — with
+`_RJEM_MALLOC_CONF=dirty_decay_ms:0,muzzy_decay_ms:0` the same runs are flat
+(0.87 / 0.86 GB) and about 20% slower for the purging; the CLI's system
+malloc returns pages at once, which is why its trace drains and Python's
+does not. Not a knob to set in production — it is the explanation of the
+reported number, and the reason the CLI and `po.run` differ here.
+
+**What the constant is.** Almost none of it is ours. A 100k-row chunk of
+this file is ~20 MB and the pipeline holds three, the bank's state for 32
+groups at k=20 is under a megabyte, and the output writer holds one chunk.
+The rest is polars' parquet reader: the streaming engine prefetches
+row groups ahead of the consumer — `row_group_prefetch_size: 96` on 14
+threads, held back only by a 448 MB byte budget — and this file's row
+groups are 262k rows, so the reader front-loads ~0.7 GB of decoded rows
+before the bank has consumed one chunk (the CLI's trace peaks at the start
+and drains from there). `POLARS_ROW_GROUP_PREFETCH_SIZE=1` takes the
+CLI on 12M rows from 0.75 GB to **0.15 GB at the same 3.2 s** — the bank,
+not the reader, is the bound, and a local SSD needs no read-ahead; `=2` is
+0.28 GB. The bank loop and `po.run` keep a few more chunks in flight in
+py-polars' `collect_batches` and the FFI hand-off (0.31 / 0.46 GB with
+prefetch 1). `POLARS_MAX_THREADS` scales the same term (4 threads: 0.45 GB,
+1 thread: 0.18 GB), because the prefetch is sized from the thread count.
+The byte budget (`POLARS_ROW_GROUP_PREFETCH_KBYTES_BUDGET`) counts
+compressed bytes, which for a memory-mapped local file cost nothing, so
+lowering it changed nothing here. CSV and NDJSON have their own
+(`POLARS_CSV_CHUNK_PREFETCH_LIMIT`, `POLARS_NDJSON_CHUNK_PREFETCH_LIMIT`),
+not measured.
+
+`chunk_rows` is the term the caller owns: `po.run` at 500k is 1.38 GB on 3M
+rows against 0.95 GB at 100k, three chunks in flight being five times
+larger. §10's advice to raise it for group-sorted input is a memory trade,
+which is what the knob was for.
+
+**How it was measured, and why not RSS.** Peak *physical footprint* —
+`proc_pid_rusage(RUSAGE_INFO_V4).ri_phys_footprint`, sampled every 20 ms
+from outside the process; the same number `/usr/bin/time -l` prints as
+"peak memory footprint". RSS is the wrong ruler for this question: polars
+memory-maps a local parquet file, and the file's clean pages count in RSS
+though the kernel drops them under pressure at no cost. The CLI's *RSS*
+grew 1.37 → 2.26 GB from 3M to 6M rows while its footprint stayed at
+0.75 GB; the first cut of this measurement used `ru_maxrss` and said every
+surface was O(data). It is not.

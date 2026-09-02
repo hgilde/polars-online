@@ -86,6 +86,13 @@ carries breaking changes.
   not. The README also states the cost — a zero-weight row still advances the
   clock, so `n_eff` decays while scoring and `min_periods` can blank the
   output.
+- **Which surface is O(data)**, measured (`docs/PERFORMANCE.md` §11): the
+  expression plugin — 2.0 GB at 3M rows, 7.3 GB at 12M, in either engine,
+  because polars' streaming engine collects the input of any user
+  expression before calling it. The bank, `po.run` and the CLI are flat at
+  ~0.75 GB from 3M to 12M rows, nearly all of it polars' parquet
+  read-ahead; `POLARS_ROW_GROUP_PREFETCH_SIZE=1` takes the CLI to 0.15 GB at
+  the same speed.
 
 ### Fixed
 
