@@ -133,6 +133,30 @@ def test_keywords_override_the_config(tmp_path):
     assert not (tmp_path / "unused.parquet").exists()
 
 
+def test_a_decimal_parquet_runs(tmp_path):
+    """Prices in parquet are commonly `Decimal`, and small codes `UInt8`.
+    Both used to be unreadable by this build -- `Decimal` panicked at the
+    boundary with `activate 'dtype-decimal' feature` (IMPROVEMENTS U5) --
+    which for the CLI meant a file it could not open at all."""
+    src, out = tmp_path / "in.parquet", tmp_path / "out.parquet"
+    _write(src, n=2000)
+    pl.read_parquet(src).with_columns(
+        price=pl.col("x0").cast(pl.Decimal(12, 4)),
+        code=(pl.arange(0, 2000) % 3).cast(pl.UInt8),
+    ).write_parquet(src)
+
+    stats = po.run(input=src, output=out, specs=[_spec(features=["price", "code"])])
+    assert stats["rows"] == 2000
+    got = pl.read_parquet(out)
+    assert got["ridge"].struct.field("pred_y").drop_nulls().len() > 0
+    # And the same numbers the Float64 columns would have given.
+    plain = pl.read_parquet(src).with_columns(
+        price=pl.col("price").cast(pl.Float64), code=pl.col("code").cast(pl.Float64)
+    )
+    want = po.ModelBank([_spec(features=["price", "code"])]).fit_predict(plain)
+    assert want["ridge"].equals(got["ridge"], null_equal=True)
+
+
 def test_missing_specs_is_rejected(tmp_path):
     with pytest.raises(ValueError, match="at least one spec"):
         po.run(input=tmp_path / "x.parquet", output=tmp_path / "y.parquet")

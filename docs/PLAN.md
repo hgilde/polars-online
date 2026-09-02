@@ -432,7 +432,7 @@ would have to become a *stated, tested* property, not a habit.
 
 ## 11f. Pre-release improvements review
 
-[`docs/IMPROVEMENTS.md`](IMPROVEMENTS.md) (C1–C6, P1–P3, U1–U4, X1–X2, T1–T4):
+[`docs/IMPROVEMENTS.md`](IMPROVEMENTS.md) (C1–C6, P1–P3, U1–U5, X1–X2, T1–T4):
 one pass per axis — correctness, performance, usability, extensibility,
 testing — with every finding reproduced before it was written down. Done so
 far: the emit flags through the expression plugin (C1), a bounded-input
@@ -460,7 +460,9 @@ sweeps, golden bank, API snapshot, README — is tested against, with
 `docs/EXTENDING.md` as the ordered list of places a model touches; writing
 those checks found `ftrl` missing from the golden pipeline (X2), and state
 and output files written through a temporary and renamed into place, so an
-interrupted save no longer destroys the state it was updating (C6).
+interrupted save no longer destroys the state it was updating (C6), and the
+dtype features a frame can carry across the boundary, since a `Decimal`
+column the spec never named used to abort the process (U5).
 The rest is proposed with its measurements next to it.
 
 ## 12. Open questions (not blocking)

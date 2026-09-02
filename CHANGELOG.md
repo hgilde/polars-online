@@ -9,6 +9,16 @@ carries breaking changes.
 
 ### Fixed
 
+- **Every polars dtype can now cross into the model bank.** A `Decimal` or
+  `Int128` column *anywhere* in the frame — even one no spec named — aborted
+  the process with `activate 'dtype-decimal' feature`, and `Int8`/`UInt8`/
+  `Array` columns failed with a polars error naming neither the column nor the
+  fix. The missing dtype features are enabled, so unused columns are carried
+  through whatever they are, and narrow numeric columns (`UInt8`, `Decimal`,
+  …) are usable as features, cast to `f64` and bit-identical to the `Float64`
+  columns they came from. The extension grows 7% (gzipped 17.6 → 18.9 MB); no
+  new dependency.
+
 - **State and output files are written atomically** — a temporary sibling,
   then a rename into place. `ModelBank.save` used to truncate the destination
   and write into it, so an interrupted save (a kill, a full disk, a quota)

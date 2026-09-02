@@ -43,7 +43,7 @@ uv run maturin develop --release -m crates/online-py/Cargo.toml
 ```
 
 Wheels and CLI binaries for macOS, Windows and Linux are attached to each
-release. The wheel is ~17 MB to download and ~50 MB installed: it statically
+release. The wheel is ~19 MB to download and ~59 MB installed: it statically
 links the Rust half of Polars, so nothing beyond `polars` itself has to be
 present at run time. `numpy` is an optional extra, needed only by
 `ModelBank.gram()`.
@@ -198,7 +198,7 @@ Every model takes the same stream parameters:
 
 | parameter | meaning |
 |---|---|
-| `targets`, `features` | column names; ≥1 target, shared `X'X` across targets. Columns must be numeric (Boolean counts): a String column is refused, not cast to null |
+| `targets`, `features` | column names; ≥1 target, shared `X'X` across targets. Columns must be numeric — any width, `Decimal` and `Boolean` included, cast to `f64` on the way in — and a String column is refused rather than cast to null. Columns the spec does not name are carried through untouched, whatever their dtype |
 | `add_intercept` | default `True` |
 | `clock` | monotone **numeric** column (seconds, cumulative volume, …). `None` ⇒ row count. A temporal column is rejected — cast it first, e.g. `pl.col("ts").dt.epoch("s")` — because its internal representation would silently set the units of `halflife`, `max_dclock` and `session_gap` |
 | `halflife` / `lam` | decay in clock units; mutually exclusive. A list of halflives means one accumulator per value |

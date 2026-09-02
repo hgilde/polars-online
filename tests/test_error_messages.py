@@ -6,6 +6,7 @@ JSON offset, a Rust type or an internal method is a regression here.
 
 from __future__ import annotations
 
+import datetime
 import threading
 import types
 import typing
@@ -255,6 +256,99 @@ def test_boolean_features_and_integer_keys_are_fine():
     spec = _spec_dict(features=["x0", "b"], group="g", session="g", session_gap=1.0)
     out = po.ModelBank([spec]).fit_predict(df)
     assert out["m"].struct.field("pred_y").drop_nulls().len() > 0
+
+
+#: One column of every dtype polars can hand us, by name. Built lazily,
+#: because a few need a cast to exist at all.
+DTYPES: dict[str, typing.Callable[[], pl.Series]] = {
+    "Int8": lambda: pl.Series("c", [1, 2], dtype=pl.Int8),
+    "UInt8": lambda: pl.Series("c", [1, 2], dtype=pl.UInt8),
+    "Int16": lambda: pl.Series("c", [1, 2], dtype=pl.Int16),
+    "UInt16": lambda: pl.Series("c", [1, 2], dtype=pl.UInt16),
+    "Int32": lambda: pl.Series("c", [1, 2], dtype=pl.Int32),
+    "Int64": lambda: pl.Series("c", [1, 2], dtype=pl.Int64),
+    "Int128": lambda: pl.Series("c", [1, 2], dtype=pl.Int128),
+    "Float32": lambda: pl.Series("c", [1.0, 2.0], dtype=pl.Float32),
+    "Decimal": lambda: pl.Series("c", [1.5, 2.5]).cast(pl.Decimal(10, 4)),
+    "Boolean": lambda: pl.Series("c", [True, False]),
+    "String": lambda: pl.Series("c", ["a", "b"]),
+    "Categorical": lambda: pl.Series("c", ["a", "b"], dtype=pl.Categorical),
+    "Enum": lambda: pl.Series("c", ["a", "b"], dtype=pl.Enum(["a", "b"])),
+    "Binary": lambda: pl.Series("c", [b"a", b"b"]),
+    "Date": lambda: pl.Series("c", [datetime.date(2026, 1, 1), datetime.date(2026, 1, 2)]),
+    "Datetime": lambda: pl.Series(
+        "c", [datetime.datetime(2026, 1, 1), datetime.datetime(2026, 1, 2)]
+    ),
+    "Time": lambda: pl.Series("c", [datetime.time(1), datetime.time(2)]),
+    "Duration": lambda: pl.Series(
+        "c", [datetime.timedelta(seconds=1), datetime.timedelta(seconds=2)]
+    ),
+    "List": lambda: pl.Series("c", [[1.0], [2.0]]),
+    "Array": lambda: pl.Series("c", [[1.0, 2.0], [3.0, 4.0]], dtype=pl.Array(pl.Float64, 2)),
+    "Struct": lambda: pl.Series("c", [{"a": 1.0}, {"a": 2.0}]),
+    "Null": lambda: pl.Series("c", [None, None], dtype=pl.Null),
+    "Object": lambda: pl.Series("c", [object(), object()], dtype=pl.Object),
+}
+
+#: Dtypes that are numbers once cast, and so are legal features.
+NUMERIC = {
+    "Int8",
+    "UInt8",
+    "Int16",
+    "UInt16",
+    "Int32",
+    "Int64",
+    "Int128",
+    "Float32",
+    "Decimal",
+    "Boolean",
+    "Null",
+}
+
+
+def _two_rows() -> pl.DataFrame:
+    return pl.DataFrame({"y": [1.0, 2.0], "x0": [0.5, 1.5]})
+
+
+@pytest.mark.parametrize("name", list(DTYPES), ids=list(DTYPES))
+def test_a_column_the_spec_never_names_is_ignored_whatever_its_dtype(name):
+    """A frame carries columns the model does not use, and the whole frame
+    crosses into Rust. A `Decimal` or `Int128` column *anywhere* in it used to
+    abort the process with `activate 'dtype-decimal' feature` -- a panic
+    inside the conversion, before any validation of ours could name the
+    column, on a column the spec never asked for. The dtype features are on
+    now (IMPROVEMENTS U5); this table is what keeps them on."""
+    df = _two_rows().with_columns(DTYPES[name]().alias("c"))
+    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=5.0, min_periods=1.0)
+    out = po.ModelBank([spec]).fit_predict(df)
+    assert out["m"].struct.field("n_eff").len() == 2
+
+
+@pytest.mark.parametrize("name", list(DTYPES), ids=list(DTYPES))
+def test_a_feature_of_any_dtype_is_either_used_or_named(name):
+    """The other half: used as a feature, a dtype either casts to f64 or is
+    refused by name. Never a panic, and never silently all-null."""
+    df = _two_rows().with_columns(DTYPES[name]().alias("c"))
+    spec = po.spec.ewridge("m", targets=["y"], features=["c"], halflife=5.0, min_periods=1.0)
+    if name in NUMERIC:
+        po.ModelBank([spec]).fit_predict(df)
+        return
+    with pytest.raises(ValueError) as exc:
+        po.ModelBank([spec]).fit_predict(df)
+    assert 'feature column "c"' in str(exc.value), str(exc.value)
+    assert "must be numeric" in str(exc.value), str(exc.value)
+
+
+@pytest.mark.parametrize("dtype", [pl.Int8, pl.UInt16, pl.Int128, pl.Float32, pl.Decimal(12, 4)])
+def test_a_narrow_dtype_gives_the_same_answer_as_float64(dtype):
+    """Casting happens on our side, so a `UInt8` or `Decimal` feature must fit
+    exactly what the same numbers as `Float64` would."""
+    x = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+    df = pl.DataFrame({"y": [2 * v + 1 for v in x], "x0": x})
+    spec = po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=5.0, min_periods=2.0)
+    want = po.ModelBank([spec]).fit_predict(df)
+    got = po.ModelBank([spec]).fit_predict(df.with_columns(pl.col("x0").cast(dtype)))
+    assert want.equals(got, null_equal=True)
 
 
 def test_a_spec_named_like_an_input_column_is_refused():

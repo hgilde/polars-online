@@ -22,7 +22,7 @@ online-polars = { path = "crates/online-polars", version = "0.1.0" }
 # rust polars 0.55.2  <->  py-polars 1.44.1  <->  pyo3-polars 0.28
 # "object" is required because pyo3-polars/derive pulls polars-plan, which turns on
 # polars-core/object; without it polars-ops fails to compile (non-exhaustive DataType match).
-polars = { version = "=0.55.2", default-features = false, features = ["object"] }
+polars = { version = "=0.55.2", default-features = false, features = ["object", "dtype-i8", "dtype-u8", "dtype-i16", "dtype-u16", "dtype-i128", "dtype-decimal", "dtype-array"] }
 pyo3 = "0.29"
 pyo3-polars = "0.28"
 

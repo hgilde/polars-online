@@ -431,6 +431,35 @@ editor showed nothing and a typo was a runtime error. Now:
   the stub, a `_json` that accepted a list but said `dict`, and an `int`
   comparison typed as `object`.
 
+### U5 — a `Decimal` column anywhere in the frame aborted the process — *done*
+
+`ModelBank.fit_predict` takes the whole frame, and the whole frame crosses
+into Rust, so every column's dtype has to be one this build can receive. Two
+were not, and they did not fail cleanly: a `Decimal` or `Int128` column
+panicked inside polars' own conversion with `activate 'dtype-decimal, '
+feature` — a message naming a cargo feature, raised before any validation of
+ours could name the column, and on a column the spec never asked for. Prices
+in parquet are commonly `Decimal`, so this is a first-minute failure for
+exactly the data this library is for. `Int8`/`UInt8`/`Array` were not much
+better: `ComputeError: cannot create series from Int8`, which at least is an
+error, but names neither the column nor the fix.
+
+Probed every dtype polars has, as an unused column and as a feature. The
+build was missing `dtype-i8`, `dtype-u8`, `dtype-i16`, `dtype-u16`,
+`dtype-i128`, `dtype-decimal` and `dtype-array`; with them on, every dtype
+either works or is refused by our own message, and the narrow numeric ones
+(`UInt8`, `Decimal`, …) are legal features that give bit-identical answers to
+the `Float64` columns they cast from.
+
+The cost is code size, and no new dependency: the graph is 453 crates either
+way, the extension goes 53.6 MB → 59.3 MB, and gzipped — the wheel's own
+measure — 17.6 MB → 18.9 MB, +7.4%. That is the price of not aborting on a
+column the user did not name.
+
+`tests/test_error_messages.py` holds the table: every dtype, unused and as a
+feature, plus a cast-equivalence check; `tests/test_runner.py` reads a
+`Decimal` parquet through the CLI's own path.
+
 ## 4. Extensibility
 
 ### X1 — the output dtype lives in one place — *done with C1*
