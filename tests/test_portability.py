@@ -292,9 +292,13 @@ class TestConfigParsing:
     """T-W3/T-W4: the CLI reads a TOML config as text. Windows checkouts can
     have CRLF endings, and Windows paths need escaping in TOML strings."""
 
+    @pytest.fixture(autouse=True)
+    def _exe(self, online_cli):
+        self.exe = online_cli
+
     def _cli(self, args, **kw):
         return subprocess.run(
-            ["cargo", "run", "-q", "-p", "online-cli", "--", *args],
+            [str(self.exe), *args],
             capture_output=True,
             text=True,
             encoding="utf-8",

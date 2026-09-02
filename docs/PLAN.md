@@ -449,7 +449,10 @@ non-numeric column is refused rather than cast to null (U2), and a bank that
 can say what it holds — `repr`, `groups()`, `drop_groups()`, `rows_seen()`,
 and `specs` that survive `load` (U3), and a typed Python surface — PEP 692
 kwargs on the builders and the namespace, `po.online(expr)` for the type
-checkers that cannot see a registered namespace, and mypy in the gate (U4).
+checkers that cannot see a registered namespace, and mypy in the gate (U4),
+and the CLI tests running a once-built executable instead of `cargo run`
+per call -- 33 s to 3.6 s, and the cost turned out to be macOS validating a
+freshly cloned 418 MB binary's signature, not cargo (T1).
 The rest is proposed with its measurements next to it.
 
 ## 12. Open questions (not blocking)

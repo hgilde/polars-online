@@ -406,12 +406,24 @@ each omission.
 
 ## 5. Testing
 
-### T1 — ten `cargo run` calls cost half the suite — *proposed*
+### T1 — eight `cargo run` calls cost half the suite — *done*
 
-`cargo run -q -p online-cli` takes 2.8 s even when nothing needs building
-(cargo's freshness check over the polars dependency graph); the binary itself
-starts in 1 ms. Ten CLI tests ≈ 28 s of a 58 s suite. A session-scoped
-fixture builds once and runs the executable directly.
+`cargo run -q -p online-cli` took 2.9 s per call with nothing to build, and
+the eight CLI tests took 33 s of a 64 s suite. The proposal blamed cargo's
+freshness check; measuring it showed that is 0.15 s. The rest is the launch:
+on macOS cargo re-clones the binary into `target/debug` on every fresh
+build (a new inode each time, `stat` shows), and the first exec of a new
+file of a 418 MB debug executable spends ~2.7 s before `main` -- the
+kernel validating the linker's ad-hoc code signature, 101k page hashes;
+it scales with size (1.5 s for the stripped 208 MB) and the second exec of
+the same file takes 10 ms. So `cargo run` paid it on every call.
+
+`tests/conftest.py` now has a session-scoped `online_cli` fixture: one
+`cargo build -q -p online-cli`, the executable's path taken from cargo's
+`--message-format=json` artifact message (so `CARGO_TARGET_DIR` and the
+`.exe` suffix are cargo's problem), and the two CLI test classes run it
+directly. The eleven CLI tests went from 33.1 s to 3.6 s, of which 2.7 s is
+the one launch the session still pays; the whole suite from 64 s to 31 s.
 
 ### T2 — zero Rust doc tests — *proposed*
 

@@ -122,8 +122,12 @@ class TestBankToml:
     """`examples/bank.toml` is quoted in the README and in the CLI's own module
     docs; nothing until now ran it."""
 
+    @pytest.fixture(autouse=True)
+    def _exe(self, online_cli):
+        self.exe = online_cli
+
     def _cli(self, *args):
-        return _run(["cargo", "run", "-q", "-p", "online-cli", "--", *args])
+        return _run([str(self.exe), *args])
 
     def test_dry_run_validates_the_shipped_config(self, data):
         res = self._cli(
