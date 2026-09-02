@@ -5,10 +5,15 @@
 # the job summary where a reviewer sees them next to the diff.
 name: Benchmark
 
-# Reported, never gating -- a shared runner is too noisy for a threshold. That
-# makes it a poor use of metered minutes on every push, so it runs weekly and
-# on demand. Put `push:` back when the repo is public.
+# Reported, never gating -- a shared runner is too noisy for a threshold. It
+# ran weekly and on demand while minutes were metered; the repo is public now
+# (2026-09-02), so it also runs on a push that can change the numbers. Not on
+# pull requests: the summary is worth reading on the branch that ships, and a
+# fork's PR would run it on a runner nobody is comparing against.
 on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**", "LICENSE", ".gitignore"]
   schedule:
     - cron: "41 5 * * 1" # Mondays, before the weekly CI
   workflow_dispatch:

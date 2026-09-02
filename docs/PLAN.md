@@ -264,6 +264,8 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       currently report clean, so the job starts from a known-good baseline;
       wire it as reported-not-gating first (like the benchmark job), since
       valgrind on CPython is noisy until the suppressions are tuned.
+      **The trigger fired on 2026-09-02**: the repository is public and
+      Actions is unmetered, so this is now doable work rather than a deferral.
 
 ## 11a. Decisions made while implementing
 

@@ -596,6 +596,30 @@ request, and `paths-ignore` deleted. That flag does not come back even as an
 optimisation — if CI becomes a required status check, a doc-only pull request
 would never run it and never become mergeable.
 
+**Done, 2026-09-02.** The repository was deleted and recreated public, and
+163 commits pushed to the empty repo. What came back by itself: every
+community health file, `dependabot.yml`, all four workflows, and the matrix,
+which widens on `github.event.repository.private` without being touched.
+What did **not**, because they are repository settings rather than files:
+
+- **The `pypi` environment** that `release.yml` names (`environment: pypi`).
+  It must exist again *before any tag is pushed*, or the publish job fails
+  after the wheels are built. PyPI's trusted-publisher configuration is keyed
+  by owner / repository / workflow / environment *names*, so recreating the
+  repository under the same name leaves it valid — nothing to redo on PyPI's
+  side, but the environment is not optional.
+- Dependabot alerts and security updates, private vulnerability reporting
+  (the enforcement channel `SECURITY.md` and `CODE_OF_CONDUCT.md` both point
+  at), branch protection or rulesets, and the description / topics.
+- Actions history and the open dependabot pull requests, which are
+  disposable — dependabot opened a fresh one within a minute of the push.
+
+The first push also proved the `paths-ignore` warning above in the cheapest
+possible way: it ended in two documentation commits, the filter matched them,
+and **no CI ran at all** on the 163 commits. The flag is gone (and
+`benchmark.yml` gained a `push:` trigger, keeping a paths filter of its own —
+it is reported-never-gating, so a filter there cannot block a merge).
+
 ## Actions quota: exhausted on day one (2026-08-31)
 
 The push of `1a52267` did not run. All four jobs failed in ~2s with *"The job

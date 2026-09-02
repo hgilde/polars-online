@@ -19,15 +19,17 @@ name: CI
 # macOS matrix to every pull request: 830 billed minutes, 37% of the month, on
 # one dependabot PR.
 #
-# `paths-ignore` stays until the repo is public. It must be gone before CI
-# becomes a required status check, or a doc-only pull request never runs the
-# check and never becomes mergeable.
+# `paths-ignore` is gone (2026-09-02, the repo is public). It saved metered
+# minutes on doc-only pushes, and it cost exactly what it was warned it would:
+# the first push to the public repo ended in two doc commits, the filter
+# swallowed it, and no CI ran at all on 163 commits. A required status check
+# has the same failure in the mergeable direction -- a doc-only pull request
+# would never run it and so could never merge. Minutes are free here now, so
+# every push and every pull request runs.
 on:
   push:
     branches: [main]
-    paths-ignore: ["**.md", "docs/**", "LICENSE", ".gitignore"]
   pull_request:
-    paths-ignore: ["**.md", "docs/**", "LICENSE", ".gitignore"]
   schedule:
     - cron: "23 5 * * 1"
   workflow_dispatch:

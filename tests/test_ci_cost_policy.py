@@ -158,13 +158,18 @@ class TestStepOrderingThatHasAlreadyBrokenCI:
 
 class TestDocOnlyPushesAreFree:
     @pytest.mark.parametrize("trigger", ["push", "pull_request"])
-    def test_paths_ignore_present_while_private(self, trigger):
-        """Must be removed when CI becomes a required status check -- a
-        doc-only PR would never run it and so could never merge. Until then it
-        is free money: this repo is majority prose by file count."""
-        assert "paths-ignore" in CI["on"][trigger]
+    def test_ci_has_no_paths_filter(self, trigger):
+        """It saved metered minutes while the repo was private and it cost the
+        first CI run on the public one: the push ended in two doc commits and
+        the filter swallowed all 163. A required status check fails the same
+        way -- a doc-only PR never runs it, so it can never merge. Minutes are
+        free on a public repo; CI runs on everything."""
+        assert CI["on"][trigger] is None or "paths-ignore" not in CI["on"][trigger]
 
-    def test_benchmark_does_not_run_on_push(self):
-        """Reported, never gating (E11), so it has no business spending
-        minutes on every commit."""
-        assert "push" not in ALL["benchmark.yml"]["on"]
+    def test_benchmark_skips_doc_only_pushes(self):
+        """Reported, never gating (E11). It runs on main now that minutes are
+        free, but a prose commit cannot change a throughput number, and a
+        summary nobody reads is still noise in the run list."""
+        on = ALL["benchmark.yml"]["on"]
+        assert "pull_request" not in on, "a fork's runner is not a comparable number"
+        assert "paths-ignore" in on["push"]
