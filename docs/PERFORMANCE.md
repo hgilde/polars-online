@@ -498,8 +498,34 @@ effect, gave `po.run` every source py-polars can stream: globs, cloud URLs,
 a query with a filter or a UDF, a `DataFrame`, an iterable of frames. The
 GIL is released for the run and reacquired only to take each batch. The CLI
 still scans in Rust, so on a stable toolchain **a large CSV is faster
-through `po.run` than through `online`**; parquet and ipc are the same
-either way.
+through `po.run` than through `online`**. On parquet the CLI is ~15% behind
+too (0.83 s / 2.55 s against `po.run`'s 0.72 s / 2.12 s), and its timing
+line says why it is not the reader: `read_wait=0.06s bank=2.42s` against
+`bank=2.07s` in Python, for the same code on the same chunks. Rechunking the
+engine's two-piece batches on the reader thread was tried and changed
+nothing. What differs between the two processes is the allocator — the
+extension allocates through py-polars' jemalloc (`PolarsAllocator`, §6,
+which measured it at +16% for exactly this `k`), the binary through the
+system malloc — and giving the CLI its own would statically link one,
+which rule 12 keeps a decision rather than a tweak.
+
+**Before and after.** The C7 runner ran `lf.slice(offset, chunk_rows)
+.collect()` per chunk on the calling thread, re-planning the scan thirty
+times and overlapping nothing. Same machine, same file, same spec, best of
+3, the C7 wheel and binary built from `62d74a1` in a worktree:
+
+| parquet → parquet | C7 `po.run` | E32 `po.run` | C7 `online` | E32 `online` |
+|---|---:|---:|---:|---:|
+| groups interleaved | 1.93 s | **0.72 s** | 2.14 s | **0.83 s** |
+| group-sorted | 3.30 s | **2.12 s** | 3.84 s | **2.55 s** |
+
+The bank, the plugin and `online-core` are untouched by E32 (`git diff
+--stat 62d74a1 HEAD -- crates/` names only the runner, the CLI and the
+bindings), so the `fit_predict` numbers in §8 stand. The price is size:
+the extension 59.3 → 61.9 MB (+4.4%; gzipped 18.8 → 19.8 MB), the wheel
+19.8 → 20.8 MB, the CLI 51.0 → 53.1 MB, all of it polars' ipc, csv and
+ndjson readers and writers — no new crate outside polars and no new `-sys`
+crate (`Cargo.lock`'s are the four C7 had).
 
 **Writers.** Parquet through `BatchedWriter` with parallel page encoding —
 one row group per chunk, so 30 row groups regardless of the input's layout.

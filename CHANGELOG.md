@@ -49,6 +49,13 @@ carries breaking changes.
   `Output::Batches(callback)` out — with `run_config_on(cfg, Input, ..)` for
   a `RunConfig` over an input the caller already has, `Format`
   (`from_path`, `scan`, `name`, `ALL`) and `DEFAULT_CHUNK_ROWS`.
+  The three stages now overlap and a plan is read in one streaming pass
+  instead of a `slice().collect()` per chunk, so on parquet the same run is
+  **1.6–2.7× faster than before** (`po.run`, 3M rows: 1.93 → 0.72 s with
+  groups interleaved, 3.30 → 2.12 s group-sorted; the CLI 2.14 → 0.83 s and
+  3.84 → 2.55 s). The extension grows 4% for the three extra formats
+  (gzipped 18.8 → 19.8 MB; wheel 19.8 → 20.8 MB; CLI 51 → 53 MB); no new
+  dependency outside polars. Measured in `docs/PERFORMANCE.md` §10.
 
 ### Changed
 
