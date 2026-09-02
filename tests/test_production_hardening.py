@@ -310,6 +310,88 @@ print("ok")
 """
 
 
+class TestScoringWithoutLearning:
+    """The deployment path: load a fit and score new rows. The README says to
+    do it with weight 0, and says why a null target is not the same; both
+    halves are pinned here (IMPROVEMENTS U8, docs/ENHANCEMENTS.md E31)."""
+
+    def _fitted(self, df):
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0"],
+            clock="t",
+            max_dclock=5.0,
+            halflife=20.0,
+            min_periods=3.0,
+            weight="w",
+            max_rows_between_solves=1,
+            coef_every=1,
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        return bank
+
+    def _frame(self, n, seed=0, weight=1.0):
+        rng = np.random.default_rng(seed)
+        x = rng.standard_normal(n)
+        return pl.DataFrame(
+            {
+                "t": np.arange(float(n)),
+                "x0": x,
+                "y": 1.0 + 2.0 * x + 0.01 * rng.standard_normal(n),
+                "w": np.full(n, weight),
+            }
+        )
+
+    def test_zero_weight_rows_score_and_freeze_the_fit_exactly(self):
+        """Mean-form accumulators decayed with nothing added are themselves, so
+        the coefficients do not move by one bit while scoring."""
+        fit = self._frame(100)
+        bank = self._fitted(fit)
+        before = bank.fit_predict(fit.tail(1))["m"].struct.field("coef").to_list()[-1]
+
+        scored = self._frame(60, seed=1, weight=0.0).with_columns(pl.col("t") + 100.0)
+        out = po.ModelBank.load_bytes(bank.save_bytes()).fit_predict(scored)["m"].struct
+        after = out.field("coef").to_list()[-1]
+        assert after == before, "scoring moved the coefficients"
+        assert out.field("pred_y")[0] is not None, "scoring emitted nothing"
+
+    def test_a_null_target_is_not_a_scoring_mode(self):
+        """The feature moments still update while the cross-moment does not, so
+        the two halves of the fit end up over different windows. That is the
+        reason the README tells people to use weight 0 instead."""
+        fit = self._frame(100)
+        bank = self._fitted(fit)
+        before = bank.fit_predict(fit.tail(1))["m"].struct.field("coef").to_list()[-1]
+
+        scored = self._frame(60, seed=1).with_columns(
+            pl.col("t") + 100.0, pl.lit(None, dtype=pl.Float64).alias("y")
+        )
+        after = (
+            po.ModelBank.load_bytes(bank.save_bytes())
+            .fit_predict(scored)["m"]
+            .struct.field("coef")
+            .to_list()[-1]
+        )
+        assert after != before, "if this ever stops drifting, the README can say so"
+
+    def test_a_long_scoring_tail_decays_n_eff_under_min_periods(self):
+        """The documented cost of scoring with weight 0: the clock still
+        advances, so `n_eff` decays and eventually `min_periods` blanks the
+        output even though the fit behind it is unchanged."""
+        bank = self._fitted(self._frame(100))
+        scored = self._frame(200, seed=2, weight=0.0).with_columns(pl.col("t") + 100.0)
+        out = po.ModelBank.load_bytes(bank.save_bytes()).fit_predict(scored)["m"].struct
+        n_eff = out.field("n_eff").to_list()
+        assert n_eff[0] > 3.0 > n_eff[-1], (n_eff[0], n_eff[-1])
+        preds = out.field("pred_y").to_list()
+        assert preds[0] is not None and preds[-1] is None
+        # ... and it is only the gate: the fit is still there underneath.
+        coefs = [c for c in out.field("coef").to_list() if c is not None]
+        assert coefs[0] == coefs[-1]
+
+
 class TestSerializationRobustness:
     """State bytes are the resume path; a corrupt file must be an error, never
     a panic or worse. (`SECURITY.md` already says to treat state like pickle;

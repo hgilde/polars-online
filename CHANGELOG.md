@@ -7,6 +7,14 @@ carries breaking changes.
 
 ## [Unreleased]
 
+### Documented
+
+- **How to score without learning**: give the rows weight `0`, which freezes
+  the coefficients bit for bit, rather than nulling the target, which does
+  not. The README also states the cost — a zero-weight row still advances the
+  clock, so `n_eff` decays while scoring and `min_periods` can blank the
+  output.
+
 ### Fixed
 
 - **`coef` is null, never an empty list, before a model's first solve.** Rows

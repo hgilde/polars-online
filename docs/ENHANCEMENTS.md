@@ -180,6 +180,10 @@ a loss function rather than a model:
 Neither is recommended without a use case; they are listed so that "we do not
 have a perceptron" is a recorded decision rather than an oversight.
 
+| # | P | Candidate | The argument, and what exists today |
+|---|---|---|---|
+| E31 | P3 | **A `predict(df)` that does not touch the state at all** — score a batch against a loaded bank with no clock advance, no decay, no `n_eff` erosion. | `weight=0` already scores without learning, and freezes the coefficients bit for bit (mean-form accumulators decay to themselves). What it does *not* freeze is the clock: `n_eff` decays as you score, and after a few halflives it drops under `min_periods` and the outputs go null while the fit behind them is still good (measured: `n_eff` 29.4 → 0.95 over 100 rows at halflife 20, the last 34 predictions null). Since `min_periods` is baked into the saved state, a deployment cannot lower it for a scoring pass. A real `predict` would need per-model care — `holt` and `kalman` legitimately extrapolate with elapsed time, so "as of when" is a parameter, not an omission — which is why this is a candidate rather than a patch. Documented in the README meanwhile. |
+
 ## 6. Reaching the accumulators directly
 
 | # | P | Enhancement |

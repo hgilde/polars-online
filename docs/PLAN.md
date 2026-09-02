@@ -432,7 +432,7 @@ would have to become a *stated, tested* property, not a habit.
 
 ## 11f. Pre-release improvements review
 
-[`docs/IMPROVEMENTS.md`](IMPROVEMENTS.md) (C1–C6, P1–P4, U1–U7, X1–X2, T1–T5):
+[`docs/IMPROVEMENTS.md`](IMPROVEMENTS.md) (C1–C6, P1–P4, U1–U8, X1–X2, T1–T5):
 one pass per axis — correctness, performance, usability, extensibility,
 testing — with every finding reproduced before it was written down. Done so
 far: the emit flags through the expression plugin (C1), a bounded-input
@@ -469,7 +469,10 @@ that last one C5's square-root rewrite, measured by A/B against the commit
 before it (P4), and the README's python blocks run rather than merely compile,
 which found its `holt` example refused by its own validation (T5, U6), and
 `coef` reporting "nothing yet" as null rather than as an empty list, which is
-what made the documented `coef.list.get(position)` raise (U7).
+what made the documented `coef.list.get(position)` raise (U7), and the
+scoring path documented at last -- `weight = 0` freezes the fit bit for bit
+where a null target quietly degrades it, at the cost of an `n_eff` that keeps
+decaying while you score (U8, ENHANCEMENTS E31).
 The rest is proposed with its measurements next to it.
 
 ## 12. Open questions (not blocking)

@@ -452,6 +452,34 @@ editor showed nothing and a typo was a runtime error. Now:
   the stub, a `_json` that accepted a list but said `dict`, and an `int`
   comparison typed as `object`.
 
+### U8 — nothing said how to score without learning — *done*
+
+The deployment question — load yesterday's fit, score today's rows, learn
+nothing — has an answer (`weight = 0`) that appears nowhere in the docs, and a
+plausible wrong answer (a null target) that quietly degrades the model.
+Measured, 100 rows scored against a fit at halflife 20:
+
+- **weight 0**: coefficients frozen *bit for bit*. Mean-form accumulators
+  decayed with nothing added are themselves — `S' = (λ·W·S + 0)/(λ·W) = S`.
+- **null target**: coefficients 1.00 → 1.21 and 2.00 → 2.39. The feature
+  moments keep updating while the target's cross-moment does not, so the two
+  halves of `S·β = r` end up estimated over different windows and β wanders
+  with feature-moment noise. Right for a label that has not arrived yet;
+  wrong as a scoring mode.
+
+And one trap in the recommended path: a zero-weight row still advances the
+clock, so `n_eff` decays while scoring — 29.4 → 0.95 over 100 rows — and once
+it passes `min_periods` the outputs go null although the fit behind them never
+changed (34 of the 100 rows, in the measurement). `min_periods` is baked into
+the saved state, so a deployment cannot lower it for a scoring pass; it has to
+be chosen with the scoring tail in mind.
+
+README documents all three. A state-free `predict(df)` is recorded as
+`docs/ENHANCEMENTS.md` E31 rather than built: `holt` and `kalman` legitimately
+extrapolate with elapsed time, so "as of when" is a parameter of such a call
+and not an omission. `TestScoringWithoutLearning` pins the frozen
+coefficients, the drift, and the decay.
+
 ### U7 — `coef` said "nothing yet" in two different spellings — *done*
 
 Checking the docstring examples the README does not carry (T5 covers those)

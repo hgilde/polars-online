@@ -227,6 +227,22 @@ sentinels like `f64::MAX` never reach a model, and every model is tested to
 keep a finite state and go on learning through anything below that bound
 (`docs/IMPROVEMENTS.md` C2).
 
+**Scoring without learning.** Give the rows weight `0`: predictions come out,
+nothing is learned, and because the accumulators are exponentially weighted
+*means*, decaying them and adding nothing leaves them exactly where they were
+— the coefficients are frozen bit for bit. A **null target is not the same
+thing**: the feature-side moments still update while the target's cross-moment
+does not, so the two halves of the fit end up estimated over different windows
+and the coefficients wander with feature noise (measured: 2.00 → 2.39 over 100
+scored rows at a halflife of 20). Use a null target for a label that has not
+arrived yet, and weight `0` to score.
+
+One consequence to plan for: a zero-weight row still advances the clock, so
+`n_eff` keeps decaying while you score. Score for several halflives and it can
+fall below `min_periods`, at which point the outputs go null even though the
+fit behind them is perfectly good — `min_periods` is baked into the saved
+state, so choose it with the scoring tail in mind.
+
 **Mistakes are named.** A builder checks each keyword against its own type
 hints, so `halflife="10"` says `spec "m": halflife must be a number or a list
 of numbers, got str '10'`; a missing column says which spec wanted it, in what
