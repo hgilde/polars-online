@@ -135,11 +135,16 @@ spec, and the plugin's `online_run` is the bank.
 
 ## 4. Tests — `tests/`
 
-13. **`tests/test_<model>.py`**: the Python-side oracle (a numpy reference in
-    `tests/reference.py` where the model has a closed form; a longhand
-    recursion otherwise), through both `ModelBank` and the expression.
-    **No check** beyond convention; the sweeps below cover the invariants,
-    not the arithmetic.
+13. **`tests/test_<model>.py`** (`test_robust.py` for `huber`/`quantile`):
+    the Python-side oracle (a numpy reference in `tests/reference.py` where
+    the model has a closed form; a longhand recursion otherwise), through
+    `ModelBank`. The expression path is held to the bank for every model by
+    `test_semantics_all_models::test_expression_equals_bank`, so this file
+    is for the arithmetic, which the sweeps cannot see.
+    *Check*: `test_model_registry::test_every_builder_has_a_per_model_test
+    _file` fails for a builder with no such file, or one that never calls
+    `po.spec.<builder>(`. Writing it moved `ewridge` and `rls` out of
+    `test_bank.py`, where their oracles had lived unnamed.
 14. **Per-model sweeps**: one entry each in `test_semantics_all_models.MODELS`,
     `test_properties.MODELS`, `test_edge_cases.MODELS` and
     `test_portability.TestOutputSchemaStability._ALL_MODELS`. Every entry is

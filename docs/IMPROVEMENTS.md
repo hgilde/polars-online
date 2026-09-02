@@ -597,8 +597,15 @@ modules, the set the mutation blind spot (`docs/TESTING.md`) bites hardest.
 Each has one now (`sgd` two, the plain and the busy path), each was mutated
 once to confirm it moves, and
 `test_model_registry::test_the_core_golden_file_pins_every_model` holds the
-file to `KINDS`. Step 13, the per-model Python test file, is the other; see
-below.
+file to `KINDS`. Step 13, the per-model Python test file, is the other:
+`test_model_registry::test_every_builder_has_a_per_model_test_file` requires
+a `tests/test_<model>.py` that builds the model. Writing it found `ewridge`
+and `rls` — the two oldest models — with their oracle tests inside
+`test_bank.py` under class names that did not say so; they are
+`test_ewridge.py` (oracle, warm priors, `session_shrink`) and `test_rls.py`
+now, and `test_bank.py` is the bank's own semantics. Both checks were mutated
+once — a file renamed away, a builder call spelled differently — and each
+failed on its own list.
 
 ## 5. Testing
 

@@ -118,6 +118,25 @@ def test_the_golden_pipeline_pins_every_model():
     assert set(pinned) == set(_native.model_kinds()), "the golden bank is missing a model"
 
 
+#: Builders whose per-model file is named for the Rust kind, not the builder.
+PER_MODEL_FILE = {"huber": "robust", "quantile": "robust"}
+
+
+def test_every_builder_has_a_per_model_test_file():
+    """`tests/test_<model>.py` is where a model's *arithmetic* is held to an
+    oracle (docs/EXTENDING.md step 13); the sweeps hold every model to the
+    shared invariants and cannot see a wrong coefficient. The file has to
+    build the model itself -- a file that only imports it proves nothing.
+    Before this check, `ewridge` and `rls` had theirs inside `test_bank.py`,
+    where nothing said which model a test belonged to."""
+    for builder in MINIMAL:
+        path = ROOT / "tests" / f"test_{PER_MODEL_FILE.get(builder, builder)}.py"
+        assert path.exists(), f"{builder} has no per-model test file {path.name}"
+        assert f"po.spec.{builder}(" in path.read_text(encoding="utf-8"), (
+            f"{path.name} never builds po.spec.{builder}(...)"
+        )
+
+
 def test_the_core_golden_file_pins_every_model():
     """`crates/online-core/tests/golden.rs` pins the core arithmetic of a
     model with a `fn <kind>_golden()`, so that a divergence the pipeline
