@@ -284,11 +284,15 @@ def rls(
 ) -> dict[str, Any]:
     """Recursive least squares spec (docs/PLAN.md section 4.2).
 
-    Math: maintains ``P = A^-1`` with ``A = sum of decayed w z z^T + ridge I``
-    via Sherman-Morrison, so coefficients update every row with no solve
-    staleness: ``g = P z / (1/w + z' P z)``,
-    ``beta_j += g (y_j - z' beta_j)``, ``P -= g (P z)'``. ``ridge`` sets
-    ``P0 = I / ridge`` and (unlike ew_ridge) penalizes the intercept.
+    Math: decayed ridge least squares solved exactly every row,
+    ``A <- lam A + w z z'``, ``b_j <- lam b_j + w y_j z``, ``beta_j = A^-1 b_j``
+    with ``A0 = ridge I`` and ``b0 = ridge coef0``. The state is the Cholesky
+    factor ``R`` of ``A`` and ``u_j = R^-T b_j`` (square-root / QR form): a row
+    is folded in by Givens rotations and ``beta`` read off by one
+    back-substitution, O(k^2) per row with no solve staleness and none of the
+    covariance recursion's drift (docs/IMPROVEMENTS.md C5). ``ridge`` sets
+    ``A0 = ridge I`` (``P0 = I / ridge``) and (unlike ew_ridge) penalizes the
+    intercept.
 
     Null policy deviation: a row with ANY null target is predict-only for all
     targets, because P is shared across targets.
@@ -539,9 +543,10 @@ def ew_cov(
     ``corr`` and ``partial_corr`` (default: mean, std, corr).
     ``partial_corr`` is the correlation between two columns *controlling for
     every other column*, read off the precision matrix as
-    ``-P_ij / sqrt(P_ii P_jj)``. It needs ``precision_prior``, which turns on a
-    Sherman-Morrison inverse maintained alongside the covariance (so no solve
-    per row); like RLS's ``P0`` the prior fades as data accumulates.
+    ``-P_ij / sqrt(P_ii P_jj)``. It needs ``precision_prior``: the precision
+    matrix is ``(C + s * prior * I)^-1``, solved from the co-moments on each
+    row it is read (O(k^3), only when asked for); like RLS's ``P0`` the prior
+    fades as data accumulates.
 
     Pairwise statistics are emitted for each unordered pair ``i < j``, named
     after the columns (``corr_x0_x1``, ``pcorr_x0_x1``).
@@ -652,8 +657,11 @@ def pa(
         pa2   tau = loss / (s + 1 / (2c))    (damped by c)
         b    += tau * sign(y - p) * z
 
-    The row weight scales ``tau``, so a half-weight row moves the fit half as
-    far.
+    A row weight below 1 scales ``tau``, so a half-weight row moves the fit
+    half as far; a weight above 1 counts as 1. The update is a projection onto
+    the row's constraint, and repeating a projection changes nothing, so there
+    is no "two observations" to emulate -- scaling past the projection would
+    overshoot it.
 
     **Decay note.** Unlike the other models, PA keeps no accumulators, so there
     is nothing for the clock to decay: each step fully satisfies the current

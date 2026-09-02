@@ -640,10 +640,13 @@ impl Bank {
                 file.format_version, BANK_FORMAT_VERSION
             ));
         }
-        if file.schema_version != online_core::SCHEMA_VERSION {
+        if !(online_core::MIN_SCHEMA_VERSION..=online_core::SCHEMA_VERSION)
+            .contains(&file.schema_version)
+        {
             return Err(format!(
-                "state schema version {} not supported (current: {})",
+                "state schema version {} not supported (this build loads {}..={})",
                 file.schema_version,
+                online_core::MIN_SCHEMA_VERSION,
                 online_core::SCHEMA_VERSION
             ));
         }

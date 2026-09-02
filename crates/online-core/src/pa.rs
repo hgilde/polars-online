@@ -11,8 +11,13 @@
 //! PA    tau = loss / s                    (unbounded step)
 //! PA-I  tau = min(C, loss / s)            (step capped at C)
 //! PA-II tau = loss / (s + 1 / (2C))       (step damped by C)
-//! b    += tau * sign(y − p) * z
+//! b    += min(w, 1) * tau * sign(y − p) * z
 //! ```
+//!
+//! **Weight note.** A row weight below 1 scales the step; a weight above 1
+//! counts as 1. The update is a projection onto the row's constraint, and
+//! repeating a projection changes nothing, so there is no "two observations"
+//! to emulate -- scaling past the projection would overshoot it.
 //!
 //! **Decay note.** Unlike every other model here, PA keeps no accumulators, so
 //! there is nothing for the clock to decay: each step fully satisfies the
@@ -145,7 +150,9 @@ impl OnlineModel for Pa {
                 pred[j] = p;
             }
             let Some(yj) = y[j] else { continue };
-            if weight <= 0.0 || !yj.is_finite() || sq_norm <= 0.0 {
+            // `p` overflows when a feature at the input bound meets a large
+            // coefficient; a step from an infinite loss would be permanent.
+            if weight <= 0.0 || !yj.is_finite() || !p.is_finite() || sq_norm <= 0.0 {
                 continue;
             }
             let err = yj - p;
@@ -153,9 +160,14 @@ impl OnlineModel for Pa {
             if loss == 0.0 {
                 continue; // passive: the constraint already holds
             }
-            // The row weight scales the aggressiveness, so a half-weight row
-            // moves the fit half as far.
-            let tau = weight
+            // A weight below 1 scales the step, so a half-weight row moves the
+            // fit half as far. A weight above 1 counts as 1: the update is a
+            // projection onto this row's constraint, and a projection repeated
+            // is the same projection -- scaling past it would overshoot (a
+            // constant weight of 2 makes plain PA oscillate for ever) and,
+            // since nothing here decays, a weight at the input bound would
+            // move the fit by 1e100 with no way back (docs/IMPROVEMENTS.md C2).
+            let tau = weight.min(1.0)
                 * match self.cfg.mode {
                     PaMode::Pa => loss / sq_norm,
                     PaMode::Pa1 => (loss / sq_norm).min(self.cfg.c),

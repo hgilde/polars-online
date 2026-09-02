@@ -231,7 +231,7 @@ impl SlotMetrics {
 
     /// Information coefficient: the correlation between prediction and target.
     pub fn ic(&self) -> Option<f64> {
-        let d = (self.joint.var(0) * self.joint.var(1)).sqrt();
+        let d = self.joint.var(0).sqrt() * self.joint.var(1).sqrt();
         (d > 0.0).then(|| (self.joint.cov(0, 1) / d).clamp(-1.0, 1.0))
     }
 

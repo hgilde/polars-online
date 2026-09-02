@@ -377,31 +377,46 @@ impl OnlineModel for Kalman {
             }
             let zpz: f64 = self.zs.iter().zip(&self.pz).map(|(z, p)| z * p).sum();
             let s_inn = zpz + sigma2 / weight;
-            if s_inn > 0.0 {
+            let pred_now: f64 = self.zs.iter().zip(&self.beta[j]).map(|(z, b)| z * b).sum();
+            let err = yj - pred_now;
+            // A standardized regressor can be ~1e200 when a feature at the
+            // input bound follows a run at a tiny scale, and then `z P z` or
+            // `z . beta` overflows. The row is skipped rather than let an
+            // `inf` gain or an `inf/inf` NaN into `beta` and `P`, which no
+            // later row would repair (docs/IMPROVEMENTS.md C2).
+            if s_inn > 0.0 && s_inn.is_finite() && err.is_finite() {
                 for i in 0..k {
                     self.gain[i] = self.pz[i] / s_inn;
                 }
-                let pred_now: f64 = self.zs.iter().zip(&self.beta[j]).map(|(z, b)| z * b).sum();
-                let err = yj - pred_now;
                 for (b, g) in self.beta[j].iter_mut().zip(&self.gain) {
                     *b += g * err;
                 }
+                // Once per pair, written to both halves, so P stays symmetric
+                // (see `Rls::step` for why that matters).
                 let p = &mut self.p[pi];
                 for i in 0..k {
                     let gi = self.gain[i];
-                    let row = i * k;
-                    for jj in 0..k {
-                        p[row + jj] -= gi * self.pz[jj];
+                    for jj in i..k {
+                        let v = gi * self.pz[jj];
+                        p[i * k + jj] -= v;
+                        if jj != i {
+                            p[jj * k + i] -= v;
+                        }
                     }
                 }
             }
-            // EW residual variance from the out-of-sample prediction.
+            // EW residual variance from the out-of-sample prediction. The
+            // update is skipped when it would not be finite: `sig2` feeds the
+            // process noise, and an `inf` there puts `inf` on the diagonal of
+            // `P` and a NaN in every later gain.
             if pred[j].is_finite() {
                 let resid = yj - pred[j];
                 let ws_new = lam * self.wsig[j] + weight;
-                self.sig2[j] =
-                    (lam * self.wsig[j] * self.sig2[j] + weight * resid * resid) / ws_new;
-                self.wsig[j] = ws_new;
+                let s2 = (lam * self.wsig[j] * self.sig2[j] + weight * resid * resid) / ws_new;
+                if s2.is_finite() {
+                    self.sig2[j] = s2;
+                    self.wsig[j] = ws_new;
+                }
             }
             self.wj[j] = lam * self.wj[j] + weight;
         }

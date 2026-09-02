@@ -24,13 +24,15 @@ mod stats;
 
 pub use clock::{ClockAdvance, ClockCfg, ClockState, Decay, OnClockReset, SessionGap};
 pub use drift::PageHinkley;
-pub use ewcov::{EwCov, EwCovCfg, EwCovModel, EwCovStat, variance_is_usable};
+pub use ewcov::{EwCov, EwCovCfg, EwCovModel, EwCovStat, partial_corr, variance_is_usable};
 pub use ewridge::{EwRidge, EwRidgeCfg};
 pub use ftrl::{Ftrl, FtrlCfg, FtrlLoss};
 pub use holt::{Holt, HoltCfg};
 pub use kalman::{Kalman, KalmanCfg};
 pub use lasso::{Lasso, LassoCfg};
-pub use model::{Extra, ModelState, OnlineModel, State, StateError, Step, check_schema};
+pub use model::{
+    Extra, INPUT_BOUND, ModelState, OnlineModel, State, StateError, Step, check_schema,
+};
 pub use pa::{Pa, PaCfg, PaMode};
 pub use rls::{Rls, RlsCfg};
 pub use robust::{Robust, RobustCfg, RobustLoss};
@@ -41,5 +43,13 @@ pub use stats::{EwAutoCorr, P2Quantile, SlotMetrics};
 /// Version of the serialized model-state layout.
 ///
 /// Bump on any state layout change and keep a loader for the previous version
-/// (`docs/PLAN.md`, hard rule 5).
-pub const SCHEMA_VERSION: u32 = 1;
+/// (`docs/PLAN.md`, hard rule 5). History:
+///
+/// - 1: initial layout.
+/// - 2: `rls` stores the information factor `R` and `u = R^-T b` instead of
+///   the covariance `P` (docs/IMPROVEMENTS.md C5). Schema-1 `rls` states are
+///   converted on load; every other model is unchanged.
+pub const SCHEMA_VERSION: u32 = 2;
+
+/// Oldest state layout this build still loads.
+pub const MIN_SCHEMA_VERSION: u32 = 1;

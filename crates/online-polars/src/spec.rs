@@ -266,7 +266,7 @@ pub enum ModelKind {
         /// Default: mean + std + corr.
         #[serde(default)]
         stats: Option<Vec<String>>,
-        /// Prior for the tracked precision matrix, required by "partial_corr".
+        /// Prior for the precision matrix, required by "partial_corr".
         #[serde(default)]
         precision_prior: Option<f64>,
     },
@@ -332,7 +332,8 @@ pub enum ModelKind {
         trend_halflife: Option<Num>,
     },
     Rls {
-        /// Prior strength: `P0 = I / ridge`. Scalar only (baked into P0).
+        /// Prior strength: `A0 = ridge I`, i.e. `P0 = I / ridge`. Scalar only
+        /// (baked into the state).
         #[serde(default)]
         ridge: Option<f64>,
         #[serde(default)]

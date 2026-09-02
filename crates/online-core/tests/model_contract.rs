@@ -158,9 +158,8 @@ fn decay() -> Decay {
     Decay::Halflife(HALFLIFE)
 }
 
-#[test]
-fn ew_ridge() {
-    let cfg = EwRidgeCfg {
+fn ew_ridge_cfg() -> EwRidgeCfg {
+    EwRidgeCfg {
         n_features: K,
         n_targets: 2,
         add_intercept: true,
@@ -175,14 +174,18 @@ fn ew_ridge() {
         min_periods: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
-    };
+    }
+}
+
+#[test]
+fn ew_ridge() {
+    let cfg = ew_ridge_cfg();
     let r = probe_with(EwRidge::new(cfg).unwrap(), 2, Some(&EwRidge::n_eff));
     check(&r, "ew_ridge", 2, 2);
 }
 
-#[test]
-fn rls() {
-    let cfg = RlsCfg {
+fn rls_cfg() -> RlsCfg {
+    RlsCfg {
         n_features: K,
         n_targets: 2,
         add_intercept: true,
@@ -190,14 +193,18 @@ fn rls() {
         ridge: 1.0,
         coef0: None,
         min_periods: 3.0,
-    };
+    }
+}
+
+#[test]
+fn rls() {
+    let cfg = rls_cfg();
     let r = probe_with(Rls::new(cfg).unwrap(), 2, Some(&Rls::n_eff));
     check(&r, "rls", 2, 1);
 }
 
-#[test]
-fn lasso() {
-    let cfg = LassoCfg {
+fn lasso_cfg() -> LassoCfg {
+    LassoCfg {
         n_features: K,
         n_targets: 1,
         add_intercept: true,
@@ -210,14 +217,18 @@ fn lasso() {
         max_rows_between_solves: 1,
         max_cd_iters: 100,
         cd_tol: 1e-10,
-    };
+    }
+}
+
+#[test]
+fn lasso() {
+    let cfg = lasso_cfg();
     let r = probe_with(Lasso::new(cfg).unwrap(), 1, Some(&Lasso::n_eff));
     check(&r, "lasso", 1, 2);
 }
 
-#[test]
-fn kalman() {
-    let cfg = KalmanCfg {
+fn kalman_cfg() -> KalmanCfg {
+    KalmanCfg {
         n_features: K,
         n_targets: 2,
         add_intercept: true,
@@ -229,38 +240,48 @@ fn kalman() {
         share_p: false,
         min_periods: 3.0,
         standardize: true,
-    };
+    }
+}
+
+#[test]
+fn kalman() {
+    let cfg = kalman_cfg();
     let r = probe_with(Kalman::new(cfg).unwrap(), 2, Some(&Kalman::n_eff));
     check(&r, "kalman", 2, 1);
 }
 
+fn robust_cfg(loss: RobustLoss) -> RobustCfg {
+    RobustCfg {
+        n_features: K,
+        n_targets: 2,
+        add_intercept: true,
+        decay: decay(),
+        loss,
+        ridge: 1e-6,
+        standardize: false,
+        min_periods: 3.0,
+        solve_every: 0.0,
+        max_rows_between_solves: 1,
+        quantile_eps: 1e-3,
+    }
+}
+
+const ROBUST_LOSSES: [RobustLoss; 2] = [
+    RobustLoss::Huber { delta: 1.5 },
+    RobustLoss::Quantile { tau: 0.5 },
+];
+
 #[test]
 fn robust() {
-    for loss in [
-        RobustLoss::Huber { delta: 1.5 },
-        RobustLoss::Quantile { tau: 0.5 },
-    ] {
-        let cfg = RobustCfg {
-            n_features: K,
-            n_targets: 2,
-            add_intercept: true,
-            decay: decay(),
-            loss,
-            ridge: 1e-6,
-            standardize: false,
-            min_periods: 3.0,
-            solve_every: 0.0,
-            max_rows_between_solves: 1,
-            quantile_eps: 1e-3,
-        };
+    for loss in ROBUST_LOSSES {
+        let cfg = robust_cfg(loss);
         let r = probe_with(Robust::new(cfg).unwrap(), 2, Some(&Robust::n_eff));
         check(&r, "robust", 2, 1);
     }
 }
 
-#[test]
-fn ftrl() {
-    let cfg = FtrlCfg {
+fn ftrl_cfg() -> FtrlCfg {
+    FtrlCfg {
         n_features: K,
         n_targets: 2,
         add_intercept: true,
@@ -272,14 +293,18 @@ fn ftrl() {
         min_periods: 3.0,
         strict_binary: false,
         loss: FtrlLoss::Squared,
-    };
+    }
+}
+
+#[test]
+fn ftrl() {
+    let cfg = ftrl_cfg();
     let r = probe_with(Ftrl::new(cfg).unwrap(), 2, Some(&Ftrl::n_eff));
     check(&r, "ftrl", 2, 1);
 }
 
-#[test]
-fn sgd() {
-    let cfg = SgdCfg {
+fn sgd_cfg() -> SgdCfg {
+    SgdCfg {
         n_features: K,
         n_targets: 2,
         add_intercept: true,
@@ -291,14 +316,18 @@ fn sgd() {
         clip_gradient: 1e3,
         scale_features: false,
         min_periods: 3.0,
-    };
+    }
+}
+
+#[test]
+fn sgd() {
+    let cfg = sgd_cfg();
     let r = probe_with(Sgd::new(cfg).unwrap(), 2, Some(&Sgd::n_eff));
     check(&r, "sgd", 2, 1);
 }
 
-#[test]
-fn pa() {
-    let cfg = PaCfg {
+fn pa_cfg() -> PaCfg {
+    PaCfg {
         n_features: K,
         n_targets: 2,
         add_intercept: true,
@@ -307,19 +336,28 @@ fn pa() {
         c: 1.0,
         eps: 0.1,
         min_periods: 3.0,
-    };
+    }
+}
+
+#[test]
+fn pa() {
+    let cfg = pa_cfg();
     let r = probe_with(Pa::new(cfg).unwrap(), 2, Some(&Pa::n_eff));
     check(&r, "pa", 2, 1);
 }
 
-#[test]
-fn holt() {
-    let cfg = HoltCfg {
+fn holt_cfg() -> HoltCfg {
+    HoltCfg {
         n_targets: 2,
         level_halflife: HALFLIFE,
         trend_halflife: 4.0 * HALFLIFE,
         min_periods: 3.0,
-    };
+    }
+}
+
+#[test]
+fn holt() {
+    let cfg = holt_cfg();
     // Holt reads no features, so it is the one model whose `n_features` is 0.
     let r = probe_with(Holt::new(cfg).unwrap(), 2, Some(&Holt::n_eff));
     assert_eq!(r.n_features, 0, "holt takes no features");
@@ -334,15 +372,19 @@ fn holt() {
     assert!(r.roundtrips);
 }
 
-#[test]
-fn ew_cov_model() {
-    let cfg = EwCovCfg {
+fn ew_cov_model_cfg() -> EwCovCfg {
+    EwCovCfg {
         n_features: K,
         decay: decay(),
         stats: vec![EwCovStat::Mean, EwCovStat::Var, EwCovStat::Corr],
         min_periods: 3.0,
         precision_prior: None,
-    };
+    }
+}
+
+#[test]
+fn ew_cov_model() {
+    let cfg = ew_cov_model_cfg();
     // No targets: it emits statistics, one slot per (stat x column-or-pair).
     let m = EwCovModel::new(cfg).unwrap();
     assert_eq!(m.n_targets(), 0, "ew_cov has no targets");
@@ -410,4 +452,304 @@ fn restoring_the_wrong_model_is_an_error_that_names_both() {
         }
         other => panic!("expected a WrongModel error, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Bounded input (docs/IMPROVEMENTS.md C2, T4)
+// ---------------------------------------------------------------------------
+
+/// The largest magnitude the stream layer lets through for a feature, target
+/// or weight; beyond it a value is treated as missing.
+const BOUND: f64 = online_core::INPUT_BOUND;
+
+struct Row {
+    x: Vec<f64>,
+    y: Vec<Option<f64>>,
+    w: f64,
+    /// Rows the clean twin never sees.
+    extreme: bool,
+}
+
+/// One row of the well-behaved process, at `scale`.
+fn nice(s: &mut u64, targets: usize, scale: f64) -> Row {
+    let x: Vec<f64> = (0..K).map(|_| lcg(s) * scale).collect();
+    let y = (0..targets)
+        .map(|j| Some(0.5 * (j as f64 + 1.0) * scale + x[0] - 0.5 * x[1]))
+        .collect();
+    Row {
+        x,
+        y,
+        w: 1.0,
+        extreme: false,
+    }
+}
+
+fn extreme(rows: &mut Vec<Row>, s: &mut u64, targets: usize, edit: impl FnOnce(&mut Row)) {
+    let mut r = nice(s, targets, 1.0);
+    edit(&mut r);
+    r.extreme = true;
+    rows.push(r);
+}
+
+/// A warm start, then the bound in every position and sign, a run at a tiny
+/// scale followed by the bound again (a standardized regressor is then
+/// `(1e100 - mean) / 1e-100`), and a long well-behaved tail.
+fn bounded_script(targets: usize) -> Vec<Row> {
+    let mut s = 20260901u64;
+    let mut rows = Vec::new();
+    // At the bound before anything else: the first observation is the `a = 0`
+    // branch of every accumulator (CLAUDE.md rule 9).
+    extreme(&mut rows, &mut s, targets, |r| r.x[0] = BOUND);
+    extreme(&mut rows, &mut s, targets, |r| {
+        r.y.iter_mut().for_each(|y| *y = Some(BOUND))
+    });
+    for _ in 0..300 {
+        rows.push(nice(&mut s, targets, 1.0));
+    }
+    for sign in [1.0, -1.0] {
+        let b = sign * BOUND;
+        extreme(&mut rows, &mut s, targets, |r| r.x[0] = b);
+        extreme(&mut rows, &mut s, targets, |r| {
+            r.x.iter_mut().for_each(|x| *x = b)
+        });
+        extreme(&mut rows, &mut s, targets, |r| {
+            r.y.iter_mut().for_each(|y| *y = Some(b))
+        });
+        extreme(&mut rows, &mut s, targets, |r| r.w = BOUND);
+        extreme(&mut rows, &mut s, targets, |r| {
+            r.x[0] = b;
+            r.w = BOUND;
+        });
+        extreme(&mut rows, &mut s, targets, |r| {
+            r.y.iter_mut().for_each(|y| *y = Some(b));
+            r.w = BOUND;
+        });
+        extreme(&mut rows, &mut s, targets, |r| {
+            r.x.iter_mut().for_each(|x| *x = b);
+            r.y.iter_mut().for_each(|y| *y = Some(b));
+            r.w = BOUND;
+        });
+        extreme(&mut rows, &mut s, targets, |r| r.w = 1.0 / BOUND);
+    }
+    for _ in 0..200 {
+        let mut r = nice(&mut s, targets, 1.0 / BOUND);
+        r.extreme = true;
+        rows.push(r);
+    }
+    extreme(&mut rows, &mut s, targets, |r| r.x[0] = BOUND);
+    extreme(&mut rows, &mut s, targets, |r| {
+        r.y.iter_mut().for_each(|y| *y = Some(BOUND))
+    });
+    // 1500 halflives. A row at the bound with weight at the bound leaves a
+    // moment of 1e300 on the sum scale, which needs 1000 halflives to fall
+    // below 1e-6; the rest is margin (measured: ew_ridge agrees with its twin
+    // to 3e-5 after 1000 halflives and to rounding after 1100).
+    for _ in 0..30_000 {
+        rows.push(nice(&mut s, targets, 1.0));
+    }
+    rows
+}
+
+/// What "recovered" means for a model over the tail of the script; both are
+/// relative errors, `|a - b| / (1 + |b|)`.
+#[derive(Clone, Copy)]
+enum Recovery {
+    /// Every prediction agrees with the clean twin's to this tolerance. The
+    /// right criterion for a model that converges to one answer on clean data.
+    Twin(f64),
+    /// Every prediction of the model *and* of its twin is within this distance
+    /// of the target. For models that stop learning inside a tolerance band
+    /// (`pa` inside its epsilon tube, the quantile loss at its residual floor),
+    /// two copies with different histories legitimately settle at different
+    /// points of the band, so agreement with the twin is not a property they
+    /// have; being as accurate as the twin is.
+    Tube(f64),
+}
+
+/// The stream layer accepts any finite value with `|v| <= BOUND`, so a model
+/// must keep a finite state -- and go on learning -- after any such row. Two
+/// copies of the model: one sees the whole script, the twin only its
+/// well-behaved rows. Over the last thousand rows every prediction of the
+/// first must be finite and satisfy `how`: the extreme rows perturbed the
+/// model as its equations say they should, and then washed out, rather than
+/// leaving an `inf` or NaN that never decays.
+fn recovers_from_bounded_extremes<M: OnlineModel>(
+    build: impl Fn() -> M,
+    targets: usize,
+    how: Recovery,
+) {
+    let rows = bounded_script(targets);
+    let mut model = build();
+    let mut twin = build();
+    let kind = model.state().model.kind();
+    let n = rows.len();
+    let mut seen = [false, false];
+    let mut worst = 0.0f64;
+    for (i, r) in rows.iter().enumerate() {
+        let d = if seen[0] { 1.0 } else { 0.0 };
+        seen[0] = true;
+        let a = model.step(&r.x, &r.y, d, r.w);
+        assert!(
+            a.n_eff.is_finite(),
+            "{kind}: n_eff is {} at row {i}",
+            a.n_eff
+        );
+        if r.extreme {
+            continue;
+        }
+        let d = if seen[1] { 1.0 } else { 0.0 };
+        seen[1] = true;
+        let b = twin.step(&r.x, &r.y, d, r.w);
+        if i + 1000 < n {
+            continue;
+        }
+        for (slot, (pa, pb)) in a.pred.iter().zip(&b.pred).enumerate() {
+            assert!(
+                pa.is_finite(),
+                "{kind}: slot {slot} predicts {pa} at row {i} (twin: {pb})"
+            );
+            let rel = |a: f64, b: f64| (a - b).abs() / (1.0 + b.abs());
+            match how {
+                Recovery::Twin(tol) => {
+                    let err = rel(*pa, *pb);
+                    assert!(
+                        err <= tol,
+                        "{kind}: slot {slot} at row {i}: {pa} vs the twin's {pb} (tol {tol})"
+                    );
+                    worst = worst.max(err);
+                }
+                Recovery::Tube(tol) => {
+                    let y = r.y[slot].unwrap();
+                    for (who, p) in [("model", *pa), ("twin", *pb)] {
+                        let err = rel(p, y);
+                        assert!(
+                            err <= tol,
+                            "{kind}: slot {slot} at row {i}: the {who} predicts {p} for {y} (tol {tol})"
+                        );
+                        worst = worst.max(err);
+                    }
+                }
+            }
+        }
+    }
+    match how {
+        Recovery::Twin(_) => {
+            eprintln!("{kind}: worst relative disagreement with the twin {worst:.2e}")
+        }
+        Recovery::Tube(_) => eprintln!("{kind}: worst relative error of model or twin {worst:.2e}"),
+    }
+}
+
+#[test]
+fn ew_ridge_recovers_from_bounded_extremes() {
+    recovers_from_bounded_extremes(
+        || EwRidge::new(ew_ridge_cfg()).unwrap(),
+        2,
+        Recovery::Twin(1e-9),
+    );
+    let mut cfg = ew_ridge_cfg();
+    cfg.standardize = true;
+    recovers_from_bounded_extremes(
+        move || EwRidge::new(cfg.clone()).unwrap(),
+        2,
+        Recovery::Twin(1e-9),
+    );
+}
+
+#[test]
+fn rls_recovers_from_bounded_extremes() {
+    recovers_from_bounded_extremes(|| Rls::new(rls_cfg()).unwrap(), 2, Recovery::Twin(1e-9));
+}
+
+#[test]
+fn lasso_recovers_from_bounded_extremes() {
+    recovers_from_bounded_extremes(|| Lasso::new(lasso_cfg()).unwrap(), 1, Recovery::Twin(1e-9));
+}
+
+#[test]
+fn kalman_recovers_from_bounded_extremes() {
+    recovers_from_bounded_extremes(
+        || Kalman::new(kalman_cfg()).unwrap(),
+        2,
+        Recovery::Twin(1e-9),
+    );
+    let mut cfg = kalman_cfg();
+    cfg.standardize = false;
+    recovers_from_bounded_extremes(
+        move || Kalman::new(cfg.clone()).unwrap(),
+        2,
+        Recovery::Twin(1e-9),
+    );
+}
+
+#[test]
+fn robust_recovers_from_bounded_extremes() {
+    for loss in ROBUST_LOSSES {
+        // Huber is least squares near the solution and converges; the
+        // quantile loss reweights by `s / |r|`, which never settles closer than
+        // its residual floor, so two histories agree only to about that.
+        let how = match loss {
+            RobustLoss::Huber { .. } => Recovery::Twin(1e-9),
+            RobustLoss::Quantile { .. } => Recovery::Tube(1e-3),
+        };
+        for standardize in [false, true] {
+            let mut cfg = robust_cfg(loss);
+            cfg.standardize = standardize;
+            recovers_from_bounded_extremes(move || Robust::new(cfg.clone()).unwrap(), 2, how);
+        }
+    }
+}
+
+#[test]
+fn ftrl_recovers_from_bounded_extremes() {
+    recovers_from_bounded_extremes(|| Ftrl::new(ftrl_cfg()).unwrap(), 2, Recovery::Twin(1e-9));
+    let mut cfg = ftrl_cfg();
+    cfg.loss = FtrlLoss::Logistic;
+    recovers_from_bounded_extremes(
+        move || Ftrl::new(cfg.clone()).unwrap(),
+        2,
+        Recovery::Twin(1e-9),
+    );
+}
+
+#[test]
+fn sgd_recovers_from_bounded_extremes() {
+    for scale_features in [false, true] {
+        let mut cfg = sgd_cfg();
+        cfg.scale_features = scale_features;
+        recovers_from_bounded_extremes(
+            move || Sgd::new(cfg.clone()).unwrap(),
+            2,
+            Recovery::Twin(1e-9),
+        );
+    }
+}
+
+#[test]
+fn pa_recovers_from_bounded_extremes() {
+    // PA-I with `epsilon = 0.1` stops updating inside its tube, so it is
+    // accurate to the tube, not to the twin.
+    recovers_from_bounded_extremes(|| Pa::new(pa_cfg()).unwrap(), 2, Recovery::Tube(1e-1));
+}
+
+#[test]
+fn holt_recovers_from_bounded_extremes() {
+    recovers_from_bounded_extremes(|| Holt::new(holt_cfg()).unwrap(), 2, Recovery::Twin(1e-9));
+}
+
+#[test]
+fn ew_cov_recovers_from_bounded_extremes() {
+    recovers_from_bounded_extremes(
+        || EwCovModel::new(ew_cov_model_cfg()).unwrap(),
+        0,
+        Recovery::Twin(1e-9),
+    );
+    let mut cfg = ew_cov_model_cfg();
+    cfg.stats.push(EwCovStat::PartialCorr);
+    cfg.precision_prior = Some(1e-4);
+    recovers_from_bounded_extremes(
+        move || EwCovModel::new(cfg.clone()).unwrap(),
+        0,
+        Recovery::Twin(1e-9),
+    );
 }

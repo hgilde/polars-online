@@ -222,6 +222,15 @@ impl OnlineModel for Ftrl {
                 FtrlLoss::Logistic => yj.clamp(0.0, 1.0),
             };
             let err = p - yb;
+            // `n_i += g^2` never decays an `inf` away, so a row whose squared
+            // gradient would overflow (a feature at the input bound with a
+            // comparable weight or, under the squared loss, a comparable
+            // error) is skipped rather than learned from
+            // (docs/IMPROVEMENTS.md C2).
+            let g_max = err.abs() * weight * self.zbuf.iter().fold(0.0_f64, |m, z| m.max(z.abs()));
+            if !(g_max * g_max).is_finite() {
+                continue;
+            }
             for i in 0..k {
                 let g = err * self.zbuf[i] * weight;
                 let n_new = self.n[j][i] + g * g;

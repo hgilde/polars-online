@@ -303,7 +303,9 @@ impl OnlineModel for Robust {
                 1.0
             };
             let w = weight * w_rob;
-            if w <= 0.0 {
+            // NaN is `inf / inf` from an overflowed residual against an
+            // overflowed scale; such a row cannot be learned from either.
+            if w.is_nan() || w <= 0.0 {
                 self.cov[j].decay(lam);
                 self.wj[j] *= lam;
                 continue;
@@ -319,9 +321,14 @@ impl OnlineModel for Robust {
             if pred[j].is_finite() {
                 let resid = yj - pred[j];
                 let ws_new = lam * self.wsig[j] + weight;
-                self.sig2[j] =
-                    (lam * self.wsig[j] * self.sig2[j] + weight * resid * resid) / ws_new;
-                self.wsig[j] = ws_new;
+                let s2 = (lam * self.wsig[j] * self.sig2[j] + weight * resid * resid) / ws_new;
+                // Skipped when it would not be finite: an `inf` scale makes
+                // the Huber cut infinite (plain least squares for good) and
+                // the quantile weight `inf / inf` (docs/IMPROVEMENTS.md C2).
+                if s2.is_finite() {
+                    self.sig2[j] = s2;
+                    self.wsig[j] = ws_new;
+                }
             }
         }
 

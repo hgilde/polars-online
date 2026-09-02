@@ -164,10 +164,11 @@ class TestPlumbing:
 
 
 class TestPartialCorrelation:
-    """E2: `partial_corr`, backed by the Sherman-Morrison inverse.
+    """E2: `partial_corr`, read off the regularized precision matrix.
 
-    The inverse is maintained incrementally alongside the covariance, so a
-    precision matrix costs no solve per row.
+    The matrix is solved from the co-moments on each row it is read (a
+    Sherman-Morrison inverse used to be tracked; IMPROVEMENTS C5 explains why
+    it is gone).
     """
 
     def _driver_data(self, n=20000, seed=0):

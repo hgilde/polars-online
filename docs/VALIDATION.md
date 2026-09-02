@@ -12,7 +12,7 @@ uv run python scripts/validate.py > docs/VALIDATION.md
 
 ## 1. Solve schedule (`solve_every` default = halflife/50) [validate]
 
-Solving every `halflife/d` clock units, halflife = 500.0. All schedules share one accumulator, so this is a free experiment (0.06s for 6 schedules).
+Solving every `halflife/d` clock units, halflife = 500.0. All schedules share one accumulator, so this is a free experiment (0.02s for 6 schedules).
 
 | divisor | n | r2 | ic | hit_rate | mse |
 |---|---|---|---|---|---|
@@ -50,7 +50,7 @@ Lasso path [0.01, 0.001, 0.0001, 0.0]. `l1_ratio` = 1 is pure lasso; below 1 the
 
 ## 4. Kalman `share_p` approximation [validate]
 
-Two targets (['y0', 'y1']) with very different noise levels, so the shared-P approximation is doing real work. Both specs run in 0.02s total.
+Two targets (['y0', 'y1']) with very different noise levels, so the shared-P approximation is doing real work. Both specs run in 0.01s total.
 
 | spec | slot | target | n | r2 | ic | mse |
 |---|---|---|---|---|---|---|
@@ -64,7 +64,7 @@ Two targets (['y0', 'y1']) with very different noise levels, so the shared-P app
 | spec | slot | n | r2 | ic | hit_rate | mse |
 |---|---|---|---|---|---|---|
 | ewridge | pred_y0 | 14284 | -0.0088945 | 0.0230593 | 0.497778 | 1.16172e-06 |
-| rls | pred_y0 | 14284 | -0.0640996 | -0.122276 | 0.497073 | 1.22528e-06 |
+| rls | pred_y0 | 14284 | -0.064088 | -0.122254 | 0.497002 | 1.22527e-06 |
 | kalman | pred_y0 | 14284 | -0.110682 | -0.147729 | 0.501869 | 1.27892e-06 |
 | lasso | pred_y0__l0 | 14284 | -0.00889757 | 0.023058 | 0.497849 | 1.16172e-06 |
 | lasso | pred_y0__l0.0001 | 14284 | -0.000652936 | 0.0171685 | 0.502716 | 1.15223e-06 |

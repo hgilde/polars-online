@@ -71,6 +71,9 @@ Per-row decay: `λ_row = 0.5 ** (Δ / halflife)`; `n_eff` = EW count with the sa
 ### Null policy
 - Null in any feature ⇒ row skipped entirely: outputs null, no update, clock still advances.
 - Null in target j ⇒ `pred_j` emitted, `resid_j` null, no update for j; other targets update.
+- NaN, ±inf and `|v| > online_core::INPUT_BOUND` (1e100) in a feature, target or weight count
+  as null (IMPROVEMENTS C2); models must stay finite and keep learning for anything inside the
+  bound (`tests/model_contract.rs`).
 - Warmup (`n_eff < min_periods`) ⇒ all outputs null except `n_eff`.
 
 ### Output
@@ -97,9 +100,12 @@ State: `S = EW Σ w·x·xᵀ` (k×k, intercept included), `r_j = EW Σ w·x·y_j
 - Between solves, predictions use the last solved coefficients.
 
 ### 4.2 RLS (recursive least squares) — variant
-Maintains `P = (S+λ₀I)⁻¹` via Sherman–Morrison, updates coefficients every row, O(k²), zero
-staleness. Cannot share ridge grids (λ₀ is baked into P₀). Params: `ridge` (scalar, as P₀=I/ridge),
-`coef0`. Included mainly as the reference for 4.1 and for very small k.
+Decayed ridge least squares solved exactly every row, O(k²), zero staleness. Square-root (QR)
+form: the state is the Cholesky factor of `A = S+λ₀I` and the rotated right-hand side, updated by
+Givens rotations, not the covariance `P = A⁻¹` (whose recursion drifts and can freeze —
+docs/IMPROVEMENTS.md C5). Cannot share ridge grids (λ₀ is baked into `A₀`). Params: `ridge`
+(scalar, as `A₀ = ridge·I`, i.e. `P₀ = I/ridge`), `coef0`. Included mainly as the reference for 4.1
+and for very small k.
 
 ### 4.3 Lasso path — on top of 4.1
 Coordinate descent on standardized `S`, `r_j` over `lasso_path: list[float]` (decreasing),
@@ -131,8 +137,9 @@ For binary targets (direction, "signal accurate now"). FTRL-proximal with `alpha
 with the same clock as everything else. Output `pred` is a probability; `resid = y − p`.
 
 ### 4.7 Shared primitive
-`EwCov`: EW covariance matrix with optional Sherman–Morrison inverse — used by 4.1, 4.2, 4.4 and
-exposed on its own as `online.ew_cov()` (replaces pure-Polars pairwise EW correlations when k>2).
+`EwCov`: EW covariance matrix, with an optional regularized precision matrix solved on demand
+(not tracked incrementally — IMPROVEMENTS C5) — used by 4.1, 4.4 and exposed on its own as
+`online.ew_cov()` (replaces pure-Polars pairwise EW correlations when k>2).
 
 ## 5. Model bank (`online-polars`)
 
@@ -422,6 +429,19 @@ assumption. Three strong candidates (adaptive conformal prediction, frequent-dir
 sketching, rolling-window regression), three weak, and Hoeffding trees left to MOA on
 purpose. Survey only — nothing proposed. The one condition attached: a relaxed bound
 would have to become a *stated, tested* property, not a habit.
+
+## 11f. Pre-release improvements review
+
+[`docs/IMPROVEMENTS.md`](IMPROVEMENTS.md) (C1–C5, P1–P3, U1–U4, X1–X2, T1–T4):
+one pass per axis — correctness, performance, usability, extensibility,
+testing — with every finding reproduced before it was written down. Done so
+far: the emit flags through the expression plugin (C1), a bounded-input
+contract for every model with the test that enforces it (C2/T4), `.over()`
+running groups in parallel (P1), features as expressions (U1), and the one T4
+found: covariance-form `rls` and `ew_cov`'s tracked inverse die of
+cancellation on a single extreme row, so `rls` is now in square-root (QR)
+form and the precision matrix is solved on demand (C5, schema 2). The rest is
+proposed with its measurements next to it.
 
 ## 12. Open questions (not blocking)
 

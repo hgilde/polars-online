@@ -3,9 +3,9 @@
 
 use online_core::{
     ClockState, Decay, EwAutoCorr, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl,
-    FtrlCfg, FtrlLoss, Holt, HoltCfg, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, ModelState,
-    OnlineModel, P2Quantile, Pa, PaCfg, PaMode, PageHinkley, Rls, RlsCfg, Robust, RobustCfg,
-    RobustLoss, Sgd, SgdCfg, SgdLoss, SlotMetrics, State, StateError,
+    FtrlCfg, FtrlLoss, Holt, HoltCfg, INPUT_BOUND, Kalman, KalmanCfg, Lasso, LassoCfg,
+    LearningRate, ModelState, OnlineModel, P2Quantile, Pa, PaCfg, PaMode, PageHinkley, Rls, RlsCfg,
+    Robust, RobustCfg, RobustLoss, Sgd, SgdCfg, SgdLoss, SlotMetrics, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -608,6 +608,15 @@ impl Stream {
     }
 }
 
+/// Is a feature, target or weight value one the models are asked to learn
+/// from? Null (extracted as NaN), NaN, infinities and magnitudes beyond
+/// [`INPUT_BOUND`] are all "missing": a feature or weight skips the row, a
+/// target makes it predict-only (docs/PLAN.md §3, docs/IMPROVEMENTS.md C2).
+#[inline]
+pub fn usable(v: f64) -> bool {
+    v.is_finite() && v.abs() <= INPUT_BOUND
+}
+
 /// True when this target has not reached its own warmup threshold yet.
 #[inline]
 fn step_n_eff_below(n_eff: f64, min_periods: &[f64], target: usize) -> bool {
@@ -836,10 +845,10 @@ impl Stream {
         let last = idx.last().copied();
         let mut plans: Vec<RowPlan> = Vec::with_capacity(n_rows);
         for (ri, &i) in idx.iter().enumerate() {
-            // Null arrives as NaN from extraction, so one `is_finite` covers both.
+            // Null arrives as NaN from extraction, so one `usable` covers
+            // null, NaN, infinity and the bound.
             let w = weight.map(|w| w[i]);
-            let accept = features.iter().all(|f| f[i].is_finite())
-                && w.map(|w| w.is_finite()).unwrap_or(true);
+            let accept = features.iter().all(|f| usable(f[i])) && w.map(usable).unwrap_or(true);
             let adv = self
                 .clock
                 .advance(cfg, clock.map(|c| c[i]), session.map(|s| s[i]), accept);
@@ -1111,7 +1120,7 @@ fn run_instance(
         sc.xs.extend(features.iter().map(|f| f[i]));
         sc.ys.clear();
         sc.ys
-            .extend(targets.iter().map(|t| Some(t[i]).filter(|f| f.is_finite())));
+            .extend(targets.iter().map(|t| Some(t[i]).filter(|f| usable(*f))));
         let m_targets = sc.ys.len();
 
         let mut step = inst.model.step(&sc.xs, &sc.ys, plan.d_clock, w);

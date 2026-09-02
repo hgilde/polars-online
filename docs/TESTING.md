@@ -64,7 +64,7 @@ its shape. Grouped by function, the survivors were:
 | `EwCovModel::read` / `labels` / `n_outputs` | 26 | `ew_cov` is reachable only through the Polars layer |
 | `<Holt as OnlineModel>::step` | 19 | brand new, and its tests checked outcomes not arithmetic |
 | `Kalman::pred_var` + `<Kalman as OnlineModel>::step` | 17 | surfaced only as `emit_sigma` / spec options |
-| `EwCov::partial_corr` / `with_inverse` / `inverse_from_scratch` | 15 | E2's Sherman–Morrison inverse, exposed only as a statistic |
+| `EwCov::precision` / `with_precision_prior` / `partial_corr` | 15 | E2's precision matrix, solved on demand and exposed only as a statistic (C5) |
 
 One cause explains nearly all of it: **`cargo mutants` runs `cargo test`, so
 everything proven only by the pytest suite through the compiled extension is

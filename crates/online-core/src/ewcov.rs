@@ -63,22 +63,26 @@ pub struct EwCov {
     /// EW **centered** co-moments, row-major `k*k`.
     #[serde(alias = "s")]
     c: Vec<f64>,
-    /// Optional Sherman-Morrison inverse of `M = C + s·prior·I`, row-major
-    /// `k*k` (docs/PLAN.md §4.7).
+    /// Prior strength for the precision matrix `M⁻¹ = (C + s·prior·I)⁻¹`
+    /// (docs/PLAN.md §4.7); `0` when none is wanted.
     ///
-    /// The prior's scale `s` must decay by the *same* factor `a` the
-    /// co-moments do, not by `lam`, or the update is not rank-1:
-    /// `M' = a·C + a·b·δδᵀ + a·s·prior·I = a·(M + b·δδᵀ)`, hence
-    /// `M'⁻¹ = (1/a)·SM(M⁻¹, δ)`. Like RLS's `P₀`, this makes the prior fade as
-    /// data accumulates.
-    #[serde(default)]
-    inv: Option<Vec<f64>>,
-    /// Prior strength for the tracked inverse; `0` when no inverse is kept.
-    #[serde(default)]
-    inv_prior: f64,
-    /// Decaying scale on that prior (see `inv`).
-    #[serde(default)]
-    inv_scale: f64,
+    /// The precision matrix is not stored. Schema-1 states tracked it by
+    /// Sherman-Morrison, which has the same two failure modes as covariance
+    /// form RLS (docs/IMPROVEMENTS.md C5): the division by `a` every row
+    /// amplifies rounding asymmetry without bound, and a row that dominates
+    /// the prior by `1/ulp` in some direction cancels the inverse to exactly
+    /// zero there, which no later row can undo. [`Self::precision`] solves
+    /// `M X = I` from the co-moments instead, which cannot drift, and is only
+    /// paid for when partial correlations are read.
+    #[serde(default, alias = "inv_prior")]
+    precision_prior: f64,
+    /// Decaying scale `s` on that prior. It must decay by the *same* factor
+    /// `a` the co-moments do, not by `lam`, so that `M` stays a fixed multiple
+    /// of what it would be with a constant prior:
+    /// `M' = a·C + a·b·δδᵀ + a·s·prior·I = a·(M + b·δδᵀ)`. Like RLS's `P₀`,
+    /// this makes the prior fade as data accumulates.
+    #[serde(default, alias = "inv_scale")]
+    precision_scale: f64,
 }
 
 impl EwCov {
@@ -89,30 +93,24 @@ impl EwCov {
             prior_scale: 1.0,
             m: vec![0.0; k],
             c: vec![0.0; k * k],
-            inv: None,
-            inv_prior: 0.0,
-            inv_scale: 1.0,
+            precision_prior: 0.0,
+            precision_scale: 1.0,
         }
     }
 
-    /// Same, but also maintaining `(C + s·prior·I)⁻¹` incrementally via
-    /// Sherman-Morrison, so a precision matrix is available without a solve.
+    /// Same, with a prior for the precision matrix `(C + s·prior·I)⁻¹`, so
+    /// that [`Self::precision`] and partial correlations are available.
     ///
     /// `prior` regularizes the inverse and must be `> 0`: the centered
     /// co-moment matrix starts at zero and is singular until `k` independent
     /// rows have been seen, so there is nothing to invert without it.
-    pub fn with_inverse(k: usize, prior: f64) -> Result<Self, String> {
+    pub fn with_precision_prior(k: usize, prior: f64) -> Result<Self, String> {
         if prior <= 0.0 || !prior.is_finite() {
-            return Err("EwCov::with_inverse: prior must be finite and > 0".into());
+            return Err("EwCov::with_precision_prior: prior must be finite and > 0".into());
         }
         let mut ew = Self::new(k);
-        let mut inv = vec![0.0; k * k];
-        for i in 0..k {
-            inv[i * k + i] = 1.0 / prior;
-        }
-        ew.inv = Some(inv);
-        ew.inv_prior = prior;
-        ew.inv_scale = 1.0;
+        ew.precision_prior = prior;
+        ew.precision_scale = 1.0;
         Ok(ew)
     }
 
@@ -121,33 +119,42 @@ impl EwCov {
         self.k
     }
 
-    /// Element of `(C + s·prior·I)⁻¹`, or `None` when no inverse is tracked.
-    #[inline]
-    pub fn inv(&self, i: usize, j: usize) -> Option<f64> {
-        self.inv.as_ref().map(|v| v[i * self.k + j])
+    pub fn has_precision_prior(&self) -> bool {
+        self.precision_prior > 0.0
     }
 
-    pub fn has_inverse(&self) -> bool {
-        self.inv.is_some()
+    /// Current decaying scale `s` on the precision prior (see the field).
+    pub fn precision_scale(&self) -> f64 {
+        self.precision_scale
     }
 
-    /// Current decaying scale on the inverse's prior (see the `inv` field).
-    pub fn inv_scale(&self) -> f64 {
-        self.inv_scale
-    }
-
-    /// Partial correlation between `i` and `j`, controlling for every other
-    /// column: `−P_ij / sqrt(P_ii · P_jj)` from the precision matrix `P`.
-    /// `None` when no inverse is tracked.
-    pub fn partial_corr(&self, i: usize, j: usize) -> Option<f64> {
-        let p = self.inv.as_ref()?;
-        let (pij, pii, pjj) = (p[i * self.k + j], p[i * self.k + i], p[j * self.k + j]);
-        let d = (pii * pjj).sqrt();
-        Some(if d > 0.0 {
-            (-pij / d).clamp(-1.0, 1.0)
-        } else {
-            f64::NAN
-        })
+    /// The precision matrix `(C + s·prior·I)⁻¹`, row-major `k*k` and exactly
+    /// symmetric, solved from the co-moments by Cholesky (`solve_spd`, so a
+    /// numerically indefinite `M` gets the same jitter the regressions use).
+    /// `None` when no prior was configured or the solve fails.
+    pub fn precision(&self) -> Option<Vec<f64>> {
+        if !self.has_precision_prior() {
+            return None;
+        }
+        let k = self.k;
+        let mut m = self.c.clone();
+        let mut eye = vec![0.0; k * k];
+        for i in 0..k {
+            m[i * k + i] += self.precision_prior * self.precision_scale;
+            eye[i * k + i] = 1.0;
+        }
+        // Columns of the solution are columns of the inverse; the identity is
+        // symmetric, so its column-major layout is the same array.
+        let (x, _) = crate::solve::solve_spd(&m, &eye, k, k)?;
+        let mut p = vec![0.0; k * k];
+        for i in 0..k {
+            for j in i..k {
+                let v = 0.5 * (x[j * k + i] + x[i * k + j]);
+                p[i * k + j] = v;
+                p[j * k + i] = v;
+            }
+        }
+        p.iter().all(|v| v.is_finite()).then_some(p)
     }
 
     #[inline]
@@ -238,53 +245,14 @@ impl EwCov {
                 self.c[row + j] = a * self.c[row + j] + a * b * di * dj;
             }
         }
-        // Sherman-Morrison on the same rank-1 update, before the mean moves
-        // (the deviations above were taken against the old mean).
-        let k = self.k;
-        let prior = self.inv_prior;
-        // `d` is computed before the mutable borrow of `self.inv`.
-        let d: Vec<f64> = (0..k).map(|i| x[i] - self.m[i]).collect();
-        // `a == 0` only on the very first observation, when the whole history
-        // is discarded and the centered co-moments are exactly zero.
-        let first_observation = a <= 0.0;
-        let mut scale_factor = 1.0;
-        if let Some(inv) = &mut self.inv {
-            if first_observation {
-                // First observation: `a = 0` discards everything, so the
-                // centered co-moments are exactly zero and M is just the prior.
-                // There is no rank-1 step to take -- reinitialize instead of
-                // dividing by zero.
-                inv.iter_mut().for_each(|v| *v = 0.0);
-                for i in 0..k {
-                    inv[i * k + i] = 1.0 / prior;
-                }
-            } else {
-                let mut u = vec![0.0; k];
-                for (i, ui) in u.iter_mut().enumerate() {
-                    let row = i * k;
-                    *ui = (0..k).map(|j| inv[row + j] * d[j]).sum();
-                }
-                let dtu: f64 = d.iter().zip(&u).map(|(di, ui)| di * ui).sum();
-                let denom = 1.0 + b * dtu;
-                if denom.abs() > 1e-300 {
-                    let f = b / denom;
-                    for i in 0..k {
-                        let row = i * k;
-                        for j in 0..k {
-                            inv[row + j] = (inv[row + j] - f * u[i] * u[j]) / a;
-                        }
-                    }
-                    scale_factor = a;
-                }
-            }
-        }
-        if self.inv.is_some() {
-            self.inv_scale = if first_observation {
-                1.0
-            } else {
-                self.inv_scale * scale_factor
-            };
-        }
+        // The precision prior decays with the co-moments. `a == 0` only on
+        // the very first observation, when the whole history is discarded and
+        // the centered co-moments are exactly zero: the prior starts over.
+        self.precision_scale = if a <= 0.0 {
+            1.0
+        } else {
+            self.precision_scale * a
+        };
         for (mi, xi) in self.m.iter_mut().zip(x) {
             *mi += b * (xi - *mi);
         }
@@ -310,10 +278,11 @@ impl EwCov {
         self.prior_scale *= lam;
     }
 
-    /// Reference inverse, recomputed from scratch by Gauss-Jordan. Used by the
-    /// tests to check the incremental one, and available for a caller that
-    /// wants a one-off precision matrix without paying for the tracking.
-    pub fn inverse_from_scratch(&self, prior: f64, prior_scale: f64) -> Option<Vec<f64>> {
+    /// Reference inverse of `C + prior·prior_scale·I` by Gauss-Jordan with
+    /// partial pivoting, so the tests can check [`Self::precision`] against
+    /// something that shares none of its code.
+    #[cfg(test)]
+    fn inverse_from_scratch(&self, prior: f64, prior_scale: f64) -> Option<Vec<f64>> {
         let k = self.k;
         let mut a = vec![0.0; k * 2 * k];
         for i in 0..k {
@@ -358,6 +327,22 @@ impl EwCov {
     }
 }
 
+/// Partial correlation between columns `i` and `j` controlling for every other
+/// column, read off a precision matrix `P` (row-major `k*k`, as
+/// [`EwCov::precision`] returns it): `−P_ij / sqrt(P_ii · P_jj)`.
+pub fn partial_corr(precision: &[f64], k: usize, i: usize, j: usize) -> f64 {
+    let p = precision;
+    let (pij, pii, pjj) = (p[i * k + j], p[i * k + i], p[j * k + j]);
+    // `sqrt(pii) * sqrt(pjj)`, not `sqrt(pii * pjj)`: the product overflows
+    // at 1e154 and underflows at 1e-154 where the factors are fine.
+    let d = pii.sqrt() * pjj.sqrt();
+    if d > 0.0 {
+        (-pij / d).clamp(-1.0, 1.0)
+    } else {
+        f64::NAN
+    }
+}
+
 /// Which statistics an [`EwCovModel`] emits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -373,7 +358,7 @@ pub enum EwCovStat {
     /// Pearson correlation for each unordered pair `i < j`.
     Corr,
     /// Partial correlation for each unordered pair, controlling for every other
-    /// column. Needs the tracked inverse (`precision_prior`).
+    /// column. Needs `precision_prior`.
     PartialCorr,
 }
 
@@ -383,8 +368,8 @@ pub struct EwCovCfg {
     pub decay: crate::Decay,
     pub stats: Vec<EwCovStat>,
     pub min_periods: f64,
-    /// Prior for the tracked precision matrix. Required by
-    /// [`EwCovStat::PartialCorr`]; `None` skips the inverse entirely.
+    /// Prior for the precision matrix `(C + s·prior·I)⁻¹`. Required by
+    /// [`EwCovStat::PartialCorr`], which is the only consumer.
     #[serde(default)]
     pub precision_prior: Option<f64>,
 }
@@ -405,7 +390,7 @@ impl EwCovCfg {
         if self.stats.contains(&EwCovStat::PartialCorr) && self.precision_prior.is_none() {
             return Err(
                 "ew_cov: partial_corr needs `precision_prior` (it is computed from the \
-                 tracked precision matrix)"
+                 regularized precision matrix)"
                     .into(),
             );
         }
@@ -443,7 +428,7 @@ impl EwCovModel {
     pub fn new(cfg: EwCovCfg) -> Result<Self, String> {
         cfg.validate()?;
         let cov = match cfg.precision_prior {
-            Some(p) => EwCov::with_inverse(cfg.n_features, p)?,
+            Some(p) => EwCov::with_precision_prior(cfg.n_features, p)?,
             None => EwCov::new(cfg.n_features),
         };
         Ok(Self { cfg, cov })
@@ -501,6 +486,13 @@ impl EwCovModel {
     fn read(&self) -> Vec<f64> {
         let k = self.cfg.n_features;
         let mut out = Vec::with_capacity(self.cfg.n_outputs());
+        // One O(k³) solve per row, only when partial correlations are wanted.
+        let precision = self
+            .cfg
+            .stats
+            .contains(&EwCovStat::PartialCorr)
+            .then(|| self.cov.precision())
+            .flatten();
         for stat in &self.cfg.stats {
             match stat {
                 EwCovStat::Mean => (0..k).for_each(|i| out.push(self.cov.mean(i))),
@@ -516,7 +508,7 @@ impl EwCovModel {
                 EwCovStat::Corr => {
                     for i in 0..k {
                         for j in (i + 1)..k {
-                            let d = (self.cov.var(i) * self.cov.var(j)).sqrt();
+                            let d = self.cov.var(i).sqrt() * self.cov.var(j).sqrt();
                             out.push(if d > 0.0 {
                                 (self.cov.cov(i, j) / d).clamp(-1.0, 1.0)
                             } else {
@@ -528,7 +520,10 @@ impl EwCovModel {
                 EwCovStat::PartialCorr => {
                     for i in 0..k {
                         for j in (i + 1)..k {
-                            out.push(self.cov.partial_corr(i, j).unwrap_or(f64::NAN));
+                            out.push(match &precision {
+                                Some(p) => partial_corr(p, k, i, j),
+                                None => f64::NAN,
+                            });
                         }
                     }
                 }
@@ -895,10 +890,10 @@ mod tests {
     #[test]
     fn decay_shrinks_the_weight_and_the_prior_scale_but_not_the_means() {
         // `decay` is the pure-ageing path a skipped row takes. The prior scale
-        // must ride along, or the tracked inverse's prior stops matching the
-        // co-moments it is regularizing.
+        // must ride along, or the ridge prior stops matching the co-moments it
+        // is regularizing.
         let prior = 0.25;
-        let mut ew = EwCov::with_inverse(2, prior).unwrap();
+        let mut ew = EwCov::with_precision_prior(2, prior).unwrap();
         let mut s = 109u64;
         for _ in 0..50 {
             ew.update(&[lcg(&mut s), 1.0 + lcg(&mut s)], 0.99, 1.0);
@@ -921,7 +916,7 @@ mod tests {
     fn k_reports_the_configured_width() {
         for k in [1usize, 2, 7] {
             assert_eq!(EwCov::new(k).k(), k);
-            assert_eq!(EwCov::with_inverse(k, 1.0).unwrap().k(), k);
+            assert_eq!(EwCov::with_precision_prior(k, 1.0).unwrap().k(), k);
         }
     }
 
@@ -953,17 +948,17 @@ mod tests {
 
     #[test]
     fn the_from_scratch_inverse_really_inverts() {
-        // `tracked_inverse_matches_a_from_scratch_solve` uses this as its
-        // reference, so it has to be checked against something else -- the
-        // definition. A · A⁻¹ = I, where A = C + s·prior·I.
+        // `precision_matches_a_from_scratch_solve` uses this as its reference,
+        // so it has to be checked against something else -- the definition.
+        // A · A⁻¹ = I, where A = C + s·prior·I.
         let (prior, k) = (0.5, 3usize);
-        let mut ew = EwCov::with_inverse(k, prior).unwrap();
+        let mut ew = EwCov::with_precision_prior(k, prior).unwrap();
         let mut s = 103u64;
         for _ in 0..80 {
             let x = [lcg(&mut s), 2.0 + lcg(&mut s), 10.0 * lcg(&mut s)];
             ew.update(&x, 0.97, 0.5 + lcg(&mut s).abs());
         }
-        let scale = ew.inv_scale();
+        let scale = ew.precision_scale();
         let inv = ew.inverse_from_scratch(prior, scale).unwrap();
         for i in 0..k {
             for j in 0..k {
@@ -991,34 +986,33 @@ mod tests {
     }
 
     #[test]
-    fn with_inverse_starts_at_the_prior_and_only_accepts_a_usable_one() {
-        // Before any data the precision matrix is I/prior exactly: there is no
-        // rank-1 step to take on the first row, which is the case the
-        // Sherman-Morrison recursion cannot express.
+    fn the_precision_prior_starts_at_i_over_prior_and_must_be_usable() {
+        // Before any data the precision matrix is I/prior exactly.
         let prior = 4.0;
-        let ew = EwCov::with_inverse(3, prior).unwrap();
-        assert_eq!(ew.inv_scale(), 1.0);
+        let ew = EwCov::with_precision_prior(3, prior).unwrap();
+        assert_eq!(ew.precision_scale(), 1.0);
+        let p = ew.precision().unwrap();
         for i in 0..3 {
             for j in 0..3 {
                 let want = if i == j { 1.0 / prior } else { 0.0 };
-                assert_eq!(ew.inv(i, j), Some(want), "({i},{j})");
+                assert_eq!(p[i * 3 + j], want, "({i},{j})");
             }
         }
-        assert!(ew.has_inverse());
-        assert!(!EwCov::new(3).has_inverse());
-        assert_eq!(EwCov::new(3).inv(0, 0), None);
+        assert!(ew.has_precision_prior());
+        assert!(!EwCov::new(3).has_precision_prior());
+        assert!(EwCov::new(3).precision().is_none());
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            assert!(EwCov::with_inverse(3, bad).is_err(), "prior {bad}");
+            assert!(EwCov::with_precision_prior(3, bad).is_err(), "prior {bad}");
         }
     }
 
     #[test]
     fn partial_corr_is_the_textbook_formula_on_the_precision_matrix() {
         // -P_ij / sqrt(P_ii P_jj), against a precision matrix obtained the
-        // other way (Gauss-Jordan), so the formula and the tracking cannot
-        // agree by both being wrong.
+        // other way (Gauss-Jordan), so the formula and the solve cannot agree
+        // by both being wrong.
         let (prior, k) = (1e-4, 4usize);
-        let mut ew = EwCov::with_inverse(k, prior).unwrap();
+        let mut ew = EwCov::with_precision_prior(k, prior).unwrap();
         let mut s = 107u64;
         for _ in 0..300 {
             let a = lcg(&mut s);
@@ -1027,11 +1021,15 @@ mod tests {
             let x = [a, b, a + b + 0.3 * lcg(&mut s), 0.5 * lcg(&mut s)];
             ew.update(&x, 0.99, 1.0);
         }
-        let p = ew.inverse_from_scratch(prior, ew.inv_scale()).unwrap();
+        let reference = ew
+            .inverse_from_scratch(prior, ew.precision_scale())
+            .unwrap();
+        let p = ew.precision().unwrap();
         for i in 0..k {
             for j in 0..k {
-                let want = -p[i * k + j] / (p[i * k + i] * p[j * k + j]).sqrt();
-                let got = ew.partial_corr(i, j).unwrap();
+                let want =
+                    -reference[i * k + j] / (reference[i * k + i] * reference[j * k + j]).sqrt();
+                let got = partial_corr(&p, k, i, j);
                 assert!(
                     (got - want.clamp(-1.0, 1.0)).abs() < 1e-6,
                     "pcorr({i},{j}) = {got}, want {want}"
@@ -1039,31 +1037,25 @@ mod tests {
             }
             // A column against itself is -1 by the formula's own definition;
             // callers only ask for i != j, but it must not be NaN.
-            assert!(ew.partial_corr(i, i).unwrap().is_finite());
+            assert!(partial_corr(&p, k, i, i).is_finite());
         }
-        // Symmetric, and always a correlation. Only to ~1e-9: the tracked
-        // inverse is built by rank-1 updates, which accumulate rounding
-        // differently for (i,j) and (j,i), and a small prior on a nearly
-        // singular matrix amplifies that. The formula itself is exact.
+        // Exactly symmetric (the precision matrix is symmetrized), and always
+        // a correlation.
         for i in 0..k {
             for j in 0..k {
-                let (a, b) = (
-                    ew.partial_corr(i, j).unwrap(),
-                    ew.partial_corr(j, i).unwrap(),
-                );
-                assert!((a - b).abs() < 1e-9, "asymmetric at ({i},{j}): {a} vs {b}");
+                let (a, b) = (partial_corr(&p, k, i, j), partial_corr(&p, k, j, i));
+                assert_eq!(a, b, "asymmetric at ({i},{j})");
                 assert!((-1.0..=1.0).contains(&a), "({i},{j}) = {a}");
             }
         }
-        assert_eq!(EwCov::new(2).partial_corr(0, 1), None, "no inverse tracked");
     }
 
     #[test]
-    fn tracked_inverse_matches_a_from_scratch_solve() {
-        // The incremental Sherman-Morrison inverse must equal a direct
-        // inversion of the same matrix at every step, not just at the end.
+    fn precision_matches_a_from_scratch_solve() {
+        // The Cholesky solve must equal a Gauss-Jordan inversion of the same
+        // matrix at every step, prior scale included.
         let prior = 0.5;
-        let mut ew = EwCov::with_inverse(3, prior).unwrap();
+        let mut ew = EwCov::with_precision_prior(3, prior).unwrap();
         let mut state = 7u64;
         let mut lcg = move || {
             state = state
@@ -1075,15 +1067,15 @@ mod tests {
             let x = [lcg(), lcg(), lcg() * 3.0];
             ew.update(&x, 0.97, 0.5 + lcg().abs());
             let want = ew
-                .inverse_from_scratch(prior, ew.inv_scale())
+                .inverse_from_scratch(prior, ew.precision_scale())
                 .expect("reference inverse should exist");
+            let got = ew.precision().unwrap();
             for i in 0..3 {
                 for j in 0..3 {
-                    let got = ew.inv(i, j).unwrap();
+                    let (g, w) = (got[i * 3 + j], want[i * 3 + j]);
                     assert!(
-                        (got - want[i * 3 + j]).abs() < 1e-6 * (1.0 + want[i * 3 + j].abs()),
-                        "step {step}, ({i},{j}): tracked {got}, direct {}",
-                        want[i * 3 + j]
+                        (g - w).abs() < 1e-9 * (1.0 + w.abs()),
+                        "step {step}, ({i},{j}): cholesky {g}, gauss-jordan {w}"
                     );
                 }
             }
@@ -1096,7 +1088,7 @@ mod tests {
         // x1 they still do, but x0 and x1 are independent both ways. The
         // interesting case is the reverse: with a common driver, the marginal
         // correlation is high and the partial one is not.
-        let mut ew = EwCov::with_inverse(3, 1e-6).unwrap();
+        let mut ew = EwCov::with_precision_prior(3, 1e-6).unwrap();
         let mut state = 11u64;
         let mut lcg = move || {
             state = state
@@ -1113,7 +1105,7 @@ mod tests {
             ew.update(&[driver, a, b], 1.0, 1.0);
         }
         let marginal = ew.cov(1, 2) / (ew.var(1) * ew.var(2)).sqrt();
-        let partial = ew.partial_corr(1, 2).unwrap();
+        let partial = partial_corr(&ew.precision().unwrap(), 3, 1, 2);
         assert!(
             marginal > 0.9,
             "children should correlate marginally: {marginal}"
@@ -1125,11 +1117,10 @@ mod tests {
     }
 
     #[test]
-    fn no_inverse_by_default() {
+    fn no_precision_prior_by_default() {
         let ew = EwCov::new(2);
-        assert!(!ew.has_inverse());
-        assert!(ew.inv(0, 0).is_none());
-        assert!(ew.partial_corr(0, 1).is_none());
+        assert!(!ew.has_precision_prior());
+        assert!(ew.precision().is_none());
     }
 
     #[test]
@@ -1139,5 +1130,29 @@ mod tests {
         let bytes = rmp_serde::to_vec(&ew).unwrap();
         let back: EwCov = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(ew, back);
+    }
+
+    #[test]
+    fn loads_a_schema_1_state() {
+        // Schema 1 stored the Sherman-Morrison inverse under `inv` with its
+        // prior as `inv_prior` / `inv_scale`. The inverse is discarded (it is
+        // recomputed from the co-moments) and the prior carried over.
+        let mut want = EwCov::with_precision_prior(2, 0.25).unwrap();
+        want.update(&[1.0, 2.0], 0.95, 1.3);
+        want.update(&[0.5, 2.5], 0.95, 1.0);
+        let v1 = serde_json::json!({
+            "k": 2,
+            "w_sum": want.w_sum,
+            "prior_scale": want.prior_scale,
+            "m": want.m,
+            "c": want.c,
+            "inv": [1.0, 2.0, 3.0, 4.0],
+            "inv_prior": 0.25,
+            "inv_scale": want.precision_scale,
+        });
+        let got: EwCov = serde_json::from_value(v1).unwrap();
+        assert_eq!(got, want);
+        assert!(got.has_precision_prior());
+        assert_eq!(got.precision(), want.precision());
     }
 }

@@ -205,7 +205,10 @@ makes `min_periods` mean the same thing across a bank. It saturates at
 **Null policy.** A null in any feature (or the weight) skips the row entirely:
 outputs are null, no update happens, but the clock still advances. A null in
 target *j* still emits `pred_j`, leaves `resid_j` null, and skips only that
-target's update.
+target's update. NaN, ±inf and any magnitude above `1e100` count as null —
+sentinels like `f64::MAX` never reach a model, and every model is tested to
+keep a finite state and go on learning through anything below that bound
+(`docs/IMPROVEMENTS.md` C2).
 
 ## Models
 
@@ -236,15 +239,21 @@ near-zero-variance features are dropped rather than blowing up.
 ### `rls` — recursive least squares
 
 ```
-P ← P/λ            g = P z / (1/w + zᵀ P z)
-β_j ← β_j + g(y_j − zᵀβ_j)          P ← P − g zᵀP
+A ← λA + w zzᵀ       b_j ← λb_j + w y_j z        β_j = A⁻¹ b_j
+A₀ = ridge·I         b₀ = ridge·coef0
 ```
 
-Coefficients move every row with zero solve staleness (Sherman–Morrison).
-`ridge` sets `P₀ = I/ridge` and penalizes the intercept. This is algebraically
-identical to `ewridge(ridge_decay=True)` solved every row — a test asserts they
-agree to <1e-9. *Null-policy deviation:* a row with any null target is
-predict-only for all targets, since `P` is shared.
+Coefficients move every row with zero solve staleness. The state is the
+Cholesky factor `R` of `A` (`A = RᵀR`) and `u_j = R⁻ᵀb_j`; each row is folded
+in by `k` Givens rotations and `β` read off by one back-substitution — the
+square-root (QR) form, O(k²) per row like the textbook `P ← P − g zᵀP`
+recursion but without its two failure modes: `P`'s rounding asymmetry growing
+by `1/λ` every row, and one extreme row cancelling `P` to zero in some
+direction and freezing that coefficient for good (`docs/IMPROVEMENTS.md` C5).
+`ridge` sets `A₀ = ridge·I` (`P₀ = I/ridge`) and penalizes the intercept. This
+is algebraically identical to `ewridge(ridge_decay=True)` solved every row — a
+test asserts they agree to <1e-9. *Null-policy deviation:* a row with any null
+target is predict-only for all targets, since `R` is shared.
 
 ### `lasso` — lasso path with free λ selection
 
@@ -320,7 +329,8 @@ Each row poses a constraint and the update is the smallest change that
 satisfies it — no learning rate to tune. Note plain `pa` will move the fit as
 far as one bad row demands, so `pa1` is the default. PA keeps no accumulators,
 so unlike the other models its coefficients have no half-life; the clock only
-drives `n_eff`.
+drives `n_eff`. A row weight below 1 scales `τ`; above 1 it counts as 1 (the
+update is a projection, and repeating it changes nothing).
 
 ### `ew_cov` — exponentially weighted moments (no regression)
 
@@ -331,11 +341,13 @@ varᵢ = Sᵢᵢ − mᵢ²     covᵢⱼ = Sᵢⱼ − mᵢmⱼ             cor
 
 Running mean / variance / std / covariance / correlation of the columns you
 name, on the same clock as every model here. With `precision_prior` set it also
-tracks the inverse by Sherman–Morrison, giving `partial_corr` — the correlation
-between two columns *controlling for all the others* — with no solve per row. One O(k²) update per row, replacing
-the O(k²) *passes* a pure-Polars pairwise EW correlation needs. Values are read
-from the state before each row, so an `ew_cov` output can be a feature for that
-same row without leaking it.
+gives `partial_corr` — the correlation between two columns *controlling for all
+the others* — read off `(C + s·prior·I)⁻¹`, solved from the co-moments each
+row (O(k³), paid only when asked for; the prior fades as data accumulates like
+RLS's `P₀`). One O(k²) update per row otherwise, replacing the O(k²) *passes*
+a pure-Polars pairwise EW correlation needs. Values are read from the state
+before each row, so an `ew_cov` output can be a feature for that same row
+without leaking it.
 
 ### `ftrl` — online logistic regression
 

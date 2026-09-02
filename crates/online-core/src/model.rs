@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::SCHEMA_VERSION;
+use crate::{MIN_SCHEMA_VERSION, SCHEMA_VERSION};
 
 /// Output of one [`OnlineModel::step`].
 #[derive(Debug, Clone, PartialEq)]
@@ -92,9 +92,13 @@ impl ModelState {
 }
 
 /// Check a state's schema version before dispatching to a model's `restore`.
-/// When old versions gain migration paths they are handled here.
+///
+/// Layout migrations do not live here: a model whose layout changed accepts
+/// every version it can convert in its own `Deserialize` (see `rls`), so by
+/// the time a `State` exists the migration has already happened. This gate
+/// only rejects versions no model can convert.
 pub fn check_schema(state: &State) -> Result<(), StateError> {
-    if state.schema_version != SCHEMA_VERSION {
+    if !(MIN_SCHEMA_VERSION..=SCHEMA_VERSION).contains(&state.schema_version) {
         return Err(StateError::SchemaVersion {
             found: state.schema_version,
             current: SCHEMA_VERSION,
@@ -103,17 +107,32 @@ pub fn check_schema(state: &State) -> Result<(), StateError> {
     Ok(())
 }
 
+/// The largest magnitude of a feature, target or weight a model has to cope
+/// with. The plumbing (`online-polars`) treats any value beyond it as missing,
+/// like a null or a NaN, so a model never sees one.
+///
+/// Every model must keep a finite state, and go on learning, through any row
+/// within the bound -- including a weight of `1e100` and a feature of `1e100`
+/// on the same row -- and its predictions must return to a clean copy's once
+/// such a row has decayed (`tests/model_contract.rs`, docs/IMPROVEMENTS.md
+/// C2). The bound is where that is provable with `f64`: squares of `1e100`
+/// still fit, products of a weight and a square (`1e300`) still fit.
+pub const INPUT_BOUND: f64 = 1e100;
+
 /// One row in, one [`Step`] out (docs/PLAN.md §2).
 ///
 /// Invariants:
 /// - `pred` uses state *before* the update with this row (out-of-sample by
 ///   construction);
 /// - deterministic given input order;
-/// - no allocation in the hot path after warmup (buffers preallocated).
+/// - no allocation in the hot path after warmup (buffers preallocated);
+/// - every input is finite and within [`INPUT_BOUND`]; the state stays finite
+///   and the model keeps learning after any such row.
 ///
 /// `x` excludes the intercept (the model adds it if configured); `y[j] = None`
 /// means predict-only for target j; `d_clock` is already capped/gap-adjusted
-/// (see [`crate::ClockState`]); `weight` scales the row.
+/// (see [`crate::ClockState`]); `weight >= 0` scales the row, and `0` means
+/// "advance the clock, learn nothing".
 pub trait OnlineModel: Sized {
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step;
     fn state(&self) -> State;
@@ -134,13 +153,20 @@ mod tests {
     fn schema_check() {
         let s = State::new(ModelState::EwCov(crate::EwCov::new(1)));
         assert!(check_schema(&s).is_ok());
-        let bad = State {
-            schema_version: SCHEMA_VERSION + 1,
-            ..s
+        let old = State {
+            schema_version: MIN_SCHEMA_VERSION,
+            ..s.clone()
         };
-        assert!(matches!(
-            check_schema(&bad),
-            Err(StateError::SchemaVersion { .. })
-        ));
+        assert!(check_schema(&old).is_ok());
+        for v in [MIN_SCHEMA_VERSION - 1, SCHEMA_VERSION + 1] {
+            let bad = State {
+                schema_version: v,
+                ..s.clone()
+            };
+            assert!(matches!(
+                check_schema(&bad),
+                Err(StateError::SchemaVersion { .. })
+            ));
+        }
     }
 }

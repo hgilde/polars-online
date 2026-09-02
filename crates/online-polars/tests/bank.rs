@@ -184,3 +184,41 @@ fn null_clock_errors_loudly() {
     let err = bank.fit_predict(&df).unwrap_err();
     assert!(err.to_string().contains("clock"), "{err}");
 }
+
+/// A value beyond `online_core::INPUT_BOUND` is treated exactly like a null in
+/// the same position (docs/IMPROVEMENTS.md C2): a feature or weight skips the
+/// row, a target makes it predict-only. At the bound itself the value is used.
+#[test]
+fn values_beyond_the_bound_are_missing() {
+    let df = make_df(200);
+    let run = |df: &DataFrame| {
+        let mut bank = Bank::new(vec![spec_json("m", true)]).unwrap();
+        let cols = bank.fit_predict(df).unwrap();
+        let out = DataFrame::new(df.height(), cols).unwrap();
+        drop_coef(&out.unnest(["m"], None).unwrap())
+    };
+    let with = |col: &str, v: Option<f64>| {
+        let mut vals: Vec<Option<f64>> = df.column(col).unwrap().f64().unwrap().iter().collect();
+        vals[100] = v;
+        let mut d = df.clone();
+        d.with_column(Column::new(col.into(), vals)).unwrap();
+        d
+    };
+    let bound = online_core::INPUT_BOUND;
+    for col in ["x0", "y", "w"] {
+        let null = run(&with(col, None));
+        for beyond in [bound * 10.0, -bound * 10.0, f64::INFINITY] {
+            if col == "w" && beyond < 0.0 {
+                continue; // a negative weight is an error, not a missing value
+            }
+            assert!(
+                run(&with(col, Some(beyond))).equals_missing(&null),
+                "{col} = {beyond} must act as a null"
+            );
+        }
+        assert!(
+            !run(&with(col, Some(bound))).equals_missing(&null),
+            "{col} = {bound} is within the bound and must be used"
+        );
+    }
+}

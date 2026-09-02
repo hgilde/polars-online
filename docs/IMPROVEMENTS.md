@@ -54,25 +54,43 @@ Two different things are going on. `inf` and NaN are already treated as
 missing (that column is all "fine"). A *finite* absurd value is legal input,
 and an exponentially weighted least-squares model responds to it exactly as
 its equations say: the accumulators absorb `M`, and it takes `log2(M)`
-halflives to wash out — 330 halflives for `1e100`. That is the model, not a
-defect; `huber`, `pa` and `quantile` are immune because their updates are
-bounded, and that is what they are for.
+halflives for a first moment and `2·log2(M)` for a Gram matrix (which holds
+`M²`) to wash out — 664 halflives for `x = 1e100`. A weight of `W` freezes
+the model for `log2(W)` halflives: the row's own information dominates until
+its weight has decayed back to the order of the rest. That is the model, not
+a defect.
 
-The defect is the first two rows of the table: once an accumulator holds
-`inf` (`x² = 1e400`), it never decays (`inf·λ = inf`), so the model is dead
-for the rest of the stream. Kalman gets there through `sig2`: the residual
-of the absurd row squares to `inf`, `Q ∝ sig2` puts `inf` on the diagonal of
-`P`, and the gain is `inf/inf = NaN`. FTRL gets there through `n_i += g²`.
+The defects were elsewhere:
+
+- Once an accumulator holds `inf` (`x² = 1e400`), it never decays
+  (`inf·λ = inf`), so the model is dead for the rest of the stream. Kalman
+  got there through `sig2`: the residual of the absurd row squares to `inf`,
+  `Q ∝ sig2` puts `inf` on the diagonal of `P`, and the gain is
+  `inf/inf = NaN`. FTRL got there through `n_i += g²`.
+- `rls` and `ew_cov`'s tracked inverse died deterministically on a finite
+  row and never recovered — a different mechanism, written up as **C5**.
+- `pa` scaled its step by the row weight, so `w = 1e100` was a step of
+  `1e100·(loss/‖z‖²)` and the coefficients left the representable range.
+  PA-I's step is already the *minimum* change that fits the row; a weight
+  only makes sense as a cap on it. The weight is now applied as
+  `min(w, 1)`, documented in the spec.
+- The robust IRLS weights (`huber`'s `cut/|r|`, `quantile`'s `s/|r|`) are
+  `0/0` when the residual and the scale estimate are both 0, which a run of
+  exactly-fitted rows produces; guarded.
 
 Fix, two layers:
 
 1. **Bounded input at the boundary.** `online-polars` treats any feature,
-   target or weight with `|v| > 1e100` as missing, exactly like NaN. Products
-   of two such values (`x²`, `x·y`, `w·x²`) then stay below `1e300`, so no
-   accumulator can overflow from the input side, and the state stays finite
-   for every row the stream accepts. `1e100` is far outside any measured
-   quantity and inside the sentinel range that actually shows up in data
-   (`f64::MAX`, `1e300`, `1e308`).
+   target or weight with `|v| > online_core::INPUT_BOUND` (= `1e100`) as
+   missing, exactly like a null: a feature or weight skips the row, a
+   target makes it predict-only. Products of two such values (`x²`, `x·y`,
+   `w·x²`) then stay below `1e300`, so no accumulator can overflow from the
+   input side, and the state stays finite for every row the stream accepts.
+   `1e100` is far outside any measured quantity and inside the sentinel
+   range that actually shows up in data (`f64::MAX`, `1e300`, `1e308`). The
+   constant lives in `online-core` next to the `OnlineModel` trait because
+   it is part of the model contract: every model must survive any row inside
+   it.
 2. **Guards where a bounded input still overflows a derived quantity.**
    Kalman's innovation variance and residual-variance updates and FTRL's
    gradient accumulator skip the row when the increment is non-finite
@@ -80,10 +98,71 @@ Fix, two layers:
    Rule 9 in CLAUDE.md already says "an unguarded division poisons the state
    with a NaN that never washes out"; this extends it to overflow.
 
-`crates/online-core/tests/model_contract.rs` gets the property: for every
-model, after a stream that includes the largest accepted magnitudes and
-tiny scales, the state is finite and the model predicts a fresh well-behaved
-tail to within tolerance (T4).
+`crates/online-core/tests/model_contract.rs` holds the property (T4): two
+copies of every model, one fed a script that puts the bound in every
+position and sign (`x`, `y`, `w`, all at once, then a run at scale `1e-100`
+and the bound again), the other only the well-behaved rows; over the last
+thousand of a 30,000-row tail every prediction of the first is finite and
+agrees with the twin's to `1e-9` (`Recovery::Twin`). `pa` and `quantile`
+are held to a different criterion, because they do not converge to one
+answer on clean data — PA-I stops updating inside its epsilon tube and the
+quantile IRLS weight `s/|r|` never settles closer than its residual floor —
+so two histories legitimately end at different points of the band: for them
+both copies must be within the band of the target (`Recovery::Tube`). The
+measured worst cases after the fixes: every least-squares model agrees with
+its twin to `1e-14`, `pa` is within `0.087` of a `0.1` tube, `quantile`
+within `1e-4` of a `1e-3` one.
+
+### C5 — covariance-form RLS dies of cancellation; so did `ew_cov`'s inverse — *done*
+
+Found by T4: `rls` failed the bounded-input test with coefficients stuck at
+`[0, 0, -4.3e68]` from row 316 to row 30,000, long after the extreme rows
+were gone. Two separate mechanisms, both in the textbook recursion
+`P ← (P − g zᵀP)/λ`:
+
+1. **Asymmetry amplification.** `g_i (Pz)_j` and `g_j (Pz)_i` differ by an
+   ulp; the rank-1 downdate never touches the antisymmetric part, and the
+   `1/λ` multiplies it every row. Measured in numpy on well-behaved data:
+   the antisymmetric part of `P` grows as `λ^-n`, and is order 1 relative
+   to `P` after ~60 halflives. The symmetric downdate (write `P_ij = P_ji`
+   from one product) fixes this one.
+2. **Cancellation death.** A row whose information exceeds the prior's by
+   `1/ulp` in some direction (a feature `1e8×` its usual scale, or a weight
+   of `1e100`) computes `P_ii − u_i²/d` as exactly `0` or `±ulp`. An exact
+   zero never regrows: the only growth `P` has is multiplicative (`P/λ`),
+   and `0/λ = 0`, so the gain in that direction is `0` and the coefficient
+   is frozen for good. The probe printed `P` becoming all zeros by row 316.
+   In numpy a *single* outlier usually heals — a sub-ulp negative eigenvalue
+   gets kicked positive by later rounding — which is why the failure is
+   sequence-specific and why it had not been seen before.
+
+The information form has neither problem: an outlier's information decays
+multiplicatively and new information is added, so nothing ever cancels.
+`ewridge`, which keeps the Gram matrix, passed T4 on the first run. `rls`
+is now the **square-root information (QR) form**: the state is the Cholesky
+factor `R` of `A = λA + w zzᵀ` and `u = R⁻ᵀb`; a row is folded in by `k`
+Givens rotations on the stacked `[R u; √w zᵀ √w y]` and `β` read off by one
+back-substitution. Same O(k²) per row (~5k² flops, as before), backward
+stable, holds only the square root of the scale (`1e100` inputs with a
+`1e100` weight give entries of `1e150`, no overflow), and is still exactly
+`ewridge(ridge_decay=True)` solved every row — the agreement test is
+unchanged and T4 now passes at `1e-14`. Over the 14,284-row validation
+stream (docs/VALIDATION.md) the old form had drifted `1.8e-4` relative from
+the exact solve; the new one agrees to `5e-13`.
+
+`ew_cov`'s Sherman-Morrison precision matrix had the same two problems
+(`inv_ii → 0` exactly, then `partial_corr = 0/0`). Tracking it is not worth
+the fragility: the precision matrix is now solved from the co-moments
+(`solve_spd` against the identity, O(k³)) on each row that reads
+`partial_corr`, and never otherwise. The prior's semantics
+(`M = C + s·prior·I`, `s` decaying with the co-moments) are unchanged, and
+the golden outputs match to `1e-12`.
+
+State layout: `SCHEMA_VERSION` is 2. Schema-1 `rls` states (`P`, `β`) are
+converted on load (`R` from the reverse-Cholesky of `P`, `u = Rβ`); schema-1
+`ew_cov` states load with the stored inverse ignored. `MIN_SCHEMA_VERSION`
+records the oldest layout a build still loads, and both `check_schema` and
+the bank accept the range.
 
 ### C3 — `fit_predict` is not atomic under `on_clock_reset="error"` — *proposed*
 
@@ -235,6 +314,10 @@ user reads and that break when the API changes.
 ### T3 — emit-flag matrix through the expression path — *done with C1*
 
 ### T4 — bounded-input contract for every model — *done with C2*
+
+The test is described under C2. It found C5, which is the argument for
+having it: a property test over the whole input range, run on every model,
+against a twin that saw only clean data.
 
 ## 6. Rejected or deferred
 
