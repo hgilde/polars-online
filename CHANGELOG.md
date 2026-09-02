@@ -9,6 +9,10 @@ carries breaking changes.
 
 ### Fixed
 
+- **`coef` is null, never an empty list, before a model's first solve.** Rows
+  between `coef_every` snapshots were already null; warmup rows were an empty
+  list, which made `coef.list.get(position)` — the documented way to read one
+  coefficient — raise "index out of bounds" instead of returning null.
 - **`holt` accepts `level_halflife` on its own.** For Holt the level halflife
   is the spec's halflife — one knob spelled two ways — but a spec that gave
   only `level_halflife` was refused with "one of halflife/lam is required",

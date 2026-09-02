@@ -1286,8 +1286,15 @@ fn run_instance(
             }
         }
         if plan.want_coef {
-            let c = inst.model.coefficients().unwrap_or_default();
-            inst.o_coef[ri] = Some(c.into_iter().flatten().collect());
+            // A model that has not solved yet has nothing to report, and
+            // `null` is how every other output spells that. This used to be
+            // an empty list, so `coef.list.get(i)` -- the documented way to
+            // read one coefficient -- raised "index out of bounds" on the
+            // warmup rows instead of returning null (IMPROVEMENTS U7).
+            inst.o_coef[ri] = inst
+                .model
+                .coefficients()
+                .map(|c| c.into_iter().flatten().collect());
         }
         if reset_on_drift && row_drift {
             inst.reset();

@@ -452,6 +452,26 @@ editor showed nothing and a typo was a runtime error. Now:
   the stub, a `_json` that accepted a list but said `dict`, and an `int`
   comparison typed as `object`.
 
+### U7 — `coef` said "nothing yet" in two different spellings — *done*
+
+Checking the docstring examples the README does not carry (T5 covers those)
+turned up one that raises: `coef_index`'s own example,
+`out["m"].struct.field("coef@h100").list.get(pos)`, fails with an
+index-out-of-bounds `ComputeError` on real data.
+
+The cause is a spelling inconsistency. Rows between `coef_every` snapshots are
+`null`, which is how every other output says "nothing here" — but rows before
+the model's first solve were an **empty list**, and `list.get` on an empty
+list is out of bounds rather than null. So the documented way to read one
+coefficient worked only on a spec whose first row happens to be a solve.
+
+`null` in both cases now. The gradient models (`rls`, `kalman`, `ftrl`, `sgd`,
+`pa`, `holt`) carry coefficients from the first row and were never affected;
+the four that solve on a schedule were. Pinned for every model by
+`test_coef_is_null_or_complete_never_empty`, which delays the first solve on
+purpose — the first version of that test passed against the bug, because the
+sweep's own specs solve on row one.
+
 ### U6 — the README's own `holt` example did not run — *done*
 
 Found by running the README's python blocks instead of only compiling them

@@ -118,6 +118,34 @@ class TestWarmup:
         assert neff[first] >= 5.0, f"{model}: predicted at n_eff {neff[first]} < 5"
         assert all(p is None for p in preds[:first])
 
+    def test_coef_is_null_or_complete_never_empty(self, model, extra):
+        """A model that has not solved yet has nothing to report, and every
+        other output spells that `null`. `coef` used to spell it as an empty
+        list on the warmup rows, which made the documented way to read one
+        coefficient -- `coef.list.get(position)` -- raise "index out of
+        bounds" instead of returning null (IMPROVEMENTS U7)."""
+        df = frame(binary=model == "ftrl")
+        # The models that solve on a schedule report nothing until the first
+        # solve, which is the state this is about; delay it a few rows. The
+        # rest carry coefficients from row one and never had the problem.
+        delay = (
+            dict(solve_every=5.0, max_rows_between_solves=10_000)
+            if model in ("ewridge", "lasso", "huber", "quantile")
+            else {}
+        )
+        out = run(model, extra, df, min_periods=5.0, coef_every=1, **delay)
+        fields = [f.name for f in out.schema["m"].fields if f.name.startswith("coef")]
+        assert fields, f"{model}: no coef field"
+        for name in fields:
+            c = out["m"].struct.field(name)
+            lengths = c.list.len().drop_nulls().to_list()
+            assert lengths, f"{model}.{name}: every row is null"
+            assert all(n > 0 for n in lengths), f"{model}.{name}: an empty coef list"
+            # And the access pattern the docstrings show works on every row.
+            assert c.list.get(0).len() == df.height
+            if delay:
+                assert c[0] is None, f"{model}.{name}: unsolved row is not null"
+
     def test_n_eff_is_reported_before_the_update(self, model, extra):
         df = frame(binary=model == "ftrl")
         out = run(model, extra, df, min_periods=0.0)
