@@ -2,7 +2,7 @@
 //! class (docs/PLAN.md §6). Specs cross the boundary as JSON (Python dicts are
 //! serialized by the thin wrapper in `python/polars_online/`).
 
-use online_polars::{Bank, Spec};
+use online_polars::{Bank, GroupKey, Spec};
 use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3_polars::{PyDataFrame, PySeries};
@@ -207,6 +207,38 @@ impl PyModelBank {
 
     fn spec_names(&self) -> Vec<String> {
         self.inner.specs().iter().map(|s| s.name.clone()).collect()
+    }
+
+    /// The specs as JSON, so a loaded bank can show them as dicts again.
+    fn specs_json(&self) -> PyResult<String> {
+        serde_json::to_string(self.inner.specs()).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Per spec: `(group, rows_processed, last_clock)` for every group held.
+    #[allow(clippy::type_complexity)]
+    fn groups(&self) -> Vec<Vec<(Option<String>, u64, Option<f64>)>> {
+        self.inner
+            .groups()
+            .into_iter()
+            .map(|v| v.into_iter().map(|(k, n, c)| (k.0, n, c)).collect())
+            .collect()
+    }
+
+    #[pyo3(signature = (keys, spec=None))]
+    fn drop_groups(
+        slf: &Bound<'_, Self>,
+        keys: Vec<Option<String>>,
+        spec: Option<usize>,
+    ) -> PyResult<usize> {
+        let mut this = slf.try_borrow_mut().map_err(|_| busy("drop_groups"))?;
+        let keys: Vec<GroupKey> = keys.into_iter().map(GroupKey).collect();
+        this.inner
+            .drop_groups(&keys, spec)
+            .map_err(PyValueError::new_err)
+    }
+
+    fn rows_seen(&self) -> u64 {
+        self.inner.rows_seen()
     }
 }
 

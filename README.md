@@ -91,6 +91,18 @@ bank.save("bank.state")                    # versioned msgpack, portable across 
 bank = po.ModelBank.load("bank.state", specs=[spec])
 ```
 
+A bank says what it holds: `repr(bank)` is `ModelBank(['ridge'], groups=412,
+rows_seen=3000000)`, `bank.specs` comes back from the state file as the
+same dicts the builders made, and `bank.groups()` is a frame of every
+`(spec, group)` with its processed-row count and last clock value. State
+lives until it is dropped, so a long-running bank forgets the groups that
+have gone quiet with:
+
+```python
+stale = bank.groups().filter(pl.col("last_clock") < now - 30 * 86400)
+bank.drop_groups(stale["group"])           # they start cold if they reappear
+```
+
 ### 3. Streaming runner (Python or CLI)
 
 The same O(state + chunk) parquet→parquet path, from Python:

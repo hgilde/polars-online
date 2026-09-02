@@ -249,11 +249,12 @@ impl FloatOrList {
     }
 }
 
-/// `session_gap`: clock units, or "reset".
+/// `session_gap`: clock units, or "reset". The gap is a [`Num`] so that an
+/// infinite one ("never") survives JSON, which has no infinity literal.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum SessionGapSpec {
-    Gap(f64),
+    Gap(Num),
     Word(String),
 }
 
@@ -269,22 +270,22 @@ impl<'de> Deserialize<'de> for SessionGapSpec {
             }
 
             fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<SessionGapSpec, E> {
-                Ok(SessionGapSpec::Gap(v))
+                Ok(SessionGapSpec::Gap(Num(v)))
             }
 
             fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<SessionGapSpec, E> {
-                Ok(SessionGapSpec::Gap(v as f64))
+                Ok(SessionGapSpec::Gap(Num(v as f64)))
             }
 
             fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<SessionGapSpec, E> {
-                Ok(SessionGapSpec::Gap(v as f64))
+                Ok(SessionGapSpec::Gap(Num(v as f64)))
             }
 
             fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<SessionGapSpec, E> {
                 if v == "reset" {
                     Ok(SessionGapSpec::Word(v.to_string()))
                 } else if let Some(n) = Num::from_word(v) {
-                    Ok(SessionGapSpec::Gap(n.0))
+                    Ok(SessionGapSpec::Gap(n))
                 } else {
                     Err(E::invalid_value(serde::de::Unexpected::Str(v), &self))
                 }
@@ -694,13 +695,13 @@ impl Spec {
         }
         let session_gap = match &self.session_gap {
             None => None,
-            Some(SessionGapSpec::Gap(g)) if !non_negative(*g) => {
+            Some(SessionGapSpec::Gap(g)) if !non_negative(g.0) => {
                 return Err(format!(
                     "spec {:?}: session_gap must be >= 0 or \"reset\"",
                     self.name
                 ));
             }
-            Some(SessionGapSpec::Gap(g)) => Some(SessionGap::Gap(*g)),
+            Some(SessionGapSpec::Gap(g)) => Some(SessionGap::Gap(g.0)),
             Some(SessionGapSpec::Word(w)) if w == "reset" => Some(SessionGap::Reset),
             Some(SessionGapSpec::Word(w)) => {
                 return Err(format!(

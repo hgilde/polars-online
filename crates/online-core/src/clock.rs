@@ -114,6 +114,13 @@ impl ClockState {
         Self::default()
     }
 
+    /// The last clock value seen, `None` before the first row or on a
+    /// row-count clock. What a caller uses to tell a stale group from a live
+    /// one.
+    pub fn last_clock(&self) -> Option<f64> {
+        self.prev_clock
+    }
+
     /// Advance by one row. `clock = None` means a row-count clock (delta 1).
     /// `accept = false` marks a skipped (feature-null) row: its delta is folded
     /// into `pending` instead of being returned.

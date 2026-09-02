@@ -346,6 +346,10 @@ struct BankFile {
     specs: Vec<Spec>,
     /// Per spec: (group key, stream state) pairs.
     states: Vec<Vec<(GroupKey, StreamState)>>,
+    /// Rows fed over the bank's life. An optional field (the file is a map),
+    /// so a file without it still loads and reports the streams' own count.
+    #[serde(default)]
+    rows_fed: u64,
 }
 
 pub struct Bank {
@@ -353,6 +357,9 @@ pub struct Bank {
     clock_cfgs: Vec<ClockCfg>,
     derived: Vec<SpecDerived>,
     states: Vec<HashMap<GroupKey, Stream>>,
+    /// Rows fed so far. Kept at the bank level because a stream's `rows_seen`
+    /// goes with it when its group is dropped.
+    rows_fed: u64,
 }
 
 /// Everything `assemble` needs that follows from the `Spec` alone.
@@ -438,11 +445,59 @@ impl Bank {
             clock_cfgs,
             derived,
             states,
+            rows_fed: 0,
         })
     }
 
     pub fn specs(&self) -> &[Spec] {
         &self.specs
+    }
+
+    /// The groups each spec holds state for, sorted by key: `(key, rows
+    /// processed, last clock value)`. Rows processed are the group's rows the
+    /// null policy did not skip -- the count the stream's own `coef_every`
+    /// cadence runs on. A group's state lives until [`Self::drop_groups`]
+    /// removes it, so this is how a long-running bank finds the ones that have
+    /// gone quiet (docs/IMPROVEMENTS.md U3).
+    pub fn groups(&self) -> Vec<Vec<(GroupKey, u64, Option<f64>)>> {
+        self.states
+            .iter()
+            .map(|hm| {
+                let mut v: Vec<_> = hm
+                    .iter()
+                    .map(|(k, s)| (k.clone(), s.rows_seen, s.clock.last_clock()))
+                    .collect();
+                v.sort_by(|a, b| a.0.cmp(&b.0));
+                v
+            })
+            .collect()
+    }
+
+    /// Forget the state of these groups -- in every spec, or in one -- and
+    /// return how many streams were dropped. A dropped group starts cold if it
+    /// appears again, exactly as a never-seen one would.
+    pub fn drop_groups(&mut self, keys: &[GroupKey], spec: Option<usize>) -> Result<usize, String> {
+        if let Some(si) = spec {
+            if si >= self.states.len() {
+                return Err(format!("spec index {si} out of range"));
+            }
+        }
+        let mut dropped = 0;
+        for (si, hm) in self.states.iter_mut().enumerate() {
+            if spec.is_some_and(|s| s != si) {
+                continue;
+            }
+            for key in keys {
+                dropped += usize::from(hm.remove(key).is_some());
+            }
+        }
+        Ok(dropped)
+    }
+
+    /// Rows fed so far, over every chunk and group: skipped rows and dropped
+    /// groups included, which is why it is not the sum of [`Self::groups`].
+    pub fn rows_seen(&self) -> u64 {
+        self.rows_fed
     }
 
     /// Jittered/failed factorizations so far, per spec, as `(group, count)`
@@ -663,6 +718,7 @@ impl Bank {
                 n as f64 / total.as_secs_f64()
             );
         }
+        self.rows_fed += n as u64;
         Ok(out)
     }
 
@@ -670,6 +726,7 @@ impl Bank {
         let file = BankFile {
             magic: BANK_MAGIC.to_string(),
             format_version: BANK_FORMAT_VERSION,
+            rows_fed: self.rows_fed,
             schema_version: online_core::SCHEMA_VERSION,
             package_version: env!("CARGO_PKG_VERSION").to_string(),
             specs: self.specs.clone(),
@@ -720,6 +777,16 @@ impl Bank {
                 bank.states[si].insert(key.clone(), stream);
             }
         }
+        // A file from before the counter existed: every spec sees every row,
+        // so the first spec's streams have the count, less any dropped group
+        // and less the rows the null policy skipped.
+        bank.rows_fed = if file.rows_fed > 0 {
+            file.rows_fed
+        } else {
+            bank.states
+                .first()
+                .map_or(0, |hm| hm.values().map(|s| s.rows_seen).sum())
+        };
         Ok(bank)
     }
 

@@ -445,8 +445,10 @@ cancellation on a single extreme row, so `rls` is now in square-root (QR)
 form and the precision matrix is solved on demand (C5, schema 2), and error
 messages that name the spec, the parameter or the column and its role — the
 builders check their own annotations, the parser names the path, and a
-non-numeric column is refused rather than cast to null (U2). The rest is
-proposed with its measurements next to it.
+non-numeric column is refused rather than cast to null (U2), and a bank that
+can say what it holds — `repr`, `groups()`, `drop_groups()`, `rows_seen()`,
+and `specs` that survive `load` (U3). The rest is proposed with its
+measurements next to it.
 
 ## 12. Open questions (not blocking)
 

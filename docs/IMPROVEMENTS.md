@@ -318,12 +318,42 @@ What was done, and where each message comes from:
   `fit_predict` releases the GIL, so this is reachable.
 - `ModelBank.fit_predict` checks for a `DataFrame` first.
 
-### U3 — `ModelBank` ergonomics — *proposed*
+### U3 — `ModelBank` ergonomics — *done*
 
-No `__repr__`; `bank.specs` is `[]` after `load`; no way to list the groups a
-bank holds or to drop stale ones, so memory grows with every group ever
-seen. Add `__repr__` (spec names, groups, rows seen), keep `specs` after
-load, and `groups()` / `drop_groups(keys)`.
+A bank was opaque: no `__repr__`; `bank.specs` was `[]` after `load`; no way
+to list the groups a bank held or to drop stale ones, so a long-running
+bank's memory grew with every group ever seen.
+
+| | before | after |
+|---|---|---|
+| `repr(bank)` | `<polars_online._bank.ModelBank object at 0x...>` | `ModelBank(['m', 'r'], groups=3, rows_seen=60)` |
+| `ModelBank.load(path).specs` | `[]` | the builders' dicts, `==` the originals |
+| which groups are held | — | `bank.groups()` → frame of `spec, group, rows_processed, last_clock` |
+| forgetting a group | — | `bank.drop_groups(keys, spec=None)` → number of streams dropped |
+
+- **`specs` survive the file** through `specs_json()` on the native bank and
+  `_from_json` in Python, which turns `"inf"` back into `float("inf")` --
+  but only under parameter names the builders type as `float`
+  (`_NUMERIC_KEYS`, derived from their annotations), so a column literally
+  named `"inf"` stays a name. Two things had to change for `loaded.specs ==
+  bank.specs` to hold: `SessionGapSpec::Gap` became a `Num` (serde_json
+  writes a bare infinite `f64` as `null`), and `ewridge` stores
+  `feature_sets` as lists rather than tuples.
+- **`groups()`** reports each stream's processed-row count and its last
+  clock value (`ClockState::last_clock`), sorted by key, with `""` for an
+  ungrouped spec exactly as `solve_failures()` does. The stale-group idiom
+  is `bank.drop_groups(bank.groups().filter(pl.col("last_clock") < cutoff)["group"])`.
+- **`drop_groups`** removes the streams in every spec or one, and a dropped
+  group restarts as a never-seen one would; the tests check the other groups
+  continue bit-for-bit.
+- **`rows_seen()`** is a bank-level `rows_fed` counter rather than a sum over
+  streams, because a stream's count leaves with its group and excludes the
+  rows the null policy skipped. It is an optional field of the map-encoded
+  state file (`#[serde(default)]`, no format bump); a file from before it
+  existed falls back to the streams' sum, and `tests/state_v1.rs` checks the
+  v1 fixture does.
+- `groups`, `drop_groups` and `rows_seen` are new rows in
+  `tests/api_surface.txt`; `tests/test_bank_ergonomics.py` pins the rest.
 
 ### U4 — `**kwargs: Any` on every namespace method — *proposed*
 

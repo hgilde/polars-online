@@ -1,7 +1,7 @@
 //! Bank-level integration tests: chunk invariance, save/load mid-stream,
 //! per-group independence (docs/PLAN.md §9). The oracle tests live in pytest.
 
-use online_polars::{Bank, Spec};
+use online_polars::{Bank, GroupKey, Spec};
 use polars::prelude::*;
 
 fn spec_json(name: &str, group: bool) -> Spec {
@@ -168,6 +168,99 @@ fn groups_are_independent() {
     let a = drop_coef(&both_g0.unnest(["m"], None).unwrap());
     let b = drop_coef(&solo.unnest(["m"], None).unwrap());
     assert!(a.equals_missing(&b));
+}
+
+#[test]
+fn groups_can_be_listed_and_dropped() {
+    // docs/IMPROVEMENTS.md U3: a bank says which groups it holds, and can
+    // forget the stale ones without touching the rest.
+    let df = make_df(400);
+    let mut bank = Bank::new(vec![spec_json("m", true), spec_json("u", false)]).unwrap();
+    assert_eq!(bank.groups(), vec![vec![], vec![]]);
+    assert_eq!(bank.rows_seen(), 0);
+    bank.fit_predict(&df.slice(0, 200)).unwrap();
+
+    let key = |k: &str| GroupKey(Some(k.to_string()));
+    let t = df.column("t").unwrap().f64().unwrap();
+    let gs = df.column("g").unwrap().str().unwrap();
+    let x0 = df.column("x0").unwrap().f64().unwrap();
+    let last_clock = |g: Option<&str>| {
+        (0..200)
+            .rev()
+            .find(|&i| g.is_none_or(|g| gs.get(i) == Some(g)))
+            .map(|i| t.get(i).unwrap())
+    };
+    // A group's count is of the rows the null policy let through.
+    let processed = |g: Option<&str>| {
+        (0..200)
+            .filter(|&i| g.is_none_or(|g| gs.get(i) == Some(g)) && x0.get(i).is_some())
+            .count() as u64
+    };
+    assert!(
+        processed(None) < 200,
+        "the fixture should have null features"
+    );
+    // Sorted by key; an ungrouped spec has the one key "".
+    assert_eq!(
+        bank.groups(),
+        vec![
+            vec![
+                (key("g0"), processed(Some("g0")), last_clock(Some("g0"))),
+                (key("g1"), processed(Some("g1")), last_clock(Some("g1"))),
+            ],
+            vec![(GroupKey::ungrouped(), processed(None), last_clock(None))],
+        ]
+    );
+    // The bank counts every row it was fed, skipped or not.
+    assert_eq!(bank.rows_seen(), 200);
+
+    // Scoped to one spec, counting only what was actually there.
+    assert_eq!(bank.drop_groups(&[key("g1"), key("zz")], Some(0)), Ok(1));
+    assert_eq!(bank.groups()[0].len(), 1);
+    assert_eq!(bank.groups()[1].len(), 1);
+    assert!(bank.drop_groups(&[key("g0")], Some(2)).is_err());
+
+    // Untouched groups continue exactly as before; the dropped one restarts.
+    let second = df.slice(200, 200);
+    let mut control = Bank::new(vec![spec_json("m", true), spec_json("u", false)]).unwrap();
+    control.fit_predict(&df.slice(0, 200)).unwrap();
+    let expected = DataFrame::new(200, control.fit_predict(&second).unwrap()).unwrap();
+    let got = DataFrame::new(200, bank.fit_predict(&second).unwrap()).unwrap();
+    let is_g0: BooleanChunked = second
+        .column("g")
+        .unwrap()
+        .str()
+        .unwrap()
+        .iter()
+        .map(|v| Some(v == Some("g0")))
+        .collect();
+    assert!(
+        got.filter(&is_g0)
+            .unwrap()
+            .equals_missing(&expected.filter(&is_g0).unwrap())
+    );
+    assert!(
+        got.column("u")
+            .unwrap()
+            .as_materialized_series()
+            .equals_missing(expected.column("u").unwrap().as_materialized_series())
+    );
+    assert!(
+        !got.column("m")
+            .unwrap()
+            .as_materialized_series()
+            .equals_missing(expected.column("m").unwrap().as_materialized_series())
+    );
+    // The dropped group's rows still count as fed, and the count survives a save.
+    assert_eq!(bank.rows_seen(), 400);
+    // ... but the restarted group only processed the second chunk's rows.
+    assert_eq!(
+        bank.groups()[0][1].1 + processed(Some("g1")),
+        control.groups()[0][1].1
+    );
+    let reloaded = Bank::load_bytes(&bank.save_bytes().unwrap(), None).unwrap();
+    assert_eq!(reloaded.rows_seen(), 400);
+    assert_eq!(reloaded.groups(), bank.groups());
 }
 
 #[test]

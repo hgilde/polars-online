@@ -161,12 +161,15 @@
 
 [ModelBank]
   __reduce__
+  drop_groups
   fit_predict
   fit_predict_batches
   gram
+  groups
   load
   load_bytes
   output_fields
+  rows_seen
   save
   save_bytes
   solve_failures

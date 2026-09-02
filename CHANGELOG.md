@@ -24,7 +24,9 @@ weighted **mean-form** accumulators with centered (Welford) co-moments:
 
 Three, with identical numerics: a Polars **expression plugin**
 (`pl.col("y").online.ewridge(...)`), a chunk-fed **`ModelBank`** with O(state)
-memory, and a standalone **CLI** (parquet in, parquet out, TOML config).
+memory that reports what it holds (`groups()`, `rows_seen()`) and can forget
+stale groups (`drop_groups()`), and a standalone **CLI** (parquet in, parquet
+out, TOML config).
 
 ### Guarantees
 

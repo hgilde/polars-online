@@ -155,3 +155,17 @@ fn a_corrupt_state_is_refused() {
         "an empty state should be refused"
     );
 }
+
+#[test]
+fn a_file_without_the_row_counter_reports_its_streams_sum() {
+    // `rows_fed` (docs/IMPROVEMENTS.md U3) is an optional field of the map-
+    // encoded file. A file from before it existed reports what its streams
+    // processed -- 30 rows in each of the fixture's two groups, none skipped
+    // -- and the counter is live from there on.
+    let mut bank = Bank::load_bytes(&bytes(), None).unwrap();
+    assert_eq!(bank.rows_seen(), 60);
+    bank.fit_predict(&frame(60, 20)).unwrap();
+    assert_eq!(bank.rows_seen(), 80);
+    let saved = Bank::load_bytes(&bank.save_bytes().unwrap(), None).unwrap();
+    assert_eq!(saved.rows_seen(), 80);
+}

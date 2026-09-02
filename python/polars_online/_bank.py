@@ -9,7 +9,7 @@ from typing import Any
 import polars as pl
 
 from polars_online import _polars_online as _native
-from polars_online._spec import _json
+from polars_online._spec import _from_json, _json
 
 __all__ = ["ModelBank"]
 
@@ -25,6 +25,69 @@ class ModelBank:
     def __init__(self, specs: Iterable[dict[str, Any]]) -> None:
         self.specs = list(specs)
         self._native = _native.ModelBank(_json(self.specs))
+
+    def __repr__(self) -> str:
+        names = ", ".join(repr(s["name"]) for s in self.specs)
+        n_groups = max((len(g) for g in self._native.groups()), default=0)
+        return f"ModelBank([{names}], groups={n_groups}, rows_seen={self.rows_seen()})"
+
+    def rows_seen(self) -> int:
+        """Rows fed so far, over every chunk and group -- skipped rows and
+        dropped groups included, so not the sum of :meth:`groups`."""
+        return self._native.rows_seen()
+
+    def groups(self, spec: str | int | None = None) -> pl.DataFrame:
+        """The groups the bank holds state for: one row per (spec, group).
+
+        ``group`` is the key as a string -- ``""`` for a spec without a
+        ``group`` column, null for rows whose key was null, as in
+        :meth:`solve_failures`. ``rows_processed`` counts the group's rows
+        that the null policy did not skip, and ``last_clock`` is its last
+        clock value (null before the first row, or on a row-count clock).
+        State lives until :meth:`drop_groups` removes it, so this is how a
+        long-running bank finds the groups that have gone quiet::
+
+            stale = bank.groups().filter(pl.col("last_clock") < now - 30 * 86400)
+            bank.drop_groups(stale["group"])
+        """
+        names = self._native.spec_names()
+        per_spec = self._native.groups()
+        if spec is not None:
+            i = self._spec_index(spec)
+            names, per_spec = [names[i]], [per_spec[i]]
+        rows = [
+            (name, key, n, clock)
+            for name, groups in zip(names, per_spec, strict=True)
+            for key, n, clock in groups
+        ]
+        return pl.DataFrame(
+            rows,
+            schema={
+                "spec": pl.String,
+                "group": pl.String,
+                "rows_processed": pl.UInt64,
+                "last_clock": pl.Float64,
+            },
+            orient="row",
+        )
+
+    def drop_groups(self, keys: Iterable[str | None], spec: str | int | None = None) -> int:
+        """Forget the state of these groups, in every spec or in one, and
+        return how many streams were dropped. Keys are as :meth:`groups`
+        reports them. A dropped group starts cold if it appears again, exactly
+        as a never-seen one would; nothing else in the bank changes, and
+        :meth:`rows_seen` still counts the rows it was fed."""
+        index = None if spec is None else self._spec_index(spec)
+        return self._native.drop_groups(list(keys), index)
+
+    def _spec_index(self, spec: str | int) -> int:
+        if isinstance(spec, int):
+            return spec
+        names = self._native.spec_names()
+        if spec not in names:
+            msg = f"no spec named {spec!r}; the bank has {names}"
+            raise KeyError(msg)
+        return names.index(spec)
 
     def fit_predict(self, df: pl.DataFrame) -> pl.DataFrame:
         """One chunk in; the chunk plus one struct column per spec out."""
@@ -116,8 +179,7 @@ class ModelBank:
             )
             raise ModuleNotFoundError(msg) from e
 
-        names = self._native.spec_names()
-        idx = names.index(spec) if isinstance(spec, str) else spec
+        idx = self._spec_index(spec)
         out = []
         for g, instance, k, n_eff, means, como, cross, tw in self._native.gram(idx, group):
             out.append(
@@ -179,5 +241,7 @@ class ModelBank:
     def _wrap(cls, native: Any) -> ModelBank:
         obj = cls.__new__(cls)
         obj._native = native
-        obj.specs = []  # not round-tripped as dicts; the native side holds them
+        # The state file carries the specs; they come back as the same dicts
+        # the builders made.
+        obj.specs = _from_json(native.specs_json())
         return obj

@@ -44,6 +44,24 @@ def _json(spec: dict[str, Any]) -> str:
     return json.dumps(enc(spec, "spec"))
 
 
+def _from_json(text: str) -> Any:
+    """The inverse of :func:`_json`: the ``"inf"`` strings the Rust side writes
+    for infinite numeric parameters become floats again, so a loaded bank's
+    ``specs`` compare equal to the dicts that built it. Only the numeric
+    parameters are touched -- a feature column may be called ``"inf"``."""
+
+    def dec(v: Any, numeric: bool) -> Any:
+        if isinstance(v, dict):
+            return {k: dec(x, k in _NUMERIC_KEYS) for k, x in v.items()}
+        if isinstance(v, list):
+            return [dec(x, numeric) for x in v]
+        if numeric and v in ("inf", "-inf"):
+            return math.inf if v == "inf" else -math.inf
+        return v
+
+    return dec(json.loads(text), False)
+
+
 # The builders' annotations are the contract, and these two functions read
 # them, so a wrong shape is reported by parameter name ("halflife must be a
 # number or a list of numbers, got str '10'") before anything is serialized.
@@ -290,7 +308,7 @@ def ewridge(
     model: dict[str, Any] = {
         "type": "ew_ridge",
         "ridge": ridge,
-        "feature_sets": list(feature_sets.items()) if feature_sets else None,
+        "feature_sets": [[k, list(v)] for k, v in feature_sets.items()] if feature_sets else None,
         "standardize": standardize,
         "ridge_decay": ridge_decay,
         "coef0": coef0,
@@ -300,6 +318,19 @@ def ewridge(
         "max_rows_between_solves": max_rows_between_solves,
     }
     return _common(name, model, targets=targets, features=features, **common)
+
+
+def _numeric_keys() -> frozenset[str]:
+    """Every parameter, across the builders, whose annotation admits a float."""
+    keys = set()
+    for fn in (_common, ewridge, rls, lasso, kalman, huber, quantile, ftrl, ew_cov, sgd, pa, holt):
+        for key, hint in typing.get_type_hints(getattr(fn, "__wrapped__", fn)).items():
+            leaves = {hint, *typing.get_args(hint)}
+            leaves |= {a for h in list(leaves) for a in typing.get_args(h)}
+            leaves |= {a for h in list(leaves) for a in typing.get_args(h)}
+            if float in leaves:
+                keys.add(key)
+    return frozenset(keys)
 
 
 def output_fields(spec: dict[str, Any]) -> list[str]:
@@ -859,3 +890,6 @@ def holt(
         "trend_halflife": trend_halflife,
     }
     return _common(name, model, targets=targets, features=features or [], **common)
+
+
+_NUMERIC_KEYS = _numeric_keys()
