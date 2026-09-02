@@ -381,17 +381,28 @@ values and not just absence of exceptions:
 | **1.28.1 – 1.44.1** | **OK** | **OK** |
 
 Identical numbers everywhere it works, and both failure modes are clean named
-exceptions — no segfault, no silent wrong answer. The floor is
+exceptions — no segfault, no silent wrong answer. The floor of *these two* is
 `PySeries._export`, which pyo3-polars calls and py-polars added in 1.28.1.
 
 So the exact pin was protecting nothing the ABI does not already protect, and
-it blocked resolution for anyone wanting a different polars. Now
-`polars>=1.28.1,<2`. Reproduce with:
+it blocked resolution for anyone wanting a different polars. Reproduce with:
 
 ```sh
 uv venv /tmp/v && uv pip install --python /tmp/v/bin/python --no-deps dist/*.whl
-uv pip install --python /tmp/v/bin/python 'polars==1.28.1'
+uv pip install --python /tmp/v/bin/python 'polars==1.34.0'
 ```
+
+**The declared floor is `polars>=1.34.0,<2`, not 1.28.1 (2026-09-02).** The
+table measured `ModelBank` and the plugin, and those do work from 1.28.1 —
+but `po.run` over a path or a plan reads with `LazyFrame.collect_batches`
+(E32), and so does the streaming query form `lf.online.fit_predict` (E33).
+py-polars added `collect_batches` in **1.34.0**; on 1.28.1–1.33 both fail
+with `AttributeError: 'LazyFrame' object has no attribute 'collect_batches'`
+(24 of 27 runner tests), which the canary — latest polars only — could not
+see. Found while checking E33 against the floor; the floor now says what the
+package needs. The whole suite (1037 tests) passes on 1.34.0, 1.38.1 and
+1.44.1 with identical numbers, and `tests/test_scaffold.py` pins the declared
+floor so a change to either has to change both.
 
 The ceiling is a bet that 1.x keeps the interface, hedged twice: the plugin ABI
 is version-negotiated and refuses to load rather than misbehave, and
@@ -406,13 +417,23 @@ is version-negotiated and refuses to load rather than misbehave, and
   types "are however only provided for convenience and **do not have stability
   guarantees beyond that the latest definitions should work for the latest
   version of Polars**." That is exactly the `PySeries._export` call whose
-  absence sets our 1.28.1 floor.
+  absence sets the 1.28.1 floor of the table.
+- **The IO plugin** (`lf.online.fit_predict`, on
+  `polars.io.plugins.register_io_source`) is a third kind: documented in the
+  user guide, but the function is decorated `@unstable` in polars (a warning
+  only under `POLARS_WARN_UNSTABLE`), and its contract is partly unwritten —
+  polars pushes a projection, a predicate and a slice into a Python source
+  and does not re-apply any of them afterwards, so the source honours all
+  three itself (`python/polars_online/_frame.py`; `tests/test_frame.py`
+  checks every pushdown against the collected frame in both orders). A
+  change in that contract would show as a wrong row count, not a crash —
+  which is why those tests exist and why the canary runs them.
 
-The range stays, because it is measured across 17 releases with identical
+The range stays, because it is measured across the releases with identical
 numbers and the failure mode is a loud `AttributeError` rather than a wrong
 answer — but it is our empirical claim, not Polars'. A `ModelBank` break on a
 new Polars is expected maintenance; check that path before suspecting the
-plugin.
+plugin; check the IO-plugin tests after that.
 
 ### "A frame allocated by one binary and freed by the other"
 

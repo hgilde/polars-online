@@ -83,6 +83,15 @@ def describe_api() -> str:
             w(f"  {name}")
     w("")
 
+    w("[frame namespaces]  # lf.online.<method> -> LazyFrame; df.online.<method> -> DataFrame")
+    for label, frame in (("LazyFrame", pl.LazyFrame()), ("DataFrame", pl.DataFrame())):
+        for name in sorted(dir(frame.online)):
+            if name.startswith("_"):
+                continue
+            sig = inspect.signature(getattr(frame.online, name))
+            w(f"  {label}.online.{name}{sig}")
+    w("")
+
     w("[output field grammar]  # the strings users index the output struct by")
     cases: list[tuple[str, dict]] = [
         ("ewridge minimal", dict(targets=["y"], features=["x0"], halflife=100.0)),

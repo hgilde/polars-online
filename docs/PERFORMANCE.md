@@ -592,6 +592,8 @@ parquet out, `chunk_rows=100k`, 14 threads:
 | `ModelBank` loop, the same | — | 0.73 GB | 0.74 GB |
 | `online` CLI, `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | — | — | 0.15 GB |
 | `po.run` / bank loop, prefetch 1 and pages released | — | — | 0.46 GB / 0.31 GB |
+| **`lf.online.fit_predict`, `sink_parquet(engine="streaming")`** (E33) | 0.90 GB | 1.13 GB | 1.35 GB |
+| the same, pages released / plus prefetch 1 | — | — | 0.78 GB / 0.37 GB |
 
 **The plugin is O(data); nothing else is.** O(data) here means what it says:
 the whole input is resident at once, because polars calls a plugin function
@@ -649,6 +651,26 @@ not measured.
 rows against 0.95 GB at 100k, three chunks in flight being five times
 larger. §10's advice to raise it for group-sorted input is a memory trade,
 which is what the knob was for.
+
+**The fix for the query-shaped trap (E33).** The plugin row above is what a
+user gets for writing the natural thing — a `LazyFrame`, the expression,
+`sink_parquet` — and expecting online processing, and it cannot be fixed in
+the plugin: polars' contract for a user expression is the whole column (or
+elementwise, which is stateless and unordered), and an ordered, stateful
+per-morsel node is something only polars-stream itself can add
+(`AnonymousScan` on the Rust side is `todo!()` in 0.55.2's `lower_ir.rs`).
+What can be fixed is where the bank sits in a plan: `lf.online.fit_predict
+(specs)` registers the bank as a polars **IO-plugin source**
+(`register_io_source`), the kind of node the engine pulls batches from,
+which runs `collect_batches` over the input and `ModelBank.fit_predict` per
+chunk. The last two rows are that: **bit-identical to `po.run`'s output**,
+12M rows in 2.8 s (`po.run` 2.9 s, the bank loop 2.5 s, the plugin 14.4 s),
+and flat — the reported creep is jemalloc's again, 0.78 GB live at 12M rows
+and 0.37 GB with the prefetch at 1 — with the plan's filter, projection and
+`head` pushed into the source and a selection reaching the input scan. The
+engine reads a few morsels ahead of the bank (7 of 100 input batches were
+requested before a `head(10)` stopped the plan) and tears the input query
+down with the plan.
 
 **How it was measured, and why not RSS.** Peak *physical footprint* —
 `proc_pid_rusage(RUSAGE_INFO_V4).ri_phys_footprint`, sampled every 20 ms

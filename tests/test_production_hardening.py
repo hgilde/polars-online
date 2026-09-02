@@ -573,11 +573,24 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
             "bond_id": [f"b{i % 4}" for i in range(n)],
             "group": [f"g{i % 3}" for i in range(n)],
             "session": ["m"] * (n // 2) + ["a"] * (n - n // 2),
+            "venue": ["X", "Y"] * (n // 2),
         }
     )
     common = dict(targets=["y"], features=["x0", "x1"], clock="t", max_dclock=300.0)
-    # The grid the "output field names" section filters on: ridge 0.5, halflife 500.
+    # `spec` as section 2 shows it, and `grid` as the "output field names"
+    # section introduces it (ridge 0.5, halflife 500 are what its blocks filter on).
     spec = po.spec.ewridge(
+        "ridge",
+        targets=["y"],
+        features=["x0", "x1", "x2"],
+        clock="t",
+        halflife=600.0,
+        max_dclock=300.0,
+        group="bond_id",
+        ridge=[1e-6, 0.1],
+        standardize=True,
+    )
+    grid = po.spec.ewridge(
         "m", halflife=[100.0, 500.0], ridge=[1e-6, 0.5], min_periods=5.0, **common
     )
     scored = po.ModelBank(
@@ -588,11 +601,17 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
             ),
         ]
     ).fit_predict(df)
-    graded = po.ModelBank([spec]).fit_predict(df)
+    graded = po.ModelBank([grid]).fit_predict(df)
     out = df.hstack(scored.select("ridge", "kalman")).hstack(graded.select("m"))
     for name in ("ticks.parquet", "today.parquet"):
         df.write_parquet(tmp_path / name)
+    (tmp_path / "ticks").mkdir()  # the `ticks/*.parquet` glob: a stream in two files
+    df[:200].write_parquet(tmp_path / "ticks" / "part-0.parquet")
+    df[200:].write_parquet(tmp_path / "ticks" / "part-1.parquet")
     df.write_csv(tmp_path / "today.csv")
+    fed = po.ModelBank([spec])
+    fed.fit_predict(df)
+    fed.save(tmp_path / "bank.state")  # what section 2's `bank.save` left behind
     (tmp_path / "bank.toml").write_text(
         'input = "ticks.parquet"\noutput = "fitted.parquet"\n\n'
         '[[specs]]\nname = "ridge"\ntargets = ["y"]\nfeatures = ["x0"]\n'
@@ -607,6 +626,7 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
         "today": df,
         "lf": df.lazy(),
         "spec": spec,
+        "grid": grid,
         "bank": po.ModelBank([spec]),
         "out": out,
         "now": float(n),

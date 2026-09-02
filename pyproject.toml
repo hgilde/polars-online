@@ -36,17 +36,20 @@ dependencies = [
     # Interface, so the two are independent, and an exact pin here only blocked
     # dependency resolution for anyone who wanted a different polars.
     #
-    # The floor is measured, not guessed: 1.28.0 and below fail on
-    # `PySeries._export` (added in 1.28.1) with a clean AttributeError, and
-    # 1.26.0 additionally refuses to load the plugin. 1.28.1 through 1.44.1 all
-    # pass both paths with identical numbers. `docs/RELEASE-READINESS.md` has
-    # the matrix and the command to reproduce it.
+    # The floor is measured, not guessed. `ModelBank` and the plugin work from
+    # 1.28.1 (1.28.0 and below fail on `PySeries._export` with a clean
+    # AttributeError, and 1.26.0 additionally refuses to load the plugin);
+    # `po.run` over a path or a plan and `lf.online.fit_predict` read with
+    # `LazyFrame.collect_batches`, which py-polars added in 1.34.0, and that
+    # is the floor. The whole suite passes on 1.34.0, 1.38.1 and 1.44.1 with
+    # identical numbers. `docs/RELEASE-READINESS.md` has the matrix and the
+    # command to reproduce it.
     #
     # The ceiling is a bet that 1.x keeps the interface, hedged two ways: the
     # plugin ABI is version-negotiated and refuses to load rather than
     # misbehave, and `polars-canary.yml` runs the suite against the latest
     # polars weekly.
-    "polars>=1.28.1,<2",
+    "polars>=1.34.0,<2",
 ]
 
 # `gram()` is the only thing that needs numpy, so it is an extra rather than a

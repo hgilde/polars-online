@@ -3,8 +3,11 @@
 Streaming / online regression models for [Polars](https://pola.rs). A Rust core
 exposed three ways with identical numerics:
 
-1. **an expression plugin** — `pl.col("y").online.ewridge(...)`, with `.over(group)`;
-2. **a chunk-fed `ModelBank`** — holds O(state), not O(data);
+1. **an expression plugin** — `pl.col("y").online.ewridge(...)`, with `.over(group)`,
+   for a frame in memory;
+2. **a chunk-fed `ModelBank`** — holds O(state), not O(data) — and, as a plan,
+   **`lf.online.fit_predict(specs)`**: a `LazyFrame` that streams through the
+   bank when it runs, so a query stays O(chunk);
 3. **a streaming runner** — `po.run(...)` or the standalone `online` CLI:
    parquet, ipc, csv or ndjson in and out, config from TOML.
 
@@ -15,12 +18,19 @@ irregular clocks, session breaks, gaps, nulls, and per-group state.
 import polars as pl
 import polars_online as po
 
-df.with_columns(
+df.with_columns(                              # a frame in memory: the expression
     pl.col("ret").online.ewridge(
         features=["signal_a", "signal_b"],
         clock="ts", halflife=600.0, max_dclock=300.0,
     ).over("bond_id")
 )
+
+spec = po.spec.ewridge("ridge", targets=["ret"], features=["signal_a", "signal_b"],
+                       clock="ts", halflife=600.0, max_dclock=300.0, group="bond_id")
+(pl.scan_parquet("ticks/*.parquet")           # a stream: the same bank, as a plan
+   .online.fit_predict([spec])
+   .filter(pl.col("ridge").struct.field("n_eff") > 100)
+   .sink_parquet("fitted.parquet"))           # O(chunk) end to end
 ```
 
 ## Two guarantees
@@ -78,16 +88,18 @@ run in parallel (the inputs travel as one packed struct, which is the polars
 path that spreads groups over threads — see docs/PERFORMANCE.md P5). Grids are
 allowed but produce wide structs; the bank is the better surface for grids.
 
-The plugin is called once with the whole column, so its memory is O(data),
-and `collect(engine="streaming")` does not change that: polars' streaming
-engine has no streaming node for a user expression — a plugin is a
+**This is the in-memory surface.** Polars calls the plugin once with the
+whole column, so its memory is O(data), and putting it in a `LazyFrame` with
+`collect(engine="streaming")` or `sink_parquet` does not change that: the
+streaming engine has no streaming node for a user expression — a plugin is a
 `columnar-function` node, which collects its input, calls once, and re-emits
 (the engine's own `rolling`, `ewm_*` and `cum_*` get dedicated windowed
 nodes; nothing a user writes does). Measured: 2.0 GB at 3M rows, 7.3 GB at
-12M. For data that does not fit, the surfaces are the bank and the runner
-below, which hold O(state): measured flat from 3M to 12M rows, 0.75 GB in
-the CLI and nearly all of it polars' parquet read-ahead (docs/PERFORMANCE.md
-§11, which also explains the number a Python process reports).
+12M, in either engine. For a stream, write the same thing as a plan —
+`lf.online.fit_predict([spec])`, next section — which is the bank as a
+polars source and stays O(chunk): 0.78 GB at 12M rows, and flat
+(docs/PERFORMANCE.md §11, which also explains the number a Python process
+reports).
 
 ### 2. `ModelBank` (chunk-fed)
 
@@ -121,6 +133,38 @@ have gone quiet with:
 stale = bank.groups().filter(pl.col("last_clock") < now - 30 * 86400)
 bank.drop_groups(stale["group"])           # they start cold if they reappear
 ```
+
+**As a plan.** `lf.online.fit_predict(specs)` is the loop above as a
+`LazyFrame`: executing it — `collect()`, `collect_batches()`, `sink_*()` —
+streams the plan's rows through a fresh bank in `chunk_rows` chunks, so a
+query with the bank in it is O(chunk) however long the stream, and what
+comes after the bank is polars' own:
+
+```python
+(
+    pl.scan_parquet("ticks/*.parquet")
+    .filter(pl.col("venue") == "X")                      # before: what the bank learns from
+    .online.fit_predict([spec], chunk_rows=100_000)
+    .filter(pl.col("ridge").struct.field("n_eff") > 100) # after: what comes out
+    .select("ts", "bond_id", "ridge")                    # pushed into the scan: only these
+    .sink_parquet("fitted.parquet")                      #   columns and the specs' are read
+)
+lf.online.predict(bank).collect()          # serve: score against a bank (or a state file)
+lf.online.fit_predict(load_state="bank.state")   # resume from a saved bank
+```
+
+The plan is *pure*: every execution starts from the same state — the specs',
+or `load_state` — so collecting twice gives the same frame, `head(n)` learns
+from the first `n` rows and no more, and nothing is saved; the state after
+the stream is `po.run(save_state=)`'s or your own bank's. Filters, selections
+and `head` after the bank are pushed into the source and honoured there (a
+filter after never changes what the bank learns from — put it before to do
+that), and a selection reaches the input scan. The same numbers as the loop
+and as `po.run`, bit for bit, in either engine, held by `tests/test_frame.py`.
+`df.online.fit_predict(specs)` is the eager twin; `po.fit_predict(frame, ..)`
+and `po.predict(frame, bank)` are both spelled for a type checker, which
+cannot see a registered namespace. Rides on polars' IO-plugin interface
+(`register_io_source`), which polars documents but marks unstable.
 
 ### 3. Streaming runner (Python or CLI)
 
@@ -546,8 +590,9 @@ way: 12.2M rows/s at k=20 over 1000 groups.
 on a 14-thread machine the parquet reader front-loads ~0.7 GB of decoded
 row groups whatever the file's length, and `POLARS_ROW_GROUP_PREFETCH_SIZE=1`
 takes the CLI to 0.15 GB at the same speed. Measured flat from 3M to 12M
-rows in docs/PERFORMANCE.md §11. The expression plugin is the O(data)
-surface.
+rows in docs/PERFORMANCE.md §11, `lf.online.fit_predict` included (0.78 GB
+live at 12M rows, 0.37 GB with the prefetch at 1). The expression plugin is
+the O(data) surface.
 
 Where the time goes, and what to reach for, is in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
@@ -591,14 +636,16 @@ Downloads are cached under `.cache/` and skipped when offline.
 
 | py-polars | rust polars | pyo3-polars | pyo3 | Python |
 |---|---|---|---|---|
-| **>= 1.28.1, < 2** (built and tested against 1.44.1) | 0.55.2 | 0.28 | 0.29 | ≥ 3.12 (`abi3-py312`) |
+| **>= 1.34.0, < 2** (built and tested against 1.44.1) | 0.55.2 | 0.28 | 0.29 | ≥ 3.12 (`abi3-py312`) |
 
 The *Rust* pin is exact and the wheel links it statically; the *runtime*
-requirement is a range, because the two copies of Polars never meet. One wheel
-was tested against 17 py-polars releases: 1.28.1 through 1.44.1 pass both entry
-points with identical numbers, and below that the failure is a clean
-`AttributeError` on `PySeries._export` rather than anything subtle. The matrix
-is in `docs/RELEASE-READINESS.md`.
+requirement is a range, because the two copies of Polars never meet. The floor
+is `LazyFrame.collect_batches`, which `po.run` and `lf.online.fit_predict`
+read with and py-polars added in 1.34.0; the whole suite passes on 1.34.0,
+1.38.1 and 1.44.1 with identical numbers. `ModelBank` and the expression
+plugin alone work from 1.28.1 (tested across 17 releases), and below that the
+failure is a clean `AttributeError` on `PySeries._export` rather than anything
+subtle. The matrix is in `docs/RELEASE-READINESS.md`.
 
 This is stricter than the mechanism strictly requires, and it is worth being
 precise about why, because "pinned" usually implies "fragile" and here it does
@@ -667,19 +714,21 @@ field with the machine values its name encodes, so selection is a filter, not
 string formatting:
 
 ```python
-idx = po.spec.output_index(spec)
+grid = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"], clock="t",
+                       max_dclock=300.0, halflife=[100.0, 500.0], ridge=[1e-6, 0.5])
+idx = po.spec.output_index(grid)
 name = idx.filter(
     (pl.col("kind") == "pred") & (pl.col("target") == "y")
     & (pl.col("ridge") == 0.5) & (pl.col("halflife") == 500.0)
 )["field"].item()          # -> "pred_y__r0.5@h500", resolved for you
-out["m"].struct.field(name)
+po.ModelBank([grid]).fit_predict(df)["m"].struct.field(name)
 ```
 
 `coef_index(spec)` does the same for the flat `coef` list — one row per
 position, mapping it to (target, combo, term):
 
 ```python
-pos = po.spec.coef_index(spec).filter(
+pos = po.spec.coef_index(grid).filter(
     (pl.col("term") == "x1") & (pl.col("ridge") == 0.5)
 )["position"].item()
 ```

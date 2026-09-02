@@ -9,6 +9,23 @@ carries breaking changes.
 
 ### Added
 
+- **`lf.online.fit_predict(specs)` — the bank as a polars source.** A
+  `LazyFrame` in, a `LazyFrame` out: executing it (`collect`,
+  `collect_batches`, `sink_parquet`, …) streams the plan's rows through a
+  fresh `ModelBank` in `chunk_rows` chunks, so a query with the bank in it is
+  O(chunk) in memory — where the expression plugin in the same query is
+  O(data) in either engine, because polars calls a user expression once with
+  its whole column. Bit-identical to `po.run`'s output; 12M rows in 2.8 s at
+  0.78 GB live (the plugin: 14.4 s, 7.3 GB). Filters, selections and `head`
+  after the bank are pushed into the source and honoured there — a filter
+  after never changes what the bank learns from — and a selection reaches
+  the input scan. The plan is pure: every run starts from the specs' state
+  or `load_state`, and nothing is saved. Also `lf.online.predict(bank)` to
+  score against a bank or a state file, the eager twins
+  `df.online.fit_predict(specs)` / `df.online.predict(bank)`, and
+  `po.fit_predict(frame, …)` / `po.predict(frame, bank)` for type checkers.
+  Rides on polars' IO-plugin interface (`register_io_source`), documented
+  but marked unstable by polars (`docs/RELEASE-READINESS.md`).
 - **`ModelBank.predict(df)`** scores a frame against the bank exactly as it
   stands and updates nothing: no clock advance, no decay, `n_eff` frozen. Row
   `i` carries what `fit_predict` would have reported had it been the next row
@@ -59,6 +76,13 @@ carries breaking changes.
 
 ### Changed
 
+- **`polars>=1.34.0,<2`** (was `>=1.28.1`). `po.run` over a path or a plan
+  has read with `LazyFrame.collect_batches` since the runner became
+  format-agnostic, and so does `lf.online.fit_predict`; py-polars added it
+  in 1.34.0, and on 1.28.1–1.33 those calls failed with an `AttributeError`
+  the latest-only canary could not see. The whole suite passes on 1.34.0,
+  1.38.1 and 1.44.1 with identical numbers; `ModelBank` and the expression
+  plugin alone still work from 1.28.1.
 - **`lasso`'s `lam_selected_<target>`** is reported as it stood *before* the
   row — the λ the row was scored with — rather than after the row's error
   joined the selection. A one-row shift in that column, which makes it

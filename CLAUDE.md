@@ -111,10 +111,20 @@ dependencies; `crate-type` is the publisher's choice).
       **do not have stability guarantees** beyond that the latest definitions
       should work for the latest version of Polars."
 
-    `polars>=1.28.1,<2` in `pyproject.toml` is therefore *measured* for both
-    paths but *guaranteed* for neither below the latest — see
-    `docs/RELEASE-READINESS.md`. Treat a `ModelBank` break on a new Polars as
-    expected maintenance, not a surprise, and check that path first.
+    - **IO plugin** (`lf.online.fit_predict(...)`, `polars.io.plugins.register_io_source`)
+      — documented in the user guide but decorated `@unstable` in py-polars:
+      "may be changed at any point without it being considered a breaking
+      change". The bank is the source; polars does not re-apply the
+      projection, predicate or slice it pushes into a Python source, so the
+      source honours all three (`python/polars_online/_frame.py`).
+
+    `polars>=1.34.0,<2` in `pyproject.toml` is therefore *measured* for all
+    three paths but *guaranteed* for none below the latest — see
+    `docs/RELEASE-READINESS.md`. Treat a `ModelBank` or IO-plugin break on a
+    new Polars as expected maintenance, not a surprise, and check those paths
+    first. The floor is `LazyFrame.collect_batches` (py-polars 1.34.0), which
+    `po.run` and the IO plugin read with; `ModelBank` and the expression
+    plugin alone work from 1.28.1.
 
 ## Style
 

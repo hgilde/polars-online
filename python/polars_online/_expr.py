@@ -114,7 +114,14 @@ def _run(spec: dict[str, Any], target_expr: pl.Expr, feature_exprs: list[pl.Expr
 
 @pl.api.register_expr_namespace("online")
 class OnlineNamespace:
-    """Online models over the expression's column as a target."""
+    """Online models over the expression's column as a target.
+
+    For a frame in memory. Polars calls the plugin once with the whole
+    column, in either engine -- its streaming engine collects a user
+    expression's input to do so -- so in a plan the column is O(data). For a
+    stream, ``lf.online.fit_predict(specs)`` is the same bank as a plan that
+    stays O(chunk) (:mod:`polars_online._frame`).
+    """
 
     def __init__(self, expr: pl.Expr) -> None:
         self._expr = expr

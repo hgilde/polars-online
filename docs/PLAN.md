@@ -8,9 +8,11 @@ chosen without data; check them in the evaluation harness (task 12) before relyi
 Online regression models over ordered event data (one stream per group, e.g. per bond),
 usable three ways with identical numerics:
 
-1. **Expression plugin** — `pl.col("y").online.<model>(...)`, in-memory / lazy, with `.over(group)`.
+1. **Expression plugin** — `pl.col("y").online.<model>(...)`, with `.over(group)`, for a
+   frame in memory: polars calls it with the whole column, in either engine (E33).
 2. **Python ModelBank** — chunk-fed, `fit_predict(chunk)` over `LazyFrame.collect_batches()`;
-   memory is O(state), not O(data).
+   memory is O(state), not O(data). Also as a plan: `lf.online.fit_predict(specs)` is the bank
+   registered as a polars IO-plugin source, a `LazyFrame` that streams when it runs (E33).
 3. **Streaming runner** — same bank as a read → fit → write pipeline, memory O(state + chunk):
    `po.run(...)` from Python (any source py-polars can stream, parquet / ipc / csv / ndjson out),
    or the Rust `online` CLI (the same formats, TOML config, no Python) for deployment.
@@ -264,6 +266,29 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       valgrind on CPython is noisy until the suppressions are tuned.
 
 ## 11a. Decisions made while implementing
+
+**The expression form is in-memory; the streaming query form is the bank as a
+source, 2026-09-02 (ENHANCEMENTS E33).** `lf.with_columns(pl.col("y").online
+.ewridge(..)).sink_parquet(..)` collects the whole input in either engine,
+because polars' streaming engine has no ordered, stateful node for a user
+expression — a plugin is a `columnar-function` node (collect, call once,
+re-emit), and the only per-morsel path for user code is elementwise, which
+is unordered. Measured 7.3 GB at 12M rows (`docs/PERFORMANCE.md` §11). That
+cannot be fixed inside the plugin, so it is fixed at the plan level:
+`lf.online.fit_predict(specs)` registers the bank as a polars IO-plugin
+source (`register_io_source`) and returns a `LazyFrame` that streams the
+input through a fresh bank when it runs — O(chunk), bit-identical to
+`po.run`, composing with polars' filters, selections, joins and sinks. Rules
+adopted: the plan is *pure* (a fresh bank per execution, or `load_state`;
+no `bank=` the plan would mutate, no `save_state`); a filter after the bank
+never changes what it learns from; polars does not re-apply the pushdowns
+it hands a Python source, so the source honours projection, predicate and
+slice itself, slice counted before predicate (polars' optimizer order). The
+interface is polars' documented-but-`@unstable` IO plugin (CLAUDE.md rule
+13), and it reads with `LazyFrame.collect_batches` (py-polars 1.34.0), which
+`po.run` already did since E32 — the declared floor moved from 1.28.1 to
+1.34.0 to say so. The Rust API has no twin: polars-stream 0.55.2 lowers
+`AnonymousScan` to `todo!()`; Rust callers use `run(.., Output::Batches)`.
 
 **Clock dtype decision, 2026-08-30.**
 

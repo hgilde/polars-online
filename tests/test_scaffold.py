@@ -21,8 +21,9 @@ def test_schema_version_is_positive() -> None:
 # the dev environment to it.
 BUILT_AGAINST = "1.44.1"
 # Measured floor -- see the note in pyproject.toml and the matrix in
-# docs/RELEASE-READINESS.md.
-SUPPORTED_FLOOR = "1.28.1"
+# docs/RELEASE-READINESS.md. `LazyFrame.collect_batches`, which `po.run` and
+# `lf.online.fit_predict` read with, arrived in 1.34.0.
+SUPPORTED_FLOOR = "1.34.0"
 
 
 def _ver(s: str) -> tuple[int, ...]:
