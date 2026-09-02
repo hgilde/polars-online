@@ -509,6 +509,17 @@ which measured it at +16% for exactly this `k`), the binary through the
 system malloc — and giving the CLI its own would statically link one,
 which rule 12 keeps a decision rather than a tweak.
 
+**What the custom parts are worth.** Asked whether the runner's hand-written
+pieces could go, each was measured against the plain polars call it
+replaces, in the CLI on the interleaved file: the three-stage pipeline
+against C7's one-thread loop, below (1.6–2.7×); `ParquetSink`'s parallel
+page encoding against `BatchedWriter::write_batch` (0.86 s against 1.55 s —
+the serial encode becomes the pace); and `ndjson_write`'s slice-per-thread
+against polars' NDJSON `BatchedWriter`, where the custom part is a 4× win
+under jemalloc (`po.run`: 1.04 s against ~4 s) and a defect under the
+system allocator (the CLI: 4.8–54 s against a steady 4.1 s) — see
+docs/IMPROVEMENTS.md C8 for the diagnosis and the two fixes.
+
 **Before and after.** The C7 runner ran `lf.slice(offset, chunk_rows)
 .collect()` per chunk on the calling thread, re-planning the scan thirty
 times and overlapping nothing. Same machine, same file, same spec, best of

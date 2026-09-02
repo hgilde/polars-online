@@ -9,7 +9,8 @@ to it. Items are numbered by axis: **C** correctness, **P** performance,
 **U** usability, **X** extensibility, **T** testing. Status per item:
 *done*, *proposed*, or *rejected* (with the reason). C6 onward are a second
 pass, made after the first one was closed; C7 was found later, by the E32
-benchmark.
+benchmark, and C8 by asking which of the runner's custom parts earn their
+keep.
 
 Machine for every number: Apple M-series, 10 performance + 4 efficiency
 cores, release build, the same setup as docs/PERFORMANCE.md.
@@ -282,6 +283,62 @@ of the whole frame) and `row_groups_need_not_align_with_chunk_rows` in
 `crates/online-cli/tests/run.rs`, which is the same file in `cargo test`,
 where the debug assertion fires instead of the arrow panic. Both fail with
 the alignment removed.
+
+### C8 — the CLI's NDJSON output is pathological on the system allocator — *proposed*
+
+Found on 2026-09-02 by measuring, one custom part at a time, whether the
+runner's hand-written pieces add anything over polars' plain batched
+writers (the question was whether to simplify them away). Two do, one is a
+defect in the CLI:
+
+| CLI, 3M rows, parquet in, groups interleaved | custom | polars' `write_batch` |
+|---|---:|---:|
+| parquet out (`ParquetSink`, parallel page encoding) | 0.86 s | 1.55 s |
+| ndjson out (`ndjson_write`, a slice per thread) | **4.8 – 54 s** | 4.1 s, steady |
+
+The same NDJSON code through `po.run` on the same file: **1.04 s**, three
+runs within 0.02 s. The CLI runs are bimodal — 1.4, 3.0, 4.8, 7.1, 20.9,
+27.9, 39.6, 54.3 s — and `/usr/bin/time -l` says where the time goes: a
+21 s run is 9 s user and **118 s sys**, a 40 s run 9 s user and **220 s
+sys**, against 9 s user / 11 s sys for a good one. That is the kernel, not
+the code: fourteen threads each growing and freeing multi-megabyte
+buffers per chunk — polars' NDJSON serializer builds its block in a `Vec`
+that doubles up to the slice's size and drops it after each slice — and
+macOS's malloc serves blocks that size straight from `vm_allocate` /
+`vm_deallocate`, one map-lock round trip and a TLB shootdown per call,
+which convoy under contention. jemalloc, which py-polars carries and the
+extension routes through (`PolarsAllocator`, docs/PERFORMANCE.md §6),
+keeps those pages and never makes the calls; the CLI has no allocator of
+its own and runs on the system one. Reusing the runner's own slice buffers
+across chunks was tried and changed nothing (1.4 / 42.6 / 54.3 s): the
+churn that matters is inside polars' serializer. Windows is the other
+deployment target and its heap also hands large blocks to the kernel
+(`VirtualAlloc`), which is why py-polars ships mimalloc there.
+
+Two fixes, and the choice is CLAUDE.md rule 12's, so it is recorded rather
+than made:
+
+1. **Give the CLI an allocator** — what polars' own documentation asks for
+   ("An OLAP query engine does a lot of heap allocations. It is recommended
+   to use a custom allocator, (we have found this to have up to ~25% runtime
+   influence). JeMalloc and Mimalloc ... show a significant performance gain
+   in runtime as well as memory usage", `polars/src/lib.rs`), and what
+   py-polars does (jemalloc on unix, mimalloc on Windows). One
+   `#[global_allocator]` line in `online-cli/src/main.rs`, no change to
+   `online-core` or `online-polars`. It is a C library statically linked
+   through a `-sys` crate (`mimalloc` is the one that builds on both
+   targets), which is exactly what rule 12 says to raise first. It would
+   also close the 15% bank gap between the CLI and `po.run` measured in
+   docs/PERFORMANCE.md §10.
+2. **Serialize NDJSON on one thread in the CLI** (`Ndjson` through polars'
+   `BatchedWriter` as the other formats are): steady 4.1 s, no new link, and
+   the CLI's NDJSON stays 4× slower than `po.run`'s. Making that a
+   per-caller switch is another special case; making it the only path
+   costs `po.run` the same 4×.
+
+Until one is chosen the CLI's `.ndjson` output is correct but can take ten
+times longer than the same run through `po.run` on macOS; parquet, ipc and
+csv are unaffected, and `po.run` is unaffected in every format.
 
 ## 2. Performance
 
