@@ -603,6 +603,7 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
         "np": np,
         "po": po,
         "df": df,
+        "today": df,
         "lf": df.lazy(),
         "spec": spec,
         "bank": po.ModelBank([spec]),

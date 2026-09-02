@@ -23,6 +23,9 @@ pub trait OnlineModel {
     /// `y[j] = None` => predict-only for target j, update the others.
     /// `d_clock` is the already-capped/gap-adjusted clock delta; `weight` scales the row.
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step;
+    /// The step without the step: what `step` would report for this row, state untouched
+    /// (`pred`, `n_eff`, `extra` identical row by row; `tests/model_contract.rs`).
+    fn predict(&self, x: &[f64], d_clock: f64) -> Step;
     fn state(&self) -> State;            // versioned, serializable
     fn restore(s: &State) -> Result<Self, StateError>;
     fn n_targets(&self) -> usize;
@@ -31,8 +34,8 @@ pub trait OnlineModel {
 
 pub struct Step {
     pub pred: Vec<f64>,                  // per target; NaN when not ready
-    pub coef: Option<Vec<Vec<f64>>>,     // per target, only on coef_every rows / last row of chunk
-    pub n_eff: f64,
+    pub n_eff: f64,                      // coefficients come from `coefficients()`, read by the
+                                         // stream layer on coef_every rows / last row of chunk
     pub extra: Option<Extra>,            // model-specific (lasso path, lam_selected, ...)
 }
 ```
@@ -112,7 +115,9 @@ Coordinate descent on standardized `S`, `r_j` over `lasso_path: list[float]` (de
 warm-started along the path and across solves. Returns:
 - full path coefficients every `coef_every` rows,
 - `lam_selected_j`: argmin over the path of an EW of squared out-of-sample error (halflife
-  `select_halflife`, default = model halflife) — free, since preds for all λ are computed anyway,
+  `select_halflife`, default = model halflife) — free, since preds for all λ are computed anyway.
+  Reported as it stood *before* the row's error joined the selection, i.e. the λ the row was
+  scored with; that is what makes it identical between `fit_predict` and `predict` (E31),
 - `pred_j` / `resid_j` from the selected λ.
 Elastic net via `l1_ratio` **[validate]** — cheap to add, may not be needed.
 
@@ -150,8 +155,11 @@ with the same clock as everything else. Output `pred` is a probability; `resid =
   handling) and errors loudly otherwise.
 - `state()` / `save(path)` / `load(path)`: msgpack (`rmp-serde`) with header
   `{schema_version, package_version, spec}`; loading checks the spec matches.
-- Python: `ModelBank(specs).fit_predict(df) -> df` (appends struct columns); Rust CLI reads the
-  same specs from TOML.
+- Python: `ModelBank(specs).fit_predict(df) -> df` (appends struct columns) and
+  `predict(df) -> df`, the same columns scored against the bank as it stands with nothing
+  updated — every row from the same state, the clock distance measured from the last learned
+  row, session/clock reset policies honored by scoring a fresh model (ENHANCEMENTS E31); Rust
+  CLI reads the same specs from TOML.
 
 ## 6. Expression plugin (`online-py`)
 
@@ -472,7 +480,11 @@ which found its `holt` example refused by its own validation (T5, U6), and
 what made the documented `coef.list.get(position)` raise (U7), and the
 scoring path documented at last -- `weight = 0` freezes the fit bit for bit
 where a null target quietly degrades it, at the cost of an `n_eff` that keeps
-decaying while you score (U8, ENHANCEMENTS E31).
+decaying while you score (U8, ENHANCEMENTS E31). E31 itself followed
+(2026-09-02): `ModelBank.predict(df)`, `po.run(predict=True)` and the CLI's
+`--predict` score against the bank as it stands and move nothing, built on
+an `OnlineModel::predict` that every model implements and derives its own
+`step`'s prediction from, so the two cannot drift.
 The rest is proposed with its measurements next to it.
 
 ## 12. Open questions (not blocking)

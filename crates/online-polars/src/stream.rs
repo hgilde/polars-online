@@ -70,6 +70,11 @@ impl AnyModel {
         dispatch!(self, m => m.step(x, y, d_clock, weight))
     }
 
+    /// The step's answer without the step ([`OnlineModel::predict`]).
+    pub fn predict(&self, x: &[f64], d_clock: f64) -> online_core::Step {
+        dispatch!(self, m => m.predict(x, d_clock))
+    }
+
     /// Cumulative count of jittered or failed factorizations (docs/PLAN.md §7).
     /// Models that do not factorize (rls, kalman, ftrl) report 0.
     pub fn solve_failures(&self) -> u64 {
@@ -923,7 +928,17 @@ impl Stream {
         // `min_periods` is read by every instance; move it out so the split
         // below can borrow the rest of `self` mutably.
         let min_periods = std::mem::take(&mut self.min_periods);
-        let mut insts = self.split_instances(spec, out, n_rows);
+        let models = self.models.iter_mut().map(|(_, m)| ModelRef::Learn(m));
+        let diag = Diagnostics {
+            resid_var: &mut self.resid_var,
+            resid_w: &mut self.resid_w,
+            drift: &mut self.drift,
+            resid_q: &mut self.resid_q,
+            autocorr: &mut self.autocorr,
+            metrics: &mut self.metrics,
+            scratch: &mut self.scratch,
+        };
+        let mut insts = build_instances(spec, models, &self.decays, diag, out, n_rows);
         if coupled && insts.len() > 1 {
             for pi in 0..plans.len() {
                 let mut seen = false;
@@ -937,6 +952,7 @@ impl Stream {
                         targets,
                         &min_periods,
                         false,
+                        true,
                     );
                 }
                 if seen {
@@ -948,91 +964,328 @@ impl Stream {
             // Only reached when instances are independent, which (given
             // `coupled` above) means `drift_action` is not "reset".
             insts.par_iter_mut().for_each(|inst| {
-                run_instance(inst, &plans, features, targets, &min_periods, false);
+                run_instance(inst, &plans, features, targets, &min_periods, false, true);
             });
         } else if let Some(inst) = insts.first_mut() {
             // One instance: a drift reset has nothing to coordinate with, so
             // it resets itself inline at the row that fired.
-            run_instance(inst, &plans, features, targets, &min_periods, drift_resets);
+            run_instance(
+                inst,
+                &plans,
+                features,
+                targets,
+                &min_periods,
+                drift_resets,
+                true,
+            );
         }
         drop(insts);
         self.min_periods = min_periods;
         Ok(())
     }
 
-    /// Split per-instance state and output into disjoint pieces, so instances
-    /// can run concurrently. Every `ChunkOut` buffer is laid out model-major,
-    /// which is what makes an instance's region one contiguous slice; the
-    /// state vectors are already `[mi]`-indexed.
-    fn split_instances<'a>(
-        &'a mut self,
-        spec: &'a Spec,
-        out: &'a mut ChunkOut,
-        n_rows: usize,
-    ) -> Vec<Instance<'a>> {
-        let n = self.models.len();
-        let block = out.n_slots * n_rows;
-        let n_targets = if n == 0 || n_rows == 0 || out.lam_selected.is_empty() {
-            0
-        } else {
-            out.lam_selected.len() / (n * n_rows)
-        };
+    /// Score this stream's rows of one chunk against the state as it stands
+    /// (docs/ENHANCEMENTS.md E31): every output [`Self::process_chunk`]
+    /// would write for the row as the stream's next accepted row, and no
+    /// update -- not to the models, the clock, the diagnostics or
+    /// `rows_seen`. Row order is immaterial, since every row is scored from
+    /// the same state; the clock distance each prediction extrapolates over
+    /// is the row's own distance from the last learned row, with the cap,
+    /// the pending time of skipped rows and the session policy applied as
+    /// the learning path would apply them.
+    ///
+    /// The session and clock policies hold too, because they are part of
+    /// what "the next row" means: a row that would start a fresh stream
+    /// (`session_gap = "reset"`, `on_clock_reset = "reset_state"`) is scored
+    /// by a fresh one -- null throughout, as it would be -- a row that would
+    /// blend toward the long run (`session_shrink`) is scored by a blended
+    /// copy, and a backwards clock under `on_clock_reset = "error"` is the
+    /// same error, naming the row. The scoring for each of the three is the
+    /// one [`run_instance`], with its updates switched off.
+    ///
+    /// Per field: `pred` and `lam_selected` as the model would report;
+    /// `resid` where the row carries a usable target; `sigma`, `resid_z`,
+    /// the residual quantiles, autocorrelation and metrics from the
+    /// diagnostics as they stand; `n_eff` frozen; `coef` on the last
+    /// accepted row of the chunk (the same coefficients score every row);
+    /// `drift` never fires. A weight column is not read. `&self`, so a
+    /// stream can be scored from several threads at once.
+    #[allow(clippy::too_many_arguments)]
+    pub fn predict_chunk(
+        &self,
+        spec: &Spec,
+        cfg: &online_core::ClockCfg,
+        features: &[Vec<f64>],
+        targets: &[Vec<f64>],
+        clock: Option<&[f64]>,
+        session: Option<&[u64]>,
+        idx: &[usize],
+        out: &mut ChunkOut,
+    ) -> Result<(), (f64, usize)> {
+        let n_rows = idx.len();
+        out.rows.extend_from_slice(idx);
+        // Three classes of row, by what the clock says the row would do to
+        // the state it is scored against: nothing, reset it, or blend it.
+        let mut classes: [Vec<RowPlan>; 3] = Default::default();
+        let [as_is, fresh, blended] = [0, 1, 2];
+        // (class, position in it) of the last accepted row, which carries
+        // the coefficients for the chunk.
+        let mut last_accepted: Option<(usize, usize)> = None;
+        for (ri, &i) in idx.iter().enumerate() {
+            let accept = features.iter().all(|f| usable(f[i]));
+            // Every row is the first after the last learned one.
+            let adv =
+                self.clock
+                    .clone()
+                    .advance(cfg, clock.map(|c| c[i]), session.map(|s| s[i]), true);
+            if let Some(raw) = adv.backwards {
+                return Err((raw, i));
+            }
+            if accept {
+                out.processed[ri] = true;
+            }
+            let plan = RowPlan {
+                ri,
+                i,
+                d_clock: adv.d_clock,
+                reset: false,
+                blend: false,
+                accept,
+                want_coef: false,
+                w: 1.0,
+            };
+            let class = if adv.reset {
+                fresh
+            } else if adv.session_changed {
+                blended
+            } else {
+                as_is
+            };
+            classes[class].push(plan);
+            if accept {
+                last_accepted = Some((class, classes[class].len() - 1));
+            }
+        }
+        if let Some((class, at)) = last_accepted {
+            classes[class][at].want_coef = true;
+        }
 
-        let mut drift = self.drift.iter_mut();
-        let mut resid_q = self.resid_q.iter_mut();
-        let mut autocorr = self.autocorr.iter_mut();
-        let mut metrics = self.metrics.iter_mut();
-        let mut o_pred = out.pred.chunks_mut(block.max(1));
-        let mut o_resid = out.resid.chunks_mut(block.max(1));
-        let mut o_sigma = out.sigma.chunks_mut(block.max(1));
-        let mut o_resid_z = out.resid_z.chunks_mut(block.max(1));
-        let mut o_autocorr = out.autocorr.chunks_mut(block.max(1));
-        let mut o_metrics = out.metrics.chunks_mut((3 * block).max(1));
-        let mut o_resid_q = out.resid_q.chunks_mut((out.n_levels * block).max(1));
-        let mut o_drift = out.drift.chunks_mut(block.max(1));
-        let mut o_n_eff = out.n_eff.chunks_mut(n_rows.max(1));
-        let mut o_lam = out.lam_selected.chunks_mut((n_targets * n_rows).max(1));
-        let mut o_coef = out.coef.iter_mut();
-
-        let n_slots = out.n_slots;
-        let mut models = self.models.iter_mut();
-        let mut decays = self.decays.iter();
-        let mut resid_var = self.resid_var.iter_mut();
-        let mut resid_w = self.resid_w.iter_mut();
-        let mut scratch = self.scratch.iter_mut();
-
-        // Pulled in lockstep: each iterator yields disjoint `&mut`s, so every
-        // Instance owns its own piece of everything.
-        (0..n)
-            .enumerate()
-            .map(|(mi, _)| Instance {
+        self.score(
+            spec,
+            &classes[as_is],
+            &self.models,
+            features,
+            targets,
+            out,
+            n_rows,
+        );
+        if !classes[fresh].is_empty() {
+            let stream = Stream::new(spec).expect("spec was already validated");
+            stream.score(
                 spec,
-                mi,
-                model: &mut models.next().expect("one per instance").1,
-                decay: *decays.next().expect("one per instance"),
-                resid_var: resid_var.next().expect("one per instance"),
-                resid_w: resid_w.next().expect("one per instance"),
-                drift: drift.next(),
-                resid_q: resid_q.next(),
-                autocorr: autocorr.next(),
-                metrics: metrics.next(),
-                scratch: scratch.next().expect("one per instance"),
-                n_slots,
+                &classes[fresh],
+                &stream.models,
+                features,
+                targets,
+                out,
                 n_rows,
-                o_pred: o_pred.next().unwrap_or_default(),
-                o_resid: o_resid.next().unwrap_or_default(),
-                o_sigma: o_sigma.next().unwrap_or_default(),
-                o_resid_z: o_resid_z.next().unwrap_or_default(),
-                o_autocorr: o_autocorr.next().unwrap_or_default(),
-                o_metrics: o_metrics.next().unwrap_or_default(),
-                o_resid_q: o_resid_q.next().unwrap_or_default(),
-                o_drift: o_drift.next().unwrap_or_default(),
-                o_n_eff: o_n_eff.next().unwrap_or_default(),
-                o_lam: o_lam.next().unwrap_or_default(),
-                o_coef: o_coef.next().expect("one per instance"),
-            })
-            .collect()
+            );
+        }
+        if !classes[blended].is_empty() {
+            let mut models = self.models.clone();
+            models
+                .iter_mut()
+                .for_each(|(_, m)| m.blend_toward_long_run());
+            self.score(
+                spec,
+                &classes[blended],
+                &models,
+                features,
+                targets,
+                out,
+                n_rows,
+            );
+        }
+        Ok(())
     }
+
+    /// Run these plans through every instance with `learn = false`, scoring
+    /// with `models` (this stream's own, or a variant of them) against this
+    /// stream's diagnostics.
+    #[allow(clippy::too_many_arguments)]
+    fn score(
+        &self,
+        spec: &Spec,
+        plans: &[RowPlan],
+        models: &[(String, AnyModel)],
+        features: &[Vec<f64>],
+        targets: &[Vec<f64>],
+        out: &mut ChunkOut,
+        n_rows: usize,
+    ) {
+        if plans.is_empty() {
+            return;
+        }
+        // The diagnostics are read, never written, on this path; a copy is
+        // how a `&self` stream lends them to the same `run_instance` that
+        // updates them when learning. They are per-slot summaries, so the
+        // copy is a few hundred bytes per instance.
+        let n = self.models.len();
+        let (mut resid_var, mut resid_w) = (self.resid_var.clone(), self.resid_w.clone());
+        let (mut drift, mut resid_q) = (self.drift.clone(), self.resid_q.clone());
+        let (mut autocorr, mut metrics) = (self.autocorr.clone(), self.metrics.clone());
+        let mut scratch: Vec<Scratch> = (0..n).map(|_| Scratch::default()).collect();
+        let diag = Diagnostics {
+            resid_var: &mut resid_var,
+            resid_w: &mut resid_w,
+            drift: &mut drift,
+            resid_q: &mut resid_q,
+            autocorr: &mut autocorr,
+            metrics: &mut metrics,
+            scratch: &mut scratch,
+        };
+        let models = models.iter().map(|(_, m)| ModelRef::Score(m));
+        let mut insts = build_instances(spec, models, &self.decays, diag, out, n_rows);
+        if insts.len() > 1 {
+            use rayon::prelude::*;
+            insts.par_iter_mut().for_each(|inst| {
+                run_instance(
+                    inst,
+                    plans,
+                    features,
+                    targets,
+                    &self.min_periods,
+                    false,
+                    false,
+                );
+            });
+        } else if let Some(inst) = insts.first_mut() {
+            run_instance(
+                inst,
+                plans,
+                features,
+                targets,
+                &self.min_periods,
+                false,
+                false,
+            );
+        }
+    }
+}
+
+/// How an instance reaches its model: exclusively, to learn, or shared, to
+/// score. [`Stream::predict_chunk`] runs on `&Stream`, so it can only hand
+/// out the latter -- which is what lets a bank be scored from several
+/// threads at once.
+enum ModelRef<'a> {
+    Learn(&'a mut AnyModel),
+    Score(&'a AnyModel),
+}
+
+impl ModelRef<'_> {
+    fn get(&self) -> &AnyModel {
+        match self {
+            ModelRef::Learn(m) => m,
+            ModelRef::Score(m) => m,
+        }
+    }
+
+    /// Only a learning instance is ever stepped, blended or reset; the
+    /// scoring plans never ask for any of the three.
+    fn get_mut(&mut self) -> &mut AnyModel {
+        match self {
+            ModelRef::Learn(m) => m,
+            ModelRef::Score(_) => unreachable!("a scoring instance never updates its model"),
+        }
+    }
+}
+
+/// Everything an instance touches besides its model and its output slice,
+/// split per instance below. `process_chunk` lends the stream's own;
+/// `predict_chunk` lends a copy it drops afterwards.
+struct Diagnostics<'a> {
+    resid_var: &'a mut [Vec<f64>],
+    resid_w: &'a mut [Vec<f64>],
+    drift: &'a mut [Vec<PageHinkley>],
+    resid_q: &'a mut [Vec<Vec<P2Quantile>>],
+    autocorr: &'a mut [Vec<EwAutoCorr>],
+    metrics: &'a mut [Vec<SlotMetrics>],
+    scratch: &'a mut [Scratch],
+}
+
+/// Split per-instance state and output into disjoint pieces, so instances
+/// can run concurrently. Every `ChunkOut` buffer is laid out model-major,
+/// which is what makes an instance's region one contiguous slice; the
+/// state vectors are already `[mi]`-indexed.
+fn build_instances<'a>(
+    spec: &'a Spec,
+    models: impl Iterator<Item = ModelRef<'a>>,
+    decays: &[Decay],
+    diag: Diagnostics<'a>,
+    out: &'a mut ChunkOut,
+    n_rows: usize,
+) -> Vec<Instance<'a>> {
+    let n = decays.len();
+    let block = out.n_slots * n_rows;
+    let n_targets = if n == 0 || n_rows == 0 || out.lam_selected.is_empty() {
+        0
+    } else {
+        out.lam_selected.len() / (n * n_rows)
+    };
+
+    let mut drift = diag.drift.iter_mut();
+    let mut resid_q = diag.resid_q.iter_mut();
+    let mut autocorr = diag.autocorr.iter_mut();
+    let mut metrics = diag.metrics.iter_mut();
+    let mut o_pred = out.pred.chunks_mut(block.max(1));
+    let mut o_resid = out.resid.chunks_mut(block.max(1));
+    let mut o_sigma = out.sigma.chunks_mut(block.max(1));
+    let mut o_resid_z = out.resid_z.chunks_mut(block.max(1));
+    let mut o_autocorr = out.autocorr.chunks_mut(block.max(1));
+    let mut o_metrics = out.metrics.chunks_mut((3 * block).max(1));
+    let mut o_resid_q = out.resid_q.chunks_mut((out.n_levels * block).max(1));
+    let mut o_drift = out.drift.chunks_mut(block.max(1));
+    let mut o_n_eff = out.n_eff.chunks_mut(n_rows.max(1));
+    let mut o_lam = out.lam_selected.chunks_mut((n_targets * n_rows).max(1));
+    let mut o_coef = out.coef.iter_mut();
+
+    let n_slots = out.n_slots;
+    let mut decays = decays.iter();
+    let mut resid_var = diag.resid_var.iter_mut();
+    let mut resid_w = diag.resid_w.iter_mut();
+    let mut scratch = diag.scratch.iter_mut();
+
+    // Pulled in lockstep: each iterator yields disjoint `&mut`s, so every
+    // Instance owns its own piece of everything.
+    models
+        .enumerate()
+        .map(|(mi, model)| Instance {
+            spec,
+            mi,
+            model,
+            decay: *decays.next().expect("one per instance"),
+            resid_var: resid_var.next().expect("one per instance"),
+            resid_w: resid_w.next().expect("one per instance"),
+            drift: drift.next(),
+            resid_q: resid_q.next(),
+            autocorr: autocorr.next(),
+            metrics: metrics.next(),
+            scratch: scratch.next().expect("one per instance"),
+            n_slots,
+            n_rows,
+            o_pred: o_pred.next().unwrap_or_default(),
+            o_resid: o_resid.next().unwrap_or_default(),
+            o_sigma: o_sigma.next().unwrap_or_default(),
+            o_resid_z: o_resid_z.next().unwrap_or_default(),
+            o_autocorr: o_autocorr.next().unwrap_or_default(),
+            o_metrics: o_metrics.next().unwrap_or_default(),
+            o_resid_q: o_resid_q.next().unwrap_or_default(),
+            o_drift: o_drift.next().unwrap_or_default(),
+            o_n_eff: o_n_eff.next().unwrap_or_default(),
+            o_lam: o_lam.next().unwrap_or_default(),
+            o_coef: o_coef.next().expect("one per instance"),
+        })
+        .collect()
 }
 
 /// What pass 1 decided about one row, so pass 2 can replay it per instance
@@ -1067,7 +1320,7 @@ struct Instance<'a> {
     /// description of a pristine model, and `mi` picks this one out of it.
     spec: &'a Spec,
     mi: usize,
-    model: &'a mut AnyModel,
+    model: ModelRef<'a>,
     decay: Decay,
     resid_var: &'a mut Vec<f64>,
     resid_w: &'a mut Vec<f64>,
@@ -1096,7 +1349,7 @@ impl Instance<'_> {
     /// does, applied to one instance rather than the whole stream.
     fn reset(&mut self) {
         let spec = self.spec;
-        *self.model = build_models(spec)
+        *self.model.get_mut() = build_models(spec)
             .expect("spec was already validated")
             .swap_remove(self.mi)
             .1;
@@ -1129,7 +1382,12 @@ impl Instance<'_> {
 ///
 /// This is the whole per-row arithmetic, and the only copy of it: the parallel
 /// path calls it once per instance with every row, the drift-coupled path once
-/// per instance per row.
+/// per instance per row, and [`Stream::predict_chunk`] with `learn = false`,
+/// which reads every state the row would be scored against and writes none
+/// of them back. Scoring is the learning path with its updates switched off
+/// rather than a second loop, so the two cannot drift apart
+/// (docs/ENHANCEMENTS.md E31).
+#[allow(clippy::too_many_arguments)]
 fn run_instance(
     inst: &mut Instance<'_>,
     plans: &[RowPlan],
@@ -1140,6 +1398,7 @@ fn run_instance(
     // *at the row that fired*, not at the end of the chunk, or the rest of the
     // chunk keeps learning from the regime the detector just rejected.
     reset_on_drift: bool,
+    learn: bool,
 ) -> bool {
     let mut drift_seen = false;
     let n_rows = inst.n_rows;
@@ -1150,7 +1409,7 @@ fn run_instance(
         } else if plan.blend {
             // A gentler alternative to resetting: revert partway toward the
             // long-run relationship (ENHANCEMENTS E6).
-            inst.model.blend_toward_long_run();
+            inst.model.get_mut().blend_toward_long_run();
         }
         if !plan.accept {
             continue;
@@ -1164,7 +1423,11 @@ fn run_instance(
             .extend(targets.iter().map(|t| Some(t[i]).filter(|f| usable(*f))));
         let m_targets = sc.ys.len();
 
-        let mut step = inst.model.step(&sc.xs, &sc.ys, plan.d_clock, w);
+        let mut step = if learn {
+            inst.model.get_mut().step(&sc.xs, &sc.ys, plan.d_clock, w)
+        } else {
+            inst.model.get().predict(&sc.xs, plan.d_clock)
+        };
         let n_slots = step.pred.len();
         // `ew_cov` has no targets; its slots are statistics, so every one
         // maps to "target 0" for the warmup check.
@@ -1204,6 +1467,9 @@ fn run_instance(
                     sc.zs[slot] = rv / sd;
                 }
             }
+            if !learn {
+                continue;
+            }
             if rv.is_finite() {
                 let w_new = lam * inst.resid_w[slot] + w;
                 if w_new > 0.0 {
@@ -1233,7 +1499,7 @@ fn run_instance(
         // std, so `drift_delta` means the same thing whatever the target's
         // units. Rows with no residual are skipped, not treated as zero error.
         let mut row_drift = false;
-        if let Some(dets) = inst.drift.as_deref_mut() {
+        if let (true, Some(dets)) = (learn, inst.drift.as_deref_mut()) {
             for (slot, &rv) in sc.r.iter().enumerate() {
                 let scale = sc.sig[slot];
                 if rv.is_finite() && scale.is_finite() && scale > 0.0 {
@@ -1251,7 +1517,7 @@ fn run_instance(
             for (slot, per_level) in ests.iter_mut().enumerate() {
                 for (li, est) in per_level.iter_mut().enumerate() {
                     inst.o_resid_q[li * block + slot * n_rows + ri] = est.get().unwrap_or(f64::NAN);
-                    if sc.r[slot].is_finite() {
+                    if learn && sc.r[slot].is_finite() {
                         est.update(sc.r[slot].abs());
                     }
                 }
@@ -1260,7 +1526,7 @@ fn run_instance(
         if let Some(ests) = inst.autocorr.as_deref_mut() {
             for (slot, est) in ests.iter_mut().enumerate() {
                 inst.o_autocorr[slot * n_rows + ri] = est.get().unwrap_or(f64::NAN);
-                if sc.r[slot].is_finite() {
+                if learn && sc.r[slot].is_finite() {
                     est.update(sc.r[slot], lam);
                 }
             }
@@ -1274,8 +1540,10 @@ fn run_instance(
                 inst.o_metrics[at] = met.ic().unwrap_or(f64::NAN);
                 inst.o_metrics[block + at] = met.r2().unwrap_or(f64::NAN);
                 inst.o_metrics[2 * block + at] = met.hit_rate().unwrap_or(f64::NAN);
-                let yj = sc.ys.get(slot / nc).copied().flatten().unwrap_or(f64::NAN);
-                met.update(step.pred[slot], yj, lam, w);
+                if learn {
+                    let yj = sc.ys.get(slot / nc).copied().flatten().unwrap_or(f64::NAN);
+                    met.update(step.pred[slot], yj, lam, w);
+                }
             }
         }
 
@@ -1293,6 +1561,7 @@ fn run_instance(
             // warmup rows instead of returning null (IMPROVEMENTS U7).
             inst.o_coef[ri] = inst
                 .model
+                .get()
                 .coefficients()
                 .map(|c| c.into_iter().flatten().collect());
         }

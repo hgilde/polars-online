@@ -23,6 +23,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{Extra, ModelState, OnlineModel, State, StateError, Step, check_schema};
+use crate::solve::dot_aug;
 use crate::{Decay, EwCov};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -311,20 +312,11 @@ impl OnlineModel for Lasso {
         }
 
         // ---- predict every path point (state before the update) ----
-        let n_eff = self.cov.n_eff();
-        let ready = n_eff >= self.cfg.min_periods && self.beta.is_some();
-        let mut pred = vec![f64::NAN; m * np];
-        if ready {
-            let beta = self.beta.as_ref().unwrap();
-            for j in 0..m {
-                if self.wj[j] > 0.0 {
-                    for li in 0..np {
-                        pred[j * np + li] =
-                            self.zbuf.iter().zip(&beta[j][li]).map(|(z, b)| z * b).sum();
-                    }
-                }
-            }
-        }
+        // `lam_selected` is read here too: the selection as it stood coming
+        // into this row, like everything else a `Step` reports, so pairing it
+        // with this row's `pred_<lambda>` slots is an out-of-sample choice.
+        let out = self.predict(x, d_clock);
+        let pred = &out.pred;
 
         // ---- lambda selection: EW mean squared OOS error, free from preds ----
         let sel_lam = match self.cfg.select_halflife {
@@ -387,10 +379,24 @@ impl OnlineModel for Lasso {
         if due {
             self.solve();
         }
+        out
+    }
 
+    fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
+        let (m, np) = (self.cfg.n_targets, self.cfg.n_lambdas());
+        let n_eff = self.cov.n_eff();
+        let mut pred = vec![f64::NAN; m * np];
+        if let (true, Some(beta)) = (n_eff >= self.cfg.min_periods, &self.beta) {
+            for j in 0..m {
+                if self.wj[j] > 0.0 {
+                    for li in 0..np {
+                        pred[j * np + li] = dot_aug(&beta[j][li], x, self.cfg.add_intercept);
+                    }
+                }
+            }
+        }
         Step {
             pred,
-            coef: None,
             n_eff,
             extra: Some(Extra::Lasso {
                 lam_selected: self.lam_selected(),

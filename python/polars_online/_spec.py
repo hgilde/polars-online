@@ -502,7 +502,9 @@ def lasso(
     Selection is free: predictions for every path point are computed anyway, so
     ``lam_selected_<target>`` is the argmin over the path of an EW mean squared
     out-of-sample error with halflife ``select_halflife`` (default: the model
-    halflife). Outputs carry one pred/resid pair per path point.
+    halflife), reported as it stood before the row -- the lambda this row was
+    scored with, not the one its own error then elected. Outputs carry one
+    pred/resid pair per path point.
     """
     model: dict[str, Any] = {
         "type": "lasso",

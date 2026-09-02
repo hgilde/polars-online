@@ -7,6 +7,36 @@ carries breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`ModelBank.predict(df)`** scores a frame against the bank exactly as it
+  stands and updates nothing: no clock advance, no decay, `n_eff` frozen. Row
+  `i` carries what `fit_predict` would have reported had it been the next row
+  of the stream — the same fields, the same values — every row scored from the
+  same state, with the clock distance measured from the last row the bank
+  learned from. The target column is optional (then `resid` is null), `weight`
+  is not read, unknown groups score null, and the stream's session and clock
+  policies still hold. Concurrent `predict` calls are fine; a `fit_predict`
+  racing one is refused. Also from the runner, as `po.run(predict=True)`, the
+  TOML key `predict = true`, and the CLI flag `--predict` — each needs a
+  loaded state and refuses `save_state` (the keyword and the flag drop a
+  config's own `save_state`, so one TOML serves both the learning and the
+  scoring run). Roughly twice the throughput of `fit_predict`.
+- **`OnlineModel::predict`** (Rust, `online-core`): the step without the
+  step, implemented by every model and held to `predict == step` row by row
+  in `tests/model_contract.rs`.
+
+### Changed
+
+- **`lasso`'s `lam_selected_<target>`** is reported as it stood *before* the
+  row — the λ the row was scored with — rather than after the row's error
+  joined the selection. A one-row shift in that column, which makes it
+  identical between `fit_predict` and `predict`.
+- **`Step.coef`** (Rust) is gone: it was never `Some`; coefficients are read
+  through `coefficients()`.
+- The busy-bank message now says the bank "is in use on another thread" and
+  that concurrent `predict` calls are fine.
+
 ### Documented
 
 - **How to score without learning**: give the rows weight `0`, which freezes

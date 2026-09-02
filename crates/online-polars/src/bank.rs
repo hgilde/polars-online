@@ -157,7 +157,12 @@ fn key_column(df: &DataFrame, spec: &Spec, role: &str, name: &str) -> PolarsResu
         })
 }
 
-fn extract(df: &DataFrame, spec: &Spec) -> PolarsResult<SpecColumns> {
+/// `scoring` is [`Bank::predict`]'s reading of the frame: the features and
+/// the clock are required as ever, a target or session column is read when
+/// present and taken as absent otherwise, and the weight column is not read
+/// at all -- a scoring row has nothing to weigh.
+fn extract(df: &DataFrame, spec: &Spec, scoring: bool) -> PolarsResult<SpecColumns> {
+    let optional = |name: &str| scoring && df.get_column_index(name).is_none();
     let features = spec
         .features
         .iter()
@@ -166,7 +171,13 @@ fn extract(df: &DataFrame, spec: &Spec) -> PolarsResult<SpecColumns> {
     let targets = spec
         .targets
         .iter()
-        .map(|c| f64_column(df, spec, "target", c))
+        .map(|c| {
+            if optional(c) {
+                Ok(vec![f64::NAN; df.height()])
+            } else {
+                f64_column(df, spec, "target", c)
+            }
+        })
         .collect::<PolarsResult<Vec<_>>>()?;
     let clock = match &spec.clock {
         Some(c) => {
@@ -205,13 +216,14 @@ fn extract(df: &DataFrame, spec: &Spec) -> PolarsResult<SpecColumns> {
         None => None,
     };
     let session = match &spec.session {
-        Some(c) => {
+        Some(c) if !optional(c) => {
             let s = key_column(df, spec, "session", c)?;
             Some(s.str()?.iter().map(session_hash).collect())
         }
-        None => None,
+        _ => None,
     };
     let weight = match &spec.weight {
+        Some(_) if scoring => None,
         Some(c) => {
             let v = f64_column(df, spec, "weight", c)?;
             // A negative weight is never meaningful for a weighted mean, and
@@ -578,17 +590,10 @@ impl Bank {
         Ok(out)
     }
 
-    /// Run every spec over one chunk; returns one struct column per spec.
-    /// Chunks must arrive in stream order within each group.
-    pub fn fit_predict(&mut self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
-        // Section timings to stderr when ONLINE_TIMING is set; costs one env
-        // read per chunk. This is how docs/PERFORMANCE.md's numbers are made.
-        let timing = std::env::var_os("ONLINE_TIMING").is_some();
-        let t0 = std::time::Instant::now();
-        let n = df.height();
-        // Outputs are attached with `with_column`, which replaces a column of
-        // the same name, so a spec named like an input would silently eat the
-        // input (the Python bank and the CLI runner both attach that way).
+    /// Outputs are attached with `with_column`, which replaces a column of
+    /// the same name, so a spec named like an input would silently eat the
+    /// input (the Python bank and the CLI runner both attach that way).
+    fn refuse_name_clash(&self, df: &DataFrame) -> PolarsResult<()> {
         if let Some(spec) = self
             .specs
             .iter()
@@ -600,12 +605,24 @@ impl Bank {
                 spec.name
             );
         }
+        Ok(())
+    }
+
+    /// Run every spec over one chunk; returns one struct column per spec.
+    /// Chunks must arrive in stream order within each group.
+    pub fn fit_predict(&mut self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
+        // Section timings to stderr when ONLINE_TIMING is set; costs one env
+        // read per chunk. This is how docs/PERFORMANCE.md's numbers are made.
+        let timing = std::env::var_os("ONLINE_TIMING").is_some();
+        let t0 = std::time::Instant::now();
+        let n = df.height();
+        self.refuse_name_clash(df)?;
         // Independent per spec, and each is a full pass over its columns, so
         // they run in parallel with each other (docs/PERFORMANCE.md P3).
         let cols: Vec<SpecColumns> = self
             .specs
             .par_iter()
-            .map(|s| extract(df, s))
+            .map(|s| extract(df, s, false))
             .collect::<PolarsResult<_>>()?;
         let t_extract = t0.elapsed();
         let t1 = std::time::Instant::now();
@@ -719,6 +736,76 @@ impl Bank {
         }
         self.rows_fed += n as u64;
         Ok(out)
+    }
+
+    /// Score one chunk against the bank as it stands, learning nothing
+    /// (docs/ENHANCEMENTS.md E31): for every row, the struct
+    /// [`Self::fit_predict`] would produce for it as the next row of its
+    /// group's stream. The bank is not touched -- not the models, the clocks,
+    /// the diagnostics or the row counts -- so the call is `&self` and any
+    /// number of them can run at once, and row order does not matter.
+    ///
+    /// The frame needs each spec's feature and clock columns. A target
+    /// column is optional and yields `resid` where present; the session
+    /// column is optional and feeds `session_gap`; a weight column is not
+    /// read. Rows of a group the bank has never seen are null throughout,
+    /// like a skipped row. Per field, see [`Stream::predict_chunk`].
+    pub fn predict(&self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
+        let n = df.height();
+        self.refuse_name_clash(df)?;
+        let cols: Vec<SpecColumns> = self
+            .specs
+            .par_iter()
+            .map(|s| extract(df, s, true))
+            .collect::<PolarsResult<_>>()?;
+        let groups: Vec<Vec<(GroupKey, Vec<usize>)>> = self
+            .specs
+            .par_iter()
+            .map(|s| group_indices(df, s))
+            .collect::<PolarsResult<_>>()?;
+
+        let specs = &self.specs;
+        let cfgs = &self.clock_cfgs;
+        let mut work: Vec<(usize, &Vec<usize>, &Stream)> = Vec::new();
+        for (si, hm) in self.states.iter().enumerate() {
+            for (key, idx) in &groups[si] {
+                if let Some(stream) = hm.get(key) {
+                    work.push((si, idx, stream));
+                }
+            }
+        }
+        work.sort_by_key(|(_, idx, _)| std::cmp::Reverse(idx.len()));
+        let done: Vec<(usize, ChunkOut)> = work
+            .into_par_iter()
+            .map(|(si, idx, stream)| {
+                let spec = &specs[si];
+                let sc = &cols[si];
+                let mut out = ChunkOut::new(spec, stream.n_models(), stream.n_slots(), idx.len());
+                stream
+                    .predict_chunk(
+                        spec,
+                        &cfgs[si],
+                        &sc.features,
+                        &sc.targets,
+                        sc.clock.as_deref(),
+                        sc.session.as_deref(),
+                        idx,
+                        &mut out,
+                    )
+                    .map_err(|(raw, i)| backwards_clock(spec, raw, i))?;
+                Ok((si, out))
+            })
+            .collect::<PolarsResult<_>>()?;
+        let mut per_spec_rows: Vec<Vec<ChunkOut>> = (0..specs.len()).map(|_| Vec::new()).collect();
+        for (si, out) in done {
+            per_spec_rows[si].push(out);
+        }
+        specs
+            .par_iter()
+            .zip(self.derived.par_iter())
+            .zip(per_spec_rows.par_iter())
+            .map(|((spec, d), rows)| assemble(spec, d, n, rows))
+            .collect()
     }
 
     pub fn save_bytes(&self) -> Result<Vec<u8>, String> {

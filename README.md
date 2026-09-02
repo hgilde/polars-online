@@ -94,6 +94,7 @@ for chunk in lf.collect_batches():        # never materializes the whole stream
 
 bank.save("bank.state")                    # atomic: temp file, then rename
 bank = po.ModelBank.load("bank.state", specs=[spec])
+scored = bank.predict(today)               # serve: score, learn nothing, the bank does not move
 ```
 
 A bank says what it holds: `repr(bank)` is `ModelBank(['ridge'], groups=412,
@@ -119,6 +120,8 @@ po.run(
 )                                    # -> {"rows": ..., "chunks": ...}
 
 po.run("bank.toml", input="today.parquet")   # keywords override the config
+po.run(input="today.parquet", output="scored.parquet", specs=[spec],
+       load_state="bank.state", predict=True)  # serve: score against the state, learn nothing
 ```
 
 or from the CLI:
@@ -136,8 +139,12 @@ input = "C:/data/in.parquet"      # forward slashes are fine on Windows
 ```sh
 online --config examples/bank.toml
 online --config examples/bank.toml --resume bank.state --save-state bank.state
+online --config examples/bank.toml --resume bank.state --predict --input today.parquet
 online --config examples/bank.toml --dry-run     # validate + print the output schema
 ```
+
+`--predict` scores against the resumed state and learns nothing; one TOML
+serves both runs, since the flag drops the config's `save_state`.
 
 ## Diagnostics and selection
 
@@ -227,21 +234,40 @@ sentinels like `f64::MAX` never reach a model, and every model is tested to
 keep a finite state and go on learning through anything below that bound
 (`docs/IMPROVEMENTS.md` C2).
 
-**Scoring without learning.** Give the rows weight `0`: predictions come out,
-nothing is learned, and because the accumulators are exponentially weighted
-*means*, decaying them and adding nothing leaves them exactly where they were
-— the coefficients are frozen bit for bit. A **null target is not the same
-thing**: the feature-side moments still update while the target's cross-moment
-does not, so the two halves of the fit end up estimated over different windows
-and the coefficients wander with feature noise (measured: 2.00 → 2.39 over 100
-scored rows at a halflife of 20). Use a null target for a label that has not
-arrived yet, and weight `0` to score.
+**Scoring without learning.** `bank.predict(df)` scores every row against
+the bank exactly as it stands and touches nothing: no clock advance, no decay,
+`n_eff` frozen, so a fit is served for as long as it stays good. Row `i`
+carries what `fit_predict` would have reported had it been the next row of
+the stream — the same `pred`, `n_eff`, `sigma`, `resid_z`, selection and
+metrics, field for field — and every row is scored from that same state, with
+the clock distance measured from the last row the bank learned from (`holt`
+extrapolates over it, capped by `max_dclock`). The target column may be
+absent, in which case `resid` is null; `weight` is not read; a group the bank
+has never seen scores null; `coef` lands on each group's last accepted row.
+The stream's session and clock policies still hold: a row that would reset
+the stream (`session_gap="reset"`, `on_clock_reset="reset_state"`) scores as
+a fresh model — null — and a backwards clock under `"error"` raises the same
+error. From the runner it is `po.run(..., load_state=..., predict=True)`, from
+the CLI `--predict`. It is also the faster path — nothing is updated, so
+`ewridge` scores at 1.8× (`k=5`) to 2.9× (`k=20`) its learning throughput.
 
-One consequence to plan for: a zero-weight row still advances the clock, so
-`n_eff` keeps decaying while you score. Score for several halflives and it can
-fall below `min_periods`, at which point the outputs go null even though the
-fit behind them is perfectly good — `min_periods` is baked into the saved
-state, so choose it with the scoring tail in mind.
+Inside a `fit_predict` stream there are two other ways to withhold learning,
+and they differ. Give the rows weight `0` and the coefficients are frozen bit
+for bit, because the accumulators are exponentially weighted *means* and
+decaying them and adding nothing leaves them exactly where they were. A
+**null target is not the same thing**: the feature-side moments still update
+while the target's cross-moment does not, so the two halves of the fit end up
+estimated over different windows and the coefficients wander with feature
+noise (measured: 2.00 → 2.39 over 100 scored rows at a halflife of 20). Use a
+null target for a label that has not arrived yet, weight `0` to hold a row's
+place in the stream, and `predict` to serve.
+
+One consequence of weight `0` to plan for: a zero-weight row still advances
+the clock, so `n_eff` keeps decaying while you score. Score for several
+halflives and it can fall below `min_periods`, at which point the outputs go
+null even though the fit behind them is perfectly good — `min_periods` is
+baked into the saved state, so choose it with the scoring tail in mind, or
+serve with `predict`, which has no tail.
 
 **Mistakes are named.** A builder checks each keyword against its own type
 hints, so `halflife="10"` says `spec "m": halflife must be a number or a list
@@ -306,7 +332,9 @@ and across solves:
 
 `l1_ratio < 1` gives elastic net. Because predictions for every path point are
 computed anyway, `lam_selected_<target>` — the argmin over the path of an EW
-mean squared **out-of-sample** error — costs nothing extra.
+mean squared **out-of-sample** error — costs nothing extra. It is reported as
+it stood *before* the row, like every other output: the λ this row was scored
+with, not the one its own error then elected.
 
 ### `kalman` — random-walk-β dynamic linear model
 

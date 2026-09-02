@@ -535,18 +535,22 @@ impl EwCovModel {
 
 impl crate::OnlineModel for EwCovModel {
     fn step(&mut self, x: &[f64], _y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
-        let n_eff = self.cov.n_eff();
         // Statistics are read before this row is folded in, so an `ew_cov`
         // column is usable as a feature for the same row without leaking it.
+        let out = self.predict(x, d_clock);
+        self.cov.update(x, self.cfg.decay.factor(d_clock), weight);
+        out
+    }
+
+    fn predict(&self, _x: &[f64], _d_clock: f64) -> crate::Step {
+        let n_eff = self.cov.n_eff();
         let pred = if n_eff >= self.cfg.min_periods {
             self.read()
         } else {
             vec![f64::NAN; self.cfg.n_outputs()]
         };
-        self.cov.update(x, self.cfg.decay.factor(d_clock), weight);
         crate::Step {
             pred,
-            coef: None,
             n_eff,
             extra: None,
         }

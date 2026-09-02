@@ -285,6 +285,23 @@ impl Kalman {
             .collect()
     }
 
+    /// `[1, x]` standardized against the stats as they stand, as `step`
+    /// fills `zs` before its own update.
+    fn standardized(&self, x: &[f64]) -> Vec<f64> {
+        let off = usize::from(self.cfg.add_intercept);
+        let s = self.scales();
+        (0..self.cfg.k_total())
+            .map(|i| {
+                let raw = if i < off { 1.0 } else { x[i - off] };
+                if !self.cfg.standardize || i < off {
+                    raw
+                } else {
+                    (raw - self.cov.mean(i)) / s[i]
+                }
+            })
+            .collect()
+    }
+
     fn ensure_buffers(&mut self) {
         let k = self.cfg.k_total();
         if self.zbuf.len() != k {
@@ -426,7 +443,25 @@ impl OnlineModel for Kalman {
 
         Step {
             pred,
-            coef: None,
+            n_eff,
+            extra: None,
+        }
+    }
+
+    fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
+        let m = self.cfg.n_targets;
+        let n_eff = self.cov.n_eff();
+        let mut pred = vec![f64::NAN; m];
+        if n_eff >= self.cfg.min_periods {
+            let zs = self.standardized(x);
+            for (j, p) in pred.iter_mut().enumerate() {
+                if self.wj[j] > 0.0 {
+                    *p = zs.iter().zip(&self.beta[j]).map(|(z, b)| z * b).sum();
+                }
+            }
+        }
+        Step {
+            pred,
             n_eff,
             extra: None,
         }

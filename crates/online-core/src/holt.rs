@@ -145,7 +145,23 @@ impl OnlineModel for Holt {
 
         Step {
             pred,
-            coef: None,
+            n_eff,
+            extra: None,
+        }
+    }
+
+    fn predict(&self, _x: &[f64], d_clock: f64) -> Step {
+        let n_eff = self.w_sum;
+        let mut pred = vec![f64::NAN; self.cfg.n_targets];
+        if n_eff >= self.cfg.min_periods {
+            for (j, p) in pred.iter_mut().enumerate() {
+                if self.seen[j] {
+                    *p = self.level[j] + self.trend[j] * d_clock;
+                }
+            }
+        }
+        Step {
+            pred,
             n_eff,
             extra: None,
         }

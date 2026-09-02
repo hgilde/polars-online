@@ -398,7 +398,7 @@ def test_concurrent_fit_predict_says_so():
     assert errors, "four threads never overlapped; make the chunk bigger"
     for e in errors:
         assert isinstance(e, RuntimeError), e
-        assert "running fit_predict on another thread" in str(e), str(e)
+        assert "in use on another thread" in str(e), str(e)
         assert "one ordered stream" in str(e)
     # The bank is intact: the winners' rows are counted, nothing else happened.
     assert bank.fit_predict(df.head(10)).height == 10

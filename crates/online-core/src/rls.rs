@@ -46,6 +46,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Decay;
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
+use crate::solve::dot_aug;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RlsCfg {
@@ -311,7 +312,6 @@ impl OnlineModel for Rls {
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         self.ensure_buffers();
         let k = self.cfg.k_total();
-        let m = self.cfg.n_targets;
         let lam = self.cfg.decay.factor(d_clock);
 
         if self.cfg.add_intercept {
@@ -322,14 +322,7 @@ impl OnlineModel for Rls {
         }
 
         // ---- predict (state before the update) ----
-        let n_eff = self.w_sum;
-        let ready = n_eff >= self.cfg.min_periods && self.seen;
-        let mut pred = vec![f64::NAN; m];
-        if ready {
-            for (p, beta) in pred.iter_mut().zip(&self.beta) {
-                *p = self.zbuf.iter().zip(beta).map(|(z, b)| z * b).sum();
-            }
-        }
+        let out = self.predict(x, d_clock);
 
         // ---- decay ----
         // A <- lam A, b <- lam b  =>  R <- sqrt(lam) R, u <- sqrt(lam) u. The
@@ -395,10 +388,19 @@ impl OnlineModel for Rls {
             self.solve();
             self.seen = true;
         }
+        out
+    }
 
+    fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
+        let n_eff = self.w_sum;
+        let mut pred = vec![f64::NAN; self.cfg.n_targets];
+        if n_eff >= self.cfg.min_periods && self.seen {
+            for (p, beta) in pred.iter_mut().zip(&self.beta) {
+                *p = dot_aug(beta, x, self.cfg.add_intercept);
+            }
+        }
         Step {
             pred,
-            coef: None,
             n_eff,
             extra: None,
         }

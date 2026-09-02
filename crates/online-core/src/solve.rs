@@ -33,9 +33,35 @@ pub fn solve_spd(a: &[f64], b: &[f64], k: usize, m: usize) -> Option<(Vec<f64>, 
     None
 }
 
+/// `beta · [1, x]` when `add_intercept`, else `beta · x`, summed left to
+/// right from zero -- the order every model's `step` uses on its augmented
+/// row buffer, so a `predict` built on this is bit-for-bit the step's own
+/// prediction.
+pub(crate) fn dot_aug(beta: &[f64], x: &[f64], add_intercept: bool) -> f64 {
+    let (mut acc, slopes) = if add_intercept {
+        (beta[0], &beta[1..])
+    } else {
+        (0.0, beta)
+    };
+    for (b, xi) in slopes.iter().zip(x) {
+        acc += xi * b;
+    }
+    acc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dot_aug_matches_the_augmented_row() {
+        let beta = [0.5, 2.0, -1.0];
+        let x = [3.0, 4.0];
+        let z = [1.0, 3.0, 4.0];
+        let by_hand: f64 = z.iter().zip(&beta).map(|(z, b)| z * b).sum();
+        assert_eq!(dot_aug(&beta, &x, true), by_hand);
+        assert_eq!(dot_aug(&beta[1..], &x, false), 2.0 * 3.0 - 4.0);
+    }
 
     #[test]
     fn solves_well_conditioned() {

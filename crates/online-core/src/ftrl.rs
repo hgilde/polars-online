@@ -146,13 +146,17 @@ impl Ftrl {
 
     #[inline]
     fn weight(&self, j: usize, i: usize) -> f64 {
-        let zz = self.zz[j][i];
+        self.weight_of(self.zz[j][i], self.n[j][i])
+    }
+
+    /// The proximal weight for one accumulator pair `(z, n)` -- the closed
+    /// form of the FTRL-Proximal update, shared by `step` and `predict`.
+    fn weight_of(&self, zz: f64, n: f64) -> f64 {
         if zz.abs() <= self.cfg.l1 {
             0.0
         } else {
             let sgn = if zz < 0.0 { -1.0 } else { 1.0 };
-            -(zz - sgn * self.cfg.l1)
-                / ((self.cfg.beta + self.n[j][i].sqrt()) / self.cfg.alpha + self.cfg.l2)
+            -(zz - sgn * self.cfg.l1) / ((self.cfg.beta + n.sqrt()) / self.cfg.alpha + self.cfg.l2)
         }
     }
 
@@ -243,7 +247,37 @@ impl OnlineModel for Ftrl {
 
         Step {
             pred,
-            coef: None,
+            n_eff,
+            extra: None,
+        }
+    }
+
+    fn predict(&self, x: &[f64], d_clock: f64) -> Step {
+        let lam = self.cfg.decay.factor(d_clock);
+        let n_eff = self.w_sum;
+        let m = self.cfg.n_targets;
+        let mut pred = vec![f64::NAN; m];
+        if n_eff >= self.cfg.min_periods {
+            let k = self.cfg.k_total();
+            let off = usize::from(self.cfg.add_intercept);
+            for (j, p) in pred.iter_mut().enumerate() {
+                // The proximal weights `step` would derive after decaying the
+                // accumulators by this row's clock, computed without storing
+                // the decay.
+                let raw: f64 = (0..k)
+                    .map(|i| {
+                        let z = if i < off { 1.0 } else { x[i - off] };
+                        z * self.weight_of(self.zz[j][i] * lam, self.n[j][i] * lam)
+                    })
+                    .sum();
+                *p = match self.cfg.loss {
+                    FtrlLoss::Logistic => sigmoid(raw),
+                    FtrlLoss::Squared => raw,
+                };
+            }
+        }
+        Step {
+            pred,
             n_eff,
             extra: None,
         }

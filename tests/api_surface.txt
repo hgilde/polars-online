@@ -170,6 +170,7 @@
   load
   load_bytes
   output_fields
+  predict
   rows_seen
   save
   save_bytes

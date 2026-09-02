@@ -26,6 +26,7 @@ def run(
     chunk_rows: int | None = None,
     load_state: str | Path | None = None,
     save_state: str | Path | None = None,
+    predict: bool | None = None,
 ) -> dict[str, int]:
     """Stream a parquet file through a model bank, writing parquet out.
 
@@ -38,6 +39,13 @@ def run(
     Returns ``{"rows": ..., "chunks": ...}``. Chunking never changes the
     numbers -- it only trades memory for overhead -- so ``chunk_rows`` is purely
     a resource knob.
+
+    ``predict=True`` scores instead of learning: every row gets what the bank
+    loaded from ``load_state`` predicts for it as it stands
+    (:meth:`ModelBank.predict`), and the bank is not updated -- so it needs
+    ``load_state`` and refuses ``save_state``. One TOML can serve both runs:
+    the keyword drops the config's ``save_state``, which belongs to the
+    learning run, unless ``save_state=`` is passed alongside it.
     """
     if isinstance(config, (str, Path)):
         cfg = tomllib.loads(Path(config).read_text())
@@ -53,10 +61,13 @@ def run(
         "chunk_rows": chunk_rows,
         "load_state": load_state,
         "save_state": save_state,
+        "predict": predict,
     }
     for key, value in overrides.items():
         if value is not None:
             cfg[key] = value
+    if predict and save_state is None:
+        cfg.pop("save_state", None)
 
     for key in ("input", "output", "load_state", "save_state"):
         if cfg.get(key) is not None:

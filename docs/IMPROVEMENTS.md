@@ -345,7 +345,7 @@ Collected from the probes, before and after:
 | String target column | no error; every prediction null | `spec "m": target column "s" has dtype str; it must be numeric (cast it, e.g. pl.col("s").cast(pl.Float64))` |
 | List column as group key | `cannot cast List type (inner: 'Float64', to: 'String')` | `spec "m": group column "l" has dtype list[f64], which cannot be used as a key: ...` |
 | spec named like an input column | no error; the input column silently replaced | `spec "y" has the same name as an input column; the output struct would replace it. Rename the spec.` |
-| two threads calling `fit_predict` | `RuntimeError: Already borrowed` | `RuntimeError: ModelBank.fit_predict: the bank is running fit_predict on another thread; a bank is one ordered stream ...` |
+| two threads calling `fit_predict` | `RuntimeError: Already borrowed` | `RuntimeError: ModelBank.fit_predict: the bank is in use on another thread; a bank is one ordered stream ...` |
 | `np.float64` / `np.int64` parameters | `Object of type float64 is not JSON serializable` | accepted |
 
 What was done, and where each message comes from:
@@ -474,11 +474,14 @@ changed (34 of the 100 rows, in the measurement). `min_periods` is baked into
 the saved state, so a deployment cannot lower it for a scoring pass; it has to
 be chosen with the scoring tail in mind.
 
-README documents all three. A state-free `predict(df)` is recorded as
-`docs/ENHANCEMENTS.md` E31 rather than built: `holt` and `kalman` legitimately
-extrapolate with elapsed time, so "as of when" is a parameter of such a call
-and not an omission. `TestScoringWithoutLearning` pins the frozen
-coefficients, the drift, and the decay.
+README documents all three. A state-free `predict(df)` was recorded as
+`docs/ENHANCEMENTS.md` E31 rather than built here, because `holt` and
+`kalman` legitimately extrapolate with elapsed time, so "as of when" is a
+parameter of such a call and not an omission; it has since been built with
+that parameter answered (the clock distance from the last learned row) and
+is the recommended way to serve — see E31. `TestScoringWithoutLearning`
+still pins the frozen coefficients, the drift, and the decay of the
+in-stream route.
 
 ### U7 — `coef` said "nothing yet" in two different spellings — *done*
 

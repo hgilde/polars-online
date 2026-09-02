@@ -10,8 +10,6 @@ use crate::{MIN_SCHEMA_VERSION, SCHEMA_VERSION};
 pub struct Step {
     /// Per output slot (targets, or targets x grid combos); NaN when not ready.
     pub pred: Vec<f64>,
-    /// Per output slot, only on `coef_every` rows / the last row of a chunk.
-    pub coef: Option<Vec<Vec<f64>>>,
     /// EW count of observations (with the model's decay).
     pub n_eff: f64,
     /// Model-specific extras.
@@ -142,7 +140,7 @@ pub const INPUT_BOUND: f64 = 1e100;
 ///     n_targets: 1,
 ///     level_halflife: 2.0,
 ///     trend_halflife: 4.0,
-///     min_periods: 3.0,
+///     min_periods: 2.0,
 /// })?;
 /// for t in 0..60 {
 ///     model.step(&[], &[Some(t as f64)], 1.0, 1.0);
@@ -158,10 +156,28 @@ pub const INPUT_BOUND: f64 = 1e100;
 /// let before = model.coefficients();
 /// model.step(&[], &[Some(1e9)], 1.0, 0.0);
 /// assert_eq!(model.coefficients(), before);
+///
+/// // `predict` is the step's answer without the step: the forecast three
+/// // clock units past the last learned row (level 59, trend 1), and nothing
+/// // -- not even the clock -- has moved.
+/// let ahead = model.predict(&[], 3.0);
+/// assert!((ahead.pred[0] - 62.0).abs() < 1e-3);
+/// assert_eq!(model.predict(&[], 3.0), ahead);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub trait OnlineModel: Sized {
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step;
+    /// The [`Step`] that [`Self::step`] would return for this row, without
+    /// the update: the same `pred`, the same `n_eff`, the same `extra`, and
+    /// the state untouched. `d_clock` is the clock elapsed since the last
+    /// learned row -- a trend model (`holt`) extrapolates over it and a
+    /// proximal model (`ftrl`) sees its accumulators decayed by it; the
+    /// coefficient models ignore it, since decay alone never moves a mean.
+    ///
+    /// `tests/model_contract.rs` holds every model to the equality
+    /// `predict(x, d) == step(x, y, d, w)` on `pred`, `n_eff` and `extra`,
+    /// row by row (docs/ENHANCEMENTS.md E31).
+    fn predict(&self, x: &[f64], d_clock: f64) -> Step;
     fn state(&self) -> State;
     fn restore(s: &State) -> Result<Self, StateError>;
     fn n_targets(&self) -> usize;

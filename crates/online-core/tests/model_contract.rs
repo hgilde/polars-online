@@ -786,3 +786,198 @@ fn ew_cov_recovers_from_bounded_extremes() {
         Recovery::Twin(1e-9),
     );
 }
+
+// ---------------------------------------------------------------------------
+// `predict` is the step without the step (docs/ENHANCEMENTS.md E31).
+// ---------------------------------------------------------------------------
+
+/// Equal slot by slot, with NaN equal to NaN: the "not ready" marker has to
+/// agree too.
+fn same_step(kind: &str, i: usize, p: &Step, s: &Step) {
+    assert_eq!(p.pred.len(), s.pred.len(), "{kind}: slot count at row {i}");
+    for (slot, (a, b)) in p.pred.iter().zip(&s.pred).enumerate() {
+        assert!(
+            a == b || (a.is_nan() && b.is_nan()),
+            "{kind}: slot {slot} at row {i}: predict said {a}, step said {b}"
+        );
+    }
+    assert!(
+        p.n_eff == s.n_eff,
+        "{kind}: n_eff at row {i}: predict said {}, step said {}",
+        p.n_eff,
+        s.n_eff
+    );
+    assert_eq!(p.extra, s.extra, "{kind}: extra at row {i}");
+}
+
+/// Over a stream with missing targets, zero-weight rows, uneven weights and
+/// clock gaps, `predict(x, d)` called before each `step(x, y, d, w)` must
+/// return exactly what the step returns -- the same numbers, not close ones --
+/// and, being `&self`, it cannot have moved the state. That equality is the
+/// whole definition of `predict`; a model that computes its prediction any
+/// other way in one of the two places fails here.
+fn predict_is_the_step_without_the_step<M: OnlineModel>(
+    build: impl Fn() -> M,
+    targets: usize,
+    binary: bool,
+) {
+    let mut m = build();
+    let kind = m.state().model.kind();
+    let mut s = 20260902u64;
+    let mut ready = 0usize;
+    for i in 0..400 {
+        let x: Vec<f64> = (0..K).map(|_| lcg(&mut s) * 3.0).collect();
+        let y: Vec<Option<f64>> = (0..targets)
+            .map(|j| {
+                if lcg(&mut s) > 0.8 {
+                    return None;
+                }
+                let lin = 0.5 * (j as f64 + 1.0) + x[0] - 0.5 * x[1] + 0.1 * lcg(&mut s);
+                Some(if binary { f64::from(lin > 0.5) } else { lin })
+            })
+            .collect();
+        let u = lcg(&mut s);
+        let w = if u < -0.9 {
+            0.0
+        } else if u < -0.5 {
+            0.5
+        } else if u > 0.7 {
+            2.0
+        } else {
+            1.0
+        };
+        let d = match (i, lcg(&mut s)) {
+            (0, _) => 0.0,
+            (_, v) if v > 0.95 => 25.0,
+            (_, v) if v > 0.8 => 3.0,
+            _ => 1.0,
+        };
+        let p = m.predict(&x, d);
+        let step = m.step(&x, &y, d, w);
+        same_step(kind, i, &p, &step);
+        if step.pred.iter().all(|v| v.is_finite()) {
+            ready += 1;
+        }
+    }
+    // The stream must actually have exercised the ready path, or the test
+    // would pass on NaN == NaN alone.
+    assert!(
+        ready > 300,
+        "{kind}: only {ready} rows had every slot ready"
+    );
+}
+
+#[test]
+fn ew_ridge_predict_is_the_step() {
+    predict_is_the_step_without_the_step(|| EwRidge::new(ew_ridge_cfg()).unwrap(), 2, false);
+    let mut cfg = ew_ridge_cfg();
+    cfg.standardize = true;
+    cfg.session_shrink = Some(0.5);
+    cfg.long_halflife = Some(4.0 * HALFLIFE);
+    predict_is_the_step_without_the_step(move || EwRidge::new(cfg.clone()).unwrap(), 2, false);
+    // A lazily refreshed solve: both read the cached coefficients.
+    let mut cfg = ew_ridge_cfg();
+    cfg.solve_every = 5.0;
+    cfg.max_rows_between_solves = 10_000;
+    predict_is_the_step_without_the_step(move || EwRidge::new(cfg.clone()).unwrap(), 2, false);
+}
+
+#[test]
+fn rls_predict_is_the_step() {
+    predict_is_the_step_without_the_step(|| Rls::new(rls_cfg()).unwrap(), 2, false);
+}
+
+#[test]
+fn lasso_predict_is_the_step() {
+    predict_is_the_step_without_the_step(|| Lasso::new(lasso_cfg()).unwrap(), 1, false);
+    // With a selection halflife `lam_selected` moves; `extra` must match too.
+    let mut cfg = lasso_cfg();
+    cfg.lasso_path = vec![1.0, 0.1, 0.01, 0.0];
+    cfg.select_halflife = Some(HALFLIFE);
+    predict_is_the_step_without_the_step(move || Lasso::new(cfg.clone()).unwrap(), 1, false);
+}
+
+#[test]
+fn kalman_predict_is_the_step() {
+    for standardize in [true, false] {
+        let mut cfg = kalman_cfg();
+        cfg.standardize = standardize;
+        predict_is_the_step_without_the_step(move || Kalman::new(cfg.clone()).unwrap(), 2, false);
+    }
+}
+
+#[test]
+fn robust_predict_is_the_step() {
+    for loss in ROBUST_LOSSES {
+        for standardize in [false, true] {
+            let mut cfg = robust_cfg(loss);
+            cfg.standardize = standardize;
+            predict_is_the_step_without_the_step(
+                move || Robust::new(cfg.clone()).unwrap(),
+                2,
+                false,
+            );
+        }
+    }
+}
+
+#[test]
+fn ftrl_predict_is_the_step() {
+    // `l1 > 0` so some proximal weights sit at exactly zero.
+    let mut cfg = ftrl_cfg();
+    cfg.l1 = 0.05;
+    predict_is_the_step_without_the_step(move || Ftrl::new(cfg.clone()).unwrap(), 2, false);
+    let mut cfg = ftrl_cfg();
+    cfg.loss = FtrlLoss::Logistic;
+    predict_is_the_step_without_the_step(move || Ftrl::new(cfg.clone()).unwrap(), 2, true);
+}
+
+#[test]
+fn sgd_predict_is_the_step() {
+    for scale_features in [false, true] {
+        let mut cfg = sgd_cfg();
+        cfg.scale_features = scale_features;
+        predict_is_the_step_without_the_step(move || Sgd::new(cfg.clone()).unwrap(), 2, false);
+    }
+    let mut cfg = sgd_cfg();
+    cfg.loss = SgdLoss::Logistic;
+    predict_is_the_step_without_the_step(move || Sgd::new(cfg.clone()).unwrap(), 2, true);
+}
+
+#[test]
+fn pa_predict_is_the_step() {
+    predict_is_the_step_without_the_step(|| Pa::new(pa_cfg()).unwrap(), 2, false);
+}
+
+#[test]
+fn holt_predict_is_the_step() {
+    predict_is_the_step_without_the_step(|| Holt::new(holt_cfg()).unwrap(), 2, false);
+}
+
+#[test]
+fn ew_cov_predict_is_the_step() {
+    predict_is_the_step_without_the_step(|| EwCovModel::new(ew_cov_model_cfg()).unwrap(), 0, false);
+}
+
+#[test]
+fn every_model_with_a_recovery_test_has_a_predict_parity_test() {
+    // The recovery tests above are the per-model roll call of this file; each
+    // `<model>_recovers_from_bounded_extremes` must have its
+    // `<model>_predict_is_the_step` twin.
+    let src = include_str!("model_contract.rs");
+    let models: Vec<&str> = src
+        .lines()
+        .filter_map(|l| {
+            l.strip_prefix("fn ")?
+                .strip_suffix("_recovers_from_bounded_extremes() {")
+        })
+        .collect();
+    assert!(models.len() >= 10, "found only {models:?}");
+    for model in models {
+        let name = format!("fn {model}_predict_is_the_step()");
+        assert!(
+            src.contains(&name),
+            "{model}: add `{name}` to the predict parity tests"
+        );
+    }
+}

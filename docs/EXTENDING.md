@@ -19,7 +19,10 @@ example; `git show --stat aa96ad3` is this list as a diff.
 1. **`src/<model>.rs`**: a `<Model>Cfg` struct, `<Model>::new(cfg) ->
    Result<Self, String>` that validates it (every parameter check belongs here,
    not in the spec layer — the CLI, the bank and the plugin all construct
-   through `new`), and `impl OnlineModel`. The docstring states the update
+   through `new`), and `impl OnlineModel` — `step` *and* `predict`, where
+   `predict` is the step without the step: what `step` would report for the
+   row, state untouched. Derive `step`'s prediction from `predict` so the two
+   cannot drift (ENHANCEMENTS E31). The docstring states the update
    equations; the module's unit tests need an **oracle** — the recursion
    written out longhand, an equivalent model configured differently, or the
    optimality conditions — not a golden number alone. `n_eff` is the weight
@@ -41,8 +44,14 @@ example; `git show --stat aa96ad3` is this list as a diff.
 4. **`tests/model_contract.rs`**: a `<model>_cfg()`, a `#[test] fn <model>()`
    that runs `probe_with` and `check`, and the variant name in `PROBED`. This
    is the one place every model is held to the same `n_eff` recursion, slot
-   counts, state round-trip and bounded-input contract at once.
-   *Check*: the test in step 3.
+   counts, state round-trip and bounded-input contract at once. Plus a
+   `#[test] fn <model>_predict_is_the_step()` through
+   `predict_is_the_step_without_the_step`, which holds `predict` to `step`'s
+   `pred`, `n_eff` and `extra` row by row.
+   *Check*: the test in step 3, and
+   `every_model_with_a_recovery_test_has_a_predict_parity_test`, which reads
+   this file and fails for a model with a `fn <model>()` but no
+   `fn <model>_predict_is_the_step()`.
 5. **`tests/golden.rs`** (optional): a pinned signature of the core
    arithmetic alone. **No check**; the Python golden pipeline (step 17) pins
    every model through the whole stack, so this one is for localizing a

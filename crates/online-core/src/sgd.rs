@@ -267,6 +267,22 @@ impl Sgd {
         }
     }
 
+    /// `[1, x]` standardized against the scaler as it stands, as `step`
+    /// rewrites `zbuf` before its own update.
+    fn standardized(&self, x: &[f64]) -> Vec<f64> {
+        let off = usize::from(self.cfg.add_intercept);
+        let scales = self.scales();
+        (0..self.cfg.k_total())
+            .map(|i| {
+                let raw = if i < off { 1.0 } else { x[i - off] };
+                match &self.scaler {
+                    Some(sc) if i >= off => (raw - sc.mean(i)) / scales[i],
+                    _ => raw,
+                }
+            })
+            .collect()
+    }
+
     fn ensure_buffers(&mut self) {
         if self.zbuf.len() != self.cfg.k_total() {
             self.zbuf = vec![0.0; self.cfg.k_total()];
@@ -365,7 +381,23 @@ impl OnlineModel for Sgd {
 
         Step {
             pred,
-            coef: None,
+            n_eff,
+            extra: None,
+        }
+    }
+
+    fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
+        let n_eff = self.w_sum;
+        let mut pred = vec![f64::NAN; self.cfg.n_targets];
+        if n_eff >= self.cfg.min_periods {
+            let z = self.standardized(x);
+            for (j, p) in pred.iter_mut().enumerate() {
+                let eta: f64 = z.iter().zip(&self.beta[j]).map(|(z, b)| z * b).sum();
+                *p = self.link(eta);
+            }
+        }
+        Step {
+            pred,
             n_eff,
             extra: None,
         }

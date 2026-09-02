@@ -42,6 +42,12 @@ pub struct RunConfig {
     /// Columns to keep from the input; all of them when empty.
     #[serde(default)]
     pub keep_columns: Vec<String>,
+    /// Score instead of learn: every row gets the prediction the loaded bank
+    /// makes for it as it stands, and the bank is not updated
+    /// (docs/ENHANCEMENTS.md E31). Requires `load_state`; `save_state` is
+    /// refused, since there is nothing new to save.
+    #[serde(default)]
+    pub predict: bool,
     /// The model specs to run.
     pub specs: Vec<Spec>,
 }
@@ -63,6 +69,21 @@ impl RunConfig {
         }
         if self.chunk_rows == 0 {
             return Err("chunk_rows must be > 0".into());
+        }
+        if self.predict {
+            if self.load_state.is_none() {
+                return Err(
+                    "predict = true needs load_state: a fresh bank has nothing to score with"
+                        .into(),
+                );
+            }
+            if self.save_state.is_some() {
+                return Err(
+                    "predict = true does not update the bank, so save_state has nothing to save; \
+                     drop one or the other"
+                        .into(),
+                );
+            }
         }
         for s in &self.specs {
             s.validate()?;
@@ -140,7 +161,11 @@ pub fn run_config(cfg: &RunConfig, mut progress: impl FnMut(RunStats)) -> Polars
             break;
         }
         let height = chunk.height();
-        let cols = match bank.fit_predict(&chunk) {
+        let cols = match if cfg.predict {
+            bank.predict(&chunk)
+        } else {
+            bank.fit_predict(&chunk)
+        } {
             Ok(c) => c,
             Err(e) => {
                 result = Err(e);
@@ -180,7 +205,11 @@ pub fn run_config(cfg: &RunConfig, mut progress: impl FnMut(RunStats)) -> Polars
     } else {
         // Empty input: still produce a valid, empty output with the right schema.
         let mut empty = lf.clone().limit(0).collect()?;
-        let cols = bank.fit_predict(&empty)?;
+        let cols = if cfg.predict {
+            bank.predict(&empty)?
+        } else {
+            bank.fit_predict(&empty)?
+        };
         for c in cols {
             empty.with_column(c)?;
         }

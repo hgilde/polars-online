@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Decay;
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
+use crate::solve::dot_aug;
 
 /// Which passive-aggressive variant (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -182,7 +183,21 @@ impl OnlineModel for Pa {
 
         Step {
             pred,
-            coef: None,
+            n_eff,
+            extra: None,
+        }
+    }
+
+    fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
+        let n_eff = self.w_sum;
+        let mut pred = vec![f64::NAN; self.cfg.n_targets];
+        if n_eff >= self.cfg.min_periods {
+            for (p, beta) in pred.iter_mut().zip(&self.beta) {
+                *p = dot_aug(beta, x, self.cfg.add_intercept);
+            }
+        }
+        Step {
+            pred,
             n_eff,
             extra: None,
         }

@@ -394,3 +394,22 @@ covariance form died deterministically on one extreme row. Worth paying, and
 now stated rather than implied. A square-root-free (fast) Givens variant would
 recover part of it and is the obvious place to look if `rls` throughput ever
 becomes the constraint; nobody has asked yet, so it is not done.
+
+## 9. `predict` (E31, 2026-09-02)
+
+Scoring is the learning loop with `learn = false` — the same `run_instance`,
+the same per-row arithmetic up to the model call, and then `predict` in place
+of `step`. Measured on the bank benchmark's million-row single-stream case,
+`ewridge`, the two paths on the same frame:
+
+| k | `fit_predict` | `predict` | |
+|---|---:|---:|---:|
+| 5 | 8,003,000 | **14,270,000** | 1.8× |
+| 20 | 3,300,000 | **9,430,000** | 2.9× |
+
+The gap is the update: at `k=20` a step is a rank-one update of the `k × k`
+co-moments plus a solve every `solve_every` rows, and a prediction is a dot
+product. The learning path itself did not move — `scripts/benchmark.py` gives
+8.99M / 3.60M / 990k rows/s at k=5/20/50 against §8's 8.96M / 3.62M / 961k —
+because the only change on it is that `ewridge`'s `step` now gets its
+prediction from `predict` instead of an inlined copy of the same loop.

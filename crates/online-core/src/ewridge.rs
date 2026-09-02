@@ -25,7 +25,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
-use crate::solve::solve_spd;
+use crate::solve::{dot_aug, solve_spd};
 use crate::{Decay, EwCov};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -579,24 +579,8 @@ impl OnlineModel for EwRidge {
         self.z(x);
 
         // ---- predict (state before this row's update) ----
-        let n_eff = self.cov.n_eff();
-        let ready = n_eff >= self.cfg.min_periods && self.beta.is_some();
-        let mut pred = vec![f64::NAN; m * nc];
-        if ready {
-            let beta = self.beta.as_ref().unwrap();
-            for j in 0..m {
-                if self.wj[j] > 0.0 {
-                    for c in 0..nc {
-                        let b = &beta[j * nc + c];
-                        let mut p = 0.0;
-                        for (zi, bi) in self.zbuf.iter().zip(b) {
-                            p += zi * bi;
-                        }
-                        pred[j * nc + c] = p;
-                    }
-                }
-            }
-        }
+        let out = self.predict(x, d_clock);
+        let pred = &out.pred;
 
         // ---- update ----
         // The slow twin sees the same rows under its own, longer halflife.
@@ -667,10 +651,25 @@ impl OnlineModel for EwRidge {
         if due {
             self.solve();
         }
+        out
+    }
 
+    fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
+        debug_assert_eq!(x.len(), self.cfg.n_features);
+        let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
+        let n_eff = self.cov.n_eff();
+        let mut pred = vec![f64::NAN; m * nc];
+        if let (true, Some(beta)) = (n_eff >= self.cfg.min_periods, &self.beta) {
+            for j in 0..m {
+                if self.wj[j] > 0.0 {
+                    for c in 0..nc {
+                        pred[j * nc + c] = dot_aug(&beta[j * nc + c], x, self.cfg.add_intercept);
+                    }
+                }
+            }
+        }
         Step {
             pred,
-            coef: None,
             n_eff,
             extra: None,
         }
@@ -942,7 +941,6 @@ mod tests {
         let mut s = 42u64;
         let mut last = Step {
             pred: vec![],
-            coef: None,
             n_eff: 0.0,
             extra: None,
         };

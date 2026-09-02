@@ -91,20 +91,55 @@ class ModelBank:
 
     def fit_predict(self, df: pl.DataFrame) -> pl.DataFrame:
         """One chunk in; the chunk plus one struct column per spec out."""
-        if not isinstance(df, pl.DataFrame):
-            # A LazyFrame is the common slip, and the attribute error it used to
-            # produce named an internal method.
-            if isinstance(df, pl.LazyFrame):
-                msg = (
-                    "ModelBank.fit_predict takes a DataFrame, not a LazyFrame: collect it "
-                    "first (lf.collect()), or feed it in chunks with "
-                    "fit_predict_batches(lf.collect_batches())"
-                )
-            else:
-                msg = f"ModelBank.fit_predict takes a polars DataFrame, got {type(df).__name__}"
-            raise TypeError(msg)
+        self._check_frame(df, "fit_predict")
         outs = self._native.fit_predict(df)
         return df.with_columns([pl.Series(s) for s in outs])
+
+    def predict(self, df: pl.DataFrame) -> pl.DataFrame:
+        """Score a frame against the bank as it stands, learning nothing.
+
+        Every row gets the struct :meth:`fit_predict` would give it as the
+        next row of its group's stream, computed from the current state; the
+        bank is left exactly as it was, so the call is safe from any number
+        of threads at once and row order does not matter. This is the serving
+        side of a trained bank: ``load`` once, ``predict`` per request, and
+        ``fit_predict`` the rows later, in order, once their targets arrive.
+
+        The frame needs each spec's feature and clock columns. Target columns
+        are optional -- present, they give ``resid`` and the standardized
+        residual; absent, those are null. The session column is optional and
+        feeds ``session_gap``; a weight column is not read. A trend model
+        (``holt``) extrapolates over the clock distance from the row it last
+        learned, capped by ``max_dclock``; the coefficient models predict from
+        their current coefficients regardless of the clock.
+
+        Per field: ``n_eff``, ``lam_selected``, ``sigma``, the residual
+        quantiles, autocorrelation and the metrics are the values the bank
+        holds, frozen; ``coef`` is filled on the last accepted row (the same
+        coefficients score every row); ``drift`` never fires; rows of a group
+        the bank has never seen, or without usable features, are null
+        throughout, as a skipped row is in ``fit_predict``.
+        """
+        self._check_frame(df, "predict")
+        outs = self._native.predict(df)
+        return df.with_columns([pl.Series(s) for s in outs])
+
+    @staticmethod
+    def _check_frame(df: object, what: str) -> None:
+        if isinstance(df, pl.DataFrame):
+            return
+        # A LazyFrame is the common slip, and the attribute error it used to
+        # produce named an internal method.
+        if isinstance(df, pl.LazyFrame):
+            msg = (
+                f"ModelBank.{what} takes a DataFrame, not a LazyFrame: "
+                "collect it first (lf.collect())"
+            )
+            if what == "fit_predict":
+                msg += ", or feed it in chunks with fit_predict_batches(lf.collect_batches())"
+        else:
+            msg = f"ModelBank.{what} takes a polars DataFrame, got {type(df).__name__}"
+        raise TypeError(msg)
 
     def fit_predict_batches(self, batches: Iterable[pl.DataFrame]) -> Iterable[pl.DataFrame]:
         """Lazily map ``fit_predict`` over an iterator of chunks."""

@@ -81,12 +81,14 @@ struct PyModelBank {
 }
 
 /// The error for a bank reached from a second thread while `fit_predict` is
-/// running on the first (the GIL is released for the run).
+/// running on the first (the GIL is released for the run), or for a
+/// `fit_predict` reached while `predict` calls are still returning.
 fn busy(what: &str) -> PyErr {
     PyRuntimeError::new_err(format!(
-        "ModelBank.{what}: the bank is running fit_predict on another thread; a bank \
-         is one ordered stream and cannot be used concurrently. Wait for the call to \
-         return, or give each thread its own bank."
+        "ModelBank.{what}: the bank is in use on another thread; a bank is one \
+         ordered stream and cannot learn from two places at once (concurrent \
+         `predict` calls are fine). Wait for the call to return, or give each \
+         thread its own bank."
     ))
 }
 
@@ -112,6 +114,24 @@ impl PyModelBank {
         let cols = slf
             .py()
             .detach(|| bank.fit_predict(&df))
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(cols
+            .into_iter()
+            .map(|c| PySeries(c.take_materialized_series()))
+            .collect())
+    }
+
+    /// Score one chunk against the bank as it stands (`Bank::predict`): the
+    /// output columns `fit_predict` would produce, and no learning. A shared
+    /// borrow, so scoring threads never refuse each other; only a
+    /// `fit_predict` in flight does.
+    fn predict(slf: &Bound<'_, Self>, df: PyDataFrame) -> PyResult<Vec<PySeries>> {
+        let this = slf.try_borrow().map_err(|_| busy("predict"))?;
+        let bank = &this.inner;
+        let df = df.into();
+        let cols = slf
+            .py()
+            .detach(|| bank.predict(&df))
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(cols
             .into_iter()

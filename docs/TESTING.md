@@ -162,6 +162,7 @@ Scorecard against PLAN §9's eight test classes:
 | 4. Clock semantics | Done: cap, negative-delta (`max`/`zero`/`reset_state`), session gap and reset, first row, row-count clock, skipped-row decay folding, per-group independence. |
 | 5. Null policy & warmup | Done for feature/target/weight nulls and `min_periods` — for the tested models (ewridge, rls, kalman-adjacent paths). |
 | 6. Expression ≡ bank | Done for every model, incl. grids and `.over()`. |
+| 6b. `predict` ≡ `fit_predict` of the next row | Done (E31): `tests/test_predict.py` holds row `i` of `predict(df)` to row 0 of `fit_predict(df.slice(i, 1))` on a fresh clone, field for field, for all ten models with every diagnostic on, and across every session/clock policy; `crates/online-core/tests/model_contract.rs` holds each model's `predict` to its `step` row by row. |
 | 7. Cross-platform state | **Defined but never executed on real runners.** The test file and the macOS→Windows/Linux artifact hand-off exist in `release.yml`, but no workflow run has happened (no remote/tag yet). Locally only same-OS round-trip + byte-determinism are proven. |
 | 8. Benchmark | Done (`scripts/benchmark.py`, numbers in README). |
 

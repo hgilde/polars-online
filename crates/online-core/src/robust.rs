@@ -24,7 +24,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
-use crate::solve::solve_spd;
+use crate::solve::{dot_aug, solve_spd};
 use crate::{Decay, EwCov};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -276,17 +276,8 @@ impl OnlineModel for Robust {
         }
 
         // ---- predict (state before the update) ----
-        let n_eff = self.w_raw;
-        let ready = n_eff >= self.cfg.min_periods && self.beta.is_some();
-        let mut pred = vec![f64::NAN; m];
-        if ready {
-            let beta = self.beta.as_ref().unwrap();
-            for (j, p) in pred.iter_mut().enumerate() {
-                if self.wj[j] > 0.0 {
-                    *p = self.zbuf.iter().zip(&beta[j]).map(|(z, b)| z * b).sum();
-                }
-            }
-        }
+        let out = self.predict(x, d_clock);
+        let pred = &out.pred;
 
         // ---- update, reweighting by the PRIOR residual ----
         for j in 0..m {
@@ -343,10 +334,21 @@ impl OnlineModel for Robust {
         if due {
             self.solve();
         }
+        out
+    }
 
+    fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
+        let n_eff = self.w_raw;
+        let mut pred = vec![f64::NAN; self.cfg.n_targets];
+        if let (true, Some(beta)) = (n_eff >= self.cfg.min_periods, &self.beta) {
+            for (j, p) in pred.iter_mut().enumerate() {
+                if self.wj[j] > 0.0 {
+                    *p = dot_aug(&beta[j], x, self.cfg.add_intercept);
+                }
+            }
+        }
         Step {
             pred,
-            coef: None,
             n_eff,
             extra: None,
         }

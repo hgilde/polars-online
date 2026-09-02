@@ -4,6 +4,7 @@
 //! ```sh
 //! online --config examples/bank.toml
 //! online --config examples/bank.toml --input other.parquet --resume state.msgpack
+//! online --config examples/bank.toml --input today.parquet --resume state.msgpack --predict
 //! ```
 
 use std::path::PathBuf;
@@ -38,6 +39,12 @@ struct Cli {
     /// Save the final state here (overrides the config's `save_state`).
     #[arg(long)]
     save_state: Option<PathBuf>,
+
+    /// Score instead of learn: every row gets the loaded bank's prediction
+    /// as it stands and the bank is not updated (sets the config's
+    /// `predict`). Needs `--resume` or `load_state`.
+    #[arg(long)]
+    predict: bool,
 
     /// Validate the config and print the output schema without running.
     #[arg(long)]
@@ -90,6 +97,14 @@ fn run() -> Result<(), String> {
     if let Some(p) = cli.resume {
         cfg.load_state = Some(p);
     }
+    if cli.predict {
+        cfg.predict = true;
+        // One TOML serves both the learning run and the scoring run, and its
+        // `save_state` belongs to the former; `--predict` drops it. An
+        // explicit `--save-state` is kept below, and `validate` refuses the
+        // pair.
+        cfg.save_state = None;
+    }
     if let Some(p) = cli.save_state {
         cfg.save_state = Some(p);
     }
@@ -106,6 +121,9 @@ fn run() -> Result<(), String> {
         println!("input:  {}", cfg.input.display());
         println!("output: {}", cfg.output.display());
         println!("chunk_rows: {}", cfg.chunk_rows);
+        if cfg.predict {
+            println!("mode: predict (score against the loaded state, learn nothing)");
+        }
         return Ok(());
     }
 
