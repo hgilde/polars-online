@@ -318,6 +318,14 @@ README table and prose refreshed, PERFORMANCE §8 records the comparison, and
 stopped at 8, which on a 14-core box hides the row the script exists to show
 (1→14 threads is 6.6×).
 
+Then the bill was itemized (PERFORMANCE §8, 2026-09-02): half of the QR
+form's row was the back-substitution, not the rotations, because its sum ran
+in the one order that serialized every row on the coefficient just solved.
+Summing from the far end — one `.rev()`, a rounding-level change inside the
+golden tolerance — took `rls` to 2.12M rows/s at k=20 and 800k at k=50 on
+the model arithmetic (1.93M through the bank), so the QR form now costs
+1.3–2.1× the covariance form rather than 2–2.6×.
+
 ## 3. Usability
 
 ### U1 — features as expressions — *done*

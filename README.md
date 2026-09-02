@@ -468,7 +468,7 @@ Apple M-series, single process, best of 3, 200k rows per run
 | `ewridge` k=50 | 1 target, 1 halflife | 960,926 |
 | `ewridge` k=20 | 10 targets | 1,906,032 |
 | `ewridge` k=20 | 5 halflives | 2,158,579 |
-| `rls` | k=20, 1 target | 1,629,801 |
+| `rls` | k=20, 1 target | 1,927,999 |
 | `kalman` | k=20, 1 target | 1,661,270 |
 | `lasso` | k=20, 1 target (3-point path) | 1,878,137 |
 | `huber` | k=20, 1 target | 3,680,996 |
@@ -477,7 +477,7 @@ Apple M-series, single process, best of 3, 200k rows per run
 `rls` is the one that went *down* — it was 3.1M before the square-root
 rewrite that keeps it from dying of cancellation on a single extreme row
 (`docs/IMPROVEMENTS.md` C5). Measured on the model arithmetic alone, the
-QR form costs 2.2–2.6× the covariance form; that is the price of the fix,
+QR form costs 1.3–2.1× the covariance form; that is the price of the fix,
 and it is worth paying.
 
 Targets share one `S` accumulator, so 10 targets cost far less than 10× one.

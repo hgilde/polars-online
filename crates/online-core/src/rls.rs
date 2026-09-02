@@ -297,7 +297,14 @@ impl Rls {
             for i in (0..k).rev() {
                 let row = i * k;
                 let mut acc = u[i];
-                for (rij, bj) in self.r[row + i + 1..row + k].iter().zip(&beta[i + 1..]) {
+                // Summed from the far end of the row: every term but the last
+                // is known before the coefficient just solved arrives, so the
+                // rows' chains overlap instead of queueing on it.
+                for (rij, bj) in self.r[row + i + 1..row + k]
+                    .iter()
+                    .zip(&beta[i + 1..])
+                    .rev()
+                {
                     acc -= rij * bj;
                 }
                 let d = self.r[row + i];
@@ -373,11 +380,14 @@ impl OnlineModel for Rls {
                 let (c, s) = (rii / rho, zi / rho);
                 self.r[row + i] = rho;
                 self.zbuf[i] = 0.0;
-                for j in i + 1..k {
-                    let rij = self.r[row + j];
-                    let zj = self.zbuf[j];
-                    self.r[row + j] = c * rij + s * zj;
-                    self.zbuf[j] = c * zj - s * rij;
+                // Two disjoint slices, so the loop has no bounds checks to
+                // clear and nothing to alias: it vectorizes.
+                let r_rest = &mut self.r[row + i + 1..row + k];
+                let z_rest = &mut self.zbuf[i + 1..k];
+                for (rij, zj) in r_rest.iter_mut().zip(z_rest.iter_mut()) {
+                    let (a, b) = (*rij, *zj);
+                    *rij = c * a + s * b;
+                    *zj = c * b - s * a;
                 }
                 for (u, yb) in self.u.iter_mut().zip(self.ybuf.iter_mut()) {
                     let ui = u[i];

@@ -364,7 +364,7 @@ agreeing within 2%:
 | ew_ridge k=50 | 846,000 | **960,926** | +14% |
 | ew_ridge k=20, 10 targets | 1,391,097 | **1,906,032** | +37% |
 | ew_ridge k=20, 5 halflives | 1,328,381 | **2,158,579** | +62% |
-| rls k=20 | 3,131,992 | **1,629,801** | **−48%** |
+| rls k=20 | 3,131,992 | **1,629,801** (1,927,999 after the solve reorder below) | **−48%** |
 | kalman k=20 | 1,345,525 | **1,661,270** | +23% |
 | lasso k=20 | 1,503,706 | **1,878,137** | +25% |
 | huber k=20 | 2,852,545 | **3,680,996** | +29% |
@@ -391,9 +391,40 @@ so nothing but `Rls::step` differs:
 Both forms are O(k²) per row; the QR form does more of it — `k` Givens
 rotations, each with a square root — and buys the thing C5 was after: the
 covariance form died deterministically on one extreme row. Worth paying, and
-now stated rather than implied. A square-root-free (fast) Givens variant would
-recover part of it and is the obvious place to look if `rls` throughput ever
-becomes the constraint; nobody has asked yet, so it is not done.
+now stated rather than implied.
+
+**Where the QR form's time actually went (2026-09-02).** Skipping the
+per-row back-substitution — timing only, the numbers are meaningless without
+it — took k=20 from 1.75M to 3.15M rows/s and k=50 from 511k to 1.26M: the
+solve was *half* the row, though it is a quarter of the flops. It was
+latency-bound. `beta_i = (u_i − Σ_{j>i} R_ij β_j) / R_ii` summed the row from
+`j = i+1` upward, so every row's chain began with the coefficient that had
+just been solved and could not start until it had; `k` chains of `k/2`
+dependent subtractions, queued. Summing from the far end instead (`j = k−1`
+downward) makes every term but the last independent of the previous row, so
+the chains overlap in the pipeline. One `.rev()`:
+
+| k | before | after | |
+|---|---:|---:|---:|
+| 5 | 7,244,780 | 7,360,936 | 1.02× |
+| 20 | 1,753,624 | 2,118,547 | 1.21× |
+| 50 | 510,829 | 799,909 | 1.57× |
+
+Bank level, `rls` k=20: 1.63M → **1.93M rows/s** (README table). It is a
+rounding-level change — a different summation order — measured on the golden
+signatures at 1e-15 relative (the Rust one moved by one ulp in two of three
+values; the Python pipeline by up to 1.2e-15 absolute), inside both tests'
+1e-12 tolerance, so no pinned value was regenerated. The same experiment
+rejected two others: a column-oriented solve (the ideal chain, but strided
+loads; 2.25M / 774k, no better) and two interleaved partial sums (2.19M /
+831k, within noise of the one-line version), and a decay pass fused into the
+rotations, which is bit-identical and gained 8% at k ≤ 20 but lost 4% at
+k=50 for a longer skip path — not worth its shape. What remains is the
+rotation chain itself: `k` dependent `sqrt`-and-divide pairs per row, which
+is the QR form's structure and not a codegen artefact; a square-root-free
+(fast) Givens variant would shorten it and is the obvious place to look if
+`rls` throughput ever becomes the constraint, at the cost of a rescaling
+step whose stability would have to be argued as carefully as C5 was.
 
 ## 9. `predict` (E31, 2026-09-02)
 

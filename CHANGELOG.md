@@ -36,6 +36,12 @@ carries breaking changes.
   through `coefficients()`.
 - The busy-bank message now says the bank "is in use on another thread" and
   that concurrent `predict` calls are fine.
+- **`rls` is 20% faster at k=20 and 57% faster at k=50** (model arithmetic;
+  1.63M → 1.93M rows/s through the bank at k=20). The per-row
+  back-substitution summed each row in the one order that serialized it on
+  the coefficient just solved; it now sums from the far end. A summation
+  order is a rounding-level change: the golden signatures moved by at most
+  1.2e-15, inside their 1e-12 tolerance.
 
 ### Documented
 
