@@ -299,11 +299,20 @@ fn schema_version() -> u32 {
     online_core::SCHEMA_VERSION
 }
 
+/// Every model this build can construct, as spec `type` names. What the
+/// Python builders and the per-model test sweeps are checked against
+/// (docs/EXTENDING.md).
+#[pyfunction]
+fn model_kinds() -> Vec<&'static str> {
+    online_polars::ModelKind::KINDS.to_vec()
+}
+
 #[pymodule]
 fn _polars_online(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyModelBank>()?;
     m.add_function(wrap_pyfunction!(native_version, m)?)?;
     m.add_function(wrap_pyfunction!(schema_version, m)?)?;
+    m.add_function(wrap_pyfunction!(model_kinds, m)?)?;
     m.add_function(wrap_pyfunction!(validate_spec, m)?)?;
     m.add_function(wrap_pyfunction!(run_config, m)?)?;
     m.add_function(wrap_pyfunction!(spec_output_fields, m)?)?;

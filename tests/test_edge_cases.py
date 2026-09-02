@@ -16,6 +16,21 @@ INF = float("inf")
 #: Models with no solve schedule (they update every row by construction).
 _NO_SOLVE_SCHEDULE = {"rls", "kalman", "ftrl", "sgd", "pa", "holt"}
 
+#: Every regression model, with the least it needs to be constructible.
+#: `tests/test_model_registry.py` holds this list complete.
+MODELS = [
+    ("ewridge", {}),
+    ("rls", {}),
+    ("kalman", {"coef_halflife": 100.0}),
+    ("lasso", {"lasso_path": [0.0]}),
+    ("huber", {}),
+    ("quantile", {"quantile": 0.5}),
+    ("ftrl", {}),
+    ("sgd", {"learning_rate": 0.01}),
+    ("pa", {}),
+    ("holt", {"features": []}),
+]
+
 
 def _spec(model="ewridge", **kw):
     d = dict(targets=["y0"], features=["x0"], halflife=1e9, min_periods=1.0)
@@ -71,21 +86,7 @@ class TestWeights:
         # the same as if its target had been null.
         assert _f(out, "pred_y0")[2] == _f(skipped, "pred_y0")[2]
 
-    @pytest.mark.parametrize(
-        ("model", "extra"),
-        [
-            ("ewridge", {}),
-            ("rls", {}),
-            ("kalman", {"coef_halflife": 100.0}),
-            ("lasso", {"lasso_path": [0.0]}),
-            ("huber", {}),
-            ("quantile", {"quantile": 0.5}),
-            ("ftrl", {}),
-            ("sgd", {"learning_rate": 0.01}),
-            ("pa", {}),
-            ("holt", {"features": []}),
-        ],
-    )
+    @pytest.mark.parametrize(("model", "extra"), MODELS, ids=[m for m, _ in MODELS])
     def test_leading_zero_weight_rows_do_not_disable_the_model(self, model, extra):
         """A zero-weight row *before any weighted row* used to poison `ewridge`
         and `lasso` permanently.

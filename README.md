@@ -472,6 +472,7 @@ Downloads are cached under `.cache/` and skipped when offline.
 
 - Design and task list: [`docs/PLAN.md`](docs/PLAN.md)
 - Measured defaults: [`docs/VALIDATION.md`](docs/VALIDATION.md)
+- Adding a model: [`docs/EXTENDING.md`](docs/EXTENDING.md)
 
 ## Versioning and the Polars pin
 

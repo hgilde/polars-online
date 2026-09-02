@@ -31,6 +31,27 @@ pub struct Num(pub f64);
 /// in rustc's float formatting, which has happened historically) fails a test
 /// instead of silently renaming users' columns.
 #[cfg(test)]
+mod kinds_tests {
+    use super::ModelKind;
+
+    /// serde's unknown-variant error names every variant the enum has -- the
+    /// one place that list exists outside the enum itself.
+    #[test]
+    fn kinds_lists_every_variant_in_order() {
+        let err = serde_json::from_str::<ModelKind>(r#"{"type": "nope"}"#)
+            .unwrap_err()
+            .to_string();
+        let quoted: Vec<&str> = err.split('`').skip(1).step_by(2).collect();
+        assert_eq!(quoted[0], "nope", "{err}");
+        assert_eq!(
+            &quoted[1..],
+            ModelKind::KINDS,
+            "ModelKind::KINDS is out of date"
+        );
+    }
+}
+
+#[cfg(test)]
 mod num_label_tests {
     use super::num_label;
 
@@ -494,6 +515,15 @@ pub enum ModelKind {
 }
 
 impl ModelKind {
+    /// Every model the bank can build, by the `type` a spec names it with,
+    /// in declaration order. The registry the Python side and the tests
+    /// check themselves against (docs/EXTENDING.md); `kinds_tests` holds it
+    /// to the enum, so a new variant fails a test until it is listed here.
+    pub const KINDS: &'static [&'static str] = &[
+        "ew_ridge", "lasso", "kalman", "huber", "quantile", "ftrl", "ew_cov", "sgd", "pa", "holt",
+        "rls",
+    ];
+
     pub fn kind_name(&self) -> &'static str {
         match self {
             ModelKind::EwRidge { .. } => "ew_ridge",

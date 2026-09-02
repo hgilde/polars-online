@@ -395,14 +395,31 @@ Adding an output kind used to mean a name-prefix rule in the plugin *and* a
 branch in `assemble`. With `dtype` on `FieldMeta` both read the same
 descriptor.
 
-### X2 — adding a model touches eleven places — *proposed*
+### X2 — adding a model touches eighteen places — *done*
 
-Core file, `ModelState`, `AnyModel` plus its `dispatch!`/restore/
-coefficients/solve_failures arms, `ModelKind` plus validation, `build_one`,
-`combos`, the Python builder, the namespace method, the README table, and
-tests. None of it is avoidable — each is a real decision — but nothing lists
-them. `docs/EXTENDING.md` is that list, in order, with the test that catches
-each omission.
+Counted against the `holt` commit (`aa96ad3`), it is eighteen steps, not
+eleven: the core file and its `pub use`, `ModelState` and the contract
+probe, `ModelKind` with `kind_name`/`validate`, the six `AnyModel` arms,
+`output_index` for an unusual layout, the builder with `_INF_OK`, the
+`TypedDict`, the namespace method, the API snapshot, four per-model sweep
+lists, the golden pipeline, the README heading, the changelog. None of it is
+avoidable — each is a real decision — but nothing listed them, and the
+compiler only covers the Rust half: every Python-side list was a plain list,
+and a model left out of one was simply never swept.
+
+`docs/EXTENDING.md` is the list, in order, with the check that fails on each
+omission. The check is a registry: `ModelKind::KINDS` (held to the enum by a
+unit test that reads serde's own "expected one of" error, the one place the
+variant list exists outside the enum), exposed as `_polars_online
+.model_kinds()`, and `tests/test_model_registry.py` holds the builders, the
+namespace, the four sweeps, the golden bank, the API snapshot's output-field
+blocks and the README headings to it. `model_contract.rs` does the same for
+`ModelState` with `PROBED`. Every new check was mutated once — an entry
+removed from each list — and each failed on its own list and nothing else.
+
+Writing the checks found two gaps in the existing suite: the cross-platform
+golden pipeline pinned nine models and not `ftrl`, and the API snapshot pinned
+output fields for every model but `lasso`. Both are pinned now.
 
 ## 5. Testing
 

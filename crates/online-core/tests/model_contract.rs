@@ -435,6 +435,39 @@ fn every_state_kind_is_distinct_and_named() {
     );
 }
 
+/// The variants of `ModelState` this file probes. A model added to the enum
+/// and not to this list fails here, which is the reminder to write its
+/// `*_cfg()` and probe above (docs/EXTENDING.md).
+const PROBED: &[&str] = &[
+    "EwCov",
+    "EwRidge",
+    "Rls",
+    "Lasso",
+    "Kalman",
+    "Robust",
+    "Ftrl",
+    "EwCovModel",
+    "Sgd",
+    "Pa",
+    "Holt",
+];
+
+#[test]
+fn every_model_state_variant_is_probed_here() {
+    // serde's unknown-variant error names every variant the enum has -- the
+    // one place that list exists outside the enum itself.
+    let err = serde_json::from_str::<ModelState>(r#"{"Nope": null}"#)
+        .unwrap_err()
+        .to_string();
+    let quoted: Vec<&str> = err.split('`').skip(1).step_by(2).collect();
+    assert_eq!(quoted[0], "Nope", "{err}");
+    assert_eq!(
+        &quoted[1..],
+        PROBED,
+        "a ModelState variant has no contract probe"
+    );
+}
+
 #[test]
 fn restoring_the_wrong_model_is_an_error_that_names_both() {
     let holt = Holt::new(HoltCfg {

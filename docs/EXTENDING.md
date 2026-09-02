@@ -1,0 +1,167 @@
+# Adding a model
+
+A model touches every layer, from the recursion in `online-core` to a heading
+in the README, and none of the steps can be folded into another: each is a
+real decision (what the state is, what the spec calls it, what the outputs are
+named, what the tests assert). What *can* be done is to make each omission
+fail. This is the list, in the order the data flows, with the check that
+catches skipping each step. Where a step says **no check**, that is the truth
+and not a to-do.
+
+The registry is `ModelKind::KINDS` in `crates/online-polars/src/spec.rs` — the
+spec `type` names, in enum order — reached from Python as
+`polars_online._polars_online.model_kinds()`. Everything else is held to it.
+`holt` (commit `aa96ad3`) is the most recent addition and a complete worked
+example; `git show --stat aa96ad3` is this list as a diff.
+
+## 1. The recursion — `crates/online-core`
+
+1. **`src/<model>.rs`**: a `<Model>Cfg` struct, `<Model>::new(cfg) ->
+   Result<Self, String>` that validates it (every parameter check belongs here,
+   not in the spec layer — the CLI, the bank and the plugin all construct
+   through `new`), and `impl OnlineModel`. The docstring states the update
+   equations; the module's unit tests need an **oracle** — the recursion
+   written out longhand, an equivalent model configured differently, or the
+   optimality conditions — not a golden number alone. `n_eff` is the weight
+   before this row's update and before its own decay (CLAUDE.md rule 8), and
+   a zero-weight first row must not divide 0/0 (rule 9). No `unsafe`, `f64`
+   everywhere.
+   *Check*: the trait. A missing method is a compile error; the shared
+   contract is step 3.
+2. **`src/lib.rs`**: `pub use <model>::{<Model>, <Model>Cfg};`.
+   *Check*: the compiler, as soon as `online-polars` names the type.
+3. **`src/model.rs`**: a `ModelState::<Model>(Box<...>)` variant and its arm
+   in `kind()`. The state is what `save`/`load` serialize, so a new variant is
+   a new schema: bump `SCHEMA_VERSION` if an existing layout changes (rule 5);
+   appending a variant does not.
+   *Check*: `kind()` is an exhaustive match. Then
+   `every_model_state_variant_is_probed_here` in `tests/model_contract.rs`
+   fails until the variant is listed in `PROBED`, which is the reminder for
+   step 4.
+4. **`tests/model_contract.rs`**: a `<model>_cfg()`, a `#[test] fn <model>()`
+   that runs `probe_with` and `check`, and the variant name in `PROBED`. This
+   is the one place every model is held to the same `n_eff` recursion, slot
+   counts, state round-trip and bounded-input contract at once.
+   *Check*: the test in step 3.
+5. **`tests/golden.rs`** (optional): a pinned signature of the core
+   arithmetic alone. **No check**; the Python golden pipeline (step 17) pins
+   every model through the whole stack, so this one is for localizing a
+   divergence to the core when that pipeline moves.
+
+## 2. The bank — `crates/online-polars`
+
+6. **`src/spec.rs`**: a `ModelKind::<Model> { ... }` variant — serde-tagged,
+   so its snake_case name is the spec `type` — with `#[serde(default)]` on
+   every optional field; its arm in `kind_name()`; a clause in
+   `Spec::validate` only for a constraint that crosses the spec (`holt` takes
+   no features; `ew_cov` no targets) — per-parameter checks stay in step 1;
+   and the name in **`ModelKind::KINDS`**.
+   *Check*: `kind_name` is exhaustive. `kinds_lists_every_variant_in_order`
+   fails until `KINDS` matches the enum, and `KINDS` is what every Python
+   check below reads.
+7. **`src/stream.rs`**: an `AnyModel::<Model>(Box<...>)` variant and its arm
+   in the `dispatch!` macro; arms in `solve_failures` (0 for a model that
+   never factorizes) and `coefficients` (the per-target layout the `coef`
+   field reports); the `ModelState` arm in `restore`; the `ModelKind` arm in
+   `build_one` that turns spec fields into a `Cfg` (defaults are decided here:
+   `holt` reads the spec's `halflife` as its level halflife so the shared
+   parameter means the same thing everywhere); and the arm in `combos`
+   (`vec![Combo::default()]` unless the model is a grid).
+   *Check*: every match but `restore` is exhaustive. `restore` has a
+   catch-all — `ModelState::EwCov` is a component, not a bank model — so a
+   model left out of it restores as `WrongModel`; the save/load sweeps
+   (`test_properties::test_save_load_is_transparent`,
+   `test_semantics_all_models::test_save_load_mid_stream`) catch that once
+   the model is in their lists, which step 16 enforces.
+8. **`src/bank.rs`**: nothing, unless the outputs are not one `pred`/`resid`
+   pair per target per combo — `ew_cov` (statistics, no target) and `lasso`
+   (a path) are the two cases, in `output_index`.
+   *Check*: `test_portability.TestOutputSchemaStability
+   .test_names_match_the_realized_struct` compares the declared field names
+   with the struct the bank actually produces, for every model in its list,
+   times three output combinations.
+
+`crates/online-cli` and `crates/online-py` need nothing: both build from the
+spec, and the plugin's `online_run` is the bank.
+
+## 3. The Python surface — `python/polars_online`
+
+9. **`_spec.py`**: `@_checked def <name>(name, *, targets, features, <own
+   parameters>, **common: Unpack[CommonKwargs])` returning
+   `_common(name, {"type": "<name>", ...}, ...)`, with the update equations in
+   the docstring; a `_INF_OK` entry if any parameter accepts `inf` (Rust
+   parses those as `Num`); and the name in `__all__`. Then in **`spec.py`**,
+   the import and `__all__`.
+   *Check*: `test_model_registry::test_every_rust_kind_has_exactly_one_builder`
+   fails while a kind has no builder; `test_minimal_names_every_builder` then
+   sends you to step 15. `test_error_messages::test_the_inf_table_matches
+   _the_rust_side` holds `_INF_OK` to what Rust accepts.
+10. **`_kwargs.py`**: `class <Name>Kwargs(ExprKwargs, total=False)` with the
+    builder's own parameters — the PEP 692 keywords the namespace method
+    exposes.
+    *Check*: `test_kwargs_typing::test_each_namespace_typed_dict_mirrors_its
+    _builder`.
+11. **`_expr.py`**: the namespace method, `**kwargs: Unpack[<Name>Kwargs]`,
+    building the spec with `targets=self._targets(extra_targets)` and calling
+    `_run`; and the name in `test_kwargs_typing.NAMESPACE_METHODS`.
+    *Check*: `test_the_namespace_methods_are_the_builders` holds the class to
+    that list, and `test_model_registry::test_every_builder_has_a_namespace
+    _method` holds the list to the builders.
+12. **`tests/api_surface.txt`**: `UPDATE_API_SURFACE=1 uv run pytest
+    tests/test_api_surface.py`, after adding a `<model> minimal` case to the
+    `[output field grammar]` list in `tests/test_api_surface.py`. Field names
+    are API; the snapshot is where they are pinned.
+    *Check*: `test_api_surface_matches_the_snapshot` fails on the new
+    constructor signature; `test_model_registry::test_the_api_snapshot_pins
+    _every_models_output_fields` fails until the minimal case is there.
+
+## 4. Tests — `tests/`
+
+13. **`tests/test_<model>.py`**: the Python-side oracle (a numpy reference in
+    `tests/reference.py` where the model has a closed form; a longhand
+    recursion otherwise), through both `ModelBank` and the expression.
+    **No check** beyond convention; the sweeps below cover the invariants,
+    not the arithmetic.
+14. **Per-model sweeps**: one entry each in `test_semantics_all_models.MODELS`,
+    `test_properties.MODELS`, `test_edge_cases.MODELS` and
+    `test_portability.TestOutputSchemaStability._ALL_MODELS`. Every entry is
+    `(builder name, the least it needs to be constructible)`.
+    *Check*: `test_model_registry::test_the_sweeps_cover_every_regression
+    _model`.
+15. **`tests/test_model_registry.py`**: the model's `MINIMAL` entry. This is
+    the file that holds every list in this section to `KINDS`.
+    *Check*: `test_minimal_names_every_builder`.
+16. **`tests/test_golden_pipeline.py`**: a spec in `specs()`, then
+    `PRINT_GOLDEN=1 uv run pytest tests/test_golden_pipeline.py -s -k print`
+    and copy **only the new model's lines** into `GOLDEN` — if any other
+    line moved, that is a finding, not a regeneration.
+    *Check*: `test_model_registry::test_the_golden_pipeline_pins_every_model`.
+    Writing that check found `ftrl` missing: nine models had been pinned on
+    three operating systems and the tenth was not.
+
+## 5. Docs
+
+17. **`README.md`**: a `### \`<name>\` — ...` heading under `## Models`, with
+    the equations, the parameters and when to reach for it.
+    *Check*: `test_model_registry::test_the_readme_documents_every_model`
+    (`huber` / `quantile` share a heading; the regex knows).
+18. **`CHANGELOG.md`**, and the design note wherever the model was proposed —
+    `docs/PLAN.md` §4 for the original six, `docs/ENHANCEMENTS.md` for the
+    rest. **No check.**
+
+Then `./scripts/gate.sh`, unpiped, and one commit per step group is fine —
+the registry tests will fail in between, which is what they are for.
+
+## Adding an output or a parameter instead
+
+- **A new output field** on every model: `FieldMeta` in
+  `crates/online-polars/src/bank.rs` carries the name and dtype
+  (IMPROVEMENTS X1), the emit flag goes on `Spec` and `CommonKwargs`, and
+  `test_portability::test_exact_field_names_for_a_grid_spec` plus the API
+  snapshot pin the names.
+- **A new parameter** on one model: the `Cfg` field and its validation in
+  `new` (step 1), the `ModelKind` field with `#[serde(default)]` (step 6), the
+  `build_one` default (step 7), the builder keyword (step 9), the
+  `<Name>Kwargs` entry (step 10), the snapshot (step 12). If it accepts `inf`,
+  `_INF_OK` (step 9). The typed-dict and inf-table tests catch the Python
+  half; the compiler catches the Rust half.

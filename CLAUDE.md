@@ -27,6 +27,7 @@ crates/online-py/      pyo3 + pyo3-polars: expression plugin + Python ModelBank 
 python/polars_online/  Python package (thin wrappers, expression namespace registration)
 tests/                 pytest (Python) — integration, invariance, oracle tests
 docs/PLAN.md           design + task list
+docs/EXTENDING.md      every place a new model touches, with the test that catches each omission
 ```
 
 ## Commands

@@ -74,6 +74,12 @@ know nothing about Polars, Python, or clocks-as-columns. Plumbing lives in
   every model at once;
 - wiring in `online-polars/src/spec.rs` and a `po.spec.<name>()` constructor.
 
+That is the shape of it; [`docs/EXTENDING.md`](docs/EXTENDING.md) is the full
+list of places a model touches, in order, with the test that fails when one is
+skipped. `tests/test_model_registry.py` holds every per-model list to the Rust
+registry (`ModelKind::KINDS`), so a half-wired model fails the gate rather than
+going unswept.
+
 ## Performance changes
 
 `docs/PERFORMANCE.md` has the measured baseline and the methodology. Measure

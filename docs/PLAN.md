@@ -454,7 +454,11 @@ and the CLI tests running a once-built executable instead of `cargo run`
 per call -- 33 s to 3.6 s, and the cost turned out to be macOS validating a
 freshly cloned 418 MB binary's signature, not cargo (T1), and doc tests
 on the crate roots, the trait and the clock, so `cargo test --doc` now
-compiles the examples a Rust reader sees first (T2).
+compiles the examples a Rust reader sees first (T2), and a model registry
+(`ModelKind::KINDS`) that every per-model list — builders, namespace,
+sweeps, golden bank, API snapshot, README — is tested against, with
+`docs/EXTENDING.md` as the ordered list of places a model touches; writing
+those checks found `ftrl` missing from the golden pipeline (X2).
 The rest is proposed with its measurements next to it.
 
 ## 12. Open questions (not blocking)

@@ -122,6 +122,7 @@ def describe_api() -> str:
             w(f"    {f}")
     for model, kw in [
         ("rls", dict(targets=["y"], features=["x0"], halflife=100.0)),
+        ("lasso", dict(targets=["y"], features=["x0"], halflife=100.0, lasso_path=[0.1, 0.0])),
         ("kalman", dict(targets=["y"], features=["x0"], halflife=100.0, coef_halflife=50.0)),
         ("huber", dict(targets=["y"], features=["x0"], halflife=100.0)),
         ("quantile", dict(targets=["y"], features=["x0"], halflife=100.0, quantile=0.5)),

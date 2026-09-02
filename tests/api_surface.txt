@@ -407,6 +407,14 @@
     resid_y
     n_eff
     coef
+  lasso minimal:
+    pred_y__l0.1
+    resid_y__l0.1
+    pred_y__l0
+    resid_y__l0
+    n_eff
+    coef
+    lam_selected_y
   kalman minimal:
     pred_y
     resid_y
