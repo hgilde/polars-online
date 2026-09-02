@@ -75,6 +75,20 @@ Everything after the bank — filters, joins, group-bys, sinks — is polars' ow
 and streams as polars streams it. All of it measured in
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) §11.
 
+**This is polars' rule, not ours**, which is the reassuring part: its own
+windowed operations split the same way, and the rule is whether the streaming
+engine has a node for that spelling. On the same 12M rows,
+`pl.col("y").mean().rolling(index_column="t", period="1000i")` peaks at
+0.25 GB and the identical expression under **`.over("group")` at 6.5 GB**;
+`lf.rolling(index_column="t", period="1000i").agg(...)` at 0.28 GB and the
+same call with **`group_by="group"` at 1.7 GB**. Both collecting spellings
+land on the engine's `InMemoryMap` node — collect, run in memory, re-emit —
+which is exactly the node a plugin gets, because the plugin contract has no
+way to say "call me per morsel, in order, and let me keep state". Note where
+that leaves per-group work: in polars, the *grouped* window is the collecting
+spelling; in a bank, `group=` is one accumulator per group and stays
+O(state).
+
 ## Two guarantees
 
 - **Predictions are out-of-sample by construction.** Every row is predicted from

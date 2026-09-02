@@ -672,6 +672,51 @@ engine reads a few morsels ahead of the bank (7 of 100 input batches were
 requested before a `head(10)` stopped the plan) and tears the input query
 down with the plan.
 
+**Polars' own windowed operations do the same thing (2026-09-02).** Worth
+knowing before concluding that this is a quirk of ours: it is polars' rule,
+and the rule is *whether the streaming engine has a node for that spelling*.
+Same file, `sink_parquet(engine="streaming")`, `POLARS_ROW_GROUP_PREFETCH_SIZE=1`,
+one output column so the scan reads only what the expression needs — each
+plan is `pl.scan_parquet(f).select(<the expression below>)`, run in its own
+process:
+
+| peak footprint | 3M rows | 12M rows | grows? |
+|---|---:|---:|---|
+| `pl.col("y0") * 2` (the floor) | 0.11 GB | 0.14 GB | no |
+| `pl.col("y0").mean().rolling(index_column="ti", period="1000i")` | 0.16 GB | 0.25 GB | no |
+| **the same, `.over("group")`** | 1.76 GB | **6.52 GB** | **3.7× on 4× data** |
+| `pl.col("y0").rolling_mean(1000)` | 0.12 GB | 0.34 GB | barely |
+| `pl.col("y0").ewm_mean(half_life=500)` | 0.14 GB | 0.19 GB | no |
+| the same, `.over("group")` | 0.30 GB | 0.72 GB | yes |
+| `lf.rolling(index_column="ti", period="1000i").agg(mean)` | 0.18 GB | 0.28 GB | no |
+| **the same, plus `group_by="group"`** | 0.49 GB | **1.72 GB** | **3.5× on 4× data** |
+
+The mechanism is visible in polars-stream 0.55.2 and is the same node in
+every collecting row. `AExpr::Rolling` is lowered to a dedicated
+`RollingGroupBy` node (`physical_plan/lower_expr.rs`), and that node is a
+real streaming one — it keeps a `buf_df` with a `buf_df_offset` and drops
+rows once the window has passed them (`nodes/rolling_group_by.rs`); `ewm_*`,
+`cum_*`, `shift`, `interpolate`, `rle` and friends each have their own node
+under `nodes/`. `AExpr::Over` tries `try_build_streaming_group_by` and, when
+that returns `None`, pushes the expression into `fallback_subset` →
+`build_fallback_node_with_ctx` → **`PhysNodeKind::InMemoryMap`**: collect the
+input, run the in-memory engine, re-emit. A frame-level `rolling` takes the
+dedicated node only while `keys.is_empty()`, and any group-by carrying
+`rolling`/`dynamic` options returns `Ok(None)` twice over
+(`lower_group_by.rs:737`, `:1043`) and ends at `build_group_by_fallback` —
+the same collect.
+
+So the trap is not "user code is O(data)". It is that an ordered, stateful
+operation streams **only where polars has hand-written a node for it**, and
+the plugin interface has no way to declare one: there is no "call me per
+morsel, in order, and let me keep state" in the contract, which is why
+`InMemoryMap` is what a plugin gets. Two consequences worth stating plainly:
+polars' own `ewm_mean` streams as an expression while the same EW mean
+written as our plugin does not, for that reason alone; and *per-group*
+windowing in polars is the collecting spelling (`.over`, `group_by=`),
+while a bank's `group=` is O(state) — one accumulator per group, no
+partitioning of the data at all.
+
 **How it was measured, and why not RSS.** Peak *physical footprint* —
 `proc_pid_rusage(RUSAGE_INFO_V4).ri_phys_footprint`, sampled every 20 ms
 from outside the process; the same number `/usr/bin/time -l` prints as
