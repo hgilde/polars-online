@@ -520,6 +520,31 @@ under jemalloc (`po.run`: 1.04 s against ~4 s) and a defect under the
 system allocator (the CLI: 4.8–54 s against a steady 4.1 s) — see
 docs/IMPROVEMENTS.md C8 for the diagnosis and the two fixes.
 
+**Why the bank is not a polars node.** The pipeline is what polars-stream
+builds for its own ordered, stateful operators and does not offer to a user
+function. Checked in polars-stream 0.55.2 (`physical_plan/lower_ir.rs`,
+`lower_expr.rs`, `lower_group_by.rs`, `nodes/`): `df.rolling(index_column,
+period)` and `expr.rolling(index_column=..)` with no `group_by` keys lower to
+a `RollingGroupBy` node that receives morsels serially, insists the index is
+sorted, keeps only the rows still inside the lookback (`buf_df` is sliced as
+windows retire) and hands each batch of windows to parallel evaluators — a
+serial fold feeding a parallel stage, which is this runner's shape.
+`ewm_mean`/`ewm_var`/`ewm_std`/`ewm_sum`, `cum_*`, `forward_fill`, `rle`
+and a group-by over sorted keys have nodes of the same kind. Everything else
+collects first: `rolling(.., group_by=..)` and `group_by_dynamic(.., group_by=..)`
+(`lower_group_by.rs:737`, an in-memory fallback), `rolling_mean(window_size)`
+and any other non-elementwise function, `.over` with an `order_by`, and
+every plugin or Python UDF expression — those become a `columnar-function`
+node, an in-memory sink per input that calls the function once on the whole
+column and becomes a source (`nodes/columnar_function.rs`, flagged
+`is_memory_intensive_pipeline_blocker`). A user function that *is*
+elementwise gets a `Map` node, per morsel and concurrent, which is why it
+cannot carry state. So `online.ewridge(..)` as an expression is O(data) in
+either engine, and an O(state) pass over a stream needs a fold the engine
+does not expose — the reader → bank → writer pipeline here, which also gets
+what `RollingGroupBy` gets, a serial stage and a parallel one, with the
+parallel one across groups.
+
 **Before and after.** The C7 runner ran `lf.slice(offset, chunk_rows)
 .collect()` per chunk on the calling thread, re-planning the scan thirty
 times and overlapping nothing. Same machine, same file, same spec, best of

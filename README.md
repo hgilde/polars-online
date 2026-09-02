@@ -78,6 +78,14 @@ run in parallel (the inputs travel as one packed struct, which is the polars
 path that spreads groups over threads — see docs/PERFORMANCE.md P5). Grids are
 allowed but produce wide structs; the bank is the better surface for grids.
 
+The plugin is called once with the whole column, so its memory is O(data),
+and `collect(engine="streaming")` does not change that: polars' streaming
+engine has no streaming node for a user expression — a plugin is a
+`columnar-function` node, which collects its input, calls once, and re-emits
+(the engine's own `rolling`, `ewm_*` and `cum_*` get dedicated windowed
+nodes; nothing a user writes does). For data that does not fit, the surfaces
+are the bank and the runner below, which hold O(state).
+
 ### 2. `ModelBank` (chunk-fed)
 
 ```python
