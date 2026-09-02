@@ -82,6 +82,46 @@ pub fn num_label(v: f64) -> String {
     }
 }
 
+/// `v > 0` as a named predicate, so that `!positive(v)` refuses NaN too (a
+/// plain `v <= 0.0` lets it through, and NaN in any of these parameters is
+/// a state that never washes out).
+fn positive(v: f64) -> bool {
+    v > 0.0
+}
+
+fn non_negative(v: f64) -> bool {
+    v >= 0.0
+}
+
+/// The first value that appears twice in a grid, if any. Grid entries become
+/// field-name suffixes, so a repeated value is always a mistake.
+fn first_duplicate(vals: &[f64]) -> Option<f64> {
+    vals.iter()
+        .enumerate()
+        .find(|(i, v)| vals[..*i].iter().any(|u| u.to_bits() == v.to_bits()))
+        .map(|(_, v)| *v)
+}
+
+/// `ridge` for the IRLS models: finite and non-negative (zero is plain least
+/// squares).
+fn check_ridge(name: &str, ridge: Option<f64>) -> Result<(), String> {
+    if ridge.is_some_and(|r| !non_negative(r) || !r.is_finite()) {
+        return Err(format!("spec {name:?}: ridge must be finite and >= 0"));
+    }
+    Ok(())
+}
+
+/// `solve_every`: clock units between solves; zero solves every row. A
+/// negative value silently meant "every row" too, NaN meant "never".
+fn check_solve_every(name: &str, v: Option<f64>) -> Result<(), String> {
+    if v.is_some_and(|v| !non_negative(v) || !v.is_finite()) {
+        return Err(format!(
+            "spec {name:?}: solve_every must be finite and >= 0 (0 solves every row)"
+        ));
+    }
+    Ok(())
+}
+
 impl Serialize for Num {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         if self.0.is_finite() {
@@ -375,8 +415,9 @@ pub struct Spec {
     pub halflife: Option<FloatOrList>,
     #[serde(default)]
     pub lam: Option<f64>,
+    /// Ceiling on the clock delta, in clock units; `"inf"` for none.
     #[serde(default)]
-    pub max_dclock: Option<f64>,
+    pub max_dclock: Option<Num>,
     #[serde(default)]
     pub on_clock_reset: OnClockReset,
     #[serde(default)]
@@ -495,8 +536,21 @@ impl Spec {
             }
             (Some(h), None) => {
                 let hs = h.to_vec();
-                if hs.iter().any(|&h| h <= 0.0) {
-                    return Err(format!("spec {:?}: halflife must be > 0", self.name));
+                // `!(h > 0)` rather than `h <= 0` so NaN is refused too: it
+                // decays every accumulator to NaN and nothing washes it out.
+                if hs.iter().any(|&h| !positive(h)) {
+                    return Err(format!(
+                        "spec {:?}: halflife must be > 0 (\"inf\" for no decay)",
+                        self.name
+                    ));
+                }
+                if let Some(dup) = first_duplicate(&hs) {
+                    return Err(format!(
+                        "spec {:?}: halflife lists {} more than once; each value is one \
+                         model instance and the two would produce the same field names",
+                        self.name,
+                        num_label(dup)
+                    ));
                 }
                 if hs.len() == 1 {
                     Ok(vec![(String::new(), Decay::Halflife(hs[0]))])
@@ -517,8 +571,24 @@ impl Spec {
                 self.name
             ));
         }
+        // A negative ceiling clips every delta to it, so the decay *grows*
+        // (`n_eff` ran to 6e7 on 50 rows with `max_dclock = -5`); NaN poisons
+        // the clock. Zero freezes it (a documented way to switch decay off)
+        // and infinity removes the ceiling; both are legitimate.
+        if self.max_dclock.is_some_and(|m| !non_negative(m.0)) {
+            return Err(format!(
+                "spec {:?}: max_dclock must be >= 0 (0 disables decay, \"inf\" removes the ceiling)",
+                self.name
+            ));
+        }
         let session_gap = match &self.session_gap {
             None => None,
+            Some(SessionGapSpec::Gap(g)) if !non_negative(*g) => {
+                return Err(format!(
+                    "spec {:?}: session_gap must be >= 0 or \"reset\"",
+                    self.name
+                ));
+            }
             Some(SessionGapSpec::Gap(g)) => Some(SessionGap::Gap(*g)),
             Some(SessionGapSpec::Word(w)) if w == "reset" => Some(SessionGap::Reset),
             Some(SessionGapSpec::Word(w)) => {
@@ -535,7 +605,7 @@ impl Spec {
             ));
         }
         Ok(ClockCfg {
-            max_dclock: self.max_dclock.unwrap_or(f64::INFINITY),
+            max_dclock: self.max_dclock.map_or(f64::INFINITY, |m| m.0),
             on_clock_reset: self.on_clock_reset,
             session_gap,
         })
@@ -829,22 +899,33 @@ impl Spec {
                     }
                 }
             }
-            ModelKind::Huber { huber_delta, .. } => {
-                if huber_delta.is_some_and(|d| d <= 0.0 || d.is_nan()) {
+            ModelKind::Huber {
+                huber_delta,
+                ridge,
+                solve_every,
+                ..
+            } => {
+                if huber_delta.is_some_and(|d| !positive(d)) {
                     return Err(format!("spec {:?}: huber_delta must be > 0", self.name));
                 }
+                check_ridge(&self.name, *ridge)?;
+                check_solve_every(&self.name, *solve_every)?;
             }
             ModelKind::Quantile {
                 quantile,
                 quantile_eps,
+                ridge,
+                solve_every,
                 ..
             } => {
                 if !(0.0 < *quantile && *quantile < 1.0) {
                     return Err(format!("spec {:?}: quantile must be in (0, 1)", self.name));
                 }
-                if quantile_eps.is_some_and(|e| e <= 0.0) {
+                if quantile_eps.is_some_and(|e| !positive(e)) {
                     return Err(format!("spec {:?}: quantile_eps must be > 0", self.name));
                 }
+                check_ridge(&self.name, *ridge)?;
+                check_solve_every(&self.name, *solve_every)?;
             }
             ModelKind::Kalman {
                 coef_halflife,
@@ -861,8 +942,11 @@ impl Spec {
                         self.name
                     ));
                 }
-                if hs.iter().any(|&h| h <= 0.0) {
-                    return Err(format!("spec {:?}: coef_halflife must be > 0", self.name));
+                if hs.iter().any(|&h| !positive(h)) {
+                    return Err(format!(
+                        "spec {:?}: coef_halflife must be > 0 (\"inf\" pins a coefficient)",
+                        self.name
+                    ));
                 }
                 if q.as_ref().is_some_and(|q| q.len() != k_total) {
                     return Err(format!(
@@ -870,16 +954,30 @@ impl Spec {
                         self.name
                     ));
                 }
-                if obs_var.is_some_and(|v| v <= 0.0) {
-                    return Err(format!("spec {:?}: obs_var must be > 0", self.name));
+                if q.as_ref()
+                    .is_some_and(|q| q.iter().any(|v| !non_negative(v.0) || !v.0.is_finite()))
+                {
+                    return Err(format!(
+                        "spec {:?}: q values must be finite and >= 0 (0 pins a coefficient)",
+                        self.name
+                    ));
                 }
-                if p0.is_some_and(|v| v <= 0.0) {
-                    return Err(format!("spec {:?}: p0 must be > 0", self.name));
+                if obs_var.is_some_and(|v| !positive(v) || !v.is_finite()) {
+                    return Err(format!(
+                        "spec {:?}: obs_var must be finite and > 0",
+                        self.name
+                    ));
+                }
+                if p0.is_some_and(|v| !positive(v) || !v.is_finite()) {
+                    return Err(format!("spec {:?}: p0 must be finite and > 0", self.name));
                 }
             }
             ModelKind::Lasso {
                 lasso_path,
                 l1_ratio,
+                select_halflife,
+                solve_every,
+                cd_tol,
                 ..
             } => {
                 if lasso_path.is_empty() {
@@ -888,19 +986,43 @@ impl Spec {
                         self.name
                     ));
                 }
-                if !lasso_path.windows(2).all(|w| w[0] >= w[1]) {
+                if lasso_path
+                    .iter()
+                    .any(|l| !non_negative(*l) || !l.is_finite())
+                {
                     return Err(format!(
-                        "spec {:?}: lasso_path must be decreasing",
+                        "spec {:?}: lasso_path values must be finite and >= 0",
+                        self.name
+                    ));
+                }
+                // Strictly: a repeated penalty is two identical slots with the
+                // same field name.
+                if !lasso_path.windows(2).all(|w| w[0] > w[1]) {
+                    return Err(format!(
+                        "spec {:?}: lasso_path must be strictly decreasing",
                         self.name
                     ));
                 }
                 if l1_ratio.is_some_and(|r| !(0.0..=1.0).contains(&r)) {
                     return Err(format!("spec {:?}: l1_ratio must be in [0, 1]", self.name));
                 }
+                if select_halflife.is_some_and(|h| !positive(h)) {
+                    return Err(format!("spec {:?}: select_halflife must be > 0", self.name));
+                }
+                check_solve_every(&self.name, *solve_every)?;
+                if cd_tol.is_some_and(|t| !positive(t) || !t.is_finite()) {
+                    return Err(format!(
+                        "spec {:?}: cd_tol must be finite and > 0",
+                        self.name
+                    ));
+                }
             }
             ModelKind::Rls { ridge, coef0 } => {
-                if ridge.is_some_and(|r| r <= 0.0 || r.is_nan()) {
-                    return Err(format!("spec {:?}: rls ridge must be > 0", self.name));
+                if ridge.is_some_and(|r| !positive(r) || !r.is_finite()) {
+                    return Err(format!(
+                        "spec {:?}: rls ridge must be finite and > 0",
+                        self.name
+                    ));
                 }
                 let k_total = self.k() + usize::from(self.add_intercept);
                 if let Some(c) = coef0 {
@@ -913,12 +1035,39 @@ impl Spec {
                 }
             }
             ModelKind::EwRidge {
+                ridge,
                 feature_sets,
                 coef0,
                 session_shrink,
                 long_halflife,
+                solve_every,
                 ..
             } => {
+                if let Some(r) = ridge {
+                    let rs = r.to_vec();
+                    // A negative ridge makes the system indefinite and the
+                    // coefficients garbage; NaN/inf make them zero. Zero is
+                    // legal: plain least squares, rescued by the jitter
+                    // fallback when singular.
+                    if rs.iter().any(|r| !non_negative(*r) || !r.is_finite()) {
+                        return Err(format!(
+                            "spec {:?}: ridge must be finite and >= 0",
+                            self.name
+                        ));
+                    }
+                    if let Some(dup) = first_duplicate(&rs) {
+                        return Err(format!(
+                            "spec {:?}: ridge lists {} more than once; each value is one \
+                             grid slot and the two would produce the same field names",
+                            self.name,
+                            num_label(dup)
+                        ));
+                    }
+                }
+                check_solve_every(&self.name, *solve_every)?;
+                if long_halflife.is_some_and(|h| !positive(h)) {
+                    return Err(format!("spec {:?}: long_halflife must be > 0", self.name));
+                }
                 if session_shrink.is_some_and(|f| !(0.0..=1.0).contains(&f)) {
                     return Err(format!(
                         "spec {:?}: session_shrink must be in [0, 1]",

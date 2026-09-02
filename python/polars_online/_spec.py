@@ -13,19 +13,22 @@ from polars_online._polars_online import spec_output_fields, spec_output_index, 
 
 def _json(spec: dict[str, Any]) -> str:
     """JSON has no infinity literal, but ``halflife=inf`` is meaningful (it pins
-    a coefficient), so non-finite floats are encoded as strings the Rust side
-    understands."""
+    a coefficient), so infinities are encoded as strings the Rust side
+    understands. A NaN is never meaningful in a spec and is refused here, by
+    parameter name, rather than by the JSON offset serde would report."""
 
-    def enc(v: Any) -> Any:
+    def enc(v: Any, key: str) -> Any:
         if isinstance(v, float) and not math.isfinite(v):
-            return "inf" if v > 0 else ("-inf" if v < 0 else "nan")
+            if math.isnan(v):
+                raise ValueError(f"spec {json.dumps(spec.get('name'))}: {key} must not be NaN")
+            return "inf" if v > 0 else "-inf"
         if isinstance(v, dict):
-            return {k: enc(x) for k, x in v.items()}
+            return {k: enc(x, k) for k, x in v.items()}
         if isinstance(v, (list, tuple)):
-            return [enc(x) for x in v]
+            return [enc(x, key) for x in v]
         return v
 
-    return json.dumps(enc(spec))
+    return json.dumps(enc(spec, "spec"))
 
 
 __all__ = [

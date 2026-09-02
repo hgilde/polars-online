@@ -186,13 +186,28 @@ two columns and is skipped outright unless the policy is `"error"` and there
 is a clock column — a row-count clock cannot go backwards. The message says
 "the bank was not updated".
 
-### C4 — silent nonsense from a few parameters — *proposed*
+### C4 — silent nonsense from a few parameters — *done*
 
-Each of these builds a spec, runs, and produces garbage without a word:
-`ridge=-1` / `ridge=nan` (solve failures, junk coefficients), `max_dclock=-5`
-(`n_eff = 2e30`), `session_gap=-1`, `solve_every=-1`, `solve_every=nan`, and
-`halflife=[10, 10]` is caught only at bank construction, not by
-`validate_spec`. Each gets a validation line with the spec's name in it.
+Each of these built a spec, ran, and produced garbage without a word:
+`ridge=-1` (pred −1.2 on a target of 1), `ridge=nan` / `ridge=inf` (every
+coefficient 0), `max_dclock=-5` (`n_eff = 5.7e7` on 50 rows — every delta
+clipped to −5, so the "decay" grows), `session_gap=-1` (clamped to 0),
+`solve_every=-1` (solved every row), `halflife=nan` (`n_eff` NaN for good),
+and `halflife=[10, 10]` was caught only at bank construction, by the
+field-name tripwire, not by the builder.
+
+Done, all at `Spec::validate` so the builder, `validate_spec`, the bank and
+the CLI agree: `ridge` finite and ≥ 0 (zero is plain least squares; `rls`
+keeps > 0), grid values (`ridge`, `halflife`) unique, `max_dclock` ≥ 0 (zero
+is the documented "no decay", `inf` now expressible from Python — the field
+is a `Num`), `session_gap` ≥ 0, `solve_every` finite and ≥ 0, `lasso_path`
+finite, ≥ 0 and *strictly* decreasing, `select_halflife`/`long_halflife`/
+`cd_tol` > 0, Kalman `q` ≥ 0 and `obs_var`/`p0` finite; every
+`x <= 0` test became `!(x > 0)` so NaN fails it too. The Python encoder
+refuses any NaN by parameter name (`spec "m": lam must not be NaN`) instead
+of letting serde report a JSON column offset. `tests/test_spec_validation.py`
+is the table: every refused value, its message, and the legal neighbour that
+still runs.
 
 ## 2. Performance
 

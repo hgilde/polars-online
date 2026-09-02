@@ -185,7 +185,7 @@ Every model takes the same stream parameters:
 | `add_intercept` | default `True` |
 | `clock` | monotone **numeric** column (seconds, cumulative volume, …). `None` ⇒ row count. A temporal column is rejected — cast it first, e.g. `pl.col("ts").dt.epoch("s")` — because its internal representation would silently set the units of `halflife`, `max_dclock` and `session_gap` |
 | `halflife` / `lam` | decay in clock units; mutually exclusive. A list of halflives means one accumulator per value |
-| `max_dclock` | ceiling on the clock delta (required with `clock`) |
+| `max_dclock` | ceiling on the clock delta (required with `clock`); `0` disables decay, `inf` removes the ceiling |
 | `on_clock_reset` | what a backwards clock means: `"max"` (default), `"zero"`, `"reset_state"`, or `"error"` to refuse the chunk — the bank is left as it was, so the corrected chunk can be fed |
 | `session`, `session_gap` | on a session change, apply this delta (or `"reset"`) |
 | `session_shrink`, `long_halflife` | `ewridge` only: at a session change, mix partway back toward a slow-moving twin — changes what the model believes, where `session_gap` only changes how confident it is |
