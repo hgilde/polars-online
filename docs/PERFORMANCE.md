@@ -1,6 +1,6 @@
 # Performance: measurements and the parallelism plan
 
-Status as of 2026-08-31: **P1–P8 all done.** Headline, against the baseline in
+Status as of 2026-09-02: **P1–P8 all done**, numbers refreshed in §8. Headline, against the baseline in
 §1: **2.8× single stream at k=5, 2.0× at k=20, 2.0× on grouped data, 2.1× on a
 single-stream grid, 3.9× on a multi-spec bank, 1.23× on the CLI end to end**,
 and thread scaling from 3.2× to 6.2× on ten performance cores. Every golden
@@ -14,7 +14,8 @@ sit, and §5 collects everything rejected.
 Machine for every number in this file: Apple M-series, 10 performance + 4
 efficiency cores, release build (thin LTO, `codegen-units = 1`), single
 process, `ONLINE_TIMING=1` for the section rows. Regenerate the raw numbers
-with `cargo run --release -p online-core --example core_bench` and
+with `cargo run --release -p online-core --example core_bench` (and
+`--example rls_bench` for the `rls` A/B in §8) and
 `ONLINE_TIMING=1 uv run python scripts/benchmark.py`.
 
 ## 1. The measured baseline
@@ -348,3 +349,48 @@ useful kind.
   two distinct session names, or one name against null, collide with
   probability ~2⁻⁶⁴ per pair (FNV-1a). Accepted; a collision merges two
   sessions, it does not corrupt state.
+
+## 8. Refresh (2026-09-02), and what `rls` costs now
+
+§4's table was the state after P1–P8; §6's allocator fix landed *after* it, and
+the README's table predates both. Re-measured with the same commands
+(`scripts/benchmark.py --markdown`, `scripts/scaling_bench.py`), two runs
+agreeing within 2%:
+
+| configuration | README claimed | measured now | |
+|---|---:|---:|---:|
+| ew_ridge k=5 | 5,823,285 | **8,961,460** | +54% |
+| ew_ridge k=20 | 2,775,086 | **3,620,024** | +30% |
+| ew_ridge k=50 | 846,000 | **960,926** | +14% |
+| ew_ridge k=20, 10 targets | 1,391,097 | **1,906,032** | +37% |
+| ew_ridge k=20, 5 halflives | 1,328,381 | **2,158,579** | +62% |
+| rls k=20 | 3,131,992 | **1,629,801** | **−48%** |
+| kalman k=20 | 1,345,525 | **1,661,270** | +23% |
+| lasso k=20 | 1,503,706 | **1,878,137** | +25% |
+| huber k=20 | 2,852,545 | **3,680,996** | +29% |
+| ftrl k=20 | 4,814,801 | **6,288,122** | +31% |
+
+Grouped, k=20 over 64 groups: 5.13M → **6.04M rows/s**. Thread scaling on the
+same workload now runs to every core the machine has (the script stopped at 8,
+which on a 14-core box hides the row that matters): 916k / 1.65M / 2.86M /
+4.75M / 6.03M at 1, 2, 4, 8, 14 threads — **6.6×**. Eight single-group specs
+over 300k rows: 201.7 ms → **118 ms** against 685 ms run one at a time.
+Expression under `.over(g)` at 1000 groups: **12.2M rows/s**.
+
+**`rls` is the exception, and it is C5's bill.** Attributed by A/B on the model
+arithmetic alone — `crates/online-core/examples/rls_bench.rs`, which compiles
+unchanged against `50c1a38^` (the commit before the square-root rewrite),
+so nothing but `Rls::step` differs:
+
+| k | covariance form | square-root (QR) form | |
+|---|---:|---:|---:|
+| 5 | 13,915,222 | 7,226,608 | 0.52× |
+| 20 | 4,390,434 | 1,700,789 | 0.39× |
+| 50 | 996,592 | 491,013 | 0.49× |
+
+Both forms are O(k²) per row; the QR form does more of it — `k` Givens
+rotations, each with a square root — and buys the thing C5 was after: the
+covariance form died deterministically on one extreme row. Worth paying, and
+now stated rather than implied. A square-root-free (fast) Givens variant would
+recover part of it and is the obvious place to look if `rls` throughput ever
+becomes the constraint; nobody has asked yet, so it is not done.

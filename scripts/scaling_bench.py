@@ -52,8 +52,12 @@ def main() -> None:
     ap.add_argument("--markdown", action="store_true")
     args = ap.parse_args()
 
-    counts = [1, 2, 4, min(8, os.cpu_count() or 8)]
-    counts = sorted(set(c for c in counts if c >= 1))
+    # Up to every core the machine has: the last row is the one that shows
+    # whether the fan-out still scales where it matters, and stopping at 8 on
+    # a 14-core box hides exactly that (docs/PERFORMANCE.md P8). On a 4-core
+    # CI runner this collapses back to 1/2/4.
+    cpus = os.cpu_count() or 8
+    counts = sorted({c for c in (1, 2, 4, 8, cpus) if 1 <= c <= cpus})
     base = None
     rowsps: list[tuple[int, float]] = []
     for n in counts:

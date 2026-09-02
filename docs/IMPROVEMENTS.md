@@ -297,6 +297,27 @@ it at 4%; the stale claim is corrected in PERFORMANCE.md and the code comment.
 rows / 1000 groups: int keys 167 ms, string keys 146 ms, categorical 176 ms,
 end to end. The cast is not where the time goes; nothing to do.
 
+### P4 — the published throughput table was two changes stale — *done*
+
+Not a code finding: a documentation one, found by re-running the command the
+README cites. Every `ewridge` case was 14–62% *faster* than the table claimed
+(the allocator fix, PERFORMANCE §6, landed after the table was written), and
+`rls` was **48% slower** — 3.13M rows/s published, 1.63M measured.
+
+`rls` is C5's bill, and it is now attributed rather than assumed:
+`crates/online-core/examples/rls_bench.rs` times `Rls::step` alone and
+compiles unchanged against `50c1a38^`, the commit before the square-root
+rewrite, so the A/B isolates the model arithmetic — 4.39M vs 1.70M rows/s at
+k=20, 0.39×, and 0.52×/0.49× at k=5/k=50. Both forms are O(k²); the QR form
+does `k` Givens rotations with a square root each, and in exchange `rls` no
+longer dies of cancellation on one extreme row. The right trade, wrongly
+advertised.
+
+README table and prose refreshed, PERFORMANCE §8 records the comparison, and
+`scripts/scaling_bench.py` now runs up to every core the machine has — it
+stopped at 8, which on a 14-core box hides the row the script exists to show
+(1→14 threads is 6.6×).
+
 ## 3. Usability
 
 ### U1 — features as expressions — *done*
