@@ -51,7 +51,7 @@ input order; no allocation in the hot path after warmup (preallocate buffers in 
 | `halflife` | float \| list[float] | clock units; mutually exclusive with `lam` |
 | `lam` | float | per-row decay factor, alternative to `halflife` |
 | `max_dclock` | float | ceiling on clock delta (required if `clock` given) |
-| `on_clock_reset` | `"max"` \| `"zero"` \| `"reset_state"` | negative delta handling; default `"max"` |
+| `on_clock_reset` | `"max"` \| `"zero"` \| `"reset_state"` \| `"error"` | negative delta handling; default `"max"`. `"error"` refuses the whole chunk and leaves the bank untouched (IMPROVEMENTS C3) |
 | `session` | str \| None | column; on change apply `session_gap` |
 | `session_gap` | float \| `"reset"` | clock units to apply at session change |
 | `weight` | str \| None | row weight column, default 1 |
@@ -437,8 +437,9 @@ one pass per axis — correctness, performance, usability, extensibility,
 testing — with every finding reproduced before it was written down. Done so
 far: the emit flags through the expression plugin (C1), a bounded-input
 contract for every model with the test that enforces it (C2/T4), `.over()`
-running groups in parallel (P1), features as expressions (U1), and the one T4
-found: covariance-form `rls` and `ew_cov`'s tracked inverse die of
+running groups in parallel (P1), features as expressions (U1), a chunk
+refused under `on_clock_reset="error"` leaving the bank untouched (C3), and
+the one T4 found: covariance-form `rls` and `ew_cov`'s tracked inverse die of
 cancellation on a single extreme row, so `rls` is now in square-root (QR)
 form and the precision matrix is solved on demand (C5, schema 2). The rest is
 proposed with its measurements next to it.

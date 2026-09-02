@@ -164,7 +164,7 @@ converted on load (`R` from the reverse-Cholesky of `P`, `u = Rβ`); schema-1
 records the oldest layout a build still loads, and both `check_schema` and
 the bank accept the range.
 
-### C3 — `fit_predict` is not atomic under `on_clock_reset="error"` — *proposed*
+### C3 — `fit_predict` is not atomic under `on_clock_reset="error"` — *done*
 
 Two groups; group `b` goes backwards at row 80. The error is raised, but by
 then group `a` has been fully updated and `b`'s clock has advanced to row 79.
@@ -174,9 +174,17 @@ error mode is documented as "a data error here, and `on_clock_reset='error'`
 will say so", but saying so and then leaving the bank half-updated turns a
 recoverable data error into a restart.
 
-Fix: validate the clock schedule of the whole chunk on a *clone* of each
-stream's `ClockState` before any model is touched; only then run pass 2.
-The check is O(rows) and only runs under `"error"`.
+Done: `Stream::check_clock` walks the chunk's clock and session columns on a
+*clone* of the stream's `ClockState` and reports the first backwards row
+exactly as `process_chunk` would; the bank runs it over every (spec × group)
+of the chunk before it runs `process_chunk` on any, so a refusal leaves the
+bank byte-identical (`a_refused_chunk_updates_nothing` compares
+`save_bytes()` before and after, then feeds the corrected chunk and matches a
+bank that never saw the bad one). `process_chunk`'s own pass 1 now runs on a
+copy too, so a stream is atomic on its own as well. The check is O(rows) over
+two columns and is skipped outright unless the policy is `"error"` and there
+is a clock column — a row-count clock cannot go backwards. The message says
+"the bank was not updated".
 
 ### C4 — silent nonsense from a few parameters — *proposed*
 

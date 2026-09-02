@@ -211,6 +211,20 @@ fn extract(df: &DataFrame, spec: &Spec) -> PolarsResult<SpecColumns> {
 /// clock policy can refuse a row (`on_clock_reset = "error"`).
 type StreamRows = PolarsResult<ChunkOut>;
 
+/// The error for a backwards clock under `on_clock_reset = "error"`: names the
+/// spec, the column, the size of the step back, the row, and the way out.
+fn backwards_clock(spec: &Spec, raw: f64, row: usize) -> PolarsError {
+    polars_err!(ComputeError:
+        "spec {:?}: clock column {:?} goes backwards by {} at row {} \
+         (on_clock_reset = \"error\"); the bank was not updated. Sort each \
+         group by the clock, or choose \"max\"/\"zero\"/\"reset_state\" to \
+         define what a backwards clock means.",
+        spec.name,
+        spec.clock.as_deref().unwrap_or("<row count>"),
+        -raw, row
+    )
+}
+
 /// Row-index partition by group key, in row order.
 ///
 /// Keyed on a 64-bit hash of the string value rather than on the string
@@ -539,6 +553,18 @@ impl Bank {
         // starting the big ones last leaves cores idle at the tail.
         work.sort_by_key(|(_, idx, _)| std::cmp::Reverse(idx.len()));
 
+        // Under `on_clock_reset = "error"` the chunk is refused as a whole:
+        // every stream checks its clock schedule on a copy before any model is
+        // touched (docs/IMPROVEMENTS.md C3), so the bank is left exactly as it
+        // was and the corrected chunk can be fed. A no-op under every other
+        // policy.
+        work.par_iter().try_for_each(|(si, idx, stream)| {
+            let sc = &cols[*si];
+            stream
+                .check_clock(&cfgs[*si], sc.clock.as_deref(), sc.session.as_deref(), idx)
+                .map_err(|(raw, i)| backwards_clock(&specs[*si], raw, i))
+        })?;
+
         let done: Vec<(usize, StreamRows)> = work
             .into_par_iter()
             .map(|(si, idx, stream)| {
@@ -560,17 +586,7 @@ impl Bank {
                             idx,
                             &mut out,
                         )
-                        .map_err(|(raw, i)| {
-                            polars_err!(ComputeError:
-                                "spec {:?}: clock column {:?} goes backwards by {} at \
-                                 row {} (on_clock_reset = \"error\"). Sort each group by \
-                                 the clock, or choose \"max\"/\"zero\"/\"reset_state\" \
-                                 to define what a backwards clock means.",
-                                spec.name,
-                                spec.clock.as_deref().unwrap_or("<row count>"),
-                                -raw, i
-                            )
-                        })?;
+                        .map_err(|(raw, i)| backwards_clock(spec, raw, i))?;
                     Ok(out)
                 })();
                 (si, r)

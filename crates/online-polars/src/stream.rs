@@ -808,6 +808,39 @@ impl Stream {
         Ok(stream)
     }
 
+    /// Under `on_clock_reset = "error"`: the first row of the chunk at which
+    /// this stream's clock would go backwards, exactly as [`Stream::process_chunk`]
+    /// would report it, found on a copy of the clock so nothing is touched.
+    ///
+    /// The bank runs this over every stream of a chunk before it runs any of
+    /// them (docs/IMPROVEMENTS.md C3). Without it a backwards clock in one
+    /// group refused that group's rows but left every other group updated, so
+    /// the corrected chunk could not be re-fed and only a `load` recovered the
+    /// bank.
+    pub fn check_clock(
+        &self,
+        cfg: &online_core::ClockCfg,
+        clock: Option<&[f64]>,
+        session: Option<&[u64]>,
+        idx: &[usize],
+    ) -> Result<(), (f64, usize)> {
+        // A row-count clock cannot go backwards, and no other policy refuses a
+        // row, so this costs nothing unless it can fail.
+        let (Some(clock), online_core::OnClockReset::Error) = (clock, cfg.on_clock_reset) else {
+            return Ok(());
+        };
+        let mut state = self.clock.clone();
+        for &i in idx {
+            // `accept` only routes the delta into `pending`; whether the row
+            // is refused depends on the clock and session alone.
+            let adv = state.advance(cfg, Some(clock[i]), session.map(|s| s[i]), true);
+            if let Some(raw) = adv.backwards {
+                return Err((raw, i));
+            }
+        }
+        Ok(())
+    }
+
     /// Process this stream's rows of one chunk, writing into flat per-slot
     /// buffers (docs/PERFORMANCE.md P1, P2).
     ///
@@ -824,7 +857,10 @@ impl Stream {
     /// [`run_instance`], so there is one implementation of the arithmetic.
     ///
     /// On a backwards clock under `on_clock_reset = "error"`, returns the raw
-    /// delta and the absolute row it happened at, for the caller to name.
+    /// delta and the absolute row it happened at, for the caller to name, and
+    /// leaves the stream untouched (pass 1 runs on a copy of the clock). The
+    /// bank runs [`Stream::check_clock`] over every stream before it runs
+    /// this on any, so the refusal is per chunk, not per stream.
     #[allow(clippy::too_many_arguments)]
     pub fn process_chunk(
         &mut self,
@@ -842,6 +878,10 @@ impl Stream {
         out.rows.extend_from_slice(idx);
 
         // ---- pass 1: the clock schedule, models untouched ----
+        // On a copy of the clock, committed below, so a refused row leaves
+        // the stream exactly as it was.
+        let mut clock_state = self.clock.clone();
+        let mut rows_seen = self.rows_seen;
         let last = idx.last().copied();
         let mut plans: Vec<RowPlan> = Vec::with_capacity(n_rows);
         for (ri, &i) in idx.iter().enumerate() {
@@ -849,21 +889,19 @@ impl Stream {
             // null, NaN, infinity and the bound.
             let w = weight.map(|w| w[i]);
             let accept = features.iter().all(|f| usable(f[i])) && w.map(usable).unwrap_or(true);
-            let adv = self
-                .clock
-                .advance(cfg, clock.map(|c| c[i]), session.map(|s| s[i]), accept);
+            let adv = clock_state.advance(cfg, clock.map(|c| c[i]), session.map(|s| s[i]), accept);
             // `on_clock_reset = "error"`: hand the offending delta back so the
             // caller can name the row and column.
             if let Some(raw) = adv.backwards {
                 return Err((raw, i));
             }
             if accept {
-                self.rows_seen += 1;
+                rows_seen += 1;
                 out.processed[ri] = true;
             }
             let want_coef = accept
                 && (Some(i) == last
-                    || (spec.coef_every > 0 && self.rows_seen % u64::from(spec.coef_every) == 0));
+                    || (spec.coef_every > 0 && rows_seen % u64::from(spec.coef_every) == 0));
             plans.push(RowPlan {
                 ri,
                 i,
@@ -875,6 +913,9 @@ impl Stream {
                 w: w.unwrap_or(1.0),
             });
         }
+
+        self.clock = clock_state;
+        self.rows_seen = rows_seen;
 
         // ---- pass 2: the instances ----
         let drift_resets = spec.drift_action.as_deref() == Some("reset");

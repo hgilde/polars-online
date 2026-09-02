@@ -222,3 +222,48 @@ fn values_beyond_the_bound_are_missing() {
         );
     }
 }
+
+/// Under `on_clock_reset = "error"` a refused chunk leaves the whole bank as it
+/// was (docs/IMPROVEMENTS.md C3): not just the group whose clock went
+/// backwards, but every other group and spec that shared the chunk. The
+/// corrected chunk then feeds normally and gives the same output as a bank
+/// that never saw the bad one.
+#[test]
+fn a_refused_chunk_updates_nothing() {
+    let strict = |name: &str| {
+        let mut s = spec_json(name, true);
+        s.on_clock_reset = online_core::OnClockReset::Error;
+        s
+    };
+    let specs = || vec![strict("m"), strict("m2")];
+    let df = make_df(200);
+    let first = df.slice(0, 100);
+    let good = df.slice(100, 100);
+    // Send group g1's clock backwards halfway through the second chunk.
+    let mut t = good.column("t").unwrap().f64().unwrap().to_vec();
+    t[81] = Some(t[79].unwrap() - 1.0);
+    let bad = good
+        .clone()
+        .with_column(Column::new("t".into(), t))
+        .unwrap()
+        .clone();
+
+    let mut bank = Bank::new(specs()).unwrap();
+    bank.fit_predict(&first).unwrap();
+    let before = bank.save_bytes().unwrap();
+    let err = bank.fit_predict(&bad).unwrap_err().to_string();
+    assert!(
+        err.contains("goes backwards") && err.contains("row 81"),
+        "{err}"
+    );
+    assert!(
+        bank.save_bytes().unwrap() == before,
+        "a refused chunk changed the bank"
+    );
+
+    let out = bank.fit_predict(&good).unwrap();
+    let mut clean = Bank::new(specs()).unwrap();
+    clean.fit_predict(&first).unwrap();
+    let want = clean.fit_predict(&good).unwrap();
+    assert_eq!(out, want);
+}
