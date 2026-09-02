@@ -122,6 +122,34 @@ def test_chunk_invariance_and_save_load(tmp_path):
     assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
 
 
+def test_level_halflife_alone_is_enough(tmp_path):
+    """`halflife` and `level_halflife` are one knob spelled two ways -- the
+    level defaults to the spec's halflife -- so giving either satisfies the
+    "one of halflife/lam is required" rule. The README's own Holt example
+    gives only `level_halflife`, and used to be refused (IMPROVEMENTS U6)."""
+    df = _trending(n=200)
+    d = dict(targets=["y0"], clock="t", max_dclock=100.0, min_periods=3.0, trend_halflife=80.0)
+    spelled_level = po.spec.holt("m", level_halflife=20.0, **d)
+    spelled_halflife = po.spec.holt("m", halflife=20.0, **d)
+    a = po.ModelBank([spelled_level]).fit_predict(df)
+    b = po.ModelBank([spelled_halflife]).fit_predict(df)
+    assert a.equals(b, null_equal=True)
+    # And the field names stay ungridded -- no `@h` suffix from a phantom grid.
+    assert [f.name for f in a.schema["m"].fields] == po.spec.output_fields(spelled_level)
+
+
+def test_a_holt_spec_still_needs_one_of_them():
+    with pytest.raises(ValueError, match="one of halflife/lam is required"):
+        po.spec.holt("m", targets=["y0"], trend_halflife=100.0)
+    with pytest.raises(ValueError, match="level_halflife must be > 0"):
+        po.spec.holt("m", targets=["y0"], level_halflife=-1.0)
+
+
+def test_other_models_do_not_get_the_exemption():
+    with pytest.raises(ValueError, match="one of halflife/lam is required"):
+        po.spec.kalman("m", targets=["y0"], features=["x0"], coef_halflife=50.0)
+
+
 def test_bad_config_rejected():
     with pytest.raises(ValueError, match="level_halflife"):
         _spec(level_halflife=0.0)

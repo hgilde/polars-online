@@ -666,10 +666,26 @@ impl Spec {
                 "spec {:?}: halflife and lam are mutually exclusive",
                 self.name
             )),
-            (None, None) => Err(format!(
-                "spec {:?}: one of halflife/lam is required",
-                self.name
-            )),
+            (None, None) => match &self.model {
+                // For Holt the level halflife *is* the spec's halflife --
+                // `build_one` defaults one from the other, so they are one
+                // knob spelled two ways -- and a spec that gives
+                // `level_halflife` has already said it. The README's own Holt
+                // example did not run before this (docs/IMPROVEMENTS.md U6).
+                ModelKind::Holt {
+                    level_halflife: Some(h),
+                    ..
+                } => {
+                    if !positive(*h) {
+                        return Err(format!("spec {:?}: level_halflife must be > 0", self.name));
+                    }
+                    Ok(vec![(String::new(), Decay::Halflife(*h))])
+                }
+                _ => Err(format!(
+                    "spec {:?}: one of halflife/lam is required",
+                    self.name
+                )),
+            },
             (None, Some(l)) => {
                 if !(0.0 < l && l <= 1.0) {
                     return Err(format!("spec {:?}: lam must be in (0, 1]", self.name));

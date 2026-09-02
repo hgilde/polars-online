@@ -452,6 +452,21 @@ editor showed nothing and a typo was a runtime error. Now:
   the stub, a `_json` that accepted a list but said `dict`, and an `int`
   comparison typed as `object`.
 
+### U6 — the README's own `holt` example did not run — *done*
+
+Found by running the README's python blocks instead of only compiling them
+(T5). `po.spec.holt("baseline", targets=["y"], clock="t", level_halflife=200.0,
+trend_halflife=2000.0)` — the example under the model's own section — raised
+`spec "baseline": one of halflife/lam is required`.
+
+The example was right and the rule was wrong. For `holt` the level halflife
+*is* the spec's halflife: `build_one` defaults `level_halflife` from it, so
+they are one knob spelled two ways, and a spec that gives `level_halflife` has
+said what the decay is. `decays()` now accepts that spelling for `holt` alone
+and nothing else — the two spellings produce identical output, ungridded field
+names, and `trend_halflife` by itself is still refused, as is a non-positive
+`level_halflife`.
+
 ### U5 — a `Decimal` column anywhere in the frame aborted the process — *done*
 
 `ModelBank.fit_predict` takes the whole frame, and the whole frame crosses

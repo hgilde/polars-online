@@ -9,6 +9,10 @@ carries breaking changes.
 
 ### Fixed
 
+- **`holt` accepts `level_halflife` on its own.** For Holt the level halflife
+  is the spec's halflife — one knob spelled two ways — but a spec that gave
+  only `level_halflife` was refused with "one of halflife/lam is required",
+  including the example in this project's own README.
 - **Every polars dtype can now cross into the model bank.** A `Decimal` or
   `Int128` column *anywhere* in the frame — even one no spec named — aborted
   the process with `activate 'dtype-decimal' feature`, and `Int8`/`UInt8`/
