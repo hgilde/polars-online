@@ -10,9 +10,16 @@
 //! or a solve moves these numbers.
 //!
 //! The constants are not arbitrary. They are the current implementation's
-//! output, and that implementation is independently verified against numpy
-//! references for every model in `tests/test_oracles.py`. This file locks in
-//! numbers that have already been checked against something else.
+//! output, and that implementation is independently verified elsewhere: the
+//! numpy references in `tests/reference.py` for `ew_ridge`, `rls`, `kalman`,
+//! `huber`/`quantile` and `ftrl`; the lasso's KKT conditions in
+//! `tests/test_oracles.py`; and, for `sgd`, `pa`, `holt` and `ew_cov`, the
+//! recursion written out longhand in each module's own unit tests. This file
+//! locks in numbers that have already been checked against something else.
+//!
+//! Every model has a signature here, and
+//! `tests/test_model_registry.py::test_the_core_golden_file_pins_every_model`
+//! fails when one is missing.
 //!
 //! Regenerate with `PRINT_GOLDEN=1 cargo test -p online-core --test golden --
 //! --nocapture`, and only after confirming a change is intended.
@@ -53,9 +60,16 @@ fn stream() -> Vec<Row> {
 
 /// Predictions at rows 20, 45 and 59 for one output slot.
 fn signature<M: OnlineModel>(model: &mut M, pick: usize) -> Vec<f64> {
+    signature_of(model, pick, true)
+}
+
+/// The same three rows, with the features withheld for the model that
+/// takes none (`holt`).
+fn signature_of<M: OnlineModel>(model: &mut M, pick: usize, features: bool) -> Vec<f64> {
     let mut out = Vec::new();
     for (i, (x, y, d, w)) in stream().into_iter().enumerate() {
-        let step = model.step(&x, &y, d, w);
+        let x: &[f64] = if features { &x } else { &[] };
+        let step = model.step(x, &y, d, w);
         if matches!(i, 20 | 45 | 59) {
             out.push(step.pred[pick]);
         }
@@ -231,6 +245,90 @@ fn ftrl_squared_golden() {
     check("ftrl_squared", &signature(&mut m, 0), GOLDEN_FTRL_SQUARED);
 }
 
+/// The busier path: a robust loss, an annealed rate, a penalty and the
+/// running standardization all take part, so each has a number to move.
+#[test]
+fn sgd_golden() {
+    let mut m = Sgd::new(SgdCfg {
+        n_features: 2,
+        n_targets: 1,
+        add_intercept: true,
+        decay: Decay::Halflife(20.0),
+        loss: SgdLoss::Huber { delta: 0.5 },
+        learning_rate: 0.05,
+        schedule: LearningRate::InvScaling { power: 0.25 },
+        l2: 0.01,
+        clip_gradient: 1e3,
+        scale_features: true,
+        min_periods: 3.0,
+    })
+    .unwrap();
+    check("sgd", &signature(&mut m, 0), GOLDEN_SGD);
+}
+
+/// The plain path: squared loss, constant rate, no penalty, raw features.
+#[test]
+fn sgd_squared_golden() {
+    let mut m = Sgd::new(SgdCfg {
+        n_features: 2,
+        n_targets: 1,
+        add_intercept: true,
+        decay: Decay::Halflife(20.0),
+        loss: SgdLoss::Squared,
+        learning_rate: 0.05,
+        schedule: LearningRate::Constant,
+        l2: 0.0,
+        clip_gradient: 1e3,
+        scale_features: false,
+        min_periods: 3.0,
+    })
+    .unwrap();
+    check("sgd_squared", &signature(&mut m, 0), GOLDEN_SGD_SQUARED);
+}
+
+#[test]
+fn pa_golden() {
+    let mut m = Pa::new(PaCfg {
+        n_features: 2,
+        n_targets: 1,
+        add_intercept: true,
+        decay: Decay::Halflife(20.0),
+        mode: PaMode::Pa2,
+        c: 0.5,
+        eps: 0.05,
+        min_periods: 3.0,
+    })
+    .unwrap();
+    check("pa", &signature(&mut m, 0), GOLDEN_PA);
+}
+
+#[test]
+fn holt_golden() {
+    let mut m = Holt::new(HoltCfg {
+        n_targets: 1,
+        level_halflife: 10.0,
+        trend_halflife: 40.0,
+        min_periods: 3.0,
+    })
+    .unwrap();
+    check("holt", &signature_of(&mut m, 0, false), GOLDEN_HOLT);
+}
+
+#[test]
+fn ew_cov_golden() {
+    // Slots in emission order: mean x0, mean x1, var x0, var x1, corr x0x1.
+    // The correlation is the one that reads every accumulator at once.
+    let mut m = EwCovModel::new(EwCovCfg {
+        n_features: 2,
+        decay: Decay::Halflife(20.0),
+        stats: vec![EwCovStat::Mean, EwCovStat::Var, EwCovStat::Corr],
+        min_periods: 3.0,
+        precision_prior: None,
+    })
+    .unwrap();
+    check("ew_cov", &signature(&mut m, 4), GOLDEN_EW_COV);
+}
+
 // --- generated; see the module docs ---
 const GOLDEN_EW_RIDGE: &[f64] = &[
     0.23958810892448523,
@@ -257,3 +355,20 @@ const GOLDEN_FTRL_SQUARED: &[f64] = &[
     -0.053001920184771734,
 ];
 const GOLDEN_FTRL: &[f64] = &[0.4944157427243535, 0.5720078133207852, 0.4641448801691502];
+const GOLDEN_SGD: &[f64] = &[-0.11253411046976192, 1.168224926369749, -0.0631738574598267];
+const GOLDEN_SGD_SQUARED: &[f64] = &[
+    0.31727038792368356,
+    1.429415537069254,
+    -0.007974524370910653,
+];
+const GOLDEN_PA: &[f64] = &[
+    0.35403211576284754,
+    2.1379339164214444,
+    -0.061839814133866494,
+];
+const GOLDEN_HOLT: &[f64] = &[0.6940554404209057, 0.5781242794831807, 0.2548083372371531];
+const GOLDEN_EW_COV: &[f64] = &[
+    -0.3469363807058677,
+    -0.1331528573613194,
+    -0.013968574548668105,
+];

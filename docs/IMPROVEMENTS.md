@@ -589,6 +589,17 @@ Writing the checks found two gaps in the existing suite: the cross-platform
 golden pipeline pinned nine models and not `ftrl`, and the API snapshot pinned
 output fields for every model but `lasso`. Both are pinned now.
 
+Two steps were left with **no check** on purpose and have since acquired one
+(2026-09-02). Step 5, `golden.rs`, was "optional" — and four of the eleven
+kinds (`sgd`, `pa`, `holt`, `ew_cov`) had no signature there, which is
+exactly the set whose only oracles are the longhand recursions in their own
+modules, the set the mutation blind spot (`docs/TESTING.md`) bites hardest.
+Each has one now (`sgd` two, the plain and the busy path), each was mutated
+once to confirm it moves, and
+`test_model_registry::test_the_core_golden_file_pins_every_model` holds the
+file to `KINDS`. Step 13, the per-model Python test file, is the other; see
+below.
+
 ## 5. Testing
 
 ### T1 — eight `cargo run` calls cost half the suite — *done*

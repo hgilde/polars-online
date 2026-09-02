@@ -24,7 +24,9 @@ import test_properties
 import test_semantics_all_models
 from polars_online import _polars_online as _native
 
-README = Path(__file__).resolve().parent.parent / "README.md"
+ROOT = Path(__file__).resolve().parent.parent
+README = ROOT / "README.md"
+CORE_GOLDEN = ROOT / "crates" / "online-core" / "tests" / "golden.rs"
 
 #: Builder -> the least it needs beyond targets/features/halflife to be
 #: constructible; ``None`` drops that argument. A new builder goes here first,
@@ -114,6 +116,17 @@ def test_the_golden_pipeline_pins_every_model():
     pinned = [spec["model"]["type"] for spec in test_golden_pipeline.specs()]
     assert len(pinned) == len(set(pinned)), "a model is pinned twice; one bank per kind"
     assert set(pinned) == set(_native.model_kinds()), "the golden bank is missing a model"
+
+
+def test_the_core_golden_file_pins_every_model():
+    """`crates/online-core/tests/golden.rs` pins the core arithmetic of a
+    model with a `fn <kind>_golden()`, so that a divergence the pipeline
+    check above reports can be placed in the core or above it. It went four
+    models without one (`sgd`, `pa`, `holt`, `ew_cov`) before this check."""
+    text = CORE_GOLDEN.read_text(encoding="utf-8")
+    pinned = set(re.findall(r"^fn ([a-z_]+)_golden\(\)", text, flags=re.MULTILINE))
+    missing = set(_native.model_kinds()) - pinned
+    assert not missing, f"{CORE_GOLDEN.name} has no fn <kind>_golden() for {sorted(missing)}"
 
 
 def test_the_readme_documents_every_model():
