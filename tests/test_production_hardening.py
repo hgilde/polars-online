@@ -449,21 +449,103 @@ class TestOddNames:
             po.ModelBank([_spec(features=["x0", "x9"])]).fit_predict(_df())
 
 
-class TestReadmeExamples:
-    """Every python block in the README must at least be valid syntax — users
-    copy-paste them, and a typo there outlives any release."""
+def _readme_blocks() -> list[tuple[int, str]]:
+    """Every ```python block in the README, with the line it starts on."""
+    out: list[tuple[int, str]] = []
+    in_block, buf, start = False, [], 0
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    for i, line in enumerate(text.splitlines(), 1):
+        if line.strip().startswith("```python"):
+            in_block, buf, start = True, [], i
+        elif line.strip() == "```" and in_block:
+            in_block = False
+            out.append((start, "\n".join(buf)))
+        elif in_block:
+            buf.append(line)
+    return out
 
-    def test_python_blocks_compile(self):
-        text = (REPO / "README.md").read_text(encoding="utf-8")
-        blocks, in_block, buf = [], False, []
-        for line in text.splitlines():
-            if line.strip().startswith("```python"):
-                in_block, buf = True, []
-            elif line.strip() == "```" and in_block:
-                in_block = False
-                blocks.append("\n".join(buf))
-            elif in_block:
-                buf.append(line)
-        assert len(blocks) >= 3, "the README should carry runnable examples"
-        for i, b in enumerate(blocks):
-            compile(b, f"README.md:block{i}", "exec")
+
+README_BLOCKS = _readme_blocks()
+
+
+def _readme_namespace(tmp_path: Path) -> dict[str, object]:
+    """What the README's prose has already introduced by the time a block runs:
+    a frame with every column it names, a spec with the grid its field-name
+    examples assume, a fed bank, an output frame, and the files the runner
+    examples read. A block that needs something not here fails with a
+    `NameError`, which is itself the finding -- the README would be using a
+    name it never showed the reader."""
+    n = 400
+    rng = np.random.default_rng(0)
+    df = pl.DataFrame(
+        {
+            "t": np.arange(float(n)),
+            "ts": np.arange(float(n)) * 60.0,
+            "x0": rng.standard_normal(n),
+            "x1": rng.standard_normal(n),
+            "x2": rng.standard_normal(n),
+            "signal_a": rng.standard_normal(n),
+            "signal_b": rng.standard_normal(n),
+            "y": rng.standard_normal(n),
+            "ret": rng.standard_normal(n),
+            "bond_id": [f"b{i % 4}" for i in range(n)],
+            "group": [f"g{i % 3}" for i in range(n)],
+            "session": ["m"] * (n // 2) + ["a"] * (n - n // 2),
+        }
+    )
+    common = dict(targets=["y"], features=["x0", "x1"], clock="t", max_dclock=300.0)
+    # The grid the "output field names" section filters on: ridge 0.5, halflife 500.
+    spec = po.spec.ewridge(
+        "m", halflife=[100.0, 500.0], ridge=[1e-6, 0.5], min_periods=5.0, **common
+    )
+    scored = po.ModelBank(
+        [
+            po.spec.ewridge("ridge", halflife=500.0, group="bond_id", **common),
+            po.spec.kalman(
+                "kalman", halflife=500.0, coef_halflife=100.0, group="bond_id", **common
+            ),
+        ]
+    ).fit_predict(df)
+    graded = po.ModelBank([spec]).fit_predict(df)
+    out = df.hstack(scored.select("ridge", "kalman")).hstack(graded.select("m"))
+    for name in ("ticks.parquet", "today.parquet"):
+        df.write_parquet(tmp_path / name)
+    (tmp_path / "bank.toml").write_text(
+        'input = "ticks.parquet"\noutput = "fitted.parquet"\n\n'
+        '[[specs]]\nname = "ridge"\ntargets = ["y"]\nfeatures = ["x0"]\n'
+        'halflife = 500.0\nmin_periods = 5.0\n[specs.model]\ntype = "ew_ridge"\n',
+        encoding="utf-8",
+    )
+    return {
+        "pl": pl,
+        "np": np,
+        "po": po,
+        "df": df,
+        "lf": df.lazy(),
+        "spec": spec,
+        "bank": po.ModelBank([spec]),
+        "out": out,
+        "now": float(n),
+    }
+
+
+class TestReadmeExamples:
+    """The README's python blocks are the first code anyone runs, so they are
+    run here -- not just compiled, which is all this checked before and which
+    let `po.spec.holt(..., level_halflife=200.0)` sit in the README raising
+    "one of halflife/lam is required" (IMPROVEMENTS U6).
+
+    Each block runs in its own copy of a namespace holding what the prose has
+    already introduced, so blocks do not depend on each other's order or
+    leftovers."""
+
+    def test_there_are_blocks_to_check(self):
+        assert len(README_BLOCKS) >= 8, README_BLOCKS
+
+    @pytest.mark.parametrize(
+        ("line", "code"), README_BLOCKS, ids=[f"L{ln}" for ln, _ in README_BLOCKS]
+    )
+    def test_a_readme_block_runs(self, line, code, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)  # the runner examples write next to the inputs
+        ns = _readme_namespace(tmp_path)
+        exec(compile(code, f"README.md:{line}", "exec"), ns)

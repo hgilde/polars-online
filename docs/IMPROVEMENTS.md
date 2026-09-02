@@ -587,6 +587,28 @@ The test is described under C2. It found C5, which is the argument for
 having it: a property test over the whole input range, run on every model,
 against a twin that saw only clean data.
 
+### T5 — the README was compiled, not run — *done*
+
+`test_python_blocks_compile` checked that every python block in the README
+parses. Parsing is not much of a guarantee: a block can parse and still call a
+keyword that does not exist, name a field that was renamed, or — as it turned
+out — be refused by the library's own validation. Running the nine blocks
+found two: `po.spec.holt(..., level_halflife=200.0)` was refused by a rule
+that should not have applied (U6, fixed), and the same example was missing
+`max_dclock`, which *is* required with a clock (example fixed).
+
+Each block now runs in its own copy of a namespace holding what the prose has
+already introduced by that point — a frame with every column the README names,
+the grid its field-name examples filter on, a fed bank, a scored output frame,
+and the parquet/TOML files the runner examples read — in a `tmp_path` working
+directory. Blocks do not see each other's leftovers, so the order in the file
+is not load-bearing. A block that needs a name the prelude does not have fails
+with `NameError`, which is the finding rather than a nuisance: the README
+would be using something it never showed the reader.
+
+Mutation-checked by renaming a keyword in a README example (`by=` to
+`group_by=`): the block for that line fails, and only that one.
+
 ## 6. Rejected or deferred
 
 - **P2, P3** above — measured, not worth it.

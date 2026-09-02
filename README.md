@@ -403,7 +403,7 @@ distance. `coef` is `[level, trend]` per target;
 `trend_halflife=float("inf")` pins the trend at zero, leaving a plain EW level.
 
 ```python
-po.spec.holt("baseline", targets=["y"], clock="t",
+po.spec.holt("baseline", targets=["y"], clock="t", max_dclock=600.0,
              level_halflife=200.0, trend_halflife=2000.0)
 ```
 
