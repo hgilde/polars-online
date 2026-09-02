@@ -18,8 +18,9 @@ Prerequisites are [uv](https://docs.astral.sh/uv/) and a stable Rust toolchain
 
 **Run `./scripts/gate.sh` before every commit, and let it pass.** It runs
 `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace`,
-`ruff format --check`, `ruff check`, a `maturin develop` rebuild, and `pytest`
-— in that order, and it prints `gate: PASS` or `gate: FAIL` as its last line.
+`ruff format --check`, `ruff check`, `mypy`, a `maturin develop` rebuild, and
+`pytest` — in that order, and it prints `gate: PASS` or `gate: FAIL` as its
+last line.
 
 Two things it exists to prevent, both of which happened before it did:
 
@@ -50,7 +51,7 @@ finding** — understand why before regenerating it.
 
 - **Rust**: `cargo fmt`, `cargo clippy -D warnings`, small files, one model per
   file. No `unsafe` in `online-core`. `f64` everywhere.
-- **Python**: `ruff` (format + lint), type hints, no pandas.
+- **Python**: `ruff` (format + lint), `mypy` clean, type hints, no pandas.
 - **Docstrings state the math.** Every model's docs carry its update equations.
 - **No data files in the repo, ever.** Tests generate or download what they
   need, cached under the gitignored `.cache/`. `tests/test_repo_hygiene.py`

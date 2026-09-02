@@ -98,6 +98,11 @@ jobs:
         run: uv run ruff check .
         env:
           UV_NO_SYNC: "1"
+      # Checks the package against its own pyo3 stub, so it needs no build.
+      - name: mypy
+        run: uv run mypy
+        env:
+          UV_NO_SYNC: "1"
 
   # The first-ever CI run died here with `ld terminated with signal 7 [Bus
   # error]` on ubuntu, on two test binaries linking one second apart. That is

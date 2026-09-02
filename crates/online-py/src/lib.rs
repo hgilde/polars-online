@@ -57,11 +57,6 @@ fn parse_specs(specs_json: &str) -> PyResult<Vec<Spec>> {
     from_json(specs_json).map_err(PyValueError::new_err)
 }
 
-/// Chunk-fed model bank: feed ordered chunks, get the input chunk back with one
-/// struct column appended per spec. Memory is O(state), not O(data).
-// `module` matters for pickle: `__reduce__` hands back `ModelBank.load_bytes`,
-// and pickle serializes that by qualified name -- which fails while the class
-// claims to live in `builtins` (pyo3's default).
 /// `(group, instance, k, n_eff, means, comoments, cross_moments, target_weights)`
 /// — the flat shape `ModelBank.gram` reshapes into numpy arrays.
 type GramRow = (
@@ -75,6 +70,11 @@ type GramRow = (
     Vec<f64>,
 );
 
+/// Chunk-fed model bank: feed ordered chunks, get the input chunk back with one
+/// struct column appended per spec. Memory is O(state), not O(data).
+// `module` matters for pickle: `__reduce__` hands back `ModelBank.load_bytes`,
+// and pickle serializes that by qualified name -- which fails while the class
+// claims to live in `builtins` (pyo3's default).
 #[pyclass(name = "ModelBank", module = "polars_online._polars_online")]
 struct PyModelBank {
     inner: Bank,

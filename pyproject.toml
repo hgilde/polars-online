@@ -81,7 +81,20 @@ dev = [
     "pyyaml>=6.0",
     "river>=0.26.1",
     "ruff>=0.14",
+    # The package is typed (py.typed, the pyo3 stub, PEP 692 kwargs); mypy in
+    # the gate is what keeps that true. Pure Python, seconds to run.
+    "mypy>=1.14",
 ]
+
+[tool.mypy]
+# The package only: it must type-check against its own stub with nothing
+# built, which is how the lint job runs it. Tests are deliberately untyped.
+files = ["python/polars_online"]
+mypy_path = "python"
+python_version = "3.12"
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

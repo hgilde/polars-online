@@ -13,6 +13,7 @@ from polars_online import (
     spec,
 )
 from polars_online._bank import ModelBank
+from polars_online._expr import online
 from polars_online._polars_online import native_version, schema_version
 from polars_online._runner import run
 
@@ -23,6 +24,7 @@ __all__ = [
     "__version__",
     "eval",
     "native_version",
+    "online",
     "run",
     "schema_version",
     "spec",

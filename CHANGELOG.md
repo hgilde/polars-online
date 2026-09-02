@@ -26,7 +26,9 @@ Three, with identical numerics: a Polars **expression plugin**
 (`pl.col("y").online.ewridge(...)`), a chunk-fed **`ModelBank`** with O(state)
 memory that reports what it holds (`groups()`, `rows_seen()`) and can forget
 stale groups (`drop_groups()`), and a standalone **CLI** (parquet in, parquet
-out, TOML config).
+out, TOML config). The Python surface is typed: PEP 692 keywords on the
+builders and the namespace, and `po.online(expr)` for type checkers, which
+cannot see a registered namespace.
 
 ### Guarantees
 

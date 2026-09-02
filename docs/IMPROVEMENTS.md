@@ -355,13 +355,37 @@ bank's memory grew with every group ever seen.
 - `groups`, `drop_groups` and `rows_seen` are new rows in
   `tests/api_surface.txt`; `tests/test_bank_ergonomics.py` pins the rest.
 
-### U4 — `**kwargs: Any` on every namespace method — *proposed*
+### U4 — `**kwargs: Any` on every namespace method — *done*
 
-Ten expression-namespace methods take `**kwargs: Any`, so an IDE shows
-nothing and a typo is a runtime `TypeError` from a private function
-(`_common() got an unexpected keyword argument`). PEP 692 `Unpack[TypedDict]`
-gives completion and type checking without changing the call syntax; a test
-pins each TypedDict to the builder's actual signature so they cannot drift.
+Ten expression-namespace methods took `**kwargs: Any`, and every builder
+took its shared parameters as `**common: Any` -- so for `halflife`, `clock`,
+`session_gap` and the other twenty-odd parameters most calls are made of, an
+editor showed nothing and a typo was a runtime error. Now:
+
+- **`python/polars_online/_kwargs.py`** holds one PEP 692 `TypedDict` per
+  model plus `CommonKwargs` / `ExprKwargs` (the shared parameters with and
+  without `group`). The builders take `**common: Unpack[CommonKwargs]`; the
+  namespace methods take `**kwargs: Unpack[EwridgeKwargs]` and so on, with
+  `Required[...]` on `lasso_path`, `coef_halflife` and `quantile`. mypy
+  now reports `Unexpected keyword argument "halflif" ... did you mean
+  "halflife"?`, a missing `lasso_path`, a `str` where a float goes, and
+  `group=` on the expression form. A TypedDict is a copy of a signature and
+  copies drift, so `tests/test_kwargs_typing.py` pins every one to its
+  builder: same keys, same annotations, same required set.
+- **`po.online(expr)`**. A registered namespace is attached at runtime, so
+  `pl.col("y").online` is `"Expr" has no attribute "online"` to every type
+  checker -- a polars limitation no annotation here can fix. `po.online(
+  pl.col("y"))` returns the same namespace object, visibly typed; the two
+  spellings build identical expressions and a test says so.
+- **`group=` on the expression form is refused** with `use .over(...)`.
+  The Rust side set `spec.group = None`, so it had been silently ignored.
+- **The pyo3 stub was stale** (`_polars_online.pyi` had no `gram` and no
+  `spec_output_index`), which mypy found the moment it ran; it is now
+  complete and a test compares it with what the built module exports.
+- **mypy is in the gate and the lint job** (`uv run mypy`, package only,
+  against the stub, so it needs no build; seconds, pure Python). It found
+  the stub, a `_json` that accepted a list but said `dict`, and an `int`
+  comparison typed as `object`.
 
 ## 4. Extensibility
 

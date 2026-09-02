@@ -9,14 +9,15 @@ import numbers
 import types
 import typing
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Unpack
 
 import polars as pl
 
+from polars_online._kwargs import CommonKwargs
 from polars_online._polars_online import spec_output_fields, spec_output_index, validate_spec
 
 
-def _json(spec: dict[str, Any]) -> str:
+def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
     """JSON has no infinity literal, but ``halflife=inf`` is meaningful (it pins
     a coefficient), so infinities are encoded as strings the Rust side
     understands. A NaN is never meaningful in a spec and is refused here, by
@@ -31,7 +32,8 @@ def _json(spec: dict[str, Any]) -> str:
         if isinstance(v, numbers.Real):
             v = float(v)
             if math.isnan(v):
-                raise ValueError(f"spec {json.dumps(spec.get('name'))}: {key} must not be NaN")
+                who = spec.get("name") if isinstance(spec, dict) else None
+                raise ValueError(f"spec {json.dumps(who)}: {key} must not be NaN")
             if math.isinf(v):
                 return "inf" if v > 0 else "-inf"
             return v
@@ -167,7 +169,12 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
             if not _matches(value, hint):
                 raise TypeError(f"{who}: {key} must be {_describe(hint)}, got {_got(value)}")
             # Every int parameter is a count (u32 on the Rust side).
-            if _matches(value, int) and int in (hint, *typing.get_args(hint)) and value < 0:
+            if (
+                isinstance(value, numbers.Integral)
+                and not isinstance(value, bool)
+                and int in (hint, *typing.get_args(hint))
+                and value < 0
+            ):
                 raise ValueError(f"{who}: {key} must be >= 0, got {value}")
             if key not in inf_ok and not _finite(value):
                 raise ValueError(f"{who}: {key} must be finite, got {_got(value)}")
@@ -274,7 +281,7 @@ def ewridge(
     long_halflife: float | None = None,
     solve_every: float | None = None,
     max_rows_between_solves: int | None = None,
-    **common: Any,
+    **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """EW-ridge spec (docs/PLAN.md §4.1).
 
@@ -443,7 +450,7 @@ def rls(
     features: list[str],
     ridge: float | None = None,
     coef0: list[list[float]] | None = None,
-    **common: Any,
+    **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Recursive least squares spec (docs/PLAN.md section 4.2).
 
@@ -477,7 +484,7 @@ def lasso(
     max_rows_between_solves: int | None = None,
     max_cd_iters: int | None = None,
     cd_tol: float | None = None,
-    **common: Any,
+    **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Lasso path with online lambda selection (docs/PLAN.md section 4.3).
 
@@ -522,7 +529,7 @@ def kalman(
     p0: float | None = None,
     share_p: bool = False,
     standardize: bool = True,
-    **common: Any,
+    **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Kalman / random-walk-beta dynamic linear model (docs/PLAN.md section 4.4).
 
@@ -573,7 +580,7 @@ def huber(
     standardize: bool = False,
     solve_every: float | None = None,
     max_rows_between_solves: int | None = None,
-    **common: Any,
+    **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Huber regression (docs/PLAN.md section 4.5).
 
@@ -610,7 +617,7 @@ def quantile(
     solve_every: float | None = None,
     max_rows_between_solves: int | None = None,
     quantile_eps: float | None = None,
-    **common: Any,
+    **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Quantile regression at level ``quantile`` (docs/PLAN.md section 4.5).
 
@@ -646,7 +653,7 @@ def ftrl(
     l2: float | None = None,
     strict_binary: bool = False,
     loss: str = "logistic",
-    **common: Any,
+    **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Online regression via FTRL-proximal (docs/PLAN.md section 4.6).
 
@@ -692,7 +699,7 @@ def ew_cov(
     features: list[str],
     stats: list[str] | None = None,
     precision_prior: float | None = None,
-    **common: Any,
+    **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Exponentially weighted moments of the feature columns (docs/PLAN.md 4.7).
 
@@ -754,7 +761,7 @@ def sgd(
     l2: float | None = None,
     clip_gradient: float | None = None,
     scale_features: bool = False,
-    **common: Any,
+    **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Stochastic gradient descent with pluggable losses (ENHANCEMENTS E16).
 
@@ -819,7 +826,7 @@ def pa(
     mode: str = "pa1",
     c: float | None = None,
     eps: float | None = None,
-    **common: Any,
+    **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Passive-aggressive regression (ENHANCEMENTS E17; Crammer et al. 2006).
 
@@ -860,7 +867,7 @@ def holt(
     level_halflife: float | None = None,
     trend_halflife: float | None = None,
     features: list[str] | None = None,
-    **common: Any,
+    **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Holt's linear trend method (ENHANCEMENTS E25).
 

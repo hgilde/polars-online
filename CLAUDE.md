@@ -118,5 +118,5 @@ dependencies; `crate-type` is the publisher's choice).
 ## Style
 
 - Rust: `cargo fmt`, `cargo clippy -D warnings`. Small files, one model per file.
-- Python: `ruff` (format + lint), type hints, no pandas.
+- Python: `ruff` (format + lint), `mypy` clean (`uv run mypy`), type hints, no pandas.
 - Docstrings state the math (update equations) for every model.

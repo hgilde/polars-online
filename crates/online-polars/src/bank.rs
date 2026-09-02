@@ -324,7 +324,6 @@ pub struct Gram {
     pub means: Vec<f64>,
     /// Centered co-moments, row-major `k*k`.
     pub comoments: Vec<f64>,
-    /// Per-target centered cross-moments, each `k` long. Empty for `ew_cov`.
     /// Per-target uncentered cross-moments, each `k` long. Empty for
     /// `ew_cov`.
     pub cross_moments: Vec<Vec<f64>>,
@@ -993,7 +992,6 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
     }
     let combos = crate::stream::combos(spec);
     let (nc, m, n_models) = (combos.len(), spec.m(), decays.len());
-    let n_levels = spec.resid_quantiles.as_ref().map_or(0, Vec::len);
     let mut fields = Vec::new();
     for (mi, (suffix, d)) in decays.iter().enumerate() {
         // `dst` is the flat (instance, target, combo) index every per-slot
@@ -1093,7 +1091,6 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
             }
         }
     }
-    let _ = n_levels;
     if spec.emit_selected {
         for (t_i, t) in spec.targets.iter().enumerate() {
             fields.push(

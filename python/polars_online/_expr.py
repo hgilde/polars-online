@@ -11,16 +11,29 @@ but produce wide structs; the bank is the recommended surface for grids.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Unpack
 
 import polars as pl
 from polars.plugins import register_plugin_function
 
 from polars_online import _spec
+from polars_online._kwargs import (
+    EwCovKwargs,
+    EwridgeKwargs,
+    FtrlKwargs,
+    HoltKwargs,
+    HuberKwargs,
+    KalmanKwargs,
+    LassoKwargs,
+    PaKwargs,
+    QuantileKwargs,
+    RlsKwargs,
+    SgdKwargs,
+)
 
 _PLUGIN_PATH = Path(__file__).parent
 
-__all__ = ["Feature", "OnlineNamespace"]
+__all__ = ["Feature", "OnlineNamespace", "online"]
 
 
 Feature = str | pl.Expr
@@ -57,6 +70,14 @@ def _features(features: list[Feature]) -> tuple[list[str], list[pl.Expr]]:
 
 
 def _run(spec: dict[str, Any], target_expr: pl.Expr, feature_exprs: list[pl.Expr]) -> pl.Expr:
+    if spec["group"] is not None:
+        # The Rust side would drop it silently: the expression always streams
+        # over the column it receives, and polars does the grouping.
+        msg = (
+            f"online: group is not an expression parameter (the Rust side ignores it); "
+            f"stream per group with .over({spec['group']!r}) instead"
+        )
+        raise TypeError(msg)
     # ew_cov has no target: its first feature *is* the calling column, so it
     # must not be passed twice.
     is_ew_cov = spec["model"]["type"] == "ew_cov"
@@ -122,7 +143,10 @@ class OnlineNamespace:
         return [first, *rest]
 
     def ewridge(
-        self, features: list[Feature], extra_targets: list[str] | None = None, **kwargs: Any
+        self,
+        features: list[Feature],
+        extra_targets: list[str] | None = None,
+        **kwargs: Unpack[EwridgeKwargs],
     ) -> pl.Expr:
         """EW-ridge over this column as the target. Same parameters as
         ``polars_online.spec.ewridge`` minus name/targets/group."""
@@ -136,7 +160,10 @@ class OnlineNamespace:
         return _run(spec, self._expr, exprs)
 
     def rls(
-        self, features: list[Feature], extra_targets: list[str] | None = None, **kwargs: Any
+        self,
+        features: list[Feature],
+        extra_targets: list[str] | None = None,
+        **kwargs: Unpack[RlsKwargs],
     ) -> pl.Expr:
         """Recursive least squares over this column as the target."""
         names, exprs = _features(features)
@@ -149,7 +176,10 @@ class OnlineNamespace:
         return _run(spec, self._expr, exprs)
 
     def lasso(
-        self, features: list[Feature], extra_targets: list[str] | None = None, **kwargs: Any
+        self,
+        features: list[Feature],
+        extra_targets: list[str] | None = None,
+        **kwargs: Unpack[LassoKwargs],
     ) -> pl.Expr:
         """Lasso path with online lambda selection over this column as target."""
         names, exprs = _features(features)
@@ -162,7 +192,10 @@ class OnlineNamespace:
         return _run(spec, self._expr, exprs)
 
     def kalman(
-        self, features: list[Feature], extra_targets: list[str] | None = None, **kwargs: Any
+        self,
+        features: list[Feature],
+        extra_targets: list[str] | None = None,
+        **kwargs: Unpack[KalmanKwargs],
     ) -> pl.Expr:
         """Kalman / random-walk-beta filter over this column as the target."""
         names, exprs = _features(features)
@@ -175,7 +208,10 @@ class OnlineNamespace:
         return _run(spec, self._expr, exprs)
 
     def huber(
-        self, features: list[Feature], extra_targets: list[str] | None = None, **kwargs: Any
+        self,
+        features: list[Feature],
+        extra_targets: list[str] | None = None,
+        **kwargs: Unpack[HuberKwargs],
     ) -> pl.Expr:
         """Huber regression over this column as the target."""
         names, exprs = _features(features)
@@ -188,7 +224,10 @@ class OnlineNamespace:
         return _run(spec, self._expr, exprs)
 
     def quantile(
-        self, features: list[Feature], extra_targets: list[str] | None = None, **kwargs: Any
+        self,
+        features: list[Feature],
+        extra_targets: list[str] | None = None,
+        **kwargs: Unpack[QuantileKwargs],
     ) -> pl.Expr:
         """Quantile regression over this column as the target."""
         names, exprs = _features(features)
@@ -201,7 +240,10 @@ class OnlineNamespace:
         return _run(spec, self._expr, exprs)
 
     def ftrl(
-        self, features: list[Feature], extra_targets: list[str] | None = None, **kwargs: Any
+        self,
+        features: list[Feature],
+        extra_targets: list[str] | None = None,
+        **kwargs: Unpack[FtrlKwargs],
     ) -> pl.Expr:
         """Online logistic regression (FTRL-proximal) over this column as the
         binary target. ``pred`` is a probability."""
@@ -214,7 +256,7 @@ class OnlineNamespace:
         )
         return _run(spec, self._expr, exprs)
 
-    def ew_cov(self, others: list[Feature], **kwargs: Any) -> pl.Expr:
+    def ew_cov(self, others: list[Feature], **kwargs: Unpack[EwCovKwargs]) -> pl.Expr:
         """EW moments of this column together with ``others``.
 
         Unlike the model namespaces this one has no target: the column the
@@ -225,7 +267,10 @@ class OnlineNamespace:
         return _run(spec, self._expr, [self._expr, *exprs])
 
     def sgd(
-        self, features: list[Feature], extra_targets: list[str] | None = None, **kwargs: Any
+        self,
+        features: list[Feature],
+        extra_targets: list[str] | None = None,
+        **kwargs: Unpack[SgdKwargs],
     ) -> pl.Expr:
         """SGD with pluggable losses over this column as the target."""
         names, exprs = _features(features)
@@ -238,7 +283,10 @@ class OnlineNamespace:
         return _run(spec, self._expr, exprs)
 
     def pa(
-        self, features: list[Feature], extra_targets: list[str] | None = None, **kwargs: Any
+        self,
+        features: list[Feature],
+        extra_targets: list[str] | None = None,
+        **kwargs: Unpack[PaKwargs],
     ) -> pl.Expr:
         """Passive-aggressive regression over this column as the target."""
         names, exprs = _features(features)
@@ -250,7 +298,7 @@ class OnlineNamespace:
         )
         return _run(spec, self._expr, exprs)
 
-    def holt(self, extra_targets: list[str] | None = None, **kwargs: Any) -> pl.Expr:
+    def holt(self, extra_targets: list[str] | None = None, **kwargs: Unpack[HoltKwargs]) -> pl.Expr:
         """Holt's linear trend over this column -- level plus slope, no features.
 
         The only namespace method without a ``features`` argument, because the
@@ -258,3 +306,16 @@ class OnlineNamespace:
         """
         spec = _spec.holt("online", targets=self._targets(extra_targets), **kwargs)
         return _run(spec, self._expr, [])
+
+
+def online(expr: pl.Expr) -> OnlineNamespace:
+    """``expr.online``, spelled so that a type checker can see it.
+
+    A registered namespace is attached to ``pl.Expr`` at runtime, so to a type
+    checker ``pl.col("y").online`` is an attribute that does not exist. This
+    returns the same namespace, with its methods and their typed keywords
+    (docs/IMPROVEMENTS.md U4) visible::
+
+        df.with_columns(po.online(pl.col("y")).ewridge(features=["x0"], halflife=10.0))
+    """
+    return OnlineNamespace(expr)

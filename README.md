@@ -66,6 +66,11 @@ out = df.with_columns(
 out.select(pl.col("fit").struct.field("pred_y"), pl.col("fit").struct.field("n_eff"))
 ```
 
+`pl.col("y").online` is attached when `polars_online` is imported, which no
+type checker can see; `po.online(pl.col("y"))` is the same namespace, visibly
+typed, and every keyword above is checked and completed there and in the
+`po.spec` builders.
+
 Features are column names or named expressions; under `.over` an expression is
 evaluated per group, so the lag above never crosses a group boundary. Groups
 run in parallel (the inputs travel as one packed struct, which is the polars

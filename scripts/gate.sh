@@ -33,6 +33,7 @@ step "cargo clippy" cargo clippy --workspace --all-targets -- -D warnings
 step "cargo test"   cargo test --workspace
 step "ruff format"  uv run ruff format --check .
 step "ruff check"   uv run ruff check .
+step "mypy"         uv run mypy
 # The extension MUST be rebuilt before pytest. `uv run pytest` re-syncs the
 # project but does not reliably pick up a Rust change, so without this the
 # Python suite can silently test a stale binary -- which once made a working

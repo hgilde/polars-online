@@ -47,6 +47,11 @@ TOOL_OUTPUT_DIRS = {"mutants.out", "mutants.out.old", "target", ".venv", "htmlco
 #: state fixture is the biggest legitimate one, and it is a hex constant.
 MAX_SOURCE_BYTES = 200_000
 
+#: Lockfiles are generated but must be tracked, and grow with every wheel a
+#: dependency publishes (mypy alone added 65 KB); their size says nothing
+#: about data.
+LOCKFILES = {"uv.lock", "Cargo.lock"}
+
 
 def _tracked() -> list[Path]:
     out = subprocess.run(
@@ -84,6 +89,8 @@ def test_no_tracked_file_is_data_sized(tracked):
     big = []
     for p in tracked:
         f = REPO / p
+        if p.name in LOCKFILES:
+            continue
         if f.is_file() and f.stat().st_size > MAX_SOURCE_BYTES:
             big.append((str(p), f.stat().st_size))
     assert not big, f"suspiciously large tracked files (data in disguise?): {big}"

@@ -5,6 +5,7 @@
   __version__
   eval
   native_version
+  online
   run
   schema_version
   spec

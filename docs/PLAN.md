@@ -447,8 +447,10 @@ messages that name the spec, the parameter or the column and its role — the
 builders check their own annotations, the parser names the path, and a
 non-numeric column is refused rather than cast to null (U2), and a bank that
 can say what it holds — `repr`, `groups()`, `drop_groups()`, `rows_seen()`,
-and `specs` that survive `load` (U3). The rest is proposed with its
-measurements next to it.
+and `specs` that survive `load` (U3), and a typed Python surface — PEP 692
+kwargs on the builders and the namespace, `po.online(expr)` for the type
+checkers that cannot see a registered namespace, and mypy in the gate (U4).
+The rest is proposed with its measurements next to it.
 
 ## 12. Open questions (not blocking)
 
