@@ -584,6 +584,7 @@ parquet out, `chunk_rows=100k`, 14 threads:
 | peak physical footprint | 3M rows (0.54 GB parquet, 0.59 GB in memory) | 6M rows | 12M rows |
 |---|---:|---:|---:|
 | plugin, `sink_parquet(engine="streaming")` (`collect` is the same) | 1.98 GB | 3.73 GB | 7.35 GB |
+| the same query without the plugin (`pl.col("y0") * 2`) | 0.81 GB | — | 2.08 GB |
 | `online` CLI | 0.73 GB | 0.72 GB | 0.75 GB |
 | `po.run` | 0.95 GB | 1.29 GB | 1.41 GB |
 | `ModelBank` loop over `collect_batches` | 0.80 GB | 1.09 GB | 1.24 GB |
@@ -592,10 +593,26 @@ parquet out, `chunk_rows=100k`, 14 threads:
 | `online` CLI, `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | — | — | 0.15 GB |
 | `po.run` / bank loop, prefetch 1 and pages released | — | — | 0.46 GB / 0.31 GB |
 
-**The plugin is O(data); nothing else is.** The plugin's footprint is over 3×
-the frame at every size and its time is linear (3.2 / 6.7 / 14.4 s), and
-the streaming engine does not help because a plugin expression is a
-`columnar-function` node, which collects its input (§10). The CLI is flat
+**The plugin is O(data); nothing else is.** O(data) here means what it says:
+the whole input is resident at once, because polars calls a plugin function
+once with the entire column and has to have the column first (§10). The
+sharpest form of the measurement is the same query with one expression
+swapped — `scan_parquet(f).with_columns(<expr>).sink_parquet(out,
+engine="streaming")`, prefetch pinned to 1 row group so the reader is not
+part of the number:
+
+| | 3M rows | 12M rows |
+|---|---:|---:|
+| `<expr>` = `pl.col("y0") * 2` | 0.51 GB | 0.51 GB |
+| `<expr>` = `online.ewridge(...).over("group")` | 1.85 GB | 7.30 GB |
+
+Same engine, same file, same sink: one expression streams flat, the other
+holds three times the frame (2.4 GB at 12M rows) — the collected input, the
+packed struct the plugin is handed, the `.over` gather, and the output
+column. `collect()` and `sink_parquet(engine="streaming")` are within 1% of
+each other, and pinning the prefetch, which takes the non-plugin query from
+1.86 GB to 0.51 GB, does nothing for the plugin. Its time is linear too
+(3.2 / 6.7 / 14.4 s). The CLI is flat
 at 0.73 GB from 3M to 12M rows. `po.run` and the bank loop *report* a
 creeping number, and the creep is the allocator, not live data: the
 extension allocates through py-polars' jemalloc, which keeps freed pages
