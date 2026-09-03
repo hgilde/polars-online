@@ -208,6 +208,17 @@ lf.online.predict(bank).collect()          # serve: score against a bank (or a s
 lf.online.fit_predict(load_state="bank.state")   # resume from a saved bank
 ```
 
+One caveat with a number on it: a filter *before* the bank costs memory
+today, because polars' `collect_batches` — how the source reads its input —
+stops applying backpressure once a filter is in the plan and buffers the
+filtered result. At 12M rows that is 2.5 GB against 0.65 GB for the same
+query with no upstream filter, and 0.78 GB for the same filter written
+*after* the bank, where it is pushed into the source and applied per chunk.
+So prefer the filter after unless you need the model to skip those rows, and
+see `docs/PERFORMANCE.md` §11 for the repro (it needs no plugin: a filtered
+`collect_batches` with a slow consumer does it on its own). `with_columns`
+upstream is fine; a `sort` is a pipeline breaker and collects by definition.
+
 The plan is *pure*: every execution starts from the same state — the specs',
 or `load_state` — so collecting twice gives the same frame, `head(n)` learns
 from the first `n` rows and no more, and nothing is saved; the state after

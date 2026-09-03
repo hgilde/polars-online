@@ -672,6 +672,49 @@ engine reads a few morsels ahead of the bank (7 of 100 input batches were
 requested before a `head(10)` stopped the plan) and tears the input query
 down with the plan.
 
+**What comes before the bank: an upstream `filter` is not O(chunk)
+(2026-09-02).** The source reads its input with `LazyFrame.collect_batches`,
+so the input plan runs in the streaming engine and its memory is polars'.
+Measured on the same files, prefetch 1, `sink_parquet(engine="streaming")`,
+the input plan being what feeds `lf.online.fit_predict([spec])`:
+
+| peak footprint | 3M rows | 12M rows |
+|---|---:|---:|
+| `scan` — nothing upstream | 0.65 GB | 0.65 GB |
+| `scan.with_columns(<elementwise>)` | 0.92 GB | 1.52 GB |
+| **`scan.filter(..)`** | 0.87 GB | **2.59 GB** |
+| `scan.filter(..).with_columns(..)` | 0.92 GB | **2.85 GB** |
+| `scan.with_columns(mean().over("group"))` | 0.97 GB | 3.16 GB |
+| `scan.sort("t")` | 1.74 GB | 6.73 GB |
+| the same filter **after** the bank (pushed into the source) | — | **0.78 GB** |
+
+`sort` is expected — it is a pipeline breaker, and the whole frame has to
+exist before the first row is sorted. `with_columns` is fine: 1.65× on 4×
+the data is the extra columns riding in each chunk, not accumulation. **The
+`filter` row is a polars bug, not ours**, and it is reproducible with no bank
+in the process at all: iterate `scan.filter(vol > 0).collect_batches
+(chunk_size=100_000)` with a `time.sleep(0.02)` in the loop and 12M rows
+buffer to 2.54 GB, the trace peaking in the first fifth of the run and
+draining from there — the producer runs to completion and holds the result.
+The identical loop over the *unfiltered* scan holds 0.67 GB with a **six
+times slower** consumer (`sleep(0.12)`, 15.6 s). So `collect_batches`
+backpressures a plain scan and stops once a filter is in the plan. Not the
+allocator (2.44 GB with `dirty_decay_ms:0`), not `maintain_order=False`, not
+`lazy=True`, not predicate pushdown (2.00 GB with it disabled), and none of
+`POLARS_INFLIGHT_SINK_MORSEL_LIMIT`, `POLARS_DEFAULT_LINEARIZER_BUFFER_SIZE`
+or `POLARS_DEFAULT_DISTRIBUTOR_BUFFER_SIZE` move it. `sink_batches`, the
+callback sink, is worse: it does not throttle even without a filter (2.77 GB
+on the plain scan). There is nothing to fix on our side — the buffering is
+inside the Rust batch sink, before our iterator sees a frame.
+
+What to do about it, and it is not merely a workaround: **filter after the
+bank when the semantics allow**. The predicate is pushed into the source and
+applied per chunk (E33), which is 0.78 GB flat against 2.53 GB for the same
+filter before, and the two mean different things anyway — before changes what
+the model *learns from*, after changes only what comes out. `po.run(input=
+<a filtered plan>)` reads the same way and has the same cost; `keep_columns=`
+does not (a projection is not a filter).
+
 **Polars' own windowed operations do the same thing (2026-09-02).** Worth
 knowing before concluding that this is a quirk of ours: it is polars' rule,
 and the rule is *whether the streaming engine has a node for that spelling*.

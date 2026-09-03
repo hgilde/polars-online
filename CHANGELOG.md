@@ -110,6 +110,13 @@ carries breaking changes.
   not. The README also states the cost — a zero-weight row still advances the
   clock, so `n_eff` decays while scoring and `min_periods` can blank the
   output.
+- **An upstream `filter` costs memory** (`docs/PERFORMANCE.md` §11). The
+  plan form reads its input with polars' `collect_batches`, which
+  backpressures a plain scan but stops once a filter is in the plan: 2.5 GB
+  at 12M rows against 0.65 GB unfiltered, and 0.78 GB for the same filter
+  written *after* the bank, where it is pushed into the source and applied
+  per chunk. Reproducible with no plugin in the process. Filter after unless
+  the model should skip those rows.
 - **Which surface is O(data)**, measured (`docs/PERFORMANCE.md` §11): the
   expression plugin — 2.0 GB at 3M rows, 7.3 GB at 12M, in either engine,
   because polars' streaming engine collects the input of any user
