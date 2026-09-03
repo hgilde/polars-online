@@ -83,7 +83,10 @@ class TestChunkInvariance:
         garbage.write_bytes(b"not a bank")
         with pytest.raises(ValueError, match="not a polars-online bank state file"):
             po.ModelBank.load(garbage)
-        with pytest.raises(IsADirectoryError):
+        # A directory is the OSError the platform gives for reading one --
+        # IsADirectoryError on macOS/Linux, PermissionError on Windows --
+        # and in neither case FileNotFoundError.
+        with pytest.raises((IsADirectoryError, PermissionError)):
             po.ModelBank.load(tmp_path)
 
     def test_save_names_the_path_it_could_not_write(self, tmp_path):

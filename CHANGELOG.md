@@ -119,8 +119,9 @@ carries breaking changes.
     refused**, naming the keys there are (the CLI with the line), where a
     misspelt `halflfe` used to fall silently back to the default.
     `Spec`, `ModelKind` and `RunConfig` are `deny_unknown_fields`.
-  - `ModelBank.load` raises `FileNotFoundError`/`IsADirectoryError` for a
-    path it cannot read and `ValueError` for a file that is not a bank, a
+  - `ModelBank.load` raises `FileNotFoundError` (or the `OSError` subclass
+    the platform gives, e.g. `PermissionError` for a directory on Windows)
+    for a path it cannot read and `ValueError` for a file that is not a bank, a
     newer build's file (now told from garbage by its envelope), or a spec
     mismatch — it raised `OSError` for all of them.
   - `po.run` raises the `OSError` subclass for an unreadable `load_state`,
