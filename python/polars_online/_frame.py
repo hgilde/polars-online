@@ -362,7 +362,7 @@ def fit_predict(
     save_state: State | None = None,
     chunk_rows: int | None = None,
 ) -> pl.LazyFrame | pl.DataFrame:
-    """``frame.online.fit_predict(...)``, spelled so that a type checker can see it.
+    """``frame.online.fit_predict(...)`` as a plain function, so that a type checker can see it.
 
     A ``LazyFrame`` gives a plan that streams the rows through a bank when it
     runs (:meth:`LazyFrameOnlineNamespace.fit_predict`); a ``DataFrame`` gives
@@ -396,7 +396,7 @@ def predict(
 def predict(
     frame: pl.LazyFrame | pl.DataFrame, bank: ModelBank | State, *, chunk_rows: int | None = None
 ) -> pl.LazyFrame | pl.DataFrame:
-    """``frame.online.predict(bank)``, spelled so that a type checker can see it.
+    """``frame.online.predict(bank)`` as a plain function, so that a type checker can see it.
 
     Scores the rows against ``bank`` as it stands and learns nothing: a plan
     from a ``LazyFrame`` (:meth:`LazyFrameOnlineNamespace.predict`), a frame

@@ -33,10 +33,10 @@ spec = po.spec.ewridge("ridge", targets=["ret"], features=["signal_a", "signal_b
 df.online.fit_predict([spec])                 # a frame in memory: the same bank, eagerly
 ```
 
-## Which spelling streams
+## Which calls stream
 
 All of them but one, and that one says so. One model, one set of numbers,
-and the memory is O(chunk) however the call is spelled — peak footprint on
+and the memory is O(chunk) whichever way you call it — peak footprint on
 the same file, `ewridge` with 20 features, parquet in and out:
 
 | what you write | 3M rows | 12M rows | |
@@ -53,27 +53,27 @@ the bank — filters, joins, group-bys, sinks — is polars' own and streams as
 polars streams it. All of it measured in
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) §11.
 
-The one spelling that is not in the table is the expression form — the
+The one call that is not in the table is the expression form — the
 same model written as `pl.col("y").online.ewridge(...)` inside
 `with_columns`. It measures **7.3 GB** on the same 12M rows against the
 plan's 1.35 GB, because polars hands a user expression its whole column in
 either engine. It is kept for a frame in memory and warns on every call;
-[the note at the end](#the-expression-form) puts the two spellings side by
-side and explains the number.
+[the note at the end](#the-expression-form) puts the two side by side and
+explains the number.
 
 **This is polars' rule, not ours**, and it decides what streams *around* the
 bank too: polars' own windowed operations split the same way, and the rule
-is whether the streaming engine has a node for that spelling. On the same
+is whether the streaming engine has a node for that call. On the same
 12M rows, `pl.col("y").mean().rolling(index_column="t", period="1000i")`
 peaks at 0.25 GB and the identical expression under **`.over("group")` at
 6.5 GB**; `lf.rolling(index_column="t", period="1000i").agg(...)` at 0.28 GB
-and the same call with **`group_by="group"` at 1.7 GB**. Both collecting
-spellings land on the engine's `in-memory-map` node — collect, run in
+and the same call with **`group_by="group"` at 1.7 GB**. Both of the
+collecting calls land on the engine's `in-memory-map` node — collect, run in
 memory, re-emit — the same class of node a user expression gets
 (`columnar-function`: collect, call once, re-emit), because polars'
 expression contract has no way to say "call me per morsel, in order, and
 let me keep state". Note where that leaves per-group work: in polars, the
-*grouped* window is the collecting spelling; in a bank, `group=` is one
+*grouped* window is the one that collects; in a bank, `group=` is one
 accumulator per group and stays O(state).
 
 ## Two guarantees
@@ -121,8 +121,6 @@ for chunk in lf.collect_batches():        # never materializes the whole stream
                                            #  loop, pipelined, written straight to a file)
 
 bank.save("bank.state")                    # atomic: temp file, then rename
-bank = po.ModelBank.load("bank.state", specs=[spec])
-scored = bank.predict(today)               # serve: score, learn nothing, the bank does not move
 ```
 
 A bank says what it holds: `repr(bank)` is `ModelBank(['ridge'], groups=412,
@@ -137,18 +135,9 @@ stale = bank.groups().filter(pl.col("last_clock") < now - 30 * 86400)
 bank.drop_groups(stale["group"])           # they start cold if they reappear
 ```
 
-The fit itself is readable too, from a live bank or one loaded from a state
-file: `bank.coef("ridge")` is a frame of every coefficient — one row per
-`(group, instance, position)` with the `target`, grid values and `term`
-(`"intercept"` or the feature) that position means, and the `n_eff` behind
-it — as of the last row each group learned from, which is what the output's
-`coef` field said on that row and what its next `pred` is computed from.
-`bank.gram("ridge")` gives the EW accumulators behind it (`means`, centered
-`comoments`, `cross_moments`, `n_eff`), for anything other than our solve.
-
-```python
-betas = bank.coef("ridge").pivot("term", index=["group", "instance"], values="coef")
-```
+Loading the state back, serving from it, and reading the fit's coefficients
+are in [Saving, loading and reading a model](#saving-loading-and-reading-a-model)
+below, each in both the bank's form and the query's.
 
 **As a plan.** `lf.online.fit_predict(specs)` is the loop above as a
 `LazyFrame`: executing it — `collect()`, `collect_batches()`, `sink_*()` —
@@ -182,7 +171,7 @@ a plain scan feeding the bank has no parallel stage in between and holds
 none of it (`docs/PERFORMANCE.md` §11: the stage, the thread sweep, the
 knobs, what is already reported upstream). So prefer the filter *after*
 unless the model must skip those rows, and if that is the reason, a zero
-weight is the streaming spelling:
+weight skips them and still streams:
 
 ```python
 (
@@ -229,8 +218,8 @@ filter after never changes what the bank learns from — put it before to do
 that), and a selection reaches the input scan. The same numbers as the loop
 and as `po.run`, bit for bit, in either engine, held by `tests/test_frame.py`.
 `df.online.fit_predict(specs)` is the eager twin; `po.fit_predict(frame, ..)`
-and `po.predict(frame, bank)` are both spelled for a type checker, which
-cannot see a registered namespace. Rides on polars' IO-plugin interface
+and `po.predict(frame, bank)` are the same calls as plain functions, for a
+type checker, which cannot see a registered namespace. Rides on polars' IO-plugin interface
 (`register_io_source`), which polars documents but marks unstable.
 
 ### 2. Streaming runner (Python or CLI)
@@ -305,6 +294,77 @@ The same pipeline is the Rust API: `online_polars::run_config` for a
 `RunConfig` (what the CLI and a TOML describe), `run_config_on` with an
 `Input::Lazy(LazyFrame)` or `Input::Batches` of frames the caller already
 has, and `run` with an `Output::Batches` callback instead of a file.
+
+## Saving, loading and reading a model
+
+A fitted model is the bank's *state* — one accumulator per `(spec, group)` —
+and it travels as one file, written whole or not at all. It is saved and
+loaded from a bank, or from a query, with the same words:
+
+```python
+# From a bank: save after the loop; load it to keep learning, or to serve
+bank.fit_predict(df)
+bank.save("bank.state")                               # atomic: temp file, then rename
+bank = po.ModelBank.load("bank.state", specs=[spec])  # specs= checks the file is this model's
+bank.fit_predict(today)                               # learn on: the state moves
+scored = bank.predict(today)                          # serve: score, learn nothing
+
+# From a query: the same two keywords; the file is written when the run reaches the last row
+lf.online.fit_predict([spec], save_state="bank.state").sink_parquet("fitted.parquet")
+lf.online.fit_predict(load_state="bank.state", save_state="bank.state").sink_parquet("more.parquet")
+served = lf.online.predict("bank.state").collect()    # serve from the file
+```
+
+`po.run(..., save_state=)`, `po.run(..., load_state=, predict=True)` and the
+CLI's `--save-state` / `--resume` / `--predict` (section 2) read and write
+the same file, and the bytes are the same whichever wrote them: a state a
+query saved loads into a bank and the other way round. Loading names the
+problem it hits — `FileNotFoundError` for no file yet (start fresh),
+`ValueError` for a file that is not a bank, a newer build's, or another
+model's. [docs/STATE-WORKFLOW.md](docs/STATE-WORKFLOW.md) walks the whole
+workflow — fit, save, serve, learn on — with what each step guarantees.
+
+**The coefficients.** The betas behind a fit can be read two ways, and the
+two agree row for row:
+
+```python
+ols = po.spec.ewridge("ols", targets=["y"], features=["x0", "x1"], clock="t",
+                      halflife=600.0, max_dclock=300.0, group="bond_id", coef_every=1)
+
+# 1. From a bank -- live, or loaded from a state file with no data at hand:
+#    one row per coefficient, with the term it belongs to
+bank = po.ModelBank([ols])
+bank.fit_predict(df)
+betas = bank.coef("ols")             # group, instance, n_eff, position, target, ..., term, coef
+wide = betas.pivot("term", index=["group", "instance"], values="coef")
+
+# 2. From the output, in polars: `coef` is a list on every row, and the spec's
+#    layout names its positions
+terms = po.spec.coef_index(ols)["term"].to_list()               # ['intercept', 'x0', 'x1']
+path = (
+    lf.online.fit_predict([ols])
+    .select("t", "bond_id",
+            pl.col("ols").struct.field("coef").list.to_struct(fields=terms).alias("beta"))
+    .unnest("beta")                  # t, bond_id, intercept, x0, x1: the fit as it moved
+    .collect()
+)
+```
+
+`bank.coef()` is the fit as of the last row each group learned from — what
+`coef` said on that row, and what the group's next `pred` is computed from
+— with `n_eff` for how much weight is behind it. The output's `coef` is the
+same fit snapshotted *after* each row's update (the row's `pred` is from
+the fit *before* it), every `coef_every` rows and on the last row of every
+chunk; the default, `coef_every=0`, is the chunk end only, so the per-row
+path above asks for `coef_every=1` and pays a list of `k` floats per row.
+Under a grid — several `ridge` values, `feature_sets`, a `lasso_path`,
+several targets — the list holds one block per (target × grid point), and
+`coef_index` and `bank.coef()` carry `target`, `ridge`, `feature_set` and
+`lambda` columns to tell the blocks apart: add the ones the spec varies to
+the pivot's `index` (`["group", "instance", "target", "ridge"]` for the
+`ridge` grid of section 1). `bank.gram("ols")` gives the EW accumulators
+behind the fit (`means`, centered `comoments`, `cross_moments`, `n_eff`),
+for anything other than our solve.
 
 ## Diagnostics and selection
 
@@ -657,8 +717,8 @@ on a 14-thread machine the parquet reader front-loads ~0.7 GB of decoded
 row groups whatever the file's length, and `POLARS_ROW_GROUP_PREFETCH_SIZE=1`
 takes the CLI to 0.15 GB at the same speed. Measured flat from 3M to 12M
 rows in docs/PERFORMANCE.md §11, `lf.online.fit_predict` included (0.78 GB
-live at 12M rows, 0.37 GB with the prefetch at 1). *Which spelling
-streams*, at the top, is the whole comparison in one table.
+live at 12M rows, 0.37 GB with the prefetch at 1). *Which calls stream*,
+at the top, is the whole comparison in one table.
 
 Where the time goes, and what to reach for, is in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
@@ -823,8 +883,8 @@ from it needs a Rust toolchain.
 
 ## The expression form
 
-The same model can be written as an expression, and it is the shortest
-spelling for a frame that is already in memory:
+The same model can be written as an expression, and it is the shortest way
+to write it for a frame that is already in memory:
 
 ```python
 out = df.with_columns(
@@ -838,7 +898,7 @@ out.select(pl.col("fit").struct.field("pred_y"), pl.col("fit").struct.field("n_e
 
 Features may be expressions, evaluated per group under `.over`, so the lag
 above never crosses a group boundary; `po.online(pl.col("y"))` is the same
-namespace spelled so that a type checker can see it. The numbers are the
+namespace as a plain function, so that a type checker can see it. The numbers are the
 bank's — the expression *is* the bank, run over the column polars hands it.
 
 **Every call warns**, with `polars_online.InMemoryExpressionWarning`, and
@@ -863,7 +923,7 @@ lf.online.fit_predict([spec]).sink_parquet("fitted.parquet")   # O(chunk): the b
 ```
 
 Both produce the same numbers. The first grows with the file; the second
-does not (*Which spelling streams*, at the top). The warning is a
+does not (*Which calls stream*, at the top). The warning is a
 `UserWarning`, shown by default wherever the call is made — a
 `DeprecationWarning` would be hidden outside `__main__`, which is exactly
 the pipeline module where the difference matters. Using the expression on a
@@ -875,8 +935,8 @@ import warnings
 warnings.filterwarnings("ignore", category=po.InMemoryExpressionWarning)
 ```
 
-The warning would go, and the expression become the streaming spelling too,
-if polars ever ran a user expression per morsel, in order, with state.
+The warning would go, and the expression would stream too, if polars ever
+ran a user expression per morsel, in order, with state.
 [`docs/PLAN.md`](docs/PLAN.md) §6 has the design and that condition.
 
 ## License

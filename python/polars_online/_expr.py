@@ -8,13 +8,13 @@ the model bank itself, so expression == bank by construction.
 
 **Every call warns** (:class:`InMemoryExpressionWarning`). Polars hands a
 stateful user expression its whole column in either engine -- its streaming
-engine collects the input to do so -- so this spelling is O(data) where
+engine collects the input to do so -- so this form is O(data) where
 ``lf.online.fit_predict(specs)`` and ``po.run`` are O(chunk): 7.3 GB against
 1.35 GB at 12M rows for the same model (docs/PERFORMANCE.md section 11). That
 is polars' contract for a user expression, not something a plugin can change,
-and a reader who takes the expression for the natural streaming spelling gets
+and a reader who takes the expression for the natural streaming form gets
 the collecting one. The namespace stays for a frame already in memory, where
-it is the shortest spelling and features can be expressions; the warning
+it is the shortest way to write the model and features can be expressions; the warning
 exists so that nobody learns the difference from a memory profile. See the
 README's closing section.
 """
@@ -53,7 +53,7 @@ class InMemoryExpressionWarning(UserWarning):
     form runs on the whole column at once.
 
     Polars calls a stateful user expression once with its whole column, in
-    either engine, so in a plan over a file this spelling is O(data) where
+    either engine, so in a plan over a file this form is O(data) where
     ``lf.online.fit_predict(specs)`` is O(chunk) -- the same model, the same
     numbers, and only one of them streams (module docstring). The warning is
     a ``UserWarning``, shown by default wherever the call is made; a
@@ -179,7 +179,7 @@ class OnlineNamespace:
     builder raises (:mod:`polars_online.spec`): ``TypeError`` for a keyword
     the model has not got or a value of the wrong shape, ``ValueError`` for
     a value the model refuses; and its own ``TypeError`` for ``group=``
-    (spelled ``.over``) or a feature that is neither a name nor an
+    (written ``.over`` instead) or a feature that is neither a name nor an
     expression, ``ValueError`` for a calling or feature expression whose
     output name polars cannot determine (give it an ``.alias``), and for
     ``extra_targets`` naming the calling column or a column twice. When the
@@ -385,7 +385,7 @@ class OnlineNamespace:
 
 
 def online(expr: pl.Expr) -> OnlineNamespace:
-    """``expr.online``, spelled so that a type checker can see it.
+    """``expr.online`` as a plain function, so that a type checker can see it.
 
     A registered namespace is attached to ``pl.Expr`` at runtime, so to a type
     checker ``pl.col("y").online`` is an attribute that does not exist. This

@@ -16,10 +16,15 @@ carries breaking changes.
   "instance"], values="coef")` is the betas per group. The values are what
   the output's `coef` field reported on the last row each group learned
   from (the fit after that row, which the next `pred` is computed from);
-  null for a group still in warmup; an empty frame for a group the bank
-  has never seen; `ValueError` for `ew_cov`. Rust: `Bank::coef` and the
-  `Coef` row. Before this, the betas of a saved state were reachable only
-  through `predict` on a one-row frame or a hand solve over `gram()`.
+  null before the group's first solve — the solve schedule's decision, not
+  `min_periods`', which gates `pred` alone, so the frame carries `n_eff`
+  for how much weight is behind each fit; an empty frame for a group the
+  bank has never seen; `ValueError` for `ew_cov`. Rust: `Bank::coef` and
+  the `Coef` row. Before this, the betas of a saved state were reachable
+  only through `predict` on a one-row frame or a hand solve over `gram()`.
+  The README's new *Saving, loading and reading a model* section shows
+  save/load and the coefficients each in both the bank's form and the
+  query's (`coef_index` + `list.to_struct` for the per-row path in polars).
 - **`save_state=` on the plan: `lf.online.fit_predict(specs, load_state=,
   save_state=)`**, and on `df.online.fit_predict` and `po.fit_predict`. The
   state the execution ends in — after the last row the source fed the bank:
