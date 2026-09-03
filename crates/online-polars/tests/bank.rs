@@ -378,3 +378,76 @@ fn a_refused_chunk_updates_nothing() {
     let want = clean.fit_predict(&good).unwrap();
     assert_eq!(out, want);
 }
+
+#[test]
+fn coef_is_the_output_s_last_coef_per_group() {
+    // `Bank::coef` reads the same coefficients the `coef` field reports: for
+    // every group, the list on the group's last row of the chunk, and the
+    // same again from a bank restored from the file.
+    let df = make_df(400);
+    let mut bank = Bank::new(vec![spec_json("m", true)]).unwrap();
+    let out = bank.fit_predict(&df).unwrap().remove(0);
+    let coef = out.struct_().unwrap().field_by_name("coef").unwrap();
+    let coef = coef.list().unwrap();
+    let gs = df.column("g").unwrap().str().unwrap();
+
+    let rows = bank.coef(0, None).unwrap();
+    assert_eq!(rows.len(), 2, "one row per group, single instance");
+    for row in &rows {
+        assert_eq!(row.instance, "");
+        let g = row.group.as_str().unwrap();
+        let last = (0..400).rev().find(|&i| gs.get(i) == Some(g)).unwrap();
+        let reported: Vec<f64> = coef
+            .get_as_series(last)
+            .unwrap()
+            .f64()
+            .unwrap()
+            .into_no_null_iter()
+            .collect();
+        assert_eq!(row.coef.as_deref(), Some(reported.as_slice()), "group {g}");
+        assert_eq!(reported.len(), 3, "intercept + 2 features");
+    }
+    assert_eq!(bank.coef(0, Some("g0")).unwrap().len(), 1);
+    assert!(bank.coef(0, Some("zzz")).unwrap().is_empty());
+    assert!(
+        bank.coef(1, None)
+            .unwrap_err()
+            .contains("spec index 1 out of range")
+    );
+
+    let restored = Bank::load_bytes(&bank.save_bytes().unwrap(), None).unwrap();
+    assert_eq!(restored.coef(0, None).unwrap(), rows);
+
+    // `coef` does not wait for `min_periods` (5 here): the spec solves every
+    // row, so after one row per group there is a fit, and `n_eff` is what
+    // says how little is behind it. Under the default schedule the first
+    // row of a stream has not solved, and the row is `None`, as `coef` is.
+    let mut fresh = Bank::new(vec![spec_json("m", true)]).unwrap();
+    fresh.fit_predict(&df.slice(0, 2)).unwrap();
+    assert!(
+        fresh
+            .coef(0, None)
+            .unwrap()
+            .iter()
+            .all(|r| r.coef.is_some() && r.n_eff < 5.0)
+    );
+    let lazy: Spec = serde_json::from_str(
+        &serde_json::to_string(&spec_json("m", true))
+            .unwrap()
+            .replace(r#","max_rows_between_solves":1"#, ""),
+    )
+    .unwrap();
+    assert!(
+        !serde_json::to_string(&lazy)
+            .unwrap()
+            .contains("max_rows_between_solves\":1")
+    );
+    let mut lazy = Bank::new(vec![lazy]).unwrap();
+    lazy.fit_predict(&df.slice(0, 2)).unwrap();
+    assert!(
+        lazy.coef(0, None)
+            .unwrap()
+            .iter()
+            .all(|r| r.coef.is_none() && r.n_eff > 0.0)
+    );
+}

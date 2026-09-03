@@ -96,6 +96,12 @@ impl AnyModel {
         dispatch!(self, m => m.n_outputs())
     }
 
+    /// The accumulated weight behind the model as it stands: what the next
+    /// row's `n_eff` field reports (before that row's update).
+    pub fn n_eff(&self) -> f64 {
+        dispatch!(self, m => m.n_eff())
+    }
+
     pub fn coefficients(&self) -> Option<Vec<Vec<f64>>> {
         match self {
             AnyModel::EwRidge(m) => m.coefficients().map(|b| b.to_vec()),

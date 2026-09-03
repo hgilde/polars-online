@@ -350,6 +350,22 @@ pub struct Gram {
     pub target_weights: Vec<f64>,
 }
 
+/// One decay instance's coefficients, from [`Bank::coef`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Coef {
+    pub group: GroupKey,
+    /// The decay instance's suffix (`"@h500"`, or `""` for a single instance).
+    pub instance: String,
+    /// The accumulated weight behind the fit -- the next row's `n_eff`. The
+    /// solve schedule, not `min_periods`, decides when `coef` first appears,
+    /// so this is how a caller tells a warm fit from one over fewer rows
+    /// than `min_periods` asks for (`pred` waits for that; `coef` does not).
+    pub n_eff: f64,
+    /// The flat list the output's `coef` field reports, in
+    /// `polars_online.spec.coef_index` order; `None` before the first solve.
+    pub coef: Option<Vec<f64>>,
+}
+
 const BANK_MAGIC: &str = "polars-online-bank";
 
 /// The envelope of a [`BankFile`], read on its own first: a file from a newer
@@ -612,6 +628,49 @@ impl Bank {
                     comoments: cov.comoments().to_vec(),
                     cross_moments: cross,
                     target_weights: weights,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// The coefficients behind a spec's fit, per group and decay instance:
+    /// the flat list the output's `coef` field reports, as of the last row
+    /// each stream learned from -- `coef` on that row said the same, and
+    /// the next row's `pred` is computed from it. The layout is
+    /// `polars_online.spec.coef_index`'s: (target x combo) slots, each with
+    /// its terms in order. `None` before a stream's first solve, and for a
+    /// model without coefficients (`ew_cov`). The first solve is the solve
+    /// schedule's to decide (`solve_every`, `max_rows_between_solves`), not
+    /// `min_periods`: `pred` waits for `min_periods`, `coef` does not, so a
+    /// row's `n_eff` says how much weight is behind it.
+    ///
+    /// `group` narrows the list to one group; a group the bank has never
+    /// seen gives an empty vector, not an error.
+    ///
+    /// # Errors
+    ///
+    /// `spec` out of range.
+    pub fn coef(&self, spec: usize, group: Option<&str>) -> Result<Vec<Coef>, String> {
+        let states = self
+            .states
+            .get(spec)
+            .ok_or_else(|| format!("spec index {spec} out of range"))?;
+        let mut keys: Vec<&GroupKey> = match group {
+            Some(g) => states.keys().filter(|k| k.as_str() == Some(g)).collect(),
+            None => states.keys().collect(),
+        };
+        keys.sort();
+        let mut out = Vec::new();
+        for key in keys {
+            for (label, model) in &states[key].models {
+                out.push(Coef {
+                    group: key.clone(),
+                    instance: label.clone(),
+                    n_eff: model.n_eff(),
+                    coef: model
+                        .coefficients()
+                        .map(|c| c.into_iter().flatten().collect()),
                 });
             }
         }

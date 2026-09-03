@@ -9,6 +9,17 @@ carries breaking changes.
 
 ### Added
 
+- **`ModelBank.coef(spec, group=None)`: the coefficients behind a fit, as a
+  frame**, from a live bank or one loaded from a state file — one row per
+  `(group, instance, position)` with `coef_index`'s `target`, grid values
+  and `term`, so `bank.coef("ols").pivot("term", index=["group",
+  "instance"], values="coef")` is the betas per group. The values are what
+  the output's `coef` field reported on the last row each group learned
+  from (the fit after that row, which the next `pred` is computed from);
+  null for a group still in warmup; an empty frame for a group the bank
+  has never seen; `ValueError` for `ew_cov`. Rust: `Bank::coef` and the
+  `Coef` row. Before this, the betas of a saved state were reachable only
+  through `predict` on a one-row frame or a hand solve over `gram()`.
 - **`save_state=` on the plan: `lf.online.fit_predict(specs, load_state=,
   save_state=)`**, and on `df.online.fit_predict` and `po.fit_predict`. The
   state the execution ends in — after the last row the source fed the bank:
@@ -117,7 +128,7 @@ carries breaking changes.
     `save_state`'s directory *before* the run, so a typo there no longer
     costs the run and the state. `config=` that is not a dict, a path or
     `None` is `TypeError`; `chunk_rows < 1` is `ValueError` on every surface.
-  - A spec position out of range (`ModelBank.coef(3)`, `groups(3)`, …) is
+  - A spec position out of range (`ModelBank.gram(3)`, `groups(3)`, …) is
     `IndexError`, not `ValueError`; every bank method, not just
     `fit_predict`, gives the "bank is busy" `RuntimeError` when another
     thread holds it.

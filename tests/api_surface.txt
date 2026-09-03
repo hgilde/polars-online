@@ -165,6 +165,7 @@
 
 [ModelBank]
   __reduce__
+  coef
   drop_groups
   fit_predict
   fit_predict_batches

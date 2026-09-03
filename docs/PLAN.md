@@ -344,6 +344,29 @@ sphinx-autodoc: the docstrings are RST-flavoured) is a dependency and CI
 decision for the user, not taken here. `cargo doc --workspace --no-deps`
 builds clean and is the Rust reference.
 
+**The betas are a frame, not a detour, 2026-09-03.** Asked whether a saved
+state can be introspected -- the coefficients of a linear model read back
+from a file -- the answer was "in three roundabout ways": `predict` one row
+and read the output's `coef` field, hand-solve `gram()`'s moments, or take
+the last `coef` from the run that made the file. None names the terms.
+`ModelBank.coef(spec, group=None)` now returns one frame -- `group`,
+`instance`, `n_eff`, then `spec.coef_index`'s columns, then `coef` -- so
+`bank.coef("ols").pivot("term", index=["group", "instance"], values="coef")`
+is the wide table people expect, from a live bank or `ModelBank.load(path)`.
+It is the same `AnyModel::coefficients()` call the output's `coef` field
+makes, so the two agree by construction (`tests/test_coef.py`). Two facts
+the docstring states because they surprised: `coef` is the last *solve*, not
+gated by `min_periods` as `pred` is (so it can exist, jittered, over fewer
+rows than terms -- `n_eff` is there to say how much is behind it), and under
+the default `solve_every = halflife/50` it is that stale. Asked separately
+whether an EW-OLS is a local regression: measured, yes -- with `ridge=0.0`
+and `solve_every=0`, `pred[t]` is the weighted least-squares fit of rows
+`< t` with weights `0.5**((t-1-i)/halflife)` to 1e-14, `coef[t]` the same
+over rows `<= t`; the kernel is one-sided (causal), `n_eff` saturates at
+`1/(1-0.5**(1/halflife))` ~ `1.44*halflife`, so `min_periods` must sit below
+that, and the plan / `po.run` stream it in O(chunk) memory. The test pins
+the statement against `numpy.linalg.lstsq`.
+
 **State leaves a streamed plan through a file, and only a file, 2026-09-03
 (task 20).** `lf.online.fit_predict(specs, load_state=, save_state=)` — the
 runner's two keywords on the plan, so the fourth step of the state workflow

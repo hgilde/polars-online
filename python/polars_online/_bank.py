@@ -9,7 +9,7 @@ from typing import Any
 import polars as pl
 
 from polars_online import _polars_online as _native
-from polars_online._spec import _from_json, _json
+from polars_online._spec import _from_json, _json, coef_index
 
 __all__ = ["ModelBank"]
 
@@ -199,14 +199,83 @@ class ModelBank:
         for chunk in batches:
             yield self.fit_predict(chunk)
 
+    def coef(self, spec: str | int, group: str | None = None) -> pl.DataFrame:
+        """The coefficients behind a spec's fit: one row per (group, instance,
+        position), so a bank loaded from a state file answers "what are the
+        betas?" without a row of data::
+
+            bank = po.ModelBank.load("state.bin")
+            betas = bank.coef("ols")
+            wide = betas.pivot("term", index=["group", "instance"], values="coef")
+
+        The values are what the output's ``coef`` field reported on the last
+        row each stream learned from: the fit *after* that row, which the
+        next row's ``pred`` is computed from. Laid out by
+        :func:`polars_online.spec.coef_index`:
+
+        ``group``, ``instance``
+            As :meth:`groups` and :meth:`gram` report them: the key as a
+            string (``""`` for a spec without a ``group`` column) and the
+            decay instance's field suffix (``"@h500"``, or ``""`` for a
+            single one).
+        ``n_eff``
+            The accumulated weight behind the fit -- what the next row's
+            ``n_eff`` field reports. The solve schedule (``solve_every``,
+            default halflife/50, and ``max_rows_between_solves``) decides
+            when a stream first solves, not ``min_periods``: ``pred`` waits
+            for ``min_periods``, ``coef`` does not, so a fit with ``n_eff``
+            below it is over fewer rows than the spec asks for (a solve over
+            fewer rows than terms is a jittered one, counted by
+            :meth:`solve_failures`).
+        ``position``, ``target``, ``ridge``, ``feature_set``, ``lambda``, ``term``
+            :func:`~polars_online.spec.coef_index`'s columns: ``position``
+            indexes the flat ``coef`` list, ``term`` is ``"intercept"``, a
+            feature name, or ``"level"``/``"trend"`` for ``holt``.
+        ``coef``
+            The value, in the features' original units; null until the
+            stream's first solve, as ``coef`` is on those rows.
+
+        ``spec`` and ``group`` are as for :meth:`gram`: ``KeyError`` /
+        ``IndexError`` for a spec the bank has not got, and a group it has
+        never seen gives an empty frame with the same columns. ``ValueError``
+        for an ``ew_cov`` spec, which emits statistics, not coefficients.
+        """
+        idx = self._spec_index(spec)
+        layout = coef_index(self.specs[idx])
+        n = layout.height
+        groups: list[str | None] = []
+        instances: list[str] = []
+        n_effs: list[float] = []
+        values: list[float | None] = []
+        for g, instance, n_eff, coef in self._native.coef(idx, group):
+            if coef is not None and len(coef) != n:
+                msg = (
+                    f"spec {self.specs[idx]['name']!r}: {len(coef)} coefficients for {n} positions"
+                )
+                raise AssertionError(msg)
+            groups += [g] * n
+            instances += [instance] * n
+            n_effs += [n_eff] * n
+            values += coef if coef is not None else [None] * n
+        k = len(instances) // n
+        body = pl.concat([layout] * k) if k else layout.clear()
+        return body.with_columns(
+            pl.Series("group", groups, pl.String),
+            pl.Series("instance", instances, pl.String),
+            pl.Series("n_eff", n_effs, pl.Float64),
+            pl.Series("coef", values, pl.Float64),
+        ).select("group", "instance", "n_eff", *layout.columns, "coef")
+
     def gram(self, spec: str | int, group: str | None = None) -> list[dict[str, Any]]:
         """The EW accumulators behind a spec's fit, per group and instance.
 
         Returns one dict per (group, decay instance) with:
 
         ``group``, ``instance``
-            The group key (``None`` when ungrouped) and the instance's field
-            suffix (``"@h500"``, or ``""`` for a single instance).
+            The group key as :meth:`groups` reports it (``""`` for a spec
+            without a ``group`` column, ``None`` for a null key) and the
+            instance's field suffix (``"@h500"``, or ``""`` for a single
+            instance).
         ``n_eff``
             Accumulated weight behind these moments.
         ``means``

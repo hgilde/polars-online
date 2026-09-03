@@ -75,6 +75,11 @@ type GramRow = (
     Vec<f64>,
 );
 
+/// `(group, instance, n_eff, coef)` — one decay instance's flat `coef` list,
+/// `None` before its first solve; `ModelBank.coef` lays it out with
+/// `coef_index`.
+type CoefRow = (Option<String>, String, f64, Option<Vec<f64>>);
+
 /// Chunk-fed model bank: feed ordered chunks, get the input chunk back with one
 /// struct column appended per spec. Memory is O(state), not O(data).
 // `module` matters for pickle: `__reduce__` hands back `ModelBank.load_bytes`,
@@ -249,6 +254,20 @@ impl PyModelBank {
                     g.target_weights,
                 )
             })
+            .collect())
+    }
+
+    /// The coefficients behind a spec's fit, per (group, instance): the flat
+    /// `coef` list the output reports, as of the last row learned from.
+    #[pyo3(signature = (spec, group=None))]
+    fn coef(slf: &Bound<'_, Self>, spec: usize, group: Option<&str>) -> PyResult<Vec<CoefRow>> {
+        let this = slf.try_borrow().map_err(|_| busy("coef"))?;
+        Ok(this
+            .inner
+            .coef(spec, group)
+            .map_err(PyValueError::new_err)?
+            .into_iter()
+            .map(|c| (c.group.0, c.instance, c.n_eff, c.coef))
             .collect())
     }
 

@@ -301,8 +301,9 @@ def ewridge(
     schedule (``solve_every`` clock units, default halflife/50). Predictions use
     the last solved coefficients and the state *before* the row's update.
     ``ridge`` may be a list (one fit per value, reported side by side) and
-    ``feature_sets`` names subsets of ``features`` to fit alongside the full
-    set; ``emit_selected`` then reports the fit doing best.
+    ``feature_sets`` names subsets of ``features``, each a fit of its own
+    reported as ``pred_<t>__<set>`` -- the full set is fitted only when it
+    is one of them; ``emit_selected`` then reports the fit doing best.
 
     ``coef0`` shrinks toward a stated belief instead of toward zero, one vector
     per target in the features' original units. **Whether the prior fades

@@ -137,6 +137,19 @@ stale = bank.groups().filter(pl.col("last_clock") < now - 30 * 86400)
 bank.drop_groups(stale["group"])           # they start cold if they reappear
 ```
 
+The fit itself is readable too, from a live bank or one loaded from a state
+file: `bank.coef("ridge")` is a frame of every coefficient — one row per
+`(group, instance, position)` with the `target`, grid values and `term`
+(`"intercept"` or the feature) that position means, and the `n_eff` behind
+it — as of the last row each group learned from, which is what the output's
+`coef` field said on that row and what its next `pred` is computed from.
+`bank.gram("ridge")` gives the EW accumulators behind it (`means`, centered
+`comoments`, `cross_moments`, `n_eff`), for anything other than our solve.
+
+```python
+betas = bank.coef("ridge").pivot("term", index=["group", "instance"], values="coef")
+```
+
 **As a plan.** `lf.online.fit_predict(specs)` is the loop above as a
 `LazyFrame`: executing it — `collect()`, `collect_batches()`, `sink_*()` —
 streams the plan's rows through a fresh bank in `chunk_rows` chunks, so a
