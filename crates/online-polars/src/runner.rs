@@ -22,6 +22,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::time::{Duration, Instant};
 
@@ -34,9 +35,35 @@ use crate::bank::Bank;
 use crate::spec::Spec;
 
 /// Writing the output through a temporary is filesystem work, and polars'
-/// error type is what the runner returns.
-fn io_err(e: std::io::Error) -> PolarsError {
-    polars_err!(ComputeError: "{}", e)
+/// error type is what the runner returns: its `IO` variant, kind intact, so
+/// a caller can tell a file that could not be written or read from a run
+/// that was refused (the Python `run` raises `OSError` -- the subclass the
+/// kind names -- for the one and `ValueError` for the other). `what` and
+/// `path` say which file: the `io::Error` alone does not.
+fn io_err(what: &str, path: &Path, e: std::io::Error) -> PolarsError {
+    let msg = format!("{what} {}: {e}", path.display());
+    PolarsError::IO {
+        error: Arc::new(e),
+        msg: Some(msg.into()),
+    }
+}
+
+/// The directory `path` would be written into, or the error naming it: a
+/// missing directory is reported before a run, not after the stream it would
+/// have cost. `what` is as for [`io_err`].
+fn check_parent(what: &str, path: &Path) -> PolarsResult<()> {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    if parent.is_dir() {
+        return Ok(());
+    }
+    let e = std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!("{} is not a directory", parent.display()),
+    );
+    Err(io_err(what, path, e))
 }
 
 /// A file format the runner reads and writes.
@@ -107,8 +134,10 @@ impl Format {
 }
 
 /// A run description, deserialized from TOML by the CLI and from JSON by
-/// `polars_online.run`.
+/// `polars_online.run`. An unknown key is refused, naming the keys there
+/// are, so a misspelt one cannot silently fall back to its default.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunConfig {
     /// Input path. Empty when the caller supplies the source itself
     /// ([`run_config_on`]), which is how `polars_online.run` passes a
@@ -230,10 +259,16 @@ impl RunConfig {
     }
 
     /// The bank this config starts from: loaded from `load_state`, or fresh.
+    /// A file that cannot be read is an `IO` error; one that is not a bank
+    /// this build loads, or whose specs are not the config's, is a
+    /// `ComputeError` saying why (`Bank::load_bytes`).
     pub fn open_bank(&self) -> PolarsResult<Bank> {
         match &self.load_state {
-            Some(p) => Bank::load(p, Some(&self.specs))
-                .map_err(|e| polars_err!(ComputeError: "loading state {}: {}", p.display(), e)),
+            Some(p) => {
+                let bytes = std::fs::read(p).map_err(|e| io_err("loading state", p, e))?;
+                Bank::load_bytes(&bytes, Some(&self.specs))
+                    .map_err(|e| polars_err!(ComputeError: "loading state {}: {}", p.display(), e))
+            }
             None => Bank::new(self.specs.clone()).map_err(|e| polars_err!(ComputeError: "{}", e)),
         }
     }
@@ -292,6 +327,24 @@ impl Default for RunOptions {
 /// the state. `progress` is called after each chunk with the running stats,
 /// so the CLI can print without this crate knowing about stdout; an error
 /// from it ends the run with that error (the output is not published).
+///
+/// # Errors
+///
+/// Before a row is read: `ComputeError` for a config [`RunConfig::validate`]
+/// refuses or a bank [`Bank::new`] does; `PolarsError::IO` -- carrying the
+/// `io::Error` under a message naming the path -- for a `load_state` that
+/// cannot be read, and for a `save_state` whose directory is not there,
+/// checked before the run because finding out after it would leave the
+/// output written and the state lost; `ComputeError` as `loading state
+/// <path>: ...` for a `load_state` that is not a bank this build loads or
+/// whose specs are not the config's. During the run (the scan is lazy):
+/// polars' own error for `input` (a missing file is its `IO`, naming the
+/// path; `keep_columns` naming a column it has not got is `ColumnNotFound`),
+/// `PolarsError::IO` as `writing <output>: ...` for the output, and
+/// [`Bank::fit_predict`]'s for the data. Whatever ends the run leaves the
+/// previous `output` in place and `save_state` unwritten: the state is saved
+/// last, as `PolarsError::IO` `saving state <path>: ...` if that fails, so a
+/// state file always has an output to go with it.
 pub fn run_config(
     cfg: &RunConfig,
     progress: impl FnMut(RunStats) -> PolarsResult<()>,
@@ -310,6 +363,10 @@ pub fn run_config(
 /// cannot name, a query, an in-memory frame -- or frames the caller already
 /// has. `keep_columns` still applies, to a plan as a `select` (so the scan
 /// reads only those columns) and to frames one by one.
+///
+/// # Errors
+///
+/// [`run_config`]'s, with the source's own in place of the scan's.
 pub fn run_config_on(
     cfg: &RunConfig,
     input: Input<'_>,
@@ -340,6 +397,9 @@ pub fn run_config_on(
             }
         }
     };
+    if let Some(p) = &cfg.save_state {
+        check_parent("saving state", p)?;
+    }
     let mut bank = cfg.open_bank()?;
     let opts = RunOptions {
         chunk_rows: cfg.chunk_rows,
@@ -356,8 +416,7 @@ pub fn run_config_on(
         progress,
     )?;
     if let Some(p) = &cfg.save_state {
-        bank.save(p)
-            .map_err(|e| polars_err!(ComputeError: "saving state {}: {}", p.display(), e))?;
+        bank.save(p).map_err(|e| io_err("saving state", p, e))?;
     }
     Ok(stats)
 }
@@ -387,6 +446,13 @@ enum Write_ {
 ///
 /// The read and the write each run on a thread of their own, a chunk ahead
 /// of and behind the bank; see the module docs.
+///
+/// # Errors
+///
+/// The source's, the bank's ([`Bank::fit_predict`] or [`Bank::predict`]),
+/// the writer's (`PolarsError::IO` naming the file) or `progress`'s,
+/// whichever comes first; the bank is left as it was after the last chunk
+/// it accepted, and a file output is not published.
 pub fn run(
     bank: &mut Bank,
     input: Input<'_>,
@@ -589,7 +655,21 @@ fn read_frames(
 /// `End` is a failed run, and the temporary is removed instead. Returns the
 /// time spent writing, for the timing line.
 fn write_file(path: &Path, format: Format, rx: Receiver<Write_>) -> PolarsResult<Duration> {
-    let (file, pending) = AtomicFile::create(path).map_err(io_err)?;
+    write_frames(path, format, rx).map_err(|e| match e {
+        // Polars' writers report the filesystem without the file; name it.
+        PolarsError::IO { error, msg } => {
+            let inner = msg.map_or_else(|| error.to_string(), |m| m.to_string());
+            PolarsError::IO {
+                error,
+                msg: Some(format!("writing {}: {inner}", path.display()).into()),
+            }
+        }
+        e => e,
+    })
+}
+
+fn write_frames(path: &Path, format: Format, rx: Receiver<Write_>) -> PolarsResult<Duration> {
+    let (file, pending) = AtomicFile::create(path)?;
     let mut buf = BufWriter::new(file);
     let mut busy = Duration::ZERO;
     // The run always sends a frame before `End` -- an empty one for an empty
@@ -622,10 +702,10 @@ fn write_file(path: &Path, format: Format, rx: Receiver<Write_>) -> PolarsResult
     }
     let t = Instant::now();
     writer.finish()?;
-    buf.flush().map_err(io_err)?;
+    buf.flush()?;
     drop(buf);
     // The output is complete, footer and all; publish it under its own name.
-    pending.commit().map_err(io_err)?;
+    pending.commit()?;
     busy += t.elapsed();
     Ok(busy)
 }
@@ -703,7 +783,7 @@ fn ndjson_write(sink: &mut BufWriter<File>, df: &DataFrame) -> PolarsResult<()> 
         })
         .collect::<PolarsResult<_>>()?;
     for part in parts {
-        sink.write_all(&part).map_err(io_err)?;
+        sink.write_all(&part)?;
     }
     Ok(())
 }

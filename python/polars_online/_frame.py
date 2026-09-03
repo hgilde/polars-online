@@ -244,8 +244,23 @@ class LazyFrameOnlineNamespace:
         (docs/STATE-WORKFLOW.md) -- :func:`polars_online.run` saves only after
         its output is committed, for the case where the two must be tied
         together, and a dated ``save_state`` per batch of data keeps a rerun
-        from learning it twice. An error in the bank surfaces as a polars
-        ``ComputeError`` carrying its message.
+        from learning it twice.
+
+        What the schema decides is reported while the plan is built, as
+        polars reports its own schema errors: ``ValueError`` for neither
+        ``specs`` nor ``load_state``, for ``chunk_rows`` below 1, for a spec
+        the bank refuses, and for a spec whose column the plan has not got,
+        is not numeric, or shares the spec's name (the checks of
+        :class:`ModelBank` and :meth:`ModelBank.fit_predict`, with the same
+        messages); ``FileNotFoundError`` for a ``load_state`` that is not
+        there or a ``save_state`` whose directory is not, ``ValueError`` for
+        a ``load_state`` that is not a bank this build loads or whose specs
+        are not ``specs`` (:meth:`ModelBank.load`). What only the values
+        decide -- a null clock, a negative weight, a clock running backwards
+        -- is reported when the plan runs, as polars' ``ComputeError``
+        carrying the bank's message, and so is a ``save_state`` that cannot
+        be written when the run ends, carrying the ``OSError``'s message and
+        the path.
         """
         return _fit_predict_lazy(self._lf, specs, load_state, save_state, chunk_rows)
 
@@ -260,6 +275,16 @@ class LazyFrameOnlineNamespace:
         state, read when the plan is built -- build the plan again to pick up
         a newer file. Target columns are optional, as for ``predict``;
         ``chunk_rows`` is the read chunk.
+
+        Reported while the plan is built: ``FileNotFoundError`` for a path
+        that is not there and ``ValueError`` for a file that is not a bank
+        this build loads (:meth:`ModelBank.load`), ``TypeError`` for a
+        ``bank`` that is neither a bank nor a path, ``ValueError`` for
+        ``chunk_rows`` below 1 and for a column the bank reads that the plan
+        has not got or that is not numeric (a missing target is fine). A
+        value the bank refuses -- a null clock, a negative weight -- is
+        reported when the plan runs, as polars' ``ComputeError`` carrying
+        :meth:`ModelBank.predict`'s message.
         """
         return _predict_lazy(self._lf, bank, chunk_rows)
 
@@ -282,7 +307,13 @@ class DataFrameOnlineNamespace:
         column per spec, from a bank that is then dropped, or saved to
         ``save_state`` first (:meth:`ModelBank.save`); ``load_state`` starts
         it from a saved bank instead of the specs. Keep a bank of your own to
-        feed it more rows."""
+        feed it more rows.
+
+        Raises what :class:`ModelBank`, :meth:`ModelBank.fit_predict`,
+        :meth:`ModelBank.load` and :meth:`ModelBank.save` raise, and
+        ``ValueError`` for neither ``specs`` nor ``load_state``. A
+        ``save_state`` whose directory is not there is ``FileNotFoundError``
+        before the fit, not after it."""
         save_path = _save_path(save_state)
         bank = _bank(specs, load_state, "fit_predict")()
         out = bank.fit_predict(self._df)
@@ -293,7 +324,9 @@ class DataFrameOnlineNamespace:
     def predict(self, bank: ModelBank | State) -> pl.DataFrame:
         """:meth:`ModelBank.predict` over the frame: scored against ``bank`` --
         a :class:`ModelBank`, or the path of a saved one -- as it stands, which
-        does not move."""
+        does not move. Raises what :meth:`ModelBank.load` (for a path) and
+        :meth:`ModelBank.predict` raise, and ``TypeError`` for a ``bank`` that
+        is neither."""
         if not isinstance(bank, ModelBank):
             bank = ModelBank.load(os.fspath(bank))
         return bank.predict(self._df)
@@ -337,7 +370,8 @@ def fit_predict(
     (:meth:`DataFrameOnlineNamespace.fit_predict`). ``load_state`` starts the
     bank from a saved one and ``save_state`` writes where it ends up;
     ``chunk_rows`` is the plan's read chunk, and a frame already in memory is
-    fitted in one call.
+    fitted in one call. ``TypeError`` for a ``frame`` that is neither;
+    otherwise raises what the namespace method does.
     """
     if isinstance(frame, pl.LazyFrame):
         return _fit_predict_lazy(frame, specs, load_state, save_state, chunk_rows)
@@ -367,6 +401,8 @@ def predict(
     Scores the rows against ``bank`` as it stands and learns nothing: a plan
     from a ``LazyFrame`` (:meth:`LazyFrameOnlineNamespace.predict`), a frame
     from a ``DataFrame`` (:meth:`DataFrameOnlineNamespace.predict`).
+    ``TypeError`` for a ``frame`` that is neither; otherwise raises what the
+    namespace method does.
     """
     if isinstance(frame, pl.LazyFrame):
         return _predict_lazy(frame, bank, chunk_rows)

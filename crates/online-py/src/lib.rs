@@ -4,7 +4,8 @@
 //! (Python dicts are serialized by the thin wrapper in `python/polars_online/`).
 
 use online_polars::{Bank, GroupKey, Spec};
-use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
+use polars::prelude::PolarsError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3_polars::{PyDataFrame, PySeries};
 
@@ -84,9 +85,29 @@ struct PyModelBank {
     inner: Bank,
 }
 
+/// `e` as the `OSError` Python raises for its kind -- pyo3 chooses the
+/// subclass (`FileNotFoundError`, `PermissionError`, ...) -- carrying `msg`,
+/// since an `io::Error`'s own message has no path in it.
+fn os_err(kind: std::io::ErrorKind, msg: String) -> PyErr {
+    PyErr::from(std::io::Error::new(kind, msg))
+}
+
+/// A run's error as Python sees it: a file that could not be read or written
+/// (the runner's `IO` errors, kind intact) is an `OSError`; everything else --
+/// a config the runner refused, a column a spec names that the frames lack,
+/// a bank error mid-stream -- is a `ValueError` with the message.
+fn run_err(e: &PolarsError) -> PyErr {
+    match e {
+        PolarsError::IO { error, .. } => os_err(error.kind(), e.to_string()),
+        _ => PyValueError::new_err(e.to_string()),
+    }
+}
+
 /// The error for a bank reached from a second thread while `fit_predict` is
 /// running on the first (the GIL is released for the run), or for a
-/// `fit_predict` reached while `predict` calls are still returning.
+/// `fit_predict` reached while `predict` calls are still returning. Every
+/// method takes its borrow this way, so the refusal is this message and not
+/// pyo3's "Already mutably borrowed".
 fn busy(what: &str) -> PyErr {
     PyRuntimeError::new_err(format!(
         "ModelBank.{what}: the bank is in use on another thread; a bank is one \
@@ -143,11 +164,13 @@ impl PyModelBank {
             .collect())
     }
 
+    /// `Bank::save`: the filesystem's error becomes the `OSError` of its
+    /// kind, with the path.
     fn save(slf: &Bound<'_, Self>, path: &str) -> PyResult<()> {
         let this = slf.try_borrow().map_err(|_| busy("save"))?;
         this.inner
             .save(std::path::Path::new(path))
-            .map_err(PyIOError::new_err)
+            .map_err(|e| os_err(e.kind(), format!("{path}: {e}")))
     }
 
     fn save_bytes(slf: &Bound<'_, Self>) -> PyResult<Vec<u8>> {
@@ -155,15 +178,9 @@ impl PyModelBank {
         this.inner.save_bytes().map_err(PyValueError::new_err)
     }
 
-    #[staticmethod]
-    #[pyo3(signature = (path, specs_json=None))]
-    fn load(path: &str, specs_json: Option<&str>) -> PyResult<Self> {
-        let specs = specs_json.map(parse_specs).transpose()?;
-        let inner =
-            Bank::load(std::path::Path::new(path), specs.as_deref()).map_err(PyIOError::new_err)?;
-        Ok(Self { inner })
-    }
-
+    /// `Bank::load_bytes`; a refusal is a `ValueError` with its reason. The
+    /// file itself is read on the Python side (`ModelBank.load`), so that a
+    /// missing one is the `FileNotFoundError` `open` raises.
     #[staticmethod]
     #[pyo3(signature = (bytes, specs_json=None))]
     fn load_bytes(bytes: &[u8], specs_json: Option<&str>) -> PyResult<Self> {
@@ -186,21 +203,26 @@ impl PyModelBank {
     }
 
     /// Output struct field names per spec (in order), for schema inspection.
-    fn output_fields(&self) -> Vec<Vec<String>> {
-        self.inner
+    fn output_fields(slf: &Bound<'_, Self>) -> PyResult<Vec<Vec<String>>> {
+        let this = slf.try_borrow().map_err(|_| busy("output_fields"))?;
+        Ok(this
+            .inner
             .specs()
             .iter()
             .map(online_polars::output_fields)
-            .collect()
+            .collect())
     }
 
     /// Per spec, `{group_key_or_None: count}` of jittered/failed solves.
-    fn solve_failures(&self) -> Vec<Vec<(Option<String>, u64)>> {
-        self.inner
+    #[allow(clippy::type_complexity)]
+    fn solve_failures(slf: &Bound<'_, Self>) -> PyResult<Vec<Vec<(Option<String>, u64)>>> {
+        let this = slf.try_borrow().map_err(|_| busy("solve_failures"))?;
+        Ok(this
+            .inner
             .solve_failures()
             .into_iter()
             .map(|per_spec| per_spec.into_iter().map(|(k, n)| (k.0, n)).collect())
-            .collect()
+            .collect())
     }
 
     /// The EW accumulators behind a spec's fit (ENHANCEMENTS E30), as flat
@@ -208,8 +230,9 @@ impl PyModelBank {
     /// `(group, instance, k, n_eff, means, comoments, cross_moments,
     /// target_weights)`.
     #[pyo3(signature = (spec, group=None))]
-    fn gram(&self, spec: usize, group: Option<&str>) -> PyResult<Vec<GramRow>> {
-        Ok(self
+    fn gram(slf: &Bound<'_, Self>, spec: usize, group: Option<&str>) -> PyResult<Vec<GramRow>> {
+        let this = slf.try_borrow().map_err(|_| busy("gram"))?;
+        Ok(this
             .inner
             .gram(spec, group)
             .map_err(PyValueError::new_err)?
@@ -229,23 +252,27 @@ impl PyModelBank {
             .collect())
     }
 
-    fn spec_names(&self) -> Vec<String> {
-        self.inner.specs().iter().map(|s| s.name.clone()).collect()
+    fn spec_names(slf: &Bound<'_, Self>) -> PyResult<Vec<String>> {
+        let this = slf.try_borrow().map_err(|_| busy("spec_names"))?;
+        Ok(this.inner.specs().iter().map(|s| s.name.clone()).collect())
     }
 
     /// The specs as JSON, so a loaded bank can show them as dicts again.
-    fn specs_json(&self) -> PyResult<String> {
-        serde_json::to_string(self.inner.specs()).map_err(|e| PyValueError::new_err(e.to_string()))
+    fn specs_json(slf: &Bound<'_, Self>) -> PyResult<String> {
+        let this = slf.try_borrow().map_err(|_| busy("specs_json"))?;
+        serde_json::to_string(this.inner.specs()).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Per spec: `(group, rows_processed, last_clock)` for every group held.
     #[allow(clippy::type_complexity)]
-    fn groups(&self) -> Vec<Vec<(Option<String>, u64, Option<f64>)>> {
-        self.inner
+    fn groups(slf: &Bound<'_, Self>) -> PyResult<Vec<Vec<(Option<String>, u64, Option<f64>)>>> {
+        let this = slf.try_borrow().map_err(|_| busy("groups"))?;
+        Ok(this
+            .inner
             .groups()
             .into_iter()
             .map(|v| v.into_iter().map(|(k, n, c)| (k.0, n, c)).collect())
-            .collect()
+            .collect())
     }
 
     #[pyo3(signature = (keys, spec=None))]
@@ -261,8 +288,9 @@ impl PyModelBank {
             .map_err(PyValueError::new_err)
     }
 
-    fn rows_seen(&self) -> u64 {
-        self.inner.rows_seen()
+    fn rows_seen(slf: &Bound<'_, Self>) -> PyResult<u64> {
+        let this = slf.try_borrow().map_err(|_| busy("rows_seen"))?;
+        Ok(this.inner.rows_seen())
     }
 }
 
@@ -377,9 +405,7 @@ fn run_config_frames(
     let result = py.detach(|| online_polars::run_config_on(&cfg, input, report));
     match result {
         Ok(stats) => Ok((stats.rows, stats.chunks)),
-        Err(e) => Err(failure
-            .take()
-            .unwrap_or_else(|| PyValueError::new_err(e.to_string()))),
+        Err(e) => Err(failure.take().unwrap_or_else(|| run_err(&e))),
     }
 }
 

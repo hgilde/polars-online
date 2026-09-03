@@ -271,6 +271,13 @@ fn backwards_clock(spec: &Spec, raw: f64, row: usize) -> PolarsError {
     )
 }
 
+/// Drop the streams a refused chunk materialized, `(spec index, key)` each.
+fn forget(states: &mut [HashMap<GroupKey, Stream>], fresh: &[(usize, GroupKey)]) {
+    for (si, key) in fresh {
+        states[*si].remove(key);
+    }
+}
+
 /// Row-index partition by group key, in row order.
 ///
 /// Keyed on a 64-bit hash of the string value rather than on the string
@@ -345,6 +352,17 @@ pub struct Gram {
 
 const BANK_MAGIC: &str = "polars-online-bank";
 
+/// The envelope of a [`BankFile`], read on its own first: a file from a newer
+/// build may carry keys this build's [`Spec`] refuses, and the version check
+/// has to run before that refusal can be mistaken for "not a bank file".
+#[derive(Deserialize)]
+struct BankHeader {
+    magic: String,
+    #[serde(default = "default_format_version")]
+    format_version: u32,
+    schema_version: u32,
+}
+
 #[derive(Serialize, Deserialize)]
 struct BankFile {
     magic: String,
@@ -417,6 +435,15 @@ impl SpecDerived {
 }
 
 impl Bank {
+    /// A bank over `specs`, each validated and its models built eagerly, so
+    /// that every parameter problem is reported here and not on the first
+    /// chunk.
+    ///
+    /// # Errors
+    ///
+    /// No specs; two with the same name; a spec [`Spec::validate`] refuses
+    /// or whose model cannot be built from its parameters -- the message
+    /// names the spec and the parameter, as the Python builders' do.
     pub fn new(specs: Vec<Spec>) -> Result<Self, String> {
         if specs.is_empty() {
             return Err("at least one spec is required".into());
@@ -486,7 +513,8 @@ impl Bank {
 
     /// Forget the state of these groups -- in every spec, or in one -- and
     /// return how many streams were dropped. A dropped group starts cold if it
-    /// appears again, exactly as a never-seen one would.
+    /// appears again, exactly as a never-seen one would. `spec` is an index
+    /// into [`Self::specs`]; the caller keeps it in range.
     pub fn drop_groups(&mut self, keys: &[GroupKey], spec: Option<usize>) -> Result<usize, String> {
         if let Some(si) = spec {
             if si >= self.states.len() {
@@ -610,6 +638,19 @@ impl Bank {
 
     /// Run every spec over one chunk; returns one struct column per spec.
     /// Chunks must arrive in stream order within each group.
+    ///
+    /// # Errors
+    ///
+    /// Each names the spec and the column: `ColumnNotFound` for a column a
+    /// spec reads that the frame has not got (and what it has);
+    /// `ComputeError` for a target, feature, clock or weight column that is
+    /// not numeric (a temporal clock is refused rather than read as its
+    /// epoch integer), a clock with a null or non-finite value, a finite
+    /// negative weight, or a group's clock running backwards under
+    /// `on_clock_reset = "error"`; `Duplicate` for a spec named like an
+    /// input column, which its struct would replace. A refused chunk leaves
+    /// the bank exactly as it was -- no state is updated, no new group is
+    /// kept -- so the corrected chunk can be fed.
     pub fn fit_predict(&mut self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
         // Section timings to stderr when ONLINE_TIMING is set; costs one env
         // read per chunk. This is how docs/PERFORMANCE.md's numbers are made.
@@ -635,6 +676,9 @@ impl Bank {
         let t2 = std::time::Instant::now();
 
         // Materialize missing streams, then fan out over (spec x group).
+        // `fresh` remembers which, so that a refused chunk can take them
+        // away again.
+        let mut fresh: Vec<(usize, GroupKey)> = Vec::new();
         for (si, spec) in self.specs.iter().enumerate() {
             for (key, _) in &groups[si] {
                 if !self.states[si].contains_key(key) {
@@ -642,6 +686,7 @@ impl Bank {
                         key.clone(),
                         Stream::new(spec).map_err(|e| polars_err!(ComputeError: "{}", e))?,
                     );
+                    fresh.push((si, key.clone()));
                 }
             }
         }
@@ -669,14 +714,20 @@ impl Bank {
         // Under `on_clock_reset = "error"` the chunk is refused as a whole:
         // every stream checks its clock schedule on a copy before any model is
         // touched (docs/IMPROVEMENTS.md C3), so the bank is left exactly as it
-        // was and the corrected chunk can be fed. A no-op under every other
-        // policy.
-        work.par_iter().try_for_each(|(si, idx, stream)| {
+        // was -- the streams the chunk would have created included, so that
+        // `groups()` lists what the bank has learned from -- and the corrected
+        // chunk can be fed. A no-op under every other policy.
+        let checked = work.par_iter().try_for_each(|(si, idx, stream)| {
             let sc = &cols[*si];
             stream
                 .check_clock(&cfgs[*si], sc.clock.as_deref(), sc.session.as_deref(), idx)
                 .map_err(|(raw, i)| backwards_clock(&specs[*si], raw, i))
-        })?;
+        });
+        if let Err(e) = checked {
+            drop(work);
+            forget(&mut self.states, &fresh);
+            return Err(e);
+        }
 
         let done: Vec<(usize, StreamRows)> = work
             .into_par_iter()
@@ -708,7 +759,13 @@ impl Bank {
 
         let mut per_spec_rows: Vec<Vec<ChunkOut>> = (0..specs.len()).map(|_| Vec::new()).collect();
         for (si, r) in done {
-            per_spec_rows[si].push(r?);
+            match r {
+                Ok(out) => per_spec_rows[si].push(out),
+                Err(e) => {
+                    forget(&mut self.states, &fresh);
+                    return Err(e);
+                }
+            }
         }
         let t_process = t2.elapsed();
         let t3 = std::time::Instant::now();
@@ -750,6 +807,10 @@ impl Bank {
     /// column is optional and feeds `session_gap`; a weight column is not
     /// read. Rows of a group the bank has never seen are null throughout,
     /// like a skipped row. Per field, see [`Stream::predict_chunk`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::fit_predict`]'s, less a missing target, which is not one.
     pub fn predict(&self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
         let n = df.height();
         self.refuse_name_clash(df)?;
@@ -808,6 +869,11 @@ impl Bank {
             .collect()
     }
 
+    /// The bank as versioned msgpack: the specs, every group's state and the
+    /// row count, behind a magic string and two version numbers
+    /// (`BANK_FORMAT_VERSION` for this envelope, `online_core::SCHEMA_VERSION`
+    /// for the states). Fails only if serialization does, which a bank
+    /// built by this crate cannot make happen.
     pub fn save_bytes(&self) -> Result<Vec<u8>, String> {
         let file = BankFile {
             magic: BANK_MAGIC.to_string(),
@@ -830,27 +896,37 @@ impl Bank {
         rmp_serde::to_vec_named(&file).map_err(|e| e.to_string())
     }
 
+    /// A bank from what [`Bank::save_bytes`] wrote, on this or any other OS.
+    /// Refused, with the reason: bytes that are not a bank file (with
+    /// `rmp_serde`'s message when they do not even parse), a file written by
+    /// a newer build of this crate (envelope version) or of `online-core`
+    /// (schema version), and, when `expected_specs` is given, specs that
+    /// differ from the file's -- the state would not be the state of the bank
+    /// the caller has in mind.
     pub fn load_bytes(bytes: &[u8], expected_specs: Option<&[Spec]>) -> Result<Self, String> {
-        let file: BankFile = rmp_serde::from_slice(bytes).map_err(|e| e.to_string())?;
-        if file.magic != BANK_MAGIC {
+        let header: BankHeader = rmp_serde::from_slice(bytes)
+            .map_err(|e| format!("not a polars-online bank state file ({e})"))?;
+        if header.magic != BANK_MAGIC {
             return Err("not a polars-online bank state file".into());
         }
-        if file.format_version > BANK_FORMAT_VERSION {
+        if header.format_version > BANK_FORMAT_VERSION {
             return Err(format!(
                 "bank state file format version {} is newer than this build supports ({})",
-                file.format_version, BANK_FORMAT_VERSION
+                header.format_version, BANK_FORMAT_VERSION
             ));
         }
         if !(online_core::MIN_SCHEMA_VERSION..=online_core::SCHEMA_VERSION)
-            .contains(&file.schema_version)
+            .contains(&header.schema_version)
         {
             return Err(format!(
                 "state schema version {} not supported (this build loads {}..={})",
-                file.schema_version,
+                header.schema_version,
                 online_core::MIN_SCHEMA_VERSION,
                 online_core::SCHEMA_VERSION
             ));
         }
+        let file: BankFile = rmp_serde::from_slice(bytes)
+            .map_err(|e| format!("not a polars-online bank state file ({e})"))?;
         if let Some(exp) = expected_specs {
             if exp != file.specs.as_slice() {
                 return Err("saved specs do not match the bank's specs; refusing to load".into());
@@ -880,13 +956,22 @@ impl Bank {
     /// rename over the destination (`crate::atomic`). An interrupted save
     /// used to leave a truncated file and take the last good state with it,
     /// which is a resume loop starting the stream over.
-    pub fn save(&self, path: &Path) -> Result<(), String> {
-        let bytes = self.save_bytes()?;
-        crate::atomic::write(path, &bytes).map_err(|e| format!("{}: {e}", path.display()))
+    ///
+    /// The error is the filesystem's, without the path: the caller names it,
+    /// and keeps the kind (the Python side raises `FileNotFoundError` for a
+    /// directory that is not there, `PermissionError` for one it cannot
+    /// write, ... from it).
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        let bytes = self.save_bytes().map_err(std::io::Error::other)?;
+        crate::atomic::write(path, &bytes)
     }
 
+    /// [`Bank::load_bytes`] over a file. The error is a message, whichever
+    /// step failed; a caller who needs to tell the two apart -- a file that
+    /// could not be read from a file that is not a bank -- does the read
+    /// itself (`RunConfig::open_bank`, the Python `ModelBank.load`).
     pub fn load(path: &Path, expected_specs: Option<&[Spec]>) -> Result<Self, String> {
-        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         Self::load_bytes(&bytes, expected_specs)
     }
 }

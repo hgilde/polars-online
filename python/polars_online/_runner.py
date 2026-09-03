@@ -86,13 +86,44 @@ def run(
     ``load_state`` and refuses ``save_state``. One TOML can serve both runs:
     the keyword drops the config's ``save_state``, which belongs to the
     learning run, unless ``save_state=`` is passed alongside it.
+
+    What is wrong with the call or the config is ``ValueError``, before a
+    row is read: no input; no specs; a spec the bank refuses
+    (:class:`ModelBank`); a key the config, a spec or its model has not
+    got, named with the keys there are (a misspelt key is never kept at its
+    default in silence); ``chunk_rows`` below 1; a format that cannot be
+    told from a path's extension, or that is not one of the four;
+    ``predict=True`` without ``load_state``, or with ``save_state``; an
+    iterable that produced no frames; a ``load_state`` that is not a bank
+    this build loads or whose specs are not ``specs``; and a TOML that does
+    not parse (``tomllib.TOMLDecodeError``). ``TypeError`` for a ``config``
+    that is none of the three, a ``progress`` that is not callable, or an
+    item of ``input`` that is not a ``DataFrame``. A file fails as the
+    ``OSError`` for what went wrong, with the path in the message: a
+    ``config`` or ``input`` that is not there (the scan is polars', so its
+    ``FileNotFoundError``), a ``load_state`` that cannot be read, an
+    ``output`` whose directory is not there, and a ``save_state`` whose
+    directory is not -- found out before the run, since after it the output
+    would be written and the state lost. A column the specs read that the
+    input has not got, or that ``keep_columns`` dropped, is the bank's
+    ``ValueError`` (a ``keep_columns`` name the input has not got is
+    polars' ``ColumnNotFoundError``); a value the bank refuses -- a null
+    clock, a negative weight, a clock running backwards -- is its
+    ``ValueError`` mid-run. Whatever stops the run -- the bank, the writer,
+    ``progress`` or the iterable raising (both come through as themselves)
+    -- leaves the previous ``output`` where it was and ``save_state``
+    unwritten: the state is saved last, after the output is in place, so a
+    state file always has an output to go with it.
     """
     if isinstance(config, (str, Path)):
         cfg = tomllib.loads(Path(config).read_text())
     elif config is None:
         cfg = {}
-    else:
+    elif isinstance(config, dict):
         cfg = dict(config)
+    else:
+        msg = f"config must be a dict, a path to a TOML file, or None, got {type(config).__name__}"
+        raise TypeError(msg)
 
     overrides: dict[str, Any] = {
         "output": output,
@@ -127,6 +158,9 @@ def run(
         msg = f"progress must be callable, got {type(progress).__name__}"
         raise TypeError(msg)
     cfg.setdefault("chunk_rows", _native.default_chunk_rows())
+    if not isinstance(cfg["chunk_rows"], int) or cfg["chunk_rows"] < 1:
+        msg = f"chunk_rows must be at least 1, got {cfg['chunk_rows']!r}"
+        raise ValueError(msg)
 
     frames, schema = _frames(source, cfg)
     rows, chunks = _native.run_config_frames(_json(cfg), frames, schema, progress)

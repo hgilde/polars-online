@@ -20,6 +20,17 @@ class ModelBank:
     Chunks must arrive in stream order within each group (the clock must not
     run backwards unless the spec's reset semantics say so). Feed
     ``LazyFrame.collect_batches()`` for out-of-core streams.
+
+    ``specs`` are the dicts the :mod:`polars_online.spec` builders make.
+    ``ValueError`` when there are none, when two share a name, or when a
+    dict is not a spec (the message names the field).
+
+    A bank is one ordered stream, so it is not for two threads at once: a
+    method that finds the bank in use on another thread raises
+    ``RuntimeError`` saying so rather than interleave with it
+    (:meth:`fit_predict` releases the GIL while it works). :meth:`predict`
+    learns nothing, so any number of ``predict`` calls may overlap; only a
+    ``fit_predict`` in flight refuses them, and they refuse it.
     """
 
     def __init__(self, specs: Iterable[dict[str, Any]]) -> None:
@@ -49,6 +60,10 @@ class ModelBank:
 
             stale = bank.groups().filter(pl.col("last_clock") < now - 30 * 86400)
             bank.drop_groups(stale["group"])
+
+        ``spec``, a name or a position, narrows the table to one spec:
+        ``KeyError`` for a name the bank has not got (the message lists the
+        names), ``IndexError`` for a position it has not got.
         """
         names = self._native.spec_names()
         per_spec = self._native.groups()
@@ -74,23 +89,52 @@ class ModelBank:
     def drop_groups(self, keys: Iterable[str | None], spec: str | int | None = None) -> int:
         """Forget the state of these groups, in every spec or in one, and
         return how many streams were dropped. Keys are as :meth:`groups`
-        reports them. A dropped group starts cold if it appears again, exactly
-        as a never-seen one would; nothing else in the bank changes, and
-        :meth:`rows_seen` still counts the rows it was fed."""
+        reports them; a key the bank does not hold is not an error, it just
+        drops nothing. A dropped group starts cold if it appears again,
+        exactly as a never-seen one would; nothing else in the bank changes,
+        and :meth:`rows_seen` still counts the rows it was fed. ``spec`` is
+        as for :meth:`groups` (``KeyError`` / ``IndexError`` for one the bank
+        has not got)."""
         index = None if spec is None else self._spec_index(spec)
         return self._native.drop_groups(list(keys), index)
 
     def _spec_index(self, spec: str | int) -> int:
-        if isinstance(spec, int):
-            return spec
+        """A spec's position from its name or index: ``KeyError`` for a name
+        the bank has not got, ``IndexError`` for a position it has not got."""
         names = self._native.spec_names()
+        if isinstance(spec, int):
+            if not -len(names) <= spec < len(names):
+                msg = f"spec index {spec} out of range; the bank has {len(names)} spec(s)"
+                raise IndexError(msg)
+            return spec % len(names)
         if spec not in names:
             msg = f"no spec named {spec!r}; the bank has {names}"
             raise KeyError(msg)
         return names.index(spec)
 
     def fit_predict(self, df: pl.DataFrame) -> pl.DataFrame:
-        """One chunk in; the chunk plus one struct column per spec out."""
+        """One chunk in; the chunk plus one struct column per spec out.
+
+        The struct is named after the spec (``out["m"]``; its fields are
+        :meth:`output_fields`), and ``pred`` in it is out-of-sample: computed
+        from the state *before* the row updates it. Chunk boundaries never
+        change the numbers, only the cadence at which ``coef`` is reported.
+
+        Raises ``TypeError`` for anything but a ``DataFrame`` (a ``LazyFrame``
+        is told to collect, or to feed :meth:`fit_predict_batches`), and
+        ``ValueError`` -- naming the spec and the column -- when a column a
+        spec reads (target, feature, clock, session, weight, group) is not
+        in the frame; a target, feature, clock or weight column is not
+        numeric (a datetime clock is refused rather than read as its epoch
+        integer: cast it to the unit ``halflife`` and ``max_dclock`` are in);
+        the clock has a null or non-finite value; a weight is negative (null
+        skips the row); a spec is named like an input column, which the
+        struct would replace; or a group's clock runs backwards under
+        ``on_clock_reset="error"`` (the other policies absorb it). A refused
+        chunk leaves the bank exactly as it was, so the corrected chunk can
+        be fed. ``RuntimeError`` when the bank is in use on another thread
+        (class docstring).
+        """
         self._check_frame(df, "fit_predict")
         outs = self._native.fit_predict(df)
         return df.with_columns([pl.Series(s) for s in outs])
@@ -119,6 +163,11 @@ class ModelBank:
         coefficients score every row); ``drift`` never fires; rows of a group
         the bank has never seen, or without usable features, are null
         throughout, as a skipped row is in ``fit_predict``.
+
+        Raises what :meth:`fit_predict` raises for the same frame -- a
+        missing or non-numeric column, a bad clock value -- except that a
+        missing target is not an error, and ``RuntimeError`` only when a
+        ``fit_predict`` is in flight on another thread.
         """
         self._check_frame(df, "predict")
         outs = self._native.predict(df)
@@ -142,7 +191,11 @@ class ModelBank:
         raise TypeError(msg)
 
     def fit_predict_batches(self, batches: Iterable[pl.DataFrame]) -> Iterable[pl.DataFrame]:
-        """Lazily map ``fit_predict`` over an iterator of chunks."""
+        """Lazily map :meth:`fit_predict` over an iterator of chunks: each is
+        fed as the generator reaches it, so ``lf.collect_batches()`` streams
+        through the bank one chunk at a time. Whatever ``fit_predict`` raises
+        for a chunk, this raises there; the chunks before it have been
+        learned from."""
         for chunk in batches:
             yield self.fit_predict(chunk)
 
@@ -199,11 +252,16 @@ class ModelBank:
         This is not a speed claim: for a single batch Gram over materialized
         data, BLAS ``dgemm`` is blocked, vectorized, and comfortably faster.
 
-        ``spec`` is a spec name or index.
+        ``spec`` is a spec name or position (``KeyError`` / ``IndexError``
+        for one the bank has not got, as for :meth:`groups`); ``group``
+        narrows the list to one group. A group the bank has never seen gives
+        an empty list, as does a model that keeps no co-moments -- neither is
+        an error.
 
         Requires numpy, which is *not* a dependency of this package -- polars
         does not require it either, and one optional accessor is no reason to
-        put it on every install. ``pip install polars-online[numpy]`` adds it.
+        put it on every install. ``pip install polars-online[numpy]`` adds it;
+        without it the call raises ``ModuleNotFoundError`` saying so.
         """
         try:
             import numpy as np
@@ -250,6 +308,10 @@ class ModelBank:
         }
 
     def output_fields(self) -> dict[str, list[str]]:
+        """Spec name -> the field names of its output struct, in order --
+        :func:`polars_online.spec.output_fields` for every spec in the bank.
+        The fields are fixed by the spec, so this is the output schema before
+        any row is fed."""
         return dict(zip(self._native.spec_names(), self._native.output_fields(), strict=True))
 
     def save(self, path: str | Path) -> None:
@@ -261,21 +323,43 @@ class ModelBank:
         filesystem sync, which is what a resumable file costs: ~4 ms on macOS,
         against ~0.5 ms for serializing 500 groups. Save every chunk and the
         sync dominates; save every hundredth and it disappears.
+
+        Raises the ``OSError`` for what went wrong -- ``FileNotFoundError``
+        for a directory that is not there, ``PermissionError`` for one that
+        cannot be written -- with the path in the message; the file, if it
+        existed, is untouched. ``RuntimeError`` while a ``fit_predict`` is in
+        flight on another thread.
         """
         self._native.save(str(path))
 
     def save_bytes(self) -> bytes:
+        """What :meth:`save` writes, as bytes -- for a store that is not a
+        file (:meth:`load_bytes` reads them back). This is also what pickle
+        and ``copy.deepcopy`` carry. ``RuntimeError`` while a ``fit_predict``
+        is in flight on another thread."""
         return bytes(self._native.save_bytes())
 
     @classmethod
     def load(cls, path: str | Path, specs: Iterable[dict[str, Any]] | None = None) -> ModelBank:
-        """Load a saved bank. Passing ``specs`` asserts they match the file."""
-        specs_json = _json(list(specs)) if specs is not None else None
-        native = _native.ModelBank.load(str(path), specs_json)
-        return cls._wrap(native)
+        """A bank from a file :meth:`save` wrote, on this or any other OS.
+
+        The file carries the specs, so none need be given; passing ``specs``
+        asserts they are the file's, which is how a resuming job checks that
+        the state it found is the state of the bank it is about to run.
+
+        Raises ``FileNotFoundError`` (or the ``OSError`` for what went wrong)
+        when the file cannot be read, and ``ValueError`` when it can but is
+        not a bank this build loads: not a bank state file at all, written by
+        a newer build (the file's format or state schema version is above
+        this build's), or ``specs`` differ from the file's.
+        """
+        return cls.load_bytes(Path(path).read_bytes(), specs)
 
     @classmethod
     def load_bytes(cls, data: bytes, specs: Iterable[dict[str, Any]] | None = None) -> ModelBank:
+        """:meth:`load` from the bytes :meth:`save_bytes` gave, with the same
+        ``specs`` check and the same ``ValueError`` for bytes that are not a
+        bank this build loads."""
         specs_json = _json(list(specs)) if specs is not None else None
         native = _native.ModelBank.load_bytes(data, specs_json)
         return cls._wrap(native)

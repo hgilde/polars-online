@@ -1,4 +1,14 @@
-"""Spec builders: plain dicts, validated eagerly by the Rust core."""
+"""Spec builders: plain dicts, validated eagerly by the Rust core.
+
+The public module is :mod:`polars_online.spec`; its docstring says what a
+spec is, what every model shares and what a builder raises. Here: the
+checker each builder is wrapped in (:func:`_checked`, a ``TypeError`` per
+keyword whose value has the wrong shape, a ``ValueError`` for a count below
+0 or a non-finite value where infinity means nothing), the shared
+parameters (:func:`_common`, which has the Rust side validate the finished
+dict), and the JSON the two sides exchange (:func:`_json`, where
+``inf`` becomes the string the Rust side reads).
+"""
 
 from __future__ import annotations
 
@@ -285,32 +295,40 @@ def ewridge(
 ) -> dict[str, Any]:
     """EW-ridge spec (docs/PLAN.md §4.1).
 
-        ``coef0`` shrinks toward a stated belief instead of toward zero, one vector
-        per target in the features' original units. **Whether the prior fades
-        depends on ``ridge_decay``**: ``S`` is a weighted *mean*, so a plain
-        ``ridge`` is a fixed per-observation penalty whose pull is permanent
-        ("always stay near this belief"); with ``ridge_decay`` the prior sits on the
-        decaying sum scale and fades as data arrives (the usual warm start, "begin
-        at yesterday's fit and let evidence take over").
+    Math: EW means ``S = EW[x x^T]``, ``r_j = EW[x y_j]`` with per-row decay
+    ``0.5 ** (d_clock / halflife)``; coefficients solve
+    ``(S + ridge * D) beta_j = r_j`` (D = identity minus the intercept slot) on a
+    schedule (``solve_every`` clock units, default halflife/50). Predictions use
+    the last solved coefficients and the state *before* the row's update.
+    ``ridge`` may be a list (one fit per value, reported side by side) and
+    ``feature_sets`` names subsets of ``features`` to fit alongside the full
+    set; ``emit_selected`` then reports the fit doing best.
+
+    ``coef0`` shrinks toward a stated belief instead of toward zero, one vector
+    per target in the features' original units. **Whether the prior fades
+    depends on ``ridge_decay``**: ``S`` is a weighted *mean*, so a plain
+    ``ridge`` is a fixed per-observation penalty whose pull is permanent
+    ("always stay near this belief"); with ``ridge_decay`` the prior sits on the
+    decaying sum scale and fades as data arrives (the usual warm start, "begin
+    at yesterday's fit and let evidence take over").
 
     ``session_shrink`` is a middle option between ``session_gap`` and a full
-        reset (PLAN section 12 open question 1). A second accumulator tracks the
-        long-run relationship at ``long_halflife``, and on a session boundary the
-        two are mixed weight-respectingly::
+    reset (PLAN section 12 open question 1). A second accumulator tracks the
+    long-run relationship at ``long_halflife``, and on a session boundary the
+    two are mixed weight-respectingly::
 
-            W'  = (1-f) * W_fast + f * W_slow
-            S'  = ((1-f) * W_fast * S_fast + f * W_slow * S_slow) / W'
+        W'  = (1-f) * W_fast + f * W_slow
+        S'  = ((1-f) * W_fast * S_fast + f * W_slow * S_slow) / W'
 
-        so ``0`` keeps today's fit, ``1`` reverts fully to the long run, and
-        anything between says "overnight, drift partway back". Unlike
-        ``session_gap`` this changes what the model *believes*, not just how
-        confident it is.
+    so ``0`` keeps today's fit, ``1`` reverts fully to the long run, and
+    anything between says "overnight, drift partway back". Unlike
+    ``session_gap`` this changes what the model *believes*, not just how
+    confident it is.
 
-        Math: EW means ``S = EW[x x^T]``, ``r_j = EW[x y_j]`` with per-row decay
-        ``0.5 ** (d_clock / halflife)``; coefficients solve
-        ``(S + ridge * D) beta_j = r_j`` (D = identity minus the intercept slot) on a
-        schedule (``solve_every`` clock units, default halflife/50). Predictions use
-        the last solved coefficients and the state *before* the row's update.
+    Raises as every builder does (:mod:`polars_online.spec`); its own rules:
+    a ``feature_sets`` entry naming a column not in ``features``, a ``coef0``
+    vector of the wrong length, and ``session_shrink`` without
+    ``long_halflife`` are ``ValueError`` naming the problem.
     """
     model: dict[str, Any] = {
         "type": "ew_ridge",
@@ -341,7 +359,11 @@ def _numeric_keys() -> frozenset[str]:
 
 
 def output_fields(spec: dict[str, Any]) -> list[str]:
-    """Struct field names this spec will produce, in order."""
+    """Struct field names this spec will produce, in order.
+
+    ``ValueError`` for a spec that is not valid, with the builders' message
+    (:mod:`polars_online.spec`); a dict that is not a spec at all is told
+    what it lacks (``invalid spec: missing field `name```)."""
     return spec_output_fields(_json(spec))
 
 
@@ -367,7 +389,8 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
         out["m"].struct.field(name)
 
     Produced by the same Rust code that renders the names, so the metadata can
-    never drift from the strings.
+    never drift from the strings. ``ValueError`` for a spec that is not
+    valid, as for :func:`output_fields`.
     """
     rows = json.loads(spec_output_index(_json(spec)))
     return pl.DataFrame(
@@ -404,7 +427,9 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
         slope = out["m"].struct.field("coef@h100").list.get(pos)
 
     Derived from :func:`output_index` (the slot order comes from the same Rust
-    code that renders the names), never from parsing strings.
+    code that renders the names), never from parsing strings. ``ValueError``
+    for a spec that is not valid, as for :func:`output_fields`, and for an
+    ``ew_cov`` spec, which has no coefficients.
     """
     idx = output_index(spec)
     model = spec.get("model", {}).get("type")

@@ -219,6 +219,40 @@ specs = []
 }
 
 #[test]
+fn rejects_a_misspelt_key_with_its_line() {
+    // A key the config has not got is an error naming it, where it is and
+    // what the keys are -- not a default kept in silence. At every level a
+    // TOML has: the run's keys, a spec's, and the model's.
+    let good = r#"
+input = "x.parquet"
+output = "y.parquet"
+chunk_rows = 5
+[[specs]]
+name = "m"
+targets = ["y"]
+features = ["x"]
+halflife = 10
+[specs.model]
+type = "ew_ridge"
+"#;
+    assert!(toml::from_str::<RunConfig>(good).is_ok());
+    let unknown = |text: String| toml::from_str::<RunConfig>(&text).unwrap_err().to_string();
+
+    let err = unknown(good.replace("chunk_rows = 5", "chunk_row = 5"));
+    assert!(
+        err.contains("line 4") && err.contains("unknown field `chunk_row`, expected one of"),
+        "{err}"
+    );
+    let err = unknown(good.replace("halflife = 10", "halflfe = 10"));
+    assert!(err.contains("unknown field `halflfe`"), "{err}");
+    let err = unknown(good.replace("type = \"ew_ridge\"", "type = \"ew_ridge\"\nrigde = 0.1"));
+    assert!(
+        err.contains("unknown field `rigde`, expected one of `ridge`"),
+        "{err}"
+    );
+}
+
+#[test]
 fn resume_rejects_mismatched_specs() {
     let input = tmp("mismatch-in.parquet");
     write_input(&input, 200).unwrap();

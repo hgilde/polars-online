@@ -70,8 +70,28 @@ class TestChunkInvariance:
         b1 = po.ModelBank([_spec()])
         p = tmp_path / "bank.state"
         b1.save(p)
-        with pytest.raises(OSError, match="do not match"):
+        with pytest.raises(ValueError, match="do not match"):
             po.ModelBank.load(p, specs=[_spec(ridge=0.5)])
+
+    def test_load_tells_a_missing_file_from_a_bad_one(self, tmp_path):
+        # The two failure modes a resuming job has to tell apart: no state
+        # yet (start fresh) is the OSError for the path; a file that is not
+        # a bank is a ValueError saying so, never mistaken for a missing one.
+        with pytest.raises(FileNotFoundError):
+            po.ModelBank.load(tmp_path / "nope.state")
+        garbage = tmp_path / "garbage.state"
+        garbage.write_bytes(b"not a bank")
+        with pytest.raises(ValueError, match="not a polars-online bank state file"):
+            po.ModelBank.load(garbage)
+        with pytest.raises(IsADirectoryError):
+            po.ModelBank.load(tmp_path)
+
+    def test_save_names_the_path_it_could_not_write(self, tmp_path):
+        bank = po.ModelBank([_spec()])
+        missing = tmp_path / "nope" / "bank.state"
+        with pytest.raises(FileNotFoundError, match="nope"):
+            bank.save(missing)
+        assert not missing.exists()
 
 
 class TestOutOfSample:

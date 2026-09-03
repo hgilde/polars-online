@@ -325,6 +325,25 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
 
 ## 11a. Decisions made while implementing
 
+**One error contract, stated once and documented at every entry point,
+2026-09-03.** Audit of every public docstring and Rust doc comment for its
+failure modes found the contract mostly there and the gaps all of one kind:
+a failure that was typed wrong (`OSError` for a spec mismatch), silent (an
+unknown key in a spec or config took the default), or late (`save_state`'s
+directory checked after the run it would lose). Each was fixed rather than
+written up: `deny_unknown_fields` on `Spec`, `ModelKind` and `RunConfig`
+(the state-file loader reads the envelope first, so a newer build's file
+with keys this build lacks says "newer", not "not a bank file");
+`ModelBank.load` splits file errors (`OSError` subclass) from content errors
+(`ValueError`); `po.run` checks `save_state`'s directory before the run.
+The contract is one paragraph in `polars_online.__doc__`; each docstring
+says only what *it* raises and when, and `tests/test_runner.py`,
+`test_bank.py`, `test_eval.py` pin the types and messages. **No Python API
+docs are built** — nothing in the repo does, and adding a builder (pdoc or
+sphinx-autodoc: the docstrings are RST-flavoured) is a dependency and CI
+decision for the user, not taken here. `cargo doc --workspace --no-deps`
+builds clean and is the Rust reference.
+
 **State leaves a streamed plan through a file, and only a file, 2026-09-03
 (task 20).** `lf.online.fit_predict(specs, load_state=, save_state=)` — the
 runner's two keywords on the plan, so the fourth step of the state workflow

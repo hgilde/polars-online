@@ -573,7 +573,7 @@ impl crate::OnlineModel for EwCovModel {
 
     /// `ew_cov` has no targets; one nominal target carries all the slots.
     /// Zero: `ew_cov` regresses nothing, it reports statistics. The slot count
-    /// callers want is [`Self::n_outputs`], which is not `n_targets`-derived
+    /// callers want is [`EwCovCfg::n_outputs`], which is not `n_targets`-derived
     /// here as it is for every other model.
     fn n_targets(&self) -> usize {
         0

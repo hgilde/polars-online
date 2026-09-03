@@ -121,7 +121,7 @@ def test_drop_groups_counts_streams_and_can_be_scoped_to_one_spec():
     assert bank.groups()["spec"].to_list() == ["m"]
     with pytest.raises(KeyError, match="no spec named 'nope'; the bank has \\['m', 'r'\\]"):
         bank.drop_groups(["a"], spec="nope")
-    with pytest.raises(ValueError, match="spec index 7 out of range"):
+    with pytest.raises(IndexError, match="spec index 7 out of range"):
         bank.drop_groups(["a"], spec=7)
 
 

@@ -859,7 +859,7 @@ impl Stream {
     /// The one exception is `drift_action = "reset"`, where a break detected by
     /// any instance resets all of them, so instances are coupled *within a
     /// row*. That case keeps row-major order. Both paths call the same
-    /// [`run_instance`], so there is one implementation of the arithmetic.
+    /// `run_instance`, so there is one implementation of the arithmetic.
     ///
     /// On a backwards clock under `on_clock_reset = "error"`, returns the raw
     /// delta and the absolute row it happened at, for the caller to name, and
@@ -1001,7 +1001,7 @@ impl Stream {
     /// blend toward the long run (`session_shrink`) is scored by a blended
     /// copy, and a backwards clock under `on_clock_reset = "error"` is the
     /// same error, naming the row. The scoring for each of the three is the
-    /// one [`run_instance`], with its updates switched off.
+    /// one `run_instance`, with its updates switched off.
     ///
     /// Per field: `pred` and `lam_selected` as the model would report;
     /// `resid` where the row carries a usable target; `sigma`, `resid_z`,

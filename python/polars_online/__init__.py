@@ -9,6 +9,17 @@ Three entry points share one Rust core (see ``docs/PLAN.md``):
 3. the expression namespace, ``pl.col("y").online.<model>(...)``, for a frame
    in memory only: polars calls it with the whole column in either engine, so
    every use warns (:class:`InMemoryExpressionWarning`, ``polars_online._expr``).
+
+Errors follow one contract throughout, and each docstring says which of it
+applies: a file that cannot be read or written is the ``OSError`` subclass
+for what went wrong (``FileNotFoundError``, ``PermissionError``, ...), with
+the path in the message; a value that is refused -- a spec parameter, a
+config key, what a column holds -- is ``ValueError`` naming the spec and
+the parameter or column; a wrong type is ``TypeError``; a spec name or
+position a bank has not got is ``KeyError`` or ``IndexError``; a bank fed
+from two threads at once is ``RuntimeError``. Inside a polars plan the same
+messages arrive as polars' ``ComputeError``. A refused chunk never changes
+a bank, and a failed run never replaces an output or a state file.
 """
 
 from polars_online import (

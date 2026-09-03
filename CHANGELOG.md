@@ -93,6 +93,40 @@ carries breaking changes.
 
 ### Changed
 
+- **Every public entry point documents its failure modes, and they follow
+  one contract** (`polars_online.__doc__` states it): a file problem is
+  the `OSError` subclass for what went wrong, naming the path; a parameter,
+  spec or column problem is `ValueError` naming the spec, parameter or
+  column; the wrong kind of object is `TypeError`; a name or position that
+  is not there is `KeyError`/`IndexError`; a bank used from two threads is
+  `RuntimeError`; inside a plan, a run-time error is polars'
+  `ComputeError` carrying that message. Rust: `# Errors` on `Bank::new`,
+  `fit_predict`, `predict`, `run_config`, `run_config_on` and `run`;
+  `cargo doc` builds without a warning. What did not fit the contract
+  was changed to:
+  - **An unknown key in a spec, a `po.run` config or a CLI TOML is
+    refused**, naming the keys there are (the CLI with the line), where a
+    misspelt `halflfe` used to fall silently back to the default.
+    `Spec`, `ModelKind` and `RunConfig` are `deny_unknown_fields`.
+  - `ModelBank.load` raises `FileNotFoundError`/`IsADirectoryError` for a
+    path it cannot read and `ValueError` for a file that is not a bank, a
+    newer build's file (now told from garbage by its envelope), or a spec
+    mismatch — it raised `OSError` for all of them.
+  - `po.run` raises the `OSError` subclass for an unreadable `load_state`,
+    an unwritable output or `save_state`, each naming the path, and checks
+    `save_state`'s directory *before* the run, so a typo there no longer
+    costs the run and the state. `config=` that is not a dict, a path or
+    `None` is `TypeError`; `chunk_rows < 1` is `ValueError` on every surface.
+  - A spec position out of range (`ModelBank.coef(3)`, `groups(3)`, …) is
+    `IndexError`, not `ValueError`; every bank method, not just
+    `fit_predict`, gives the "bank is busy" `RuntimeError` when another
+    thread holds it.
+  - A chunk the bank refuses leaves no empty new groups behind: `groups()`
+    lists only what the bank has learned from.
+  - `eval.unpack` on a struct with no `pred_*` fields is `TypeError` naming
+    the fields it found; `rolling_metrics(window=0)` is `ValueError`; a
+    non-numeric `clock` there is `TypeError`.
+  - Rust: `online_polars::Gram` is exported like the other bank types.
 - **`load_state=` on the plan, and `predict(path)`, read the file when the
   plan is built**, not each time it runs: the plan carries the state, as
   `df.lazy()` carries a frame, so a plan collected twice gives the same

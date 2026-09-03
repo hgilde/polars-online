@@ -332,12 +332,24 @@ fn a_refused_chunk_updates_nothing() {
     let df = make_df(200);
     let first = df.slice(0, 100);
     let good = df.slice(100, 100);
-    // Send group g1's clock backwards halfway through the second chunk.
+    // Send group g1's clock backwards halfway through the second chunk, and
+    // have the chunk bring a group the bank has never seen.
     let mut t = good.column("t").unwrap().f64().unwrap().to_vec();
     t[81] = Some(t[79].unwrap() - 1.0);
+    let mut g: Vec<Option<String>> = good
+        .column("g")
+        .unwrap()
+        .str()
+        .unwrap()
+        .iter()
+        .map(|v| v.map(str::to_string))
+        .collect();
+    g[0] = Some("brand-new".to_string());
     let bad = good
         .clone()
         .with_column(Column::new("t".into(), t))
+        .unwrap()
+        .with_column(Column::new("g".into(), g))
         .unwrap()
         .clone();
 
@@ -352,6 +364,12 @@ fn a_refused_chunk_updates_nothing() {
     assert!(
         bank.save_bytes().unwrap() == before,
         "a refused chunk changed the bank"
+    );
+    assert!(
+        !bank.groups()[0]
+            .iter()
+            .any(|(k, ..)| k.as_str() == Some("brand-new")),
+        "a refused chunk left its new group behind"
     );
 
     let out = bank.fit_predict(&good).unwrap();

@@ -138,7 +138,7 @@ impl Robust {
         &self.sig2
     }
 
-    /// EW count of observations under the raw row weights (see [`Self::w_raw`]).
+    /// EW count of observations under the raw row weights (`w_raw`).
     pub fn n_eff(&self) -> f64 {
         self.w_raw
     }

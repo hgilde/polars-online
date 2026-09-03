@@ -169,3 +169,37 @@ fn a_file_without_the_row_counter_reports_its_streams_sum() {
     let saved = Bank::load_bytes(&bank.save_bytes().unwrap(), None).unwrap();
     assert_eq!(saved.rows_seen(), 80);
 }
+
+/// A file from a newer build is reported as such, even when its specs carry
+/// a key this build's `Spec` refuses: the envelope is checked before the
+/// body is parsed, so the refusal cannot masquerade as "not a bank file".
+#[test]
+fn a_newer_build_s_file_is_reported_as_newer_not_as_garbage() {
+    let mut file: serde_json::Value = {
+        // The fixture, re-encoded as JSON so it can be edited.
+        let bank = Bank::load_bytes(&bytes(), None).unwrap();
+        let mut spec = serde_json::to_value(&bank.specs()[0]).unwrap();
+        spec["a_knob_this_build_has_not_got"] = serde_json::json!(1);
+        serde_json::json!({
+            "magic": "polars-online-bank",
+            "format_version": 2,
+            "schema_version": 1,
+            "package_version": "0.1.0",
+            "specs": [spec],
+            "states": [[]],
+        })
+    };
+    let refused = Bank::load_bytes(&rmp_serde::to_vec_named(&file).unwrap(), None)
+        .err()
+        .expect("an unknown spec key should be refused");
+    assert!(
+        refused.contains("not a polars-online bank state file")
+            && refused.contains("a_knob_this_build_has_not_got"),
+        "{refused}"
+    );
+    file["format_version"] = serde_json::json!(999);
+    let newer = Bank::load_bytes(&rmp_serde::to_vec_named(&file).unwrap(), None)
+        .err()
+        .expect("a newer format version should be refused");
+    assert!(newer.contains("format version 999 is newer"), "{newer}");
+}

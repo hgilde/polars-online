@@ -49,6 +49,30 @@ mod kinds_tests {
             "ModelKind::KINDS is out of date"
         );
     }
+
+    /// A key no spec has -- a typo in a TOML -- is refused, naming it and the
+    /// keys there are, rather than left at its default without a word. Both
+    /// levels: the spec's own keys and the model's.
+    #[test]
+    fn an_unknown_key_is_refused_at_either_level() {
+        let spec = serde_json::from_str::<super::Spec>(
+            r#"{"name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"],
+                "features": ["x"], "halflfe": 10}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            spec.contains("unknown field `halflfe`") && spec.contains("`halflife`"),
+            "{spec}"
+        );
+        let model = serde_json::from_str::<ModelKind>(r#"{"type": "ew_ridge", "rigde": 0.1}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            model.contains("unknown field `rigde`") && model.contains("`ridge`"),
+            "{model}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -318,8 +342,12 @@ impl<'de> Deserialize<'de> for SessionGapSpec {
 }
 
 /// Model choice + model-specific params (docs/PLAN.md §4).
+///
+/// A key no variant has is an error, not ignored: a spec is typed by hand in
+/// TOML, and a misspelt parameter that silently kept its default would change
+/// the model without a word.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ModelKind {
     EwRidge {
         #[serde(default)]
@@ -386,7 +414,7 @@ pub enum ModelKind {
     },
     /// Huber regression (docs/PLAN.md §4.5).
     Huber {
-        /// Cut point in units of the EW residual std. Default 1.5 [validate].
+        /// Cut point in units of the EW residual std. Default 1.5 ([`Spec::validate`]).
         #[serde(default)]
         huber_delta: Option<f64>,
         #[serde(default)]
@@ -541,8 +569,10 @@ impl ModelKind {
     }
 }
 
-/// One model spec: common parameters (docs/PLAN.md §3) + the model.
+/// One model spec: common parameters (docs/PLAN.md §3) + the model. An
+/// unknown key is refused, naming the keys there are (see [`ModelKind`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Spec {
     /// Output struct column name.
     pub name: String,
@@ -791,7 +821,7 @@ impl Spec {
             .fold(f64::INFINITY, f64::min)
     }
 
-    /// Default solve cadence: halflife/50 (docs/PLAN.md §4.1, [validate]).
+    /// Default solve cadence: halflife/50 (docs/PLAN.md §4.1, [`Spec::validate`]).
     pub fn solve_every_default(&self, decay: Decay) -> f64 {
         match decay {
             Decay::Halflife(h) if h.is_finite() => h / 50.0,

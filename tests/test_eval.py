@@ -108,6 +108,29 @@ def test_rejects_non_struct_column():
         po.eval.metrics(out, "x0")
 
 
+def test_mistakes_are_named():
+    # The failure modes eval's docstrings promise, each as the exception it
+    # says: a missing column, a struct with nothing to unpack (ew_cov), a
+    # target the frame has lost, a window that would divide by zero, and a
+    # clock that is not a number.
+    out = _fitted(n_groups=1, n_rows=50)
+    with pytest.raises(KeyError, match="nope"):
+        po.eval.metrics(out, "nope")
+    cov = po.ModelBank([po.spec.ew_cov("c", features=["x0", "x1"], halflife=20.0)]).fit_predict(
+        out.drop("m")
+    )
+    with pytest.raises(TypeError, match="no prediction fields"):
+        po.eval.unpack(cov, "c")
+    with pytest.raises(ValueError, match="cannot infer the target column for slot 'pred_y0'"):
+        po.eval.unpack(out.drop("y0"), "m")
+    with pytest.raises(ValueError, match="window must be > 0, got 0"):
+        po.eval.rolling_metrics(out, "m", clock="t", window=0)
+    with pytest.raises(TypeError, match="clock column 'group' must be numeric"):
+        po.eval.rolling_metrics(out, "m", clock="group", window=10.0)
+    with pytest.raises(pl.exceptions.ColumnNotFoundError):
+        po.eval.metrics(out, "m", by=["zz"])
+
+
 def test_noise_target_gives_no_edge():
     rng = np.random.default_rng(3)
     n = 3000

@@ -170,6 +170,26 @@ class OnlineNamespace:
     stream, ``lf.online.fit_predict(specs)`` is the same bank as a plan that
     stays O(chunk) (:mod:`polars_online._frame`). Every method warns with
     :class:`InMemoryExpressionWarning` (module docstring).
+
+    Each method takes the model's parameters as ``polars_online.spec``'s
+    builder of the same name does, minus ``name``, ``targets`` and ``group``:
+    the calling column is the target (``extra_targets`` adds more, sharing
+    one fit), ``features`` are column names or named expressions, and a
+    group is ``.over(group)``. Building the expression raises what the
+    builder raises (:mod:`polars_online.spec`): ``TypeError`` for a keyword
+    the model has not got or a value of the wrong shape, ``ValueError`` for
+    a value the model refuses; and its own ``TypeError`` for ``group=``
+    (spelled ``.over``) or a feature that is neither a name nor an
+    expression, ``ValueError`` for a calling or feature expression whose
+    output name polars cannot determine (give it an ``.alias``), and for
+    ``extra_targets`` naming the calling column or a column twice. When the
+    expression runs, a column it reads that the frame has not got is polars'
+    ``ColumnNotFoundError`` as the plan is resolved, and what the bank
+    refuses on the data -- a column that is not numeric, a null clock, a
+    negative weight, a clock running backwards under
+    ``on_clock_reset="error"`` -- is polars' ``ComputeError`` (``the plugin
+    failed with message: ...``) carrying the message
+    :meth:`polars_online.ModelBank.fit_predict` gives for the same frame.
     """
 
     def __init__(self, expr: pl.Expr) -> None:

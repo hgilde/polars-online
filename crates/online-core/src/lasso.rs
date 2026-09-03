@@ -34,7 +34,7 @@ pub struct LassoCfg {
     pub decay: Decay,
     /// Decreasing penalties. Applied to standardized (correlation-form) stats.
     pub lasso_path: Vec<f64>,
-    /// 1.0 = lasso, < 1.0 = elastic net (docs/PLAN.md §4.3 [validate]).
+    /// 1.0 = lasso, < 1.0 = elastic net (docs/PLAN.md §4.3, [`Self::validate`]).
     pub l1_ratio: f64,
     /// Halflife of the EW squared-error used to pick lambda; defaults to the
     /// model halflife when None.

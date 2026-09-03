@@ -375,6 +375,10 @@ def test_non_frames_are_rejected(tmp_path):
         po.run(output=dst, specs=[_spec()])
     with pytest.raises(FileNotFoundError):
         po.run(input=tmp_path / "missing.parquet", output=dst, specs=[_spec()])
+    with pytest.raises(TypeError, match="config must be a dict, a path to a TOML file, or None"):
+        po.run(42, input=df, output=dst, specs=[_spec()])
+    with pytest.raises(TypeError, match="progress must be callable, got str"):
+        po.run(input=df, output=dst, specs=[_spec()], progress="tick")
 
 
 def test_an_empty_input_writes_the_schema(tmp_path):
@@ -421,3 +425,62 @@ def test_an_unknown_extension_needs_the_format_named(tmp_path):
         po.run(input=src, input_format="xml", output=dst, specs=[_spec()])
     po.run(input=src, input_format="parquet", output=dst, output_format="csv", specs=[_spec()])
     assert pl.read_csv(dst)["ridge.pred_y"].to_list() == _bank_preds(df)
+
+
+def test_file_problems_are_the_os_error_for_the_path(tmp_path):
+    # Each file `run` touches fails as the OSError subclass for what went
+    # wrong, with the path in the message, so a caller can tell "no state yet"
+    # from "cannot write here" without parsing text.
+    src = tmp_path / "in.parquet"
+    _write(src, n=100)
+    with pytest.raises(FileNotFoundError, match="nope.parquet"):
+        po.run(input=tmp_path / "nope.parquet", output=tmp_path / "o.parquet", specs=[_spec()])
+    with pytest.raises(FileNotFoundError, match="writing .*missing"):
+        po.run(input=src, output=tmp_path / "missing" / "o.parquet", specs=[_spec()])
+    with pytest.raises(FileNotFoundError, match="loading state .*nope.state"):
+        po.run(
+            input=src,
+            output=tmp_path / "o.parquet",
+            specs=[_spec()],
+            load_state=tmp_path / "nope.state",
+        )
+    garbage = tmp_path / "garbage.state"
+    garbage.write_bytes(b"not a bank")
+    with pytest.raises(ValueError, match="loading state .*garbage.state: not a polars-online"):
+        po.run(input=src, output=tmp_path / "o.parquet", specs=[_spec()], load_state=garbage)
+
+
+def test_an_unwritable_save_state_is_refused_before_the_run(tmp_path):
+    # Found out at the end, a bad `save_state` would leave the output written
+    # and the state lost: the rows would look processed but could not be
+    # resumed from. So the directory is checked before a row is read.
+    src, dst = tmp_path / "in.parquet", tmp_path / "out.parquet"
+    _write(src, n=100)
+    calls = []
+    with pytest.raises(FileNotFoundError, match="saving state .*missing.* is not a directory"):
+        po.run(
+            input=src,
+            output=dst,
+            specs=[_spec()],
+            save_state=tmp_path / "missing" / "bank.state",
+            progress=lambda rows, chunks: calls.append(rows),
+        )
+    assert not dst.exists() and calls == [], "nothing should have run"
+
+
+def test_an_unknown_config_key_is_refused(tmp_path):
+    # A misspelt key in a TOML would otherwise keep its default in silence.
+    src, dst = tmp_path / "in.parquet", tmp_path / "out.parquet"
+    _write(src, n=100)
+    with pytest.raises(ValueError, match="unknown field `chunk_row`, expected one of"):
+        po.run({"chunk_row": 10}, input=src, output=dst, specs=[_spec()])
+    with pytest.raises(
+        ValueError, match=r"specs\[0\]\.halflfe: unknown field `halflfe`, expected one of `name`"
+    ):
+        po.run(input=src, output=dst, specs=[{**_spec(), "halflfe": 10.0}])
+    with pytest.raises(ValueError, match=r"unknown field `rigde`, expected one of `ridge`"):
+        spec = _spec()
+        spec["model"] = {**spec["model"], "rigde": 0.1}
+        po.run(input=src, output=dst, specs=[spec])
+    with pytest.raises(ValueError, match="chunk_rows must be at least 1, got 0"):
+        po.run(input=src, output=dst, specs=[_spec()], chunk_rows=0)
