@@ -36,7 +36,7 @@ carries breaking changes.
 - **An API reference, built from the docstrings with Sphinx** (`docs/reference/`;
   `uv run --group docs sphinx-build -W docs/reference docs/_build/html`), in
   the gate and CI with warnings as errors, and published to GitHub Pages
-  from `main` once Pages is enabled for the repository. The `docs`
+  from `main`: <https://hgilde.github.io/polars-online/>. The `docs`
   dependency group (`sphinx`, `furo`) is separate from `dev`. The first
   build found four docstrings that were not valid reStructuredText; fixed.
 - **`ModelBank.coef(spec, group=None)`: the coefficients behind a fit, as a

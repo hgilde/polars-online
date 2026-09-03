@@ -373,8 +373,13 @@ autodoc; nothing is written twice. It builds with `-W` in the gate and in
 CI's ubuntu test job (it imports the package, so it needs the built
 extension that job already has; no second Rust build, no new job on the
 other runners), and a `docs` job publishes the HTML to GitHub Pages from
-`main` once Pages is switched on for the repo, skipping with a notice until
-then. The first `-W` build found four docstrings that were not valid RST
+`main`, skipping with a notice if Pages is ever switched off. Pages was
+enabled the same day, Source "GitHub Actions" and nothing else — the
+Jekyll / static-HTML starter workflows GitHub offers there would each add
+a second deploy of the repository tree to the same site — and the run in
+flight deployed <https://hgilde.github.io/polars-online/> at once; the URL
+is `Documentation` in `[project.urls]`. The first `-W` build found four
+docstrings that were not valid RST
 (a `*by` read as emphasis, `|r|` as a substitution, a table column one
 character narrow, ``` ``TypedDict``s ``` with the plural glued to the
 literal) — the class of defect that had no test before, which is the

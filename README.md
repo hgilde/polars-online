@@ -804,8 +804,9 @@ also works if `PYO3_PYTHON` points at a 3.12+ interpreter.
 Tests generate or download their own data — there are no data files in the repo.
 Downloads are cached under `.cache/` and skipped when offline.
 
-- API reference: `docs/reference/`, Sphinx over the docstrings, built by the
-  gate and CI with warnings as errors and published to GitHub Pages from `main`
+- API reference: <https://hgilde.github.io/polars-online/> — Sphinx over the
+  docstrings (`docs/reference/`), built by the gate and CI with warnings as
+  errors and published from every green push to `main`
 - Design and task list: [`docs/PLAN.md`](docs/PLAN.md)
 - Measured defaults: [`docs/VALIDATION.md`](docs/VALIDATION.md)
 - Adding a model: [`docs/EXTENDING.md`](docs/EXTENDING.md)

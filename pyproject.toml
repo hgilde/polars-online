@@ -60,6 +60,7 @@ numpy = ["numpy>=1.24"]
 
 [project.urls]
 Repository = "https://github.com/hgilde/polars-online"
+Documentation = "https://hgilde.github.io/polars-online/"
 Changelog = "https://github.com/hgilde/polars-online/blob/main/CHANGELOG.md"
 Issues = "https://github.com/hgilde/polars-online/issues"
 

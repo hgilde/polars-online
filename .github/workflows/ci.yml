@@ -223,8 +223,9 @@ jobs:
         continue-on-error: true
 
   # Publishes the reference the test job built to GitHub Pages, on every
-  # push to main that passed. It needs Pages switched on for the repository
-  # (Settings > Pages > Source: GitHub Actions); until it is, the site
+  # push to main that passed, at https://hgilde.github.io/polars-online/.
+  # It needs Pages switched on for the repository (Settings > Pages >
+  # Source: GitHub Actions — no starter workflow); if it is not, the site
   # lookup fails and the job skips the deploy with a notice rather than
   # failing a green run over a setting. The build itself was checked above.
   docs:
