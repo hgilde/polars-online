@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 import polars as pl
+import pytest
 
 import polars_online
 
@@ -30,12 +31,17 @@ def _ver(s: str) -> tuple[int, ...]:
     return tuple(int(p) for p in s.split(".")[:3])
 
 
+# These two are about *our* pins, not about polars: the canary unpins polars
+# on purpose and runs `-m "not pins"`, since a red canary must mean "Polars
+# broke us" and nothing else. Its first run failed on the range assertion.
+@pytest.mark.pins
 def test_the_dev_environment_is_on_the_version_we_build_against() -> None:
     """The golden files and `docs/VALIDATION.md` were produced here, so a
     silent local upgrade would move numbers without anyone deciding to."""
     assert pl.__version__ == BUILT_AGAINST
 
 
+@pytest.mark.pins
 def test_the_declared_range_brackets_what_we_build_against() -> None:
     """The runtime requirement is a range now, so the invariant worth pinning
     is that it actually contains the tested version -- and that the floor is

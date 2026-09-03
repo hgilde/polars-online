@@ -111,7 +111,10 @@ no_implicit_optional = true
 testpaths = ["tests"]
 # Soak tests are opt-in: `uv run pytest -m soak`.
 addopts = "-ra -m 'not soak'"
-markers = ["soak: long-running stability tests (millions of rows)"]
+markers = [
+    "soak: long-running stability tests (millions of rows)",
+    "pins: assertions about this repo's own polars pins; the canary unpins on purpose and runs `-m 'not soak and not pins'`",
+]
 # The expression form warns on every call by design (it is O(data); README,
 # "The expression form"). The suite uses it on small frames in dozens of
 # places, so the warning is silenced here; `pytest.warns` still sees it, and

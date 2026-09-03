@@ -97,4 +97,8 @@ jobs:
 
       - run: uv run cargo test --workspace
       - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
-      - run: uv run pytest -q
+      # `-m` replaces the `-m 'not soak'` in pyproject's addopts rather than
+      # adding to it, so both go here. `pins` marks the two tests that assert
+      # this repo's own polars pins -- meaningless with polars unpinned, and
+      # the first run of this job was red on exactly one of them.
+      - run: uv run pytest -q -m "not soak and not pins"

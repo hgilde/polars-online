@@ -493,6 +493,15 @@ at the last release that passed, in a patch release, then fix and widen;
 look at `ModelBank` first, the IO-plugin tests second, the plugin last.
 "What the pin costs you" was rewritten too -- it still said a different
 polars could not be installed at all, which the range made false.
+Dispatched by hand after the push, the job's first run ever was red on
+exactly one of 1162 tests, with the same 1.44.1 CI uses:
+`test_scaffold.py::test_the_declared_range_brackets_what_we_build_against`
+reads pyproject and asserts the range the canary had just removed. That
+test and its neighbour (`pl.__version__ == BUILT_AGAINST`, which would
+have gone red on the first newer wheel) are about our pins, not polars;
+they now carry a `pins` marker and the canary runs
+`-m "not soak and not pins"`. Note `-m` replaces pyproject's addopts
+`-m 'not soak'` rather than adding to it.
 
 **State leaves a streamed plan through a file, and only a file, 2026-09-03
 (task 20).** `lf.online.fit_predict(specs, load_state=, save_state=)` — the
