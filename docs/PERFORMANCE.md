@@ -672,11 +672,13 @@ engine reads a few morsels ahead of the bank (7 of 100 input batches were
 requested before a `head(10)` stopped the plan) and tears the input query
 down with the plan.
 
-**What comes before the bank: an upstream `filter` is not O(chunk)
-(2026-09-02).** The source reads its input with `LazyFrame.collect_batches`,
-so the input plan runs in the streaming engine and its memory is polars'.
-Measured on the same files, prefetch 1, `sink_parquet(engine="streaming")`,
-the input plan being what feeds `lf.online.fit_predict([spec])`:
+**What comes before the bank: an upstream `filter` or `with_columns`
+costs a bounded window, not the data (2026-09-02; mechanism corrected
+2026-09-03 from the polars-stream source).** The source reads its input with
+`LazyFrame.collect_batches`, so the input plan runs in the streaming engine
+and its memory is polars'. Measured on the same files, prefetch 1,
+`sink_parquet(engine="streaming")`, the input plan being what feeds
+`lf.online.fit_predict([spec])`:
 
 | peak footprint | 3M rows | 12M rows |
 |---|---:|---:|
@@ -688,32 +690,79 @@ the input plan being what feeds `lf.online.fit_predict([spec])`:
 | `scan.sort("t")` | 1.74 GB | 6.73 GB |
 | the same filter **after** the bank (pushed into the source) | — | **0.78 GB** |
 
-`sort` is expected — it is a pipeline breaker, and the whole frame has to
-exist before the first row is sorted. `with_columns` is fine: 1.65× on 4×
-the data is the extra columns riding in each chunk, not accumulation. **The
-`filter` row is a polars bug, not ours**, and it is reproducible with no bank
-in the process at all: iterate `scan.filter(vol > 0).collect_batches
-(chunk_size=100_000)` with a `time.sleep(0.02)` in the loop and 12M rows
-buffer to 2.54 GB, the trace peaking in the first fifth of the run and
-draining from there — the producer runs to completion and holds the result.
-The identical loop over the *unfiltered* scan holds 0.67 GB with a **six
-times slower** consumer (`sleep(0.12)`, 15.6 s). So `collect_batches`
-backpressures a plain scan and stops once a filter is in the plan. Not the
-allocator (2.44 GB with `dirty_decay_ms:0`), not `maintain_order=False`, not
-`lazy=True`, not predicate pushdown (2.00 GB with it disabled), and none of
-`POLARS_INFLIGHT_SINK_MORSEL_LIMIT`, `POLARS_DEFAULT_LINEARIZER_BUFFER_SIZE`
-or `POLARS_DEFAULT_DISTRIBUTOR_BUFFER_SIZE` move it. `sink_batches`, the
-callback sink, is worse: it does not throttle even without a filter (2.77 GB
-on the plain scan). There is nothing to fix on our side — the buffering is
-inside the Rust batch sink, before our iterator sees a frame.
+`sort` and `.over` are O(data) — pipeline breakers; the whole frame exists
+before the first row comes out (`.over` measured on: 8.4 GB at 36M rows).
+The `filter` and `with_columns` rows are something else, and the first
+reading of them here — "`collect_batches` stops applying backpressure once a
+filter is in the plan and buffers the filtered result" — was wrong. What
+they hold is a **window that is bounded in morsels, not bytes**, and on this
+machine the window is bigger than the 12M-row file. Isolated with no bank in
+the process — `scan.<shape>.collect_batches(chunk_size=100_000)` iterated
+with a `time.sleep` per chunk, 14 threads unless noted, a 36M-row file that
+is the 12M one three times over:
+
+| peak footprint | 12M rows | 36M rows |
+|---|---:|---:|
+| plain scan, `sleep(0.02)` | 0.67 GB | 0.64 GB |
+| `filter`, `sleep(0.02)` | 2.54 GB | **3.11 GB** — a flat plateau, then a drain |
+| `filter`, `sleep(0.02)`, `POLARS_MAX_THREADS=2` | 0.71 GB | 0.74 GB |
+| `with_columns`, `sleep(0.1)` | 2.60 GB (the whole file) | **4.70 GB** (the file is 7.8 GB) |
+| `mean().over("group")` | 2.97 GB | 8.39 GB — a straight ramp |
+
+and the filter at 12M rows against the thread count: 1 → 0.46, 2 → 0.71,
+4 → 1.08, 8 → 1.89, 14 → 2.54 GB, **0.2 GB per thread**, flat plateaus at
+≤ 4 threads and a draining profile above, where the window exceeds the file.
+
+Where the window comes from (polars-stream 0.55.2). Backpressure in the
+streaming engine counts *morsels per pipe*, and the count is multiplied by
+the number of pipelines (= threads) at every serial → parallel → serial
+transition. `pipe.rs`: a distributor with 4 slots per lane, one morsel in
+flight per lane, a linearizer with 4 slots per lane when order is kept — 9
+per lane through a parallel compute node such as `with-columns`; a predicate
+pushed into `multi-scan` runs in the reader's post-apply stage with 1 + 1 + 4
+(`post_apply_extra_ops.rs`, literals). A morsel out of the parquet reader is
+a whole row group (`multi-scan` disables morsel splitting): 125,000 rows × 26
+f64 columns = 26 MB in these files. So a `with_columns` or a pushed-down
+`filter` may hold (6–9 morsels × 14 lanes × 26 MB) plus one decoded row group
+per pipeline — 2.5–3.5 GB — before the source stalls, which is more than the
+12M-row file. A plain scan has no parallel stage between the reader and the
+sink (serial → serial, capacity 1 each way), hence 0.65 GB at any consumer
+speed; the filter *after* the bank is applied inside the IO-plugin source
+and never enters a `multi-scan` stage at all. The window is O(threads ×
+row-group rows × columns) and O(1) in the data.
+
+What shrinks it: fewer threads (`POLARS_MAX_THREADS`), smaller parquet row
+groups (the pushed-down path carries whole row groups;
+`POLARS_IDEAL_MORSEL_SIZE` applies only where the reader splits), a narrower
+projection (`keep_columns=`, or a `select` before the bank), and on the
+compute-node path `POLARS_DEFAULT_DISTRIBUTOR_BUFFER_SIZE` /
+`POLARS_DEFAULT_LINEARIZER_BUFFER_SIZE` — which is why they did nothing for
+the pushed-down filter: its 1 and 4 are literals. Not the allocator (2.44 GB
+with `dirty_decay_ms:0`), not `maintain_order=False`, not `lazy=True`;
+disabling predicate pushdown moves the filter to a compute node (2.00 GB).
+One more spelling that is not the engine at all: `sink_batches` with the
+default `engine="auto"` runs in the *in-memory* engine — polars-lazy maps
+`Auto` to `InMemory`, file sinks are handed to the streaming executor from
+there but the callback sink is not (`polars-mem-engine/planner/lp.rs`), so
+it collects its input and then chunks it: 2.77 GB on the plain scan,
+ramping, against 0.49 GB with `engine="streaming"`. `collect_batches`
+resolves `auto` to streaming itself, in py-polars.
 
 What to do about it, and it is not merely a workaround: **filter after the
 bank when the semantics allow**. The predicate is pushed into the source and
 applied per chunk (E33), which is 0.78 GB flat against 2.53 GB for the same
 filter before, and the two mean different things anyway — before changes what
-the model *learns from*, after changes only what comes out. `po.run(input=
-<a filtered plan>)` reads the same way and has the same cost; `keep_columns=`
-does not (a projection is not a filter).
+the model *learns from*, after changes only what comes out. When the model
+*must* skip those rows, a zero weight is the streaming spelling:
+`with_columns(pl.when(cond).then(pl.col("w")).otherwise(0.0).alias("w2"))`
+with `weight="w2"` — `when/then/otherwise` is elementwise, 1.31 GB at 12M
+rows against the filter's 2.53 — at the documented cost that the rows still
+come out (scored), the clock advances through them, so `n_eff` decays and
+`min_periods` can blank output, and no `max_dclock` gap opens where a filter
+would leave one. A branch holding an `.over()` drags the whole expression
+onto a collecting node (3.18 GB). `po.run(input=<a filtered plan>)` reads
+the same way and has the same window; `keep_columns=` does not (a
+projection is not a filter).
 
 **Polars' own windowed operations do the same thing (2026-09-02).** Worth
 knowing before concluding that this is a quirk of ours: it is polars' rule,
@@ -734,26 +783,48 @@ process:
 | `lf.rolling(index_column="ti", period="1000i").agg(mean)` | 0.18 GB | 0.28 GB | no |
 | **the same, plus `group_by="group"`** | 0.49 GB | **1.72 GB** | **3.5× on 4× data** |
 
-The mechanism is visible in polars-stream 0.55.2 and is the same node in
-every collecting row. `AExpr::Rolling` is lowered to a dedicated
-`RollingGroupBy` node (`physical_plan/lower_expr.rs`), and that node is a
-real streaming one — it keeps a `buf_df` with a `buf_df_offset` and drops
-rows once the window has passed them (`nodes/rolling_group_by.rs`); `ewm_*`,
+The mechanism is visible in polars-stream 0.55.2
+(`physical_plan/lower_expr.rs`), and it is a classification, not a
+heuristic. Every expression lands in one bin. *Elementwise* —
+`FunctionFlags::ROW_SEPARABLE | LENGTH_PRESERVING`, computable on any subset
+of rows with one row out per row in — stays inside the `select` /
+`with-columns` / `filter` node it appears in and streams per morsel.
+`AExpr::Rolling` is lowered to a dedicated `RollingGroupBy` node, a real
+streaming one — it keeps a `buf_df` with a `buf_df_offset` and drops rows
+once the window has passed them (`nodes/rolling_group_by.rs`); `ewm_*`,
 `cum_*`, `shift`, `interpolate`, `rle` and friends each have their own node
-under `nodes/`. `AExpr::Over` tries `try_build_streaming_group_by` and, when
-that returns `None`, pushes the expression into `fallback_subset` →
-`build_fallback_node_with_ctx` → **`PhysNodeKind::InMemoryMap`**: collect the
-input, run the in-memory engine, re-emit. A frame-level `rolling` takes the
-dedicated node only while `keys.is_empty()`, and any group-by carrying
-`rolling`/`dynamic` options returns `Ok(None)` twice over
-(`lower_group_by.rs:737`, `:1043`) and ends at `build_group_by_fallback` —
-the same collect.
+under `nodes/`. `AExpr::Over` without an `order_by` tries
+`try_build_streaming_group_by`, which rewrites `mean().over("group")` as
+`multiplexer → group-by → equi-join → zip` — streaming nodes, but the
+multiplexer buffers the whole input while the group-by side finishes, so it
+is O(data) all the same (2.97 GB at 12M rows, 8.39 GB at 36M) — and when
+that returns `None` (a `rolling` or `ewm_mean` under `.over`) pushes the
+expression into `fallback_subset` → `build_fallback_node_with_ctx` →
+**`PhysNodeKind::InMemoryMap`**: collect the input, run the in-memory engine,
+re-emit. A frame-level `rolling` takes the dedicated node only while
+`keys.is_empty()`, and any group-by carrying `rolling`/`dynamic` options
+returns `Ok(None)` twice over (`lower_group_by.rs:737`, `:1043`) and ends at
+`build_group_by_fallback` — the same collect. A user expression not flagged
+elementwise — a plugin — is the generic fallback for column UDFs: a
+`columnar-function` node, one `InMemorySink` per input, `call_udf` once on
+the whole column, an `InMemorySource` after (`nodes/columnar_function.rs`).
+The engine draws exactly this classification, and it is the fastest way to
+know which bin a query landed in:
+`lf.show_graph(engine="streaming", plan_stage="physical", raw_output=True)`
+marks streaming nodes ◯, memory-intensive ones (multiplexer, group-by, join,
+sort) yellow, and in-memory fallbacks (`columnar-function`, `in-memory-map`)
+red. Out-of-core spilling exists for the yellow nodes in 1.44.1 but is off
+by default — `POLARS_OOC_MEMORY_BUDGET_MB` is `u64::MAX` and the `_FRACTION`
+variable is parsed and never read (`polars-config-0.55.2`); with a 1.5 GB
+budget the `.over` plan peaked at 2.47 GB instead of 2.97: it spills, it
+does not cap.
 
 So the trap is not "user code is O(data)". It is that an ordered, stateful
 operation streams **only where polars has hand-written a node for it**, and
 the plugin interface has no way to declare one: there is no "call me per
-morsel, in order, and let me keep state" in the contract, which is why
-`InMemoryMap` is what a plugin gets. Two consequences worth stating plainly:
+morsel, in order, and let me keep state" in the contract, which is why one
+call with the whole column is what a plugin gets. Two consequences worth
+stating plainly:
 polars' own `ewm_mean` streams as an expression while the same EW mean
 written as our plugin does not, for that reason alone; and *per-group*
 windowing in polars is the collecting spelling (`.over`, `group_by=`),

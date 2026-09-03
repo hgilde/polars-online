@@ -82,9 +82,10 @@ engine has a node for that spelling. On the same 12M rows,
 0.25 GB and the identical expression under **`.over("group")` at 6.5 GB**;
 `lf.rolling(index_column="t", period="1000i").agg(...)` at 0.28 GB and the
 same call with **`group_by="group"` at 1.7 GB**. Both collecting spellings
-land on the engine's `InMemoryMap` node — collect, run in memory, re-emit —
-which is exactly the node a plugin gets, because the plugin contract has no
-way to say "call me per morsel, in order, and let me keep state". Note where
+land on the engine's `in-memory-map` node — collect, run in memory, re-emit —
+the same class of node a plugin gets (`columnar-function`: collect, call
+once, re-emit), because the plugin contract has no way to say "call me per
+morsel, in order, and let me keep state". Note where
 that leaves per-group work: in polars, the *grouped* window is the collecting
 spelling; in a bank, `group=` is one accumulator per group and stays
 O(state).
@@ -208,16 +209,37 @@ lf.online.predict(bank).collect()          # serve: score against a bank (or a s
 lf.online.fit_predict(load_state="bank.state")   # resume from a saved bank
 ```
 
-One caveat with a number on it: a filter *before* the bank costs memory
-today, because polars' `collect_batches` — how the source reads its input —
-stops applying backpressure once a filter is in the plan and buffers the
-filtered result. At 12M rows that is 2.5 GB against 0.65 GB for the same
-query with no upstream filter, and 0.78 GB for the same filter written
-*after* the bank, where it is pushed into the source and applied per chunk.
-So prefer the filter after unless you need the model to skip those rows, and
-see `docs/PERFORMANCE.md` §11 for the repro (it needs no plugin: a filtered
-`collect_batches` with a slow consumer does it on its own). `with_columns`
-upstream is fine; a `sort` is a pipeline breaker and collects by definition.
+One caveat with a number on it: a `filter` *before* the bank holds more
+memory than the same filter after it — 2.5 GB at 12M rows against 0.78 GB,
+with 0.65 GB for no filter at all. It is not the filtered result being
+buffered. Polars' streaming engine bounds what is in flight in *morsels per
+thread*, not bytes, and a morsel from a parquet scan is a whole row group,
+so a `filter` or `with_columns` upstream may hold a window of some 6–9 row
+groups × threads — 2.5–3 GB on 14 threads with 125k-row groups of 26
+doubles, 3.1 GB at 36M rows, 0.7 GB on 2 threads — while a plain scan
+feeding the bank has no parallel stage in between and holds none of it
+(`docs/PERFORMANCE.md` §11: the thread sweep, the source, the knobs). So
+prefer the filter *after* unless the model must skip those rows, and if
+that is the reason, a zero weight is the streaming spelling:
+
+```python
+(
+    lf.with_columns(pl.when(pl.col("venue") == "X").then(1.0).otherwise(0.0).alias("w"))
+    .online.fit_predict([po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
+                                         clock="t", halflife=600.0, max_dclock=300.0,
+                                         weight="w")])
+    .sink_parquet("fitted.parquet")                      # 1.3 GB at 12M rows, not 2.5
+)
+```
+
+Weight 0 learns nothing, bit for bit; the rows still come out, scored, the
+clock advances through them (so `n_eff` decays and `min_periods` can blank
+output), and no `max_dclock` gap opens where a filter would leave one.
+`when/then/otherwise` streams because it is elementwise — unless a branch
+holds an `.over()`, which drags the whole expression onto a collecting node
+(3.2 GB). A `sort` or an `.over()` upstream collects by definition;
+`lf.show_graph(engine="streaming", plan_stage="physical")` shows which
+nodes do.
 
 The plan is *pure*: every execution starts from the same state — the specs',
 or `load_state` — so collecting twice gives the same frame, `head(n)` learns
