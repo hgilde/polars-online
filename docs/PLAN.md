@@ -308,6 +308,19 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       and the reason (§6); the README shows the two spellings side by side in a closing note.
       (First committed as an off-by-default cargo feature that took it out of the wheel;
       reverted the same day — §11a.)
+- [ ] 20. **State out of a streamed plan — researched 2026-09-03, awaiting a decision.**
+      The four-step workflow (fit online in bounded memory; export the state, optionally
+      to disk; load it and predict without updating; load it and learn on) exists end to
+      end on `ModelBank`, `po.run` and the CLI, and on the plan surface for every step
+      but the export: `lf.online.fit_predict` is pure by decision (E33, §11a). The
+      research — `docs/STATE-WORKFLOW.md`, with the engine facts measured on polars
+      1.34.0/1.38.1/1.44.1 by `scripts/io_source_semantics.py` — finds one sound
+      spelling, `lf.online.fit_predict(specs, load_state=, save_state=)`: the runner's
+      keywords on the plan, the state written atomically when the source has fed the
+      bank its last row, idempotent under the two concurrent runs polars gives a plan
+      used twice in one query. It needs the source to feed the bank only the rows a
+      `head(n)` asked for, and `load_state` read at build time. Not implemented; the
+      decisions are listed in that document's §7.
 
 ## 11a. Decisions made while implementing
 
@@ -496,6 +509,9 @@ returns / volume / trade-count z-scores, targets = strictly future returns.
   negative-weight validation, ...) and a feature comparison against river.
 - `docs/TESTING.md` — coverage scorecard against §9, found edge-case defects,
   and the oracle/river cross-check backlog.
+- `docs/STATE-WORKFLOW.md` — research (2026-09-03) on carrying state out of a
+  streamed plan: what polars does with a Python source, measured; the
+  candidate spellings; the proposal awaiting a decision (task 20).
 
 ## 11b. Performance plan
 
