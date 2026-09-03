@@ -278,6 +278,15 @@ carries breaking changes.
   ~0.75 GB from 3M to 12M rows, nearly all of it polars' parquet
   read-ahead; `POLARS_ROW_GROUP_PREFETCH_SIZE=1` takes the CLI to 0.15 GB at
   the same speed.
+- **The README is written to be read.** It opens with a summary of what the
+  package does — the model table, the ways to run a bank, the stream
+  semantics, the two guarantees, state as a file, diagnostics — and then
+  keeps like with like: the loop, the query, the job and the expression form
+  under one heading, the stream parameters under another, the coefficient
+  and field-name material together. The facts are the previous README's;
+  measurements stay where they decide something and otherwise point at
+  `docs/`. Every python block still runs under the README harness in
+  `tests/test_production_hardening.py`.
 
 ### Fixed
 
