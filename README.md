@@ -214,12 +214,13 @@ memory than the same filter after it — 2.5 GB at 12M rows against 0.78 GB,
 with 0.65 GB for no filter at all. It is not the filtered result being
 buffered, and it is not the filter: polars' parquet reader applies the
 predicate itself, then restores the column order through a per-thread
-pipeline whose slots are whole row groups — some 6 row groups × threads of
-what the filter *keeps*: 2.5 GB on 14 threads with 125k-row groups of 26
-doubles when it keeps every row, 1.2 GB when it keeps half, 3.1 GB at 36M
-rows, 0.7 GB on 2 threads — while a plain scan feeding the bank has no
-parallel stage in between and holds none of it (`docs/PERFORMANCE.md` §11:
-the stage, the thread sweep, the knobs). So prefer the filter *after*
+pipeline whose slots are whole row groups when a sink sits right above the
+scan — about 7 row groups × threads of what the filter *keeps*: 2.5 GB on
+14 threads with 125k-row groups of 26 doubles when it keeps every row,
+1.2 GB when it keeps half, 3.1 GB at 36M rows, 0.7 GB on 2 threads — while
+a plain scan feeding the bank has no parallel stage in between and holds
+none of it (`docs/PERFORMANCE.md` §11: the stage, the thread sweep, the
+knobs, what is already reported upstream). So prefer the filter *after*
 unless the model must skip those rows, and if that is the reason, a zero
 weight is the streaming spelling:
 

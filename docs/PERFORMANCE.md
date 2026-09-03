@@ -673,9 +673,9 @@ requested before a `head(10)` stopped the plan) and tears the input query
 down with the plan.
 
 **What comes before the bank: an upstream `filter` or `with_columns`
-costs a bounded window, not the data (2026-09-02; mechanism corrected
-2026-09-03 from the polars-stream source, and again 2026-09-04 — the slots
-were right, the stage was not).** The source reads its input with
+costs a bounded window, not the data (2026-09-02, and corrected three
+times the same day from the polars-stream source: the stage, then what
+fills its slots, then who decides what a slot holds).** The source reads its input with
 `LazyFrame.collect_batches`, so the input plan runs in the streaming engine
 and its memory is polars'. Measured on the same files, prefetch 1,
 `sink_parquet(engine="streaming")`, the input plan being what feeds
@@ -712,7 +712,8 @@ is the 12M one three times over:
 
 and the filter at 12M rows against the thread count: 1 → 0.46, 2 → 0.71,
 4 → 1.08, 8 → 1.89, 14 → 2.54 GB, **0.2 GB per thread**, flat plateaus at
-≤ 4 threads and a draining profile above, where the window exceeds the file.
+≤ 4 threads and a draining profile above, where the window exceeds the file
+(96 row groups of 26 MB; at 14 threads the window is 98).
 
 Where the window comes from (polars-stream 0.55.2). Backpressure in the
 streaming engine counts *morsels per pipe*, and the count is multiplied by
@@ -723,34 +724,45 @@ per lane through a parallel compute node such as `with-columns`). That is
 the `with_columns` row, and it shrinks with the morsel:
 `pl.Config.set_streaming_chunk_size(25_000)` — public API; the env var is
 `POLARS_STREAMING_CHUNK_SIZE`, and `POLARS_IDEAL_MORSEL_SIZE` is silently
-overwritten by the unset legacy name in 0.55.2 — takes the isolated
+overwritten by the unset legacy name in 0.55.2, pola-rs/polars#29021 —
+takes the isolated
 `with_columns` probe from 2.56 to 1.32 GB, and to 1.03 at 10,000 rows.
 
 The pushed-down `filter` is not a filter cost at all. The parquet reader
 applies the predicate itself (`FULL_FILTER`, `row_group_decode.rs`: the
 predicate's columns are decoded first, the mask is built, the other columns
 are decoded through it), so the reader's output carries the predicate
-columns *first*. That order no longer matches the projection, so the scan's
-post-apply stage is `Initialized` with column selectors instead of `Noop`
-(`apply_extra_ops.rs`: `is_input_passthrough` is `input_index ==
-output_index` for every column), and every morsel goes through
-`distributor_channel(num_pipelines, 1)` → one worker per lane →
-`MorselLinearizer::new(num_pipelines, 4)` (`post_apply_extra_ops.rs`) to
-have its columns permuted — a zero-copy `select`, through a 6-slot-per-lane
-pipeline whose slots are whole row groups, because the reader does not
-split them (`disable_morsel_split: true`; the split to morsels happens after
-this stage, which is why the chunk size does nothing here: 2.59 GB at
-25,000 rows, 2.63 at 10,000). 14 lanes × 6 × 26 MB ≈ 2.2 GB plus the
+columns *first*. Unless those columns already lead the projection, that
+order no longer matches it, so the scan's post-apply stage is
+`Initialized` with column selectors instead of `Noop` (`apply_extra_ops.rs`:
+`is_input_passthrough` is `input_index == output_index` for every column),
+and every morsel goes through `distributor_channel(num_pipelines, 1)` → one
+worker per lane → `MorselLinearizer::new(num_pipelines, 4)`
+(`post_apply_extra_ops.rs`) to have its columns permuted — a zero-copy
+`select`, through a pipeline holding about 7 morsels per lane: 1 in the
+distributor's buffer, 1 in the worker, 4 in the linearizer's channel, 1 in
+its heap. What a morsel is here is the planner's choice, not the reader's.
+A sink directly above the scan — `collect_batches`, `sink_*` — sets
+`disable_morsel_split` on it (`physical_plan/lower_ir.rs`), so the reader
+emits whole row groups and the chunk size does nothing: 2.59 GB at 25,000
+rows, 2.63 at 10,000. With a compute node above the scan the reader splits
+to `ideal_morsel_size` rows *before* this stage (`parquet/init.rs`), and
+the stage then costs 14 × 7 × 3.2 MB ≈ 0.3 GB at 25,000-row morsels and
+0.12 at 10,000 — isolated, 8M rows × 16 columns, 50,000-row groups:
+`filter(x1).with_columns(..)` 1.11 / 0.60 GB against 0.80 / 0.48 with the
+predicate on the first column. 14 lanes × 7 × 26 MB ≈ 2.5 GB plus the
 reader's own ≈ the 2.5–3.1 GB measured, 0.2 GB per thread. Three checks,
 isolated probes at 12M rows: the predicate column moved to the front of
 the projection — `scan.select(["vol", *rest]).filter(pl.col("vol") > 0)` —
 makes the post-apply `Noop` (`POLARS_VERBOSE=1` says so) and the same
-filter costs **0.38 GB**, 0.58 GB with the bank behind it; the slots hold
-what the filter *keeps*, so a predicate keeping 100 / 99 / 90 / 50 / 10 /
-1 % of the rows peaks at 2.52 / 2.48 / 2.31 / 1.23 / 0.23 / 0.12 GB — the
-2.5 GB above is the keep-everything worst case; and with predicate pushdown
-off the filter is an ordinary compute node, 1.96 GB, 1.33 with 25,000-row
-morsels. A plain scan has no parallel stage between the reader and the sink
+filter costs **0.38 GB**, 0.58 GB with the bank behind it, and a predicate
+that is on the first column to begin with is `Noop` as it stands (the 8M-row
+file, 14 threads: plain 0.30 GB, `filter(x0)` 0.25, `filter(x1)` 0.93);
+the slots hold what the filter *keeps*, so a predicate keeping 100 / 99 /
+90 / 50 / 10 / 1 % of the rows peaks at 2.52 / 2.48 / 2.31 / 1.23 / 0.23 /
+0.12 GB — the 2.5 GB above is the keep-everything worst case; and with
+predicate pushdown off the filter is an ordinary compute node, 1.96 GB,
+1.33 with 25,000-row morsels. A plain scan has no parallel stage between the reader and the sink
 (serial → serial, capacity 1 each way), hence 0.65 GB at any consumer
 speed; the filter *after* the bank is applied inside the IO-plugin source
 and never enters a `multi-scan` stage at all. The window is O(threads ×
@@ -758,15 +770,30 @@ row-group rows × kept columns) and O(1) in the data. That the post-apply
 pipeline exists only to restore column order is polars' to fix — a reader
 emitting its columns in projection order would make the stage `Noop` —
 and reordering one's own projection to dodge it is not something to build
-on.
+on. Upstream (checked 2026-09-02): the stage's memory is known from
+pola-rs/polars#28912 — a multi-file scan with an out-of-order `select`,
+which the maintainer traced to "the morsel distributor in
+PostApplyExtraOps" — and PR #29049 (merged after 1.44.1) divides its lane
+count by the number of concurrently scanned files, which for one file is 1:
+`stage_pipelines = num_pipelines.div_ceil(max_concurrent_scans)`, so a
+single-file scan is unchanged; the PR calls in-lining the permutation
+"still worth pursuing". That a pushed-down predicate on any but the
+leading column trips the same stage on a single file, with these numbers,
+is not reported there; #28569 (accepted) asks more generally that the
+parquet source keep a bounded number of decoded morsels outstanding under
+sink backpressure. #25242 says `set_streaming_chunk_size` has no effect in
+the new engine; on 1.44.1 it does (`ideal_morsel_size: 25000` in the
+verbose log, and the numbers above).
 
 What shrinks it: fewer threads (`POLARS_MAX_THREADS`); for the pushed-down
 filter, keeping fewer rows and smaller parquet row groups (the slots are
 row groups, and polars' own default when writing is 262,144 rows, twice
 these files'); for compute nodes, `pl.Config.set_streaming_chunk_size` as
-above and `POLARS_DEFAULT_DISTRIBUTOR_BUFFER_SIZE` /
-`POLARS_DEFAULT_LINEARIZER_BUFFER_SIZE` — which is why they did nothing for
-the pushed-down filter: its 1 and 4 are literals. A narrower projection
+above — and through it the pushed-down filter too, once a compute node
+above the scan makes the reader split — and
+`POLARS_DEFAULT_DISTRIBUTOR_BUFFER_SIZE` /
+`POLARS_DEFAULT_LINEARIZER_BUFFER_SIZE`, which did nothing for the
+pushed-down filter: its 1 and 4 are literals. A narrower projection
 (`keep_columns=`, or a `select` before the bank) shrinks every row group.
 Not the allocator (2.44 GB with `dirty_decay_ms:0`), not
 `maintain_order=False`, not `lazy=True`.
@@ -776,7 +803,10 @@ default `engine="auto"` runs in the *in-memory* engine — polars-lazy maps
 there but the callback sink is not (`polars-mem-engine/planner/lp.rs`), so
 it collects its input and then chunks it: 2.77 GB on the plain scan,
 ramping, against 0.49 GB with `engine="streaming"`. `collect_batches`
-resolves `auto` to streaming itself, in py-polars.
+resolves `auto` to streaming itself, in py-polars. That is the 1.x line:
+polars 2.0 (rc.1, 2026-09-02) resolves `auto` to the streaming engine for
+every lazy plan (pola-rs/polars#27822), so there `sink_batches` streams
+by default.
 
 What to do about it, and it is not merely a workaround: **filter after the
 bank when the semantics allow**. The predicate is pushed into the source and
@@ -800,7 +830,7 @@ The one spelling that gives a filter the plain scan's footprint is to run
 it *inside* the source — read the plain scan, `chunk.filter(cond)`, feed
 the bank — because the IO-plugin source is the only serial stage in the
 graph and whatever runs there costs one chunk. Measured as a prototype
-(2026-09-04): 0.81 GB at 12M rows against 2.54, the same wall time, and the
+(2026-09-02): 0.81 GB at 12M rows against 2.54, the same wall time, and the
 output identical to the upstream filter's except `coef`, which is
 snapshotted per chunk by contract. It is not in the API, deliberately: it
 would be a second spelling of `filter` whose only difference is memory —

@@ -116,7 +116,7 @@ carries breaking changes.
   morsels per thread, and for a predicate pushed into a parquet scan the
   morsels are whole row groups of what the filter keeps: the reader applies
   the predicate itself and the scan then restores the column order through
-  a 6-slot-per-thread pipeline — 2.5 GB at 12M rows and 3.1 GB at 36M on
+  a 7-slot-per-thread pipeline — 2.5 GB at 12M rows and 3.1 GB at 36M on
   14 threads when the filter keeps every row, 1.2 GB when it keeps half,
   0.7 GB on 2 threads, 0.38 GB with the predicate column first in the
   projection (the stage becomes a no-op; an accident, not a recipe) —
@@ -125,9 +125,11 @@ carries breaking changes.
   per chunk. Filter after unless the model should skip those rows, and then
   give them weight 0 through `when/then/otherwise` (1.3 GB; 1.1 with
   `pl.Config.set_streaming_chunk_size(25_000)`, which shrinks any
-  `with_columns` window and not the filter's) rather than filtering.
+  `with_columns` window, and the filter's only once such a node above the
+  scan makes the reader split its row groups) rather than filtering.
   `.over()` and `sort` upstream are O(data), and `sink_batches` with the
-  default engine collects its input (`engine="streaming"` streams). The
+  default engine collects its input on polars 1.x (`engine="streaming"`
+  streams; 2.0 makes it the default). The
   engine's own map of which is which:
   `lf.show_graph(engine="streaming", plan_stage="physical")`. A filter run
   inside the source would be 0.81 GB with identical output; not added — a
