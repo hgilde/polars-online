@@ -18,6 +18,33 @@
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Numbers the temporaries this process creates, so that two writers of one
+/// destination in one process never share one. The pid alone was the name
+/// once, and two threads saving the same state file at the same moment --
+/// which a plan used twice in one query does, `lf.online.fit_predict(..,
+/// save_state=)` under a self-join or `collect_all` -- both created and
+/// wrote the same temporary, and the rename published whichever mixture
+/// resulted.
+static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+/// The temporary for `dest`: a sibling, so the rename stays on one
+/// filesystem (`fs::rename` does not cross mount points), named by pid and
+/// sequence number, so no two writers -- processes or threads -- share one.
+fn temp_name(dest: &Path, seq: u64) -> io::Result<PathBuf> {
+    let name = dest.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{}: not a file path", dest.display()),
+        )
+    })?;
+    Ok(dest.with_file_name(format!(
+        ".{}.tmp{}-{seq}",
+        name.to_string_lossy(),
+        std::process::id()
+    )))
+}
 
 /// A file being written next to `dest`, renamed over it by [`Self::commit`].
 ///
@@ -36,20 +63,7 @@ impl AtomicFile {
     /// takes the paths rather than the file.
     pub(crate) fn create(dest: &Path) -> io::Result<(File, Self)> {
         let dest = resolve_symlink(dest);
-        // A sibling, so the rename stays on one filesystem -- `fs::rename`
-        // does not cross mount points. The pid keeps two processes saving to
-        // the same destination from sharing one temporary.
-        let name = dest.file_name().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("{}: not a file path", dest.display()),
-            )
-        })?;
-        let tmp = dest.with_file_name(format!(
-            ".{}.tmp{}",
-            name.to_string_lossy(),
-            std::process::id()
-        ));
+        let tmp = temp_name(&dest, NEXT_TEMP.fetch_add(1, Ordering::Relaxed))?;
         let file = File::create(&tmp)?;
         Ok((
             file,
@@ -127,22 +141,64 @@ mod tests {
 
         // Make `File::create` on the temporary fail, by putting a directory
         // where it goes. That is the same shape as a full disk: the failure
-        // happens on the temporary, before the destination is touched.
-        let (_, blocker) = AtomicFile::create(&dest).unwrap();
-        let tmp = blocker.tmp.clone();
-        drop(blocker);
-        fs::create_dir(&tmp).unwrap();
+        // happens on the temporary, before the destination is touched. The
+        // name carries a process-wide sequence number, so block the next
+        // few hundred: other tests in this binary take some in between.
+        let first = NEXT_TEMP.load(Ordering::Relaxed);
+        let blockers: Vec<PathBuf> = (first..first + 256)
+            .map(|n| temp_name(&dest, n).unwrap())
+            .collect();
+        for b in &blockers {
+            fs::create_dir(b).unwrap();
+        }
 
         let err = write(&dest, b"the new state").unwrap_err();
         assert_eq!(fs::read(&dest).unwrap(), b"the good state", "{err}");
 
-        fs::remove_dir(&tmp).unwrap();
+        for b in &blockers {
+            fs::remove_dir(b).unwrap();
+        }
         write(&dest, b"the new state").unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b"the new state");
         assert_eq!(
             fs::read_dir(&dir).unwrap().count(),
             1,
             "the temporary was left behind"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Two threads saving to one destination at the same moment: each
+    /// write succeeds, the file is always exactly one of the two contents,
+    /// and no temporary is left. With the pid-only name they shared a
+    /// temporary, and the file could be a mixture.
+    #[test]
+    fn two_writers_of_one_destination_do_not_share_a_temporary() {
+        let dir = std::env::temp_dir().join(format!("po-atomic-two-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("state.msgpack");
+        let a = vec![b'a'; 200_000];
+        let b = vec![b'b'; 200_000];
+
+        let (a, b, dest) = (&a, &b, &dest);
+        std::thread::scope(|s| {
+            for bytes in [a, b] {
+                s.spawn(move || {
+                    for _ in 0..50 {
+                        write(dest, bytes).unwrap();
+                        let got = fs::read(dest).unwrap();
+                        assert!(&got == a || &got == b, "a mixture of the two writes");
+                    }
+                });
+            }
+        });
+
+        let got = fs::read(dest).unwrap();
+        assert!(&got == a || &got == b);
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            1,
+            "a temporary was left behind"
         );
         fs::remove_dir_all(&dir).unwrap();
     }

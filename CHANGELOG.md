@@ -9,6 +9,22 @@ carries breaking changes.
 
 ### Added
 
+- **`save_state=` on the plan: `lf.online.fit_predict(specs, load_state=,
+  save_state=)`**, and on `df.online.fit_predict` and `po.fit_predict`. The
+  state the execution ends in — after the last row the source fed the bank:
+  the stream's end, or the `n` rows of a `head(n)` — is written to the path
+  when the run ends, atomically (`ModelBank.save`), as the same bytes a bank
+  fed those rows saves and `po.run(save_state=)` writes. `load_state` and
+  `save_state` may be the same path, for a resume in place. The plan stays
+  pure, and that is what makes the write safe: polars runs a plan's source
+  once per use in a query — twice, on two threads, under a self-join,
+  `pl.concat` or `pl.collect_all` of two sinks — and every run writes the
+  same bytes. Nothing is written by a run the caller abandons or one the
+  bank ended with an error; a node after the bank failing does not stop the
+  bank, so the state is written then (`po.run` saves only after its output
+  is committed). `docs/STATE-WORKFLOW.md` has the measurements and the
+  rules.
+
 - **`lf.online.fit_predict(specs)` — the bank as a polars source.** A
   `LazyFrame` in, a `LazyFrame` out: executing it (`collect`,
   `collect_batches`, `sink_parquet`, …) streams the plan's rows through a
@@ -20,7 +36,8 @@ carries breaking changes.
   after the bank are pushed into the source and honoured there — a filter
   after never changes what the bank learns from — and a selection reaches
   the input scan. The plan is pure: every run starts from the specs' state
-  or `load_state`, and nothing is saved. Also `lf.online.predict(bank)` to
+  or `load_state` (and `save_state=`, below, writes where it ends). Also
+  `lf.online.predict(bank)` to
   score against a bank or a state file, the eager twins
   `df.online.fit_predict(specs)` / `df.online.predict(bank)`, and
   `po.fit_predict(frame, …)` / `po.predict(frame, bank)` for type checkers.
@@ -75,6 +92,21 @@ carries breaking changes.
   dependency outside polars. Measured in `docs/PERFORMANCE.md` §10.
 
 ### Changed
+
+- **`load_state=` on the plan, and `predict(path)`, read the file when the
+  plan is built**, not each time it runs: the plan carries the state, as
+  `df.lazy()` carries a frame, so a plan collected twice gives the same
+  frame whatever happened to the file in between, and `load_state=p,
+  save_state=p` used twice in one query cannot race one run's load against
+  the other's write. Build the plan again to pick up a newer file.
+  `predict(bank_object)` still scores the bank as it stands when the plan
+  runs.
+- **`head(n)` on the plan feeds the bank exactly `n` rows.** The source
+  applied polars' pushed slice to its output and fed the bank the whole
+  chunk the `n`th row fell in; it now trims the input chunk, so the state
+  after a `head(n)` is the state after `n` rows. The numbers are unchanged
+  except `coef`, reported on each chunk's last row, which now lands on the
+  `n`th row.
 
 - **The expression form warns on every use** (`docs/PLAN.md` §6). Each
   `pl.col("y").online.<model>(...)` call now issues
@@ -157,6 +189,16 @@ carries breaking changes.
   the same speed.
 
 ### Fixed
+
+- **Two writers of one state file in one process no longer share a
+  temporary.** `atomic.rs` named its temporary sibling by pid alone, so two
+  threads saving the same path at the same moment — `ModelBank.save` from
+  two threads, or now a plan with `save_state=` used twice in one query —
+  created and wrote *the same* temporary and the rename published a
+  mixture. The name now carries a process-wide sequence number, so the
+  destination is always the old file or one writer's whole file; the
+  runner's output file is written the same way and is covered too. Held by
+  a two-thread, fifty-round test that fails under the old name.
 
 - **The runner (`po.run` and the CLI) no longer panics on a parquet with
   more than one row group.** A chunk that spanned a row-group boundary

@@ -153,7 +153,7 @@ comes after the bank is polars' own:
     .sink_parquet("fitted.parquet")                      #   columns and the specs' are read
 )
 lf.online.predict(bank).collect()          # serve: score against a bank (or a state file)
-lf.online.fit_predict(load_state="bank.state")   # resume from a saved bank
+lf.online.fit_predict(load_state="bank.state", save_state="bank.state")  # resume, and save
 ```
 
 One caveat with a number on it: a `filter` *before* the bank holds more
@@ -193,10 +193,25 @@ to 1.1 GB, against 0.9 with nothing upstream — unless a branch holds an
 nodes do.
 
 The plan is *pure*: every execution starts from the same state — the specs',
-or `load_state` — so collecting twice gives the same frame, `head(n)` learns
-from the first `n` rows and no more, and nothing is saved; the state after
-the stream is `po.run(save_state=)`'s or your own bank's. Filters, selections
-and `head` after the bank are pushed into the source and honoured there (a
+or `load_state`, read when the plan is built — so collecting twice gives the
+same frame, and `head(n)` learns from the first `n` rows and no more.
+`save_state=` writes the state an execution ends in, after the last row it
+fed the bank, when it ends: atomically (the file is the old state or the
+new, never half of either), the same bytes a bank fed those rows saves and
+the same bytes `po.run(save_state=)` writes. Purity is what makes the write
+safe: polars runs a plan's source once per execution and *twice, on two
+threads*, when one query uses the plan twice (a self-join, `pl.concat`, a
+`pl.collect_all` of two sinks — no common-subplan elimination reaches a
+Python source), and every run writes the same bytes. Nothing is written
+unless the source reaches the last row: a run abandoned before then, or one
+the bank ended with an error, leaves the file as it was; a node *after* the
+bank failing does not stop the bank (polars drains a Python source before
+it raises), so the state is written although the query failed —
+`po.run` saves only after its output is committed, for the case where the
+two must be tied together, and a dated `save_state` per batch of data keeps
+a rerun from learning it twice (`docs/STATE-WORKFLOW.md`: the measurements
+behind each of these, on polars 1.34 to 1.44). Filters, selections and
+`head` after the bank are pushed into the source and honoured there (a
 filter after never changes what the bank learns from — put it before to do
 that), and a selection reaches the input scan. The same numbers as the loop
 and as `po.run`, bit for bit, in either engine, held by `tests/test_frame.py`.

@@ -193,9 +193,9 @@
   sgd
 
 [frame namespaces]  # lf.online.<method> -> LazyFrame; df.online.<method> -> DataFrame
-  LazyFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | None' = None, chunk_rows: 'int | None' = None) -> 'pl.LazyFrame'
+  LazyFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | None' = None, save_state: 'State | None' = None, chunk_rows: 'int | None' = None) -> 'pl.LazyFrame'
   LazyFrame.online.predict(bank: 'ModelBank | State', *, chunk_rows: 'int | None' = None) -> 'pl.LazyFrame'
-  DataFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | None' = None) -> 'pl.DataFrame'
+  DataFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | None' = None, save_state: 'State | None' = None) -> 'pl.DataFrame'
   DataFrame.online.predict(bank: 'ModelBank | State') -> 'pl.DataFrame'
 
 [output field grammar]  # the strings users index the output struct by

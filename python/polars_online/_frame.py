@@ -13,9 +13,13 @@ from, and what comes after it -- filters, selects, joins, ``sink_parquet`` --
 is polars' own.
 
 The plan is pure: every execution starts from the same state (the specs'
-initial state, or ``load_state``), so collecting twice gives the same frame,
-and nothing is saved. For the state after the stream use :func:`run` with
-``save_state=``, or a bank of your own over ``collect_batches``.
+initial state, or ``load_state``, read when the plan is built), so collecting
+twice gives the same frame. ``save_state`` writes the state the execution
+ends in -- after the last row the source fed the bank -- atomically, and
+because the plan is pure that write is idempotent: polars runs a plan's
+source once per execution and twice, concurrently, when one query uses the
+plan twice (a self-join, ``pl.concat``, ``pl.collect_all`` of two sinks), and
+every run ends in the same state (docs/STATE-WORKFLOW.md).
 
 ``df.online.fit_predict(specs)`` is the eager twin, ``ModelBank(specs)
 .fit_predict(df)`` in one call. Both namespaces are attached at import, which
@@ -46,13 +50,41 @@ _COLUMN_KEYS = ("targets", "features")
 _SCALAR_COLUMN_KEYS = ("clock", "session", "weight", "group")
 
 
-def _bank(specs: Specs | None, load_state: State | None, what: str) -> ModelBank:
+def _bank(specs: Specs | None, load_state: State | None, what: str) -> Callable[[], ModelBank]:
+    """How to make the bank a plan starts from, from the specs or a state file.
+
+    A state file is read here, once, when the plan is built -- the plan
+    carries the bytes, as ``df.lazy()`` carries the frame -- and each
+    execution deserialises them. Read at run time instead, a plan collected
+    twice would not be the same frame if the file changed in between, and
+    ``load_state=p, save_state=p`` used twice in one query would race the
+    second run's load against the first run's write.
+    """
     if load_state is not None:
-        return _load(load_state, specs)
+        state = _read_state(load_state)
+        return lambda: ModelBank.load_bytes(state, specs)
     if specs is None:
         msg = f"online.{what} needs specs, or load_state= to take them from a saved bank"
         raise ValueError(msg)
-    return ModelBank(specs)
+    return lambda: ModelBank(specs)
+
+
+def _read_state(state: State) -> bytes:
+    with open(os.fspath(state), "rb") as f:
+        return f.read()
+
+
+def _save_path(save_state: State | None) -> str | None:
+    """The ``save_state`` path, checked while the plan is built: a directory
+    that is not there is reported now, not after the stream."""
+    if save_state is None:
+        return None
+    path = os.fspath(save_state)
+    parent = os.path.dirname(os.path.abspath(path))
+    if not os.path.isdir(parent):
+        msg = f"save_state: {parent!r} is not a directory"
+        raise FileNotFoundError(msg)
+    return path
 
 
 def _spec_columns(specs: Iterable[dict[str, Any]]) -> set[str]:
@@ -71,12 +103,14 @@ def _source(
     make_bank: Callable[[], ModelBank],
     step: Callable[[ModelBank, pl.DataFrame], pl.DataFrame],
     chunk_rows: int | None,
+    save_state: State | None = None,
 ) -> pl.LazyFrame:
     """``lf`` streamed through ``step`` on a bank from ``make_bank``, as a plan."""
     if chunk_rows is not None and chunk_rows < 1:
         msg = f"chunk_rows must be at least 1, got {chunk_rows}"
         raise ValueError(msg)
     rows = chunk_rows or _native.default_chunk_rows()
+    save_path = _save_path(save_state)
     in_schema = lf.collect_schema()
     # The output schema, from a bank run on no rows. This is also where a spec
     # naming a column the input lacks is reported: while the plan is built,
@@ -99,7 +133,10 @@ def _source(
         # only while the scan has no predicate yet (slice pushdown runs first,
         # `slice_pushdown_lp.rs`), so both present means the plan sliced
         # before it filtered. (Polars' own `pl.defer` filters first, and
-        # returns 100 rows for `head(100).filter(..)`.)
+        # returns 100 rows for `head(100).filter(..)`.) The slice is applied
+        # to the *input*, so the bank is fed exactly the rows the query
+        # pulled and no more: the state it ends in -- what `save_state`
+        # writes -- is the state after those rows, whatever the chunk size.
         plan = lf
         if with_columns is not None:
             wanted = set(with_columns) | needed
@@ -107,49 +144,57 @@ def _source(
         bank = make_bank()
         seen = 0
         for chunk in plan.collect_batches(chunk_size=rows, maintain_order=True):
-            out = step(bank, chunk)
-            done = False
             if n_rows is not None:
-                take = min(out.height, n_rows - seen)
-                out = out.head(take)
-                seen += take
-                done = seen >= n_rows
+                chunk = chunk.head(n_rows - seen)
+            out = step(bank, chunk)
+            seen += chunk.height
             if predicate is not None:
                 out = out.filter(predicate)
             if with_columns is not None:
                 out = out.select(with_columns)
             yield out
-            if done:
-                return
+            if n_rows is not None and seen >= n_rows:
+                break
+        # Reached only when the source has fed the bank its last row: the
+        # input's end, or the rows a `head(n)` asked for. Not in a `finally`:
+        # a run the caller abandons is closed whenever polars drops it -- on
+        # some versions when the plan object goes -- and a run the bank
+        # ended with an error never gets here, so the file, if any, stands.
+        # A node after this one failing does not stop this one (polars
+        # drains a Python source first), so the state is written even then;
+        # `po.run` saves after its output is committed, for callers who need
+        # the two tied together.
+        if save_path is not None:
+            bank.save(save_path)
 
     return register_io_source(source, schema=schema, validate_schema=True)
 
 
 def _fit_predict_lazy(
-    lf: pl.LazyFrame, specs: Specs | None, load_state: State | None, chunk_rows: int | None
+    lf: pl.LazyFrame,
+    specs: Specs | None,
+    load_state: State | None,
+    save_state: State | None,
+    chunk_rows: int | None,
 ) -> pl.LazyFrame:
     specs = list(specs) if specs is not None else None
     return _source(
-        lf,
-        lambda: _bank(specs, load_state, "fit_predict"),
-        ModelBank.fit_predict,
-        chunk_rows,
+        lf, _bank(specs, load_state, "fit_predict"), ModelBank.fit_predict, chunk_rows, save_state
     )
 
 
 def _predict_lazy(
     lf: pl.LazyFrame, bank: ModelBank | State, chunk_rows: int | None
 ) -> pl.LazyFrame:
-    def make() -> ModelBank:
+    if not isinstance(bank, ModelBank):
+        return _source(lf, _bank(None, bank, "predict"), ModelBank.predict, chunk_rows)
+
+    def own() -> ModelBank:
         # `predict` leaves a bank as it was, so the caller's own is safe to
         # share with the plan; it scores as the bank stands when the plan runs.
-        return bank if isinstance(bank, ModelBank) else _load(bank)
+        return bank
 
-    return _source(lf, make, ModelBank.predict, chunk_rows)
-
-
-def _load(state: State, specs: Specs | None = None) -> ModelBank:
-    return ModelBank.load(os.fspath(state), specs)
+    return _source(lf, own, ModelBank.predict, chunk_rows)
 
 
 @pl.api.register_lazyframe_namespace("online")
@@ -164,6 +209,7 @@ class LazyFrameOnlineNamespace:
         specs: Specs | None = None,
         *,
         load_state: State | None = None,
+        save_state: State | None = None,
         chunk_rows: int | None = None,
     ) -> pl.LazyFrame:
         """The plan's rows plus one struct column per spec, learning as it goes.
@@ -175,19 +221,33 @@ class LazyFrameOnlineNamespace:
         so memory is O(chunk + state) whatever the length of the stream. Rows
         must arrive in stream order, as for the bank. Filters, selections and
         ``head`` applied after are pushed into the source: a filter never
-        changes what the bank learns from -- filter *before* to do that -- and
-        a selection is read from the input, so a wide scan reads only the
-        columns the specs and the query need.
+        changes what the bank learns from -- filter *before* to do that -- a
+        selection is read from the input, so a wide scan reads only the
+        columns the specs and the query need, and ``head(n)`` feeds the bank
+        the first ``n`` rows and no more.
 
         ``specs`` are the bank's, or ``load_state`` names a saved bank to
-        resume from (with ``specs``, they are checked against the file). Each
-        execution starts from that state afresh and saves nothing, so a plan
-        collected twice gives the same frame; the state after the stream is
-        :func:`polars_online.run`'s ``save_state=`` or your own bank's
-        ``save``. An error in the bank surfaces as a polars ``ComputeError``
-        carrying its message.
+        resume from (with ``specs``, they are checked against the file). The
+        file is read when the plan is built, so the plan carries that state:
+        each execution starts from it afresh, and a plan collected twice
+        gives the same frame. ``save_state`` writes the state the execution
+        ends in -- after the last row the source fed the bank -- to that path
+        when it ends, atomically (:meth:`ModelBank.save`), so the file is the
+        old state or the new one and never half of either; ``load_state`` and
+        ``save_state`` may be the same path. Because the plan is pure the
+        write is the same whenever it happens: a plan used twice in one query
+        (a self-join, ``pl.concat``, ``pl.collect_all`` of two sinks) runs
+        twice and writes the same bytes twice. Nothing is written unless the
+        source reaches the last row: a run abandoned before then, or one the
+        bank ended with an error, leaves the file as it was; a node *after*
+        the bank failing does not stop the bank, so the state is written then
+        (docs/STATE-WORKFLOW.md) -- :func:`polars_online.run` saves only after
+        its output is committed, for the case where the two must be tied
+        together, and a dated ``save_state`` per batch of data keeps a rerun
+        from learning it twice. An error in the bank surfaces as a polars
+        ``ComputeError`` carrying its message.
         """
-        return _fit_predict_lazy(self._lf, specs, load_state, chunk_rows)
+        return _fit_predict_lazy(self._lf, specs, load_state, save_state, chunk_rows)
 
     def predict(self, bank: ModelBank | State, *, chunk_rows: int | None = None) -> pl.LazyFrame:
         """The plan's rows scored against ``bank`` as it stands, learning nothing.
@@ -197,8 +257,9 @@ class LazyFrameOnlineNamespace:
         state, which the plan never moves. ``bank`` is a :class:`ModelBank`
         (scored as it stands each time the plan runs; ``predict`` leaves it
         untouched, so sharing it with a plan is safe) or a path to a saved
-        state, loaded each time the plan runs. Target columns are optional,
-        as for ``predict``; ``chunk_rows`` is the read chunk.
+        state, read when the plan is built -- build the plan again to pick up
+        a newer file. Target columns are optional, as for ``predict``;
+        ``chunk_rows`` is the read chunk.
         """
         return _predict_lazy(self._lf, bank, chunk_rows)
 
@@ -211,20 +272,30 @@ class DataFrameOnlineNamespace:
         self._df = df
 
     def fit_predict(
-        self, specs: Specs | None = None, *, load_state: State | None = None
+        self,
+        specs: Specs | None = None,
+        *,
+        load_state: State | None = None,
+        save_state: State | None = None,
     ) -> pl.DataFrame:
         """``ModelBank(specs).fit_predict(df)`` -- the frame plus one struct
-        column per spec, from a bank that is then dropped; keep a bank of your
-        own to save its state or to feed it more rows. ``load_state`` starts
-        it from a saved bank instead."""
-        return _bank(specs, load_state, "fit_predict").fit_predict(self._df)
+        column per spec, from a bank that is then dropped, or saved to
+        ``save_state`` first (:meth:`ModelBank.save`); ``load_state`` starts
+        it from a saved bank instead of the specs. Keep a bank of your own to
+        feed it more rows."""
+        save_path = _save_path(save_state)
+        bank = _bank(specs, load_state, "fit_predict")()
+        out = bank.fit_predict(self._df)
+        if save_path is not None:
+            bank.save(save_path)
+        return out
 
     def predict(self, bank: ModelBank | State) -> pl.DataFrame:
         """:meth:`ModelBank.predict` over the frame: scored against ``bank`` --
         a :class:`ModelBank`, or the path of a saved one -- as it stands, which
         does not move."""
         if not isinstance(bank, ModelBank):
-            bank = _load(bank)
+            bank = ModelBank.load(os.fspath(bank))
         return bank.predict(self._df)
 
 
@@ -234,6 +305,7 @@ def fit_predict(
     specs: Specs | None = None,
     *,
     load_state: State | None = None,
+    save_state: State | None = None,
     chunk_rows: int | None = None,
 ) -> pl.LazyFrame: ...
 
@@ -244,6 +316,7 @@ def fit_predict(
     specs: Specs | None = None,
     *,
     load_state: State | None = None,
+    save_state: State | None = None,
     chunk_rows: int | None = None,
 ) -> pl.DataFrame: ...
 
@@ -253,6 +326,7 @@ def fit_predict(
     specs: Specs | None = None,
     *,
     load_state: State | None = None,
+    save_state: State | None = None,
     chunk_rows: int | None = None,
 ) -> pl.LazyFrame | pl.DataFrame:
     """``frame.online.fit_predict(...)``, spelled so that a type checker can see it.
@@ -260,13 +334,17 @@ def fit_predict(
     A ``LazyFrame`` gives a plan that streams the rows through a bank when it
     runs (:meth:`LazyFrameOnlineNamespace.fit_predict`); a ``DataFrame`` gives
     the frame with the bank's columns
-    (:meth:`DataFrameOnlineNamespace.fit_predict`). ``chunk_rows`` is the
-    plan's read chunk; a frame already in memory is fitted in one call.
+    (:meth:`DataFrameOnlineNamespace.fit_predict`). ``load_state`` starts the
+    bank from a saved one and ``save_state`` writes where it ends up;
+    ``chunk_rows`` is the plan's read chunk, and a frame already in memory is
+    fitted in one call.
     """
     if isinstance(frame, pl.LazyFrame):
-        return _fit_predict_lazy(frame, specs, load_state, chunk_rows)
+        return _fit_predict_lazy(frame, specs, load_state, save_state, chunk_rows)
     _check_frame(frame, "fit_predict")
-    return DataFrameOnlineNamespace(frame).fit_predict(specs, load_state=load_state)
+    return DataFrameOnlineNamespace(frame).fit_predict(
+        specs, load_state=load_state, save_state=save_state
+    )
 
 
 @overload

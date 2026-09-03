@@ -118,6 +118,11 @@ def test_pushdowns_are_honoured_after_the_model():
         want = q(ref.lazy()).collect()
         for engine in ("streaming", "in-memory"):
             got = q(plan).collect(engine=engine)
+            if "head" in name:
+                # The rows a `head` asks for are the bank's last chunk, so
+                # `coef` -- reported on each chunk's last row -- lands on the
+                # last row delivered; the reference's chunk ran on past it.
+                got, want = _no_coef(got), _no_coef(want)
             assert got.equals(want), (name, engine)
     # A filter that means to change what the bank learns from goes before it.
     want = _bank_loop(df.filter(pl.col("g") == "a"), 1000)
@@ -214,7 +219,7 @@ def test_load_state_resumes_the_bank(tmp_path):
     want = bank.fit_predict(tail)
     plan = tail.lazy().online.fit_predict(load_state=state)
     assert plan.collect().equals(want)
-    assert plan.collect().equals(want)  # loaded afresh each run
+    assert plan.collect().equals(want)  # the plan carries the state; each run starts from it
     assert tail.lazy().online.fit_predict([_spec()], load_state=state).collect().equals(want)
     assert tail.online.fit_predict(load_state=state).equals(want)
     with pytest.raises(ValueError, match="online.fit_predict needs specs, or load_state="):
@@ -296,3 +301,167 @@ def test_chunks_arrive_in_stream_order():
     assert plan.collect(engine="streaming").equals(_bank_loop(df, 400))
     n = plan.select(pl.col("ridge").struct.field("n_eff")).collect()["n_eff"]
     assert math.isclose(n.max(), _bank_loop(df, 400)["ridge"].struct.field("n_eff").max())
+
+
+# --- E35: the state out of a streamed plan -- `save_state=` (docs/STATE-WORKFLOW.md).
+
+
+def _bank_after(df: pl.DataFrame, **kw) -> bytes:
+    """The reference: what a bank fed these rows saves."""
+    bank = po.ModelBank([_spec(**kw)])
+    bank.fit_predict(df)
+    return bank.save_bytes()
+
+
+def test_save_state_is_the_banks_state_after_the_stream(tmp_path):
+    """C1: the plan writes, when it ends, the state a bank fed the same rows
+    saves -- byte for byte, whatever the chunking, through either engine, and
+    the same bytes `po.run(save_state=)` writes; so do the eager and typed
+    spellings. Building the plan writes nothing."""
+    df = _frame(n=4000)
+    want = _bank_after(df)
+    state = tmp_path / "bank.state"
+    plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_rows=700)
+    assert not state.exists()
+    for engine in ("streaming", "in-memory"):
+        assert plan.collect(engine=engine).equals(_bank_loop(df, 700))
+        assert state.read_bytes() == want, engine
+        state.unlink()
+    src = tmp_path / "in.parquet"
+    df.write_parquet(src)
+    po.run(input=src, output=tmp_path / "out.parquet", specs=[_spec()], save_state=state)
+    assert state.read_bytes() == want
+    for spell in (
+        lambda: df.online.fit_predict([_spec()], save_state=state),
+        lambda: po.fit_predict(df, [_spec()], save_state=state),
+        lambda: po.fit_predict(df.lazy(), [_spec()], save_state=state).collect(),
+        lambda: po.fit_predict(df.lazy(), [_spec()], save_state=str(state)).collect(),
+    ):
+        state.unlink()
+        assert spell().equals(po.ModelBank([_spec()]).fit_predict(df))
+        assert state.read_bytes() == want
+
+
+def test_save_state_follows_head(tmp_path):
+    """C2, R4: `head(n)` feeds the bank the first `n` rows and no more, so the
+    state written is the state after `n` rows -- the rows the caller got --
+    and not after the chunk they ended in. A `head` polars cannot push into
+    the source (after a `sort`) runs the whole stream, and writes its state."""
+    df = _frame(n=4000)
+    state = tmp_path / "bank.state"
+    plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_rows=700)
+    for n in (1, 699, 700, 701, 2345, 4000, 5000):
+        got = plan.head(n).collect()
+        assert got.height == min(n, 4000)
+        assert _no_coef(got).equals(_no_coef(_bank_loop(df.head(n), 700)))
+        assert state.read_bytes() == _bank_after(df.head(n)), n
+    plan.sort("t", descending=True).head(5).collect()
+    assert state.read_bytes() == _bank_after(df)
+
+
+def test_a_plan_used_twice_in_one_query_writes_the_same_state_twice(tmp_path):
+    """C3, R2: polars runs a Python source once per use of the plan in a
+    query, concurrently, and does not share the runs (no CSE). Each run ends
+    in the same state, so each write is the same bytes and the file is whole
+    whichever finished last; no temporary is left behind."""
+    df = _frame(n=4000)
+    want = _bank_after(df)
+    state = tmp_path / "bank.state"
+    plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_rows=500)
+    ref = _bank_loop(df, 500)
+    assert pl.concat([plan, plan]).collect().equals(pl.concat([ref, ref]))
+    assert state.read_bytes() == want
+    state.unlink()
+    joined = plan.join(plan.select("t", "ridge"), on="t").collect()
+    assert joined.height == 4000
+    assert state.read_bytes() == want
+    state.unlink()
+    a, b = tmp_path / "a.parquet", tmp_path / "b.parquet"
+    pl.collect_all(
+        [plan.sink_parquet(a, lazy=True), plan.select("t", "ridge").sink_parquet(b, lazy=True)]
+    )
+    assert pl.read_parquet(a).equals(ref)
+    assert pl.read_parquet(b).equals(ref.select("t", "ridge"))
+    assert state.read_bytes() == want
+    assert sorted(f.name for f in tmp_path.iterdir()) == ["a.parquet", "b.parquet", "bank.state"]
+
+
+def test_a_run_that_does_not_reach_the_end_writes_nothing(tmp_path):
+    """R1: the state is written by a run that fed the bank its last row and
+    by nothing else -- not by one the caller abandoned (polars closes the
+    source when it drops the plan), not by one the bank ended with an error."""
+    df = _frame(n=40000)
+    state = tmp_path / "bank.state"
+    plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_rows=500)
+    batches = plan.collect_batches(chunk_size=500)
+    assert next(batches).height == 500
+    del batches, plan  # the engine read a few chunks ahead, out of 80
+    time.sleep(0.2)
+    assert not state.exists()
+    plan = (
+        df.reverse()
+        .lazy()
+        .online.fit_predict([_spec(on_clock_reset="error")], save_state=state, chunk_rows=500)
+    )
+    with pytest.raises(pl.exceptions.ComputeError, match="clock"):
+        plan.collect()
+    assert not state.exists()
+    # The known gap (R6): a node *after* the bank failing does not stop the
+    # bank -- polars drains a Python source before it raises -- so the state
+    # after the whole stream is written although the query failed. `po.run`
+    # saves only once its output is committed.
+    plan = df.lazy().online.fit_predict([_spec()], save_state=state, chunk_rows=500)
+    with pytest.raises(pl.exceptions.InvalidOperationError):
+        plan.with_columns(pl.col("g").cast(pl.Int64, strict=True)).collect()
+    assert state.read_bytes() == _bank_after(df)
+
+
+def test_load_and_save_the_same_path_resumes_in_place(tmp_path):
+    """C8: `load_state=p, save_state=p` over successive batches of the stream
+    is one continuous stream -- the rows the bank gives, and the state it
+    ends in -- and a plan built between two batches carries the state it was
+    built from (R3): the file changing under it does not change its frame."""
+    df = _frame(n=4000)
+    state = tmp_path / "bank.state"
+    parts = [df.slice(0, 900), df.slice(900, 1300), df.slice(2200, 1800)]
+    got = []
+    for i, part in enumerate(parts):
+        plan = part.lazy().online.fit_predict(
+            [_spec()], load_state=state if i else None, save_state=state, chunk_rows=500
+        )
+        got.append(plan.collect())
+    assert _no_coef(pl.concat(got)).equals(_no_coef(_bank_loop(df, 500)))
+    assert state.read_bytes() == _bank_after(df)
+    # The plan carries the loaded state, so collecting it twice with the
+    # file rewritten in between gives the same frame; the same for `predict`.
+    resume = parts[2].lazy().online.fit_predict(load_state=state, chunk_rows=500)
+    score = parts[2].lazy().online.predict(state, chunk_rows=500)
+    first, scored = resume.collect(), score.collect()
+    parts[0].lazy().online.fit_predict([_spec()], save_state=state).collect()
+    assert resume.collect().equals(first)
+    assert score.collect().equals(scored)
+    assert not parts[2].lazy().online.predict(state).collect().equals(scored)
+    # ... and `load_state=p, save_state=p` used twice in one query resumes
+    # from the file's state twice, not from what the first run wrote.
+    plan = (
+        parts[1]
+        .lazy()
+        .online.fit_predict([_spec()], load_state=state, save_state=state, chunk_rows=500)
+    )
+    pl.concat([plan, plan]).collect()
+    assert state.read_bytes() == _bank_after(pl.concat(parts[:2]))
+
+
+def test_save_state_is_checked_when_the_plan_is_built(tmp_path):
+    df = _frame(n=100)
+    with pytest.raises(FileNotFoundError, match="save_state: .* is not a directory"):
+        df.lazy().online.fit_predict([_spec()], save_state=tmp_path / "nope" / "bank.state")
+    with pytest.raises(FileNotFoundError, match="save_state: .* is not a directory"):
+        df.online.fit_predict([_spec()], save_state=tmp_path / "nope" / "bank.state")
+    with pytest.raises(FileNotFoundError):
+        df.lazy().online.fit_predict(load_state=tmp_path / "nope.state")
+    with pytest.raises(FileNotFoundError):
+        df.lazy().online.predict(tmp_path / "nope.state")
+    # `predict` moves no state and so has nothing to save.
+    with pytest.raises(TypeError, match="save_state"):
+        df.lazy().online.predict(tmp_path / "nope.state", save_state=tmp_path / "s")  # type: ignore[call-arg]

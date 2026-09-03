@@ -308,21 +308,52 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       and the reason (§6); the README shows the two spellings side by side in a closing note.
       (First committed as an off-by-default cargo feature that took it out of the wheel;
       reverted the same day — §11a.)
-- [ ] 20. **State out of a streamed plan — researched 2026-09-03, awaiting a decision.**
+- [x] 20. **State out of a streamed plan — researched and implemented 2026-09-03.**
       The four-step workflow (fit online in bounded memory; export the state, optionally
-      to disk; load it and predict without updating; load it and learn on) exists end to
+      to disk; load it and predict without updating; load it and learn on) existed end to
       end on `ModelBank`, `po.run` and the CLI, and on the plan surface for every step
       but the export: `lf.online.fit_predict` is pure by decision (E33, §11a). The
       research — `docs/STATE-WORKFLOW.md`, with the engine facts measured on polars
-      1.34.0/1.38.1/1.44.1 by `scripts/io_source_semantics.py` — finds one sound
+      1.34.0/1.38.1/1.44.1 by `scripts/io_source_semantics.py` — found one sound
       spelling, `lf.online.fit_predict(specs, load_state=, save_state=)`: the runner's
       keywords on the plan, the state written atomically when the source has fed the
       bank its last row, idempotent under the two concurrent runs polars gives a plan
-      used twice in one query. It needs the source to feed the bank only the rows a
-      `head(n)` asked for, and `load_state` read at build time. Not implemented; the
-      decisions are listed in that document's §7.
+      used twice in one query. Implemented as proposed (§11a): the source feeds the bank
+      only the rows a `head(n)` asked for, `load_state` and `predict(path)` are read when
+      the plan is built, and the collision two concurrent writers had in `atomic.rs` is
+      fixed at the root. The memory side (a plan mutating a `ModelBank`) is declined.
 
 ## 11a. Decisions made while implementing
+
+**State leaves a streamed plan through a file, and only a file, 2026-09-03
+(task 20).** `lf.online.fit_predict(specs, load_state=, save_state=)` — the
+runner's two keywords on the plan, so the fourth step of the state workflow
+(load, learn on, save) has the same spelling on every surface. The plan
+stays pure: `load_state` is read when the plan is built and the plan carries
+the bytes, as `df.lazy()` carries a frame (the same for `predict(path)`), so
+collecting twice gives the same frame and `load_state=p, save_state=p` used
+twice in one query cannot race the second run's load against the first
+run's write. `save_state` is written when the source has fed the bank its
+last row — the stream's end, or the `n` rows of a pushed `head(n)`, which
+the source now applies to the *input* chunk so the bank learns exactly those
+rows — never in `finally`, never after a bank error; a plan used twice in
+one query runs twice on two threads (measured: no common-subplan
+elimination reaches a Python source) and writes the same bytes twice. That
+second point turned up a hole older than the feature: `atomic.rs` named its
+temporary by pid alone, so two threads saving one path in one process wrote
+*one* temporary and published a mixture — `ModelBank.save` from two threads
+had the same hole. Fixed there, with a process-wide counter in the name,
+rather than with a Python-side lock: the root, and it covers `po.run`'s
+output file too. The memory side — a plan that updates a `ModelBank`
+object, or `load_state=bank` — is declined: the user's call, and the right
+one, because a plan is re-executed (twice, concurrently, when a query uses
+it twice) and an object it mutates has no single "after"; the file has, and
+a user reads it without knowing any of this. One documented gap (R6 in the
+research): a node *after* the bank failing does not stop the bank, so the
+state is written although the query failed — `po.run` saves only after its
+output is committed, and a dated `save_state` per batch keeps a rerun from
+learning it twice. `coef` moved one row in `head(n)` results: it is reported
+on each chunk's last row, and the `n`th row is now that row.
 
 **The expression form stays and warns, 2026-09-03 (task 19).** Two spellings
 carried one set of numbers and two memory profiles — `df.with_columns(pl.col
@@ -359,7 +390,8 @@ source (`register_io_source`) and returns a `LazyFrame` that streams the
 input through a fresh bank when it runs — O(chunk), bit-identical to
 `po.run`, composing with polars' filters, selections, joins and sinks. Rules
 adopted: the plan is *pure* (a fresh bank per execution, or `load_state`;
-no `bank=` the plan would mutate, no `save_state`); a filter after the bank
+no `bank=` the plan would mutate — `save_state=` came with task 20, and
+purity is what makes it safe); a filter after the bank
 never changes what it learns from; polars does not re-apply the pushdowns
 it hands a Python source, so the source honours projection, predicate and
 slice itself, slice counted before predicate (polars' optimizer order). The
@@ -511,7 +543,8 @@ returns / volume / trade-count z-scores, targets = strictly future returns.
   and the oracle/river cross-check backlog.
 - `docs/STATE-WORKFLOW.md` — research (2026-09-03) on carrying state out of a
   streamed plan: what polars does with a Python source, measured; the
-  candidate spellings; the proposal awaiting a decision (task 20).
+  candidate spellings; the rules `save_state=` on the plan follows and the
+  decisions behind them (task 20).
 
 ## 11b. Performance plan
 

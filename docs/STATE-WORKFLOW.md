@@ -1,10 +1,14 @@
 # The state workflow on the plan surface — research, 2026-09-03
 
-**Status: research, awaiting a decision (PLAN task 20). Nothing here is
-implemented.** The syntax proposed in §4 is a prototype checked against the
-real bank (§5); the facts about polars it rests on were measured, not
-recalled (§2, `scripts/io_source_semantics.py`), on polars 1.34.0 (the
-floor), 1.38.1 and 1.44.1 (the pin).
+**Status: decided and implemented, 2026-09-03 (PLAN task 20; the decisions
+are recorded in §7).** `lf.online.fit_predict(.., save_state=)` is the
+syntax proposed in §4, with rules R1–R7; §5's checks are
+`tests/test_frame.py`'s E35 tests. The facts about polars it rests on were
+measured, not recalled (§2, `scripts/io_source_semantics.py`), on polars
+1.34.0 (the floor), 1.38.1 and 1.44.1 (the pin). The memory side — a plan
+that updates a `ModelBank` object, or takes one as `load_state` — was
+decided against: the file is the state's one spelling on the plan surface,
+and a bank object stays the loop's (§1, §3 B/E).
 
 ## 0. The ask, and the answer in one paragraph
 
@@ -35,16 +39,16 @@ the state written (polars drains the source first, in every engine); where
 "state only if the output landed" is required, `po.run` is that spelling
 and stays so.
 
-## 1. What exists today, per step and surface
+## 1. What existed before the decision, per step and surface
 
 | step | `ModelBank` | `po.run` / TOML / CLI | plan `lf.online.*` (and `df.online.*`, `po.fit_predict`) |
 |---|---|---|---|
 | (1) fit online, bounded | `bank.fit_predict(chunk)` in a `collect_batches` loop; `fit_predict_batches(iter)` | `po.run(input=path\|lf\|df\|iter, output=path, specs=)` — polars reads in chunks, the bank fits, a writer thread writes; O(state + chunk) | `lf.online.fit_predict(specs).sink_parquet(..)` / `.collect_batches()` — O(chunk) |
-| (2) export state | `bank.save(path)` (atomic), `bank.save_bytes()`, `pickle`; inspect with `groups()`, `gram()` | `save_state=` / `[save_state]` / `--save-state`, written after the output is committed | **none** — the bank is dropped when the source ends (E33: "no `save_state`") |
+| (2) export state | `bank.save(path)` (atomic), `bank.save_bytes()`, `pickle`; inspect with `groups()`, `gram()` | `save_state=` / `[save_state]` / `--save-state`, written after the output is committed | **none** — the bank was dropped when the source ended (E33: "no `save_state`"); now `save_state=` (§4) |
 | (3) load, predict, no update | `ModelBank.load(path).predict(df)`; `load_bytes` | `po.run(load_state=, predict=True)`; `--resume p --predict` | `lf.online.predict(bank_or_path)` — pure, the bank does not move |
-| (4) load, update | `ModelBank.load(p).fit_predict(df)` then `save` | `po.run(load_state=, save_state=)`; `--resume p --save-state p` | `lf.online.fit_predict(load_state=p)` learns on from `p`, **cannot save** |
+| (4) load, update | `ModelBank.load(p).fit_predict(df)` then `save` | `po.run(load_state=, save_state=)`; `--resume p --save-state p` | `lf.online.fit_predict(load_state=p)` learns on from `p`, **could not save**; now `load_state=p, save_state=p` |
 
-So the gap is one cell, twice: getting state *out* of a streamed plan. The
+So the gap was one cell, twice: getting state *out* of a streamed plan. The
 Rust side (`crates/online-polars/src/runner.rs`, the CLI) needs nothing: it
 has both keywords and saves after the writer commits.
 
@@ -52,9 +56,10 @@ The state file itself is one msgpack blob for the whole bank
 (`crates/online-polars/src/bank.rs` `BankFile`: magic, `format_version`,
 `schema_version`, package version, the specs, per spec a sorted list of
 (group key, stream state), `rows_fed`), written through `atomic.rs` — a
-temporary sibling named `.{file}.tmp{pid}`, fsync, rename over the
-destination. Serialization is deterministic (groups sorted), so two saves of
-the same state are byte-identical; §5 relies on that to compare states.
+temporary sibling, fsync, rename over the destination (named `.{file}.tmp{pid}`
+at the time of the research; `.{file}.tmp{pid}-{seq}` since decision 4, §7).
+Serialization is deterministic (groups sorted), so two saves of the same
+state are byte-identical; §5 relies on that to compare states.
 
 ## 2. How polars executes a Python IO source — measured
 
@@ -150,9 +155,10 @@ The rules — each one checked in §5:
   the same state, so the two concurrent runs of a self-join or a
   `collect_all` write the same bytes twice (C3); `collect()` twice writes
   twice. Two in-process writers need distinct temporaries — `atomic.rs`
-  names its temporary by pid only, so either the Python side serialises the
+  named its temporary by pid only, so either the Python side serialises the
   writes with a lock (the prototype) or the temporary name gains a thread id
-  / counter. One of the two is required, not optional (F2).
+  / counter. One of the two is required, not optional (F2). *Taken: the
+  counter, in `atomic.rs` (§7, decision 4).*
 - **R3 — `load_state` is read when the plan is built.** The plan carries
   the state it was built from (the bytes; each run deserialises them), the
   way `df.lazy()` carries the frame — not re-read at run time, the way
@@ -162,8 +168,8 @@ The rules — each one checked in §5:
   if the file changed in between (C8b). The probe that computes the output
   schema already opens the file at build time, so this costs nothing. Cost:
   a plan built against `p` does not see a later `p`; build it again.
-  `predict(path)` should follow the same rule for consistency (today's
-  docstring says "loaded each time the plan runs"); `predict(bank_object)`
+  `predict(path)` follows the same rule for consistency (its docstring
+  said "loaded each time the plan runs" before this); `predict(bank_object)`
   stays by reference, as documented, since `predict` never moves the bank.
 - **R4 — the bank is fed exactly the rows the query pulled.** Today a
   pushed `head(n)` feeds the bank the whole first chunk and trims the
@@ -236,31 +242,51 @@ A stand-alone `register_io_source` source with R1–R4 built in, against
   (R2 — a `crates/online-polars/src/atomic.rs` change, no linkage, no
   `SCHEMA_VERSION` bump: the file format does not change).
 
-## 7. Decisions needed
+## 7. Decisions (taken 2026-09-03)
 
-1. **Add `save_state=` to the plan (A)?** — recommended, with R1–R7.
-2. **R3, `load_state` read at build time** — recommended, including for
-   `predict(path)`. The alternative (re-read per run, like `scan_parquet`)
+1. **Add `save_state=` to the plan (A)** — yes, with R1–R7. The user's
+   framing: the file saves are good and easier for a user to understand;
+   the memory side is not worth its problems.
+2. **R3, `load_state` read at build time** — yes, including for
+   `predict(path)`; the alternative (re-read per run, like `scan_parquet`)
    keeps a race in `load_state=p, save_state=p` when a plan is used twice in
-   one query.
-3. **`load_state` accepting a `ModelBank`** (copied at build) — recommended;
-   completes the symmetry with `predict(bank | path)` and gives step (4) an
-   in-process form.
-4. **R2's mechanism** — a Python-side lock around the write (smallest) or a
-   thread id in `atomic.rs`'s temporary name (also protects two Rust callers
-   in one process; none exists today). Recommend the lock now.
-5. **Candidates C / E / F** — none now; C is the one to revisit if state as
-   a frame ever has a consumer.
+   one query. Taken with decision 1, as the rule set proposed; it is the one
+   change in observable behaviour for existing code — a plan built before
+   the file changed keeps the frame it had (`tests/test_frame.py`,
+   `test_load_and_save_the_same_path_resumes_in_place`).
+3. **`load_state` accepting a `ModelBank`** — no. The memory side is out of
+   scope; a bank object is the loop's, the file is the plan's. Nothing on
+   the plan surface mutates a `ModelBank`.
+4. **R2's mechanism** — the root, not a lock: the concern was parallel
+   writers colliding on one file, and the collision was in
+   `crates/online-polars/src/atomic.rs`, whose temporary was named by pid
+   alone, so two threads saving one path in one process created and wrote
+   *the same temporary* and the rename published whichever mixture resulted.
+   The temporary is now `.{name}.tmp{pid}-{seq}` with a process-wide
+   counter, so no two writers — threads or processes — share one; the
+   destination is the old file or one writer's whole file. This also closes
+   the same hole for `ModelBank.save` called from two threads, which existed
+   before the plan could write anything, and for `po.run`'s output file
+   (`AtomicFile::create` in `runner.rs`). Held by
+   `two_writers_of_one_destination_do_not_share_a_temporary` (50 rounds ×
+   2 threads × 200 kB, every read is one writer's bytes; it fails under the
+   pid-only name). No Python-side lock: the plan's writes are idempotent
+   (R2) and now collision-free.
+5. **Candidates C / E / F** — none; C is the one to revisit if state as a
+   frame ever has a consumer.
 
-## 8. Where it would land (after the decision)
+## 8. Where it landed
 
-`python/polars_online/_frame.py` (`_source`: R1–R4, the lock; `fit_predict`
-signatures on the lazy, eager and typed spellings; `predict` R5),
-`tests/test_frame.py` (C1–C8b as tests, plus `predict(save_state=)` refused
-and the R3 snapshot), `README.md` ("As a plan" gains the two keywords and the
-R6 note; "Which spelling streams" unchanged), `docs/PLAN.md` §11a (the
-decision), `docs/ENHANCEMENTS.md` (E35), `CHANGELOG.md`, `tests/api_surface.txt`.
-No Rust unless decision 4 picks the temporary name.
+`python/polars_online/_frame.py` (`_source`: R1, R4 and the write;
+`_bank`/`_read_state`: R3 for `load_state` and `predict(path)`;
+`_save_path`: the directory checked at build; `fit_predict` on the lazy,
+eager and typed spellings; `predict` R5 by having no such keyword),
+`crates/online-polars/src/atomic.rs` (decision 4), `tests/test_frame.py`
+(C1–C8b as the E35 tests, `predict(save_state=)` refused, the R3 snapshot,
+the same-path double use), `README.md` ("As a plan": the keyword, purity as
+what makes the write safe, the R6 note and the dated-file recommendation),
+`docs/PLAN.md` §11a, `docs/ENHANCEMENTS.md` (E35), `CHANGELOG.md`,
+`tests/api_surface.txt`.
 
 ## 9. Reproduce
 
