@@ -221,7 +221,8 @@ class ModelBank:
         ``n_eff``
             The accumulated weight behind the fit -- what the next row's
             ``n_eff`` field reports. The solve schedule (``solve_every``,
-            default halflife/50, and ``max_rows_between_solves``) decides
+            default halflife/50 or every row for ``halflife=inf``, and
+            ``max_rows_between_solves``) decides
             when a stream first solves, not ``min_periods``: ``pred`` waits
             for ``min_periods``, ``coef`` does not, so a fit with ``n_eff``
             below it is over fewer rows than the spec asks for (a solve over

@@ -5,8 +5,10 @@ chosen without data; check them in the evaluation harness (task 12) before relyi
 
 ## 1. Goal
 
-Online regression models over ordered event data (one stream per group, e.g. per bond),
-usable two ways with identical numerics:
+Online regression models over data that does not fit in memory -- ordered event streams
+(one per group, e.g. per bond) with a clock, and equally a plain table in any row order,
+where decay off (`halflife=inf`) is exact least squares at O(state) (the "Any row order"
+decision below, 2026-09-03) -- usable two ways with identical numerics:
 
 1. **Python ModelBank** — chunk-fed, `fit_predict(chunk)` over `LazyFrame.collect_batches()`;
    memory is O(state), not O(data). Also as a plan: `lf.online.fit_predict(specs)` is the bank
@@ -159,8 +161,9 @@ with the same clock as everything else. Output `pred` is a probability; `resid =
 - Takes `list[Spec]`; extracts feature/target/clock/session/weight columns from a chunk once,
   computes the clock delta once per row, then runs each spec's state (per group key) — specs are
   independent, so they run in parallel with `rayon` over (spec × group).
-- Chunks must be clock-ordered within each group; the bank asserts monotonicity (after reset
-  handling) and errors loudly otherwise.
+- Under a `clock`, chunks must be clock-ordered within each group; the bank asserts
+  monotonicity (after reset handling) and errors loudly otherwise. Without one the row
+  order is the clock, and with decay off the order does not reach the fit at all.
 - `state()` / `save(path)` / `load(path)`: msgpack (`rmp-serde`) with header
   `{schema_version, package_version, spec}`; loading checks the spec matches.
 - Python: `ModelBank(specs).fit_predict(df) -> df` (appends struct columns) and
@@ -428,6 +431,42 @@ a wrong slot order, a swapped feature, a wrong ridge or a wrong instance
 each break by 0.03 to 7 (checked by breaking them). Not added: a SQL
 `where=` filter for the CLI (the user declined it: a `polars-sql`
 dependency for a filter polars' own plan already has).
+
+**Any row order, 2026-09-03.** The README said the library was "built for
+ordered event data", which undersold it: a bank is sufficient statistics,
+so row order reaches the fit only through decay, and with decay off it is
+a regression library that never holds the data. Measured rather than
+argued, 6M iid rows x 20 features in 12 parquet parts: `ewridge` with
+`ridge=0` and `halflife=inf` (or `lam=1.0`) matches `numpy.linalg.lstsq`
+to 2e-13 fed forwards or backwards, at 1.4 GB peak RSS against 3.97 GB
+for `lstsq` on the same rows (10.7 s solving every row, the default for
+`inf`; 1.4 s with `solve_every=1000`, the coefficients 2e-6 off). A finite
+row halflife is the weighted least squares of the order given (halflife
+1e6 rows: 4e-4 from OLS, which is itself 5e-4 from the truth; reversed,
+the same distance). Two things came out of it. (1) The docs now lead with
+both shapes: the README intro, a new "Any row order" section, "What this
+is not", the `halflife` row and the `ewridge` solve sentence; and
+`tests/test_row_order.py` pins no-decay == lstsq in four row orders with
+two interleaved groups, through the bank and the chunked plan, and the
+finite-halflife-reverses-the-weights statement. (2) A trap, known here as
+the `solve_every` gotcha further down in this section and now documented
+in the README and pinned, but not fixed: the solve cadence defaults to `halflife/50` for any
+*finite* halflife and to every row only for `inf`/`lam`
+(`Spec::solve_every_default`), and `max_rows_between_solves` defaults to
+unlimited, so `halflife=1e12` solves once at `min_periods` and never again
+-- 0.3 to 0.4 off OLS on the same 6M rows, where `inf` or
+`solve_every=1000` is 2e-6 off. Not changed now because the cadence is
+part of every golden and any rule that scales with the accumulated weight
+needs the weight at the last solve in the state (a layout change:
+`SCHEMA_VERSION` bump plus a loader for the old one). The candidate rule,
+for the user's decision: solve when the weight added since the last solve
+exceeds ~2% of the total, which reproduces `halflife/50` at steady state
+(2% of a saturated `1.44*h` is `h/35`), solves densely while the weight
+is still growing (early rows, and a warm-up after `reset_state`), and
+makes `inf` cost O(log n) solves instead of one per row while bounding
+the staleness to 2% of the weight. Until then the README says: `inf` is
+the no-decay setting, `solve_every` is the throttle, and a huge finite
+halflife is neither.
 
 **State leaves a streamed plan through a file, and only a file, 2026-09-03
 (task 20).** `lf.online.fit_predict(specs, load_state=, save_state=)` — the

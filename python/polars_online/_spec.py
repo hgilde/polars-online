@@ -303,7 +303,9 @@ def ewridge(
     Math: EW means ``S = EW[x x^T]``, ``r_j = EW[x y_j]`` with per-row decay
     ``0.5 ** (d_clock / halflife)``; coefficients solve
     ``(S + ridge * D) beta_j = r_j`` (D = identity minus the intercept slot) on a
-    schedule (``solve_every`` clock units, default halflife/50). Predictions use
+    schedule (``solve_every`` clock units, default halflife/50 -- every row for
+    ``halflife=inf`` and for ``lam``, so set it with a large finite halflife
+    or the default never comes due). Predictions use
     the last solved coefficients and the state *before* the row's update.
     ``ridge`` may be a list (one fit per value, reported side by side) and
     ``feature_sets`` names subsets of ``features``, each a fit of its own

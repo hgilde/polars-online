@@ -15,8 +15,13 @@ frame already in memory. It cannot stream — polars hands it the whole column
 — so it warns on every use; [the note at the end](#the-expression-form)
 shows it next to the plan and says why.
 
-Built for ordered event data (one stream per group) that does not fit in memory:
-irregular clocks, session breaks, gaps, nulls, and per-group state.
+Built for data that does not fit in memory, in either of two shapes. A plain
+table in any row order: with decay off (`halflife=inf`) the bank *is* least
+squares over every row it has seen — `numpy.linalg.lstsq`'s coefficients to
+2e-13, at O(state) instead of O(data) — and a row halflife makes that a
+recency-weighted fit. And ordered event streams (one per group), which is
+where the rest of the machinery lives: a clock column, irregular spacing,
+session breaks, gaps, nulls, and per-group state.
 
 ```python
 import polars as pl
@@ -88,6 +93,31 @@ accumulator per group and stays O(state).
   is identical.
 
 Both are enforced by tests, not just intended.
+
+## Any row order
+
+A bank is a set of sufficient statistics, so row order reaches the fit only
+through decay. With decay off — `halflife=inf`, or `lam=1.0` — an `ewridge`
+with `ridge=0` is ordinary least squares over every row it has seen, whatever
+order they came in. Forwards, backwards or shuffled, with the groups
+interleaved however the file has them, its coefficients match
+`numpy.linalg.lstsq` to 2e-13. What it costs is state, not data: 6M rows × 20
+features from a parquet stream peak at 1.4 GB against 3.97 GB for
+`lstsq` on the same rows, and the frame never has to fit. By default it
+re-solves on every row (11 s there); `solve_every=1000` makes it 1.4 s with
+the coefficients at most 1000 rows stale (2e-6 off). Everything the
+streaming shape gets — `group`, `weight`, `min_periods`, null policy, the
+ridge and feature-set grids, `save`/`load` — applies as it stands.
+
+A finite halflife with no `clock` is the same fit with each row discounted by
+how far back in the stream it sits: the weighted least squares of *that*
+order, so reversing the rows reverses the weights. On rows that carry no
+order of their own that is a random weighting, and its fit differs from OLS
+by sampling noise only (halflife 1e6 rows on the 6M above: 4e-4 apart, with
+OLS itself 5e-4 from the truth). One thing to know: a huge *finite* halflife
+is not `inf`. Its solve cadence defaults to `halflife/50`, so `halflife=1e12`
+solves once, at `min_periods`, and stays there (0.3 off on the same data).
+Say `inf`, or set `solve_every`. `tests/test_row_order.py` pins all of this.
 
 ## Install
 
@@ -402,7 +432,8 @@ po.eval.compare_specs(out, ["ridge", "kalman"])                     # one table,
 ## What this is not
 
 A model layer, not a stream-processing framework. It expects a frame that is
-already aligned and already ordered within each group, and it keeps O(state) per
+already aligned — and, when a spec names a `clock`, each group's rows in clock
+order; without one the row order is the clock — and it keeps O(state) per
 stream. It deliberately does **not** provide:
 
 - **connectors or ingestion** — feed it whatever Polars can read;
@@ -411,8 +442,8 @@ stream. It deliberately does **not** provide:
   such as [Pathway](https://pathway.com), whose Rust engine already does this;
 - **watermarks or late-arrival policy** — `clock`, `max_dclock`,
   `on_clock_reset` and `session` describe *within-stream* time, not pipeline
-  lateness. A row that arrives out of order is a data error here, and
-  `on_clock_reset="error"` will say so;
+  lateness. Under a `clock`, a row that arrives out of order is a data error
+  here, and `on_clock_reset="error"` will say so;
 - **distributed execution** — one process, `rayon` across (spec × group).
 
 Those boundaries make the two compose rather than compete:
@@ -433,7 +464,7 @@ Every model takes the same stream parameters:
 | `targets`, `features` | column names; ≥1 target, shared `X'X` across targets. Columns must be numeric — any width, `Decimal` and `Boolean` included, cast to `f64` on the way in — and a String column is refused rather than cast to null. Columns the spec does not name are carried through untouched, whatever their dtype |
 | `add_intercept` | default `True` |
 | `clock` | monotone **numeric** column (seconds, cumulative volume, …). `None` ⇒ row count. A temporal column is rejected — cast it first, e.g. `pl.col("ts").dt.epoch("s")` — because its internal representation would silently set the units of `halflife`, `max_dclock` and `session_gap` |
-| `halflife` / `lam` | decay in clock units; mutually exclusive. A list of halflives means one accumulator per value |
+| `halflife` / `lam` | decay in clock units; mutually exclusive. A list of halflives means one accumulator per value. `halflife=inf` (or `lam=1.0`) is decay off: least squares over every row seen, in any order — and not the same as a huge finite halflife, whose default solve cadence of `halflife/50` never comes due ([Any row order](#any-row-order)) |
 | `max_dclock` | ceiling on the clock delta (required with `clock`); `0` disables decay, `inf` removes the ceiling |
 | `on_clock_reset` | what a backwards clock means: `"max"` (default), `"zero"`, `"reset_state"`, or `"error"` to refuse the chunk — the bank is left as it was, so the corrected chunk can be fed |
 | `session`, `session_gap` | on a session change, apply this delta (`"reset"` resets the state, `inf` never applies it) |
@@ -521,7 +552,9 @@ its pull is **permanent**; the fading warm start ("start at yesterday's fit")
 is `ridge_decay`, where the prior sits on the decaying sum scale.
 
 O(k²) per row; Cholesky solves on a schedule (`solve_every` in clock units,
-default `halflife/50`). Ridge values and named `feature_sets` are expanded at
+default `halflife/50`; every row for `halflife=inf` and for `lam` — so set it
+with a large finite halflife, or the default never comes due;
+`max_rows_between_solves` caps it in rows). Ridge values and named `feature_sets` are expanded at
 solve time from the same accumulator, so grids are nearly free. With
 `standardize`, the solve is done in correlation form and unscaled afterwards;
 near-zero-variance features are dropped rather than blowing up.

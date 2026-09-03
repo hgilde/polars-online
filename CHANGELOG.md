@@ -231,6 +231,16 @@ carries breaking changes.
 
 ### Documented
 
+- **The docs say what the bank is for a table in any row order.** It was
+  introduced as "built for ordered event data"; row order reaches a bank's
+  fit only through decay, and with decay off (`halflife=inf`, `lam=1.0`)
+  `ewridge` is least squares over every row seen — `numpy.linalg.lstsq` to
+  2e-13 in any order, 1.4 GB against `lstsq`'s 3.97 GB at 6M rows × 20
+  features from parquet. The README leads with both shapes and has an "Any
+  row order" section; `tests/test_row_order.py` pins the claim. Documented
+  with it, and pinned, a trap that is not fixed: a huge *finite* halflife
+  inherits the `halflife/50` solve cadence and so solves once and stays
+  there — `inf` is the no-decay setting and `solve_every` the throttle.
 - **How to score without learning**: give the rows weight `0`, which freezes
   the coefficients bit for bit, rather than nulling the target, which does
   not. The README also states the cost — a zero-weight row still advances the
