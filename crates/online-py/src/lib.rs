@@ -450,6 +450,17 @@ fn spec_output_index(spec_json: &str) -> PyResult<String> {
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
+/// Every coefficient of a spec's output as JSON: the `coef` field and
+/// position it sits at, the column name `unnest` gives it, and the machine
+/// values (target, halflife/lam, ridge, feature_set, lambda, term).
+#[pyfunction]
+fn spec_coef_fields(spec_json: &str) -> PyResult<String> {
+    let spec: Spec = from_json(spec_json).map_err(PyValueError::new_err)?;
+    spec.validate().map_err(PyValueError::new_err)?;
+    serde_json::to_string(&online_polars::coef_fields(&spec))
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
 /// Output field names for a spec, without building a bank.
 #[pyfunction]
 fn spec_output_fields(spec_json: &str) -> PyResult<Vec<String>> {
@@ -491,5 +502,6 @@ fn _polars_online(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(default_chunk_rows, m)?)?;
     m.add_function(wrap_pyfunction!(spec_output_fields, m)?)?;
     m.add_function(wrap_pyfunction!(spec_output_index, m)?)?;
+    m.add_function(wrap_pyfunction!(spec_coef_fields, m)?)?;
     Ok(())
 }

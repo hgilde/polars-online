@@ -93,11 +93,16 @@ example; `git show --stat aa96ad3` is this list as a diff.
    the model is in their lists, which step 16 enforces.
 8. **`src/bank.rs`**: nothing, unless the outputs are not one `pred`/`resid`
    pair per target per combo — `ew_cov` (statistics, no target) and `lasso`
-   (a path) are the two cases, in `output_index`.
+   (a path) are the two cases, in `output_index` — or the coefficient vector
+   is not `[intercept] + features` per (target, combo) slot: `coef_fields`
+   names the slots, and `holt` (`level`, `trend`) and `ew_cov` (none) are
+   its two special cases.
    *Check*: `test_portability.TestOutputSchemaStability
    .test_names_match_the_realized_struct` compares the declared field names
    with the struct the bank actually produces, for every model in its list,
-   times three output combinations.
+   times three output combinations; `test_coef.test_every_model_lays_out_as
+   _coef_index` checks each model's `coef` list is as long as its named
+   slots.
 
 `crates/online-cli` and `crates/online-py` need nothing: both build from the
 spec, and the plugin's `online_run` is the bank.

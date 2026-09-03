@@ -56,7 +56,7 @@ def _build(name: str) -> dict:
 
 
 #: What ``polars_online.spec`` exports besides builders.
-HELPERS = {"output_fields", "coef_index", "output_index"}
+HELPERS = {"output_fields", "coef_fields", "coef_index", "output_index"}
 
 
 def _builders() -> set[str]:

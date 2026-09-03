@@ -9,6 +9,20 @@ carries breaking changes.
 
 ### Added
 
+- **`online.unnest(specs)`: a bank's output as flat columns, the
+  coefficients named.** `lf.online.unnest(specs)`, `df.online.unnest(specs)`
+  and `po.unnest(frame, specs)` take each spec's struct column apart in
+  place — scalar fields under their own names, each `coef` list as one
+  column per coefficient named on the field grammar (`coef_y_intercept`,
+  `coef_y_x1__r0.5@h500` beside `pred_y__r0.5@h500`). `specs` may be the
+  spec dicts, a `ModelBank`, or the path of a saved state; a parquet the
+  CLI wrote reads back flat through `pl.scan_parquet(..).online.unnest(..)`.
+  The names come from the new **`polars_online.spec.coef_fields(spec)`**:
+  every coefficient with the `coef` field it sits in, its `position` there,
+  its column `name`, and `target`, `halflife`/`lam`, `ridge`,
+  `feature_set`, `lambda`, `term` — rendered by the same Rust code as the
+  field names (`online_polars::coef_fields`, `CoefField`). `coef_index` is
+  unchanged and is now derived from it.
 - **A weekly native leak check in CI** (`.github/workflows/leakcheck.yml`,
   PLAN task 18): `scripts/leakcheck.sh` under `leaks` on macOS and valgrind
   on Linux, Mondays and on demand; nothing gates on it, a red scheduled run
@@ -179,13 +193,13 @@ carries breaking changes.
   `pl.col("y").online.<model>(...)` call now issues
   `polars_online.InMemoryExpressionWarning`, new and exported: polars hands
   a stateful user expression its whole column in either engine, so that
-  spelling is O(data) — 7.3 GB at 12M rows against 1.35 GB for
+  form is O(data) — 7.3 GB at 12M rows against 1.35 GB for
   `lf.online.fit_predict([spec])` in the same query — and a reader who took
-  it for the streaming spelling learned otherwise from a memory profile. The
+  it for the streaming form learned otherwise from a memory profile. The
   warning says why, names the plan to write instead, and gives the one-line
   filter for a frame in memory on purpose; it is a `UserWarning` because a
   `DeprecationWarning` is hidden outside `__main__`, which is exactly the
-  pipeline module where it matters. The README shows the two spellings side
+  pipeline module where it matters. The README shows the two forms side
   by side in a closing note. Nothing else moves: the expression still runs,
   `po.online` is still exported, and the numbers are the same bits.
 - **`polars>=1.34.0,<2`** (was `>=1.28.1`). `po.run` over a path or a plan
@@ -245,7 +259,7 @@ carries breaking changes.
   engine's own map of which is which:
   `lf.show_graph(engine="streaming", plan_stage="physical")`. A filter run
   inside the source would be 0.81 GB with identical output; not added — a
-  second spelling of `filter` differing only in memory, for a cost that is
+  second `filter` differing only in memory, for a cost that is
   polars' column-reorder stage to remove.
 - **Which surface is O(data)**, measured (`docs/PERFORMANCE.md` §11): the
   expression plugin — 2.0 GB at 3M rows, 7.3 GB at 12M, in either engine,
@@ -281,7 +295,7 @@ carries breaking changes.
   list, which made `coef.list.get(position)` — the documented way to read one
   coefficient — raise "index out of bounds" instead of returning null.
 - **`holt` accepts `level_halflife` on its own.** For Holt the level halflife
-  is the spec's halflife — one knob spelled two ways — but a spec that gave
+  is the spec's halflife — one knob under two names — but a spec that gave
   only `level_halflife` was refused with "one of halflife/lam is required",
   including the example in this project's own README.
 - **Every polars dtype can now cross into the model bank.** A `Decimal` or

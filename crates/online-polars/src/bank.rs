@@ -366,6 +366,33 @@ pub struct Coef {
     pub coef: Option<Vec<f64>>,
 }
 
+/// One coefficient of a spec's output, from [`coef_fields`]: which `coef`
+/// list it sits in and where, and the flat column name it gets when the
+/// struct is unnested with the coefficients named
+/// (`polars_online.spec.coef_fields`, `lf.online.unnest`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CoefField {
+    /// The `coef` field holding the list (`coef`, or `coef@h500` per
+    /// instance).
+    pub field: String,
+    /// Position in that list.
+    pub position: usize,
+    /// `coef_{target}_{term}{combo}{instance}` -- the field grammar with the
+    /// term after the target, so `coef_y_x1__r0.5@h500` sits beside
+    /// `pred_y__r0.5@h500`. Prefixed, because a bare `x1` would collide with
+    /// the feature column of that name in the same frame.
+    pub name: String,
+    pub target: String,
+    pub halflife: Option<f64>,
+    pub lam: Option<f64>,
+    pub ridge: Option<f64>,
+    pub feature_set: Option<String>,
+    /// Lasso path point.
+    pub lambda: Option<f64>,
+    /// `intercept`, a feature name, or `level` / `trend` for `holt`.
+    pub term: String,
+}
+
 const BANK_MAGIC: &str = "polars-online-bank";
 
 /// The envelope of a [`BankFile`], read on its own first: a file from a newer
@@ -1154,6 +1181,62 @@ impl FieldMeta {
         self.lambda = c.lambda;
         self
     }
+}
+
+/// Every coefficient a spec reports, in `coef` list order, with the name
+/// [`CoefField`] gives it. Empty for `ew_cov`, which has none.
+///
+/// The layout is the models' (`online_core`): per instance, one `coef` list
+/// holding `(target, combo)` slots in the order the `pred` fields declare
+/// them, each slot the full term vector -- `intercept` first when the spec
+/// has one, then every feature, zeros for features a feature set leaves out
+/// (`EwRidgeModel::solve` scatters each combo's solution into `k_total`
+/// columns) -- or `level`, `trend` for `holt`. Rendered here, beside the
+/// field names, from the same combos and suffixes, so the two cannot drift.
+pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
+    if matches!(spec.model, crate::ModelKind::EwCov { .. }) {
+        return Vec::new();
+    }
+    let terms: Vec<String> = if matches!(spec.model, crate::ModelKind::Holt { .. }) {
+        vec!["level".into(), "trend".into()]
+    } else {
+        let mut t = Vec::with_capacity(spec.features.len() + 1);
+        if spec.add_intercept {
+            t.push("intercept".to_string());
+        }
+        t.extend(spec.features.iter().cloned());
+        t
+    };
+    let combos = crate::stream::combos(spec);
+    let decays = spec.decays().expect("validated");
+    let mut out = Vec::new();
+    for (suffix, d) in &decays {
+        let (halflife, lam) = match d {
+            online_core::Decay::Halflife(h) => (Some(*h), None),
+            online_core::Decay::Lam(l) => (None, Some(*l)),
+        };
+        let mut position = 0;
+        for t in &spec.targets {
+            for c in &combos {
+                for term in &terms {
+                    out.push(CoefField {
+                        field: format!("coef{suffix}"),
+                        position,
+                        name: format!("coef_{t}_{term}{}{suffix}", c.label),
+                        target: t.clone(),
+                        halflife,
+                        lam,
+                        ridge: c.ridge,
+                        feature_set: c.feature_set.clone(),
+                        lambda: c.lambda,
+                        term: term.clone(),
+                    });
+                    position += 1;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Output field names for a spec, in struct order (used by Python for dtypes).

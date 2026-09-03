@@ -338,15 +338,13 @@ bank.fit_predict(df)
 betas = bank.coef("ols")             # group, instance, n_eff, position, target, ..., term, coef
 wide = betas.pivot("term", index=["group", "instance"], values="coef")
 
-# 2. From the output, in polars: `coef` is a list on every row, and the spec's
-#    layout names its positions
-terms = po.spec.coef_index(ols)["term"].to_list()               # ['intercept', 'x0', 'x1']
+# 2. From the output, in polars: `unnest` takes the struct apart into columns,
+#    the `coef` list as one named column per coefficient
 path = (
     lf.online.fit_predict([ols])
-    .select("t", "bond_id",
-            pl.col("ols").struct.field("coef").list.to_struct(fields=terms).alias("beta"))
-    .unnest("beta")                  # t, bond_id, intercept, x0, x1: the fit as it moved
-    .collect()
+    .online.unnest([ols])            # pred_y, resid_y, n_eff, coef_y_intercept, coef_y_x0, coef_y_x1
+    .select("t", "bond_id", "^coef_.*$")
+    .collect()                       # the fit as it moved, one row per row
 )
 ```
 
@@ -358,13 +356,20 @@ the fit *before* it), every `coef_every` rows and on the last row of every
 chunk; the default, `coef_every=0`, is the chunk end only, so the per-row
 path above asks for `coef_every=1` and pays a list of `k` floats per row.
 Under a grid — several `ridge` values, `feature_sets`, a `lasso_path`,
-several targets — the list holds one block per (target × grid point), and
-`coef_index` and `bank.coef()` carry `target`, `ridge`, `feature_set` and
-`lambda` columns to tell the blocks apart: add the ones the spec varies to
-the pivot's `index` (`["group", "instance", "target", "ridge"]` for the
-`ridge` grid of section 1). `bank.gram("ols")` gives the EW accumulators
-behind the fit (`means`, centered `comoments`, `cross_moments`, `n_eff`),
-for anything other than our solve.
+several targets — the list holds one block per (target × grid point).
+`unnest` names each block's columns the way the `pred` fields are named
+(`coef_y_x0__r0.5@h500` beside `pred_y__r0.5@h500`), and
+`po.spec.coef_fields(spec)` is the table behind those names — one row per
+coefficient with its `field`, `position`, `name`, `target`, `halflife`,
+`ridge`, `feature_set`, `lambda` and `term` — so a grid is a filter on it,
+not a string to write. `bank.coef()` carries the same columns to tell the
+blocks apart: add the ones the spec varies to the pivot's `index`
+(`["group", "instance", "target", "ridge"]` for the `ridge` grid of
+section 1). `unnest` reads a saved output the same way
+(`pl.scan_parquet("fitted.parquet").online.unnest([ols])`), and takes the
+specs, a bank, or the path of a saved state. `bank.gram("ols")` gives the
+EW accumulators behind the fit (`means`, centered `comoments`,
+`cross_moments`, `n_eff`), for anything other than our solve.
 
 ## Diagnostics and selection
 
@@ -853,17 +858,20 @@ name = idx.filter(
 po.ModelBank([grid]).fit_predict(df)["m"].struct.field(name)
 ```
 
-`coef_index(spec)` does the same for the flat `coef` list — one row per
-position, mapping it to (target, combo, term):
+`coef_fields(spec)` does the same for the flat `coef` lists — one row per
+coefficient, mapping (target, combo, instance, term) to the list it sits
+in, its position there, and the column `online.unnest` gives it:
 
 ```python
-pos = po.spec.coef_index(grid).filter(
-    (pl.col("term") == "x1") & (pl.col("ridge") == 0.5)
-)["position"].item()
+row = po.spec.coef_fields(grid).filter(
+    (pl.col("term") == "x1") & (pl.col("ridge") == 0.5) & (pl.col("halflife") == 500.0)
+).row(0, named=True)       # field "coef@h500", position 5, name "coef_y_x1__r0.5@h500"
+out["m"].struct.field(row["field"]).list.get(row["position"])
 ```
 
-Both come from the same Rust code that renders the names, so they cannot
-drift from the strings. The index also carries each field's `dtype` (`f64`,
+(`coef_index(spec)` is the same table for one instance, by position.) All
+of them come from the same Rust code that renders the names, so they
+cannot drift from the strings. The index also carries each field's `dtype` (`f64`,
 `bool` for `drift_*`, `str` for `selected_*`, `list[f64]` for `coef`), which
 is the schema the bank declares to polars before the first row is read.
 

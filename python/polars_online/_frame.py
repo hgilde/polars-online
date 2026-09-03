@@ -22,9 +22,13 @@ plan twice (a self-join, ``pl.concat``, ``pl.collect_all`` of two sinks), and
 every run ends in the same state (docs/STATE-WORKFLOW.md).
 
 ``df.online.fit_predict(specs)`` is the eager twin, ``ModelBank(specs)
-.fit_predict(df)`` in one call. Both namespaces are attached at import, which
-no type checker can see; :func:`fit_predict` and :func:`predict` are the same
-calls with the frame as the first argument, visibly typed.
+.fit_predict(df)`` in one call. ``online.unnest(specs)`` takes a bank's
+output apart: each spec's struct column becomes its fields as columns, with
+the ``coef`` list as one named column per coefficient
+(:func:`polars_online.spec.coef_fields`). Both namespaces are attached at
+import, which no type checker can see; :func:`fit_predict`, :func:`predict`
+and :func:`unnest` are the same calls with the frame as the first argument,
+visibly typed.
 """
 
 from __future__ import annotations
@@ -38,8 +42,15 @@ from polars.io.plugins import register_io_source
 
 from polars_online import _polars_online as _native
 from polars_online._bank import ModelBank
+from polars_online._spec import coef_fields, output_index
 
-__all__ = ["DataFrameOnlineNamespace", "LazyFrameOnlineNamespace", "fit_predict", "predict"]
+__all__ = [
+    "DataFrameOnlineNamespace",
+    "LazyFrameOnlineNamespace",
+    "fit_predict",
+    "predict",
+    "unnest",
+]
 
 Specs = Iterable[dict[str, Any]]
 State = str | os.PathLike[str]
@@ -197,6 +208,73 @@ def _predict_lazy(
     return _source(lf, own, ModelBank.predict, chunk_rows)
 
 
+def _specs_of(specs: Specs | ModelBank | State, what: str) -> list[dict[str, Any]]:
+    """The spec dicts behind ``specs``: a list of them, a bank's, or a saved
+    bank's (the file carries them; it is read here, once)."""
+    if isinstance(specs, ModelBank):
+        return specs.specs
+    if isinstance(specs, (str, os.PathLike)):
+        return ModelBank.load(os.fspath(specs)).specs
+    out = list(specs)
+    if not all(isinstance(spec, dict) for spec in out):
+        msg = f"online.{what} takes specs, a ModelBank or the path of a saved one"
+        raise TypeError(msg)
+    return out
+
+
+def _unnest_exprs(schema: pl.Schema, specs: list[dict[str, Any]]) -> list[pl.Expr]:
+    """The columns of ``schema`` with each spec's struct replaced, in place, by
+    its fields -- the ``coef`` lists as one column per coefficient, named by
+    :func:`polars_online.spec.coef_fields`.
+
+    A spec whose column the frame has not got, or whose struct lacks a field
+    the spec produces, is reported here, while the plan is built.
+    """
+    by_name: dict[str, dict[str, Any]] = {}
+    for spec in specs:
+        if spec["name"] in by_name:
+            msg = f"online.unnest: spec {spec['name']!r} given twice"
+            raise ValueError(msg)
+        by_name[spec["name"]] = spec
+    exprs: list[pl.Expr] = []
+    for column, dtype in schema.items():
+        if column not in by_name:
+            exprs.append(pl.col(column))
+            continue
+        spec = by_name.pop(column)
+        if not isinstance(dtype, pl.Struct):
+            msg = f"online.unnest: column {column!r} is {dtype}, not spec {column!r}'s struct"
+            raise ValueError(msg)
+        fields = [f.name for f in dtype.fields]
+        idx = output_index(spec)
+        missing = [f for f in idx["field"] if f not in fields]
+        if missing:
+            msg = (
+                f"online.unnest: column {column!r} lacks the field(s) spec {column!r} "
+                f"produces: {', '.join(missing)}"
+            )
+            raise ValueError(msg)
+        coefs = coef_fields(spec)
+        lists = set(idx.filter(pl.col("kind") == "coef")["field"])
+        for field in fields:
+            col = pl.col(column).struct.field(field)
+            if field not in lists:
+                exprs.append(col)
+                continue
+            for position, name in (
+                coefs.filter(pl.col("field") == field).select("position", "name").iter_rows()
+            ):
+                exprs.append(col.list.get(position, null_on_oob=False).alias(name))
+    if by_name:
+        msg = f"online.unnest: the frame has no column(s) {', '.join(map(repr, by_name))}"
+        raise ValueError(msg)
+    return exprs
+
+
+def _unnest_lazy(lf: pl.LazyFrame, specs: Specs | ModelBank | State) -> pl.LazyFrame:
+    return lf.select(_unnest_exprs(lf.collect_schema(), _specs_of(specs, "unnest")))
+
+
 @pl.api.register_lazyframe_namespace("online")
 class LazyFrameOnlineNamespace:
     """A model bank over the plan's rows, as a plan that streams."""
@@ -288,6 +366,39 @@ class LazyFrameOnlineNamespace:
         """
         return _predict_lazy(self._lf, bank, chunk_rows)
 
+    def unnest(self, specs: Specs | ModelBank | State) -> pl.LazyFrame:
+        """The plan with each spec's struct column taken apart into columns.
+
+        ``lf.unnest(names)`` with the ``coef`` lists taken apart too: every
+        scalar field becomes a column of its own name (``pred_y``,
+        ``n_eff@h500``), and each ``coef`` list becomes one column per
+        coefficient, named ``coef_{target}_{term}{combo}{instance}`` --
+        ``coef_y_intercept``, ``coef_y_x1__r0.5@h500`` -- as
+        :func:`polars_online.spec.coef_fields` lists them. The columns take
+        the struct's place; the rest of the frame, and any spec column not
+        named, are left as they are. ``specs`` is the spec dicts, a
+        :class:`ModelBank` (its specs), or the path of a saved bank (which
+        carries them). So a scored plan, or a parquet the CLI wrote, comes
+        back flat::
+
+            betas = (
+                pl.scan_parquet("out.parquet")
+                .online.unnest([ols])
+                .select("t", "^coef_.*$")
+            )
+
+        Reported while the plan is built: ``ValueError`` for a spec whose
+        column the plan has not got, is not a struct, or lacks a field the
+        spec produces, for a spec given twice and for a spec that is not
+        valid; ``TypeError`` for ``specs`` that are none of the three;
+        ``FileNotFoundError`` and :meth:`ModelBank.load`'s ``ValueError`` for
+        a path. Two specs that produce a field of the same name unnest to
+        the same column name, which polars reports as its ``DuplicateError``
+        -- unnest them one at a time, or rename the struct's fields first
+        (``pl.col("m").name.prefix_fields("m_")``).
+        """
+        return _unnest_lazy(self._lf, specs)
+
 
 @pl.api.register_dataframe_namespace("online")
 class DataFrameOnlineNamespace:
@@ -330,6 +441,13 @@ class DataFrameOnlineNamespace:
         if not isinstance(bank, ModelBank):
             bank = ModelBank.load(os.fspath(bank))
         return bank.predict(self._df)
+
+    def unnest(self, specs: Specs | ModelBank | State) -> pl.DataFrame:
+        """The frame with each spec's struct column taken apart into
+        columns, as :meth:`LazyFrameOnlineNamespace.unnest` does for a plan:
+        scalar fields under their own names, each ``coef`` list as one named
+        column per coefficient. Raises what the plan form does, on the call."""
+        return self._df.select(_unnest_exprs(self._df.schema, _specs_of(specs, "unnest")))
 
 
 @overload
@@ -408,6 +526,31 @@ def predict(
         return _predict_lazy(frame, bank, chunk_rows)
     _check_frame(frame, "predict")
     return DataFrameOnlineNamespace(frame).predict(bank)
+
+
+@overload
+def unnest(frame: pl.LazyFrame, specs: Specs | ModelBank | State) -> pl.LazyFrame: ...
+
+
+@overload
+def unnest(frame: pl.DataFrame, specs: Specs | ModelBank | State) -> pl.DataFrame: ...
+
+
+def unnest(
+    frame: pl.LazyFrame | pl.DataFrame, specs: Specs | ModelBank | State
+) -> pl.LazyFrame | pl.DataFrame:
+    """``frame.online.unnest(specs)`` as a plain function, so that a type checker can see it.
+
+    Takes each spec's struct column apart into columns, the ``coef`` lists
+    as one named column per coefficient: a plan from a ``LazyFrame``
+    (:meth:`LazyFrameOnlineNamespace.unnest`), a frame from a ``DataFrame``
+    (:meth:`DataFrameOnlineNamespace.unnest`). ``TypeError`` for a ``frame``
+    that is neither; otherwise raises what the namespace method does.
+    """
+    if isinstance(frame, pl.LazyFrame):
+        return _unnest_lazy(frame, specs)
+    _check_frame(frame, "unnest")
+    return DataFrameOnlineNamespace(frame).unnest(specs)
 
 
 def _check_frame(frame: object, what: str) -> None:

@@ -451,3 +451,83 @@ fn coef_is_the_output_s_last_coef_per_group() {
             .all(|r| r.coef.is_none() && r.n_eff > 0.0)
     );
 }
+
+#[test]
+fn coef_fields_name_every_slot_of_every_list() {
+    // `coef_fields` is the layout the models write (`Bank::coef` and the
+    // `coef` field), one row per coefficient, named on the field grammar:
+    // the `coef_{target}_{term}` prefix takes the combo and instance suffix
+    // of the `pred` field it belongs to.
+    let spec: Spec = serde_json::from_str(
+        r#"{
+            "name": "m",
+            "model": {"type": "ew_ridge", "ridge": [0.0, 0.5],
+                      "feature_sets": [["a", ["x0"]], ["b", ["x0", "x1"]]]},
+            "targets": ["y", "z"],
+            "features": ["x0", "x1"],
+            "halflife": [50.0, 200.0],
+            "min_periods": 5.0
+        }"#,
+    )
+    .unwrap();
+    let fields = online_polars::coef_fields(&spec);
+    let per_instance = 2 * 4 * 3; // targets x (sets x ridges) x (intercept + 2)
+    assert_eq!(fields.len(), 2 * per_instance);
+    let preds: Vec<_> = online_polars::output_index(&spec)
+        .into_iter()
+        .filter(|m| m.kind == "pred")
+        .collect();
+    for (i, f) in fields.iter().enumerate() {
+        assert_eq!(f.position, i % per_instance);
+        assert_eq!(f.field, format!("coef@h{}", f.halflife.unwrap() as i64));
+        let pred = preds
+            .iter()
+            .find(|m| {
+                m.target.as_deref() == Some(f.target.as_str())
+                    && m.ridge == f.ridge
+                    && m.feature_set == f.feature_set
+                    && m.halflife == f.halflife
+            })
+            .unwrap_or_else(|| panic!("no pred field for {f:?}"));
+        let suffix = pred
+            .field
+            .strip_prefix(&format!("pred_{}", f.target))
+            .unwrap();
+        assert_eq!(f.name, format!("coef_{}_{}{suffix}", f.target, f.term));
+    }
+    let terms: Vec<_> = fields[..3].iter().map(|f| f.term.as_str()).collect();
+    assert_eq!(terms, ["intercept", "x0", "x1"]);
+    assert_eq!(fields[0].name, "coef_y_intercept__a_r0@h50");
+    assert_eq!(fields[per_instance - 1].name, "coef_z_x1__b_r0.5@h50");
+    assert_eq!(fields[per_instance].name, "coef_y_intercept__a_r0@h200");
+
+    // The list a bank reports is exactly this long, so every name has a value.
+    let mut df = make_df(200);
+    let z = df.column("y").unwrap().clone().with_name("z".into());
+    df.with_column(z).unwrap();
+    let mut bank = Bank::new(vec![spec]).unwrap();
+    bank.fit_predict(&df).unwrap();
+    for row in bank.coef(0, None).unwrap() {
+        if let Some(coef) = row.coef {
+            assert_eq!(coef.len(), per_instance, "instance {}", row.instance);
+        }
+    }
+
+    // `holt` names its two terms; `ew_cov` has none.
+    let holt: Spec = serde_json::from_str(
+        r#"{"name": "h", "model": {"type": "holt"}, "targets": ["y"], "features": [],
+            "halflife": 50.0, "min_periods": 2.0}"#,
+    )
+    .unwrap();
+    let names: Vec<_> = online_polars::coef_fields(&holt)
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    assert_eq!(names, ["coef_y_level", "coef_y_trend"]);
+    let cov: Spec = serde_json::from_str(
+        r#"{"name": "c", "model": {"type": "ew_cov", "stats": ["mean"]}, "targets": [],
+            "features": ["x0"], "halflife": 50.0, "min_periods": 2.0}"#,
+    )
+    .unwrap();
+    assert!(online_polars::coef_fields(&cov).is_empty());
+}

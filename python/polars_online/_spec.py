@@ -24,7 +24,12 @@ from typing import Any, Unpack
 import polars as pl
 
 from polars_online._kwargs import CommonKwargs
-from polars_online._polars_online import spec_output_fields, spec_output_index, validate_spec
+from polars_online._polars_online import (
+    spec_coef_fields,
+    spec_output_fields,
+    spec_output_index,
+    validate_spec,
+)
 
 
 def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
@@ -412,6 +417,57 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
     )
 
 
+def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
+    """Every coefficient the spec reports, in ``coef`` list order, with the
+    column it becomes when the output is unnested.
+
+    One row per (instance, target, combo, term): ``field`` (the ``coef``
+    list it sits in -- ``coef``, or ``coef@h500`` per instance),
+    ``position`` in that list, ``name`` (the column
+    :meth:`~polars_online._frame.LazyFrameOnlineNamespace.unnest` gives it:
+    ``coef_{target}_{term}{combo}{instance}``, so ``coef_y_x1__r0.5@h500``
+    sits beside ``pred_y__r0.5@h500``), then ``target``, ``halflife`` (or
+    ``lam``), ``ridge``, ``feature_set``, ``lambda`` (lasso path point) and
+    ``term`` -- ``"intercept"``, a feature name, or ``"level"`` /
+    ``"trend"`` for ``holt``. Empty for ``ew_cov``, which has none.
+
+    The names carry the ``coef_`` prefix and the target because a bare
+    ``x1`` would collide with the feature column of that name in the same
+    frame. To reach one coefficient in the nested output without writing
+    either name::
+
+        cf = po.spec.coef_fields(spec)
+        row = cf.filter(
+            (pl.col("target") == "y") & (pl.col("term") == "x1")
+            & (pl.col("halflife") == 500.0)
+        ).row(0, named=True)
+        slope = out["m"].struct.field(row["field"]).list.get(row["position"])
+
+    Rendered by the same Rust code as the field names, from the same slot
+    order the models lay the list out in (``intercept`` first when the spec
+    has one, then every feature -- zero for a feature outside a feature set
+    -- per (target, combo) slot, slots in the order the ``pred`` fields
+    declare them). ``ValueError`` for a spec that is not valid, as for
+    :func:`output_fields`.
+    """
+    rows = json.loads(spec_coef_fields(_json(spec)))
+    return pl.DataFrame(
+        rows,
+        schema={
+            "field": pl.String,
+            "position": pl.UInt32,
+            "name": pl.String,
+            "target": pl.String,
+            "halflife": pl.Float64,
+            "lam": pl.Float64,
+            "ridge": pl.Float64,
+            "feature_set": pl.String,
+            "lambda": pl.Float64,
+            "term": pl.String,
+        },
+    )
+
+
 def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
     """The layout of each ``coef`` list, one row per position.
 
@@ -427,45 +483,20 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
         )["position"].item()
         slope = out["m"].struct.field("coef@h100").list.get(pos)
 
-    Derived from :func:`output_index` (the slot order comes from the same Rust
-    code that renders the names), never from parsing strings. ``ValueError``
-    for a spec that is not valid, as for :func:`output_fields`, and for an
-    ``ew_cov`` spec, which has no coefficients.
+    Every instance's list has this layout; :func:`coef_fields` is the same
+    table per instance, with the field each list sits in and the column
+    name each entry unnests to. ``ValueError`` for a spec that is not
+    valid, as for :func:`output_fields`, and for an ``ew_cov`` spec, which
+    has no coefficients.
     """
-    idx = output_index(spec)
-    model = spec.get("model", {}).get("type")
-    if model == "ew_cov":
+    if spec.get("model", {}).get("type") == "ew_cov":
         msg = "ew_cov emits statistics, not coefficients"
         raise ValueError(msg)
-    if model == "holt":
-        terms = ["level", "trend"]
-    else:
-        terms = (["intercept"] if spec.get("add_intercept", True) else []) + list(
-            spec.get("features", [])
-        )
-    # One instance's slot order, exactly as the pred fields declare it.
-    one = idx.filter(pl.col("kind") == "pred")
-    first = one.row(0, named=True)
-    slots = one.filter(
-        (pl.col("halflife").eq_missing(first["halflife"]))
-        & (pl.col("lam").eq_missing(first["lam"]))
+    cf = coef_fields(spec)
+    first = cf["field"][0]
+    return cf.filter(pl.col("field") == first).select(
+        pl.col("position").cast(pl.Int64), "target", "ridge", "feature_set", "lambda", "term"
     )
-    rows = []
-    pos = 0
-    for slot in slots.iter_rows(named=True):
-        for term in terms:
-            rows.append(
-                {
-                    "position": pos,
-                    "target": slot["target"],
-                    "ridge": slot["ridge"],
-                    "feature_set": slot["feature_set"],
-                    "lambda": slot["lambda"],
-                    "term": term,
-                }
-            )
-            pos += 1
-    return pl.DataFrame(rows)
 
 
 @_checked

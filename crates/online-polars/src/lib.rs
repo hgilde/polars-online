@@ -44,7 +44,9 @@ mod runner;
 mod spec;
 mod stream;
 
-pub use bank::{Bank, Coef, FieldMeta, Gram, GroupKey, output_fields, output_index};
+pub use bank::{
+    Bank, Coef, CoefField, FieldMeta, Gram, GroupKey, coef_fields, output_fields, output_index,
+};
 pub use online_core;
 pub use runner::{
     DEFAULT_CHUNK_ROWS, Format, Input, Output, RunConfig, RunOptions, RunStats, run, run_config,

@@ -18,7 +18,7 @@ usable two ways with identical numerics:
 
 Both share `online-polars` and `online-core`. A third way, the **expression plugin**
 (`pl.col("y").online.<model>(...)`, with `.over(group)`), was built first and is the
-**in-memory** spelling (§6): polars calls a user expression with the whole column in either
+**in-memory** form (§6): polars calls a user expression with the whole column in either
 engine, so it is the one O(data) surface. It stays, for a frame already in memory, and every
 call warns with `InMemoryExpressionWarning` naming the plan — so the difference is learned at
 the call site, not from a memory profile.
@@ -187,8 +187,8 @@ plugin to say "call me per morsel, in order, and let me keep state" (§11a, 2026
 `lf.with_columns(pl.col("y").online.ewridge(..)).sink_parquet(..)` measured 7.3 GB at 12M
 rows where `lf.online.fit_predict([spec]).sink_parquet(..)` measures 1.35 GB
 (`docs/PERFORMANCE.md` §11) — the same numbers, two memory profiles, and users read the
-expression as the natural spelling. The first answer (task 19 as first committed) was to
-take the spelling out of the wheel behind a cargo feature; that left a user who wrote it with
+expression as the natural form. The first answer (task 19 as first committed) was to
+take the expression out of the wheel behind a cargo feature; that left a user who wrote it with
 polars' bare `AttributeError: 'Expr' object has no attribute 'online'` and no pointer, and
 left the plugin's runtime tests skipped in CI. The answer that stands is to keep it and say
 so at the call site: every namespace method issues `polars_online.InMemoryExpressionWarning`
@@ -198,7 +198,7 @@ default from anywhere; a `DeprecationWarning` is hidden outside `__main__`, i.e.
 the pipeline module where it matters (`tests/test_expr.py` checks both facts in a
 subprocess). Nothing else changes: the plugin ships, `pl.Expr.online` is registered on
 import, `po.online` is exported, the tests run in every build, and the README shows the two
-spellings side by side in its closing note. Nothing about the model needs the expression:
+forms side by side in its closing note. Nothing about the model needs the expression:
 the bank fans out over (spec × group) with rayon, so `group=` is the parallel path
 `.over(group)` is, and `df.online.fit_predict(specs)` is the in-memory call; what the
 expression adds is features as expressions (a lag under `.over` stays in its group) and the
@@ -207,7 +207,7 @@ plugin ABI's MAJOR/MINOR handshake, the one polars stability guarantee we ride o
 
 **What would remove the warning.** A polars node that lets a user expression run per morsel,
 in order, with state — i.e. a streaming-engine contract for stateful UDFs. Until then the
-expression can only ever be the in-memory spelling, and the bank already is that.
+expression can only ever be the in-memory form, and the bank already is that.
 
 ## 7. Numerics
 
@@ -322,9 +322,9 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       must fail. Real workload: growth 63 blocks / 3.7 KB, clean; control:
       +1968 blocks / 142 KB, caught. The valgrind path is written to the same
       contract and first runs on the runner — it cannot run on this machine.
-- [x] 19. The expression plugin (task 8) is the in-memory spelling and says so: every
+- [x] 19. The expression plugin (task 8) is the in-memory form and says so: every
       `pl.col(..).online.<model>` call warns with `InMemoryExpressionWarning` naming the plan
-      and the reason (§6); the README shows the two spellings side by side in a closing note.
+      and the reason (§6); the README shows the two forms side by side in a closing note.
       (First committed as an off-by-default cargo feature that took it out of the wheel;
       reverted the same day — §11a.)
 - [x] 20. **State out of a streamed plan — researched and implemented 2026-09-03.**
@@ -334,7 +334,7 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       but the export: `lf.online.fit_predict` is pure by decision (E33, §11a). The
       research — `docs/STATE-WORKFLOW.md`, with the engine facts measured on polars
       1.34.0/1.38.1/1.44.1 by `scripts/io_source_semantics.py` — found one sound
-      spelling, `lf.online.fit_predict(specs, load_state=, save_state=)`: the runner's
+      form, `lf.online.fit_predict(specs, load_state=, save_state=)`: the runner's
       keywords on the plan, the state written atomically when the source has fed the
       bank its last row, idempotent under the two concurrent runs polars gives a plan
       used twice in one query. Implemented as proposed (§11a): the source feeds the bank
@@ -401,10 +401,38 @@ over rows `<= t`; the kernel is one-sided (causal), `n_eff` saturates at
 that, and the plan / `po.run` stream it in O(chunk) memory. The test pins
 the statement against `numpy.linalg.lstsq`.
 
+**The output comes apart with the coefficients named, 2026-09-03.** The
+polars-native way to the betas was `coef_index(spec)["term"]` fed to
+`list.to_struct(fields=...)` and an `unnest` -- correct for one instance
+and one combo, wrong for a grid (one term list, several blocks), and with
+bare names (`x0`) that collide with the feature columns. Asked for a helper
+that covers whatever else the output carries, not just the coefficients:
+`lf.online.unnest(specs)` (and `df.online.unnest`, `po.unnest(frame, ..)`)
+is polars' `unnest` for a bank's output -- every scalar field becomes a
+column of its own name, and each `coef` list becomes one column per
+coefficient, named on the field grammar with the term after the target
+(`coef_y_x1__r0.5@h500` beside `pred_y__r0.5@h500`). The names come from
+`spec.coef_fields(spec)`, a Rust-rendered table (`online_polars::coef_fields`,
+next to `output_index`) of every coefficient with its `field`, `position`,
+`name`, target, halflife/lam, ridge, feature set, lambda and term;
+`coef_index` is now that table's first instance. `unnest` takes the specs,
+a bank, or a state path, replaces each struct in place, leaves unnamed
+columns alone, and reports a spec that does not match the frame while the
+plan is built; two specs with the same field names are polars'
+`DuplicateError`, as with polars' own `unnest`. The test that matters
+(`tests/test_unnest.py::test_named_coefficients_predict_the_next_row`) pins
+the names against the models rather than the strings: with a solve on
+every row, `pred[t+1] == coef_intercept[t] + sum_j coef_xj[t] * xj[t+1]`
+for all 16 (target, feature set, ridge, halflife) columns of a grid, which
+a wrong slot order, a swapped feature, a wrong ridge or a wrong instance
+each break by 0.03 to 7 (checked by breaking them). Not added: a SQL
+`where=` filter for the CLI (the user declined it: a `polars-sql`
+dependency for a filter polars' own plan already has).
+
 **State leaves a streamed plan through a file, and only a file, 2026-09-03
 (task 20).** `lf.online.fit_predict(specs, load_state=, save_state=)` — the
 runner's two keywords on the plan, so the fourth step of the state workflow
-(load, learn on, save) has the same spelling on every surface. The plan
+(load, learn on, save) is written the same way on every surface. The plan
 stays pure: `load_state` is read when the plan is built and the plan carries
 the bytes, as `df.lazy()` carries a frame (the same for `predict(path)`), so
 collecting twice gives the same frame and `load_state=p, save_state=p` used
@@ -431,25 +459,25 @@ output is committed, and a dated `save_state` per batch keeps a rerun from
 learning it twice. `coef` moved one row in `head(n)` results: it is reported
 on each chunk's last row, and the `n`th row is now that row.
 
-**The expression form stays and warns, 2026-09-03 (task 19).** Two spellings
+**The expression form stays and warns, 2026-09-03 (task 19).** Two forms
 carried one set of numbers and two memory profiles — `df.with_columns(pl.col
 ("y").online.ewridge(..))` at 7.3 GB against `lf.online.fit_predict([spec])`
 at 1.35 GB on 12M rows — and a user who wrote the natural expression inside a
 lazy query got the O(data) one. The cause is polars' contract for a stateful
 user expression (the entry below), which we cannot change from inside a
-plugin. The first cut of this task removed the spelling: the wheel was built
+plugin. The first cut of this task removed the expression form: the wheel was built
 without an `expr-plugin` cargo feature, `pl.Expr.online` went unregistered and
 the README showed only surfaces that stream. Reconsidered the same day, before
 the next commit: a user who writes the expression then gets polars' bare
 `AttributeError` with no rationale and no pointer, the in-memory use (features
 as expressions, `.over`) is lost for nothing, the one interface with a polars
 stability guarantee leaves the wheel, and the plugin's runtime tests stop
-running in CI. So the spelling stays and *teaches* instead: every call issues
+running in CI. So the expression stays and *teaches* instead: every call issues
 `InMemoryExpressionWarning` — a `UserWarning`, because a `DeprecationWarning`
 is hidden outside `__main__`, i.e. in the pipeline module where it matters —
 with the reason, the plan to write instead, and the filter for someone who
-means it; the README's closing note shows the two spellings side by side with
-the numbers. Not "deprecated": it would become the streaming spelling too if
+means it; the README's closing note shows the two forms side by side with
+the numbers. Not "deprecated": it would become a streaming form too if
 polars ever ran a user expression per morsel with state (§6). The feature
 gate, `has_expr_plugin()` and the `requires_expr_plugin` marker are gone.
 
@@ -619,7 +647,7 @@ returns / volume / trade-count z-scores, targets = strictly future returns.
   and the oracle/river cross-check backlog.
 - `docs/STATE-WORKFLOW.md` — research (2026-09-03) on carrying state out of a
   streamed plan: what polars does with a Python source, measured; the
-  candidate spellings; the rules `save_state=` on the plan follows and the
+  candidate forms; the rules `save_state=` on the plan follows and the
   decisions behind them (task 20).
 
 ## 11b. Performance plan
