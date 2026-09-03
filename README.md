@@ -48,14 +48,28 @@ least squares over everything it has seen, in any row order.
 **Two guarantees.** Predictions are out-of-sample by construction. Output is
 chunk-invariant. Both are tests, not intentions.
 
+**Tested the way those guarantees demand.** Around 290 Rust tests and 1,100
+pytest cases: numpy oracles to ~1e-13, cross-checks against river,
+hypothesis-generated adversarial streams, chunk and thread invariance, golden
+numbers on every OS, the README's own code blocks executed. CI runs all of it
+on macOS, Windows and Linux on every push, and a weekly canary runs it on the
+newest Polars. Details under [Testing](#testing).
+
 **State is a file.** Save a bank; load it to keep learning, or to serve
 predictions without learning. The file is written atomically, is the same
-bytes from every entry point, and loads on macOS, Windows and Linux.
+bytes from every entry point, and carries nothing host-specific.
 
 **Introspection and diagnostics.** Coefficients as a table or as columns.
 Residual sigma and z-scores, drift detection, online model selection and
 averaging across a grid, streaming R²/IC/hit rate, residual quantiles and
 autocorrelation — all out-of-sample, all O(state).
+
+**Parallel by group, deterministic by construction.** Every (spec, group)
+pair is one task on a thread pool, the halflives of a grid run side by side,
+and the runner overlaps reading, fitting and writing. Rows within a stream go
+one at a time — that is the recursion — so the thread count changes the speed
+and nothing else, and a test holds it to that. Details under
+[Parallelism](#parallelism).
 
 ## Install
 
@@ -724,6 +738,47 @@ po.spec.holt("baseline", targets=["y"], clock="t", max_dclock=600.0,
              level_halflife=200.0, trend_halflife=2000.0)
 ```
 
+## Parallelism
+
+The unit of work is a *stream*: one spec on one group (with no `group`, one
+stream per spec). On every chunk, each stream in the bank becomes one task on
+a [rayon](https://github.com/rayon-rs/rayon) pool — one flat pool across all
+specs and all groups, longest stream first so a few big groups do not leave
+cores idle at the tail. Within a stream the rows go one at a time, because
+each row's update depends on the last: that is what makes the numbers
+independent of how the work is split, and it also means a bank with one spec
+and one group is one thread's work per chunk, with polars' own reading and
+writing running in parallel around it.
+
+Where the parallelism comes from, then:
+
+- **Groups.** k=20 over 64 groups: 916k, 1.65M, 2.86M, 4.75M and 6.03M
+  rows/s at 1, 2, 4, 8 and 14 threads — **6.6×** on a 14-core machine.
+- **Specs.** Eight single-group specs in one bank run in 118 ms against
+  685 ms one at a time.
+- **Halflives.** Each halflife in a grid is its own accumulator, and the
+  instances of a stream run alongside each other (except with
+  `drift_action="reset"`, which couples them). Ridge and feature-set grids
+  are not parallel because they need not be: they share one accumulator and
+  are expanded at solve time.
+- **The runner.** `po.run` and the CLI are a three-stage pipeline — a reader
+  thread, the bank on the calling thread, a writer thread — with one chunk
+  in flight per stage; `ONLINE_TIMING=1` prints how long the bank waited on
+  each side. NDJSON output is serialized a slice per thread.
+- **Python.** The GIL is released while a chunk is in the bank, so a Python
+  reader thread can run ahead of `ModelBank.fit_predict`.
+- **The expression form.** Under `.over("group")`, polars runs the groups
+  through its own pool — which is why the plugin packs its inputs into one
+  struct: the single-input path is parallel, the multi-input one is not
+  (12.2M rows/s at 1000 groups).
+
+Thread count is `RAYON_NUM_THREADS` for the bank's pool and
+`POLARS_MAX_THREADS` for polars' readers and writers. It changes the speed
+and nothing else: `tests/test_portability.py` runs the same stream at 1 and
+8 threads in separate processes and requires identical output. Everything is
+one process — there is no distributed execution, by design (see [What this
+is not](#what-this-is-not)).
+
 ## Performance
 
 Apple M-series, single process, best of 3, 200k rows per run
@@ -748,17 +803,16 @@ a 5-halflife grid costs about 2× one rather than 5×. `rls` pays 1.3–2.1× fo
 the square-root form that keeps it from dying of cancellation on one extreme
 row; that is worth it.
 
-**Grouped data goes wider.** One state per group is one rayon task, so
-throughput rises with the group count: 6.0M rows/s at k=20 over 64 groups,
-scaling 5.2× from one thread to eight. A bank of several specs is one flat
-task pool too.
+Grouped data goes wider, as [Parallelism](#parallelism) shows: 6.0M rows/s
+at k=20 over 64 groups.
 
 **Memory** is the state, the chunks in flight (three, so `chunk_rows` is the
 knob) and whatever polars' reader prefetches — on a 14-thread machine the
 parquet reader front-loads ~0.7 GB of decoded row groups whatever the file's
 length, and `POLARS_ROW_GROUP_PREFETCH_SIZE=1` takes the CLI to 0.15 GB at
-the same speed. Where the time goes, and what to reach for, is in
-[docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+the same speed. The prefetch is sized from the thread count, so
+`POLARS_MAX_THREADS` shrinks it too. Where the time goes, and what to reach
+for, is in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
 ## What this is not
 
@@ -848,6 +902,78 @@ is a minor release; narrowing it is breaking. See
 [CHANGELOG.md](CHANGELOG.md). Output field names are part of the API
 ([above](#output-field-names)).
 
+## Testing
+
+The guarantees above are only worth what checks them, so the suite is built
+around oracles and invariants rather than expected values typed in by hand.
+Around 290 Rust tests and 1,100 pytest cases (from 630-odd functions), all
+green on three OSes; [docs/TESTING.md](docs/TESTING.md) is the ledger of what
+each part proves and what it has found.
+
+**Against references.** `ewridge` and `rls` match numpy references in
+`tests/reference.py` to 1e-9, `kalman` to ~1e-15, `huber` and `quantile` to
+~1e-13, `ftrl` to ~1e-16; `rls` equals `ewridge(ridge_decay=True)` solved
+every row to <1e-9. The lasso is checked against the KKT conditions of its
+objective rather than a ported solver, which cannot share a bug with it.
+[river](https://riverml.xyz) is an independent implementation of several of
+the same algorithms: its FTRL recursion agrees with ours to 1e-12 row for
+row, its EW moments in closed form and in the limit, its quantile and Huber
+models statistically — and two convention differences are pinned as tests
+rather than left as surprises.
+
+**Invariants, for all ten models.** Chunk invariance at the bank, expression
+and CLI levels (one chunk, seven, four hundred, one row at a time, with a
+save and load in the middle); thread count 1 against 8; group independence;
+expression ≡ bank; `predict` ≡ `fit_predict` of the next row, field for
+field with every diagnostic on; runner ≡ bank for every input source and
+format; the null policy, warm-up and clock semantics; the same `n_eff`
+recursion in every model (`crates/online-core/tests/model_contract.rs`).
+Hypothesis generates adversarial streams — mixed nulls, duplicate and
+long-gap clocks, values at ±1e8, zero weights, tiny groups — and asserts the
+strongest one: **changing a row's own target never changes that row's own
+prediction.** IC ≈ 0 on pure-noise targets says the same thing from the
+other side.
+
+**Fixed numbers.** One golden stream per model in the Rust core, and the
+whole pipeline — extraction, fan-out, diagnostics, struct assembly — pinned
+to fixed output and compared on every OS, so a divergence in polars'
+vectorized paths on another CPU would show.
+
+**Hardening.** A 30k-row stream with every output switched on, compared
+across chunkings, a mid-stream save and load, and thread counts by digest;
+weight-scale invariance at ×1e±6 (all weights scaled changes nothing but
+`n_eff`); parameter edges from `halflife=1e-3` to `inf`; state files with
+any byte flipped fail cleanly and never panic; two threads calling
+`fit_predict` at once get a clean error; `pickle` and `copy.deepcopy` resume
+bit-exactly; memory safety across the FFI, where two copies of Polars share
+one process; and a 10M-row soak, opt-in with `pytest -m soak`.
+
+**Contracts that are files.** The public API — every name, default and
+signature, every output field name — is a checked-in snapshot
+(`tests/api_surface.txt`), so a change is a reviewable diff. Every python
+block in this README runs. Everything under `examples/` runs unmodified —
+the TOML through the real CLI, the Pathway operator end to end.
+`docs/VALIDATION.md`, where the defaults were chosen,
+is regenerated and compared, so the numbers behind them cannot silently stop
+being true. A data file, a large file or generated output that gets tracked
+fails a test. Bank files from the previous schema version still load.
+
+**Beyond the suite.** `cargo mutants` runs over the core: the last pass left
+8.3% of 2,616 mutants surviving, clustered where only the Python suite
+reaches (`cargo test` cannot see it), which is what the golden and contract
+tests in Rust were added for. Coverage is 96% of the Python package and 75%
+of Rust regions, understated for the same reason.
+
+**Where it runs.** `./scripts/gate.sh` before every commit — `cargo fmt`,
+`clippy -D warnings`, `cargo test`, `ruff`, `mypy`, the build, `pytest`,
+`sphinx -W`. CI runs the same on ubuntu, windows and macos for every push
+and pull request. The release build writes a state file on macOS and
+continues the stream from it on Windows and Linux. The weekly canary runs
+the suite against the newest py-polars.
+
+Tests generate or download their own data; there are no data files in the
+repo. Downloads are cached under `.cache/` and skipped when offline.
+
 ## Development
 
 ```sh
@@ -867,9 +993,6 @@ in PowerShell) puts both on the `PATH` for a shell; `.vscode/settings.json`
 does it for VS Code's terminal. `cargo` runs via `uv run` because `online-py`
 builds against pyo3's `abi3-py312` and needs a 3.12+ interpreter at build
 time.
-
-Tests generate or download their own data; there are no data files in the
-repo. Downloads are cached under `.cache/` and skipped when offline.
 
 - API reference: <https://hgilde.github.io/polars-online/> — built from the
   docstrings and published from every green push to `main`
