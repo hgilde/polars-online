@@ -88,6 +88,14 @@ dev = [
     # the gate is what keeps that true. Pure Python, seconds to run.
     "mypy>=1.14",
 ]
+# The API reference: Sphinx over the docstrings, which are written in its
+# dialect (``:class:`` roles, ``::`` literal blocks). Its own group, so a
+# plain `uv sync` stays lean; the gate and CI build it with
+# `uv run --group docs sphinx-build -W docs/reference docs/_build/html`.
+docs = [
+    "sphinx>=8.2",
+    "furo>=2024.8",
+]
 
 [tool.mypy]
 # The package only: it must type-check against its own stub with nothing

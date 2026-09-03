@@ -41,6 +41,9 @@ step "mypy"         uv run mypy
 # same old code.
 step "maturin develop" uv run maturin develop --release -m crates/online-py/Cargo.toml
 step "pytest"       uv run pytest -q
+# The API reference imports the package, so it runs after the build. -W: a
+# docstring that is not valid reStructuredText fails here, not on the site.
+step "sphinx"       uv run --group docs sphinx-build -W -q docs/reference docs/_build/html
 
 if [ ${#failed[@]} -eq 0 ]; then
     echo "gate: PASS"

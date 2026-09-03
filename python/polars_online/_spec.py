@@ -654,7 +654,7 @@ def quantile(
         w_robust = 2 * tau       * s / max(|r|, eps * s)   if r > 0
                  = 2 * (1 - tau) * s / max(|r|, eps * s)   otherwise
 
-    ``quantile_eps`` floors |r| (in units of the EW residual std) so a
+    ``quantile_eps`` floors ``|r|`` (in units of the EW residual std) so a
     near-zero residual cannot produce an unbounded weight.
     """
     model: dict[str, Any] = {
@@ -799,16 +799,16 @@ def sgd(
 
     With ``eta = z . b``, ``p = link(eta)`` and ``d = dL/d(eta)``:
 
-    ==================== ========= =========== ==============================
-    loss                 link      ``p``       ``d``
-    ==================== ========= =========== ==============================
-    squared              identity  ``eta``     ``p - y``
-    huber                identity  ``eta``     ``clamp(p - y, +/-delta)``
-    quantile             identity  ``eta``     ``1{y < p} - tau``
-    epsilon_insensitive  identity  ``eta``     0 inside the tube, else sign
-    poisson              log       ``exp(eta)``  ``p - y``
-    logistic             sigmoid   sigmoid     ``p - y``
-    ==================== ========= =========== ==============================
+    ==================== ========= ============ ==============================
+    loss                 link      ``p``        ``d``
+    ==================== ========= ============ ==============================
+    squared              identity  ``eta``      ``p - y``
+    huber                identity  ``eta``      ``clamp(p - y, +/-delta)``
+    quantile             identity  ``eta``      ``1{y < p} - tau``
+    epsilon_insensitive  identity  ``eta``      0 inside the tube, else sign
+    poisson              log       ``exp(eta)`` ``p - y``
+    logistic             sigmoid   sigmoid      ``p - y``
+    ==================== ========= ============ ==============================
 
     then ``g_i = d * z_i * w + l2 * b_i`` and ``b_i -= lr_i * g_i``.
 

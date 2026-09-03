@@ -731,6 +731,7 @@ uv sync                                                # Python env (CPython 3.1
 uv run cargo test --workspace                          # Rust tests
 uv run maturin develop --release -m crates/online-py/Cargo.toml
 uv run pytest                                          # Python tests
+uv run --group docs sphinx-build -W docs/reference docs/_build/html   # API reference
 uv run python scripts/validate.py > docs/VALIDATION.md # re-run the [validate] experiments
 uv run python scripts/benchmark.py                     # throughput
 ```
@@ -749,6 +750,8 @@ also works if `PYO3_PYTHON` points at a 3.12+ interpreter.
 Tests generate or download their own data — there are no data files in the repo.
 Downloads are cached under `.cache/` and skipped when offline.
 
+- API reference: `docs/reference/`, Sphinx over the docstrings, built by the
+  gate and CI with warnings as errors and published to GitHub Pages from `main`
 - Design and task list: [`docs/PLAN.md`](docs/PLAN.md)
 - Measured defaults: [`docs/VALIDATION.md`](docs/VALIDATION.md)
 - Adding a model: [`docs/EXTENDING.md`](docs/EXTENDING.md)

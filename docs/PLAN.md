@@ -338,11 +338,26 @@ with keys this build lacks says "newer", not "not a bank file");
 (`ValueError`); `po.run` checks `save_state`'s directory before the run.
 The contract is one paragraph in `polars_online.__doc__`; each docstring
 says only what *it* raises and when, and `tests/test_runner.py`,
-`test_bank.py`, `test_eval.py` pin the types and messages. **No Python API
-docs are built** — nothing in the repo does, and adding a builder (pdoc or
-sphinx-autodoc: the docstrings are RST-flavoured) is a dependency and CI
-decision for the user, not taken here. `cargo doc --workspace --no-deps`
-builds clean and is the Rust reference.
+`test_bank.py`, `test_eval.py` pin the types and messages. `cargo doc
+--workspace --no-deps` builds clean and is the Rust reference.
+
+**The API reference is Sphinx, and a bad docstring fails the build,
+2026-09-03.** Asked for a doc builder with no preference between them:
+Sphinx, because the docstrings were already written in its dialect
+(`:class:`/`:func:` roles, `::` literal blocks) and pdoc would print those
+roles as text. `docs/reference/` holds four pages — the package, `spec`
+with the typed keyword sets, the three `online` namespaces, `eval` — all
+autodoc; nothing is written twice. It builds with `-W` in the gate and in
+CI's ubuntu test job (it imports the package, so it needs the built
+extension that job already has; no second Rust build, no new job on the
+other runners), and a `docs` job publishes the HTML to GitHub Pages from
+`main` once Pages is switched on for the repo, skipping with a notice until
+then. The first `-W` build found four docstrings that were not valid RST
+(a `*by` read as emphasis, `|r|` as a substitution, a table column one
+character narrow, ``` ``TypedDict``s ``` with the plural glued to the
+literal) — the class of defect that had no test before, which is the
+argument for `-W`. The `docs` dependency group (`sphinx`, `furo`) is
+installed by `uv run --group docs`, so a plain `uv sync` stays as it was.
 
 **The betas are a frame, not a detour, 2026-09-03.** Asked whether a saved
 state can be introspected -- the coefficients of a linear model read back

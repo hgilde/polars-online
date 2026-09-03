@@ -205,7 +205,51 @@ jobs:
       - name: pytest
         run: uv run pytest
 
+      # The API reference (docs/reference): Sphinx over the docstrings, -W so
+      # a docstring that is not valid reStructuredText fails the job. It
+      # imports the package, hence here, after the extension is built, and
+      # once, on Linux. The HTML is the artifact the `docs` job publishes.
+      - name: sphinx (warnings are errors)
+        if: runner.os == 'Linux'
+        run: uv run --group docs sphinx-build -W docs/reference docs/_build/html
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        if: runner.os == 'Linux'
+        with:
+          path: docs/_build/html
+
       # Reported, never gating (docs/TESTING.md T-D4).
       - name: coverage (python)
         run: uv run pytest --cov=polars_online --cov-report=term -q
         continue-on-error: true
+
+  # Publishes the reference the test job built to GitHub Pages, on every
+  # push to main that passed. It needs Pages switched on for the repository
+  # (Settings > Pages > Source: GitHub Actions); until it is, the site
+  # lookup fails and the job skips the deploy with a notice rather than
+  # failing a green run over a setting. The build itself was checked above.
+  docs:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: is Pages enabled?
+        id: pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${{ github.repository }}/pages" --silent; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::GitHub Pages is not enabled for this repository: the API reference was built and checked, not published."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
+        if: steps.pages.outputs.enabled == 'true'
+        id: deploy

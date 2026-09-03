@@ -145,7 +145,7 @@ def metrics(
     targets: Sequence[str] | None = None,
     min_obs: int = 30,
 ) -> pl.DataFrame:
-    """Overall out-of-sample metrics per (slot, *by).
+    """Overall out-of-sample metrics per ``(slot, *by)``.
 
     Rows where the prediction or the target is null are dropped, so warmup and
     skipped rows never enter the numbers; a group with fewer than ``min_obs``

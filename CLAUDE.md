@@ -33,6 +33,7 @@ crates/online-py/      pyo3 + pyo3-polars: Python ModelBank class, runner entry 
 python/polars_online/  Python package (thin wrappers, frame + expression namespaces)
 tests/                 pytest (Python) — integration, invariance, oracle tests
 docs/PLAN.md           design + task list
+docs/reference/        Sphinx API reference over the docstrings (RST dialect); -W in gate and CI
 docs/EXTENDING.md      every place a new model touches, with the test that catches each omission
 ```
 
@@ -43,6 +44,7 @@ uv sync                                  # Python env
 cargo test --workspace                   # Rust unit tests
 maturin develop --release -m crates/online-py/Cargo.toml
 uv run pytest -x                         # Python tests (downloads/generates data on first run)
+uv run --group docs sphinx-build -W docs/reference docs/_build/html   # API reference (gate + CI)
 cargo run -p online-cli -- --config examples/bank.toml
 ```
 

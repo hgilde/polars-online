@@ -31,3 +31,4 @@ mutants.out/
 mutants.out.old/
 .coverage
 lcov.info
+docs/_build/

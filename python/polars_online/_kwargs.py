@@ -1,4 +1,4 @@
-"""The keyword parameters of every spec, as ``TypedDict``s (PEP 692).
+"""The keyword parameters of every spec, as ``TypedDict`` classes (PEP 692).
 
 The builders in ``_spec.py`` take the shared parameters as ``**common`` and the
 expression namespace in ``_expr.py`` takes everything as ``**kwargs``; with
