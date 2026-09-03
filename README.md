@@ -23,6 +23,22 @@ recency-weighted fit. And ordered event streams (one per group), which is
 where the rest of the machinery lives: a clock column, irregular spacing,
 session breaks, gaps, nulls, and per-group state.
 
+> **Polars moves, and two of the three interfaces this rides on carry no
+> stability promise.** The expression form uses polars' plugin ABI, which is
+> negotiated (a mismatch refuses to load); `ModelBank` crosses on
+> pyo3-polars' `PyDataFrame`/`PySeries`, which polars provides "for
+> convenience" with no guarantee beyond the latest definitions working for
+> the latest Polars; and the plan form is an IO plugin, `@unstable` in
+> py-polars. So `polars>=1.34.0,<2` is measured — 1.34.0, 1.38.1 and 1.44.1
+> pass the whole suite with identical numbers — not promised, and a weekly
+> **canary** ([`polars-canary.yml`](.github/workflows/polars-canary.yml))
+> installs the newest py-polars and runs the suite on it. A red canary is
+> the notification, and the response is decided in advance: cap the range at
+> the last release that passed, in a patch release, so no resolver hands you
+> the broken pair; then fix, and widen again.
+> [Versioning and the Polars pin](#versioning-and-the-polars-pin) has the
+> mechanics and where to look first when it breaks.
+
 ```python
 import polars as pl
 import polars_online as po
@@ -798,8 +814,10 @@ Downloads are cached under `.cache/` and skipped when offline.
 
 ### What is pinned, and why
 
-`polars` is pinned **exactly**, in two places that must stay in sync
-(`Cargo.toml` and `pyproject.toml`); a test asserts they agree.
+The Rust `polars` is pinned **exactly** in `Cargo.toml`; the py-polars
+requirement in `pyproject.toml` is a range that brackets the release the
+wheel is built and tested against, and `tests/test_scaffold.py` asserts both
+that and that the dev environment sits on that release.
 
 | py-polars | rust polars | pyo3-polars | pyo3 | Python |
 |---|---|---|---|---|
@@ -840,21 +858,35 @@ never see those messages, not because something worse waits behind them.
 
 ### What the pin costs you
 
-`polars-online` cannot currently be installed alongside a different `polars`.
-If your environment requires, say, `polars>=1.45`, the resolver will refuse.
-There is no workaround other than matching the pin.
+At install time, nothing: the exact pin is the Rust side's, inside the wheel,
+and the runtime requirement is the range `polars>=1.34.0,<2`. What it costs
+is that a py-polars newer than the last one the canary passed is untested
+until the canary's next run — and, since the two streaming surfaces ride on
+interfaces polars does not promise to keep, a break there is expected
+maintenance rather than a surprise (`docs/RELEASE-READINESS.md`).
 
 At the time of writing, **1.44.1 is the latest Polars release**, so nothing is
-excluded today.
+untested today.
 
 ### How the pin will move
 
-A scheduled CI job (`.github/workflows/polars-canary.yml`) unpins both
-`Cargo.toml` and `pyproject.toml` weekly and runs the whole suite against the
-newest Polars. A failure there is the notification. That turns "is it safe to
-widen the pin?" into a question answered by evidence rather than by caution: if
-the canary passes across a few Polars releases, the constraint widens to a
-range in a minor release.
+A scheduled CI job (`.github/workflows/polars-canary.yml`) drops the range
+from `pyproject.toml` weekly, installs the newest py-polars — a 2.0 included,
+the week it appears — builds the wheel as CI does and runs the whole suite on
+it. Only polars moves in that run, so a red canary means Polars broke us and
+nothing else. It opens nothing on its own; the failure is the notification,
+and the response is decided in advance: **cap** the range at the last release
+that passed, in a patch release, so no resolver hands anyone the broken pair;
+then **fix**, and widen again. Where to look first is set too: `ModelBank`
+(the extension types), then the IO-plugin tests in `tests/test_frame.py`
+(a changed pushdown contract shows as a wrong row count, not a crash), and
+the plugin last, since its ABI is negotiated and refuses to load rather than
+misbehave.
+
+The Rust copy of polars does not move in the canary and is not what it is
+for: it never meets the user's, and pyo3-polars, polars-arrow, polars-parquet
+and polars-utils pin to the same release, so it moves by hand, all together,
+through CI.
 
 ### Output field names are part of the API
 

@@ -14,8 +14,9 @@ updates:
     commit-message:
       prefix: "ci"
 
-  # Rust and Python dependencies are deliberately *not* automated. `polars` is
-  # pinned exactly and must stay in lockstep with the Rust side (see the
-  # README's "Versioning and the Polars pin"); a bot bumping either half in
-  # isolation would produce a build that cannot work. `polars-canary.yml` is
-  # how that pin moves instead.
+  # Rust and Python dependencies are deliberately *not* automated. The Rust
+  # `polars` is pinned exactly and must move together with pyo3-polars,
+  # polars-arrow, polars-parquet and polars-utils (see the README's
+  # "Versioning and the Polars pin"); a bot bumping one of them in isolation
+  # would produce a build that cannot work. The Python side is a range whose
+  # ceiling `polars-canary.yml` watches weekly instead.

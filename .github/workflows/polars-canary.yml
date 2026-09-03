@@ -1,13 +1,16 @@
-# docs/PLAN.md §10: Polars is pinned, so breakage in a new release is invisible
-# until someone upgrades. This job tries the latest Polars on a schedule and
-# opens nothing on its own -- a failure here is the notification.
+# docs/PLAN.md §10: the wheel is built against one Polars and declares a
+# range (`polars>=1.34.0,<2`), so a new py-polars that breaks one of the three
+# interfaces we ride on -- the expression plugin's negotiated ABI, the
+# `PyDataFrame`/`PySeries` extension types, the IO plugin -- is invisible
+# until a user upgrades. This job installs the newest py-polars on a schedule,
+# builds the wheel as CI does and runs the whole suite on it. It opens nothing on
+# its own: a failure here is the notification, and the README's *Versioning
+# and the Polars pin* says what happens next (a cap on the range in a patch
+# release, then the fix).
 #
-# It is also how the pin gets widened. The pyo3-polars coupling is negotiated
-# rather than fragile (see the README's *Versioning and the Polars pin*), so
-# "is it safe to relax `polars==`?" is an empirical question: if this job stays
-# green across a few Polars releases, the constraint becomes a range in a minor
-# release. That only works if a red canary means *Polars broke us* and nothing
-# else -- so this job has to be as reliable as CI, not less.
+# It is also the evidence for moving the range. That only works if a red
+# canary means *Polars broke us* and nothing else -- so this job has to be
+# as reliable as CI, not less, and only one thing may vary in it.
 name: Polars canary
 
 on:
@@ -58,24 +61,35 @@ jobs:
           printf '[target.x86_64-unknown-linux-gnu]\nrustflags = ["-C", "link-arg=-fuse-ld=lld"]\n' \
             >> .cargo/config.toml
 
-      - name: unpin polars (Rust and Python)
+      # The Python side only. The wheel carries its own, statically linked
+      # copy of polars (`polars = "=0.55.2"` in Cargo.toml) that never meets
+      # the user's -- data crosses on the Arrow C Data Interface -- so the
+      # Polars release that can break a user is py-polars, and that is the
+      # one this job installs. The Rust copy moves by hand: pyo3-polars pins
+      # its polars (0.28 wants ^0.55.1) and `crates/online-polars` pins
+      # polars-arrow, polars-parquet and polars-utils to the same release, so
+      # the `version = "*"` + `cargo update -p polars` this step used to do
+      # would have put two polars in the tree the day 0.56 shipped and failed
+      # the build for a reason that is not "Polars broke us".
+      #
+      # The range in pyproject.toml is dropped rather than widened so that a
+      # 2.0 is tested the week it appears, not silently excluded by `<2`; the
+      # step fails if the line is not where it expects, since a canary that
+      # quietly tests the pinned version is worse than none.
+      - name: unpin py-polars
         shell: bash
         run: |
           python3 - <<'PY'
           import re, pathlib
-          p = pathlib.Path("Cargo.toml")
-          s = p.read_text()
-          s = re.sub(r'polars = \{ version = "=[^"]+"', 'polars = { version = "*"', s)
-          p.write_text(s)
-
           p = pathlib.Path("pyproject.toml")
-          s = p.read_text()
-          s = re.sub(r'"polars==[^"]+"', '"polars"', s)
+          s, n = re.subn(r'"polars[<>=~!][^"]*"', '"polars"', p.read_text(), count=1)
+          assert n == 1, "the polars dependency line moved; fix this unpin"
           p.write_text(s)
           PY
-          cargo update -p polars || true
 
-      - run: uv sync --upgrade
+      # Only polars moves; the rest of the lock stays as CI tests it, so the
+      # one variable in this run is the Polars release.
+      - run: uv sync --upgrade-package polars
       - name: versions in play
         run: |
           uv run python -c "import polars; print('py-polars', polars.__version__)"

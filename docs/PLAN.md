@@ -468,6 +468,32 @@ the staleness to 2% of the weight. Until then the README says: `inf` is
 the no-decay setting, `solve_every` is the throttle, and a huge finite
 halflife is neither.
 
+**The Polars concern stated up front, and the canary made honest,
+2026-09-03.** Asked for a note at the top of the README on the moving
+polars API and how the canary handles it. Writing it meant checking what
+the canary does, and it was not what the README said: its Python unpin
+regex still matched `"polars==..."`, which the range `polars>=1.34.0,<2`
+no longer is (so it tested the newest 1.x only by the range's grace and
+would have excluded a 2.0 silently), and its Rust unpin -- `version = "*"`
+plus `cargo update -p polars` -- would have put two polars in the tree
+the day polars 0.56 ships, because pyo3-polars 0.28 requires `^0.55.1`
+(its Cargo.toml) and `crates/online-polars` pins polars-arrow,
+polars-parquet and polars-utils to `=0.55.2`: a red canary for a reason
+that is not "Polars broke us". Today both are harmless (0.55.2 is the
+newest crate, `cargo search`; 1.44.1 the newest wheel), so the job has
+never misfired -- it has also never run, the schedule being Mondays on a
+repo public since 09-02. Now: the canary moves py-polars only, the copy
+that can break a user (the Rust copy is the wheel's own and never meets
+it), drops the range rather than widening it so a 2.0 is tested the week
+it appears, asserts the dependency line was found, and upgrades polars
+alone (`uv sync --upgrade-package polars`, checked locally to move
+nothing else) so one thing varies per run. The README's top note and
+"How the pin will move" state the policy for a red canary: cap the range
+at the last release that passed, in a patch release, then fix and widen;
+look at `ModelBank` first, the IO-plugin tests second, the plugin last.
+"What the pin costs you" was rewritten too -- it still said a different
+polars could not be installed at all, which the range made false.
+
 **State leaves a streamed plan through a file, and only a file, 2026-09-03
 (task 20).** `lf.online.fit_predict(specs, load_state=, save_state=)` — the
 runner's two keywords on the plan, so the fourth step of the state workflow
