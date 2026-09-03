@@ -66,7 +66,9 @@ jobs:
             target: aarch64-apple-darwin
             bin: online
             cli: true
-          - os: macos-13 # the last Intel runner
+          # Intel: `macos-13` was retired from the hosted pool; `macos-15-intel`
+          # is the label GitHub lists for x64 macOS now (actions/runner-images).
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             bin: online
             cli: true
