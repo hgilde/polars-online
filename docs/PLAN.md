@@ -344,8 +344,52 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       only the rows a `head(n)` asked for, `load_state` and `predict(path)` are read when
       the plan is built, and the collision two concurrent writers had in `atomic.rs` is
       fixed at the root. The memory side (a plan mutating a `ModelBank`) is declined.
+- [x] 21. **Gradient-boosted trees, as online as possible — investigated 2026-09-03.**
+      Asked how far XGBoost's method can be pushed toward this library's contract, and
+      what that does to parallel fitting and memory. `docs/BOOSTED-TREES.md` (§11g) is the
+      answer: the XGBoost paper and source (`54155e3`) read with every claim cited by
+      `file:line`, the streaming-tree literature and river/MOA/VW/LightGBM code compared,
+      a design that keeps the contract (EW-decayed per-node gradient sums, histograms only
+      on splittable leaves from a bounded pool, growth and collapse at checkpoints so the
+      model is frozen between them — hence chunk-invariant and additive over threads — and
+      a batch warm start on the warm-up buffer the bins need anyway), prototyped in numpy
+      (`scripts/ogbt_proto.py`) and measured (`scripts/ogbt_experiments.py`) against
+      XGBoost refits on synthetic drift. Nothing in the Rust crates; whether to build it is
+      the user's call and §9 of the doc costs it. Research sources stay under the
+      gitignored `.cache/research/`.
 
 ## 11a. Decisions made while implementing
+
+**Boosted trees: investigated, prototyped, not built, 2026-09-03 (task 21).**
+Asked to dig into XGBoost — the papers and the code — for how gradient-boosted
+trees could be made as online as possible, fit in parallel, and use less
+memory. The finding, in `docs/BOOSTED-TREES.md`: the boosting math is
+already online-shaped (leaf values and split gains are functions of per-node
+gradient sums, which are additive, mergeable and decayable), and what is
+*not* online in XGBoost is everything around the sums — a cut pre-pass over
+all the data, O(n) gradient/position arrays, histograms that exist only
+while a tree is built. A design that keeps every rule of the contract was
+prototyped in numpy and measured: it matches XGBoost's batch fit on the
+warm-up buffer to 0.02, then ties an 8 000-row refit window on stationary
+data and beats it by 2–12 MSE under drift, in 12–16 k doubles of state
+against the window's 80 000 rows. Chunk invariance is exact and per-tree
+sums are additive over threads; both are measured, not argued. The ideas
+that did not survive measurement are recorded with their numbers (§7.3) so
+they are not re-tried. Decisions: the prototype and its experiment script
+are committed under `scripts/` as source, not wired into the gate or CI,
+with nothing added to `pyproject.toml` (XGBoost is an optional `uv run
+--with` overlay for the baseline rows only, so rule 12 is untouched);
+downloaded sources, clones and notes stay under the gitignored
+`.cache/research/`; the exclusion of trees in `ENHANCEMENTS` §4 and
+`BEYOND-O-STATE` is reassessed — its three technical grounds (unbounded
+state, nondeterminism under resampling, no clock-decay semantics) are
+answered by the design; the cost of a second model family is not, and is
+the decision — and both documents point here without rewriting their
+history; nothing goes
+into the Rust crates until the user decides, and the doc's §9 says what
+that would take (a `gbt` module in `online-core`, `ModelState::Gbt`, a
+`SCHEMA_VERSION` bump, the `EXTENDING.md` list) and what should come first
+(real data, §8 idea 10).
 
 **One error contract, stated once and documented at every entry point,
 2026-09-03.** Audit of every public docstring and Rust doc comment for its
@@ -818,6 +862,18 @@ decaying while you score (U8, ENHANCEMENTS E31). E31 itself followed
 an `OnlineModel::predict` that every model implements and derives its own
 `step`'s prediction from, so the two cannot drift.
 The rest is proposed with its measurements next to it.
+
+## 11g. Gradient-boosted trees
+
+[`docs/BOOSTED-TREES.md`](BOOSTED-TREES.md): how far XGBoost's method can be
+pushed toward the contract — the paper and source read with citations, the
+streaming-tree literature and implementations compared, a design that keeps
+every rule (decayed per-node sums, a bounded histogram pool, growth and
+collapse only at checkpoints, a batch warm start), a numpy prototype
+(`scripts/ogbt_proto.py`) measured against XGBoost refits
+(`scripts/ogbt_experiments.py`), the ideas that failed with their numbers,
+and the cost of a Rust build. Investigation only — nothing in the crates;
+the build decision is the user's (task 21, §11a).
 
 ## 12. Open questions (not blocking)
 

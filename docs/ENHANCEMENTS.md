@@ -118,7 +118,10 @@ two items it found that are arguably *in* scope are in §5.
 
 - **Trees and forests** (`tree.HoeffdingTreeRegressor`, `forest.ARFRegressor`,
   SGT): unbounded/adaptive state, nondeterministic under resampling, no clean
-  clock-decay semantics. A different library.
+  clock-decay semantics. A different library. *Reassessed 2026-09-03 in
+  [`BOOSTED-TREES.md`](BOOSTED-TREES.md) §4: bounded state, determinism and
+  clock decay are all answered by the design measured there; "a different
+  library" remains the cost, and the decision is open.*
 - **Neighbors** (`neighbors.KNNRegressor`): O(window) memory contradicts
   "memory is O(state), not O(data)".
 - **Clustering / naive Bayes / multiclass softmax**: not regression on ordered

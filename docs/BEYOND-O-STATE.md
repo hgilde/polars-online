@@ -145,7 +145,10 @@ worth restating so nobody re-opens them on the memory argument alone:
 - **Hoeffding trees / streaming forests.** Nothing in Rust, and that is a real gap —
   but it is MOA's territory, it is a different library's identity (`ENHANCEMENTS` §4),
   and the state is adaptive rather than bounded. Building it here would double the
-  project's surface area and halve its coherence.
+  project's surface area and halve its coherence. *Reassessed 2026-09-03 in
+  [`BOOSTED-TREES.md`](BOOSTED-TREES.md): a gradient-boosted design with bounded
+  state, no per-row randomness and `ewridge`'s clock decay is prototyped and
+  measured there; the surface-area cost stands and is the decision.*
 - **kNN regression.** `O(window)` is now permitted, but it is river-and-MOA territory,
   and the value of a Rust version is speed on a workload this library is not shaped for.
 - **Contextual bandits.** Vowpal Wabbit owns this and is very good at it.
