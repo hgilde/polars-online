@@ -100,8 +100,7 @@ example; `git show --stat aa96ad3` is this list as a diff.
    times three output combinations.
 
 `crates/online-cli` and `crates/online-py` need nothing: both build from the
-spec, and the (dormant, `--features expr-plugin`) plugin's `online_run` is
-the bank.
+spec, and the plugin's `online_run` is the bank.
 
 ## 3. The Python surface — `python/polars_online`
 
@@ -123,14 +122,13 @@ the bank.
 11. **`_expr.py`**: the namespace method, `**kwargs: Unpack[<Name>Kwargs]`,
     building the spec with `targets=self._targets(extra_targets)` and calling
     `_run`; and the name in `test_kwargs_typing.NAMESPACE_METHODS`. The
-    namespace is dormant (PLAN §6) — not registered in a default build — but
-    the method is still written, because the static checks below run in
-    every build and hold it to the builders.
+    in-memory warning (PLAN §6) is issued inside `_run`, so the method gets
+    it for free; add the method to `TestTheExpressionWarnsThatItRunsInMemory
+    ._calls` in `test_expr.py`, which holds that dict to `model_kinds()` and
+    checks that the warning names the method.
     *Check*: `test_the_namespace_methods_are_the_builders` holds the class to
     that list, and `test_model_registry::test_every_builder_has_a_namespace
-    _method` holds the list to the builders. Both are static and need no
-    plugin; `test_expr.py` and the `requires_expr_plugin` tests need
-    `maturin develop --features expr-plugin` to run rather than skip.
+    _method` holds the list to the builders.
 12. **`tests/api_surface.txt`**: `UPDATE_API_SURFACE=1 uv run pytest
     tests/test_api_surface.py`, after adding a `<model> minimal` case to the
     `[output field grammar]` list in `tests/test_api_surface.py`. Field names
@@ -145,9 +143,8 @@ the bank.
     the Python-side oracle (a numpy reference in `tests/reference.py` where
     the model has a closed form; a longhand recursion otherwise), through
     `ModelBank`. The expression path is held to the bank for every model by
-    `test_semantics_all_models::test_expression_equals_bank` (in an
-    `expr-plugin` build; it skips otherwise), so this file is for the
-    arithmetic, which the sweeps cannot see.
+    `test_semantics_all_models::test_expression_equals_bank`, so this file
+    is for the arithmetic, which the sweeps cannot see.
     *Check*: `test_model_registry::test_every_builder_has_a_per_model_test
     _file` fails for a builder with no such file, or one that never calls
     `po.spec.<builder>(`. Writing it moved `ewridge` and `rls` out of

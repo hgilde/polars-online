@@ -1,11 +1,13 @@
 # polars-online public API surface. Regenerate: UPDATE_API_SURFACE=1 pytest
 
 [package]
+  InMemoryExpressionWarning
   ModelBank
   __version__
   eval
   fit_predict
   native_version
+  online
   predict
   run
   schema_version
@@ -177,8 +179,7 @@
   save_bytes
   solve_failures
 
-[expression namespace]  # dormant; pl.col(...).online.<method> with --features expr-plugin
-  online  # po.online(expr), exported only in that build
+[expression namespace]  # pl.col(...).online.<method>
   ew_cov
   ewridge
   ftrl

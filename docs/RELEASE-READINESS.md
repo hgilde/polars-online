@@ -435,15 +435,15 @@ answer — but it is our empirical claim, not Polars'. A `ModelBank` break on a
 new Polars is expected maintenance; check that path before suspecting the
 plugin; check the IO-plugin tests after that.
 
-**2026-09-03: the expression plugin is dormant** (`docs/PLAN.md` §6, task 19).
-The wheel is built without the `expr-plugin` cargo feature, so the one path
-with a stability guarantee is the one that no longer ships: what a user gets
-is `ModelBank` on the extension types and `lf.online.fit_predict` on the
-`@unstable` IO plugin, both measured across releases, neither promised. The
-table's plugin column and the plugin-ABI sentences above describe a
-`--features expr-plugin` build, which the gate and CI still compile. The
-floor and ceiling are unchanged — 1.34.0 was set by `collect_batches`, not by
-the plugin — and the canary now exercises exactly the paths that ship.
+**2026-09-03: the expression plugin warns on every use** (`docs/PLAN.md` §6,
+task 19). It ships as before and everything above still holds for it; what
+changed is that `pl.col(..).online.<model>(..)` now issues
+`InMemoryExpressionWarning` naming `lf.online.fit_predict`, because it is the
+one O(data) spelling. Nothing here moves: the floor and ceiling were set by
+`collect_batches`, not by the plugin, and the canary exercises all three
+paths. (For a few hours the same task had the plugin out of the wheel behind
+a cargo feature; that was reverted before release, so no published wheel
+lacks it.)
 
 ### "A frame allocated by one binary and freed by the other"
 

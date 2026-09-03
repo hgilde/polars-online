@@ -6,7 +6,6 @@ import pytest
 
 import polars_online as po
 from data import synthetic
-from expr_plugin import requires_expr_plugin
 
 
 def _pred(out, col="pred_y0"):
@@ -151,7 +150,6 @@ def test_chunk_invariance():
     assert one.select(keep).equals(many.select(keep), null_equal=True)
 
 
-@requires_expr_plugin
 def test_expression_equals_bank():
     df, kw, spec = _plumbing_case()
     one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")

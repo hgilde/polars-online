@@ -1,7 +1,7 @@
-//! Python bindings: the `ModelBank` class, the runner entry point, and -- behind
-//! the dormant `expr-plugin` feature -- the `online` expression namespace
-//! (docs/PLAN.md §6). Specs cross the boundary as JSON (Python dicts are
-//! serialized by the thin wrapper in `python/polars_online/`).
+//! Python bindings: the `ModelBank` class, the runner entry point, and the
+//! `online` expression namespace plugin (docs/PLAN.md §6 -- in-memory only;
+//! the Python side warns on every use). Specs cross the boundary as JSON
+//! (Python dicts are serialized by the thin wrapper in `python/polars_online/`).
 
 use online_polars::{Bank, GroupKey, Spec};
 use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
@@ -27,9 +27,9 @@ use pyo3_polars::{PyDataFrame, PySeries};
 #[global_allocator]
 static ALLOC: pyo3_polars::PolarsAllocator = pyo3_polars::PolarsAllocator::new();
 
-/// The expression namespace (docs/PLAN.md section 6). Dormant: see the
-/// `expr-plugin` feature in `Cargo.toml`.
-#[cfg(feature = "expr-plugin")]
+/// The expression namespace plugin (docs/PLAN.md section 6). Polars hands it
+/// the whole column in either engine, so `python/polars_online/_expr.py`
+/// warns on every use and points at `lf.online.fit_predict` for a stream.
 mod expr;
 
 /// Parse a spec (or a list of them) from the JSON the Python builders emit.
@@ -425,15 +425,6 @@ fn schema_version() -> u32 {
     online_core::SCHEMA_VERSION
 }
 
-/// Whether this build carries the `online` expression namespace
-/// (`expr-plugin` feature). The Python package registers the namespace only
-/// when it does, so a build without it has no `pl.col(..).online` at all
-/// rather than one that fails at collect time with a missing symbol.
-#[pyfunction]
-fn has_expr_plugin() -> bool {
-    cfg!(feature = "expr-plugin")
-}
-
 /// Every model this build can construct, as spec `type` names. What the
 /// Python builders and the per-model test sweeps are checked against
 /// (docs/EXTENDING.md).
@@ -448,7 +439,6 @@ fn _polars_online(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(native_version, m)?)?;
     m.add_function(wrap_pyfunction!(schema_version, m)?)?;
     m.add_function(wrap_pyfunction!(model_kinds, m)?)?;
-    m.add_function(wrap_pyfunction!(has_expr_plugin, m)?)?;
     m.add_function(wrap_pyfunction!(validate_spec, m)?)?;
     m.add_function(wrap_pyfunction!(run_config_frames, m)?)?;
     m.add_function(wrap_pyfunction!(format_of_path, m)?)?;

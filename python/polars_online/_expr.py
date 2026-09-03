@@ -1,4 +1,4 @@
-"""The `online` expression namespace (docs/PLAN.md section 6) -- **dormant**.
+"""The `online` expression namespace (docs/PLAN.md section 6) -- in-memory only.
 
 ``pl.col("y").online.ewridge(features=[...], halflife=...)`` runs one spec over
 the column the expression receives; use ``.over(group)`` for per-group streams.
@@ -6,18 +6,22 @@ Features are column names or named expressions (``pl.col("x").shift(1)
 .alias("x_lag")``), evaluated per group under ``.over``. The implementation is
 the model bank itself, so expression == bank by construction.
 
-It is not built by default. Polars hands a stateful user expression its whole
-column in either engine, so this spelling is O(data) where ``lf.online
-.fit_predict`` and ``po.run`` are O(chunk) -- and one set of numbers with two
-memory profiles confused users. The namespace is registered, and ``po.online``
-exported, only when the native module was built with ``--features
-expr-plugin``; this module stays importable without it so the static checks
-(``tests/test_kwargs_typing.py``, ``tests/test_model_registry.py``) keep it
-from rotting.
+**Every call warns** (:class:`InMemoryExpressionWarning`). Polars hands a
+stateful user expression its whole column in either engine -- its streaming
+engine collects the input to do so -- so this spelling is O(data) where
+``lf.online.fit_predict(specs)`` and ``po.run`` are O(chunk): 7.3 GB against
+1.35 GB at 12M rows for the same model (docs/PERFORMANCE.md section 11). That
+is polars' contract for a user expression, not something a plugin can change,
+and a reader who takes the expression for the natural streaming spelling gets
+the collecting one. The namespace stays for a frame already in memory, where
+it is the shortest spelling and features can be expressions; the warning
+exists so that nobody learns the difference from a memory profile. See the
+README's closing section.
 """
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 from typing import Any, Unpack
 
@@ -38,18 +42,45 @@ from polars_online._kwargs import (
     RlsKwargs,
     SgdKwargs,
 )
-from polars_online._polars_online import has_expr_plugin
 
 _PLUGIN_PATH = Path(__file__).parent
 
-__all__ = ["Feature", "OnlineNamespace", "has_expr_plugin", "online"]
+__all__ = ["Feature", "InMemoryExpressionWarning", "OnlineNamespace", "online"]
 
-_NOT_BUILT = (
-    "polars_online: the expression namespace is not built into this install "
-    "(a dormant feature; docs/PLAN.md section 6). Write the same model as a "
-    "spec: `lf.online.fit_predict([spec])` for a stream, or "
-    "`po.fit_predict(df, [spec])` for a frame in memory."
-)
+
+class InMemoryExpressionWarning(UserWarning):
+    """Issued by every ``pl.col(...).online.<model>(...)`` call: the expression
+    form runs on the whole column at once.
+
+    Polars calls a stateful user expression once with its whole column, in
+    either engine, so in a plan over a file this spelling is O(data) where
+    ``lf.online.fit_predict(specs)`` is O(chunk) -- the same model, the same
+    numbers, and only one of them streams (module docstring). The warning is
+    a ``UserWarning``, shown by default wherever the call is made; a
+    ``DeprecationWarning`` would be hidden outside ``__main__``, which is the
+    one place -- a pipeline module -- where it matters. Using the expression
+    on a frame that is in memory anyway is fine; say so once::
+
+        warnings.filterwarnings("ignore", category=po.InMemoryExpressionWarning)
+    """
+
+
+# Spec `type` -> namespace method, where the two differ.
+_METHOD_OF = {"ew_ridge": "ewridge"}
+
+
+def _warn_in_memory(kind: str, target: str) -> None:
+    method = _METHOD_OF.get(kind, kind)
+    msg = (
+        f"polars_online: pl.col({target!r}).online.{method}(...) runs on the whole column at "
+        "once -- polars hands a user expression its whole column in either engine -- so it "
+        "is O(data) where lf.online.fit_predict([spec]) is O(chunk) for the same model. Fine "
+        "for a frame in memory; for a stream write the model as a spec (README: 'The "
+        "expression form'). Silence with warnings.filterwarnings('ignore', "
+        "category=polars_online.InMemoryExpressionWarning)."
+    )
+    # stacklevel 4: this helper, `_run`, the namespace method, the user's call.
+    warnings.warn(msg, InMemoryExpressionWarning, stacklevel=4)
 
 
 Feature = str | pl.Expr
@@ -94,10 +125,7 @@ def _run(spec: dict[str, Any], target_expr: pl.Expr, feature_exprs: list[pl.Expr
             f"stream per group with .over({spec['group']!r}) instead"
         )
         raise TypeError(msg)
-    if not has_expr_plugin():
-        # Without the symbol, polars would fail at collect time with a dlopen
-        # error naming `_polars_plugin_online_run`; say what is going on instead.
-        raise RuntimeError(_NOT_BUILT)
+    _warn_in_memory(spec["model"]["type"], target_expr.meta.output_name())
     # ew_cov has no target: its first feature *is* the calling column, so it
     # must not be passed twice.
     is_ew_cov = spec["model"]["type"] == "ew_cov"
@@ -132,6 +160,7 @@ def _run(spec: dict[str, Any], target_expr: pl.Expr, feature_exprs: list[pl.Expr
     return out.alias(target_expr.meta.output_name())
 
 
+@pl.api.register_expr_namespace("online")
 class OnlineNamespace:
     """Online models over the expression's column as a target.
 
@@ -139,10 +168,8 @@ class OnlineNamespace:
     column, in either engine -- its streaming engine collects a user
     expression's input to do so -- so in a plan the column is O(data). For a
     stream, ``lf.online.fit_predict(specs)`` is the same bank as a plan that
-    stays O(chunk) (:mod:`polars_online._frame`).
-
-    Registered as ``pl.Expr.online`` only in a build with the ``expr-plugin``
-    feature (module docstring).
+    stays O(chunk) (:mod:`polars_online._frame`). Every method warns with
+    :class:`InMemoryExpressionWarning` (module docstring).
     """
 
     def __init__(self, expr: pl.Expr) -> None:
@@ -348,7 +375,3 @@ def online(expr: pl.Expr) -> OnlineNamespace:
         df.with_columns(po.online(pl.col("y")).ewridge(features=["x0"], halflife=10.0))
     """
     return OnlineNamespace(expr)
-
-
-if has_expr_plugin():
-    pl.api.register_expr_namespace("online")(OnlineNamespace)

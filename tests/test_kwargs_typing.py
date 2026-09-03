@@ -15,7 +15,6 @@ import polars as pl
 import pytest
 
 import polars_online as po
-from expr_plugin import requires_expr_plugin
 from polars_online import _expr, _kwargs, _spec
 
 # What the expression supplies itself, and so does not take as a keyword.
@@ -93,7 +92,6 @@ def test_each_namespace_typed_dict_mirrors_its_builder(name):
     assert set(td.__required_keys__) == required, name
 
 
-@requires_expr_plugin
 def test_po_online_is_the_registered_namespace():
     # pl.col("y").online is invisible to a type checker ("Expr" has no
     # attribute "online"); po.online(expr) is the same thing, visibly typed.
@@ -106,31 +104,17 @@ def test_po_online_is_the_registered_namespace():
 
 def test_the_expression_refuses_a_group_keyword():
     # The Rust side sets group = None: it would have been silently ignored.
-    # Static: refused before the build is consulted, so it holds in every build.
     with pytest.raises(TypeError, match=r"group is not an expression parameter.*\.over\('g'\)"):
-        _expr.OnlineNamespace(pl.col("y")).ewridge(features=["x0"], halflife=10.0, group="g")
+        pl.col("y").online.ewridge(features=["x0"], halflife=10.0, group="g")
 
 
 def test_a_typo_is_still_named_at_runtime():
-    # Static: the namespace class is importable in every build.
     with pytest.raises(
         TypeError, match="ewridge\\(\\) got an unexpected keyword argument 'halflif'"
     ):
-        _expr.OnlineNamespace(pl.col("y")).ewridge(features=["x0"], halflif=10.0)
+        pl.col("y").online.ewridge(features=["x0"], halflif=10.0)
 
 
-def test_an_unbuilt_namespace_says_so():
-    # Without the plugin symbol the namespace is not registered, and the
-    # class itself refuses with the spelling to use instead of a dlopen error.
-    if po.has_expr_plugin():
-        pytest.skip("built with --features expr-plugin")
-    assert not hasattr(pl.col("y"), "online")
-    assert "online" not in po.__all__
-    with pytest.raises(RuntimeError, match="not built.*lf.online.fit_predict"):
-        _expr.OnlineNamespace(pl.col("y")).ewridge(features=["x0"], halflife=2.0)
-
-
-@requires_expr_plugin
 def test_the_typed_dicts_change_nothing_at_runtime():
     # A TypedDict is a plain dict at runtime: the same kwargs reach the same
     # builder, and a required key missing is still the builder's error.

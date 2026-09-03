@@ -17,10 +17,11 @@ usable two ways with identical numerics:
    or the Rust `online` CLI (the same formats, TOML config, no Python) for deployment.
 
 Both share `online-polars` and `online-core`. A third way, the **expression plugin**
-(`pl.col("y").online.<model>(...)`, with `.over(group)`), was built first and is now
-**dormant** (§6): polars calls a user expression with the whole column in either engine, so
-it is the one O(data) surface, and two spellings with one set of numbers and two memory
-profiles confused users. The code stays behind the off-by-default `expr-plugin` feature.
+(`pl.col("y").online.<model>(...)`, with `.over(group)`), was built first and is the
+**in-memory** spelling (§6): polars calls a user expression with the whole column in either
+engine, so it is the one O(data) surface. It stays, for a frame already in memory, and every
+call warns with `InMemoryExpressionWarning` naming the plan — so the difference is learned at
+the call site, not from a memory profile.
 
 ## 2. Core contract (Rust, `online-core`)
 
@@ -67,7 +68,7 @@ input order; no allocation in the hot path after warmup (preallocate buffers in 
 | `weight` | str \| None | row weight column, default 1 |
 | `min_periods` | float | in `n_eff` units; outputs null until reached |
 | `coef_every` | int | 0 = never; also emitted on the last row of every chunk |
-| `group` | str \| None | one state per key (the dormant expression API uses `.over()` instead, §6) |
+| `group` | str \| None | one state per key (the expression API uses `.over()` instead, §6) |
 
 Per-row decay: `λ_row = 0.5 ** (Δ / halflife)`; `n_eff` = EW count with the same decay.
 
@@ -76,7 +77,7 @@ Per-row decay: `λ_row = 0.5 ** (Δ / halflife)`; `n_eff` = EW count with the sa
   Δ<0 ⇒ `max_dclock` (`"max"`, default) or state reset (`"reset_state"`).
 - Session change ⇒ Δ := `session_gap` (or reset), regardless of the clock delta.
 - First row of a group ⇒ Δ = 0.
-- The clock is per group (the dormant expression API gets the group's rows via `.over()`).
+- The clock is per group (the expression API gets the group's rows via `.over()`).
 
 ### Null policy
 - Null in any feature ⇒ row skipped entirely: outputs null, no update, clock still advances.
@@ -168,7 +169,7 @@ with the same clock as everything else. Output `pred` is a probability; `resid =
   row, session/clock reset policies honored by scoring a fresh model (ENHANCEMENTS E31); Rust
   CLI reads the same specs from TOML.
 
-## 6. Expression plugin (`online-py`) — dormant since 2026-09-03
+## 6. Expression plugin (`online-py`) — in-memory only, warns since 2026-09-03
 
 `pyo3-polars` expression with `is_elementwise=False`, `returns_scalar=False`, one namespace
 `online` with one function per model. Runs a single spec over the full column it receives
@@ -179,36 +180,33 @@ polars path that spreads `.over` groups across threads), and `online_run` in
 `crates/online-py/src/expr.rs` unpacks it into a frame and runs `Bank::fit_predict` on it —
 so expression ≡ bank by construction.
 
-**Why it is dormant.** Polars hands a non-elementwise user expression its whole column: in
-the in-memory engine by definition, and in the streaming engine because a plugin lowers to a
+**Why it warns.** Polars hands a non-elementwise user expression its whole column: in the
+in-memory engine by definition, and in the streaming engine because a plugin lowers to a
 `columnar-function` node — collect the input, call once, re-emit. There is no way for a
 plugin to say "call me per morsel, in order, and let me keep state" (§11a, 2026-09-02). So
 `lf.with_columns(pl.col("y").online.ewridge(..)).sink_parquet(..)` measured 7.3 GB at 12M
 rows where `lf.online.fit_predict([spec]).sink_parquet(..)` measures 1.35 GB
 (`docs/PERFORMANCE.md` §11) — the same numbers, two memory profiles, and users read the
-expression as the natural spelling. Nothing about the model is lost by parking it: the bank
-fans out over (spec × group) with rayon, so `group=` is the parallel path `.over(group)` was,
-and `df.online.fit_predict(specs)` is the in-memory call. What *is* given up is the one
-surface with a polars stability guarantee (the plugin ABI's MAJOR/MINOR handshake, CLAUDE.md
-rule 13); what ships now rides on the extension types and the IO plugin, both measured across
-releases but guaranteed by nobody.
+expression as the natural spelling. The first answer (task 19 as first committed) was to
+take the spelling out of the wheel behind a cargo feature; that left a user who wrote it with
+polars' bare `AttributeError: 'Expr' object has no attribute 'online'` and no pointer, and
+left the plugin's runtime tests skipped in CI. The answer that stands is to keep it and say
+so at the call site: every namespace method issues `polars_online.InMemoryExpressionWarning`
+(`_expr.py`, `_warn_in_memory`) with the reason, the plan to write instead, and the one-line
+filter for someone using it on a frame in memory on purpose. It is a `UserWarning`, shown by
+default from anywhere; a `DeprecationWarning` is hidden outside `__main__`, i.e. in exactly
+the pipeline module where it matters (`tests/test_expr.py` checks both facts in a
+subprocess). Nothing else changes: the plugin ships, `pl.Expr.online` is registered on
+import, `po.online` is exported, the tests run in every build, and the README shows the two
+spellings side by side in its closing note. Nothing about the model needs the expression:
+the bank fans out over (spec × group) with rayon, so `group=` is the parallel path
+`.over(group)` is, and `df.online.fit_predict(specs)` is the in-memory call; what the
+expression adds is features as expressions (a lag under `.over` stays in its group) and the
+plugin ABI's MAJOR/MINOR handshake, the one polars stability guarantee we ride on
+(CLAUDE.md rule 13).
 
-**How it is parked.** Cargo feature `expr-plugin` on `online-py` (off by default, not in the
-wheel) gates `mod expr` and pulls `pyo3-polars/derive` + `lazy`; `has_expr_plugin()` reports
-it to Python, which registers `pl.Expr.online` and exports `po.online` only when true, and
-otherwise raises a `RuntimeError` naming `lf.online.fit_predict` from any namespace method.
-`python/polars_online/_expr.py` stays importable so the static checks (typed kwargs mirror the
-builders, every builder has a namespace method, the API snapshot) keep it from rotting; the
-runtime tests carry `tests/expr_plugin.py::requires_expr_plugin` and skip with the reason.
-The gate and CI compile the Rust side with `--all-features`. To bring it back for a re-check:
-
-```sh
-uv run maturin develop --release -m crates/online-py/Cargo.toml --features expr-plugin
-uv run pytest tests/test_expr.py   # and every `requires_expr_plugin` test runs again
-```
-
-**What would un-park it.** A polars node that lets a user expression run per morsel, in
-order, with state — i.e. a streaming-engine contract for stateful UDFs. Until then the
+**What would remove the warning.** A polars node that lets a user expression run per morsel,
+in order, with state — i.e. a streaming-engine contract for stateful UDFs. Until then the
 expression can only ever be the in-memory spelling, and the bank already is that.
 
 ## 7. Numerics
@@ -247,7 +245,7 @@ Test classes:
    row, per-group independence.
 5. **Null policy** and **warmup** exactly as in §3.
 6. **Expression ≡ bank**: same spec through `.over()` and through `fit_predict` gives identical
-   output (runs in an `expr-plugin` build, §6; skipped otherwise).
+   output.
 7. **Cross-platform state**: a state written on CI macOS loads on CI Windows (artifact hand-off).
 8. **Benchmark** (not a test): rows/sec for k ∈ {5, 20, 50}, 1 vs 10 targets, 1 vs 5 halflives.
 
@@ -305,28 +303,35 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       valgrind on CPython is noisy until the suppressions are tuned.
       **The trigger fired on 2026-09-02**: the repository is public and
       Actions is unmetered, so this is now doable work rather than a deferral.
-- [x] 19. Park the expression plugin (task 8) behind the off-by-default `expr-plugin`
-      feature — out of the wheel and the README, kept in §6 with the rationale and the
-      re-enable recipe; the static checks still run against `_expr.py`, the runtime tests
-      skip with the reason, and the gate compiles it with `--all-features`.
+- [x] 19. The expression plugin (task 8) is the in-memory spelling and says so: every
+      `pl.col(..).online.<model>` call warns with `InMemoryExpressionWarning` naming the plan
+      and the reason (§6); the README shows the two spellings side by side in a closing note.
+      (First committed as an off-by-default cargo feature that took it out of the wheel;
+      reverted the same day — §11a.)
 
 ## 11a. Decisions made while implementing
 
-**The expression plugin is dormant, 2026-09-03 (task 19).** Two spellings
+**The expression form stays and warns, 2026-09-03 (task 19).** Two spellings
 carried one set of numbers and two memory profiles — `df.with_columns(pl.col
 ("y").online.ewridge(..))` at 7.3 GB against `lf.online.fit_predict([spec])`
 at 1.35 GB on 12M rows — and a user who wrote the natural expression inside a
 lazy query got the O(data) one. The cause is polars' contract for a stateful
-user expression (the entry below), which we cannot change from inside a plugin,
-so rather than document the trap we removed the spelling: the wheel is built
-without the `expr-plugin` feature, `pl.Expr.online` is not registered, and
-the README shows only surfaces that stream. Not deleted: §6 keeps the design,
-the code and the tests stay, CI compiles them, and one `maturin develop
---features expr-plugin` brings the namespace back for a later look. Cost
-accepted: the plugin was the one path with a polars stability guarantee
-(CLAUDE.md rule 13); the two that ship are the measured-not-guaranteed ones.
-No throughput is lost — the bank runs (spec × group) on rayon, which is the
-parallelism `.over(group)` had.
+user expression (the entry below), which we cannot change from inside a
+plugin. The first cut of this task removed the spelling: the wheel was built
+without an `expr-plugin` cargo feature, `pl.Expr.online` went unregistered and
+the README showed only surfaces that stream. Reconsidered the same day, before
+the next commit: a user who writes the expression then gets polars' bare
+`AttributeError` with no rationale and no pointer, the in-memory use (features
+as expressions, `.over`) is lost for nothing, the one interface with a polars
+stability guarantee leaves the wheel, and the plugin's runtime tests stop
+running in CI. So the spelling stays and *teaches* instead: every call issues
+`InMemoryExpressionWarning` — a `UserWarning`, because a `DeprecationWarning`
+is hidden outside `__main__`, i.e. in the pipeline module where it matters —
+with the reason, the plan to write instead, and the filter for someone who
+means it; the README's closing note shows the two spellings side by side with
+the numbers. Not "deprecated": it would become the streaming spelling too if
+polars ever ran a user expression per morsel with state (§6). The feature
+gate, `has_expr_plugin()` and the `requires_expr_plugin` marker are gone.
 
 **The expression form is in-memory; the streaming query form is the bank as a
 source, 2026-09-02 (ENHANCEMENTS E33).** `lf.with_columns(pl.col("y").online

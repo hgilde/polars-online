@@ -19,8 +19,11 @@ PYBIN=$(uv run python -c 'import sys; print(sys.executable)')
 echo "interpreter: $PYBIN"
 
 WORK=$(cat <<'PY'
-import gc
+import gc, warnings
 import numpy as np, polars as pl, polars_online as po
+# The expression form warns on every call (it is O(data)); this is a frame in
+# memory, and 300 warnings would bury the leak numbers.
+warnings.filterwarnings("ignore", category=po.InMemoryExpressionWarning)
 rng = np.random.default_rng(0)
 spec = po.spec.ewridge("m", targets=["y"], features=["x0", "x1"],
                        halflife=50.0, min_periods=2.0)
@@ -30,9 +33,8 @@ for i in range(300):
     df = df.with_columns(y=pl.col("x0") * 2)
     out = po.ModelBank([spec]).fit_predict(df)
     _ = out["m"].struct.field("pred_y").sum()
-    if po.has_expr_plugin():   # the dormant expression path, when it is built
-        df.with_columns(pl.col("y").online.ewridge(features=["x0"], halflife=50.0,
-                                                   min_periods=2.0))
+    df.with_columns(pl.col("y").online.ewridge(features=["x0"], halflife=50.0,
+                                               min_periods=2.0))
     if cat is None:
         cat = df.with_columns(c=pl.col("x1").cast(pl.String).cast(pl.Categorical))
     try:                       # the error path, where release is easiest to miss

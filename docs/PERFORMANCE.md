@@ -52,8 +52,7 @@ with `cargo run --release -p online-core --example core_bench` (and
 | 8 | 1,363,018 | 3.1× |
 | 10 | 1,414,097 | **3.2×** |
 
-**The expression API** (dormant since 2026-09-03 — `--features expr-plugin`,
-PLAN §6; the numbers stand for that build), 400k rows, k=20:
+**The expression API**, 400k rows, k=20:
 
 | path | rows/s |
 |---|---|
@@ -596,9 +595,9 @@ parquet out, `chunk_rows=100k`, 14 threads:
 | **`lf.online.fit_predict`, `sink_parquet(engine="streaming")`** (E33) | 0.90 GB | 1.13 GB | 1.35 GB |
 | the same, pages released / plus prefetch 1 | — | — | 0.78 GB / 0.37 GB |
 
-**The plugin is O(data); nothing else is.** (Which is why, as of 2026-09-03,
-the plugin no longer ships: it is dormant behind `--features expr-plugin`,
-PLAN §6, and its rows here describe that build.) O(data) here means what it says:
+**The plugin is O(data); nothing else is.** (Which is why, since 2026-09-03,
+every expression call warns with `InMemoryExpressionWarning` and names the
+plan — PLAN §6.) O(data) here means what it says:
 the whole input is resident at once, because polars calls a plugin function
 once with the entire column and has to have the column first (§10). The
 sharpest form of the measurement is the same query with one expression

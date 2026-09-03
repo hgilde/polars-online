@@ -6,7 +6,6 @@ import pytest
 
 import polars_online as po
 from data import synthetic
-from expr_plugin import requires_expr_plugin
 
 
 def _spec(path, **kw):
@@ -103,7 +102,6 @@ def test_chunk_invariance():
     assert one.select(keep).equals(many.select(keep), null_equal=True)
 
 
-@requires_expr_plugin
 def test_expression_equals_bank():
     df, _ = synthetic(seed=34, n_groups=2, n_rows=180, k=3, null_frac=0.0)
     spec = _spec([0.5, 0.0], group="group", halflife=200.0)

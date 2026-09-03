@@ -76,23 +76,19 @@ carries breaking changes.
 
 ### Changed
 
-- **The expression plugin is dormant** (`docs/PLAN.md` §6). The wheel no
-  longer registers `pl.col("y").online.<model>(...)` or exports `po.online`,
-  and the README shows only the surfaces that stream: polars hands a
-  stateful user expression its whole column in either engine, so that
-  spelling was O(data) — 7.3 GB at 12M rows against 1.35 GB for
-  `lf.online.fit_predict([spec])` in the same query — and two spellings with
-  one set of numbers and two memory profiles confused more than they helped.
-  Nothing else moves: `df.online.fit_predict(specs)` is the in-memory call,
-  `group=` is the parallel path `.over(group)` was, and the numbers are the
-  same bits. The code, the namespace and its tests stay behind the
-  off-by-default cargo feature `expr-plugin` (`maturin develop --features
-  expr-plugin` brings them back; `po.has_expr_plugin()` says whether a build
-  has it), CI compiles them with `--all-features`, and calling a namespace
-  method in a build without the feature raises a `RuntimeError` that names
-  the streaming spelling. Trade-off accepted: the plugin was the one
-  interface with a polars stability guarantee; the two that ship are
-  measured across releases, not promised.
+- **The expression form warns on every use** (`docs/PLAN.md` §6). Each
+  `pl.col("y").online.<model>(...)` call now issues
+  `polars_online.InMemoryExpressionWarning`, new and exported: polars hands
+  a stateful user expression its whole column in either engine, so that
+  spelling is O(data) — 7.3 GB at 12M rows against 1.35 GB for
+  `lf.online.fit_predict([spec])` in the same query — and a reader who took
+  it for the streaming spelling learned otherwise from a memory profile. The
+  warning says why, names the plan to write instead, and gives the one-line
+  filter for a frame in memory on purpose; it is a `UserWarning` because a
+  `DeprecationWarning` is hidden outside `__main__`, which is exactly the
+  pipeline module where it matters. The README shows the two spellings side
+  by side in a closing note. Nothing else moves: the expression still runs,
+  `po.online` is still exported, and the numbers are the same bits.
 - **`polars>=1.34.0,<2`** (was `>=1.28.1`). `po.run` over a path or a plan
   has read with `LazyFrame.collect_batches` since the runner became
   format-agnostic, and so does `lf.online.fit_predict`; py-polars added it
@@ -213,8 +209,8 @@ weighted **mean-form** accumulators with centered (Welford) co-moments:
 ### Interfaces
 
 Three, with identical numerics: a Polars **expression plugin**
-(`pl.col("y").online.ewridge(...)`; dormant since, see *Unreleased /
-Changed*), a chunk-fed **`ModelBank`** with O(state)
+(`pl.col("y").online.ewridge(...)`; in-memory only, and it warns so since —
+see *Unreleased / Changed*), a chunk-fed **`ModelBank`** with O(state)
 memory that reports what it holds (`groups()`, `rows_seen()`) and can forget
 stale groups (`drop_groups()`), and a standalone **CLI** (parquet in, parquet
 out, TOML config). The Python surface is typed: PEP 692 keywords on the

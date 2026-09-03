@@ -7,9 +7,6 @@ import pytest
 
 import polars_online as po
 from data import synthetic
-from expr_plugin import requires_expr_plugin
-
-pytestmark = requires_expr_plugin
 
 COMMON = dict(
     clock="t",
@@ -314,3 +311,105 @@ class TestEveryEmitFlagThroughThePlugin:
         }
         declared = {f: as_polars[d] for f, d in zip(idx["field"], idx["dtype"], strict=True)}
         assert dict(out.schema) == declared
+
+
+class TestTheExpressionWarnsThatItRunsInMemory:
+    """The expression form is O(data) -- polars hands it the whole column in
+    either engine -- and it says so on every call, so the difference from
+    `lf.online.fit_predict` is learned at the call site, not from a memory
+    profile (docs/PLAN.md section 6)."""
+
+    FRAME = pl.DataFrame({"y": [1.0, 2.0, 3.0, 4.0], "x0": [1.0, 3.0, 2.0, 5.0]})
+
+    @staticmethod
+    def _calls():
+        ns = pl.col("y").online
+        common = dict(features=["x0"], halflife=2.0)
+        # Keyed by spec `type`, valued by the namespace method's name and call.
+        return {
+            "ew_ridge": ("ewridge", lambda: ns.ewridge(**common)),
+            "rls": ("rls", lambda: ns.rls(**common)),
+            "lasso": ("lasso", lambda: ns.lasso(lasso_path=[1.0, 0.1], **common)),
+            "kalman": ("kalman", lambda: ns.kalman(coef_halflife=100.0, **common)),
+            "huber": ("huber", lambda: ns.huber(**common)),
+            "quantile": ("quantile", lambda: ns.quantile(quantile=0.5, **common)),
+            "ftrl": ("ftrl", lambda: ns.ftrl(**common)),
+            "sgd": ("sgd", lambda: ns.sgd(learning_rate=0.01, **common)),
+            "pa": ("pa", lambda: ns.pa(**common)),
+            "holt": ("holt", lambda: ns.holt(halflife=2.0)),
+            "ew_cov": ("ew_cov", lambda: ns.ew_cov(others=["x0"], halflife=2.0)),
+        }
+
+    def test_every_method_warns_and_names_the_spelling_that_streams(self):
+        calls = self._calls()
+        assert set(calls) == set(po._polars_online.model_kinds())
+        for kind, (method, call) in calls.items():
+            with pytest.warns(po.InMemoryExpressionWarning) as rec:
+                call()
+            assert len(rec) == 1, kind
+            text = str(rec[0].message)
+            assert f"pl.col('y').online.{method}(...) runs on the whole column" in text
+            assert "lf.online.fit_predict([spec]) is O(chunk)" in text
+            assert "category=polars_online.InMemoryExpressionWarning" in text
+            # stacklevel: the warning is attributed to the caller, not to _expr.py.
+            assert rec[0].filename == __file__, kind
+
+    def test_the_expression_still_works_and_matches_the_bank(self):
+        # A warning, not an error: the result is the bank's, for a frame in memory.
+        spec = po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=2.0)
+        with pytest.warns(po.InMemoryExpressionWarning):
+            out = self.FRAME.select(pl.col("y").online.ewridge(features=["x0"], halflife=2.0))
+        assert out["y"].equals(po.fit_predict(self.FRAME, [spec])["m"])
+
+    def test_silenced_by_category(self):
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            warnings.filterwarnings("ignore", category=po.InMemoryExpressionWarning)
+            pl.col("y").online.ewridge(features=["x0"], halflife=2.0)
+
+    def test_a_usage_error_is_raised_before_the_warning(self):
+        import warnings
+
+        # An invalid call gets its error and nothing else.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            with pytest.raises(TypeError, match="group is not an expression parameter"):
+                pl.col("y").online.ewridge(features=["x0"], halflife=2.0, group="g")
+
+    def test_shown_by_default_from_a_module(self, tmp_path):
+        # A DeprecationWarning is hidden by default unless raised in __main__,
+        # which is exactly the wrong way round for a pipeline module: that is
+        # where the streaming spelling matters. The category is a UserWarning
+        # so it is shown from anywhere; a DeprecationWarning emitted at the
+        # same place is the control.
+        import subprocess
+        import sys
+        import textwrap
+
+        assert issubclass(po.InMemoryExpressionWarning, UserWarning)
+        assert not issubclass(po.InMemoryExpressionWarning, DeprecationWarning)
+        (tmp_path / "pipeline.py").write_text(
+            textwrap.dedent("""
+                import warnings
+                import polars as pl
+                import polars_online  # noqa: F401
+
+                def build():
+                    warnings.warn("control: a DeprecationWarning here", DeprecationWarning)
+                    return pl.col("y").online.ewridge(features=["x0"], halflife=2.0)
+                """)
+        )
+        r = subprocess.run(
+            [sys.executable, "-c", "import pipeline; pipeline.build()"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=str(tmp_path),
+            check=False,
+        )
+        assert r.returncode == 0, r.stderr
+        assert "InMemoryExpressionWarning" in r.stderr, r.stderr
+        assert "pipeline.py:8" in r.stderr, r.stderr  # attributed to the caller's line
+        assert "control" not in r.stderr, r.stderr

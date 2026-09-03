@@ -2,14 +2,15 @@
 
 A ``LazyFrame`` in, a ``LazyFrame`` out. Executing the plan streams the input
 through a fresh :class:`ModelBank` in ``chunk_rows`` chunks, so a query with
-the bank in it is O(chunk) in memory however long the stream is -- where a
-user *expression* in the same query is O(data): polars calls it once with
-its whole column, and its streaming engine collects the column to do so
-(docs/PERFORMANCE.md section 11; that is why the expression namespace is
-dormant, docs/PLAN.md section 6). This is polars' IO-plugin mechanism
-(``polars.io.plugins.register_io_source``): the bank is registered as a
-*source*, the kind of node the engine pulls batches from, and what comes
-after it -- filters, selects, joins, ``sink_parquet`` -- is polars' own.
+the bank in it is O(chunk) in memory however long the stream is -- where the
+expression form, ``pl.col("y").online.<model>(...)``, in the same query is
+O(data): polars calls a user expression once with its whole column, and its
+streaming engine collects the column to do so (docs/PERFORMANCE.md section
+11; the expression warns about it, :mod:`polars_online._expr`). This is
+polars' IO-plugin mechanism (``polars.io.plugins.register_io_source``): the
+bank is registered as a *source*, the kind of node the engine pulls batches
+from, and what comes after it -- filters, selects, joins, ``sink_parquet`` --
+is polars' own.
 
 The plan is pure: every execution starts from the same state (the specs'
 initial state, or ``load_state``), so collecting twice gives the same frame,

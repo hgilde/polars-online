@@ -1,9 +1,8 @@
 """The keyword parameters of every spec, as ``TypedDict``s (PEP 692).
 
 The builders in ``_spec.py`` take the shared parameters as ``**common`` and the
-(dormant) expression namespace in ``_expr.py`` takes everything as
-``**kwargs``; with ``**kwargs: Any`` an editor shows nothing and a typo is
-found at runtime.
+expression namespace in ``_expr.py`` takes everything as ``**kwargs``; with
+``**kwargs: Any`` an editor shows nothing and a typo is found at runtime.
 Annotating them as ``Unpack[...]`` of the classes below gives completion and
 type checking without changing a call (docs/IMPROVEMENTS.md U4).
 

@@ -17,7 +17,6 @@ import polars as pl
 import pytest
 
 import polars_online as po
-from expr_plugin import requires_expr_plugin
 
 #: (name, extra spec kwargs). One entry per model the bank can build.
 MODELS = [
@@ -244,7 +243,6 @@ class TestUniversalInvariants:
         keep = [c for c in a.columns if not c.startswith("coef")]
         assert a.select(keep).equals(b.select(keep), null_equal=True)
 
-    @requires_expr_plugin
     def test_expression_equals_bank(self, model, extra):
         df = frame(n=80, seed=6, binary=model == "ftrl")
         spec = build(model, extra)

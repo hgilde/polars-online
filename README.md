@@ -10,6 +10,11 @@ exposed two ways with identical numerics:
 2. **a streaming runner** — `po.run(...)` or the standalone `online` CLI:
    parquet, ipc, csv or ndjson in and out, config from TOML.
 
+There is also an expression form, `pl.col("y").online.ewridge(...)`, for a
+frame already in memory. It cannot stream — polars hands it the whole column
+— so it warns on every use; [the note at the end](#the-expression-form)
+shows it next to the plan and says why.
+
 Built for ordered event data (one stream per group) that does not fit in memory:
 irregular clocks, session breaks, gaps, nulls, and per-group state.
 
@@ -30,9 +35,9 @@ df.online.fit_predict([spec])                 # a frame in memory: the same bank
 
 ## Which spelling streams
 
-All of them. One model, one set of numbers, and the memory is O(chunk)
-however the call is spelled — peak footprint on the same file, `ewridge`
-with 20 features, parquet in and out:
+All of them but one, and that one says so. One model, one set of numbers,
+and the memory is O(chunk) however the call is spelled — peak footprint on
+the same file, `ewridge` with 20 features, parquet in and out:
 
 | what you write | 3M rows | 12M rows | |
 |---|---:|---:|---|
@@ -48,15 +53,13 @@ the bank — filters, joins, group-bys, sinks — is polars' own and streams as
 polars streams it. All of it measured in
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) §11.
 
-What is deliberately *not* here is an expression form — a model written as
-`pl.col("y").online.ewridge(...)` inside `with_columns`. Polars hands a
-user expression its whole column, in the in-memory engine by definition and
-in the streaming engine because a plugin is a `columnar-function` node
-(collect the input, call once, re-emit), so that spelling measured 7.3 GB
-where the plan above measures 1.35 GB — the same numbers with two memory
-profiles, which confused more than it helped. The code is kept as a dormant
-build feature for a later look; [`docs/PLAN.md`](docs/PLAN.md) §6 has the
-design and how to build it.
+The one spelling that is not in the table is the expression form — the
+same model written as `pl.col("y").online.ewridge(...)` inside
+`with_columns`. It measures **7.3 GB** on the same 12M rows against the
+plan's 1.35 GB, because polars hands a user expression its whole column in
+either engine. It is kept for a frame in memory and warns on every call;
+[the note at the end](#the-expression-form) puts the two spellings side by
+side and explains the number.
 
 **This is polars' rule, not ours**, and it decides what streams *around* the
 bank too: polars' own windowed operations split the same way, and the rule
@@ -677,30 +680,34 @@ The *Rust* pin is exact and the wheel links it statically; the *runtime*
 requirement is a range, because the two copies of Polars never meet. The floor
 is `LazyFrame.collect_batches`, which `po.run` and `lf.online.fit_predict`
 read with and py-polars added in 1.34.0; the whole suite passes on 1.34.0,
-1.38.1 and 1.44.1 with identical numbers. `ModelBank` alone works from
-1.28.1 (tested across 17 releases), and below that the failure is a clean
-`AttributeError` on `PySeries._export` rather than anything subtle. The
-matrix is in `docs/RELEASE-READINESS.md`.
+1.38.1 and 1.44.1 with identical numbers. `ModelBank` and the expression
+form alone work from 1.28.1 (tested across 17 releases), and below that the
+failure is a clean `AttributeError` on `PySeries._export` rather than
+anything subtle. The matrix is in `docs/RELEASE-READINESS.md`.
 
 This is stricter than the mechanism strictly requires, and it is worth being
 precise about why, because "pinned" usually implies "fragile" and here it does
 not.
 
-`ModelBank` moves data across the boundary through the **Arrow C Data
-Interface** — `SeriesExport` is a `#[repr(C)]` struct of `ArrowSchema` and
-`ArrowArray` pointers, the same cross-language ABI pyarrow and DuckDB use.
-`PyDataFrame` is not special-cased: it extracts column-by-column as
-`PySeries`, each through `import_series`. This package does *not* use
-`PyExpr` or `PyLazyFrame`, which are the genuinely version-sensitive types
-that cross as serialized query plans.
+`ModelBank` and the expression plugin move data across the boundary
+through the **Arrow C Data Interface** — `SeriesExport` is a `#[repr(C)]`
+struct of `ArrowSchema` and `ArrowArray` pointers, the same cross-language
+ABI pyarrow and DuckDB use. `PyDataFrame` is not special-cased: it extracts
+column-by-column as `PySeries`, each through `import_series`. This package
+does *not* use `PyExpr` or `PyLazyFrame`, which are the genuinely
+version-sensitive types that cross as serialized query plans.
 
 The interface is versioned by name (`polars_ffi::version_0`), and the only
-thing asked of the Python side is `PySeries._export` / `_import`: a Polars
-without them fails with a clean `AttributeError` before any data moves, and
-one with them ran the whole matrix in `docs/RELEASE-READINESS.md` — one
-wheel, 17 releases — with identical numbers. **So a mismatched Polars is a
-clear error, not a crash.** The pin exists so you never see that message,
-not because something worse waits behind it.
+thing `ModelBank` asks of the Python side is `PySeries._export` / `_import`:
+a Polars without them fails with a clean `AttributeError` before any data
+moves, and one with them ran the whole matrix in `docs/RELEASE-READINESS.md`
+— one wheel, 17 releases — with identical numbers. The plugin goes one step
+further, because polars' plugin loader **negotiates** the ABI: it calls the
+plugin's `_polars_plugin_get_version()` before its first call and refuses a
+major it does not know (`ComputeError: this polars engine doesn't support
+plugin version: 0-1`), with a dedicated check for layout drift besides. **So
+a mismatched Polars is a clear error, not a crash.** The pin exists so you
+never see those messages, not because something worse waits behind them.
 
 ### What the pin costs you
 
@@ -785,6 +792,64 @@ Wheels are published for macOS (arm64 and x86_64), Windows x64, and Linux x64
 and aarch64 in both glibc and musl flavours. `abi3-py312` means one wheel per
 platform covers 3.12, 3.13, 3.14 and later. An sdist is published too; building
 from it needs a Rust toolchain.
+
+## The expression form
+
+The same model can be written as an expression, and it is the shortest
+spelling for a frame that is already in memory:
+
+```python
+out = df.with_columns(
+    pl.col("y").online.ewridge(
+        features=["x0", "x1", pl.col("y").shift(1).alias("y_lag")],
+        clock="t", halflife=600.0, max_dclock=300.0,
+    ).over("group").alias("fit")
+)
+out.select(pl.col("fit").struct.field("pred_y"), pl.col("fit").struct.field("n_eff"))
+```
+
+Features may be expressions, evaluated per group under `.over`, so the lag
+above never crosses a group boundary; `po.online(pl.col("y"))` is the same
+namespace spelled so that a type checker can see it. The numbers are the
+bank's — the expression *is* the bank, run over the column polars hands it.
+
+**Every call warns**, with `polars_online.InMemoryExpressionWarning`, and
+this is why. Polars gives a stateful user expression its whole column at
+once — in the in-memory engine by definition, and in the streaming engine
+because a plugin is a `columnar-function` node: collect the input, call
+once, re-emit. Nothing a plugin does can change that; it is polars'
+expression contract, which has no way to say "call me per morsel, in order,
+and let me keep state". So wrapping the expression in a lazy query does not
+make it stream, and this pair, `ewridge` with 20 features on the same 12M-row
+file, is **7.3 GB against 1.35 GB**, not a matter of taste:
+
+```python
+lf.with_columns(                                   # O(data): the stream is collected
+    pl.col("ret").online.ewridge(                  #   first, then the plugin is called
+        features=["signal_a"], clock="ts", halflife=600.0, max_dclock=300.0,
+    ).over("bond_id")
+).sink_parquet("fitted.parquet")
+
+lf.online.fit_predict([spec]).sink_parquet("fitted.parquet")   # O(chunk): the bank is a
+                                                               #   source the engine pulls
+```
+
+Both produce the same numbers. The first grows with the file; the second
+does not (*Which spelling streams*, at the top). The warning is a
+`UserWarning`, shown by default wherever the call is made — a
+`DeprecationWarning` would be hidden outside `__main__`, which is exactly
+the pipeline module where the difference matters. Using the expression on a
+frame in memory on purpose is fine; say so once:
+
+```python
+import warnings
+
+warnings.filterwarnings("ignore", category=po.InMemoryExpressionWarning)
+```
+
+The warning would go, and the expression become the streaming spelling too,
+if polars ever ran a user expression per morsel, in order, with state.
+[`docs/PLAN.md`](docs/PLAN.md) §6 has the design and that condition.
 
 ## License
 

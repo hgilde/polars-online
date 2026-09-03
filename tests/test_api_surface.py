@@ -41,10 +41,7 @@ def describe_api() -> str:
     w("")
 
     w("[package]")
-    # `online` is exported only in a build with the dormant `expr-plugin`
-    # feature (docs/PLAN.md section 6); it is pinned under its own heading
-    # below so the snapshot is the same in both builds.
-    for name in sorted(set(po.__all__) - {"online"}):
+    for name in sorted(po.__all__):
         w(f"  {name}")
     w(f"  schema_version = {po.schema_version()}")
     w("")
@@ -79,14 +76,9 @@ def describe_api() -> str:
             w(f"  {name}")
     w("")
 
-    # Dormant (docs/PLAN.md section 6): registered as `pl.col(...).online`
-    # only in a build with the `expr-plugin` feature. Rendered from the class
-    # so the snapshot is the same in both builds and the surface stays pinned.
-    from polars_online import _expr
-
-    w("[expression namespace]  # dormant; pl.col(...).online.<method> with --features expr-plugin")
-    w("  online  # po.online(expr), exported only in that build")
-    for name in sorted(dir(_expr.OnlineNamespace)):
+    w("[expression namespace]  # pl.col(...).online.<method>")
+    ns = pl.col("x").online
+    for name in sorted(dir(ns)):
         if not name.startswith("_"):
             w(f"  {name}")
     w("")
