@@ -921,10 +921,11 @@ pub struct FieldMeta {
     pub columns: Option<Vec<String>>,
     /// The polars dtype the field is materialized with, as its string form
     /// (`f64`, `bool`, `str`, `list[f64]`). Set from `src`, so it is the same
-    /// table `assemble` fills the buffers from; the expression plugin declares
-    /// its output struct from [`FieldMeta::dtype`] (docs/IMPROVEMENTS.md C1 —
-    /// a name-prefix guess there once declared `drift_*` as `f64` while the
-    /// bank produced `bool`, and polars refused the struct).
+    /// table `assemble` fills the buffers from; the (dormant) expression
+    /// plugin declares its output struct from [`FieldMeta::dtype`]
+    /// (docs/IMPROVEMENTS.md C1 — a name-prefix guess there once declared
+    /// `drift_*` as `f64` while the bank produced `bool`, and polars refused
+    /// the struct).
     pub dtype: String,
     /// Which assembled buffer, and where in it, this field's values come from.
     /// Private and not serialized: it is how `assemble` walks this schema

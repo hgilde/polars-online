@@ -25,6 +25,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from expr_plugin import requires_expr_plugin
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -455,6 +456,7 @@ class TestRunnerErrorPaths:
         assert not [p for p in tmp_path.iterdir() if ".tmp" in p.name], "temporary left behind"
 
 
+@requires_expr_plugin
 class TestExpressionSpecCache:
     """P5 added a thread-local parsed-spec cache keyed by the kwargs JSON. Two
     different specs evaluated on the same thread must not bleed into each

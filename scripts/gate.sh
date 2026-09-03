@@ -29,8 +29,11 @@ $(echo "$out" | tail -25 | sed 's/^/    /')"
 }
 
 step "cargo fmt"   cargo fmt --all -- --check
-step "cargo clippy" cargo clippy --workspace --all-targets -- -D warnings
-step "cargo test"   cargo test --workspace
+# `--all-features` keeps the dormant expression plugin (online-py's
+# `expr-plugin`, docs/PLAN.md section 6) compiling and linted, though the
+# wheel below is built without it.
+step "cargo clippy" cargo clippy --workspace --all-targets --all-features -- -D warnings
+step "cargo test"   cargo test --workspace --all-features
 step "ruff format"  uv run ruff format --check .
 step "ruff check"   uv run ruff check .
 step "mypy"         uv run mypy

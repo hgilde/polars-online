@@ -6,6 +6,7 @@ import pytest
 
 import polars_online as po
 from data import synthetic
+from expr_plugin import requires_expr_plugin
 
 
 def _spec(**kw):
@@ -82,7 +83,7 @@ def test_out_of_sample_on_noise():
     assert abs(ic) < 0.06, f"IC {ic}: predictions are not out-of-sample"
 
 
-def test_chunk_invariance_and_expression_equality():
+def test_chunk_invariance():
     df, _ = synthetic(seed=45, n_groups=2, n_rows=200, k=3, null_frac=0.0)
     spec = _spec(group="group", clock="t", max_dclock=50.0, weight="w")
     one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
@@ -95,6 +96,13 @@ def test_chunk_invariance_and_expression_equality():
     keep = [c for c in one.columns if not c.startswith("coef")]
     assert one.select(keep).equals(many.select(keep), null_equal=True)
 
+
+@requires_expr_plugin
+def test_expression_equals_bank():
+    df, _ = synthetic(seed=45, n_groups=2, n_rows=200, k=3, null_frac=0.0)
+    spec = _spec(group="group", clock="t", max_dclock=50.0, weight="w")
+    one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+    keep = [c for c in one.columns if not c.startswith("coef")]
     expr = df.select(
         pl.col("y0")
         .online.kalman(

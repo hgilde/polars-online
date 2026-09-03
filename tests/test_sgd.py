@@ -9,6 +9,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from expr_plugin import requires_expr_plugin
 
 
 def _spec(**kw):
@@ -146,7 +147,7 @@ class TestSchedules:
 
 
 class TestPlumbing:
-    def test_chunk_invariance_and_expression_equality(self):
+    def test_chunk_invariance(self):
         df = _linear(n=400, seed=9)
         spec = _spec()
         one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
@@ -159,6 +160,12 @@ class TestPlumbing:
         keep = [c for c in one.columns if not c.startswith("coef")]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
 
+    @requires_expr_plugin
+    def test_expression_equals_bank(self):
+        df = _linear(n=400, seed=9)
+        spec = _spec()
+        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        keep = [c for c in one.columns if not c.startswith("coef")]
         expr = df.select(
             pl.col("y0").online.sgd(
                 features=["x0", "x1"],

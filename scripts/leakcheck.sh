@@ -30,8 +30,9 @@ for i in range(300):
     df = df.with_columns(y=pl.col("x0") * 2)
     out = po.ModelBank([spec]).fit_predict(df)
     _ = out["m"].struct.field("pred_y").sum()
-    df.with_columns(pl.col("y").online.ewridge(features=["x0"], halflife=50.0,
-                                               min_periods=2.0))
+    if po.has_expr_plugin():   # the dormant expression path, when it is built
+        df.with_columns(pl.col("y").online.ewridge(features=["x0"], halflife=50.0,
+                                                   min_periods=2.0))
     if cat is None:
         cat = df.with_columns(c=pl.col("x1").cast(pl.String).cast(pl.Categorical))
     try:                       # the error path, where release is easiest to miss

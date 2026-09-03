@@ -26,6 +26,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from expr_plugin import requires_expr_plugin
 
 psutil = pytest.importorskip("psutil")
 PROC = psutil.Process(os.getpid())
@@ -87,6 +88,7 @@ class TestNothingLeaksAcrossTheBoundary:
         df = frame()
         assert_plateaus(lambda: po.ModelBank([SPEC]).fit_predict(df))
 
+    @requires_expr_plugin
     def test_expression_plugin(self):
         df = frame()
         assert_plateaus(
@@ -95,6 +97,7 @@ class TestNothingLeaksAcrossTheBoundary:
             )
         )
 
+    @requires_expr_plugin
     def test_plugin_over_groups(self):
         """The one case with a real one-time step (~6 MB of thread stacks and
         arena), which is exactly why the primitive tolerates a step.
@@ -143,6 +146,7 @@ class TestNothingLeaksAcrossTheBoundary:
 
         assert_plateaus(raises)
 
+    @requires_expr_plugin
     def test_the_plugin_error_path_still_releases(self):
         """The same question for the other FFI path, where it is sharper: the
         engine has already exported the inputs when our plugin returns an
@@ -297,6 +301,7 @@ class TestNothingCrashes:
                 bank.fit_predict(allnull)
         """)
 
+    @requires_expr_plugin
     def test_interleaved_banks_and_plugin(self):
         """Both FFI paths alive at once, each holding exports from the other."""
         run_isolated("""

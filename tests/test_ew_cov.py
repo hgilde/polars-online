@@ -9,6 +9,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from expr_plugin import requires_expr_plugin
 
 
 def _df(n=3000, seed=0, rho=0.6):
@@ -129,6 +130,7 @@ class TestPlumbing:
         rest = df.slice(150, 150)
         assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
 
+    @requires_expr_plugin
     def test_expression_equals_bank(self):
         df = _df(n=400).with_columns(g=pl.Series(["p", "q"] * 200))
         spec = _spec(group="g")

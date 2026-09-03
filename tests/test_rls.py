@@ -6,6 +6,7 @@ import polars as pl
 
 import polars_online as po
 from data import synthetic
+from expr_plugin import requires_expr_plugin
 from reference import compute_dclock, rls_ref
 
 HL = 300.0
@@ -89,6 +90,7 @@ class TestRls:
         assert row["pred_y0"] is not None
         assert row["resid_y0"] is None
 
+    @requires_expr_plugin
     def test_expression_equals_bank(self):
         df, _ = synthetic(seed=23, n_groups=2, n_rows=120, k=2, null_frac=0.0)
         kw = dict(clock="t", halflife=HL, max_dclock=MAXD, weight="w", ridge=0.5, min_periods=5.0)

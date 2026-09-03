@@ -1,11 +1,19 @@
-"""The `online` expression namespace (docs/PLAN.md section 6).
+"""The `online` expression namespace (docs/PLAN.md section 6) -- **dormant**.
 
 ``pl.col("y").online.ewridge(features=[...], halflife=...)`` runs one spec over
 the column the expression receives; use ``.over(group)`` for per-group streams.
 Features are column names or named expressions (``pl.col("x").shift(1)
 .alias("x_lag")``), evaluated per group under ``.over``. The implementation is
-the model bank itself, so expression == bank by construction. Grids are allowed
-but produce wide structs; the bank is the recommended surface for grids.
+the model bank itself, so expression == bank by construction.
+
+It is not built by default. Polars hands a stateful user expression its whole
+column in either engine, so this spelling is O(data) where ``lf.online
+.fit_predict`` and ``po.run`` are O(chunk) -- and one set of numbers with two
+memory profiles confused users. The namespace is registered, and ``po.online``
+exported, only when the native module was built with ``--features
+expr-plugin``; this module stays importable without it so the static checks
+(``tests/test_kwargs_typing.py``, ``tests/test_model_registry.py``) keep it
+from rotting.
 """
 
 from __future__ import annotations
@@ -30,10 +38,18 @@ from polars_online._kwargs import (
     RlsKwargs,
     SgdKwargs,
 )
+from polars_online._polars_online import has_expr_plugin
 
 _PLUGIN_PATH = Path(__file__).parent
 
-__all__ = ["Feature", "OnlineNamespace", "online"]
+__all__ = ["Feature", "OnlineNamespace", "has_expr_plugin", "online"]
+
+_NOT_BUILT = (
+    "polars_online: the expression namespace is not built into this install "
+    "(a dormant feature; docs/PLAN.md section 6). Write the same model as a "
+    "spec: `lf.online.fit_predict([spec])` for a stream, or "
+    "`po.fit_predict(df, [spec])` for a frame in memory."
+)
 
 
 Feature = str | pl.Expr
@@ -78,6 +94,10 @@ def _run(spec: dict[str, Any], target_expr: pl.Expr, feature_exprs: list[pl.Expr
             f"stream per group with .over({spec['group']!r}) instead"
         )
         raise TypeError(msg)
+    if not has_expr_plugin():
+        # Without the symbol, polars would fail at collect time with a dlopen
+        # error naming `_polars_plugin_online_run`; say what is going on instead.
+        raise RuntimeError(_NOT_BUILT)
     # ew_cov has no target: its first feature *is* the calling column, so it
     # must not be passed twice.
     is_ew_cov = spec["model"]["type"] == "ew_cov"
@@ -112,7 +132,6 @@ def _run(spec: dict[str, Any], target_expr: pl.Expr, feature_exprs: list[pl.Expr
     return out.alias(target_expr.meta.output_name())
 
 
-@pl.api.register_expr_namespace("online")
 class OnlineNamespace:
     """Online models over the expression's column as a target.
 
@@ -121,6 +140,9 @@ class OnlineNamespace:
     expression's input to do so -- so in a plan the column is O(data). For a
     stream, ``lf.online.fit_predict(specs)`` is the same bank as a plan that
     stays O(chunk) (:mod:`polars_online._frame`).
+
+    Registered as ``pl.Expr.online`` only in a build with the ``expr-plugin``
+    feature (module docstring).
     """
 
     def __init__(self, expr: pl.Expr) -> None:
@@ -326,3 +348,7 @@ def online(expr: pl.Expr) -> OnlineNamespace:
         df.with_columns(po.online(pl.col("y")).ewridge(features=["x0"], halflife=10.0))
     """
     return OnlineNamespace(expr)
+
+
+if has_expr_plugin():
+    pl.api.register_expr_namespace("online")(OnlineNamespace)

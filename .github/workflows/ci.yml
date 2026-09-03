@@ -89,7 +89,7 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
-        run: uv run cargo clippy --workspace --all-targets -- -D warnings
+        run: uv run cargo clippy --workspace --all-targets --all-features -- -D warnings
         env:
           UV_NO_SYNC: "1"
       - name: ruff format
@@ -192,8 +192,11 @@ jobs:
 
       - run: uv sync
 
+      # `--all-features` keeps the dormant expression plugin (online-py's
+      # `expr-plugin`, docs/PLAN.md section 6) compiling; the wheel is built
+      # without it.
       - name: cargo test
-        run: uv run cargo test --workspace
+        run: uv run cargo test --workspace --all-features
 
       - name: disk after the build
         if: always() && runner.os == 'Linux'

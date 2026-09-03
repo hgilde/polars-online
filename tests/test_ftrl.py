@@ -6,6 +6,7 @@ import pytest
 
 import polars_online as po
 from data import synthetic
+from expr_plugin import requires_expr_plugin
 
 
 def _pred(out, col="pred_y0"):
@@ -91,7 +92,7 @@ def test_forgets_a_regime_flip_on_the_clock():
     assert np.nanmean(hi) < 0.4, "model did not follow the flipped regime"
 
 
-def test_chunk_invariance_and_expression_equality():
+def _plumbing_case():
     df, _ = synthetic(seed=64, n_groups=2, n_rows=200, k=2, null_frac=0.0)
     df = df.with_columns(y0=(pl.col("y0") > 0).cast(pl.Float64))
     kw = dict(
@@ -101,7 +102,11 @@ def test_chunk_invariance_and_expression_equality():
         max_dclock=50.0,
         min_periods=10.0,
     )
-    spec = po.spec.ftrl("m", targets=["y0"], group="group", **kw)
+    return df, kw, po.spec.ftrl("m", targets=["y0"], group="group", **kw)
+
+
+def test_chunk_invariance():
+    df, _, spec = _plumbing_case()
     one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
     bank = po.ModelBank([spec])
     many = (
@@ -112,6 +117,12 @@ def test_chunk_invariance_and_expression_equality():
     keep = [c for c in one.columns if not c.startswith("coef")]
     assert one.select(keep).equals(many.select(keep), null_equal=True)
 
+
+@requires_expr_plugin
+def test_expression_equals_bank():
+    df, kw, spec = _plumbing_case()
+    one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+    keep = [c for c in one.columns if not c.startswith("coef")]
     expr = df.select(pl.col("y0").online.ftrl(**kw).over("group")).unnest("y0")
     assert one.select(keep).equals(expr.select(keep), null_equal=True)
 
@@ -212,7 +223,7 @@ class TestSquaredLoss:
         ic = np.corrcoef(p[m], df["y0"].to_numpy()[m])[0, 1]
         assert abs(ic) < 0.06
 
-    def test_chunk_invariance_and_expression_equality(self):
+    def test_chunk_invariance(self):
         df = self._data(n=400, seed=7)
         spec = self._spec()
         one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
@@ -225,6 +236,12 @@ class TestSquaredLoss:
         keep = [c for c in one.columns if not c.startswith("coef")]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
 
+    @requires_expr_plugin
+    def test_expression_equals_bank(self):
+        df = self._data(n=400, seed=7)
+        spec = self._spec()
+        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+        keep = [c for c in one.columns if not c.startswith("coef")]
         expr = df.select(
             pl.col("y0").online.ftrl(
                 features=["x0", "x1", "x2"],

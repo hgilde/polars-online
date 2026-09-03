@@ -1,14 +1,13 @@
 # polars-online
 
 Streaming / online regression models for [Polars](https://pola.rs). A Rust core
-exposed three ways with identical numerics:
+exposed two ways with identical numerics:
 
-1. **an expression plugin** — `pl.col("y").online.ewridge(...)`, with `.over(group)`,
-   for a frame in memory (polars hands it the whole column, so it is O(data));
-2. **a chunk-fed `ModelBank`** — holds O(state), not O(data) — and, as a plan,
+1. **a chunk-fed `ModelBank`** — holds O(state), not O(data) — and, as a plan,
    **`lf.online.fit_predict(specs)`**: a `LazyFrame` that streams through the
-   bank when it runs, so a query stays O(chunk);
-3. **a streaming runner** — `po.run(...)` or the standalone `online` CLI:
+   bank when it runs, so a query stays O(chunk) (`df.online.fit_predict(specs)`
+   for a frame in memory);
+2. **a streaming runner** — `po.run(...)` or the standalone `online` CLI:
    parquet, ipc, csv or ndjson in and out, config from TOML.
 
 Built for ordered event data (one stream per group) that does not fit in memory:
@@ -18,77 +17,61 @@ irregular clocks, session breaks, gaps, nulls, and per-group state.
 import polars as pl
 import polars_online as po
 
-df.with_columns(                              # a frame in memory: the expression
-    pl.col("ret").online.ewridge(
-        features=["signal_a", "signal_b"],
-        clock="ts", halflife=600.0, max_dclock=300.0,
-    ).over("bond_id")
-)
-
 spec = po.spec.ewridge("ridge", targets=["ret"], features=["signal_a", "signal_b"],
                        clock="ts", halflife=600.0, max_dclock=300.0, group="bond_id")
-(pl.scan_parquet("ticks/*.parquet")           # a stream: the same bank, as a plan
+
+(pl.scan_parquet("ticks/*.parquet")           # a stream: the bank, as a plan
    .online.fit_predict([spec])
    .filter(pl.col("ridge").struct.field("n_eff") > 100)
    .sink_parquet("fitted.parquet"))           # O(chunk) end to end
+
+df.online.fit_predict([spec])                 # a frame in memory: the same bank, eagerly
 ```
 
 ## Which spelling streams
 
-One model, one set of numbers — but **the syntax decides the memory**, because
-it decides where the model sits in polars' plan. Peak footprint on the same
-file, `ewridge` with 20 features, parquet in and out:
+All of them. One model, one set of numbers, and the memory is O(chunk)
+however the call is spelled — peak footprint on the same file, `ewridge`
+with 20 features, parquet in and out:
 
 | what you write | 3M rows | 12M rows | |
 |---|---:|---:|---|
-| `df.with_columns(pl.col("y").online.ewridge(...))` | 2.0 GB | **7.3 GB** | **O(data)** — a frame in memory |
 | `lf.online.fit_predict([spec])` | 0.90 GB | 1.35 GB | **O(chunk)** — a query over a stream |
 | `for chunk in lf.collect_batches(): bank.fit_predict(chunk)` | 0.80 GB | 1.24 GB | O(state + chunk) — your own loop |
 | `po.run(input=..., output=...)`, `online --config` | 0.95 / 0.73 GB | 1.41 / 0.75 GB | O(state + chunk) — file in, file out |
 
-The bottom three rows are flat, and what growth they show is the allocator
-holding freed pages rather than live data: told to release them, all three sit
-at 0.74–0.86 GB at 12M rows, nearly all of it polars' parquet read-ahead
-(0.31–0.46 GB with `POLARS_ROW_GROUP_PREFETCH_SIZE=1`). The first row is live
-data, and it grows with the file.
-
-**Wrapping the expression in a lazy query does not make it stream.** Polars
-hands a user expression its whole column — in the in-memory engine by
-definition, and in the streaming engine because a plugin is a
-`columnar-function` node: collect the input, call once, re-emit. So this pair
-is 7.3 GB against 1.35 GB, not a matter of taste:
-
-```python
-lf.with_columns(                                   # O(data): the stream is collected
-    pl.col("ret").online.ewridge(                  #   first, then the plugin is called
-        features=["signal_a"], clock="ts", halflife=600.0, max_dclock=300.0,
-    ).over("bond_id")
-).sink_parquet("fitted.parquet")
-
-lf.online.fit_predict([spec]).sink_parquet("fitted.parquet")   # O(chunk): the bank is a
-                                                               #   source the engine pulls
-```
-
-Use the expression when the frame is already in memory — it is the shortest
-thing to write and the numbers are identical. Use the plan for a stream.
-Everything after the bank — filters, joins, group-bys, sinks — is polars' own
-and streams as polars streams it. All of it measured in
+All three are flat, and what growth they show is the allocator holding
+freed pages rather than live data: told to release them, all three sit at
+0.74–0.86 GB at 12M rows, nearly all of it polars' parquet read-ahead
+(0.31–0.46 GB with `POLARS_ROW_GROUP_PREFETCH_SIZE=1`). Everything after
+the bank — filters, joins, group-bys, sinks — is polars' own and streams as
+polars streams it. All of it measured in
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) §11.
 
-**This is polars' rule, not ours**, which is the reassuring part: its own
-windowed operations split the same way, and the rule is whether the streaming
-engine has a node for that spelling. On the same 12M rows,
-`pl.col("y").mean().rolling(index_column="t", period="1000i")` peaks at
-0.25 GB and the identical expression under **`.over("group")` at 6.5 GB**;
-`lf.rolling(index_column="t", period="1000i").agg(...)` at 0.28 GB and the
-same call with **`group_by="group"` at 1.7 GB**. Both collecting spellings
-land on the engine's `in-memory-map` node — collect, run in memory, re-emit —
-the same class of node a plugin gets (`columnar-function`: collect, call
-once, re-emit), because the plugin contract has no way to say "call me per
-morsel, in order, and let me keep state". Note where
-that leaves per-group work: in polars, the *grouped* window is the collecting
-spelling; in a bank, `group=` is one accumulator per group and stays
-O(state).
+What is deliberately *not* here is an expression form — a model written as
+`pl.col("y").online.ewridge(...)` inside `with_columns`. Polars hands a
+user expression its whole column, in the in-memory engine by definition and
+in the streaming engine because a plugin is a `columnar-function` node
+(collect the input, call once, re-emit), so that spelling measured 7.3 GB
+where the plan above measures 1.35 GB — the same numbers with two memory
+profiles, which confused more than it helped. The code is kept as a dormant
+build feature for a later look; [`docs/PLAN.md`](docs/PLAN.md) §6 has the
+design and how to build it.
+
+**This is polars' rule, not ours**, and it decides what streams *around* the
+bank too: polars' own windowed operations split the same way, and the rule
+is whether the streaming engine has a node for that spelling. On the same
+12M rows, `pl.col("y").mean().rolling(index_column="t", period="1000i")`
+peaks at 0.25 GB and the identical expression under **`.over("group")` at
+6.5 GB**; `lf.rolling(index_column="t", period="1000i").agg(...)` at 0.28 GB
+and the same call with **`group_by="group"` at 1.7 GB**. Both collecting
+spellings land on the engine's `in-memory-map` node — collect, run in
+memory, re-emit — the same class of node a user expression gets
+(`columnar-function`: collect, call once, re-emit), because polars'
+expression contract has no way to say "call me per morsel, in order, and
+let me keep state". Note where that leaves per-group work: in polars, the
+*grouped* window is the collecting spelling; in a bank, `group=` is one
+accumulator per group and stays O(state).
 
 ## Two guarantees
 
@@ -116,48 +99,9 @@ links the Rust half of Polars, so nothing beyond `polars` itself has to be
 present at run time. `numpy` is an optional extra, needed only by
 `ModelBank.gram()`.
 
-## The three usage modes
+## The two usage modes
 
-### 1. Expression plugin
-
-Runs one spec over the column it receives, so `.over(group)` gives per-group
-streams. Output is a struct column.
-
-```python
-out = df.with_columns(
-    pl.col("y").online.ewridge(
-        features=["x0", "x1", pl.col("y").shift(1).alias("y_lag")],
-        clock="t", halflife=600.0, max_dclock=300.0,
-        session="session", session_gap=1800.0,
-    ).over("group").alias("fit")
-)
-out.select(pl.col("fit").struct.field("pred_y"), pl.col("fit").struct.field("n_eff"))
-```
-
-`pl.col("y").online` is attached when `polars_online` is imported, which no
-type checker can see; `po.online(pl.col("y"))` is the same namespace, visibly
-typed, and every keyword above is checked and completed there and in the
-`po.spec` builders.
-
-Features are column names or named expressions; under `.over` an expression is
-evaluated per group, so the lag above never crosses a group boundary. Groups
-run in parallel (the inputs travel as one packed struct, which is the polars
-path that spreads groups over threads — see docs/PERFORMANCE.md P5). Grids are
-allowed but produce wide structs; the bank is the better surface for grids.
-
-**This is the in-memory surface** (*Which spelling streams*, above). Polars
-calls the plugin once with the whole column, so its memory is O(data), and
-putting it in a `LazyFrame` with `collect(engine="streaming")` or
-`sink_parquet` does not change that: the streaming engine has no streaming
-node for a user expression — a plugin is a `columnar-function` node, which
-collects its input, calls once, and re-emits (the engine's own `rolling`,
-`ewm_*` and `cum_*` get dedicated windowed nodes; nothing a user writes
-does). For a stream, write the same thing as a plan —
-`lf.online.fit_predict([spec])`, next section — which is the bank as a polars
-source and stays O(chunk) (docs/PERFORMANCE.md §11, which also explains the
-number a Python process reports).
-
-### 2. `ModelBank` (chunk-fed)
+### 1. `ModelBank` (chunk-fed)
 
 ```python
 spec = po.spec.ewridge(
@@ -170,7 +114,7 @@ bank = po.ModelBank([spec])
 
 for chunk in lf.collect_batches():        # never materializes the whole stream
     out = bank.fit_predict(chunk)
-    ...                                    # (or po.run(input=lf, output=...) -- §3: the same
+    ...                                    # (or po.run(input=lf, output=...) -- §2: the same
                                            #  loop, pipelined, written straight to a file)
 
 bank.save("bank.state")                    # atomic: temp file, then rename
@@ -258,7 +202,7 @@ and `po.predict(frame, bank)` are both spelled for a type checker, which
 cannot see a registered namespace. Rides on polars' IO-plugin interface
 (`register_io_source`), which polars documents but marks unstable.
 
-### 3. Streaming runner (Python or CLI)
+### 2. Streaming runner (Python or CLI)
 
 The same bank as a three-stage pipeline — read, fit, write, one chunk in
 flight per stage — so memory is O(state + chunk) however long the stream is.
@@ -401,7 +345,7 @@ Every model takes the same stream parameters:
 | `weight` | row weight column |
 | `min_periods` | in `n_eff` units; outputs are null until reached. A list gives one threshold per target — warmup gates output, not learning |
 | `coef_every` | 0 = never; coefficients are also emitted on each chunk's last row |
-| `group` | bank/CLI only; one state per key (the expression API uses `.over()`) |
+| `group` | one state per key |
 
 Per-row decay is `λ = 0.5 ** (Δclock / halflife)`, and `n_eff` is the
 exponentially weighted observation count under the same decay. It is the weight
@@ -674,8 +618,7 @@ throughput rises with the group count rather than falling: **6.0M rows/s** at
 k=20 over 64 groups, scaling 5.2× from one thread to eight and 6.6× to
 fourteen. A bank of several specs is one flat task pool too — eight
 single-group specs over 300k rows take 118 ms, against 685 ms if they ran one
-at a time. The expression plugin under `.over(group)` parallelizes the same
-way: 12.2M rows/s at k=20 over 1000 groups.
+at a time.
 
 **Memory.** The bank and the runner hold the state, the chunks in flight
 (three, so `chunk_rows` is the knob) and whatever polars' reader prefetches:
@@ -683,9 +626,8 @@ on a 14-thread machine the parquet reader front-loads ~0.7 GB of decoded
 row groups whatever the file's length, and `POLARS_ROW_GROUP_PREFETCH_SIZE=1`
 takes the CLI to 0.15 GB at the same speed. Measured flat from 3M to 12M
 rows in docs/PERFORMANCE.md §11, `lf.online.fit_predict` included (0.78 GB
-live at 12M rows, 0.37 GB with the prefetch at 1). The expression plugin is
-the O(data) surface — *Which spelling streams*, at the top, is the whole
-comparison in one table.
+live at 12M rows, 0.37 GB with the prefetch at 1). *Which spelling
+streams*, at the top, is the whole comparison in one table.
 
 Where the time goes, and what to reach for, is in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
@@ -735,34 +677,30 @@ The *Rust* pin is exact and the wheel links it statically; the *runtime*
 requirement is a range, because the two copies of Polars never meet. The floor
 is `LazyFrame.collect_batches`, which `po.run` and `lf.online.fit_predict`
 read with and py-polars added in 1.34.0; the whole suite passes on 1.34.0,
-1.38.1 and 1.44.1 with identical numbers. `ModelBank` and the expression
-plugin alone work from 1.28.1 (tested across 17 releases), and below that the
-failure is a clean `AttributeError` on `PySeries._export` rather than anything
-subtle. The matrix is in `docs/RELEASE-READINESS.md`.
+1.38.1 and 1.44.1 with identical numbers. `ModelBank` alone works from
+1.28.1 (tested across 17 releases), and below that the failure is a clean
+`AttributeError` on `PySeries._export` rather than anything subtle. The
+matrix is in `docs/RELEASE-READINESS.md`.
 
 This is stricter than the mechanism strictly requires, and it is worth being
 precise about why, because "pinned" usually implies "fragile" and here it does
 not.
 
-Both the expression plugin and `ModelBank` move data across the boundary
-through the **Arrow C Data Interface** — `SeriesExport` is a `#[repr(C)]`
-struct of `ArrowSchema` and `ArrowArray` pointers, the same cross-language ABI
-pyarrow and DuckDB use. `PyDataFrame` is not special-cased: it extracts
-column-by-column as `PySeries`, each through `import_series`. This package does
-*not* use `PyExpr` or `PyLazyFrame`, which are the genuinely version-sensitive
-types that cross as serialized query plans.
+`ModelBank` moves data across the boundary through the **Arrow C Data
+Interface** — `SeriesExport` is a `#[repr(C)]` struct of `ArrowSchema` and
+`ArrowArray` pointers, the same cross-language ABI pyarrow and DuckDB use.
+`PyDataFrame` is not special-cased: it extracts column-by-column as
+`PySeries`, each through `import_series`. This package does *not* use
+`PyExpr` or `PyLazyFrame`, which are the genuinely version-sensitive types
+that cross as serialized query plans.
 
-That ABI is **negotiated, not assumed**. The plugin exports
-`_polars_plugin_get_version()`, and Polars checks it at load time:
-
-```
-ComputeError: this polars engine doesn't support plugin version: 0-1
-```
-
-**So a mismatched Polars is a clear error, not a crash.** There is even a
-dedicated check for layout drift (*"This Polars' version has a different
-'binary/string' layout"*). The pin exists so you never see those messages, not
-because something worse waits behind them.
+The interface is versioned by name (`polars_ffi::version_0`), and the only
+thing asked of the Python side is `PySeries._export` / `_import`: a Polars
+without them fails with a clean `AttributeError` before any data moves, and
+one with them ran the whole matrix in `docs/RELEASE-READINESS.md` — one
+wheel, 17 releases — with identical numbers. **So a mismatched Polars is a
+clear error, not a crash.** The pin exists so you never see that message,
+not because something worse waits behind it.
 
 ### What the pin costs you
 
@@ -829,7 +767,7 @@ pos = po.spec.coef_index(grid).filter(
 Both come from the same Rust code that renders the names, so they cannot
 drift from the strings. The index also carries each field's `dtype` (`f64`,
 `bool` for `drift_*`, `str` for `selected_*`, `list[f64]` for `coef`), which
-is the declaration the expression plugin makes to polars.
+is the schema the bank declares to polars before the first row is read.
 
 One sharp edge to know: a *target named* `y__r0.5` produces the same field
 string as a ridge grid on `y` would. Nothing breaks — the struct is still

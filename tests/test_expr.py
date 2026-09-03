@@ -7,6 +7,9 @@ import pytest
 
 import polars_online as po
 from data import synthetic
+from expr_plugin import requires_expr_plugin
+
+pytestmark = requires_expr_plugin
 
 COMMON = dict(
     clock="t",

@@ -6,6 +6,7 @@ import pytest
 
 import polars_online as po
 from data import synthetic
+from expr_plugin import requires_expr_plugin
 
 
 def _spec(path, **kw):
@@ -87,7 +88,7 @@ def test_selection_prefers_penalty_when_features_are_noise():
     assert (sel == 10.0).mean() > 0.8
 
 
-def test_chunk_invariance_and_expression_equality():
+def test_chunk_invariance():
     df, _ = synthetic(seed=34, n_groups=2, n_rows=180, k=3, null_frac=0.0)
     spec = _spec([0.5, 0.0], group="group", halflife=200.0)
     one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
@@ -101,6 +102,13 @@ def test_chunk_invariance_and_expression_equality():
     keep = [c for c in one.columns if not c.startswith("coef")]
     assert one.select(keep).equals(many.select(keep), null_equal=True)
 
+
+@requires_expr_plugin
+def test_expression_equals_bank():
+    df, _ = synthetic(seed=34, n_groups=2, n_rows=180, k=3, null_frac=0.0)
+    spec = _spec([0.5, 0.0], group="group", halflife=200.0)
+    one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+    keep = [c for c in one.columns if not c.startswith("coef")]
     expr = df.select(
         pl.col("y0")
         .online.lasso(

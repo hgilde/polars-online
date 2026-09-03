@@ -6,6 +6,7 @@ import pytest
 
 import polars_online as po
 from data import synthetic
+from expr_plugin import requires_expr_plugin
 
 
 def _pred(out, col="pred_y0"):
@@ -123,7 +124,7 @@ def test_out_of_sample_on_noise():
     assert abs(ic) < 0.06
 
 
-def test_chunk_invariance_and_expression_equality():
+def _plumbing_case():
     df, _ = synthetic(seed=62, n_groups=2, n_rows=200, k=2, null_frac=0.0)
     kw = dict(
         targets=["y0"],
@@ -134,7 +135,11 @@ def test_chunk_invariance_and_expression_equality():
         min_periods=10.0,
         huber_delta=1.5,
     )
-    spec = po.spec.huber("m", group="group", **kw)
+    return df, kw, po.spec.huber("m", group="group", **kw)
+
+
+def test_chunk_invariance():
+    df, _, spec = _plumbing_case()
     one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
     bank = po.ModelBank([spec])
     many = (
@@ -145,6 +150,12 @@ def test_chunk_invariance_and_expression_equality():
     keep = [c for c in one.columns if not c.startswith("coef")]
     assert one.select(keep).equals(many.select(keep), null_equal=True)
 
+
+@requires_expr_plugin
+def test_expression_equals_bank():
+    df, kw, spec = _plumbing_case()
+    one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
+    keep = [c for c in one.columns if not c.startswith("coef")]
     expr = df.select(
         pl.col("y0").online.huber(**{k: v for k, v in kw.items() if k != "targets"}).over("group")
     ).unnest("y0")

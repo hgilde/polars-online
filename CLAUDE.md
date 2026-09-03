@@ -1,8 +1,12 @@
 # polars-online
 
 Streaming / online regression models for Polars. Rust core, exposed as
-(1) a Polars expression plugin, (2) a chunk-fed Python "model bank",
-(3) a standalone Rust CLI for deployment. Runs on data that does not fit in memory.
+(1) a chunk-fed Python "model bank", also as a streaming `LazyFrame` plan,
+(2) a standalone Rust CLI for deployment. Runs on data that does not fit in memory.
+A Polars expression plugin exists too, dormant behind the off-by-default
+`expr-plugin` cargo feature (`docs/PLAN.md` §6): it is O(data) by polars'
+rules, so it is out of the wheel and the README until polars can stream a
+stateful user expression.
 
 **Read `docs/PLAN.md` before doing anything.** It is the source of truth for the
 design and the task list. Tick tasks off there as they are completed; add
@@ -23,8 +27,9 @@ decisions there, not in chat.
 crates/online-core/    pure Rust models, NO polars dependency, exhaustively unit-tested
 crates/online-polars/  Rust-side integration: model bank over Polars DataFrames / parquet streams
 crates/online-cli/     binary: parquet in -> parquet out, config from TOML
-crates/online-py/      pyo3 + pyo3-polars: expression plugin + Python ModelBank class
-python/polars_online/  Python package (thin wrappers, expression namespace registration)
+crates/online-py/      pyo3 + pyo3-polars: Python ModelBank class, runner entry point
+                       (+ the dormant expression plugin under `--features expr-plugin`)
+python/polars_online/  Python package (thin wrappers, frame namespace registration)
 tests/                 pytest (Python) — integration, invariance, oracle tests
 docs/PLAN.md           design + task list
 docs/EXTENDING.md      every place a new model touches, with the test that catches each omission
@@ -102,10 +107,12 @@ Polars' extension mechanism is a `dlopen`ed C ABI by design, and nothing on
 crates.io publishes a `dylib` to link against anyway (0 of our 453
 dependencies; `crate-type` is the publisher's choice).
 
-13. **Know which of the two interfaces a change rides on.** Polars supports two,
-    and only one carries a guarantee:
-    - **Expression plugin** (`online.ewridge(...)`) — the supported path, with a
-      MAJOR/MINOR handshake the loader checks before its first call.
+13. **Know which of the interfaces a change rides on.** Polars supports three,
+    and only one carries a guarantee — and that one is the dormant path:
+    - **Expression plugin** (`online.ewridge(...)`, `--features expr-plugin`
+      only) — the supported path, with a MAJOR/MINOR handshake the loader
+      checks before its first call. Dormant since 2026-09-03 because polars
+      hands it the whole column (`docs/PLAN.md` §6); the gate still compiles it.
     - **PyO3 extension types** (`PyDataFrame`/`PySeries`, i.e. `ModelBank`) —
       the README states these "are however only provided for convenience and
       **do not have stability guarantees** beyond that the latest definitions
@@ -119,12 +126,13 @@ dependencies; `crate-type` is the publisher's choice).
       source honours all three (`python/polars_online/_frame.py`).
 
     `polars>=1.34.0,<2` in `pyproject.toml` is therefore *measured* for all
-    three paths but *guaranteed* for none below the latest — see
-    `docs/RELEASE-READINESS.md`. Treat a `ModelBank` or IO-plugin break on a
-    new Polars as expected maintenance, not a surprise, and check those paths
-    first. The floor is `LazyFrame.collect_batches` (py-polars 1.34.0), which
-    `po.run` and the IO plugin read with; `ModelBank` and the expression
-    plugin alone work from 1.28.1.
+    three paths but *guaranteed* for none below the latest — and the wheel
+    ships only the two unguaranteed ones — see `docs/RELEASE-READINESS.md`.
+    Treat a `ModelBank` or IO-plugin break on a new Polars as expected
+    maintenance, not a surprise, and check those paths first. The floor is
+    `LazyFrame.collect_batches` (py-polars 1.34.0), which `po.run` and the IO
+    plugin read with; `ModelBank` (and the dormant expression plugin) alone
+    work from 1.28.1.
 
 ## Style
 
