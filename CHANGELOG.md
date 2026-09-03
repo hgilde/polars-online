@@ -9,6 +9,16 @@ carries breaking changes.
 
 ### Added
 
+- **A weekly native leak check in CI** (`.github/workflows/leakcheck.yml`,
+  PLAN task 18): `scripts/leakcheck.sh` under `leaks` on macOS and valgrind
+  on Linux, Mondays and on demand; nothing gates on it, a red scheduled run
+  is the report. Wiring it showed the script's earlier "0 leaks" was a blind
+  check — pymalloc's arenas are invisible to both tools — so it now runs
+  under `PYTHONMALLOC=malloc`, counts differentially (1 iteration against
+  1000) and has a control mode that leaks one object per iteration and must
+  be caught; the job runs the control too. What it cannot see, and says so:
+  memory from polars' allocator, i.e. the Rust side, which
+  `tests/test_ffi_memory.py` covers by RSS.
 - **An API reference, built from the docstrings with Sphinx** (`docs/reference/`;
   `uv run --group docs sphinx-build -W docs/reference docs/_build/html`), in
   the gate and CI with warnings as errors, and published to GitHub Pages

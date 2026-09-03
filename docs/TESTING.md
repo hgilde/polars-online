@@ -297,10 +297,18 @@ reference cycles holding a bank, empty/single-row/all-null frames, both FFI
 paths interleaved while each holds the other's exports, and pickle round-trips.
 
 `scripts/leakcheck.sh` goes further than RSS can — `leaks` on macOS walks the
-heap for unreachable blocks, valgrind on Linux. Current result on 300
-iterations of both paths plus the error path: **0 leaks for 0 total leaked
-bytes.** Not in `gate.sh`: it needs a live process and valgrind is ~50x slower.
-Run it after touching `crates/online-py` or the extraction path.
+malloc zones for unreachable blocks, valgrind on Linux — with two limits that
+took a deliberate leak each to find (2026-09-03). It sees Python objects only
+under `PYTHONMALLOC=malloc`: pymalloc's arenas are mmap'd, and against a
+128 MB refcount leak the default allocator reported "0 leaks", which is what
+the earlier "clean" result here was. It cannot see anything allocated through
+polars' allocator — every Rust-side allocation — so that side stays with
+`test_ffi_memory.py`. The count is differential (1 iteration against 1000;
+the interpreter leaves ~11k blocks unreachable at exit regardless) and the
+script has a control mode that leaks one object per iteration and must fail.
+Weekly in CI (`leakcheck.yml`), both platforms, control included. Not in
+`gate.sh`: it needs a live process and valgrind is ~50x slower. Run it after
+touching `crates/online-py` or the extraction path.
 
 Two findings worth recording, neither a leak:
 

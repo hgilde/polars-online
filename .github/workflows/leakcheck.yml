@@ -1,0 +1,89 @@
+# docs/PLAN.md task 18: the native leak check, weekly. tests/test_ffi_memory.py
+# watches RSS, so it needs a leak big enough to move it; scripts/leakcheck.sh
+# counts the blocks nothing references any more, however small, with `leaks`
+# on macOS and valgrind on Linux. Nothing gates on it -- it is scheduled, not
+# on push -- so a red run *is* the report: GitHub mails the owner when a
+# scheduled workflow fails. Deferred while minutes were metered (valgrind is
+# ~50x slower than native, macOS billed at 10x); the repo is public now.
+name: Leak check
+
+on:
+  schedule:
+    - cron: "17 7 * * 1" # Mondays, 07:17 UTC, after the canary
+  workflow_dispatch:
+
+# Least privilege: no token scope by default, granted per job.
+permissions: {}
+
+# A second run tells you nothing the first will not; do not pay for both.
+concurrency:
+  group: leakcheck-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  native:
+    name: leak check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Same treatment as ci.yml's test job, for the same reasons: the restored
+      # target/ does not fit the image's free disk, and the rustflags must be
+      # in place before anything compiles.
+      - name: free disk and use a leaner linker (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost /usr/local/.ghcup || true
+          df -h /
+          sudo apt-get install -y --no-install-recommends lld valgrind
+          mkdir -p .cargo
+          printf '[target.x86_64-unknown-linux-gnu]\nrustflags = ["-C", "link-arg=-fuse-ld=lld"]\n' \
+            >> .cargo/config.toml
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-on-failure: true
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+
+      - run: uv sync
+      - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+
+      - name: leak check
+        run: |
+          set +e
+          scripts/leakcheck.sh > leakcheck.txt; status=$?
+          cat leakcheck.txt
+          { echo "### leak check (${RUNNER_OS})"; echo '```'; cat leakcheck.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      # A check that has gone blind reports "clean" forever: this script with
+      # the default allocator did exactly that against a deliberate 128 MB
+      # leak. The control leaks one object per iteration and must be caught.
+      - name: the check can still see a leak (control)
+        if: always()
+        env:
+          LEAKCHECK_CONTROL: "1"
+        run: |
+          set +e
+          scripts/leakcheck.sh > control.txt; status=$?
+          cat control.txt
+          { echo "### control (${RUNNER_OS}, must report a leak)"; echo '```'; cat control.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 1 ]; then
+            echo "::error::the control leak was not detected (exit $status): the leak check is blind"
+            exit 1
+          fi

@@ -352,11 +352,10 @@ to corporate users; the LICENSE carries the attribution.
    SECURITY.md and CODE_OF_CONDUCT.md point at it).
 2. Description + topics; branch protection on `main` last.
 3. README badges (CI, license) — only render once public, add then.
-4. **Weekly native leak check** — `docs/PLAN.md` task 18. `scripts/leakcheck.sh`
-   into the scheduled Linux job (valgrind) and the weekly macOS run (`leaks`),
-   reported-not-gating at first. Held back purely by the metered budget:
-   valgrind is ~50x slower than the suite and macOS bills at 10x. Both report
-   clean today, so it starts from a known-good baseline.
+4. **Weekly native leak check** — `docs/PLAN.md` task 18. Done 2026-09-03:
+   `.github/workflows/leakcheck.yml`, Mondays and on demand, ubuntu + macOS,
+   with a control leak that must be caught. The "clean today" baseline this
+   item rested on turned out to be a blind check (task 18 has the numbers).
 
 ## The Polars pin, and the two copies of Polars (2026-08-31)
 

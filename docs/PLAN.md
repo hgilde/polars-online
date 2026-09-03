@@ -288,7 +288,7 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
 - [x] 16. CI: wheels + CLI binaries for macOS/Windows, cross-platform state test, Polars-latest
       canary job. Benchmark script + numbers in README.
 - [x] 17. README with the three usage modes and the math per model.
-- [ ] 18. **Weekly native leak check in CI — after the repo is public.** Add
+- [x] 18. **Weekly native leak check in CI — after the repo is public.** Add
       `scripts/leakcheck.sh` to a scheduled Linux job (valgrind, with CPython's
       suppression file) and to the weekly macOS run (`leaks`). Deliberately
       deferred, not forgotten: it is worthless on a budget, because valgrind is
@@ -303,6 +303,25 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       valgrind on CPython is noisy until the suppressions are tuned.
       **The trigger fired on 2026-09-02**: the repository is public and
       Actions is unmetered, so this is now doable work rather than a deferral.
+      **Done 2026-09-03**, `.github/workflows/leakcheck.yml`: Mondays and on
+      demand, ubuntu + macOS, nothing gates on it — a scheduled run that goes
+      red is the report (GitHub mails the owner). Wiring it found that the
+      "0 leaks" baseline was blindness, not cleanliness: pymalloc hands Python
+      objects out of mmap'd arenas that `leaks` does not walk, and the script
+      reported 0 leaks against a deliberate 128 MB refcount leak. With
+      `PYTHONMALLOC=malloc` it sees Python objects — and the interpreter then
+      leaves ~11k blocks (~700 KB) unreachable at exit whatever the workload,
+      so the script became differential: 1 iteration against 1000, growth over
+      500 blocks or 64 KiB is a leak (two runs of the same workload differ by
+      <150). It still cannot see anything allocated through polars' allocator
+      (mimalloc on macOS, jemalloc on Linux), which is every Rust-side
+      allocation; 160 MB of deliberately leaked `Series` buffers did not move
+      the count. That side stays with `test_ffi_memory.py` and RSS. Because a
+      blind check reports clean forever, the job also runs a **control**
+      (`LEAKCHECK_CONTROL=1`, one Python object leaked per iteration) that
+      must fail. Real workload: growth 63 blocks / 3.7 KB, clean; control:
+      +1968 blocks / 142 KB, caught. The valgrind path is written to the same
+      contract and first runs on the runner — it cannot run on this machine.
 - [x] 19. The expression plugin (task 8) is the in-memory spelling and says so: every
       `pl.col(..).online.<model>` call warns with `InMemoryExpressionWarning` naming the plan
       and the reason (§6); the README shows the two spellings side by side in a closing note.
