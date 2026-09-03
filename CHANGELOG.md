@@ -113,17 +113,26 @@ carries breaking changes.
 - **An upstream `filter` costs a bounded window, not the data**
   (`docs/PERFORMANCE.md` §11). The plan form reads its input with polars'
   `collect_batches`; the streaming engine bounds what is in flight in
-  morsels per thread — a whole parquet row group each — so a `filter` or
-  `with_columns` before the bank may hold 6–9 row groups × threads before
-  the scan stalls: 2.5 GB at 12M rows and 3.1 GB at 36M on 14 threads,
-  0.7 GB on 2, against 0.65 GB with nothing upstream and 0.78 GB for the
-  same filter written *after* the bank, where it is pushed into the source
-  and applied per chunk. Filter after unless the model should skip those
-  rows, and then give them weight 0 through `when/then/otherwise` (1.3 GB)
-  rather than filtering. `.over()` and `sort` upstream are O(data), and
-  `sink_batches` with the default engine collects its input
-  (`engine="streaming"` streams). The engine's own map of which is which:
-  `lf.show_graph(engine="streaming", plan_stage="physical")`.
+  morsels per thread, and for a predicate pushed into a parquet scan the
+  morsels are whole row groups of what the filter keeps: the reader applies
+  the predicate itself and the scan then restores the column order through
+  a 6-slot-per-thread pipeline — 2.5 GB at 12M rows and 3.1 GB at 36M on
+  14 threads when the filter keeps every row, 1.2 GB when it keeps half,
+  0.7 GB on 2 threads, 0.38 GB with the predicate column first in the
+  projection (the stage becomes a no-op; an accident, not a recipe) —
+  against 0.65 GB with nothing upstream and 0.78 GB for the same filter
+  written *after* the bank, where it is pushed into the source and applied
+  per chunk. Filter after unless the model should skip those rows, and then
+  give them weight 0 through `when/then/otherwise` (1.3 GB; 1.1 with
+  `pl.Config.set_streaming_chunk_size(25_000)`, which shrinks any
+  `with_columns` window and not the filter's) rather than filtering.
+  `.over()` and `sort` upstream are O(data), and `sink_batches` with the
+  default engine collects its input (`engine="streaming"` streams). The
+  engine's own map of which is which:
+  `lf.show_graph(engine="streaming", plan_stage="physical")`. A filter run
+  inside the source would be 0.81 GB with identical output; not added — a
+  second spelling of `filter` differing only in memory, for a cost that is
+  polars' column-reorder stage to remove.
 - **Which surface is O(data)**, measured (`docs/PERFORMANCE.md` §11): the
   expression plugin — 2.0 GB at 3M rows, 7.3 GB at 12M, in either engine,
   because polars' streaming engine collects the input of any user

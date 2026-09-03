@@ -212,15 +212,16 @@ lf.online.fit_predict(load_state="bank.state")   # resume from a saved bank
 One caveat with a number on it: a `filter` *before* the bank holds more
 memory than the same filter after it — 2.5 GB at 12M rows against 0.78 GB,
 with 0.65 GB for no filter at all. It is not the filtered result being
-buffered. Polars' streaming engine bounds what is in flight in *morsels per
-thread*, not bytes, and a morsel from a parquet scan is a whole row group,
-so a `filter` or `with_columns` upstream may hold a window of some 6–9 row
-groups × threads — 2.5–3 GB on 14 threads with 125k-row groups of 26
-doubles, 3.1 GB at 36M rows, 0.7 GB on 2 threads — while a plain scan
-feeding the bank has no parallel stage in between and holds none of it
-(`docs/PERFORMANCE.md` §11: the thread sweep, the source, the knobs). So
-prefer the filter *after* unless the model must skip those rows, and if
-that is the reason, a zero weight is the streaming spelling:
+buffered, and it is not the filter: polars' parquet reader applies the
+predicate itself, then restores the column order through a per-thread
+pipeline whose slots are whole row groups — some 6 row groups × threads of
+what the filter *keeps*: 2.5 GB on 14 threads with 125k-row groups of 26
+doubles when it keeps every row, 1.2 GB when it keeps half, 3.1 GB at 36M
+rows, 0.7 GB on 2 threads — while a plain scan feeding the bank has no
+parallel stage in between and holds none of it (`docs/PERFORMANCE.md` §11:
+the stage, the thread sweep, the knobs). So prefer the filter *after*
+unless the model must skip those rows, and if that is the reason, a zero
+weight is the streaming spelling:
 
 ```python
 (
@@ -235,8 +236,10 @@ that is the reason, a zero weight is the streaming spelling:
 Weight 0 learns nothing, bit for bit; the rows still come out, scored, the
 clock advances through them (so `n_eff` decays and `min_periods` can blank
 output), and no `max_dclock` gap opens where a filter would leave one.
-`when/then/otherwise` streams because it is elementwise — unless a branch
-holds an `.over()`, which drags the whole expression onto a collecting node
+`when/then/otherwise` streams because it is elementwise, through a window
+counted in morsels — `pl.Config.set_streaming_chunk_size(25_000)` takes it
+to 1.1 GB, against 0.9 with nothing upstream — unless a branch holds an
+`.over()`, which drags the whole expression onto a collecting node
 (3.2 GB). A `sort` or an `.over()` upstream collects by definition;
 `lf.show_graph(engine="streaming", plan_stage="physical")` shows which
 nodes do.
