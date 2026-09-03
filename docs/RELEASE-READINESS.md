@@ -623,6 +623,22 @@ What did **not**, because they are repository settings rather than files:
 - Actions history and the open dependabot pull requests, which are
   disposable — dependabot opened a fresh one within a minute of the push.
 
+**Done, 2026-09-03**, through the REST API rather than the settings pages:
+Dependabot alerts and security updates re-enabled, the description, homepage
+(the Pages site) and topics set, and two rulesets created — `main` cannot be
+force-pushed or deleted, and `v*` tags cannot be moved or deleted once they
+exist, with no bypass list, so the owner is bound too and disabling the
+ruleset is the only way round it. Left to the owner, each of them a
+decision rather than a setting: the `pypi` environment
+(with the owner as required reviewer and a `v*` tag rule), private
+vulnerability reporting, the PyPI pending publisher (`polars-online` /
+`hgilde` / `polars-online` / `release.yml` / `pypi`), and a
+`workflow_dispatch` rehearsal of `release.yml` on `main`, which builds every
+wheel and publishes nothing. One more thing that rehearsal would have caught:
+`release.yml` named the `macos-13` runner for the Intel wheel, and GitHub has
+retired it; the label is `macos-15-intel` now. A tag would have built five
+wheels and published none.
+
 The first push also proved the `paths-ignore` warning above in the cheapest
 possible way: it ended in two documentation commits, the filter matched them,
 and **no CI ran at all** on the 163 commits. The flag is gone (and
