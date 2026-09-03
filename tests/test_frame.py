@@ -5,7 +5,7 @@ runs, so a query with the bank in it stays O(chunk); the expression plugin in
 the same position is O(data) in either engine (docs/PERFORMANCE.md section
 11). Held here to the numbers `ModelBank` and `po.run` give on the same rows,
 through both engines, every pushdown polars applies to a Python source, a
-streaming sink, and the eager and typed spellings.
+streaming sink, and the eager and typed forms.
 """
 
 from __future__ import annotations
@@ -250,7 +250,7 @@ def test_predict_scores_the_bank_as_it_stands(tmp_path):
     )
 
 
-def test_the_eager_and_typed_spellings_are_the_bank():
+def test_the_eager_and_typed_forms_are_the_bank():
     df = _frame(n=1500)
     want = po.ModelBank([_spec()]).fit_predict(df)
     assert df.online.fit_predict([_spec()]).equals(want)
@@ -317,7 +317,7 @@ def test_save_state_is_the_banks_state_after_the_stream(tmp_path):
     """C1: the plan writes, when it ends, the state a bank fed the same rows
     saves -- byte for byte, whatever the chunking, through either engine, and
     the same bytes `po.run(save_state=)` writes; so do the eager and typed
-    spellings. Building the plan writes nothing."""
+    forms. Building the plan writes nothing."""
     df = _frame(n=4000)
     want = _bank_after(df)
     state = tmp_path / "bank.state"

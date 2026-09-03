@@ -183,7 +183,7 @@ impl Serialize for Num {
 }
 
 impl Num {
-    /// The spellings of the non-finite values accepted in place of a number.
+    /// The words accepted in place of a number for the non-finite values.
     fn from_word(w: &str) -> Option<Num> {
         match w.to_ascii_lowercase().as_str() {
             "inf" | "+inf" | "infinity" | "+infinity" => Some(Num(f64::INFINITY)),
@@ -699,7 +699,7 @@ impl Spec {
             (None, None) => match &self.model {
                 // For Holt the level halflife *is* the spec's halflife --
                 // `build_one` defaults one from the other, so they are one
-                // knob spelled two ways -- and a spec that gives
+                // knob under two names -- and a spec that gives
                 // `level_halflife` has already said it. The README's own Holt
                 // example did not run before this (docs/IMPROVEMENTS.md U6).
                 ModelKind::Holt {

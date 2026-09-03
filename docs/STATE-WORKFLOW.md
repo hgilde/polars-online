@@ -7,7 +7,7 @@ syntax proposed in §4, with rules R1–R7; §5's checks are
 measured, not recalled (§2, `scripts/io_source_semantics.py`), on polars
 1.34.0 (the floor), 1.38.1 and 1.44.1 (the pin). The memory side — a plan
 that updates a `ModelBank` object, or takes one as `load_state` — was
-decided against: the file is the state's one spelling on the plan surface,
+decided against: the file is the state's one form on the plan surface,
 and a bank object stays the loop's (§1, §3 B/E).
 
 ## 0. The ask, and the answer in one paragraph
@@ -25,7 +25,7 @@ was made *pure* on purpose (ENHANCEMENTS E33, PLAN §11a) — a fresh bank per
 execution, nothing saved. The research question was therefore narrow: *is
 there a way for a plan to carry state out that survives the way polars
 actually executes a Python source?* The measurements say yes, with exactly
-one spelling: **`save_state=`, the runner's keyword, on the plan**, written
+one way: **`save_state=`, the runner's keyword, on the plan**, written
 atomically when the source has fed the bank its last row. It is safe
 precisely *because* the plan is pure: polars runs a plan's source once per
 execution and twice — concurrently — when a query uses the plan twice, and
@@ -36,7 +36,7 @@ whole chunk and trims the output), and `load_state` must be read when the
 plan is built, not when it runs. One thing cannot be had: the source does not
 learn whether the *query* succeeded, so a node after it failing still leaves
 the state written (polars drains the source first, in every engine); where
-"state only if the output landed" is required, `po.run` is that spelling
+"state only if the output landed" is required, `po.run` is that call
 and stays so.
 
 ## 1. What existed before the decision, per step and surface
@@ -95,13 +95,13 @@ Two consequences drive everything in §3–§4:
 
 ## 3. The candidates
 
-| | spelling | verdict |
+| | form | verdict |
 |---|---|---|
 | **A** | **`lf.online.fit_predict(specs, save_state=path)`** — the runner's keyword on the plan; the state is written when the source ends, atomically. | **Recommended.** Sound under F1/F2 because the plan is pure: both concurrent runs write the same bytes (§5 C3). Needs the two changes in §4 to be exact under `head(n)` and under a file that changes between build and run. One documented gap (F5): a downstream failure still writes. |
 | B | `lf.online.fit_predict(bank)` — a caller's bank the plan learns into. | **Rejected**, as in E33, now on measurement: `lf.join(lf)` or `collect_all` feeds it the stream twice concurrently (F1+F2). A "used once" guard cannot distinguish the second run inside one query from a legitimate second `collect()`, and would fail the query from inside the source. |
 | C | State as data: `lf.online.fit(specs)` → a plan of one row, `state: Binary`, that a user sinks or `ModelBank.load_bytes` reads; `load_state` accepting a frame. | Pure and polars-native, but **predictions and state come from two plans, so one pass of the input becomes two** (F1: `collect_all` does not share the source), the bank runs twice, and a user who wants both pays double. Nothing single-pass is possible without a side effect. Keep as an idea if a "state is a frame" use case appears (a join of states? none known). |
 | C′ | State on the output's last row: a `state: Binary` column, null except on the last row the source delivers. | Pure and single-pass, but the consumer must find that row after a sink (re-scan the output), a filter after the bank can drop it, and every row carries a null cell. Judged heavier than A for no gain in safety: it too is written before the query's outcome is known. |
-| D | Keep the plan pure; state comes from `po.run` / `ModelBank` (status quo). | What the README says today. It answers the four steps, but not in the polars-native syntax the user asked for; and `po.run(input=lf, output=path)` has no lazy output — it is the terminal op. Stays as the *transactional* spelling (§4 R6). |
+| D | Keep the plan pure; state comes from `po.run` / `ModelBank` (status quo). | What the README says today. It answers the four steps, but not in the polars-native syntax the user asked for; and `po.run(input=lf, output=path)` has no lazy output — it is the terminal op. Stays as the *transactional* call (§4 R6). |
 | E | `save_state=callable`: `fit_predict(specs, save_state=lambda bank: ...)` — in-memory export from a plan, in the shape of `sink_batches`. | Possible later on top of A (same trigger, same F1/F2 caveat: called once per run, twice in a self-join, on polars' threads). Not needed for the four steps: in-process state is `ModelBank`'s job (`fit_predict_batches`, `save_bytes`). Not recommended now. |
 | F | `lf.online.run(specs, output=path, save_state=p)` — the runner as a namespace method, for a uniform reading of the four steps. | A one-line alias of `po.run(input=lf, ..)`; adds surface, no capability. Not recommended; `po.run` takes a `LazyFrame` already. |
 
@@ -192,7 +192,7 @@ The rules — each one checked in §5:
   with the complete, valid state of the whole stream while the query's own
   output is missing. With `load_state=p, save_state=p` a rerun then learns
   the data twice. `po.run` saves only after the writer has committed the
-  output and is the spelling for "state only if the output landed"; the
+  output and is the call for "state only if the output landed"; the
   plan's docstring and the README say so, and recommend a dated
   `save_state` per batch of data (`ridge-2026-01.state`) for the in-place
   pattern, which also keeps an audit trail. This is polars' own precedent:
@@ -280,7 +280,7 @@ A stand-alone `register_io_source` source with R1–R4 built in, against
 `python/polars_online/_frame.py` (`_source`: R1, R4 and the write;
 `_bank`/`_read_state`: R3 for `load_state` and `predict(path)`;
 `_save_path`: the directory checked at build; `fit_predict` on the lazy,
-eager and typed spellings; `predict` R5 by having no such keyword),
+eager and typed forms; `predict` R5 by having no such keyword),
 `crates/online-polars/src/atomic.rs` (decision 4), `tests/test_frame.py`
 (C1–C8b as the E35 tests, `predict(save_state=)` refused, the R3 snapshot,
 the same-path double use), `README.md` ("As a plan": the keyword, purity as

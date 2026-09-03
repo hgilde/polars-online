@@ -536,7 +536,7 @@ editor showed nothing and a typo was a runtime error. Now:
   `pl.col("y").online` is `"Expr" has no attribute "online"` to every type
   checker -- a polars limitation no annotation here can fix. `po.online(
   pl.col("y"))` returns the same namespace object, visibly typed; the two
-  spellings build identical expressions and a test says so.
+  forms build identical expressions and a test says so.
 - **`group=` on the expression form is refused** with `use .over(...)`.
   The Rust side set `spec.group = None`, so it had been silently ignored.
 - **The pyo3 stub was stale** (`_polars_online.pyi` had no `gram` and no
@@ -578,14 +578,14 @@ is the recommended way to serve — see E31. `TestScoringWithoutLearning`
 still pins the frozen coefficients, the drift, and the decay of the
 in-stream route.
 
-### U7 — `coef` said "nothing yet" in two different spellings — *done*
+### U7 — `coef` said "nothing yet" in two different ways — *done*
 
 Checking the docstring examples the README does not carry (T5 covers those)
 turned up one that raises: `coef_index`'s own example,
 `out["m"].struct.field("coef@h100").list.get(pos)`, fails with an
 index-out-of-bounds `ComputeError` on real data.
 
-The cause is a spelling inconsistency. Rows between `coef_every` snapshots are
+The cause is an inconsistency in how "nothing" was written. Rows between `coef_every` snapshots are
 `null`, which is how every other output says "nothing here" — but rows before
 the model's first solve were an **empty list**, and `list.get` on an empty
 list is out of bounds rather than null. So the documented way to read one
@@ -607,9 +607,9 @@ trend_halflife=2000.0)` — the example under the model's own section — raised
 
 The example was right and the rule was wrong. For `holt` the level halflife
 *is* the spec's halflife: `build_one` defaults `level_halflife` from it, so
-they are one knob spelled two ways, and a spec that gives `level_halflife` has
-said what the decay is. `decays()` now accepts that spelling for `holt` alone
-and nothing else — the two spellings produce identical output, ungridded field
+they are one knob under two names, and a spec that gives `level_halflife` has
+said what the decay is. `decays()` now accepts that name for `holt` alone
+and nothing else — the two names produce identical output, ungridded field
 names, and `trend_halflife` by itself is still refused, as is a non-positive
 `level_halflife`.
 
@@ -691,7 +691,7 @@ and `rls` — the two oldest models — with their oracle tests inside
 `test_bank.py` under class names that did not say so; they are
 `test_ewridge.py` (oracle, warm priors, `session_shrink`) and `test_rls.py`
 now, and `test_bank.py` is the bank's own semantics. Both checks were mutated
-once — a file renamed away, a builder call spelled differently — and each
+once — a file renamed away, a builder call written differently — and each
 failed on its own list.
 
 ## 5. Testing

@@ -438,7 +438,7 @@ plugin; check the IO-plugin tests after that.
 task 19). It ships as before and everything above still holds for it; what
 changed is that `pl.col(..).online.<model>(..)` now issues
 `InMemoryExpressionWarning` naming `lf.online.fit_predict`, because it is the
-one O(data) spelling. Nothing here moves: the floor and ceiling were set by
+one O(data) form. Nothing here moves: the floor and ceiling were set by
 `collect_batches`, not by the plugin, and the canary exercises all three
 paths. (For a few hours the same task had the plugin out of the wheel behind
 a cargo feature; that was reverted before release, so no published wheel

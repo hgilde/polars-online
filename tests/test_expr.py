@@ -340,7 +340,7 @@ class TestTheExpressionWarnsThatItRunsInMemory:
             "ew_cov": ("ew_cov", lambda: ns.ew_cov(others=["x0"], halflife=2.0)),
         }
 
-    def test_every_method_warns_and_names_the_spelling_that_streams(self):
+    def test_every_method_warns_and_names_the_call_that_streams(self):
         calls = self._calls()
         assert set(calls) == set(po._polars_online.model_kinds())
         for kind, (method, call) in calls.items():
@@ -381,7 +381,7 @@ class TestTheExpressionWarnsThatItRunsInMemory:
     def test_shown_by_default_from_a_module(self, tmp_path):
         # A DeprecationWarning is hidden by default unless raised in __main__,
         # which is exactly the wrong way round for a pipeline module: that is
-        # where the streaming spelling matters. The category is a UserWarning
+        # where the streaming form matters. The category is a UserWarning
         # so it is shown from anywhere; a DeprecationWarning emitted at the
         # same place is the control.
         import subprocess

@@ -799,7 +799,7 @@ pushed-down filter: its 1 and 4 are literals. A narrower projection
 (`keep_columns=`, or a `select` before the bank) shrinks every row group.
 Not the allocator (2.44 GB with `dirty_decay_ms:0`), not
 `maintain_order=False`, not `lazy=True`.
-One more spelling that is not the engine at all: `sink_batches` with the
+One more form that is not the engine at all: `sink_batches` with the
 default `engine="auto"` runs in the *in-memory* engine — polars-lazy maps
 `Auto` to `InMemory`, file sinks are handed to the streaming executor from
 there but the callback sink is not (`polars-mem-engine/planner/lp.rs`), so
@@ -815,7 +815,7 @@ bank when the semantics allow**. The predicate is pushed into the source and
 applied per chunk (E33), which is 0.78 GB flat against 2.53 GB for the same
 filter before, and the two mean different things anyway — before changes what
 the model *learns from*, after changes only what comes out. When the model
-*must* skip those rows, a zero weight is the streaming spelling:
+*must* skip those rows, a zero weight is the streaming form:
 `with_columns(pl.when(cond).then(pl.col("w")).otherwise(0.0).alias("w2"))`
 with `weight="w2"` — `when/then/otherwise` is elementwise, 1.3–1.4 GB at
 12M rows against the filter's 2.53, 1.08 GB with
@@ -828,14 +828,14 @@ onto a collecting node (3.18 GB). `po.run(input=<a filtered plan>)` reads
 the same way and has the same window; `keep_columns=` does not (a
 projection is not a filter).
 
-The one spelling that gives a filter the plain scan's footprint is to run
+The one way that gives a filter the plain scan's footprint is to run
 it *inside* the source — read the plain scan, `chunk.filter(cond)`, feed
 the bank — because the IO-plugin source is the only serial stage in the
 graph and whatever runs there costs one chunk. Measured as a prototype
 (2026-09-02): 0.81 GB at 12M rows against 2.54, the same wall time, and the
 output identical to the upstream filter's except `coef`, which is
 snapshotted per chunk by contract. It is not in the API, deliberately: it
-would be a second spelling of `filter` whose only difference is memory —
+would be a second `filter` whose only difference is memory —
 the class of surprise this section exists to remove; the CLI could not say
 it without an expression parser; a predicate that is not elementwise
 (`x > x.mean()`) would silently mean something different per chunk, where
@@ -850,7 +850,7 @@ row-group parallelism follows the same number. Not taken either.
 
 **Polars' own windowed operations do the same thing (2026-09-02).** Worth
 knowing before concluding that this is a quirk of ours: it is polars' rule,
-and the rule is *whether the streaming engine has a node for that spelling*.
+and the rule is *whether the streaming engine has a node for that call*.
 Same file, `sink_parquet(engine="streaming")`, `POLARS_ROW_GROUP_PREFETCH_SIZE=1`,
 one output column so the scan reads only what the expression needs — each
 plan is `pl.scan_parquet(f).select(<the expression below>)`, run in its own
@@ -911,7 +911,7 @@ call with the whole column is what a plugin gets. Two consequences worth
 stating plainly:
 polars' own `ewm_mean` streams as an expression while the same EW mean
 written as our plugin does not, for that reason alone; and *per-group*
-windowing in polars is the collecting spelling (`.over`, `group_by=`),
+windowing in polars is the collecting form (`.over`, `group_by=`),
 while a bank's `group=` is O(state) — one accumulator per group, no
 partitioning of the data at all.
 

@@ -123,19 +123,19 @@ def test_chunk_invariance_and_save_load(tmp_path):
 
 
 def test_level_halflife_alone_is_enough(tmp_path):
-    """`halflife` and `level_halflife` are one knob spelled two ways -- the
+    """`halflife` and `level_halflife` are one knob under two names -- the
     level defaults to the spec's halflife -- so giving either satisfies the
     "one of halflife/lam is required" rule. The README's own Holt example
     gives only `level_halflife`, and used to be refused (IMPROVEMENTS U6)."""
     df = _trending(n=200)
     d = dict(targets=["y0"], clock="t", max_dclock=100.0, min_periods=3.0, trend_halflife=80.0)
-    spelled_level = po.spec.holt("m", level_halflife=20.0, **d)
-    spelled_halflife = po.spec.holt("m", halflife=20.0, **d)
-    a = po.ModelBank([spelled_level]).fit_predict(df)
-    b = po.ModelBank([spelled_halflife]).fit_predict(df)
+    by_level = po.spec.holt("m", level_halflife=20.0, **d)
+    by_halflife = po.spec.holt("m", halflife=20.0, **d)
+    a = po.ModelBank([by_level]).fit_predict(df)
+    b = po.ModelBank([by_halflife]).fit_predict(df)
     assert a.equals(b, null_equal=True)
     # And the field names stay ungridded -- no `@h` suffix from a phantom grid.
-    assert [f.name for f in a.schema["m"].fields] == po.spec.output_fields(spelled_level)
+    assert [f.name for f in a.schema["m"].fields] == po.spec.output_fields(by_level)
 
 
 def test_a_holt_spec_still_needs_one_of_them():
