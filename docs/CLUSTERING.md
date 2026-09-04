@@ -99,9 +99,30 @@ material stays out of the repo.
   whole stream instead of a prefix — and the two things standing in its way,
   neither of which is complexity: it would be lookahead under hard rule 2, and
   the expression plugin cannot express it.
-- **Nothing is recommended for the crates yet.** §9 costs a Rust build; the
-  decision is the user's. The narrowest useful build is one model, `kmeans`,
-  with the split–merge move and the seeding buffer.
+- **The design worth the build decision is `micro`.** Seven reasons, each
+  measured or cited above: it alone reaches the batch ceiling on the shapes
+  that define the problem, where every k-means and GMM scores 0.000 (§7.8);
+  being online is not what limits any model here — the family is (§7.8); it is
+  DBSCAN over a weighted quantisation with a measured resolution rule, and the
+  rule derives the threshold at the checkpoint instead of shipping a constant
+  (§6.5, §7.8); it meets the contract as it stands — bounded, deterministic,
+  chunk-invariant, out-of-sample labels, monotone ids (§7.1, §6.5); the field
+  agrees it is the building block and its three recorded reservations —
+  thresholds, fragmentation, cost — are answered by the derived window and by
+  `O(M·p)` per row (§3, §7.7); its limits against DBSCAN are structural and
+  stated, not measured away — no revision of an emitted label, no `eps` sweep
+  on rows not kept, a resolution floor of `eps`, and a silent all-null output
+  when the threshold is wrong at high `p` (§7.8, §12); and nobody has measured
+  a per-row, predict-before-update label from this family (§3). It is not a
+  universal clusterer — a setting that chains along a shape loses to `kmeans`
+  on convex data — so the honest exposure is `kmeans` for convex data and
+  `micro` for shapes, with the trade stated. The one DBSCAN-faithful design
+  inside the bar, batch DBSCAN over a retained sample, is unmeasured (§12).
+- **Nothing is in the crates.** §9 costs a Rust build; the decision is the
+  user's. The narrowest useful build is one model, `kmeans`, with the
+  split–merge move and the seeding buffer; `micro` is about the same again, on
+  the shared summary `kmeans` needs. Merged to `main` 2026-09-04 as
+  documentation and numpy prototypes.
 
 ---
 

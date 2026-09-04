@@ -372,9 +372,17 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       (`scripts/clustering_experiments.py`) against Lloyd refits and scikit-learn's
       `MiniBatchKMeans`. Every guarantee holds bit-exactly. The one real defect of
       sequential k-means — two centres collapsing onto one component under drift, on 5
-      of 20 streams — is fixed by a split–merge move on a slower clock. Nothing in the
-      Rust crates; whether to build it is the user's call and §9 costs it. Research
-      sources stay under the gitignored `.cache/research/`.
+      of 20 streams — is fixed by a split–merge move on a slower clock. On seven
+      hard geometries (§7.8) being online costs at most 0.04 ARI against batch
+      Lloyd's; the family costs everything — every k-means and GMM scores 0.000
+      on concentric rings, where `micro` (DenStream-style micro-clusters with a
+      linkage macro step) reaches 0.998 / 0.999 / 0.998 on moons, rings and bars
+      against DBSCAN's 1.000, with a measured rule for the threshold that decides
+      it. `micro` is the design worth the build decision; §0 of the doc and
+      ENHANCEMENTS §4 give the seven reasons and the structural limits. Merged to
+      `main` 2026-09-04 as documentation and numpy prototypes. Nothing in the
+      Rust crates; whether to build it is the user's call and §9 costs it.
+      Research sources stay under the gitignored `.cache/research/`.
 
 ## 11a. Decisions made while implementing
 
@@ -1008,7 +1016,8 @@ the build decision is the user's (task 21, §11a).
 
 ## 11h. Online clustering
 
-[`docs/CLUSTERING.md`](CLUSTERING.md), on the branch `online-clustering`: every
+[`docs/CLUSTERING.md`](CLUSTERING.md), investigated on the branch
+`online-clustering` and merged 2026-09-04: every
 clustering family the field has produced, decided against the contract — what
 fails does so for one of three reasons (it needs the rows back, its state is not
 bounded by parameters, or it puts randomness on the output path), and what
@@ -1018,10 +1027,16 @@ it. Nine numpy prototypes (`scripts/clustering_proto.py`) measured
 regime changes: chunk invariance, determinism, zero-weight and null rows all
 bit-exact; seeding is the largest source of variance and the right rule depends
 on the outliers expected; a split–merge move on a slower clock than the centre
-update is what makes fixed-`k` k-means survive drift. §8 settles the spec and
-the static output schema, §9 costs a Rust build, §10 lists what failed.
+update is what makes fixed-`k` k-means survive drift. On hard geometries the
+streaming costs nothing and the family costs everything: `micro` reaches
+DBSCAN's ceiling on moons, rings and bars (0.998 / 0.999 / 0.998 against 1.000)
+where every k-means and GMM scores 0.000 on the rings, with the threshold rule
+measured and derivable at the checkpoint — it is the design worth the build
+decision, for the seven reasons in §0 and ENHANCEMENTS §4. §8 settles the spec
+and the static output schema, §9 costs a Rust build, §10 lists what failed.
 Investigation only — nothing in the crates; the build decision is the user's
-(task 22).
+(task 22). ENHANCEMENTS §5.1 is the follow-on inventory of what else fits the
+online contract (E36–E42).
 
 ## 12. Open questions (not blocking)
 

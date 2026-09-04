@@ -15,8 +15,11 @@ against [river](https://riverml.xyz) (the reference online-ML library) and
 [Pathway](https://pathway.com) (a Rust-engined live-data framework) — both what
 we adopted and what we deliberately leave out. Everything marked **done** is
 implemented and tested. The forward-looking parts are §4 (the standing list of
-what we will *not* build), §5 (two candidates the river audit left undecided)
-and §6 (one accessor the accumulators are missing).
+what we will *not* build, two entries of which — trees and clustering — have
+since been investigated to prototype level and are open), §5 (two candidates
+the river audit left undecided, and §5.1, the 2026-09-04 inventory of what
+else fits the online contract: E36–E42, none built) and §6 (the accessor the
+accumulators were missing, done).
 
 Priorities: **P1** = promised by PLAN.md or fixes a real sharp edge; **P2** =
 cheap and clearly goal-aligned; **P3** = worthwhile, larger.
@@ -126,14 +129,54 @@ two items it found that are arguably *in* scope are in §5.
   "memory is O(state), not O(data)".
 - **Clustering / naive Bayes / multiclass softmax**: not regression on ordered
   streams (PLAN §4.6 scopes classification to binary). *Clustering reassessed
-  2026-09-04 in [`CLUSTERING.md`](CLUSTERING.md) §4, on the branch
-  `online-clustering`: every workable family reduces to `EwCov`'s decayed
-  weighted mean with an assignment in front of it, so bounded state,
-  determinism, chunk invariance and the damped window are all met — nine
+  2026-09-04 in [`CLUSTERING.md`](CLUSTERING.md) §4 (investigated on the
+  branch `online-clustering`, merged the same day — documentation and numpy
+  prototypes, nothing in the crates): every workable family reduces to
+  `EwCov`'s decayed weighted mean with an assignment in front of it, so bounded
+  state, determinism, chunk invariance and the damped window are all met — nine
   designs are prototyped and measured. "Not regression" stays true and the bank
   already ships one unsupervised model (`ew_cov`); the real cost is a second
   family plus a label whose stability is a user-visible API property. The
-  decision is open.*
+  decision is open.* **The design worth the decision is `micro`, DenStream-style
+  micro-clusters with a linkage macro step, and the reasons are all measured
+  (`CLUSTERING.md` §0, §3, §7.8, §12):* (1) it reaches the batch ceiling on the
+  shapes that define the problem — 0.998 on two moons, 0.999 on three
+  concentric rings, 0.998 on parallel bars, against batch DBSCAN's 1.000 —
+  where every k-means and every Gaussian mixture, batch ones included, scores
+  0.000 on the rings; (2) being online costs nothing measurable: on the six
+  geometries where k-means is the right family, one-pass sequential k-means is
+  within 0.04 ARI of a converged batch Lloyd's, so the family, not the
+  streaming, is what limits a model; (3) it is DBSCAN over a weighted
+  quantisation, and the rule is measured — a shape resolves when the gap
+  between clusters exceeds about three micro-cluster spacings, `macro_link`
+  must lie between the largest within-cluster spacing and the smallest
+  across-cluster gap (in units of `eps`; (2.71, 6.47) on the rings), both are
+  computable at the macro checkpoint, so the threshold is derived there rather
+  than shipped as a constant, and `eps` widens the window at the price of
+  more summaries (109 / 71 / 43 at `0.07 / 0.1 / 0.15 · √p`); (4) it meets the
+  contract as it stands — `O(M·(p+5))` doubles, deterministic, chunk-invariant
+  bit for bit at 1, 37, 1 000 and one chunk, zero-weight and null rows inert,
+  labels out-of-sample and ids monotone — with the macro step on a learned-row
+  schedule so a chunking cannot move it; (5) the field agrees it is the
+  building block (every stream-clustering toolkit ships it; DenStream's fading
+  function is where the damped window comes from) and its three recorded
+  reservations are answered here — thresholds by (3), fragmentation of sparse
+  clusters by the derived window (18 fragments at 3.0 on the rings, 0.999 at
+  4.0), and cost by `O(M·p)` per row with `O(M²)` only at checkpoints; (6) its
+  limits against DBSCAN are structural and stated, not measured away — it
+  cannot revise a label already emitted, cannot sweep `eps` on rows it did not
+  keep, and its resolution floor is `eps`, so a bad threshold emits *zero*
+  clusters at high `p` (silent all-null), which is why (3) is mandatory; and
+  (7) nobody has measured a per-row, predict-before-update micro-cluster label
+  — river's `predict_one` runs a full DBSCAN per call, MOA returns null — so
+  this would be the first. What it is not: a universal clusterer — a setting
+  that chains along a shape scores 0.537 on sheared Gaussians against
+  `kmeans`' 0.933, so the honest exposure is `kmeans` for convex data and
+  `micro` for shapes, with the trade stated; and the one DBSCAN-faithful
+  design inside the bar, batch DBSCAN over a deterministically retained sample,
+  is unmeasured because the library's convention reads retained rows as
+  `O(data)` (`CLUSTERING.md` §12). Costed in §9: `micro` is about the size of
+  `holt` again, on the shared summary `kmeans` needs. **Build decision: open.**
 - **Bandit-based model selection** (`model_selection.*`): E13/E14 cover the
   need deterministically; bandits add randomness to the prediction path.
 - **Pipelines / feature extraction** (`compose.*`, `feature_extraction.*`,
@@ -197,6 +240,51 @@ have a perceptron" is a recorded decision rather than an oversight.
 | # | P | Candidate | The argument, and what exists today |
 |---|---|---|---|
 | E31 | ~~P3~~ **done** | **A `predict(df)` that does not touch the state at all** — score a batch against a loaded bank with no clock advance, no decay, no `n_eff` erosion. | The argument for it: `weight=0` scores without learning and freezes the coefficients bit for bit, but not the clock — `n_eff` decays as you score, and after a few halflives it drops under `min_periods` and the outputs go null while the fit behind them is still good (measured: `n_eff` 29.4 → 0.95 over 100 rows at halflife 20, the last 34 predictions null), and `min_periods` is baked into the saved state. Done as `ModelBank.predict(df)`, `po.run(predict=True)` / TOML `predict = true` / CLI `--predict`. The contract is an oracle, not a description: **row `i` of `predict(df)` equals row 0 of `fit_predict(df.slice(i, 1))` on a fresh clone of the bank, field for field** — `pred`, `n_eff`, `sigma`, `resid_z`, selection, averaging, quantiles, autocorr, metrics, `lam_selected` — for all ten models, and `tests/test_predict.py` asserts exactly that. Every row is scored from the same state, with the clock distance measured from the last learned row (so `holt` extrapolates, capped by `max_dclock`, which is the "as of when" the candidate asked for); the stream's policies hold rather than being bypassed — a row that would reset the stream scores as a fresh model (null), a row that would blend (`session_shrink`) scores the blended clone, and `on_clock_reset="error"` raises the same error naming the row. Targets and session are optional on input, weight is not read, unknown groups score null, `drift` never fires, `coef` lands on each group's last accepted row. Underneath, `OnlineModel::predict(x, d_clock)` is *the step without the step*: every model implements it, and `ewridge`/`rls`/`lasso`/`robust`/`ew_cov` derive their own `step`'s prediction from it so the two cannot drift; `tests/model_contract.rs` holds every model to `predict == step` row by row, and refuses a model with a recovery test but no parity test. Two things it changed on the way: `Step.coef` was dead (never `Some`; coefficients were always read through `coefficients()`) and is gone; and `lasso`'s `lam_selected` is now reported *before* the row's error joins the selection — the λ the row was scored with — a one-row shift in that column (the golden pipeline did not move: its pinned values were all 0.0). Scoring is `run_instance` with `learn = false`, one copy of the arithmetic, over a shared borrow, so concurrent `predict` calls are fine and a `fit_predict` racing one is refused with the same message as two `fit_predict`s. Cost: none on the learning path (8.99M / 3.60M / 990k rows/s at k=5/20/50 against PERFORMANCE §8's 8.96M / 3.62M / 961k); `predict` runs at 14.3M (k=5) and 9.4M (k=20) rows/s against `fit_predict`'s 8.0M and 3.3M on the same million rows. |
+
+### 5.1 What else can be online (2026-09-04)
+
+Asked, after the clustering investigation, "what else can we do online": the
+inventory under the bar [`CLUSTERING.md`](CLUSTERING.md) §2 states — `O(1)`
+memory in `n`, `O(n · parameters)` processing, a constant number of passes,
+deterministic, decayed on the clock, predict-before-update — with §2's
+rejection codes (R needs the rows back, G grows with `n`, X randomness on the
+output path, S no static schema, C passes the bar and is excluded by
+convention). What already exists is above (E1–E35; `sgd` carries the GLM
+losses, Poisson included); what is investigated to prototype level is trees
+([`BOOSTED-TREES.md`](BOOSTED-TREES.md)) and clustering
+([`CLUSTERING.md`](CLUSTERING.md)), both open; what is surveyed is B1–B6 in
+[`BEYOND-O-STATE.md`](BEYOND-O-STATE.md). One correction to that survey: **B1,
+adaptive conformal intervals, passes the `O(state)` rule as written** — its own
+memory line says so (`O(1/ε)`, on top of E23's P²) — so it belongs here rather
+than behind a relaxed bound, and it is E36 below. The other rows were on no
+list before. Every row passes the bar; none is recommended without a use case.
+
+| # | P | Candidate | State, cost, and the argument either way |
+|---|---|---|---|
+| E36 | P2 | **Adaptive conformal intervals** — `pred_lo` / `pred_hi` with a long-run coverage guarantee that needs no distributional assumption and holds under shift, plus the realised coverage. | `O(1)` state: the radius is a scalar recursion on the conformity score `\|resid\|` — quantile tracking, `q' = q + η·(1{\|resid\| > q} − α)`, the P term of Angelopoulos, Candès & Tibshirani 2023, or Gibbs & Candès 2021's `α' = α + γ·(α_target − 1{y ∉ interval})` over quantiles P² (E23) already tracks. Deterministic, chunk-invariant (one scalar per row), and out-of-sample for free: the score comes from a model that has not seen the row, the property every other conformal implementation has to arrange by splitting data and this library guarantees by construction. Composes with all ten models rather than being one. Against: `sigma` (E12) already gives `pred ± z·sigma`, and on Gaussian residuals conformal adds nothing; its value is coverage when the residuals are not Gaussian and the distribution moves, which on intraday data is the normal case (E23 measured `sigma` 2.95 against a median `\|resid\|` of 0.43 with 1% gross outliers). `min_periods` applies: null until the radius has seen that much weight. Rust has no streaming implementation (`conformal-prediction`, 461 downloads — the crates.io check in BEYOND-O-STATE). Smallest effort on this list, largest gap. |
+| E37 | P2 | **Mahalanobis score on `ew_cov`** — per row, `(x − μ)ᵀ Σ⁻¹ (x − μ)` from the state *before* the row: how unusual this feature vector is against the decayed history, the feature-side twin of `resid_z` (E21). | Zero new state: `ew_cov` holds `μ` and the centred comoments, and solves the precision on demand for `partial_corr` (a Cholesky per read; it is not stored, by design — the tracked inverse of E2 cancelled to exactly zero under a dominant row and never recovered, `ewcov.rs`). A per-row score is one factorisation and one triangular solve per row, `O(k³)`, which is more than `ew_cov`'s `O(k²)` update but what `partial_corr` already pays whenever it is emitted; `precision_prior` regularises it as it does today. Out-of-sample by construction: scored, then learned. Under Gaussian rows the null is roughly `χ²_k` scaled by the decayed count, but the honest output is the raw score plus, as with `resid_z`, a P² quantile of past scores for a threshold — not a p-value. One more entry in `stats`, say `"mahal"`, and no schema change elsewhere. Against: no use case named; the case is regime and outlier flagging on the features, where `resid_z` sees only the residual. |
+| E38 | P3 | **EW-PCA at checkpoints on `ew_cov`** — the eigenvalues of the `k × k` centred comoments (E11b) and the first `r` loadings, refreshed every `pca_every` learned rows, with each row's scores on the frozen components. | No new state beyond `r × k` loadings. The checkpoint schedule is BOOSTED-TREES §6.3's device: the components change only every `pca_every` *learned* rows, so a chunking cannot move them and the per-row scores stay chunk-invariant; `O(k³)` per checkpoint, `O(r·k)` per row. `faer`'s self-adjoint eigensolver is deterministic; the one design detail is a fixed sign convention per component (largest-magnitude entry positive), or the loadings flip between checkpoints. Static schema: `r` is a spec parameter, `explained` is `k` floats, `loadings` `r × k`, `scores` `r`. Against: E30 already exports the comoments, so a caller can eigendecompose them offline; the value is the scores *inside* the stream and the factor structure at every point of it rather than at one. B3 (frequent directions, `O(ℓ·k)`) is the version for a `k` too large to hold `k × k` — not needed while `ew_cov` holds it. |
+| E39 | P3 | **Class-conditional `ew_cov`: naive Bayes, LDA, QDA** — one decayed Gaussian per class with the label as the assignment; `pred` is the class posterior. | The supervised twin of the clustering prototypes: `CLUSTERING.md` §4 found every workable clusterer is `EwCov`'s decayed mean with an assignment in front of it, and here the assignment is *given*. State `O(C·k)` (naive Bayes, diagonal), `O(C·k + k²)` (LDA, one shared covariance) or `O(C·k²)` (QDA); decayed class priors from the counts; `C` quadratic forms per row, out-of-sample. A static schema needs the class set declared in the spec (`classes = [...]`; code S otherwise), with an undeclared label an error the way an unknown group is null. The discriminative route is the same size: a softmax head on `sgd` / `ftrl` with `C − 1` weight vectors, `O(C·k)`. Against: §4's "not regression" — PLAN §4.6 scopes classification to binary, and `ftrl` covers it — is a recorded decision, reopened for clustering on exactly this row's argument; multiclass is a second surface (a class column and its probabilities) with no use case in the stated goals. Cheap, and "cheap" is not a use case (E28). |
+| E40 | P3 | **Constrained coefficients** in `sgd` / `pa` — a projection after each step onto a box `[lo, hi]` per coefficient (non-negative weights, the portfolio-weights ask) or onto the simplex (weights that sum to one). | `O(k)` per row for the box, `O(k log k)` for the simplex, deterministic, no new state: a `match` arm, like E28. Scoped to the gradient models: the exact solvers (`ewridge`, `rls`, `lasso`) have no closed form under a bound — non-negative least squares is an active-set solve per row, `O(k³)` in the worst case, a different model. Against: no use case named, and a bound the data disagrees with is a bias the fit cannot report, so `resid_z` and E22's metrics are how one would see it. |
+| E41 | P3 | **Coefficient dynamics on `kalman`** — a diagonal transition `b ← φ^d · b + w`, coefficients that revert toward zero or toward the warm prior (E15), in place of the random walk `F = I`. | `O(k²)` unchanged for a diagonal `F`; `φ^{d_clock}` handles the irregular clock exactly as `Q·d` does today (`kalman.rs`); state unchanged. Mean reversion of `β` is what `session_shrink` / `long_halflife` (E6) do for the accumulator models at a session boundary — the same idea, continuous and inside the filter. Against: a general `F` is a matrix power per row on an irregular clock and `O(k³)` for `F P Fᵀ`, not worth it; the diagonal case is one parameter, and nobody has asked for it. |
+| E42 | P3 | **A sequential test between two specs** — an e-process for "spec A's loss is below spec B's", anytime-valid: `P(sup_t E_t ≥ 1/α) ≤ α` under the null, so it may be read at every row and stopped whenever it crosses. | `O(1)` state, deterministic. On the *sign* of the per-row loss difference (a conditional-median null, so unbounded squared losses need no clipping): a betting martingale `E' = E · (1 + λ·s)` with a predictable `λ` (Waudby-Smith & Ramdas 2020), emitted as `log_e` per row. What E13 (`emit_selected`) and E14 (`emit_averaged`) do not do: they *act* on the comparison; this *tests* it, with an error rate that survives peeking — on a stream, the only honest kind. Against: the rows' losses are dependent in time, so the sign-conditional null is the one that holds and the claim must be stated as that; and there is no use case yet beyond "is the new spec better, with a number I can defend". |
+
+**Two that need no build.** Nonlinear regression without trees is a feature map
+upstream: random Fourier features (`cos(x·ω + b)` with `ω, b` drawn once and
+written into the query as constants), splines or polynomial terms as Polars
+expressions into `ewridge` — kernel ridge in `O(D²)` state for `D` features.
+The seed lives in the expression, fixed per query and not per row, so it is
+chunk-invariant and not code X; the plan and the plugin both accept it today.
+Seasonality is E25's recorded answer: a `group_by` on the phase, not a seasonal
+term in `holt`.
+
+**Ranked**, by gap × fit × cost: E36 first (passes as-is, and every model gains
+an interval with a guarantee), E37 with E38 second (no new state; `ew_cov`
+becomes anomaly detection and factor structure), then the two open
+investigations — trees and clustering, the largest jumps and the largest costs
+— then E39 only if multiclass is wanted, then B2 rolling-window regression once
+the retained-rows convention (`CLUSTERING.md` §12, DBSCAN over a retained
+sample) is settled. E40–E42 wait for a use case.
 
 ## 6. Reaching the accumulators directly
 
