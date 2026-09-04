@@ -788,8 +788,8 @@ scores = po.eval.compare_specs(pl.read_parquet("grid.parquet"),
 ```
 
 Every chunk puts 6 × 64 stream tasks on the pool. On 2.56M rows over 64
-groups that plan takes 13.1 s at one thread and 2.35 s at fourteen; the
-three-factor spec alone goes from 2.65 s to 0.72 s, because with one task
+groups that plan takes 12.3 s at one thread and 2.2 s at fourteen; the
+three-factor spec alone goes from 2.5 s to 0.62 s, because with one task
 per group the fixed cost of reading and assembling each chunk shows
 through. The output is one struct column per spec, which is what
 `compare_specs` reads, and one state file holds them all. The same list
@@ -797,10 +797,10 @@ runs the same way through `ModelBank`, `po.run` and the CLI.
 
 Where the parallelism comes from, then:
 
-- **Groups.** k=20 over 64 groups: 916k, 1.65M, 2.86M, 4.75M and 6.03M
-  rows/s at 1, 2, 4, 8 and 14 threads — **6.6×** on a 14-core machine.
-- **Specs.** Eight single-group specs in one bank run in 118 ms against
-  685 ms one at a time.
+- **Groups.** k=20 over 64 groups: 1.02M, 1.91M, 3.52M, 6.44M and 8.20M
+  rows/s at 1, 2, 4, 8 and 14 threads — **8.0×** on a 14-core machine.
+- **Specs.** Eight single-group specs in one bank run in 130 ms against
+  515 ms one at a time.
 - **Halflives.** Each halflife in a grid is its own accumulator, and the
   instances of a stream run alongside each other (except with
   `drift_action="reset"`, which couples them). Ridge and feature-set grids
@@ -920,16 +920,16 @@ Apple M-series, single process, best of 3, 200k rows per run
 
 | configuration | notes | rows/sec |
 |---|---|---|
-| `ewridge` k=5 | 1 target, 1 halflife | 8,961,460 |
-| `ewridge` k=20 | 1 target, 1 halflife | 3,620,024 |
-| `ewridge` k=50 | 1 target, 1 halflife | 960,926 |
-| `ewridge` k=20 | 10 targets | 1,906,032 |
-| `ewridge` k=20 | 5 halflives | 2,158,579 |
-| `rls` | k=20, 1 target | 1,927,999 |
-| `kalman` | k=20, 1 target | 1,661,270 |
-| `lasso` | k=20, 1 target (3-point path) | 1,878,137 |
-| `huber` | k=20, 1 target | 3,680,996 |
-| `ftrl` | k=20, 1 target | 6,288,122 |
+| `ewridge` k=5 | 1 target, 1 halflife | 11,052,624 |
+| `ewridge` k=20 | 1 target, 1 halflife | 3,915,551 |
+| `ewridge` k=50 | 1 target, 1 halflife | 1,013,347 |
+| `ewridge` k=20 | 10 targets | 2,319,677 |
+| `ewridge` k=20 | 5 halflives | 2,499,997 |
+| `rls` | k=20, 1 target | 1,962,001 |
+| `kalman` | k=20, 1 target | 1,686,204 |
+| `lasso` | k=20, 1 target (3-point path) | 2,087,772 |
+| `huber` | k=20, 1 target | 4,085,464 |
+| `ftrl` | k=20, 1 target | 7,119,127 |
 
 Targets share one `S` accumulator, so 10 targets cost far less than 10× one.
 Each halflife in a grid is its own accumulator, but they run in parallel, so
@@ -937,7 +937,7 @@ a 5-halflife grid costs about 2× one rather than 5×. `rls` pays 1.3–2.1× fo
 the square-root form that keeps it from dying of cancellation on one extreme
 row; that is worth it.
 
-Grouped data goes wider, as [Parallelism](#parallelism) shows: 6.0M rows/s
+Grouped data goes wider, as [Parallelism](#parallelism) shows: 8.2M rows/s
 at k=20 over 64 groups.
 
 **Memory** is the state, the chunks in flight (three, so `chunk_rows` is the

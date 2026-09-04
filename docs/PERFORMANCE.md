@@ -1064,6 +1064,23 @@ matrix re-measured the same way on this branch: one spec 14/14 2.64 s /
 parallel, 4/14 no longer beats 14/14 on time; it still takes a third off
 the memory. 28 + 28 on the ticks grid: 2.18 s against 2.21 at 14 + 14.
 
+**The README's numbers, regenerated on this branch (2026-09-04).**
+`scripts/benchmark.py` (200k rows, best of 3): k=5 8.96M → **11.05M**
+rows/s, k=20 3.62M → 3.92M, k=50 961k → 1.01M, 10 targets 1.91M → 2.32M,
+5 halflives 2.16M → 2.50M, `rls` 1.93M → 1.96M, `kalman` 1.66M → 1.69M,
+`lasso` 1.88M → 2.09M, `huber` 3.68M → 4.09M, `ftrl` 6.29M → 7.12M — a
+200k single-group run spends a visible share of its time in `assemble`,
+which P10 made ~5× cheaper. `scripts/scaling_bench.py` (k=20, 64 groups):
+1.02M / 1.91M / 3.52M / 6.44M / **8.20M** at 1, 2, 4, 8, 14 threads, **8.0×**
+(was 6.6×). The ticks grid, six specs over 2.56M rows: 12.3 s at one thread
+and 2.22 s at fourteen (13.1 / 2.35); the three-factor spec alone 2.47 s →
+0.62 s (2.65 / 0.72). Eight single-group specs, k=20 over 300k rows, one
+halflife each: 130 ms in one bank against 515 ms one at a time (the old
+118 / 685 came from a configuration nobody wrote down; this one is
+`halflife=1000·j`, `max_dclock=10`). The `.over()` figure is untouched:
+the plugin's groups sit below the row floor and time the same on both
+builds.
+
 **The row floor.** The gate caught what the wall clock did not:
 `tests/test_ffi_memory.py::test_plugin_over_groups` failed once at
 6.6 KB/iter against its 4.0 line. Not a leak — 3000 iterations of the same
