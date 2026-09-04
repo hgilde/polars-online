@@ -358,6 +358,23 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       XGBoost refits on synthetic drift. Nothing in the Rust crates; whether to build it is
       the user's call and §9 of the doc costs it. Research sources stay under the
       gitignored `.cache/research/`.
+- [x] 22. **Online clustering, every family that can be made to fit — investigated
+      2026-09-04, on the branch `online-clustering`.** The user asked for "all the
+      clustering types that may be possible Online", so: every family in river 0.26.1,
+      MOA, scikit-learn and Spark plus the two survey papers, each decided against the
+      contract. `docs/CLUSTERING.md` (§11h) is the answer — the papers read with claims
+      cited by line (DenStream's fading function, definitions and pruning thresholds;
+      CluStream's micro-cluster; BIRCH's CF triple; DP-means; Cappé–Moulines eq. 15;
+      Bottou–Bengio's `1/n_k` as the Newton rate), the four implementations read with
+      `file:line` (none of which is both chunk-invariant and bounded, none of which
+      reads a real clock, none of which labels a row before learning it), nine designs
+      prototyped in numpy (`scripts/clustering_proto.py`) and measured
+      (`scripts/clustering_experiments.py`) against Lloyd refits and scikit-learn's
+      `MiniBatchKMeans`. Every guarantee holds bit-exactly. The one real defect of
+      sequential k-means — two centres collapsing onto one component under drift, on 5
+      of 20 streams — is fixed by a split–merge move on a slower clock. Nothing in the
+      Rust crates; whether to build it is the user's call and §9 costs it. Research
+      sources stay under the gitignored `.cache/research/`.
 
 ## 11a. Decisions made while implementing
 
@@ -988,6 +1005,23 @@ collapse only at checkpoints, a batch warm start), a numpy prototype
 (`scripts/ogbt_experiments.py`), the ideas that failed with their numbers,
 and the cost of a Rust build. Investigation only — nothing in the crates;
 the build decision is the user's (task 21, §11a).
+
+## 11h. Online clustering
+
+[`docs/CLUSTERING.md`](CLUSTERING.md), on the branch `online-clustering`: every
+clustering family the field has produced, decided against the contract — what
+fails does so for one of three reasons (it needs the rows back, its state is not
+bounded by parameters, or it puts randomness on the output path), and what
+passes reduces to `EwCov`'s decayed weighted mean with an assignment in front of
+it. Nine numpy prototypes (`scripts/clustering_proto.py`) measured
+(`scripts/clustering_experiments.py`) on drifting mixtures with outliers and
+regime changes: chunk invariance, determinism, zero-weight and null rows all
+bit-exact; seeding is the largest source of variance and the right rule depends
+on the outliers expected; a split–merge move on a slower clock than the centre
+update is what makes fixed-`k` k-means survive drift. §8 settles the spec and
+the static output schema, §9 costs a Rust build, §10 lists what failed.
+Investigation only — nothing in the crates; the build decision is the user's
+(task 22).
 
 ## 12. Open questions (not blocking)
 

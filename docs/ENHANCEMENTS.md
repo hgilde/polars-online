@@ -125,7 +125,15 @@ two items it found that are arguably *in* scope are in §5.
 - **Neighbors** (`neighbors.KNNRegressor`): O(window) memory contradicts
   "memory is O(state), not O(data)".
 - **Clustering / naive Bayes / multiclass softmax**: not regression on ordered
-  streams (PLAN §4.6 scopes classification to binary).
+  streams (PLAN §4.6 scopes classification to binary). *Clustering reassessed
+  2026-09-04 in [`CLUSTERING.md`](CLUSTERING.md) §4, on the branch
+  `online-clustering`: every workable family reduces to `EwCov`'s decayed
+  weighted mean with an assignment in front of it, so bounded state,
+  determinism, chunk invariance and the damped window are all met — nine
+  designs are prototyped and measured. "Not regression" stays true and the bank
+  already ships one unsupervised model (`ew_cov`); the real cost is a second
+  family plus a label whose stability is a user-visible API property. The
+  decision is open.*
 - **Bandit-based model selection** (`model_selection.*`): E13/E14 cover the
   need deterministically; bandits add randomness to the prediction path.
 - **Pipelines / feature extraction** (`compose.*`, `feature_extraction.*`,
