@@ -401,6 +401,22 @@ and are regenerated when the branch lands (`scripts/benchmark.py`,
 `scripts/scaling_bench.py`, the grid timings). PERFORMANCE §12 has the
 sweep on both builds.
 
+**The x86 control, the merge, and 0.1.1 prepared, 2026-09-04.** Asked
+whether the layout's gain was this machine's, the answer came from
+GitHub's `ubuntu-latest` (4 vCPU, x86) with the same workflow file on both
+commits — `benchmark.yml` gained a `ref` input for exactly that (a
+dispatch measures any tag, branch or full SHA as a control) and its
+artifact now carries both tables. k=20 over 64 groups: 389k / 704k / 788k
+rows/s on `v0.1.0` against 421k / 807k / 890k on the branch at 1 / 2 / 4
+threads (+8 / +15 / +13%), so the stride was not an Apple artefact; the
+single-group table is at or above `v0.1.0` on every row within the
+runner's own ±10% (two runs of `v0.1.0` code differed by that much). The
+branch was merged fast-forward and prepared as **0.1.1**: version bumped,
+CHANGELOG cut, `docs/VALIDATION.md` regenerated (the version line and
+nothing else), the README's measured numbers regenerated on this build.
+What remains is CI and a Release rehearsal on the merged head, then
+`v0.1.1` on the user's word.
+
 **The bank's pool is its own, named for what it is, 2026-09-04.** The
 bank fanned out on rayon's global pool, so its one knob was
 `RAYON_NUM_THREADS` — a name that, next to `POLARS_MAX_THREADS`, said
