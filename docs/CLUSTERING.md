@@ -77,6 +77,12 @@ material stays out of the repo.
   refit block: the drop is entirely label churn between refits. Online models
   keep their ids stable by construction; the variable-`k` ones must allocate ids
   monotonically and never reuse them (§6.5).
+- **The bar is `O(1)` memory in `n` and `O(n · parameters)` processing**, which
+  admits a constant number of passes (§2). Everything here is single-pass
+  anyway; §2.1 records what a second pass would buy — chiefly seeding from the
+  whole stream instead of a prefix — and the two things standing in its way,
+  neither of which is complexity: it would be lookahead under hard rule 2, and
+  the expression plugin cannot express it.
 - **Nothing is recommended for the crates yet.** §9 costs a Rust build; the
   decision is the user's. The narrowest useful build is one model, `kmeans`,
   with the split–merge move and the seeding buffer.
@@ -125,7 +131,28 @@ model must emit an id, not a column per cluster).
 
 The families are the union of river 0.26.1's `cluster` module, MOA's
 `moa.clusterers`, scikit-learn's `cluster` and `mixture`, Spark MLlib, and the
-algorithms tabulated by the two surveys read for §3. Verdicts:
+algorithms tabulated by the two surveys read for §3.
+
+**The bar is a complexity bar, and it is worth stating separately from §1's
+contract**, because the two are often conflated: *memory bounded by parameters
+(constant in `n`), and total processing linear in `n` times those parameters* —
+`O(n·k·p)` is fine, `O(n²)` is not, and neither is any state that grows with the
+row count. A **constant number of passes is admissible**, since `2n` is still
+`O(n)`; §2.1 says what a second pass would buy and what it would cost. Each
+rejection below carries a code for which part of the bar it fails:
+
+| code | meaning |
+|---|---|
+| **R** | needs the rows back — the raw points, retained, so memory is `O(n)` |
+| **Q** | quadratic — `O(n²)` processing, or an `n×n` matrix |
+| **G** | state grows with `n`, even if sub-linearly |
+| **X** | randomness on the per-row output path (breaks determinism, §1.4) |
+| **P** | bounded in principle, but by a constant exponential in `p` |
+| **S** | the output schema is not derivable from the spec (§1.10) |
+| **T** | the state is not `f64` (§1.9) |
+| **C** | *passes the complexity bar* — excluded by convention or measurement instead |
+
+Verdicts:
 
 | family | representative | verdict | why |
 |---|---|---|---|
@@ -136,28 +163,81 @@ algorithms tabulated by the two surveys read for §3. Verdicts:
 | online EM / Gaussian mixture | Cappé–Moulines'09, Neal–Hinton'98, Titterington'84 | **in** | expected sufficient statistics are additive; `EwCov` per component weighted by `w·r_k` |
 | DP-means / leader / threshold | Kulis–Jordan'12, Hartigan'75 | **in, capped** | one distance test per row; needs `max_clusters` and an eviction rule to be O(state) |
 | micro-clusters, damped | DenStream'06, DBSTREAM'16, CluStream'03 | **in, capped** | (weight, centre, radius) is `EwCov`'s triple; the fading function *is* our decay |
-| grid / density grid | D-Stream'07 | **out** | grid count is `bins^p`; bounded only for tiny `p`, and the bound is not a state bound |
+| grid / density grid | D-Stream'07 | **out (P)** | the occupied-cell count is bounded by `bins^p`, so it *is* a parameter bound and constant in `n` — but that constant is astronomical past `p ≈ 6`, and the cells actually held grow with `n` until saturation. Bounded in principle, useless in practice |
 | hierarchical CF-tree | BIRCH'96, ClusTree'11 | **partly** | the CF triple is exactly our summary and the insertion is per-row and chunk-invariant, but the tree is **not memory-bounded** as implemented (`_birch.py`, no rebuild) — a capped flat set of micro-clusters is the same idea with a bound |
-| coreset / streaming k-means with guarantees | Guha'03, Ailon'09, StreamKM++'12, BICO'13 | **out** | the guarantee is bought with memory that grows in `n` (§3), the construction is randomized, and the clustering happens *at the end*; there is no per-row label |
-| online facility location | Liberty'16 (`liberty2016:206-214`) | **out** | opens a centre with probability `min(D²/f, 1)` — per-row randomness on the output path, and `O(k log n log W)` centres |
+| coreset / streaming k-means with guarantees | Guha'03, Ailon'09, StreamKM++'12, BICO'13 | **out (G, X)** | the guarantee is bought with memory that grows in `n` — that *is* the complexity bar, not a preference (§3) — the construction is randomized, and the clustering happens at the end |
+| online facility location | Liberty'16 (`liberty2016:206-214`) | **out (X, G)** | opens a centre with probability `min(D²/f, 1)` — randomness on the output path — and `O(k log n log(W*/w*))` centres, which grows with `n` |
 | self-organising map | Kohonen'82 | **in** | fixed grid, each neuron an EW mean with a neighbourhood weight |
 | growing neural gas | Fritzke'95 | **in, capped** | the paper's own stopping criterion is "net size or some performance measure" (`fritzke1995:153`), so a `max_nodes` cap is its option, not a violation — but growth then simply stops (§6.6); constant learning rates also make it a constant-gain model |
 | ODAC — clustering the *variables* | Rodrigues–Gama'08 | **in** | one EW correlation matrix; a static per-column output |
-| DBSCAN / OPTICS / HDBSCAN / mean-shift on rows | — | **out** | need the rows, or all pairwise distances |
-| spectral / affinity propagation / kernel k-means | — | **out** | an n×n affinity |
-| agglomerative on rows | — | **out** | O(n²) and needs the rows |
-| sliding-window clustering | SL-KMeans'20 | **out** | O(window) memory; also the lowest-accuracy window model in the Sesame study |
-| projected / subspace, high-dimensional | HPStream'04, PreDeCon | **out for now** | the projection is per-cluster and evolves — a variable schema, and a much bigger design |
-| sequence / time-series clustering | DTW-based | **out** | needs the series, and DTW is not a decayed mean |
-| categorical / text | k-modes, TextClust | **out** | non-`f64` state (rule: `f64` everywhere) |
-| co-clustering / consensus | — | **out** | need the matrix, or many models' labels at once |
+| DBSCAN / OPTICS / HDBSCAN **on rows** | Ester'96, Ankerst'99, Campello'13 | **out (R, Q)** | a point's label depends on which other points lie within `ε`, so either the points are retained (`O(n)`) or every pair is evaluated (`O(n²)`). A second problem is independent of memory: density-connectivity is global, so a later arrival can promote noise to core or bridge two clusters into one, and correct output means *revising labels already emitted*. **Density clustering over bounded summaries is a different question and is in** — that is DenStream's whole design and §6.5's macro step |
+| spectral / affinity propagation / kernel k-means | Ng'01, Frey–Dueck'07 | **out (R, Q)** | an `n×n` affinity matrix, and an eigendecomposition or message passing over it |
+| agglomerative **on rows** | Ward'63 and the linkage family | **out (R, Q)** | `O(n²)` distances over retained rows. Linkage over *summaries* is bounded and is in (§6.5's macro step is single linkage over `M ≤ max_micro` micro-clusters, `O(M²)` at a checkpoint) |
+| sliding-window clustering | SL-KMeans'20 | **out (C)** | a fixed window `W` is `W·p` doubles — a *parameter* bound, constant in `n`, so it **passes the complexity bar**. It is excluded on two other grounds: the library's convention reads a retained window as `O(data)` (`BEYOND-O-STATE.md` excludes kNN for exactly this), and the damped window buys the same recency in `O(1)` without storing a row. Sesame's O5 also measures the sliding window as the least accurate of the three window models |
+| projected / subspace, high-dimensional | HPStream'04, PreDeCon | **out for now (S)** | the retained dimension set is per-cluster and evolves, so neither the state layout nor the output schema is fixed by the spec. Not a complexity failure — a much bigger design |
+| sequence / time-series clustering | DTW-based | **out (R, Q)** | needs the series retained, and a DTW alignment is `O(L²)` per pair — it is not expressible as a decayed mean of anything |
+| categorical / text | k-modes, TextClust | **out (T)** | the state is modes, token tables or tries, not `f64` |
+| co-clustering / consensus | Dhillon'01, Strehl–Ghosh'02 | **out (R, Q)** | co-clustering needs the full `n×p` matrix resident; consensus needs every base model's label vector over all rows |
 | clusterwise regression | gated `ewridge` instances | **later** | a natural follow-on once a clusterer exists: the gate is a clusterer, the experts are models the bank already has |
 
-Three reasons cover every "out": **it needs the rows back** (medoids, DBSCAN,
-spectral, agglomerative, DTW, sliding windows), **its state is not bounded by
-parameters** (grids in `p` dimensions, CF-trees without a rebuild, coresets),
-or **it puts randomness on the output path** (Liberty's rule, and any
-Poisson-weighted resampling).
+**Two reasons cover almost every "out"**: it needs the rows back (R), or it is
+quadratic (Q) — and the two travel together, because what you would do with the
+retained rows is compare them pairwise. The remaining rejections are one each of
+state that grows with `n` (coresets), randomness on the output path (Liberty),
+a bound exponential in `p` (grids), a schema that is not fixed by the spec
+(subspace), a non-`f64` state (categorical), and one — sliding windows — that
+passes the complexity bar outright and is excluded on other grounds.
+
+**The R rejections are not a statement about density clustering.** DBSCAN *on
+rows* is out; DBSCAN *over bounded summaries* is in, is what DenStream does, and
+is what §6.5 implements as single linkage over capped micro-clusters. Same for
+linkage: `O(n²)` over rows, `O(M²)` over `M ≤ max_micro` summaries at a
+checkpoint. The published literature reached this conclusion first and said so
+plainly — a naive approach "would be to maintain all the points in memory…
+clustered by the DBSCAN algorithm", but "it is unrealistic to provide such a
+precise result, because in a streaming environment the memory is limited", so
+DenStream "resort[s] to an approximate result" over summaries
+(`cao2006:199-217`).
+
+### 2.1 What a second pass would change
+
+A constant number of passes is inside the bar. It is not currently used, and the
+prototypes are all single-pass, but four things would come within reach and one
+of them addresses the largest weakness measured anywhere in this document:
+
+- **Seeding from the whole stream, not a prefix.** §7.2 shows seeding dominating
+  every other choice, and §6.3 shows a *bigger* warm-up buffer scoring worse
+  (0.944 against 1.000) because its extra rows are older. That is an artefact of
+  having only a prefix to look at. Two passes removes it: pass 1 builds capped
+  micro-clusters over the whole stream, weighted Lloyd runs over those `M`
+  summaries in memory (`O(M)`, not `O(n)`), and the fit pass starts from seeds
+  that have seen everything. This is BIRCH's two-phase shape with a hard cap
+  instead of a growing tree.
+- **Approximate k-medoids.** Pass 1 gives centres; pass 2 keeps, per centre, the
+  nearest actual row seen — `O(M·p)`. Exact medoids stay out.
+- **Davies–Bouldin exactly** (§8 notes it needs a pass with the final centroids).
+- **A fit-then-label mode**: the macro step runs once after pass 1 and pass 2
+  labels every row from a frozen model, so labels are never revised and `k` is
+  known before any output is emitted.
+
+**Two things stand in the way, and neither is about complexity.**
+
+*Hard rule 2, out-of-sample by construction.* A second pass over the same rows
+means the model labelling row `i` has seen rows `i+1…n`. In a backtest that is
+lookahead — the failure this library exists to prevent. Note that a two-phase
+mode over *different* data already exists and leaks nothing: fit, `save_state`,
+then load and score. Passing twice over the *same* data is the new thing, and
+initialisation quality is its only real justification. If it is ever built, the
+leak must be named in the output, not buried in a parameter.
+
+*The expression plugin cannot do it at all.* It receives its column once. The
+CLI and `po.run` over a file can re-scan cheaply; the IO plugin
+(`python/polars_online/_frame.py`) would have to re-execute its input plan
+inside the source, which doubles any upstream compute and is not obviously sound
+under polars' semantics for a plan used twice in one query. So a two-pass model
+cannot be an ordinary `ModelKind` in the bank — it needs its own entry point.
+That is an architectural decision, not a modelling one, and it is why nothing
+here assumes a second pass.
 
 ---
 
@@ -1022,6 +1102,11 @@ it was re-checked.
 - **`k`-selection is out of scope behind the plugin** (a static schema needs a
   fixed `k`), but the bank could run several `k` at once and expose an EW SSQ
   per model — an elbow computed by the user rather than by us.
+- **Whether to spend a second pass** (§2.1), and if so on initialisation only
+  (keeping per-row outputs out-of-sample w.r.t. learning, with the seeds
+  carrying a named leak) or on an explicitly in-sample fit-then-label mode. Left
+  open deliberately on 2026-09-04; the prototypes stay single-pass until it is
+  settled.
 - **No convergence theory covers the constant-step regime** these models run in
   (§3). The measurements say they track; nothing says they converge, and a
   counter-example (a stream where a damped-window GMM oscillates instead of
