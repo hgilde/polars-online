@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 
 import polars_online as po
 
@@ -50,25 +51,61 @@ def _spec(**kw):
     return po.spec.ewridge("m", **d)
 
 
+def _bank_specs():
+    """The plain spec beside one with a halflife grid, `coef` on every row and
+    every optional output on, so that a field of every kind is compared."""
+    grid = po.spec.ewridge(
+        "grid",
+        targets=["y0"],
+        features=["x0", "x1"],
+        clock="t",
+        max_dclock=10.0,
+        halflife=[10.0, 50.0, 200.0],
+        group="g",
+        min_periods=5.0,
+        max_rows_between_solves=1,
+        coef_every=1,
+        emit_sigma=True,
+        emit_resid_z=True,
+        emit_selected=True,
+        emit_averaged=True,
+        emit_metrics=True,
+        resid_quantiles=[0.5, 0.9],
+        emit_autocorr=True,
+        emit_drift=True,
+    )
+    return [_spec(), grid]
+
+
 class TestThreadDeterminism:
     """T-D3: the bank fans out over (spec x group) on its own pool, sized by
-    `POLARS_ONLINE_MAX_THREADS`. Work within one stream is serial, so thread
-    count must not change a single number."""
+    `POLARS_ONLINE_MAX_THREADS`, and from 4096 rows a chunk's columns are
+    also laid out, read and assembled in parallel (`PAR_MIN_ROWS`,
+    docs/PERFORMANCE.md P9-P11). Work within one stream is serial, so thread
+    count must not change a single number -- in any field, on either side
+    of that threshold."""
 
     SNIPPET = """
 import sys, numpy as np, polars as pl
 sys.path.insert(0, {tests!r})
 import polars_online as po
-from test_portability import _frame, _spec
-out = po.ModelBank([_spec()]).fit_predict(_frame())
-vals = out["m"].struct.field("pred_y0").to_list()
-print(repr([None if v is None else float(v) for v in vals]))
+from test_portability import _frame, _bank_specs
+out = po.ModelBank(_bank_specs()).fit_predict(_frame(n={n}, groups={groups}, seed=1))
+out.write_ipc({path!r})
 print(po.thread_pool_size())
 """
 
-    def _run_with_threads(self, n_threads):
+    # 37 groups round-robin over 5000 rows: every column is gathered into the
+    # group layout and read on the pool, and every field is scattered back.
+    FRAMES = [
+        pytest.param(400, 6, id="below-PAR_MIN_ROWS"),
+        pytest.param(5000, 37, id="above-PAR_MIN_ROWS"),
+    ]
+
+    def _run_with_threads(self, tmp_path, tag, n_threads, n, groups):
         env = dict(os.environ, POLARS_ONLINE_MAX_THREADS=str(n_threads), POLARS_MAX_THREADS="1")
-        code = self.SNIPPET.format(tests=str(REPO / "tests"))
+        path = tmp_path / f"{tag}.arrow"
+        code = self.SNIPPET.format(tests=str(REPO / "tests"), n=n, groups=groups, path=str(path))
         res = subprocess.run(
             [sys.executable, "-c", code],
             capture_output=True,
@@ -79,20 +116,23 @@ print(po.thread_pool_size())
             check=False,
         )
         assert res.returncode == 0, res.stderr[-2000:]
-        vals, size = res.stdout.strip().rsplit("\n", 1)
         # The variable took: the pool the bank ran on is the size asked for.
-        assert int(size) == n_threads
-        return eval(vals)  # noqa: S307 - our own repr output
+        assert int(res.stdout.strip()) == n_threads
+        out = pl.read_ipc(path)
+        assert out.height == n and out.columns[-2:] == ["m", "grid"]
+        return out
 
-    def test_one_thread_matches_many(self):
-        single = self._run_with_threads(1)
-        many = self._run_with_threads(8)
-        assert single == many, "thread count changed the output"
+    @pytest.mark.parametrize(("n", "groups"), FRAMES)
+    def test_one_thread_matches_many(self, tmp_path, n, groups):
+        single = self._run_with_threads(tmp_path, "one", 1, n, groups)
+        many = self._run_with_threads(tmp_path, "many", 8, n, groups)
+        assert_frame_equal(single, many, check_exact=True)
 
-    def test_repeated_runs_are_identical(self):
-        a = self._run_with_threads(4)
-        b = self._run_with_threads(4)
-        assert a == b
+    @pytest.mark.parametrize(("n", "groups"), FRAMES)
+    def test_repeated_runs_are_identical(self, tmp_path, n, groups):
+        a = self._run_with_threads(tmp_path, "a", 4, n, groups)
+        b = self._run_with_threads(tmp_path, "b", 4, n, groups)
+        assert_frame_equal(a, b, check_exact=True)
 
 
 class TestThreadPoolKnob:

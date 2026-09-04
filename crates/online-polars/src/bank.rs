@@ -233,8 +233,9 @@ fn key_column(df: &DataFrame, spec: &Spec, role: &str, name: &str) -> PolarsResu
 /// groups of a few dozen rows, and fanning those out spread their
 /// allocations over the pool's threads. Measured as a doubled RSS wobble in
 /// `tests/test_ffi_memory.py` (±4.6 vs ±2 KB per call around a flat mean)
-/// with no change in speed (docs/PERFORMANCE.md §12).
-const PAR_MIN_ROWS: usize = 4096;
+/// with no change in speed (docs/PERFORMANCE.md §12). Public so that
+/// `tests/chunk_plan.rs` can run the same frames on both sides of it.
+pub const PAR_MIN_ROWS: usize = 4096;
 
 /// `items.par_iter().map(f)` when `par`, the same on this thread otherwise.
 fn map_maybe_par<T, R, C>(items: &[T], par: bool, f: impl Fn(&T) -> R + Sync + Send) -> C

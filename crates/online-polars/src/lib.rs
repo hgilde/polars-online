@@ -46,7 +46,8 @@ mod spec;
 mod stream;
 
 pub use bank::{
-    Bank, Coef, CoefField, FieldMeta, Gram, GroupKey, coef_fields, output_fields, output_index,
+    Bank, Coef, CoefField, FieldMeta, Gram, GroupKey, PAR_MIN_ROWS, coef_fields, output_fields,
+    output_index,
 };
 pub use online_core;
 pub use pool::{THREADS_VAR, pool, thread_pool_size};

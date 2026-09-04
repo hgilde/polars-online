@@ -417,6 +417,20 @@ nothing else), the README's measured numbers regenerated on this build.
 What remains is CI and a Release rehearsal on the merged head, then
 `v0.1.1` on the user's word.
 
+**The chunk plan's edge cases, 2026-09-04.** Asked to make sure every edge
+case of the parallel implementation is tested. The plan's three pieces
+had been proved by golden numbers on the benchmark frames and by the
+existing 400-row bank tests, which never reach `PAR_MIN_ROWS`; what was
+missing was the same claims *above* the floor and on the awkward inputs
+(null keys, one-row groups, nulls in every column, sessions, a column in
+many arrow chunks, non-Float64 dtypes, chunk sizes of 4095/4096/4097,
+errors under a permuted layout). `crates/online-polars/tests/chunk_plan.rs`
+now holds them, `PAR_MIN_ROWS` is public so the test can straddle it, and
+`tests/test_portability.py`'s thread-determinism case runs above the floor
+too, with a halflife grid and every output on. Nothing was found; the
+tests were mutated by hand to check they could find something, and did.
+`docs/TESTING.md` T-E13 has the list.
+
 **The bank's pool is its own, named for what it is, 2026-09-04.** The
 bank fanned out on rayon's global pool, so its one knob was
 `RAYON_NUM_THREADS` — a name that, next to `POLARS_MAX_THREADS`, said
