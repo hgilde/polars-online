@@ -648,9 +648,22 @@ the `manylinux2014_aarch64` image with a current GCC; the tag stays
 now ships too. And a third, on the x64 Linux job: maturin-action exports
 `RUSTC_WRAPPER=sccache` into the job but installs sccache inside the
 manylinux container, so the host `cargo build` of the CLI that follows could
-not execute the wrapper; the CLI step now clears it. Both fixes are in the
-tagged commit, which is the point: a tag runs the workflow file *at the
-tag*. The rehearsal is not optional.
+not execute the wrapper; the CLI step now clears it. And a fourth: the
+Intel macOS job hit the 90-minute timeout, 26 minutes of which were `uv
+sync` building the extension into a venv nothing in the job uses
+(maturin-action brings its own Python; the CLI has no pyo3 in its tree).
+That step is gone, the timeout is 120, and rust-cache now saves on failure
+as it does in `ci.yml`. And a fifth, the one that matters most because it is
+rule 5 itself: both `read state` jobs failed with `handoff.state: No such
+file or directory`. The artifact lands in the workspace root, but cargo runs
+an integration test with the *package* root as its working directory
+(`crates/online-polars/`, per the cargo reference), so the relative path
+missed it; the write side already used `${{ github.workspace }}` and the read
+side now does too. Reproduced locally both ways before the fix. The state
+jobs also lose their `uv sync` (17--23 minutes each): `online-polars` has no
+pyo3 in its tree and the test is pure Rust. All of it is in the tagged
+commit, which is the point: a tag runs the workflow file *at the tag*. The
+rehearsal is not optional.
 
 The first push also proved the `paths-ignore` warning above in the cheapest
 possible way: it ended in two documentation commits, the filter matched them,

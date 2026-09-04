@@ -55,7 +55,9 @@ jobs:
   build:
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    # Cold, the slowest runner (Intel macOS) needs ~40 min for the wheel and
+    # ~30 for the CLI; Windows ~35 and ~25. 90 was cut by the first rehearsal.
+    timeout-minutes: 120
     permissions:
       contents: read
     strategy:
@@ -101,11 +103,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          enable-cache: true
+          # A timed-out or failed job still leaves a valid compile behind;
+          # without this the next run starts cold again (same as ci.yml).
+          cache-on-failure: true
 
-      - run: uv sync
+      # No `uv sync` here: it builds the extension into a venv nobody uses --
+      # maturin-action brings its own Python, and the CLI has no pyo3 in its
+      # tree (`cargo tree -p online-cli` finds none). That was 26 minutes of
+      # the Intel macOS job in the first rehearsal.
 
       # maturin-action supplies the manylinux/musllinux container and the
       # cross-compilation toolchain; on macOS and Windows it is a thin wrapper
@@ -132,7 +138,7 @@ jobs:
         if: matrix.cli
         env:
           RUSTC_WRAPPER: ""
-        run: uv run cargo build --release -p online-cli
+        run: cargo build --release -p online-cli
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -156,12 +162,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-      - run: uv sync
+      # No Python here either: `online-polars` has no pyo3 in its tree and
+      # the test is pure Rust. The `uv sync` this used to run built the
+      # extension into a venv the test never touched (17 minutes on macOS,
+      # 23 on Windows in the first rehearsal).
       - name: write the hand-off state
         env:
           ONLINE_WRITE_STATE: ${{ github.workspace }}/handoff.state
-        run: uv run cargo test -p online-polars --test state_portability
+        run: cargo test -p online-polars --test state_portability
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: handoff-state
@@ -183,15 +191,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-      - run: uv sync
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: handoff-state
       - name: load the macOS-written state and continue the stream
+        # Absolute on purpose: the artifact lands in the workspace root, but
+        # cargo runs an integration test with the *package* root as its
+        # working directory (crates/online-polars/), so a bare
+        # `handoff.state` is "No such file or directory". The first
+        # rehearsal failed here on both OSes.
         env:
-          ONLINE_FOREIGN_STATE: handoff.state
-        run: uv run cargo test -p online-polars --test state_portability
+          ONLINE_FOREIGN_STATE: ${{ github.workspace }}/handoff.state
+        run: cargo test -p online-polars --test state_portability
 
   release:
     name: publish the release
@@ -222,13 +233,15 @@ jobs:
           files: release/*
           generate_release_notes: true
 
-  # Publishing is a separate, manually-approved job: a tag should be able to
-  # build and attach artifacts without also pushing to PyPI. Uses trusted
-  # publishing (OIDC), so there is no API token to store or rotate.
+  # Publishing is a separate job so that a tag can build and attach artifacts
+  # without also pushing to PyPI. Uses trusted publishing (OIDC), so there is
+  # no API token to store or rotate. The `pypi` environment has no required
+  # reviewers (checked 2026-09-03), so a tag publishes as soon as the build
+  # is green; add reviewers to the environment to make this step manual.
   #
-  # Before the first run: claim the project name on PyPI and register this
-  # repository/workflow as a trusted publisher. The name `polars-online` has
-  # NOT been checked as available -- do that first (PLAN section 10).
+  # Registered on PyPI on 2026-09-03 as a pending trusted publisher for
+  # `polars-online` (owner hgilde, repository polars-online, workflow
+  # release.yml, environment pypi); the first publish claims the name.
   publish:
     name: publish to PyPI
     needs: [sdist, build, read-state]
