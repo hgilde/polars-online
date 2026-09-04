@@ -17,6 +17,14 @@ on:
   schedule:
     - cron: "41 5 * * 1" # Mondays, before the weekly CI
   workflow_dispatch:
+    inputs:
+      ref:
+        # A control run: measure an older commit with *this* workflow file, so
+        # a branch and the main it forked from get the same tables on the same
+        # runner type. Empty means the ref the workflow was dispatched on.
+        description: "Commit or branch to benchmark (default: this one)"
+        required: false
+        default: ""
 
 # Least privilege: no token scope by default, granted per job. This matters more
 # once the repo is public, when a fork's pull request can trigger these.
@@ -34,6 +42,13 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      # The artifact is named for the commit that was measured, which with a
+      # `ref` input is not `github.sha`.
+      - name: name the numbers after the commit they measure
+        id: measured
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -65,5 +80,5 @@ jobs:
       - name: keep the numbers as an artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: benchmark-${{ github.sha }}
+          name: benchmark-${{ steps.measured.outputs.sha }}
           path: benchmark.md
