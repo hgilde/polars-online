@@ -32,6 +32,13 @@ material stays out of the repo.
   agglomerative on rows), sliding windows, and the coreset constructions that
   carry the streaming k-means approximation guarantees. §2 rules on each family
   and says which of the three reasons it fails for.
+- **The approximation guarantees are not available at all in bounded state.**
+  Guha's constant factor costs `O(n^ε)` memory, Ailon's `O(log k)` costs
+  `O(log(k)·√(nk))`, and Liberty's opens `O(k log n log(W*/w*))` centres —
+  something grows with `n` in every one of them (§3). A bounded-state online
+  clusterer is a heuristic by necessity, not by choice, and the same applies to
+  the GMM's step size: Cappé & Moulines' convergence theorem requires
+  `Σγᵢ² < ∞`, which a damped window violates by construction.
 - **Seven model classes pass and are prototyped**, ten designs between them:
   fixed-`k` EW k-means with spherical, Huber and fuzzy variants; online EM for a
   Gaussian mixture (spherical, diagonal, full); DP-means and its frozen-centre
@@ -131,10 +138,10 @@ algorithms tabulated by the two surveys read for §3. Verdicts:
 | micro-clusters, damped | DenStream'06, DBSTREAM'16, CluStream'03 | **in, capped** | (weight, centre, radius) is `EwCov`'s triple; the fading function *is* our decay |
 | grid / density grid | D-Stream'07 | **out** | grid count is `bins^p`; bounded only for tiny `p`, and the bound is not a state bound |
 | hierarchical CF-tree | BIRCH'96, ClusTree'11 | **partly** | the CF triple is exactly our summary and the insertion is per-row and chunk-invariant, but the tree is **not memory-bounded** as implemented (`_birch.py`, no rebuild) — a capped flat set of micro-clusters is the same idea with a bound |
-| coreset / streaming k-means with guarantees | Guha'03, Ailon'09, StreamKM++'12, BICO'13 | **out** | the guarantee comes from a coreset whose size grows with `log n`, is randomized, and is clustered *at the end*; there is no per-row label |
+| coreset / streaming k-means with guarantees | Guha'03, Ailon'09, StreamKM++'12, BICO'13 | **out** | the guarantee is bought with memory that grows in `n` (§3), the construction is randomized, and the clustering happens *at the end*; there is no per-row label |
 | online facility location | Liberty'16 (`liberty2016:206-214`) | **out** | opens a centre with probability `min(D²/f, 1)` — per-row randomness on the output path, and `O(k log n log W)` centres |
 | self-organising map | Kohonen'82 | **in** | fixed grid, each neuron an EW mean with a neighbourhood weight |
-| growing neural gas | Fritzke'95 | **in, capped** | bounded by `max_nodes`; constant learning rates make it a constant-gain model |
+| growing neural gas | Fritzke'95 | **in, capped** | the paper's own stopping criterion is "net size or some performance measure" (`fritzke1995:153`), so a `max_nodes` cap is its option, not a violation — but growth then simply stops (§6.6); constant learning rates also make it a constant-gain model |
 | ODAC — clustering the *variables* | Rodrigues–Gama'08 | **in** | one EW correlation matrix; a static per-column output |
 | DBSCAN / OPTICS / HDBSCAN / mean-shift on rows | — | **out** | need the rows, or all pairwise distances |
 | spectral / affinity propagation / kernel k-means | — | **out** | an n×n affinity |
@@ -233,6 +240,33 @@ online k-means is online gradient descent with a prototype-dependent learning
 rate `1/n_k` (`bottou1995:128-141`), and that rate is the Newton rate for this
 objective (`bottou1995:153-190`) — so it needs no tuning, and there is no step
 size to schedule.
+
+**The approximation guarantees, and what they cost.** Three papers give
+streaming k-means/k-median a provable factor, and each pays for it in a
+different currency — read from their own statements:
+
+| result | approximation | what grows with `n` |
+|---|---|---|
+| Guha et al. 2003 | constant factor, one pass | **memory `O(n^ε)`**, time `O(n^{1+ε})` (`guha2003:79-86`) |
+| Ailon et al. 2009 | `O(log k)` | **memory `O(log(k)·√(nk))`** times the log of the input size (`ailon2009:303-310`) |
+| Liberty et al. 2016 | `O(1)` expected cost, semi-online | **`O(k log n log(W*/w*))` clusters** in expectation; fully online, the factor itself "degrades by a `log n`-factor" (`liberty2016:84-99`) |
+
+**Not one of them holds fixed `O(k)` state and a constant factor as `n → ∞`.**
+Something always grows: the memory, the number of centres, or the factor. Rule 2
+therefore does not merely make coresets inconvenient here — it is incompatible
+with the guarantees, and any bounded-state clusterer this library ships is a
+heuristic by necessity, not by choice. That is worth saying plainly in the
+user-facing docs if one ever ships.
+
+**The step size is the honest caveat on the GMM.** Cappé & Moulines' convergence
+result for the online EM recursion (Theorem 5, `cappe2009:533-538`) assumes
+`0 < γᵢ < 1`, `Σγᵢ = ∞` **and `Σγᵢ² < ∞`** — satisfied by `γᵢ = γ₀i^{−α}` with
+`α ∈ (1/2, 1]` (`cappe2009:541-543`). A damped window is the constant-`γ` regime:
+it satisfies the first two and **violates the third**, so the theorem does not
+cover it. That is not a defect peculiar to clustering — it is the same trade
+`ewridge` and every other model here makes, a stationary tracking estimator
+instead of a convergent one — but it means the GMM's decayed step has no
+convergence proof behind it, only the measurements in §7.
 
 **Implementations.** In river, DenStream, DBSTREAM, CluStream and STREAMKMeans
 are per-row; ODAC (`river/cluster/odac.py`) keeps a Pearson accumulator per
@@ -500,7 +534,12 @@ it a stationary estimator under decay rather than an annealing one. It is
 0.01 ARI of k-means on every stream and recovered from a regime change in 1 000
 rows without any structural move, because the neighbourhood drags neurons along.
 
-**`gng`** (Fritzke 1995) is bounded by `max_nodes` and inserts a node every
+**`gng`** (Fritzke 1995) is bounded by `max_nodes` — which is the paper's own
+suggested stopping criterion, "net size or some performance measure"
+(`fritzke1995:153`), though its stated advantage is precisely *not* having to
+pre-specify one (`fritzke1995:196-197`). On an endless stream that cap does not
+bound a converged model; it stops growth wherever the stream happens to be. It
+inserts a node every
 `insert_every` learned rows between the highest-error node and its
 highest-error neighbour; edges age out; connected components are relabelled at
 the insertion checkpoints. Its constant steps `eps_b`, `eps_n` make it a
@@ -983,6 +1022,10 @@ it was re-checked.
 - **`k`-selection is out of scope behind the plugin** (a static schema needs a
   fixed `k`), but the bank could run several `k` at once and expose an EW SSQ
   per model — an elbow computed by the user rather than by us.
+- **No convergence theory covers the constant-step regime** these models run in
+  (§3). The measurements say they track; nothing says they converge, and a
+  counter-example (a stream where a damped-window GMM oscillates instead of
+  settling) has not been looked for. It would be worth constructing one.
 - **Clusterwise regression** — a gate over `ewridge` instances — is the
   interesting thing a clusterer unlocks in a *regression* library, and is not
   investigated here.
