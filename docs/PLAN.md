@@ -431,6 +431,18 @@ too, with a halflife grid and every output on. Nothing was found; the
 tests were mutated by hand to check they could find something, and did.
 `docs/TESTING.md` T-E13 has the list.
 
+**`v0.1.1` released, 2026-09-04.** The user fixed the PyPI trusted
+publisher (the `v0.1.0` publish job, re-run, put 0.1.0 on PyPI) and said
+"tag for 0.1.1 when ready". Ready meant CI 33871208866 and the
+user-dispatched rehearsal 33872948555 green on `e552176`, so the annotated
+tag `v0.1.1` went on that commit — not on the edge-case tests that landed
+on `main` the same hour, which are test-only and would have meant another
+rehearsal. Release run 33879445306: every job green; the GitHub release
+carries the six wheels, the sdist and five CLI binaries; PyPI has all
+seven files, and a clean venv's `pip install polars-online==0.1.1` (polars
+1.44.1) ran a 5000-row grouped fit. The next release is whatever
+`[Unreleased]` gathers.
+
 **The bank's pool is its own, named for what it is, 2026-09-04.** The
 bank fanned out on rayon's global pool, so its one knob was
 `RAYON_NUM_THREADS` — a name that, next to `POLARS_MAX_THREADS`, said
