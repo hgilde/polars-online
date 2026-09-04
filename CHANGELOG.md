@@ -31,6 +31,18 @@ out, TOML config). The Python surface is typed: PEP 692 keywords on the
 builders and the namespace, and `po.online(expr)` for type checkers, which
 cannot see a registered namespace.
 
+### Parallelism
+
+One task per (spec × group) per chunk on the bank's own thread pool, sized
+by **`POLARS_ONLINE_MAX_THREADS`** (unset: one per core; read when the pool
+is built, at the first bank call; `po.thread_pool_size()` reports it).
+Polars' readers and writers stay on polars' pool, `POLARS_MAX_THREADS`,
+which also sizes what its reader holds in flight — so a run can keep polars
+small for memory and give the bank every core, and the README's
+*Parallelism* section measures why. A value that is not a count is refused
+by name. Thread count changes speed and nothing else; a test runs the same
+stream at 1 and 8 threads and requires identical output.
+
 ### Guarantees
 
 - Predictions are out-of-sample by construction.
@@ -206,6 +218,17 @@ way they are.*
 
 #### Changed
 
+- **The bank's thread pool is its own, sized by `POLARS_ONLINE_MAX_THREADS`**
+  (`crates/online-polars/src/pool.rs`), where it used to be rayon's global
+  pool and `RAYON_NUM_THREADS` — a name that said nothing about which pool
+  it was next to `POLARS_MAX_THREADS`. `RAYON_NUM_THREADS` now reaches
+  nothing here: the per-core default is spelled out rather than left to
+  rayon, and `tests/test_portability.py` checks that neither it nor
+  `POLARS_MAX_THREADS` sizes the bank's pool. The runner's parquet page
+  encoding and NDJSON serialization moved the other way, onto polars' pool
+  (`polars_core::runtime::THREAD_POOL`, already in the tree), so that
+  `POLARS_MAX_THREADS` is polars' readers *and* writers in every form.
+  `po.thread_pool_size()` is new, the mirror of `pl.thread_pool_size()`.
 - **Every public entry point documents its failure modes, and they follow
   one contract** (`polars_online.__doc__` states it): a file problem is
   the `OSError` subclass for what went wrong, naming the path; a parameter,

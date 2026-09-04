@@ -22,3 +22,5 @@
 .. autofunction:: polars_online.native_version
 
 .. autofunction:: polars_online.schema_version
+
+.. autofunction:: polars_online.thread_pool_size

@@ -42,7 +42,7 @@ with `cargo run --release -p online-core --example core_bench` (and
 | k=20, 8 groups | 12.2 | 14.8 | 46.3 | 8.8 | 82.3 | 2,431,070 |
 | k=20, 64 groups | 13.0 | 15.3 | 40.6 | 8.0 | 76.9 | 2,601,719 |
 
-**Thread scaling**, 400k rows, k=20, 64 independent groups (`RAYON_NUM_THREADS`):
+**Thread scaling**, 400k rows, k=20, 64 independent groups (`POLARS_ONLINE_MAX_THREADS`, then `RAYON_NUM_THREADS`):
 
 | threads | rows/s | speedup |
 |---|---|---|

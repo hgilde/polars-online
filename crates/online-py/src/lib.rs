@@ -481,6 +481,20 @@ fn schema_version() -> u32 {
     online_core::SCHEMA_VERSION
 }
 
+/// Size of the bank's thread pool.
+///
+/// The pool is built at the first bank call from ``POLARS_ONLINE_MAX_THREADS``
+/// (unset: one thread per core) and never resized; this builds it if nothing
+/// has yet. Polars' own pool, ``POLARS_MAX_THREADS``, is separate --
+/// ``pl.thread_pool_size()`` reports that one.
+///
+/// Raises ``ValueError`` when the variable is set to anything but a
+/// non-negative integer.
+#[pyfunction]
+fn thread_pool_size() -> PyResult<usize> {
+    online_polars::thread_pool_size().map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
 /// Every model this build can construct, as spec `type` names. What the
 /// Python builders and the per-model test sweeps are checked against
 /// (docs/EXTENDING.md).
@@ -494,6 +508,7 @@ fn _polars_online(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyModelBank>()?;
     m.add_function(wrap_pyfunction!(native_version, m)?)?;
     m.add_function(wrap_pyfunction!(schema_version, m)?)?;
+    m.add_function(wrap_pyfunction!(thread_pool_size, m)?)?;
     m.add_function(wrap_pyfunction!(model_kinds, m)?)?;
     m.add_function(wrap_pyfunction!(validate_spec, m)?)?;
     m.add_function(wrap_pyfunction!(run_config_frames, m)?)?;

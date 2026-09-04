@@ -40,6 +40,7 @@
 
 mod atomic;
 mod bank;
+mod pool;
 mod runner;
 mod spec;
 mod stream;
@@ -48,6 +49,7 @@ pub use bank::{
     Bank, Coef, CoefField, FieldMeta, Gram, GroupKey, coef_fields, output_fields, output_index,
 };
 pub use online_core;
+pub use pool::{THREADS_VAR, pool, thread_pool_size};
 pub use runner::{
     DEFAULT_CHUNK_ROWS, Format, Input, Output, RunConfig, RunOptions, RunStats, run, run_config,
     run_config_on,

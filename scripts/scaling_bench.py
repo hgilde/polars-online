@@ -2,7 +2,7 @@
 
 Throughput alone hides the thing most likely to regress: a change that
 serializes the fan-out looks fine on one thread and costs 4x on ten. This
-re-runs one grouped workload at several `RAYON_NUM_THREADS` in subprocesses --
+re-runs one grouped workload at several `POLARS_ONLINE_MAX_THREADS` in subprocesses --
 the pool size is fixed at first use, so it cannot be varied in-process.
 """
 
@@ -34,7 +34,7 @@ print(rows / dt)
 
 
 def run(rows: int, threads: int) -> float:
-    env = {**os.environ, "RAYON_NUM_THREADS": str(threads)}
+    env = {**os.environ, "POLARS_ONLINE_MAX_THREADS": str(threads)}
     out = subprocess.run(
         [sys.executable, "-c", WORKLOAD.format(rows=rows)],
         capture_output=True,

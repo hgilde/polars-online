@@ -160,7 +160,8 @@ with the same clock as everything else. Output `pred` is a probability; `resid =
 
 - Takes `list[Spec]`; extracts feature/target/clock/session/weight columns from a chunk once,
   computes the clock delta once per row, then runs each spec's state (per group key) — specs are
-  independent, so they run in parallel with `rayon` over (spec × group).
+  independent, so they run in parallel over (spec × group) on the bank's own pool
+  (`POLARS_ONLINE_MAX_THREADS`; polars' readers and writers stay on `POLARS_MAX_THREADS`).
 - Under a `clock`, chunks must be clock-ordered within each group; the bank asserts
   monotonicity (after reset handling) and errors loudly otherwise. Without one the row
   order is the clock, and with decay off the order does not reach the fit at all.
@@ -359,6 +360,34 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       gitignored `.cache/research/`.
 
 ## 11a. Decisions made while implementing
+
+**The bank's pool is its own, named for what it is, 2026-09-04.** The
+bank fanned out on rayon's global pool, so its one knob was
+`RAYON_NUM_THREADS` — a name that, next to `POLARS_MAX_THREADS`, said
+nothing about which pool it was. Asked whether two pools could interact
+badly, measured first: no correctness hazard (the wait graph is one-way —
+py-polars' pool → our pool → our polars copy's pool — and a bank task never
+takes the GIL or calls back into polars' pool), and no speed hazard either
+(28 + 28 threads on 14 cores ran the grid in the same time as 14 + 14;
+7 + 7 was slower). The two counts do different things: polars' also sizes
+its reader's prefetch, so on 12M rows over 64 groups `POLARS_MAX_THREADS=4`
+with the bank on 14 was 3.0 s at 1.4 GB against 3.2 s at 1.8 GB, while one
+shared count of 4 would have been 4.5 s. Decisions: keep two pools and
+two knobs; rename ours **`POLARS_ONLINE_MAX_THREADS`** and build it
+ourselves (`crates/online-polars/src/pool.rs`: `OnceLock<ThreadPool>`,
+built at the first bank call, per-core default spelled out so
+`RAYON_NUM_THREADS` reaches nothing, a non-count refused by name);
+`Bank::fit_predict`/`predict` run under `pool().install`, which also
+carries the per-instance `par_iter`s in `Stream`; the runner's parquet page
+encoding and NDJSON slices move onto polars' pool
+(`polars_core::runtime::THREAD_POOL`, a direct `polars-core` dependency
+already in the tree, nothing new linked) so `POLARS_MAX_THREADS` is
+polars' readers *and* writers in every form; `po.thread_pool_size()`
+mirrors `pl.thread_pool_size()`. The README's parallelism example is a
+grid over factor sets (one spec per set — its own accumulator,
+standardization and null handling — with the halflife/ridge grid inside),
+and a second example shows the two knobs set apart, with the numbers.
+Not done before `v0.1.0` would have been a released knob to rename later.
 
 **Boosted trees: investigated, prototyped, not built, 2026-09-03 (task 21).**
 Asked to dig into XGBoost — the papers and the code — for how gradient-boosted

@@ -764,24 +764,28 @@ impl<'a> FormatWriter<'a> {
     }
 }
 
-/// `df` as JSON lines, serialized a slice per thread and written in order --
-/// the same serializer as polars' batched NDJSON writer, which runs it over
-/// the whole frame on one thread and took five times as long as the bank.
+/// `df` as JSON lines, serialized a slice per thread of polars' pool and
+/// written in order -- the same serializer as polars' batched NDJSON
+/// writer, which runs it over the whole frame on one thread and took five
+/// times as long as the bank.
 fn ndjson_write(sink: &mut BufWriter<File>, df: &DataFrame) -> PolarsResult<()> {
     use rayon::prelude::*;
+    let pool = &*polars_core::runtime::THREAD_POOL;
     let rows = df.height();
-    let per = rows.div_ceil(rayon::current_num_threads().max(1)).max(1024);
-    let parts: Vec<Vec<u8>> = (0..rows)
-        .step_by(per)
-        .collect::<Vec<_>>()
-        .into_par_iter()
-        .map(|start| {
-            let mut buf = Vec::new();
-            polars::io::json::BatchedWriter::new(&mut buf)
-                .write_batch(&df.slice(start as i64, per))?;
-            Ok(buf)
-        })
-        .collect::<PolarsResult<_>>()?;
+    let per = rows.div_ceil(pool.current_num_threads().max(1)).max(1024);
+    let parts: Vec<Vec<u8>> = pool.install(|| {
+        (0..rows)
+            .step_by(per)
+            .collect::<Vec<_>>()
+            .into_par_iter()
+            .map(|start| {
+                let mut buf = Vec::new();
+                polars::io::json::BatchedWriter::new(&mut buf)
+                    .write_batch(&df.slice(start as i64, per))?;
+                Ok(buf)
+            })
+            .collect::<PolarsResult<_>>()
+    })?;
     for part in parts {
         sink.write_all(&part)?;
     }
@@ -796,8 +800,10 @@ fn ndjson_write(sink: &mut BufWriter<File>, df: &DataFrame) -> PolarsResult<()> 
 /// time goes -- one column after another on the writing thread; at k=20 that
 /// serial work took longer than the bank and set the runner's pace. This is
 /// what polars' own streaming sink does instead: encode and compress every
-/// leaf column to pages on the thread pool, then hand the finished row group
-/// to the writer. Same pages, same file; measured in docs/PERFORMANCE.md.
+/// leaf column to pages on polars' thread pool (`POLARS_MAX_THREADS`, like
+/// its readers; the bank's pool is separate), then hand the finished row
+/// group to the writer. Same pages, same file; measured in
+/// docs/PERFORMANCE.md.
 struct ParquetSink<'a> {
     writer: polars::io::parquet::write::BatchedWriter<Sink<'a>>,
     fields: Vec<polars_parquet::write::ParquetType>,
@@ -840,30 +846,33 @@ impl<'a> ParquetSink<'a> {
             if rows == 0 {
                 continue;
             }
-            let columns: Vec<Vec<Vec<CompressedPage>>> = batch
-                .columns()
-                .par_iter()
-                .zip(&self.fields)
-                .zip(&self.encodings)
-                .map(|((array, field), encoding)| {
-                    // A nested column (`coef`) is more than one leaf.
-                    array_to_columns(array, field.clone(), options, encoding)?
-                        .into_iter()
-                        .map(|pages| {
-                            let pages = pages.map(|p| {
-                                p.map_err(|e| {
-                                    ParquetError::FeatureNotSupported(format!(
-                                        "reraised in polars: {e}"
-                                    ))
+            let columns: Vec<Vec<Vec<CompressedPage>>> = polars_core::runtime::THREAD_POOL
+                .install(|| {
+                    batch
+                        .columns()
+                        .par_iter()
+                        .zip(&self.fields)
+                        .zip(&self.encodings)
+                        .map(|((array, field), encoding)| {
+                            // A nested column (`coef`) is more than one leaf.
+                            array_to_columns(array, field.clone(), options, encoding)?
+                                .into_iter()
+                                .map(|pages| {
+                                    let pages = pages.map(|p| {
+                                        p.map_err(|e| {
+                                            ParquetError::FeatureNotSupported(format!(
+                                                "reraised in polars: {e}"
+                                            ))
+                                        })
+                                    });
+                                    Compressor::new_from_vec(pages, options.compression, vec![])
+                                        .collect::<ParquetResult<Vec<CompressedPage>>>()
+                                        .map_err(PolarsError::from)
                                 })
-                            });
-                            Compressor::new_from_vec(pages, options.compression, vec![])
-                                .collect::<ParquetResult<Vec<CompressedPage>>>()
-                                .map_err(PolarsError::from)
+                                .collect::<PolarsResult<Vec<_>>>()
                         })
-                        .collect::<PolarsResult<Vec<_>>>()
-                })
-                .collect::<PolarsResult<_>>()?;
+                        .collect::<PolarsResult<_>>()
+                })?;
             let leaves: Vec<Vec<CompressedPage>> = columns.into_iter().flatten().collect();
             self.writer.write_row_group(rows as u64, &leaves)?;
         }

@@ -2055,6 +2055,7 @@ dependencies = [
  "online-core",
  "polars",
  "polars-arrow",
+ "polars-core",
  "polars-parquet",
  "polars-utils",
  "rayon",

@@ -51,8 +51,9 @@ def _spec(**kw):
 
 
 class TestThreadDeterminism:
-    """T-D3: the bank fans out over (spec x group) with rayon. Work within one
-    stream is serial, so thread count must not change a single number."""
+    """T-D3: the bank fans out over (spec x group) on its own pool, sized by
+    `POLARS_ONLINE_MAX_THREADS`. Work within one stream is serial, so thread
+    count must not change a single number."""
 
     SNIPPET = """
 import sys, numpy as np, polars as pl
@@ -62,10 +63,11 @@ from test_portability import _frame, _spec
 out = po.ModelBank([_spec()]).fit_predict(_frame())
 vals = out["m"].struct.field("pred_y0").to_list()
 print(repr([None if v is None else float(v) for v in vals]))
+print(po.thread_pool_size())
 """
 
     def _run_with_threads(self, n_threads):
-        env = dict(os.environ, RAYON_NUM_THREADS=str(n_threads), POLARS_MAX_THREADS="1")
+        env = dict(os.environ, POLARS_ONLINE_MAX_THREADS=str(n_threads), POLARS_MAX_THREADS="1")
         code = self.SNIPPET.format(tests=str(REPO / "tests"))
         res = subprocess.run(
             [sys.executable, "-c", code],
@@ -77,17 +79,79 @@ print(repr([None if v is None else float(v) for v in vals]))
             check=False,
         )
         assert res.returncode == 0, res.stderr[-2000:]
-        return eval(res.stdout.strip())  # noqa: S307 - our own repr output
+        vals, size = res.stdout.strip().rsplit("\n", 1)
+        # The variable took: the pool the bank ran on is the size asked for.
+        assert int(size) == n_threads
+        return eval(vals)  # noqa: S307 - our own repr output
 
     def test_one_thread_matches_many(self):
         single = self._run_with_threads(1)
         many = self._run_with_threads(8)
-        assert single == many, "rayon thread count changed the output"
+        assert single == many, "thread count changed the output"
 
     def test_repeated_runs_are_identical(self):
         a = self._run_with_threads(4)
         b = self._run_with_threads(4)
         assert a == b
+
+
+class TestThreadPoolKnob:
+    """`POLARS_ONLINE_MAX_THREADS` is the bank's knob and the only one: it is
+    read when the pool is built, at the first bank call; polars' and rayon's
+    own variables do not reach it; a value that is not a count is refused
+    by name, and nothing is built, so the process can go on."""
+
+    def _python(self, code, **env):
+        res = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env={**os.environ, **env},
+            cwd=str(REPO),
+            check=False,
+        )
+        assert res.returncode == 0, res.stderr[-2000:]
+        return res.stdout.strip()
+
+    def test_read_at_the_first_bank_call_and_fixed_after(self):
+        out = self._python(
+            "import os, polars as pl, polars_online as po\n"
+            "os.environ['POLARS_ONLINE_MAX_THREADS'] = '3'\n"  # after import: still in time
+            "print(po.thread_pool_size())\n"
+            "os.environ['POLARS_ONLINE_MAX_THREADS'] = '5'\n"  # after the build: too late
+            "print(po.thread_pool_size())\n"
+        )
+        assert out.split() == ["3", "3"]
+
+    def test_other_pools_variables_do_not_size_it(self):
+        cores = os.cpu_count() or 1
+        out = self._python(
+            "import polars_online as po; print(po.thread_pool_size())",
+            RAYON_NUM_THREADS="1",
+            POLARS_MAX_THREADS="1",
+        )
+        assert int(out) == cores
+
+    def test_a_value_that_is_not_a_count_is_refused_by_name(self):
+        tests = str(REPO / "tests")
+        out = self._python(
+            "import os, sys, polars_online as po\n"
+            f"sys.path.insert(0, {tests!r})\n"
+            "from test_portability import _frame, _spec\n"
+            "bank = po.ModelBank([_spec()])\n"
+            "try:\n"
+            "    bank.fit_predict(_frame())\n"
+            "except ValueError as e:\n"
+            "    print(e)\n"
+            "os.environ['POLARS_ONLINE_MAX_THREADS'] = '2'\n"  # fixed: the same bank goes on
+            "print(bank.fit_predict(_frame()).height, po.thread_pool_size())\n",
+            POLARS_ONLINE_MAX_THREADS="eight",
+        )
+        first, second = out.split("\n")
+        refused = 'POLARS_ONLINE_MAX_THREADS="eight" is not a number of threads'
+        assert first.startswith(refused), first
+        assert second == f"{_frame().height} 2"
 
 
 class TestOutputSchemaStability:

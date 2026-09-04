@@ -742,36 +742,42 @@ po.spec.holt("baseline", targets=["y"], clock="t", max_dclock=600.0,
 
 The unit of work is a *stream*: one spec on one group (with no `group`, one
 stream per spec). On every chunk, each stream in the bank becomes one task on
-a [rayon](https://github.com/rayon-rs/rayon) pool — one flat pool across all
-specs and all groups, longest stream first so a few big groups do not leave
-cores idle at the tail. Within a stream the rows go one at a time, because
+the bank's own thread pool (a [rayon](https://github.com/rayon-rs/rayon)
+pool, separate from polars') — one flat pool across all specs and all
+groups, longest stream first so a few big groups do not leave cores idle at
+the tail. Within a stream the rows go one at a time, because
 each row's update depends on the last: that is what makes the numbers
 independent of how the work is split, and it also means a bank with one spec
 and one group is one thread's work per chunk, with polars' own reading and
 writing running in parallel around it.
 
 So a bank fills the pool with groups, with specs, or with both. A search
-over what one spec cannot hold more than one of — session policy,
-`standardize`, the model — is a list of specs, run as one plan in one pass,
-with the thread counts set before anything is built:
+over factor sets is a list of specs, one per set: each is its own
+accumulator — its own standardization, and a null in a factor it does not
+use costs it nothing — with its own grid inside, and every one is a task.
+(Subsets of one list that should share an accumulator are `feature_sets`
+on one spec: one solve each, not one task.) The list runs as one plan in
+one pass, with the thread counts set before anything is built:
 
 ```python
 import os
-os.environ["RAYON_NUM_THREADS"] = "8"        # the bank's pool: read at the first bank call
-os.environ["POLARS_MAX_THREADS"] = "8"       # polars' readers and writers: read at import
+os.environ["POLARS_ONLINE_MAX_THREADS"] = "8"   # the bank's pool: read at the first bank call
+os.environ["POLARS_MAX_THREADS"] = "8"          # polars' readers and writers: read at import
 
 import polars as pl
 import polars_online as po
 from itertools import product
 
-def spec(session_gap, standardize):
-    return po.spec.ewridge(f"m-gap{session_gap:g}-std{standardize:d}",
-                           targets=["y"], features=["x0", "x1", "x2"], clock="t", max_dclock=300.0,
-                           group="bond_id", session="session", session_gap=session_gap,
+factors = {"mkt": ["x0"], "mkt-sz": ["x0", "x1"], "mkt-sz-val": ["x0", "x1", "x2"]}
+
+def spec(name, features, standardize):
+    return po.spec.ewridge(f"{name}-std{standardize:d}",
+                           targets=["y"], features=features, clock="t", max_dclock=300.0,
+                           group="bond_id", session="session", session_gap=60.0,
                            halflife=[100.0, 1000.0], ridge=[1e-3, 0.1],   # gridded inside the spec
                            standardize=standardize)
 
-specs = [spec(g, s) for g, s in product([0.0, 60.0, 300.0], [False, True])]
+specs = [spec(n, f, s) for (n, f), s in product(factors.items(), [False, True])]
 
 (pl.scan_parquet("ticks.parquet")
    .online.fit_predict(specs, chunk_rows=200_000, save_state="grid.state")
@@ -782,12 +788,12 @@ scores = po.eval.compare_specs(pl.read_parquet("grid.parquet"),
 ```
 
 Every chunk puts 6 × 64 stream tasks on the pool. On 2.56M rows over 64
-groups that plan takes 15.5 s at one thread and 2.71 s at fourteen; the
-single spec alone goes from 2.49 s to 0.78 s, because with one task per
-group the fixed cost of reading and assembling each chunk shows through.
-The output is one struct column per spec, which is what `compare_specs`
-reads, and one state file holds them all. The same list runs the same way
-through `ModelBank`, `po.run` and the CLI.
+groups that plan takes 13.1 s at one thread and 2.35 s at fourteen; the
+three-factor spec alone goes from 2.65 s to 0.72 s, because with one task
+per group the fixed cost of reading and assembling each chunk shows
+through. The output is one struct column per spec, which is what
+`compare_specs` reads, and one state file holds them all. The same list
+runs the same way through `ModelBank`, `po.run` and the CLI.
 
 Where the parallelism comes from, then:
 
@@ -803,7 +809,8 @@ Where the parallelism comes from, then:
 - **The runner.** `po.run` and the CLI are a three-stage pipeline — a reader
   thread, the bank on the calling thread, a writer thread — with one chunk
   in flight per stage; `ONLINE_TIMING=1` prints how long the bank waited on
-  each side. NDJSON output is serialized a slice per thread.
+  each side. Reading and writing are polars' work on polars' pool: parquet
+  pages are encoded a column at a time there, NDJSON a slice per thread.
 - **Python.** The GIL is released while a chunk is in the bank, so a Python
   reader thread can run ahead of `ModelBank.fit_predict`, and independent
   `po.run` calls in threads of one process share the one pool.
@@ -812,16 +819,47 @@ Where the parallelism comes from, then:
   struct: the single-input path is parallel, the multi-input one is not
   (12.2M rows/s at 1000 groups).
 
-Thread count is `RAYON_NUM_THREADS` for the bank's pool and
-`POLARS_MAX_THREADS` for polars' readers and writers. Rayon builds its pool
-at the first bank call and polars its own at import, so each must be set
-before that point, as above, or in the shell
-(`RAYON_NUM_THREADS=8 python fit.py`), which is the form that always
-works; set later, the variable is ignored. It changes the speed and nothing
-else: `tests/test_portability.py` runs the same stream at 1 and 8 threads
-in separate processes and requires identical output. Everything is
-one process — there is no distributed execution, by design (see [What this
-is not](#what-this-is-not)).
+Thread count is `POLARS_ONLINE_MAX_THREADS` for the bank's pool and
+`POLARS_MAX_THREADS` for polars' readers and writers; unset, each is one
+thread per core. The bank builds its pool at the first bank call and polars
+its own at import, so each must be set before that point, as above, or in
+the shell (`POLARS_ONLINE_MAX_THREADS=8 python fit.py`), which is the form
+that always works; set later, the variable is ignored, and
+`po.thread_pool_size()` says what took (`pl.thread_pool_size()` for
+polars'). A value that is not a count is refused by name at the first bank
+call. It changes the speed and nothing else: `tests/test_portability.py`
+runs the same stream at 1 and 8 threads in separate processes and requires
+identical output. Everything is one process — there is no distributed
+execution, by design (see [What this is not](#what-this-is-not)).
+
+Two knobs because the two counts do different things. Polars' also sizes
+what its parquet reader holds in flight — it prefetches row groups ahead of
+the consumer, so more threads is a bigger pile of decoded rows
+([Memory](#performance), below) — while the bank's count buys speed and
+nothing else. So a run that has to fit in a smaller box keeps polars small
+and gives the bank every core:
+
+```python
+import os
+os.environ["POLARS_MAX_THREADS"] = "4"           # the reader's prefetch is sized from this
+os.environ["POLARS_ONLINE_MAX_THREADS"] = "14"   # the bank still has every core
+
+import polars as pl
+import polars_online as po
+
+(pl.scan_parquet("ticks.parquet")
+   .online.fit_predict([spec], chunk_rows=200_000)
+   .sink_parquet("fit.parquet"))
+```
+
+On 12M rows over 64 groups, one spec: 14 and 14 is 3.2 s at a peak of
+1.8 GB; 4 and 14 is 3.0 s at 1.4 GB; one shared count of 4 would be 4.5 s
+at 1.3 GB, and polars alone at one thread 7.2 s, because its reading and
+writing are then one thread's work. Six specs split the same way: 13.8 s at
+2.7 GB, 13.1 s at 2.3 GB, 23.6 s at 1.9 GB. The pools never wait on each
+other — a bank task never calls back into polars' pool — so both at the
+whole machine costs nothing either: 28 and 28 on 14 cores ran the grid
+above in 2.34 s against 2.35.
 
 ## Performance
 
@@ -873,7 +911,7 @@ provide:
   `on_clock_reset` and `session` describe time *within* a stream, not
   pipeline lateness. Under a `clock`, a row that arrives out of order is a
   data error, and `on_clock_reset="error"` will say so;
-- **distributed execution** — one process, `rayon` across (spec × group).
+- **distributed execution** — one process, a thread pool across (spec × group).
 
 Those boundaries make the two compose:
 [examples/pathway_integration.py](examples/pathway_integration.py) runs a

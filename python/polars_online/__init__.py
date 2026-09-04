@@ -31,7 +31,7 @@ from polars_online import (
 from polars_online._bank import ModelBank
 from polars_online._expr import InMemoryExpressionWarning, online
 from polars_online._frame import fit_predict, predict, unnest
-from polars_online._polars_online import native_version, schema_version
+from polars_online._polars_online import native_version, schema_version, thread_pool_size
 from polars_online._runner import run
 
 __version__ = "0.1.0"
@@ -48,5 +48,6 @@ __all__ = [
     "run",
     "schema_version",
     "spec",
+    "thread_pool_size",
     "unnest",
 ]

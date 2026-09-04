@@ -1,5 +1,6 @@
 //! The chunk-fed model bank (docs/PLAN.md §5): column extraction, per-group
-//! state, rayon fan-out over (spec x group), versioned msgpack save/load.
+//! state, fan-out over (spec x group) on the bank's pool (pool.rs), versioned
+//! msgpack save/load.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -736,8 +737,16 @@ impl Bank {
     /// `on_clock_reset = "error"`; `Duplicate` for a spec named like an
     /// input column, which its struct would replace. A refused chunk leaves
     /// the bank exactly as it was -- no state is updated, no new group is
-    /// kept -- so the corrected chunk can be fed.
+    /// kept -- so the corrected chunk can be fed. And, on the first call
+    /// only, a `POLARS_ONLINE_MAX_THREADS` that is not a count of threads.
     pub fn fit_predict(&mut self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
+        // Everything parallel below -- the `par_iter`s here and the
+        // per-instance ones in `Stream` -- runs on the bank's own pool
+        // (pool.rs), never on rayon's global one, whichever thread calls.
+        crate::pool::pool()?.install(|| self.fit_predict_on_pool(df))
+    }
+
+    fn fit_predict_on_pool(&mut self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
         // Section timings to stderr when ONLINE_TIMING is set; costs one env
         // read per chunk. This is how docs/PERFORMANCE.md's numbers are made.
         let timing = std::env::var_os("ONLINE_TIMING").is_some();
@@ -898,6 +907,10 @@ impl Bank {
     ///
     /// As [`Self::fit_predict`]'s, less a missing target, which is not one.
     pub fn predict(&self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
+        crate::pool::pool()?.install(|| self.predict_on_pool(df))
+    }
+
+    fn predict_on_pool(&self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
         let n = df.height();
         self.refuse_name_clash(df)?;
         let cols: Vec<SpecColumns> = self

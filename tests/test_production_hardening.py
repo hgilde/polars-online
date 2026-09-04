@@ -651,5 +651,13 @@ class TestReadmeExamples:
     )
     def test_a_readme_block_runs(self, line, code, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)  # the runner examples write next to the inputs
+        # The parallelism blocks set thread-count variables; both pools are
+        # long built in this process, so they change nothing here, but the
+        # subprocess tests inherit the environment, so put it back.
+        env = dict(os.environ)
         ns = _readme_namespace(tmp_path)
-        exec(compile(code, f"README.md:{line}", "exec"), ns)
+        try:
+            exec(compile(code, f"README.md:{line}", "exec"), ns)
+        finally:
+            os.environ.clear()
+            os.environ.update(env)

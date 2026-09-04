@@ -20,12 +20,16 @@ publish = false
 [dependencies]
 online-core.workspace = true
 polars = { workspace = true, features = ["lazy", "dtype-struct", "parquet", "ipc", "csv", "json"] }
-# Same pin as `polars`; all three are internal polars crates the facade does
-# not re-export, and all three are already in `polars`' own tree (nothing new
+# Same pin as `polars`; all four are internal polars crates the facade does
+# not re-export, and all four are already in `polars`' own tree (nothing new
 # is linked): `PlRefPath` for the scans, the IPC field defaults the batched
-# IPC writer wants spelled out, and the page encoder the runner's parquet
-# writer parallelises with (`ParquetSink` in runner.rs).
+# IPC writer wants spelled out, the page encoder the runner's parquet writer
+# parallelises with (`ParquetSink` in runner.rs), and polars' thread pool
+# (`runtime::THREAD_POOL`, sized by `POLARS_MAX_THREADS`), which is where
+# that writer's encoding runs -- polars' readers and writers on polars'
+# pool, the bank on its own (pool.rs).
 polars-arrow = { version = "=0.55.2", default-features = false, features = ["io_ipc"] }
+polars-core = { version = "=0.55.2", default-features = false }
 polars-parquet = { version = "=0.55.2", default-features = false }
 polars-utils = "=0.55.2"
 rayon.workspace = true

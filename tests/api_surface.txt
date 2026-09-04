@@ -12,6 +12,7 @@
   run
   schema_version
   spec
+  thread_pool_size
   unnest
   schema_version = 2
 

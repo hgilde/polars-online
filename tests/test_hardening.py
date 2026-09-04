@@ -172,7 +172,7 @@ class TestKitchenSinkAtScale:
                 # Inherit the environment and override only the thread count.
                 # A hardcoded POSIX PATH left the child with no resolvable
                 # interpreter on Windows.
-                env={**os.environ, "RAYON_NUM_THREADS": threads},
+                env={**os.environ, "POLARS_ONLINE_MAX_THREADS": threads},
                 cwd=str(REPO),
                 check=True,
             )
