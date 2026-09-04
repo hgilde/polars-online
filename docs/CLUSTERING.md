@@ -80,11 +80,13 @@ material stays out of the repo.
   concentric rings, where batch DBSCAN scores 1.000. The streaming constraint is
   not what limits these models; the k-means assumption is.
 - **For a non-convex shape the answer is micro-clusters with the linkage macro
-  step**, and it reaches the batch ceiling: 0.998 on two moons against DBSCAN's
-  1.000, 0.998 on parallel bars against 1.000. It needs `macro_link` set to
-  chain along the shape (≈3× the micro-cluster spacing, not §6.5's default of
-  2.0), and that setting costs it on blob-shaped data — 0.537 on sheared
-  Gaussians against k-means' 0.933. **No configuration wins everywhere**, which
+  step**, and it reaches the batch ceiling: 0.998 on two moons, 0.999 on three
+  concentric rings and 0.998 on parallel bars, against DBSCAN's 1.000. It needs
+  `macro_link` set to chain along the shape — above the largest spacing between
+  neighbouring micro-clusters and below the gap between clusters, a window
+  that `eps` widens at the price of more micro-clusters (§7.8) — not §6.5's
+  default of 2.0, and a setting that chains costs it on blob-shaped data —
+  0.537 on sheared Gaussians against k-means' 0.933. **No configuration wins everywhere**, which
   is Sesame's "no silver bullet" reproduced on our own models.
 - **Labels are the hard part of the API, not the maths.** A batch learner refit
   on a rolling window scores ARI 0.07–0.26 over a segment and 0.99 *within* one
@@ -184,7 +186,7 @@ Verdicts:
 | self-organising map | Kohonen'82 | **in** | fixed grid, each neuron an EW mean with a neighbourhood weight |
 | growing neural gas | Fritzke'95 | **in, capped** | the paper's own stopping criterion is "net size or some performance measure" (`fritzke1995:153`), so a `max_nodes` cap is its option, not a violation — but growth then simply stops (§6.6); constant learning rates also make it a constant-gain model |
 | ODAC — clustering the *variables* | Rodrigues–Gama'08 | **in** | one EW correlation matrix; a static per-column output |
-| DBSCAN / OPTICS / HDBSCAN **on rows** | Ester'96, Ankerst'99, Campello'13 | **out (R, Q)** | a point's label depends on which other points lie within `ε`, so either the points are retained (`O(n)`) or every pair is evaluated (`O(n²)`). A second problem is independent of memory: density-connectivity is global, so a later arrival can promote noise to core or bridge two clusters into one, and correct output means *revising labels already emitted*. **Density clustering over bounded summaries is a different question and is in** — that is DenStream's whole design and §6.5's macro step, and §7.8 measures it reaching batch DBSCAN's accuracy on non-convex shapes (0.998 vs 1.000 on two moons) |
+| DBSCAN / OPTICS / HDBSCAN **on rows** | Ester'96, Ankerst'99, Campello'13 | **out (R, Q)** | a point's label depends on which other points lie within `ε`, so either the points are retained (`O(n)`) or every pair is evaluated (`O(n²)`). A second problem is independent of memory: density-connectivity is global, so a later arrival can promote noise to core or bridge two clusters into one, and correct output means *revising labels already emitted*. **Density clustering over bounded summaries is a different question and is in** — that is DenStream's whole design and §6.5's macro step, and §7.8 measures it reaching batch DBSCAN's accuracy on non-convex shapes (0.998 on two moons and 0.999 on three concentric rings, against 1.000) |
 | spectral / affinity propagation / kernel k-means | Ng'01, Frey–Dueck'07 | **out (R, Q)** | an `n×n` affinity matrix, and an eigendecomposition or message passing over it |
 | agglomerative **on rows** | Ward'63 and the linkage family | **out (R, Q)** | `O(n²)` distances over retained rows. Linkage over *summaries* is bounded and is in (§6.5's macro step is single linkage over `M ≤ max_micro` micro-clusters, `O(M²)` at a checkpoint) |
 | sliding-window clustering | SL-KMeans'20 | **out (C)** | a fixed window `W` is `W·p` doubles — a *parameter* bound, constant in `n`, so it **passes the complexity bar**. It is excluded on two other grounds: the library's convention reads a retained window as `O(data)` (`BEYOND-O-STATE.md` excludes kNN for exactly this), and the damped window buys the same recency in `O(1)` without storing a row. Sesame's O5 also measures the sliding window as the least accurate of the three window models |
@@ -1102,7 +1104,8 @@ set to chain along the shape rather than to sit inside it:
 | `kmeans` split–merge | 0.493 | 0.000 | 0.933 | 0.448 | 0.822 | **1.000** | **1.000** |
 | `gmm full` | 0.507 | 0.000 | **0.938** | 0.492 | **0.989** | 0.910 | **1.000** |
 | `micro` eps=0.4 link=2.0 | 0.343 | 0.069 | 0.905 | 0.537 | 0.919 | **1.000** | **1.000** |
-| `micro` eps=0.1 link=3.0 | **0.998** | **0.734** | 0.537 | **0.998** | 0.690 | *none* | *none* |
+| `micro` eps=0.1 link=3.0 | **0.998** | 0.734 | 0.537 | **0.998** | 0.690 | *none* | *none* |
+| `micro` eps=0.07 link=4.0 | — | **0.999** | — | — | — | — | — |
 | batch DBSCAN (ceiling) | 1.000 | 1.000 | 0.572 | 1.000 | 0.978 | 1.000 | 1.000 |
 | batch single linkage | 1.000 | 1.000 | 0.572 | 0.858 | 0.000 | 1.000 | 1.000 |
 
@@ -1123,6 +1126,21 @@ not the median.** Since both quantities are available at the macro checkpoint �
 the pairwise distance matrix is already being computed there — the principled
 default is to derive `macro_link` from the observed spacing rather than to ship
 a constant.
+
+`rings` — the canonical DBSCAN shape, and the one number in the table that
+could have meant a resolution limit — confirms it is the same threshold miss.
+Labelling the potential micro-clusters by their nearest ring radius: at
+`eps = 0.07·√p` the within-ring spacing has p90 2.47·eps and maximum 2.71·eps,
+while the nearest pair *across* rings is 6.47·eps apart. Any `macro_link` in
+(2.71, 6.47) therefore resolves the three rings, and it does — **0.999 ± 0.001
+at 4.0 and 6.0, against batch DBSCAN's 1.000**; 0.720 with 18 fragments at
+3.0, and 0.000 at 8.0 when the rings bridge. `eps` sets the width of the
+window: (2.99, 4.72) at `0.1·√p`, still hit by 4.0, and (2.96, 3.26) at
+`0.15·√p`, too narrow for any value tried. Smaller `eps` buys a wider window
+with more micro-clusters — 109, 71, 43 — which is the family's memory–
+resolution trade stated as a number: **a shape resolves when the gap between
+clusters exceeds about three micro-cluster spacings, and `eps` decides how many
+summaries that costs.** 109 two-dimensional summaries were enough here.
 
 **2. It is a genuine trade, not a free win.** The same `link=3.0` that scores
 0.998 on `moons` scores 0.537 on `aniso` and 0.690 on `varied`, because a
@@ -1323,6 +1341,21 @@ it was re-checked.
   what it cannot see, or ship two (`kmeans` for blobs, `micro` for shapes) and
   make the trade explicit. Shipping only `kmeans` and calling it "clustering"
   would be the misleading option.
+- **DBSCAN over a retained sample is the one DBSCAN-faithful design inside
+  the bar, and it is unmeasured.** A fixed sample of `m` rows (`m·p` doubles,
+  constant in `n`, so it passes §2's bar the way a sliding window does) with
+  batch DBSCAN run over it at each checkpoint and rows labelled by their
+  nearest core point is *exactly* DBSCAN at sample resolution — density
+  semantics, border points and all — where micro-clusters are DBSCAN over a
+  weighted quantisation (§7.8 shows the two agree to 0.001 on `rings` once
+  the threshold sits in its window). It is Hahsler's `DSC_Sample` plus a
+  macro step. Three things keep it out of the prototypes: the library's
+  convention reads retained rows as `O(data)` (§2, sliding-window row), the
+  sampling must be deterministic in the row counter to stay chunk-invariant
+  (§1 rule 3 — a seeded reservoir is not), and every checkpoint costs
+  `O(m²)` or an index. Whether the convention bends for a parameter-bounded
+  sample is the user's call; if it does, this is the first thing to measure
+  against `micro`.
 - **Only synthetic data so far.** The next measurement should be the Binance
   intraday data `tests/data.py` already downloads — clusters of minutes by
   their return/volume/spread profile, scored by stability rather than by a

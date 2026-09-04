@@ -977,6 +977,60 @@ def exp_hard() -> None:
             f"; pairs linked at 2.0/2.5/3.0 = {links[2.0]}/{links[2.5]}/{links[3.0]}"
         )
 
+    print(
+        "--- is `rings` a resolution limit or a threshold miss? potential MCs\n"
+        "    labelled by the nearest ring radius; the working window for\n"
+        "    macro_link is (max within-ring spacing, min across-ring gap), in\n"
+        "    units of eps, and eps is the dial that widens it."
+    )
+    radii = np.array([1.0, 2.2, 3.4])
+    rings = [hard_dataset("rings", s) for s in seeds]
+    half = (len(rings[0]["X"]) // 2, len(rings[0]["X"]))
+    for c in (0.07, 0.1, 0.15):
+        eps = c * math.sqrt(2)
+        m = MicroClusters(
+            MicroCfg(
+                eps=eps,
+                beta_mu=5.0,
+                max_micro=300,
+                macro_link=3.0,
+                prune_every=200,
+                standardize=True,
+            ),
+            2,
+        )
+        run(m, rings[0])
+        cs = m.centres()
+        dist = np.sqrt(np.stack([((cs - c0) ** 2 * m.mw).sum(1) for c0 in cs]))
+        np.fill_diagonal(dist, np.inf)
+        ring = np.argmin(np.abs(np.linalg.norm(cs, axis=1)[:, None] - radii[None, :]), 1)
+        same = ring[:, None] == ring[None, :]
+        within = np.where(same, dist, np.inf).min(1)
+        across = np.where(~same, dist, np.inf).min()
+        print(
+            f"eps={c}*sqrt(p): {len(cs):3d} potential MCs; within-ring spacing/eps"
+            f" p90 {np.percentile(within, 90) / eps:.2f} max {within.max() / eps:.2f};"
+            f" across-ring min/eps {across / eps:.2f}"
+        )
+    for c, ml in ((0.07, 3.0), (0.07, 4.0), (0.07, 6.0), (0.07, 8.0), (0.1, 4.0), (0.15, 4.0)):
+        ys = []
+        for d in rings:
+            m = MicroClusters(
+                MicroCfg(
+                    eps=c * math.sqrt(2),
+                    beta_mu=5.0,
+                    max_micro=300,
+                    macro_link=ml,
+                    prune_every=200,
+                    standardize=True,
+                ),
+                2,
+            )
+            ys.append(run(m, d)["cluster"])
+        a, sd, q, seen = _score(rings, ys, half)
+        name = f"micro eps={c} link={ml}"
+        print(f"{name:22s} {fmt(a)} {fmt(sd, 5)} {fmt(q, 7)} {seen:7.0f}")
+
 
 EXPERIMENTS = {
     "guarantees": exp_guarantees,
