@@ -13,7 +13,7 @@ scikit-learn's MiniBatchKMeans / GaussianMixture when importable.
 
 Experiments: ``guarantees`` (chunk invariance, determinism, zero-weight and
 null rows, NaN-free state), ``baselines``, ``seeding``, ``decay``,
-``outliers``, ``regime``, ``knobs``, ``cost``; ``all`` runs them in that
+``outliers``, ``regime``, ``knobs``, ``cost``, ``hard``; ``all`` runs them in that
 order. Each prints a table whose rows are quoted in the document. The
 scikit-learn rows are skipped with a note when it cannot be imported.
 """
@@ -50,6 +50,7 @@ from clustering_proto import (  # noqa: E402
 
 try:
     import sklearn.cluster
+    import sklearn.metrics
     import sklearn.mixture
 except Exception:  # noqa: BLE001 -- any import failure is "not available"
     sklearn = None
@@ -137,7 +138,7 @@ def seg_purity(truth: np.ndarray, pred: np.ndarray, seg: tuple[int, int]) -> flo
 def tracking(model, data: dict, row: int) -> float:
     """Mean distance from each live true centre at `row` to the nearest model centre."""
     C = model.centres()
-    if C is None or len(C) == 0:
+    if C is None or len(C) == 0 or data.get("centres") is None:
         return math.nan
     live = np.unique(data["lab"][max(0, row - 500) : row + 1])
     live = live[live >= 0]
@@ -178,9 +179,12 @@ def lloyd(X: np.ndarray, k: int, seed: int = 0, iters: int = 50, restarts: int =
     return best
 
 
-def batch_full(data: dict, k: int) -> np.ndarray:
-    C = lloyd(data["X"], k)
-    return np.argmin(((data["X"][:, None] - C[None]) ** 2).sum(2), axis=1)
+def batch_full(data: dict, k: int, standardize: bool = False) -> np.ndarray:
+    X = data["X"]
+    if standardize:  # the online models standardize in the metric; match them
+        X = (X - X.mean(0)) / np.where(X.std(0) > 0, X.std(0), 1.0)
+    C = lloyd(X, k)
+    return np.argmin(((X[:, None] - C[None]) ** 2).sum(2), axis=1)
 
 
 def batch_rolling(data: dict, k: int, window: int = 2000, refit: int = 500) -> np.ndarray:
@@ -726,6 +730,254 @@ def exp_cost() -> None:
         print(f"{name:22s} {m.state_doubles():9d} {el:7.0f}  {work.get(key, '')}")
 
 
+# --------------------------------------------------------------------------- hard geometries
+def hard_dataset(name: str, seed: int, n: int = 6000) -> dict:
+    """A stream whose clusters are *not* isotropic Gaussian blobs.
+
+    ``mixture`` generates exactly the shape k-means is optimal for, so it can
+    only say whether these models are broken, never whether they cluster well.
+    These seven can: two are non-convex, two defeat a spherical distance, one
+    has densities an order of magnitude apart, and two ask what happens as ``p``
+    grows. Rows are drawn i.i.d. and shuffled, the clock is regular and nothing
+    drifts, so the only question asked is clustering quality. Same dict shape as
+    ``mixture`` with ``centres = None`` -- a tracking error is meaningless for a
+    shape.
+    """
+    rng = np.random.default_rng(seed)
+    if name == "moons":
+        m = n // 2
+        t = rng.uniform(0, math.pi, m)
+        a = np.stack([np.cos(t), np.sin(t)], 1)
+        b = np.stack([1 - np.cos(t), 0.5 - np.sin(t)], 1)
+        X = np.vstack([a, b]) + rng.normal(0, 0.07, (2 * m, 2))
+        lab = np.repeat([0, 1], m)
+    elif name == "rings":
+        per = n // 3
+        Xs, ls = [], []
+        for j, r in enumerate((1.0, 2.2, 3.4)):
+            t = rng.uniform(0, 2 * math.pi, per)
+            Xs.append(np.stack([r * np.cos(t), r * np.sin(t)], 1) + rng.normal(0, 0.10, (per, 2)))
+            ls.append(np.full(per, j))
+        X, lab = np.vstack(Xs), np.concatenate(ls)
+    elif name == "aniso":
+        per = n // 3
+        mu = np.array([[0.0, 0.0], [5.0, 0.0], [2.5, 4.0]])
+        T = np.array([[0.6, -0.63], [-0.4, 0.85]])  # a shear: clusters become long and tilted
+        X = np.vstack([rng.normal(0, 1.0, (per, 2)) @ T + mu[j] for j in range(3)])
+        lab = np.repeat(np.arange(3), per)
+    elif name == "elongated":
+        per = n // 3
+        Xs = []
+        for j in range(3):
+            u = rng.uniform(-6, 6, per)
+            Xs.append(np.stack([u, np.full(per, 2.0 * j)], 1) + rng.normal(0, 0.25, (per, 2)))
+        X = np.vstack(Xs)
+        lab = np.repeat(np.arange(3), per)
+    elif name == "varied":
+        per = n // 3
+        mu = np.array([[0.0, 0.0], [7.0, 0.0], [3.5, 6.0]])
+        sd = np.array([0.4, 2.5, 0.4])
+        X = np.vstack([rng.normal(0, 1.0, (per, 2)) * sd[j] + mu[j] for j in range(3)])
+        lab = np.repeat(np.arange(3), per)
+    elif name.startswith("highdim"):
+        p, k = int(name.removeprefix("highdim")), 5
+        per = n // k
+        mu = rng.normal(0, 1.0, (k, p)) * 4.0
+        X = np.vstack([rng.normal(0, 1.0, (per, p)) + mu[j] for j in range(k)])
+        lab = np.repeat(np.arange(k), per)
+    else:
+        raise ValueError(name)
+    order = rng.permutation(len(X))
+    X, lab = X[order], lab[order]
+    return {
+        "X": X,
+        "lab": lab,
+        "dt": np.ones(len(X)),
+        "w": np.ones(len(X)),
+        "centres": None,
+        "k": int(lab.max()) + 1,
+        "sigma": 1.0,
+    }
+
+
+HARD = ("moons", "rings", "aniso", "elongated", "varied", "highdim20", "highdim50")
+
+
+def sk_batch(data: dict, kind: str) -> np.ndarray | None:
+    """Batch, in-sample, best of a sweep -- the ceiling a shape-aware method reaches."""
+    if sklearn is None:
+        return None
+    X, lab, k = data["X"], data["lab"], data["k"]
+    Z = (X - X.mean(0)) / np.where(X.std(0) > 0, X.std(0), 1.0)
+    if kind == "dbscan":
+        best, best_s = None, -2.0
+        rp = math.sqrt(X.shape[1])
+        for c in (0.03, 0.07, 0.14, 0.2, 0.35, 0.6, 1.0):
+            for mp in (5, 15):
+                y = sklearn.cluster.DBSCAN(eps=c * rp, min_samples=mp).fit_predict(Z)
+                sc = sklearn.metrics.adjusted_rand_score(lab, y)
+                if sc > best_s:
+                    best, best_s = y, sc
+        return best
+    if kind == "single":
+        return sklearn.cluster.AgglomerativeClustering(n_clusters=k, linkage="single").fit_predict(
+            Z
+        )
+    return sklearn.mixture.GaussianMixture(
+        n_components=k, covariance_type="full", random_state=0
+    ).fit_predict(Z)
+
+
+def hard_models(k: int, p: int) -> dict:
+    """Every prototype, standardizing in the metric, with `k` given as an oracle.
+
+    Every distance threshold is quoted as ``c * sqrt(p)``: two standardized points
+    are ``sqrt(2p)`` apart on average, so a threshold fixed in absolute units means
+    something different at every ``p`` -- and a 2-d default emits *no clusters at
+    all* at ``p = 20``, rather than bad ones.
+    """
+    rp = math.sqrt(p)
+    b: dict = {
+        "kmeans": lambda: EWKMeans(
+            KMeansCfg(k=k, warm_rows=500, seed_rule="lloyd", standardize=True), p
+        ),
+        "kmeans split-merge": lambda: EWKMeans(
+            KMeansCfg(
+                k=k,
+                warm_rows=500,
+                seed_rule="lloyd",
+                standardize=True,
+                reseed=True,
+                split_merge=0.5,
+                sm_every=100,
+            ),
+            p,
+        ),
+        "fuzzy m=2": lambda: EWKMeans(
+            KMeansCfg(k=k, warm_rows=500, seed_rule="lloyd", standardize=True, fuzzifier=2.0), p
+        ),
+        "gmm diag": lambda: OnlineGMM(
+            GMMCfg(k=k, warm_rows=500, seed_rule="lloyd", cov="diag", standardize=True), p
+        ),
+        "gmm full": lambda: OnlineGMM(
+            GMMCfg(k=k, warm_rows=500, seed_rule="lloyd", cov="full", standardize=True), p
+        ),
+        "som 3x3": lambda: SOM(
+            SOMCfg(
+                rows=3, cols=3, sigma=0.5, warm_rows=500, seed_rule="kmeanspp", standardize=True
+            ),
+            p,
+        ),
+        "gng 30": lambda: GNG(GNGCfg(max_nodes=30, insert_every=100, standardize=True), p),
+    }
+    for c in (0.2, 0.4, 0.7, 1.4):
+        b[f"dpmeans r={c}"] = lambda c=c: DPMeans(
+            DPCfg(radius=c * rp, max_clusters=100, prune_weight=5.0, standardize=True), p
+        )
+    # `eps` sets the micro-cluster spacing; `macro_link` decides whether a chain of
+    # them follows a shape or bridges the gap between two shapes
+    for c, ml in ((0.1, 2.0), (0.2, 2.0), (0.4, 2.0), (0.1, 3.0), (0.2, 3.0)):
+        b[f"micro eps={c} link={ml}"] = lambda c=c, ml=ml: MicroClusters(
+            MicroCfg(
+                eps=c * rp,
+                beta_mu=5.0,
+                max_micro=300,
+                macro_link=ml,
+                prune_every=200,
+                standardize=True,
+            ),
+            p,
+        )
+    return b
+
+
+def _score(
+    data: list[dict], ys: list[np.ndarray], half: tuple[int, int]
+) -> tuple[float, float, float, float]:
+    pairs = list(zip(data, ys, strict=True))
+    a = [seg_ari(d["lab"], y, half) for d, y in pairs]
+    q = [seg_purity(d["lab"], y, half) for d, y in pairs]
+    seen = [len(np.unique(y[half[0] :][y[half[0] :] != NONE])) for y in ys]
+    if all(math.isnan(v) for v in a):
+        return math.nan, math.nan, math.nan, float(np.mean(seen))
+    return (
+        float(np.nanmean(a)),
+        float(np.nanstd(a)),
+        float(np.nanmean(q)),
+        float(np.mean(seen)),
+    )
+
+
+def exp_hard() -> None:
+    print(
+        "=== hard geometries: clusters that are not isotropic blobs\n"
+        "    ARI over the second half (the first half is warm-up), mean +- sd\n"
+        "    over 3 seeds. Every model standardizes in the metric and is given\n"
+        "    the true k as an oracle where it takes one. The batch rows are\n"
+        "    in-sample and best-of-a-sweep: a ceiling, not a competitor."
+    )
+    seeds = (5, 6, 7)
+    for name in HARD:
+        probe = hard_dataset(name, seeds[0])
+        n, k, p = len(probe["X"]), probe["k"], probe["X"].shape[1]
+        half = (n // 2, n)
+        print(f"--- {name}: n={n} p={p} true k={k}")
+        print(f"{'model':22s} {'ARI':>6s} {'+-':>5s} {'purity':>7s} {'labels':>7s}")
+        data = [hard_dataset(name, s) for s in seeds]
+        for mname, build in hard_models(k, p).items():
+            ys = [run(build(), d)["cluster"] for d in data]
+            a, sd, q, seen = _score(data, ys, half)
+            print(f"{mname:22s} {fmt(a)} {fmt(sd, 5)} {fmt(q, 7)} {seen:7.0f}")
+        for bname, kind in (
+            ("batch lloyd (k given)", None),
+            ("batch dbscan (swept)", "dbscan"),
+            ("batch single linkage", "single"),
+            ("batch gmm full", "gmm-full"),
+        ):
+            ys = [
+                batch_full(d, k, standardize=True) if kind is None else sk_batch(d, kind)
+                for d in data
+            ]
+            if any(y is None for y in ys):
+                print(f"{bname:22s}  (scikit-learn not importable; skipped)")
+                continue
+            a, sd, q, seen = _score(data, ys, half)
+            print(f"{bname:22s} {fmt(a)} {fmt(sd, 5)} {fmt(q, 7)} {seen:7.0f}")
+
+    print(
+        "--- why macro_link matters: nearest-neighbour spacing between potential\n"
+        "    micro-clusters on `moons`, in units of eps. A link threshold below\n"
+        "    that spacing severs the chain and a shape fragments."
+    )
+    d = hard_dataset("moons", 5)
+    for c in (0.1, 0.2):
+        eps = c * math.sqrt(2)
+        m = MicroClusters(
+            MicroCfg(
+                eps=eps,
+                beta_mu=5.0,
+                max_micro=300,
+                macro_link=2.0,
+                prune_every=200,
+                standardize=True,
+            ),
+            2,
+        )
+        run(m, d)
+        cs = m.centres()
+        dist = np.sqrt(np.stack([((cs - c0) ** 2 * m.mw).sum(1) for c0 in cs]))
+        np.fill_diagonal(dist, np.inf)
+        nn = dist.min(1)
+        links = {}
+        for t in (2.0, 2.5, 3.0):
+            links[t] = int(np.count_nonzero(dist < t * eps) // 2)
+        print(
+            f"eps={c}*sqrt(p): {len(cs):3d} potential MCs, spacing/eps"
+            f" median {np.median(nn) / eps:.2f} p90 {np.percentile(nn, 90) / eps:.2f}"
+            f"; pairs linked at 2.0/2.5/3.0 = {links[2.0]}/{links[2.5]}/{links[3.0]}"
+        )
+
+
 EXPERIMENTS = {
     "guarantees": exp_guarantees,
     "baselines": exp_baselines,
@@ -735,6 +987,7 @@ EXPERIMENTS = {
     "regime": exp_regime,
     "knobs": exp_knobs,
     "cost": exp_cost,
+    "hard": exp_hard,
 }
 
 if __name__ == "__main__":

@@ -72,6 +72,20 @@ material stays out of the repo.
   from the spec alone, so `k` must be a spec parameter for the fixed-`k` models,
   and the variable-`k` models emit a monotone integer id plus a count, never a
   column per cluster (§8).
+- **Being online costs almost nothing; choosing the wrong family costs
+  everything.** On seven deliberately hard geometries (§7.8), one-pass
+  sequential k-means matches a converged batch Lloyd's fit to within 0.04 ARI on
+  six of seven, and the seventh gap closes with the split–merge move. But every
+  k-means and every Gaussian mixture — batch ones included — scores **0.000** on
+  concentric rings, where batch DBSCAN scores 1.000. The streaming constraint is
+  not what limits these models; the k-means assumption is.
+- **For a non-convex shape the answer is micro-clusters with the linkage macro
+  step**, and it reaches the batch ceiling: 0.998 on two moons against DBSCAN's
+  1.000, 0.998 on parallel bars against 1.000. It needs `macro_link` set to
+  chain along the shape (≈3× the micro-cluster spacing, not §6.5's default of
+  2.0), and that setting costs it on blob-shaped data — 0.537 on sheared
+  Gaussians against k-means' 0.933. **No configuration wins everywhere**, which
+  is Sesame's "no silver bullet" reproduced on our own models.
 - **Labels are the hard part of the API, not the maths.** A batch learner refit
   on a rolling window scores ARI 0.07–0.26 over a segment and 0.99 *within* one
   refit block: the drop is entirely label churn between refits. Online models
@@ -170,7 +184,7 @@ Verdicts:
 | self-organising map | Kohonen'82 | **in** | fixed grid, each neuron an EW mean with a neighbourhood weight |
 | growing neural gas | Fritzke'95 | **in, capped** | the paper's own stopping criterion is "net size or some performance measure" (`fritzke1995:153`), so a `max_nodes` cap is its option, not a violation — but growth then simply stops (§6.6); constant learning rates also make it a constant-gain model |
 | ODAC — clustering the *variables* | Rodrigues–Gama'08 | **in** | one EW correlation matrix; a static per-column output |
-| DBSCAN / OPTICS / HDBSCAN **on rows** | Ester'96, Ankerst'99, Campello'13 | **out (R, Q)** | a point's label depends on which other points lie within `ε`, so either the points are retained (`O(n)`) or every pair is evaluated (`O(n²)`). A second problem is independent of memory: density-connectivity is global, so a later arrival can promote noise to core or bridge two clusters into one, and correct output means *revising labels already emitted*. **Density clustering over bounded summaries is a different question and is in** — that is DenStream's whole design and §6.5's macro step |
+| DBSCAN / OPTICS / HDBSCAN **on rows** | Ester'96, Ankerst'99, Campello'13 | **out (R, Q)** | a point's label depends on which other points lie within `ε`, so either the points are retained (`O(n)`) or every pair is evaluated (`O(n²)`). A second problem is independent of memory: density-connectivity is global, so a later arrival can promote noise to core or bridge two clusters into one, and correct output means *revising labels already emitted*. **Density clustering over bounded summaries is a different question and is in** — that is DenStream's whole design and §6.5's macro step, and §7.8 measures it reaching batch DBSCAN's accuracy on non-convex shapes (0.998 vs 1.000 on two moons) |
 | spectral / affinity propagation / kernel k-means | Ng'01, Frey–Dueck'07 | **out (R, Q)** | an `n×n` affinity matrix, and an eigendecomposition or message passing over it |
 | agglomerative **on rows** | Ward'63 and the linkage family | **out (R, Q)** | `O(n²)` distances over retained rows. Linkage over *summaries* is bounded and is in (§6.5's macro step is single linkage over `M ≤ max_micro` micro-clusters, `O(M²)` at a checkpoint) |
 | sliding-window clustering | SL-KMeans'20 | **out (C)** | a fixed window `W` is `W·p` doubles — a *parameter* bound, constant in `n`, so it **passes the complexity bar**. It is excluded on two other grounds: the library's convention reads a retained window as `O(data)` (`BEYOND-O-STATE.md` excludes kNN for exactly this), and the damped window buys the same recency in `O(1)` without storing a row. Sesame's O5 also measures the sliding window as the least accurate of the three window models |
@@ -477,6 +491,12 @@ the moments move, and measures **worse than not standardising at all** (§10).
 
 ### 6.2 `kmeans`: fixed `k`, the recommendation
 
+**Scope first: this is the right model when the clusters are blob-shaped**, and
+it is measurably the wrong one when they are not — §7.8 puts it at 0.000 ARI on
+concentric rings, the same score batch Lloyd's gets. What it buys over batch
+Lloyd's is not accuracy but bounded state, a stable label, and the ability to
+follow a moving population.
+
 State: `k` centres, `k` weights, `k` radii, plus the shared feature moments and
 a warm-up buffer of `warm_rows × p`.
 
@@ -589,6 +609,17 @@ each a macro label = the smallest id in its component. Sesame's O15 says the
 offline step is often unnecessary; here it is what makes the output usable as a
 *cluster* label rather than a micro-cluster id, and it is worth its cost: under
 drift, 94 micro-clusters collapse to 28 distinct labels.
+
+**`macro_link` is the most consequential parameter in this document and the
+default of 2.0 is wrong.** It must be read against the *nearest-neighbour
+spacing between potential micro-clusters*, which `eps` sets: §7.8 measures that
+spacing at 1.84·eps median and 2.21·eps at p90, so a threshold of 2.0 links only
+half the adjacent pairs and fragments every shape it is given. A threshold must
+clear the p90 spacing — 2.5 or 3.0 here — to chain reliably, and one much above
+it bridges genuinely separate clusters instead. **The fix is not a better
+constant**: the macro checkpoint already computes the pairwise distances, so the
+threshold should be derived from the observed spacing (say 1.5× its p90) and
+`macro_link` retained only as an override.
 
 **Label semantics is the API decision.** Three rules make a variable-`k` output
 honest:
@@ -961,6 +992,114 @@ statement worth making before a Rust build measures it.
 
 ---
 
+### 7.8 Hard geometries: what these models are actually worth (`hard`)
+
+Everything above runs on isotropic Gaussian blobs, which is precisely the shape
+k-means is optimal for — so §7.3 can say the models are not broken and nothing
+more. These seven streams are chosen to break them: two non-convex (`moons`,
+`rings`), two that defeat a spherical distance (`aniso` — sheared Gaussians;
+`elongated` — three long parallel bars), one with densities an order of
+magnitude apart (`varied`), and two asking what `p` does (`highdim20`,
+`highdim50`). 6 000 rows, i.i.d. and shuffled, regular clock, no drift, so the
+only question asked is clustering quality. ARI over the second half, mean ± sd
+over three seeds. Every model standardizes in the metric and is handed the true
+`k` where it takes one. **The batch rows are in-sample and best-of-a-sweep — a
+ceiling, not a competitor.**
+
+**The headline is that streaming costs almost nothing.** Online sequential
+k-means against batch Lloyd's, on the same standardized data:
+
+| geometry | online `kmeans` | batch Lloyd's | difference |
+|---|---|---|---|
+| moons | 0.493 | 0.495 | −0.002 |
+| rings | 0.000 | 0.000 | 0 |
+| aniso | 0.933 | 0.934 | −0.001 |
+| elongated | 0.448 | 0.488 | −0.040 |
+| varied | 0.822 | 0.822 | 0 |
+| highdim20 | 0.903 ± 0.137 | 1.000 | −0.097, and **split–merge closes it** (1.000) |
+| highdim50 | 1.000 | 1.000 | 0 |
+
+One pass with bounded state, seeded from a 500-row prefix, matches a converged
+batch fit to within noise on six of seven — and the seventh is seeding variance
+that the split–merge move removes. **The penalty for being online is not the
+problem. The penalty for choosing the wrong family is.**
+
+**And the k-means family is the wrong family for a non-convex shape** — batch or
+online, it makes no difference. On `rings` every k-means and every Gaussian
+mixture scores **0.000**, including batch Lloyd's and batch full-covariance EM,
+while batch DBSCAN and single linkage score 1.000. That is a model-class
+failure, not a streaming one.
+
+**The one online model that handles a shape is micro-clusters with the linkage
+macro step, and it reaches the batch ceiling** — but only when `macro_link` is
+set to chain along the shape rather than to sit inside it:
+
+| config | moons | rings | aniso | elongated | varied | hd20 | hd50 |
+|---|---|---|---|---|---|---|---|
+| `kmeans` split–merge | 0.493 | 0.000 | 0.933 | 0.448 | 0.822 | **1.000** | **1.000** |
+| `gmm full` | 0.507 | 0.000 | **0.938** | 0.492 | **0.989** | 0.910 | **1.000** |
+| `micro` eps=0.4 link=2.0 | 0.343 | 0.069 | 0.905 | 0.537 | 0.919 | **1.000** | **1.000** |
+| `micro` eps=0.1 link=3.0 | **0.998** | **0.734** | 0.537 | **0.998** | 0.690 | *none* | *none* |
+| batch DBSCAN (ceiling) | 1.000 | 1.000 | 0.572 | 1.000 | 0.978 | 1.000 | 1.000 |
+| batch single linkage | 1.000 | 1.000 | 0.572 | 0.858 | 0.000 | 1.000 | 1.000 |
+
+Five things to take from this.
+
+**1. `macro_link` is the knob that decides whether the macro step follows a
+shape or ignores it**, and §6.5's default of 2.0 sits exactly on the wrong side
+of it — measured, not inferred. On `moons`, the nearest-neighbour spacing
+between potential micro-clusters is **1.84·eps at the median and 2.21·eps at the
+90th percentile** (`eps = 0.1·√p`, 45 micro-clusters); at `eps = 0.2·√p` it is
+1.96 and 2.44. A threshold of 2.0 therefore sits *at the median spacing* and
+links 25 of the adjacent pairs, severing the chain about every other step — the
+model reports 24 fragments, ARI 0.139. At 2.5 it links 56 pairs and at 3.0, 62;
+the chain holds and the model reports 3 clusters, ARI 0.998.
+
+The rule that falls out is precise: **the threshold must clear the *p90* spacing,
+not the median.** Since both quantities are available at the macro checkpoint —
+the pairwise distance matrix is already being computed there — the principled
+default is to derive `macro_link` from the observed spacing rather than to ship
+a constant.
+
+**2. It is a genuine trade, not a free win.** The same `link=3.0` that scores
+0.998 on `moons` scores 0.537 on `aniso` and 0.690 on `varied`, because a
+threshold loose enough to chain along a shape is loose enough to bridge two
+nearby blobs. No configuration in the table wins everywhere — Sesame's O1 ("no
+silver bullet", §3) reproduced with these models on these streams.
+
+**3. The batch shape-aware methods are not a universal ceiling either.** DBSCAN
+scores 0.572 on `aniso`; single linkage scores 0.000 on `varied`, chaining
+straight through the sparse cluster, and 0.858 ± 0.200 on `elongated`. Each
+family has a shape it cannot see.
+
+**4. A bad threshold produces silence, not a bad answer.** `micro` at
+`eps = 0.1·√p` emits **zero clusters** at `p = 20` and `p = 50` — every row
+opens an outlier micro-cluster, none reaches `beta_mu`, the cap thrashes, and
+the output is all-null rather than wrong. At `p = 50`, `eps = 0.2·√p` gives ARI
+0.023 while the same setting at `p = 20` gives 0.882. This is the worst failure
+mode in the whole investigation because it is invisible: a fixed threshold does
+not degrade gracefully with `p`, it falls off a cliff. Any shipped model needs
+either a threshold expressed in units of `√p` (which is how this table is
+parameterised) or a hard diagnostic when the potential-micro-cluster set stays
+empty.
+
+**5. High dimensions are otherwise a non-event.** At `p = 20` and `p = 50` with
+five well-separated components, every fixed-`k` model scores 1.000. There is no
+distance-concentration problem at this separation; the only casualties are the
+threshold models, and only through the threshold.
+
+Two smaller observations. **`som` has high purity and low ARI everywhere** (0.986
+purity, 0.266 ARI on `moons`): a 3×3 grid quantises 2 clusters into 9 cells,
+each pure. It is a quantiser, and it needs a macro step over the grid before it
+is a clusterer. **`gng` is the worst model on every hard geometry** (0.000
+moons, 0.029 rings, 0.002 varied) — the constant-gain result of §7.6 again, now
+confirmed on shape as well as on outliers. It should not be in a recommended
+set. And **`gmm full` emits `slogdet` divide-by-zero warnings at `p = 50`**,
+where a full covariance is 2 500 parameters per component: the variance floor
+keeps the answer correct (ARI 1.000) but not the conditioning.
+
+---
+
 ## 8. The spec and the output shape
 
 This is where clustering needs decisions the existing models did not.
@@ -1068,6 +1207,24 @@ Effort: `kmeans` alone is about the size of `holt`; the plumbing is a day by the
    scores 0.18–0.34 ARI while every mean-form model stays above 0.78.
 8. **A bigger warm-up buffer.** 2 000 rows is worse than 500 (0.944 vs 1.000):
    the extra rows are older, and the components have moved.
+9. **`macro_link = 2.0` as the micro-cluster default.** It sits *at* the median
+   nearest-neighbour spacing between potential micro-clusters (measured at
+   1.84·eps), so it links half the adjacent pairs and fragments every shape it
+   is given: 0.139 on two moons where 3.0 gives 0.998 (§7.8). Picked because it
+   looked safe; it is the worst of both worlds, and the replacement should be
+   derived from the spacing rather than guessed again.
+10. **A distance threshold in absolute units.** `eps` and `radius` fixed in
+    standardized units mean something different at every `p`, and the failure at
+    `p = 20` is not a bad clustering but **no clustering at all** — every row
+    opens an outlier micro-cluster, none is ever promoted, and the output is
+    all-null. Quoting every threshold as `c·√p` fixes it (§7.8).
+11. **Growing neural gas, finally.** Bad with outliers (§7.6) *and* worst on
+    every hard geometry (§7.8: 0.000 moons, 0.029 rings, 0.002 varied). Two
+    independent failures from the same cause — constant gain — is enough. It
+    stays prototyped for the record and out of any recommendation.
+12. **The SOM as a clusterer.** Purity 0.986 with ARI 0.266 on two moons: a 3×3
+    grid quantises two clusters into nine pure cells. It is a quantiser, and
+    would need a macro step over the grid to be a clusterer.
 
 ---
 
@@ -1079,9 +1236,12 @@ uv run --with scikit-learn python scripts/clustering_experiments.py all  # with 
 ```
 
 Experiments: `guarantees`, `baselines`, `seeding`, `decay`, `outliers`,
-`regime`, `knobs`, `cost`. Nothing is added to `pyproject.toml` or the lock file
+`regime`, `knobs`, `cost`, `hard`. `hard` needs scikit-learn for its batch
+DBSCAN, single-linkage and full-covariance-EM ceilings; without it those rows
+are skipped and the online rows still run. Nothing is added to `pyproject.toml` or the lock file
 — the overlay is ephemeral. The whole suite takes about five minutes in pure
-numpy; `decay` and `seeding` are the slow ones (they sweep over data seeds).
+numpy; `decay`, `seeding` and `hard` are the slow ones (they sweep over data
+seeds).
 
 Sources (all under the gitignored `.cache/research/`): fifteen papers as PDFs
 with text extractions; river 0.26.1 at `b50439f2`, MOA at `f0c284da`,
@@ -1095,6 +1255,11 @@ it was re-checked.
 
 - **Whether to build any of it.** Nothing here presumes it. §9 costs the
   narrowest build (`kmeans` with the split–merge move and the seeding buffer).
+- **Which family to expose, given that none dominates.** §7.8 shows the choice
+  is the user's shape assumption, not ours. Either ship one model and document
+  what it cannot see, or ship two (`kmeans` for blobs, `micro` for shapes) and
+  make the trade explicit. Shipping only `kmeans` and calling it "clustering"
+  would be the misleading option.
 - **Only synthetic data so far.** The next measurement should be the Binance
   intraday data `tests/data.py` already downloads — clusters of minutes by
   their return/volume/spread profile, scored by stability rather than by a
