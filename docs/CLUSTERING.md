@@ -286,6 +286,69 @@ an outlier micro-cluster whose weight is below
 `cao2006:389-390`). Its offline part is DBSCAN over the potential
 micro-clusters, on demand.
 
+**What the field makes of the micro-cluster family.** It is the consensus
+building block, not a contender: every toolkit ships it (MOA's `WithDBSCAN`,
+river's `DenStream` and `DBSTREAM`, R `stream`'s `DSC_DenStream`,
+`DSC_DBSTREAM` and `DSC_DStream`); its fading function is what Hahsler credits
+as the origin of the damped window — "introduced first for DenStream"
+(`hahsler2017:169-174`); and in Sesame's decomposition micro-clusters are the
+most accurate summarizing structure (O2, O4 — `wang2023:639-651, 705-711`),
+with DenStream's buffered outlier handling worth ≥ 8 % accuracy (O11,
+`:928-936`). Hahsler's own worked comparison is the clearest statement of the
+utility: on a noisy four-cluster benchmark the two density-based methods score
+cRand 0.782 and 0.795 against 0.581 and 0.550 for sampling and sliding-window
+k-means (`hahsler2017:2523-2525`), and on two drifting clusters that cross they
+are equal-best, "easily explained by the fact that these two algorithms cannot
+detect noise" (`:2595-2598`). The reservations the field states are the ones
+§7.8 measures, and none of them is about being online:
+
+- **The thresholds.** Zubaroğlu's open problems put "density threshold,
+  distance threshold" among parameters that are "very sensitive to the input
+  data" and need "expert knowledge" (`zubaroglu2021:1183-1187, 1221-1226`),
+  and call multi-density clusters — "different density thresholds ...
+  different distance thresholds" — "another open problem by itself"
+  (`:1213-1215`). DenStream's own recipe for `ε` is to **run batch DBSCAN on
+  the initial points** and take `ε = α·d_min` from the nearest pair of points
+  in different clusters (`cao2006:788-798`): the threshold is derived from a
+  warm-up buffer, not chosen. §7.8 reaches the same conclusion for
+  `macro_link`.
+- **Fragmentation.** In Hahsler's example the density-based methods "identify
+  the two denser clusters correctly, but split the lower density clusters into
+  multiple pieces" — 7 and 6 macro-clusters for 4 true — and "do not assign
+  some points which are not noise points" (`hahsler2017:2180-2183, 2523-2525`).
+  That is `varied` at 0.690 and the `macro_link` trade in §7.8.
+- **The macro step is contested — under a metric that cannot see what it
+  does.** Sesame's O15, offline refinement is "unnecessary" and on two
+  workloads harmful, verified by switching DenStream's refine off with no
+  change (`wang2023:1035-1046`), is measured in purity with every algorithm
+  tuned so its cluster count is "close to the ground truth" (`:558-561`) — a
+  setup in which merging has nothing left to do and can only lower the score.
+  Under ARI the macro step is the whole difference between 0.343 and 0.998 on
+  `moons` (§7.8). O15 is a finding about purity; it does not transfer.
+- **Cost.** Partitional structures run ~70 % slower than hierarchical ones
+  (O2), the outlier buffer costs throughput (O12, `wang2023:937-949`), the
+  damped window is the slowest window model (O7, `:759-762`), and every
+  structure slows with `p` (O16, `:1197-1202`). Zubaroğlu relays DenStream
+  reaching 800 micro-clusters and 650× CEDAS's time at 3 000 dimensions
+  (`zubaroglu2021:864-872`). Here that is `O(max_micro · p)` per row, and the
+  cap is the cost control.
+- **Nobody has measured it the way it would ship here.** The published
+  numbers are checkpoint or horizon evaluations; river's `DenStream.predict_one`
+  runs the full DBSCAN per call with an inverted expansion condition, MOA's
+  `getVotesForInstance` returns `null`, and no implementation reads a clock
+  (see "Implementations" below). Per-row predict-before-update labels from
+  this family are unmeasured in the literature.
+- **Shapes are asserted more than benchmarked.** Sesame's workloads (FCT,
+  KDD99, Sensor, Insects) contain no non-convex geometry; the arbitrary-shape
+  claim rests on the DenStream paper's own figures (`cao2006:822-830`) and the
+  batch-DBSCAN intuition. §7.8 is the only ARI measurement of it in this
+  investigation.
+
+Not read: Carnein, Assenmacher & Trautmann 2017 (Computing Frontiers) and
+Carnein & Trautmann 2019 (BISE) — the other large empirical comparison and
+survey — and Hahsler & Bolaños 2016 (DBSTREAM, TKDE); all three were paywalled
+or bot-blocked when fetched. Their verdicts are not represented here.
+
 **CluStream** (Aggarwal et al., VLDB 2003) defines the micro-cluster as
 `(CF2ˣ, CF1ˣ, CF2ᵗ, CF1ᵗ, n)` (Definition 1, `aggarwal2003:220-245`) — BIRCH's
 CF triple plus timestamp moments. It is a landmark-window algorithm: recency
