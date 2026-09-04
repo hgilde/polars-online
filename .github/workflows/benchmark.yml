@@ -21,8 +21,10 @@ on:
       ref:
         # A control run: measure an older commit with *this* workflow file, so
         # a branch and the main it forked from get the same tables on the same
-        # runner type. Empty means the ref the workflow was dispatched on.
-        description: "Commit or branch to benchmark (default: this one)"
+        # runner type. Empty means the ref the workflow was dispatched on. A
+        # commit must be the full 40-character SHA: actions/checkout reads
+        # anything shorter as a branch or tag name and fails to fetch it.
+        description: "Tag, branch or full commit SHA to benchmark (default: this one)"
         required: false
         default: ""
 
