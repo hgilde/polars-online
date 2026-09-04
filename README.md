@@ -328,47 +328,6 @@ flattened to `<spec>.<field>` columns and the `coef` list becomes a JSON
 string that `pl.col("ridge.coef").str.json_decode(pl.List(pl.Float64))` reads
 back bit-exact.
 
-Most searches are one run: a spec holds a grid of halflives, ridge values
-and feature sets, and specs that differ in anything else — session policy,
-`standardize`, the model — sit side by side in one bank, so one pass over
-the data fits them all into one output and one state file
-([Parallelism](#parallelism)). A grid of *runs* is for when every point must
-be its own artifact: an output to compare by file, a state file to serve or
-resume on its own. `po.run` calls are independent, and the GIL is released
-while a chunk is in the bank, so threads run them together in one process:
-
-```python
-from concurrent.futures import ThreadPoolExecutor
-from itertools import product
-
-def fit(session_gap, standardize):
-    tag = f"gap{session_gap:g}-std{standardize}"
-    spec = po.spec.ewridge("m", targets=["y"], features=["x0", "x1", "x2"],
-                           clock="t", max_dclock=300.0, group="bond_id",
-                           session="session", session_gap=session_gap,
-                           halflife=[100.0, 1000.0], ridge=[1e-3, 0.1],   # gridded inside the spec
-                           standardize=standardize)
-    po.run(input="ticks.parquet", output=f"{tag}.parquet", specs=[spec],
-           save_state=f"{tag}.state")
-    return tag
-
-points = product([0.0, 60.0, 300.0], [False, True])                  # session_gap × standardize
-with ThreadPoolExecutor() as pool:
-    tags = list(pool.map(lambda p: fit(*p), points))
-
-scores = pl.concat(                                                   # one row per (run, slot)
-    po.eval.metrics(pl.read_parquet(f"{tag}.parquet"), "m").with_columns(run=pl.lit(tag))
-    for tag in tags
-).sort("r2", descending=True)
-```
-
-The outputs and the state files are the same bytes as from the runs one
-after another; the threads change only the wall time. Six single-group runs
-over 1M rows take 4.9 s in sequence and 1.4 s together on 14 cores; with 64
-groups and 2.56M rows each run is already parallel across its groups, and
-the threads add 2.5×. Each run reads the input once, which is the price of
-the separate files.
-
 The CLI is the same pipeline as one binary and one TOML
 ([examples/bank.toml](examples/bank.toml)), for deployments with no Python:
 
@@ -791,6 +750,45 @@ independent of how the work is split, and it also means a bank with one spec
 and one group is one thread's work per chunk, with polars' own reading and
 writing running in parallel around it.
 
+So a bank fills the pool with groups, with specs, or with both. A search
+over what one spec cannot hold more than one of — session policy,
+`standardize`, the model — is a list of specs, run as one plan in one pass,
+with the thread counts set before anything is built:
+
+```python
+import os
+os.environ["RAYON_NUM_THREADS"] = "8"        # the bank's pool: read at the first bank call
+os.environ["POLARS_MAX_THREADS"] = "8"       # polars' readers and writers: read at import
+
+import polars as pl
+import polars_online as po
+from itertools import product
+
+def spec(session_gap, standardize):
+    return po.spec.ewridge(f"m-gap{session_gap:g}-std{standardize:d}",
+                           targets=["y"], features=["x0", "x1", "x2"], clock="t", max_dclock=300.0,
+                           group="bond_id", session="session", session_gap=session_gap,
+                           halflife=[100.0, 1000.0], ridge=[1e-3, 0.1],   # gridded inside the spec
+                           standardize=standardize)
+
+specs = [spec(g, s) for g, s in product([0.0, 60.0, 300.0], [False, True])]
+
+(pl.scan_parquet("ticks.parquet")
+   .online.fit_predict(specs, chunk_rows=200_000, save_state="grid.state")
+   .sink_parquet("grid.parquet"))
+
+scores = po.eval.compare_specs(pl.read_parquet("grid.parquet"),
+                               [s["name"] for s in specs]).sort("r2", descending=True)
+```
+
+Every chunk puts 6 × 64 stream tasks on the pool. On 2.56M rows over 64
+groups that plan takes 15.5 s at one thread and 2.71 s at fourteen; the
+single spec alone goes from 2.49 s to 0.78 s, because with one task per
+group the fixed cost of reading and assembling each chunk shows through.
+The output is one struct column per spec, which is what `compare_specs`
+reads, and one state file holds them all. The same list runs the same way
+through `ModelBank`, `po.run` and the CLI.
+
 Where the parallelism comes from, then:
 
 - **Groups.** k=20 over 64 groups: 916k, 1.65M, 2.86M, 4.75M and 6.03M
@@ -806,20 +804,22 @@ Where the parallelism comes from, then:
   thread, the bank on the calling thread, a writer thread — with one chunk
   in flight per stage; `ONLINE_TIMING=1` prints how long the bank waited on
   each side. NDJSON output is serialized a slice per thread.
-- **Runs.** `po.run` calls are independent and share the one pool, so a grid
-  of them runs in threads ([As a job](#as-a-job-porun-and-the-online-cli)):
-  six single-group runs over 1M rows, 4.9 s in sequence, 1.4 s together.
 - **Python.** The GIL is released while a chunk is in the bank, so a Python
-  reader thread can run ahead of `ModelBank.fit_predict`.
+  reader thread can run ahead of `ModelBank.fit_predict`, and independent
+  `po.run` calls in threads of one process share the one pool.
 - **The expression form.** Under `.over("group")`, polars runs the groups
   through its own pool — which is why the plugin packs its inputs into one
   struct: the single-input path is parallel, the multi-input one is not
   (12.2M rows/s at 1000 groups).
 
 Thread count is `RAYON_NUM_THREADS` for the bank's pool and
-`POLARS_MAX_THREADS` for polars' readers and writers. It changes the speed
-and nothing else: `tests/test_portability.py` runs the same stream at 1 and
-8 threads in separate processes and requires identical output. Everything is
+`POLARS_MAX_THREADS` for polars' readers and writers. Rayon builds its pool
+at the first bank call and polars its own at import, so each must be set
+before that point, as above, or in the shell
+(`RAYON_NUM_THREADS=8 python fit.py`), which is the form that always
+works; set later, the variable is ignored. It changes the speed and nothing
+else: `tests/test_portability.py` runs the same stream at 1 and 8 threads
+in separate processes and requires identical output. Everything is
 one process — there is no distributed execution, by design (see [What this
 is not](#what-this-is-not)).
 
