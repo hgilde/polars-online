@@ -47,8 +47,8 @@ jobs:
   # here falls back to the sdist, which means the user needs a Rust toolchain --
   # the single most common way a pyo3 package fails to be "easily installable".
   # So it covers Intel and Apple-silicon macOS, Windows x64, and Linux x64 and
-  # aarch64 in both glibc and musl flavours (aarch64 for Graviton and for Docker
-  # on Apple silicon; musl for Alpine images).
+  # aarch64 glibc (for Graviton and for Docker on Apple silicon) and Linux x64
+  # musl (for Alpine images).
   #
   # `abi3-py312` means one wheel per platform serves 3.12, 3.13, 3.14 and up,
   # rather than one per interpreter version.
@@ -81,10 +81,18 @@ jobs:
             manylinux: auto
             bin: online
             cli: true
-          - os: ubuntu-latest
+          # Built natively on GitHub's arm64 runner, as polars builds its own.
+          # Cross-compiling from x64 uses `manylinux2014-cross:aarch64`, whose
+          # GCC 4.8.5 does not define `__ARM_ARCH`, and `ring` 0.17 (reached
+          # through polars-io's cloud feature) refuses to assemble without it
+          # (briansmith/ring#1728). On an arm64 host maturin-action picks the
+          # native `manylinux2014_aarch64` image, with a current GCC, and the
+          # wheel keeps the same `manylinux_2_17` tag.
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             manylinux: auto
             bin: online
+            cli: true
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             manylinux: musllinux_1_2
@@ -110,9 +118,9 @@ jobs:
           args: --release --out dist -m crates/online-py/Cargo.toml
           sccache: "true"
 
-      # Only on targets the runner builds natively. The cross-compiled Linux
-      # wheels (aarch64, musl) ship without a prebuilt CLI; `cargo install
-      # online-cli` covers those, and the wheel is the artifact that matters
+      # Only on targets the runner builds natively. The musl wheel is
+      # cross-compiled and ships without a prebuilt CLI; `cargo install
+      # online-cli` covers it, and the wheel is the artifact that matters
       # for `pip install`.
       - name: build the CLI
         if: matrix.cli

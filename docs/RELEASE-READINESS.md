@@ -637,7 +637,15 @@ vulnerability reporting, the PyPI pending publisher (`polars-online` /
 wheel and publishes nothing. One more thing that rehearsal would have caught:
 `release.yml` named the `macos-13` runner for the Intel wheel, and GitHub has
 retired it; the label is `macos-15-intel` now. A tag would have built five
-wheels and published none.
+wheels and published none. **The rehearsal ran on 2026-09-03 and caught a
+second one**: the aarch64 Linux wheel, cross-compiled from x64 in
+`manylinux2014-cross:aarch64`, failed in `ring` 0.17 (reached through
+polars-io's cloud feature) because that image's GCC 4.8.5 does not define
+`__ARM_ARCH` (briansmith/ring#1728). Fixed the way polars builds its own:
+natively on GitHub's `ubuntu-24.04-arm` runner, where maturin-action picks
+the `manylinux2014_aarch64` image with a current GCC; the tag stays
+`manylinux_2_17`, and the runner being native means the aarch64 CLI binary
+now ships too. The rehearsal is not optional.
 
 The first push also proved the `paths-ignore` warning above in the cheapest
 possible way: it ended in two documentation commits, the filter matched them,

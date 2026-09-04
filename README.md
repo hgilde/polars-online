@@ -73,8 +73,8 @@ and nothing else, and a test holds it to that. Details under
 
 ## Install
 
-Wheels for macOS (arm64, x86_64), Windows x64 and Linux (x64, aarch64; glibc
-and musl) plus the CLI binaries are attached to each release. Python 3.12+.
+Wheels for macOS (arm64, x86_64), Windows x64 and Linux (x64 glibc and musl,
+aarch64 glibc) plus the CLI binaries are attached to each release. Python 3.12+.
 The wheel is ~19 MB to download and ~59 MB installed: it statically links the
 Rust half of Polars, so nothing beyond `polars` itself has to be present at
 run time. `numpy` is an optional extra, needed only by `ModelBank.gram()`.
