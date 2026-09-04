@@ -328,6 +328,47 @@ flattened to `<spec>.<field>` columns and the `coef` list becomes a JSON
 string that `pl.col("ridge.coef").str.json_decode(pl.List(pl.Float64))` reads
 back bit-exact.
 
+Most searches are one run: a spec holds a grid of halflives, ridge values
+and feature sets, and specs that differ in anything else — session policy,
+`standardize`, the model — sit side by side in one bank, so one pass over
+the data fits them all into one output and one state file
+([Parallelism](#parallelism)). A grid of *runs* is for when every point must
+be its own artifact: an output to compare by file, a state file to serve or
+resume on its own. `po.run` calls are independent, and the GIL is released
+while a chunk is in the bank, so threads run them together in one process:
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+from itertools import product
+
+def fit(session_gap, standardize):
+    tag = f"gap{session_gap:g}-std{standardize}"
+    spec = po.spec.ewridge("m", targets=["y"], features=["x0", "x1", "x2"],
+                           clock="t", max_dclock=300.0, group="bond_id",
+                           session="session", session_gap=session_gap,
+                           halflife=[100.0, 1000.0], ridge=[1e-3, 0.1],   # gridded inside the spec
+                           standardize=standardize)
+    po.run(input="ticks.parquet", output=f"{tag}.parquet", specs=[spec],
+           save_state=f"{tag}.state")
+    return tag
+
+points = product([0.0, 60.0, 300.0], [False, True])                  # session_gap × standardize
+with ThreadPoolExecutor() as pool:
+    tags = list(pool.map(lambda p: fit(*p), points))
+
+scores = pl.concat(                                                   # one row per (run, slot)
+    po.eval.metrics(pl.read_parquet(f"{tag}.parquet"), "m").with_columns(run=pl.lit(tag))
+    for tag in tags
+).sort("r2", descending=True)
+```
+
+The outputs and the state files are the same bytes as from the runs one
+after another; the threads change only the wall time. Six single-group runs
+over 1M rows take 4.9 s in sequence and 1.4 s together on 14 cores; with 64
+groups and 2.56M rows each run is already parallel across its groups, and
+the threads add 2.5×. Each run reads the input once, which is the price of
+the separate files.
+
 The CLI is the same pipeline as one binary and one TOML
 ([examples/bank.toml](examples/bank.toml)), for deployments with no Python:
 
@@ -765,6 +806,9 @@ Where the parallelism comes from, then:
   thread, the bank on the calling thread, a writer thread — with one chunk
   in flight per stage; `ONLINE_TIMING=1` prints how long the bank waited on
   each side. NDJSON output is serialized a slice per thread.
+- **Runs.** `po.run` calls are independent and share the one pool, so a grid
+  of them runs in threads ([As a job](#as-a-job-porun-and-the-online-cli)):
+  six single-group runs over 1M rows, 4.9 s in sequence, 1.4 s together.
 - **Python.** The GIL is released while a chunk is in the bank, so a Python
   reader thread can run ahead of `ModelBank.fit_predict`.
 - **The expression form.** Under `.over("group")`, polars runs the groups
