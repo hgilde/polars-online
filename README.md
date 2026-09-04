@@ -852,14 +852,66 @@ import polars_online as po
    .sink_parquet("fit.parquet"))
 ```
 
-On 12M rows over 64 groups, one spec: 14 and 14 is 3.2 s at a peak of
-1.8 GB; 4 and 14 is 3.0 s at 1.4 GB; one shared count of 4 would be 4.5 s
-at 1.3 GB, and polars alone at one thread 7.2 s, because its reading and
-writing are then one thread's work. Six specs split the same way: 13.8 s at
-2.7 GB, 13.1 s at 2.3 GB, 23.6 s at 1.9 GB. The pools never wait on each
-other — a bank task never calls back into polars' pool — so both at the
-whole machine costs nothing either: 28 and 28 on 14 cores ran the grid
-above in 2.34 s against 2.35.
+On 12M rows over 64 groups, one spec: 14 and 14 takes 2.6 s at a peak of
+1.1 GB. 4 and 14 takes the same 2.6 s at 0.8 GB — a third less memory for
+free. One shared count of 4 takes 3.9 s at 0.6 GB, and polars alone at one
+thread 7.4 s, because reading and writing are then one thread's work. Six
+specs split the same way: 10.3 s at 1.5 GB, 11.8 s at 1.2 GB, 16.6 s at
+1.0 GB. (Memory here and below is the peak footprint `/usr/bin/time -l`
+reports. RSS reads about 0.7 GB higher, because the memory-mapped input
+file counts there.) The pools never wait on each other — a bank task never
+calls back into polars' pool — so both at the whole machine costs nothing
+either: 28 and 28 on 14 cores ran the grid above in 2.18 s against 2.21.
+
+### Chunk size
+
+`chunk_rows` is how many rows the bank takes at a time. It is a keyword on
+`lf.online.fit_predict` and `lf.online.predict`, on `po.run`, and on the
+CLI (`--chunk-rows`, or `chunk_rows` in the TOML); the default is 100,000.
+With `ModelBank.fit_predict(df)` the chunk is whatever frame you pass.
+
+It never changes the numbers. One chunk or a thousand gives the same
+output; the one thing that moves is where `coef` lands, because each stream
+reports its coefficients on its last row of every chunk. `coef_every` gives
+it a cadence that does not move.
+
+What it changes is speed and memory, and two things pull against each
+other:
+
+- **A chunk can only run the groups it holds.** If the file is sorted by
+  group, a 100k chunk holds one or two groups, so the bank has one or two
+  tasks per chunk and most cores sit idle. Bigger chunks fix that.
+- **Bigger chunks lose the overlap.** Reading, fitting and writing run side
+  by side, a chunk apart. With huge chunks the stages spend more time
+  waiting on each other, and the chunks in flight (about three) cost
+  memory.
+
+The same 12M rows and 64 groups, one spec, 14 threads:
+
+| `chunk_rows` | groups interleaved | sorted by group | peak memory |
+|---|---|---|---|
+| 20,000 | 2.7 s | 9.2 s | 1.0 GB |
+| 50,000 | 2.5 s | 8.8 s | 0.9 GB |
+| 100,000 (default) | 2.4 s | 8.1 s | 1.0 GB |
+| 200,000 | 2.6 s | 7.1 s | 1.1 GB |
+| 500,000 | 2.8 s | 4.6 s | 1.5 GB |
+| 1,000,000 | 3.2 s | 4.2 s | 1.8 GB |
+| 2,000,000 | 4.5 s | 6.0 s | 2.4 GB |
+
+(The memory column is the interleaved file's; the sorted file is within
+0.1 GB of it, except 2.6 GB at 2M.) So:
+
+- **Groups mixed through the file** — tick data in time order — leave the
+  default. Everything from 50k to 500k is within 0.4 s of it.
+- **Sorted or clustered by group** — raise it until a chunk spans several
+  groups: a few times the rows per group. This file has about 190k rows
+  per group, and 1M, five groups a chunk, is twice as fast as the default.
+  Past that the overlap goes and memory climbs; the interleaved file shows
+  the cost, with 2M nearly twice the default's time.
+- **A smaller box** — lower it, but expect little below the default: most
+  of the first gigabyte is polars' reader prefetch, not the chunks, and
+  `POLARS_MAX_THREADS` or `POLARS_ROW_GROUP_PREFETCH_SIZE` is what shrinks
+  that ([Memory](#performance), below).
 
 ## Performance
 
@@ -889,7 +941,7 @@ Grouped data goes wider, as [Parallelism](#parallelism) shows: 6.0M rows/s
 at k=20 over 64 groups.
 
 **Memory** is the state, the chunks in flight (three, so `chunk_rows` is the
-knob) and whatever polars' reader prefetches — on a 14-thread machine the
+knob — [Chunk size](#chunk-size), above) and whatever polars' reader prefetches — on a 14-thread machine the
 parquet reader front-loads ~0.7 GB of decoded row groups whatever the file's
 length, and `POLARS_ROW_GROUP_PREFETCH_SIZE=1` takes the CLI to 0.15 GB at
 the same speed. The prefetch is sized from the thread count, so

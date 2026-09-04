@@ -21,6 +21,11 @@ carries breaking changes.
   thread, so the expression plugin's small `.over()` groups do not fan out
   for nothing. Every output is bit-identical; the golden, chunk-invariance
   and oracle suites are unchanged.
+- **README: a *Chunk size* guide** under Parallelism — what `chunk_rows`
+  does and does not change, and a sweep from 20k to 2M rows on interleaved
+  and group-sorted data. The section's memory numbers are now peak
+  footprint (`/usr/bin/time -l`), where they had been RSS with the
+  memory-mapped input counted in.
 
 ## [0.1.0] — 2026-09-03
 

@@ -384,7 +384,22 @@ memory test caught the fan-out of 30-row groups (the plugin under
 `PAR_MIN_ROWS` = 4096 below which a chunk's columns and fields are done on
 the calling thread. `docs/PERFORMANCE.md` §12 has the tables. Not merged
 before `v0.1.0` unless the user says so: it moves the tag target and needs
-another rehearsal.
+another rehearsal. **Decided 2026-09-04: `v0.1.0` is tagged on `d6370d9`
+(main, rehearsal and CI green there) and this branch is 0.1.1 material.**
+The same day the README's Parallelism section gained a *Chunk size*
+subsection — the knob is `chunk_rows` on every streaming surface, the
+numbers never depend on it (only where `coef` lands), the default 100k is
+right for interleaved groups (50k–500k within 0.4 s on 12M rows), a
+group-sorted file wants a few × rows-per-group (8.1 → 4.2 s at 1M here),
+and very large chunks cost memory and the read/fit/write overlap (2M: 2.4 GB
+and nearly twice the default's time). Its memory column, and the two-knobs
+paragraph's memory numbers, are **peak footprint** (`/usr/bin/time -l`),
+one run per process; the two-knobs numbers had been peak RSS, which counts
+the memory-mapped input (~0.7 GB on a 712 MB file) and read 1.8 GB where
+the footprint is 1.1. The other numbers in that section are still main's
+and are regenerated when the branch lands (`scripts/benchmark.py`,
+`scripts/scaling_bench.py`, the grid timings). PERFORMANCE §12 has the
+sweep on both builds.
 
 **The bank's pool is its own, named for what it is, 2026-09-04.** The
 bank fanned out on rayon's global pool, so its one knob was

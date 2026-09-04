@@ -1039,6 +1039,31 @@ the group-sorted file 7.47 → 6.86 s of `total` (few groups per chunk; §10's
 specs 2.32 → 2.23 s. Every golden number, the chunk-invariance suite and the
 oracle tests are unchanged; the whole pytest suite passes on the branch.
 
+**`chunk_rows`, swept (2026-09-04).** The README's new *Chunk size*
+subsection comes from this: 12M rows over 64 groups, one k=4 spec with two
+halflives, 14 + 14 threads, one run per process, wall and peak footprint
+(`/usr/bin/time -l`; RSS reads ~0.7 GB higher because the memory-mapped
+input counts there, which is why the two-knobs paragraph's old numbers said
+1.8 GB where these say 1.1). Interleaved groups, this branch: 20k 2.73 s /
+1.00 GB, 50k 2.51 / 0.95, 100k 2.41 / 1.04, 200k 2.59 / 1.13, 500k 2.78 /
+1.45, 1M 3.16 / 1.83, 2M 4.53 / 2.38 — the bank's `total` is 2.2–2.7 s at
+every size, so what the large chunks lose is the read/fit/write overlap.
+Sorted by group: 20k 9.19 / 0.92, 50k 8.77 / 0.93, 100k 8.09 / 0.98, 200k
+7.13 / 1.06, 500k 4.60 / 1.44, 1M 4.18 / 1.85, 2M 6.00 / 2.64 — `process`
+8.5 → 2.2 s from 20k to 1M, because a chunk runs only the groups it holds
+and this file has ~187k rows per group. On `main` the shape is the same
+with a slower assembly: interleaved 50k 3.14 / 0.97, 100k 3.06 / 0.97, 200k
+3.36 / 1.09, 500k 3.87 / 1.32, 1M 4.47 / 1.81, 2M 6.58 / 2.53; sorted 50k
+9.30 / 0.85, 100k 8.71 / 0.96, 200k 7.77 / 1.02, 500k 5.27 / 1.37, 1M 5.04
+/ 1.92, 2M 5.42 / 2.70. Below the default the footprint barely moves —
+polars' reader prefetch is most of the first gigabyte (0.46 GB at
+`POLARS_MAX_THREADS=1`, 1.14 at 14, same 200k chunks). The two-knobs
+matrix re-measured the same way on this branch: one spec 14/14 2.64 s /
+1.14 GB, 4/14 2.65 / 0.76, 4/4 3.87 / 0.61, 1/14 7.35 / 0.46; six specs
+14/14 10.30 / 1.52, 4/14 11.83 / 1.18, 4/4 16.63 / 1.04 — with `assemble`
+parallel, 4/14 no longer beats 14/14 on time; it still takes a third off
+the memory. 28 + 28 on the ticks grid: 2.18 s against 2.21 at 14 + 14.
+
 **The row floor.** The gate caught what the wall clock did not:
 `tests/test_ffi_memory.py::test_plugin_over_groups` failed once at
 6.6 KB/iter against its 4.0 line. Not a leak — 3000 iterations of the same
