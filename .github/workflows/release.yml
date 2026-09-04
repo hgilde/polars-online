@@ -122,8 +122,16 @@ jobs:
       # cross-compiled and ships without a prebuilt CLI; `cargo install
       # online-cli` covers it, and the wheel is the artifact that matters
       # for `pip install`.
+      #
+      # maturin-action exports `RUSTC_WRAPPER=sccache` into the job, but for a
+      # container build it installs sccache inside the container, not on the
+      # runner, so a host `cargo build` after it cannot execute the wrapper
+      # (the first rehearsal failed exactly there). An empty wrapper is treated
+      # as none — measured on cargo 1.98, the stable this workflow installs.
       - name: build the CLI
         if: matrix.cli
+        env:
+          RUSTC_WRAPPER: ""
         run: uv run cargo build --release -p online-cli
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

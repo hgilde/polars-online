@@ -645,7 +645,12 @@ polars-io's cloud feature) because that image's GCC 4.8.5 does not define
 natively on GitHub's `ubuntu-24.04-arm` runner, where maturin-action picks
 the `manylinux2014_aarch64` image with a current GCC; the tag stays
 `manylinux_2_17`, and the runner being native means the aarch64 CLI binary
-now ships too. The rehearsal is not optional.
+now ships too. And a third, on the x64 Linux job: maturin-action exports
+`RUSTC_WRAPPER=sccache` into the job but installs sccache inside the
+manylinux container, so the host `cargo build` of the CLI that follows could
+not execute the wrapper; the CLI step now clears it. Both fixes are in the
+tagged commit, which is the point: a tag runs the workflow file *at the
+tag*. The rehearsal is not optional.
 
 The first push also proved the `paths-ignore` warning above in the cheapest
 possible way: it ended in two documentation commits, the filter matched them,
