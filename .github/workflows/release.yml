@@ -124,10 +124,21 @@ jobs:
           args: --release --out dist -m crates/online-py/Cargo.toml
           sccache: "true"
 
+      # On Linux the wheel was built inside maturin-action's manylinux
+      # container, which runs as root with the workspace bind-mounted, so
+      # `target/` comes back root-owned. The host `cargo build` below then
+      # fails to open `target/release/.cargo-build-lock`, and rust-cache's
+      # post step cannot tar the tree, so every Linux job ran cold (the
+      # fourth rehearsal showed both). Passwordless sudo is a given on the
+      # hosted Ubuntu images.
+      - name: take back ownership of the build tree
+        if: runner.os == 'Linux'
+        run: sudo chown -R "$(id -u):$(id -g)" target
+
       # Only on targets the runner builds natively. The musl wheel is
-      # cross-compiled and ships without a prebuilt CLI; `cargo install
-      # online-cli` covers it, and the wheel is the artifact that matters
-      # for `pip install`.
+      # cross-compiled and ships without a prebuilt CLI; `cargo build
+      # --release -p online-cli` from a checkout covers it, and the wheel is
+      # the artifact that matters for `pip install`.
       #
       # maturin-action exports `RUSTC_WRAPPER=sccache` into the job, but for a
       # container build it installs sccache inside the container, not on the

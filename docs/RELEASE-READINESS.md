@@ -661,9 +661,25 @@ an integration test with the *package* root as its working directory
 missed it; the write side already used `${{ github.workspace }}` and the read
 side now does too. Reproduced locally both ways before the fix. The state
 jobs also lose their `uv sync` (17--23 minutes each): `online-polars` has no
-pyo3 in its tree and the test is pure Rust. All of it is in the tagged
-commit, which is the point: a tag runs the workflow file *at the tag*. The
-rehearsal is not optional.
+pyo3 in its tree and the test is pure Rust. The fourth rehearsal, with all
+of that in, passed the state hand-off on both OSes and found a sixth: on
+Linux the wheel is built inside maturin-action's manylinux container, which
+runs as root over the bind-mounted workspace, so `target/` comes back
+root-owned -- the host `cargo build` for the CLI failed on
+`target/release/.cargo-build-lock` (Permission denied), and rust-cache's
+post step could not tar the tree either, which is why the Linux jobs had
+never once restored a cache. A `sudo chown -R` of `target` between the two
+steps fixes both. Rehearsal one never reached this: the sccache wrapper
+failed first and hid it. All of it is in the tagged commit, which is the
+point: a tag runs the workflow file *at the tag*. The rehearsal is not
+optional.
+
+One thing the rehearsals do not measure: the Linux CLI binaries are built on
+the runner's own glibc (Ubuntu 24.04, 2.39), not in the manylinux2014
+container the wheels come from, so their glibc floor is whatever the
+toolchain emits and is not checked. The wheels are `manylinux_2_17`; a
+deployment on an older glibc builds the CLI from a checkout, or the release
+job grows a container step for it.
 
 The first push also proved the `paths-ignore` warning above in the cheapest
 possible way: it ended in two documentation commits, the filter matched them,
