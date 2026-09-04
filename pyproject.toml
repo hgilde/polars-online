@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "polars-online"
-version = "0.1.0"
+version = "0.1.1"
 description = "Streaming / online regression models for Polars"
 readme = "README.md"
 license = "Apache-2.0"

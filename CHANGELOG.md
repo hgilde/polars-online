@@ -7,6 +7,13 @@ carries breaking changes.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.1] — 2026-09-04
+
+A faster chunk plan and a guide to the chunk size. Every number a model
+produces is unchanged.
+
 ### Changed
 
 - **The chunk plan: every phase parallel, and no stride** (`docs/PERFORMANCE.md`
@@ -25,7 +32,10 @@ carries breaking changes.
   does and does not change, and a sweep from 20k to 2M rows on interleaved
   and group-sorted data. The section's memory numbers are now peak
   footprint (`/usr/bin/time -l`), where they had been RSS with the
-  memory-mapped input counted in.
+  memory-mapped input counted in. The README's measured numbers are
+  regenerated on this build.
+- **`benchmark.yml` keeps both tables in its artifact** (throughput and
+  thread scaling), so two runs can be compared without the browser.
 
 ## [0.1.0] — 2026-09-03
 
