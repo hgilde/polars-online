@@ -7,7 +7,74 @@ carries breaking changes.
 
 ## [Unreleased]
 
-### Added
+Nothing yet.
+
+## [0.1.0] — 2026-09-03
+
+First release.
+
+### Models
+
+Ten online regression models plus streaming moments, all on exponentially
+weighted **mean-form** accumulators with centered (Welford) co-moments:
+`ewridge`, `rls`, `lasso`, `kalman`, `huber`, `quantile`, `sgd`, `pa`, `ftrl`,
+`holt`, and `ew_cov`.
+
+### Interfaces
+
+Three, with identical numerics: a Polars **expression plugin**
+(`pl.col("y").online.ewridge(...)`; in-memory only, and it warns so since —
+see *Changed* below), a chunk-fed **`ModelBank`** with O(state)
+memory that reports what it holds (`groups()`, `rows_seen()`) and can forget
+stale groups (`drop_groups()`), and a standalone **CLI** (parquet in, parquet
+out, TOML config). The Python surface is typed: PEP 692 keywords on the
+builders and the namespace, and `po.online(expr)` for type checkers, which
+cannot see a registered namespace.
+
+### Guarantees
+
+- Predictions are out-of-sample by construction.
+- Chunk invariance: 1 chunk or 1000 produces identical output, as does saving
+  state mid-stream and resuming. (`coef` is a reporting cadence and excepted.)
+- `n_eff` means the same thing in every model, which is what makes
+  `min_periods` portable across a bank.
+
+### Diagnostics
+
+`emit_sigma`, `emit_resid_z`, `emit_drift` (Page-Hinkley), `emit_metrics`
+(ic / r² / hit rate), `emit_autocorr`, `resid_quantiles` (P²),
+`emit_selected` and `emit_averaged` for online model selection and averaging.
+
+### Verified against [river](https://riverml.xyz)
+
+FTRL's z/n recursion to 1e-12; Kalman ≡ `BayesianLinearRegression` to 3.6e-15;
+`EwCov` ≡ river's Welford statistics exactly. Two documented places where the
+libraries legitimately differ are pinned by tests rather than left as
+surprises.
+
+### Known limitations
+
+- `polars>=1.34.0,<2`. The floor is measured (`LazyFrame.collect_batches`,
+  which the streaming paths read with, arrived in py-polars 1.34.0; see
+  *Changed* below); the ceiling is a bet that 1.x keeps the interface, hedged
+  by a version-negotiated plugin ABI that refuses to load rather than
+  misbehave and by a weekly canary against the latest polars. The Rust
+  `polars` inside the wheel is pinned exactly, but it never meets the user's
+  copy — data crosses on the Arrow C Data Interface. The README's
+  *Versioning and the Polars pin* has the matrix.
+- Requires Python 3.12+ (`abi3-py312`).
+- Wheels for macOS (arm64, x86_64), Windows x64 and Linux (x64 glibc and
+  musl, aarch64 glibc); anything else builds from the sdist with a Rust
+  toolchain.
+
+### Before the release
+
+*The entries below were written as the code evolved, before anything was
+published; they describe changes relative to earlier development snapshots,
+not to a released version, and stay because they record why things are the
+way they are.*
+
+#### Added
 
 - **`online.unnest(specs)`: a bank's output as flat columns, the
   coefficients named.** `lf.online.unnest(specs)`, `df.online.unnest(specs)`
@@ -137,7 +204,7 @@ carries breaking changes.
   (gzipped 18.8 → 19.8 MB; wheel 19.8 → 20.8 MB; CLI 51 → 53 MB); no new
   dependency outside polars. Measured in `docs/PERFORMANCE.md` §10.
 
-### Changed
+#### Changed
 
 - **Every public entry point documents its failure modes, and they follow
   one contract** (`polars_online.__doc__` states it): a file problem is
@@ -229,7 +296,7 @@ carries breaking changes.
   order is a rounding-level change: the golden signatures moved by at most
   1.2e-15, inside their 1e-12 tolerance.
 
-### Documented
+#### Documented
 
 - **The docs say what the bank is for a table in any row order.** It was
   introduced as "built for ordered event data"; row order reaches a bank's
@@ -288,7 +355,7 @@ carries breaking changes.
   `docs/`. Every python block still runs under the README harness in
   `tests/test_production_hardening.py`.
 
-### Fixed
+#### Fixed
 
 - **Two writers of one state file in one process no longer share a
   temporary.** `atomic.rs` named its temporary sibling by pid alone, so two
@@ -336,53 +403,3 @@ carries breaking changes.
   of a headless parquet under its name. Saving now costs a filesystem sync
   (~4 ms on macOS, where `sync_all` is `F_FULLFSYNC`); save less often if that
   matters more than surviving a crash.
-
-## [0.1.0] — unreleased
-
-First release.
-
-### Models
-
-Ten online regression models plus streaming moments, all on exponentially
-weighted **mean-form** accumulators with centered (Welford) co-moments:
-`ewridge`, `rls`, `lasso`, `kalman`, `huber`, `quantile`, `sgd`, `pa`, `ftrl`,
-`holt`, and `ew_cov`.
-
-### Interfaces
-
-Three, with identical numerics: a Polars **expression plugin**
-(`pl.col("y").online.ewridge(...)`; in-memory only, and it warns so since —
-see *Unreleased / Changed*), a chunk-fed **`ModelBank`** with O(state)
-memory that reports what it holds (`groups()`, `rows_seen()`) and can forget
-stale groups (`drop_groups()`), and a standalone **CLI** (parquet in, parquet
-out, TOML config). The Python surface is typed: PEP 692 keywords on the
-builders and the namespace, and `po.online(expr)` for type checkers, which
-cannot see a registered namespace.
-
-### Guarantees
-
-- Predictions are out-of-sample by construction.
-- Chunk invariance: 1 chunk or 1000 produces identical output, as does saving
-  state mid-stream and resuming. (`coef` is a reporting cadence and excepted.)
-- `n_eff` means the same thing in every model, which is what makes
-  `min_periods` portable across a bank.
-
-### Diagnostics
-
-`emit_sigma`, `emit_resid_z`, `emit_drift` (Page-Hinkley), `emit_metrics`
-(ic / r² / hit rate), `emit_autocorr`, `resid_quantiles` (P²),
-`emit_selected` and `emit_averaged` for online model selection and averaging.
-
-### Verified against [river](https://riverml.xyz)
-
-FTRL's z/n recursion to 1e-12; Kalman ≡ `BayesianLinearRegression` to 3.6e-15;
-`EwCov` ≡ river's Welford statistics exactly. Two documented places where the
-libraries legitimately differ are pinned by tests rather than left as
-surprises.
-
-### Known limitations
-
-- `polars` is pinned exactly (see the README's *Version pins*). The pyo3-polars
-  plugin ABI is negotiated and a mismatch produces a clear error, but the pin
-  means this package cannot currently coexist with a different polars.
-- Requires Python 3.12+ (`abi3-py312`).
