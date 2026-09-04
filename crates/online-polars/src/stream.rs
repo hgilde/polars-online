@@ -833,7 +833,8 @@ impl Stream {
         cfg: &online_core::ClockCfg,
         clock: Option<&[f64]>,
         session: Option<&[u64]>,
-        idx: &[usize],
+        rows: &[usize],
+        base: usize,
     ) -> Result<(), (f64, usize)> {
         // A row-count clock cannot go backwards, and no other policy refuses a
         // row, so this costs nothing unless it can fail.
@@ -841,12 +842,13 @@ impl Stream {
             return Ok(());
         };
         let mut state = self.clock.clone();
-        for &i in idx {
+        for (ri, &row) in rows.iter().enumerate() {
+            let at = base + ri;
             // `accept` only routes the delta into `pending`; whether the row
             // is refused depends on the clock and session alone.
-            let adv = state.advance(cfg, Some(clock[i]), session.map(|s| s[i]), true);
+            let adv = state.advance(cfg, Some(clock[at]), session.map(|s| s[at]), true);
             if let Some(raw) = adv.backwards {
-                return Err((raw, i));
+                return Err((raw, row));
             }
         }
         Ok(())
@@ -872,6 +874,13 @@ impl Stream {
     /// leaves the stream untouched (pass 1 runs on a copy of the clock). The
     /// bank runs [`Stream::check_clock`] over every stream before it runs
     /// this on any, so the refusal is per chunk, not per stream.
+    ///
+    /// `rows` are the absolute rows of the chunk this stream owns, in order;
+    /// they name rows in the output and in errors. The input columns are read
+    /// at `base + ri` for the `ri`-th of them: the bank lays every spec's
+    /// columns out group after group (docs/PERFORMANCE.md P9), so a stream's
+    /// rows are one contiguous run whatever order the frame interleaves its
+    /// groups in.
     #[allow(clippy::too_many_arguments)]
     pub fn process_chunk(
         &mut self,
@@ -882,20 +891,21 @@ impl Stream {
         clock: Option<&[f64]>,
         session: Option<&[u64]>,
         weight: Option<&[f64]>,
-        idx: &[usize],
+        rows: &[usize],
+        base: usize,
         out: &mut ChunkOut,
     ) -> Result<(), (f64, usize)> {
-        let n_rows = idx.len();
-        out.rows.extend_from_slice(idx);
+        let n_rows = rows.len();
+        out.rows.extend_from_slice(rows);
 
         // ---- pass 1: the clock schedule, models untouched ----
         // On a copy of the clock, committed below, so a refused row leaves
         // the stream exactly as it was.
         let mut clock_state = self.clock.clone();
         let mut rows_seen = self.rows_seen;
-        let last = idx.last().copied();
         let mut plans: Vec<RowPlan> = Vec::with_capacity(n_rows);
-        for (ri, &i) in idx.iter().enumerate() {
+        for (ri, &row) in rows.iter().enumerate() {
+            let i = base + ri;
             // Null arrives as NaN from extraction, so one `usable` covers
             // null, NaN, infinity and the bound.
             let w = weight.map(|w| w[i]);
@@ -904,14 +914,14 @@ impl Stream {
             // `on_clock_reset = "error"`: hand the offending delta back so the
             // caller can name the row and column.
             if let Some(raw) = adv.backwards {
-                return Err((raw, i));
+                return Err((raw, row));
             }
             if accept {
                 rows_seen += 1;
                 out.processed[ri] = true;
             }
             let want_coef = accept
-                && (Some(i) == last
+                && (ri + 1 == n_rows
                     || (spec.coef_every > 0 && rows_seen % u64::from(spec.coef_every) == 0));
             plans.push(RowPlan {
                 ri,
@@ -1025,11 +1035,12 @@ impl Stream {
         targets: &[Vec<f64>],
         clock: Option<&[f64]>,
         session: Option<&[u64]>,
-        idx: &[usize],
+        rows: &[usize],
+        base: usize,
         out: &mut ChunkOut,
     ) -> Result<(), (f64, usize)> {
-        let n_rows = idx.len();
-        out.rows.extend_from_slice(idx);
+        let n_rows = rows.len();
+        out.rows.extend_from_slice(rows);
         // Three classes of row, by what the clock says the row would do to
         // the state it is scored against: nothing, reset it, or blend it.
         let mut classes: [Vec<RowPlan>; 3] = Default::default();
@@ -1037,7 +1048,8 @@ impl Stream {
         // (class, position in it) of the last accepted row, which carries
         // the coefficients for the chunk.
         let mut last_accepted: Option<(usize, usize)> = None;
-        for (ri, &i) in idx.iter().enumerate() {
+        for (ri, &row) in rows.iter().enumerate() {
+            let i = base + ri;
             let accept = features.iter().all(|f| usable(f[i]));
             // Every row is the first after the last learned one.
             let adv =
@@ -1045,7 +1057,7 @@ impl Stream {
                     .clone()
                     .advance(cfg, clock.map(|c| c[i]), session.map(|s| s[i]), true);
             if let Some(raw) = adv.backwards {
-                return Err((raw, i));
+                return Err((raw, row));
             }
             if accept {
                 out.processed[ri] = true;
@@ -1297,9 +1309,10 @@ fn build_instances<'a>(
 /// What pass 1 decided about one row, so pass 2 can replay it per instance
 /// without touching the clock again.
 struct RowPlan {
-    /// Position within the chunk (index into the output buffers).
+    /// Position within the stream's run (index into the output buffers).
     ri: usize,
-    /// Absolute row in the DataFrame (index into the input columns).
+    /// Position in the input columns: the run's base plus `ri`, since the
+    /// columns are laid out group after group.
     i: usize,
     d_clock: f64,
     reset: bool,

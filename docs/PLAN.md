@@ -361,6 +361,31 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
 
 ## 11a. Decisions made while implementing
 
+**The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
+Asked whether the per-chunk parallel plan could be faster without
+compromise. Sectioned first: at 14 threads on a 64-group chunk the
+per-group tasks were 15 ms and the phases around them 21, each with a
+single-threaded stretch. Three changes, every golden number unchanged:
+columns gathered once, group after group, so a stream reads a contiguous
+run (P9); one job per output field, `Vec<f64>` + bitmap into
+`from_vec_validity` (P10, which reverses the 2026-09-02 "typed builders
+not worth it" — right for the chunk it measured, wrong at 14 threads and
+for a grid); columns read in parallel, multi-chunk columns copied per arrow
+chunk, integer keys bucketed by value with `integer_groups` pinned to the
+`String` path by a test (P11). Wall on the 64-group chunk at 14 threads
+37 → 17 ms; the 12M-row README workload 3.25 → 2.48 s. Two findings worth
+more than the speed: the matrix's 4× interleaved-vs-blocked gap was
+`solve_every` cadence — an index clock over interleaved groups hits
+`max_dclock` every row and re-solves ten times as often — so the layout's
+true cost was 14%/38%, and the "artifact" is the documented semantics of a
+clock-unit solve schedule, which any such benchmark pays; and the gate's
+memory test caught the fan-out of 30-row groups (the plugin under
+`.over()`) doubling RSS *wobble*, not growth, for no speed, hence
+`PAR_MIN_ROWS` = 4096 below which a chunk's columns and fields are done on
+the calling thread. `docs/PERFORMANCE.md` §12 has the tables. Not merged
+before `v0.1.0` unless the user says so: it moves the tag target and needs
+another rehearsal.
+
 **The bank's pool is its own, named for what it is, 2026-09-04.** The
 bank fanned out on rayon's global pool, so its one knob was
 `RAYON_NUM_THREADS` — a name that, next to `POLARS_MAX_THREADS`, said
@@ -804,13 +829,16 @@ returns / volume / trade-count z-scores, targets = strictly future returns.
 
 ## 11b. Performance plan
 
-**Done — P1 through P8.** See [`docs/PERFORMANCE.md`](PERFORMANCE.md): the
+**Done — P1 through P11.** See [`docs/PERFORMANCE.md`](PERFORMANCE.md): the
 integration layer cost 3–5× the model arithmetic and capped thread scaling at
 3.2× on ten cores. Removing per-row allocation, flattening the rayon fan-out to
 (spec × group × instance), extracting columns as `f64`-with-NaN instead of
 `Option<f64>`, and pipelining the runner took it to **2.0–2.8× throughput and
 6.2× scaling**, with every golden number unchanged. Three of the eight items
 were closed by measuring and *rejecting* the change; §5 there records why.
+P9–P11 (2026-09-04, §12 there) then made the phases around the per-group
+tasks parallel too — a 64-group chunk at 14 threads 37 → 17 ms of wall —
+and reversed one of those three rejections on new measurement.
 
 ## 11c. Simplification review
 

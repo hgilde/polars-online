@@ -1,9 +1,11 @@
 # Performance: measurements and the parallelism plan
 
-Status as of 2026-09-02: **P1–P8 all done**, numbers refreshed in §8. Headline, against the baseline in
+Status as of 2026-09-04: **P1–P11 all done**, numbers refreshed in §8 and
+the chunk plan revisited in §12. Headline, against the baseline in
 §1: **2.8× single stream at k=5, 2.0× at k=20, 2.0× on grouped data, 2.1× on a
 single-stream grid, 3.9× on a multi-spec bank, 1.23× on the CLI end to end**,
-and thread scaling from 3.2× to 6.2× on ten performance cores. Every golden
+and thread scaling from 3.2× to 6.2× on ten performance cores; §12 then
+took a grouped chunk at 14 threads from 37 to 17 ms of wall. Every golden
 number is unchanged throughout — that was the contract.
 
 Two plan items were closed by *rejecting* them on measurement rather than
@@ -240,6 +242,37 @@ that moves a golden number is wrong by definition.
   extend `benchmark.yml`'s job summary with the scaling row so the CI history
   carries it. Golden tests must be untouched throughout.</details>
 
+- [x] **P9 — Group-contiguous layout (2026-09-04).** *Done.* Every column
+  of a spec is gathered once, group after group in first-seen order
+  (`layout_of`), so a stream reads its rows as one contiguous run at
+  `base + ri` instead of gathering every column at a stride, twice per row
+  (`check_clock`, then `process_chunk`). Skipped when the chunk is already
+  blocked (no group, one group, or groups arriving as blocks). Measured with
+  a *matched* clock (§12): the stride cost 14% of `process` on one thread
+  and 38% on fourteen at k=20 over 64 interleaved groups. Output rows keep
+  their absolute index for `out.rows` and error messages.
+- [x] **P10 — Assembly per field (2026-09-04).** *Done, and it reverses §5's
+  "typed builders are not worth it".* One job per output field, each a
+  scatter over every stream's run into a `Vec<f64>` plus a `MutableBitmap`,
+  finished with `Float64Chunked::from_vec_validity`; a spec with a grid of
+  instances used to build its fields one after another through
+  `Vec<Option<f64>>`. `assemble` 8–9 → 1.5–2 ms on the 64-group chunk and
+  **39.6 → 3.5 ms** on a five-halflife grid, where it had been a tenth of
+  the wall. Below `PAR_MIN_ROWS` (4096) the fields build on the calling
+  thread (§12).
+- [x] **P11 — Extraction: per column, per arrow chunk, and integer keys as
+  themselves (2026-09-04).** *Done.* A spec's columns are read in parallel
+  from `PAR_MIN_ROWS` up (one spec meant one thread copying every column);
+  a column with more than one arrow chunk — what `collect_batches` hands over
+  when a batch spans two parquet row groups — is copied chunk by chunk with
+  `downcast_iter` rather than falling to the per-element path when
+  `cont_slice` fails; and an integer group key is bucketed by its value
+  (`integer_groups`, `PlHashMap` — foldhash rather than SipHash) instead of
+  being cast to `String` and hashed, since its text *is* its decimal
+  (`integer_group_keys_match_the_string_cast` pins the two paths to the same
+  keys and output). `group` 8.6 → 1.6 ms on the 64-group chunk; on the 12M-row
+  README workload `group` 0.20 → 0.09 s and `extract` 0.26 → 0.19 s.
+
 **Rejected, with reasons:** see §5, which records what was rejected up
 front and what was rejected after measuring.
 
@@ -322,7 +355,11 @@ useful kind.
   one.
 - **Typed-builder assembly (part of P4).** Measured first: P1's flat buffers had
   already taken `assemble` to ~5.5 ms of a 39 ms chunk, and the rest is `Series`
-  construction polars needs anyway. Not worth the code.
+  construction polars needs anyway. Not worth the code. *Reversed 2026-09-04
+  (P10): at 14 threads the 5.5 ms had become a fifth of the wall, and a grid
+  of instances assembled on one thread for 40 ms; per-field scatters into
+  `Vec<f64>` + bitmap took those to 1.5 and 3.5 ms. The 2026-09-02 verdict
+  was right about the single-thread, single-instance chunk it measured.*
 - **`lto = "fat"` and `-C target-cpu=native` (P7).** Measured: +3.2%, +1.3%,
   −1.2%, −1.0%, −2.1%, +0.4% across the six `core_bench` cases for fat LTO — a
   wash against a slower build; and −3% at k=20 for `target-cpu=native`, which
@@ -476,7 +513,9 @@ writer's own time — and it says where each case sits:
   the CSV *reader* (`read_wait=0.02s`) is no longer the problem. ndjson: the
   bank reads 1.04 s against 0.64 s alone, because the parallel NDJSON
   serializer competes for the same rayon pool as the bank's per-group tasks
-  — contention, not a defect, and the total still beats serial.
+  — contention, not a defect, and the total still beats serial. (Since
+  2026-09-04 the serializer runs on polars' pool and the bank on its own,
+  docs/PLAN.md §11a; they now compete for cores rather than for one pool.)
 - **Group-sorted rows are bank-bound in every format**: `bank=2.07s` of
   2.16 s, `read_wait=0.05s`. A 100k chunk of group-sorted rows holds one or
   two groups, so the bank's per-group parallelism has nothing to spread —
@@ -924,3 +963,108 @@ though the kernel drops them under pressure at no cost. The CLI's *RSS*
 grew 1.37 → 2.26 GB from 3M to 6M rows while its footprint stayed at
 0.75 GB; the first cut of this measurement used `ru_maxrss` and said every
 surface was O(data). It is not.
+
+## 12. The chunk plan, revisited (2026-09-04)
+
+The question was whether the plan for one chunk — what runs in parallel,
+in which order, over which memory — could be faster without giving anything
+up. The answer is the three items P9–P11 in §3; this section is the
+measurement behind them, including the one that overturned the hypothesis
+the work started from.
+
+**The plan as it stood.** Under the bank's pool, per chunk: `group`
+(indices per key, specs in parallel) → `extract` (columns, one thread per
+spec) → `check_clock` → `process` (one task per spec × group, instances
+nested) → `assemble` (specs in parallel, fields serial within one). Every
+phase is a barrier, and chunks are strictly sequential: that is what chunk
+invariance means, and it is not on the table.
+
+**What the sections said.** The per-group tasks had been made to scale
+(P1–P3) and nothing around them had. On 400k rows × k=20 × 64 interleaved
+groups at 14 threads, `process` was 15 ms and `group` + `extract` +
+`assemble` were 21: the plumbing had become the majority of the wall, and
+all three of those phases had a single-threaded stretch inside them.
+
+**The benchmark artifact.** The obvious suspect was memory layout: the same
+64 groups arriving as blocks ran the chunk in 27 ms against 63 interleaved,
+which read as "a cache line per gathered value, twice per row". Building the
+group-contiguous layout (P9) took the interleaved `process` on one thread
+from 400–420 ms (the run-to-run spread on `main`) to 399: nothing. The gap
+was somewhere else: the matrix used
+`clock="t"` with `t` the row index and `max_dclock=10`, and
+`solve_every` defaults to `halflife / 50` clock units (`spec.rs`,
+`solve_every_default`) — 20 units at `halflife=1000`. Blocked, a group's
+consecutive rows are 1 unit apart: a solve every 20 rows. Interleaved, they
+are 64 apart, capped to 10: a solve every 2 rows. Ten times the solves is
+the whole 300 ms. That is the documented semantics of a clock-unit solve
+schedule, not a layout cost, and any benchmark with an index clock over
+interleaved groups pays it. Re-measured with a *matched* clock — each
+group's rows 1 unit apart in both orders — the layout penalty on `main` was
+14% at one thread and 38% at fourteen. Real, and worth P9, but a third of
+the story rather than all of it.
+
+**Where it ended up.** Milliseconds per 400k-row chunk, k=20, 64 groups on
+an `Int64` key, matched clock, best of three; `total` is the sum of the
+sections and `wall` the Python-side call.
+
+| layout, threads | | extract | group | process | assemble | total | wall |
+|---|---|---|---|---|---|---|---|
+| interleaved, 1 | main | 1.6 | 8.6 | 119.1 | 8.9 | 138.1 | 139.9 |
+| | now | 7.3 | 1.6 | 102.3 | 3.7 | 114.9 | 116.4 |
+| interleaved, 14 | main | 2.2 | 9.3 | 15.3 | 9.0 | 35.9 | 37.3 |
+| | now | 1.6 | 1.6 | 11.1 | 1.8 | 16.0 | **17.3** |
+| blocked, 1 | main | 1.4 | 6.2 | 105.0 | 8.0 | 120.6 | 122.3 |
+| | now | 2.0 | 1.3 | 103.0 | 4.0 | 110.3 | 112.0 |
+| blocked, 14 | main | 1.8 | 6.2 | 11.1 | 7.8 | 26.9 | 28.6 |
+| | now | 0.8 | 1.3 | 11.5 | 2.1 | 15.8 | **17.1** |
+
+2.2× on the interleaved chunk and 1.7× on the blocked one at 14 threads;
+17% and 8% at one thread. The gather moved the stride from `process` into
+`extract` (1.6 → 7.3 ms at one thread), where it is paid once per column
+instead of twice per row and, from 4096 rows up, in parallel. Interleaved and
+blocked now finish within noise of each other, which is the point of P9.
+
+The rest of the matrix, `total` at 14 threads (400k rows, k=20, the index
+clock of the artifact above): one group 119.8 → 109.9; 64 interleaved
+62.7 → 44.8; 64 blocked 26.8 → 15.5; one group × five halflives
+`assemble` 39.6 → 3.5 with `process` unchanged at ~415 (a `halflife=100`
+instance solves every 2 clock units, and that is the bound); 64 Zipf-sized
+groups `process` 117 → 110.5, bounded by the biggest group.
+
+The README's workloads: 12M rows over 64 groups with a k=4 grid, 14 threads,
+`total` 3.03 → 2.27 s and wall **3.25 → 2.48 s** (`assemble` 0.84 → 0.10,
+`group` 0.20 → 0.09, `extract` 0.26 → 0.19); one thread 14.06 → 13.48 s;
+the group-sorted file 7.47 → 6.86 s of `total` (few groups per chunk; §10's
+`chunk_rows` advice stands). The ticks file: one spec 0.74 → 0.64 s, six
+specs 2.32 → 2.23 s. Every golden number, the chunk-invariance suite and the
+oracle tests are unchanged; the whole pytest suite passes on the branch.
+
+**The row floor.** The gate caught what the wall clock did not:
+`tests/test_ffi_memory.py::test_plugin_over_groups` failed once at
+6.6 KB/iter against its 4.0 line. Not a leak — 3000 iterations of the same
+body drift by −0.07 and −0.37 KB/iter overall — but the per-block wobble
+around that flat mean had doubled, ±4.6 KB/iter against ±2 on `main`, and
+the test's 240-iteration window can now catch the wobble. The cause is
+fanning a 30-row group (what the expression plugin hands the bank under
+`.over()`) out across the pool: more threads' allocator caches take part in
+every tiny call, for no speed at all — 0.85 ms per call in both builds at
+1500 rows over 50 groups, 15.0 vs 15.2 ms at 200k rows over 1000. So the
+column reads and the field builds fan out only from `PAR_MIN_ROWS` = 4096
+rows up, where one task is a 32 KB copy, about a rayon dispatch. With the
+floor the wobble is back at ±2.4, the tiny-group timings are unchanged, and
+the 400k-row rows above are the same to the tenth of a millisecond. A
+threshold on fan-out is the usual answer to this (polars' own splits have
+one); what is worth writing down is that the *memory* test found it, and
+what it found was noise amplitude, not growth — read the marks, not the
+verdict, before touching that test's line.
+
+**What is left, and why it stays.** The recursion in a stream is the
+per-row cost and cannot be split (§5, "parallelizing the recursion
+itself"); the biggest group bounds every Zipf-shaped chunk; a short halflife
+bounds a grid through its solve cadence; and a group-sorted file gives a
+chunk few groups to spread, which is a `chunk_rows` decision, not a plan
+one. The phases are now all parallel above the floor, the stride is gone,
+and the barriers between phases are the ones chunk invariance requires. The
+next factor would have to come from inside `process`, and §5 says why it
+will not.
+

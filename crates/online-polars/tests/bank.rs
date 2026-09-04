@@ -531,3 +531,84 @@ fn coef_fields_name_every_slot_of_every_list() {
     .unwrap();
     assert!(online_polars::coef_fields(&cov).is_empty());
 }
+
+#[test]
+fn integer_group_keys_match_the_string_cast() {
+    // `group_indices` buckets an integer key on its value rather than on the
+    // text polars' String cast would give it (docs/PERFORMANCE.md P8). The
+    // two must be the same partition with the same key text, whatever the
+    // width and sign, at the extremes, and with nulls -- and the output must
+    // be bit-identical to feeding the cast column.
+    let n = 400;
+    let base = make_df(n);
+    // Nine distinct values, cycling, with a null every 13th row; the
+    // extremes of every width so that the text of each is exercised.
+    let cycle = |i: usize, lo: i128, hi: i128| -> Option<i128> {
+        if i % 13 == 3 {
+            None
+        } else {
+            Some(match i % 9 {
+                0 => lo,
+                1 => hi,
+                2 => 0,
+                3 => 1,
+                4 => (-1i128).max(lo),
+                5 => hi - 1,
+                6 => lo + 1,
+                7 => 7,
+                _ => 42.min(hi),
+            })
+        }
+    };
+    let dtypes = [
+        (DataType::Int8, i8::MIN as i128, i8::MAX as i128),
+        (DataType::Int16, i16::MIN as i128, i16::MAX as i128),
+        (DataType::Int32, i32::MIN as i128, i32::MAX as i128),
+        (DataType::Int64, i64::MIN as i128, i64::MAX as i128),
+        (DataType::UInt8, 0, u8::MAX as i128),
+        (DataType::UInt16, 0, u16::MAX as i128),
+        (DataType::UInt32, 0, u32::MAX as i128),
+        (DataType::UInt64, 0, u64::MAX as i128),
+    ];
+    for (dtype, lo, hi) in dtypes {
+        let vals: Vec<Option<i128>> = (0..n).map(|i| cycle(i, lo, hi)).collect();
+        // Build the typed column from its text, so the expected key text is
+        // the one and only source of truth.
+        let text: Vec<Option<String>> = vals.iter().map(|v| v.map(|v| v.to_string())).collect();
+        let as_text = Series::new("g".into(), text.clone());
+        let typed = as_text.cast(&dtype).unwrap();
+        assert_eq!(
+            typed.null_count(),
+            as_text.null_count(),
+            "{dtype}: lossless cast"
+        );
+        let mut df = base.clone();
+        df.with_column(typed.clone().into_column()).unwrap();
+        let mut df_text = base.clone();
+        df_text.with_column(as_text.into_column()).unwrap();
+
+        let mut bank = Bank::new(vec![spec_json("m", true)]).unwrap();
+        let out = DataFrame::new(n, bank.fit_predict(&df).unwrap()).unwrap();
+        let mut bank_text = Bank::new(vec![spec_json("m", true)]).unwrap();
+        let out_text = DataFrame::new(n, bank_text.fit_predict(&df_text).unwrap()).unwrap();
+        assert!(
+            out.equals_missing(&out_text),
+            "{dtype}: same output as the String path"
+        );
+
+        let mut want: Vec<GroupKey> = text
+            .iter()
+            .map(|v| GroupKey(v.clone()))
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        want.sort();
+        let have: Vec<GroupKey> = bank.groups()[0].iter().map(|(k, _, _)| k.clone()).collect();
+        assert_eq!(have, want, "{dtype}: key text");
+        assert_eq!(
+            bank.groups(),
+            bank_text.groups(),
+            "{dtype}: same groups, counts and clocks"
+        );
+    }
+}

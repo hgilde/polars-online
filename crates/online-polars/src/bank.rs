@@ -7,6 +7,8 @@ use std::path::Path;
 
 use online_core::ClockCfg;
 use polars::prelude::*;
+use polars_arrow::bitmap::MutableBitmap;
+use polars_utils::aliases::PlHashMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -118,13 +120,23 @@ fn column<'a>(df: &'a DataFrame, spec: &Spec, role: &str, name: &str) -> PolarsR
     })
 }
 
-/// Values as `f64`, null as NaN. Zero-copy-ish for the common case: a
-/// null-free contiguous Float64 column is a `memcpy`.
+/// Values as `f64`, null as NaN, in the order `layout` gives (see
+/// [`Layout`]). Zero-copy-ish for the common case: a null-free Float64
+/// column is a `memcpy` per arrow chunk when the layout is the identity and
+/// one gather otherwise. (A batch from `collect_batches` that spans two
+/// parquet row groups arrives as two chunks, so `cont_slice` alone is not
+/// the common case; docs/PERFORMANCE.md P11.)
 ///
 /// Only numeric, Boolean and Null columns are accepted. Anything else would be
 /// cast non-strictly, and a String column of numbers-as-text (or of anything)
 /// becomes all-null: every prediction null and no error to say why.
-fn f64_column(df: &DataFrame, spec: &Spec, role: &str, name: &str) -> PolarsResult<Vec<f64>> {
+fn f64_column(
+    df: &DataFrame,
+    spec: &Spec,
+    role: &str,
+    name: &str,
+    layout: Layout<'_>,
+) -> PolarsResult<Vec<f64>> {
     let col = column(df, spec, role, name)?;
     let dtype = col.dtype();
     if !(dtype.is_numeric() || matches!(dtype, DataType::Boolean | DataType::Null)) {
@@ -136,12 +148,68 @@ fn f64_column(df: &DataFrame, spec: &Spec, role: &str, name: &str) -> PolarsResu
     }
     let s = col.as_materialized_series().cast(&DataType::Float64)?;
     let ca = s.f64()?;
-    if ca.null_count() == 0 {
-        if let Ok(slice) = ca.cont_slice() {
-            return Ok(slice.to_vec());
+    if let (Some(perm), Ok(slice)) = (layout, ca.cont_slice()) {
+        return Ok(perm.iter().map(|&i| slice[i]).collect());
+    }
+    let mut v: Vec<f64> = Vec::with_capacity(ca.len());
+    for arr in ca.downcast_iter() {
+        match arr.validity() {
+            Some(valid) if valid.unset_bits() > 0 => {
+                v.extend(arr.iter().map(|x| x.copied().unwrap_or(f64::NAN)));
+            }
+            _ => v.extend_from_slice(arr.values().as_slice()),
         }
     }
-    Ok(ca.iter().map(|v| v.unwrap_or(f64::NAN)).collect())
+    Ok(gathered(v, layout))
+}
+
+/// The order a spec's columns are extracted in: `None` is the frame's own
+/// order; `Some(perm)` puts row `perm[j]` at position `j`, which the bank uses
+/// to lay a chunk out group after group (docs/PERFORMANCE.md P9). Only ever
+/// a permutation of `0..height`, so every row appears exactly once.
+type Layout<'a> = Option<&'a [usize]>;
+
+/// `v` in layout order.
+fn gathered<T: Copy>(v: Vec<T>, layout: Layout<'_>) -> Vec<T> {
+    match layout {
+        None => v,
+        Some(perm) => perm.iter().map(|&i| v[i]).collect(),
+    }
+}
+
+/// Where a position in layout order came from, for naming a row in an error.
+fn source_row(layout: Layout<'_>, j: usize) -> usize {
+    layout.map_or(j, |perm| perm[j])
+}
+
+/// The layout that puts each spec's groups one after another, in first-seen
+/// order, or `None` when the chunk is already in that order (ungrouped, one
+/// group, or groups that arrive as blocks). A stream then reads its rows as
+/// one contiguous run instead of gathering every column at a stride, twice
+/// per row; with many groups interleaved row by row that stride is a cache
+/// line per value, and cost 14% of `process` on one thread and 38% on
+/// fourteen at k=20 (docs/PERFORMANCE.md P9). The gather here is one pass
+/// per column, and runs per column in parallel.
+fn layout_of(groups: &[(GroupKey, Vec<usize>)], n: usize) -> Option<Vec<usize>> {
+    let mut base = 0;
+    let blocked = groups.iter().all(|(_, idx)| {
+        // Indices are distinct and increasing, so first and last say whether
+        // the group is one run, and `base` whether the runs are in order.
+        let run = idx
+            .first()
+            .is_none_or(|&f| f == base && idx[idx.len() - 1] == base + idx.len() - 1);
+        base += idx.len();
+        run
+    });
+    if blocked {
+        return None;
+    }
+    let mut perm = Vec::with_capacity(n);
+    for (_, idx) in groups {
+        perm.extend_from_slice(idx);
+    }
+    debug_assert_eq!(perm.len(), n);
+    Some(perm)
 }
 
 /// A session or group key as strings. Any dtype with a string form is a key
@@ -158,99 +226,161 @@ fn key_column(df: &DataFrame, spec: &Spec, role: &str, name: &str) -> PolarsResu
         })
 }
 
+/// Below this many rows a chunk's columns are read, and a spec's fields
+/// assembled, on the calling thread. A task at the floor is a 32 KB copy,
+/// about what a rayon dispatch costs, so there is nothing to gain -- and
+/// something to lose: under `.over()` the expression plugin hands the bank
+/// groups of a few dozen rows, and fanning those out spread their
+/// allocations over the pool's threads. Measured as a doubled RSS wobble in
+/// `tests/test_ffi_memory.py` (±4.6 vs ±2 KB per call around a flat mean)
+/// with no change in speed (docs/PERFORMANCE.md §12).
+const PAR_MIN_ROWS: usize = 4096;
+
+/// `items.par_iter().map(f)` when `par`, the same on this thread otherwise.
+fn map_maybe_par<T, R, C>(items: &[T], par: bool, f: impl Fn(&T) -> R + Sync + Send) -> C
+where
+    T: Sync,
+    R: Send,
+    C: FromIterator<R> + FromParallelIterator<R>,
+{
+    if par {
+        items.par_iter().map(f).collect()
+    } else {
+        items.iter().map(f).collect()
+    }
+}
+
+/// `rayon::join(a, b)` when `par`, `a` then `b` on this thread otherwise.
+fn join_maybe_par<A, B>(
+    par: bool,
+    a: impl FnOnce() -> A + Send,
+    b: impl FnOnce() -> B + Send,
+) -> (A, B)
+where
+    A: Send,
+    B: Send,
+{
+    if par { rayon::join(a, b) } else { (a(), b()) }
+}
+
 /// `scoring` is [`Bank::predict`]'s reading of the frame: the features and
 /// the clock are required as ever, a target or session column is read when
 /// present and taken as absent otherwise, and the weight column is not read
 /// at all -- a scoring row has nothing to weigh.
-fn extract(df: &DataFrame, spec: &Spec, scoring: bool) -> PolarsResult<SpecColumns> {
+///
+/// Every column comes back in `layout` order. The columns are independent
+/// passes over the frame, so they are read in parallel (from [`PAR_MIN_ROWS`]
+/// up): with one spec in the bank this phase was a single thread copying
+/// every column in turn.
+fn extract(
+    df: &DataFrame,
+    spec: &Spec,
+    scoring: bool,
+    layout: Layout<'_>,
+) -> PolarsResult<SpecColumns> {
     let optional = |name: &str| scoring && df.get_column_index(name).is_none();
-    let features = spec
-        .features
-        .iter()
-        .map(|c| f64_column(df, spec, "feature", c))
-        .collect::<PolarsResult<Vec<_>>>()?;
-    let targets = spec
-        .targets
-        .iter()
-        .map(|c| {
+    let par = df.height() >= PAR_MIN_ROWS;
+    let features = || -> PolarsResult<Vec<Vec<f64>>> {
+        map_maybe_par(&spec.features, par, |c| {
+            f64_column(df, spec, "feature", c, layout)
+        })
+    };
+    let targets = || -> PolarsResult<Vec<Vec<f64>>> {
+        map_maybe_par(&spec.targets, par, |c| {
             if optional(c) {
                 Ok(vec![f64::NAN; df.height()])
             } else {
-                f64_column(df, spec, "target", c)
+                f64_column(df, spec, "target", c, layout)
             }
         })
-        .collect::<PolarsResult<Vec<_>>>()?;
-    let clock = match &spec.clock {
-        Some(c) => {
-            // A temporal clock column is refused rather than cast. Casting one
-            // to f64 exposes its *internal representation*, so the same 60
-            // seconds becomes 60_000 / 60_000_000 / 60_000_000_000 clock units
-            // depending only on whether the column is Datetime(ms/us/ns), and a
-            // Date becomes 1 unit per day. `halflife`, `max_dclock` and
-            // `session_gap` all live in those units, so `halflife = 600` on a
-            // microsecond column silently means 600 microseconds: every row
-            // decays to nothing and the output is plausible-looking garbage
-            // with no error. Making the user cast is one expression and makes
-            // the intended scale explicit (docs/TESTING.md T-E10).
-            let dtype = column(df, spec, "clock", c)?.dtype().clone();
-            if dtype.is_temporal() {
-                polars_bail!(ComputeError:
-                    "spec {:?}: clock column {:?} has dtype {}; a temporal clock would be \
-                     read as its internal representation (e.g. epoch microseconds), so \
-                     halflife/max_dclock/session_gap would silently be in those units. \
-                     Cast it to the scale you mean, e.g. \
-                     pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64), and use that column.",
-                    spec.name, c, dtype, c
-                );
-            }
-            let v = f64_column(df, spec, "clock", c)?;
-            // Nulls arrive as NaN, which this rejects along with inf: a clock
-            // with no value has no defined delta either way.
-            if let Some(i) = v.iter().position(|f| !f.is_finite()) {
-                polars_bail!(ComputeError:
-                    "spec {:?}: clock column {:?} has a null/non-finite value at row {}",
-                    spec.name, c, i
-                );
-            }
-            Some(v)
-        }
-        None => None,
     };
-    let session = match &spec.session {
-        Some(c) if !optional(c) => {
-            let s = key_column(df, spec, "session", c)?;
-            Some(s.str()?.iter().map(session_hash).collect())
-        }
-        _ => None,
-    };
-    let weight = match &spec.weight {
-        Some(_) if scoring => None,
-        Some(c) => {
-            let v = f64_column(df, spec, "weight", c)?;
-            // A negative weight is never meaningful for a weighted mean, and
-            // silently letting one through corrupts the accumulators (the EW
-            // count and the per-target cross moments disagree about whether the
-            // row happened). Non-finite weights are a different case, handled
-            // uniformly with non-finite features: they mean "no information for
-            // this row" and skip it (docs/PLAN.md §3), so only a *finite*
-            // negative weight is an error.
-            if let Some(i) = v.iter().position(|f| f.is_finite() && *f < 0.0) {
-                polars_bail!(ComputeError:
-                    "spec {:?}: weight column {:?} has a negative value ({}) at row {}; \
-                     weights must be >= 0 (use null to skip a row)",
-                    spec.name, c, v[i], i
-                );
+    let clock = || -> PolarsResult<Option<Vec<f64>>> {
+        match &spec.clock {
+            Some(c) => {
+                // A temporal clock column is refused rather than cast. Casting one
+                // to f64 exposes its *internal representation*, so the same 60
+                // seconds becomes 60_000 / 60_000_000 / 60_000_000_000 clock units
+                // depending only on whether the column is Datetime(ms/us/ns), and a
+                // Date becomes 1 unit per day. `halflife`, `max_dclock` and
+                // `session_gap` all live in those units, so `halflife = 600` on a
+                // microsecond column silently means 600 microseconds: every row
+                // decays to nothing and the output is plausible-looking garbage
+                // with no error. Making the user cast is one expression and makes
+                // the intended scale explicit (docs/TESTING.md T-E10).
+                let dtype = column(df, spec, "clock", c)?.dtype().clone();
+                if dtype.is_temporal() {
+                    polars_bail!(ComputeError:
+                        "spec {:?}: clock column {:?} has dtype {}; a temporal clock would be \
+                         read as its internal representation (e.g. epoch microseconds), so \
+                         halflife/max_dclock/session_gap would silently be in those units. \
+                         Cast it to the scale you mean, e.g. \
+                         pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64), and use that column.",
+                        spec.name, c, dtype, c
+                    );
+                }
+                let v = f64_column(df, spec, "clock", c, layout)?;
+                // Nulls arrive as NaN, which this rejects along with inf: a clock
+                // with no value has no defined delta either way.
+                if let Some(j) = v.iter().position(|f| !f.is_finite()) {
+                    polars_bail!(ComputeError:
+                        "spec {:?}: clock column {:?} has a null/non-finite value at row {}",
+                        spec.name, c, source_row(layout, j)
+                    );
+                }
+                Ok(Some(v))
             }
-            Some(v)
+            None => Ok(None),
         }
-        None => None,
     };
+    let session = || -> PolarsResult<Option<Vec<u64>>> {
+        match &spec.session {
+            Some(c) if !optional(c) => {
+                let s = key_column(df, spec, "session", c)?;
+                Ok(Some(gathered(
+                    s.str()?.iter().map(session_hash).collect(),
+                    layout,
+                )))
+            }
+            _ => Ok(None),
+        }
+    };
+    let weight = || -> PolarsResult<Option<Vec<f64>>> {
+        match &spec.weight {
+            Some(_) if scoring => Ok(None),
+            Some(c) => {
+                let v = f64_column(df, spec, "weight", c, layout)?;
+                // A negative weight is never meaningful for a weighted mean, and
+                // silently letting one through corrupts the accumulators (the EW
+                // count and the per-target cross moments disagree about whether the
+                // row happened). Non-finite weights are a different case, handled
+                // uniformly with non-finite features: they mean "no information for
+                // this row" and skip it (docs/PLAN.md §3), so only a *finite*
+                // negative weight is an error.
+                if let Some(j) = v.iter().position(|f| f.is_finite() && *f < 0.0) {
+                    polars_bail!(ComputeError:
+                        "spec {:?}: weight column {:?} has a negative value ({}) at row {}; \
+                         weights must be >= 0 (use null to skip a row)",
+                        spec.name, c, v[j], source_row(layout, j)
+                    );
+                }
+                Ok(Some(v))
+            }
+            None => Ok(None),
+        }
+    };
+    // Every column in one parallel batch: the session hash and the clock
+    // check are passes of their own, and used to wait for the features.
+    let ((features, targets), (clock, (session, weight))) = join_maybe_par(
+        par,
+        || join_maybe_par(par, features, targets),
+        || join_maybe_par(par, clock, || join_maybe_par(par, session, weight)),
+    );
     Ok(SpecColumns {
-        features,
-        targets,
-        clock,
-        session,
-        weight,
+        features: features?,
+        targets: targets?,
+        clock: clock?,
+        session: session?,
+        weight: weight?,
     })
 }
 
@@ -292,9 +422,23 @@ fn group_indices(df: &DataFrame, spec: &Spec) -> PolarsResult<Vec<(GroupKey, Vec
     match &spec.group {
         None => Ok(vec![(GroupKey::ungrouped(), (0..df.height()).collect())]),
         Some(g) => {
+            // An integer key's text is its decimal, which is exactly what the
+            // String cast below would produce (`integer_group_keys_match_the_
+            // string_cast` in tests/bank.rs pins the two paths to the same
+            // keys and output), so the value itself is the bucket: no cast, no
+            // hash, and no collision to document (docs/PERFORMANCE.md P11).
+            let col = column(df, spec, "group", g)?;
+            if col.dtype().is_integer() {
+                let s = col.as_materialized_series();
+                return Ok(if *s.dtype() == DataType::UInt64 {
+                    integer_groups(s.u64()?, |v| v)
+                } else {
+                    integer_groups(s.cast(&DataType::Int64)?.i64()?, |v| v as u64)
+                });
+            }
             let s = key_column(df, spec, "group", g)?;
             let mut order: Vec<(GroupKey, Vec<usize>)> = Vec::new();
-            let mut slot_of: HashMap<u64, usize> = HashMap::new();
+            let mut slot_of: PlHashMap<u64, usize> = PlHashMap::default();
             for (i, v) in s.str()?.iter().enumerate() {
                 let h = match v {
                     None => null_session_hash(),
@@ -314,6 +458,36 @@ fn group_indices(df: &DataFrame, spec: &Spec) -> PolarsResult<Vec<(GroupKey, Vec
             Ok(order)
         }
     }
+}
+
+/// [`group_indices`] over an integer column: `bucket` maps a value to its
+/// 64-bit identity (sign extension is a bijection, so `as u64` serves every
+/// signed width), and the key text is formatted once per distinct group.
+fn integer_groups<T>(
+    ca: &ChunkedArray<T>,
+    bucket: impl Fn(T::Native) -> u64,
+) -> Vec<(GroupKey, Vec<usize>)>
+where
+    T: PolarsNumericType,
+    T::Native: std::fmt::Display,
+{
+    let mut order: Vec<(GroupKey, Vec<usize>)> = Vec::new();
+    let mut slot_of: PlHashMap<u64, usize> = PlHashMap::default();
+    let mut null_slot: Option<usize> = None;
+    for (i, v) in ca.iter().enumerate() {
+        let slot = match v {
+            None => *null_slot.get_or_insert_with(|| {
+                order.push((GroupKey(None), Vec::new()));
+                order.len() - 1
+            }),
+            Some(v) => *slot_of.entry(bucket(v)).or_insert_with(|| {
+                order.push((GroupKey(Some(v.to_string())), Vec::new()));
+                order.len() - 1
+            }),
+        };
+        order[slot].1.push(i);
+    }
+    order
 }
 
 /// One instance's EW accumulators, as returned by [`Bank::gram`].
@@ -754,20 +928,24 @@ impl Bank {
         let n = df.height();
         self.refuse_name_clash(df)?;
         // Independent per spec, and each is a full pass over its columns, so
-        // they run in parallel with each other (docs/PERFORMANCE.md P3).
-        let cols: Vec<SpecColumns> = self
-            .specs
-            .par_iter()
-            .map(|s| extract(df, s, false))
-            .collect::<PolarsResult<_>>()?;
-        let t_extract = t0.elapsed();
-        let t1 = std::time::Instant::now();
+        // they run in parallel with each other (docs/PERFORMANCE.md P3). The
+        // groups come first because they decide the layout the columns are
+        // extracted in (P9).
         let groups: Vec<Vec<(GroupKey, Vec<usize>)>> = self
             .specs
             .par_iter()
             .map(|s| group_indices(df, s))
             .collect::<PolarsResult<_>>()?;
-        let t_group = t1.elapsed();
+        let layouts: Vec<Option<Vec<usize>>> = groups.iter().map(|g| layout_of(g, n)).collect();
+        let t_group = t0.elapsed();
+        let t1 = std::time::Instant::now();
+        let cols: Vec<SpecColumns> = self
+            .specs
+            .par_iter()
+            .zip(layouts.par_iter())
+            .map(|(s, l)| extract(df, s, false, l.as_deref()))
+            .collect::<PolarsResult<_>>()?;
+        let t_extract = t1.elapsed();
         let t2 = std::time::Instant::now();
 
         // Materialize missing streams, then fan out over (spec x group).
@@ -793,18 +971,21 @@ impl Bank {
         let derived = &self.derived;
         let cfgs = &self.clock_cfgs;
         // Each task owns a disjoint `&mut Stream`, so the borrow checker needs
-        // them pulled out of the maps up front.
-        let mut work: Vec<(usize, &Vec<usize>, &mut Stream)> = Vec::new();
+        // them pulled out of the maps up front. `base` is where the group's
+        // run starts in the laid-out columns.
+        let mut work: Vec<(usize, &Vec<usize>, usize, &mut Stream)> = Vec::new();
         for (si, hm) in self.states.iter_mut().enumerate() {
             let mut taken: HashMap<&GroupKey, &mut Stream> = hm.iter_mut().collect();
+            let mut base = 0;
             for (key, idx) in &groups[si] {
                 let stream = taken.remove(key).expect("stream materialized above");
-                work.push((si, idx, stream));
+                work.push((si, idx, base, stream));
+                base += idx.len();
             }
         }
         // Longest stream first: with a few big groups and many small ones,
         // starting the big ones last leaves cores idle at the tail.
-        work.sort_by_key(|(_, idx, _)| std::cmp::Reverse(idx.len()));
+        work.sort_by_key(|(_, idx, _, _)| std::cmp::Reverse(idx.len()));
 
         // Under `on_clock_reset = "error"` the chunk is refused as a whole:
         // every stream checks its clock schedule on a copy before any model is
@@ -812,10 +993,16 @@ impl Bank {
         // was -- the streams the chunk would have created included, so that
         // `groups()` lists what the bank has learned from -- and the corrected
         // chunk can be fed. A no-op under every other policy.
-        let checked = work.par_iter().try_for_each(|(si, idx, stream)| {
+        let checked = work.par_iter().try_for_each(|(si, idx, base, stream)| {
             let sc = &cols[*si];
             stream
-                .check_clock(&cfgs[*si], sc.clock.as_deref(), sc.session.as_deref(), idx)
+                .check_clock(
+                    &cfgs[*si],
+                    sc.clock.as_deref(),
+                    sc.session.as_deref(),
+                    idx,
+                    *base,
+                )
                 .map_err(|(raw, i)| backwards_clock(&specs[*si], raw, i))
         });
         if let Err(e) = checked {
@@ -826,7 +1013,7 @@ impl Bank {
 
         let done: Vec<(usize, StreamRows)> = work
             .into_par_iter()
-            .map(|(si, idx, stream)| {
+            .map(|(si, idx, base, stream)| {
                 let spec = &specs[si];
                 let cfg = &cfgs[si];
                 let sc = &cols[si];
@@ -843,6 +1030,7 @@ impl Bank {
                             sc.session.as_deref(),
                             sc.weight.as_deref(),
                             idx,
+                            base,
                             &mut out,
                         )
                         .map_err(|(raw, i)| backwards_clock(spec, raw, i))?;
@@ -913,31 +1101,35 @@ impl Bank {
     fn predict_on_pool(&self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
         let n = df.height();
         self.refuse_name_clash(df)?;
-        let cols: Vec<SpecColumns> = self
-            .specs
-            .par_iter()
-            .map(|s| extract(df, s, true))
-            .collect::<PolarsResult<_>>()?;
         let groups: Vec<Vec<(GroupKey, Vec<usize>)>> = self
             .specs
             .par_iter()
             .map(|s| group_indices(df, s))
             .collect::<PolarsResult<_>>()?;
+        let layouts: Vec<Option<Vec<usize>>> = groups.iter().map(|g| layout_of(g, n)).collect();
+        let cols: Vec<SpecColumns> = self
+            .specs
+            .par_iter()
+            .zip(layouts.par_iter())
+            .map(|(s, l)| extract(df, s, true, l.as_deref()))
+            .collect::<PolarsResult<_>>()?;
 
         let specs = &self.specs;
         let cfgs = &self.clock_cfgs;
-        let mut work: Vec<(usize, &Vec<usize>, &Stream)> = Vec::new();
+        let mut work: Vec<(usize, &Vec<usize>, usize, &Stream)> = Vec::new();
         for (si, hm) in self.states.iter().enumerate() {
+            let mut base = 0;
             for (key, idx) in &groups[si] {
                 if let Some(stream) = hm.get(key) {
-                    work.push((si, idx, stream));
+                    work.push((si, idx, base, stream));
                 }
+                base += idx.len();
             }
         }
-        work.sort_by_key(|(_, idx, _)| std::cmp::Reverse(idx.len()));
+        work.sort_by_key(|(_, idx, _, _)| std::cmp::Reverse(idx.len()));
         let done: Vec<(usize, ChunkOut)> = work
             .into_par_iter()
-            .map(|(si, idx, stream)| {
+            .map(|(si, idx, base, stream)| {
                 let spec = &specs[si];
                 let sc = &cols[si];
                 let mut out = ChunkOut::new(spec, stream.n_models(), stream.n_slots(), idx.len());
@@ -950,6 +1142,7 @@ impl Bank {
                         sc.clock.as_deref(),
                         sc.session.as_deref(),
                         idx,
+                        base,
                         &mut out,
                     )
                     .map_err(|(raw, i)| backwards_clock(spec, raw, i))?;
@@ -1467,6 +1660,74 @@ fn slot_labels(spec: &Spec) -> Vec<String> {
     out
 }
 
+/// One numeric output column: every row null until a stream's run writes it.
+/// Values and validity are built directly -- no `Vec<Option<f64>>` and no
+/// second copy into the `Series` -- and `finish` hands the buffers to polars
+/// as they are.
+struct F64Column {
+    values: Vec<f64>,
+    valid: MutableBitmap,
+}
+
+impl F64Column {
+    fn new(n: usize) -> Self {
+        Self {
+            values: vec![f64::NAN; n],
+            valid: MutableBitmap::from_len_zeroed(n),
+        }
+    }
+
+    /// The contract is finite-or-null. NaN is the models' own null encoding,
+    /// but a diverged model can also reach exact +/-inf, and `is_nan` alone
+    /// would hand that to the user.
+    #[inline]
+    fn set_if_finite(&mut self, i: usize, v: f64) {
+        if v.is_finite() {
+            self.values[i] = v;
+            self.valid.set(i, true);
+        }
+    }
+
+    #[inline]
+    fn set(&mut self, i: usize, v: f64) {
+        self.values[i] = v;
+        self.valid.set(i, true);
+    }
+
+    fn finish(self, name: PlSmallStr) -> Series {
+        let validity = (self.valid.unset_bits() > 0).then(|| self.valid.into());
+        Float64Chunked::from_vec_validity(name, self.values, validity).into_series()
+    }
+}
+
+/// Scatter one value per processed row of every chunk into a column:
+/// `value(chunk, n_rows, ri)` reads the stream's buffers at its `ri`-th row.
+/// Non-finite values stay null unless `all` (for `n_eff`, which is always
+/// finite and is reported as-is).
+fn scatter(
+    n: usize,
+    chunks: &[ChunkOut],
+    all: bool,
+    value: impl Fn(&ChunkOut, usize, usize) -> f64,
+) -> F64Column {
+    let mut col = F64Column::new(n);
+    for ch in chunks {
+        let nr = ch.rows.len();
+        for (ri, &i) in ch.rows.iter().enumerate() {
+            if !ch.processed[ri] {
+                continue;
+            }
+            let v = value(ch, nr, ri);
+            if all {
+                col.set(i, v);
+            } else {
+                col.set_if_finite(i, v);
+            }
+        }
+    }
+    col
+}
+
 fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> PolarsResult<Column> {
     let SpecDerived {
         schema,
@@ -1482,90 +1743,7 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
     // and the schema says so (`Source::Stat`), so one assembler covers both
     // (docs/SIMPLIFICATION.md S2). Only `pred` and `n_eff` are populated for
     // it; every other buffer is length zero and never indexed.
-    let is_ew_cov = matches!(spec.model, crate::ModelKind::EwCov { .. });
-    let reg = if is_ew_cov { 0 } else { n_models * m * nc };
-
-    let mut pred = vec![vec![None::<f64>; n]; n_models * per_model];
-    let mut resid = vec![vec![None::<f64>; n]; reg];
-    let n_extra = if spec.emit_sigma || spec.emit_resid_z {
-        reg
-    } else {
-        0
-    };
-    let mut sigma = vec![vec![None::<f64>; n]; n_extra];
-    let mut resid_z = vec![vec![None::<f64>; n]; n_extra];
-    let n_drift = if spec.emit_drift { reg } else { 0 };
-    let mut drift = vec![vec![None::<bool>; n]; n_drift];
-    let n_met = if spec.emit_metrics { reg } else { 0 };
-    let mut met = vec![vec![vec![None::<f64>; n]; n_met]; 3];
     let n_levels = spec.resid_quantiles.as_ref().map_or(0, Vec::len);
-    let mut rq = vec![vec![None::<f64>; n]; n_levels * reg];
-    let n_ac = if spec.emit_autocorr { reg } else { 0 };
-    let mut ac = vec![vec![None::<f64>; n]; n_ac];
-    let mut n_eff = vec![vec![None::<f64>; n]; n_models];
-    let mut coef: Vec<Vec<Option<Vec<f64>>>> = vec![vec![None; n]; n_models];
-    let is_lasso = matches!(spec.model, crate::ModelKind::Lasso { .. });
-    let mut lam_sel = vec![vec![None::<f64>; n]; if is_lasso { n_models * m } else { 0 }];
-
-    // Scatter the flat per-chunk buffers into per-column vectors. NaN is null
-    // for every numeric output; `processed` is what distinguishes a skipped row
-    // (all null, including the bool `drift`) from one that produced NaN.
-    // The contract is finite-or-null. NaN is the models' own null encoding,
-    // but a diverged model can also reach exact +/-inf, and `is_nan` alone
-    // would hand that to the user.
-    let some_if_finite = |v: f64| v.is_finite().then_some(v);
-    for ch in chunks {
-        let nr = ch.rows.len();
-        let block = ch.n_slots * nr;
-        for (ri, &i) in ch.rows.iter().enumerate() {
-            if !ch.processed[ri] {
-                continue;
-            }
-            for mi in 0..n_models {
-                for slot in 0..per_model {
-                    let at = ChunkOut::at(ch.n_slots, nr, mi, slot, ri);
-                    let dst = mi * per_model + slot;
-                    pred[dst][i] = some_if_finite(ch.pred[at]);
-                    if is_ew_cov {
-                        continue;
-                    }
-                    resid[dst][i] = some_if_finite(ch.resid[at]);
-                    if n_drift > 0 {
-                        drift[dst][i] = Some(ch.drift[at]);
-                    }
-                    if n_met > 0 {
-                        // Model-major: instance mi owns 3 contiguous blocks.
-                        let mbase = mi * 3 * block + slot * nr + ri;
-                        for (k, met_k) in met.iter_mut().enumerate() {
-                            met_k[dst][i] = some_if_finite(ch.metrics[mbase + k * block]);
-                        }
-                    }
-                    for li in 0..n_levels {
-                        let qbase = mi * n_levels * block + li * block + slot * nr + ri;
-                        rq[(li * n_models + mi) * m * nc + slot][i] =
-                            some_if_finite(ch.resid_q[qbase]);
-                    }
-                    if n_ac > 0 {
-                        ac[dst][i] = some_if_finite(ch.autocorr[at]);
-                    }
-                    if n_extra > 0 {
-                        sigma[dst][i] = some_if_finite(ch.sigma[at]);
-                        resid_z[dst][i] = some_if_finite(ch.resid_z[at]);
-                    }
-                }
-                n_eff[mi][i] = Some(ch.n_eff[mi * nr + ri]);
-                if let Some(c) = &ch.coef[mi][ri] {
-                    coef[mi][i] = Some(c.clone());
-                }
-                if is_lasso {
-                    for t_i in 0..m {
-                        lam_sel[mi * m + t_i][i] =
-                            some_if_finite(ch.lam_selected[(mi * m + t_i) * nr + ri]);
-                    }
-                }
-            }
-        }
-    }
 
     // Online selection across every slot of a target: pick the slot with the
     // lowest EW out-of-sample error so far (`sigma`, already tracked for E12),
@@ -1661,37 +1839,102 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
     // the ordering, no `format!` here at all, and no way for the declared
     // schema and the realized struct to disagree (docs/SIMPLIFICATION.md S1 —
     // that divergence is exactly what defect E23 was).
-    let mut fields: Vec<Series> = Vec::with_capacity(schema.len());
-    for f in schema {
-        let name: PlSmallStr = f.field.as_str().into();
-        fields.push(match f.src {
-            Source::Pred(i) | Source::Stat(i) => Series::new(name, pred[i].as_slice()),
-            Source::Resid(i) => Series::new(name, resid[i].as_slice()),
-            Source::Sigma(i) => Series::new(name, sigma[i].as_slice()),
-            Source::ResidZ(i) => Series::new(name, resid_z[i].as_slice()),
-            Source::Drift(i) => Series::new(name, drift[i].as_slice()),
-            Source::Metric(k, i) => Series::new(name, met[k][i].as_slice()),
-            Source::Quantile(i) => Series::new(name, rq[i].as_slice()),
-            Source::Autocorr(i) => Series::new(name, ac[i].as_slice()),
-            Source::NEff(i) => Series::new(name, n_eff[i].as_slice()),
-            Source::LamSelected(i) => Series::new(name, lam_sel[i].as_slice()),
-            Source::SelPred(i) => Series::new(name, sel_pred[i].as_slice()),
-            Source::SelName(i) => Series::new(name, sel_name[i].as_slice()),
-            Source::AvgPred(i) => Series::new(name, avg_pred[i].as_slice()),
-            Source::Coef(i) => {
-                let mut b =
-                    ListPrimitiveChunkedBuilder::<Float64Type>::new(name, n, 8, DataType::Float64);
-                for v in &coef[i] {
-                    match v {
-                        Some(flat) => b.append_slice(flat),
-                        None => b.append_null(),
-                    }
+    //
+    // One job per field, each its own scatter over every stream's run, so
+    // the fields of a spec are built in parallel from `PAR_MIN_ROWS` up
+    // (docs/PERFORMANCE.md P10): one spec with a grid of instances used to
+    // assemble on a single thread. A field's index `i` is
+    // `mi * per_model + slot`, the order `output_index` numbers the
+    // per-instance fields in.
+    let block = |ch: &ChunkOut, nr: usize| ch.n_slots * nr;
+    let fields: Vec<Series> =
+        map_maybe_par::<_, _, PolarsResult<_>>(schema, n >= PAR_MIN_ROWS, |f| {
+            let name: PlSmallStr = f.field.as_str().into();
+            let at = |ch: &ChunkOut, nr: usize, i: usize, ri: usize| {
+                ChunkOut::at(ch.n_slots, nr, i / per_model, i % per_model, ri)
+            };
+            Ok(match f.src {
+                Source::Pred(i) | Source::Stat(i) => {
+                    scatter(n, chunks, false, |ch, nr, ri| ch.pred[at(ch, nr, i, ri)]).finish(name)
                 }
-                b.finish().into_series()
-            }
-            Source::Unset => unreachable!("every field is given a source in output_index"),
-        });
-    }
+                Source::Resid(i) => {
+                    scatter(n, chunks, false, |ch, nr, ri| ch.resid[at(ch, nr, i, ri)]).finish(name)
+                }
+                Source::Sigma(i) => {
+                    scatter(n, chunks, false, |ch, nr, ri| ch.sigma[at(ch, nr, i, ri)]).finish(name)
+                }
+                Source::ResidZ(i) => {
+                    scatter(n, chunks, false, |ch, nr, ri| ch.resid_z[at(ch, nr, i, ri)])
+                        .finish(name)
+                }
+                Source::Autocorr(i) => scatter(n, chunks, false, |ch, nr, ri| {
+                    ch.autocorr[at(ch, nr, i, ri)]
+                })
+                .finish(name),
+                Source::Metric(k, i) => scatter(n, chunks, false, |ch, nr, ri| {
+                    // Model-major: instance mi owns 3 contiguous blocks.
+                    let (mi, slot) = (i / per_model, i % per_model);
+                    ch.metrics[mi * 3 * block(ch, nr) + k * block(ch, nr) + slot * nr + ri]
+                })
+                .finish(name),
+                Source::Quantile(i) => scatter(n, chunks, false, |ch, nr, ri| {
+                    // `(li * n_models + mi) * m * nc + slot`, as `output_index`
+                    // numbers the quantile fields.
+                    let slot = i % (m * nc);
+                    let (li, mi) = ((i / (m * nc)) / n_models, (i / (m * nc)) % n_models);
+                    ch.resid_q[mi * n_levels * block(ch, nr) + li * block(ch, nr) + slot * nr + ri]
+                })
+                .finish(name),
+                Source::NEff(mi) => {
+                    scatter(n, chunks, true, |ch, nr, ri| ch.n_eff[mi * nr + ri]).finish(name)
+                }
+                Source::LamSelected(i) => {
+                    scatter(n, chunks, false, |ch, nr, ri| ch.lam_selected[i * nr + ri])
+                        .finish(name)
+                }
+                Source::Drift(i) => {
+                    let mut drift = vec![None::<bool>; n];
+                    for ch in chunks {
+                        let nr = ch.rows.len();
+                        for (ri, &row) in ch.rows.iter().enumerate() {
+                            if ch.processed[ri] {
+                                drift[row] = Some(ch.drift[at(ch, nr, i, ri)]);
+                            }
+                        }
+                    }
+                    Series::new(name, drift.as_slice())
+                }
+                Source::SelPred(i) => Series::new(name, sel_pred[i].as_slice()),
+                Source::SelName(i) => Series::new(name, sel_name[i].as_slice()),
+                Source::AvgPred(i) => Series::new(name, avg_pred[i].as_slice()),
+                Source::Coef(mi) => {
+                    let mut coef: Vec<Option<&Vec<f64>>> = vec![None; n];
+                    for ch in chunks {
+                        for (ri, &row) in ch.rows.iter().enumerate() {
+                            if ch.processed[ri] {
+                                if let Some(c) = &ch.coef[mi][ri] {
+                                    coef[row] = Some(c);
+                                }
+                            }
+                        }
+                    }
+                    let mut b = ListPrimitiveChunkedBuilder::<Float64Type>::new(
+                        name,
+                        n,
+                        8,
+                        DataType::Float64,
+                    );
+                    for v in &coef {
+                        match v {
+                            Some(flat) => b.append_slice(flat),
+                            None => b.append_null(),
+                        }
+                    }
+                    b.finish().into_series()
+                }
+                Source::Unset => unreachable!("every field is given a source in output_index"),
+            })
+        })?;
     let st = StructChunked::from_series(spec.name.as_str().into(), n, fields.iter())?;
     Ok(st.into_series().into())
 }

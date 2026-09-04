@@ -7,7 +7,20 @@ carries breaking changes.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **The chunk plan: every phase parallel, and no stride** (`docs/PERFORMANCE.md`
+  §12, P9–P11). A spec's columns are gathered once, group after group, so
+  each stream reads a contiguous run; output fields are built one job each
+  into `Vec<f64>` + validity; columns are read in parallel, multi-chunk
+  columns copied per arrow chunk, and an integer group key is bucketed by
+  its value rather than cast to text (the keys and output are identical, and
+  a test says so). Measured on a 400k-row chunk over 64 groups at 14
+  threads: 37 → 17 ms; the README's 12M-row grouped workload 3.25 → 2.48 s.
+  Below 4096 rows a chunk's columns and fields are done on the calling
+  thread, so the expression plugin's small `.over()` groups do not fan out
+  for nothing. Every output is bit-identical; the golden, chunk-invariance
+  and oracle suites are unchanged.
 
 ## [0.1.0] — 2026-09-03
 
