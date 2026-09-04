@@ -43,8 +43,13 @@ jobs:
       - run: uv sync
       - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
 
+      # Both tables go to the job summary and to `benchmark.md`, which the
+      # artifact keeps: the summary is only readable in the browser, and a
+      # comparison across two runs (a branch against main, one machine
+      # against another) wants a file. One run of each script, not two.
       - name: benchmark
         run: |
+          set -o pipefail   # a failing script must still fail the step through the tee
           {
             echo "## Throughput"
             echo
@@ -55,11 +60,10 @@ jobs:
             # Throughput alone hides a change that serializes the fan-out: it
             # looks fine on one thread and costs 4x on ten (docs/PERFORMANCE.md P8).
             uv run python scripts/scaling_bench.py --rows 200000 --markdown
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee benchmark.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: keep the numbers as an artifact
-        run: uv run python scripts/benchmark.py --rows 100000 --markdown > benchmark.md
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: benchmark-${{ github.sha }}
           path: benchmark.md
