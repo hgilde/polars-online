@@ -17,6 +17,20 @@ carries breaking changes.
   list; `stats=None` still means `["mean", "std", "corr"]`. Before this the
   constructor refused an empty list, so accumulating a Gram over a wide
   set of columns meant emitting every mean on every row.
+- **The Gram export is a complete sufficient statistic** (`ModelBank.gram`,
+  `docs/ENHANCEMENTS.md` E45, task 38). `gram()` gains `n_kish`,
+  `target_means`, `target_vars` and `target_n_kish`: the accumulators now
+  track `Σw²` beside `Σw`, and `ewridge` and `lasso` keep each target's own
+  mean and variance beside its cross-moments. Without `Var[y]` no residual
+  variance, R², information criterion or standard error could be computed
+  from a saved Gram; with it they can, and `n_kish = n_eff² / Σw²` is the
+  sample size they divide by (`n_eff` counts weight, not rows). A target's
+  variance is bit-identical to an `ew_cov` over that column. A state saved by
+  0.2.0 or earlier has none of them and reports `None` for all four for the
+  rest of its life — the sums cannot be replayed, and a partial one paired
+  with a whole-stream `n_eff` would be wrong by the length of the history.
+  Such a state still loads, still continues to the bit, and still re-saves
+  byte for byte.
 - **`marginal`: every (feature, target) pair's EW moments, kept in the
   state** (`po.spec.marginal`, `docs/ENHANCEMENTS.md` E44, task 37). Per
   pair the mean, variance and covariance in `ew_cov`'s arithmetic — a

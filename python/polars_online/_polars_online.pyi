@@ -25,10 +25,14 @@ class ModelBank:
             str,  # instance
             int,  # k
             float,  # n_eff
+            float | None,  # n_kish
             list[float],  # means
             list[float],  # comoments, k*k row-major
             list[list[float]],  # cross_moments, one row per target
             list[float],  # target_weights
+            list[float] | None,  # target_means
+            list[float] | None,  # target_vars
+            list[float | None] | None,  # target_n_kish
         ]
     ]: ...
     def coef(

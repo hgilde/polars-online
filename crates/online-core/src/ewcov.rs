@@ -56,6 +56,15 @@ pub struct EwCov {
     k: usize,
     /// EW sum of weights (the `n_eff` count).
     w_sum: f64,
+    /// EW sum of *squared* weights, `Q = Sum w^2` under `lam^2` decay, from
+    /// which Kish's effective sample size `W^2 / Q` follows
+    /// (docs/ENHANCEMENTS.md E45). `None` in a state written before task 38:
+    /// the history behind `w_sum` cannot be replayed, and a `Q` accumulated
+    /// from the resume point paired with a `W` from the whole stream reports
+    /// an effective size that is wrong by the length of the history. Such a
+    /// state keeps reporting `None`, which is the honest answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    q_sum: Option<f64>,
     /// Product of all decay factors applied so far (a decaying prior's scale).
     prior_scale: f64,
     /// EW mean vector, length `k`.
@@ -90,6 +99,7 @@ impl EwCov {
         Self {
             k,
             w_sum: 0.0,
+            q_sum: Some(0.0),
             prior_scale: 1.0,
             m: vec![0.0; k],
             c: vec![0.0; k * k],
@@ -160,6 +170,29 @@ impl EwCov {
     #[inline]
     pub fn n_eff(&self) -> f64 {
         self.w_sum
+    }
+
+    /// Kish's effective sample size `W^2 / Q`: the number of *equally*
+    /// weighted rows that carry the information these moments hold
+    /// (docs/ENHANCEMENTS.md E45). `(1 + lam) / (1 - lam)` in the limit for
+    /// unit weights on a constant clock.
+    ///
+    /// `None` before the first row, and for a state written before task 38
+    /// (see the `q_sum` field). It is what a standard error from these
+    /// moments must divide by: `n_eff` counts weight, not rows, so it is not
+    /// a sample size.
+    #[inline]
+    pub fn n_kish(&self) -> Option<f64> {
+        match self.q_sum {
+            Some(q) if q > 0.0 => Some(self.w_sum * self.w_sum / q),
+            _ => None,
+        }
+    }
+
+    /// `Sum w^2` behind these moments, or `None` for a pre-task-38 state.
+    #[inline]
+    pub fn q_sum(&self) -> Option<f64> {
+        self.q_sum
     }
 
     #[inline]
@@ -257,24 +290,33 @@ impl EwCov {
             *mi += b * (xi - *mi);
         }
         self.w_sum = w_new;
+        if let Some(q) = self.q_sum.as_mut() {
+            // `W` decays by `lam`, so its square decays by `lam^2`; the row
+            // adds `w^2`. Kish's `n` is then `W^2 / Q`.
+            *q = lam * lam * *q + w * w;
+        }
         self.prior_scale *= lam;
     }
 
     /// Overwrite the moments directly. Used when two accumulators are mixed
     /// (see `EwRidge::blend_toward_long_run`); the caller is responsible for
     /// the mixture being a valid set of weighted moments.
-    pub fn set_moments(&mut self, mean: &[f64], centered: &[f64], w_sum: f64) {
+    pub fn set_moments(&mut self, mean: &[f64], centered: &[f64], w_sum: f64, q_sum: Option<f64>) {
         debug_assert_eq!(mean.len(), self.k);
         debug_assert_eq!(centered.len(), self.k * self.k);
         self.m.copy_from_slice(mean);
         self.c.copy_from_slice(centered);
         self.w_sum = w_sum;
+        self.q_sum = q_sum;
     }
 
     /// Age the accumulator without adding data (pure decay: means unchanged,
     /// only the effective count shrinks).
     pub fn decay(&mut self, lam: f64) {
         self.w_sum *= lam;
+        if let Some(q) = self.q_sum.as_mut() {
+            *q *= lam * lam;
+        }
         self.prior_scale *= lam;
     }
 
@@ -324,6 +366,98 @@ impl EwCov {
                 .map(|(i, j)| a[i * 2 * k + k + j])
                 .collect(),
         )
+    }
+}
+
+/// Per-target first and second moments, and `Sum w^2`, kept beside a model's
+/// cross-moments (docs/ENHANCEMENTS.md E45).
+///
+/// The cross-moments alone are half of the sufficient statistic: without
+/// `E[y]` and `Var[y]` no residual variance, `R^2`, information criterion or
+/// standard error can be computed from a saved Gram. These are the other
+/// half, in the same [`EwCov`] arithmetic and against the same per-target
+/// weight `W_t`, so a target's variance here equals the variance an `ew_cov`
+/// over that column would report, to the bit.
+///
+/// The moments are weighted *means*, `q` is a sum. Every field is per target.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TargetMoments {
+    /// EW mean of `y_t`.
+    mean: Vec<f64>,
+    /// EW **centered** variance of `y_t`.
+    var: Vec<f64>,
+    /// `Sum w^2` under `lam^2` decay, per target.
+    q: Vec<f64>,
+}
+
+impl TargetMoments {
+    pub fn new(n_targets: usize) -> Self {
+        Self {
+            mean: vec![0.0; n_targets],
+            var: vec![0.0; n_targets],
+            q: vec![0.0; n_targets],
+        }
+    }
+
+    pub fn means(&self) -> &[f64] {
+        &self.mean
+    }
+
+    pub fn vars(&self) -> &[f64] {
+        &self.var
+    }
+
+    /// `Sum w^2` per target.
+    pub fn q(&self) -> &[f64] {
+        &self.q
+    }
+
+    /// Kish's effective sample size per target, `W_t^2 / Q_t`; `None` for a
+    /// target that has not seen a weighted row yet.
+    pub fn n_kish(&self, target_weights: &[f64]) -> Vec<Option<f64>> {
+        self.q
+            .iter()
+            .zip(target_weights)
+            .map(|(&q, &w)| (q > 0.0).then_some(w * w / q))
+            .collect()
+    }
+
+    /// One present target, with the `a` and `b` its cross-moment update
+    /// computed from the same `W_t` -- [`EwCov::update`]'s weighted Welford
+    /// step, so the variance matches an `ew_cov` over the column to the bit.
+    #[inline]
+    pub fn learn(&mut self, t: usize, y: f64, a: f64, b: f64, lam: f64, w: f64) {
+        let d = y - self.mean[t];
+        self.var[t] = a * self.var[t] + a * b * d * d;
+        self.mean[t] += b * d;
+        self.q[t] = lam * lam * self.q[t] + w * w;
+    }
+
+    /// A row where this target is null: time passes for its weight, and
+    /// `Q_t` decays with the square of it, as in [`EwCov::decay`].
+    #[inline]
+    pub fn age(&mut self, t: usize, lam: f64) {
+        self.q[t] *= lam * lam;
+    }
+
+    /// Mix toward another set of moments with the same coefficients the
+    /// caller mixes weights and co-moments by (`a + b == 1`); see
+    /// `EwRidge::blend_toward_long_run`. Centered second moments are not
+    /// additive across differing means, so the variance is mixed raw and
+    /// re-centered on the mixed mean, exactly as the co-moments are.
+    pub fn blend(&mut self, other: &Self, t: usize, a: f64, b: f64) {
+        let mean = a * self.mean[t] + b * other.mean[t];
+        let raw = a * (self.var[t] + self.mean[t] * self.mean[t])
+            + b * (other.var[t] + other.mean[t] * other.mean[t]);
+        self.var[t] = raw - mean * mean;
+        self.mean[t] = mean;
+        // `Q` is mixed by the same coefficients as the moments, not summed as
+        // a union of two row sets would be: the twins see the *same* rows
+        // under two halflives, so a union would count every row twice and
+        // report a blend of a state with itself as more informative than the
+        // state. With this form that blend is the identity, as it is for the
+        // means, the co-moments and the weights.
+        self.q[t] = a * self.q[t] + b * other.q[t];
     }
 }
 
@@ -1869,8 +2003,120 @@ mod tests {
             "inv_scale": want.precision_scale,
         });
         let got: EwCov = serde_json::from_value(v1).unwrap();
+        // No `q_sum` in a schema-1 file, and it cannot be reconstructed: the
+        // load reports `None` rather than a Kish size that would be wrong by
+        // the length of the history (E45).
+        assert_eq!(got.q_sum(), None);
+        assert_eq!(got.n_kish(), None);
+        want.q_sum = None;
         assert_eq!(got, want);
         assert!(got.has_precision_prior());
         assert_eq!(got.precision(), want.precision());
+    }
+
+    #[test]
+    fn kish_size_of_a_unit_weight_window() {
+        // Unit weights on a constant clock: `W -> 1/(1-lam)` and
+        // `Q -> 1/(1-lam^2)`, so `W^2/Q -> (1+lam)/(1-lam)`.
+        let lam = 0.98;
+        let mut ew = EwCov::new(1);
+        assert_eq!(ew.n_kish(), None, "no rows, no sample size");
+        for i in 0..20_000 {
+            ew.update(&[i as f64 % 3.0], lam, 1.0);
+        }
+        let want = (1.0 + lam) / (1.0 - lam);
+        let got = ew.n_kish().unwrap();
+        assert!((got - want).abs() < 1e-6, "{got} vs {want}");
+        // And it is a *row* count, not a weight: doubling every weight leaves
+        // it where it was, while `n_eff` doubles.
+        let mut heavy = EwCov::new(1);
+        for i in 0..20_000 {
+            heavy.update(&[i as f64 % 3.0], lam, 2.0);
+        }
+        assert!((heavy.n_kish().unwrap() - got).abs() < 1e-9);
+        assert!((heavy.n_eff() - 2.0 * ew.n_eff()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn kish_size_counts_the_rows_that_carry_the_weight() {
+        // One heavy row among many light ones is worth about one row.
+        let mut ew = EwCov::new(1);
+        ew.update(&[1.0], 1.0, 1e6);
+        for _ in 0..1_000 {
+            ew.update(&[1.0], 1.0, 1.0);
+        }
+        let n = ew.n_kish().unwrap();
+        assert!((1.0..1.01).contains(&n), "{n}");
+    }
+
+    #[test]
+    fn a_pure_decay_ages_the_squared_weights_too() {
+        let mut ew = EwCov::new(1);
+        for _ in 0..50 {
+            ew.update(&[1.0], 0.9, 1.0);
+        }
+        let before = ew.n_kish().unwrap();
+        ew.decay(0.5);
+        // `W` halves and `Q` quarters, so the Kish size is unchanged: aging
+        // without data forgets weight, not rows.
+        assert!((ew.n_kish().unwrap() - before).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_zero_weight_row_is_still_a_decay() {
+        let mut a = EwCov::new(1);
+        let mut b = EwCov::new(1);
+        for _ in 0..10 {
+            a.update(&[1.5], 0.9, 1.0);
+            b.update(&[1.5], 0.9, 1.0);
+        }
+        a.update(&[0.0], 0.9, 0.0);
+        b.decay(0.9);
+        assert_eq!(a.q_sum(), b.q_sum());
+        assert_eq!(a.n_eff(), b.n_eff());
+    }
+
+    #[test]
+    fn target_moments_match_an_ew_cov_over_the_column() {
+        // `TargetMoments::learn` takes the `a`/`b` its caller computed from
+        // the same per-target weight, so its variance is bit-identical to an
+        // `EwCov` over that one column.
+        let mut tm = TargetMoments::new(1);
+        let mut ew = EwCov::new(1);
+        let mut w_t = 0.0;
+        for i in 0..500 {
+            let y = 100.0 + (i as f64 * 0.37).sin();
+            let (lam, w) = (0.97, 0.5 + (i % 4) as f64);
+            let w_new = lam * w_t + w;
+            let (a, b) = (lam * w_t / w_new, w / w_new);
+            tm.learn(0, y, a, b, lam, w);
+            w_t = w_new;
+            ew.update(&[y], lam, w);
+        }
+        assert_eq!(tm.means()[0], ew.mean(0), "mean");
+        assert_eq!(tm.vars()[0], ew.cov(0, 0), "variance");
+        assert_eq!(tm.q()[0], ew.q_sum().unwrap(), "Sum w^2");
+        assert_eq!(tm.n_kish(&[w_t])[0], ew.n_kish(), "Kish n");
+    }
+
+    #[test]
+    fn blending_target_moments_with_a_copy_is_the_identity() {
+        let mut tm = TargetMoments::new(1);
+        let mut w_t = 0.0;
+        for i in 0..100 {
+            let y = (i as f64 * 0.11).cos();
+            let (lam, w) = (0.95, 1.0);
+            let w_new = lam * w_t + w;
+            tm.learn(0, y, lam * w_t / w_new, w / w_new, lam, w);
+            w_t = w_new;
+        }
+        let twin = tm.clone();
+        let want = tm.clone();
+        tm.blend(&twin, 0, 0.5, 0.5);
+        assert!((tm.means()[0] - want.means()[0]).abs() < 1e-12);
+        assert!((tm.vars()[0] - want.vars()[0]).abs() < 1e-12);
+        // `Q` too: a union of the two row sets would report the blend as
+        // twice as informative as the state it blended with itself.
+        assert!((tm.q()[0] - want.q()[0]).abs() < 1e-12);
     }
 }

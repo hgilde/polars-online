@@ -62,17 +62,23 @@ fn parse_specs(specs_json: &str) -> PyResult<Vec<Spec>> {
     from_json(specs_json).map_err(PyValueError::new_err)
 }
 
-/// `(group, instance, k, n_eff, means, comoments, cross_moments, target_weights)`
-/// — the flat shape `ModelBank.gram` reshapes into numpy arrays.
+/// `(group, instance, k, n_eff, n_kish, means, comoments, cross_moments,
+/// target_weights, target_means, target_vars, target_n_kish)` — the flat
+/// shape `ModelBank.gram` reshapes into numpy arrays. The trailing four are
+/// `None` for a state written before task 38 (docs/ENHANCEMENTS.md E45).
 type GramRow = (
     Option<String>,
     String,
     usize,
     f64,
+    Option<f64>,
     Vec<f64>,
     Vec<f64>,
     Vec<Vec<f64>>,
     Vec<f64>,
+    Option<Vec<f64>>,
+    Option<Vec<f64>>,
+    Option<Vec<Option<f64>>>,
 );
 
 /// `(group, instance, n_eff, coef)` — one decay instance's flat `coef` list,
@@ -230,10 +236,9 @@ impl PyModelBank {
             .collect())
     }
 
-    /// The EW accumulators behind a spec's fit (ENHANCEMENTS E30), as flat
-    /// tuples the Python layer reshapes into numpy arrays:
-    /// `(group, instance, k, n_eff, means, comoments, cross_moments,
-    /// target_weights)`.
+    /// The EW accumulators behind a spec's fit (ENHANCEMENTS E30, E45), as
+    /// flat tuples the Python layer reshapes into numpy arrays: see
+    /// [`GramRow`].
     #[pyo3(signature = (spec, group=None))]
     fn gram(slf: &Bound<'_, Self>, spec: usize, group: Option<&str>) -> PyResult<Vec<GramRow>> {
         let this = slf.try_borrow().map_err(|_| busy("gram"))?;
@@ -248,10 +253,14 @@ impl PyModelBank {
                     g.instance,
                     g.k,
                     g.n_eff,
+                    g.n_kish,
                     g.means,
                     g.comoments,
                     g.cross_moments,
                     g.target_weights,
+                    g.target_means,
+                    g.target_vars,
+                    g.target_n_kish,
                 )
             })
             .collect())

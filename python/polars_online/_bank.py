@@ -412,6 +412,19 @@ class ModelBank:
             instance).
         ``n_eff``
             Accumulated weight behind these moments.
+        ``n_kish``
+            Kish's effective sample size, ``n_eff**2 / sum(w**2)`` -- the
+            number of *equally* weighted rows these moments are worth, and
+            what a standard error computed from them divides by. ``n_eff``
+            counts weight, not rows, so it is not a sample size:
+            ``(1 + lam) / (1 - lam)`` is the Kish size of an exponentially
+            weighted window, whatever the halflife's units. ``None`` before
+            the first row.
+
+            It is scale-free: decay divides ``n_eff`` and ``sum(w**2)`` by
+            the same factor, so ``n_kish`` does not shrink when a stream goes
+            quiet. It says how many rows these moments average, not how old
+            they are -- ``n_eff`` and ``target_weights`` are what say that.
         ``means``
             EW column means, shape ``(k,)``.
         ``comoments``
@@ -424,6 +437,33 @@ class ModelBank:
         ``target_weights``
             Per-target accumulated weight, shape ``(n_targets,)``. Differs from
             ``n_eff`` when targets have different null patterns.
+        ``target_means``, ``target_vars``
+            Per-target EW mean and **centered** variance of the target itself,
+            shape ``(n_targets,)``, in the same arithmetic as ``comoments`` --
+            a target's variance here is the variance an ``ew_cov`` over that
+            column would report, to the bit. Empty for ``ew_cov``.
+        ``target_n_kish``
+            Per-target Kish effective sample size, ``target_weights**2 /
+            sum(w**2)`` over that target's rows; ``nan`` for a target that has
+            not seen a weighted row. Empty for ``ew_cov``.
+
+        The target moments are what makes the export a *complete* sufficient
+        statistic (ENHANCEMENTS E45). With the cross-moments alone there is no
+        residual variance, no ``R^2``, no information criterion and no
+        standard error to be had from a saved Gram, because every one of them
+        needs ``Var[y]``::
+
+            beta = solve(raw, cross_moments[t])           # the model's own fit
+            resid_var = target_vars[t] - beta[1:] @ comoments[1:, 1:] @ beta[1:]
+            r2 = 1 - resid_var / target_vars[t]
+
+        A state saved before task 38 has none of them: ``n_kish``,
+        ``target_means``, ``target_vars`` and ``target_n_kish`` are ``None``
+        there, for that state's whole remaining life. The weight sums behind
+        them cannot be replayed, and a ``sum(w**2)`` accumulated from the
+        resume point against an ``n_eff`` from the whole stream would report
+        an effective size too large by the length of the history -- a wrong
+        number where ``None`` is the true answer.
 
         The two moment forms differ, and mixing them gives a silently wrong
         answer rather than an error, so the bridging identity is worth stating
@@ -477,18 +517,29 @@ class ModelBank:
 
         idx = self._spec_index(spec)
         out = []
-        for g, instance, k, n_eff, means, como, cross, tw in self._native.gram(idx, group):
+        for row in self._native.gram(idx, group):
+            g, instance, k, n_eff, n_kish, means, como, cross, tw = row[:9]
+            tmeans, tvars, tkish = row[9:]
             out.append(
                 {
                     "group": g,
                     "instance": instance,
                     "n_eff": n_eff,
+                    "n_kish": n_kish,
                     "means": np.asarray(means),
                     "comoments": np.asarray(como).reshape(k, k),
                     "cross_moments": np.asarray(cross).reshape(len(cross), k)
                     if cross
                     else np.zeros((0, k)),
                     "target_weights": np.asarray(tw),
+                    "target_means": None if tmeans is None else np.asarray(tmeans),
+                    "target_vars": None if tvars is None else np.asarray(tvars),
+                    # A target with no weighted row yet has no Kish size; the
+                    # array says `nan` where the Rust side says `None`, as
+                    # every other float array here does.
+                    "target_n_kish": None
+                    if tkish is None
+                    else np.asarray([np.nan if v is None else v for v in tkish], dtype=float),
                 }
             )
         return out

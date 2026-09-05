@@ -490,8 +490,49 @@ the same columns to tell blocks apart (add them to the pivot's `index`), and
 `unnest` reads a saved output the same way:
 `pl.scan_parquet("fitted.parquet").online.unnest([ols])`. It takes the specs,
 a bank, or the path of a saved state. `bank.gram("ols")` gives the EW
-accumulators behind the fit (`means`, centered `comoments`, `cross_moments`,
-`n_eff`), for anything other than our solve.
+accumulators behind the fit, for anything other than our solve.
+
+### The accumulators behind a fit
+
+`bank.gram(spec)` hands back the matrices the model itself solves against,
+per group and decay instance. They are a *complete* sufficient statistic, so
+a saved state answers questions the run never asked:
+
+| key | what it is |
+|---|---|
+| `means`, `comoments` | the feature means and the centred `k × k` co-moment matrix |
+| `cross_moments`, `target_weights` | per target, the uncentred `E[z·y]` the solve consumes, and the weight behind it |
+| `target_means`, `target_vars` | per target, the target's own mean and centred variance |
+| `n_eff`, `n_kish`, `target_n_kish` | the accumulated weight, and Kish's effective sample size for the features and per target |
+
+`n_eff` counts weight, not rows. `n_kish = n_eff² / Σw²` is the number of
+equally weighted rows the moments are worth, which is what a standard error
+divides by; an exponentially weighted window of unit rows settles at
+`(1 + λ)/(1 − λ)` whatever the halflife's units. It is scale-free, so it does
+not shrink when a stream goes quiet — `n_eff` is what says that.
+
+The target moments are the half that makes the rest usable. Without `Var[y]`
+there is no residual variance, no R², no information criterion and no
+standard error to be had from a saved Gram:
+
+```python
+ols = po.spec.ewridge("ols", targets=["y"], features=["x0", "x1", "x2"],
+                      halflife=500.0, ridge=1e-9, standardize=False)
+fitted = po.ModelBank([ols])
+fitted.fit_predict(df)
+
+g = fitted.gram("ols")[0]
+raw = g["comoments"] + np.outer(g["means"], g["means"])   # the solve's pairing
+beta = np.linalg.solve(raw, g["cross_moments"][0])
+slopes = beta[1:]                                          # column 0 is the intercept
+resid_var = g["target_vars"][0] - slopes @ g["comoments"][1:, 1:] @ slopes
+r2 = 1 - resid_var / g["target_vars"][0]
+```
+
+A state saved by 0.2.0 or earlier has no `Σw²` and no target moments, and
+they cannot be recovered from what it does have — those four keys are `None`
+there, for that state's whole remaining life. Reading any of this back needs
+`numpy`, which is an optional extra.
 
 ### The last row
 

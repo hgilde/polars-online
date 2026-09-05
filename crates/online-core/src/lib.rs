@@ -85,7 +85,9 @@ pub use conformal::{Conformal, norm_ppf};
 pub use constraint::Constraint;
 pub use drift::PageHinkley;
 pub use ewclass::{Covariance, EwClass, EwClassCfg};
-pub use ewcov::{EwCov, EwCovCfg, EwCovModel, EwCovStat, Pca, partial_corr, variance_is_usable};
+pub use ewcov::{
+    EwCov, EwCovCfg, EwCovModel, EwCovStat, Pca, TargetMoments, partial_corr, variance_is_usable,
+};
 pub use ewdiag::EwDiag;
 pub use ewridge::{EwRidge, EwRidgeCfg};
 pub use ftrl::{Ftrl, FtrlCfg, FtrlLoss};

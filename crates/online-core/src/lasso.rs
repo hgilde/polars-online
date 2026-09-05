@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{Extra, ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::solve::dot_aug;
-use crate::{Decay, EwCov};
+use crate::{Decay, EwCov, TargetMoments};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LassoCfg {
@@ -86,6 +86,11 @@ pub struct Lasso {
     wj: Vec<f64>,
     /// Per target: EW mean of `z y_j` (`z` includes the intercept slot).
     r: Vec<Vec<f64>>,
+    /// Per target: mean, variance and `Sum w^2` -- the other half of the
+    /// sufficient statistic the Gram export hands back
+    /// (docs/ENHANCEMENTS.md E45). `None` in a state written before task 38.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tm: Option<TargetMoments>,
     /// Per target, per path point: coefficients in original units (`k_total`).
     beta: Option<Vec<Vec<Vec<f64>>>>,
     /// Per target, per path point: EW mean squared out-of-sample error.
@@ -109,6 +114,7 @@ impl Lasso {
             cov: EwCov::new(k_total),
             wj: vec![0.0; m],
             r: vec![vec![0.0; k_total]; m],
+            tm: Some(TargetMoments::new(m)),
             beta: None,
             sel_err: vec![vec![0.0; np]; m],
             sel_w: vec![0.0; m],
@@ -160,6 +166,12 @@ impl Lasso {
     /// Per-target accumulated weight behind [`Self::cross_moments`].
     pub fn target_weights(&self) -> &[f64] {
         &self.wj
+    }
+
+    /// Per-target mean, variance and `Sum w^2` (docs/ENHANCEMENTS.md E45);
+    /// `None` for a state written before task 38. See the field.
+    pub fn target_moments(&self) -> Option<&TargetMoments> {
+        self.tm.as_ref()
     }
 
     pub fn n_eff(&self) -> f64 {
@@ -351,7 +363,11 @@ impl OnlineModel for Lasso {
 
         // ---- update accumulators ----
         self.cov.update(&self.zbuf, lam_decay, weight);
-        for ((wj, r), yj) in self.wj.iter_mut().zip(self.r.iter_mut()).zip(y) {
+        let Self {
+            wj: wjs, r: rs, tm, ..
+        } = self;
+        for (j, yj) in y.iter().enumerate() {
+            let (wj, r) = (&mut wjs[j], &mut rs[j]);
             match yj {
                 // See `EwRidge`'s copy of this update: `wj_new == 0` is a
                 // zero-weight row before any weighted one, where `a` and `b`
@@ -364,9 +380,17 @@ impl OnlineModel for Lasso {
                         *ri = a * *ri + b * zi * yj;
                     }
                     *wj = wj_new;
+                    if let Some(tm) = tm.as_mut() {
+                        tm.learn(j, *yj, a, b, lam_decay, weight);
+                    }
                 }
                 Some(_) => {}
-                None => *wj *= lam_decay,
+                None => {
+                    *wj *= lam_decay;
+                    if let Some(tm) = tm.as_mut() {
+                        tm.age(j, lam_decay);
+                    }
+                }
             }
         }
 

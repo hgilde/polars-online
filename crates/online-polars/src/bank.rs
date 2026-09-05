@@ -703,6 +703,11 @@ pub struct Gram {
     pub k: usize,
     /// Accumulated weight behind these moments.
     pub n_eff: f64,
+    /// Kish's effective sample size over the feature rows, `n_eff^2 / Sum w^2`
+    /// (docs/ENHANCEMENTS.md E45): the number of equally weighted rows these
+    /// moments are worth, which is what a standard error divides by. `None`
+    /// before the first row and for a state written before task 38.
+    pub n_kish: Option<f64>,
     /// EW column means, length `k`.
     pub means: Vec<f64>,
     /// Centered co-moments, row-major `k*k`.
@@ -712,6 +717,15 @@ pub struct Gram {
     pub cross_moments: Vec<Vec<f64>>,
     /// Per-target accumulated weight. Empty for `ew_cov`.
     pub target_weights: Vec<f64>,
+    /// Per-target EW mean of the target. Empty for `ew_cov` (no targets);
+    /// `None` for a state written before task 38.
+    pub target_means: Option<Vec<f64>>,
+    /// Per-target EW centered variance of the target, alongside
+    /// [`Self::target_means`].
+    pub target_vars: Option<Vec<f64>>,
+    /// Per-target Kish effective sample size, `W_t^2 / Q_t`; an entry is
+    /// `None` for a target that has not seen a weighted row.
+    pub target_n_kish: Option<Vec<Option<f64>>>,
 }
 
 /// One decay instance's coefficients, from [`Bank::coef`].
@@ -1075,30 +1089,50 @@ impl Bank {
         for key in keys {
             let stream = &states[key];
             for (label, model) in &stream.models {
-                let (cov, cross, weights) = match model {
+                let (cov, cross, weights, tm, targetless) = match model {
                     AnyModel::EwRidge(m) => (
                         m.cov(),
                         m.cross_moments().to_vec(),
                         m.target_weights().to_vec(),
+                        m.target_moments(),
+                        false,
                     ),
                     AnyModel::Lasso(m) => (
                         m.cov(),
                         m.cross_moments().to_vec(),
                         m.target_weights().to_vec(),
+                        m.target_moments(),
+                        false,
                     ),
                     // No targets, so no cross-moments: the matrix is the whole
                     // output.
-                    AnyModel::EwCov(m) => (m.cov(), Vec::new(), Vec::new()),
+                    AnyModel::EwCov(m) => (m.cov(), Vec::new(), Vec::new(), None, true),
                     _ => continue,
+                };
+                // Empty says "this model has no targets"; `None` says "this
+                // state was written before task 38 and cannot say". They are
+                // different answers, so `ew_cov` reports empty, not `None`.
+                let (target_means, target_vars, target_n_kish) = if targetless {
+                    (Some(Vec::new()), Some(Vec::new()), Some(Vec::new()))
+                } else {
+                    (
+                        tm.map(|t| t.means().to_vec()),
+                        tm.map(|t| t.vars().to_vec()),
+                        tm.map(|t| t.n_kish(&weights)),
+                    )
                 };
                 out.push(Gram {
                     group: key.clone(),
                     instance: label.clone(),
                     k: cov.k(),
                     n_eff: cov.n_eff(),
+                    n_kish: cov.n_kish(),
                     means: cov.means().to_vec(),
                     comoments: cov.comoments().to_vec(),
                     cross_moments: cross,
+                    target_means,
+                    target_vars,
+                    target_n_kish,
                     target_weights: weights,
                 });
             }

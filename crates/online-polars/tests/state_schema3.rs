@@ -405,6 +405,38 @@ fn a_schema_3_state_file_loads_with_its_summary_and_last_row() {
 }
 
 #[test]
+fn a_schema_3_state_reports_no_kish_size_and_no_target_moments() {
+    // Task 38 (E45) added `Sum w^2` and the per-target moments. A schema-3
+    // file has neither, and neither can be replayed from what it does have:
+    // a `Q` accumulated from the resume point against a `W` from the whole
+    // stream reports an effective size too large by the length of the
+    // history. So such a state reports `None` for the rest of its life --
+    // and keeps streaming, and keeps re-saving the same bytes.
+    let mut restored = Bank::load_bytes(&bytes(), None).unwrap();
+    let g = &restored.gram(1, None).unwrap()[0];
+    assert_eq!(g.n_kish, None, "no Sum w^2 in a schema-3 file");
+    assert_eq!(g.target_means, None);
+    assert_eq!(g.target_vars, None);
+    assert_eq!(g.target_n_kish, None);
+    // Not merely absent at load: absent for good.
+    restored.fit_predict(&frame(60, 20)).unwrap();
+    let g = &restored.gram(1, None).unwrap()[0];
+    assert_eq!(g.n_kish, None, "a partial Sum w^2 would be worse than none");
+    assert_eq!(g.target_vars, None);
+    // The moments it does have are still the moments a fresh bank has.
+    let mut want = fresh();
+    want.fit_predict(&frame(60, 20)).unwrap();
+    let w = &want.gram(1, None).unwrap()[0];
+    assert_eq!(g.means, w.means);
+    assert_eq!(g.comoments, w.comoments);
+    assert_eq!(g.cross_moments, w.cross_moments);
+    assert_eq!(g.target_weights, w.target_weights);
+    // And a bank that never left the build reports all of it.
+    assert!(w.n_kish.is_some());
+    assert!(w.target_vars.is_some());
+}
+
+#[test]
 fn a_schema_3_state_continues_the_stream_to_the_bit() {
     let specs = specs_from_fixture();
     let mut want = fresh();

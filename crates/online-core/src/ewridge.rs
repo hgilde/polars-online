@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::solve::{dot_aug, solve_spd};
-use crate::{Decay, EwCov};
+use crate::{Decay, EwCov, TargetMoments};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EwRidgeCfg {
@@ -173,6 +173,10 @@ struct SlowState {
     cov: EwCov,
     wj: Vec<f64>,
     r: Vec<Vec<f64>>,
+    /// The twin's own target moments, so a blend mixes two complete sets
+    /// (docs/ENHANCEMENTS.md E45). `None` in a state written before task 38.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tm: Option<TargetMoments>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -185,6 +189,13 @@ pub struct EwRidge {
     /// Per-target EW residual variance and its weight sum.
     wsig: Vec<f64>,
     sig2: Vec<f64>,
+    /// Per-target mean, variance and `Sum w^2`, the other half of the
+    /// sufficient statistic the Gram export hands back
+    /// (docs/ENHANCEMENTS.md E45). `None` in a state written before task 38:
+    /// the moments cannot be reconstructed from the cross-moments, so such a
+    /// state reports `None` rather than a partial answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tm: Option<TargetMoments>,
     /// Last solved coefficients per output slot (target-major, then combo),
     /// each of length `k_total` (zeros outside a combo's feature set).
     beta: Option<Vec<Vec<f64>>>,
@@ -210,6 +221,7 @@ impl EwRidge {
                 cov: EwCov::new(k_total),
                 wj: vec![0.0; m],
                 r: vec![vec![0.0; k_total]; m],
+                tm: Some(TargetMoments::new(m)),
             })
         });
         Ok(Self {
@@ -217,6 +229,7 @@ impl EwRidge {
             cov: EwCov::new(k_total),
             wj: vec![0.0; m],
             r: vec![vec![0.0; k_total]; m],
+            tm: Some(TargetMoments::new(m)),
             wsig: vec![0.0; m],
             sig2: vec![0.0; m],
             beta: None,
@@ -270,6 +283,13 @@ impl EwRidge {
         &self.wj
     }
 
+    /// Per-target mean, variance and `Sum w^2` -- the other half of what a
+    /// saved Gram needs (docs/ENHANCEMENTS.md E45). `None` for a state
+    /// written before task 38; see the field.
+    pub fn target_moments(&self) -> Option<&TargetMoments> {
+        self.tm.as_ref()
+    }
+
     pub fn coefficients(&self) -> Option<&[Vec<f64>]> {
         self.beta.as_deref()
     }
@@ -316,10 +336,21 @@ impl EwRidge {
                     mixed_c[i * k + j] = raw - mixed_mean[i] * mixed_mean[j];
                 }
             }
-            blended.set_moments(&mixed_mean, &mixed_c, w_new);
+            // `Q` mixes by the same coefficients as the moments; see
+            // `TargetMoments::blend` for why a union would be wrong here.
+            let q = match (self.cov.q_sum(), slow.cov.q_sum()) {
+                (Some(qf), Some(qs)) => Some(af * qf + as_ * qs),
+                _ => None,
+            };
+            blended.set_moments(&mixed_mean, &mixed_c, w_new, q);
             self.cov = blended;
         }
 
+        // A twin restored from a pre-task-38 state has no target moments, and
+        // the mixture of a set with nothing is nothing (E45).
+        if slow.tm.is_none() {
+            self.tm = None;
+        }
         for j in 0..self.cfg.n_targets {
             let (wf, ws) = (self.wj[j], slow.wj[j]);
             let w_new = (1.0 - f) * wf + f * ws;
@@ -329,6 +360,9 @@ impl EwRidge {
                     self.r[j][i] = af * self.r[j][i] + as_ * slow.r[j][i];
                 }
                 self.wj[j] = w_new;
+                if let (Some(tm), Some(stm)) = (self.tm.as_mut(), slow.tm.as_ref()) {
+                    tm.blend(stm, j, af, as_);
+                }
             }
         }
     }
@@ -587,7 +621,14 @@ impl OnlineModel for EwRidge {
         if let (Some(slow), Some(h)) = (self.slow.as_mut(), self.cfg.long_halflife) {
             let slow_lam = Decay::Halflife(h).factor(d_clock);
             slow.cov.update(&self.zbuf, slow_lam, weight);
-            for ((wj, r), yj) in slow.wj.iter_mut().zip(slow.r.iter_mut()).zip(y) {
+            let SlowState {
+                wj: swj,
+                r: sr,
+                tm: stm,
+                ..
+            } = &mut **slow;
+            for (j, yj) in y.iter().enumerate() {
+                let (wj, r) = (&mut swj[j], &mut sr[j]);
                 match yj {
                     // `wj_new == 0` means this row carries no weight and none
                     // has ever been carried, so there is nothing to blend and
@@ -600,9 +641,17 @@ impl OnlineModel for EwRidge {
                             *ri = a * *ri + b * zi * yj;
                         }
                         *wj = wj_new;
+                        if let Some(tm) = stm.as_mut() {
+                            tm.learn(j, *yj, a, b, slow_lam, weight);
+                        }
                     }
                     Some(_) => {}
-                    None => *wj *= slow_lam,
+                    None => {
+                        *wj *= slow_lam;
+                        if let Some(tm) = stm.as_mut() {
+                            tm.age(j, slow_lam);
+                        }
+                    }
                 }
             }
         }
@@ -623,6 +672,11 @@ impl OnlineModel for EwRidge {
                         *ri = a * *ri + b * zi * yj;
                     }
                     self.wj[j] = wj_new;
+                    // The other half of the sufficient statistic, on the same
+                    // `a`/`b` as the cross-moments (E45).
+                    if let Some(tm) = self.tm.as_mut() {
+                        tm.learn(j, yj, a, b, lam, weight);
+                    }
                     // EW residual variance from the primary (first-combo) pred.
                     let p = pred[j * nc];
                     let ws_new = lam * self.wsig[j] + weight;
@@ -637,6 +691,9 @@ impl OnlineModel for EwRidge {
                 None => {
                     self.wj[j] *= lam;
                     self.wsig[j] *= lam;
+                    if let Some(tm) = self.tm.as_mut() {
+                        tm.age(j, lam);
+                    }
                 }
             }
         }
@@ -893,6 +950,87 @@ mod tests {
             after_shrunk > before_shrunk + 0.5,
             "shrink should pull back toward the long run: {before_shrunk} -> {after_shrunk}"
         );
+    }
+
+    /// E45: the target moments must survive a blend as a mixture, not go
+    /// stale, and `f = 0` (or a twin identical to the model) must leave them
+    /// exactly where they were -- the invariant the means, co-moments and
+    /// weights already hold.
+    #[test]
+    fn a_blend_mixes_the_target_moments() {
+        let build = |f: f64| {
+            let mut c = cfg(1, 1);
+            c.decay = Decay::Halflife(50.0);
+            c.session_shrink = Some(f);
+            c.long_halflife = Some(50.0); // the same halflife: an identical twin
+            c.min_periods = 0.0;
+            EwRidge::new(c).unwrap()
+        };
+        let run = |m: &mut EwRidge| {
+            let mut s = 7u64;
+            for i in 0..500 {
+                let x = [lcg(&mut s)];
+                m.step(
+                    &x,
+                    &[Some(3.0 + 2.0 * x[0])],
+                    if i == 0 { 0.0 } else { 1.0 },
+                    1.0,
+                );
+            }
+        };
+        let mut twin = build(0.5);
+        run(&mut twin);
+        let (m0, v0, q0) = {
+            let tm = twin.target_moments().unwrap();
+            (tm.means()[0], tm.vars()[0], tm.q()[0])
+        };
+        twin.blend_toward_long_run();
+        let tm = twin.target_moments().unwrap();
+        assert!(
+            (tm.means()[0] - m0).abs() < 1e-12,
+            "{} vs {m0}",
+            tm.means()[0]
+        );
+        assert!((tm.vars()[0] - v0).abs() < 1e-9, "{} vs {v0}", tm.vars()[0]);
+        assert!((tm.q()[0] - q0).abs() < 1e-9, "{} vs {q0}", tm.q()[0]);
+
+        // A genuinely slower twin moves them toward the long run. The level
+        // sits at 0 for a long stretch and jumps to 10 for a short one, so
+        // the fast window's mean is ~10 and the twin's is much lower.
+        let mut slow = {
+            let mut c = cfg(1, 1);
+            c.decay = Decay::Halflife(20.0);
+            c.session_shrink = Some(0.9);
+            c.long_halflife = Some(5000.0);
+            c.min_periods = 0.0;
+            EwRidge::new(c).unwrap()
+        };
+        let mut s = 11u64;
+        for i in 0..2000 {
+            let x = [lcg(&mut s)];
+            let level = if i < 1900 { 0.0 } else { 10.0 };
+            slow.step(
+                &x,
+                &[Some(level + x[0])],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let before = slow.target_moments().unwrap().means()[0];
+        assert!(
+            before > 9.0,
+            "the fast window should be at the new level: {before}"
+        );
+        slow.blend_toward_long_run();
+        let tm = slow.target_moments().unwrap();
+        assert!(
+            tm.means()[0] < before - 5.0,
+            "the blend should pull the mean toward the long run: {before} -> {}",
+            tm.means()[0]
+        );
+        // And the mixture is still a valid set of moments.
+        assert!(tm.vars()[0] > 0.0);
+        assert!(tm.q()[0] > 0.0 && tm.n_kish(slow.target_weights())[0].unwrap() > 1.0);
     }
 
     #[test]

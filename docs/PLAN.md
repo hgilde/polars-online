@@ -590,7 +590,7 @@ to run at the width, target count and block count its design allows.
 - [x] 37. **`marginal` model** (E44): per-(feature, target) EW mean, variance,
       covariance, Σw and Σw² — `O(p·T)` per row, `n_eff` the only output —
       read as a long frame by `ModelBank.marginal()`.
-- [ ] 38. **Complete the Gram export** (E45): `gram()` gains per-target means
+- [x] 38. **Complete the Gram export** (E45): `gram()` gains per-target means
       and variances and Kish `n_kish` (features and per target); Σw² tracked
       beside Σw. Additive fields, legacy states report `None`.
 - [ ] 39. **`po.gram`** (E46): merge / subset / correlation / solve /
@@ -1483,6 +1483,46 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   is added at the end of the enum; the file format encodes a variant by
   name, so schema-3 files written before it still load (rule 5's
   appended-variant precedent, as for `seqtest`).
+
+**Task 38's decisions: the complete Gram, 2026-09-05.**
+
+- *`Option`, not a sentinel, and skipped when absent.* `EwCov::q_sum`,
+  `EwRidge::tm` and `Lasso::tm` are `Option`, `#[serde(default,
+  skip_serializing_if = "Option::is_none")]`. A state written before this
+  task deserialises to `None`, keeps streaming, and re-saves **byte for
+  byte** — the schema-3 fixture's `a_schema_3_state_re_saves_byte_identically`
+  still passes, which is why the field is skipped rather than written as
+  nil. No `SCHEMA_VERSION` bump: additive defaulted fields are the
+  `rows_fed` precedent (rule 5), as an appended variant was for task 37.
+- *A legacy state reports `None` for good, not from the resume point.* The
+  tempting alternative — start accumulating `Q` on load — pairs a `Q` over
+  the rows since the resume with a `W` over the whole stream, and reports an
+  effective sample size too large by the length of the history. That is a
+  wrong number where `None` is the true answer, and it would be wrong
+  silently. `a_schema_3_state_reports_no_kish_size_and_no_target_moments`
+  feeds twenty more rows and asserts it is still `None`.
+- *The target moments ride the cross-moment update's own `a` and `b`.*
+  `TargetMoments::learn` takes them rather than recomputing from `W_t`, so
+  the arithmetic is `EwCov::update`'s operation for operation and a target's
+  variance equals an `ew_cov` over that column to the bit — asserted in the
+  core and again through `gram()` in Python. It is the same reasoning as
+  task 37's, and the same test.
+- *Kish's `n` is scale-free, and that is a feature.* `W` decays by `λ` and
+  `Q` by `λ²`, so `W²/Q` is unchanged by pure decay: a target that stops
+  arriving keeps the sample size its moments earned, and `target_weights` is
+  what collapses. A first draft of the test asserted the opposite and was
+  wrong, not the code. The docstring and the README now say which number
+  means "how many rows" and which means "how recent".
+- *A blend mixes `Q` by the moments' coefficients, not as a union.* The
+  slow twin sees the *same* rows under a longer halflife, so summing the two
+  `Q`s (the exact `Σw²` of the re-weighted union) reports a blend of a state
+  with itself as twice as informative as the state. Mixing by `af`/`as`
+  keeps the invariant the means, co-moments and weights already have: an
+  identical twin blends to the identity. Documented on `TargetMoments::blend`
+  as an approximation for overlapping histories, which it is.
+- *Empty is not `None`.* `ew_cov` has no targets, so its three target lists
+  are empty; `None` is reserved for "this state cannot tell you". Two
+  different answers, two different values.
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without
