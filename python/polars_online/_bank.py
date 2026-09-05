@@ -273,6 +273,52 @@ class ModelBank:
             pl.Series("coef", values, pl.Float64).fill_nan(None),
         ).select("group", "instance", "n_eff", *layout.columns, "coef")
 
+    def last_row(self, spec: str | int | None = None, group: str | None = None) -> pl.DataFrame:
+        """The output struct as it stood on the last row each stream learned
+        from: one row per (spec, group), the struct's fields unnested after
+        ``spec`` and ``group``.
+
+        It is the row :meth:`fit_predict` reported for that row, field for
+        field -- ``pred``, ``resid``, ``sigma``, the metrics, the residual
+        quantiles, ``n_eff``, and ``coef`` when the row carried it (a chunk's
+        last row does; :meth:`coef` has the coefficients whichever row was
+        last). It travels with the state, so a bank loaded from a file says
+        how each model was doing without its output frame, and a directory
+        of fits compares without keeping the last row of every output::
+
+            fits = sorted(Path("fits").glob("*.bin"))
+            table = pl.concat(
+                [po.ModelBank.load(f).last_row().with_columns(file=pl.lit(f.name)) for f in fits],
+                how="diagonal_relaxed",
+            )
+            table.sort("ic_y", descending=True)  # with emit_metrics=True
+
+        ``spec``, a name or a position, narrows the table to one spec
+        (``KeyError`` / ``IndexError`` for one the bank has not got, as
+        :meth:`groups`); ``group`` to one group, and a group the bank has
+        never seen gives an empty frame. Specs with different fields are
+        stacked ``diagonal_relaxed``, so a field one spec has not got is
+        null on its rows. A group with no learned row yet -- every row
+        skipped so far, or a state file written before 0.2.0 -- is a row of
+        nulls. :meth:`predict` does not move it, and a chunk that ends in
+        skipped rows leaves the row before them.
+        """
+        names = self._native.spec_names()
+        picked = range(len(names)) if spec is None else [self._spec_index(spec)]
+        frames: list[pl.DataFrame] = []
+        for i in picked:
+            keys, struct = self._native.last_row(i, group)
+            frames.append(
+                pl.DataFrame(
+                    [
+                        pl.Series("spec", [names[i]] * len(keys), pl.String),
+                        pl.Series("group", keys, pl.String),
+                        struct,
+                    ]
+                ).unnest(names[i])
+            )
+        return pl.concat(frames, how="diagonal_relaxed")
+
     def gram(self, spec: str | int, group: str | None = None) -> list[dict[str, Any]]:
         """The EW accumulators behind a spec's fit, per group and instance.
 

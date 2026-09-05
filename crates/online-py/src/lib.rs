@@ -271,6 +271,26 @@ impl PyModelBank {
             .collect())
     }
 
+    /// The output struct on the last row each stream learned from, per
+    /// group (`Bank::last_row`): the sorted group keys and a struct series
+    /// with one row per key.
+    #[pyo3(signature = (spec, group=None))]
+    fn last_row(
+        slf: &Bound<'_, Self>,
+        spec: usize,
+        group: Option<&str>,
+    ) -> PyResult<(Vec<Option<String>>, PySeries)> {
+        let this = slf.try_borrow().map_err(|_| busy("last_row"))?;
+        let (keys, col) = this
+            .inner
+            .last_row(spec, group)
+            .map_err(PyValueError::new_err)?;
+        Ok((
+            keys.into_iter().map(|k| k.0).collect(),
+            PySeries(col.take_materialized_series()),
+        ))
+    }
+
     fn spec_names(slf: &Bound<'_, Self>) -> PyResult<Vec<String>> {
         let this = slf.try_borrow().map_err(|_| busy("spec_names"))?;
         Ok(this.inner.specs().iter().map(|s| s.name.clone()).collect())

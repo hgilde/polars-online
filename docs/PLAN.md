@@ -167,6 +167,8 @@ with the same clock as everything else. Output `pred` is a probability; `resid =
   order is the clock, and with decay off the order does not reach the fit at all.
 - `state()` / `save(path)` / `load(path)`: msgpack (`rmp-serde`) with header
   `{schema_version, package_version, spec}`; loading checks the spec matches.
+  Each stream's state also carries the output row of the last row it learned
+  from, read back as `ModelBank.last_row()` (task 34).
 - Python: `ModelBank(specs).fit_predict(df) -> df` (appends struct columns) and
   `predict(df) -> df`, the same columns scored against the bank as it stands with nothing
   updated — every row from the same state, the clock distance measured from the last learned
@@ -559,10 +561,11 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       dump recipe against a build of the previous commit, plus `EwDiag` vs
       `EwCov` compared as bits. Per 400k rows at k = 20: `kalman` 223 → 179 ms,
       `sgd` with `scale_features` 109 → 62; at k = 50 1065 → 908 and 279 → 121.
-- [ ] 34. **Last-row diagnostics in the bank file**: the output-struct fields as
+- [x] 34. **Last-row diagnostics in the bank file**: the output-struct fields as
       of the last training row, per (spec, group), saved with the state and
-      readable from a loaded bank without the output frame. Additive field, no
-      format bump (the `rows_fed` precedent).
+      readable from a loaded bank without the output frame
+      (`ModelBank.last_row()`, `Bank::last_row`). Additive field, no format
+      bump (the `rows_fed` precedent).
 
 ## 11a. Decisions made while implementing
 
@@ -1260,6 +1263,47 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   row regardless (it carries `n_eff`), so the raw `kalman` runs 213 → 172
   ms as well. Reported as before/after from two wheels run back to back
   on the same (loaded) machine — the ratio is the claim.
+
+**Task 34's decisions: the last row in the bank file, 2026-09-05.**
+
+- *It is one row of `ChunkOut`, not a second set of diagnostics.* Every
+  output buffer keeps the row index innermost (`(mi*n_slots+slot)*n_rows
+  +ri`, and the same shape for metrics, conformal, quantiles, `n_eff`,
+  `lam_selected`), so `LastRow::take` is one strided gather per buffer
+  and `to_chunk` puts the row back into a 1-row `ChunkOut` that the
+  ordinary `assemble` turns into the struct column. The saved row is
+  therefore the `fit_predict` row field for field — `emit_selected`,
+  `emit_averaged` and the rest are re-derived by the same code. A new
+  `ChunkOut` buffer has to be added to `take` and `to_chunk` by hand, and
+  switched on in `tests/last_row.rs`'s rich spec, whose field-for-field
+  comparison against the frame is what catches the omission
+  (`docs/EXTENDING.md`).
+- *The last row **learned from**, not the last row fed.* `remember_last`
+  runs after every accepted run in `process` and keeps the run's last
+  *processed* row, so a chunk that ends in skipped rows (a null feature
+  or weight) steps back to the row before them, and a group that never
+  learned reports a null row. `predict` and `score` never touch it: the
+  saved row describes the state, and the state did not move.
+- *`coef` when the frame's row carried it.* The row is faithful to the
+  frame, so `coef` is present exactly when that row had it — a chunk's
+  last accepted row does, an interior row only on the `coef_every`
+  cadence. `coef()` remains the way to the coefficients otherwise;
+  duplicating them into every saved row would have made the file's row
+  disagree with the frame's.
+- *Additive, so no format bump.* `StreamState.last_row: Option<LastRow>`
+  with `#[serde(default)]`, map-encoded like `rows_fed` and the residual
+  statistics before it: files from 0.1.x load and report a null row
+  (`state_v1.rs`, `state_schema2.rs` check this on the frozen fixtures).
+  `Stream::restore` checks the row's shape against the spec — twelve
+  lengths — so a file whose spec no longer matches its row is refused,
+  not assembled out of bounds.
+- *Python stacks specs `diagonal_relaxed`.* `ModelBank.last_row(spec=None,
+  group=None)` returns `spec`, `group`, then the struct's fields unnested,
+  one row per (spec, group); specs with different fields stack with nulls,
+  which is what a table of many fits needs. An unseen group is an empty
+  frame, not an error, so a glob over saved files can ask for one group
+  everywhere. The CLI is untouched: it exposes neither `coef` nor an
+  inspect facility, and the data is read through `ModelBank.load`.
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without

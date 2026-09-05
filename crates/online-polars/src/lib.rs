@@ -56,4 +56,4 @@ pub use runner::{
     run_config_on,
 };
 pub use spec::{Compare, FloatOrList, ModelKind, Num, SessionGapSpec, Spec};
-pub use stream::{AnyModel, ChunkOut, Stream, StreamState, build_models, combo_labels};
+pub use stream::{AnyModel, ChunkOut, LastRow, Stream, StreamState, build_models, combo_labels};

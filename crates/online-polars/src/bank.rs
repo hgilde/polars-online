@@ -476,7 +476,10 @@ fn process(
                 );
                 off += run.len();
                 match r {
-                    Ok(()) => outs.push((si, Ok(out))),
+                    Ok(()) => {
+                        stream.remember_last(&out);
+                        outs.push((si, Ok(out)));
+                    }
                     Err((raw, i)) => {
                         outs.push((si, Err(backwards_clock(spec, raw, i))));
                         break;
@@ -1143,6 +1146,58 @@ impl Bank {
             }
         }
         Ok(out)
+    }
+
+    /// The output struct as it stood on the last row each stream of a spec
+    /// learned from, per group (docs/PLAN.md task 34): the sorted group keys
+    /// and a struct column with one row for each, in that order -- the row
+    /// [`Bank::fit_predict`] reported for that row, field for field,
+    /// including `coef` when the row carried it. It travels with the state,
+    /// so a bank loaded from a file answers "how was this model doing?"
+    /// without the output frame, and a directory of files compares without
+    /// keeping the last row of each output. A group with no learned row
+    /// yet, or restored from a file written before this existed, is a row
+    /// of nulls. [`Bank::predict`] does not move it.
+    ///
+    /// `group` narrows the list to one group; a group the bank has never
+    /// seen gives an empty column, not an error.
+    ///
+    /// # Errors
+    ///
+    /// `spec` out of range.
+    pub fn last_row(
+        &self,
+        spec: usize,
+        group: Option<&str>,
+    ) -> Result<(Vec<GroupKey>, Column), String> {
+        let states = self
+            .states
+            .get(spec)
+            .ok_or_else(|| format!("spec index {spec} out of range"))?;
+        let mut keys: Vec<&GroupKey> = match group {
+            Some(g) => states.keys().filter(|k| k.as_str() == Some(g)).collect(),
+            None => states.keys().collect(),
+        };
+        keys.sort();
+        let (s, d) = (&self.specs[spec], &self.derived[spec]);
+        let chunks: Vec<ChunkOut> = keys
+            .iter()
+            .enumerate()
+            .map(|(row, key)| {
+                let stream = &states[*key];
+                match stream.last_row() {
+                    Some(last) => last.to_chunk(s, stream.n_models(), stream.n_slots(), row),
+                    // One unprocessed row: every field null.
+                    None => {
+                        let mut out = ChunkOut::new(s, stream.n_models(), stream.n_slots(), 1);
+                        out.rows.push(row);
+                        Ok(out)
+                    }
+                }
+            })
+            .collect::<Result<_, String>>()?;
+        let col = assemble(s, d, keys.len(), &chunks).map_err(|e| e.to_string())?;
+        Ok((keys.into_iter().cloned().collect(), col))
     }
 
     /// Outputs are attached with `with_column`, which replaces a column of

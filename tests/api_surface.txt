@@ -227,6 +227,7 @@
   fit_predict_batches
   gram
   groups
+  last_row
   load
   load_bytes
   output_fields

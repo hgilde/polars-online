@@ -731,6 +731,10 @@ pub struct StreamState {
     pub metrics: Vec<Vec<SlotMetrics>>,
     #[serde(default)]
     pub conformal: Vec<Vec<Conformal>>,
+    /// The output row of the last row learned from (docs/PLAN.md task 34).
+    /// `None` before the first, and in files written before it existed.
+    #[serde(default)]
+    pub last_row: Option<LastRow>,
 }
 
 /// Live per-stream state.
@@ -765,6 +769,9 @@ pub struct Stream {
     /// inside each `Step` is the one per-row allocation left, and it is cheap
     /// (docs/IMPROVEMENTS.md P2).
     scratch: Vec<Scratch>,
+    /// What the output struct said on the last row this stream learned
+    /// from, kept for [`Stream::save`] (docs/PLAN.md task 34).
+    last_row: Option<LastRow>,
 }
 
 impl Stream {
@@ -786,6 +793,26 @@ impl Stream {
             .map(|(_, m)| m.n_outputs())
             .max()
             .unwrap_or(0)
+    }
+
+    /// The output row of the last row this stream learned from, if any
+    /// (docs/PLAN.md task 34): what [`Stream::process_chunk`] wrote for it,
+    /// kept across [`Stream::save`] and [`Stream::restore`].
+    pub fn last_row(&self) -> Option<&LastRow> {
+        self.last_row.as_ref()
+    }
+
+    /// Keep the last learned row of a run's buffers as [`Self::last_row`]:
+    /// the last row `processed` marks, so a chunk that ends in skipped rows
+    /// keeps the row before them. A run with no learned row changes nothing.
+    /// The vectors are reused, so after the first run this allocates only
+    /// for a `coef` the row carried.
+    pub fn remember_last(&mut self, out: &ChunkOut) {
+        if let Some(ri) = out.processed.iter().rposition(|&p| p) {
+            self.last_row
+                .get_or_insert_with(Default::default)
+                .take(out, ri);
+        }
     }
 }
 
@@ -990,6 +1017,112 @@ impl ChunkOut {
     }
 }
 
+/// One row of a [`ChunkOut`], as a value: the output-struct fields of the
+/// last row a stream learned from, kept with its state so that a bank loaded
+/// from a file reports the diagnostics as they stood -- `pred`, `resid`,
+/// `sigma`, the metrics, the residual quantiles, `n_eff`, `coef`, ... --
+/// without the output frame (docs/PLAN.md task 34). Every field is the
+/// chunk's buffer with `n_rows = 1`, so the row goes out through
+/// [`LastRow::take`] and back in through [`LastRow::to_chunk`] by the one
+/// layout `assemble` reads, and a value it holds is the value the output
+/// row had, to the bit.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct LastRow {
+    pub pred: Vec<f64>,
+    pub resid: Vec<f64>,
+    pub sigma: Vec<f64>,
+    pub resid_z: Vec<f64>,
+    pub autocorr: Vec<f64>,
+    pub metrics: Vec<f64>,
+    pub conformal: Vec<f64>,
+    pub resid_q: Vec<f64>,
+    pub drift: Vec<bool>,
+    pub n_eff: Vec<f64>,
+    pub lam_selected: Vec<f64>,
+    pub coef: Vec<Option<Vec<f64>>>,
+}
+
+/// Row `ri` of a buffer of `n_rows` rows: in every `ChunkOut` buffer the row
+/// is the innermost index, whatever the outer product (`ChunkOut::at`, and
+/// the model-major blocks of `metrics`, `conformal` and `resid_q`), so the
+/// row's values are the elements `g * n_rows + ri`.
+fn take_row<T: Copy>(dst: &mut Vec<T>, src: &[T], n_rows: usize, ri: usize) {
+    dst.clear();
+    dst.extend(src.iter().skip(ri).step_by(n_rows.max(1)));
+}
+
+impl LastRow {
+    /// Overwrite with row `ri` of `out`, reusing the vectors.
+    pub fn take(&mut self, out: &ChunkOut, ri: usize) {
+        let n = out.processed.len();
+        debug_assert!(ri < n && out.processed[ri]);
+        take_row(&mut self.pred, &out.pred, n, ri);
+        take_row(&mut self.resid, &out.resid, n, ri);
+        take_row(&mut self.sigma, &out.sigma, n, ri);
+        take_row(&mut self.resid_z, &out.resid_z, n, ri);
+        take_row(&mut self.autocorr, &out.autocorr, n, ri);
+        take_row(&mut self.metrics, &out.metrics, n, ri);
+        take_row(&mut self.conformal, &out.conformal, n, ri);
+        take_row(&mut self.resid_q, &out.resid_q, n, ri);
+        take_row(&mut self.drift, &out.drift, n, ri);
+        take_row(&mut self.n_eff, &out.n_eff, n, ri);
+        take_row(&mut self.lam_selected, &out.lam_selected, n, ri);
+        self.coef.clear();
+        self.coef.extend(out.coef.iter().map(|c| c[ri].clone()));
+    }
+
+    /// A one-row chunk at absolute row `row`, marked processed, for
+    /// `assemble`. `Err` when the row is not the shape `spec` writes with
+    /// `n_models` instances of `n_slots` slots -- a state file that does not
+    /// belong to its spec.
+    pub fn to_chunk(
+        &self,
+        spec: &Spec,
+        n_models: usize,
+        n_slots: usize,
+        row: usize,
+    ) -> Result<ChunkOut, String> {
+        let mut out = ChunkOut::new(spec, n_models, n_slots, 1);
+        let same = [
+            out.pred.len() == self.pred.len(),
+            out.resid.len() == self.resid.len(),
+            out.sigma.len() == self.sigma.len(),
+            out.resid_z.len() == self.resid_z.len(),
+            out.autocorr.len() == self.autocorr.len(),
+            out.metrics.len() == self.metrics.len(),
+            out.conformal.len() == self.conformal.len(),
+            out.resid_q.len() == self.resid_q.len(),
+            out.drift.len() == self.drift.len(),
+            out.n_eff.len() == self.n_eff.len(),
+            out.lam_selected.len() == self.lam_selected.len(),
+            out.coef.len() == self.coef.len(),
+        ];
+        if same.contains(&false) {
+            return Err(format!(
+                "saved last row of spec {:?} has the wrong shape for its spec",
+                spec.name
+            ));
+        }
+        out.rows.push(row);
+        out.processed[0] = true;
+        out.pred.clone_from(&self.pred);
+        out.resid.clone_from(&self.resid);
+        out.sigma.clone_from(&self.sigma);
+        out.resid_z.clone_from(&self.resid_z);
+        out.autocorr.clone_from(&self.autocorr);
+        out.metrics.clone_from(&self.metrics);
+        out.conformal.clone_from(&self.conformal);
+        out.resid_q.clone_from(&self.resid_q);
+        out.drift.clone_from(&self.drift);
+        out.n_eff.clone_from(&self.n_eff);
+        out.lam_selected.clone_from(&self.lam_selected);
+        for (dst, src) in out.coef.iter_mut().zip(&self.coef) {
+            dst[0].clone_from(src);
+        }
+        Ok(out)
+    }
+}
+
 impl Stream {
     pub fn new(spec: &Spec) -> Result<Self, String> {
         let models = build_models(spec)?;
@@ -1042,6 +1175,7 @@ impl Stream {
             decays,
             rows_seen: 0,
             scratch: slots.iter().map(|_| Scratch::default()).collect(),
+            last_row: None,
         })
     }
 
@@ -1057,6 +1191,7 @@ impl Stream {
             autocorr: self.autocorr.clone(),
             metrics: self.metrics.clone(),
             conformal: self.conformal.clone(),
+            last_row: self.last_row.clone(),
         }
     }
 
@@ -1095,6 +1230,12 @@ impl Stream {
         }
         if saved.conformal.len() == stream.conformal.len() {
             stream.conformal = saved.conformal.clone();
+        }
+        // Checked here, where a file that is not its spec's is refused with
+        // the models, rather than at the first read.
+        if let Some(last) = &saved.last_row {
+            last.to_chunk(spec, stream.n_models(), stream.n_slots(), 0)?;
+            stream.last_row = Some(last.clone());
         }
         Ok(stream)
     }

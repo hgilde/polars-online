@@ -492,6 +492,34 @@ a bank, or the path of a saved state. `bank.gram("ols")` gives the EW
 accumulators behind the fit (`means`, centered `comoments`, `cross_moments`,
 `n_eff`), for anything other than our solve.
 
+### The last row
+
+The state file also carries the output row of the last row each group
+learned from, so a saved model says how it was doing without its output
+frame:
+
+```python
+bank = po.ModelBank.load("bank.state", specs=[spec])
+last = bank.last_row("ridge")    # one row per group: spec, group, pred_y__r0.000001, ..., n_eff, coef
+```
+
+It is the `fit_predict` row field for field — `pred`, `sigma`, the metrics
+and the interval when the spec asks for them, `n_eff`, and `coef` when that
+row carried it (a chunk's last row does; `bank.coef()` has the coefficients
+either way). Fit many models, save each, and comparing them is one `concat`
+over the files:
+
+```python
+from pathlib import Path
+table = pl.concat(
+    [po.ModelBank.load(f).last_row() for f in sorted(Path(".").glob("*.state"))],
+    how="diagonal_relaxed",          # specs with different fields stack with nulls
+)
+```
+
+A group that has not learned from a row yet, or a file written by 0.1.x,
+gives a row of nulls, and `predict` does not move the row.
+
 ### Output field names
 
 You index the result struct by strings, so the names are a contract. The

@@ -19,7 +19,8 @@ predict before update, O(state) memory, chunk invariance, `n_eff` before
 the row — and every number the 0.1 models produce is unchanged. One
 breaking change: a residual diagnostic set on a model that has no
 predictions is refused by name, where `ew_cov` used to accept it silently.
-State files are written in schema 3; files from 0.1.x load.
+State files are written in schema 3 and carry the last learned row's
+output (`ModelBank.last_row()`); files from 0.1.x load.
 
 ### Added
 
@@ -273,6 +274,21 @@ State files are written in schema 3; files from 0.1.x load.
 - **`--dry-run` and `RunConfig::validate` build the bank**, so a duplicate
   spec name or a comparison naming a spec the bank has not got is reported
   before the input is opened, not on the first chunk.
+- **`ModelBank.last_row(spec=None, group=None)`: the output row of the last
+  row each group learned from, as a frame**, from a live bank or one loaded
+  from a state file (`docs/PLAN.md` §11a, task 34). One row per `(spec,
+  group)` — `spec`, `group`, then the spec's output fields unnested, so it
+  is the `fit_predict` row field for field: `pred`, `sigma`, the metrics,
+  the interval, `n_eff`, `coef` when that row carried it (a chunk's last
+  learned row does; `coef()` has them otherwise). Specs with different
+  fields stack with nulls (`diagonal_relaxed`), and `pl.concat` over the
+  `last_row()` of many saved banks is a table of fits to compare — the
+  reason it exists: a run's diagnostics no longer have to be kept from the
+  last row of its output file. The state file carries the row (`Bank::
+  last_row`, `LastRow` in Rust), an additive field with no format bump, so
+  a file from 0.1.x loads and reports a null row, as does a group that has
+  not learned from a row yet; a chunk that ends in skipped rows keeps the
+  row before them, and `predict` never moves it.
 
 ### Changed
 

@@ -107,6 +107,18 @@ fn a_v1_state_file_still_loads() {
     // and the spec it carries round-trips through the match check
     let spec = spec_from_fixture();
     assert!(Bank::load_bytes(&bytes(), Some(&[spec])).is_ok());
+    // Written before the last learned row travelled with the state
+    // (docs/PLAN.md task 34): every group reports a row of nulls.
+    let (keys, col) = bank.unwrap().last_row(0, None).unwrap();
+    assert_eq!(keys.len(), 2);
+    assert_eq!(
+        col.null_count(),
+        0,
+        "a struct row of nulls is not a null struct"
+    );
+    for f in col.struct_().unwrap().fields_as_series() {
+        assert_eq!(f.null_count(), 2, "{}", f.name());
+    }
 }
 
 #[test]

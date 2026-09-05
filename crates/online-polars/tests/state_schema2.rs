@@ -223,6 +223,16 @@ fn a_schema_2_state_file_still_loads() {
     );
     let specs = specs_from_fixture();
     assert!(Bank::load_bytes(&bytes(), Some(&specs)).is_ok());
+    // Written before the last learned row travelled with the state
+    // (docs/PLAN.md task 34): a row of nulls per group, for both specs.
+    let bank = bank.unwrap();
+    for si in 0..specs.len() {
+        let (keys, col) = bank.last_row(si, None).unwrap();
+        assert!(!keys.is_empty());
+        for f in col.struct_().unwrap().fields_as_series() {
+            assert_eq!(f.null_count(), keys.len(), "{}", f.name());
+        }
+    }
 }
 
 #[test]

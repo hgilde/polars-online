@@ -243,7 +243,11 @@ the registry tests will fail in between, which is what they are for.
   `crates/online-polars/src/bank.rs` carries the name and dtype
   (IMPROVEMENTS X1), the emit flag goes on `Spec` and `CommonKwargs`, and
   `test_portability::test_exact_field_names_for_a_grid_spec` plus the API
-  snapshot pin the names.
+  snapshot pin the names. If the field gets its own `ChunkOut` buffer, add
+  it to `LastRow::take` and `LastRow::to_chunk` in
+  `crates/online-polars/src/stream.rs` and switch it on in the rich spec of
+  `crates/online-polars/tests/last_row.rs`, whose field-for-field comparison
+  of the saved last row against the frame is what catches the omission.
 - **A new parameter** on one model: the `Cfg` field and its validation in
   `new` (step 1), the `ModelKind` field with `#[serde(default)]` (step 6), the
   `build_one` default (step 7), the builder keyword (step 9), the
