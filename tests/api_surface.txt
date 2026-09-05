@@ -168,6 +168,9 @@
     mode = 'pa1'
     c = None
     eps = None
+    coef_min = None
+    coef_max = None
+    coef_sum = None
     common
   quantile:
     name
@@ -201,6 +204,9 @@
     l2 = None
     clip_gradient = None
     scale_features = False
+    coef_min = None
+    coef_max = None
+    coef_sum = None
     common
 
 [ModelBank]

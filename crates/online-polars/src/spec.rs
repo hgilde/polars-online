@@ -517,6 +517,19 @@ pub enum ModelKind {
         /// gradient step, unscaling the coefficients on the way out.
         #[serde(default)]
         scale_features: bool,
+        /// Lower bound per slope (ENHANCEMENTS E40): one number for every
+        /// feature or a list with one entry per feature; "-inf" for none.
+        /// The intercept is never bounded. Imposed by Euclidean projection
+        /// after each update, in the space the step is taken in.
+        #[serde(default)]
+        coef_min: Option<FloatOrList>,
+        /// Upper bound per slope, as `coef_min`; "inf" for none.
+        #[serde(default)]
+        coef_max: Option<FloatOrList>,
+        /// The slopes sum to this, in the caller's units. With `coef_min =
+        /// 0` and `coef_sum = 1` the slopes are weights on the simplex.
+        #[serde(default)]
+        coef_sum: Option<f64>,
     },
     /// Passive-aggressive regression (ENHANCEMENTS E17). No learning rate:
     /// each row's update is the smallest change that satisfies it.
@@ -530,6 +543,13 @@ pub enum ModelKind {
         /// Insensitive tube: rows already this close leave the fit alone.
         #[serde(default)]
         eps: Option<f64>,
+        /// Bounds and sum on the slopes, as for `sgd` (ENHANCEMENTS E40).
+        #[serde(default)]
+        coef_min: Option<FloatOrList>,
+        #[serde(default)]
+        coef_max: Option<FloatOrList>,
+        #[serde(default)]
+        coef_sum: Option<f64>,
     },
     /// Holt's linear trend method (ENHANCEMENTS E25): level plus slope, no
     /// features. The baseline a feature-based model should have to beat.
@@ -1148,7 +1168,7 @@ impl Spec {
                     ));
                 }
             }
-            ModelKind::Pa { mode, c, eps } => {
+            ModelKind::Pa { mode, c, eps, .. } => {
                 if let Some(md) = mode {
                     if !["pa", "pa1", "pa2"].contains(&md.as_str()) {
                         return Err(format!(

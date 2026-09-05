@@ -691,6 +691,34 @@ on the clock so an adapted rate re-opens after a long gap. `clip_gradient`
 defaults to `1e3`, because with a log link one large count makes the next
 gradient exponentially bigger; it does not bind for identity-link losses.
 
+**Constrained coefficients.** `coef_min` and `coef_max` bound each slope,
+and `coef_sum` fixes their total. After every update the slopes are moved to
+the nearest point that satisfies all three (the Euclidean projection); the
+intercept is never constrained. A bound is a number for every slope or a
+list with one entry per feature, and `inf` means no bound on that side.
+Portfolio weights that must be long-only and fully invested are
+`coef_min=0.0, coef_sum=1.0`; a sign the model must respect is
+`coef_min=0.0` alone; a slope pinned at a known value is `coef_min` equal
+to `coef_max`. The fit starts from the projected zero (the uniform weights,
+on a simplex), and `coef` reports what the projection returned, in the
+caller's units even under `scale_features=True`.
+
+```python
+weights = po.spec.sgd(
+    "w",
+    targets=["y"],
+    features=["signal_a", "signal_b", "x0"],
+    halflife=200.0,
+    learning_rate=0.01,
+    coef_min=0.0,
+    coef_sum=1.0,
+    coef_every=1,
+)
+fit = po.ModelBank([weights]).fit_predict(df)
+last = fit["w"].struct.field("coef").drop_nulls()[-1]
+assert min(last[1:]) >= 0.0 and abs(sum(last[1:]) - 1.0) < 1e-12
+```
+
 ### `pa` — passive-aggressive regression
 
 ```
@@ -704,6 +732,12 @@ satisfies it — no learning rate to tune. Plain `pa` moves the fit as far as
 one bad row demands, so `pa1` is the default. PA keeps no accumulators, so
 its coefficients have no halflife; the clock only drives `n_eff`. A row
 weight below 1 scales `τ`; above 1 it counts as 1.
+
+`pa` takes the same `coef_min`, `coef_max` and `coef_sum` as `sgd`, with
+the projection applied after each update. The step then no longer meets
+the row's margin exactly, and a truth outside the set is never reached, so
+keep `c` small: each row moves the fit only as far as `c` allows and the
+projection takes the rest back.
 
 ### `ew_cov` — exponentially weighted moments
 

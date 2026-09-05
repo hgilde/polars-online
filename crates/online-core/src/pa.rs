@@ -30,9 +30,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::Decay;
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::solve::dot_aug;
+use crate::{Constraint, Decay};
 
 /// Which passive-aggressive variant (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -59,6 +59,13 @@ pub struct PaCfg {
     /// Width of the insensitive tube: rows already this close are passive.
     pub eps: f64,
     pub min_periods: f64,
+    /// Box and/or sum constraint on the slopes, imposed by Euclidean
+    /// projection right after each update (ENHANCEMENTS E40); the intercept
+    /// is free. The initial `0` is projected too. A projected step no longer
+    /// satisfies the row's margin exactly -- it is the closest feasible
+    /// coefficient to the one that would.
+    #[serde(default)]
+    pub constraint: Option<Constraint>,
 }
 
 impl PaCfg {
@@ -76,6 +83,9 @@ impl PaCfg {
         if self.eps < 0.0 || self.eps.is_nan() {
             return Err("pa: eps must be >= 0".into());
         }
+        if let Some(c) = &self.constraint {
+            c.validate(self.n_features, "pa")?;
+        }
         Ok(())
     }
 }
@@ -87,16 +97,28 @@ pub struct Pa {
     w_sum: f64,
     #[serde(skip)]
     zbuf: Vec<f64>,
+    /// Scratch for the projection's breakpoints.
+    #[serde(skip)]
+    pbuf: Vec<f64>,
 }
 
 impl Pa {
     pub fn new(cfg: PaCfg) -> Result<Self, String> {
         cfg.validate()?;
         let k = cfg.k_total();
+        let mut beta = vec![vec![0.0; k]; cfg.n_targets];
+        if let Some(c) = &cfg.constraint {
+            let off = usize::from(cfg.add_intercept);
+            let mut scratch = Vec::new();
+            for b in beta.iter_mut() {
+                c.project(&mut b[off..], None, &mut scratch);
+            }
+        }
         Ok(Self {
-            beta: vec![vec![0.0; k]; cfg.n_targets],
+            beta,
             w_sum: 0.0,
             zbuf: vec![0.0; k],
+            pbuf: Vec::new(),
             cfg,
         })
     }
@@ -178,6 +200,10 @@ impl OnlineModel for Pa {
             for (b, z) in self.beta[j].iter_mut().zip(&self.zbuf) {
                 *b += step * z;
             }
+            if let Some(c) = &self.cfg.constraint {
+                let off = usize::from(self.cfg.add_intercept);
+                c.project(&mut self.beta[j][off..], None, &mut self.pbuf);
+            }
         }
         self.w_sum = lam * self.w_sum + weight;
 
@@ -252,6 +278,7 @@ mod tests {
             c: 1.0,
             eps: 0.01,
             min_periods: 5.0,
+            constraint: None,
         }
     }
 
@@ -487,6 +514,95 @@ mod tests {
         let st = m.step(&[0.5], &[None], 1.0, 1.0);
         assert!(st.pred[0].is_finite());
         assert_eq!(m.coefficients()[0], before);
+    }
+
+    fn constrained(k: usize, lo: f64, hi: f64, sum: Option<f64>) -> PaCfg {
+        let mut c = cfg(k, PaMode::Pa1);
+        c.constraint = Some(Constraint {
+            lo: vec![lo; k],
+            hi: vec![hi; k],
+            sum,
+        });
+        c
+    }
+
+    #[test]
+    fn a_constraint_is_validated_by_name() {
+        let c = constrained(2, 1.0, 0.0, None);
+        assert_eq!(
+            c.validate().unwrap_err(),
+            "pa: coef_min[0] = 1 is above coef_max[0] = 0"
+        );
+    }
+
+    #[test]
+    fn the_projection_follows_every_update() {
+        // Slopes on the simplex after every row, including the start, and a
+        // truth on it is recovered; the fit is no longer exact on each row.
+        let mut m = Pa::new(constrained(3, 0.0, f64::INFINITY, Some(1.0))).unwrap();
+        for b in &m.coefficients()[0][1..] {
+            assert!((b - 1.0 / 3.0).abs() <= 1e-15);
+        }
+        let mut s = 5u64;
+        for i in 0..5000 {
+            let x = [lcg(&mut s), lcg(&mut s), lcg(&mut s)];
+            let y = 0.2 * x[0] + 0.5 * x[1] + 0.3 * x[2];
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            let b = &m.coefficients()[0][1..];
+            assert!(b.iter().all(|v| *v >= 0.0), "row {i}: {b:?}");
+            assert!(
+                (b.iter().sum::<f64>() - 1.0).abs() <= 1e-12,
+                "row {i}: {b:?}"
+            );
+        }
+        let b = &m.coefficients()[0];
+        for (got, want) in b[1..].iter().zip([0.2, 0.5, 0.3]) {
+            assert!((got - want).abs() < 0.03, "{b:?}");
+        }
+    }
+
+    #[test]
+    fn a_box_holds_where_the_truth_lies_outside_it() {
+        // A truth outside the box is never realizable, so PA keeps stepping;
+        // the projection keeps every step inside the box, and with a small
+        // cap `c` the fit sits against the walls the truth is behind.
+        let mut c = constrained(2, 0.0, 0.5, None);
+        c.c = 0.01;
+        c.min_periods = 0.0;
+        let mut m = Pa::new(c).unwrap();
+        let mut s = 3u64;
+        let mut bound = 0;
+        for i in 0..5000 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = -0.4 * x[0] + 0.9 * x[1];
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            let b = &m.coefficients()[0][1..];
+            assert!(b.iter().all(|v| (0.0..=0.5).contains(v)), "row {i}: {b:?}");
+            bound += usize::from(b[0] == 0.0 || b[1] == 0.5);
+        }
+        let b = &m.coefficients()[0];
+        assert!(b[1] < 0.05 && b[2] > 0.45, "{b:?}");
+        assert!(bound > 4000, "the box bound on {bound} of 5000 rows");
+    }
+
+    #[test]
+    fn a_constrained_state_roundtrips() {
+        let mut m1 = Pa::new(constrained(2, -1.0, 1.0, Some(0.5))).unwrap();
+        let mut s = 31u64;
+        for i in 0..60 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m1.step(&x, &[Some(x[0])], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let bytes = rmp_serde::to_vec(&m1.state()).unwrap();
+        let mut m2 = Pa::restore(&rmp_serde::from_slice(&bytes).unwrap()).unwrap();
+        assert_eq!(m2.cfg().constraint, m1.cfg().constraint);
+        for _ in 0..60 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            assert_eq!(
+                m1.step(&x, &[Some(x[0])], 1.0, 1.0).pred,
+                m2.step(&x, &[Some(x[0])], 1.0, 1.0).pred
+            );
+        }
     }
 
     #[test]

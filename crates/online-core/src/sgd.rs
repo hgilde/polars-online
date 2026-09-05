@@ -26,8 +26,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::Decay;
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
+use crate::{Constraint, Decay};
 
 /// Loss function, and with it the link (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -95,6 +95,16 @@ pub struct SgdCfg {
     /// ordinary scales — a squared-loss fit is bit-identical with and without
     /// it. `inf` disables it.
     pub clip_gradient: f64,
+    /// Box and/or sum constraint on the slopes, imposed by Euclidean
+    /// projection after each update (ENHANCEMENTS E40); the intercept is
+    /// free. The projection is taken in the space the step is taken in: the
+    /// caller's units, or the standardized coordinates under
+    /// `scale_features`, where a caller bound `lo_i` on `c_i` is the bound
+    /// `lo_i * scale_i` on `b_i` and the sum is `sum(b_i / scale_i)`.
+    /// The reported coefficients satisfy the constraint after every learned
+    /// row, and the initial `0` is projected too, so a simplex starts uniform.
+    #[serde(default)]
+    pub constraint: Option<Constraint>,
 }
 
 impl SgdCfg {
@@ -134,6 +144,9 @@ impl SgdCfg {
                 return Err("sgd: inv_scaling power must be >= 0".into());
             }
         }
+        if let Some(c) = &self.constraint {
+            c.validate(self.n_features, "sgd")?;
+        }
         Ok(())
     }
 }
@@ -151,6 +164,12 @@ pub struct Sgd {
     w_sum: f64,
     #[serde(skip)]
     zbuf: Vec<f64>,
+    /// Scratch for the projection's breakpoints.
+    #[serde(skip)]
+    pbuf: Vec<f64>,
+    /// Which targets stepped this row (only kept under a constraint).
+    #[serde(skip)]
+    learned: Vec<bool>,
 }
 
 impl Sgd {
@@ -164,12 +183,22 @@ impl Sgd {
             Vec::new()
         };
         let scaler = cfg.scale_features.then(|| crate::EwCov::new(k));
+        let mut beta = vec![vec![0.0; k]; m];
+        if let Some(c) = &cfg.constraint {
+            let off = usize::from(cfg.add_intercept);
+            let mut scratch = Vec::new();
+            for b in beta.iter_mut() {
+                c.project(&mut b[off..], None, &mut scratch);
+            }
+        }
         Ok(Self {
             scaler,
-            beta: vec![vec![0.0; k]; m],
+            beta,
             g2,
             w_sum: 0.0,
             zbuf: vec![0.0; k],
+            pbuf: Vec::new(),
+            learned: Vec::new(),
             cfg,
         })
     }
@@ -339,6 +368,11 @@ impl OnlineModel for Sgd {
 
         let ready = n_eff >= self.cfg.min_periods;
         let mut pred = vec![f64::NAN; m];
+        if self.cfg.constraint.is_some() {
+            // Skipped by serde, so sized here rather than in `new`.
+            self.learned.clear();
+            self.learned.resize(m, false);
+        }
         for j in 0..m {
             let eta: f64 = self
                 .zbuf
@@ -373,9 +407,33 @@ impl OnlineModel for Sgd {
                 };
                 self.beta[j][i] -= lr * g;
             }
+            if let Some(l) = self.learned.get_mut(j) {
+                *l = true;
+            }
         }
         if let Some(sc) = &mut self.scaler {
             sc.update(&raw_z, lam, weight);
+        }
+        // Project after the scaler moved: the bounds live in the caller's
+        // units, and in standardized coordinates they move with the scales,
+        // so every target is re-projected when the scales changed (a
+        // positive weight), otherwise only the ones this row stepped.
+        if self.cfg.constraint.is_some() {
+            let scales = self.scaler.is_some().then(|| self.scales());
+            let rescaled = self.scaler.is_some() && weight > 0.0;
+            let Self {
+                cfg,
+                beta,
+                pbuf,
+                learned,
+                ..
+            } = self;
+            let c = cfg.constraint.as_ref().expect("checked above");
+            for (j, b) in beta.iter_mut().enumerate() {
+                if rescaled || learned[j] {
+                    c.project(&mut b[off..], scales.as_deref().map(|s| &s[off..]), pbuf);
+                }
+            }
         }
         self.w_sum = lam * self.w_sum + weight;
 
@@ -454,6 +512,7 @@ mod tests {
             l2: 0.0,
             min_periods: 5.0,
             clip_gradient: 1e12,
+            constraint: None,
             scale_features: false,
         }
     }
@@ -867,6 +926,152 @@ mod tests {
         let st = m.step(&[0.5], &[None], 1.0, 1.0);
         assert!(st.pred[0].is_finite());
         assert_eq!(m.coefficients()[0], before);
+    }
+
+    fn constrained(k: usize, lo: f64, hi: f64, sum: Option<f64>) -> SgdCfg {
+        let mut c = cfg(k, SgdLoss::Squared);
+        c.constraint = Some(Constraint {
+            lo: vec![lo; k],
+            hi: vec![hi; k],
+            sum,
+        });
+        c
+    }
+
+    #[test]
+    fn a_constraint_is_validated_by_name() {
+        let mut c = constrained(2, 0.0, 1.0, Some(3.0));
+        assert_eq!(
+            c.validate().unwrap_err(),
+            "sgd: coef_sum = 3 is outside what the bounds allow, [0, 2]"
+        );
+        c.constraint.as_mut().unwrap().lo = vec![0.0];
+        assert!(
+            c.validate()
+                .unwrap_err()
+                .contains("coef_min lists 1 bounds")
+        );
+    }
+
+    #[test]
+    fn a_simplex_starts_uniform_and_stays_on_it() {
+        // Truth on the simplex: the fit lands on it, and every intermediate
+        // coefficient vector is on it too (sum exact to rounding, slopes >= 0).
+        let mut m = Sgd::new(constrained(3, 0.0, f64::INFINITY, Some(1.0))).unwrap();
+        let start = &m.coefficients()[0];
+        assert_eq!(start[0], 0.0);
+        for b in &start[1..] {
+            assert!((b - 1.0 / 3.0).abs() <= 1e-15);
+        }
+        let mut s = 11u64;
+        for i in 0..20000 {
+            let x = [lcg(&mut s), lcg(&mut s), lcg(&mut s)];
+            let y = 0.2 * x[0] + 0.5 * x[1] + 0.3 * x[2] + 0.05 * lcg(&mut s);
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            let b = &m.coefficients()[0][1..];
+            assert!(b.iter().all(|v| *v >= 0.0), "row {i}: {b:?}");
+            assert!(
+                (b.iter().sum::<f64>() - 1.0).abs() <= 1e-12,
+                "row {i}: {b:?}"
+            );
+        }
+        let b = &m.coefficients()[0];
+        for (got, want) in b[1..].iter().zip([0.2, 0.5, 0.3]) {
+            assert!((got - want).abs() < 0.03, "{b:?}");
+        }
+    }
+
+    #[test]
+    fn a_box_holds_where_the_truth_lies_outside_it() {
+        // Uncorrelated unit-scale features: the constrained least-squares
+        // optimum is the truth clamped into the box.
+        let mut c = constrained(2, 0.0, 0.5, None);
+        c.learning_rate = 0.02;
+        let b = fit(c, 20000, 3, |x, s| -0.4 * x[0] + 0.9 * x[1] + 0.1 * lcg(s));
+        assert_eq!(b[1], 0.0, "{b:?}");
+        assert_eq!(b[2], 0.5, "{b:?}");
+        assert!(b[0].abs() < 0.05, "{b:?}");
+    }
+
+    #[test]
+    fn a_pinned_slope_never_moves_and_the_rest_learn() {
+        let mut c = cfg(2, SgdLoss::Squared);
+        c.constraint = Some(Constraint {
+            lo: vec![0.7, f64::NEG_INFINITY],
+            hi: vec![0.7, f64::INFINITY],
+            sum: None,
+        });
+        let b = fit(c, 20000, 5, |x, _| 1.5 * x[0] - 0.5 * x[1] + 0.25);
+        assert_eq!(b[1], 0.7);
+        assert!((b[2] + 0.5).abs() < 0.05, "{b:?}");
+    }
+
+    #[test]
+    fn the_constraint_holds_in_the_callers_units_under_scaling() {
+        // The bound is on c_i = b_i / scale_i; the projection is taken with
+        // the scales the coefficients are reported with, after every row.
+        let mut c = constrained(2, 0.0, 0.01, Some(0.01));
+        c.scale_features = true;
+        c.min_periods = 0.0;
+        let mut m = Sgd::new(c).unwrap();
+        let mut s = 17u64;
+        for i in 0..5000 {
+            let x = [1000.0 * lcg(&mut s), 0.001 * lcg(&mut s)];
+            let y = 0.002 * x[0] + 900.0 * x[1];
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            let b = &m.coefficients()[0][1..];
+            assert!(
+                b.iter().all(|v| *v >= -1e-15 && *v <= 0.01 + 1e-15),
+                "row {i}: {b:?}"
+            );
+            assert!(
+                (b.iter().sum::<f64>() - 0.01).abs() <= 1e-12,
+                "row {i}: {b:?}"
+            );
+        }
+        // The truth (0.002, 900) has one slope inside the box and one far
+        // outside. The fit keeps the first at its truth and gives the second
+        // whatever the sum leaves: in the standardized metric that is the
+        // nearest feasible point, since a unit of c_1 is 10^6 times cheaper
+        // than a unit of c_0.
+        let b = &m.coefficients()[0];
+        assert!((b[1] - 0.002).abs() <= 2e-4, "{b:?}");
+        assert!((b[2] - 0.008).abs() <= 2e-4, "{b:?}");
+    }
+
+    #[test]
+    fn a_zero_weight_row_leaves_a_constrained_fit_alone() {
+        let mut m = Sgd::new(constrained(2, 0.0, f64::INFINITY, Some(1.0))).unwrap();
+        let mut s = 23u64;
+        for i in 0..50 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(&x, &[Some(x[0])], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let before = m.coefficients().to_vec();
+        m.step(&[0.3, -0.2], &[Some(5.0)], 1.0, 0.0);
+        m.step(&[0.3, -0.2], &[None], 1.0, 1.0);
+        assert_eq!(m.coefficients(), &before[..]);
+    }
+
+    #[test]
+    fn a_constrained_state_roundtrips() {
+        let mut m1 = Sgd::new(constrained(2, 0.0, f64::INFINITY, Some(1.0))).unwrap();
+        let mut s = 29u64;
+        for i in 0..60 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m1.step(&x, &[Some(x[0])], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let bytes = rmp_serde::to_vec(&m1.state()).unwrap();
+        let mut m2 = Sgd::restore(&rmp_serde::from_slice(&bytes).unwrap()).unwrap();
+        assert_eq!(m2.cfg().constraint, m1.cfg().constraint);
+        for _ in 0..60 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            assert_eq!(
+                m1.step(&x, &[Some(x[0])], 1.0, 1.0).pred,
+                m2.step(&x, &[Some(x[0])], 1.0, 1.0).pred
+            );
+            assert_eq!(m1.coefficients(), m2.coefficients());
+        }
     }
 
     #[test]

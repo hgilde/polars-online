@@ -56,6 +56,7 @@
 mod clock;
 mod cluster;
 mod conformal;
+mod constraint;
 mod drift;
 mod ewclass;
 mod ewcov;
@@ -78,6 +79,7 @@ pub use cluster::{
     Micro, MicroCfg, MicroCluster, SeedRule, SplitMix64, dist2, merged_radius2,
 };
 pub use conformal::{Conformal, norm_ppf};
+pub use constraint::Constraint;
 pub use drift::PageHinkley;
 pub use ewclass::{Covariance, EwClass, EwClassCfg};
 pub use ewcov::{EwCov, EwCovCfg, EwCovModel, EwCovStat, Pca, partial_corr, variance_is_usable};

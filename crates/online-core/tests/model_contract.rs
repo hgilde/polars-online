@@ -314,6 +314,7 @@ fn sgd_cfg() -> SgdCfg {
         schedule: LearningRate::Constant,
         l2: 0.0,
         clip_gradient: 1e3,
+        constraint: None,
         scale_features: false,
         min_periods: 3.0,
     }
@@ -336,6 +337,7 @@ fn pa_cfg() -> PaCfg {
         c: 1.0,
         eps: 0.1,
         min_periods: 3.0,
+        constraint: None,
     }
 }
 

@@ -490,7 +490,21 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       lazy path, the runner, the CLI and the refusals), 14 core unit tests
       plus 2 for the solve, the golden, contract, API-surface, error-message
       and registry suites extended.
-- [ ] 28. **E40: constrained coefficients** on `sgd` / `pa` (box and sign constraints).
+- [x] 28. **E40: constrained coefficients** on `sgd` / `pa`: `coef_min` /
+      `coef_max` (a number for every slope or one per feature, `inf` for no
+      bound) and `coef_sum`, one projection (`online_core::Constraint`) for
+      the box, the simplex and any box with a sum; intercept free; the
+      constraint in the caller's units under `scale_features`. Verified by a
+      Python replay of both models and the projection held bit-exact to the
+      bank over six constraint sets × three schedules / three PA modes with
+      nulls, zero and NaN weights and an irregular clock, an independent
+      bisection-and-KKT check of the projection, 200k-row recovery on the
+      simplex / a sign / a hyperplane / a box / a million-fold scale gap,
+      and the edge cases (pinned slopes, list vs scalar, explicit ±inf,
+      several targets, zero-weight and null-target rows, the input bound,
+      chunk invariance, save/load, `predict`, groups, the expression, the
+      lazy path, the runner, the CLI, every refusal by name); 9 core unit
+      tests in `constraint.rs`, 7 in `sgd.rs`, 4 in `pa.rs`, two goldens.
 - [ ] 29. **E41: diagonal transition `φ^d`** on `kalman` (coefficient dynamics).
 - [ ] 30. **E42: a sequential e-process test** between two specs' losses.
 - [ ] 31. **Performance and parallel-performance deep dive** over the new models and
@@ -875,6 +889,69 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   0.81 / 0.28; `diagonal` 6.92 / 5.88 / 4.51 / 2.84 / 1.57. `full` pays `C`
   Cholesky factorizations per row, `shared` one, `diagonal` none; the update
   itself is `ew_cov`'s O(k²) on one class and an O(1) decay on the others.
+
+**Task 28's decisions: constrained coefficients, 2026-09-05.**
+
+- *One projection, not two.* ENHANCEMENTS E40 sketched a box (clamp) and a
+  simplex (the sorting algorithm). Built as one operator over
+  `{lo ≤ b ≤ hi, Σb = s}` with any of the three optional, because the
+  portfolio ask is usually all three at once (long-only, capped per name,
+  fully invested) and the sort covers only `lo = 0, hi = ∞, s = 1`. The
+  Lagrangian `b_i(μ) = clamp(v_i − μ, lo_i, hi_i)` has a sum that is
+  piecewise linear and non-increasing in `μ`; the root lies between two of
+  the `2k` breakpoints `v_i − hi_i`, `v_i − lo_i`, found by a binary search
+  over the sorted breakpoints and one linear solve on the segment. `O(k)`
+  for a box alone (no sort), `O(k log k)` with a sum. `constraint.rs` checks
+  it against the sort formula on the simplex and against the KKT
+  conditions on random boxes-with-a-sum; the Python side checks it against
+  a bisection that shares no code.
+- *Where the projection runs under `scale_features`.* The bound is a
+  promise about the coefficient the caller reads, `c_i = b_i / scale_i`, so
+  in the standardized space it is `b_i ∈ [lo_i·scale_i, hi_i·scale_i]` and
+  the sum is `Σ b_i / scale_i = s`. The nearest point in the *standardized*
+  metric (the metric the gradient step is taken in) is the box-with-a-sum
+  projection with weights `a_i = 1/scale_i` — the same breakpoint search
+  with `a_i` in the sums. So `sgd` projects `beta` in place with the
+  scales, not the reported coefficients. Consequence, measured: with
+  features a million apart and a sum on the caller's coefficients, the sum
+  goes to the coefficient whose unit is cheap in the standardized metric,
+  and the well-determined slope keeps its truth — not the corner a
+  clamp-then-renormalize would give.
+- *When.* `pa` projects right after each target's update, inside the row.
+  `sgd` projects at the end of `step`, after the scaler has moved, for the
+  targets that learned this row — or every target when the scales moved
+  (a weight > 0 with `scale_features`), because a moved scale changes what
+  the stored `beta` means in the caller's units even for a target that saw
+  a null. `predict` never projects; a zero-weight or null-target row moves
+  nothing. The initial zero is projected in `new` so the first prediction
+  and the first `coef` are feasible: uniform weights on a simplex, the
+  nearest corner of a box that excludes zero.
+- *`pa` under a constraint.* Its step is the smallest change that meets
+  the row's margin; the projection then takes part of it back, so the
+  margin is not met and a truth outside the set is never reached (a wall
+  is approached, not sat on, as `pa.rs` measures: 4,000 of 5,000 rows
+  touching it). Documented as "keep `c` small"; not fixed by projecting
+  inside the step, which would be a different (constrained-QP) update.
+- *Refusals.* Lengths by name, NaN and the wrong infinity by index (`+inf`
+  as a floor or `−inf` as a cap pins nothing and means a typo), a floor
+  above a cap, a non-finite sum, and a sum outside `[Σlo, Σhi]` — with
+  rounding slack of `1e-12` relative, so `[0.1, 0.2, 0.3]` (which sums to
+  `0.6000000000000001`) accepts a sum of `0.6` and projects onto the
+  floors. Python's `_INF_OK` admits `inf` for `coef_min`/`coef_max` and
+  refuses it for `coef_sum`, matching the Rust parser
+  (`tests/test_error_messages.py`).
+- *Measured (200k rows, one bank, Mrows/s, k = 2 / 4 / 8 / 16 / 32).*
+  `sgd` 22.2 / 20.2 / 17.8 / 13.0 / 7.4; with a box 21.0 / 18.7 / 15.6 /
+  11.4 / 6.5; on the simplex 17.0 / 12.8 / 8.2 / 3.9 / 1.7; the simplex
+  under `scale_features` 8.5 / 6.5 / 4.6 / 2.5 / 1.1. `pa` 22.2 / 20.2 /
+  19.5 / 14.5 / 10.0; on the simplex 19.3 / 15.9 / 12.6 / 7.0 / 3.7. The
+  box is `k` clamps (5–12%); the sum is the sort and `log2(2k)` sweeps of
+  `k` clamps, about 0.4 µs a row at `k = 32`, which is what `O(k log k)`
+  costs and is unchanged by an unstable sort. A first cut allocated a
+  `learned` flag per target per row and cost the box 28% at `k = 2`; it
+  is a `#[serde(skip)]` buffer now. The `O(k)`-expected simplex
+  projections (Condat 2016) would be the next step if a bank ever ran
+  hundreds of constrained slopes; none does.
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without

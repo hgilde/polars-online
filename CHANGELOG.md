@@ -168,6 +168,31 @@ carries breaking changes.
   value (an `ew_class` class no row has carried) is null in the list and in
   `ModelBank.coef`, where a NaN would have broken the frame's
   finite-or-null rule.
+- **Constrained coefficients on `sgd` and `pa`** (`coef_min`, `coef_max`,
+  `coef_sum`; `docs/ENHANCEMENTS.md` E40, task 28). A bound is a number for
+  every slope or one per feature, `inf` for no bound on that side; the sum
+  fixes the slopes' total. After every update the slopes move to the
+  nearest feasible point — the Euclidean projection onto the box, the
+  simplex (`coef_min=0.0, coef_sum=1.0`: long-only, fully invested
+  weights), or any box with a sum — and the intercept is never constrained.
+  `O(k)` per row for a box alone, `O(k log k)` with a sum; no new state, and
+  a saved state loads unchanged. The fit starts from the projected zero
+  (uniform weights on a simplex); a zero-weight or null-target row leaves it
+  alone; under `scale_features=True` the bound is on the coefficient in the
+  caller's units and `coef` reports what the projection returned. `pa`
+  projects after each update, so its step no longer meets the margin
+  exactly and a truth outside the set is never reached — keep `c` small. A
+  sum the bounds cannot reach, a floor above a cap, or an infinite bound on
+  the wrong side is refused by name, from Python, the plan and the CLI.
+  Rust: `online_core::Constraint` (`lo`, `hi`, `sum`, and `project`) on
+  `SgdCfg::constraint` / `PaCfg::constraint`; TOML `coef_min = [0.0, 0.0]`,
+  `coef_max = "inf"`, `coef_sum = 1.0` under `[specs.model]`. Verified by
+  a Python replay of both models and the projection, held bit-exact to the
+  bank's `pred`, `n_eff` and `coef` over six constraint sets, three
+  schedules and three PA modes, with nulls, zero and NaN weights and an
+  irregular clock; and on 200k rows, Dirichlet weights recovered on the
+  simplex to 0.005 and feasible to 1e-12 at every row
+  (`tests/test_constraints.py`).
 
 ### Changed
 

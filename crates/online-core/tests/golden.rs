@@ -259,6 +259,7 @@ fn sgd_golden() {
         schedule: LearningRate::InvScaling { power: 0.25 },
         l2: 0.01,
         clip_gradient: 1e3,
+        constraint: None,
         scale_features: true,
         min_periods: 3.0,
     })
@@ -279,6 +280,7 @@ fn sgd_squared_golden() {
         schedule: LearningRate::Constant,
         l2: 0.0,
         clip_gradient: 1e3,
+        constraint: None,
         scale_features: false,
         min_periods: 3.0,
     })
@@ -297,9 +299,60 @@ fn pa_golden() {
         c: 0.5,
         eps: 0.05,
         min_periods: 3.0,
+        constraint: None,
     })
     .unwrap();
     check("pa", &signature(&mut m, 0), GOLDEN_PA);
+}
+
+/// The constrained path (ENHANCEMENTS E40): slopes on the simplex, so the
+/// projection with a sum and a wall both take part; the truth (1.5, -0.75)
+/// lies outside the set.
+#[test]
+fn sgd_simplex_golden() {
+    let mut m = Sgd::new(SgdCfg {
+        n_features: 2,
+        n_targets: 1,
+        add_intercept: true,
+        decay: Decay::Halflife(20.0),
+        loss: SgdLoss::Squared,
+        learning_rate: 0.05,
+        schedule: LearningRate::Constant,
+        l2: 0.0,
+        clip_gradient: 1e3,
+        constraint: Some(Constraint {
+            lo: vec![0.0, 0.0],
+            hi: vec![f64::INFINITY, f64::INFINITY],
+            sum: Some(1.0),
+        }),
+        scale_features: false,
+        min_periods: 3.0,
+    })
+    .unwrap();
+    check("sgd_simplex", &signature(&mut m, 0), GOLDEN_SGD_SIMPLEX);
+}
+
+/// A box with one wall the truth crosses (`x1`'s slope capped at 0) and a
+/// sum below what the free fit would give.
+#[test]
+fn pa_box_golden() {
+    let mut m = Pa::new(PaCfg {
+        n_features: 2,
+        n_targets: 1,
+        add_intercept: true,
+        decay: Decay::Halflife(20.0),
+        mode: PaMode::Pa1,
+        c: 0.5,
+        eps: 0.05,
+        min_periods: 3.0,
+        constraint: Some(Constraint {
+            lo: vec![-1.0, -1.0],
+            hi: vec![1.0, 0.0],
+            sum: Some(0.5),
+        }),
+    })
+    .unwrap();
+    check("pa_box", &signature(&mut m, 0), GOLDEN_PA_BOX);
 }
 
 #[test]
@@ -494,6 +547,8 @@ const GOLDEN_PA: &[f64] = &[
     2.1379339164214444,
     -0.061839814133866494,
 ];
+const GOLDEN_SGD_SIMPLEX: &[f64] = &[0.5169094734826561, 1.109247996359838, -0.020146022626397198];
+const GOLDEN_PA_BOX: &[f64] = &[0.5287388518302499, 1.679384820401434, 0.15906888911203854];
 const GOLDEN_HOLT: &[f64] = &[0.6940554404209057, 0.5781242794831807, 0.2548083372371531];
 const GOLDEN_EW_COV: &[f64] = &[
     -0.3469363807058677,

@@ -2,8 +2,8 @@
 //! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
 
 use online_core::{
-    ClockState, Conformal, Covariance, Decay, EwAutoCorr, EwClass, EwClassCfg, EwCovCfg,
-    EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, Holt, HoltCfg,
+    ClockState, Conformal, Constraint, Covariance, Decay, EwAutoCorr, EwClass, EwClassCfg,
+    EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, Holt, HoltCfg,
     INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, Micro,
     MicroCfg, ModelState, OnlineModel, P2Quantile, Pa, PaCfg, PaMode, PageHinkley, Rls, RlsCfg,
     Robust, RobustCfg, RobustLoss, SeedRule, Sgd, SgdCfg, SgdLoss, SlotMetrics, State, StateError,
@@ -175,6 +175,32 @@ pub fn build_models(spec: &Spec) -> Result<Vec<(String, AnyModel)>, String> {
             Ok((suffix, m))
         })
         .collect()
+}
+
+/// The slope constraint of `sgd` / `pa` from the spec's `coef_min`,
+/// `coef_max` and `coef_sum`: a scalar bound is broadcast to every feature,
+/// a list is taken as given (its length is checked by the model's config,
+/// which names the offence). `None` when nothing is constrained.
+fn constraint(
+    k: usize,
+    coef_min: &Option<FloatOrList>,
+    coef_max: &Option<FloatOrList>,
+    coef_sum: Option<f64>,
+) -> Option<Constraint> {
+    if coef_min.is_none() && coef_max.is_none() && coef_sum.is_none() {
+        return None;
+    }
+    let bounds = |b: &Option<FloatOrList>, none: f64| match b {
+        None => vec![none; k],
+        Some(FloatOrList::Float(v)) => vec![v.0; k],
+        Some(list) => list.to_vec(),
+    };
+    let c = Constraint {
+        lo: bounds(coef_min, f64::NEG_INFINITY),
+        hi: bounds(coef_max, f64::INFINITY),
+        sum: coef_sum,
+    };
+    (!c.is_trivial()).then_some(c)
 }
 
 fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
@@ -410,6 +436,9 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             l2,
             clip_gradient,
             scale_features,
+            coef_min,
+            coef_max,
+            coef_sum,
         } => {
             let loss = match loss.as_deref().unwrap_or("squared") {
                 "squared" => SgdLoss::Squared,
@@ -447,10 +476,18 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 // Finite by default: see SgdCfg::clip_gradient.
                 clip_gradient: clip_gradient.map_or(1e3, |n| n.0),
                 scale_features: *scale_features,
+                constraint: constraint(spec.k(), coef_min, coef_max, *coef_sum),
             };
             Ok(AnyModel::Sgd(Box::new(Sgd::new(cfg)?)))
         }
-        ModelKind::Pa { mode, c, eps } => {
+        ModelKind::Pa {
+            mode,
+            c,
+            eps,
+            coef_min,
+            coef_max,
+            coef_sum,
+        } => {
             let mode = match mode.as_deref().unwrap_or("pa1") {
                 "pa" => PaMode::Pa,
                 "pa1" => PaMode::Pa1,
@@ -466,6 +503,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 c: c.unwrap_or(1.0),
                 eps: eps.unwrap_or(0.1),
                 min_periods: spec.min_periods_or_default(),
+                constraint: constraint(spec.k(), coef_min, coef_max, *coef_sum),
             };
             Ok(AnyModel::Pa(Box::new(Pa::new(cfg)?)))
         }

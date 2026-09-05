@@ -163,12 +163,18 @@ class SgdKwargs(ExprKwargs, total=False):
     l2: float | None
     clip_gradient: float | None
     scale_features: bool
+    coef_min: float | list[float] | None
+    coef_max: float | list[float] | None
+    coef_sum: float | None
 
 
 class PaKwargs(ExprKwargs, total=False):
     mode: str
     c: float | None
     eps: float | None
+    coef_min: float | list[float] | None
+    coef_max: float | list[float] | None
+    coef_sum: float | None
 
 
 class HoltKwargs(ExprKwargs, total=False):

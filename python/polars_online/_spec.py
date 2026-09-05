@@ -145,7 +145,8 @@ _INF_OK: dict[str, frozenset[str]] = {
     "*": frozenset({"halflife", "min_periods", "max_dclock", "session_gap"}),
     "ewridge": frozenset({"ridge"}),
     "kalman": frozenset({"coef_halflife", "q"}),
-    "sgd": frozenset({"clip_gradient"}),
+    "sgd": frozenset({"clip_gradient", "coef_min", "coef_max"}),
+    "pa": frozenset({"coef_min", "coef_max"}),
     "holt": frozenset({"trend_halflife"}),
 }
 
@@ -884,6 +885,9 @@ def sgd(
     l2: float | None = None,
     clip_gradient: float | None = None,
     scale_features: bool = False,
+    coef_min: float | list[float] | None = None,
+    coef_max: float | list[float] | None = None,
+    coef_sum: float | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Stochastic gradient descent with pluggable losses (ENHANCEMENTS E16).
@@ -923,6 +927,26 @@ def sgd(
     rate oscillates in a band around the optimum; use ``inv_scaling`` with it.
     ``huber_delta`` here is in **target units**, unlike the ``huber`` model
     where it is in units of the residual std.
+
+    **Constrained coefficients** (ENHANCEMENTS E40). ``coef_min`` and
+    ``coef_max`` bound each slope (one number for every feature, or a list
+    with one entry per feature; ``-inf`` / ``inf`` for no bound) and
+    ``coef_sum`` fixes the slopes' total; the intercept is always free. After
+    each update the slopes are replaced by the nearest point of the feasible
+    set (the Euclidean projection): ``b_i = clamp(b_i - mu, lo_i, hi_i)``
+    with ``mu = 0`` for a box alone and, with a sum, the one ``mu`` at which
+    the sum holds -- found exactly by sorting the ``2k`` breakpoints where a
+    coordinate meets a bound. ``coef_min=0, coef_sum=1`` puts the slopes on
+    the simplex: portfolio weights, mixing weights, an ensemble over
+    forecasts. The starting point (all zero) is projected too, so a simplex
+    starts uniform. With ``scale_features`` the step is taken in standardized
+    coordinates and so is the projection, with the bounds and the sum
+    carried over exactly (``b_i = c_i * scale_i``); the reported coefficients
+    satisfy the constraint in the caller's units after every learned row. A
+    sum the bounds cannot reach, a floor above a cap, or an infinite bound on
+    the wrong side (``inf`` as a floor) is refused by name; floors of
+    ``[0.1, 0.2, 0.3]`` accept a sum of ``0.6`` although they add up to
+    ``0.6000000000000001``.
     """
     model: dict[str, Any] = {
         "type": "sgd",
@@ -936,6 +960,9 @@ def sgd(
         "l2": l2,
         "clip_gradient": clip_gradient,
         "scale_features": scale_features,
+        "coef_min": coef_min,
+        "coef_max": coef_max,
+        "coef_sum": coef_sum,
     }
     return _common(name, model, targets=targets, features=features, **common)
 
@@ -949,6 +976,9 @@ def pa(
     mode: str = "pa1",
     c: float | None = None,
     eps: float | None = None,
+    coef_min: float | list[float] | None = None,
+    coef_max: float | list[float] | None = None,
+    coef_sum: float | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Passive-aggressive regression (ENHANCEMENTS E17; Crammer et al. 2006).
@@ -977,8 +1007,23 @@ def pa(
     elsewhere, but the coefficients have no half-life. Prefer ``pa1``/``pa2``
     (the default is ``pa1``) when outliers are possible: plain ``pa`` will move
     the fit as far as it takes to satisfy a single bad row.
+
+    ``coef_min``, ``coef_max`` and ``coef_sum`` constrain the slopes exactly
+    as for :func:`sgd` (ENHANCEMENTS E40): the projection follows each
+    update, so the step no longer satisfies the row's margin exactly -- it is
+    the closest feasible coefficient to the one that would. A truth outside
+    the feasible set is never realizable, so PA keeps stepping against the
+    walls; a small ``c`` keeps those steps small.
     """
-    model: dict[str, Any] = {"type": "pa", "mode": mode, "c": c, "eps": eps}
+    model: dict[str, Any] = {
+        "type": "pa",
+        "mode": mode,
+        "c": c,
+        "eps": eps,
+        "coef_min": coef_min,
+        "coef_max": coef_max,
+        "coef_sum": coef_sum,
+    }
     return _common(name, model, targets=targets, features=features, **common)
 
 

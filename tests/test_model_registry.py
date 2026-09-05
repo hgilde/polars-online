@@ -118,9 +118,21 @@ def test_the_golden_pipeline_pins_every_model():
     they include. This check found `ftrl` missing from them on its first run:
     nine models were pinned on three operating systems and the tenth was
     not, and nothing said so."""
-    pinned = [spec["model"]["type"] for spec in test_golden_pipeline.specs()]
-    assert len(pinned) == len(set(pinned)), "a model is pinned twice; one bank per kind"
-    assert set(pinned) == set(_native.model_kinds()), "the golden bank is missing a model"
+    specs = test_golden_pipeline.specs()
+    # One bank per kind, plus variants named `<kind>_<variant>` that pin a
+    # feature of that kind (`sgd_simplex`, `pa_box`: the constrained path
+    # of task 28, which the base banks never take).
+    base = [s["model"]["type"] for s in specs if not _is_variant(s)]
+    assert len(base) == len(set(base)), "a model is pinned twice; one bank per kind"
+    assert set(base) == set(_native.model_kinds()), "the golden bank is missing a model"
+    for s in specs:
+        if _is_variant(s):
+            kind = s["model"]["type"]
+            assert kind in base, f"variant bank {s['name']!r} has no base bank for {kind!r}"
+
+
+def _is_variant(spec) -> bool:
+    return spec["name"].startswith(spec["model"]["type"] + "_")
 
 
 #: Builders whose per-model file is named for the Rust kind, not the builder.
