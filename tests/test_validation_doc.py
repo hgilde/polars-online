@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from data import public_intraday_or_skip
+from data import VALIDATION_DATES, public_intraday_or_skip
 
 REPO = Path(__file__).resolve().parent.parent
 DOC = REPO / "docs" / "VALIDATION.md"
@@ -33,7 +33,10 @@ def _normalize(text: str) -> list[str]:
 
 @pytest.fixture(scope="module")
 def regenerated():
-    public_intraday_or_skip()  # skips offline, and warms the cache
+    # Skips offline, and warms the cache for every day the script reads, so
+    # a download the retries could not save is a skip here rather than a
+    # crash in the subprocess (or its silent fallback to synthetic data).
+    public_intraday_or_skip(VALIDATION_DATES)
     res = subprocess.run(
         [sys.executable, str(REPO / "scripts" / "validate.py")],
         capture_output=True,

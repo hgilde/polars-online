@@ -7,7 +7,9 @@ them call :func:`public_intraday` and are skipped when offline.
 
 from __future__ import annotations
 
+import http.client
 import io
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -23,6 +25,9 @@ _PUBLIC_URL_FMT = (
     "https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1m/BTCUSDT-1m-{date}.zip"
 )
 _DEFAULT_DATES = ("2024-01-02",)
+#: The ten days ``scripts/validate.py`` runs over (``docs/VALIDATION.md``);
+#: here so the test that regenerates the document warms the same cache.
+VALIDATION_DATES = tuple(f"2024-01-{d:02d}" for d in range(2, 12))
 _KLINE_COLS = [
     "open_time",
     "open",
@@ -109,16 +114,32 @@ def synthetic(
     return df, betas
 
 
+#: Errors a retry can fix: no route, a timeout, a reset, and a response cut
+#: short (``http.client.IncompleteRead``, which is not an ``OSError`` -- one
+#: took a CI run down as a crash rather than a skip).
+_TRANSIENT = (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException)
+
+
+def _download(url: str, attempts: int = 3) -> bytes:
+    """One public file, retried with a short pause; ``RuntimeError("offline")``
+    once every attempt has failed."""
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                return resp.read()
+        except _TRANSIENT as e:
+            if attempt + 1 == attempts:
+                raise RuntimeError("offline") from e
+            time.sleep(2.0 * (attempt + 1))
+    raise AssertionError("unreachable")
+
+
 def _one_day(date: str) -> pl.DataFrame:
     CACHE_DIR.mkdir(exist_ok=True)
     cached = CACHE_DIR / f"BTCUSDT-1m-{date}.parquet"
     if cached.exists():
         return pl.read_parquet(cached)
-    try:
-        with urllib.request.urlopen(_PUBLIC_URL_FMT.format(date=date), timeout=30) as resp:
-            raw = resp.read()
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        raise RuntimeError("offline") from e
+    raw = _download(_PUBLIC_URL_FMT.format(date=date))
     with zipfile.ZipFile(io.BytesIO(raw)) as zf:
         csv_bytes = zf.read(zf.namelist()[0])
     df = pl.read_csv(io.BytesIO(csv_bytes), has_header=False, new_columns=_KLINE_COLS)
@@ -153,10 +174,10 @@ def public_intraday(dates: tuple[str, ...] = _DEFAULT_DATES) -> pl.DataFrame:
     return pl.concat(frames).sort("t")
 
 
-def public_intraday_or_skip() -> pl.DataFrame:
+def public_intraday_or_skip(dates: tuple[str, ...] = _DEFAULT_DATES) -> pl.DataFrame:
     import pytest
 
     try:
-        return public_intraday()
+        return public_intraday(dates)
     except RuntimeError:
         pytest.skip("offline: could not download public intraday data")

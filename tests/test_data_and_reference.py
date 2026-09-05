@@ -2,6 +2,7 @@
 
 import numpy as np
 import polars as pl
+import pytest
 
 from data import public_intraday_or_skip, synthetic
 from reference import compute_dclock, ewridge_ref, rls_ref
@@ -111,3 +112,39 @@ def test_public_intraday_download():
     assert df.height > 1000
     assert (np.diff(df["t"].to_numpy()) > 0).all()
     assert df["close"].null_count() == 0
+
+
+def test_a_truncated_download_is_retried_and_a_dead_one_is_offline(monkeypatch):
+    """`http.client.IncompleteRead` is not an `OSError`; it once escaped as a
+    crash from a CI run instead of the retry (or the skip) it deserves."""
+    import http.client
+    import io
+
+    import data
+
+    calls: list[str] = []
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+    def flaky(url, timeout):
+        calls.append(url)
+        if len(calls) < 3:
+            raise http.client.IncompleteRead(b"partial")
+        return _Resp(b"whole")
+
+    monkeypatch.setattr(data.time, "sleep", lambda s: None)
+    monkeypatch.setattr(data.urllib.request, "urlopen", flaky)
+    assert data._download("http://example.invalid/x") == b"whole"
+    assert len(calls) == 3
+
+    def dead(url, timeout):
+        raise http.client.IncompleteRead(b"")
+
+    monkeypatch.setattr(data.urllib.request, "urlopen", dead)
+    with pytest.raises(RuntimeError, match="offline"):
+        data._download("http://example.invalid/x")

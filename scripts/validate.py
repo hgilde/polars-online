@@ -19,9 +19,8 @@ import polars as pl
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
 import polars_online as po  # noqa: E402
+from data import VALIDATION_DATES as DATES  # noqa: E402
 from data import public_intraday, synthetic  # noqa: E402
-
-DATES = tuple(f"2024-01-{d:02d}" for d in range(2, 12))
 
 
 def load(rows: int) -> tuple[pl.DataFrame, str, list[str], list[str]]:
