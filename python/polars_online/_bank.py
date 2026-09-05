@@ -493,6 +493,45 @@ class ModelBank:
             )
         return out
 
+    def marginal(self, spec: str | int, group: str | None = None) -> pl.DataFrame:
+        """The pairs a ``marginal`` spec keeps: one row per (group, instance,
+        feature, target), in spec order -- groups sorted, targets in spec
+        order, features in spec order within each.
+
+        ``group`` and ``instance``
+            As :meth:`gram` reports them (``""`` for a spec without a
+            ``group`` column; ``""`` for a single decay instance, else the
+            field suffix such as ``"@h500"``).
+        ``feature``, ``target``
+            The pair's columns, by name.
+        ``n_eff``
+            The target's accumulated weight ``W_t``: rows where the target
+            was present, weighted and decayed. Differs from the struct's
+            ``n_eff`` when targets have different null patterns.
+        ``n_kish``
+            ``W_t^2 / Q_t`` with ``Q_t`` the accumulated squared weight: the
+            Kish effective sample size, the number of equally weighted rows
+            that carry the same information. Null before the target's first
+            row.
+        ``mean_x``, ``var_x``, ``mean_y``, ``var_y``, ``cov``
+            The pair's EW moments -- population form, over the decayed
+            weights, so ``var`` is never negative.
+        ``corr``, ``beta``, ``t``
+            ``cov / sqrt(var_x var_y)``, ``cov / var_x`` and ``corr *
+            sqrt((n_kish - 2) / (1 - corr^2))``; null until ``n_eff`` reaches
+            the target's ``min_periods``, and null where undefined (a
+            constant column, ``n_kish <= 2``).
+
+        The pairs are read from the state, so a bank loaded from a file
+        reports them as the bank that saved it would, and feeding the rows
+        in one chunk or a thousand gives the same numbers to the bit. A
+        group the bank has never seen gives an empty frame; a spec that is
+        not a ``marginal`` is refused (``ValueError``) -- an ``ew_cov``'s
+        moments are read with :meth:`gram`. ``spec`` is a name or position
+        (``KeyError`` / ``IndexError`` for one the bank has not got).
+        """
+        return self._native.marginal(self._spec_index(spec), group)
+
     def solve_failures(self) -> dict[str, dict[str | None, int]]:
         """Jittered or failed matrix factorizations so far, per spec and group.
 

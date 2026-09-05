@@ -699,6 +699,24 @@ pub enum ModelKind {
         #[serde(default)]
         b_suffix: Option<String>,
     },
+    /// Exponentially weighted moments of every feature against every target,
+    /// one pair at a time (docs/ENHANCEMENTS.md E44; PLAN §11a, task 37):
+    /// per (target, feature) the two means, the two variances, the
+    /// covariance, and the target's `Σw` and `Σw²` -- `O(p·T)` state where
+    /// an `ew_cov` over the same columns keeps `O((p+T)²)`. It emits nothing
+    /// per row but `n_eff`; the pairs are read from the bank as a long frame
+    /// (`ModelBank.marginal`), each with its correlation, the slope of the
+    /// target on the feature, Kish's effective sample size and the
+    /// t-statistic of the correlation at that size. A pair's correlation
+    /// is the one an `ew_cov` over the two columns reports, to the bit. A
+    /// null target ages that target's pairs and moves nothing else; a
+    /// null feature drops the row for every pair, as everywhere. No
+    /// parameters of its own: `halflife`/`lam`, `weight`, `clock` and
+    /// `min_periods` are the spec's. `min_periods` (default 3) is the
+    /// weight a target needs before its pairs' `corr`, `beta` and `t` are
+    /// reported -- a correlation of two rows is ±1 whatever the data.
+    #[serde(rename = "marginal")]
+    Marginal {},
 }
 
 /// The two sides of a `seqtest` comparison, as [`ModelKind::compares`]
@@ -729,7 +747,7 @@ impl ModelKind {
     /// to the enum, so a new variant fails a test until it is listed here.
     pub const KINDS: &'static [&'static str] = &[
         "ew_ridge", "lasso", "kalman", "huber", "quantile", "ftrl", "ew_cov", "sgd", "pa", "holt",
-        "rls", "kmeans", "micro", "ew_class", "seqtest",
+        "rls", "kmeans", "micro", "ew_class", "seqtest", "marginal",
     ];
 
     pub fn kind_name(&self) -> &'static str {
@@ -749,6 +767,7 @@ impl ModelKind {
             ModelKind::Micro { .. } => "micro",
             ModelKind::EwClass { .. } => "ew_class",
             ModelKind::SeqTest { .. } => "seqtest",
+            ModelKind::Marginal {} => "marginal",
         }
     }
 
@@ -765,15 +784,20 @@ impl ModelKind {
 
     /// True for the models that predict no target as a number: the
     /// unsupervised three, `ew_class`, whose target is a label it
-    /// classifies, and `seqtest`, whose targets are the signs it tests.
-    /// Their outputs are statistics, assignments, posteriors or e-values
-    /// read from the state *before* each row, and nothing residual-based
-    /// (`sigma`, `resid_z`, metrics, quantiles, conformal, autocorrelation,
-    /// drift, selection, averaging) applies to them; their slots are
-    /// whatever rides in `pred`, not targets × combos.
+    /// classifies, `seqtest`, whose targets are the signs it tests, and
+    /// `marginal`, whose targets are the columns it correlates the features
+    /// with. Their outputs are statistics, assignments, posteriors or
+    /// e-values read from the state *before* each row (or, for `marginal`,
+    /// nothing at all), and nothing residual-based (`sigma`, `resid_z`,
+    /// metrics, quantiles, conformal, autocorrelation, drift, selection,
+    /// averaging) applies to them; their slots are whatever rides in
+    /// `pred`, not targets × combos.
     pub fn predicts_no_target(&self) -> bool {
         self.is_unsupervised()
-            || matches!(self, ModelKind::EwClass { .. } | ModelKind::SeqTest { .. })
+            || matches!(
+                self,
+                ModelKind::EwClass { .. } | ModelKind::SeqTest { .. } | ModelKind::Marginal {}
+            )
     }
 
     /// The two specs a `seqtest` compares, when it compares rather than
@@ -1063,6 +1087,10 @@ impl Spec {
         match self.model {
             // An e-value is valid from the first row (it is 1 before it).
             ModelKind::SeqTest { .. } => 0.0,
+            // A pair's statistics are over two columns whatever the feature
+            // count: two rows give a correlation of ±1, three the first one
+            // with any content.
+            ModelKind::Marginal {} => 3.0,
             _ => (self.k() + usize::from(self.add_intercept)) as f64,
         }
     }
@@ -1599,6 +1627,10 @@ impl Spec {
             // Checked above, with the features: its refusals come before the
             // shared checks so that `halflife` is named for what it is here.
             ModelKind::SeqTest { .. } => {}
+            // Nothing of its own: the shared checks (non-empty features and
+            // targets, no column on both sides, a decay, `min_periods` per
+            // target, no residual diagnostics) are all it needs.
+            ModelKind::Marginal {} => {}
             ModelKind::Ftrl {
                 alpha,
                 beta,

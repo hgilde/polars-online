@@ -431,6 +431,35 @@ fn ew_cov_golden() {
     check("ew_cov", &signature(&mut m, 4), GOLDEN_EW_COV);
 }
 
+/// `marginal` predicts nothing per row, so its signature is read from the
+/// state: the pair `(x1, y)`'s correlation, slope and Kish size after rows
+/// 20, 45 and 59 -- together they touch every accumulator (both means, both
+/// variances, the covariance, `W_t` and `Q_t`).
+fn marginal_signature(model: &mut Marginal) -> Vec<f64> {
+    let mut out = Vec::new();
+    for (i, (x, y, d, w)) in stream().into_iter().enumerate() {
+        let step = model.step(&x, &y, d, w);
+        assert!(step.pred.is_empty());
+        if matches!(i, 20 | 45 | 59) {
+            let p = model.pair(0, 1);
+            out.extend([p.corr, p.beta, p.n_kish]);
+        }
+    }
+    out
+}
+
+#[test]
+fn marginal_golden() {
+    let mut m = Marginal::new(MarginalCfg {
+        n_features: 2,
+        n_targets: 1,
+        decay: Decay::Halflife(20.0),
+        min_periods: vec![3.0],
+    })
+    .unwrap();
+    check("marginal", &marginal_signature(&mut m), GOLDEN_MARGINAL);
+}
+
 fn kmeans_cfg(rule: SeedRule) -> KMeansCfg {
     KMeansCfg {
         n_features: 2,
@@ -608,6 +637,17 @@ const GOLDEN_EW_COV: &[f64] = &[
     -0.3469363807058677,
     -0.1331528573613194,
     -0.013968574548668105,
+];
+const GOLDEN_MARGINAL: &[f64] = &[
+    -0.658828097450141,
+    -1.2763707481988686,
+    16.974118022314695,
+    -0.575404661163831,
+    -1.0280783998000982,
+    21.444816431035854,
+    -0.4441310076916231,
+    -0.7754079187908046,
+    26.59144641744387,
 ];
 const GOLDEN_KMEANS: &[f64] = &[0.5834101526098997, 0.8292779994915372, 0.923506490724854];
 const GOLDEN_KMEANS_CLUSTER: &[f64] = &[2.0, 0.0, 2.0];

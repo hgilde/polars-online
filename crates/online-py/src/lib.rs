@@ -313,6 +313,17 @@ impl PyModelBank {
             .map_err(PyValueError::new_err)
     }
 
+    /// The pairs of a `marginal` spec (`Bank::marginal`), one row per
+    /// (group, instance, feature, target).
+    #[pyo3(signature = (spec, group=None))]
+    fn marginal(slf: &Bound<'_, Self>, spec: usize, group: Option<&str>) -> PyResult<PyDataFrame> {
+        let this = slf.try_borrow().map_err(|_| busy("marginal"))?;
+        this.inner
+            .marginal(spec, group)
+            .map(PyDataFrame)
+            .map_err(PyValueError::new_err)
+    }
+
     fn spec_names(slf: &Bound<'_, Self>) -> PyResult<Vec<String>> {
         let this = slf.try_borrow().map_err(|_| busy("spec_names"))?;
         Ok(this.inner.specs().iter().map(|s| s.name.clone()).collect())

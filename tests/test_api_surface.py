@@ -175,6 +175,7 @@ def describe_api() -> str:
             "seqtest comparing two specs",
             dict(targets=["y"], a="ridge", b="kalman", a_suffix="@h50"),
         ),
+        ("marginal", dict(targets=["y", "z"], features=["x0", "x1"], halflife=100.0)),
     ]:
         s = getattr(po.spec, model.split(" ")[0])("m", min_periods=2.0, **kw)
         w(f"  {model}{'' if ' ' in model else ' minimal'}:")

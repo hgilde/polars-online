@@ -148,6 +148,11 @@
     max_cd_iters = None
     cd_tol = None
     common
+  marginal:
+    name
+    targets
+    features
+    common
   micro:
     name
     features
@@ -231,6 +236,7 @@
   last_row
   load
   load_bytes
+  marginal
   output_fields
   predict
   rows_seen
@@ -249,6 +255,7 @@
   kalman
   kmeans
   lasso
+  marginal
   micro
   pa
   quantile
@@ -636,4 +643,6 @@
     log_e_b_y
     wins_a_y
     wins_b_y
+    n_eff
+  marginal minimal:
     n_eff

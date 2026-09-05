@@ -17,6 +17,20 @@ carries breaking changes.
   list; `stats=None` still means `["mean", "std", "corr"]`. Before this the
   constructor refused an empty list, so accumulating a Gram over a wide
   set of columns meant emitting every mean on every row.
+- **`marginal`: every (feature, target) pair's EW moments, kept in the
+  state** (`po.spec.marginal`, `docs/ENHANCEMENTS.md` E44, task 37). Per
+  pair the mean, variance and covariance in `ew_cov`'s arithmetic — a
+  pair's `corr` is bit-identical to an `ew_cov` over the two columns — plus
+  Σw and Σw² per target, O(p·T) per row where one `ew_cov` over all the
+  columns is O((p+T)²). Nothing is emitted per row but `n_eff`;
+  `ModelBank.marginal(spec, group=None)` reads the pairs as a long frame
+  (`group, instance, feature, target, n_eff, n_kish, mean_x, var_x,
+  mean_y, var_y, cov, corr, beta, t`), null below the target's
+  `min_periods` (default 3) or where undefined. A null target ages its own
+  pairs and learns nothing; weights, clocks, sessions, groups, the halflife
+  grid, save/load, `describe`/`summary`, the lazy plan, the runner, the CLI
+  and the expression form (`n_eff` alone) as for every model. Golden
+  values on every OS include the pairs at the end of the stream.
 
 ## [0.2.0] — 2026-09-05
 

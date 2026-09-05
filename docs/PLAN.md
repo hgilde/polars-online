@@ -587,7 +587,7 @@ to run at the width, target count and block count its design allows.
 - [x] 36. **`ew_cov` with no per-row output** (E43): `stats=[]` is legal and
       means "accumulate only"; the spec emits `n_eff` and its value is its
       state (`gram()`, `describe()`, `summary()`).
-- [ ] 37. **`marginal` model** (E44): per-(feature, target) EW mean, variance,
+- [x] 37. **`marginal` model** (E44): per-(feature, target) EW mean, variance,
       covariance, Σw and Σw² — `O(p·T)` per row, `n_eff` the only output —
       read as a long frame by `ModelBank.marginal()`.
 - [ ] 38. **Complete the Gram export** (E45): `gram()` gains per-target means
@@ -1428,6 +1428,61 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   `save_state` and `ModelBank.load`, the expression plugin under its
   warning, and the CLI from TOML (`[specs.model] type = "ew_cov"`,
   `stats = []`).
+
+**Task 37's decisions: `marginal`, 2026-09-05.**
+
+- *`ew_cov`'s arithmetic, operation for operation.* `Marginal::learn` is
+  the weighted-Welford mean form of `EwCov::update` — `a = λW/W'`,
+  `b = w/W'`, `S' = a·S + a·b·dᵢdⱼ` with deviations from the *old* means,
+  then `m += b·d` — applied to each pair's three moments, and `pair()`
+  derives `corr` with the `ew_cov` reader's formula (`√var_x·√var_y`,
+  clamp to ±1, NaN on a zero variance). That is what makes a pair's
+  correlation bit-identical to an `ew_cov` over the two columns, which a
+  core test and a Python test hold; a mathematically equal but
+  differently ordered update would agree to 1e-15 and no further.
+- *Per-target `min_periods` lives in the core config.* Every other model
+  takes one threshold and the stream gates each target's fields; a
+  `marginal` emits nothing per target, and its pairs are read from the
+  state by whoever holds it, so the model gates `corr`/`beta`/`t`
+  itself, per target, from `MarginalCfg.min_periods: Vec<f64>`
+  (`spec.min_periods_per_target()`). The default is 3, not
+  `k + intercept`: a pair is over two columns whatever the feature
+  count, two rows give ±1 whatever the data, and three is the first
+  count with content.
+- *Not unsupervised.* A `marginal` has real targets — the columns its
+  pairs are against — so it is not in `is_unsupervised()` (whose targets
+  mirror `features[0]`), and the leak check (no column on both sides)
+  applies. It is in `predicts_no_target()`, with `ew_class` and
+  `seqtest`, so the residual switches are refused by name and no `resid`
+  buffer is kept.
+- *A null target ages its pairs.* `W_t ← λW_t`, `Q_t ← λ²Q_t`, moments
+  untouched; the row is still learned by the other targets and by
+  `w_sum` (the struct's `n_eff`, over every processed row whatever its
+  targets). A zero-weight or zero-`W'` row is skipped per target, so a
+  zero-weight first row leaves the pairs bit-equal to a stream without
+  it (rule 9).
+- *Kish's `n` for the t-statistic.* `t = corr·√((n_kish − 2)/(1 − corr²))`
+  with `n_kish = W_t²/Q_t`, the count of equally weighted rows carrying
+  the same information ((1+λ)/(1−λ) for unit weights, held by a test);
+  documented as a scale for comparing pairs, not a p-value, since the
+  rows are neither independent nor Gaussian. `n_kish ≤ 2`, a constant
+  column and a perfect correlation give NaN in the core and null in the
+  frame — the frame never carries NaN, as the output structs never do.
+- *A long frame, sorted by group.* `Bank::marginal` returns one row per
+  (group, instance, feature, target), groups in the order `gram()` and
+  `summary()` use, targets outer and features inner in spec order; a
+  group never seen is an empty frame of the same schema, a non-`marginal`
+  spec a `ValueError` naming its kind (an `ew_cov`'s moments are
+  `gram()`'s). The frame is built on the Rust side; no numpy.
+- *The golden pipeline pins the state.* Every other model's golden
+  values are struct fields at three rows; a `marginal`'s struct is
+  `n_eff`, so `signature()` also reads `bank.marginal()` after the last
+  row and pins `n_eff`, `n_kish`, `corr`, `beta` and `t` per (group,
+  feature) — the same numbers on three operating systems.
+- *A `ModelState` variant appended, no schema bump.* `ModelState::Marginal`
+  is added at the end of the enum; the file format encodes a variant by
+  name, so schema-3 files written before it still load (rule 5's
+  appended-variant precedent, as for `seqtest`).
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without

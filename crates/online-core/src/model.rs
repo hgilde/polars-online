@@ -60,6 +60,7 @@ pub enum ModelState {
     Micro(Box<crate::Micro>),
     EwClass(Box<crate::EwClass>),
     SeqTest(Box<crate::SeqTest>),
+    Marginal(Box<crate::Marginal>),
 }
 
 #[derive(Debug, Error)]
@@ -93,6 +94,7 @@ impl ModelState {
             ModelState::Micro(_) => "micro",
             ModelState::EwClass(_) => "ew_class",
             ModelState::SeqTest(_) => "seqtest",
+            ModelState::Marginal(_) => "marginal",
         }
     }
 }

@@ -110,11 +110,13 @@ example; `git show --stat aa96ad3` is this list as a diff.
    pair per target per combo — `ew_cov` (statistics, no target), `kmeans`
    (an assignment and two distances, no target), `micro` (a label, an id, a
    flag, two counts), `ew_class` (a class and its posteriors), `seqtest`
-   (two log e-values and two counts per target, no `coef`) and `lasso`
-   (a path) are the six cases, in `output_index` — or the coefficient
-   vector is not `[intercept] + features` per (target, combo) slot:
-   `coef_fields` names the slots, and `holt` (`level`, `trend`), `ew_cov`
-   and `seqtest` (none), `kmeans` (`k` slots `cluster{j}` in place of the
+   (two log e-values and two counts per target, no `coef`), `marginal`
+   (`n_eff` alone: its pairs are state, read by `Bank::marginal` as a
+   frame, and a spec that is not a `marginal` is refused there by name)
+   and `lasso` (a path) are the seven cases, in `output_index` — or the
+   coefficient vector is not `[intercept] + features` per (target, combo)
+   slot: `coef_fields` names the slots, and `holt` (`level`, `trend`),
+   `ew_cov`, `seqtest` and `marginal` (none), `kmeans` (`k` slots `cluster{j}` in place of the
    targets, one coordinate per feature), `ew_class` (one slot per class,
    named by the class, one coordinate per feature) and `micro` (none: its
    `coef` is one row per *live* summary, so the length is not a property of
@@ -203,7 +205,7 @@ spec, and the plugin's `online_run` is the bank.
     `test_portability.TestOutputSchemaStability._ALL_MODELS`. Every entry is
     `(builder name, the least it needs to be constructible)`. The sweeps
     assert on `pred` and `resid`, so a model with no prediction (`ew_cov`,
-    `kmeans`, `micro`, `ew_class`, `seqtest`) sits them out through
+    `kmeans`, `micro`, `ew_class`, `seqtest`, `marginal`) sits them out through
     `test_model_registry.REGRESSIONS` and gets its own schema test instead
     (`test_portability.TestOutputSchemaStability.test_kmeans_names_match
     _the_realized_struct`, `test_micro_names_match_the_realized_struct`,

@@ -66,6 +66,7 @@ mod ftrl;
 mod holt;
 mod kalman;
 mod lasso;
+mod marginal;
 mod model;
 mod pa;
 mod rls;
@@ -91,6 +92,7 @@ pub use ftrl::{Ftrl, FtrlCfg, FtrlLoss};
 pub use holt::{Holt, HoltCfg};
 pub use kalman::{Kalman, KalmanCfg};
 pub use lasso::{Lasso, LassoCfg};
+pub use marginal::{Marginal, MarginalCfg, Pair as MarginalPair};
 pub use model::{
     Extra, INPUT_BOUND, ModelState, OnlineModel, State, StateError, Step, check_schema,
 };

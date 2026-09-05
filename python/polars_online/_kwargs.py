@@ -32,6 +32,7 @@ __all__ = [
     "MicroKwargs",
     "KalmanKwargs",
     "LassoKwargs",
+    "MarginalKwargs",
     "PaKwargs",
     "QuantileKwargs",
     "RlsKwargs",
@@ -218,3 +219,8 @@ class SeqTestKwargs(ExprKwargs, total=False):
     runtime, too): over an expression the test is column mode on the
     calling column, and a comparison is column mode on the residual
     difference the caller computes."""
+
+
+class MarginalKwargs(ExprKwargs, total=False):
+    """``marginal`` has no parameters of its own: the pairs are fixed by the
+    calling column and the features, and everything else is shared."""

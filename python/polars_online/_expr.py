@@ -39,6 +39,7 @@ from polars_online._kwargs import (
     KalmanKwargs,
     KMeansKwargs,
     LassoKwargs,
+    MarginalKwargs,
     MicroKwargs,
     PaKwargs,
     QuantileKwargs,
@@ -449,6 +450,30 @@ class OnlineNamespace:
             raise TypeError(msg)
         spec = _spec.seqtest("online", targets=self._targets(extra_targets), **kwargs)
         return _run(spec, self._expr, [])
+
+    def marginal(
+        self,
+        features: list[Feature],
+        extra_targets: list[str] | None = None,
+        **kwargs: Unpack[MarginalKwargs],
+    ) -> pl.Expr:
+        """Per-(feature, target) EW moments with this column as the target,
+        as ``polars_online.spec.marginal`` keeps them.
+
+        The pairs live in the state, and an expression has no state to read
+        after the fact: the struct holds ``n_eff`` alone, so over an
+        expression this only walks the stream. To read the pairs, run the
+        spec in a bank (``ModelBank``, ``lf.online.fit_predict``) and call
+        :meth:`ModelBank.marginal`.
+        """
+        names, exprs = _features(features)
+        spec = _spec.marginal(
+            "online",
+            targets=self._targets(extra_targets),
+            features=names,
+            **kwargs,
+        )
+        return _run(spec, self._expr, exprs)
 
 
 def online(expr: pl.Expr) -> OnlineNamespace:

@@ -506,7 +506,7 @@ fn every_state_kind_is_distinct_and_named() {
     // returns a constant would make "expected X, found Y" meaningless.
     let kinds = [
         "ew_ridge", "rls", "lasso", "kalman", "robust", "ftrl", "sgd", "pa", "holt", "ew_cov",
-        "kmeans", "micro", "ew_class", "seqtest",
+        "kmeans", "micro", "ew_class", "seqtest", "marginal",
     ];
     let mut seen = std::collections::HashSet::new();
     for k in kinds {
@@ -539,6 +539,10 @@ fn every_state_kind_is_distinct_and_named() {
     assert_eq!(
         Micro::new(micro_cfg()).unwrap().state().model.kind(),
         "micro"
+    );
+    assert_eq!(
+        Marginal::new(marginal_cfg()).unwrap().state().model.kind(),
+        "marginal"
     );
 }
 
@@ -604,6 +608,29 @@ fn seqtest() {
     assert!(r.roundtrips);
 }
 
+fn marginal_cfg() -> MarginalCfg {
+    MarginalCfg {
+        n_features: K,
+        n_targets: 2,
+        decay: decay(),
+        min_periods: vec![3.0; 2],
+    }
+}
+
+#[test]
+fn marginal() {
+    // Per-pair moments read from the state, nothing per row: targets and
+    // features both counted, zero output slots, and `n_eff` -- every learned
+    // row's weight -- on the same recursion as every other model.
+    let m = Marginal::new(marginal_cfg()).unwrap();
+    assert_eq!(m.n_targets(), 2);
+    assert_eq!(m.n_features(), K);
+    assert_eq!(m.n_outputs(), 0, "marginal predicts nothing per row");
+    let r = probe_with(m, 2, Some(&Marginal::n_eff));
+    check(&r, "marginal", 2, 0);
+    assert_eq!(r.pred_len, 0);
+}
+
 /// The variants of `ModelState` this file probes. A model added to the enum
 /// and not to this list fails here, which is the reminder to write its
 /// `*_cfg()` and probe above (docs/EXTENDING.md).
@@ -623,6 +650,7 @@ const PROBED: &[&str] = &[
     "Micro",
     "EwClass",
     "SeqTest",
+    "Marginal",
 ];
 
 #[test]
@@ -1102,6 +1130,67 @@ fn ew_cov_recovers_from_bounded_extremes() {
     );
 }
 
+#[test]
+fn marginal_recovers_from_bounded_extremes() {
+    // `marginal` predicts nothing, so `recovers_over` would have nothing to
+    // compare: read the pairs from the state instead. Over the last thousand
+    // rows every statistic of every pair must be finite and agree with the
+    // twin's to rounding -- the extreme rows moved the moments as the
+    // equations say and then washed out.
+    let rows = bounded_script(2);
+    let mut model = Marginal::new(marginal_cfg()).unwrap();
+    let mut twin = Marginal::new(marginal_cfg()).unwrap();
+    let n = rows.len();
+    let mut seen = [false, false];
+    let rel = |a: f64, b: f64| (a - b).abs() / (1.0 + b.abs());
+    for (i, r) in rows.iter().enumerate() {
+        let d = if seen[0] { 1.0 } else { 0.0 };
+        seen[0] = true;
+        let a = model.step(&r.x, &r.y, d, r.w);
+        assert!(
+            a.n_eff.is_finite(),
+            "marginal: n_eff is {} at row {i}",
+            a.n_eff
+        );
+        assert!(a.pred.is_empty());
+        if r.extreme {
+            continue;
+        }
+        let d = if seen[1] { 1.0 } else { 0.0 };
+        seen[1] = true;
+        twin.step(&r.x, &r.y, d, r.w);
+        if i + 1000 < n {
+            continue;
+        }
+        for t in 0..2 {
+            for j in 0..K {
+                let (pa, pb) = (model.pair(t, j), twin.pair(t, j));
+                for (what, va, vb) in [
+                    ("n_eff", pa.n_eff, pb.n_eff),
+                    ("n_kish", pa.n_kish, pb.n_kish),
+                    ("mean_x", pa.mean_x, pb.mean_x),
+                    ("var_x", pa.var_x, pb.var_x),
+                    ("mean_y", pa.mean_y, pb.mean_y),
+                    ("var_y", pa.var_y, pb.var_y),
+                    ("cov", pa.cov, pb.cov),
+                    ("corr", pa.corr, pb.corr),
+                    ("beta", pa.beta, pb.beta),
+                    ("t", pa.t, pb.t),
+                ] {
+                    assert!(
+                        va.is_finite(),
+                        "marginal: {what}[{t},{j}] is {va} at row {i} (twin: {vb})"
+                    );
+                    assert!(
+                        rel(va, vb) <= 1e-9,
+                        "marginal: {what}[{t},{j}] at row {i}: {va} vs the twin's {vb}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // `predict` is the step without the step (docs/ENHANCEMENTS.md E31).
 // ---------------------------------------------------------------------------
@@ -1324,6 +1413,13 @@ fn ew_class_predict_is_the_step() {
 #[test]
 fn ew_cov_predict_is_the_step() {
     predict_is_the_step_without_the_step(|| EwCovModel::new(ew_cov_model_cfg()).unwrap(), 0, false);
+}
+
+#[test]
+fn marginal_predict_is_the_step() {
+    // No slots to compare, so this holds `n_eff` and `extra` alone -- and
+    // that `predict` did not move the state.
+    predict_is_the_step_without_the_step(|| Marginal::new(marginal_cfg()).unwrap(), 2, false);
 }
 
 #[test]

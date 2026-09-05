@@ -166,6 +166,8 @@ def specs() -> list[dict]:
             group="g",
             min_periods=4.0,
         ),
+        # Only `n_eff` per row; the pairs are read from the state at the end.
+        po.spec.marginal("marginal", **common),
         # No weight and no halflife: a test counts trials and does not forget.
         po.spec.seqtest(
             "seqtest", targets=["y0"], clock="t", max_dclock=6.0, group="g", min_periods=4.0
@@ -187,8 +189,11 @@ def specs() -> list[dict]:
 
 
 def signature() -> dict[str, float | str | None]:
-    """Every non-coefficient output field, at three fixed rows."""
-    out = po.ModelBank(specs()).fit_predict(stream())
+    """Every non-coefficient output field, at three fixed rows; and, for a
+    `marginal`, whose output is its state, every pair's derived values after
+    the last row."""
+    bank = po.ModelBank(specs())
+    out = bank.fit_predict(stream())
     sig: dict[str, float | str | None] = {}
     for spec in specs():
         name = spec["name"]
@@ -198,6 +203,11 @@ def signature() -> dict[str, float | str | None]:
             values = out[name].struct.field(field).to_list()
             for row in PICKS:
                 sig[f"{name}.{field}@{row}"] = values[row]
+        if spec["model"]["type"] == "marginal":
+            for pair in bank.marginal(name).iter_rows(named=True):
+                where = f"[{pair['group']}/{pair['feature']}]@end"
+                for field in ("n_eff", "n_kish", "corr", "beta", "t"):
+                    sig[f"{name}.{field}{where}"] = pair[field]
     return sig
 
 
@@ -428,6 +438,29 @@ GOLDEN: dict[str, float | str | None] = {
     "ew_class.n_eff@25": 7.999488060097996,
     "ew_class.n_eff@60": 12.473100285951407,
     "ew_class.n_eff@119": 14.963784088176922,
+    "marginal.n_eff@25": 7.999488060097996,
+    "marginal.n_eff@60": 12.473100285951407,
+    "marginal.n_eff@119": 14.963784088176922,
+    "marginal.n_eff[a/x0]@end": 14.25003207447119,
+    "marginal.n_kish[a/x0]@end": 21.954322434367914,
+    "marginal.corr[a/x0]@end": 0.3785521044421579,
+    "marginal.beta[a/x0]@end": 1.220267952634861,
+    "marginal.t[a/x0]@end": 1.8269649013260865,
+    "marginal.n_eff[a/x1]@end": 14.25003207447119,
+    "marginal.n_kish[a/x1]@end": 21.954322434367914,
+    "marginal.corr[a/x1]@end": -0.8893864921594732,
+    "marginal.beta[a/x1]@end": -0.7077962970640217,
+    "marginal.t[a/x1]@end": -8.690495445789088,
+    "marginal.n_eff[b/x0]@end": 14.135960847088523,
+    "marginal.n_kish[b/x0]@end": 22.884316154885674,
+    "marginal.corr[b/x0]@end": 0.416240129877228,
+    "marginal.beta[b/x0]@end": 0.9114894780660311,
+    "marginal.t[b/x0]@end": 2.09203290696213,
+    "marginal.n_eff[b/x1]@end": 14.135960847088523,
+    "marginal.n_kish[b/x1]@end": 22.884316154885674,
+    "marginal.corr[b/x1]@end": -0.7624455139340224,
+    "marginal.beta[b/x1]@end": -0.6042700576662825,
+    "marginal.t[b/x1]@end": -5.384922720724942,
     "seqtest.log_e_pos_y0@25": 0.0,
     "seqtest.log_e_pos_y0@60": 0.0,
     "seqtest.log_e_pos_y0@119": 0.0,

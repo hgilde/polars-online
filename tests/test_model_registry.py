@@ -47,12 +47,14 @@ MINIMAL: dict[str, dict[str, object]] = {
     "micro": {"targets": None, "features": ["x0", "x1"], "eps": 0.3},
     "ew_class": {"targets": None, "label": "y", "classes": ["a", "b"], "precision_prior": 1.0},
     "seqtest": {"features": None, "halflife": None},
+    "marginal": {},
 }
 
 #: The sweeps fit a numeric target, so the models that predict none --
 #: ``ew_cov`` (moments), ``kmeans`` and ``micro`` (assignments, no target),
-#: ``ew_class`` (a label), ``seqtest`` (evidence) -- sit them out.
-REGRESSIONS = frozenset(MINIMAL) - {"ew_cov", "kmeans", "micro", "ew_class", "seqtest"}
+#: ``ew_class`` (a label), ``seqtest`` (evidence), ``marginal`` (pairwise
+#: moments, read from the state) -- sit them out.
+REGRESSIONS = frozenset(MINIMAL) - {"ew_cov", "kmeans", "micro", "ew_class", "seqtest", "marginal"}
 
 
 def _build(name: str) -> dict:

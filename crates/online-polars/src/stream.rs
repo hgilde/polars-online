@@ -4,10 +4,10 @@
 use online_core::{
     ClockState, Conformal, Constraint, Covariance, Decay, EwAutoCorr, EwClass, EwClassCfg,
     EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, Holt, HoltCfg,
-    INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, Micro,
-    MicroCfg, ModelState, OnlineModel, P2Quantile, Pa, PaCfg, PaMode, PageHinkley, Rls, RlsCfg,
-    Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss,
-    SlotMetrics, State, StateError,
+    INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, Marginal,
+    MarginalCfg, Micro, MicroCfg, ModelState, OnlineModel, P2Quantile, Pa, PaCfg, PaMode,
+    PageHinkley, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd,
+    SgdCfg, SgdLoss, SlotMetrics, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +31,7 @@ pub enum AnyModel {
     Micro(Box<Micro>),
     EwClass(Box<EwClass>),
     SeqTest(Box<SeqTest>),
+    Marginal(Box<Marginal>),
 }
 
 /// Bind the boxed model of whichever variant `$self` is, then run `$body`.
@@ -58,6 +59,7 @@ macro_rules! dispatch {
             AnyModel::Micro($m) => $body,
             AnyModel::EwClass($m) => $body,
             AnyModel::SeqTest($m) => $body,
+            AnyModel::Marginal($m) => $body,
         }
     };
 }
@@ -103,7 +105,8 @@ impl AnyModel {
             | AnyModel::Holt(_)
             | AnyModel::KMeans(_)
             | AnyModel::Micro(_)
-            | AnyModel::SeqTest(_) => 0,
+            | AnyModel::SeqTest(_)
+            | AnyModel::Marginal(_) => 0,
         }
     }
 
@@ -143,6 +146,9 @@ impl AnyModel {
             // seqtest has no coefficients: its outputs are the e-values and
             // the counts they are staked on.
             AnyModel::SeqTest(_) => None,
+            // marginal has no coefficients and no outputs: its pairs are
+            // read from the state by `Bank::marginal`.
+            AnyModel::Marginal(_) => None,
         }
     }
 
@@ -166,6 +172,7 @@ impl AnyModel {
             ModelState::Micro(_) => Ok(AnyModel::Micro(Box::new(Micro::restore(s)?))),
             ModelState::EwClass(_) => Ok(AnyModel::EwClass(Box::new(EwClass::restore(s)?))),
             ModelState::SeqTest(_) => Ok(AnyModel::SeqTest(Box::new(SeqTest::restore(s)?))),
+            ModelState::Marginal(_) => Ok(AnyModel::Marginal(Box::new(Marginal::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -623,6 +630,18 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::SeqTest(Box::new(SeqTest::new(cfg)?)))
         }
+        ModelKind::Marginal {} => {
+            // The per-target thresholds go to the model whole: it is the
+            // reader of its own state, so it gates each target's pairs
+            // itself where a regression's stream layer would.
+            let cfg = MarginalCfg {
+                n_features: spec.k(),
+                n_targets: spec.m(),
+                decay,
+                min_periods: spec.min_periods_per_target(),
+            };
+            Ok(AnyModel::Marginal(Box::new(Marginal::new(cfg)?)))
+        }
     }
 }
 
@@ -696,7 +715,8 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
         | ModelKind::KMeans { .. }
         | ModelKind::Micro { .. }
         | ModelKind::EwClass { .. }
-        | ModelKind::SeqTest { .. } => vec![Combo::default()],
+        | ModelKind::SeqTest { .. }
+        | ModelKind::Marginal {} => vec![Combo::default()],
         ModelKind::Lasso { lasso_path, .. } => lasso_path
             .iter()
             .map(|l| Combo {

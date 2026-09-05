@@ -1106,6 +1106,85 @@ impl Bank {
         Ok(out)
     }
 
+    /// The pairs of a `marginal` spec (docs/ENHANCEMENTS.md E44), as a long
+    /// frame: one row per (group, decay instance, feature, target), sorted
+    /// by group, in spec order within one, with `group`, `instance` (the
+    /// halflife-grid suffix, `""` for a single instance), `feature`,
+    /// `target`, `n_eff` (the weight behind the target's pairs), `n_kish`
+    /// (Kish's effective sample size, `(Σw)²/Σw²`), `mean_x`, `var_x`,
+    /// `mean_y`, `var_y`, `cov`, `corr`, `beta` (the slope of the target on
+    /// the feature) and `t` (the t-statistic of the correlation at Kish's
+    /// `n`), as [`online_core::Marginal::pair`] reads them from the state
+    /// as it stands, with the core's NaN -- `corr`, `beta` and `t` below the
+    /// target's `min_periods` or undefined, `n_kish` before its first row --
+    /// as null.
+    ///
+    /// `group` narrows the frame to one group; a group the bank has never
+    /// seen gives an empty frame, not an error.
+    ///
+    /// # Errors
+    ///
+    /// `spec` out of range, or not a `marginal` spec.
+    pub fn marginal(&self, spec: usize, group: Option<&str>) -> Result<DataFrame, String> {
+        let keys = self.sorted_keys(spec, group)?;
+        let (s, states) = (&self.specs[spec], &self.states[spec]);
+        if !matches!(s.model, ModelKind::Marginal {}) {
+            return Err(format!(
+                "spec {:?} has model type {:?}, not \"marginal\"; its pairs are not kept (an \
+                 ew_cov's Gram is read with gram())",
+                s.name,
+                s.model.kind_name()
+            ));
+        }
+        let mut group_col: Vec<Option<&str>> = Vec::new();
+        let mut instance: Vec<&str> = Vec::new();
+        let mut feature: Vec<&str> = Vec::new();
+        let mut target: Vec<&str> = Vec::new();
+        let mut pairs: Vec<online_core::MarginalPair> = Vec::new();
+        for key in keys {
+            for (label, model) in &states[key].models {
+                let AnyModel::Marginal(m) = model else {
+                    unreachable!("a marginal spec builds marginal models");
+                };
+                for (t_i, t) in s.targets.iter().enumerate() {
+                    for (j, f) in s.features.iter().enumerate() {
+                        group_col.push(key.as_str());
+                        instance.push(label.as_str());
+                        feature.push(f.as_str());
+                        target.push(t.as_str());
+                        pairs.push(m.pair(t_i, j));
+                    }
+                }
+            }
+        }
+        // NaN is the core's "undefined" (a constant column, too few rows);
+        // the frame says null, as the output structs do.
+        let num = |f: fn(&online_core::MarginalPair) -> f64| -> Vec<Option<f64>> {
+            pairs
+                .iter()
+                .map(f)
+                .map(|v| (!v.is_nan()).then_some(v))
+                .collect()
+        };
+        let cols = vec![
+            Column::new("group".into(), group_col),
+            Column::new("instance".into(), instance),
+            Column::new("feature".into(), feature),
+            Column::new("target".into(), target),
+            Column::new("n_eff".into(), num(|p| p.n_eff)),
+            Column::new("n_kish".into(), num(|p| p.n_kish)),
+            Column::new("mean_x".into(), num(|p| p.mean_x)),
+            Column::new("var_x".into(), num(|p| p.var_x)),
+            Column::new("mean_y".into(), num(|p| p.mean_y)),
+            Column::new("var_y".into(), num(|p| p.var_y)),
+            Column::new("cov".into(), num(|p| p.cov)),
+            Column::new("corr".into(), num(|p| p.corr)),
+            Column::new("beta".into(), num(|p| p.beta)),
+            Column::new("t".into(), num(|p| p.t)),
+        ];
+        DataFrame::new(pairs.len(), cols).map_err(|e| e.to_string())
+    }
+
     /// The coefficients behind a spec's fit, per group and decay instance:
     /// the flat list the output's `coef` field reports, as of the last row
     /// each stream learned from -- `coef` on that row said the same, and
@@ -1848,6 +1927,7 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
         crate::ModelKind::EwCov { .. }
             | crate::ModelKind::Micro { .. }
             | crate::ModelKind::SeqTest { .. }
+            | crate::ModelKind::Marginal {}
     ) {
         return Vec::new();
     }
@@ -2168,6 +2248,19 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
         }
         fields.push(FieldMeta::new("n_eff".into(), "n_eff").src(Source::NEff(0)));
         return fields;
+    }
+    // marginal emits nothing per row but `n_eff`, one per instance: its
+    // pairs are read from the state (`Bank::marginal`).
+    if let crate::ModelKind::Marginal {} = &spec.model {
+        return decays
+            .iter()
+            .enumerate()
+            .map(|(mi, (suffix, d))| {
+                FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                    .decay(d)
+                    .src(Source::NEff(mi))
+            })
+            .collect();
     }
     let combos = crate::stream::combos(spec);
     let (nc, m, n_models) = (combos.len(), spec.m(), decays.len());

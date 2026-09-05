@@ -16,7 +16,7 @@ the same whether the stream arrives as one chunk or a thousand.
 
 ## What you get
 
-**Fourteen model families, one set of stream semantics.** A spec's clock, decay,
+**Fifteen model families, one set of stream semantics.** A spec's clock, decay,
 grouping and warm-up mean the same thing whichever model it names.
 
 | model | what it is |
@@ -35,6 +35,7 @@ grouping and warm-up mean the same thing whichever model it names.
 | `micro` | density-based clustering — DenStream micro-clusters linked into clusters of any shape and number; flags the rows that belong to none |
 | `ew_class` | Gaussian classification — QDA, LDA or naive Bayes on one `ew_cov` state per class; a label column in, out-of-sample posteriors out |
 | `seqtest` | a sequential test of a sign by betting — an e-process you can read at any row; on its own a column's sign, with `a`/`b` whether one spec of the bank predicts closer than another |
+| `marginal` | every (feature, target) pair's running mean, variance, covariance, correlation, slope and t — O(p·T) per row for a wide set of columns, kept in the state and read back as a frame |
 
 **Three ways to run a bank, same numbers from each.** A Python loop over
 chunks (`ModelBank`); a Polars query (`lf.online.fit_predict(specs)` is a
@@ -1124,6 +1125,60 @@ closer = po.spec.seqtest("closer", targets=["y"], a="kalman", b="ridge", group="
 out = po.ModelBank([ridge, kalman, closer]).fit_predict(df)
 verdict = out.group_by("bond_id").agg(pl.col("closer").struct.field("log_e_a_y").max())
 # log_e_a_y >= ln(20): on that bond, kalman beat ridge at the 5% level, read at any row
+```
+
+### `marginal` — every pair's moments, kept in the state
+
+A `marginal` is not a regression and not a joint fit. It keeps the
+exponentially weighted moments of each (feature, target) pair on its own,
+as if every pair were a two-column `ew_cov`. For `p` features and `T`
+targets that is O(p·T) per row; one `ew_cov` over all the columns would be
+O((p + T)²).
+
+Per target `t`, on a row where `y_t` is present, with `W_t` the weight
+behind that target before the row:
+
+```
+W'_t = λW_t + w        a = λW_t / W'_t        b = w / W'_t        Q'_t = λ²Q_t + w²
+S'_yy = a·S_yy + a·b·(y_t − m_y)²             S'_xx = a·S_xx + a·b·(x_j − m_x)²
+S'_xy = a·S_xy + a·b·(x_j − m_x)(y_t − m_y)    m' = m + b·(value − m)
+```
+
+That is `ew_cov`'s arithmetic. A pair's correlation is the one an `ew_cov`
+over the two columns would report, to the bit. A null target ages its own
+pairs (`W_t ← λW_t`) and learns nothing for them. A null feature skips the
+row, as everywhere. Weights, the clock, sessions and groups apply as they
+do to every model.
+
+Nothing is emitted per row but `n_eff`. The pairs are the state, and
+`bank.marginal("pairs")` reads them as a long frame with one row per
+(group, instance, feature, target):
+
+| column | meaning |
+|---|---|
+| `n_eff` | the target's `W_t`, the weight behind its pairs |
+| `n_kish` | `W_t² / Q_t`, Kish's effective sample size: the count of equally weighted rows that carry the same information (`(1 + λ)/(1 − λ)` in the limit for unit weights) |
+| `mean_x`, `var_x`, `mean_y`, `var_y`, `cov` | the pair's moments, population form |
+| `corr` | `cov / √(var_x · var_y)` |
+| `beta` | `cov / var_x`, the slope of the target on that feature alone |
+| `t` | `corr·√((n_kish − 2)/(1 − corr²))`, the t-statistic of the correlation at the Kish sample size |
+
+`t` is a scale for comparing pairs, not a p-value: the rows are neither
+independent nor Gaussian. `corr`, `beta` and `t` are null until the
+target's `W_t` reaches `min_periods` (default 3; two rows give ±1 whatever
+the data), and where they are undefined — a constant feature, or
+`n_kish ≤ 2` for `t`. A bank loaded from a file reports the pairs the bank
+that saved it would. One chunk or a thousand gives the same frame to the
+bit.
+
+```python
+pairs = po.spec.marginal("pairs", targets=["y", "ret"],
+                         features=["x0", "x1", "x2", "signal_a", "signal_b"],
+                         clock="t", max_dclock=300.0, halflife=500.0, group="bond_id")
+bank = po.ModelBank([pairs])
+bank.fit_predict(df)                       # the struct holds n_eff alone
+table = bank.marginal("pairs")             # group, instance, feature, target, n_eff, n_kish, ..., corr, beta, t
+one_bond = bank.marginal("pairs", group="b0")   # 10 rows: five features by two targets
 ```
 
 ## Parallelism

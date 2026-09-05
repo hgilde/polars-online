@@ -209,6 +209,7 @@ __all__ = [
     "kalman",
     "kmeans",
     "lasso",
+    "marginal",
     "micro",
     "output_fields",
     "pa",
@@ -381,6 +382,7 @@ def _numeric_keys() -> frozenset[str]:
         micro,
         ew_class,
         seqtest,
+        marginal,
     )
     for fn in (_common, *builders):
         for key, hint in typing.get_type_hints(getattr(fn, "__wrapped__", fn)).items():
@@ -1468,6 +1470,62 @@ def seqtest(
         "b_suffix": b_suffix,
     }
     return _common(name, model, targets=targets, features=features or [], **common)
+
+
+@_checked
+def marginal(
+    name: str,
+    *,
+    targets: list[str],
+    features: list[str],
+    **common: Unpack[CommonKwargs],
+) -> dict[str, Any]:
+    """Every (feature, target) pair's exponentially weighted moments, kept in
+    the state and read back as a frame (ENHANCEMENTS E44, Task 37).
+
+    Not a regression and not a joint fit: each pair ``(x_j, y_t)`` is its own
+    two-column ``ew_cov``, so a wide feature set against a few targets costs
+    ``O(p * T)`` per row rather than the ``O((p + T)^2)`` of one ``ew_cov``
+    over all the columns. Per target ``t`` on a row where ``y_t`` is present,
+    with ``W_t`` the target's accumulated weight before the row::
+
+        W'_t = lam * W_t + w        a = lam * W_t / W'_t        b = w / W'_t
+        Q'_t = lam^2 * Q_t + w^2
+        S'_yy      = a * S_yy      + a * b * (y_t - m_y)^2
+        S'_xx[t,j] = a * S_xx[t,j] + a * b * (x_j - m_x[t,j])^2
+        S'_xy[t,j] = a * S_xy[t,j] + a * b * (x_j - m_x[t,j]) * (y_t - m_y)
+        m'  = m + b * (value - m)                     for m_y and each m_x[t,j]
+
+    (deviations from the means *before* the row), the same arithmetic as
+    ``ew_cov``'s, so a pair's ``corr`` equals the ``corr`` an ``ew_cov`` over
+    the two columns reports, to the bit. A null target ages that target
+    (``W_t *= lam``, ``Q_t *= lam^2``) and learns nothing for it; a null
+    feature skips the row, as everywhere. Weights, ``halflife``/``lam``, a
+    ``clock``, ``session`` and ``group`` apply as they do to every model.
+
+    Nothing is emitted per row but ``n_eff``: the pairs live in the state and
+    :meth:`ModelBank.marginal` reads them as a long frame, one row per
+    (group, instance, feature, target) with ``n_eff`` (the target's ``W_t``),
+    ``n_kish`` (``W_t^2 / Q_t``, the Kish effective sample size -- the row
+    count that carries the same information as the weights do; ``(1 + lam) /
+    (1 - lam)`` in the limit for unit weights), ``mean_x``, ``var_x``,
+    ``mean_y``, ``var_y``, ``cov``, and the derived ``corr`` (``cov / sqrt(var_x
+    var_y)``), ``beta`` (``cov / var_x``, the slope of ``y`` on ``x`` alone)
+    and ``t`` (``corr * sqrt((n_kish - 2) / (1 - corr^2))``, the t-statistic
+    of that correlation at the Kish sample size -- a descriptive scale, not a
+    p-value, since the rows are neither independent nor Gaussian). The three
+    derived values are null until the target's ``W_t`` reaches ``min_periods``
+    (default 3: two rows give a correlation of ±1 whatever the data, three
+    the first one with content), and ``var_x = 0`` or ``n_kish <= 2`` leave
+    the ones they undefine null.
+
+    ``add_intercept`` and ``coef_every`` have nothing to act on here, and
+    nothing residual-based applies (there is no prediction), so the residual
+    switches are refused by name. A column may not be both a target and a
+    feature.
+    """
+    model: dict[str, Any] = {"type": "marginal"}
+    return _common(name, model, targets=targets, features=features, **common)
 
 
 #: The model types with no target column: their outputs are read from the

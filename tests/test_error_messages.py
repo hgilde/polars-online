@@ -209,6 +209,7 @@ BUILDERS = {
     po.spec.holt: dict(features=None),
     po.spec.kmeans: dict(features=["x0", "y"], targets=None, k=2),
     po.spec.ew_class: dict(targets=None, label="y", classes=["a", "b"], precision_prior=1.0),
+    po.spec.marginal: {},
 }
 
 

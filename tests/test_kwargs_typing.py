@@ -41,6 +41,7 @@ NAMESPACE_METHODS = [
     "micro",
     "ew_class",
     "seqtest",
+    "marginal",
 ]
 
 

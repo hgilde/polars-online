@@ -643,6 +643,7 @@ fn only_models_that_predict_a_target_have_residual_fields() {
         r#"{"type": "micro", "eps": 1.0}"#,
         r#"{"type": "ew_class", "classes": ["a", "b"], "precision_prior": 1.0}"#,
         r#"{"type": "seqtest"}"#,
+        r#"{"type": "marginal"}"#,
     ];
     let mut seen = Vec::new();
     for model in kinds {
