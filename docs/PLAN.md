@@ -540,8 +540,16 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       CLI incl. `--dry-run`, the expression and its `a`/`b` refusal, two
       comparisons in one bank, scoring, a refused chunk, every refusal by
       name); 14 core unit tests, the contract, two goldens, 9 bank tests.
-- [ ] 31. **Performance and parallel-performance deep dive** over the new models and
-      enhancements (`docs/PERFORMANCE.md`, `benchmark.py`, `scaling_bench.py`).
+- [x] 31. **Performance and parallel-performance deep dive** over the new models and
+      enhancements (`docs/PERFORMANCE.md` §13, `benchmark.py`). Bit-exact
+      throughout, two dumps against the Task 30 build say so; per 400k rows
+      at k = 20 the default `ew_cov` 758 → 222 ms, full `ew_class` 1510 →
+      808, PCA at `pca_every=100` 332 → 162, `micro` 37 → 24, the simplex
+      179 → 157; at 14 threads over 64 groups `ew_cov` 276 → 152, `ew_class`
+      324 → 191 per 800k rows. The finding: a wide model's speed depended on
+      the caller's chunk size through the slot stride (a power-of-two chunk
+      2–3× slower), fixed by processing in cache-sized runs with an odd-line
+      stride.
 - [ ] 32. **Prepare 0.2.0**: version bump, CHANGELOG, README and VALIDATION numbers
       regenerated, gate and CI green. Tag and Release dispatch are the user's steps.
 
@@ -1119,6 +1127,54 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   docstring: 60% gains of 1e-9 against 40% losses of 1e6 is "positive". A
   test of the mean would need bounded losses or clipping, which E42 ruled
   out; the sign-conditional null is the one that holds for dependent rows.
+
+**Task 31's decisions: the performance survey, 2026-09-05.**
+
+- *Bit-exact or not at all.* Every change recomputes the same arithmetic
+  on the same inputs (`k` square roots reused across the pairs; a kept
+  Cholesky factor of the same matrix; a projection's bounds prepared once;
+  multiplications by exactly 1.0) or is plumbing (scratch buffers, skipped
+  residual tracking for a model with no predictions, a packed validity
+  bitmap, a contiguous copy). Proved, not argued: two output dumps over
+  every family, with groups, weights, a null key, `predict` and chunk
+  ends, compared as `u64` bits plus validity against a build of the
+  Task 30 commit. A survey row that moved the wrong way was a real
+  regression (the constraint scratch made the unscaled simplex 9%
+  slower) and was fixed by keeping the folded instantiation, not
+  accepted as noise.
+- *The stride is the bank's decision, not the caller's.* `ChunkOut` is
+  slot-major and a row is one store per slot at stride `n_rows × 8`
+  bytes; a power-of-two chunk put every slot of a 231-wide `ew_cov` row
+  in the same L1 sets (65 536 rows: 1302 ns/row; 65 552: 685), and a
+  400k chunk paid a page per store. Each (spec, group) work item now runs
+  its rows through the stream in runs of `ChunkOut::run_rows` — buffers
+  within 2 MiB, stride an odd number of 128-byte lines, floor five lines
+  — each run its own `ChunkOut`, the coefficient report on the last run's
+  final row. Chunk invariance is what makes it invisible; three bank
+  tests pin it. Rejected alternatives: a row-major layout (changes the
+  reader, the `at` contract and the scatter path for the same cache
+  effect) and splitting the predict-only path (the coef-on-last-row rule
+  is the thing to preserve, and `predict` reports none).
+- *Wall clock over profile.* `sample` weights a phase by its thread
+  count; `assemble` on fourteen threads looked like half the chunk when
+  `ONLINE_TIMING=1` said 20 ms of 300. The per-chunk section rows are the
+  truth for *where*; the profiler is for *what*, at function granularity.
+  Written up as a recipe in `docs/PERFORMANCE.md` §13.
+- *One factor per learned row.* `ew_class` full covariance cached the
+  factor per class (`solve::SpdFactor`, `ewclass::Factors`,
+  `#[serde(skip)]`, invalidated for the class a row learns) rather than
+  refactorizing all classes every row; the shared form was already at one
+  factorization per row and did not move.
+- *Deferred, with the reason.* `kalman`'s standardizer is a full `EwCov`
+  read on its diagonal — a diagonal accumulator is O(k) instead of O(k²)
+  but is a serialized layout change (rule 5, schema bump), left for a
+  release with another reason to bump. `pca_every=1` is O(k³) per row by
+  request. The simplex sort of `2k` breakpoints could be an O(k)
+  selection. Compare mode's second pass is 8 ms per 400k rows.
+- *Documented ratios, not a loaded machine.* The README's two tables are
+  from one quiet run of `scripts/benchmark.py --markdown` on the final
+  build; the per-row and thread-scaling tables in `docs/PERFORMANCE.md`
+  §13 carry both builds so the ratio, not the absolute, is the claim.
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without

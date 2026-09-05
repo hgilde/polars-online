@@ -97,9 +97,9 @@ pub struct Pa {
     w_sum: f64,
     #[serde(skip)]
     zbuf: Vec<f64>,
-    /// Scratch for the projection's breakpoints.
+    /// Scratch for the projection.
     #[serde(skip)]
-    pbuf: Vec<f64>,
+    pbuf: crate::constraint::Scratch,
 }
 
 impl Pa {
@@ -109,7 +109,7 @@ impl Pa {
         let mut beta = vec![vec![0.0; k]; cfg.n_targets];
         if let Some(c) = &cfg.constraint {
             let off = usize::from(cfg.add_intercept);
-            let mut scratch = Vec::new();
+            let mut scratch = crate::constraint::Scratch::default();
             for b in beta.iter_mut() {
                 c.project(&mut b[off..], None, &mut scratch);
             }
@@ -118,7 +118,7 @@ impl Pa {
             beta,
             w_sum: 0.0,
             zbuf: vec![0.0; k],
-            pbuf: Vec::new(),
+            pbuf: crate::constraint::Scratch::default(),
             cfg,
         })
     }

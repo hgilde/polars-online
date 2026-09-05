@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 use crate::clock::Decay;
 use crate::ewcov::EwCov;
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
-use crate::solve::quad_forms_logdet;
+use crate::solve::{SpdFactor, quad_forms_logdet};
 
 /// The shape of the class covariance matrices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -116,6 +116,72 @@ impl EwClassCfg {
     }
 }
 
+/// The Cholesky factor of one class's `C_c + r_c I` for the `full` shape,
+/// kept between rows. A class that did not learn the row has the same
+/// matrix bit for bit -- [`EwCov::decay`] moves neither the co-moments nor
+/// the precision scale -- so its factor is reused and only the class the row
+/// belongs to is refactorized: one O(k³) factorization per learned row
+/// instead of one per class (docs/PERFORMANCE.md §13). `Failed` is kept
+/// too, so a matrix no jitter could factorize is not retried on every row.
+#[derive(Debug, Clone)]
+enum Cached {
+    Stale,
+    Failed,
+    Ready(SpdFactor),
+}
+
+/// Per-class [`Cached`] factors. Derived state: a pure function of the
+/// class accumulators, so it is neither serialized (rebuilt on demand after
+/// a load) nor compared.
+#[derive(Debug, Clone, Default)]
+struct Factors(Vec<Cached>);
+
+impl PartialEq for Factors {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Factors {
+    /// The factor for class `c`, computing and keeping it when stale.
+    fn get(
+        &mut self,
+        c: usize,
+        n_classes: usize,
+        matrix: impl FnOnce() -> Vec<f64>,
+        k: usize,
+    ) -> Option<&SpdFactor> {
+        if self.0.len() != n_classes {
+            self.0 = vec![Cached::Stale; n_classes];
+        }
+        if matches!(self.0[c], Cached::Stale) {
+            self.0[c] = match SpdFactor::of(&matrix(), k) {
+                Some(f) => Cached::Ready(f),
+                None => Cached::Failed,
+            };
+        }
+        match &self.0[c] {
+            Cached::Ready(f) => Some(f),
+            _ => None,
+        }
+    }
+
+    /// The factor for class `c` if it is ready; `None` when stale or failed,
+    /// without computing anything.
+    fn peek(&self, c: usize) -> Option<&SpdFactor> {
+        match self.0.get(c) {
+            Some(Cached::Ready(f)) => Some(f),
+            _ => None,
+        }
+    }
+
+    fn invalidate(&mut self, c: usize) {
+        if let Some(slot) = self.0.get_mut(c) {
+            *slot = Cached::Stale;
+        }
+    }
+}
+
 /// Class-conditional Gaussian classifier; see the [module docs](self).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EwClass {
@@ -127,6 +193,9 @@ pub struct EwClass {
     /// Rows whose covariance could not be factorized even with jitter; the
     /// row's outputs are null.
     pub solve_failures: u64,
+    /// The `full` shape's per-class factors between rows; see [`Factors`].
+    #[serde(skip)]
+    factors: Factors,
 }
 
 impl EwClass {
@@ -140,6 +209,7 @@ impl EwClass {
             classes,
             n_eff: 0.0,
             solve_failures: 0,
+            factors: Factors::default(),
         })
     }
 
@@ -201,10 +271,31 @@ impl EwClass {
         self.cfg.precision_prior * self.classes[c].precision_scale()
     }
 
+    /// `C_c + r_c I`, the matrix the `full` shape factorizes for class `c`.
+    fn class_matrix(&self, c: usize) -> Vec<f64> {
+        let k = self.cfg.n_features;
+        let mut m = self.classes[c].comoments().to_vec();
+        let ridge = self.ridge(c);
+        for i in 0..k {
+            m[i * k + i] += ridge;
+        }
+        m
+    }
+
     /// `[class, p_0, .., p_{C-1}]` for `x` from the current state; NaN
     /// throughout before `min_periods`, before any labelled row, on a
     /// non-finite `x`, and when a covariance cannot be factorized.
-    fn score(&self, x: &[f64], valid: bool, solve_failed: &mut bool) -> Vec<f64> {
+    ///
+    /// `factors` is the `full` shape's cache of class factors: `step` hands
+    /// its own in and gets the stale ones rebuilt; `predict` has only `&self`
+    /// and reads whatever is ready, factorizing the rest without keeping it.
+    fn score(
+        &self,
+        x: &[f64],
+        valid: bool,
+        solve_failed: &mut bool,
+        mut factors: Option<&mut Factors>,
+    ) -> Vec<f64> {
         let nc = self.cfg.n_classes;
         let k = self.cfg.n_features;
         let nan = || vec![f64::NAN; 1 + nc];
@@ -229,14 +320,21 @@ impl EwClass {
                     for (d, (xi, mi)) in delta.iter_mut().zip(x.iter().zip(cov.means())) {
                         *d = xi - mi;
                     }
-                    let mut m = cov.comoments().to_vec();
-                    let ridge = self.ridge(c);
-                    for i in 0..k {
-                        m[i * k + i] += ridge;
-                    }
-                    match quad_forms_logdet(&m, &delta, k, 1) {
-                        Some((q, log_det, _)) => {
-                            ell[c] = (weights[c] / total).ln() - 0.5 * log_det - 0.5 * q[0];
+                    let fresh;
+                    let factor = match factors.as_deref_mut() {
+                        Some(cache) => cache.get(c, nc, || self.class_matrix(c), k),
+                        None => match self.factors.peek(c) {
+                            Some(f) => Some(f),
+                            None => {
+                                fresh = SpdFactor::of(&self.class_matrix(c), k);
+                                fresh.as_ref()
+                            }
+                        },
+                    };
+                    match factor {
+                        Some(f) => {
+                            let q = f.quad_forms(&delta, k, 1);
+                            ell[c] = (weights[c] / total).ln() - 0.5 * f.log_det() - 0.5 * q[0];
                         }
                         None => {
                             *solve_failed = true;
@@ -325,7 +423,9 @@ impl OnlineModel for EwClass {
         let n_before = self.n_eff;
         let valid = x.iter().all(|v| v.is_finite());
         let mut failed = false;
-        let pred = self.score(x, valid, &mut failed);
+        let mut factors = std::mem::take(&mut self.factors);
+        let pred = self.score(x, valid, &mut failed, Some(&mut factors));
+        self.factors = factors;
         if failed {
             self.solve_failures += 1;
         }
@@ -334,6 +434,8 @@ impl OnlineModel for EwClass {
         for (c, cov) in self.classes.iter_mut().enumerate() {
             if label == Some(c) {
                 cov.update(x, lam, weight);
+                // The one matrix this row moved.
+                self.factors.invalidate(c);
             } else {
                 cov.decay(lam);
             }
@@ -350,7 +452,7 @@ impl OnlineModel for EwClass {
         let valid = x.iter().all(|v| v.is_finite());
         let mut failed = false;
         Step {
-            pred: self.score(x, valid, &mut failed),
+            pred: self.score(x, valid, &mut failed, None),
             n_eff: self.n_eff,
             extra: None,
         }

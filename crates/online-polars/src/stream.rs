@@ -845,23 +845,72 @@ pub struct ChunkOut {
     pub n_levels: usize,
 }
 
+/// Which optional buffers a spec fills: read by `ChunkOut::new` to size them
+/// and by `ChunkOut::run_rows` to count the values a row writes.
+struct Buffers {
+    residuals: bool,
+    extras: bool,
+    n_levels: usize,
+    is_lasso: bool,
+}
+
+impl Buffers {
+    fn of(spec: &Spec) -> Self {
+        Self {
+            // A model with no target to predict has no residual field, so its
+            // `resid` buffer would be filled, written once per slot per row
+            // and never read: for a 230-statistic `ew_cov` that was a fifth
+            // of the row (docs/PERFORMANCE.md §13).
+            residuals: !spec.model.predicts_no_target(),
+            // `sigma` is also the loss that `emit_selected` and
+            // `emit_averaged` rank slots by (E13/E14 reuse E12's tracked
+            // error), so it has to be materialized for them even when it is
+            // not itself an output field.
+            extras: spec.emit_sigma
+                || spec.emit_resid_z
+                || spec.emit_selected
+                || spec.emit_averaged,
+            n_levels: spec.resid_quantiles.as_ref().map_or(0, Vec::len),
+            is_lasso: matches!(spec.model, crate::ModelKind::Lasso { .. }),
+        }
+    }
+
+    /// `f64` values one row writes across every buffer, for `n_models`
+    /// instances of `n_slots` slots.
+    fn per_row(&self, spec: &Spec, n_models: usize, n_slots: usize) -> usize {
+        let per = n_models * n_slots;
+        let on = |flag: bool| if flag { per } else { 0 };
+        per + on(self.residuals)
+            + 2 * on(self.extras)
+            + on(spec.emit_autocorr)
+            + 3 * on(spec.emit_metrics)
+            + 3 * on(spec.conformal.is_some())
+            + self.n_levels * per
+            + n_models
+            + if self.is_lasso {
+                n_models * spec.m()
+            } else {
+                0
+            }
+    }
+}
+
 impl ChunkOut {
     /// Buffers for `n_rows` rows of one stream, all null until written.
     pub fn new(spec: &Spec, n_models: usize, n_slots: usize, n_rows: usize) -> Self {
         let per = n_models * n_slots * n_rows;
         let on = |flag: bool| if flag { per } else { 0 };
-        let n_levels = spec.resid_quantiles.as_ref().map_or(0, Vec::len);
-        let is_lasso = matches!(spec.model, crate::ModelKind::Lasso { .. });
-        // `sigma` is also the loss that `emit_selected` and `emit_averaged`
-        // rank slots by (E13/E14 reuse E12's tracked error), so it has to be
-        // materialized for them even when it is not itself an output field.
-        let extras =
-            spec.emit_sigma || spec.emit_resid_z || spec.emit_selected || spec.emit_averaged;
+        let Buffers {
+            residuals,
+            extras,
+            n_levels,
+            is_lasso,
+        } = Buffers::of(spec);
         Self {
             rows: Vec::with_capacity(n_rows),
             processed: vec![false; n_rows],
             pred: vec![f64::NAN; per],
-            resid: vec![f64::NAN; per],
+            resid: vec![f64::NAN; on(residuals)],
             sigma: vec![f64::NAN; on(extras)],
             resid_z: vec![f64::NAN; on(extras)],
             autocorr: vec![f64::NAN; on(spec.emit_autocorr)],
@@ -885,12 +934,59 @@ impl ChunkOut {
         }
     }
 
+    /// How many rows one learning run covers (docs/PERFORMANCE.md §13).
+    ///
+    /// The buffers are slot-major, so a row is one store per slot, each a
+    /// slot's stride apart. Two things about that stride decide how fast a
+    /// wide model runs, and both are set here rather than by whoever chose
+    /// the chunk size:
+    ///
+    /// - The run's buffers stay within `BUDGET` bytes, so the lines a wide
+    ///   model's row touches are still in cache when the next rows complete
+    ///   them; over a 400k-row chunk, a 230-statistic `ew_cov` spent a third
+    ///   of its time on stores to lines that had already been evicted.
+    /// - A slot's stride is an odd number of 128-byte lines, so no two slots
+    ///   of a row share a cache set. A power-of-two chunk (65 536 rows, the
+    ///   natural streaming batch) put every slot of that `ew_cov` in the
+    ///   same set and ran it 2-3x slower than a chunk 16 rows longer.
+    ///
+    /// A narrow model writes a few values per row and gets runs of a hundred
+    /// thousand rows: a chunk is one or two, and nothing changes for it. A
+    /// model too wide for the budget gets the floor, five lines. Chunk
+    /// invariance is what makes the split invisible.
+    pub fn run_rows(spec: &Spec, n_models: usize, n_slots: usize) -> usize {
+        const BUDGET: usize = 2 << 20;
+        /// `f64`s in a 128-byte line, the longest of the two OSes' lines.
+        const LINE: usize = 16;
+        let width = Buffers::of(spec).per_row(spec, n_models, n_slots).max(1);
+        let lines = BUDGET / (8 * width * LINE);
+        let lines = if lines % 2 == 0 {
+            lines.saturating_sub(1)
+        } else {
+            lines
+        };
+        lines.max(5) * LINE
+    }
+
     /// Offset of `(model, slot)` at row `ri`, in any `n_models * n_slots *
     /// n_rows` buffer. The single place the layout is spelled out; the writer
     /// in `process_one` and the reader in `assemble` both go through it.
     #[inline]
     pub fn at(n_slots: usize, n_rows: usize, mi: usize, slot: usize, ri: usize) -> usize {
         (mi * n_slots + slot) * n_rows + ri
+    }
+
+    /// The first row when this task's rows are one unbroken run `base..base +
+    /// n`: a single group, or a group that arrives in blocks. `rows` is
+    /// strictly increasing by construction (`group_indices` walks the chunk
+    /// in order and each row belongs to one group), so the two ends decide.
+    pub fn contiguous(&self) -> Option<usize> {
+        let (&first, &last) = (self.rows.first()?, self.rows.last()?);
+        debug_assert!(
+            self.rows.windows(2).all(|w| w[0] < w[1]),
+            "rows out of order"
+        );
+        (last - first + 1 == self.rows.len()).then_some(first)
     }
 }
 
@@ -1065,6 +1161,11 @@ impl Stream {
     /// columns out group after group (docs/PERFORMANCE.md P9), so a stream's
     /// rows are one contiguous run whatever order the frame interleaves its
     /// groups in.
+    ///
+    /// The bank feeds a chunk's rows in runs of [`ChunkOut::run_rows`], each
+    /// into its own buffers, and says with `last` which run ends the chunk:
+    /// that run's final row is where the coefficients are reported. Chunk
+    /// invariance makes the runs the same computation as one.
     #[allow(clippy::too_many_arguments)]
     pub fn process_chunk(
         &mut self,
@@ -1078,6 +1179,7 @@ impl Stream {
         rows: &[usize],
         base: usize,
         out: &mut ChunkOut,
+        last: bool,
     ) -> Result<(), (f64, usize)> {
         let n_rows = rows.len();
         out.rows.extend_from_slice(rows);
@@ -1104,8 +1206,10 @@ impl Stream {
                 rows_seen += 1;
                 out.processed[ri] = true;
             }
+            // The chunk's last row reports the coefficients; `last` says
+            // whether this run ends the chunk (`ChunkOut::run_rows`).
             let want_coef = accept
-                && (ri + 1 == n_rows
+                && ((last && ri + 1 == n_rows)
                     || (spec.coef_every > 0 && rows_seen % u64::from(spec.coef_every) == 0));
             plans.push(RowPlan {
                 ri,
@@ -1472,6 +1576,7 @@ fn build_instances<'a>(
             mi,
             model,
             decay: *decays.next().expect("one per instance"),
+            residuals: !spec.model.predicts_no_target(),
             resid_var: resid_var.next().expect("one per instance"),
             resid_w: resid_w.next().expect("one per instance"),
             drift: drift.next(),
@@ -1533,6 +1638,10 @@ struct Instance<'a> {
     mi: usize,
     model: ModelRef<'a>,
     decay: Decay,
+    /// False for a model that predicts no target (`ModelKind::
+    /// predicts_no_target`): no residual is formed, tracked or written for
+    /// it, and `ChunkOut` gives it no `resid` buffer.
+    residuals: bool,
     resid_var: &'a mut Vec<f64>,
     resid_w: &'a mut Vec<f64>,
     drift: Option<&'a mut Vec<PageHinkley>>,
@@ -1648,62 +1757,78 @@ fn run_instance(
         };
         let n_slots = step.pred.len();
         // `ew_cov` has no targets; its slots are statistics, so every one
-        // maps to "target 0" for the warmup check.
-        let nc = n_slots.checked_div(m_targets).unwrap_or(1);
+        // maps to "target 0" for the warmup check. Slot `s` belongs to target
+        // `s / nc`; the passes below walk the slots in groups of `nc` rather
+        // than dividing per slot -- two integer divisions a slot were most of
+        // a 230-slot `ew_cov` row (docs/PERFORMANCE.md §13).
+        let nc = n_slots.checked_div(m_targets).unwrap_or(1).max(1);
 
         // Per-target warmup (ENHANCEMENTS E7). The model itself predicts once
         // the *smallest* threshold is met; a slot whose own target is not ready
         // is withheld here, before it can reach the residual, sigma, resid_z,
         // drift or selection. Warmup gates output, not learning -- the model
         // has already updated from this row.
-        for (slot, p) in step.pred.iter_mut().enumerate() {
-            if step_n_eff_below(step.n_eff, min_periods, slot / nc) {
-                *p = f64::NAN;
+        for (tj, group) in step.pred.chunks_mut(nc).enumerate() {
+            if step_n_eff_below(step.n_eff, min_periods, tj) {
+                group.fill(f64::NAN);
             }
         }
 
+        // A model that predicts no target has no residual: its slots are
+        // statistics, and `validate` refuses every residual-based option for
+        // it, so `r`, `sig` and `zs` stay empty and every loop over them
+        // below is a no-op. Tracking a residual for such a model was a
+        // division per slot per row, and filling the three buffers a
+        // `memset` per row, that no field ever read (docs/PERFORMANCE.md §13).
         sc.r.clear();
-        sc.r.extend(step.pred.iter().enumerate().map(|(slot, p)| {
-            match sc.ys.get(slot / nc).copied().flatten() {
-                Some(yj) if p.is_finite() => yj - p,
-                _ => f64::NAN,
-            }
-        }));
         sc.sig.clear();
-        sc.sig.resize(n_slots, f64::NAN);
         sc.zs.clear();
-        sc.zs.resize(n_slots, f64::NAN);
-
-        // sigma is read from the state BEFORE this row's residual is folded in,
-        // so `resid_z` is out-of-sample like the prediction it scales.
         let lam = inst.decay.factor(plan.d_clock);
-        for (slot, &rv) in sc.r.iter().enumerate() {
-            if inst.resid_w[slot] > 0.0 {
-                let sd = inst.resid_var[slot].max(0.0).sqrt();
-                sc.sig[slot] = sd;
-                if rv.is_finite() && sd > 0.0 {
-                    sc.zs[slot] = rv / sd;
-                }
+        if inst.residuals {
+            sc.sig.resize(n_slots, f64::NAN);
+            sc.zs.resize(n_slots, f64::NAN);
+            for (tj, group) in step.pred.chunks(nc).enumerate() {
+                let yj = sc.ys.get(tj).copied().flatten();
+                sc.r.extend(group.iter().map(|p| match yj {
+                    Some(yj) if p.is_finite() => yj - p,
+                    _ => f64::NAN,
+                }));
             }
-            if !learn {
-                continue;
-            }
-            if rv.is_finite() {
-                let w_new = lam * inst.resid_w[slot] + w;
-                if w_new > 0.0 {
-                    inst.resid_var[slot] =
-                        (lam * inst.resid_w[slot] * inst.resid_var[slot] + w * rv * rv) / w_new;
-                    inst.resid_w[slot] = w_new;
+
+            // sigma is read from the state BEFORE this row's residual is
+            // folded in, so `resid_z` is out-of-sample like the prediction it
+            // scales.
+            for (slot, &rv) in sc.r.iter().enumerate() {
+                if inst.resid_w[slot] > 0.0 {
+                    let sd = inst.resid_var[slot].max(0.0).sqrt();
+                    sc.sig[slot] = sd;
+                    if rv.is_finite() && sd > 0.0 {
+                        sc.zs[slot] = rv / sd;
+                    }
                 }
-            } else {
-                inst.resid_w[slot] *= lam;
+                if !learn {
+                    continue;
+                }
+                if rv.is_finite() {
+                    let w_new = lam * inst.resid_w[slot] + w;
+                    if w_new > 0.0 {
+                        inst.resid_var[slot] =
+                            (lam * inst.resid_w[slot] * inst.resid_var[slot] + w * rv * rv) / w_new;
+                        inst.resid_w[slot] = w_new;
+                    }
+                } else {
+                    inst.resid_w[slot] *= lam;
+                }
             }
         }
 
-        for (slot, (&p, &rv)) in step.pred.iter().zip(sc.r.iter()).enumerate() {
-            let at = slot * n_rows + ri;
-            inst.o_pred[at] = p;
-            inst.o_resid[at] = rv;
+        for (slot, &p) in step.pred.iter().enumerate() {
+            inst.o_pred[slot * n_rows + ri] = p;
+        }
+        if inst.residuals {
+            for (slot, &rv) in sc.r.iter().enumerate() {
+                inst.o_resid[slot * n_rows + ri] = rv;
+            }
         }
         if !inst.o_sigma.is_empty() {
             for (slot, (&s, &z)) in sc.sig.iter().zip(sc.zs.iter()).enumerate() {

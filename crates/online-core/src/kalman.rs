@@ -147,16 +147,6 @@ impl KalmanCfg {
         };
         Decay::Halflife(r).factor(d_clock)
     }
-
-    /// Per-slot halflife, broadcast to `k_total`.
-    fn halflife_per_slot(&self) -> Vec<f64> {
-        let k = self.k_total();
-        if self.halflife.len() == 1 {
-            vec![self.halflife[0]; k]
-        } else {
-            self.halflife.clone()
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -184,6 +174,12 @@ pub struct Kalman {
     /// slot reverts).
     #[serde(skip)]
     phi: Vec<f64>,
+    /// This row's feature scales and process-noise variances, kept between
+    /// rows so a step allocates nothing for them (docs/PERFORMANCE.md §13).
+    #[serde(skip)]
+    sbuf: Vec<f64>,
+    #[serde(skip)]
+    qbuf: Vec<f64>,
 }
 
 impl Kalman {
@@ -208,6 +204,8 @@ impl Kalman {
             pz: vec![0.0; k],
             gain: vec![0.0; k],
             phi: vec![1.0; k],
+            sbuf: vec![1.0; k],
+            qbuf: vec![0.0; k],
             cfg,
         })
     }
@@ -266,26 +264,27 @@ impl Kalman {
     /// value is then their centered value, i.e. 0). All ones when
     /// `standardize` is off.
     fn scales(&self) -> Vec<f64> {
-        let k = self.cfg.k_total();
+        let mut out = vec![1.0; self.cfg.k_total()];
+        self.scales_into(&mut out);
+        out
+    }
+
+    /// [`Self::scales`] into a caller's buffer of length `k_total`.
+    fn scales_into(&self, out: &mut [f64]) {
         let off = usize::from(self.cfg.add_intercept);
-        if !self.cfg.standardize {
-            return vec![1.0; k];
-        }
-        (0..k)
-            .map(|i| {
-                if i < off {
-                    1.0
+        for (i, s) in out.iter_mut().enumerate() {
+            *s = if !self.cfg.standardize || i < off {
+                1.0
+            } else {
+                let v = self.cov.var(i);
+                let raw = self.cov.raw(i, i);
+                if crate::variance_is_usable(v, raw) {
+                    v.sqrt()
                 } else {
-                    let v = self.cov.var(i);
-                    let raw = self.cov.raw(i, i);
-                    if crate::variance_is_usable(v, raw) {
-                        v.sqrt()
-                    } else {
-                        1.0
-                    }
+                    1.0
                 }
-            })
-            .collect()
+            };
+        }
     }
 
     /// Coefficients in the ORIGINAL feature units, per target.
@@ -315,24 +314,31 @@ impl Kalman {
         out
     }
 
-    /// Process-noise variances for this row: `q_i = sigma^2 * (ln2 / h_i)^2`
+    /// Process-noise variances for this row, `q_i = sigma^2 * (ln2 / h_i)^2`
     /// (steady-state gain matching with EW-RLS on standardized features).
+    #[cfg(test)]
     fn q_vec(&self, sigma2: f64) -> Vec<f64> {
+        let mut out = vec![0.0; self.cfg.k_total()];
+        self.q_into(sigma2, &mut out);
+        out
+    }
+
+    /// [`Self::q_vec`] into a caller's buffer of length `k_total`.
+    fn q_into(&self, sigma2: f64, out: &mut [f64]) {
         if let Some(q) = &self.cfg.q {
-            return q.clone();
+            out.copy_from_slice(q);
+            return;
         }
-        self.cfg
-            .halflife_per_slot()
-            .into_iter()
-            .map(|h| {
-                if h.is_infinite() {
-                    0.0
-                } else {
-                    let r = std::f64::consts::LN_2 / h;
-                    sigma2 * r * r
-                }
-            })
-            .collect()
+        let shared = self.cfg.halflife.len() == 1;
+        for (i, qi) in out.iter_mut().enumerate() {
+            let h = self.cfg.halflife[if shared { 0 } else { i }];
+            *qi = if h.is_infinite() {
+                0.0
+            } else {
+                let r = std::f64::consts::LN_2 / h;
+                sigma2 * r * r
+            };
+        }
     }
 
     /// `[1, x]` standardized against the stats as they stand, as `step`
@@ -360,6 +366,8 @@ impl Kalman {
             self.pz = vec![0.0; k];
             self.gain = vec![0.0; k];
             self.phi = vec![1.0; k];
+            self.sbuf = vec![1.0; k];
+            self.qbuf = vec![0.0; k];
         }
     }
 
@@ -371,8 +379,13 @@ impl Kalman {
             return;
         }
         let k = self.cfg.k_total();
-        for (i, ph) in self.phi.iter_mut().enumerate() {
-            *ph = self.cfg.phi(i, d_clock);
+        if self.cfg.revert_halflife.len() == 1 {
+            // One halflife for every slot: one exponential, not `k`.
+            self.phi.fill(self.cfg.phi(0, d_clock));
+        } else {
+            for (i, ph) in self.phi.iter_mut().enumerate() {
+                *ph = self.cfg.phi(i, d_clock);
+            }
         }
         for b in &mut self.beta {
             for (bi, ph) in b.iter_mut().zip(&self.phi) {
@@ -410,7 +423,8 @@ impl OnlineModel for Kalman {
         self.transition(d_clock);
 
         // Standardized regressors from the stats BEFORE this row's update.
-        let s = self.scales();
+        let mut s = std::mem::take(&mut self.sbuf);
+        self.scales_into(&mut s);
         for (i, zs) in self.zs.iter_mut().enumerate() {
             *zs = if !self.cfg.standardize {
                 self.zbuf[i]
@@ -420,6 +434,7 @@ impl OnlineModel for Kalman {
                 (self.zbuf[i] - self.cov.mean(i)) / s[i]
             };
         }
+        self.sbuf = s;
 
         // ---- predict (state before the update) ----
         let n_eff = self.cov.n_eff();
@@ -447,11 +462,13 @@ impl OnlineModel for Kalman {
             // Process step: P += Q * d_clock, after the transition above
             // (only for the target that owns P, or once when shared).
             if !self.cfg.share_p || j == 0 {
-                let q = self.q_vec(sigma2);
+                let mut q = std::mem::take(&mut self.qbuf);
+                self.q_into(sigma2, &mut q);
                 let p = &mut self.p[pi];
                 for i in 0..k {
                     p[i * k + i] += q[i] * d_clock;
                 }
+                self.qbuf = q;
             }
             let Some(yj) = y[j] else {
                 self.wj[j] *= lam;

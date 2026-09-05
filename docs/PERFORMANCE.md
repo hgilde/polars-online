@@ -1,12 +1,14 @@
 # Performance: measurements and the parallelism plan
 
-Status as of 2026-09-04: **P1–P11 all done**, numbers refreshed in §8 and
-the chunk plan revisited in §12. Headline, against the baseline in
-§1: **2.8× single stream at k=5, 2.0× at k=20, 2.0× on grouped data, 2.1× on a
-single-stream grid, 3.9× on a multi-spec bank, 1.23× on the CLI end to end**,
-and thread scaling from 3.2× to 6.2× on ten performance cores; §12 then
-took a grouped chunk at 14 threads from 37 to 17 ms of wall. Every golden
-number is unchanged throughout — that was the contract.
+Status as of 2026-09-05: **P1–P11 all done**, numbers refreshed in §8, the
+chunk plan revisited in §12 and the new families surveyed in §13. Headline,
+against the baseline in §1: **2.8× single stream at k=5, 2.0× at k=20, 2.0×
+on grouped data, 2.1× on a single-stream grid, 3.9× on a multi-spec bank,
+1.23× on the CLI end to end**, and thread scaling from 3.2× to 6.2× on ten
+performance cores; §12 then took a grouped chunk at 14 threads from 37 to
+17 ms of wall, and §13 the 230-statistic `ew_cov` from 758 to 222 ms per
+400k rows and the full-covariance `ew_class` from 1510 to 808. Every
+golden number is unchanged throughout — that was the contract.
 
 Two plan items were closed by *rejecting* them on measurement rather than
 building them (P4's typed builders, P7's build flags), and P5 found its target
@@ -1110,3 +1112,238 @@ and the barriers between phases are the ones chunk invariance requires. The
 next factor would have to come from inside `process`, and §5 says why it
 will not.
 
+
+## 13. The new families, and where a wide row goes (2026-09-05)
+
+Tasks 23–30 added two clustering models (`kmeans`, `micro`), the moments
+family's Mahalanobis distance and PCA, class-conditional moments
+(`ew_class`), two first-order learners with constraints (`sgd`, `pa`), a
+transition on `kalman`, conformal intervals and a sequential test
+(`seqtest`). Task 31 is the survey §8 gave the regressions: what each
+costs on one thread, how each scales across the pool, and what could be
+had without moving a number. The contract is §12's: **every golden bit
+is unchanged**. Each change below either recomputes the same arithmetic
+on the same inputs or touches no arithmetic at all, and two dumps prove
+it against a build of the Task 30 commit in a worktree — 31 columns ×
+65k rows over fifteen specs (groups, weights, a null key, `predict`,
+every new family) and 22 columns × 440k rows over ten specs, long enough
+that every chunk end and every run boundary of the split below falls
+inside the data. Compared bit for bit: float columns as `u64` bits plus
+the validity, lists and structs recursed. Both print `BIT-EXACT`.
+
+**The survey.** 400k rows, k = 20, one group, one chunk, one process,
+best of 3, Task 30 build → this one:
+
+| workload | before, ms | after, ms | |
+|---|---|---|---|
+| `ewridge` | 113.3 | 110.0 | |
+| `ewridge` + conformal | 111.2 | 109.8 | |
+| `ewridge` + `emit_sigma` + `emit_resid_z` | 111.3 | 107.8 | |
+| `kalman` | 238.4 | 225.1 | |
+| `kalman` + `revert_halflife` | 266.9 | 254.8 | |
+| `sgd` | 41.7 | 39.9 | |
+| `sgd`, box | 46.0 | 45.2 | |
+| `sgd`, simplex | 179.1 | 157.1 | 1.14× |
+| `pa` | 32.7 | 30.6 | |
+| `pa`, simplex | 168.8 | 148.9 | 1.13× |
+| `ew_cov` mean, std, corr (230 statistics) | 757.7 | 222.1 | **3.4×** |
+| `ew_cov` mean only | 107.5 | 66.8 | 1.6× |
+| `ew_cov` mean + mahal | 562.2 | 538.8 | |
+| `ew_cov` mean + mahal + `mahal_q0.99` | 566.0 | 547.5 | |
+| `ew_cov` pca 3, `pca_every=1` | 6399.6 | 6592.5 | |
+| `ew_cov` pca 3, `pca_every=100` | 332.3 | 162.0 | **2.05×** |
+| `ew_cov` k = 4, mahal | 115.5 | 108.8 | |
+| `ew_class` full, 3 classes | 1509.7 | 808.3 | **1.87×** |
+| `ew_class` shared | 697.3 | 707.3 | |
+| `ew_class` diagonal | 160.4 | 155.3 | |
+| `ew_class` k = 4, full | 315.2 | 199.4 | 1.58× |
+| `kmeans` k = 4, K = 3 | 41.7 | 34.6 | 1.2× |
+| `kmeans` k = 4, K = 8 | 68.3 | 58.9 | 1.16× |
+| `kmeans` k = 20, K = 8 | 127.6 | 122.6 | |
+| `micro` k = 4, eps 0.5 | 37.0 | 24.5 | **1.5×** |
+| `micro` k = 20, eps 1.0 | 58.6 | 44.4 | 1.32× |
+| `seqtest`, one column | — | 16.9 | |
+| two `ewridge` sides | 246.9 | 257.4 | |
+| two sides + `seqtest` compare | 271.0 | 265.6 | |
+
+The rows without a ratio moved by less than the run-to-run spread (3–5%
+on this machine at 400k rows). `pca_every=1` is the O(k³)-per-row
+cadence a user asks for by name; the row is there to show what it costs
+against every hundredth row.
+
+**Where `ew_cov`'s row went.** 758 ms for 400k rows is 1.9 µs a row for
+230 numbers that are each a load, a multiply and a store: the model was
+not the cost. Four things were, in the order they were found.
+
+1. *The pairwise square roots.* `corr(i, j) = cov / (std_i · std_j)`
+   took both roots inside the pair loop: 380 `sqrt` per row at k = 20,
+   80% of the model's own time. Twenty roots into a `Vec`, then the same
+   product of the same two roots per pair — bit-identical, since it *is*
+   the same two operands (`ewcov.rs`, `EwCovStat::Corr`).
+2. *Residual plumbing for a model with no residual.* `Stream::process_one`
+   tracked `r`, `sigma`, `z` per slot for every model: a division by the
+   residual variance per slot per row, and three per-row buffer fills, for
+   the 230 slots of a model whose outputs are not predictions. An
+   `Instance` now knows whether its model `predicts_no_target`, and the
+   stream skips the tracking, the fills and the `resid` buffer itself
+   (`Buffers::of(spec)` sizes it at zero). While there, the two integer
+   divisions `slot / nc` per slot became a `chunks(nc)` pass.
+3. *The stores.* This one is the section's finding, and it is about
+   layout, not arithmetic. `ChunkOut` is slot-major —
+   `(mi·n_slots + slot)·n_rows + ri` — so one row is 231 stores each
+   `n_rows × 8` bytes apart. Over a 400k-row chunk those are 231 lines
+   3.2 MB apart — a page per store — and a third of the row went on
+   stores to lines evicted before the next row came back to complete
+   them; and when `n_rows` is a power of two the stride is a multiple of
+   the L1's way size, and all 231 stores of a row map to a handful of the
+   8-way sets. Measured, `process` alone, ns per row of
+   the default `ew_cov` with the first two fixes in: 65 536-row chunks
+   **1302**, 65 552-row chunks **685**; 4096 → **1256**, 4112 → **435**;
+   the whole 400k in one chunk 690. A chunk sixteen rows longer ran
+   twice as fast, and 65 536 is the natural streaming batch. The fix is
+   to stop letting the caller's chunk size choose the stride: each
+   (spec, group) work item now feeds its rows through the stream in
+   sequential *runs* of `ChunkOut::run_rows` rows, each run its own
+   `ChunkOut`, sized so a run's buffers fit in 2 MiB and the stride is
+   an odd number of 128-byte lines — 1104 rows for the 231-wide
+   `ew_cov`, 87 376 for a one-target `ewridge` (three values per row),
+   131 056 at width two, a floor of 80 for anything wider than the
+   budget. The stream is the same object across runs, so the recursion
+   does not see the boundary; the coefficient report follows the `last`
+   run's final row, so `coef` still lands on the chunk's last row and on
+   `coef_every`. After: 437, 450, 438, 446, 491 ns per row at the same
+   five chunk sizes — flat, and the power-of-two cliff is gone (the
+   final build reads 423 / 440 / 424 / 421 / 473). Chunk invariance is
+   what makes the split invisible, and three tests in
+   `crates/online-polars/tests/bank.rs` pin it: 1 vs 5 vs 5000 chunks
+   equal across runs for the wide model, the `coef` rows across run
+   boundaries, and the odd-lines-within-budget arithmetic itself.
+4. *The assembly.* `F64Column` now keeps its validity as a packed bitmap
+   built eight flags at a time (`wrapping_mul(0x0102_0408_1020_4080) >>
+   56`), handed to arrow as a `Bitmap` instead of a `Vec<bool>` it would
+   pack again; and a work item whose rows are one unbroken range (a
+   single group, or a group that arrives in blocks) is copied with
+   `copy_from_slice` rather than scattered a row at a time. `assemble`
+   for the 400k default chunk: 27 → 20 ms; the read-out on the final
+   build is `process` 189 ms, `assemble` 21, `total` 214.
+
+**Reading the wall clock, not the profile.** The first `sample` of the
+default `ew_cov` put half the time in `assemble`, and the list above
+nearly started at the wrong end. `sample` counts threads: `assemble`
+runs on all fourteen, `process` on one for a single group, so a 14×
+weighting made a 20 ms phase look like 280. `ONLINE_TIMING=1` prints
+`extract / group / process / assemble / total` per chunk in wall
+milliseconds and is the number to trust; the profile is for *where in
+`process`*, at function granularity (per-line attribution inside an
+inlined recursion is not reliable: the `sqrt` above showed up on the
+loop header). The recipe, for next time: build with symbols
+(`CARGO_PROFILE_RELEASE_STRIP=none CARGO_PROFILE_RELEASE_DEBUG=1 uv run
+maturin develop --release -m crates/online-py/Cargo.toml`), run the
+workload in a loop, `sample <pid> 8 -mayDie -file out.txt`, and read
+"Sort by top of stack"; `nm` / `objdump -d` on
+`python/polars_online/_polars_online.abi3.so` for the inner loop when
+the function name is not enough.
+
+**`ew_class`: one factorization per learned row.** The full-covariance
+classifier scored every row against every class with a fresh Cholesky
+factor of each class's ridged comoment matrix — three O(k³)
+factorizations per row for three classes, when a row updates one class
+and leaves the other two matrices untouched. `solve::SpdFactor` splits
+`quad_forms_logdet` into the factor (`of`, the same jitter ladder as
+before) and its uses (`quad_forms`, `log_det`); `ewclass::Factors`
+keeps one per class, `#[serde(skip)]`, invalidated for the class a row
+learns. A `step` factorizes one class; `predict` (`&self`) factorizes
+what it needs without keeping it. `solve.rs` has a test that the kept
+factor gives the one-shot numbers to the bit; 1510 → 808 ms at k = 20,
+315 → 199 at k = 4. The shared-covariance form learns *the* one matrix
+every row and gains nothing (697 → 707, noise), which is the point: it
+was already at one factorization per row.
+
+**`kalman`, `sgd`, `pa`: allocations and a closure.** `kalman` built its
+per-slot standardizer scales and its process-noise vector as fresh
+`Vec`s every row; they are `#[serde(skip)]` scratch now (`sbuf`,
+`qbuf`), and a shared `revert_halflife` fills `phi` once instead of
+deriving a per-slot halflife a slot at a time. 238 → 225 ms. The
+constraint projection (`constraint.rs`) is the one place a first attempt
+made things worse. With `scales` (the standardizer's units) the closure
+`bound(i)` recomputed `1 / scale_i`, `lo_i · scale_i`, `hi_i · scale_i`
+at every one of the O(k log k) reads of the breakpoint sweep; a
+`Scratch` that fills them once per projection is the fix, and the survey
+caught it making the *unscaled* simplex 9% slower (179 → 195 ms): with
+`scales = None` the old closure folded to constants, and the new one
+read a prepared `a[i]` per coordinate. So `project` is two
+instantiations of one `project_with` — the unscaled closure
+`|i| (1.0, lo[i], hi[i])`, whose multiplications by one fold away, and
+the scaled one over `Scratch`. Multiplication and division by 1.0 are
+exact, so nothing moves; 179 → 157 and 169 → 149 ms. The rest of the
+projection is a sort of 2k breakpoints per row (≈ 300 ns at k = 20) and
+stays: an O(k) selection would replace it, but 157 ms for 400k
+constrained rows was not the problem this section was solving.
+
+**Thread scaling.** `POLARS_ONLINE_MAX_THREADS` at 1, 2, 4, 8, 14 over
+800k rows in 64 interleaved groups (`t = row // 64`, so a group's rows
+are one clock unit apart; `max_dclock = 10`), best of 3, wall in ms and
+the 14-thread speedup — Task 30 build / this one:
+
+| workload | 1 | 2 | 4 | 8 | 14 | speedup |
+|---|---|---|---|---|---|---|
+| `ewridge` | 230 / 238 | 128 / 130 | 74 / 76 | 46 / 46 | 40 / 42 | 5.8× / 5.6× |
+| `ewridge` + conformal | 241 / 254 | 134 / 141 | 75 / 78 | 47 / 48 | 43 / 44 | 5.6× / 5.8× |
+| `kalman` + revert | 552 / 532 | 287 / 276 | 158 / 153 | 89 / 87 | 75 / 74 | 7.3× / 7.2× |
+| `sgd`, simplex | 346 / 340 | 181 / 181 | 105 / 102 | 61 / 58 | 54 / 51 | 6.4× / 6.6× |
+| `ew_cov` default | 1641 / **753** | 890 / 389 | 514 / 246 | 320 / 150 | 276 / **152** | 5.9× / 5.0× |
+| `ew_cov` mahal | 1170 / 1137 | 610 / 584 | 322 / 310 | 172 / 168 | 140 / 131 | 8.4× / 8.7× |
+| `ew_cov` pca 3 / 100 | 769 / **460** | 407 / 258 | 229 / 150 | 142 / 94 | 121 / **85** | 6.4× / 5.4× |
+| `ew_class` full | 3090 / **1655** | 1601 / 852 | 823 / 440 | 434 / 236 | 324 / **191** | 9.5× / 8.7× |
+| `ew_class` k = 4, full | 662 / 419 | 374 / 220 | 189 / 124 | 114 / 76 | 85 / 65 | 7.7× / 6.4× |
+| `kmeans` k = 4, K = 8 | 219 / 211 | 117 / 114 | 66 / 64 | 39 / 38 | 31 / 31 | 7.1× / 6.9× |
+| `kmeans` k = 20, K = 8 | 463 / 461 | 242 / 244 | 131 / 132 | 74 / 72 | 63 / 62 | 7.4× / 7.4× |
+| `micro` k = 4 | 92 / 73 | 51 / 41 | 33 / 27 | 22 / 19 | 20 / 17 | 4.6× / 4.2× |
+| `micro` k = 20 | 133 / 117 | 75 / 70 | 47 / 41 | 30 / 29 | 31 / 31 | 4.3× / 3.8× |
+| `seqtest`, one column | 57 / 44 | 33 / 28 | 21 / 18 | 15 / 13 | 14 / 13 | 4.2× / 3.4× |
+| two `ewridge` sides | 731 / 747 | 387 / 388 | 209 / 215 | 119 / 121 | 96 / 98 | 7.6× / 7.6× |
+| two sides + compare | 793 / 791 | 423 / 430 | 230 / 234 | 140 / 139 | 115 / 117 | 6.9× / 6.7× |
+
+Two readings. First, every gain on one thread carries to fourteen:
+`ew_cov` 276 → 152 ms, `ew_class` 324 → 191, the PCA cadence 121 → 85.
+Second, the *speedup ratios* of the models that got faster went down
+(5.9× → 5.0×, 9.5× → 8.7×), and that is Amdahl, not a regression: the
+part that scales — `process` — shrank, and the phases around it
+(`extract`, `group`, the Python call) did not, so they are a larger
+share of a smaller wall. The models that scale worst are the cheapest
+per row (`micro`, `seqtest`, 3–4×): at 13 ms for 800k rows the
+per-chunk fixed cost is most of the chunk, as §12 found for the plumbing
+around a k = 20 `ewridge`. The models with the most arithmetic per row
+scale best (`ew_class`, `ew_cov` mahal, 8.7×). §5's ceiling stands: the
+recursion is the per-row cost and cannot be split within a group, and
+64 groups over 14 threads leaves the biggest group's tail.
+
+**What is left, and why.**
+
+- *`kalman`'s standardizer* is a full `EwCov` over the features of which
+  the filter reads the diagonal: O(k²) of comoment updates per row for
+  k variances. A diagonal accumulator is O(k), but it is a serialized
+  field, so a layout change: `SCHEMA_VERSION` bump plus a loader for the
+  old one (rule 5). Deferred to a release with another reason to bump.
+- *`pca_every=1`* is an O(k³) eigendecomposition per row by request; the
+  cadence knob is the answer (40× at every hundredth row), and the
+  docstring says so.
+- *The simplex sort* (above): an O(k) selection is possible, not done.
+- *A row-major `ChunkOut`* would make a row one contiguous store and was
+  the obvious alternative to the run split; the split gets the same
+  cache behaviour without changing the reader in `assemble`, the
+  `at(...)` layout contract or the `scatter` fast path, so the layout
+  stays.
+- *The predict-only path* (`predict_chunk`, `score`) is not split into
+  runs: the coefficient-on-the-last-row rule is what the split has to
+  preserve, `predict` reports none, and it is not the hot path.
+- *`F64Column::run`* packs its validity in a second pass over the flags
+  (eight per byte); a fused single pass measured the same within noise,
+  and `assemble` is 21 ms of 214 on the widest workload, so the simpler
+  code stays.
+- *Compare mode's second pass* (`seqtest` over two sides) costs 8 ms per
+  400k rows on top of the sides, 24 before — a second walk over two
+  residual columns, and the price of the two-phase bank it rides on.
+- *A zero-filled `pred`* (fresh pages from the allocator instead of a
+  NaN fill) was rejected: NaN is the "never written" sentinel the
+  assembly turns into null, and zero is a value.

@@ -1242,22 +1242,51 @@ Apple M-series, single process, best of 3, 200k rows per run
 
 | configuration | notes | rows/sec |
 |---|---|---|
-| `ewridge` k=5 | 1 target, 1 halflife | 11,052,624 |
-| `ewridge` k=20 | 1 target, 1 halflife | 3,915,551 |
-| `ewridge` k=50 | 1 target, 1 halflife | 1,013,347 |
-| `ewridge` k=20 | 10 targets | 2,319,677 |
-| `ewridge` k=20 | 5 halflives | 2,499,997 |
-| `rls` | k=20, 1 target | 1,962,001 |
-| `kalman` | k=20, 1 target | 1,686,204 |
-| `lasso` | k=20, 1 target (3-point path) | 2,087,772 |
-| `huber` | k=20, 1 target | 4,085,464 |
-| `ftrl` | k=20, 1 target | 7,119,127 |
+| `ewridge` k=5 | 1 target, 1 halflife | 10,870,697 |
+| `ewridge` k=20 | 1 target, 1 halflife | 3,923,931 |
+| `ewridge` k=50 | 1 target, 1 halflife | 1,002,231 |
+| `ewridge` k=20 | 10 targets | 2,330,458 |
+| `ewridge` k=20 | 5 halflives | 2,354,953 |
+| `rls` | k=20, 1 target | 1,963,308 |
+| `kalman` | k=20, 1 target | 1,851,327 |
+| `lasso` | k=20, 1 target (3-point path) | 2,033,627 |
+| `huber` | k=20, 1 target | 3,975,119 |
+| `ftrl` | k=20, 1 target | 6,995,830 |
 
 Targets share one `S` accumulator, so 10 targets cost far less than 10× one.
 Each halflife in a grid is its own accumulator, but they run in parallel, so
 a 5-halflife grid costs about 2× one rather than 5×. `rls` pays 1.3–2.1× for
 the square-root form that keeps it from dying of cancellation on one extreme
 row; that is worth it.
+
+The other families, and the options that add a pass, on the same machine
+and rows:
+
+| configuration | notes | rows/sec |
+|---|---|---|
+| `ewridge` + `conformal` | k=20, 90% interval | 3,917,766 |
+| `sgd` | k=20, squared loss | 11,578,457 |
+| `sgd` | k=20, `coef_min=0`, `coef_sum=1` | 2,766,116 |
+| `pa` | k=20 | 15,681,764 |
+| `kalman` | k=20, `revert_halflife` | 1,617,287 |
+| `ew_cov` | k=20: mean, std, corr (230 statistics) | 1,921,119 |
+| `ew_cov` | k=20: mean, mahal, `mahal_q0.99` | 763,732 |
+| `ew_class` | k=20, 3 classes, full covariance | 508,747 |
+| `ew_class` | k=20, 3 classes, shared covariance | 586,333 |
+| `ew_class` | k=20, 3 classes, diagonal | 2,690,399 |
+| `kmeans` | 4 features, K=8 | 6,747,259 |
+| `kmeans` | k=20, K=8 | 3,317,180 |
+| `micro` | 4 features, `eps=1` | 18,391,650 |
+| `seqtest` | sign of one column | 27,480,862 |
+
+A conformal interval is free: it reads the residual the model already has.
+A simplex constraint sorts `2k` breakpoints per row, so it costs `sgd`
+about 4×. `ew_cov` writes 230 numbers a row and still runs at half the
+speed of one `ewridge`. The Mahalanobis distance and the full-covariance
+`ew_class` each pay for a Cholesky factor of a `k × k` matrix, one per row
+for `mahal` and one per *learned* row for `ew_class` — the classes a row
+does not touch keep theirs. `kmeans` and `micro` cost a distance to each
+centre; `seqtest` a handful of operations.
 
 Grouped data goes wider, as [Parallelism](#parallelism) shows: 8.2M rows/s
 at k=20 over 64 groups.

@@ -30,6 +30,35 @@ pub struct Constraint {
     pub sum: Option<f64>,
 }
 
+/// Scratch space a caller keeps between rows so a projection allocates
+/// nothing: the per-coordinate weights and bounds in the projected space,
+/// computed once per projection, and the breakpoints.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Scratch {
+    a: Vec<f64>,
+    lo: Vec<f64>,
+    hi: Vec<f64>,
+    breaks: Vec<f64>,
+}
+
+impl Scratch {
+    /// In b-space the sum reads `sum(a_i b_i) = s` with `a_i = 1 / scale_i`
+    /// and the bounds are `lo_i scale_i`, `hi_i scale_i`. Once per
+    /// projection: they used to be recomputed, a division each, at every
+    /// one of the O(k log k) reads (docs/PERFORMANCE.md §13).
+    fn fill(&mut self, c: &Constraint, scales: &[f64]) {
+        let k = scales.len();
+        self.a.resize(k, 0.0);
+        self.lo.resize(k, 0.0);
+        self.hi.resize(k, 0.0);
+        for (i, &sc) in scales.iter().enumerate() {
+            self.a[i] = 1.0 / sc;
+            self.lo[i] = c.lo[i] * sc;
+            self.hi[i] = c.hi[i] * sc;
+        }
+    }
+}
+
 impl Constraint {
     /// One bound per feature, no NaN, `lo <= hi`, and a finite `sum` the
     /// box can reach. `who` prefixes the messages (`"sgd"`, `"pa"`).
@@ -94,19 +123,40 @@ impl Constraint {
 
     /// Project the slopes `b` in place, `b_i` living in the standardized
     /// coordinate `c_i * scales[i]`; `None` when the model works in the
-    /// caller's units. `breaks` is scratch space the caller keeps between
-    /// rows, so a projection allocates nothing.
-    pub fn project(&self, b: &mut [f64], scales: Option<&[f64]>, breaks: &mut Vec<f64>) {
+    /// caller's units. `scratch` is space the caller keeps between rows, so
+    /// a projection allocates nothing.
+    pub fn project(&self, b: &mut [f64], scales: Option<&[f64]>, scratch: &mut Scratch) {
         let k = b.len();
         debug_assert_eq!(k, self.lo.len());
         debug_assert!(scales.is_none_or(|s| s.len() == k));
-        // In b-space the sum reads sum(a_i b_i) = s with a_i = 1 / scale_i
-        // and the bounds are lo_i scale_i, hi_i scale_i.
-        let bound = |i: usize| {
-            let sc = scales.map_or(1.0, |s| s[i]);
-            (1.0 / sc, self.lo[i] * sc, self.hi[i] * sc)
-        };
-        let Some(s) = self.sum else {
+        match scales {
+            // The caller's units: `a_i = 1` and the bounds as given. Its own
+            // instantiation of the algorithm, so the multiplications by one
+            // fold away rather than read a prepared `a_i` per coordinate --
+            // that read alone cost the unscaled simplex 9% (docs/PERFORMANCE.md
+            // §13).
+            None => Self::project_with(
+                b,
+                self.sum,
+                |i| (1.0, self.lo[i], self.hi[i]),
+                &mut scratch.breaks,
+            ),
+            Some(scales) => {
+                scratch.fill(self, scales);
+                let Scratch { a, lo, hi, breaks } = scratch;
+                Self::project_with(b, self.sum, |i| (a[i], lo[i], hi[i]), breaks)
+            }
+        }
+    }
+
+    /// The projection proper, over `bound(i) = (a_i, lo_i, hi_i)` in b-space.
+    fn project_with(
+        b: &mut [f64],
+        sum: Option<f64>,
+        bound: impl Fn(usize) -> (f64, f64, f64),
+        breaks: &mut Vec<f64>,
+    ) {
+        let Some(s) = sum else {
             for (i, bi) in b.iter_mut().enumerate() {
                 let (_, lo, hi) = bound(i);
                 *bi = bi.clamp(lo, hi);
@@ -270,10 +320,10 @@ mod tests {
     fn a_box_clamps_coordinatewise() {
         let c = boxed(&[0.0, -1.0, f64::NEG_INFINITY], &[1.0, 1.0, 0.5], None);
         let mut b = [1.5, -3.0, 2.0];
-        c.project(&mut b, None, &mut Vec::new());
+        c.project(&mut b, None, &mut Scratch::default());
         assert_eq!(b, [1.0, -1.0, 0.5]);
         let mut inside = [0.5, 0.0, -7.0];
-        c.project(&mut inside, None, &mut Vec::new());
+        c.project(&mut inside, None, &mut Scratch::default());
         assert_eq!(inside, [0.5, 0.0, -7.0]);
     }
 
@@ -282,7 +332,7 @@ mod tests {
         // Bound 0.5 on c_i is bound 0.5 * scale_i on b_i.
         let c = boxed(&[0.0, 0.0], &[0.5, 0.5], None);
         let mut b = [1.0, 1.0];
-        c.project(&mut b, Some(&[4.0, 0.25]), &mut Vec::new());
+        c.project(&mut b, Some(&[4.0, 0.25]), &mut Scratch::default());
         assert_eq!(b, [1.0, 0.125]);
     }
 
@@ -294,7 +344,7 @@ mod tests {
             for _ in 0..200 {
                 let v: Vec<f64> = (0..k).map(|_| 3.0 * lcg(&mut s)).collect();
                 let mut b = v.clone();
-                c.project(&mut b, None, &mut Vec::new());
+                c.project(&mut b, None, &mut Scratch::default());
                 let want = simplex_by_sorting(&v);
                 for i in 0..k {
                     assert!(
@@ -311,7 +361,7 @@ mod tests {
     fn a_hyperplane_alone_shifts_by_the_mean_deficit() {
         let c = boxed(&[f64::NEG_INFINITY; 3], &[f64::INFINITY; 3], Some(1.0));
         let mut b = [2.0, -1.0, 5.0];
-        c.project(&mut b, None, &mut Vec::new());
+        c.project(&mut b, None, &mut Scratch::default());
         // sum was 6, deficit 5 spread over three coordinates.
         for (got, want) in b
             .iter()
@@ -322,7 +372,7 @@ mod tests {
         // With scales, the shift per coordinate is mu * a_i, in b-space.
         let mut b = [2.0, -1.0, 5.0];
         let scales = [1.0, 2.0, 4.0];
-        c.project(&mut b, Some(&scales), &mut Vec::new());
+        c.project(&mut b, Some(&scales), &mut Scratch::default());
         let total: f64 = b.iter().zip(&scales).map(|(bi, s)| bi / s).sum();
         assert!((total - 1.0).abs() <= 1e-12);
         let mu = (2.0 / 1.0 + (-1.0) / 2.0 + 5.0 / 4.0 - 1.0) / (1.0 + 0.25 + 1.0 / 16.0);
@@ -373,7 +423,7 @@ mod tests {
             c.validate(k, "test").unwrap();
             let v: Vec<f64> = (0..k).map(|_| 4.0 * lcg(&mut s)).collect();
             let mut b = v.clone();
-            c.project(&mut b, Some(&scales), &mut Vec::new());
+            c.project(&mut b, Some(&scales), &mut Scratch::default());
             assert!(
                 feasible(&c, &b, &scales, 1e-9),
                 "trial {trial}: {c:?} v={v:?} b={b:?}"
@@ -385,7 +435,7 @@ mod tests {
             // Projecting a projected point moves nothing beyond rounding.
             let again = {
                 let mut t = b.clone();
-                c.project(&mut t, Some(&scales), &mut Vec::new());
+                c.project(&mut t, Some(&scales), &mut Scratch::default());
                 t
             };
             for i in 0..k {
@@ -398,7 +448,7 @@ mod tests {
     fn a_feasible_point_is_left_exactly_where_it_is_by_a_box() {
         let c = boxed(&[0.0, 0.0], &[1.0, 1.0], None);
         let mut b = [0.3, 0.7];
-        c.project(&mut b, None, &mut Vec::new());
+        c.project(&mut b, None, &mut Scratch::default());
         assert_eq!(b, [0.3, 0.7]);
     }
 
@@ -407,14 +457,14 @@ mod tests {
         let c = boxed(&[0.25, 0.75], &[0.25, 0.75], Some(1.0));
         c.validate(2, "test").unwrap();
         let mut b = [-5.0, 9.0];
-        c.project(&mut b, None, &mut Vec::new());
+        c.project(&mut b, None, &mut Scratch::default());
         assert_eq!(b, [0.25, 0.75]);
         // A sum inside the rounding slack but below what the floors add up
         // to: the projection lands on the floors, from either side.
         let c = boxed(&[0.1, 0.2, 0.3], &[0.1, 0.2, 0.3], Some(0.6));
         for start in [[-5.0, 9.0, 0.0], [0.1, 0.2, 0.3], [1.0, 1.0, 1.0]] {
             let mut b = start;
-            c.project(&mut b, None, &mut Vec::new());
+            c.project(&mut b, None, &mut Scratch::default());
             assert_eq!(b, [0.1, 0.2, 0.3], "from {start:?}");
         }
     }
@@ -429,7 +479,7 @@ mod tests {
             Some(-10.0),
         );
         let mut b = [5.0, 5.0];
-        c.project(&mut b, None, &mut Vec::new());
+        c.project(&mut b, None, &mut Scratch::default());
         assert!((b[0] + 10.0).abs() <= 1e-12 && b[1] == 0.0, "{b:?}");
     }
 

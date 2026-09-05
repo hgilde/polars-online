@@ -1,7 +1,7 @@
 //! Bank-level integration tests: chunk invariance, save/load mid-stream,
 //! per-group independence (docs/PLAN.md §9). The oracle tests live in pytest.
 
-use online_polars::{Bank, GroupKey, Spec};
+use online_polars::{Bank, ChunkOut, GroupKey, Spec, Stream};
 use polars::prelude::*;
 
 fn spec_json(name: &str, group: bool) -> Spec {
@@ -67,7 +67,13 @@ fn make_df(n: usize) -> DataFrame {
 }
 
 fn run_chunked(df: &DataFrame, n_chunks: usize) -> DataFrame {
-    let mut bank = Bank::new(vec![spec_json("m", true)]).unwrap();
+    run_spec_chunked(&spec_json("m", true), df, n_chunks)
+}
+
+/// `df` through a fresh bank of `spec` in `n_chunks` near-equal chunks,
+/// stacked back into one frame.
+fn run_spec_chunked(spec: &Spec, df: &DataFrame, n_chunks: usize) -> DataFrame {
+    let mut bank = Bank::new(vec![spec.clone()]).unwrap();
     let n = df.height();
     let mut outs: Vec<DataFrame> = Vec::new();
     let step = n.div_ceil(n_chunks);
@@ -611,4 +617,239 @@ fn integer_group_keys_match_the_string_cast() {
             "{dtype}: same groups, counts and clocks"
         );
     }
+}
+
+#[test]
+fn only_models_that_predict_a_target_have_residual_fields() {
+    // `ChunkOut::new` allocates no `resid` buffer for a model whose
+    // `predicts_no_target()` is true (docs/PERFORMANCE.md §13), so the
+    // schema must never ask for a `resid` field of such a model, and a
+    // model that predicts a target must always have one. One spec per
+    // `ModelKind`; a new kind that lands on the wrong side of this line
+    // shows up here rather than as an index out of bounds in `assemble`.
+    let kinds = [
+        r#"{"type": "ew_ridge", "ridge": 1e-6}"#,
+        r#"{"type": "lasso", "lasso_path": [0.1]}"#,
+        r#"{"type": "kalman", "coef_halflife": 100.0}"#,
+        r#"{"type": "huber"}"#,
+        r#"{"type": "quantile", "quantile": 0.5}"#,
+        r#"{"type": "ftrl"}"#,
+        r#"{"type": "sgd", "learning_rate": 0.01}"#,
+        r#"{"type": "pa"}"#,
+        r#"{"type": "holt"}"#,
+        r#"{"type": "rls"}"#,
+        r#"{"type": "ew_cov", "stats": ["mean"]}"#,
+        r#"{"type": "kmeans", "k": 2}"#,
+        r#"{"type": "micro", "eps": 1.0}"#,
+        r#"{"type": "ew_class", "classes": ["a", "b"], "precision_prior": 1.0}"#,
+        r#"{"type": "seqtest"}"#,
+    ];
+    let mut seen = Vec::new();
+    for model in kinds {
+        let features = if model.contains("holt") {
+            "[]"
+        } else {
+            r#"["x0", "x1"]"#
+        };
+        let spec: Spec = serde_json::from_str(&format!(
+            r#"{{"name": "s", "model": {model}, "targets": ["y"], "features": {features},
+                "halflife": 50.0, "min_periods": 2.0}}"#
+        ))
+        .unwrap_or_else(|e| panic!("{model}: {e}"));
+        let has_resid = online_polars::output_index(&spec)
+            .iter()
+            .any(|f| f.kind == "resid");
+        assert_eq!(
+            has_resid,
+            !spec.model.predicts_no_target(),
+            "{model}: resid field present = {has_resid}"
+        );
+        seen.push(spec.model.kind_name().to_string());
+    }
+    seen.sort();
+    seen.dedup();
+    assert_eq!(seen.len(), kinds.len(), "one spec per model kind: {seen:?}");
+}
+
+/// `n` rows of `k` finite features `x0..`, a target `y` on the first two and
+/// a weight `w`, no clock and no nulls: every row is accepted, so the
+/// coefficient schedule is exactly the one `coef_every` and the chunk ends
+/// describe.
+fn make_wide_df(n: usize, k: usize) -> DataFrame {
+    let mut s = 99u64;
+    let mut lcg = move || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    };
+    let mut xs: Vec<Vec<f64>> = vec![Vec::with_capacity(n); k];
+    let mut y = Vec::with_capacity(n);
+    let mut w = Vec::with_capacity(n);
+    for _ in 0..n {
+        for x in xs.iter_mut() {
+            x.push(lcg());
+        }
+        y.push(2.0 * xs[0].last().unwrap() - xs[1].last().unwrap() + 0.01 * lcg());
+        w.push(0.5 + lcg().abs());
+    }
+    let mut cols: Vec<Column> = xs
+        .into_iter()
+        .enumerate()
+        .map(|(j, x)| Column::new(format!("x{j}").into(), x))
+        .collect();
+    cols.push(Column::new("y".into(), y));
+    cols.push(Column::new("w".into(), w));
+    DataFrame::new(n, cols).unwrap()
+}
+
+fn features_json(k: usize) -> String {
+    let names: Vec<String> = (0..k).map(|j| format!("\"x{j}\"")).collect();
+    format!("[{}]", names.join(", "))
+}
+
+/// The default `ew_cov` (mean, std, corr) over `k` features: `k + k +
+/// k(k-1)/2` statistics a row, 230 for `k = 20`.
+fn ew_cov_spec(k: usize) -> Spec {
+    serde_json::from_str(&format!(
+        r#"{{"name": "c", "model": {{"type": "ew_cov"}}, "targets": ["x0"],
+            "features": {}, "halflife": 200.0, "min_periods": 2.0}}"#,
+        features_json(k)
+    ))
+    .unwrap()
+}
+
+/// An ungrouped, unclocked `ew_ridge` on `x0`, `x1` that solves every row and
+/// reports its coefficients every `coef_every` learned rows (0: chunk ends only).
+fn ridge_spec(coef_every: u32) -> Spec {
+    serde_json::from_str(&format!(
+        r#"{{"name": "m", "model": {{"type": "ew_ridge", "ridge": 1e-6, "max_rows_between_solves": 1}},
+            "targets": ["y"], "features": ["x0", "x1"], "weight": "w", "halflife": 500.0,
+            "min_periods": 5.0, "coef_every": {coef_every}}}"#
+    ))
+    .unwrap()
+}
+
+/// Rows on which `coef` is reported: the non-null positions of the field.
+fn coef_rows(out: &DataFrame, name: &str) -> Vec<usize> {
+    let coef = out
+        .column(name)
+        .unwrap()
+        .struct_()
+        .unwrap()
+        .field_by_name("coef")
+        .unwrap();
+    (0..out.height())
+        .filter(|&i| coef.get(i).unwrap() != AnyValue::Null)
+        .collect()
+}
+
+#[test]
+fn runs_through_a_wide_model_are_invisible() {
+    // The bank feeds a task's rows through its stream in runs of
+    // `ChunkOut::run_rows` rows, one set of buffers each (docs/PERFORMANCE.md
+    // §13). A 230-statistic `ew_cov` gets runs of 1 104 rows, so 5 000 rows
+    // in one chunk are five runs, the last of them partial; the same rows in
+    // five chunks are one run each, and one row at a time is 5 000 runs of
+    // one. Chunk invariance says all three are the same computation, and
+    // `equals_missing` on every field says the runs kept it that way.
+    let k = 20;
+    let spec = ew_cov_spec(k);
+    let stream = Stream::new(&spec).unwrap();
+    assert_eq!(stream.n_slots(), k + k + k * (k - 1) / 2);
+    assert_eq!(
+        ChunkOut::run_rows(&spec, stream.n_models(), stream.n_slots()),
+        1104
+    );
+    let df = make_wide_df(5000, k);
+    let one = run_spec_chunked(&spec, &df, 1);
+    let five = run_spec_chunked(&spec, &df, 5);
+    let rows = run_spec_chunked(&spec, &df, 5000);
+    assert_eq!(one.height(), 5000);
+    let unnest = |d: &DataFrame| drop_coef(&d.clone().unnest(["c"], None).unwrap());
+    assert!(unnest(&one).equals_missing(&unnest(&five)), "1 vs 5 chunks");
+    assert!(
+        unnest(&one).equals_missing(&unnest(&rows)),
+        "1 vs 5000 chunks"
+    );
+    // The run split has to be exercised for the test to mean anything: one
+    // chunk spans several runs, and the field values are actually there.
+    let fields = unnest(&one);
+    let corr = fields.column("corr_x0_x1").unwrap();
+    assert!(corr.null_count() < 10, "statistics were reported");
+}
+
+#[test]
+fn coef_is_reported_at_the_chunk_s_end_across_runs() {
+    // The last row of a *chunk* reports the coefficients, not the last row
+    // of every run inside it: `process_chunk`'s `last` flag is what tells the
+    // two apart. A narrow `ew_ridge` gets runs of 87 376 rows (three values
+    // a row against a 2 MiB budget), so a chunk of twice that plus a hundred
+    // is three runs with two boundaries inside it, and exactly one `coef`.
+    let spec = ridge_spec(0);
+    let stream = Stream::new(&spec).unwrap();
+    let run_rows = ChunkOut::run_rows(&spec, stream.n_models(), stream.n_slots());
+    assert_eq!(run_rows, 87_376);
+    let n = 2 * run_rows + 100;
+    let df = make_wide_df(n, 2);
+
+    let one = run_spec_chunked(&spec, &df, 1);
+    assert_eq!(coef_rows(&one, "m"), vec![n - 1], "one chunk, one coef");
+
+    // Two chunks: each of the two is two runs (the budget plus fifty rows),
+    // and each reports once, on its own last row.
+    let two = run_spec_chunked(&spec, &df, 2);
+    let half = n.div_ceil(2);
+    assert_eq!(coef_rows(&two, "m"), vec![half - 1, n - 1], "two chunks");
+
+    // Everything else is the same computation either way.
+    let strip = |d: &DataFrame| drop_coef(&d.clone().unnest(["m"], None).unwrap());
+    assert!(strip(&one).equals_missing(&strip(&two)));
+
+    // `coef_every` counts learned rows across runs, since it is stream
+    // state: every thousandth row, and the chunk's last, whatever run they
+    // fall in. Every row here is accepted, so learned rows are rows.
+    let every = run_spec_chunked(&ridge_spec(1000), &df, 1);
+    let mut want: Vec<usize> = (0..n).filter(|i| (i + 1) % 1000 == 0).collect();
+    want.push(n - 1);
+    assert_eq!(coef_rows(&every, "m"), want, "coef_every across runs");
+}
+
+#[test]
+fn run_rows_is_an_odd_number_of_lines_within_the_budget() {
+    // Every run length is a whole number of 128-byte lines (16 f64) and an
+    // odd one, so that a slot's stride never shares a power of two with the
+    // cache's set count; at least five lines; and, above that floor, the
+    // run's buffers fit the 2 MiB budget with less than two lines to spare.
+    let budget = 2usize << 20;
+    let cases: Vec<(Spec, usize)> = vec![
+        (ew_cov_spec(20), 231),     // 230 statistics + n_eff
+        (ew_cov_spec(2), 6),        // 5 statistics + n_eff
+        (ridge_spec(0), 3),         // pred + resid + n_eff
+        (ew_cov_spec(200), 20_301), // wider than the budget's floor allows
+    ];
+    for (spec, width) in cases {
+        let stream = Stream::new(&spec).unwrap();
+        let (nm, ns) = (stream.n_models(), stream.n_slots());
+        let rows = ChunkOut::run_rows(&spec, nm, ns);
+        assert_eq!(rows % 16, 0, "{}: whole lines", spec.name);
+        assert_eq!((rows / 16) % 2, 1, "{}: an odd number of them", spec.name);
+        assert!(rows >= 80, "{}: at least five lines", spec.name);
+        let bytes = rows * width * 8;
+        if rows > 80 {
+            assert!(bytes <= budget, "{}: {bytes} bytes over budget", spec.name);
+            assert!(
+                (rows + 32) * width * 8 > budget,
+                "{}: {rows} rows leaves more than two lines unused",
+                spec.name
+            );
+        } else {
+            assert!(bytes > budget, "{}: at the floor for a reason", spec.name);
+        }
+    }
+    assert_eq!(ChunkOut::run_rows(&ew_cov_spec(20), 1, 230), 1104);
+    assert_eq!(ChunkOut::run_rows(&ridge_spec(0), 1, 1), 87_376);
+    // A no-target model with one statistic and one instance writes two
+    // values a row and gets the widest run there is.
+    assert_eq!(ChunkOut::run_rows(&ew_cov_spec(2), 1, 1), 131_056);
 }

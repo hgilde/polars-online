@@ -7,7 +7,7 @@ use std::path::Path;
 
 use online_core::ClockCfg;
 use polars::prelude::*;
-use polars_arrow::bitmap::MutableBitmap;
+use polars_arrow::bitmap::{Bitmap, MutableBitmap};
 use polars_utils::aliases::PlHashMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -438,7 +438,11 @@ fn extract(
 type StreamRows = PolarsResult<ChunkOut>;
 
 /// Run one phase of a chunk through its streams, learning: every `(spec,
-/// group)` task in parallel, each into its own buffers.
+/// group)` task in parallel, each in runs of [`ChunkOut::run_rows`] rows
+/// through its stream in order, one set of buffers per run. The runs are a
+/// cache-sizing device (docs/PERFORMANCE.md §13); chunk invariance makes them
+/// the same computation as one, and `last` keeps the coefficient report on
+/// the chunk's final row.
 fn process(
     work: Vec<(usize, &Vec<usize>, usize, &mut Stream)>,
     specs: &[Spec],
@@ -446,28 +450,40 @@ fn process(
     cols: &[SpecColumns],
 ) -> Vec<(usize, StreamRows)> {
     work.into_par_iter()
-        .map(|(si, idx, base, stream)| {
+        .flat_map_iter(|(si, idx, base, stream)| {
             let spec = &specs[si];
             let sc = &cols[si];
-            let r = (|| {
-                let mut out = ChunkOut::new(spec, stream.n_models(), stream.n_slots(), idx.len());
-                stream
-                    .process_chunk(
-                        spec,
-                        &cfgs[si],
-                        &sc.features,
-                        &sc.targets,
-                        sc.clock.as_deref(),
-                        sc.session.as_deref(),
-                        sc.weight.as_deref(),
-                        idx,
-                        base,
-                        &mut out,
-                    )
-                    .map_err(|(raw, i)| backwards_clock(spec, raw, i))?;
-                Ok(out)
-            })();
-            (si, r)
+            let (n_models, n_slots) = (stream.n_models(), stream.n_slots());
+            let run_rows = ChunkOut::run_rows(spec, n_models, n_slots);
+            let mut outs: Vec<(usize, StreamRows)> =
+                Vec::with_capacity(idx.len().div_ceil(run_rows));
+            let mut off = 0;
+            for run in idx.chunks(run_rows) {
+                let last = off + run.len() == idx.len();
+                let mut out = ChunkOut::new(spec, n_models, n_slots, run.len());
+                let r = stream.process_chunk(
+                    spec,
+                    &cfgs[si],
+                    &sc.features,
+                    &sc.targets,
+                    sc.clock.as_deref(),
+                    sc.session.as_deref(),
+                    sc.weight.as_deref(),
+                    run,
+                    base + off,
+                    &mut out,
+                    last,
+                );
+                off += run.len();
+                match r {
+                    Ok(()) => outs.push((si, Ok(out))),
+                    Err((raw, i)) => {
+                        outs.push((si, Err(backwards_clock(spec, raw, i))));
+                        break;
+                    }
+                }
+            }
+            outs
         })
         .collect()
 }
@@ -2168,20 +2184,36 @@ fn slot_labels(spec: &Spec) -> Vec<String> {
     out
 }
 
-/// One numeric output column: every row null until a stream's run writes it.
-/// Values and validity are built directly -- no `Vec<Option<f64>>` and no
-/// second copy into the `Series` -- and `finish` hands the buffers to polars
-/// as they are.
+/// One output column under construction: a values buffer, NaN where no
+/// finite value has been set, and its validity bits. `finish` hands both to
+/// polars as they are: no `Vec<Option<f64>>` and no second copy into the
+/// `Series`.
+///
+/// The bits are packed a byte at a time as `scatter`'s run path copies a
+/// chunk, while its values are still in cache, and are trusted at `finish`
+/// only if every chunk went that way (`packed`); otherwise validity is
+/// `is_finite` over `values` in one pass at `finish`. Neither sets a bit per
+/// value as it lands: that read-modify-write was a third of assembling a
+/// 230-statistic `ew_cov`, and the separate pass re-read every value from
+/// memory (docs/PERFORMANCE.md §13). `n_eff` is the one column reported as it
+/// is, finite or not, so it alone keeps a bit set per row (`set`).
 struct F64Column {
     values: Vec<f64>,
-    valid: MutableBitmap,
+    /// `values.len()` bits, packed little-endian as polars keeps them.
+    bits: Vec<u8>,
+    /// Every set value's bit is in `bits`.
+    packed: bool,
+    /// Scratch for `run`: one flag byte per row of the run.
+    flags: Vec<u8>,
 }
 
 impl F64Column {
     fn new(n: usize) -> Self {
         Self {
             values: vec![f64::NAN; n],
-            valid: MutableBitmap::from_len_zeroed(n),
+            bits: vec![0u8; n.div_ceil(8)],
+            packed: true,
+            flags: Vec::new(),
         }
     }
 
@@ -2192,18 +2224,80 @@ impl F64Column {
     fn set_if_finite(&mut self, i: usize, v: f64) {
         if v.is_finite() {
             self.values[i] = v;
-            self.valid.set(i, true);
+            self.packed = false;
         }
     }
 
+    /// Valid whatever the value: `n_eff`, which is reported as it is.
     #[inline]
     fn set(&mut self, i: usize, v: f64) {
         self.values[i] = v;
-        self.valid.set(i, true);
+        self.bits[i / 8] |= 1 << (i % 8);
     }
 
-    fn finish(self, name: PlSmallStr) -> Series {
-        let validity = (self.valid.unset_bits() > 0).then(|| self.valid.into());
+    /// The run `vals` of a chunk whose rows are `base..base + vals.len()`,
+    /// with `processed` alongside: a processed, finite value lands with its
+    /// bit, anything else leaves NaN and a clear bit -- exactly what
+    /// `set_if_finite` over the same rows gives.
+    ///
+    /// Two passes the compiler vectorizes -- the select into `values` with a
+    /// byte flag per row, then the flags packed eight at a time by the
+    /// multiply that gathers the low bit of each byte into one byte -- rather
+    /// than one pass that shifts each flag into place, which it compiles a
+    /// lane at a time: 0.5 ns a value against 0.3 in isolation
+    /// (docs/PERFORMANCE.md §13). The partial bytes at each end go bit by bit.
+    fn run(&mut self, base: usize, vals: &[f64], processed: &[bool]) {
+        let n = vals.len();
+        let dst = &mut self.values[base..base + n];
+        self.flags.clear();
+        self.flags.resize(n, 0);
+        let rows = dst
+            .iter_mut()
+            .zip(vals)
+            .zip(processed)
+            .zip(self.flags.iter_mut());
+        for (((d, &v), &p), f) in rows {
+            let ok = p & v.is_finite();
+            *d = if ok { v } else { f64::NAN };
+            *f = ok as u8;
+        }
+        let head = ((8 - base % 8) % 8).min(n);
+        let body = head + (n - head) / 8 * 8;
+        for k in (0..head).chain(body..n) {
+            if self.flags[k] != 0 {
+                self.bits[(base + k) / 8] |= 1 << ((base + k) % 8);
+            }
+        }
+        let bytes = &mut self.bits[(base + head) / 8..];
+        for (f, byte) in self.flags[head..body].chunks_exact(8).zip(bytes) {
+            let x = u64::from_le_bytes(f.try_into().expect("eight flags"));
+            *byte = (x.wrapping_mul(0x0102_0408_1020_4080) >> 56) as u8;
+        }
+    }
+
+    /// True where the value is set: finite, or -- with `all` -- written.
+    #[inline]
+    fn is_valid(&self, i: usize) -> bool {
+        if self.packed {
+            self.bits[i / 8] >> (i % 8) & 1 == 1
+        } else {
+            self.values[i].is_finite()
+        }
+    }
+
+    /// The validity as polars wants it: `None` when every row is valid.
+    fn validity(&mut self) -> Option<Bitmap> {
+        let n = self.values.len();
+        let bits = if self.packed {
+            MutableBitmap::from_vec(std::mem::take(&mut self.bits), n)
+        } else {
+            MutableBitmap::from_trusted_len_iter(self.values.iter().map(|v| v.is_finite()))
+        };
+        (bits.unset_bits() > 0).then(|| bits.into())
+    }
+
+    fn finish(mut self, name: PlSmallStr) -> Series {
+        let validity = self.validity();
         Float64Chunked::from_vec_validity(name, self.values, validity).into_series()
     }
 
@@ -2211,8 +2305,8 @@ impl F64Column {
     /// `kmeans` assignment, a `micro` count). Every set value is a small
     /// non-negative integer by construction; the null rows carry NaN and are
     /// masked, not cast.
-    fn finish_i32(self, name: PlSmallStr) -> Series {
-        let validity = (self.valid.unset_bits() > 0).then(|| self.valid.into());
+    fn finish_i32(mut self, name: PlSmallStr) -> Series {
+        let validity = self.validity();
         let values: Vec<i32> = self
             .values
             .iter()
@@ -2223,8 +2317,8 @@ impl F64Column {
 
     /// The same column as `i64`, for an id that only ever grows (a `micro`
     /// id or label).
-    fn finish_i64(self, name: PlSmallStr) -> Series {
-        let validity = (self.valid.unset_bits() > 0).then(|| self.valid.into());
+    fn finish_i64(mut self, name: PlSmallStr) -> Series {
+        let validity = self.validity();
         let values: Vec<i64> = self
             .values
             .iter()
@@ -2239,7 +2333,7 @@ impl F64Column {
             .values
             .iter()
             .enumerate()
-            .map(|(i, &v)| self.valid.get(i).then_some(v == 1.0))
+            .map(|(i, &v)| self.is_valid(i).then_some(v == 1.0))
             .collect();
         Series::new(name, values.as_slice())
     }
@@ -2253,8 +2347,7 @@ impl F64Column {
             .iter()
             .enumerate()
             .map(|(i, &v)| {
-                self.valid
-                    .get(i)
+                self.is_valid(i)
                     .then(|| classes.get(v as usize).map(String::as_str))
                     .flatten()
             })
@@ -2264,27 +2357,41 @@ impl F64Column {
 }
 
 /// Scatter one value per processed row of every chunk into a column:
-/// `value(chunk, n_rows, ri)` reads the stream's buffers at its `ri`-th row.
+/// `run(chunk, n_rows)` is the field's `n_rows` values for that chunk in row
+/// order -- every `ChunkOut` buffer is slot-major, so that is one slice.
 /// Non-finite values stay null unless `all` (for `n_eff`, which is always
 /// finite and is reported as-is).
+///
+/// A chunk whose rows are one unbroken run -- a single group, or a group that
+/// arrives in blocks -- is copied as a select over three slices with no index
+/// indirection, its validity packed on the way (`F64Column::run`); the
+/// general path scatters through `rows`. Same values either way: a processed,
+/// finite value lands, anything else leaves the NaN prefill
+/// (docs/PERFORMANCE.md §13).
 fn scatter(
     n: usize,
     chunks: &[ChunkOut],
     all: bool,
-    value: impl Fn(&ChunkOut, usize, usize) -> f64,
+    run: impl for<'a> Fn(&'a ChunkOut, usize) -> &'a [f64],
 ) -> F64Column {
     let mut col = F64Column::new(n);
     for ch in chunks {
         let nr = ch.rows.len();
-        for (ri, &i) in ch.rows.iter().enumerate() {
-            if !ch.processed[ri] {
-                continue;
-            }
-            let v = value(ch, nr, ri);
-            if all {
-                col.set(i, v);
-            } else {
-                col.set_if_finite(i, v);
+        let vals = run(ch, nr);
+        debug_assert_eq!(vals.len(), nr);
+        match ch.contiguous() {
+            Some(base) if !all => col.run(base, vals, &ch.processed),
+            _ => {
+                for (ri, &i) in ch.rows.iter().enumerate() {
+                    if !ch.processed[ri] {
+                        continue;
+                    }
+                    if all {
+                        col.set(i, vals[ri]);
+                    } else {
+                        col.set_if_finite(i, vals[ri]);
+                    }
+                }
             }
         }
     }
@@ -2415,21 +2522,24 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
     let fields: Vec<Series> =
         map_maybe_par::<_, _, PolarsResult<_>>(schema, n >= PAR_MIN_ROWS, |f| {
             let name: PlSmallStr = f.field.as_str().into();
-            let at = |ch: &ChunkOut, nr: usize, i: usize, ri: usize| {
-                ChunkOut::at(ch.n_slots, nr, i / per_model, i % per_model, ri)
+            // Where field `i`'s run of `nr` values starts in a per-instance buffer.
+            let at = |ch: &ChunkOut, nr: usize, i: usize| {
+                ChunkOut::at(ch.n_slots, nr, i / per_model, i % per_model, 0)
             };
             Ok(match f.src {
                 Source::Pred(i) | Source::Stat(i) => {
-                    scatter(n, chunks, false, |ch, nr, ri| ch.pred[at(ch, nr, i, ri)]).finish(name)
+                    scatter(n, chunks, false, |ch, nr| &ch.pred[at(ch, nr, i)..][..nr]).finish(name)
                 }
                 Source::Cluster(i) => {
-                    scatter(n, chunks, false, |ch, nr, ri| ch.pred[at(ch, nr, i, ri)])
+                    scatter(n, chunks, false, |ch, nr| &ch.pred[at(ch, nr, i)..][..nr])
                         .finish_i32(name)
                 }
-                Source::Id(i) => scatter(n, chunks, false, |ch, nr, ri| ch.pred[at(ch, nr, i, ri)])
-                    .finish_i64(name),
+                Source::Id(i) => {
+                    scatter(n, chunks, false, |ch, nr| &ch.pred[at(ch, nr, i)..][..nr])
+                        .finish_i64(name)
+                }
                 Source::Flag(i) => {
-                    scatter(n, chunks, false, |ch, nr, ri| ch.pred[at(ch, nr, i, ri)])
+                    scatter(n, chunks, false, |ch, nr| &ch.pred[at(ch, nr, i)..][..nr])
                         .finish_bool(name)
                 }
                 Source::Label(i) => {
@@ -2437,47 +2547,50 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
                         ModelKind::EwClass { classes, .. } => classes,
                         _ => unreachable!("only ew_class emits a label"),
                     };
-                    scatter(n, chunks, false, |ch, nr, ri| ch.pred[at(ch, nr, i, ri)])
+                    scatter(n, chunks, false, |ch, nr| &ch.pred[at(ch, nr, i)..][..nr])
                         .finish_label(name, classes)
                 }
                 Source::Resid(i) => {
-                    scatter(n, chunks, false, |ch, nr, ri| ch.resid[at(ch, nr, i, ri)]).finish(name)
-                }
-                Source::Sigma(i) => {
-                    scatter(n, chunks, false, |ch, nr, ri| ch.sigma[at(ch, nr, i, ri)]).finish(name)
-                }
-                Source::ResidZ(i) => {
-                    scatter(n, chunks, false, |ch, nr, ri| ch.resid_z[at(ch, nr, i, ri)])
+                    scatter(n, chunks, false, |ch, nr| &ch.resid[at(ch, nr, i)..][..nr])
                         .finish(name)
                 }
-                Source::Autocorr(i) => scatter(n, chunks, false, |ch, nr, ri| {
-                    ch.autocorr[at(ch, nr, i, ri)]
+                Source::Sigma(i) => {
+                    scatter(n, chunks, false, |ch, nr| &ch.sigma[at(ch, nr, i)..][..nr])
+                        .finish(name)
+                }
+                Source::ResidZ(i) => scatter(n, chunks, false, |ch, nr| {
+                    &ch.resid_z[at(ch, nr, i)..][..nr]
                 })
                 .finish(name),
-                Source::Metric(k, i) => scatter(n, chunks, false, |ch, nr, ri| {
+                Source::Autocorr(i) => scatter(n, chunks, false, |ch, nr| {
+                    &ch.autocorr[at(ch, nr, i)..][..nr]
+                })
+                .finish(name),
+                Source::Metric(k, i) => scatter(n, chunks, false, |ch, nr| {
                     // Model-major: instance mi owns 3 contiguous blocks.
                     let (mi, slot) = (i / per_model, i % per_model);
-                    ch.metrics[mi * 3 * block(ch, nr) + k * block(ch, nr) + slot * nr + ri]
+                    &ch.metrics[mi * 3 * block(ch, nr) + k * block(ch, nr) + slot * nr..][..nr]
                 })
                 .finish(name),
-                Source::Conformal(k, i) => scatter(n, chunks, false, |ch, nr, ri| {
+                Source::Conformal(k, i) => scatter(n, chunks, false, |ch, nr| {
                     let (mi, slot) = (i / per_model, i % per_model);
-                    ch.conformal[mi * 3 * block(ch, nr) + k * block(ch, nr) + slot * nr + ri]
+                    &ch.conformal[mi * 3 * block(ch, nr) + k * block(ch, nr) + slot * nr..][..nr]
                 })
                 .finish(name),
-                Source::Quantile(i) => scatter(n, chunks, false, |ch, nr, ri| {
+                Source::Quantile(i) => scatter(n, chunks, false, |ch, nr| {
                     // `(li * n_models + mi) * m * nc + slot`, as `output_index`
                     // numbers the quantile fields.
                     let slot = i % (m * nc);
                     let (li, mi) = ((i / (m * nc)) / n_models, (i / (m * nc)) % n_models);
-                    ch.resid_q[mi * n_levels * block(ch, nr) + li * block(ch, nr) + slot * nr + ri]
+                    &ch.resid_q[mi * n_levels * block(ch, nr) + li * block(ch, nr) + slot * nr..]
+                        [..nr]
                 })
                 .finish(name),
                 Source::NEff(mi) => {
-                    scatter(n, chunks, true, |ch, nr, ri| ch.n_eff[mi * nr + ri]).finish(name)
+                    scatter(n, chunks, true, |ch, nr| &ch.n_eff[mi * nr..][..nr]).finish(name)
                 }
                 Source::LamSelected(i) => {
-                    scatter(n, chunks, false, |ch, nr, ri| ch.lam_selected[i * nr + ri])
+                    scatter(n, chunks, false, |ch, nr| &ch.lam_selected[i * nr..][..nr])
                         .finish(name)
                 }
                 Source::Drift(i) => {
@@ -2486,7 +2599,7 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
                         let nr = ch.rows.len();
                         for (ri, &row) in ch.rows.iter().enumerate() {
                             if ch.processed[ri] {
-                                drift[row] = Some(ch.drift[at(ch, nr, i, ri)]);
+                                drift[row] = Some(ch.drift[at(ch, nr, i) + ri]);
                             }
                         }
                     }
@@ -2530,4 +2643,113 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
         })?;
     let st = StructChunked::from_series(spec.name.as_str().into(), n, fields.iter())?;
     Ok(st.into_series().into())
+}
+
+#[cfg(test)]
+mod column_tests {
+    use super::F64Column;
+
+    /// A deterministic mix of finite, NaN and infinite values.
+    fn values(n: usize, seed: u64) -> Vec<f64> {
+        let mut x = seed;
+        (0..n)
+            .map(|i| {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                match (x >> 33) % 7 {
+                    0 => f64::NAN,
+                    1 => f64::INFINITY,
+                    2 => f64::NEG_INFINITY,
+                    _ => i as f64 * 0.5 - 3.0,
+                }
+            })
+            .collect()
+    }
+
+    /// The packed run path is `set_if_finite` over the same rows, to the bit:
+    /// the same values, the same validity, whatever the alignment of the run
+    /// within the column and the mix of skipped and non-finite rows.
+    #[test]
+    fn a_packed_run_matches_the_scatter_bit_for_bit() {
+        for base in 0..17 {
+            for len in [0usize, 1, 3, 7, 8, 9, 15, 16, 17, 31, 33, 64, 100] {
+                let n = base + len + 5;
+                let vals = values(len, base as u64 * 1000 + len as u64);
+                let processed: Vec<bool> = (0..len).map(|k| (k * 7 + base) % 5 != 0).collect();
+
+                let mut fast = F64Column::new(n);
+                fast.run(base, &vals, &processed);
+                let mut slow = F64Column::new(n);
+                for (k, (&v, &p)) in vals.iter().zip(&processed).enumerate() {
+                    if p {
+                        slow.set_if_finite(base + k, v);
+                    }
+                }
+
+                assert!(fast.packed, "base {base} len {len}");
+                for i in 0..n {
+                    assert_eq!(
+                        fast.values[i].to_bits(),
+                        slow.values[i].to_bits(),
+                        "value at {i}: base {base} len {len}"
+                    );
+                    assert_eq!(
+                        fast.is_valid(i),
+                        slow.is_valid(i),
+                        "bit at {i}: base {base} len {len}"
+                    );
+                    assert_eq!(fast.is_valid(i), fast.values[i].is_finite());
+                }
+                let (fv, sv) = (fast.validity(), slow.validity());
+                assert_eq!(fv, sv, "validity: base {base} len {len}");
+            }
+        }
+    }
+
+    /// Once any row went through `set_if_finite`, the bits are not trusted:
+    /// validity comes from the values, so a mixed column is still right.
+    #[test]
+    fn a_mixed_column_falls_back_to_the_values() {
+        let n = 40;
+        let vals = values(16, 7);
+        let mut col = F64Column::new(n);
+        col.run(8, &vals, &[true; 16]);
+        col.set_if_finite(3, 1.5);
+        col.set_if_finite(30, f64::NAN);
+        assert!(!col.packed);
+        for i in 0..n {
+            assert_eq!(col.is_valid(i), col.values[i].is_finite());
+        }
+        let v = col.validity().expect("some rows are null");
+        for i in 0..n {
+            assert_eq!(v.get_bit(i), col.values[i].is_finite());
+        }
+    }
+
+    /// `set` is for `n_eff`: valid whatever the value, null where never set.
+    #[test]
+    fn set_is_valid_whatever_the_value() {
+        let mut col = F64Column::new(10);
+        col.set(2, f64::NAN);
+        col.set(9, 0.0);
+        assert!(col.packed);
+        let v = col.validity().expect("rows 0, 1, 3..9 are null");
+        assert_eq!(v.set_bits(), 2);
+        assert!(v.get_bit(2) && v.get_bit(9));
+    }
+
+    /// A fully valid column reports no validity at all, as polars expects.
+    #[test]
+    fn a_full_column_has_no_validity() {
+        let mut col = F64Column::new(24);
+        let vals: Vec<f64> = (0..24).map(|i| i as f64).collect();
+        col.run(0, &vals, &[true; 24]);
+        assert!(col.validity().is_none());
+        let mut col = F64Column::new(24);
+        for (i, &v) in vals.iter().enumerate() {
+            col.set_if_finite(i, v);
+        }
+        assert!(col.validity().is_none());
+    }
 }

@@ -164,9 +164,9 @@ pub struct Sgd {
     w_sum: f64,
     #[serde(skip)]
     zbuf: Vec<f64>,
-    /// Scratch for the projection's breakpoints.
+    /// Scratch for the projection.
     #[serde(skip)]
-    pbuf: Vec<f64>,
+    pbuf: crate::constraint::Scratch,
     /// Which targets stepped this row (only kept under a constraint).
     #[serde(skip)]
     learned: Vec<bool>,
@@ -186,7 +186,7 @@ impl Sgd {
         let mut beta = vec![vec![0.0; k]; m];
         if let Some(c) = &cfg.constraint {
             let off = usize::from(cfg.add_intercept);
-            let mut scratch = Vec::new();
+            let mut scratch = crate::constraint::Scratch::default();
             for b in beta.iter_mut() {
                 c.project(&mut b[off..], None, &mut scratch);
             }
@@ -197,7 +197,7 @@ impl Sgd {
             g2,
             w_sum: 0.0,
             zbuf: vec![0.0; k],
-            pbuf: Vec::new(),
+            pbuf: crate::constraint::Scratch::default(),
             learned: Vec::new(),
             cfg,
         })

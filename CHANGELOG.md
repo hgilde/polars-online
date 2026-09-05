@@ -274,6 +274,32 @@ carries breaking changes.
   release build already did (LLVM rewrites the one into the other), so no
   released number moves; a debug build now agrees with it bit for bit, and
   so can a reference in another language.
+- **The new families surveyed and tuned, bit for bit** (`docs/PERFORMANCE.md`
+  §13, task 31). Every output is unchanged — two dumps over every family,
+  with groups, weights, `predict` and chunk ends, compare bit-identical
+  against the previous build — and, per 400k rows at k = 20 on one thread:
+  the default `ew_cov` (mean, std, corr: 230 statistics) 758 → 222 ms, the
+  full-covariance `ew_class` 1510 → 808, `ew_cov` PCA at `pca_every=100`
+  332 → 162, `micro` 37 → 24, the simplex-constrained `sgd` and `pa`
+  179 → 157 and 169 → 149, `kalman` 238 → 225. What changed: `ew_cov`
+  takes `k` square roots per row for its correlations rather than
+  `k(k−1)`; `ew_class` keeps one Cholesky factor per class and
+  refactorizes only the class a row learns; `kalman` and the constraint
+  projection reuse per-row scratch instead of allocating; a model with no
+  predictions no longer carries residual tracking; and the bank feeds each
+  (spec, group) through its stream in runs sized to the cache with a
+  slot stride that is an odd number of cache lines, so a wide model's
+  speed no longer depends on the caller's chunk size — a 65 536-row chunk
+  used to run the default `ew_cov` 2–3× slower than one of 65 552. Output
+  validity is assembled as a packed bitmap, and a single-group chunk is
+  copied rather than scattered. Thread scaling at 14 threads over 64
+  groups: `ew_cov` 276 → 152 ms, `ew_class` 324 → 191 per 800k rows.
+- **README *Performance*: the other families** — a second table
+  (`scripts/benchmark.py --markdown`) for conformal intervals, `sgd`, `pa`
+  and the simplex, `kalman` with reversion, `ew_cov` with and without the
+  Mahalanobis distance, the three `ew_class` covariances, `kmeans`,
+  `micro` and `seqtest`; the regression table regenerated on the same
+  build.
 
 ## [0.1.1] — 2026-09-04
 

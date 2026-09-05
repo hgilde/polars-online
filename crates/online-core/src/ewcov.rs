@@ -727,9 +727,14 @@ impl EwCovModel {
                     }
                 }
                 EwCovStat::Corr => {
+                    // `k` square roots, not `k(k-1)`: at k = 20 the pairwise
+                    // `sqrt` was 80% of `ew_cov`'s row (docs/PERFORMANCE.md
+                    // §13). Same product of the same two roots, so the
+                    // correlations are bit-identical.
+                    let std: Vec<f64> = (0..k).map(|i| self.cov.var(i).sqrt()).collect();
                     for i in 0..k {
                         for j in (i + 1)..k {
-                            let d = self.cov.var(i).sqrt() * self.cov.var(j).sqrt();
+                            let d = std[i] * std[j];
                             out.push(if d > 0.0 {
                                 (self.cov.cov(i, j) / d).clamp(-1.0, 1.0)
                             } else {

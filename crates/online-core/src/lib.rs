@@ -97,7 +97,7 @@ pub use rls::{Rls, RlsCfg};
 pub use robust::{Robust, RobustCfg, RobustLoss};
 pub use seqtest::{SLOTS as SEQTEST_SLOTS, SeqTest, SeqTestCfg};
 pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
-pub use solve::{quad_forms_logdet, solve_spd};
+pub use solve::{SpdFactor, quad_forms_logdet, solve_spd};
 pub use stats::{EwAutoCorr, P2Quantile, SlotMetrics};
 
 /// Version of the serialized model-state layout.
