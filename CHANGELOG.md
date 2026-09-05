@@ -17,6 +17,20 @@ carries breaking changes.
   list; `stats=None` still means `["mean", "std", "corr"]`. Before this the
   constructor refused an empty list, so accumulating a Gram over a wide
   set of columns meant emitting every mean on every row.
+- **`polars_online.gram`: the accumulators, read back** (`po.gram`,
+  `docs/ENHANCEMENTS.md` E46, task 39). Eight numpy-only functions over what
+  `ModelBank.gram()` returns: `merge` (Chan-Golub-LeVeque pooling of disjoint
+  row sets), `subset`, `correlation`, `solve` (the model's own ridge, in
+  original units, a grid of ridges from one eigendecomposition),
+  `lasso_path` (the `lasso` model's coordinate descent offline, plus
+  per-feature `penalty_weights`), `coef_stats` (residual variance, R^2,
+  standard errors and t at the Kish sample size), `vif` and `condition`
+  (Belsley's indexes and variance-decomposition proportions). `gram()` also
+  names its axes now -- `columns`, with `"intercept"` first where the spec
+  has one, and `targets` -- so a column can be taken by name. `solve` and
+  `lasso_path` are held against the models themselves rather than against a
+  second copy of the formula; they agree to a few ulps, not bit for bit,
+  since the models factorize with `faer` and numpy with LAPACK.
 - **The Gram export is a complete sufficient statistic** (`ModelBank.gram`,
   `docs/ENHANCEMENTS.md` E45, task 38). `gram()` gains `n_kish`,
   `target_means`, `target_vars` and `target_n_kish`: the accumulators now

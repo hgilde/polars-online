@@ -11,6 +11,14 @@ import polars as pl
 from polars_online import _polars_online as _native
 from polars_online._spec import _from_json, _json, coef_index
 
+#: What `gram()` calls the constant column a spec's `add_intercept` puts in
+#: front of the features -- the `term` name `coef_index` gives it.
+_INTERCEPT = "intercept"
+
+#: Models whose Gram is over the features alone: they learn from no target,
+#: so there is no cross-moment and no intercept column in the accumulator.
+_NO_TARGET_GRAM = ("ew_cov",)
+
 __all__ = ["ModelBank"]
 
 
@@ -410,6 +418,14 @@ class ModelBank:
             without a ``group`` column, ``None`` for a null key) and the
             instance's field suffix (``"@h500"``, or ``""`` for a single
             instance).
+        ``columns``, ``targets``
+            What the axes mean: the spec's features, with ``"intercept"``
+            first when the spec has one (the ``term`` names of
+            :func:`polars_online.spec.coef_index`), and the target names the
+            per-target arrays are indexed by. ``targets`` is empty for
+            ``ew_cov``, which learns from none. They are what makes the
+            mapping self-describing, so :mod:`polars_online.gram` can take a
+            column by name.
         ``n_eff``
             Accumulated weight behind these moments.
         ``n_kish``
@@ -516,6 +532,14 @@ class ModelBank:
             raise ModuleNotFoundError(msg) from e
 
         idx = self._spec_index(spec)
+        spec_dict = self.specs[idx]
+        # `ew_cov` accumulates over the features alone -- no target, and so no
+        # constant column to regress one on.
+        unsupervised = spec_dict["model"]["type"] in _NO_TARGET_GRAM
+        columns = list(spec_dict["features"])
+        if spec_dict.get("add_intercept", True) and not unsupervised:
+            columns = [_INTERCEPT, *columns]
+        targets = [] if unsupervised else list(spec_dict["targets"])
         out = []
         for row in self._native.gram(idx, group):
             g, instance, k, n_eff, n_kish, means, como, cross, tw = row[:9]
@@ -524,6 +548,8 @@ class ModelBank:
                 {
                     "group": g,
                     "instance": instance,
+                    "columns": columns,
+                    "targets": targets,
                     "n_eff": n_eff,
                     "n_kish": n_kish,
                     "means": np.asarray(means),

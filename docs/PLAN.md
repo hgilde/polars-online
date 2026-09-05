@@ -593,7 +593,7 @@ to run at the width, target count and block count its design allows.
 - [x] 38. **Complete the Gram export** (E45): `gram()` gains per-target means
       and variances and Kish `n_kish` (features and per target); Σw² tracked
       beside Σw. Additive fields, legacy states report `None`.
-- [ ] 39. **`po.gram`** (E46): merge / subset / correlation / solve /
+- [x] 39. **`po.gram`** (E46): merge / subset / correlation / solve /
       lasso_path / coef_stats / vif / condition over `gram()` dicts, numpy
       only, each held against the model that computes the same thing online.
 - [ ] 40. **`label_delay`** (E47): a common parameter that holds each learned
@@ -1523,6 +1523,55 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
 - *Empty is not `None`.* `ew_cov` has no targets, so its three target lists
   are empty; `None` is reserved for "this state cannot tell you". Two
   different answers, two different values.
+
+**Task 39's decisions: `po.gram`, 2026-09-05.**
+
+- *The mapping names its own axes.* `gram()` gained `columns` and `targets`,
+  derived on the Python side from the spec the bank already holds — no Rust
+  change. Without them `subset(g, ["x0", "x2"])` and `solve(g, target="y")`
+  could only take positions, and a caller would have to rebuild
+  `["intercept"] + features` by hand and get `ew_cov`'s missing intercept
+  wrong. `"intercept"` is the name `coef_index` already gives that slot.
+- *Held against the models, not against a second copy of the formula.*
+  `solve` is checked against `bank.coef()` over both standardization paths,
+  three ridges and with/without an intercept; `lasso_path` against the
+  `lasso` model's own path; `merge` against the Gram of the whole stream.
+  A test that re-derived the same algebra in numpy would only prove I can
+  write it twice.
+- *Not bit-identical, and the docs say so.* E46 asked for "to the bit". The
+  models factorize with `faer`'s Cholesky and numpy with LAPACK's LU; the
+  measured gap is ~1e-16 relative on a well-conditioned system, and the
+  assertions sit at 1e-12. Claiming equality would have been false, and the
+  first draft of the docstring did claim it.
+- *A grid of ridges rides one eigendecomposition where the penalty is
+  uniform.* That is the standardized path always, and the unstandardized one
+  without an intercept. With an intercept the model leaves that column
+  unpenalized, so the penalty is not a multiple of the identity and each
+  value costs a factorization. The centred reduction that would restore the
+  shortcut is algebraically identical but rounds differently from the
+  model, and fidelity to the model is worth more here than the speed.
+- *`merge` is for parts that share a weighting.* Shards of a pass, groups
+  being pooled, workers. Two halves of a decayed stream in time order are
+  *not* the stream: each part's weights are relative to its own last row.
+  The docstring gives the rescaling (`n_eff * lam**dt`, `Q * lam**(2*dt)`,
+  the means and co-moments untouched), and a test does exactly that and
+  recovers the whole — the caveat is held by a test, not only by prose.
+- *`coef_stats` divides by `n_kish`.* A weighted stream's `n_eff` is not a
+  count, and using it would report standard errors too small by however
+  unequal the weights are. A test puts ten times the weight on every row and
+  asserts the errors do not move. The intercept's standard error is `nan`:
+  it depends on the design's centring, which the Gram has already absorbed.
+- *Two disagreements that are not bugs, both now tests.* `bank.coef()` is as
+  of the model's last *solve* (its `solve_every` / `max_rows_between_solves`
+  schedule), while `gram()` is as of the last row — the first draft of the
+  test read that gap as a defect in `solve`. And the tests use `lam=1.0`, no
+  decay at all, wherever they compare a merge against a whole: `halflife=1e12`
+  is nearly but not exactly no decay, and at 2400 rows the difference shows
+  at 1e-6.
+- *`penalty_weights` is the one thing the models do not also do.* Offline the
+  path is re-walked rather than carried, so a per-feature penalty costs
+  nothing; online it would be another vector in the state for a knob nobody
+  has asked for. Listed in E46, added here, and not added to the model.
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without

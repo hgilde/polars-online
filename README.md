@@ -534,6 +534,43 @@ they cannot be recovered from what it does have — those four keys are `None`
 there, for that state's whole remaining life. Reading any of this back needs
 `numpy`, which is an optional extra.
 
+`po.gram` is the toolkit for these, so the algebra above is one call:
+
+| call | what it does |
+|---|---|
+| `merge(grams)` | pools the Grams of disjoint row sets into the Gram of their union, exactly |
+| `subset(g, cols)` | the Gram of some of the columns — a sub-block, not a recomputation |
+| `solve(g, ridge=, target=, features=)` | the model's own ridge, in original units; a list of ridges is one eigendecomposition |
+| `lasso_path(g, lambdas, ...)` | the `lasso` model's coordinate descent, offline, plus per-feature `penalty_weights` |
+| `coef_stats(g, coef)` | residual variance, R², standard errors and t, at the Kish sample size |
+| `correlation(g)`, `vif(g)`, `condition(g)` | the correlation matrix, variance inflation factors, and Belsley's condition indexes and variance-decomposition proportions |
+
+```python
+ols = po.spec.ewridge("ols", targets=["y"], features=["x0", "x1", "x2"],
+                      halflife=500.0, ridge=1e-9, standardize=False)
+fitted = po.ModelBank([ols])
+fitted.fit_predict(df)
+g = fitted.gram("ols")[0]
+
+r2 = po.gram.coef_stats(g, po.gram.solve(g, ridge=1e-9))["r2"]          # the block above
+ridges = po.gram.solve(g, ridge=[0.0, 0.01, 0.1, 1.0], standardize=True)  # one decomposition
+worst = po.gram.condition(g)["kappa"]
+```
+
+It is the same arithmetic the models run, so `solve` on a spec's Gram is
+that spec's fit and `lasso_path` is that spec's path — the tests hold both
+against the models rather than against a second copy of the formula. What it
+is not is the same arithmetic to the last bit: the models factorize with
+`faer`'s Cholesky and numpy with LAPACK's LU, which round differently in the
+last place or two.
+
+Two things to know before reading a disagreement as a bug. `bank.coef()` is
+as of the model's last *solve*, which its `solve_every` schedule decides,
+while `gram()` is as of the last row. And `merge` pools parts that share a
+weighting — shards of a pass, groups being combined — not two halves of a
+decayed stream in time order, where each part's weights are relative to its
+own last row; the docstring gives the rescaling for that case.
+
 ### The last row
 
 The state file also carries the output row of the last row each group

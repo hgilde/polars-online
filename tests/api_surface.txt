@@ -6,6 +6,7 @@
   __version__
   eval
   fit_predict
+  gram
   native_version
   online
   predict
