@@ -778,6 +778,30 @@ po.eval.seqtest(out, a="kalman", b="ridge", by=["bond_id"])        # is kalman c
 [`seqtest`](#seqtest--a-sequential-test-of-a-sign-by-betting) model runs
 inside a bank, streaming.
 
+Those four all need the whole frame. When the output is never materialised —
+fifty slots over a billion rows — reduce each chunk instead and keep ten
+doubles per key:
+
+```python
+ridge = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
+                        clock="t", max_dclock=300.0, halflife=500.0, group="bond_id")
+scoring = po.ModelBank([ridge])
+
+running = None
+for chunk in df.iter_slices(100):
+    part = po.eval.sums(scoring.fit_predict(chunk), "ridge", by=["bond_id"])
+    running = part if running is None else po.eval.merge_sums(running, part)
+
+po.eval.from_sums(running, min_obs=10)   # R², IC, hit rate, MSE and RMSE
+```
+
+`from_sums(sums(df))` is `metrics(df)`, and `merge_sums` over any split of
+the rows is `sums` over all of them — both held by tests. The sums are
+**centred** (weighted means and centred second moments, merged with a
+parallel-axis term) rather than raw `Σy` and `Σy²`: a target sitting around
+1e8 with unit spread destroys the raw form's variance entirely, and this one
+does not notice. `weight=` names a column to weight the rows by.
+
 ## Models
 
 All accumulators are exponentially weighted **means**, not sums, so they stay

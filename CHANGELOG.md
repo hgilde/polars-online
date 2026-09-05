@@ -17,6 +17,17 @@ carries breaking changes.
   list; `stats=None` still means `["mean", "std", "corr"]`. Before this the
   constructor refused an empty list, so accumulating a Gram over a wide
   set of columns meant emitting every mean on every row.
+- **`po.eval.sums` / `merge_sums` / `from_sums`: metrics for output that is
+  never materialised** (`docs/ENHANCEMENTS.md` E49, task 42). `sums` reduces
+  a chunk of output to ten doubles per (slot, target, key), `merge_sums` adds
+  the sums of disjoint row sets, and `from_sums` gives back the same `n`,
+  `r2`, `ic`, `hit_rate` and `mse` that `metrics` computes from the rows,
+  plus `rmse`. A run comparing fifty slots over a billion rows keeps ten
+  doubles per key instead of writing the rows out to evaluate them later.
+  The sums are centred rather than raw -- weighted means and centred second
+  moments, merged with a parallel-axis term -- so a target sitting on a
+  large offset does not destroy the variance the way `sum(y**2) -
+  sum(y)**2 / n` does. `weight=` names a column to weight rows by.
 - **The Gram update is 14-63% faster, bit for bit** (`docs/ENHANCEMENTS.md`
   E48, task 41). `EwCov::update` is the hottest loop in the library, run
   once a row by every Gram model. It now computes the deviations `x - m`

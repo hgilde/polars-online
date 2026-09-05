@@ -602,7 +602,7 @@ to run at the width, target count and block count its design allows.
 - [x] 41. **The Gram update, measured** (E48): the symmetric-half idea is
       rejected — it is neither bit-identical nor faster — and the deviation
       hoist that *is* both ships in its place.
-- [ ] 42. **Mergeable evaluation sums** (E49): `po.eval.sums` /
+- [x] 42. **Mergeable evaluation sums** (E49): `po.eval.sums` /
       `merge_sums` / `from_sums`.
 - [ ] 43. **A run with no per-row output** (E50): `po.run(output=None,
       save_state=)`, `online --no-output`; with it E53, `targets` optional
@@ -1666,6 +1666,32 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   become bit-equal, and its message points at §14 — so the next person to
   reach for the shortcut finds out why it was not taken, in the place they
   would reach for it.
+
+**Task 42's decisions: mergeable evaluation sums, 2026-09-05.**
+
+- *Centred sums, not the raw ones E49 asked for.* The row lists `Σy`, `Σy²`,
+  `Σŷ²`, `Σyŷ`, which make `merge_sums` a plain addition. They also lose the
+  variance entirely at a large offset: a target around 1e8 with unit spread
+  has `var / E[y²] ≈ 1e-16`, and `Σy² − (Σy)²/n` has nothing left after the
+  subtraction. That is E11b's finding, in the same library, and taking the
+  raw form here would have re-made the mistake the accumulators exist to
+  avoid. The stored fields are the weighted means plus centred second
+  moments, and the merge pays a parallel-axis term for them — a multiply per
+  key per part. Still ten doubles, still O(state).
+- *An n-way merge, not a fold of pairs.* `merge_sums(*parts)` concatenates
+  and reduces in one `group_by`: the pooled mean is the weight-weighted one,
+  and each part's centred sum picks up `w_g·(mean_g − mean)²`. Every part
+  enters as a sum and never as a difference of running totals, so a hundred
+  parts lose no more than two — asserted at 2, 5 and 97.
+- *Held against `metrics`, not against a rewrite of it.* The test is
+  `from_sums(sums(df)) == metrics(df)`, column for column, grouped and
+  ungrouped. A test that re-derived R² in numpy would only show I can write
+  the formula twice.
+- *`rmse` beside `mse`, and nulls where a metric is undefined.* E49 named
+  `rmse`; `metrics` reports `mse`. Both are here, so the two frames line up
+  and the extra column is the one the row asked for. A key whose target
+  never varied gets `null` for `r2` and `ic` rather than an infinity that
+  would read as a number.
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without

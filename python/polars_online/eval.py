@@ -24,7 +24,31 @@ from collections.abc import Iterable, Sequence
 
 import polars as pl
 
-__all__ = ["metrics", "rolling_metrics", "compare_specs", "unpack", "seqtest"]
+__all__ = [
+    "metrics",
+    "rolling_metrics",
+    "compare_specs",
+    "unpack",
+    "seqtest",
+    "sums",
+    "merge_sums",
+    "from_sums",
+]
+
+#: The columns :func:`sums` produces beside the keys, in order. Ten doubles
+#: per (key, slot) is the whole memory cost of evaluating a stream.
+SUM_FIELDS = (
+    "n",
+    "w",
+    "mean_y",
+    "mean_pred",
+    "m2_y",
+    "m2_pred",
+    "cov",
+    "sse",
+    "hits",
+    "signed",
+)
 
 
 def _pred_fields(df: pl.DataFrame, spec_name: str) -> list[str]:
@@ -349,3 +373,158 @@ def seqtest(
             fields.append(pl.when(ready).then(e).alias(f"{label}_{t}"))
     fields.append(n_eff.alias("n_eff"))
     return df.with_columns(pl.struct(fields).alias(name))
+
+
+def sums(
+    df: pl.DataFrame,
+    spec_name: str,
+    *,
+    by: Iterable[str] = (),
+    targets: Sequence[str] | None = None,
+    spec: dict | None = None,
+    weight: str | None = None,
+) -> pl.DataFrame:
+    """Reduce a chunk of output to the sufficient statistics of its metrics
+    (docs/ENHANCEMENTS.md E49).
+
+    :func:`metrics` needs the whole frame. This needs one chunk at a time:
+    ten doubles per ``(slot, target, *by)``, which :func:`merge_sums` adds
+    together and :func:`from_sums` turns back into the same numbers. A run
+    that compares fifty slots over a billion rows then keeps ten doubles per
+    key instead of writing the rows out to evaluate them later.
+
+    The columns beside the keys are :data:`SUM_FIELDS`: ``n`` rows and ``w``
+    weight behind them, the weighted means ``mean_y`` and ``mean_pred``, the
+    **centred** sums ``m2_y``, ``m2_pred`` and ``cov``, the residual sum of
+    squares ``sse``, and ``hits`` / ``signed`` for the hit rate.
+
+    Centred, not raw. The obvious form -- keep ``sum(y)`` and ``sum(y**2)``
+    and subtract -- is one addition simpler and loses the variance entirely
+    when the mean is large relative to the spread: a unit-variance target
+    around 1e8 has ``var / E[y**2]`` of about 1e-16, and the subtraction has
+    nothing left. :func:`merge_sums` pays for the centring with a
+    parallel-axis term, which is a multiply, and keeps every digit. It is the
+    same choice `EwCov` makes for the same reason (E11b).
+
+    Rows where the prediction or the target is null are dropped, as
+    :func:`metrics` drops them, so warmup and skipped rows never enter the
+    numbers. ``weight`` names a column to weight rows by; without it every row
+    counts 1 and ``w`` equals ``n``. ``spec``, ``targets`` and the errors are
+    :func:`unpack`'s.
+    """
+    long = unpack(df, spec_name, spec=spec, targets=targets).drop_nulls(["pred", "y"])
+    wexpr = pl.col(weight).cast(pl.Float64) if weight is not None else pl.lit(1.0)
+    long = long.with_columns(wexpr.alias("__w"))
+    w, y, p = pl.col("__w"), pl.col("y"), pl.col("pred")
+    tw = w.sum()
+    my, mp = (w * y).sum() / tw, (w * p).sum() / tw
+    keys = ["slot", "target", *by]
+    return (
+        long.group_by(keys)
+        .agg(
+            pl.len().alias("n"),
+            tw.alias("w"),
+            my.alias("mean_y"),
+            mp.alias("mean_pred"),
+            (w * (y - my) ** 2).sum().alias("m2_y"),
+            (w * (p - mp) ** 2).sum().alias("m2_pred"),
+            (w * (y - my) * (p - mp)).sum().alias("cov"),
+            (w * (y - p) ** 2).sum().alias("sse"),
+            (w * ((y.sign() == p.sign()) & (y != 0))).sum().alias("hits"),
+            (w * (y != 0)).sum().alias("signed"),
+        )
+        .sort(keys)
+    )
+
+
+def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
+    """Add the sufficient statistics of disjoint row sets.
+
+    Exact, whatever the split: the means are pooled by weight and the centred
+    sums pick up the parallel-axis term for the distance between each part's
+    mean and the pooled one::
+
+        w    = sum(w_g)
+        mean = sum(w_g * mean_g) / w
+        m2   = sum(m2_g + w_g * (mean_g - mean)**2)
+        cov  = sum(cov_g + w_g * (mean_y_g - mean_y) * (mean_p_g - mean_p))
+
+    That is the n-way form of Chan, Golub and LeVeque's merge -- every part
+    enters as a sum, never as a difference of running totals -- so merging a
+    thousand chunks loses no more than merging two.
+
+    Keys present in one part and not another are carried through as they are.
+    Merging one frame returns it unchanged.
+    """
+    frames = [first, *rest]
+    keys = [c for c in frames[0].columns if c not in SUM_FIELDS]
+    for f in frames[1:]:
+        other = [c for c in f.columns if c not in SUM_FIELDS]
+        if other != keys:
+            msg = f"merge_sums needs the same keys in every part: {keys} vs {other}"
+            raise ValueError(msg)
+    w = pl.col("w").sum()
+    mean_y = (pl.col("w") * pl.col("mean_y")).sum() / w
+    mean_p = (pl.col("w") * pl.col("mean_pred")).sum() / w
+    return (
+        pl.concat(frames)
+        .group_by(keys)
+        .agg(
+            pl.col("n").sum(),
+            w.alias("w"),
+            mean_y.alias("mean_y"),
+            mean_p.alias("mean_pred"),
+            (pl.col("m2_y") + pl.col("w") * (pl.col("mean_y") - mean_y) ** 2).sum().alias("m2_y"),
+            (pl.col("m2_pred") + pl.col("w") * (pl.col("mean_pred") - mean_p) ** 2)
+            .sum()
+            .alias("m2_pred"),
+            (
+                pl.col("cov")
+                + pl.col("w") * (pl.col("mean_y") - mean_y) * (pl.col("mean_pred") - mean_p)
+            )
+            .sum()
+            .alias("cov"),
+            pl.col("sse").sum(),
+            pl.col("hits").sum(),
+            pl.col("signed").sum(),
+        )
+        .select(*keys, *SUM_FIELDS)
+        .sort(keys)
+    )
+
+
+def from_sums(s: pl.DataFrame, *, min_obs: int = 30) -> pl.DataFrame:
+    """The metrics :func:`metrics` reports, from :func:`sums` instead of rows.
+
+    Same columns and same numbers: ``n``, ``r2`` (out-of-sample against the
+    realized mean), ``ic`` (correlation of prediction with target),
+    ``hit_rate``, ``mse``, and ``rmse`` beside it. A key with fewer than
+    ``min_obs`` rows is dropped, as :func:`metrics` drops it.
+
+    ``r2`` and ``ic`` are ``null`` where they are undefined -- a key whose
+    target or prediction never varied has no correlation to report, and
+    dividing by its zero variance would give an infinity that reads as a
+    number.
+    """
+    keys = [c for c in s.columns if c not in SUM_FIELDS]
+    mse = pl.col("sse") / pl.col("w")
+    denom = (pl.col("m2_y") * pl.col("m2_pred")).sqrt()
+    return (
+        s.filter(pl.col("n") >= min_obs)
+        .select(
+            *keys,
+            pl.col("n"),
+            pl.when(pl.col("m2_y") > 0)
+            .then(1.0 - pl.col("sse") / pl.col("m2_y"))
+            .otherwise(None)
+            .alias("r2"),
+            pl.when(denom > 0).then(pl.col("cov") / denom).otherwise(None).alias("ic"),
+            pl.when(pl.col("signed") > 0)
+            .then(pl.col("hits") / pl.col("signed"))
+            .otherwise(None)
+            .alias("hit_rate"),
+            mse.alias("mse"),
+            mse.sqrt().alias("rmse"),
+        )
+        .sort(keys)
+    )
