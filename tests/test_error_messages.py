@@ -112,13 +112,39 @@ VALUES = [
         dict(conformal=0.9, conformal_rate=0.0),
         "conformal_rate must be finite and > 0",
     ),
+    (
+        po.spec.ew_cov,
+        dict(features=["x0", "y"], targets=None, stats=["mahal"]),
+        "ew_cov mahal needs `precision_prior`",
+    ),
+    (
+        po.spec.ew_cov,
+        dict(features=["x0", "y"], targets=None, mahal_quantiles=[0.5]),
+        'ew_cov mahal_quantiles needs "mahal" in `stats`',
+    ),
+    (
+        po.spec.ew_cov,
+        dict(features=["x0", "y"], targets=None, pca=3),
+        "ew_cov pca asks for 3 components of 2 features",
+    ),
+    (
+        po.spec.ew_cov,
+        dict(features=["x0", "y"], targets=None, pca=1, pca_every=0),
+        "ew_cov pca_every must be >= 1",
+    ),
+    (
+        po.spec.ew_cov,
+        dict(features=["x0", "y"], targets=None, pca_every=2),
+        "ew_cov pca_every needs `pca`",
+    ),
 ]
 
 
 @pytest.mark.parametrize("builder,kw,msg", VALUES, ids=[m.split(" must")[0] for _, _, m in VALUES])
 def test_a_bad_value_names_the_parameter(builder, kw, msg):
+    merged = {k: v for k, v in {**BASE, **kw}.items() if v is not None}
     with pytest.raises(ValueError) as exc:
-        builder("m", **{**BASE, **kw})
+        builder("m", **merged)
     assert msg in str(exc.value), str(exc.value)
 
 

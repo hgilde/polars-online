@@ -95,6 +95,40 @@ carries breaking changes.
   at 2: the per-slot trackers are a `#[serde(default)]` field, so a 0.1
   state file loads and a bank with `conformal` set starts its intervals
   from the first chunk it sees.
+- **Mahalanobis distance and EW-PCA on `ew_cov`** (`docs/ENHANCEMENTS.md`
+  E37 and E38, `docs/PLAN.md` task 26). `"mahal"` in `stats` adds `mahal`,
+  the row's distance from the running mean in the metric of the running
+  covariance, `sqrt(δᵀ (C + s·prior·I)⁻¹ δ)` with the same fading prior as
+  `partial_corr` (so it needs `precision_prior`); with one column it is
+  `|z|`, and on Gaussian columns `mahal²` is χ²_k — measured on 200k rows at
+  k = 8, the mean of `mahal²` is within 2% of 8 and the 99% χ² threshold
+  flags 1.0% ± 0.2% of rows. `mahal_quantiles=[0.5, 0.99]` adds
+  `mahal_q0.5`, `mahal_q0.99`: P² quantiles of the scores so far (unweighted,
+  like `resid_quantiles`), read before the row. `pca=r` adds the top `r`
+  eigenpairs of the covariance as `pc<j>_var`, `pc<j>_share` (of the trace),
+  `pc<j>_<feature>` (the loadings) and `pc<j>_score` (the row's projection,
+  `Σ v_j,i (x_i − m_i)`); `pca_every=n` refreshes the O(k³)
+  eigendecomposition every `n` learned rows once `min_periods` is reached
+  and scores the rows in between on the last loadings. Loadings are signed
+  for continuity — each refresh keeps `v_new · v_old ≥ 0` with the previous
+  one, and the first makes the largest-magnitude entry positive — because
+  the usual largest-entry rule flips a component the moment two loadings
+  trade the lead (it did, on a 5-column Gaussian). All three are read
+  before the update, are chunk-invariant, live in the state file (schema
+  still 2, `#[serde(default)]`), and are frozen by `predict`. Throughput
+  at 200k rows, Mrows/s, k = 4 / 16: the base `mean, std, corr` 7.4 / 0.86;
+  `+ mahal` 3.9 / 1.1; `pca=2, pca_every=1` 0.98 / 0.10 and `pca_every=100`
+  6.5 / 1.9 — the decomposition is the cost, so amortize it. `output_index`
+  kinds `mahal`, `mahal_q` (with its `quantile`), `pc_var`, `pc_share`,
+  `pc_score` (over every feature) and `pc_loading` (its own column).
+- Rust: `online_core::{Pca, EwCovStat::Mahal}`, `EwCovCfg::{mahal_quantiles,
+  pca, pca_every}`; `EwCovModel::{mahal, pca}` and
+  `EwCovModel::labels(names, stats, mahal_quantiles, pca)`.
+- `tests/test_ew_cov_scores.py`: a Welford replay oracle for the whole
+  stream (clock gaps, `max_dclock`, zero and null weights, skipped rows), a
+  numpy `eigh` oracle with the continuity rule at every refresh, χ²
+  calibration and a 3-factor recovery at 200k rows, a covariance switch,
+  and the chunk / save-load / predict / expression / runner / TOML contract.
 
 ### Changed
 

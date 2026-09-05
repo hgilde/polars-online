@@ -57,6 +57,9 @@
     features
     stats = None
     precision_prior = None
+    mahal_quantiles = None
+    pca = None
+    pca_every = None
     common
   ewridge:
     name
@@ -551,6 +554,22 @@
     std_x1
     cov_x0_x1
     corr_x0_x1
+    n_eff
+  ew_cov every score:
+    pcorr_x0_x1
+    mahal
+    mahal_q0.5
+    mahal_q0.99
+    pc0_var
+    pc0_share
+    pc0_x0
+    pc0_x1
+    pc0_score
+    pc1_var
+    pc1_share
+    pc1_x0
+    pc1_x1
+    pc1_score
     n_eff
   kmeans minimal:
     cluster

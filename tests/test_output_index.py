@@ -115,6 +115,38 @@ class TestOutputIndex:
         assert rows["corr_a_b"] == ["a", "b"]
         assert rows["n_eff"] is None
 
+    def test_ew_cov_scores_are_over_every_column_and_carry_their_level(self):
+        # E37/E38: `mahal` and the components are over all the columns, a
+        # loading is over its own column, and a `mahal_q` row carries its
+        # level like `absresid_q` does.
+        spec = po.spec.ew_cov(
+            "m",
+            features=["a", "b"],
+            stats=["mahal"],
+            precision_prior=1e-6,
+            mahal_quantiles=[0.95],
+            pca=1,
+            halflife=[10.0, 100.0],
+            min_periods=2.0,
+        )
+        idx = po.spec.output_index(spec)
+        rows = {r["field"]: r for r in idx.iter_rows(named=True)}
+        assert rows["mahal@h10"]["columns"] == ["a", "b"]
+        assert rows["mahal@h10"]["kind"] == "mahal"
+        assert rows["mahal_q0.95@h100"]["quantile"] == 0.95
+        assert rows["mahal_q0.95@h100"]["kind"] == "mahal_q"
+        assert rows["mahal_q0.95@h100"]["halflife"] == 100.0
+        assert rows["pc0_a@h10"]["columns"] == ["a"]
+        assert rows["pc0_a@h10"]["kind"] == "pc_loading"
+        assert rows["pc0_score@h10"]["columns"] == ["a", "b"]
+        assert {rows[f"pc0_{k}@h10"]["kind"] for k in ("var", "share", "score")} == {
+            "pc_var",
+            "pc_share",
+            "pc_score",
+        }
+        assert idx.filter(pl.col("kind") == "mahal_q")["quantile"].null_count() == 0
+        assert idx.filter(pl.col("kind") != "mahal_q")["quantile"].null_count() == idx.height - 2
+
     def test_compact_float_rendering_is_reachable_without_knowing_it(self):
         """The whole point: a user never needs to know that 1e-300 renders as
         `1e-300` and 0.5 as `0.5`."""

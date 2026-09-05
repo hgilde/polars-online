@@ -146,11 +146,23 @@ def describe_api() -> str:
                 features=["x0", "x1"], stats=["mean", "var", "std", "cov", "corr"], halflife=100.0
             ),
         ),
+        (
+            "ew_cov every score",
+            dict(
+                features=["x0", "x1"],
+                stats=["partial_corr", "mahal"],
+                precision_prior=1e-6,
+                mahal_quantiles=[0.5, 0.99],
+                pca=2,
+                pca_every=10,
+                halflife=100.0,
+            ),
+        ),
         ("kmeans", dict(features=["x0", "x1"], k=2, halflife=100.0)),
         ("micro", dict(features=["x0", "x1"], eps=0.3, halflife=100.0)),
     ]:
-        s = getattr(po.spec, model)("m", min_periods=2.0, **kw)
-        w(f"  {model} minimal:")
+        s = getattr(po.spec, model.split(" ")[0])("m", min_periods=2.0, **kw)
+        w(f"  {model}{'' if ' ' in model else ' minimal'}:")
         for f in po.spec.output_fields(s):
             w(f"    {f}")
     return "\n".join(out) + "\n"

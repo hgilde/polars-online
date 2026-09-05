@@ -78,7 +78,7 @@ pub use cluster::{
 };
 pub use conformal::{Conformal, norm_ppf};
 pub use drift::PageHinkley;
-pub use ewcov::{EwCov, EwCovCfg, EwCovModel, EwCovStat, partial_corr, variance_is_usable};
+pub use ewcov::{EwCov, EwCovCfg, EwCovModel, EwCovStat, Pca, partial_corr, variance_is_usable};
 pub use ewridge::{EwRidge, EwRidgeCfg};
 pub use ftrl::{Ftrl, FtrlCfg, FtrlLoss};
 pub use holt::{Holt, HoltCfg};

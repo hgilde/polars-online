@@ -463,13 +463,24 @@ pub enum ModelKind {
     /// EW moments of the feature columns, no regression (docs/PLAN.md §4.7).
     /// `targets` is ignored; every column of interest goes in `features`.
     EwCov {
-        /// Any of "mean", "var", "std", "cov", "corr", "partial_corr".
+        /// Any of "mean", "var", "std", "cov", "corr", "partial_corr", "mahal".
         /// Default: mean + std + corr.
         #[serde(default)]
         stats: Option<Vec<String>>,
-        /// Prior for the precision matrix, required by "partial_corr".
+        /// Prior for the precision matrix, required by "partial_corr" and "mahal".
         #[serde(default)]
         precision_prior: Option<f64>,
+        /// Quantile levels of the past Mahalanobis scores to track with P²,
+        /// one `mahal_q<p>` field each; needs "mahal" in `stats` (E37).
+        #[serde(default)]
+        mahal_quantiles: Option<Vec<f64>>,
+        /// Principal components to track, each `pc<j>_var`, `pc<j>_share`,
+        /// `pc<j>_<feature>` per feature and `pc<j>_score` (E38).
+        #[serde(default)]
+        pca: Option<usize>,
+        /// Learned rows between refreshes of the components (default 1).
+        #[serde(default)]
+        pca_every: Option<u32>,
     },
     /// Stochastic gradient descent with pluggable losses (ENHANCEMENTS E16).
     /// O(k) per row, no solves, and the only model here that takes count
@@ -1171,8 +1182,12 @@ impl Spec {
             ModelKind::EwCov {
                 stats,
                 precision_prior,
+                mahal_quantiles,
+                pca,
+                pca_every,
             } => {
-                const OK: [&str; 6] = ["mean", "var", "std", "cov", "corr", "partial_corr"];
+                const OK: [&str; 7] =
+                    ["mean", "var", "std", "cov", "corr", "partial_corr", "mahal"];
                 if let Some(stats) = stats {
                     for st in stats {
                         if !OK.contains(&st.as_str()) {
@@ -1197,10 +1212,56 @@ impl Spec {
                             self.name
                         ));
                     }
+                    if stats.iter().any(|st| st == "mahal") && precision_prior.is_none() {
+                        return Err(format!(
+                            "spec {:?}: ew_cov mahal needs `precision_prior`",
+                            self.name
+                        ));
+                    }
                 }
                 if precision_prior.is_some_and(|p| p <= 0.0 || !p.is_finite()) {
                     return Err(format!(
                         "spec {:?}: precision_prior must be finite and > 0",
+                        self.name
+                    ));
+                }
+                if let Some(levels) = mahal_quantiles {
+                    let has_mahal = stats
+                        .as_ref()
+                        .is_some_and(|st| st.iter().any(|s| s == "mahal"));
+                    if !levels.is_empty() && !has_mahal {
+                        return Err(format!(
+                            "spec {:?}: ew_cov mahal_quantiles needs \"mahal\" in `stats`",
+                            self.name
+                        ));
+                    }
+                    for &q in levels {
+                        if !(q > 0.0 && q < 1.0) {
+                            return Err(format!(
+                                "spec {:?}: ew_cov mahal_quantiles must be strictly between 0 and 1, got {q}",
+                                self.name
+                            ));
+                        }
+                    }
+                }
+                if let Some(r) = pca {
+                    if *r > self.k() {
+                        return Err(format!(
+                            "spec {:?}: ew_cov pca asks for {r} components of {} features",
+                            self.name,
+                            self.k()
+                        ));
+                    }
+                }
+                if pca_every.is_some_and(|e| e == 0) {
+                    return Err(format!(
+                        "spec {:?}: ew_cov pca_every must be >= 1",
+                        self.name
+                    ));
+                }
+                if pca_every.is_some() && pca.is_none_or(|r| r == 0) {
+                    return Err(format!(
+                        "spec {:?}: ew_cov pca_every needs `pca` (the number of components)",
                         self.name
                     ));
                 }

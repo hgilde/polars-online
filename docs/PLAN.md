@@ -444,8 +444,24 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       refusals, nulls, zero weights, warmup, out-of-sample-ness, chunk
       invariance, save/load, `predict`, a drift reset, the runner and the
       expression), 9 core unit tests, the golden and API-surface snapshots.
-- [ ] 26. **E37 + E38 on `ew_cov`:** Mahalanobis distance (`stats: "mahal"`) and EW-PCA at
+- [x] 26. **E37 + E38 on `ew_cov`:** Mahalanobis distance (`stats: "mahal"`) and EW-PCA at
       checkpoints (`pca`, `pca_every`); oracles via `gram()` and numpy.
+      Built 2026-09-05, on branch `clustering-build`: `EwCovStat::Mahal` (one
+      slot `mahal`, `solve_spd` on `C + s·prior·I` each row, so it needs
+      `precision_prior`), `EwCovCfg::{mahal_quantiles, pca, pca_every}` (all
+      `#[serde(default)]`, schema stays 2), `online_core::Pca` (faer
+      `self_adjoint_eigen`, continuity-signed), fields `mahal`, `mahal_q<p>`,
+      `pc<j>_var`, `pc<j>_share`, `pc<j>_<feature>`, `pc<j>_score`;
+      `output_index` kinds `mahal`, `mahal_q`, `pc_var`, `pc_share`,
+      `pc_score`, `pc_loading`. Decisions in §11a. Tests: 40 cases in
+      `tests/test_ew_cov_scores.py` (a Welford replay of the stream — clock
+      gaps, `max_dclock`, zero and null weights, skipped rows — held to the
+      solve at 1e-9; numpy `eigh` with the continuity rule at every refresh
+      for two cadences; χ² calibration and a 3-factor recovery at 200k rows;
+      a covariance switch; chunk invariance, save/load mid-cadence, `predict`,
+      the expression, the runner and a TOML config; fields, validation, edge
+      cases), 31 core unit tests, the API-surface, error-message and
+      output-index suites extended.
 - [ ] 27. **E39: class-conditional `ew_cov`** (`class` column, per-class moments).
 - [ ] 28. **E40: constrained coefficients** on `sgd` / `pa` (box and sign constraints).
 - [ ] 29. **E41: diagonal transition `φ^d`** on `kalman` (coefficient dynamics).
@@ -736,6 +752,49 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   new Gaussian radius. Levels 0.5, 0.8, 0.99 are met within 0.012 on fat
   tails. Cost: three f64s of output and five of state per slot; no
   measurable throughput change on `ewridge`.
+
+**Task 26's decisions: `mahal` and EW-PCA on `ew_cov`, 2026-09-05.**
+
+- *`mahal` is a distance, in σ units.* ENHANCEMENTS E37 sketched the
+  quadratic form `δᵀ Σ⁻¹ δ`; the field is its square root, so at k = 1 it is
+  `|z|` and it reads like `resid_z` — the feature-side twin it was proposed
+  as. `mahal²` is then χ²_k on Gaussian columns; the README says so and
+  `tests/test_ew_cov_scores.py` holds it at 200k rows. The matrix solved is
+  `C + s·prior·I`, the same fading ridge `partial_corr` reads, hence the
+  `precision_prior` requirement; NaN until the prior is set, before
+  `min_periods`, or when the solve fails. One `solve_spd` per row, not a
+  tracked inverse (the E2 finding still stands: a tracked inverse cancels to
+  zero under a dominant row and never recovers).
+- *`mahal_quantiles` are unweighted P² trackers* of the emitted score, like
+  `resid_quantiles`: a zero-weight row still adds its score, a `predict`
+  pass does not, and they are read before the row. They lag the score by
+  the five rows P² needs to start.
+- *The PCA refresh runs after the row's update*, not before it, so
+  `predict` (no update) and `step` read the same frozen loadings and the
+  score `Σ v_j,i (x_i − m_i)` uses the live mean with loadings from the
+  last refresh. The first refresh waits for `min_periods`; then every
+  `pca_every` learned rows. A zero-weight row advances the cadence counter
+  like any other learned row, since it advances the clock.
+- *Signs follow the previous refresh.* E38 proposed largest-magnitude-entry
+  positive. On `gaussian(k=5, seed 10)` that rule flipped `pc1` between two
+  refreshes (dot with the previous loading −0.99999) when two loadings of
+  near-equal size traded the lead. The rule built: sign each new loading so
+  `v_new · v_old ≥ 0` with the previous refresh's loading for that
+  component; fall back to largest-entry-positive when there is no previous
+  one or the dot is exactly 0. The Python oracle carries the same rule
+  (`pca_oracle(c, r, prev)`), and a test proves the max-abs rule would have
+  flipped on the same stream.
+- *`pc<j>_share`, not `explained`.* One number per emitted component (its
+  eigenvalue over the trace) rather than the `k`-vector E38 sketched; the
+  trace is the sum of the diagonal, so the shares of the emitted components
+  need not sum to 1. NaN when the trace is ≤ 0 (a constant stream).
+- *Measured (200k rows, Mrows/s, k = 4 / 8 / 16 / 32).* `mean,std,corr`
+  7.44 / 2.85 / 0.86 / 0.21; `+ mahal` 3.86 / 2.21 / 1.07 / 0.35; `+ 2
+  quantiles` 3.32 / 2.03 / 1.03 / 0.34; `pca=2, pca_every=1` 0.98 / 0.35 /
+  0.10 / 0.03; `pca_every=100` 6.52 / 3.74 / 1.92 / 0.78; `partial_corr`
+  2.92 / 1.21 / 0.39 / 0.09. The eigendecomposition is ≈ 1 µs at k = 4 and
+  ≈ 30 µs at k = 32, which is what `pca_every` amortizes; `mahal`'s solve is
+  cheaper than `partial_corr`'s because it is one right-hand side.
 
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**

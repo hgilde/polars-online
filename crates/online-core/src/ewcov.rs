@@ -360,6 +360,10 @@ pub enum EwCovStat {
     /// Partial correlation for each unordered pair, controlling for every other
     /// column. Needs `precision_prior`.
     PartialCorr,
+    /// Mahalanobis distance of the row from the decayed history,
+    /// `sqrt((x − μ)ᵀ (C + s·prior·I)⁻¹ (x − μ))`, read before the row is
+    /// learned (docs/ENHANCEMENTS.md E37). One slot. Needs `precision_prior`.
+    Mahal,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -369,9 +373,24 @@ pub struct EwCovCfg {
     pub stats: Vec<EwCovStat>,
     pub min_periods: f64,
     /// Prior for the precision matrix `(C + s·prior·I)⁻¹`. Required by
-    /// [`EwCovStat::PartialCorr`], which is the only consumer.
+    /// [`EwCovStat::PartialCorr`] and [`EwCovStat::Mahal`], its consumers.
     #[serde(default)]
     pub precision_prior: Option<f64>,
+    /// P² quantile levels of the past Mahalanobis scores, one slot each
+    /// (`mahal_q<p>`): a threshold for [`EwCovStat::Mahal`] from its own
+    /// history rather than from a χ² table. Needs `Mahal` in `stats`.
+    #[serde(default)]
+    pub mahal_quantiles: Vec<f64>,
+    /// Number of principal components to track, `0` for none
+    /// (docs/ENHANCEMENTS.md E38). Each component adds `k + 3` slots: its
+    /// variance, its share of the total, its `k` loadings and the row's score.
+    #[serde(default)]
+    pub pca: usize,
+    /// Learned rows between refreshes of the components; between refreshes
+    /// the loadings are frozen, so a row's scores do not depend on how the
+    /// stream was chunked. `1` refreshes on every row.
+    #[serde(default)]
+    pub pca_every: usize,
 }
 
 impl EwCovCfg {
@@ -394,20 +413,134 @@ impl EwCovCfg {
                     .into(),
             );
         }
+        if self.stats.contains(&EwCovStat::Mahal) && self.precision_prior.is_none() {
+            return Err(
+                "ew_cov: mahal needs `precision_prior` (the co-moments are singular until \
+                 k independent rows have been seen)"
+                    .into(),
+            );
+        }
+        if !self.mahal_quantiles.is_empty() && !self.stats.contains(&EwCovStat::Mahal) {
+            return Err("ew_cov: mahal_quantiles needs \"mahal\" in `stats`".into());
+        }
+        for &q in &self.mahal_quantiles {
+            if !(q > 0.0 && q < 1.0) {
+                return Err(format!(
+                    "ew_cov: mahal_quantiles must be strictly between 0 and 1, got {q}"
+                ));
+            }
+        }
+        if self.pca > self.n_features {
+            return Err(format!(
+                "ew_cov: pca asks for {} components of {} columns",
+                self.pca, self.n_features
+            ));
+        }
+        if self.pca > 0 && self.pca_every == 0 {
+            return Err("ew_cov: pca_every must be >= 1".into());
+        }
         Ok(())
     }
 
-    /// Number of output slots, in emission order.
+    /// Number of output slots, in emission order: the statistics, then the
+    /// Mahalanobis quantiles, then `k + 3` per principal component.
     pub fn n_outputs(&self) -> usize {
         let k = self.n_features;
         let pairs = k * (k - 1) / 2;
-        self.stats
+        let stats: usize = self
+            .stats
             .iter()
             .map(|s| match s {
                 EwCovStat::Mean | EwCovStat::Var | EwCovStat::Std => k,
                 EwCovStat::Cov | EwCovStat::Corr | EwCovStat::PartialCorr => pairs,
+                EwCovStat::Mahal => 1,
             })
-            .sum()
+            .sum();
+        stats + self.mahal_quantiles.len() + self.pca * (k + 3)
+    }
+}
+
+/// The frozen principal components between two refreshes
+/// (docs/ENHANCEMENTS.md E38): the top `r` eigenpairs of the centred
+/// co-moment matrix, largest first. An eigenvector's sign is arbitrary, so
+/// each loading vector is signed for continuity with the previous refresh
+/// (`v_new · v_old >= 0`); the first refresh makes its largest-magnitude
+/// entry positive. Continuity is what keeps a score series from flipping
+/// sign between two rows when two loadings of nearly equal size trade
+/// places as the largest.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Pca {
+    /// Eigenvalues, descending: the variance along each component.
+    pub eig: Vec<f64>,
+    /// The trace of the co-moments, the total variance the shares are of.
+    pub trace: f64,
+    /// Loadings, row-major `r * k`: row `j` is component `j`'s unit vector.
+    pub loadings: Vec<f64>,
+}
+
+impl Pca {
+    /// The top `r` components of the symmetric matrix `c` (row-major `k*k`)
+    /// by `faer`'s self-adjoint eigensolver, which is deterministic, signed
+    /// for continuity with `prev` when it has the component. `None` when
+    /// `c` has a non-finite entry or the decomposition fails.
+    pub fn of(c: &[f64], k: usize, r: usize, prev: Option<&Pca>) -> Option<Self> {
+        use faer::Side;
+        use faer::prelude::*;
+        if r == 0 || r > k || c.len() != k * k || c.iter().any(|v| !v.is_finite()) {
+            return None;
+        }
+        let mat = Mat::from_fn(k, k, |i, j| c[i * k + j]);
+        let evd = mat.self_adjoint_eigen(Side::Lower).ok()?;
+        let (s, u) = (evd.S(), evd.U());
+        // Eigenvalues come nondecreasing; take the last `r`, largest first.
+        let mut eig = Vec::with_capacity(r);
+        let mut loadings = Vec::with_capacity(r * k);
+        for j in 0..r {
+            let col = k - 1 - j;
+            eig.push(s[col]);
+            let v: Vec<f64> = (0..k).map(|i| u[(i, col)]).collect();
+            let along_prev = prev
+                .filter(|p| p.r() > j && p.loadings.len() == p.r() * k)
+                .map(|p| {
+                    p.loadings[j * k..(j + 1) * k]
+                        .iter()
+                        .zip(&v)
+                        .fold(0.0, |acc, (a, b)| acc + a * b)
+                });
+            let sign = match along_prev {
+                Some(d) if d != 0.0 => {
+                    if d < 0.0 {
+                        -1.0
+                    } else {
+                        1.0
+                    }
+                }
+                // No predecessor (or one exactly orthogonal): the
+                // largest-magnitude entry, the first on a tie, is positive.
+                _ => {
+                    let mut lead = 0;
+                    for (i, vi) in v.iter().enumerate() {
+                        if vi.abs() > v[lead].abs() {
+                            lead = i;
+                        }
+                    }
+                    if v[lead] < 0.0 { -1.0 } else { 1.0 }
+                }
+            };
+            loadings.extend(v.iter().map(|vi| sign * vi));
+        }
+        let trace = (0..k).map(|i| c[i * k + i]).sum();
+        let out = Self {
+            eig,
+            trace,
+            loadings,
+        };
+        (out.eig.iter().all(|v| v.is_finite()) && out.loadings.iter().all(|v| v.is_finite()))
+            .then_some(out)
+    }
+
+    pub fn r(&self) -> usize {
+        self.eig.len()
     }
 }
 
@@ -422,6 +555,15 @@ impl EwCovCfg {
 pub struct EwCovModel {
     cfg: EwCovCfg,
     cov: EwCov,
+    /// P² estimators of the past Mahalanobis scores, one per level.
+    #[serde(default)]
+    mahal_q: Vec<crate::P2Quantile>,
+    /// The components in force, refreshed every `pca_every` learned rows.
+    #[serde(default)]
+    pca: Option<Pca>,
+    /// Learned rows since the last refresh.
+    #[serde(default)]
+    since_pca: usize,
 }
 
 impl EwCovModel {
@@ -431,7 +573,68 @@ impl EwCovModel {
             Some(p) => EwCov::with_precision_prior(cfg.n_features, p)?,
             None => EwCov::new(cfg.n_features),
         };
-        Ok(Self { cfg, cov })
+        let mahal_q = cfg
+            .mahal_quantiles
+            .iter()
+            .map(|&q| crate::P2Quantile::new(q))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            cfg,
+            cov,
+            mahal_q,
+            pca: None,
+            since_pca: 0,
+        })
+    }
+
+    /// The components currently in force, if a refresh has happened.
+    pub fn pca(&self) -> Option<&Pca> {
+        self.pca.as_ref()
+    }
+
+    /// The Mahalanobis distance of `x` from the current moments, or NaN when
+    /// no prior is configured or the solve fails. One Cholesky factorization
+    /// and one triangular solve, O(k³).
+    pub fn mahal(&self, x: &[f64]) -> f64 {
+        if !self.cov.has_precision_prior() {
+            return f64::NAN;
+        }
+        let k = self.cov.k();
+        let delta: Vec<f64> = x
+            .iter()
+            .zip(self.cov.means())
+            .map(|(xi, mi)| xi - mi)
+            .collect();
+        let mut m = self.cov.comoments().to_vec();
+        let ridge = self.cov.precision_prior * self.cov.precision_scale;
+        for i in 0..k {
+            m[i * k + i] += ridge;
+        }
+        match crate::solve::solve_spd(&m, &delta, k, 1) {
+            Some((sol, _)) => {
+                let d2: f64 = delta.iter().zip(&sol).map(|(d, s)| d * s).sum();
+                if d2.is_finite() {
+                    d2.max(0.0).sqrt()
+                } else {
+                    f64::NAN
+                }
+            }
+            None => f64::NAN,
+        }
+    }
+
+    /// Recompute the components from the current co-moments. A failed
+    /// decomposition keeps the previous ones.
+    fn refresh_pca(&mut self) {
+        if let Some(p) = Pca::of(
+            self.cov.comoments(),
+            self.cfg.n_features,
+            self.cfg.pca,
+            self.pca.as_ref(),
+        ) {
+            self.pca = Some(p);
+        }
+        self.since_pca = 0;
     }
 
     /// The accumulator itself, for callers that want the whole matrix rather
@@ -449,8 +652,16 @@ impl EwCovModel {
         self.cov.n_eff()
     }
 
-    /// Output slot labels, in emission order (used for field names).
-    pub fn labels(names: &[String], stats: &[EwCovStat]) -> Vec<String> {
+    /// Output slot labels, in emission order (used for field names): the
+    /// statistics, then `mahal_q<p>` per quantile level, then per component
+    /// `j`: `pc<j>_var`, `pc<j>_share`, `pc<j>_<column>` for each column and
+    /// `pc<j>_score`.
+    pub fn labels(
+        names: &[String],
+        stats: &[EwCovStat],
+        mahal_quantiles: &[f64],
+        pca: usize,
+    ) -> Vec<String> {
         let mut out = Vec::new();
         for stat in stats {
             match stat {
@@ -478,12 +689,22 @@ impl EwCovModel {
                         }
                     }
                 }
+                EwCovStat::Mahal => out.push("mahal".to_string()),
             }
+        }
+        for q in mahal_quantiles {
+            out.push(format!("mahal_q{q}"));
+        }
+        for j in 0..pca {
+            out.push(format!("pc{j}_var"));
+            out.push(format!("pc{j}_share"));
+            out.extend(names.iter().map(|n| format!("pc{j}_{n}")));
+            out.push(format!("pc{j}_score"));
         }
         out
     }
 
-    fn read(&self) -> Vec<f64> {
+    fn read(&self, x: &[f64]) -> Vec<f64> {
         let k = self.cfg.n_features;
         let mut out = Vec::with_capacity(self.cfg.n_outputs());
         // One O(k³) solve per row, only when partial correlations are wanted.
@@ -527,6 +748,35 @@ impl EwCovModel {
                         }
                     }
                 }
+                EwCovStat::Mahal => out.push(self.mahal(x)),
+            }
+        }
+        for q in &self.mahal_q {
+            out.push(q.get().unwrap_or(f64::NAN));
+        }
+        if self.cfg.pca > 0 {
+            match &self.pca {
+                Some(p) => {
+                    for j in 0..p.r() {
+                        let v = &p.loadings[j * k..(j + 1) * k];
+                        out.push(p.eig[j]);
+                        out.push(if p.trace > 0.0 {
+                            p.eig[j] / p.trace
+                        } else {
+                            f64::NAN
+                        });
+                        out.extend_from_slice(v);
+                        // The row's coordinate along the component, about the
+                        // current mean: loadings frozen, centre live.
+                        let score = v
+                            .iter()
+                            .zip(x)
+                            .zip(self.cov.means())
+                            .fold(0.0, |acc, ((vi, xi), mi)| acc + vi * (xi - mi));
+                        out.push(score);
+                    }
+                }
+                None => out.extend(std::iter::repeat_n(f64::NAN, self.cfg.pca * (k + 3))),
             }
         }
         out
@@ -538,14 +788,45 @@ impl crate::OnlineModel for EwCovModel {
         // Statistics are read before this row is folded in, so an `ew_cov`
         // column is usable as a feature for the same row without leaking it.
         let out = self.predict(x, d_clock);
+        if !self.mahal_q.is_empty() {
+            // The row's own out-of-sample score joins the history it will be
+            // thresholded against, as `resid_quantiles` does for |resid|.
+            let slot = self
+                .cfg
+                .stats
+                .iter()
+                .take_while(|s| **s != EwCovStat::Mahal)
+                .map(|s| match s {
+                    EwCovStat::Mean | EwCovStat::Var | EwCovStat::Std => self.cfg.n_features,
+                    _ => self.cfg.n_features * (self.cfg.n_features - 1) / 2,
+                })
+                .sum::<usize>();
+            let score = out.pred[slot];
+            if score.is_finite() {
+                for q in &mut self.mahal_q {
+                    q.update(score);
+                }
+            }
+        }
         self.cov.update(x, self.cfg.decay.factor(d_clock), weight);
+        if self.cfg.pca > 0 {
+            // A checkpoint after the update, counted in learned rows, so the
+            // components a row is scored on never depend on the chunking and
+            // `predict` sees the same frozen ones `step` does.
+            self.since_pca += 1;
+            if self.cov.n_eff() >= self.cfg.min_periods
+                && (self.pca.is_none() || self.since_pca >= self.cfg.pca_every)
+            {
+                self.refresh_pca();
+            }
+        }
         out
     }
 
-    fn predict(&self, _x: &[f64], _d_clock: f64) -> crate::Step {
+    fn predict(&self, x: &[f64], _d_clock: f64) -> crate::Step {
         let n_eff = self.cov.n_eff();
         let pred = if n_eff >= self.cfg.min_periods {
-            self.read()
+            self.read(x)
         } else {
             vec![f64::NAN; self.cfg.n_outputs()]
         };
@@ -632,6 +913,9 @@ mod tests {
             stats,
             min_periods: 2.0,
             precision_prior: None,
+            mahal_quantiles: Vec::new(),
+            pca: 0,
+            pca_every: 0,
         }
     }
 
@@ -665,6 +949,384 @@ mod tests {
         model_cfg(2, vec![Mean, Var, Std, Cov, Corr])
             .validate()
             .unwrap();
+
+        // mahal solves against the regularized co-moments, so it needs the
+        // prior too; its quantiles need the score they are quantiles of.
+        err(model_cfg(3, vec![Mahal]), "precision_prior");
+        let mut mahal = model_cfg(3, vec![Mahal]);
+        mahal.precision_prior = Some(1e-6);
+        mahal.validate().unwrap();
+        let mut mahal1 = model_cfg(1, vec![Mahal]);
+        mahal1.precision_prior = Some(1e-6);
+        mahal1.validate().unwrap();
+        let mut no_mahal = model_cfg(3, vec![Mean]);
+        no_mahal.mahal_quantiles = vec![0.99];
+        err(no_mahal, "mahal_quantiles needs");
+        for bad in [0.0, 1.0, -0.5, 1.5, f64::NAN] {
+            let mut c = mahal.clone();
+            c.mahal_quantiles = vec![0.5, bad];
+            err(c, "strictly between 0 and 1");
+        }
+        let mut levels = mahal.clone();
+        levels.mahal_quantiles = vec![0.5, 0.99];
+        levels.validate().unwrap();
+
+        // pca: at most k components, and a cadence of at least one row.
+        let mut too_many = model_cfg(3, vec![Mean]);
+        too_many.pca = 4;
+        too_many.pca_every = 1;
+        err(too_many, "4 components of 3 columns");
+        let mut no_cadence = model_cfg(3, vec![Mean]);
+        no_cadence.pca = 2;
+        err(no_cadence, "pca_every must be >= 1");
+        let mut ok = model_cfg(3, vec![Mean]);
+        ok.pca = 3;
+        ok.pca_every = 5;
+        ok.validate().unwrap();
+        let mut off = model_cfg(3, vec![Mean]);
+        off.pca = 0;
+        off.pca_every = 0;
+        off.validate().unwrap();
+    }
+
+    fn mahal_cfg(k: usize, prior: f64) -> EwCovCfg {
+        let mut c = model_cfg(k, vec![EwCovStat::Mahal]);
+        c.precision_prior = Some(prior);
+        c
+    }
+
+    fn step(m: &mut EwCovModel, x: &[f64], first: bool) -> Vec<f64> {
+        crate::OnlineModel::step(m, x, &[], if first { 0.0 } else { 1.0 }, 1.0).pred
+    }
+
+    /// Bitwise equality, so NaN slots compare equal to NaN slots.
+    fn same_bits(a: &[f64], b: &[f64]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+    }
+
+    #[test]
+    fn mahal_is_the_standardized_distance_on_a_diagonal_covariance() {
+        // Two independent columns with variances 4 and 1 (population form
+        // under no decay): the distance of (m0 + 2a, m1 + b) is sqrt(a² + b²)
+        // up to the prior's `1e-12` on the diagonal.
+        let mut m = EwCovModel::new(mahal_cfg(2, 1e-12)).unwrap();
+        let pts = [
+            [2.0, 1.0],
+            [-2.0, -1.0],
+            [2.0, -1.0],
+            [-2.0, 1.0],
+            [2.0, 1.0],
+            [-2.0, -1.0],
+            [2.0, -1.0],
+            [-2.0, 1.0],
+        ];
+        for (i, p) in pts.iter().enumerate() {
+            step(&mut m, p, i == 0);
+        }
+        // Means 0, var0 = 4, var1 = 1, cov = 0.
+        let cov = m.cov();
+        assert!(cov.mean(0).abs() < 1e-12 && cov.mean(1).abs() < 1e-12);
+        assert!((cov.var(0) - 4.0).abs() < 1e-12 && (cov.var(1) - 1.0).abs() < 1e-12);
+        assert!(cov.cov(0, 1).abs() < 1e-12);
+        let d = m.mahal(&[6.0, -4.0]); // a = 3, b = -4
+        assert!((d - 5.0).abs() < 1e-9, "{d}");
+        assert!(m.mahal(&[0.0, 0.0]).abs() < 1e-12);
+        // Read off the model, before the row is learned, as slot 0.
+        let out = crate::OnlineModel::predict(&m, &[6.0, -4.0], 1.0).pred;
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], d);
+    }
+
+    #[test]
+    fn mahal_matches_the_precision_matrix_quadratic_form() {
+        // Against `precision()`, which the partial correlations already trust:
+        // d² = δᵀ P δ, with P the regularized inverse.
+        let mut m = EwCovModel::new(mahal_cfg(3, 0.01)).unwrap();
+        let mut s = 7u64;
+        for i in 0..50 {
+            let a = lcg(&mut s);
+            let x = [a, 0.5 * a + lcg(&mut s), lcg(&mut s) - 0.2 * a];
+            step(&mut m, &x, i == 0);
+        }
+        let p = m.cov().precision().unwrap();
+        let x = [0.7, -0.4, 1.1];
+        let delta: Vec<f64> = (0..3).map(|i| x[i] - m.cov().mean(i)).collect();
+        let mut d2 = 0.0;
+        for i in 0..3 {
+            for j in 0..3 {
+                d2 += delta[i] * p[i * 3 + j] * delta[j];
+            }
+        }
+        assert!((m.mahal(&x) - d2.sqrt()).abs() < 1e-9);
+        // A single column is the |z| of the row.
+        let mut one = EwCovModel::new(mahal_cfg(1, 1e-12)).unwrap();
+        for i in 0..20 {
+            step(&mut one, &[lcg(&mut s) * 3.0], i == 0);
+        }
+        let z = (2.5 - one.cov().mean(0)) / one.cov().var(0).sqrt();
+        assert!((one.mahal(&[2.5]) - z.abs()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mahal_quantiles_track_the_scores_seen_so_far() {
+        // Each row's own out-of-sample score enters the P² estimators after
+        // it is read, so the quantile field lags by one row and never
+        // includes the row it is emitted with.
+        let mut c = mahal_cfg(2, 1e-6);
+        c.mahal_quantiles = vec![0.5];
+        let mut m = EwCovModel::new(c).unwrap();
+        let mut s = 11u64;
+        let mut scores = Vec::new();
+        let mut oracle = crate::P2Quantile::new(0.5).unwrap();
+        for i in 0..2000 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let out = step(&mut m, &x, i == 0);
+            assert_eq!(out.len(), 2);
+            // The field is the estimate *before* this row's score joins.
+            assert_eq!(out[1].to_bits(), oracle.get().unwrap_or(f64::NAN).to_bits());
+            if out[0].is_finite() {
+                scores.push(out[0]);
+                oracle.update(out[0]);
+            }
+            if scores.len() < 5 {
+                assert!(out[1].is_nan(), "P² needs five observations");
+            }
+        }
+        let mut sorted = scores.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median = sorted[sorted.len() / 2];
+        let q = crate::OnlineModel::predict(&m, &[0.0, 0.0], 1.0).pred[1];
+        assert_eq!(q.to_bits(), oracle.get().unwrap().to_bits());
+        assert!((q - median).abs() < 0.05, "P² median {q} vs {median}");
+        // NaN scores (before min_periods) never enter the estimator.
+        let mut fresh = EwCovModel::new(m.cfg().clone()).unwrap();
+        let out = step(&mut fresh, &[1.0, 2.0], true);
+        assert!(out[0].is_nan() && out[1].is_nan());
+        assert_eq!(fresh.mahal_q[0].count(), 0);
+    }
+
+    #[test]
+    fn pca_of_recovers_a_known_eigenbasis() {
+        // [[2, 1], [1, 2]] has eigenpairs (3, (1,1)/√2) and (1, (1,−1)/√2).
+        let p = Pca::of(&[2.0, 1.0, 1.0, 2.0], 2, 2, None).unwrap();
+        let r = std::f64::consts::FRAC_1_SQRT_2;
+        assert!((p.eig[0] - 3.0).abs() < 1e-12 && (p.eig[1] - 1.0).abs() < 1e-12);
+        assert_eq!(p.trace, 4.0);
+        assert!((p.loadings[0] - r).abs() < 1e-12 && (p.loadings[1] - r).abs() < 1e-12);
+        // The tie (|v0| = |v1|) resolves to the first entry positive.
+        assert!((p.loadings[2] - r).abs() < 1e-12 && (p.loadings[3] + r).abs() < 1e-12);
+        // Only the top component when asked for one.
+        let top = Pca::of(&[2.0, 1.0, 1.0, 2.0], 2, 1, None).unwrap();
+        assert_eq!(top.r(), 1);
+        assert_eq!(top.eig, vec![p.eig[0]]);
+        assert_eq!(top.loadings, p.loadings[..2].to_vec());
+        // Largest-magnitude entry positive, not the first entry.
+        let q = Pca::of(&[1.0, 0.0, 0.0, 5.0], 2, 1, None).unwrap();
+        assert!((q.eig[0] - 5.0).abs() < 1e-12);
+        assert!(q.loadings[0].abs() < 1e-12 && (q.loadings[1] - 1.0).abs() < 1e-12);
+        // Refused: no components, more than k, a non-finite entry, a wrong size.
+        assert!(Pca::of(&[1.0, 0.0, 0.0, 1.0], 2, 0, None).is_none());
+        assert!(Pca::of(&[1.0, 0.0, 0.0, 1.0], 2, 3, None).is_none());
+        assert!(Pca::of(&[1.0, 0.0, 0.0, f64::NAN], 2, 1, None).is_none());
+        assert!(Pca::of(&[1.0, 0.0, 0.0], 2, 1, None).is_none());
+    }
+
+    #[test]
+    fn pca_signs_follow_the_previous_refresh() {
+        // The top eigenvector of [[a, -b], [-b, a]] is (1, −1)/√2, and the
+        // max-abs rule has a tie there that any perturbation decides. A
+        // predecessor along (−1, 1) keeps the new vector on its side.
+        let r = std::f64::consts::FRAC_1_SQRT_2;
+        let first = Pca::of(&[2.0, -1.0, -1.0, 2.0], 2, 1, None).unwrap();
+        assert!((first.loadings[0] - r).abs() < 1e-12 && (first.loadings[1] + r).abs() < 1e-12);
+        let prev = Pca {
+            eig: vec![3.0],
+            trace: 4.0,
+            loadings: vec![-r, r],
+        };
+        let next = Pca::of(&[2.0, -1.0, -1.0, 2.0], 2, 1, Some(&prev)).unwrap();
+        assert!((next.loadings[0] + r).abs() < 1e-12 && (next.loadings[1] - r).abs() < 1e-12);
+        // Nearly tied magnitudes that trade the lead: max-abs would flip,
+        // continuity does not.
+        let mut a = Pca::of(&[2.0, -0.999, -0.999, 2.0], 2, 1, None).unwrap();
+        for eps in [0.0005, -0.0005, 0.0005, -0.0005] {
+            // Tilt the matrix so the lead entry alternates between the two.
+            let m = [2.0 + eps, -0.999, -0.999, 2.0 - eps];
+            let b = Pca::of(&m, 2, 1, Some(&a)).unwrap();
+            let dot = a.loadings[0] * b.loadings[0] + a.loadings[1] * b.loadings[1];
+            assert!(dot > 0.99, "dot {dot}");
+            a = b;
+        }
+        // A predecessor with fewer components leaves the extra ones to the
+        // max-abs rule.
+        let wide = Pca::of(&[2.0, -1.0, -1.0, 2.0], 2, 2, Some(&prev)).unwrap();
+        assert!((wide.loadings[0] + r).abs() < 1e-12);
+        assert!((wide.loadings[2] - r).abs() < 1e-12 && (wide.loadings[3] - r).abs() < 1e-12);
+    }
+
+    #[test]
+    fn pca_loadings_are_orthonormal_and_ordered() {
+        let k = 5;
+        let mut s = 5u64;
+        // A random SPD matrix: A = Bᵀ B + small ridge.
+        let b: Vec<f64> = (0..k * k).map(|_| lcg(&mut s)).collect();
+        let mut a = vec![0.0; k * k];
+        for i in 0..k {
+            for j in 0..k {
+                a[i * k + j] = (0..k).map(|l| b[l * k + i] * b[l * k + j]).sum::<f64>()
+                    + if i == j { 0.01 } else { 0.0 };
+            }
+        }
+        let p = Pca::of(&a, k, k, None).unwrap();
+        for j in 1..k {
+            assert!(p.eig[j - 1] >= p.eig[j], "descending: {:?}", p.eig);
+        }
+        assert!((p.eig.iter().sum::<f64>() - p.trace).abs() < 1e-10);
+        for i in 0..k {
+            for j in 0..k {
+                let dot: f64 = (0..k)
+                    .map(|l| p.loadings[i * k + l] * p.loadings[j * k + l])
+                    .sum();
+                let want = if i == j { 1.0 } else { 0.0 };
+                assert!((dot - want).abs() < 1e-10, "v{i}·v{j} = {dot}");
+            }
+            // A v = λ v.
+            for l in 0..k {
+                let av: f64 = (0..k).map(|c| a[l * k + c] * p.loadings[i * k + c]).sum();
+                assert!((av - p.eig[i] * p.loadings[i * k + l]).abs() < 1e-9);
+            }
+            let lead = (0..k)
+                .max_by(|&x, &y| {
+                    p.loadings[i * k + x]
+                        .abs()
+                        .partial_cmp(&p.loadings[i * k + y].abs())
+                        .unwrap()
+                })
+                .unwrap();
+            assert!(p.loadings[i * k + lead] > 0.0);
+        }
+    }
+
+    fn pca_cfg(k: usize, r: usize, every: usize) -> EwCovCfg {
+        let mut c = model_cfg(k, vec![EwCovStat::Mean]);
+        c.pca = r;
+        c.pca_every = every;
+        c
+    }
+
+    #[test]
+    fn pca_fields_follow_the_stats_and_are_frozen_between_refreshes() {
+        // Outputs: mean_a, mean_b, then pc0_var, pc0_share, pc0_a, pc0_b,
+        // pc0_score. With `pca_every = 3` the loadings change only every
+        // third learned row, and a row's score uses the frozen loadings
+        // about the live mean.
+        let k = 2;
+        let mut m = EwCovModel::new(pca_cfg(k, 1, 3)).unwrap();
+        assert_eq!(m.cfg().n_outputs(), k + (k + 3));
+        let mut s = 3u64;
+        let mut last: Option<(Vec<f64>, usize)> = None;
+        let mut changes = Vec::new();
+        for i in 0..40 {
+            let a = lcg(&mut s);
+            let x = [a, 2.0 * a + 0.3 * lcg(&mut s)];
+            let pre = crate::OnlineModel::predict(&m, &x, 1.0).pred;
+            let out = step(&mut m, &x, i == 0);
+            assert!(
+                same_bits(&pre, &out),
+                "predict and step read the same frozen state"
+            );
+            if !out[2].is_nan() {
+                // pc0_score = v·(x − μ) with μ the mean *before* this row.
+                let want = out[4] * (x[0] - out[0]) + out[5] * (x[1] - out[1]);
+                assert!((out[6] - want).abs() < 1e-12, "row {i}");
+                assert!((0.0..=1.0 + 1e-12).contains(&out[3]), "share {}", out[3]);
+                let v = out[4..6].to_vec();
+                if let Some((prev, at)) = &last {
+                    if *prev != v {
+                        changes.push(i - at);
+                        last = Some((v, i));
+                    }
+                } else {
+                    last = Some((v, i));
+                }
+            }
+        }
+        assert!(!changes.is_empty());
+        assert!(changes.iter().all(|&c| c == 3), "refresh gaps {changes:?}");
+        assert_eq!(m.pca().unwrap().r(), 1);
+    }
+
+    #[test]
+    fn pca_refresh_counts_learned_rows_so_chunking_cannot_matter() {
+        // The same rows through one model and through a clone that was
+        // serialized and restored midway give identical outputs, including
+        // the refresh cadence and the frozen loadings.
+        let mut a = EwCovModel::new(pca_cfg(3, 2, 4)).unwrap();
+        let mut s = 9u64;
+        let rows: Vec<[f64; 3]> = (0..50)
+            .map(|_| [lcg(&mut s), lcg(&mut s), lcg(&mut s)])
+            .collect();
+        let mut outs = Vec::new();
+        for (i, x) in rows.iter().enumerate() {
+            outs.push(step(&mut a, x, i == 0));
+        }
+        let mut b = EwCovModel::new(pca_cfg(3, 2, 4)).unwrap();
+        for (i, x) in rows.iter().enumerate() {
+            if i == 17 {
+                let bytes = rmp_serde::to_vec(&b).unwrap();
+                b = rmp_serde::from_slice(&bytes).unwrap();
+            }
+            let out = step(&mut b, x, i == 0);
+            assert!(same_bits(&out, &outs[i]), "row {i}");
+        }
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn pca_with_every_component_explains_all_the_variance() {
+        let k = 3;
+        let mut m = EwCovModel::new(pca_cfg(k, k, 1)).unwrap();
+        let mut s = 13u64;
+        for i in 0..30 {
+            step(&mut m, &[lcg(&mut s), lcg(&mut s), lcg(&mut s)], i == 0);
+        }
+        // Read after the last refresh, which followed the last update.
+        let out = crate::OnlineModel::predict(&m, &[0.0; 3], 1.0).pred;
+        let shares: f64 = (0..k).map(|j| out[k + j * (k + 3) + 1]).sum();
+        assert!((shares - 1.0).abs() < 1e-10, "{shares}");
+        let vars: f64 = (0..k).map(|j| out[k + j * (k + 3)]).sum();
+        let trace: f64 = (0..k).map(|i| m.cov().cov(i, i)).sum();
+        assert!((vars - trace).abs() < 1e-10);
+    }
+
+    #[test]
+    fn pca_stays_nan_before_min_periods_and_on_a_degenerate_matrix() {
+        let mut c = pca_cfg(2, 1, 1);
+        c.min_periods = 5.0;
+        let mut m = EwCovModel::new(c).unwrap();
+        for i in 0..4 {
+            let out = step(&mut m, &[i as f64, 1.0], i == 0);
+            assert!(out[2..].iter().all(|v| v.is_nan()), "row {i}: {out:?}");
+        }
+        assert!(m.pca().is_none());
+        let out = step(&mut m, &[4.0, 1.0], false);
+        assert!(
+            out[2..].iter().all(|v| v.is_nan()),
+            "read before the first refresh"
+        );
+        assert!(m.pca().is_some(), "refreshed after the fifth learned row");
+        let out = step(&mut m, &[5.0, 1.0], false);
+        // Column 1 is constant: all the variance is on column 0.
+        assert!((out[3] - 1.0).abs() < 1e-12, "share {}", out[3]);
+        assert!((out[4] - 1.0).abs() < 1e-12 && out[5].abs() < 1e-12);
+        // A constant stream: trace 0, so the share is NaN rather than 0/0.
+        let mut flat = EwCovModel::new(pca_cfg(2, 1, 1)).unwrap();
+        let mut out = Vec::new();
+        for i in 0..6 {
+            out = step(&mut flat, &[1.0, 1.0], i == 0);
+        }
+        assert_eq!(out[2], 0.0);
+        assert!(out[3].is_nan());
     }
 
     #[test]
@@ -686,7 +1348,7 @@ mod tests {
         ] {
             let mut c = model_cfg(3, stats.clone());
             c.precision_prior = Some(1e-6);
-            let labels = EwCovModel::labels(&names, &stats);
+            let labels = EwCovModel::labels(&names, &stats, &[], 0);
             assert_eq!(c.n_outputs(), labels.len(), "{stats:?}");
 
             let mut m = EwCovModel::new(c).unwrap();
@@ -695,7 +1357,7 @@ mod tests {
                 let x = [lcg(&mut s), lcg(&mut s), lcg(&mut s)];
                 crate::OnlineModel::step(&mut m, &x, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0);
             }
-            let vals = m.read();
+            let vals = m.read(&[0.0; 3]);
             assert_eq!(vals.len(), labels.len(), "{stats:?}");
 
             // Spot-check that the label describes the value under it.
@@ -715,33 +1377,35 @@ mod tests {
         use EwCovStat::*;
         let names: Vec<String> = ["x", "y", "z"].iter().map(|s| s.to_string()).collect();
         assert_eq!(
-            EwCovModel::labels(&names, &[Mean]),
+            EwCovModel::labels(&names, &[Mean], &[], 0),
             ["mean_x", "mean_y", "mean_z"]
         );
         assert_eq!(
-            EwCovModel::labels(&names, &[Var]),
+            EwCovModel::labels(&names, &[Var], &[], 0),
             ["var_x", "var_y", "var_z"]
         );
         assert_eq!(
-            EwCovModel::labels(&names, &[Std]),
+            EwCovModel::labels(&names, &[Std], &[], 0),
             ["std_x", "std_y", "std_z"]
         );
         // Upper triangle only, and never a self-pair.
         assert_eq!(
-            EwCovModel::labels(&names, &[Cov]),
+            EwCovModel::labels(&names, &[Cov], &[], 0),
             ["cov_x_y", "cov_x_z", "cov_y_z"]
         );
         assert_eq!(
-            EwCovModel::labels(&names, &[Corr]),
+            EwCovModel::labels(&names, &[Corr], &[], 0),
             ["corr_x_y", "corr_x_z", "corr_y_z"]
         );
         assert_eq!(
-            EwCovModel::labels(&names, &[PartialCorr]),
+            EwCovModel::labels(&names, &[PartialCorr], &[], 0),
             ["pcorr_x_y", "pcorr_x_z", "pcorr_y_z"]
         );
         // Stats concatenate in the order given, not a canonical order.
         assert_eq!(
-            EwCovModel::labels(&names, &[Corr, Mean]).first().unwrap(),
+            EwCovModel::labels(&names, &[Corr, Mean], &[], 0)
+                .first()
+                .unwrap(),
             "corr_x_y"
         );
     }
@@ -763,7 +1427,7 @@ mod tests {
             crate::OnlineModel::step(&mut m, &x, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0);
             xs.push(x.to_vec());
         }
-        let v = m.read();
+        let v = m.read(&[0.0; 2]);
         let (mean0, mean1) = (v[0], v[1]);
         let (var0, var1) = (v[2], v[3]);
         let (std0, std1) = (v[4], v[5]);
@@ -807,7 +1471,7 @@ mod tests {
                 1.0,
             );
         }
-        let v = m.read();
+        let v = m.read(&[0.0; 2]);
         assert!(v[0].is_nan(), "corr against a constant column: {}", v[0]);
         assert_eq!(v[2], 0.0, "a constant column has exactly zero variance");
     }

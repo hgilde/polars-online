@@ -146,6 +146,9 @@ class FtrlKwargs(ExprKwargs, total=False):
 class EwCovKwargs(ExprKwargs, total=False):
     stats: list[str] | None
     precision_prior: float | None
+    mahal_quantiles: list[float] | None
+    pca: int | None
+    pca_every: int | None
 
 
 class SgdKwargs(ExprKwargs, total=False):

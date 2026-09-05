@@ -791,6 +791,9 @@ def ew_cov(
     features: list[str],
     stats: list[str] | None = None,
     precision_prior: float | None = None,
+    mahal_quantiles: list[float] | None = None,
+    pca: int | None = None,
+    pca_every: int | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Exponentially weighted moments of the feature columns (docs/PLAN.md 4.7).
@@ -808,7 +811,7 @@ def ew_cov(
     replaces the O(k^2) *passes* a pure-Polars pairwise EW correlation needs.
 
     ``stats`` selects which to emit, from ``mean``, ``var``, ``std``, ``cov``,
-    ``corr`` and ``partial_corr`` (default: mean, std, corr).
+    ``corr``, ``partial_corr`` and ``mahal`` (default: mean, std, corr).
     ``partial_corr`` is the correlation between two columns *controlling for
     every other column*, read off the precision matrix as
     ``-P_ij / sqrt(P_ii P_jj)``. It needs ``precision_prior``: the precision
@@ -819,6 +822,29 @@ def ew_cov(
     Pairwise statistics are emitted for each unordered pair ``i < j``, named
     after the columns (``corr_x0_x1``, ``pcorr_x0_x1``).
 
+    ``mahal`` (docs/ENHANCEMENTS.md E37) is the row's Mahalanobis distance
+    from the decayed history, one field over all the columns::
+
+        mahal = sqrt((x - m)^T (C + s * prior * I)^-1 (x - m))
+
+    in units of standard deviations, like ``resid_z`` for a regression: with
+    ``k`` Gaussian columns ``mahal^2`` is chi-squared with ``k`` degrees of
+    freedom, so ``mahal^2 > chi2.ppf(0.99, k)`` flags a 1% outlier. One
+    Cholesky solve per row (O(k^3)), only when asked for; it needs
+    ``precision_prior``. ``mahal_quantiles`` adds a P-squared running
+    quantile of the past scores per level (``mahal_q0.99``), a threshold
+    from the stream's own history instead of a table; the row's own score
+    joins after it is read.
+
+    ``pca=r`` (docs/ENHANCEMENTS.md E38) tracks the top ``r`` principal
+    components of the covariance: per component ``j`` the fields
+    ``pc<j>_var`` (its eigenvalue), ``pc<j>_share`` (of the total variance),
+    ``pc<j>_<feature>`` (its unit loading on each column, largest entry
+    positive) and ``pc<j>_score`` (the row's coordinate ``v_j . (x - m)``).
+    The eigendecomposition is refreshed every ``pca_every`` learned rows
+    (default 1, O(k^3) each) after the row is folded in; between refreshes
+    the loadings are frozen, so a row's scores never depend on chunking.
+
     Values are read from the state *before* each row, so an ``ew_cov`` output
     can be used as a feature for that same row without leaking it.
     """
@@ -826,6 +852,9 @@ def ew_cov(
         "type": "ew_cov",
         "stats": stats,
         "precision_prior": precision_prior,
+        "mahal_quantiles": mahal_quantiles,
+        "pca": pca,
+        "pca_every": pca_every,
     }
     if "targets" in common:
         msg = (

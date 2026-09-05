@@ -1500,7 +1500,13 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
     let decays = spec.decays().expect("validated");
     // ew_cov is not a regression: its slots are named statistics, not
     // pred/resid pairs, and it has no targets or coefficients.
-    if let crate::ModelKind::EwCov { stats, .. } = &spec.model {
+    if let crate::ModelKind::EwCov {
+        stats,
+        mahal_quantiles,
+        pca,
+        ..
+    } = &spec.model
+    {
         let names = stats
             .clone()
             .unwrap_or_else(|| vec!["mean".into(), "std".into(), "corr".into()]);
@@ -1512,43 +1518,63 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
                 "std" => online_core::EwCovStat::Std,
                 "cov" => online_core::EwCovStat::Cov,
                 "partial_corr" => online_core::EwCovStat::PartialCorr,
+                "mahal" => online_core::EwCovStat::Mahal,
                 _ => online_core::EwCovStat::Corr,
             })
             .collect();
-        let labels = online_core::EwCovModel::labels(&spec.features, &kinds);
-        // Statistic kind and the columns it is over, in label order: the same
-        // walk `labels` makes (per stat: each column, or each i<j pair).
-        let mut meta: Vec<(String, Vec<String>)> = Vec::new();
+        let levels: Vec<f64> = mahal_quantiles.clone().unwrap_or_default();
+        let r = pca.unwrap_or(0);
+        let labels = online_core::EwCovModel::labels(&spec.features, &kinds, &levels, r);
+        // Statistic kind, the columns it is over and its quantile level, in
+        // label order: the same walk `labels` makes (per stat: each column,
+        // each i<j pair, or all of them; then the levels; then `k + 3` per
+        // component, all over every column).
+        let all = spec.features.clone();
+        let mut meta: Vec<(String, Vec<String>, Option<f64>)> = Vec::new();
         for (name, kind) in names.iter().zip(&kinds) {
             match kind {
                 online_core::EwCovStat::Mean
                 | online_core::EwCovStat::Var
                 | online_core::EwCovStat::Std => {
                     for col in &spec.features {
-                        meta.push((name.clone(), vec![col.clone()]));
+                        meta.push((name.clone(), vec![col.clone()], None));
                     }
                 }
+                online_core::EwCovStat::Mahal => meta.push((name.clone(), all.clone(), None)),
                 _ => {
                     for i in 0..spec.features.len() {
                         for j in (i + 1)..spec.features.len() {
                             meta.push((
                                 name.clone(),
                                 vec![spec.features[i].clone(), spec.features[j].clone()],
+                                None,
                             ));
                         }
                     }
                 }
             }
         }
+        for &q in &levels {
+            meta.push(("mahal_q".into(), all.clone(), Some(q)));
+        }
+        for _ in 0..r {
+            meta.push(("pc_var".into(), all.clone(), None));
+            meta.push(("pc_share".into(), all.clone(), None));
+            for col in &spec.features {
+                meta.push(("pc_loading".into(), vec![col.clone()], None));
+            }
+            meta.push(("pc_score".into(), all.clone(), None));
+        }
         debug_assert_eq!(meta.len(), labels.len());
         let n_slots = labels.len();
         let mut fields = Vec::new();
         for (mi, (suffix, d)) in decays.iter().enumerate() {
-            for (slot, (l, (kind, cols))) in labels.iter().zip(&meta).enumerate() {
+            for (slot, (l, (kind, cols, q))) in labels.iter().zip(&meta).enumerate() {
                 let mut m = FieldMeta::new(format!("{l}{suffix}"), kind)
                     .decay(d)
                     .src(Source::Stat(mi * n_slots + slot));
                 m.columns = Some(cols.clone());
+                m.quantile = *q;
                 fields.push(m);
             }
             fields.push(

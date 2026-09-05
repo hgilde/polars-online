@@ -29,7 +29,7 @@ grouping and warm-up mean the same thing whichever model it names.
 | `sgd` | stochastic gradient descent with squared, Huber, quantile, ε-insensitive, Poisson and logistic losses |
 | `pa` | passive-aggressive regression — no learning rate |
 | `ftrl` | FTRL-proximal logistic regression, L1-sparse |
-| `ew_cov` | running mean, variance, covariance, correlation and partial correlation |
+| `ew_cov` | running mean, variance, covariance, correlation, partial correlation, Mahalanobis distance and PCA |
 | `holt` | Holt's linear trend — the no-feature baseline |
 | `kmeans` | exponentially weighted k-means — out-of-sample cluster labels, with a split–merge move that finds a cluster born after seeding |
 | `micro` | density-based clustering — DenStream micro-clusters linked into clusters of any shape and number; flags the rows that belong to none |
@@ -719,6 +719,32 @@ two columns controlling for all the others, read off `(C + s·prior·I)⁻¹`
 (O(k³), paid only when asked for). Values are read from the state before each
 row, so an `ew_cov` output can be a feature for that same row without leaking
 it.
+
+Three more outputs come off the same state. `"mahal"` in `stats` adds
+`mahal`, the Mahalanobis distance of the row from the running mean,
+`√(δᵀ (C + s·prior·I)⁻¹ δ)` with `δ = x − m` — how far the row is from what
+the columns have been doing *together*, in standard deviations. A row with
+every column in range but in a combination never seen before scores high here
+and nowhere else; on Gaussian columns `mahal²` is χ² with k degrees of
+freedom, and with one column it is `|z|`. It needs `precision_prior`, and the
+prior fades like `partial_corr`'s. `mahal_quantiles=[0.99]` adds
+`mahal_q0.99`, a P² quantile of the scores so far, so `mahal > mahal_q0.99`
+is a distribution-free "one row in a hundred". `pca=r` adds the top `r`
+eigenpairs of the covariance: `pc<j>_var`, `pc<j>_share` of the trace, the
+loading on each feature `pc<j>_<feature>`, and the row's score on that
+component `pc<j>_score`. The eigendecomposition costs O(k³), so
+`pca_every=n` refreshes it every `n` rows and scores the rows in between on
+the last loadings; each refresh keeps the sign of the previous one, so a
+loading never flips between rows.
+
+```python
+mv = po.spec.ew_cov("mv", features=["x0", "x1", "x2"], clock="t", max_dclock=300.0,
+                    halflife=500.0, stats=["mahal"], precision_prior=1e-6,
+                    mahal_quantiles=[0.99], pca=1, pca_every=20)
+scores = po.ModelBank([mv]).fit_predict(df).unnest("mv")
+odd = scores.filter(pl.col("mahal") > pl.col("mahal_q0.99"))   # the joint outliers
+first = scores.select("pc0_share", "pc0_x0", "pc0_x1", "pc0_x2", "pc0_score")
+```
 
 ### `ftrl` — online logistic regression
 

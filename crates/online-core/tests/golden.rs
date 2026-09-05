@@ -324,6 +324,9 @@ fn ew_cov_golden() {
         stats: vec![EwCovStat::Mean, EwCovStat::Var, EwCovStat::Corr],
         min_periods: 3.0,
         precision_prior: None,
+        mahal_quantiles: Vec::new(),
+        pca: 0,
+        pca_every: 0,
     })
     .unwrap();
     check("ew_cov", &signature(&mut m, 4), GOLDEN_EW_COV);
