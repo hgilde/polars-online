@@ -9,6 +9,78 @@ carries breaking changes.
 
 ### Added
 
+- **`label_delay`: a target that is only known later is learned later**
+  (`docs/ENHANCEMENTS.md` E47, task 40). A common parameter in clock units:
+  each row is scored where it sits and learned from only once the model's
+  clock has moved `label_delay` further on. The prediction, `sigma`,
+  `resid_z`, the metrics, drift, the conformal interval, `n_eff` and
+  `min_periods` then all see only labels that had really arrived. Without
+  it, a forward-looking target hands the model that much of the future
+  before it predicts the rows in between: a test shows an autocorrelated
+  *noise* column scoring +5% out-of-sample R^2 on a 20-row forward sum, and
+  below zero once the delay is on. The buffer is per group, lives in the
+  state and is saved with it; a reset drops it and a session change releases
+  it. Rows still waiting when a stream ends are never learned from.
+- **`polars_online.prep.embargo`**: the same thing written out as data --
+  every row twice, a zero-weight prediction at `t` and a lesson at
+  `t + delay`, merged back into clock order with `merge_sorted`. The native
+  path is tested against it field by field and agrees to the bit, except for
+  `resid_quantiles`, `emit_autocorr` and `emit_drift`, which take no row
+  weight and so are fed twice by the doubled stream and once by
+  `label_delay`.
+- **`marginal`: every (feature, target) pair's EW moments, kept in the
+  state** (`po.spec.marginal`, `docs/ENHANCEMENTS.md` E44, task 37). Per
+  pair the mean, variance and covariance in `ew_cov`'s arithmetic — a
+  pair's `corr` is bit-identical to an `ew_cov` over the two columns — plus
+  Σw and Σw² per target, O(p·T) per row where one `ew_cov` over all the
+  columns is O((p+T)²). Nothing is emitted per row but `n_eff`;
+  `ModelBank.marginal(spec, group=None)` reads the pairs as a long frame
+  (`group, instance, feature, target, n_eff, n_kish, mean_x, var_x,
+  mean_y, var_y, cov, corr, beta, t`), null below the target's
+  `min_periods` (default 3) or where undefined. A null target ages its own
+  pairs and learns nothing; weights, clocks, sessions, groups, the halflife
+  grid, save/load, `describe`/`summary`, the lazy plan, the runner, the CLI
+  and the expression form (`n_eff` alone) as for every model. Golden
+  values on every OS include the pairs at the end of the stream.
+- **The Gram export is a complete sufficient statistic** (`ModelBank.gram`,
+  `docs/ENHANCEMENTS.md` E45, task 38). `gram()` gains `n_kish`,
+  `target_means`, `target_vars` and `target_n_kish`: the accumulators now
+  track `Σw²` beside `Σw`, and `ewridge` and `lasso` keep each target's own
+  mean and variance beside its cross-moments. Without `Var[y]` no residual
+  variance, R², information criterion or standard error could be computed
+  from a saved Gram; with it they can, and `n_kish = n_eff² / Σw²` is the
+  sample size they divide by (`n_eff` counts weight, not rows). A target's
+  variance is bit-identical to an `ew_cov` over that column. A state saved by
+  0.2.0 or earlier has none of them and reports `None` for all four for the
+  rest of its life — the sums cannot be replayed, and a partial one paired
+  with a whole-stream `n_eff` would be wrong by the length of the history.
+  Such a state still loads, still continues to the bit, and still re-saves
+  byte for byte.
+- **`polars_online.gram`: the accumulators, read back** (`po.gram`,
+  `docs/ENHANCEMENTS.md` E46, task 39). Eight numpy-only functions over what
+  `ModelBank.gram()` returns: `merge` (Chan-Golub-LeVeque pooling of disjoint
+  row sets), `subset`, `correlation`, `solve` (the model's own ridge, in
+  original units, a grid of ridges from one eigendecomposition),
+  `lasso_path` (the `lasso` model's coordinate descent offline, plus
+  per-feature `penalty_weights`), `coef_stats` (residual variance, R^2,
+  standard errors and t at the Kish sample size), `vif` and `condition`
+  (Belsley's indexes and variance-decomposition proportions). `gram()` also
+  names its axes now -- `columns`, with `"intercept"` first where the spec
+  has one, and `targets` -- so a column can be taken by name. `solve` and
+  `lasso_path` are held against the models themselves rather than against a
+  second copy of the formula; they agree to a few ulps, not bit for bit,
+  since the models factorize with `faer` and numpy with LAPACK.
+- **`po.eval.sums` / `merge_sums` / `from_sums`: metrics for output that is
+  never materialised** (`docs/ENHANCEMENTS.md` E49, task 42). `sums` reduces
+  a chunk of output to ten doubles per (slot, target, key), `merge_sums` adds
+  the sums of disjoint row sets, and `from_sums` gives back the same `n`,
+  `r2`, `ic`, `hit_rate` and `mse` that `metrics` computes from the rows,
+  plus `rmse`. A run comparing fifty slots over a billion rows keeps ten
+  doubles per key instead of writing the rows out to evaluate them later.
+  The sums are centred rather than raw -- weighted means and centred second
+  moments, merged with a parallel-axis term -- so a target sitting on a
+  large offset does not destroy the variance the way `sum(y**2) -
+  sum(y)**2 / n` does. `weight=` names a column to weight rows by.
 - **`ew_cov` with `stats=[]`** accumulates only (`docs/ENHANCEMENTS.md`
   E43, task 36): the spec learns the same moments, emits nothing but
   `n_eff`, and its value is its state — `ModelBank.gram()`,
@@ -33,17 +105,6 @@ carries breaking changes.
   parse time now, along with `drift_action = "flag"`, so a spec written in
   TOML and the same spec written in Python save byte-identical state files.
   A spec that names no features either says *that*.
-- **`po.eval.sums` / `merge_sums` / `from_sums`: metrics for output that is
-  never materialised** (`docs/ENHANCEMENTS.md` E49, task 42). `sums` reduces
-  a chunk of output to ten doubles per (slot, target, key), `merge_sums` adds
-  the sums of disjoint row sets, and `from_sums` gives back the same `n`,
-  `r2`, `ic`, `hit_rate` and `mse` that `metrics` computes from the rows,
-  plus `rmse`. A run comparing fifty slots over a billion rows keeps ten
-  doubles per key instead of writing the rows out to evaluate them later.
-  The sums are centred rather than raw -- weighted means and centred second
-  moments, merged with a parallel-axis term -- so a target sitting on a
-  large offset does not destroy the variance the way `sum(y**2) -
-  sum(y)**2 / n` does. `weight=` names a column to weight rows by.
 - **The Gram update is 14-63% faster, bit for bit** (`docs/ENHANCEMENTS.md`
   E48, task 41). `EwCov::update` is the hottest loop in the library, run
   once a row by every Gram model. It now computes the deviations `x - m`
@@ -57,73 +118,12 @@ carries breaking changes.
   but the association does not, so the two triangles differ in the last bit)
   and it is 49% to 107% *slower*, because the mirror store walks a new cache
   line per element. `docs/PERFORMANCE.md` section 14 has the numbers.
-- **`label_delay`: a target that is only known later is learned later**
-  (`docs/ENHANCEMENTS.md` E47, task 40). A common parameter in clock units:
-  each row is scored where it sits and learned from only once the model's
-  clock has moved `label_delay` further on. The prediction, `sigma`,
-  `resid_z`, the metrics, drift, the conformal interval, `n_eff` and
-  `min_periods` then all see only labels that had really arrived. Without
-  it, a forward-looking target hands the model that much of the future
-  before it predicts the rows in between: a test shows an autocorrelated
-  *noise* column scoring +5% out-of-sample R^2 on a 20-row forward sum, and
-  below zero once the delay is on. The buffer is per group, lives in the
-  state and is saved with it; a reset drops it and a session change releases
-  it. Rows still waiting when a stream ends are never learned from.
-- **`polars_online.prep.embargo`**: the same thing written out as data --
-  every row twice, a zero-weight prediction at `t` and a lesson at
-  `t + delay`, merged back into clock order with `merge_sorted`. The native
-  path is tested against it field by field and agrees to the bit, except for
-  `resid_quantiles`, `emit_autocorr` and `emit_drift`, which take no row
-  weight and so are fed twice by the doubled stream and once by
-  `label_delay`.
 - **`SCHEMA_VERSION` is 4** (`po.schema_version()`). Every spec's bytes
   moved, because the spec each bank file carries gained `label_delay`; a
   stream also carries the rows it has accepted but not yet learned from.
   Both are additive with defaults, so a schema-3 file loads, continues to
   the bit and re-saves in the new layout, and `MIN_SCHEMA_VERSION` is still
   1. Nothing in a model's own state changed.
-- **`polars_online.gram`: the accumulators, read back** (`po.gram`,
-  `docs/ENHANCEMENTS.md` E46, task 39). Eight numpy-only functions over what
-  `ModelBank.gram()` returns: `merge` (Chan-Golub-LeVeque pooling of disjoint
-  row sets), `subset`, `correlation`, `solve` (the model's own ridge, in
-  original units, a grid of ridges from one eigendecomposition),
-  `lasso_path` (the `lasso` model's coordinate descent offline, plus
-  per-feature `penalty_weights`), `coef_stats` (residual variance, R^2,
-  standard errors and t at the Kish sample size), `vif` and `condition`
-  (Belsley's indexes and variance-decomposition proportions). `gram()` also
-  names its axes now -- `columns`, with `"intercept"` first where the spec
-  has one, and `targets` -- so a column can be taken by name. `solve` and
-  `lasso_path` are held against the models themselves rather than against a
-  second copy of the formula; they agree to a few ulps, not bit for bit,
-  since the models factorize with `faer` and numpy with LAPACK.
-- **The Gram export is a complete sufficient statistic** (`ModelBank.gram`,
-  `docs/ENHANCEMENTS.md` E45, task 38). `gram()` gains `n_kish`,
-  `target_means`, `target_vars` and `target_n_kish`: the accumulators now
-  track `Σw²` beside `Σw`, and `ewridge` and `lasso` keep each target's own
-  mean and variance beside its cross-moments. Without `Var[y]` no residual
-  variance, R², information criterion or standard error could be computed
-  from a saved Gram; with it they can, and `n_kish = n_eff² / Σw²` is the
-  sample size they divide by (`n_eff` counts weight, not rows). A target's
-  variance is bit-identical to an `ew_cov` over that column. A state saved by
-  0.2.0 or earlier has none of them and reports `None` for all four for the
-  rest of its life — the sums cannot be replayed, and a partial one paired
-  with a whole-stream `n_eff` would be wrong by the length of the history.
-  Such a state still loads, still continues to the bit, and still re-saves
-  byte for byte.
-- **`marginal`: every (feature, target) pair's EW moments, kept in the
-  state** (`po.spec.marginal`, `docs/ENHANCEMENTS.md` E44, task 37). Per
-  pair the mean, variance and covariance in `ew_cov`'s arithmetic — a
-  pair's `corr` is bit-identical to an `ew_cov` over the two columns — plus
-  Σw and Σw² per target, O(p·T) per row where one `ew_cov` over all the
-  columns is O((p+T)²). Nothing is emitted per row but `n_eff`;
-  `ModelBank.marginal(spec, group=None)` reads the pairs as a long frame
-  (`group, instance, feature, target, n_eff, n_kish, mean_x, var_x,
-  mean_y, var_y, cov, corr, beta, t`), null below the target's
-  `min_periods` (default 3) or where undefined. A null target ages its own
-  pairs and learns nothing; weights, clocks, sessions, groups, the halflife
-  grid, save/load, `describe`/`summary`, the lazy plan, the runner, the CLI
-  and the expression form (`n_eff` alone) as for every model. Golden
-  values on every OS include the pairs at the end of the stream.
 
 ## [0.2.0] — 2026-09-05
 
