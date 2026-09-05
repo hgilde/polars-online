@@ -939,9 +939,15 @@ impl Bank {
     /// No specs; two with the same name; a spec [`Spec::validate`] refuses
     /// or whose model cannot be built from its parameters -- the message
     /// names the spec and the parameter, as the Python builders' do.
-    pub fn new(specs: Vec<Spec>) -> Result<Self, String> {
+    pub fn new(mut specs: Vec<Spec>) -> Result<Self, String> {
         if specs.is_empty() {
             return Err("at least one spec is required".into());
+        }
+        // What a spec may leave out, filled before anything reads it, so the
+        // bank -- and the state file it writes -- carries the same spec
+        // whichever surface wrote it (docs/ENHANCEMENTS.md E53).
+        for s in specs.iter_mut() {
+            s.fill_defaults();
         }
         let mut names = std::collections::HashSet::new();
         for s in &specs {
@@ -1746,7 +1752,20 @@ impl Bank {
         let file: BankFile = rmp_serde::from_slice(bytes)
             .map_err(|e| format!("not a polars-online bank state file ({e})"))?;
         if let Some(exp) = expected_specs {
-            if exp != file.specs.as_slice() {
+            // Both sides filled, since filling is what a bank does to its
+            // specs before it runs them: a caller who wrote the spec in TOML
+            // without a target for an unsupervised model, or without
+            // `drift_action`, is handing over the same spec (E53) -- and a
+            // file written before the filling existed carries the unfilled
+            // form.
+            let fill = |s: &Spec| {
+                let mut s = s.clone();
+                s.fill_defaults();
+                s
+            };
+            let exp: Vec<Spec> = exp.iter().map(fill).collect();
+            let saved: Vec<Spec> = file.specs.iter().map(fill).collect();
+            if exp != saved {
                 return Err("saved specs do not match the bank's specs; refusing to load".into());
             }
         }

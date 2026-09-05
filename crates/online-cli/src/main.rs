@@ -39,8 +39,16 @@ struct Cli {
     input: Option<PathBuf>,
 
     /// Override the config's `output`.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "no_output")]
     output: Option<PathBuf>,
+
+    /// Write no per-row output: the run's product is the state it saves
+    /// (docs/ENHANCEMENTS.md E50). Needs `save_state`, in the config or with
+    /// `--save-state`. An accumulator-only spec emits `n_eff` a row and
+    /// nothing else, which over a billion rows is 8 GB of file written so it
+    /// can be deleted.
+    #[arg(long)]
+    no_output: bool,
 
     /// How to read the input (parquet, ipc, csv, ndjson); its extension
     /// decides when unset. Overrides the config's `input_format`.
@@ -115,6 +123,9 @@ fn run() -> Result<(), String> {
     if let Some(p) = cli.output {
         cfg.output = p;
     }
+    if cli.no_output {
+        cfg.output = PathBuf::new();
+    }
     if let Some(f) = cli.input_format {
         cfg.input_format = Some(f);
     }
@@ -138,10 +149,16 @@ fn run() -> Result<(), String> {
     if let Some(p) = cli.save_state {
         cfg.save_state = Some(p);
     }
+    // What a spec may leave out, filled before anything reads it (E53).
+    cfg.fill_defaults();
     cfg.validate()?;
     // `validate` leaves the input to the run; a dry run wants to know now.
     let input_format = cfg.input_format()?;
-    let output_format = cfg.output_format()?;
+    let output_format = if cfg.no_output() {
+        None
+    } else {
+        Some(cfg.output_format()?)
+    };
 
     if cli.dry_run {
         println!("config OK: {} spec(s)", cfg.specs.len());
@@ -152,11 +169,15 @@ fn run() -> Result<(), String> {
             }
         }
         println!("input:  {} ({})", cfg.input.display(), input_format.name());
-        println!(
-            "output: {} ({})",
-            cfg.output.display(),
-            output_format.name()
-        );
+        match output_format {
+            Some(f) => println!("output: {} ({})", cfg.output.display(), f.name()),
+            None => println!(
+                "output: none (--no-output); the run's product is {}",
+                cfg.save_state
+                    .as_ref()
+                    .map_or_else(|| "nothing".into(), |p| p.display().to_string())
+            ),
+        }
         println!("chunk_rows: {}", cfg.chunk_rows);
         if cfg.predict {
             println!("mode: predict (score against the loaded state, learn nothing)");

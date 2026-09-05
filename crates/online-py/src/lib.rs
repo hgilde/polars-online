@@ -464,8 +464,10 @@ fn run_config_frames(
     schema: PyDataFrame,
     progress: Option<Py<PyAny>>,
 ) -> PyResult<(usize, usize)> {
-    let cfg: online_polars::RunConfig = from_json(config_json)
+    let mut cfg: online_polars::RunConfig = from_json(config_json)
         .map_err(|e| PyValueError::new_err(e.replacen("invalid spec", "invalid run config", 1)))?;
+    // What a spec may leave out, filled before anything reads it (E53).
+    cfg.fill_defaults();
     let failure = PyFailure::default();
     let frames = PyFrames {
         iter: frames.try_iter()?.unbind(),

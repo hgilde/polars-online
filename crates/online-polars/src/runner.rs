@@ -144,7 +144,10 @@ pub struct RunConfig {
     /// `LazyFrame`.
     #[serde(default)]
     pub input: PathBuf,
-    /// Output path.
+    /// Output path. Empty for a run whose product is its state
+    /// (docs/ENHANCEMENTS.md E50): `save_state` is then required, since a run
+    /// that writes nothing and saves nothing has done nothing.
+    #[serde(default)]
     pub output: PathBuf,
     /// How to read `input`; its extension decides when unset.
     #[serde(default)]
@@ -193,6 +196,16 @@ pub struct RunStats {
 impl RunConfig {
     /// Everything but the input, which [`run_config`] checks and
     /// [`run_config_on`] does not need.
+    /// [`Spec::fill_defaults`] for every spec, so a config parsed from TOML
+    /// carries the same specs a Python caller would have built
+    /// (docs/ENHANCEMENTS.md E53). Called by the CLI and by
+    /// `polars_online.run` after the config is read; idempotent.
+    pub fn fill_defaults(&mut self) {
+        for s in self.specs.iter_mut() {
+            s.fill_defaults();
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.specs.is_empty() {
             return Err("config has no [[specs]] entries".into());
@@ -200,8 +213,12 @@ impl RunConfig {
         if self.chunk_rows == 0 {
             return Err("chunk_rows must be > 0".into());
         }
-        if self.output.as_os_str().is_empty() {
-            return Err("output is required".into());
+        if self.no_output() && self.save_state.is_none() {
+            return Err(
+                "a run needs somewhere to put its work: an `output` path, or `save_state` \
+                 for a run whose product is the state (--no-output)"
+                    .into(),
+            );
         }
         if self.predict {
             if self.load_state.is_none() {
@@ -218,7 +235,9 @@ impl RunConfig {
                 );
             }
         }
-        self.output_format()?;
+        if !self.no_output() {
+            self.output_format()?;
+        }
         for s in &self.specs {
             s.validate()?;
         }
@@ -227,6 +246,15 @@ impl RunConfig {
         // emit -- so that a dry run reports them and not the first chunk.
         Bank::new(self.specs.clone())?;
         Ok(())
+    }
+
+    /// Does this run write per-row output at all (docs/ENHANCEMENTS.md E50)?
+    ///
+    /// An accumulator-only spec emits `n_eff` a row and nothing else; over a
+    /// billion rows that is 8 GB of file written so it can be deleted. When
+    /// the product of the run is the state, there is nothing to write.
+    pub fn no_output(&self) -> bool {
+        self.output.as_os_str().is_empty()
     }
 
     /// `input_format`, or what the input path's extension says.
@@ -307,6 +335,11 @@ pub enum Output<'a> {
     /// Each augmented frame, in stream order, on the calling thread. For a
     /// destination polars cannot write to: a database, a socket, a test.
     Batches(&'a mut dyn FnMut(DataFrame) -> PolarsResult<()>),
+    /// Nowhere: the run's product is the state it saves, and the per-row
+    /// output would be I/O nobody reads (docs/ENHANCEMENTS.md E50). An
+    /// accumulator-only spec over a billion rows still emits `n_eff` a row,
+    /// which is 8 GB of file to write and delete.
+    Discard,
 }
 
 /// The knobs of [`run`] that are not the source or the destination.
@@ -378,9 +411,13 @@ pub fn run_config_on(
 ) -> PolarsResult<RunStats> {
     cfg.validate()
         .map_err(|e| polars_err!(ComputeError: "{}", e))?;
-    let format = cfg
-        .output_format()
-        .map_err(|e| polars_err!(ComputeError: "{}", e))?;
+    // A run with no output has no format to work out (E50).
+    let format = if cfg.no_output() {
+        Format::Parquet
+    } else {
+        cfg.output_format()
+            .map_err(|e| polars_err!(ComputeError: "{}", e))?
+    };
     let input = match input {
         Input::Lazy(lf) => Input::Lazy(cfg.keep(lf)),
         Input::Batches { frames, schema } if cfg.keep_columns.is_empty() => {
@@ -409,16 +446,15 @@ pub fn run_config_on(
         chunk_rows: cfg.chunk_rows,
         predict: cfg.predict,
     };
-    let stats = run(
-        &mut bank,
-        input,
+    let out = if cfg.no_output() {
+        Output::Discard
+    } else {
         Output::File {
             path: &cfg.output,
             format,
-        },
-        opts,
-        progress,
-    )?;
+        }
+    };
+    let stats = run(&mut bank, input, out, opts, progress)?;
     if let Some(p) = &cfg.save_state {
         bank.save(p).map_err(|e| io_err("saving state", p, e))?;
     }
@@ -491,12 +527,15 @@ pub fn run(
         });
 
         let (write_tx, write_rx) = sync_channel::<Write_>(1);
+        let discarding = matches!(output, Output::Discard);
         let (mut sink, writer) = match output {
             Output::File { path, format } => (
                 None,
                 Some(scope.spawn(move || write_file(path, format, write_rx))),
             ),
             Output::Batches(f) => (Some(f), None),
+            // No writer thread and no sink: `deliver` drops the frame.
+            Output::Discard => (None, None),
         };
         // Hand a frame on, to the writer thread or the caller's callback.
         // A closed writer channel means the writer failed; its own error is
@@ -504,6 +543,7 @@ pub fn run(
         let mut deliver = |df: DataFrame| -> PolarsResult<()> {
             match &mut sink {
                 Some(f) => f(df),
+                None if discarding => Ok(()),
                 None => write_tx
                     .send(Write_::Chunk(df))
                     .map_err(|_| polars_err!(ComputeError: "{}", WRITER_STOPPED)),
@@ -536,9 +576,11 @@ pub fn run(
                 stats.chunks += 1;
                 progress(stats)?;
             }
-            if stats.chunks == 0 {
+            if stats.chunks == 0 && !discarding {
                 // Empty input: still produce a valid, empty output with the
-                // right schema.
+                // right schema. Nothing to do when there is no output --
+                // collecting the plan only to drop it would be a read of the
+                // source for no one.
                 let empty = match empty_input {
                     Empty::Plan(lf) => lf.collect()?,
                     Empty::Frame(df) => df,

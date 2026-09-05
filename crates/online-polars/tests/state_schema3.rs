@@ -333,7 +333,14 @@ fn the_fixture_is_what_it_says() {
     assert_eq!(specs[0].name, "k");
     assert_eq!(specs[1].name, "r");
     let json = serde_json::to_value(&specs).unwrap();
-    assert_eq!(json, serde_json::to_value(generator_specs()).unwrap());
+    // Against the *filled* generator specs: a bank fills in what a spec may
+    // leave out before it runs anything (`Spec::fill_defaults`, E53), so
+    // that is the form both the loaded bank and a fresh one carry. The
+    // fixture's own bytes still hold the unfilled `drift_action` it was
+    // written with, which is the point of freezing it.
+    let mut want = generator_specs();
+    want.iter_mut().for_each(Spec::fill_defaults);
+    assert_eq!(json, serde_json::to_value(&want).unwrap());
     assert_eq!(json[0]["model"]["type"], "kalman");
     assert_eq!(json[0]["model"]["standardize"], true);
     assert_eq!(json[1]["model"]["type"], "ew_ridge");

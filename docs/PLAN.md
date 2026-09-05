@@ -604,9 +604,12 @@ to run at the width, target count and block count its design allows.
       hoist that *is* both ships in its place.
 - [x] 42. **Mergeable evaluation sums** (E49): `po.eval.sums` /
       `merge_sums` / `from_sums`.
-- [ ] 43. **A run with no per-row output** (E50): `po.run(output=None,
+- [x] 43. **A run with no per-row output** (E50): `po.run(output=None,
       save_state=)`, `online --no-output`; with it E53, `targets` optional
       in TOML for the unsupervised models.
+- [x] 44. **Freeze a schema-4 fixture**: `state_schema4.rs`, as
+      `state_v1.rs`, `state_schema2.rs` and `state_schema3.rs` freeze theirs,
+      now that tasks 40–43 have stopped moving the layout.
 
 ## 11a. Decisions made while implementing
 
@@ -1627,10 +1630,8 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   into schema 3 without a bump because `skip_serializing_if` kept an old
   file's bytes where they were; a spec field cannot do that without making
   `bank.specs` disagree with the dict it was built from.
-- *A frozen schema-4 fixture is still owed.* Each schema has one
-  (`state_v1.rs`, `state_schema2.rs`, `state_schema3.rs`); schema 4's waits
-  until the tasks that may still add spec fields (41–43) have landed, so it
-  is frozen once rather than three times.
+- *A frozen schema-4 fixture is owed once 41–43 have landed*, so it is
+  frozen once rather than three times. Task 44 does it.
 
 **Task 41's decisions: E48 measured and rejected, 2026-09-05.**
 
@@ -1692,6 +1693,59 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   and the extra column is the one the row asked for. A key whose target
   never varied gets `null` for `r2` and `ic` rather than an infinity that
   would read as a number.
+
+**Task 43's decisions: a quiet run, and a spec that leaves things out,
+2026-09-05.**
+
+- *No output is a destination, not a missing one.* `Output::Discard` sits
+  beside `File` and `Batches`, so `deliver` drops the frame and no writer
+  thread is spawned at all. The empty-input path — which exists to write a
+  valid empty frame of the right schema — is skipped too: collecting the
+  plan only to drop it would be a read of the source for no one.
+- *`save_state` is required in its place.* A run that writes nothing and
+  saves nothing has done nothing, and silently succeeding at it is worse
+  than refusing. The message names both ways out.
+- *`output=None` already meant this; `no_output=True` is for the other
+  case.* Leaving `output` out of both the call and the config is E50's
+  `po.run(output=None, save_state=)` and needed no sentinel. The flag is
+  for clearing an `output` a config carries, and mirrors the CLI's
+  `--no-output`, which `conflicts_with` `--output`.
+- *Filling happens where a spec enters, and on both sides of the load
+  check.* `Spec::fill_defaults` is called by `Bank::new` (so every surface
+  that runs a spec, and every state file, carries the filled form), by
+  `RunConfig::fill_defaults` (the CLI and `po.run`, before validation), and
+  on both the expected and the saved specs in `Bank::load_bytes` — the last
+  because a file written before the filling existed carries the unfilled
+  form, and refusing to load it would be a regression for the sake of a
+  field that means the same either way.
+- *`drift_action` came out of the byte-identity requirement.* E53 asks for
+  a TOML spec and a Python spec to be byte-identical. `targets` was one
+  difference; `drift_action` was the other — the builders write `"flag"`
+  and a TOML author would not, and `None` and `"flag"` already meant the
+  same thing to every reader. The test that pins this compares the two
+  state files, not the two dicts, so any third such field will be found the
+  same way.
+- *A better error for the case that is still wrong.* An unsupervised spec
+  with no features and no targets used to say "targets must be non-empty",
+  which points at the field the author was right to omit. It now says
+  features must be non-empty, and why.
+
+**Task 44's decisions: the schema-4 fixture, 2026-09-05.**
+
+- *Frozen after the layout stopped moving, not when it first moved.* Tasks
+  40–43 each touched what a bank file holds; freezing after 40 would have
+  meant regenerating three times, and a fixture regenerated is a fixture
+  that proves nothing.
+- *Four specs, two of them there for the new fields.* `d` is an `ew_ridge`
+  with `label_delay = 8`, so the file carries a **non-empty** pending
+  buffer — the part of schema 4 that a converter would be most likely to
+  drop. `u` is an `ew_cov` written with no `targets` at all, so the file
+  carries the ones `fill_defaults` put there, and a test asserts both that
+  and the filled `drift_action`. The other two are schema 3's, so the two
+  fixtures are comparable.
+- *The other three fixtures stay exactly as they are.* Their module docs
+  already say so, and `state_schema3.rs`'s byte-identity test has taken its
+  upgrade branch — which is what it was written to do.
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without

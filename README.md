@@ -334,6 +334,20 @@ flattened to `<spec>.<field>` columns and the `coef` list becomes a JSON
 string that `pl.col("ridge.coef").str.json_decode(pl.List(pl.Float64))` reads
 back bit-exact.
 
+**When the product of a run is its state, leave `output` out.** An
+accumulator-only spec emits `n_eff` a row and nothing else; over a billion
+rows that is 8 GB of file written so it can be deleted. Without an `output`
+the run writes nothing and `save_state` is required — a run that writes
+nothing and saves nothing has done nothing:
+
+```python
+wide = po.spec.ew_cov("gram", features=[f"x{i}" for i in range(3)], stats=[], halflife=1000.0)
+po.run(input="ticks.parquet", specs=[wide], save_state="gram.state")   # no output at all
+```
+
+`no_output=True` says the same thing over a config that names an output, and
+is what the CLI's `--no-output` sets.
+
 The CLI is the same pipeline as one binary and one TOML
 ([examples/bank.toml](examples/bank.toml)), for deployments with no Python:
 
@@ -343,11 +357,18 @@ online --config bank.toml --resume bank.state --save-state bank.state
 online --config bank.toml --resume bank.state --predict --input today.parquet
 online --config bank.toml --input ticks.csv --output scored.ndjson
 online --config bank.toml --input feed.dat --input-format ipc
+online --config bank.toml --no-output --save-state gram.state   # the state is the product
 online --config bank.toml --dry-run          # validate and print the output schema
 ```
 
 `--predict` scores against the resumed state and learns nothing; it drops
-the config's `save_state`, so one TOML serves both runs. The CLI reads with
+the config's `save_state`, so one TOML serves both runs. `--no-output`
+suppresses the per-row output; a run needs one or the other.
+
+A TOML spec for a model that learns from no target — `ew_cov`, `kmeans`,
+`micro` — may leave `targets` out, and it is filled with `features[0]` the
+way the Python builders fill it. The two surfaces then write byte-identical
+specs, so a state saved from one resumes under the other. The CLI reads with
 polars' own scanners, which on a stable toolchain lack the SIMD CSV parser
 py-polars' wheels have, so for a large CSV `po.run` is the faster of the two.
 In TOML, a Windows path needs single quotes or forward slashes

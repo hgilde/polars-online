@@ -17,6 +17,22 @@ carries breaking changes.
   list; `stats=None` still means `["mean", "std", "corr"]`. Before this the
   constructor refused an empty list, so accumulating a Gram over a wide
   set of columns meant emitting every mean on every row.
+- **A run whose product is its state writes no output** (`po.run` without
+  `output`, `online --no-output`, `docs/ENHANCEMENTS.md` E50, task 43). An
+  accumulator-only spec emits `n_eff` a row and nothing else; over a billion
+  rows that is 8 GB of file written so it can be deleted. `output` is now
+  optional and `save_state` is required in its place -- a run that writes
+  nothing and saves nothing has done nothing. The state a quiet run leaves
+  is byte-identical to the one a writing run leaves. `no_output=True`
+  clears an `output` a config carries.
+- **`targets` is optional in TOML for a model that has none**
+  (`docs/ENHANCEMENTS.md` E53, task 43). `ew_cov`, `kmeans` and `micro`
+  learn from no target, and `po.spec.*` fills `targets` with `features[0]`
+  silently; a TOML author had to write that line by hand or be refused with
+  "targets must be non-empty" -- for a model that has none. It is filled at
+  parse time now, along with `drift_action = "flag"`, so a spec written in
+  TOML and the same spec written in Python save byte-identical state files.
+  A spec that names no features either says *that*.
 - **`po.eval.sums` / `merge_sums` / `from_sums`: metrics for output that is
   never materialised** (`docs/ENHANCEMENTS.md` E49, task 42). `sums` reduces
   a chunk of output to ten doubles per (slot, target, key), `merge_sums` adds

@@ -39,6 +39,7 @@ def run(
     *,
     input: Source | None = None,  # noqa: A002 - mirrors the TOML key
     output: str | os.PathLike[str] | None = None,
+    no_output: bool = False,
     specs: Iterable[dict[str, Any]] | None = None,
     chunk_rows: int | None = None,
     load_state: str | os.PathLike[str] | None = None,
@@ -56,8 +57,15 @@ def run(
     them), a ``LazyFrame`` (any query: the scan is polars', with whatever
     options it needs), a ``DataFrame``, or any iterable of ``DataFrame``\\ s in
     stream order -- chunks from a database cursor, a socket, a generator.
-    ``output`` is a path in any of the four formats, told the same way; it is
-    written through a temporary and renamed into place, so a run that fails
+    ``output`` is a path in any of the four formats, told the same way. Leave
+    it out -- and out of the config -- for a run whose product is its state:
+    the per-row output of an accumulator-only spec is `n_eff` and nothing
+    else, which over a billion rows is 8 GB of file written so it can be
+    deleted (ENHANCEMENTS E50). ``save_state`` is then required, since a run
+    that writes nothing and saves nothing has done nothing. ``no_output=True``
+    says the same thing over a config that names an output, and is what the
+    CLI's ``--no-output`` sets. An output that is written is written through a
+    temporary and renamed into place, so a run that fails
     leaves the previous file where it was. CSV cannot hold the bank's struct
     columns, so there each spec's struct is flattened to ``<spec>.<field>``
     columns and a list field (``coef``) becomes a JSON string --
@@ -139,6 +147,10 @@ def run(
     for key, value in overrides.items():
         if value is not None:
             cfg[key] = value
+    if no_output:
+        # An explicit "write nothing", which clears an `output` the config
+        # carries; leaving both out says the same thing (E50).
+        cfg.pop("output", None)
     if predict and save_state is None:
         cfg.pop("save_state", None)
 

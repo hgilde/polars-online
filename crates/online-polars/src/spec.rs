@@ -830,6 +830,11 @@ pub struct Spec {
     /// Output struct column name.
     pub name: String,
     pub model: ModelKind,
+    /// Columns to learn against. Optional for a model that learns from no
+    /// target (`ModelKind::is_unsupervised`), where
+    /// [`Self::fill_defaults`] mirrors `features[0]` the way the Python
+    /// builders do (docs/ENHANCEMENTS.md E53); required otherwise.
+    #[serde(default)]
     pub targets: Vec<String>,
     pub features: Vec<String>,
     #[serde(default = "default_true")]
@@ -972,6 +977,36 @@ pub struct Spec {
 }
 
 impl Spec {
+    /// Fill in what a spec is allowed to leave out
+    /// (docs/ENHANCEMENTS.md E53), so that everything downstream sees a spec
+    /// with every field set.
+    ///
+    /// Two rules. `ew_cov`, `kmeans` and `micro` learn from no target,
+    /// and their `targets` mirror `features[0]` for the plumbing's sake. The
+    /// Python builders write that line; a TOML author should not have to
+    /// invent a target for a model that has none, and a spec that left it
+    /// out used to be refused with "targets must be non-empty". Filling it
+    /// with the same value the builders use is what makes a spec written in
+    /// TOML byte-identical to the same spec written in Python -- so a state
+    /// saved from one resumes under the other.
+    ///
+    /// And `drift_action` is spelled out as `"flag"`, which is what it means
+    /// when it is absent. It is the one other field the Python builders write
+    /// and a TOML author would not, and leaving it unfilled would make the
+    /// two surfaces' specs differ in a byte for no reason at all.
+    ///
+    /// Idempotent, and a no-op for a spec that already says both.
+    pub fn fill_defaults(&mut self) {
+        if self.targets.is_empty() && self.model.is_unsupervised() {
+            if let Some(first) = self.features.first() {
+                self.targets = vec![first.clone()];
+            }
+        }
+        if self.drift_action.is_none() {
+            self.drift_action = Some("flag".into());
+        }
+    }
+
     pub fn k(&self) -> usize {
         self.features.len()
     }
@@ -1137,7 +1172,20 @@ impl Spec {
 
     pub fn validate(&self) -> Result<(), String> {
         if self.targets.is_empty() {
-            return Err(format!("spec {:?}: targets must be non-empty", self.name));
+            // An unsupervised spec is allowed to omit them, and
+            // `fill_defaults` mirrors `features[0]` (E53) -- so an empty list
+            // here means either a model that needs targets, or one that would
+            // have had them filled but names no features either.
+            return Err(if self.model.is_unsupervised() {
+                format!(
+                    "spec {:?}: features must be non-empty ({} learns from no target, so its \
+                     targets are filled from features[0])",
+                    self.name,
+                    self.model.kind_name()
+                )
+            } else {
+                format!("spec {:?}: targets must be non-empty", self.name)
+            });
         }
         if let Some(d) = self.label_delay {
             if d.is_nan() || !d.is_finite() || d <= 0.0 {
