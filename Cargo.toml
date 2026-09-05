@@ -8,15 +8,15 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
 repository = "https://github.com/hgilde/polars-online"
 
 [workspace.dependencies]
-online-core = { path = "crates/online-core", version = "0.1.1" }
-online-polars = { path = "crates/online-polars", version = "0.1.1" }
+online-core = { path = "crates/online-core", version = "0.2.0" }
+online-polars = { path = "crates/online-polars", version = "0.2.0" }
 
 # Polars version is pinned and MUST match the `polars` pin in pyproject.toml.
 # rust polars 0.55.2  <->  py-polars 1.44.1  <->  pyo3-polars 0.28

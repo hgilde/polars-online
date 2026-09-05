@@ -2028,7 +2028,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "online-cli"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "clap",
  "online-polars",
@@ -2039,7 +2039,7 @@ dependencies = [
 
 [[package]]
 name = "online-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "faer",
  "rmp-serde",
@@ -2050,7 +2050,7 @@ dependencies = [
 
 [[package]]
 name = "online-polars"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "online-core",
  "polars",
@@ -2068,7 +2068,7 @@ dependencies = [
 
 [[package]]
 name = "online-py"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "online-core",
  "online-polars",

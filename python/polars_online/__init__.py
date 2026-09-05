@@ -34,7 +34,7 @@ from polars_online._frame import fit_predict, predict, unnest
 from polars_online._polars_online import native_version, schema_version, thread_pool_size
 from polars_online._runner import run
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 __all__ = [
     "InMemoryExpressionWarning",

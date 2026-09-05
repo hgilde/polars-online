@@ -52,7 +52,7 @@ least squares over everything it has seen, in any row order.
 **Two guarantees.** Predictions are out-of-sample by construction. Output is
 chunk-invariant. Both are tests, not intentions.
 
-**Tested the way those guarantees demand.** Around 290 Rust tests and 1,100
+**Tested the way those guarantees demand.** Around 470 Rust tests and 1,700
 pytest cases: numpy oracles to ~1e-13, cross-checks against river,
 hypothesis-generated adversarial streams, chunk and thread invariance, golden
 numbers on every OS, the README's own code blocks executed. CI runs all of it
@@ -1382,7 +1382,7 @@ pyo3-polars, polars-arrow, polars-parquet and polars-utils, through CI.
 ### This package's own versioning
 
 Semantic versioning. While pre-1.0 the **minor** version carries breaking
-changes, so pin `~=0.1.0` if you need stability. Widening the Polars range
+changes, so pin `~=0.2.0` if you need stability. Widening the Polars range
 is a minor release; narrowing it is breaking. See
 [CHANGELOG.md](CHANGELOG.md). Output field names are part of the API
 ([above](#output-field-names)).
@@ -1391,7 +1391,7 @@ is a minor release; narrowing it is breaking. See
 
 The guarantees above are only worth what checks them, so the suite is built
 around oracles and invariants rather than expected values typed in by hand.
-Around 290 Rust tests and 1,100 pytest cases (from 630-odd functions), all
+Around 470 Rust tests and 1,700 pytest cases (from 920-odd functions), all
 green on three OSes; [docs/TESTING.md](docs/TESTING.md) is the ledger of what
 each part proves and what it has found.
 

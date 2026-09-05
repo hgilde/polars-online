@@ -7,6 +7,19 @@ carries breaking changes.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.0] — 2026-09-05
+
+Two clustering models, a classifier, a sequential test, and four options
+the existing models did not have: conformal intervals, the Mahalanobis
+distance and EW-PCA on `ew_cov`, constrained coefficients on `sgd` and
+`pa`, coefficient reversion on `kalman`. Every model keeps the contract —
+predict before update, O(state) memory, chunk invariance, `n_eff` before
+the row — and every number the 0.1 models produce is unchanged. One
+breaking change: a residual diagnostic set on a model that has no
+predictions is refused by name, where `ew_cov` used to accept it silently.
+
 ### Added
 
 - **`kmeans`: exponentially weighted k-means** (`po.spec.kmeans`,
