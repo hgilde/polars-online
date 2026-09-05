@@ -252,6 +252,7 @@ def _common(
     drift_delta: float | None = None,
     drift_threshold: float | None = None,
     drift_action: str = "flag",
+    label_delay: float | None = None,
     group: str | None = None,
 ) -> dict[str, Any]:
     spec = {
@@ -285,6 +286,7 @@ def _common(
         "drift_delta": drift_delta,
         "drift_threshold": drift_threshold,
         "drift_action": drift_action,
+        "label_delay": label_delay,
         "group": group,
     }
     validate_spec(_json(spec))

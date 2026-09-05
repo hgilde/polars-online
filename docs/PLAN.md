@@ -596,7 +596,7 @@ to run at the width, target count and block count its design allows.
 - [x] 39. **`po.gram`** (E46): merge / subset / correlation / solve /
       lasso_path / coef_stats / vif / condition over `gram()` dicts, numpy
       only, each held against the model that computes the same thing online.
-- [ ] 40. **`label_delay`** (E47): a common parameter that holds each learned
+- [x] 40. **`label_delay`** (E47): a common parameter that holds each learned
       row until the clock reaches `t + delay`; plus `po.prep.embargo` for the
       doubled-stream recipe.
 - [ ] 41. **Symmetric-half Gram update** (E48): upper triangle mirrored,
@@ -1572,6 +1572,64 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   path is re-walked rather than carried, so a per-feature penalty costs
   nothing; online it would be another vector in the state for a knob nobody
   has asked for. Listed in E46, added here, and not added to the model.
+
+**Task 40's decisions: `label_delay`, 2026-09-05.**
+
+- *Two virtual rows, not two code paths.* A delayed row is scored where it
+  sits and stepped later, so the plan list is rewritten into
+  (release, …, score this row) and `RowPlan` gained `emit` and `learn`.
+  `run_instance` already guarded every diagnostic fold behind `learn` for
+  the scoring path, so the fold deferral came almost free; the new work is
+  guarding the output writes behind `emit`. A spec without a delay pays two
+  predictable branches a row and nothing else.
+- *Maturity is measured on the model's clock.* Not the raw column: the
+  delta the models are given, capped by `max_dclock`, with skipped rows'
+  time folded in. That is the only clock that is chunk-invariant, and it
+  makes `label_delay` mean the same thing as `halflife` does. With no
+  `clock` column it is one unit per accepted row, so `label_delay = 20` is
+  twenty rows. Each buffered row counts down by every later row's delta
+  rather than holding an absolute deadline, so a long stream cannot lose
+  precision in a running clock.
+- *A released row replays the delta it arrived with.* The models therefore
+  see exactly the gap sequence they would have seen without the delay, just
+  later — which is why the state at the end is bit-for-bit a plain bank fed
+  only the matured rows, and a test says so.
+- *A reset drops the buffer and applies at its row; a session change
+  releases it.* A clock reset means "this state is no longer about this
+  stream", so deferring it would leave the old model predicting the new
+  regime; the rows waiting to teach that state go with it. A session change
+  keeps the model, but one session's clock does not measure time in the
+  next, so a row still waiting would wait for a deadline that never comes:
+  it is released in order at the boundary. Both were arrived at by writing
+  the test and watching the first version get 66.9 where 51.8 was right.
+- *The doubled stream is the oracle, and it disagrees in exactly one
+  place.* `po.prep.embargo` builds E47's recipe and the native path matches
+  it field by field, bit for bit, at three delays — once `embargo` was
+  fixed to put the lesson *before* the prediction at a tied clock, which is
+  what "the clock has reached `t + delay`" means. The exception found by
+  the test: `resid_quantiles`, `emit_autocorr` and `emit_drift` take no row
+  weight (a P² estimator counts samples), so a zero-weight predict row
+  feeds them as much as its learn copy and every residual lands twice. The
+  native path feeds them once. That is the better answer, and it is now a
+  test and a line in the README rather than a surprise.
+- *A skipped row agrees to a ulp, not a bit.* A null feature's clock time
+  folds into the next *accepted* row, and the doubled stream's accepted
+  rows are not the same rows, so the two partition the same elapsed time
+  differently. The decay factors multiply to the same number to within
+  rounding, which is all that can be asked.
+- *`SCHEMA_VERSION` 3 → 4.* Not because a model's state moved — none did —
+  but because every spec's bytes moved: the spec each bank file carries
+  gained `label_delay`. Rule 5 asks to be told about a layout change, and
+  `state_schema3.rs` was written to become the upgrade test the moment the
+  writer changed, which is exactly what happened. `MIN_SCHEMA_VERSION` is
+  still 1 and every older fixture still loads. Task 38's additions rode
+  into schema 3 without a bump because `skip_serializing_if` kept an old
+  file's bytes where they were; a spec field cannot do that without making
+  `bank.specs` disagree with the dict it was built from.
+- *A frozen schema-4 fixture is still owed.* Each schema has one
+  (`state_v1.rs`, `state_schema2.rs`, `state_schema3.rs`); schema 4's waits
+  until the tasks that may still add spec fields (41–43) have landed, so it
+  is frozen once rather than three times.
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without

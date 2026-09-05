@@ -17,6 +17,31 @@ carries breaking changes.
   list; `stats=None` still means `["mean", "std", "corr"]`. Before this the
   constructor refused an empty list, so accumulating a Gram over a wide
   set of columns meant emitting every mean on every row.
+- **`label_delay`: a target that is only known later is learned later**
+  (`docs/ENHANCEMENTS.md` E47, task 40). A common parameter in clock units:
+  each row is scored where it sits and learned from only once the model's
+  clock has moved `label_delay` further on. The prediction, `sigma`,
+  `resid_z`, the metrics, drift, the conformal interval, `n_eff` and
+  `min_periods` then all see only labels that had really arrived. Without
+  it, a forward-looking target hands the model that much of the future
+  before it predicts the rows in between: a test shows an autocorrelated
+  *noise* column scoring +5% out-of-sample R^2 on a 20-row forward sum, and
+  below zero once the delay is on. The buffer is per group, lives in the
+  state and is saved with it; a reset drops it and a session change releases
+  it. Rows still waiting when a stream ends are never learned from.
+- **`polars_online.prep.embargo`**: the same thing written out as data --
+  every row twice, a zero-weight prediction at `t` and a lesson at
+  `t + delay`, merged back into clock order with `merge_sorted`. The native
+  path is tested against it field by field and agrees to the bit, except for
+  `resid_quantiles`, `emit_autocorr` and `emit_drift`, which take no row
+  weight and so are fed twice by the doubled stream and once by
+  `label_delay`.
+- **`SCHEMA_VERSION` is 4** (`po.schema_version()`). Every spec's bytes
+  moved, because the spec each bank file carries gained `label_delay`; a
+  stream also carries the rows it has accepted but not yet learned from.
+  Both are additive with defaults, so a schema-3 file loads, continues to
+  the bit and re-saves in the new layout, and `MIN_SCHEMA_VERSION` is still
+  1. Nothing in a model's own state changed.
 - **`polars_online.gram`: the accumulators, read back** (`po.gram`,
   `docs/ENHANCEMENTS.md` E46, task 39). Eight numpy-only functions over what
   `ModelBank.gram()` returns: `merge` (Chan-Golub-LeVeque pooling of disjoint

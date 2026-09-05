@@ -151,6 +151,7 @@ Per-row decay is `λ = 0.5 ** (Δclock / halflife)`.
 | `weight` | row weight column |
 | `min_periods` | in `n_eff` units; outputs are null until it is reached. A list gives one threshold per target. Warm-up gates output, not learning |
 | `coef_every` | snapshot the coefficients every N rows (`0` = only on each chunk's last row) |
+| `label_delay` | hold each row back from *learning* until the clock has moved this much further on. For a target that is only known later |
 
 `n_eff` is the exponentially weighted observation count: the weight behind
 the state that produced *this row's* prediction, measured before the row's
@@ -570,6 +571,51 @@ while `gram()` is as of the last row. And `merge` pools parts that share a
 weighting — shards of a pass, groups being combined — not two halves of a
 decayed stream in time order, where each part's weights are relative to its
 own last row; the docstring gives the rescaling for that case.
+
+### Labels that arrive late
+
+A target that is a forward quantity — the next five minutes' return, the
+next day's fill rate — is not known at the row it sits on. A stream that
+learns it there hands the model that much of the future before it predicts
+the rows in between. Every "out-of-sample" number after that is
+contaminated, and with an autocorrelated feature even a pure noise column
+starts to look predictive.
+
+`label_delay` is the fix, and it is one parameter:
+
+```python
+spec = po.spec.ewridge("fwd", targets=["ret_5m"], features=["x0", "x1"],
+                       clock="ts", max_dclock=3600.0, halflife=1800.0,
+                       label_delay=300.0)     # the return takes 5 minutes to be known
+```
+
+Each row is **scored** where it sits and **learned from** 300 clock units
+later. Everything downstream of the label moves with it: the prediction,
+`sigma`, `resid_z`, the metrics, drift, the conformal interval, `n_eff` and
+`min_periods` all see only labels that had really arrived.
+
+The clock is the model's own — the raw column capped by `max_dclock`, with
+skipped rows' time folded in — which is what makes release depend on the
+clock alone and so survive any chunking. With no `clock` column that is one
+unit per accepted row, so `label_delay=20` is twenty rows. Two events empty
+the buffer: a **reset** drops it (the state those rows would teach is being
+thrown away), and a **session change** releases it in order (one session's
+clock does not measure time in the next). Rows still waiting when the stream
+ends are simply never learned from — their labels never matured.
+
+The buffer lives in the state and is saved with it, so a run that stops
+mid-stream resumes with the same rows still waiting. It costs one row's
+values per row inside the delay, per group.
+
+`po.prep.embargo` writes the same thing out as data: every row twice, a
+zero-weight prediction at `t` and a lesson at `t + delay`, merged back into
+clock order. That is the recipe to reach for when the delay has to be
+visible in the frame, or for an engine that is not this one. The native path
+is tested against it field by field and agrees to the bit — except for
+`resid_quantiles`, `emit_autocorr` and `emit_drift`, which take no row
+weight, so in the doubled stream a zero-weight row feeds them as much as its
+learn copy does and every residual lands twice. `label_delay` feeds them
+once.
 
 ### The last row
 

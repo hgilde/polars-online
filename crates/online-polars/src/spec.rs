@@ -943,6 +943,29 @@ pub struct Spec {
     /// lasso's `lam_selected`. Requires more than one slot per target.
     #[serde(default)]
     pub emit_selected: bool,
+    /// Hold each row back from *learning* until the model's clock has moved
+    /// `label_delay` further on, in the same units the decay uses
+    /// (docs/ENHANCEMENTS.md E47). `None` (the default) learns from a row
+    /// where it sits.
+    ///
+    /// A target that is a forward quantity over `h` clock units is not known
+    /// at the row it sits on. Learning it there hands the model `h` of the
+    /// future before it predicts the rows in between, and every
+    /// "out-of-sample" number after that is contaminated -- with an
+    /// autocorrelated feature even a pure noise column then shows a
+    /// correlation with its target. With a delay the row is buffered, and
+    /// released into the model, the residual, `sigma`, the metrics, drift,
+    /// the conformal interval, `n_eff` and `min_periods` only once its label
+    /// would really have been known.
+    ///
+    /// The clock is the model's own: the raw column capped by `max_dclock`,
+    /// with skipped rows' time folded in, which is what makes release
+    /// chunk-invariant. With no `clock` column that is one unit per accepted
+    /// row, so `label_delay = 20` is twenty rows. A reset drops the buffer
+    /// (the state it would teach is gone); a session change releases it in
+    /// order, since one session's clock does not measure time in the next.
+    #[serde(default)]
+    pub label_delay: Option<f64>,
     /// ModelBank/CLI only; one state per key. The expression API uses `.over()`.
     #[serde(default)]
     pub group: Option<String>,
@@ -1115,6 +1138,14 @@ impl Spec {
     pub fn validate(&self) -> Result<(), String> {
         if self.targets.is_empty() {
             return Err(format!("spec {:?}: targets must be non-empty", self.name));
+        }
+        if let Some(d) = self.label_delay {
+            if d.is_nan() || !d.is_finite() || d <= 0.0 {
+                return Err(format!(
+                    "spec {:?}: label_delay must be finite and > 0 (got {d}); 0 is no delay,                      which is the default",
+                    self.name
+                ));
+            }
         }
         // Holt has no features by construction, and neither has seqtest;
         // every other model needs at least one to regress on. Both

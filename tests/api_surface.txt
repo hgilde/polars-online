@@ -10,12 +10,13 @@
   native_version
   online
   predict
+  prep
   run
   schema_version
   spec
   thread_pool_size
   unnest
-  schema_version = 3
+  schema_version = 4
 
 [common parameters]  # every constructor accepts these via **common
   targets
@@ -46,6 +47,7 @@
   drift_delta = None
   drift_threshold = None
   drift_action = 'flag'
+  label_delay = None
   group = None
 
 [spec constructors]  # keyword names AND defaults are API

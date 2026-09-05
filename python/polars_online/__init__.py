@@ -27,6 +27,7 @@ from polars_online import (
     _frame,  # noqa: F401  (registers the frame namespaces)
     eval,
     gram,
+    prep,
     spec,
 )
 from polars_online._bank import ModelBank
@@ -47,6 +48,7 @@ __all__ = [
     "native_version",
     "online",
     "predict",
+    "prep",
     "run",
     "schema_version",
     "spec",

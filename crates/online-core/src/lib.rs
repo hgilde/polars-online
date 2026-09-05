@@ -124,7 +124,16 @@ pub use stats::{EwAutoCorr, P2Quantile, SlotMetrics};
 ///   the diagonal of (docs/PERFORMANCE.md §13). Schema-2 states of both are
 ///   converted on load by taking that diagonal, which is the same numbers;
 ///   every other model is unchanged.
-pub const SCHEMA_VERSION: u32 = 3;
+/// - 4: the spec every bank file carries gained `label_delay`
+///   (docs/ENHANCEMENTS.md E47), and a stream carries the rows it has
+///   accepted but not yet learned from. Both are additive with defaults, so
+///   a schema-3 file loads, continues to the bit and re-saves in the new
+///   layout; the bump is because every spec's bytes moved, which is what
+///   hard rule 5 asks to be told about. Nothing in a model's own state
+///   changed. Task 38's `Sum w^2` and target moments rode into schema 3
+///   without a bump: they are skipped when absent, so a schema-3 file's
+///   bytes did not move.
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Oldest state layout this build still loads.
 pub const MIN_SCHEMA_VERSION: u32 = 1;

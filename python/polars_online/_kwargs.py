@@ -73,6 +73,7 @@ class ExprKwargs(TypedDict, total=False):
     drift_delta: float | None
     drift_threshold: float | None
     drift_action: str
+    label_delay: float | None
 
 
 class CommonKwargs(ExprKwargs, total=False):

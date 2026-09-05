@@ -729,6 +729,26 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
     }
 }
 
+/// One accepted row waiting for its label to mature (`label_delay`,
+/// docs/ENHANCEMENTS.md E47).
+///
+/// It carries everything the models need to be stepped with later: the row
+/// itself, the clock delta it arrived with -- so replaying the buffer in
+/// order gives the models exactly the gap sequence they would have seen
+/// without the delay -- and the clock still to elapse before it is released.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingRow {
+    /// Clock units still to pass before this row is learned from. Every
+    /// accepted row's delta counts down against it.
+    pub remaining: f64,
+    /// The delta the row arrived with, replayed when it is released.
+    pub d_clock: f64,
+    pub w: f64,
+    pub xs: Vec<f64>,
+    /// `None` for a target that was null on the row.
+    pub ys: Vec<Option<f64>>,
+}
+
 /// Serialized per-stream state: the clock plus each halflife's model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StreamState {
@@ -761,6 +781,11 @@ pub struct StreamState {
     /// count that began partway would read as a count.
     #[serde(default)]
     pub summary: Option<DataSummary>,
+    /// Rows accepted but not yet learned from (`label_delay`, E47). Skipped
+    /// when empty, so a spec without a delay writes the same bytes it always
+    /// did.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending: Vec<PendingRow>,
 }
 
 /// Live per-stream state.
@@ -795,6 +820,11 @@ pub struct Stream {
     /// inside each `Step` is the one per-row allocation left, and it is cheap
     /// (docs/IMPROVEMENTS.md P2).
     scratch: Vec<Scratch>,
+    /// Clock units a row waits before the models learn from it (E47);
+    /// `None` for the ordinary "learn where it sits".
+    label_delay: Option<f64>,
+    /// Rows accepted but not yet released into the models, oldest first.
+    pending: Vec<PendingRow>,
     /// What the output struct said on the last row this stream learned
     /// from, kept for [`Stream::save`] (docs/PLAN.md task 34).
     last_row: Option<LastRow>,
@@ -1215,6 +1245,8 @@ impl Stream {
             scratch: slots.iter().map(|_| Scratch::default()).collect(),
             last_row: None,
             summary: Some(DataSummary::new(spec)),
+            label_delay: spec.label_delay,
+            pending: Vec::new(),
         })
     }
 
@@ -1232,6 +1264,7 @@ impl Stream {
             conformal: self.conformal.clone(),
             last_row: self.last_row.clone(),
             summary: self.summary.clone(),
+            pending: self.pending.clone(),
         }
     }
 
@@ -1271,6 +1304,12 @@ impl Stream {
         if saved.conformal.len() == stream.conformal.len() {
             stream.conformal = saved.conformal.clone();
         }
+        // A file written by a spec with a `label_delay` carries the rows it
+        // had not learned from yet; one written without a delay has none, and
+        // one restored under a spec that has since gained or lost a delay
+        // gets whatever the file holds, which is what "resume this stream"
+        // means (E47).
+        stream.pending = saved.pending.clone();
         // Checked here, where a file that is not its spec's is refused with
         // the models, rather than at the first read.
         if let Some(last) = &saved.last_row {
@@ -1409,6 +1448,7 @@ impl Stream {
             plans.push(RowPlan {
                 ri,
                 i,
+                pending: usize::MAX,
                 d_clock: adv.d_clock,
                 reset: adv.reset,
                 blend: !adv.reset && adv.session_changed,
@@ -1416,6 +1456,8 @@ impl Stream {
                 backwards: below && !adv.session_changed,
                 accept,
                 want_coef,
+                emit: true,
+                learn: true,
                 w: w.unwrap_or(1.0),
             });
         }
@@ -1423,11 +1465,17 @@ impl Stream {
         self.clock = clock_state;
         self.rows_seen = rows_seen;
 
+        // ---- label_delay: hold each row back until its label matures ----
+        // Rewrites the plan list into (release, ..., score this row) order,
+        // and hands the released rows' values out beside it. Release depends
+        // on the clock alone, so chunking cannot move a single one.
+        let released = self.apply_label_delay(&mut plans, features, targets);
+
         // ---- the data summary (docs/PLAN.md task 35) ----
         // After the clock is committed, so a refused row above has fed
         // nothing; per row in row order, so chunking cannot move a bit.
         if let Some(summary) = self.summary.as_mut() {
-            for plan in &plans {
+            for plan in plans.iter().filter(|p| p.direct()) {
                 let i = plan.i;
                 summary.feed_row(
                     features,
@@ -1473,9 +1521,9 @@ impl Stream {
                         &plans[pi..=pi],
                         features,
                         targets,
+                        &released,
                         &min_periods,
                         false,
-                        true,
                     );
                 }
                 if seen {
@@ -1487,7 +1535,15 @@ impl Stream {
             // Only reached when instances are independent, which (given
             // `coupled` above) means `drift_action` is not "reset".
             insts.par_iter_mut().for_each(|inst| {
-                run_instance(inst, &plans, features, targets, &min_periods, false, true);
+                run_instance(
+                    inst,
+                    &plans,
+                    features,
+                    targets,
+                    &released,
+                    &min_periods,
+                    false,
+                );
             });
         } else if let Some(inst) = insts.first_mut() {
             // One instance: a drift reset has nothing to coordinate with, so
@@ -1497,14 +1553,126 @@ impl Stream {
                 &plans,
                 features,
                 targets,
+                &released,
                 &min_periods,
                 drift_resets,
-                true,
             );
         }
         drop(insts);
         self.min_periods = min_periods;
         Ok(())
+    }
+
+    /// Rewrite a chunk's plan list so each accepted row is *scored* where it
+    /// sits and *learned from* only once the model's clock has moved
+    /// `label_delay` further on (docs/ENHANCEMENTS.md E47). A no-op, and one
+    /// `Option` test, for a spec without a delay.
+    ///
+    /// The rule is one line: at each accepted row, every buffered row whose
+    /// wait has run out is released -- in arrival order, each replaying the
+    /// clock delta it arrived with, so the models see exactly the sequence of
+    /// gaps they would have seen without the delay -- and then the row itself
+    /// is scored and buffered. Release therefore depends on the clock alone,
+    /// which is what makes it chunk-invariant.
+    ///
+    /// Two events empty the buffer, because after them the clock no longer
+    /// speaks about what is in it. A **reset** drops it: the state those rows
+    /// would teach is being thrown away. A **session change** releases it in
+    /// order first: one session's clock does not measure time in the next, so
+    /// a row still waiting at the boundary would otherwise wait for a
+    /// deadline that never comes.
+    ///
+    /// Returns the released rows' values, indexed by `RowPlan::pending`.
+    fn apply_label_delay(
+        &mut self,
+        plans: &mut Vec<RowPlan>,
+        features: &[Vec<f64>],
+        targets: &[Vec<f64>],
+    ) -> Vec<PendingRow> {
+        let Some(delay) = self.label_delay else {
+            return Vec::new();
+        };
+        let mut released: Vec<PendingRow> = Vec::new();
+        let mut out: Vec<RowPlan> = Vec::with_capacity(plans.len());
+        // One template for every replayed row: only `pending` and the event
+        // flags differ, and a replay never emits, never wants coefficients
+        // and never counts as a row of the frame.
+        let replay = |slot: usize, row: &PendingRow| RowPlan {
+            ri: usize::MAX,
+            i: usize::MAX,
+            pending: slot,
+            d_clock: row.d_clock,
+            // The clock and session events stay with the row of the frame
+            // that raised them, and both empty the buffer, so a replayed row
+            // never carries one.
+            reset: false,
+            blend: false,
+            session_changed: false,
+            backwards: false,
+            accept: true,
+            want_coef: false,
+            emit: false,
+            learn: true,
+            w: row.w,
+        };
+        for plan in plans.drain(..) {
+            if !plan.accept {
+                // A skipped row teaches nothing and waits for nothing; its
+                // clock time is already folded into the next accepted row's
+                // delta, which is what counts the buffer down.
+                out.push(plan);
+                continue;
+            }
+            if plan.reset {
+                // The models restart at this row -- and the reset is applied
+                // here, not `delay` later, because the point of it is that
+                // the state is no longer about this stream. The rows waiting
+                // to teach that state go with it.
+                self.pending.clear();
+            } else {
+                for row in self.pending.iter_mut() {
+                    row.remaining -= plan.d_clock;
+                }
+                let ready = if plan.session_changed {
+                    self.pending.len()
+                } else {
+                    self.pending
+                        .iter()
+                        .take_while(|r| r.remaining <= 0.0)
+                        .count()
+                };
+                for row in self.pending.drain(..ready) {
+                    released.push(row);
+                    out.push(replay(released.len() - 1, released.last().unwrap()));
+                }
+            }
+            // The row itself: scored from the state as it now stands, and
+            // buffered with the delta it arrived with. The event it carries
+            // rides with it, so a session change or a blend reaches the
+            // models in the same place in the sequence.
+            let i = plan.i;
+            self.pending.push(PendingRow {
+                remaining: delay,
+                d_clock: plan.d_clock,
+                w: plan.w,
+                xs: features.iter().map(|f| f[i]).collect(),
+                ys: targets
+                    .iter()
+                    .map(|t| Some(t[i]).filter(|v| usable(*v)))
+                    .collect(),
+            });
+            // Scored from the state as it now stands. The row's own clock or
+            // session event applies here, where it happened: both have
+            // already emptied the buffer, so the models are caught up to this
+            // point and there is nothing left for the event to be out of
+            // order with.
+            out.push(RowPlan {
+                learn: false,
+                ..plan
+            });
+        }
+        *plans = out;
+        released
     }
 
     /// Score this stream's rows of one chunk against the state as it stands
@@ -1572,6 +1740,7 @@ impl Stream {
             let plan = RowPlan {
                 ri,
                 i,
+                pending: usize::MAX,
                 d_clock: adv.d_clock,
                 reset: false,
                 blend: false,
@@ -1579,6 +1748,8 @@ impl Stream {
                 backwards: false,
                 accept,
                 want_coef: false,
+                emit: true,
+                learn: false,
                 w: 1.0,
             };
             let class = if adv.reset {
@@ -1683,8 +1854,8 @@ impl Stream {
                     plans,
                     features,
                     targets,
+                    &[],
                     &self.min_periods,
-                    false,
                     false,
                 );
             });
@@ -1694,8 +1865,8 @@ impl Stream {
                 plans,
                 features,
                 targets,
+                &[],
                 &self.min_periods,
-                false,
                 false,
             );
         }
@@ -1829,8 +2000,13 @@ struct RowPlan {
     /// Position within the stream's run (index into the output buffers).
     ri: usize,
     /// Position in the input columns: the run's base plus `ri`, since the
-    /// columns are laid out group after group.
+    /// columns are laid out group after group. [`usize::MAX`] for a row
+    /// replayed out of the `label_delay` buffer, whose values are in
+    /// `pending` instead (E47).
     i: usize,
+    /// Index into the released-rows slice for a replayed row; [`usize::MAX`]
+    /// for a row read from the columns.
+    pending: usize,
     d_clock: f64,
     reset: bool,
     blend: bool,
@@ -1840,7 +2016,21 @@ struct RowPlan {
     backwards: bool,
     accept: bool,
     want_coef: bool,
+    /// Write this row's outputs at `ri`. False for a replayed row: it is a
+    /// lesson, not a row of the frame.
+    emit: bool,
+    /// Step the models and fold the diagnostics. False for a row whose label
+    /// has not matured: it is scored here and learned from later.
+    learn: bool,
     w: f64,
+}
+
+impl RowPlan {
+    /// A row of the chunk, read from the columns, learned from where it sits.
+    #[inline]
+    fn direct(&self) -> bool {
+        self.pending == usize::MAX
+    }
 }
 
 /// Per-row scratch, one set per model instance so instances can run
@@ -1944,12 +2134,14 @@ fn run_instance(
     plans: &[RowPlan],
     features: &[Vec<f64>],
     targets: &[Vec<f64>],
+    // Rows released from the `label_delay` buffer, indexed by
+    // `RowPlan::pending`; empty for every spec without a delay (E47).
+    released: &[PendingRow],
     min_periods: &[f64],
     // `drift_action = "reset"` with nothing else to coordinate with: restart
     // *at the row that fired*, not at the end of the chunk, or the rest of the
     // chunk keeps learning from the regime the detector just rejected.
     reset_on_drift: bool,
-    learn: bool,
 ) -> bool {
     let mut drift_seen = false;
     let n_rows = inst.n_rows;
@@ -1966,12 +2158,21 @@ fn run_instance(
             continue;
         }
         let (i, ri, w) = (plan.i, plan.ri, plan.w);
+        let (emit, learn) = (plan.emit, plan.learn);
         let sc = &mut *inst.scratch;
         sc.xs.clear();
-        sc.xs.extend(features.iter().map(|f| f[i]));
         sc.ys.clear();
-        sc.ys
-            .extend(targets.iter().map(|t| Some(t[i]).filter(|f| usable(*f))));
+        if plan.direct() {
+            sc.xs.extend(features.iter().map(|f| f[i]));
+            sc.ys
+                .extend(targets.iter().map(|t| Some(t[i]).filter(|f| usable(*f))));
+        } else {
+            // A row released from the `label_delay` buffer: the same values,
+            // stepped now instead of where they arrived (E47).
+            let row = &released[plan.pending];
+            sc.xs.extend_from_slice(&row.xs);
+            sc.ys.extend_from_slice(&row.ys);
+        }
         let m_targets = sc.ys.len();
 
         let mut step = if learn {
@@ -2046,19 +2247,21 @@ fn run_instance(
             }
         }
 
-        for (slot, &p) in step.pred.iter().enumerate() {
-            inst.o_pred[slot * n_rows + ri] = p;
-        }
-        if inst.residuals {
-            for (slot, &rv) in sc.r.iter().enumerate() {
-                inst.o_resid[slot * n_rows + ri] = rv;
+        if emit {
+            for (slot, &p) in step.pred.iter().enumerate() {
+                inst.o_pred[slot * n_rows + ri] = p;
             }
-        }
-        if !inst.o_sigma.is_empty() {
-            for (slot, (&s, &z)) in sc.sig.iter().zip(sc.zs.iter()).enumerate() {
-                let at = slot * n_rows + ri;
-                inst.o_sigma[at] = s;
-                inst.o_resid_z[at] = z;
+            if inst.residuals {
+                for (slot, &rv) in sc.r.iter().enumerate() {
+                    inst.o_resid[slot * n_rows + ri] = rv;
+                }
+            }
+            if !inst.o_sigma.is_empty() {
+                for (slot, (&s, &z)) in sc.sig.iter().zip(sc.zs.iter()).enumerate() {
+                    let at = slot * n_rows + ri;
+                    inst.o_sigma[at] = s;
+                    inst.o_resid_z[at] = z;
+                }
             }
         }
 
@@ -2071,7 +2274,9 @@ fn run_instance(
                 let scale = sc.sig[slot];
                 if rv.is_finite() && scale.is_finite() && scale > 0.0 {
                     let flag = dets[slot].update(rv.abs() / scale);
-                    inst.o_drift[slot * n_rows + ri] = flag;
+                    if emit {
+                        inst.o_drift[slot * n_rows + ri] = flag;
+                    }
                     row_drift |= flag;
                 }
             }
@@ -2083,7 +2288,10 @@ fn run_instance(
         if let Some(ests) = inst.resid_q.as_deref_mut() {
             for (slot, per_level) in ests.iter_mut().enumerate() {
                 for (li, est) in per_level.iter_mut().enumerate() {
-                    inst.o_resid_q[li * block + slot * n_rows + ri] = est.get().unwrap_or(f64::NAN);
+                    if emit {
+                        inst.o_resid_q[li * block + slot * n_rows + ri] =
+                            est.get().unwrap_or(f64::NAN);
+                    }
                     if learn && sc.r[slot].is_finite() {
                         est.update(sc.r[slot].abs());
                     }
@@ -2092,7 +2300,9 @@ fn run_instance(
         }
         if let Some(ests) = inst.autocorr.as_deref_mut() {
             for (slot, est) in ests.iter_mut().enumerate() {
-                inst.o_autocorr[slot * n_rows + ri] = est.get().unwrap_or(f64::NAN);
+                if emit {
+                    inst.o_autocorr[slot * n_rows + ri] = est.get().unwrap_or(f64::NAN);
+                }
                 if learn && sc.r[slot].is_finite() {
                     est.update(sc.r[slot], lam);
                 }
@@ -2103,10 +2313,12 @@ fn run_instance(
         // diagnostic here, so they never include the row they describe.
         if let Some(ms) = inst.metrics.as_deref_mut() {
             for (slot, met) in ms.iter_mut().enumerate() {
-                let at = slot * n_rows + ri;
-                inst.o_metrics[at] = met.ic().unwrap_or(f64::NAN);
-                inst.o_metrics[block + at] = met.r2().unwrap_or(f64::NAN);
-                inst.o_metrics[2 * block + at] = met.hit_rate().unwrap_or(f64::NAN);
+                if emit {
+                    let at = slot * n_rows + ri;
+                    inst.o_metrics[at] = met.ic().unwrap_or(f64::NAN);
+                    inst.o_metrics[block + at] = met.r2().unwrap_or(f64::NAN);
+                    inst.o_metrics[2 * block + at] = met.hit_rate().unwrap_or(f64::NAN);
+                }
                 if learn {
                     let yj = sc.ys.get(slot / nc).copied().flatten().unwrap_or(f64::NAN);
                     met.update(step.pred[slot], yj, lam, w);
@@ -2119,22 +2331,26 @@ fn run_instance(
         // the pre-row value too: it sets the step and the warm start.
         if let Some(cs) = inst.conformal.as_deref_mut() {
             for (slot, c) in cs.iter_mut().enumerate() {
-                let at = slot * n_rows + ri;
-                let p = step.pred[slot];
-                let q = c.radius().unwrap_or(f64::NAN);
-                inst.o_conformal[at] = p - q;
-                inst.o_conformal[block + at] = p + q;
-                inst.o_conformal[2 * block + at] = c.coverage().unwrap_or(f64::NAN);
+                if emit {
+                    let at = slot * n_rows + ri;
+                    let p = step.pred[slot];
+                    let q = c.radius().unwrap_or(f64::NAN);
+                    inst.o_conformal[at] = p - q;
+                    inst.o_conformal[block + at] = p + q;
+                    inst.o_conformal[2 * block + at] = c.coverage().unwrap_or(f64::NAN);
+                }
                 if learn {
                     c.update(sc.r[slot], sc.sig[slot], lam, w);
                 }
             }
         }
 
-        inst.o_n_eff[ri] = step.n_eff;
-        if let Some(online_core::Extra::Lasso { lam_selected }) = &step.extra {
-            for (t_i, l) in lam_selected.iter().enumerate() {
-                inst.o_lam[t_i * n_rows + ri] = *l;
+        if emit {
+            inst.o_n_eff[ri] = step.n_eff;
+            if let Some(online_core::Extra::Lasso { lam_selected }) = &step.extra {
+                for (t_i, l) in lam_selected.iter().enumerate() {
+                    inst.o_lam[t_i * n_rows + ri] = *l;
+                }
             }
         }
         if plan.want_coef {

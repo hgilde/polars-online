@@ -309,15 +309,18 @@ fn a_schema_2_state_continues_the_stream_to_the_bit() {
 }
 
 #[test]
-fn a_schema_2_state_saves_as_schema_3_and_loads_again() {
+fn a_schema_2_state_saves_as_the_current_schema_and_loads_again() {
     let specs = specs_from_fixture();
     let restored = Bank::load_bytes(&bytes(), Some(&specs)).unwrap();
     let upgraded = restored.save_bytes().unwrap();
     assert_ne!(upgraded, bytes(), "saving should write the current schema");
     let h = header(&upgraded);
     assert_eq!(h["format_version"], 2, "the envelope did not move");
+    // Whatever the current layout is, not the one it was written in: the
+    // pinned number moves with `SCHEMA_VERSION`, and the point of the test is
+    // that a schema-2 file comes out the other side as a current one.
     assert_eq!(h["schema_version"], online_core::SCHEMA_VERSION);
-    assert_eq!(h["schema_version"], 3);
+    assert_eq!(h["schema_version"], 4);
     let mut again = Bank::load_bytes(&upgraded, Some(&specs)).unwrap();
     let mut fresh = Bank::new(specs).unwrap();
     fresh.fit_predict(&frame(0, 60)).unwrap();
