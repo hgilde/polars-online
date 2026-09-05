@@ -16,7 +16,7 @@ the same whether the stream arrives as one chunk or a thousand.
 
 ## What you get
 
-**Twelve model families, one set of stream semantics.** A spec's clock, decay,
+**Thirteen model families, one set of stream semantics.** A spec's clock, decay,
 grouping and warm-up mean the same thing whichever model it names.
 
 | model | what it is |
@@ -33,6 +33,7 @@ grouping and warm-up mean the same thing whichever model it names.
 | `holt` | Holt's linear trend — the no-feature baseline |
 | `kmeans` | exponentially weighted k-means — out-of-sample cluster labels, with a split–merge move that finds a cluster born after seeding |
 | `micro` | density-based clustering — DenStream micro-clusters linked into clusters of any shape and number; flags the rows that belong to none |
+| `ew_class` | Gaussian classification — QDA, LDA or naive Bayes on one `ew_cov` state per class; a label column in, out-of-sample posteriors out |
 
 **Three ways to run a bank, same numbers from each.** A Python loop over
 chunks (`ModelBank`); a Polars query (`lf.online.fit_predict(specs)` is a
@@ -883,6 +884,58 @@ cannot follow the first two. Noise drawn uniformly over the box is flagged
 `outlier` 94% of the time, real rows 0.3%. A cluster born mid-stream has a
 label within 200 rows; one whose rows stop lingers `halflife · log2(n /
 beta_mu)`, with `n` the weight it had.
+
+### `ew_class` — Gaussian classification on `ew_cov` moments
+
+A label column in place of a numeric target. The model keeps one `ew_cov`
+state per class — a weight `n_c`, a mean `μ_c` and a centered covariance
+`C_c` — and scores a row by Bayes' rule over Gaussian classes. `covariance`
+picks the shape. `"full"` gives each class its own covariance: QDA.
+`"shared"` pools them, weighted by the class weights: LDA. `"diagonal"`
+keeps only the variances: Gaussian naive Bayes. `precision_prior` is the
+ridge that makes a class scoreable from its first row, and it fades the way
+`ew_cov`'s does.
+
+```
+π_c = n_c / Σ n         r_c = precision_prior · s_c        (s_c: the prior's fade)
+M_c = C_c + r_c I  (full)      M = Σ π_c M_c  (shared)      diag(C_c) + r_c  (diagonal)
+ℓ_c = ln π_c − ½ ln det M_c − ½ (x − μ_c)ᵀ M_c⁻¹ (x − μ_c)
+p_c = exp(ℓ_c − max ℓ) / Σ exp(ℓ − max ℓ)                  class = argmax ℓ
+n_c ← λ n_c + w·[y = c]        μ_c, C_c ← weighted Welford on the row's own class
+```
+
+The struct holds `class`, the most probable class as a string; one
+`p_<class>` per declared class; `n_eff`; and `coef`, the class means in the
+order of `classes` (`coef_up_x0` after `unnest`). All are read before the row
+is learned, so a row's posterior never saw its own label. A class no row has
+carried yet has `p = 0` exactly and null means. A null label scores the row
+and learns nothing from it — so a stream whose labels arrive late is scored
+by nulling the label and keeping the features. A label the spec does not list
+is an error naming the row, the value and the classes. Integer and boolean
+columns work as labels through their text: `classes=["0", "1"]`,
+`classes=["true", "false"]`.
+
+```python
+labelled = df.with_columns(
+    pl.when(pl.col("y") > 0).then(pl.lit("up")).otherwise(pl.lit("down")).alias("dir")
+)
+cl = po.spec.ew_class("cl", features=["x0", "x1", "x2"], label="dir", classes=["down", "up"],
+                      covariance="shared", precision_prior=0.1, clock="t",
+                      halflife=200.0, max_dclock=300.0, min_periods=20.0)
+out = po.ModelBank([cl]).fit_predict(labelled).unnest("cl")
+out.select("dir", "class", "p_up", "n_eff").tail(3)
+```
+
+**Choosing the shape.** `"full"` is the general case and costs one `k×k`
+Cholesky per class per row. `"shared"` factorizes once per row, and is the
+right model when the classes differ in location but not in spread — it then
+matches `"full"` to a fraction of a percent on the test data, with fewer
+parameters to learn. `"diagonal"` is the cheapest and cannot see a
+correlation: two classes with the same marginals and opposite correlations
+are one class to it. Measured at 400k rows, six features and three classes:
+0.9M rows/s full, 1.8M shared, 5M diagonal. On three Gaussian classes with
+their own covariances the accuracy sits within 0.001 of the Bayes rate the
+generating parameters allow, and the posteriors are calibrated to about 0.01.
 
 ## Parallelism
 

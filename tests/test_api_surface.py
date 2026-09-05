@@ -160,6 +160,16 @@ def describe_api() -> str:
         ),
         ("kmeans", dict(features=["x0", "x1"], k=2, halflife=100.0)),
         ("micro", dict(features=["x0", "x1"], eps=0.3, halflife=100.0)),
+        (
+            "ew_class",
+            dict(
+                features=["x0", "x1"],
+                label="y",
+                classes=["a", "b"],
+                precision_prior=1.0,
+                halflife=100.0,
+            ),
+        ),
     ]:
         s = getattr(po.spec, model.split(" ")[0])("m", min_periods=2.0, **kw)
         w(f"  {model}{'' if ' ' in model else ' minimal'}:")

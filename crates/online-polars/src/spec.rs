@@ -621,6 +621,24 @@ pub enum ModelKind {
         #[serde(default)]
         standardize: Option<bool>,
     },
+    /// Class-conditional Gaussian classifier on exponentially weighted
+    /// class moments (docs/ENHANCEMENTS.md E39; PLAN §11a, task 27). The
+    /// one target is the label column, which names its class by value; the
+    /// outputs are the most probable class and one posterior per class,
+    /// read before the row is learned, and `coef` holds the class means.
+    #[serde(rename = "ew_class")]
+    EwClass {
+        /// The classes, in output order; a label value not listed here is
+        /// an error, a null label scores the row without learning from it.
+        classes: Vec<String>,
+        /// "full" (default: one covariance per class, QDA), "shared" (one
+        /// pooled covariance, LDA) or "diagonal" (naive Bayes).
+        #[serde(default)]
+        covariance: Option<String>,
+        /// Ridge on every class covariance, finite and `> 0`; it decays as
+        /// the class accumulates data, like `ew_cov`'s `precision_prior`.
+        precision_prior: f64,
+    },
 }
 
 impl ModelKind {
@@ -630,7 +648,7 @@ impl ModelKind {
     /// to the enum, so a new variant fails a test until it is listed here.
     pub const KINDS: &'static [&'static str] = &[
         "ew_ridge", "lasso", "kalman", "huber", "quantile", "ftrl", "ew_cov", "sgd", "pa", "holt",
-        "rls", "kmeans", "micro",
+        "rls", "kmeans", "micro", "ew_class",
     ];
 
     pub fn kind_name(&self) -> &'static str {
@@ -648,20 +666,30 @@ impl ModelKind {
             ModelKind::Holt { .. } => "holt",
             ModelKind::KMeans { .. } => "kmeans",
             ModelKind::Micro { .. } => "micro",
+            ModelKind::EwClass { .. } => "ew_class",
         }
     }
 
-    /// True for the models that predict no target: `ew_cov`, `kmeans` and
-    /// `micro`. Their `targets` mirror `features[0]` for plumbing, their
-    /// outputs are statistics or assignments read from the state *before*
-    /// each row, and nothing residual-based (`sigma`, `resid_z`, metrics,
-    /// quantiles, autocorrelation, drift, selection, averaging) applies to
-    /// them.
+    /// True for the models that learn from no target column: `ew_cov`,
+    /// `kmeans` and `micro`. Their `targets` mirror `features[0]` for
+    /// plumbing, so a target that is also a feature is not a leak for them,
+    /// and the expression plugin packs no target for them.
     pub fn is_unsupervised(&self) -> bool {
         matches!(
             self,
             ModelKind::EwCov { .. } | ModelKind::KMeans { .. } | ModelKind::Micro { .. }
         )
+    }
+
+    /// True for the models that predict no target as a number: the
+    /// unsupervised three and `ew_class`, whose target is a label it
+    /// classifies. Their outputs are statistics, assignments or posteriors
+    /// read from the state *before* each row, and nothing residual-based
+    /// (`sigma`, `resid_z`, metrics, quantiles, conformal, autocorrelation,
+    /// drift, selection, averaging) applies to them; their slots are
+    /// whatever rides in `pred`, not targets × combos.
+    pub fn predicts_no_target(&self) -> bool {
+        self.is_unsupervised() || matches!(self, ModelKind::EwClass { .. })
     }
 }
 
@@ -1074,7 +1102,7 @@ impl Spec {
         // Nothing residual-based applies to a model that predicts no target.
         // Refused rather than ignored: a flag that silently emits nothing
         // looks like a bug in the output, not in the spec.
-        if unsupervised {
+        if self.model.predicts_no_target() {
             let asked = [
                 ("emit_sigma", self.emit_sigma),
                 ("emit_resid_z", self.emit_resid_z),
@@ -1336,6 +1364,49 @@ impl Spec {
                 if macro_link.is_some_and(|v| v < 0.0 || !v.is_finite()) {
                     return Err(format!(
                         "spec {:?}: macro_link must be finite and >= 0 (0 links nothing)",
+                        self.name
+                    ));
+                }
+            }
+            ModelKind::EwClass {
+                classes,
+                covariance,
+                precision_prior,
+            } => {
+                if self.targets.len() != 1 {
+                    return Err(format!(
+                        "spec {:?}: ew_class takes exactly one target, the label column (got {})",
+                        self.name,
+                        self.targets.len()
+                    ));
+                }
+                if classes.len() < 2 {
+                    return Err(format!(
+                        "spec {:?}: ew_class classes must list at least 2 classes (got {})",
+                        self.name,
+                        classes.len()
+                    ));
+                }
+                let mut seen = std::collections::HashSet::new();
+                if let Some(dup) = classes.iter().find(|c| !seen.insert(c.as_str())) {
+                    return Err(format!(
+                        "spec {:?}: ew_class classes lists {dup:?} more than once",
+                        self.name
+                    ));
+                }
+                if classes.iter().any(|c| c.is_empty()) {
+                    return Err(format!(
+                        "spec {:?}: ew_class classes must not contain an empty name",
+                        self.name
+                    ));
+                }
+                if let Some(c) = covariance {
+                    online_core::Covariance::parse(c)
+                        .map_err(|e| format!("spec {:?}: {e}", self.name))?;
+                }
+                if !(precision_prior.is_finite() && *precision_prior > 0.0) {
+                    return Err(format!(
+                        "spec {:?}: ew_class precision_prior must be finite and > 0",
                         self.name
                     ));
                 }

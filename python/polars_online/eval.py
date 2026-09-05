@@ -36,8 +36,8 @@ def _pred_fields(df: pl.DataFrame, spec_name: str) -> list[str]:
     if not fields:
         msg = (
             f"column {spec_name!r} has no prediction fields (pred_*) to unpack; "
-            "an ew_cov struct holds statistics and a kmeans or micro struct assignments, "
-            "not predictions"
+            "an ew_cov struct holds statistics, a kmeans or micro struct assignments and "
+            "an ew_class struct a class and its posteriors, not predictions"
         )
         raise TypeError(msg)
     return fields
@@ -69,8 +69,8 @@ def unpack(
 
     Raises ``KeyError`` for a ``spec_name`` the frame has not got;
     ``TypeError`` for a column that is not a struct, or a struct with no
-    ``pred_*`` fields (an ``ew_cov``, ``kmeans`` or ``micro`` output); ``ValueError``
-    when a slot's
+    ``pred_*`` fields (an ``ew_cov``, ``kmeans``, ``micro`` or ``ew_class``
+    output); ``ValueError`` when a slot's
     target column cannot be found -- the frame no longer has it, or
     ``targets`` does not name it -- and, with ``spec``, whatever
     :func:`polars_online.spec.output_index` raises for it.

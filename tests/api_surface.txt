@@ -52,6 +52,14 @@
     spec
   coef_index:
     spec
+  ew_class:
+    name
+    features
+    label
+    classes
+    covariance = None
+    precision_prior
+    common
   ew_cov:
     name
     features
@@ -213,6 +221,7 @@
   solve_failures
 
 [expression namespace]  # pl.col(...).online.<method>
+  ew_class
   ew_cov
   ewridge
   ftrl
@@ -584,5 +593,11 @@
     outlier
     n_clusters
     n_micro
+    n_eff
+    coef
+  ew_class minimal:
+    class
+    p_a
+    p_b
     n_eff
     coef

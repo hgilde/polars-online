@@ -73,14 +73,22 @@ example; `git show --stat aa96ad3` is this list as a diff.
    every optional field; its arm in `kind_name()`; a clause in
    `Spec::validate` only for a constraint that crosses the spec (`holt` takes
    no features; `ew_cov`, `kmeans` and `micro` no targets) — per-parameter
-   checks stay in step 1; and the name in **`ModelKind::KINDS`**. A model
-   that predicts no target goes into `ModelKind::is_unsupervised` too:
-   `validate` then refuses every residual-based flag (`emit_sigma`,
-   `emit_metrics`, `resid_quantiles`, `conformal`, ...) for it by name,
-   rather than emitting nothing.
+   checks stay in step 1; and the name in **`ModelKind::KINDS`**. Two
+   predicates classify a model that is not a regression. A model that
+   predicts no target goes into `ModelKind::predicts_no_target`: `validate`
+   then refuses every residual-based flag (`emit_sigma`, `emit_metrics`,
+   `resid_quantiles`, `conformal`, ...) for it by name, rather than emitting
+   nothing, and the bank counts its output slots from the schema. A model
+   with **no target column at all** goes into `ModelKind::is_unsupervised`
+   as well (`ew_cov`, `kmeans`, `micro`): the leak check exempts it and the
+   expression packs no target for it. `ew_class` is the model that is the
+   first and not the second — its label column travels as `targets[0]`, so
+   everything that reads the target column by name (`keep_columns`, the
+   lazy source's projection, the expression's packing) works unchanged.
    *Check*: `test_diagnostics::test_rejected_for_ew_cov` and
    `test_kmeans::TestRefusals::test_residual_diagnostics_are_refused_by_name`
-   (and `test_micro`'s twin) pin the refusal, for every flag.
+   (and `test_micro`'s and `test_ew_class`'s twins) pin the refusal, for
+   every flag.
    *Check*: `kind_name` is exhaustive. `kinds_lists_every_variant_in_order`
    fails until `KINDS` matches the enum, and `KINDS` is what every Python
    check below reads.
@@ -101,17 +109,23 @@ example; `git show --stat aa96ad3` is this list as a diff.
 8. **`src/bank.rs`**: nothing, unless the outputs are not one `pred`/`resid`
    pair per target per combo — `ew_cov` (statistics, no target), `kmeans`
    (an assignment and two distances, no target), `micro` (a label, an id, a
-   flag, two counts) and `lasso` (a path) are the four cases, in
-   `output_index` — or the coefficient vector is not `[intercept] +
-   features` per (target, combo) slot: `coef_fields` names the slots, and
-   `holt` (`level`, `trend`), `ew_cov` (none), `kmeans` (`k` slots
-   `cluster{j}` in place of the targets, one coordinate per feature) and
-   `micro` (none: its `coef` is one row per *live* summary, so the length
-   is not a property of the spec, and `coef_index` refuses it by name) are
-   its special cases. An output that is not an `f64` needs its own `Source`
-   variant and dtype: `Source::Cluster` reads a small count out of the
-   `pred` buffer and materializes it as `i32`, `Source::Id` an `i64`,
-   `Source::Flag` a `Boolean` (NaN is null for all three).
+   flag, two counts), `ew_class` (a class and its posteriors) and `lasso`
+   (a path) are the five cases, in `output_index` — or the coefficient
+   vector is not `[intercept] + features` per (target, combo) slot:
+   `coef_fields` names the slots, and `holt` (`level`, `trend`), `ew_cov`
+   (none), `kmeans` (`k` slots `cluster{j}` in place of the targets, one
+   coordinate per feature), `ew_class` (one slot per class, named by the
+   class, one coordinate per feature) and `micro` (none: its `coef` is one
+   row per *live* summary, so the length is not a property of the spec, and
+   `coef_index` refuses it by name) are its special cases. An output that is
+   not an `f64` needs its own `Source` variant and dtype: `Source::Cluster`
+   reads a small count out of the `pred` buffer and materializes it as
+   `i32`, `Source::Id` an `i64`, `Source::Flag` a `Boolean`, `Source::Label`
+   a class index materialized as its name (`F64Column::finish_label`; NaN is
+   null for all four). An *input* that is not an `f64` column needs its own
+   reader in `extract`: `ew_class`'s label goes through `label_column`
+   (`key_column`, so it is cast to String like `group`, then mapped to the
+   class index, with an undeclared value an error naming the row).
    *Check*: `test_portability.TestOutputSchemaStability
    .test_names_match_the_realized_struct` compares the declared field names
    with the struct the bank actually produces, for every model in its list,
@@ -173,11 +187,12 @@ spec, and the plugin's `online_run` is the bank.
     `test_properties.MODELS`, `test_edge_cases.MODELS` and
     `test_portability.TestOutputSchemaStability._ALL_MODELS`. Every entry is
     `(builder name, the least it needs to be constructible)`. The sweeps
-    assert on `pred` and `resid`, so a model with no target (`ew_cov`,
-    `kmeans`, `micro`) sits them out through `test_model_registry.REGRESSIONS`
-    and gets its own schema test instead
+    assert on `pred` and `resid`, so a model with no prediction (`ew_cov`,
+    `kmeans`, `micro`, `ew_class`) sits them out through
+    `test_model_registry.REGRESSIONS` and gets its own schema test instead
     (`test_portability.TestOutputSchemaStability.test_kmeans_names_match
-    _the_realized_struct`, `test_micro_names_match_the_realized_struct`) and
+    _the_realized_struct`, `test_micro_names_match_the_realized_struct`,
+    `test_ew_class_names_match_the_realized_struct`) and
     its own chunk-invariance, save/load, null-row and zero-weight tests in
     its step-13 file.
     *Check*: `test_model_registry::test_the_sweeps_cover_every_regression

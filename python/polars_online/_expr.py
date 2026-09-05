@@ -30,6 +30,7 @@ from polars.plugins import register_plugin_function
 
 from polars_online import _spec
 from polars_online._kwargs import (
+    EwClassKwargs,
     EwCovKwargs,
     EwridgeKwargs,
     FtrlKwargs,
@@ -408,6 +409,19 @@ class OnlineNamespace:
         names, exprs = _features(others)
         spec = _spec.micro("online", features=[self._target(), *names], **kwargs)
         return _run(spec, self._expr, [self._expr, *exprs])
+
+    def ew_class(self, features: list[Feature], **kwargs: Unpack[EwClassKwargs]) -> pl.Expr:
+        """Class-conditional Gaussian classifier (QDA / LDA / naive Bayes)
+        with this column as the label.
+
+        The column the expression is called on holds the class of each row
+        (null: score, do not learn); ``classes`` and ``precision_prior`` are
+        required. The struct holds ``class``, one ``p_<class>`` per class,
+        ``n_eff`` and ``coef`` (the class means).
+        """
+        names, exprs = _features(features)
+        spec = _spec.ew_class("online", label=self._target(), features=names, **kwargs)
+        return _run(spec, self._expr, exprs)
 
 
 def online(expr: pl.Expr) -> OnlineNamespace:

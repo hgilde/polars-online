@@ -264,7 +264,9 @@ class ModelBank:
             pl.Series("group", groups, pl.String),
             pl.Series("instance", instances, pl.String),
             pl.Series("n_eff", n_effs, pl.Float64),
-            pl.Series("coef", values, pl.Float64),
+            # Finite-or-null, as the output's `coef` field is: an `ew_class`
+            # class no row has carried yet has NaN means.
+            pl.Series("coef", values, pl.Float64).fill_nan(None),
         ).select("group", "instance", "n_eff", *layout.columns, "coef")
 
     def gram(self, spec: str | int, group: str | None = None) -> list[dict[str, Any]]:

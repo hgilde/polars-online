@@ -405,6 +405,58 @@ fn micro_golden() {
     check("micro_id", &signature(&mut m, 2), GOLDEN_MICRO_ID);
 }
 
+fn ew_class_cfg(covariance: Covariance) -> EwClassCfg {
+    EwClassCfg {
+        n_features: 2,
+        n_classes: 2,
+        decay: Decay::Halflife(20.0),
+        min_periods: 3.0,
+        covariance,
+        precision_prior: 0.1,
+    }
+}
+
+/// The three rows' outputs with the stream's target turned into a label:
+/// class 1 where `y > 0.25`, else class 0; the null stays null.
+fn labelled_signature<M: OnlineModel>(model: &mut M, pick: usize) -> Vec<f64> {
+    let mut out = Vec::new();
+    for (i, (x, y, d, w)) in stream().into_iter().enumerate() {
+        let label = y[0].map(|v| if v > 0.25 { 1.0 } else { 0.0 });
+        let step = model.step(&x, &[label], d, w);
+        if matches!(i, 20 | 45 | 59) {
+            out.push(step.pred[pick]);
+        }
+    }
+    out
+}
+
+#[test]
+fn ew_class_golden() {
+    // Slot 1 is the posterior of class 0: it reads both classes' means,
+    // co-moments, decaying ridges and priors at once, through the solve.
+    // Slot 0 pins the assignment.
+    let mut m = EwClass::new(ew_class_cfg(Covariance::Full)).unwrap();
+    check("ew_class", &labelled_signature(&mut m, 1), GOLDEN_EW_CLASS);
+    let mut m = EwClass::new(ew_class_cfg(Covariance::Full)).unwrap();
+    check(
+        "ew_class_class",
+        &labelled_signature(&mut m, 0),
+        GOLDEN_EW_CLASS_CLASS,
+    );
+    let mut m = EwClass::new(ew_class_cfg(Covariance::Shared)).unwrap();
+    check(
+        "ew_class_shared",
+        &labelled_signature(&mut m, 2),
+        GOLDEN_EW_CLASS_SHARED,
+    );
+    let mut m = EwClass::new(ew_class_cfg(Covariance::Diagonal)).unwrap();
+    check(
+        "ew_class_diagonal",
+        &labelled_signature(&mut m, 1),
+        GOLDEN_EW_CLASS_DIAGONAL,
+    );
+}
+
 // --- generated; see the module docs ---
 const GOLDEN_EW_RIDGE: &[f64] = &[
     0.23958810892448523,
@@ -454,3 +506,13 @@ const GOLDEN_KMEANS_FIRST: &[f64] = &[1.8013837727258295, 2.935845007414875, 1.3
 const GOLDEN_MICRO: &[f64] = &[0.3004267420269594, 0.8769688913202295, 1.4153400286799591];
 const GOLDEN_MICRO_CLUSTER: &[f64] = &[1.0, 6.0, 6.0];
 const GOLDEN_MICRO_ID: &[f64] = &[0.0, 3.0, 0.0];
+const GOLDEN_EW_CLASS: &[f64] = &[
+    0.7905217777831283,
+    2.3962695799139553e-7,
+    0.8870452595331249,
+];
+const GOLDEN_EW_CLASS_CLASS: &[f64] = &[0.0, 1.0, 0.0];
+const GOLDEN_EW_CLASS_SHARED: &[f64] =
+    &[0.10145341892546339, 0.9999995909585125, 0.22525421810089402];
+const GOLDEN_EW_CLASS_DIAGONAL: &[f64] =
+    &[0.9347724076192444, 0.004084196343630897, 0.8672014742687666];

@@ -462,7 +462,34 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       the expression, the runner and a TOML config; fields, validation, edge
       cases), 31 core unit tests, the API-surface, error-message and
       output-index suites extended.
-- [ ] 27. **E39: class-conditional `ew_cov`** (`class` column, per-class moments).
+- [x] 27. **E39: class-conditional `ew_cov`** (`class` column, per-class moments).
+      Built 2026-09-05, on branch `clustering-build`, as a model of its own:
+      `po.spec.ew_class(name, features=, label=, classes=, covariance=,
+      precision_prior=)` — one `EwCov` per declared class, scored by Bayes'
+      rule over Gaussian classes with `covariance` = `full` (QDA, default),
+      `shared` (LDA: the class-weighted pool, one factorization) or
+      `diagonal` (naive Bayes). Outputs `class` (String), `p_<class>` per
+      class, `n_eff`, `coef` = the class means (`coef_<class>_<feature>`).
+      `online_core::{EwClass, EwClassCfg, Covariance}`,
+      `solve::quad_forms_logdet` (all quadratic forms and the log-determinant
+      off one Cholesky), `ModelState::EwClass` (schema stays 2). The label
+      column rides as `targets[0]` through the bank and is read as a key
+      (`label_column`: cast to String, mapped to the class index, an
+      undeclared value is an error naming the row); `Source::Label` and
+      `F64Column::finish_label` materialize the class name. Decisions in
+      §11a. Tests: 51 cases in `tests/test_ew_class.py` (an in-file replay
+      oracle — per-class weighted Welford in the core's operation order —
+      holding weights, means and `n_eff` bit-exact and the posteriors to
+      1e-9 for every shape over null labels, null features, zero and null
+      weights and a capped irregular clock; 200k rows × 6 features × 3
+      classes within 0.001 of the Bayes rate and calibrated to 0.01; the
+      shapes told apart on data that separates them; a class swap relearned;
+      an unseen class, late labels, integer/boolean/categorical labels, an
+      undeclared label, the input bound, chunk invariance, save/load,
+      `predict`, groups, the grid, `coef` and its index, the expression, the
+      lazy path, the runner, the CLI and the refusals), 14 core unit tests
+      plus 2 for the solve, the golden, contract, API-surface, error-message
+      and registry suites extended.
 - [ ] 28. **E40: constrained coefficients** on `sgd` / `pa` (box and sign constraints).
 - [ ] 29. **E41: diagonal transition `φ^d`** on `kalman` (coefficient dynamics).
 - [ ] 30. **E42: a sequential e-process test** between two specs' losses.
@@ -796,6 +823,58 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   ≈ 30 µs at k = 32, which is what `pca_every` amortizes; `mahal`'s solve is
   cheaper than `partial_corr`'s because it is one right-hand side.
 
+
+**Task 27's decisions: `ew_class`, 2026-09-05.**
+
+- *A kind of its own, not an `ew_cov` option.* ENHANCEMENTS E39 sketched a
+  class-conditional `ew_cov`. Built as `ew_class` because nothing of
+  `ew_cov`'s surface carries over: no `stats`, no pairs, a label column
+  instead of a target and a String output. It reuses `EwCov` whole — one per
+  class, `with_precision_prior` — and the covariance shapes are views of the
+  same state: `full` reads each class's `C_c + r_c I`, `shared` pools them
+  by the class weights `Σ π_c (C_c + r_c I)` (one factorization, all the
+  quadratic forms at once through `quad_forms_logdet`), `diagonal` reads
+  the variances, clamped at 0. The ridge `r_c = precision_prior ·
+  precision_scale_c` fades per class as `partial_corr`'s does, so a class
+  is scoreable from its first row and the prior is gone once it has data.
+- *`n_eff` counts every accepted row, labelled or not.* It is the stream's
+  weight, the quantity `min_periods` compares against everywhere else; the
+  class weights `n_c` are the labelled weight per class and a class's share
+  `π_c` is read off them. A row before `min_periods`, or before any class
+  has been seen, is null. Hard rule 8 holds: `n_eff` is reported before the
+  row's own update and decay.
+- *A null label scores and does not learn; an undeclared one is an error.*
+  Null is the late-label case (score now, learn when the label comes back
+  in a later stream) and mirrors a null target. A value not in `classes` is
+  neither a class nor "unknown": a static schema needs the class set
+  declared, and silently dropping the row would hide a typo, so the bank
+  raises with the row, the value and the class list, and says to null the
+  rows that should only be scored. The column is read as a key (cast to
+  String, like `group`), which is what makes integer, boolean and
+  categorical label columns work through their text.
+- *An unseen class has `p = 0` exactly and null means.* Its log-likelihood
+  is −∞, so the softmax gives exactly 0 rather than a tiny positive number,
+  and it is never the argmax; its `coef` entries are null (the list builder
+  and `ModelBank.coef` both map NaN to null, which every `coef` list now
+  honours: finite or null, inside the list too). The first maximum wins a
+  tie, so two classes with identical states resolve to the first declared.
+- *Plumbing predicates.* `is_unsupervised()` (ew_cov, kmeans, micro: no
+  target column at all — the leak-check exemption, the expression's input
+  packing) is now distinct from `predicts_no_target()` (those plus
+  ew_class: no residual, so every residual diagnostic is refused by name and
+  the per-model slot count comes from the schema). `ew_class`'s label
+  travels as `targets[0]`, so every place that reads the target column by
+  name — `keep_columns`, the projection the lazy source pushes, the
+  expression's packing — works unchanged.
+- *Fields.* `class`, `p_<class>`, `n_eff`, `coef`, with the halflife suffix
+  after each (`class@h50`, `p_a@h50`); `output_index` kinds `class` (dtype
+  `str`) and `p`; `coef_fields` one slot per class named by the class, so
+  `coef_index`'s `target` column is the class and `term` the feature.
+- *Measured (200k rows, 3 classes, Mrows/s, k = 2 / 4 / 8 / 16 / 32).*
+  `full` 1.63 / 1.33 / 0.78 / 0.38 / 0.13; `shared` 3.22 / 2.55 / 1.58 /
+  0.81 / 0.28; `diagonal` 6.92 / 5.88 / 4.51 / 2.84 / 1.57. `full` pays `C`
+  Cholesky factorizations per row, `shared` one, `diagonal` none; the update
+  itself is `ew_cov`'s O(k²) on one class and an O(1) decay on the others.
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without

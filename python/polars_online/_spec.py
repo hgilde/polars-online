@@ -199,6 +199,7 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
 
 
 __all__ = [
+    "ew_class",
     "ew_cov",
     "ewridge",
     "ftrl",
@@ -376,6 +377,7 @@ def _numeric_keys() -> frozenset[str]:
         holt,
         kmeans,
         micro,
+        ew_class,
     )
     for fn in (_common, *builders):
         for key, hint in typing.get_type_hints(getattr(fn, "__wrapped__", fn)).items():
@@ -1229,9 +1231,96 @@ def micro(
     return _common(name, model, targets=[features[0]], features=features, **common)
 
 
-#: The model types that predict no target: their outputs are read from the
+@_checked
+def ew_class(
+    name: str,
+    *,
+    features: list[str],
+    label: str,
+    classes: list[str],
+    covariance: str | None = None,
+    precision_prior: float,
+    **common: Unpack[CommonKwargs],
+) -> dict[str, Any]:
+    """Class-conditional Gaussian classifier -- quadratic discriminant
+    analysis, linear discriminant analysis or Gaussian naive Bayes -- on the
+    EW moments :func:`ew_cov` keeps, one set per class (docs/PLAN.md section
+    11a, Task 27).
+
+    Not a regression: ``label`` names the column that holds the class of each
+    row, and ``classes`` lists every value it can hold (``targets`` is not a
+    keyword). The label column is read as a key -- any dtype with a string
+    form, so ``["0", "1"]`` for an integer column and ``["true", "false"]``
+    for a boolean one -- and a non-null value it does not list is an error
+    naming the row. A null label is a row to score but not to learn from:
+    the model classifies it and ticks its clock, and no class moves.
+
+    Per instance the struct holds, all read *before* the row is learned:
+
+    - ``class`` (``str``): the class with the largest posterior (the first,
+      on a tie), null before ``min_periods`` and while no class has been
+      seen;
+    - ``p_<class>`` for each class in ``classes`` order: its posterior
+      probability, so the ``p_`` fields sum to 1 -- exactly ``0`` for a
+      class no row has carried yet;
+    - ``n_eff``, and ``coef``: the class means, one row per class in
+      ``classes`` order, each one entry per feature (:func:`coef_index` lays
+      the list out as ``(class, feature)``; a class not yet seen is null).
+
+    **Math.** Each class ``c`` keeps an EW weight ``n_c``, mean ``mu_c`` and
+    covariance ``C_c`` -- :func:`ew_cov`'s own weighted Welford recursion
+    over the rows labelled ``c``, every other class decaying by the same
+    ``lam``. Before a row ``x`` is learned it is scored against every seen
+    class::
+
+        pi_c = n_c / sum_c' n_c'
+        r_c  = precision_prior * s_c         s_c: the class's prior scale
+        M_c  = C_c + r_c I                                  ("full", QDA)
+        M    = sum_c pi_c (C_c + r_c I)                     ("shared", LDA)
+        M_c  = diag(C_c) + r_c I                        ("diagonal", naive Bayes)
+        l_c  = ln pi_c - 1/2 ln det M_c - 1/2 (x - mu_c)' M_c^-1 (x - mu_c)
+        p_c  = exp(l_c - max_c' l_c') / sum_c' exp(l_c' - max l)
+
+    ``precision_prior`` is a ridge on every class covariance, in the units of
+    the features, so the first rows of a class -- whose sample covariance is
+    singular -- are scored with a finite, isotropic one. It is scaled by
+    ``s_c``, the class's own prior scale, which starts at ``1`` and decays by
+    ``lam * n_c / (lam * n_c + w)`` on every row the class learns, so the
+    ridge washes out as the class fills in (exactly :func:`ew_cov`'s
+    ``precision_prior``). ``covariance`` is ``"full"`` (the default), a
+    covariance per class; ``"shared"``, the weight-averaged one, so the
+    decision boundaries are linear; or ``"diagonal"``, the variances alone.
+    Then the labelled row's class learns it::
+
+        n_c   <- lam n_c + w
+        mu_c  <- mu_c + (w / n_c) (x - mu_c)
+        C_c   <- weighted Welford on (x - mu_c_old)(x - mu_c_new)'
+
+    and ``n_eff <- lam n_eff + w`` counts every accepted row, labelled or
+    not, so ``min_periods`` means the same number of rows as everywhere
+    else. A row with a non-finite feature is null and learns nothing; a
+    zero-weight row advances the clock. Values are read from the state
+    *before* each row, so a ``p_<class>`` can be a feature for that same row
+    without leaking it. Nothing residual-based applies (``emit_sigma``,
+    ``emit_metrics``, ``conformal``, drift, ...); each is refused by name.
+    """
+    model: dict[str, Any] = {
+        "type": "ew_class",
+        "classes": classes,
+        "covariance": covariance,
+        "precision_prior": precision_prior,
+    }
+    if "targets" in common:
+        msg = f"spec {json.dumps(name)}: ew_class() takes `label`, not targets"
+        raise TypeError(msg)
+    return _common(name, model, targets=[label], features=features, **common)
+
+
+#: The model types with no target column: their outputs are read from the
 #: state before each row, their ``targets`` mirror ``features[0]`` for the
-#: plumbing, and nothing residual-based applies to them.
+#: plumbing, and nothing residual-based applies to them. ``ew_class`` is
+#: not one -- its label column travels as the target -- though it predicts
+#: no number either, and refuses the residual switches the same way.
 UNSUPERVISED = frozenset({"ew_cov", "kmeans", "micro"})
 
 _NUMERIC_KEYS = _numeric_keys()

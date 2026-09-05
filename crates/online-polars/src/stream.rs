@@ -2,11 +2,11 @@
 //! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
 
 use online_core::{
-    ClockState, Conformal, Decay, EwAutoCorr, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg,
-    Ftrl, FtrlCfg, FtrlLoss, Holt, HoltCfg, INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg,
-    Lasso, LassoCfg, LearningRate, Micro, MicroCfg, ModelState, OnlineModel, P2Quantile, Pa, PaCfg,
-    PaMode, PageHinkley, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, SeedRule, Sgd, SgdCfg,
-    SgdLoss, SlotMetrics, State, StateError,
+    ClockState, Conformal, Covariance, Decay, EwAutoCorr, EwClass, EwClassCfg, EwCovCfg,
+    EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, Holt, HoltCfg,
+    INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, Micro,
+    MicroCfg, ModelState, OnlineModel, P2Quantile, Pa, PaCfg, PaMode, PageHinkley, Rls, RlsCfg,
+    Robust, RobustCfg, RobustLoss, SeedRule, Sgd, SgdCfg, SgdLoss, SlotMetrics, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +27,7 @@ pub enum AnyModel {
     Holt(Box<Holt>),
     KMeans(Box<KMeans>),
     Micro(Box<Micro>),
+    EwClass(Box<EwClass>),
 }
 
 /// Bind the boxed model of whichever variant `$self` is, then run `$body`.
@@ -52,6 +53,7 @@ macro_rules! dispatch {
             AnyModel::Holt($m) => $body,
             AnyModel::KMeans($m) => $body,
             AnyModel::Micro($m) => $body,
+            AnyModel::EwClass($m) => $body,
         }
     };
 }
@@ -87,6 +89,7 @@ impl AnyModel {
             AnyModel::EwRidge(m) => m.solve_failures,
             AnyModel::Lasso(m) => m.solve_failures,
             AnyModel::Robust(m) => m.solve_failures,
+            AnyModel::EwClass(m) => m.solve_failures,
             AnyModel::Rls(_)
             | AnyModel::Kalman(_)
             | AnyModel::Ftrl(_)
@@ -130,6 +133,8 @@ impl AnyModel {
             // micro: one row per potential summary -- ragged, and absent
             // until there is one.
             AnyModel::Micro(m) => m.coefficients(),
+            // The class means, one row per class (NaN for a class not seen).
+            AnyModel::EwClass(m) => Some(m.coefficients()),
         }
     }
 
@@ -151,6 +156,7 @@ impl AnyModel {
             ModelState::Holt(_) => Ok(AnyModel::Holt(Box::new(Holt::restore(s)?))),
             ModelState::KMeans(_) => Ok(AnyModel::KMeans(Box::new(KMeans::restore(s)?))),
             ModelState::Micro(_) => Ok(AnyModel::Micro(Box::new(Micro::restore(s)?))),
+            ModelState::EwClass(_) => Ok(AnyModel::EwClass(Box::new(EwClass::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -540,6 +546,24 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::Micro(Box::new(Micro::new(cfg)?)))
         }
+        ModelKind::EwClass {
+            classes,
+            covariance,
+            precision_prior,
+        } => {
+            let cfg = EwClassCfg {
+                n_features: spec.k(),
+                n_classes: classes.len(),
+                decay,
+                min_periods: spec.min_periods_per_target()[0],
+                covariance: match covariance {
+                    Some(c) => Covariance::parse(c)?,
+                    None => Covariance::Full,
+                },
+                precision_prior: *precision_prior,
+            };
+            Ok(AnyModel::EwClass(Box::new(EwClass::new(cfg)?)))
+        }
     }
 }
 
@@ -611,7 +635,8 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
         | ModelKind::Pa { .. }
         | ModelKind::Holt { .. }
         | ModelKind::KMeans { .. }
-        | ModelKind::Micro { .. } => vec![Combo::default()],
+        | ModelKind::Micro { .. }
+        | ModelKind::EwClass { .. } => vec![Combo::default()],
         ModelKind::Lasso { lasso_path, .. } => lasso_path
             .iter()
             .map(|l| Combo {

@@ -521,6 +521,43 @@ fn every_state_kind_is_distinct_and_named() {
     );
 }
 
+fn ew_class_cfg() -> EwClassCfg {
+    EwClassCfg {
+        n_features: K,
+        n_classes: 2,
+        decay: decay(),
+        min_periods: 3.0,
+        covariance: Covariance::Full,
+        precision_prior: 0.1,
+    }
+}
+
+#[test]
+fn ew_class() {
+    for covariance in [Covariance::Full, Covariance::Shared, Covariance::Diagonal] {
+        let cfg = EwClassCfg {
+            covariance,
+            ..ew_class_cfg()
+        };
+        // The label is learned from, not predicted as a number: no targets,
+        // and the outputs are the class and one posterior per class.
+        let m = EwClass::new(cfg).unwrap();
+        assert_eq!(m.n_targets(), 0, "ew_class has no targets");
+        assert_eq!(m.n_features(), K);
+        assert_eq!(m.n_outputs(), 3, "class, p_0, p_1");
+        // Probed without labels: n_eff counts every accepted row, so
+        // `min_periods` means the same number of rows as everywhere else.
+        let r = probe_with(m, 0, Some(&EwClass::n_eff));
+        assert_eq!(r.kind, "ew_class");
+        assert_eq!(r.pred_len, r.n_outputs);
+        assert_eq!(r.n_eff[0], 0.0);
+        assert_eq!(r.n_eff[1], 1.0);
+        assert!((r.n_eff[2] - (0.5f64.powf(1.0 / HALFLIFE) + 1.0)).abs() < 1e-12);
+        assert!((r.after_gap - (r.before_gap * 0.5f64.powi(10) + 1.0)).abs() < 1e-9);
+        assert!(r.roundtrips);
+    }
+}
+
 /// The variants of `ModelState` this file probes. A model added to the enum
 /// and not to this list fails here, which is the reminder to write its
 /// `*_cfg()` and probe above (docs/EXTENDING.md).
@@ -538,6 +575,7 @@ const PROBED: &[&str] = &[
     "Holt",
     "KMeans",
     "Micro",
+    "EwClass",
 ];
 
 #[test]
@@ -705,7 +743,12 @@ fn recovers_from_bounded_extremes<M: OnlineModel>(
     targets: usize,
     how: Recovery,
 ) {
-    let rows = bounded_script(targets);
+    recovers_over(&bounded_script(targets), build, how);
+}
+
+/// The same, over a script the caller has prepared (a classifier wants the
+/// targets turned into labels).
+fn recovers_over<M: OnlineModel>(rows: &[Row], build: impl Fn() -> M, how: Recovery) {
     let mut model = build();
     let mut twin = build();
     let kind = model.state().model.kind();
@@ -908,6 +951,31 @@ fn kmeans_recovers_from_bounded_extremes() {
                 Recovery::Fit(1e-6),
             );
         }
+    }
+}
+
+#[test]
+fn ew_class_recovers_from_bounded_extremes() {
+    // The script's target becomes the label: class 1 where y > 0. A row at
+    // the bound with weight at the bound leaves one class's mean at 1e100
+    // and its co-moments at 1e200; both decay back through the mean-form
+    // update as the weight does, and the ridge scale, once driven to zero
+    // by that row, never matters again (measured: the two states are
+    // bitwise equal over the tail; the tolerance is the margin).
+    let mut rows = bounded_script(1);
+    for r in &mut rows {
+        r.y = vec![Some(f64::from(r.y[0].unwrap() > 0.0))];
+    }
+    for covariance in [Covariance::Full, Covariance::Shared, Covariance::Diagonal] {
+        let cfg = EwClassCfg {
+            covariance,
+            ..ew_class_cfg()
+        };
+        recovers_over(
+            &rows,
+            move || EwClass::new(cfg.clone()).unwrap(),
+            Recovery::Twin(1e-9),
+        );
     }
 }
 
@@ -1141,6 +1209,17 @@ fn micro_predict_is_the_step() {
         ..micro_cfg()
     };
     predict_is_the_step_without_the_step(move || Micro::new(cfg.clone()).unwrap(), 0, false);
+}
+
+#[test]
+fn ew_class_predict_is_the_step() {
+    for covariance in [Covariance::Full, Covariance::Shared, Covariance::Diagonal] {
+        let cfg = EwClassCfg {
+            covariance,
+            ..ew_class_cfg()
+        };
+        predict_is_the_step_without_the_step(move || EwClass::new(cfg.clone()).unwrap(), 1, true);
+    }
 }
 
 #[test]

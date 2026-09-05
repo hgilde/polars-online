@@ -90,6 +90,19 @@ def test_kmeans_has_no_targets():
         po.spec.kmeans("m", features=["x0", "y"], targets=["y"], k=2, halflife=10.0)
 
 
+def test_ew_class_takes_a_label_not_targets():
+    with pytest.raises(TypeError, match='spec "m": ew_class\\(\\) takes `label`, not targets'):
+        po.spec.ew_class(
+            "m",
+            features=["x0"],
+            label="y",
+            targets=["y"],
+            classes=["a", "b"],
+            precision_prior=1.0,
+            halflife=10.0,
+        )
+
+
 VALUES = [
     (po.spec.ewridge, dict(coef_every=-1), "coef_every must be >= 0, got -1"),
     (po.spec.lasso, dict(lasso_path=[0.1], max_cd_iters=-1), "max_cd_iters must be >= 0"),
@@ -137,6 +150,31 @@ VALUES = [
         dict(features=["x0", "y"], targets=None, pca_every=2),
         "ew_cov pca_every needs `pca`",
     ),
+    (
+        po.spec.ew_class,
+        dict(targets=None, label="y", classes=["a"], precision_prior=1.0),
+        "ew_class classes must list at least 2 classes (got 1)",
+    ),
+    (
+        po.spec.ew_class,
+        dict(targets=None, label="y", classes=["a", "b", "a"], precision_prior=1.0),
+        'ew_class classes lists "a" more than once',
+    ),
+    (
+        po.spec.ew_class,
+        dict(targets=None, label="y", classes=["a", ""], precision_prior=1.0),
+        "ew_class classes must not contain an empty name",
+    ),
+    (
+        po.spec.ew_class,
+        dict(targets=None, label="y", classes=["a", "b"], precision_prior=1.0, covariance="lda"),
+        'unknown ew_class covariance "lda" (expected full, shared or diagonal)',
+    ),
+    (
+        po.spec.ew_class,
+        dict(targets=None, label="y", classes=["a", "b"], precision_prior=0.0),
+        "ew_class precision_prior must be finite and > 0",
+    ),
 ]
 
 
@@ -170,6 +208,7 @@ BUILDERS = {
     po.spec.pa: {},
     po.spec.holt: dict(features=None),
     po.spec.kmeans: dict(features=["x0", "y"], targets=None, k=2),
+    po.spec.ew_class: dict(targets=None, label="y", classes=["a", "b"], precision_prior=1.0),
 }
 
 

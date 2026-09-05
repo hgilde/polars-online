@@ -58,6 +58,7 @@ pub enum ModelState {
     Holt(Box<crate::Holt>),
     KMeans(Box<crate::KMeans>),
     Micro(Box<crate::Micro>),
+    EwClass(Box<crate::EwClass>),
 }
 
 #[derive(Debug, Error)]
@@ -89,6 +90,7 @@ impl ModelState {
             ModelState::Holt(_) => "holt",
             ModelState::KMeans(_) => "kmeans",
             ModelState::Micro(_) => "micro",
+            ModelState::EwClass(_) => "ew_class",
         }
     }
 }

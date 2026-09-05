@@ -21,6 +21,7 @@ from typing import Required, TypedDict
 
 __all__ = [
     "CommonKwargs",
+    "EwClassKwargs",
     "EwCovKwargs",
     "EwridgeKwargs",
     "ExprKwargs",
@@ -194,3 +195,9 @@ class MicroKwargs(ExprKwargs, total=False):
     prune_every: int | None
     macro_link: float | None
     standardize: bool | None
+
+
+class EwClassKwargs(ExprKwargs, total=False):
+    classes: Required[list[str]]
+    covariance: str | None
+    precision_prior: Required[float]

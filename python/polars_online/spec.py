@@ -41,6 +41,7 @@ rather than ignored.
 from polars_online._spec import (
     coef_fields,
     coef_index,
+    ew_class,
     ew_cov,
     ewridge,
     ftrl,
@@ -59,6 +60,7 @@ from polars_online._spec import (
 )
 
 __all__ = [
+    "ew_class",
     "ew_cov",
     "ewridge",
     "ftrl",

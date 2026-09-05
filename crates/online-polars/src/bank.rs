@@ -12,7 +12,7 @@ use polars_utils::aliases::PlHashMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::spec::Spec;
+use crate::spec::{ModelKind, Spec};
 use crate::stream::{AnyModel, ChunkOut, Stream, StreamState, combo_labels};
 
 /// One stream's group key. A null group value is its own key, distinct from any
@@ -226,6 +226,46 @@ fn key_column(df: &DataFrame, spec: &Spec, role: &str, name: &str) -> PolarsResu
         })
 }
 
+/// An `ew_class` label column as class indices: each value's position in
+/// `classes` as `f64`, null as NaN (a row scored but not learned from). Any
+/// dtype with a string form is a label, as for a key; a non-null value the
+/// spec does not list is an error naming the row, the value and the classes,
+/// rather than a row silently not learned from.
+fn label_column(
+    df: &DataFrame,
+    spec: &Spec,
+    name: &str,
+    classes: &[String],
+    layout: Layout<'_>,
+) -> PolarsResult<Vec<f64>> {
+    let s = key_column(df, spec, "label", name)?;
+    let ca = s.str()?;
+    let mut v: Vec<f64> = Vec::with_capacity(ca.len());
+    let mut last: Option<(&str, f64)> = None;
+    for (j, value) in ca.iter().enumerate() {
+        v.push(match value {
+            None => f64::NAN,
+            Some(val) => match last {
+                // Labels run in streaks; the last hit answers most rows.
+                Some((l, idx)) if l == val => idx,
+                _ => match classes.iter().position(|c| c == val) {
+                    Some(i) => {
+                        last = Some((val, i as f64));
+                        i as f64
+                    }
+                    None => polars_bail!(ComputeError:
+                        "spec {:?}: label column {:?} has the value {:?} at row {}, which is \
+                         not one of the classes {:?}; list every class the column can hold, \
+                         or null the rows that should only be scored",
+                        spec.name, name, val, j, classes
+                    ),
+                },
+            },
+        });
+    }
+    Ok(gathered(v, layout))
+}
+
 /// Below this many rows a chunk's columns are read, and a spec's fields
 /// assembled, on the calling thread. A task at the floor is a 32 KB copy,
 /// about what a rayon dispatch costs, so there is nothing to gain -- and
@@ -290,6 +330,8 @@ fn extract(
         map_maybe_par(&spec.targets, par, |c| {
             if optional(c) {
                 Ok(vec![f64::NAN; df.height()])
+            } else if let ModelKind::EwClass { classes, .. } = &spec.model {
+                label_column(df, spec, c, classes, layout)
             } else {
                 f64_column(df, spec, "target", c, layout)
             }
@@ -637,16 +679,21 @@ impl SpecDerived {
         let n_models = spec.decays().expect("validated").len();
         let nc = crate::stream::combos(spec).len();
         let m = spec.m();
-        // The unsupervised models' slots are whatever rides in the `pred`
-        // buffer (statistics, or an assignment and its distances), which the
-        // schema says with `Source::Stat` / `Cluster` / `Id` / `Flag`.
-        let per_model = if spec.model.is_unsupervised() {
+        // The models with no target prediction have as slots whatever rides
+        // in the `pred` buffer (statistics, an assignment and its distances,
+        // a class and its posteriors), which the schema says with
+        // `Source::Stat` / `Cluster` / `Id` / `Flag` / `Label`.
+        let per_model = if spec.model.predicts_no_target() {
             schema
                 .iter()
                 .filter(|f| {
                     matches!(
                         f.src,
-                        Source::Stat(_) | Source::Cluster(_) | Source::Id(_) | Source::Flag(_)
+                        Source::Stat(_)
+                            | Source::Cluster(_)
+                            | Source::Id(_)
+                            | Source::Flag(_)
+                            | Source::Label(_)
                     )
                 })
                 .count()
@@ -1361,6 +1408,9 @@ enum Source {
     /// A `micro` flag: `1.0` / `0.0` in the `pred` buffer (NaN = null),
     /// materialized as `Boolean`.
     Flag(usize),
+    /// An `ew_class` prediction: the class's position in `classes` as an
+    /// f64 in the `pred` buffer (NaN = null), materialized as the class name.
+    Label(usize),
 }
 
 impl FieldMeta {
@@ -1395,6 +1445,7 @@ impl FieldMeta {
             Source::Cluster(_) => DataType::Int32,
             Source::Id(_) => DataType::Int64,
             Source::Flag(_) => DataType::Boolean,
+            Source::Label(_) => DataType::String,
             Source::Unset => unreachable!("every field is given a source in output_index"),
             _ => DataType::Float64,
         }
@@ -1434,7 +1485,9 @@ impl FieldMeta {
 /// `kmeans` reports its centres here: `k` slots named `cluster{j}` in place
 /// of the targets, each the centre's coordinate per feature, so
 /// `coef_cluster0_x1` is centre 0's `x1` and `coef_index` lays the list out
-/// as `(cluster, feature)`.
+/// as `(cluster, feature)`. `ew_class` does the same with its class means:
+/// one slot per class, named by the class, so `coef_a_x1` is class `a`'s
+/// mean of `x1`.
 pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
     if matches!(
         spec.model,
@@ -1444,11 +1497,15 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
     }
     let slots: Vec<String> = match &spec.model {
         crate::ModelKind::KMeans { k, .. } => (0..*k).map(|j| format!("cluster{j}")).collect(),
+        crate::ModelKind::EwClass { classes, .. } => classes.clone(),
         _ => spec.targets.clone(),
     };
     let terms: Vec<String> = if matches!(spec.model, crate::ModelKind::Holt { .. }) {
         vec!["level".into(), "trend".into()]
-    } else if matches!(spec.model, crate::ModelKind::KMeans { .. }) {
+    } else if matches!(
+        spec.model,
+        crate::ModelKind::KMeans { .. } | crate::ModelKind::EwClass { .. }
+    ) {
         spec.features.clone()
     } else {
         let mut t = Vec::with_capacity(spec.features.len() + 1);
@@ -1667,6 +1724,44 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
                     .decay(d)
                     .src(Source::Cluster(at(5))),
             ));
+            fields.push(
+                FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                    .decay(d)
+                    .src(Source::NEff(mi)),
+            );
+            fields.push(
+                FieldMeta::new(format!("coef{suffix}"), "coef")
+                    .decay(d)
+                    .src(Source::Coef(mi)),
+            );
+        }
+        return fields;
+    }
+    // ew_class predicts a label, not a number: per instance, the class the
+    // row is assigned to and one posterior per class (read before the row
+    // is learned), `n_eff`, and the class means as `coef`.
+    if let crate::ModelKind::EwClass { classes, .. } = &spec.model {
+        let n_slots = 1 + classes.len();
+        let mut fields = Vec::new();
+        for (mi, (suffix, d)) in decays.iter().enumerate() {
+            let over = |mut f: FieldMeta| {
+                f.columns = Some(spec.features.clone());
+                f
+            };
+            fields.push(over(
+                FieldMeta::new(format!("class{suffix}"), "class")
+                    .decay(d)
+                    .target(&spec.targets[0])
+                    .src(Source::Label(mi * n_slots)),
+            ));
+            for (c, class) in classes.iter().enumerate() {
+                fields.push(over(
+                    FieldMeta::new(format!("p_{class}{suffix}"), "p")
+                        .decay(d)
+                        .target(&spec.targets[0])
+                        .src(Source::Stat(mi * n_slots + 1 + c)),
+                ));
+            }
             fields.push(
                 FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
                     .decay(d)
@@ -1912,6 +2007,24 @@ impl F64Column {
             .collect();
         Series::new(name, values.as_slice())
     }
+
+    /// The same column as the class names, for an `ew_class` prediction:
+    /// every set value is a position in `classes` by construction (the model
+    /// emits the argmax over its own classes), and the null rows stay null.
+    fn finish_label(self, name: PlSmallStr, classes: &[String]) -> Series {
+        let values: Vec<Option<&str>> = self
+            .values
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| {
+                self.valid
+                    .get(i)
+                    .then(|| classes.get(v as usize).map(String::as_str))
+                    .flatten()
+            })
+            .collect();
+        Series::new(name, values.as_slice())
+    }
 }
 
 /// Scatter one value per processed row of every chunk into a column:
@@ -2082,6 +2195,14 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
                     scatter(n, chunks, false, |ch, nr, ri| ch.pred[at(ch, nr, i, ri)])
                         .finish_bool(name)
                 }
+                Source::Label(i) => {
+                    let classes: &[String] = match &spec.model {
+                        ModelKind::EwClass { classes, .. } => classes,
+                        _ => unreachable!("only ew_class emits a label"),
+                    };
+                    scatter(n, chunks, false, |ch, nr, ri| ch.pred[at(ch, nr, i, ri)])
+                        .finish_label(name, classes)
+                }
                 Source::Resid(i) => {
                     scatter(n, chunks, false, |ch, nr, ri| ch.resid[at(ch, nr, i, ri)]).finish(name)
                 }
@@ -2156,7 +2277,12 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
                     );
                     for v in &coef {
                         match v {
-                            Some(flat) => b.append_slice(flat),
+                            // Finite-or-null inside the list too: an
+                            // `ew_class` class no row has carried yet has
+                            // NaN means, and a null says so.
+                            Some(flat) => {
+                                b.append_iter(flat.iter().map(|c| c.is_finite().then_some(*c)))
+                            }
                             None => b.append_null(),
                         }
                     }

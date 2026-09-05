@@ -57,6 +57,7 @@ mod clock;
 mod cluster;
 mod conformal;
 mod drift;
+mod ewclass;
 mod ewcov;
 mod ewridge;
 mod ftrl;
@@ -78,6 +79,7 @@ pub use cluster::{
 };
 pub use conformal::{Conformal, norm_ppf};
 pub use drift::PageHinkley;
+pub use ewclass::{Covariance, EwClass, EwClassCfg};
 pub use ewcov::{EwCov, EwCovCfg, EwCovModel, EwCovStat, Pca, partial_corr, variance_is_usable};
 pub use ewridge::{EwRidge, EwRidgeCfg};
 pub use ftrl::{Ftrl, FtrlCfg, FtrlLoss};
@@ -91,7 +93,7 @@ pub use pa::{Pa, PaCfg, PaMode};
 pub use rls::{Rls, RlsCfg};
 pub use robust::{Robust, RobustCfg, RobustLoss};
 pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
-pub use solve::solve_spd;
+pub use solve::{quad_forms_logdet, solve_spd};
 pub use stats::{EwAutoCorr, P2Quantile, SlotMetrics};
 
 /// Version of the serialized model-state layout.

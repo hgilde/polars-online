@@ -17,8 +17,9 @@ import pytest
 import polars_online as po
 from polars_online import _expr, _kwargs, _spec
 
-# What the expression supplies itself, and so does not take as a keyword.
-EXPR_SUPPLIES = {"name", "targets", "features", "group"}
+# What the expression supplies itself, and so does not take as a keyword
+# (the expression's own column is ew_class's label).
+EXPR_SUPPLIES = {"name", "targets", "features", "group", "label"}
 NAMESPACE_METHODS = [
     "ewridge",
     "rls",
@@ -33,6 +34,7 @@ NAMESPACE_METHODS = [
     "holt",
     "kmeans",
     "micro",
+    "ew_class",
 ]
 
 

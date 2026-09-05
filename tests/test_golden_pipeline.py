@@ -49,12 +49,16 @@ def stream(n: int = 120) -> pl.DataFrame:
 
     x1 = [None if i % 31 == 7 else v for i, v in enumerate(x1)]
     y = [None if i % 29 == 11 else v for i, v in enumerate(y)]
+    # A class label for `ew_class`: which side of its mean `x0` falls on, with
+    # a null every 13th row (scored, not learned from).
+    label = [None if i % 13 == 5 else ("hi" if v > 0.0 else "lo") for i, v in enumerate(x0)]
     return pl.DataFrame(
         {
             "t": t,
             "x0": x0,
             "x1": x1,
             "y0": y,
+            "label": label,
             "w": w,
             "g": ["a" if i % 2 == 0 else "b" for i in range(n)],
             "session": ["m" if i < n // 2 else "n" for i in range(n)],
@@ -140,13 +144,27 @@ def specs() -> list[dict]:
             group="g",
             min_periods=4.0,
         ),
+        po.spec.ew_class(
+            "ew_class",
+            features=["x0", "x1"],
+            label="label",
+            classes=["lo", "hi"],
+            covariance="shared",
+            precision_prior=0.5,
+            clock="t",
+            max_dclock=6.0,
+            halflife=25.0,
+            weight="w",
+            group="g",
+            min_periods=4.0,
+        ),
     ]
 
 
-def signature() -> dict[str, float | None]:
+def signature() -> dict[str, float | str | None]:
     """Every non-coefficient output field, at three fixed rows."""
     out = po.ModelBank(specs()).fit_predict(stream())
-    sig: dict[str, float | None] = {}
+    sig: dict[str, float | str | None] = {}
     for spec in specs():
         name = spec["name"]
         for field in po.spec.output_fields(spec):
@@ -159,7 +177,7 @@ def signature() -> dict[str, float | None]:
 
 
 #: Produced by `PRINT_GOLDEN=1 uv run pytest tests/test_golden_pipeline.py -s -k print`.
-GOLDEN: dict[str, float | None] = {
+GOLDEN: dict[str, float | str | None] = {
     "ridge.pred_y0__r0.000001@25": -4.868442910414911,
     "ridge.pred_y0__r0.000001@60": -0.18087432320800145,
     "ridge.pred_y0__r0.000001@119": -0.16041676613206843,
@@ -346,6 +364,18 @@ GOLDEN: dict[str, float | None] = {
     "micro.n_eff@25": 7.999488060097996,
     "micro.n_eff@60": 12.473100285951407,
     "micro.n_eff@119": 14.963784088176922,
+    "ew_class.class@25": "hi",
+    "ew_class.class@60": "lo",
+    "ew_class.class@119": "lo",
+    "ew_class.p_lo@25": 0.001769258464791603,
+    "ew_class.p_lo@60": 0.9998050842334101,
+    "ew_class.p_lo@119": 0.9721537211462504,
+    "ew_class.p_hi@25": 0.9982307415352083,
+    "ew_class.p_hi@60": 0.00019491576659006558,
+    "ew_class.p_hi@119": 0.02784627885374964,
+    "ew_class.n_eff@25": 7.999488060097996,
+    "ew_class.n_eff@60": 12.473100285951407,
+    "ew_class.n_eff@119": 14.963784088176922,
 }
 
 
@@ -369,6 +399,10 @@ def test_the_pipeline_produces_the_same_numbers_everywhere():
         if want is None or have is None:
             assert have == want, f"{key}: {have} vs {want} (null-ness must match)"
             continue
+        if isinstance(want, str | bool):
+            # A class name or a flag: exact, or it is a different answer.
+            assert have == want, f"{key}: {have!r} vs {want!r}"
+            continue
         assert abs(have - want) <= TOL * (1.0 + abs(want)), (
             f"{key}: {have!r} vs {want!r} (relative {abs(have - want) / (1 + abs(want)):.2e})"
         )
@@ -380,6 +414,8 @@ def test_the_stream_exercises_what_it_claims_to():
     df = stream()
     assert df["x1"].null_count() > 0, "no null feature"
     assert df["y0"].null_count() > 0, "no null target"
+    assert df["label"].null_count() > 0, "no null label"
+    assert df["label"].n_unique() == 3, "the label must hold both classes and null"
     assert df["g"].n_unique() == 2, "not two groups"
     assert df["session"].n_unique() == 2, "no session break"
     assert df["w"].n_unique() > 1, "weights are constant"

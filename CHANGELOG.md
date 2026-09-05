@@ -129,13 +129,53 @@ carries breaking changes.
   numpy `eigh` oracle with the continuity rule at every refresh, χ²
   calibration and a 3-factor recovery at 200k rows, a covariance switch,
   and the chunk / save-load / predict / expression / runner / TOML contract.
+- **`ew_class`: Gaussian classification on per-class `ew_cov` moments**
+  (`po.spec.ew_class`, `docs/ENHANCEMENTS.md` E39, `docs/PLAN.md` task 27).
+  A label column (`label=`) and its declared `classes=` in place of a
+  numeric target; one exponentially weighted Gaussian per class, scored by
+  Bayes' rule *before* the row is learned. `covariance="full"` (default)
+  gives each class its own covariance (QDA), `"shared"` pools them by the
+  class weights (LDA, one factorization per row), `"diagonal"` keeps the
+  variances (naive Bayes). `precision_prior` (required) is the per-class
+  ridge that makes a class scoreable from its first row and fades like
+  `partial_corr`'s. Outputs: `class` (String, null before `min_periods` or
+  before any class has been seen), `p_<class>` for every declared class
+  (exactly 0 for a class no row has carried), `n_eff` (every accepted row,
+  labelled or not), and `coef` = the class means (`coef_<class>_<feature>`
+  after `unnest`; `coef_index`'s `target` is the class). A null label
+  scores the row and learns nothing from it — the late-label case; a value
+  the spec does not list raises, naming the row, the value and the classes;
+  integer, boolean and categorical label columns are read through their
+  text (`classes=["0", "1"]`). Residual diagnostics are refused by name, as
+  for the clusterers. Measured at 200k rows, six features, three classes
+  with their own covariances: within 0.001 of the Bayes rate the generating
+  parameters allow, posteriors calibrated to 0.01; 0.9 / 1.8 / 5 Mrows/s
+  full / shared / diagonal (k = 6), 1.6 / 3.2 / 6.9 at k = 2.
+- Rust: `online_core::{EwClass, EwClassCfg, Covariance}`,
+  `online_core::quad_forms_logdet` (every quadratic form and the
+  log-determinant off one Cholesky), `ModelState::EwClass` (schema still 2);
+  `online_polars::ModelKind::EwClass { classes, covariance, precision_prior }`
+  and the TOML `type = "ew_class"` with `targets = ["<label column>"]`.
+- `tests/test_ew_class.py`: a replay oracle of the per-class recursion in
+  the core's operation order (weights, means, `n_eff` bit-exact; posteriors
+  to 1e-9 through numpy's `slogdet` / `solve`) over null labels, null
+  features, zero and null weights and a capped irregular clock; the Bayes
+  rate and calibration at 200k rows; LDA ≡ QDA on a shared covariance, QDA
+  alone seeing a spread, a full covariance alone seeing a correlation, a
+  class swap relearned; and the chunk / save-load / predict / groups / grid
+  / coef / expression / lazy / runner / CLI / refusal contract.
+- **`coef` lists are finite-or-null inside the list too.** A slot with no
+  value (an `ew_class` class no row has carried) is null in the list and in
+  `ModelBank.coef`, where a NaN would have broken the frame's
+  finite-or-null rule.
 
 ### Changed
 
 - **Residual diagnostics are refused for a model that predicts no target.**
   `ew_cov` already refused `emit_selected` and `emit_averaged`; it,
-  `kmeans` and `micro` now refuse `emit_sigma`, `emit_resid_z`, `emit_metrics`,
-  `resid_quantiles`, `emit_autocorr` and `emit_drift` too, by name
+  `kmeans`, `micro` and `ew_class` now refuse `emit_sigma`, `emit_resid_z`,
+  `emit_metrics`, `resid_quantiles`, `emit_autocorr`, `emit_drift` and
+  `conformal` too, by name
   (`"emit_sigma does not apply to ew_cov (it has no predictions, so no
   residuals)"`), where `ew_cov` used to accept the flag and silently emit
   nothing for it. A spec that set one of them on `ew_cov` must drop it.

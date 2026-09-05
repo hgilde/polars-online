@@ -447,6 +447,39 @@ class TestOutputSchemaStability:
         n_instances = len(halflife) if isinstance(halflife, list) else 1
         assert [f.dtype for f in out.schema["m"].fields] == per_instance * n_instances
 
+    @pytest.mark.parametrize("halflife", [50.0, [20.0, 50.0]], ids=["one", "grid"])
+    @pytest.mark.parametrize("coef_every", [0, 7], ids=["plain", "coef_every"])
+    def test_ew_class_names_match_the_realized_struct(self, halflife, coef_every):
+        """`ew_class` predicts a label: a `str` class, one `f64` posterior per
+        class, `n_eff` and the class means as `coef`, per instance."""
+        spec = po.spec.ew_class(
+            "m",
+            features=["x0", "x1"],
+            label="y",
+            classes=["neg", "pos"],
+            precision_prior=1.0,
+            halflife=halflife,
+            min_periods=2.0,
+            coef_every=coef_every,
+        )
+        df = (
+            _frame()
+            .drop("g")
+            .with_columns(
+                pl.when(pl.col("y0") > 0).then(pl.lit("pos")).otherwise(pl.lit("neg")).alias("y")
+            )
+        )
+        out = po.ModelBank([spec]).fit_predict(df)
+        assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
+        idx = po.spec.output_index(spec)
+        names = {pl.Float64: "f64", pl.String: "str", pl.List(pl.Float64): "list[f64]"}
+        for f in out.schema["m"].fields:
+            declared = idx.filter(pl.col("field") == f.name)["dtype"].item()
+            assert names[f.dtype] == declared, (f, declared)
+        per_instance = [pl.String, pl.Float64, pl.Float64, pl.Float64, pl.List(pl.Float64)]
+        n_instances = len(halflife) if isinstance(halflife, list) else 1
+        assert [f.dtype for f in out.schema["m"].fields] == per_instance * n_instances
+
 
 class TestConfigParsing:
     """T-W3/T-W4: the CLI reads a TOML config as text. Windows checkouts can
