@@ -95,6 +95,7 @@ def _spec(model, extra, **kw):
         emit_metrics=True,
         resid_quantiles=[0.5],
         emit_autocorr=True,
+        conformal=0.9,
         coef_every=7,
     )
     opts.update(extra)
@@ -142,6 +143,7 @@ def test_all_the_shared_options_at_once():
             emit_metrics=True,
             resid_quantiles=[0.5, 0.9],
             emit_autocorr=True,
+            conformal=0.95,
             emit_selected=True,
             emit_averaged=True,
             coef_every=10,

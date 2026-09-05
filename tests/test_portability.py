@@ -73,6 +73,7 @@ def _bank_specs():
         resid_quantiles=[0.5, 0.9],
         emit_autocorr=True,
         emit_drift=True,
+        conformal=0.9,
     )
     return [_spec(), grid]
 
@@ -294,6 +295,7 @@ class TestOutputSchemaStability:
             {"emit_selected": True, "emit_averaged": True},
             {"emit_drift": True},
             {"resid_quantiles": [0.5, 0.99], "emit_autocorr": True},
+            {"conformal": 0.9},
             {
                 "emit_sigma": True,
                 "emit_resid_z": True,
@@ -302,9 +304,10 @@ class TestOutputSchemaStability:
                 "emit_averaged": True,
                 "resid_quantiles": [0.1, 0.9],
                 "emit_autocorr": True,
+                "conformal": 0.8,
             },
         ],
-        ids=["plain", "sigma+z", "selected+avg", "drift", "quantiles+autocorr", "all"],
+        ids=["plain", "sigma+z", "selected+avg", "drift", "quantiles+autocorr", "conformal", "all"],
     )
     def test_names_match_the_realized_struct(self, extra):
         # The declared schema and the produced struct must agree exactly, for
@@ -347,8 +350,9 @@ class TestOutputSchemaStability:
             {},
             {"emit_sigma": True, "emit_resid_z": True, "emit_drift": True},
             {"resid_quantiles": [0.5], "emit_autocorr": True, "emit_metrics": True},
+            {"conformal": 0.9, "emit_sigma": True},
         ],
-        ids=["plain", "sigma+z+drift", "quantiles+autocorr+metrics"],
+        ids=["plain", "sigma+z+drift", "quantiles+autocorr+metrics", "conformal"],
     )
     def test_names_match_the_realized_struct_for_every_model(self, model, kw, extra):
         """The same guard as above, across every model rather than just

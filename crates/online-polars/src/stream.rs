@@ -2,9 +2,9 @@
 //! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
 
 use online_core::{
-    ClockState, Decay, EwAutoCorr, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl,
-    FtrlCfg, FtrlLoss, Holt, HoltCfg, INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg, Lasso,
-    LassoCfg, LearningRate, Micro, MicroCfg, ModelState, OnlineModel, P2Quantile, Pa, PaCfg,
+    ClockState, Conformal, Decay, EwAutoCorr, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg,
+    Ftrl, FtrlCfg, FtrlLoss, Holt, HoltCfg, INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg,
+    Lasso, LassoCfg, LearningRate, Micro, MicroCfg, ModelState, OnlineModel, P2Quantile, Pa, PaCfg,
     PaMode, PageHinkley, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, SeedRule, Sgd, SgdCfg,
     SgdLoss, SlotMetrics, State, StateError,
 };
@@ -638,6 +638,8 @@ pub struct StreamState {
     pub autocorr: Vec<Vec<EwAutoCorr>>,
     #[serde(default)]
     pub metrics: Vec<Vec<SlotMetrics>>,
+    #[serde(default)]
+    pub conformal: Vec<Vec<Conformal>>,
 }
 
 /// Live per-stream state.
@@ -665,6 +667,8 @@ pub struct Stream {
     autocorr: Vec<Vec<EwAutoCorr>>,
     /// Evaluation metrics per instance and slot (ENHANCEMENTS E22).
     metrics: Vec<Vec<SlotMetrics>>,
+    /// Conformal radius and coverage per instance and slot (ENHANCEMENTS E36).
+    conformal: Vec<Vec<Conformal>>,
     /// Row scratch, reused for the life of the stream so the chunk loop
     /// itself allocates nothing (docs/PERFORMANCE.md P1). The `pred` `Vec`
     /// inside each `Step` is the one per-row allocation left, and it is cheap
@@ -732,6 +736,8 @@ pub struct ChunkOut {
     pub autocorr: Vec<f64>,
     /// `(ic, r2, hit_rate)`, model-major: `n_models * 3 * n_slots * n_rows`.
     pub metrics: Vec<f64>,
+    /// `(pred_lo, pred_hi, coverage)`, laid out like `metrics`.
+    pub conformal: Vec<f64>,
     /// Model-major: `n_models * n_levels * n_slots * n_rows`.
     pub resid_q: Vec<f64>,
     pub drift: Vec<bool>,
@@ -769,6 +775,7 @@ impl ChunkOut {
             resid_z: vec![f64::NAN; on(extras)],
             autocorr: vec![f64::NAN; on(spec.emit_autocorr)],
             metrics: vec![f64::NAN; 3 * on(spec.emit_metrics)],
+            conformal: vec![f64::NAN; 3 * on(spec.conformal.is_some())],
             resid_q: vec![f64::NAN; n_levels * per],
             drift: vec![false; on(spec.emit_drift)],
             n_eff: vec![f64::NAN; n_models * n_rows],
@@ -836,6 +843,13 @@ impl Stream {
             } else {
                 Vec::new()
             },
+            conformal: match spec.conformal {
+                Some(level) => {
+                    let proto = Conformal::new(level, spec.conformal_rate.unwrap_or(0.05))?;
+                    slots.iter().map(|&n| vec![proto.clone(); n]).collect()
+                }
+                None => Vec::new(),
+            },
             min_periods: spec.min_periods_per_target(),
             models,
             decays,
@@ -855,6 +869,7 @@ impl Stream {
             resid_q: self.resid_q.clone(),
             autocorr: self.autocorr.clone(),
             metrics: self.metrics.clone(),
+            conformal: self.conformal.clone(),
         }
     }
 
@@ -890,6 +905,9 @@ impl Stream {
         }
         if saved.metrics.len() == stream.metrics.len() {
             stream.metrics = saved.metrics.clone();
+        }
+        if saved.conformal.len() == stream.conformal.len() {
+            stream.conformal = saved.conformal.clone();
         }
         Ok(stream)
     }
@@ -1027,6 +1045,7 @@ impl Stream {
             resid_q: &mut self.resid_q,
             autocorr: &mut self.autocorr,
             metrics: &mut self.metrics,
+            conformal: &mut self.conformal,
             scratch: &mut self.scratch,
         };
         let mut insts = build_instances(spec, models, &self.decays, diag, out, n_rows);
@@ -1227,6 +1246,7 @@ impl Stream {
         let (mut resid_var, mut resid_w) = (self.resid_var.clone(), self.resid_w.clone());
         let (mut drift, mut resid_q) = (self.drift.clone(), self.resid_q.clone());
         let (mut autocorr, mut metrics) = (self.autocorr.clone(), self.metrics.clone());
+        let mut conformal = self.conformal.clone();
         let mut scratch: Vec<Scratch> = (0..n).map(|_| Scratch::default()).collect();
         let diag = Diagnostics {
             resid_var: &mut resid_var,
@@ -1235,6 +1255,7 @@ impl Stream {
             resid_q: &mut resid_q,
             autocorr: &mut autocorr,
             metrics: &mut metrics,
+            conformal: &mut conformal,
             scratch: &mut scratch,
         };
         let models = models.iter().map(|(_, m)| ModelRef::Score(m));
@@ -1303,6 +1324,7 @@ struct Diagnostics<'a> {
     resid_q: &'a mut [Vec<Vec<P2Quantile>>],
     autocorr: &'a mut [Vec<EwAutoCorr>],
     metrics: &'a mut [Vec<SlotMetrics>],
+    conformal: &'a mut [Vec<Conformal>],
     scratch: &'a mut [Scratch],
 }
 
@@ -1330,12 +1352,14 @@ fn build_instances<'a>(
     let mut resid_q = diag.resid_q.iter_mut();
     let mut autocorr = diag.autocorr.iter_mut();
     let mut metrics = diag.metrics.iter_mut();
+    let mut conformal = diag.conformal.iter_mut();
     let mut o_pred = out.pred.chunks_mut(block.max(1));
     let mut o_resid = out.resid.chunks_mut(block.max(1));
     let mut o_sigma = out.sigma.chunks_mut(block.max(1));
     let mut o_resid_z = out.resid_z.chunks_mut(block.max(1));
     let mut o_autocorr = out.autocorr.chunks_mut(block.max(1));
     let mut o_metrics = out.metrics.chunks_mut((3 * block).max(1));
+    let mut o_conformal = out.conformal.chunks_mut((3 * block).max(1));
     let mut o_resid_q = out.resid_q.chunks_mut((out.n_levels * block).max(1));
     let mut o_drift = out.drift.chunks_mut(block.max(1));
     let mut o_n_eff = out.n_eff.chunks_mut(n_rows.max(1));
@@ -1363,6 +1387,7 @@ fn build_instances<'a>(
             resid_q: resid_q.next(),
             autocorr: autocorr.next(),
             metrics: metrics.next(),
+            conformal: conformal.next(),
             scratch: scratch.next().expect("one per instance"),
             n_slots,
             n_rows,
@@ -1372,6 +1397,7 @@ fn build_instances<'a>(
             o_resid_z: o_resid_z.next().unwrap_or_default(),
             o_autocorr: o_autocorr.next().unwrap_or_default(),
             o_metrics: o_metrics.next().unwrap_or_default(),
+            o_conformal: o_conformal.next().unwrap_or_default(),
             o_resid_q: o_resid_q.next().unwrap_or_default(),
             o_drift: o_drift.next().unwrap_or_default(),
             o_n_eff: o_n_eff.next().unwrap_or_default(),
@@ -1422,6 +1448,7 @@ struct Instance<'a> {
     resid_q: Option<&'a mut Vec<Vec<P2Quantile>>>,
     autocorr: Option<&'a mut Vec<EwAutoCorr>>,
     metrics: Option<&'a mut Vec<SlotMetrics>>,
+    conformal: Option<&'a mut Vec<Conformal>>,
     scratch: &'a mut Scratch,
     n_slots: usize,
     n_rows: usize,
@@ -1431,6 +1458,7 @@ struct Instance<'a> {
     o_resid_z: &'a mut [f64],
     o_autocorr: &'a mut [f64],
     o_metrics: &'a mut [f64],
+    o_conformal: &'a mut [f64],
     o_resid_q: &'a mut [f64],
     o_drift: &'a mut [bool],
     o_n_eff: &'a mut [f64],
@@ -1467,6 +1495,11 @@ impl Instance<'_> {
         }
         if let Some(m) = self.metrics.as_deref_mut() {
             m.iter_mut().for_each(|s| *s = SlotMetrics::new());
+        }
+        if let (Some(c), Some(level)) = (self.conformal.as_deref_mut(), spec.conformal) {
+            let rate = spec.conformal_rate.unwrap_or(0.05);
+            c.iter_mut()
+                .for_each(|e| *e = Conformal::new(level, rate).expect("validated"));
         }
     }
 }
@@ -1637,6 +1670,23 @@ fn run_instance(
                 if learn {
                     let yj = sc.ys.get(slot / nc).copied().flatten().unwrap_or(f64::NAN);
                     met.update(step.pred[slot], yj, lam, w);
+                }
+            }
+        }
+
+        // The conformal interval is `pred ± q` with `q` read before the row,
+        // then the row's own score moves `q` (ENHANCEMENTS E36). `sigma` is
+        // the pre-row value too: it sets the step and the warm start.
+        if let Some(cs) = inst.conformal.as_deref_mut() {
+            for (slot, c) in cs.iter_mut().enumerate() {
+                let at = slot * n_rows + ri;
+                let p = step.pred[slot];
+                let q = c.radius().unwrap_or(f64::NAN);
+                inst.o_conformal[at] = p - q;
+                inst.o_conformal[block + at] = p + q;
+                inst.o_conformal[2 * block + at] = c.coverage().unwrap_or(f64::NAN);
+                if learn {
+                    c.update(sc.r[slot], sc.sig[slot], lam, w);
                 }
             }
         }

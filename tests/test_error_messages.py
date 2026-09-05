@@ -96,6 +96,22 @@ VALUES = [
     (po.spec.ewridge, dict(solve_every=INF), "solve_every must be finite, got float inf"),
     (po.spec.ewridge, dict(resid_quantiles=[0.5, INF]), "resid_quantiles must be finite"),
     (po.spec.rls, dict(ridge=-INF), "ridge must be finite, got float -inf"),
+    (po.spec.ewridge, dict(conformal=INF), "conformal must be finite, got float inf"),
+    (
+        po.spec.ewridge,
+        dict(conformal=1.0),
+        "conformal must be a coverage level strictly between 0 and 1",
+    ),
+    (
+        po.spec.ewridge,
+        dict(conformal_rate=0.1),
+        "conformal_rate needs conformal (the coverage level) to be set",
+    ),
+    (
+        po.spec.ewridge,
+        dict(conformal=0.9, conformal_rate=0.0),
+        "conformal_rate must be finite and > 0",
+    ),
 ]
 
 

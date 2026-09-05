@@ -1338,6 +1338,8 @@ enum Source {
     Drift(usize),
     /// `(which of ic/r2/hit_rate, index)`.
     Metric(usize, usize),
+    /// `(which of lo/hi/coverage, index)`, laid out like `Metric`.
+    Conformal(usize, usize),
     Quantile(usize),
     Autocorr(usize),
     NEff(usize),
@@ -1685,6 +1687,17 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
             for (t_i, t) in spec.targets.iter().enumerate() {
                 for (c_i, c) in combos.iter().enumerate() {
                     fields.push(mk("resid_z", t, c, Source::ResidZ(dst(t_i, c_i))));
+                }
+            }
+        }
+        if spec.conformal.is_some() {
+            // Not `pred_lo`: `pred_` is the prefix that marks a prediction,
+            // for `eval.unpack` and for the README's grammar alike.
+            for (k, name) in ["lo", "hi", "coverage"].into_iter().enumerate() {
+                for (t_i, t) in spec.targets.iter().enumerate() {
+                    for (c_i, c) in combos.iter().enumerate() {
+                        fields.push(mk(name, t, c, Source::Conformal(k, dst(t_i, c_i))));
+                    }
                 }
             }
         }
@@ -2061,6 +2074,11 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
                     // Model-major: instance mi owns 3 contiguous blocks.
                     let (mi, slot) = (i / per_model, i % per_model);
                     ch.metrics[mi * 3 * block(ch, nr) + k * block(ch, nr) + slot * nr + ri]
+                })
+                .finish(name),
+                Source::Conformal(k, i) => scatter(n, chunks, false, |ch, nr, ri| {
+                    let (mi, slot) = (i / per_model, i % per_model);
+                    ch.conformal[mi * 3 * block(ch, nr) + k * block(ch, nr) + slot * nr + ri]
                 })
                 .finish(name),
                 Source::Quantile(i) => scatter(n, chunks, false, |ch, nr, ri| {

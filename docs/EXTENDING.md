@@ -76,8 +76,8 @@ example; `git show --stat aa96ad3` is this list as a diff.
    checks stay in step 1; and the name in **`ModelKind::KINDS`**. A model
    that predicts no target goes into `ModelKind::is_unsupervised` too:
    `validate` then refuses every residual-based flag (`emit_sigma`,
-   `emit_metrics`, `resid_quantiles`, ...) for it by name, rather than
-   emitting nothing.
+   `emit_metrics`, `resid_quantiles`, `conformal`, ...) for it by name,
+   rather than emitting nothing.
    *Check*: `test_diagnostics::test_rejected_for_ew_cov` and
    `test_kmeans::TestRefusals::test_residual_diagnostics_are_refused_by_name`
    (and `test_micro`'s twin) pin the refusal, for every flag.

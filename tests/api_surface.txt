@@ -36,6 +36,8 @@
   emit_averaged = False
   average_eta = None
   emit_metrics = False
+  conformal = None
+  conformal_rate = None
   resid_quantiles = None
   emit_autocorr = False
   resid_autocorr_lag = None
@@ -269,6 +271,30 @@
     resid_z_z__a_r0.5@h100
     resid_z_z__b_r0.000001@h100
     resid_z_z__b_r0.5@h100
+    lo_y__a_r0.000001@h100
+    lo_y__a_r0.5@h100
+    lo_y__b_r0.000001@h100
+    lo_y__b_r0.5@h100
+    lo_z__a_r0.000001@h100
+    lo_z__a_r0.5@h100
+    lo_z__b_r0.000001@h100
+    lo_z__b_r0.5@h100
+    hi_y__a_r0.000001@h100
+    hi_y__a_r0.5@h100
+    hi_y__b_r0.000001@h100
+    hi_y__b_r0.5@h100
+    hi_z__a_r0.000001@h100
+    hi_z__a_r0.5@h100
+    hi_z__b_r0.000001@h100
+    hi_z__b_r0.5@h100
+    coverage_y__a_r0.000001@h100
+    coverage_y__a_r0.5@h100
+    coverage_y__b_r0.000001@h100
+    coverage_y__b_r0.5@h100
+    coverage_z__a_r0.000001@h100
+    coverage_z__a_r0.5@h100
+    coverage_z__b_r0.000001@h100
+    coverage_z__b_r0.5@h100
     ic_y__a_r0.000001@h100
     ic_y__a_r0.5@h100
     ic_y__b_r0.000001@h100
@@ -359,6 +385,30 @@
     resid_z_z__a_r0.5@h500
     resid_z_z__b_r0.000001@h500
     resid_z_z__b_r0.5@h500
+    lo_y__a_r0.000001@h500
+    lo_y__a_r0.5@h500
+    lo_y__b_r0.000001@h500
+    lo_y__b_r0.5@h500
+    lo_z__a_r0.000001@h500
+    lo_z__a_r0.5@h500
+    lo_z__b_r0.000001@h500
+    lo_z__b_r0.5@h500
+    hi_y__a_r0.000001@h500
+    hi_y__a_r0.5@h500
+    hi_y__b_r0.000001@h500
+    hi_y__b_r0.5@h500
+    hi_z__a_r0.000001@h500
+    hi_z__a_r0.5@h500
+    hi_z__b_r0.000001@h500
+    hi_z__b_r0.5@h500
+    coverage_y__a_r0.000001@h500
+    coverage_y__a_r0.5@h500
+    coverage_y__b_r0.000001@h500
+    coverage_y__b_r0.5@h500
+    coverage_z__a_r0.000001@h500
+    coverage_z__a_r0.5@h500
+    coverage_z__b_r0.000001@h500
+    coverage_z__b_r0.5@h500
     ic_y__a_r0.000001@h500
     ic_y__a_r0.5@h500
     ic_y__b_r0.000001@h500

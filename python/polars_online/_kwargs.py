@@ -61,6 +61,8 @@ class ExprKwargs(TypedDict, total=False):
     emit_averaged: bool
     average_eta: float | None
     emit_metrics: bool
+    conformal: float | None
+    conformal_rate: float | None
     resid_quantiles: list[float] | None
     emit_autocorr: bool
     resid_autocorr_lag: int | None

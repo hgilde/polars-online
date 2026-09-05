@@ -691,6 +691,7 @@ class TestRefusals:
             {"emit_resid_z": True},
             {"emit_metrics": True},
             {"resid_quantiles": [0.5]},
+            {"conformal": 0.9},
             {"emit_autocorr": True},
             {"emit_drift": True},
             {"emit_selected": True},

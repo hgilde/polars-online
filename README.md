@@ -553,10 +553,29 @@ describe:
 | `emit_metrics` | `ic_<slot>`, `r2_<slot>`, `hit_rate_<slot>` | the numbers `po.eval` computes, kept in O(state) beside the model |
 | `resid_quantiles` | `absresid_q<p>_<slot>` | P² quantiles of \|resid\| — a distribution-free interval where `sigma` gives a Gaussian one |
 | `emit_autocorr` | `autocorr_<slot>` | EW residual autocorrelation; non-zero means the model is mis-specified |
+| `conformal=0.9` | `lo_<slot>`, `hi_<slot>`, `coverage_<slot>` | an adaptive conformal interval at that coverage, distribution-free, and the coverage it has actually delivered |
 
 Drift detection complements the halflife rather than replacing it: decay
 forgets smoothly and always; a detector notices a break and says so, within
 a couple of rows of a sign flip.
+
+`conformal` is the interval to use when the residuals are not Gaussian. It
+tracks the `coverage` quantile of `|resid|` directly — the radius grows by
+`conformal_rate · sigma · coverage` on a miss and shrinks by
+`conformal_rate · sigma · (1 − coverage)` on a hit — so its long-run coverage
+is the number you asked for whatever the residuals do, with an error that
+shrinks like `1/T`. `sigma` gives a Gaussian interval; on Gaussian residuals the two
+agree, and on fat-tailed or heteroskedastic ones the Gaussian interval
+over-covers by several points where this one lands on target. It starts at
+`sigma · Φ⁻¹(1 − α/2)` and is null until then, is read before the row like
+everything else, and costs three numbers per slot.
+
+```python
+ci = po.spec.ewridge("ci", targets=["y"], features=["x0", "x1"], clock="t",
+                     max_dclock=300.0, halflife=500.0, conformal=0.9)
+band = po.ModelBank([ci]).fit_predict(df).unnest("ci")
+held = band.select(((pl.col("lo_y") <= df["y"]) & (df["y"] <= pl.col("hi_y"))).mean())
+```
 
 After the fact, `po.eval` reads the output frame:
 

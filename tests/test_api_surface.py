@@ -109,6 +109,7 @@ def describe_api() -> str:
                 emit_metrics=True,
                 emit_autocorr=True,
                 resid_quantiles=[0.05, 0.95],
+                conformal=0.9,
                 emit_selected=True,
                 emit_averaged=True,
             ),

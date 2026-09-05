@@ -426,8 +426,24 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       save/load, groups, the ragged `coef`, the expression and CLI paths, every
       refusal), 21 core unit tests, the golden and contract suites, the Python
       golden pipeline.
-- [ ] 25. **E36: adaptive conformal intervals** (`pred_lo`/`pred_hi`/`coverage`) on every
+- [x] 25. **E36: adaptive conformal intervals** (`lo`/`hi`/`coverage` per slot) on every
       regression model, O(1) state per slot; oracle + large-data coverage tests.
+      Built 2026-09-05, on branch `clustering-build`: `online_core::Conformal`
+      (`conformal.rs`, with `norm_ppf` for the warm start), spec fields `conformal`
+      (the coverage level) and `conformal_rate` (0.05, in units of the slot's
+      `sigma`); `StreamState.conformal` as a `#[serde(default)]` per-slot vector
+      (schema stays 2); `Source::Conformal`; fields `lo_<slot>`, `hi_<slot>`,
+      `coverage_<slot>` after `resid_z`. The fields are not `pred_lo`/`pred_hi`
+      as sketched above: `pred_` marks a prediction for `eval.unpack` and the
+      README's field grammar, and a bound is not one. The update rule, the warm
+      start and the guarantee are in §11a below. Tests: 70 cases in
+      `tests/test_conformal.py` (a longhand replay bit-exact for every regression
+      model over a grid, nulls, zero and varying weights, an irregular clock and
+      groups; the telescoped `1/T` bound as a hard inequality and coverage
+      within 0.01 of target on four 200k-row residual regimes; fields, validation,
+      refusals, nulls, zero weights, warmup, out-of-sample-ness, chunk
+      invariance, save/load, `predict`, a drift reset, the runner and the
+      expression), 9 core unit tests, the golden and API-surface snapshots.
 - [ ] 26. **E37 + E38 on `ew_cov`:** Mahalanobis distance (`stats: "mahal"`) and EW-PCA at
       checkpoints (`pca`, `pca_every`); oracles via `gram()` and numpy.
 - [ ] 27. **E39: class-conditional `ew_cov`** (`class` column, per-class moments).
@@ -680,6 +696,46 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   (two bridged) — the working band narrows as clusters approach.
 - *Oracle.* `reference_cluster.py`'s `Micro` mirrors every operation in
   order; 17 bit-exact cases; 63 micro tests in all.
+
+**Task 25's decisions: the conformal recursion, 2026-09-05.**
+
+- *The rule.* Per slot, `q` is a tracked quantile of the conformity score
+  `s = |resid|`: read `lo = pred − q`, `hi = pred + q` before the row, then
+  `err = 1{s > q}`, `q ← max(0, q + η·w·(err − α))`, `α = 1 − coverage`. This
+  is the P step of Angelopoulos, Candès & Tibshirani (2023) applied to the
+  score's quantile, i.e. online gradient descent on the pinball loss, and it
+  telescopes: for scores in `[0, B]`, `|Σ η_t (err_t − α)| ≤ B + max η`
+  (the clamp at zero can only add coverage), so the average miss rate tends
+  to `α` at rate `1/T` on *any* residual sequence. No distribution, no
+  stationarity, no split: the score comes from a model that has not seen the
+  row, which is the property the library already guarantees everywhere.
+- *The step is in sigma units.* `η_t = conformal_rate · sigma_t`, the slot's
+  EW residual standard deviation before the row. A fixed `η` would need a
+  scale from the user; scaling by `sigma` makes 0.05 a sensible default on
+  every stream and lets the radius follow a scale shift at the speed `sigma`
+  does. The bound holds in σ-weighted form with `η_t` in place of `η`. With no
+  usable `sigma` (`emit_sigma` is not required: the tracker reads the
+  internal one, which exists for every regression model) the step is 0 and
+  the radius holds.
+- *The warm start.* `q` is undefined until the first scored row that has a
+  finite positive `sigma`; then `q = sigma · Φ⁻¹(1 − α/2)`, the Gaussian
+  radius, and that row is not scored. `Φ⁻¹` is Acklam's rational
+  approximation evaluated in a fixed order, so the Python replay in
+  `tests/test_conformal.py` is bit-exact. The alternative, `q = 0` and let it
+  grow, wastes `B/η` rows widening from nothing; starting at the Gaussian
+  radius is right on Gaussian residuals and a few steps off otherwise.
+- *`coverage` is the EW hit rate* on the model's own clock (`cov_w` decays
+  by `lam`, a row adds `w`), read before the row, so it says what the
+  interval has delivered recently, not over all time. A null target or a
+  zero-weight row ages it and moves nothing else; the warm-start row is not
+  counted.
+- *Measured (200k rows, halflife 2000, rate 0.05).* Coverage at target
+  ±0.01 on Gaussian, t(2.5), `exp(x₁)·N(0,1)` and slope-flip + noise-×3
+  residuals; the Gaussian `pred ± 1.645·sigma` covers 0.942–0.951 on the
+  last three. The radius follows the noise ×3 shift to within 10% of the
+  new Gaussian radius. Levels 0.5, 0.8, 0.99 are met within 0.012 on fat
+  tails. Cost: three f64s of output and five of state per slot; no
+  measurable throughput change on `ewridge`.
 
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**

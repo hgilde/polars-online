@@ -55,6 +55,7 @@
 
 mod clock;
 mod cluster;
+mod conformal;
 mod drift;
 mod ewcov;
 mod ewridge;
@@ -75,6 +76,7 @@ pub use cluster::{
     ClusterSummary, FeatureMoments, KMeans, KMeansCfg, LINK_FACTOR, LINK_FLOOR, LINK_QUANTILE,
     Micro, MicroCfg, MicroCluster, SeedRule, SplitMix64, dist2, merged_radius2,
 };
+pub use conformal::{Conformal, norm_ppf};
 pub use drift::PageHinkley;
 pub use ewcov::{EwCov, EwCovCfg, EwCovModel, EwCovStat, partial_corr, variance_is_usable};
 pub use ewridge::{EwRidge, EwRidgeCfg};

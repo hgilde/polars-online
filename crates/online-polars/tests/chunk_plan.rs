@@ -56,7 +56,7 @@ fn grouped_specs(group: &str) -> Vec<Spec> {
             "[30.0, 120.0]",
             r#""session_gap": 10.0, "coef_every": 1, "emit_sigma": true,
                "emit_resid_z": true, "emit_metrics": true,
-               "resid_quantiles": [0.5, 0.9], "emit_autocorr": true,
+               "resid_quantiles": [0.5, 0.9], "emit_autocorr": true, "conformal": 0.9,
                "emit_drift": true, "emit_selected": true, "emit_averaged": true,"#,
         ),
         spec(

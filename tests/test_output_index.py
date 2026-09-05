@@ -24,6 +24,7 @@ def grid_spec(**kw):
         min_periods=3.0,
         emit_sigma=True,
         resid_quantiles=[0.05, 0.95],
+        conformal=0.9,
         emit_selected=True,
         emit_averaged=True,
     )

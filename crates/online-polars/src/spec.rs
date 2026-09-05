@@ -710,6 +710,21 @@ pub struct Spec {
     /// keeping the rows.
     #[serde(default)]
     pub emit_metrics: bool,
+    /// Emit `pred_lo_<slot>`, `pred_hi_<slot>` and `coverage_<slot>`: an
+    /// adaptive conformal interval `pred ± q` at this coverage level, with
+    /// the realized coverage beside it (ENHANCEMENTS E36). `q` is a tracked
+    /// quantile of `|resid|` — `q ← max(0, q + rate·sigma·w·(1{|resid| > q}
+    /// − α))`, `α = 1 − coverage` — so the long-run coverage is the target
+    /// whatever the residual distribution is and however it moves, where
+    /// `sigma` gives a Gaussian interval. Read before the row, like every
+    /// other diagnostic. A coverage level strictly between 0 and 1.
+    #[serde(default)]
+    pub conformal: Option<f64>,
+    /// Step of the conformal radius per unit of the slot's `sigma`. Default
+    /// 0.05: a miss widens the interval by `0.05·sigma·(1 − α)`, a hit
+    /// narrows it by `0.05·sigma·α`.
+    #[serde(default)]
+    pub conformal_rate: Option<f64>,
     /// Emit `absresid_q<p>_<slot>` for each level in `resid_quantiles`: a P²
     /// estimate of that quantile of `|resid|` (ENHANCEMENTS E23). Five numbers
     /// per level, no window — a distribution-free interval where `sigma` only
@@ -1015,6 +1030,27 @@ impl Spec {
                 ));
             }
         }
+        if self.conformal.is_some_and(|c| !(c > 0.0 && c < 1.0)) {
+            return Err(format!(
+                "spec {:?}: conformal must be a coverage level strictly between 0 and 1",
+                self.name
+            ));
+        }
+        if self
+            .conformal_rate
+            .is_some_and(|r| !(r > 0.0 && r.is_finite()))
+        {
+            return Err(format!(
+                "spec {:?}: conformal_rate must be finite and > 0",
+                self.name
+            ));
+        }
+        if self.conformal_rate.is_some() && self.conformal.is_none() {
+            return Err(format!(
+                "spec {:?}: conformal_rate needs conformal (the coverage level) to be set",
+                self.name
+            ));
+        }
         if self.resid_autocorr_lag.is_some_and(|l| l == 0) {
             return Err(format!(
                 "spec {:?}: resid_autocorr_lag must be >= 1",
@@ -1033,6 +1069,7 @@ impl Spec {
                 ("emit_resid_z", self.emit_resid_z),
                 ("emit_metrics", self.emit_metrics),
                 ("resid_quantiles", self.resid_quantiles.is_some()),
+                ("conformal", self.conformal.is_some()),
                 ("emit_autocorr", self.emit_autocorr),
                 ("emit_drift", self.emit_drift),
                 ("emit_averaged", self.emit_averaged),

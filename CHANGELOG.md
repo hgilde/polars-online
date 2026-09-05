@@ -71,6 +71,30 @@ carries breaking changes.
   `ModelState::Micro` (schema still 2, as for `kmeans`). Two `Source`
   kinds (`Id`, `Flag`) carry `i64` and boolean fields out of the `pred`
   buffer, so a struct can now hold `Int64` and `Boolean` columns.
+- **Adaptive conformal intervals** on every regression model
+  (`docs/ENHANCEMENTS.md` E36, `docs/PLAN.md` task 25): `conformal=0.9`
+  adds `lo_<slot>`, `hi_<slot>` and `coverage_<slot>` — the interval
+  `pred ± q` at that coverage and the exponentially weighted coverage it
+  has delivered so far. `q` tracks the quantile of `|resid|` directly,
+  `q ← max(0, q + conformal_rate · sigma · w · (1{|resid| > q} − α))`, so
+  the long-run coverage is the level asked for with no assumption on the
+  residuals and an error that shrinks like `1/T` (the bound is stated in
+  `online_core::conformal` and asserted as a hard inequality on 200k-row
+  streams in `tests/test_conformal.py`). The step is in units of the slot's
+  `sigma` (`conformal_rate`, default 0.05), the radius starts at the
+  Gaussian one `sigma · Φ⁻¹(1 − α/2)` and is null until then, and it is
+  read before the row like every other output. Measured on 200k rows:
+  coverage within 0.01 of 0.9 on Gaussian, Student-t(2.5),
+  lognormal-scale-mixture and regime-shifting residuals, where
+  `pred ± 1.645·sigma` covers 0.94–0.95 on the last three. Weighted,
+  chunk-invariant, in the state file, honoured by `predict` (the radius is
+  read and not moved) and restarted by a drift `reset`. Refused by name for
+  `ew_cov`, `kmeans` and `micro`.
+- Rust: `online_core::{Conformal, norm_ppf}` (Acklam's inverse normal, so a
+  Python mirror is bit-exact); `Source::Conformal`. The state schema stays
+  at 2: the per-slot trackers are a `#[serde(default)]` field, so a 0.1
+  state file loads and a bank with `conformal` set starts its intervals
+  from the first chunk it sees.
 
 ### Changed
 

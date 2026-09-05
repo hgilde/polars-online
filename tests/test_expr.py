@@ -262,6 +262,8 @@ class TestEveryEmitFlagThroughThePlugin:
         {"emit_metrics": True},
         {"resid_quantiles": [0.5, 0.9]},
         {"emit_autocorr": True},
+        {"conformal": 0.9},
+        {"conformal": 0.8, "conformal_rate": 0.2, "emit_sigma": True},
         {"emit_drift": True},
         {"emit_drift": True, "drift_action": "reset"},
         {"emit_selected": True, "emit_drift": True, "halflife": [100.0, 300.0]},
