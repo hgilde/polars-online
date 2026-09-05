@@ -550,7 +550,7 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       the caller's chunk size through the slot stride (a power-of-two chunk
       2–3× slower), fixed by processing in cache-sized runs with an odd-line
       stride.
-- [ ] 32. **Prepare 0.2.0**: version bump, CHANGELOG, README and VALIDATION numbers
+- [x] 32. **Prepare 0.2.0**: version bump, CHANGELOG, README and VALIDATION numbers
       regenerated, gate and CI green. Tag and Release dispatch are the user's steps.
 
 ## 11a. Decisions made while implementing
@@ -1175,6 +1175,36 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   from one quiet run of `scripts/benchmark.py --markdown` on the final
   build; the per-row and thread-scaling tables in `docs/PERFORMANCE.md`
   §13 carry both builds so the ratio, not the absolute, is the claim.
+
+**Task 32's decisions: 0.2.0 prepared, 2026-09-05.**
+
+- *What ships.* Tasks 23–31 on `clustering-build`, fast-forwarded onto
+  `main`: `kmeans` and `micro`, conformal intervals, `mahal` and EW-PCA
+  on `ew_cov`, `ew_class`, constrained `sgd`/`pa`, `kalman` reversion,
+  `seqtest`, and the bit-exact performance work. Version 0.1.1 → 0.2.0 in
+  `Cargo.toml` (workspace and the two path dependencies), `pyproject.toml`,
+  `__init__.py` and both lock files — the same six files as the 0.1.1 bump;
+  `CHANGELOG.md` cut with `[Unreleased]` left at "Nothing yet."
+- *Minor, not patch.* Pre-1.0 the minor carries breaking changes, and
+  there is one: a residual diagnostic on a model with no predictions is
+  refused by name where `ew_cov` accepted it silently. Everything else is
+  additive. The README's pin advice moves to `~=0.2.0`.
+- *The 0.1 numbers are the 0.1 numbers.* `docs/VALIDATION.md` regenerated
+  on this build differs from 0.1.1's in the version line and one timing;
+  `golden.rs` and `test_golden_pipeline.py` gained entries for the new
+  models and lost no value (the diff since `main` removes three type
+  signatures and nothing numeric); Task 31's two dumps compare bit for bit
+  against the Task 30 build. The README's two *Performance* tables and the
+  test-count line (466 Rust tests, ~1,700 pytest cases from 920-odd
+  functions) are regenerated; `docs/TESTING.md`'s status line with them,
+  its coverage figures left dated.
+- *Where it stops.* Gate PASS on every commit; CI green on the Task 31
+  commit (33960229948) and on the prepare commit (33962266816, superseded
+  by the run on this head); `main` fast-forwarded to this head and pushed
+  once that run is green. The Release rehearsal (`release.yml` dispatched
+  without a tag) and the annotated tag `v0.2.0` are the user's steps, as
+  for 0.1.1: the tag goes on the commit whose rehearsal and CI are green,
+  and the `v*` ruleset makes it permanent.
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without
