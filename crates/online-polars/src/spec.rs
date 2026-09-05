@@ -407,6 +407,12 @@ pub enum ModelKind {
         p0: Option<f64>,
         #[serde(default)]
         share_p: bool,
+        /// Per-slot reversion halflife (scalar or one per slot, intercept
+        /// first): the coefficient mean shrinks toward zero by `2^(-d/r_i)`
+        /// per row. `inf` (the default) is the random walk
+        /// (docs/ENHANCEMENTS.md E41).
+        #[serde(default)]
+        revert_halflife: Option<FloatOrList>,
         /// Standardize features internally (default true). Off makes the filter
         /// a plain Bayesian linear regression on the features' own scale.
         #[serde(default = "default_true")]
@@ -1480,6 +1486,7 @@ impl Spec {
                 q,
                 obs_var,
                 p0,
+                revert_halflife,
                 ..
             } => {
                 let k_total = self.k() + usize::from(self.add_intercept);
@@ -1495,6 +1502,21 @@ impl Spec {
                         "spec {:?}: coef_halflife must be > 0 (\"inf\" pins a coefficient)",
                         self.name
                     ));
+                }
+                if let Some(rs) = revert_halflife {
+                    let rs = rs.to_vec();
+                    if rs.len() != 1 && rs.len() != k_total {
+                        return Err(format!(
+                            "spec {:?}: revert_halflife must be scalar or length {k_total}",
+                            self.name
+                        ));
+                    }
+                    if rs.iter().any(|&r| !positive(r)) {
+                        return Err(format!(
+                            "spec {:?}: revert_halflife must be > 0 (\"inf\" is the random walk)",
+                            self.name
+                        ));
+                    }
                 }
                 if q.as_ref().is_some_and(|q| q.len() != k_total) {
                     return Err(format!(

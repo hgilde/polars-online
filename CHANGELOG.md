@@ -193,6 +193,35 @@ carries breaking changes.
   irregular clock; and on 200k rows, Dirichlet weights recovered on the
   simplex to 0.005 and feasible to 1e-12 at every row
   (`tests/test_constraints.py`).
+- **Coefficient reversion on `kalman`** (`revert_halflife`;
+  `docs/ENHANCEMENTS.md` E41, task 29). The coefficient prior was a random
+  walk: a learned slope stayed until new rows moved it, and its variance
+  grew without bound over a run of null targets. With `revert_halflife` a
+  slot decays toward zero with the clock — `β ← Φβ`, `P ← ΦPΦ + Q·Δclock`,
+  `Φ = diag(2^(−Δclock/r_i))` — before each update, so a regressor active
+  only in bursts is forgotten between them and the prior variance settles
+  at `q_i·Δclock/(1−φ_i²)`: a mean-reverting (AR(1)) coefficient. A scalar
+  applies to every slot including the intercept; a list is one halflife per
+  slot, intercept first, and `inf` (the default) keeps a slot a random
+  walk. Zero is zero in the standardized coordinates — "no effect" for a
+  slope, "the target averages zero" for the intercept — and the default is
+  bit-identical to before. A zero-weight or null-target row still advances
+  the transition (it is clock), and `ModelBank.predict` propagates by the
+  same `Φ` over the distance from the last learned row, capped by
+  `max_dclock`, so it returns exactly what the next `fit_predict` row would.
+  NaN, zero and negative halflives are refused by name, from Python, the
+  plan and the CLI; `rls`/`ewridge` do not take the argument. Rust:
+  `KalmanCfg::revert_halflife` (`serde(default)`: a saved state loads
+  unchanged); TOML `revert_halflife = ["inf", 40.0, 40.0]`. Verified by a
+  Python replay held to 1e-9 against the bank over thirteen configurations
+  (per-slot and shared `P`, explicit `q`/`obs_var`/`p0`, nulls, skipped
+  features, zero weights, no intercept, `standardize=False`, a capped gap);
+  the shrink over an irregular clock with skipped rows exact to 1e-11; and
+  on 300k rows with the exact-Bayes process noise, a reverting filter
+  tracks a sparse mean-reverting slope at 0.51× the random walk's
+  tracking error (0.86× dense), a slot left at `inf` is within 0.2% of the
+  unmodified filter, and a random-walk truth is still best tracked by the
+  random walk (`tests/test_kalman_revert.py`).
 
 ### Changed
 

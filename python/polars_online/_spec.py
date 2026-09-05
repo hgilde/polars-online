@@ -144,7 +144,7 @@ def _got(v: Any) -> str:
 _INF_OK: dict[str, frozenset[str]] = {
     "*": frozenset({"halflife", "min_periods", "max_dclock", "session_gap"}),
     "ewridge": frozenset({"ridge"}),
-    "kalman": frozenset({"coef_halflife", "q"}),
+    "kalman": frozenset({"coef_halflife", "q", "revert_halflife"}),
     "sgd": frozenset({"clip_gradient", "coef_min", "coef_max"}),
     "pa": frozenset({"coef_min", "coef_max"}),
     "holt": frozenset({"trend_halflife"}),
@@ -623,6 +623,7 @@ def kalman(
     obs_var: float | None = None,
     p0: float | None = None,
     share_p: bool = False,
+    revert_halflife: float | list[float] | None = None,
     standardize: bool = True,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
@@ -631,7 +632,8 @@ def kalman(
     State per target: coefficient mean ``b_j`` and covariance ``P_j``. Per row
     (clock delta ``d``, row weight ``w``)::
 
-        P_j <- P_j + Q * d / w
+        b_j <- Phi b_j                 Phi = diag(2^(-d / r_i))
+        P_j <- Phi P_j Phi + Q * d
         s    = z' P_j z + R_j / w
         k    = P_j z / s
         b_j <- b_j + k (y_j - z' b_j)
@@ -643,6 +645,19 @@ def kalman(
     (intercept first); ``inf`` pins that coefficient. An explicit ``q``
     overrides the derivation. Observation noise is the EW residual variance
     unless ``obs_var`` is given.
+
+    ``revert_halflife`` gives each slot a reversion halflife ``r_i``: between
+    observations the coefficient shrinks toward zero by ``2^(-d / r_i)``, so a
+    coefficient no row has supported for a while is forgotten rather than
+    carried. ``inf`` (the default) is the random walk and costs nothing. A
+    scalar applies to every slot, the intercept included; a list is one value
+    per slot, intercept first, and ``[inf, r, r]`` leaves the intercept a
+    random walk. The pull is toward zero in the standardized coordinates when
+    ``standardize`` is on -- a slope toward "no effect", the intercept toward
+    "the target averages zero". With ``Q`` from ``coef_halflife`` a reverting
+    slot settles at prior variance ``q_i d / (1 - phi_i^2)``, a stationary
+    AR(1) instead of an unbounded walk. Predictions propagate the state by the
+    same ``Phi`` for the row's clock gap.
 
     ``P`` is per target because the Riccati recursion depends on ``sigma^2_j``;
     ``share_p=True`` keeps one ``P`` driven by the mean ``sigma^2`` across
@@ -659,6 +674,7 @@ def kalman(
         "obs_var": obs_var,
         "p0": p0,
         "share_p": share_p,
+        "revert_halflife": revert_halflife,
         "standardize": standardize,
     }
     return _common(name, model, targets=targets, features=features, **common)

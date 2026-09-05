@@ -120,6 +120,7 @@
     obs_var = None
     p0 = None
     share_p = False
+    revert_halflife = None
     standardize = True
     common
   kmeans:

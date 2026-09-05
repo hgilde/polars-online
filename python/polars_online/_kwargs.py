@@ -115,6 +115,7 @@ class KalmanKwargs(ExprKwargs, total=False):
     obs_var: float | None
     p0: float | None
     share_p: bool
+    revert_halflife: float | list[float] | None
     standardize: bool
 
 

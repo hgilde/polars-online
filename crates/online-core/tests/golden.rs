@@ -169,10 +169,33 @@ fn kalman_golden() {
         p0: 1.0,
         share_p: false,
         min_periods: 3.0,
+        revert_halflife: vec![f64::INFINITY],
         standardize: true,
     })
     .unwrap();
     check("kalman", &signature(&mut m, 0), GOLDEN_KALMAN);
+}
+
+/// E41: the intercept a random walk, both slopes reverting, one of them
+/// fast, on the same stream as `kalman_golden`.
+#[test]
+fn kalman_revert_golden() {
+    let mut m = Kalman::new(KalmanCfg {
+        n_features: 2,
+        n_targets: 1,
+        add_intercept: true,
+        decay: Decay::Halflife(50.0),
+        halflife: vec![f64::INFINITY, 30.0, 100.0],
+        q: None,
+        obs_var: None,
+        p0: 1.0,
+        share_p: false,
+        min_periods: 3.0,
+        revert_halflife: vec![f64::INFINITY, 40.0, 8.0],
+        standardize: true,
+    })
+    .unwrap();
+    check("kalman_revert", &signature(&mut m, 0), GOLDEN_KALMAN_REVERT);
 }
 
 #[test]
@@ -523,6 +546,8 @@ const GOLDEN_RLS: &[f64] = &[
     -0.06708586579330882,
 ];
 const GOLDEN_KALMAN: &[f64] = &[-0.07791204926408574, 2.037785637299904, 0.01654269850933259];
+const GOLDEN_KALMAN_REVERT: &[f64] =
+    &[0.19803392372898182, 0.8472979762044034, 0.08824481622816764];
 const GOLDEN_LASSO: &[f64] = &[0.25359037757905634, 2.094156488785958, -0.07537065924040198];
 const GOLDEN_HUBER: &[f64] = &[
     0.24786900553362573,

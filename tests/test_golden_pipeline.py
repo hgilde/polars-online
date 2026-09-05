@@ -66,6 +66,9 @@ def stream(n: int = 120) -> pl.DataFrame:
     )
 
 
+INF = float("inf")
+
+
 def specs() -> list[dict]:
     common = dict(
         targets=["y0"],
@@ -97,6 +100,9 @@ def specs() -> list[dict]:
         po.spec.pa("pa", **common),
         po.spec.sgd("sgd_simplex", learning_rate=0.02, coef_min=0.0, coef_sum=1.0, **common),
         po.spec.pa("pa_box", coef_min=-0.5, coef_max=0.5, **common),
+        po.spec.kalman(
+            "kalman_revert", coef_halflife=80.0, revert_halflife=[INF, 30.0, 8.0], **common
+        ),
         po.spec.ftrl("ftrl", loss="squared", alpha=0.5, **common),
         po.spec.holt(
             "holt",
@@ -315,6 +321,15 @@ GOLDEN: dict[str, float | str | None] = {
     "pa_box.n_eff@25": 7.999488060097996,
     "pa_box.n_eff@60": 12.473100285951407,
     "pa_box.n_eff@119": 14.963784088176922,
+    "kalman_revert.pred_y0@25": 0.7158232394458026,
+    "kalman_revert.pred_y0@60": -1.7736562223617134,
+    "kalman_revert.pred_y0@119": -0.12549147508700553,
+    "kalman_revert.resid_y0@25": -5.567429063680519,
+    "kalman_revert.resid_y0@60": 1.3016150935446356,
+    "kalman_revert.resid_y0@119": 0.0747927041287767,
+    "kalman_revert.n_eff@25": 7.999488060097996,
+    "kalman_revert.n_eff@60": 12.473100285951407,
+    "kalman_revert.n_eff@119": 14.963784088176922,
     "ftrl.pred_y0@25": -4.004533091781381,
     "ftrl.pred_y0@60": -0.2849015592079467,
     "ftrl.pred_y0@119": -0.19641552391486483,

@@ -505,7 +505,21 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       chunk invariance, save/load, `predict`, groups, the expression, the
       lazy path, the runner, the CLI, every refusal by name); 9 core unit
       tests in `constraint.rs`, 7 in `sgd.rs`, 4 in `pa.rs`, two goldens.
-- [ ] 29. **E41: diagonal transition `φ^d`** on `kalman` (coefficient dynamics).
+- [x] 29. **E41: diagonal transition `φ^d`** on `kalman` (coefficient dynamics):
+      `revert_halflife`, a scalar or one per slot (intercept first, `inf` =
+      random walk, the default), `β ← Φβ`, `P ← ΦPΦ + Q·d` before each
+      row's prediction, `predict` propagating by the same `Φ`. Verified by
+      the Python replay held to 1e-9 against the bank over thirteen
+      configurations (per-slot / shared `P`, explicit `q`/`obs_var`/`p0`,
+      nulls, skipped features, zero weights, no intercept,
+      `standardize=False`, a capped gap), the exact shrink over an irregular
+      clock with skipped rows to 1e-11, the covariance bound
+      `q/(1−φ²)` after 200k null rows, 300k-row tracking (sparse / dense /
+      random-walk truth), and the edge cases (`inf` bit-identical in every
+      spelling, scalar == list, zero-weight rows, `predict` over the clock
+      distance, chunk invariance, save/load, groups, the expression, the
+      lazy path, the CLI, every refusal by name); 7 core unit tests, the
+      contract with and without reversion, two goldens.
 - [ ] 30. **E42: a sequential e-process test** between two specs' losses.
 - [ ] 31. **Performance and parallel-performance deep dive** over the new models and
       enhancements (`docs/PERFORMANCE.md`, `benchmark.py`, `scaling_bench.py`).
@@ -952,6 +966,52 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   is a `#[serde(skip)]` buffer now. The `O(k)`-expected simplex
   projections (Condat 2016) would be the next step if a bank ever ran
   hundreds of constrained slopes; none does.
+
+**Task 29's decisions: coefficient reversion, 2026-09-05.**
+
+- *Where the transition sits.* At the top of `step`, before the row's
+  prediction and before the process noise, so `P ← ΦPΦ + Q·d` is the
+  textbook order and the prediction a row sees is the coefficient after
+  the decay over the gap since the last accepted row. That makes a
+  null-target or zero-weight row advance it too — it is clock, like the
+  `Q·d` it precedes — and it makes `predict(x, d)` a closed form,
+  `Σ z_i·(β_i·φ_i(d))`, bit-identical to the step because `β·φ == φ·β`;
+  the contract test (`predict_is_the_step_without_the_step`) runs with
+  and without reversion. The bank's `predict` already passes the distance
+  to the last learned row, capped by `max_dclock`, for `holt`; `kalman`
+  now reads it.
+- *Toward zero, not toward a prior.* ENHANCEMENTS E41 offered both. Zero
+  in the standardized coordinates is the one target that means the same
+  thing at every row — "no effect" for a slope, "the target averages zero"
+  for the intercept — while a fixed caller-unit prior would be a moving
+  target as the scaler moves, and `ewridge`'s E15 warm prior solves from
+  accumulated statistics the filter does not keep. No `coef0` on `kalman`.
+- *A scalar broadcasts to every slot, intercept included*, as
+  `coef_halflife` does; `[inf, r, r]` exempts it. Nothing is applied when
+  no slot is finite, so the default is bit-identical to the previous
+  filter (checked against HEAD in a worktree, and by the golden bank).
+- *Prior variance.* A reverting slot's stationary variance is
+  `q_i·d/(1−φ_i²)` instead of unbounded; measured after 200k null-target
+  rows, the gain of the next update matches that to 1e-6 relative (and the
+  random walk's `n·q` to 1e-3).
+- *Refusals.* Length 1 or `k_total`; NaN, zero and negative refused (`inf`
+  is the walk); Python's `_INF_OK` admits `inf`; `rls`/`ewridge` do not
+  take the argument.
+- *Measured.* 300k rows, exact-Bayes process noise (`q = [0, 1−φ², σ_w²]`,
+  `obs_var = σ²`, `standardize=False`): a slope active 2% of the time is
+  tracked at 0.51× the random walk's error (0.86× dense at `H = 20`,
+  `σ = 2`; 0.93× at `H = 40`, `σ = 1.5`); a slot left at `inf` within 0.2%
+  of the unmodified filter; a random-walk truth under a reverting filter
+  (`r = 30`) more than 2× worse. A first cut with `coef_halflife=40` and
+  the default process noise had the reverting filter *worse* (0.72 vs
+  0.53): `q` was far below the truth's innovation variance and the shrink
+  dominated, so the test was rewritten around the exact-Bayes noise — the
+  prior has to match the world, and the docstring says so. Throughput
+  (200k rows, one bank, `k = 2 / 4 / 8 / 16 / 32`): the transition is `k²`
+  multiplies on a `~3k²` update, 8 / 14 / 16 / 15 / 14 % slower, nothing
+  when off. The step's pre-existing per-row `scales()` and `q_vec()`
+  allocations (one `Vec` each, per target for `q_vec`) are the first thing
+  task 31 should remove.
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without

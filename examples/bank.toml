@@ -49,3 +49,4 @@ min_periods = 20.0
 [specs.model]
 type = "kalman"
 coef_halflife = 3600.0
+# revert_halflife = ["inf", 7200.0, 7200.0, 7200.0]  # slopes revert toward zero; intercept stays a random walk

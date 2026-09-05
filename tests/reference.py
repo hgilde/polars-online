@@ -312,15 +312,22 @@ def kalman_ref(
     share_p: bool = False,
     add_intercept: bool = True,
     min_periods: float = 10.0,
+    revert_halflife: float | list[float] = float("inf"),
+    standardize: bool = True,
 ) -> dict[str, np.ndarray]:
     """Kalman / random-walk-beta oracle (docs/PLAN.md section 4.4).
 
     Mirrors the core exactly, including the details that make it match:
 
+    - the transition ``b <- Phi b``, ``P <- Phi P Phi`` with
+      ``Phi = diag(2^(-d / r_i))`` from ``revert_halflife`` runs first, before
+      the prediction, on every accepted row (a null target or a zero weight
+      still advances the clock); ``inf`` is ``Phi = I`` (E41);
     - features are standardized with the EW stats *before* the row's update,
       using scale 1 for the intercept slot and for near-zero-variance features
       (centered variance <= 1e-10 * raw second moment);
-    - ``P += Q * d_clock`` happens before the gain, once per shared P;
+    - ``P += Q * d_clock`` happens after the transition and before the gain,
+      once per shared P;
     - innovation variance is ``z' P z + sigma2 / w`` (row weight scales the
       observation precision);
     - ``sigma2_j`` is the EW variance of the *out-of-sample* residual, updated
@@ -340,6 +347,12 @@ def kalman_ref(
     )
     if hl.size == 1:
         hl = np.repeat(hl, kt)
+    rh = np.asarray(
+        [revert_halflife] * kt if np.isscalar(revert_halflife) else revert_halflife, dtype=float
+    )
+    if rh.size == 1:
+        rh = np.repeat(rh, kt)
+    reverts = bool(np.isfinite(rh).any())
 
     pred = np.full((n, m), np.nan)
     resid = np.full((n, m), np.nan)
@@ -371,15 +384,23 @@ def kalman_ref(
         st["pending"] = 0.0
         lam = 0.5 ** (d / halflife)
 
-        # scales from the stats BEFORE this row
+        # transition first: the clock moved by d since the last row
+        if reverts:
+            phi = np.where(np.isinf(rh), 1.0, np.exp2(-(d / rh)))
+            st["beta"] = st["beta"] * phi
+            st["P"] = [P * np.outer(phi, phi) for P in st["P"]]
+
+        # scales from the stats BEFORE this row (all ones, and no
+        # centering, with `standardize` off: the state is the coefficient)
         scales = np.ones(kt)
-        for j in range(off, kt):
-            var = st["raw"][j, j] - st["mean"][j] ** 2
-            raw = max(abs(st["raw"][j, j]), 1e-300)
-            scales[j] = np.sqrt(var) if var > 1e-10 * raw else 1.0
-        zs = np.ones(kt)
-        for j in range(off, kt):
-            zs[j] = (z[j] - st["mean"][j]) / scales[j]
+        zs = z.copy()
+        if standardize:
+            for j in range(off, kt):
+                var = st["raw"][j, j] - st["mean"][j] ** 2
+                raw = max(abs(st["raw"][j, j]), 1e-300)
+                scales[j] = np.sqrt(var) if var > 1e-10 * raw else 1.0
+            for j in range(off, kt):
+                zs[j] = (z[j] - st["mean"][j]) / scales[j]
 
         n_eff[i] = st["W"]
         ready = st["W"] >= min_periods
@@ -434,6 +455,9 @@ def kalman_ref(
 
         # coefficients back in original units
         for j in range(m):
+            if not standardize:
+                coef[i, j] = st["beta"][j]
+                continue
             c = np.zeros(kt)
             c[off:] = st["beta"][j][off:] / scales[off:]
             if add_intercept:

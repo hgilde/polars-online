@@ -239,6 +239,7 @@ fn kalman_cfg() -> KalmanCfg {
         p0: 1.0,
         share_p: false,
         min_periods: 3.0,
+        revert_halflife: vec![f64::INFINITY],
         standardize: true,
     }
 }
@@ -247,6 +248,24 @@ fn kalman_cfg() -> KalmanCfg {
 fn kalman() {
     let cfg = kalman_cfg();
     let r = probe_with(Kalman::new(cfg).unwrap(), 2, Some(&Kalman::n_eff));
+    check(&r, "kalman", 2, 1);
+}
+
+/// E41: a reverting filter is held to the same contract as the random walk.
+fn kalman_revert_cfg() -> KalmanCfg {
+    KalmanCfg {
+        revert_halflife: vec![f64::INFINITY, 25.0, 6.0],
+        ..kalman_cfg()
+    }
+}
+
+#[test]
+fn kalman_reverting() {
+    let r = probe_with(
+        Kalman::new(kalman_revert_cfg()).unwrap(),
+        2,
+        Some(&Kalman::n_eff),
+    );
     check(&r, "kalman", 2, 1);
 }
 
@@ -877,6 +896,11 @@ fn kalman_recovers_from_bounded_extremes() {
         2,
         Recovery::Twin(1e-9),
     );
+    recovers_from_bounded_extremes(
+        || Kalman::new(kalman_revert_cfg()).unwrap(),
+        2,
+        Recovery::Twin(1e-9),
+    );
 }
 
 #[test]
@@ -1135,9 +1159,21 @@ fn lasso_predict_is_the_step() {
 #[test]
 fn kalman_predict_is_the_step() {
     for standardize in [true, false] {
-        let mut cfg = kalman_cfg();
-        cfg.standardize = standardize;
-        predict_is_the_step_without_the_step(move || Kalman::new(cfg.clone()).unwrap(), 2, false);
+        for reverting in [false, true] {
+            // Under reversion the prediction depends on `d`: `predict(x, d)`
+            // has to propagate the mean by the same `phi_i(d)` the step does.
+            let mut cfg = if reverting {
+                kalman_revert_cfg()
+            } else {
+                kalman_cfg()
+            };
+            cfg.standardize = standardize;
+            predict_is_the_step_without_the_step(
+                move || Kalman::new(cfg.clone()).unwrap(),
+                2,
+                false,
+            );
+        }
     }
 }
 

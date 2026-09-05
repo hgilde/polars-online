@@ -648,9 +648,9 @@ reported as it stood *before* the row, like every other output.
 ### `kalman` — random-walk-β dynamic linear model
 
 ```
-P_j ← P_j + Q·Δclock                s = zᵀP_j z + R_j/w
-k   = P_j z / s                     β_j ← β_j + k(y_j − zᵀβ_j)
-P_j ← P_j − k zᵀP_j
+β_j ← Φβ_j    P_j ← ΦP_jΦ + Q·Δclock    Φ = diag(2^(−Δclock/r_i))
+s   = zᵀP_j z + R_j/w                   k   = P_j z / s
+β_j ← β_j + k(y_j − zᵀβ_j)              P_j ← P_j − k zᵀP_j
 ```
 
 Process noise comes from a per-factor **coefficient halflife** on
@@ -661,6 +661,36 @@ variance. Standardization is internal and on by default. With
 `standardize=False`, `q=0` and a fixed `obs_var`, this is exactly a Bayesian
 linear regression (it reproduces river's `BayesianLinearRegression` to
 3.6e-15).
+
+**Reverting coefficients.** By default `Φ = I` and a coefficient is a random
+walk: once a slope has been learned it stays until new rows move it. With
+`revert_halflife`, a slope decays toward zero with the clock instead —
+halved every `r_i` clock units while nothing is observed, and pulled back
+toward zero by the same factor before each update. That is a mean-reverting
+(AR(1)) prior: a regressor that is only occasionally active is forgotten
+between its bursts rather than kept at its last value, and a stale effect
+cannot persist through a run of null targets. The reversion acts in the
+standardized coordinates, so "zero" means "no effect" for a slope and "the
+target averages zero" for the intercept; a scalar applies to every slot
+including the intercept, and a list with `inf` in the first slot exempts it.
+The steady-state prior variance of a reverting slot is `q_i·Δclock/(1−φ_i²)`
+instead of growing without bound. `predict` propagates the coefficients by
+the same `Φ` over the distance from the last learned row (capped by
+`max_dclock`), so a prediction far past the data is the intercept alone.
+
+```python
+revert = po.spec.kalman(
+    "k",
+    targets=["y"],
+    features=["signal_a", "signal_b"],
+    coef_halflife=100.0,
+    revert_halflife=[float("inf"), 50.0, 50.0],  # intercept stays; slopes revert
+    halflife=200.0,
+    clock="t",
+    max_dclock=10.0,
+)
+out = po.ModelBank([revert]).fit_predict(df)
+```
 
 ### `huber` / `quantile` — robust regression
 

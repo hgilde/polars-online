@@ -7,12 +7,24 @@
 //! Per row (clock delta `d`, weight `w_row`):
 //!
 //! ```text
-//! P_j <- P_j + Q * d / w_row          (predict; Q scaled by elapsed clock)
+//! b_j <- Phi b_j                      (transition; Phi = diag(2^(-d/r_i)))
+//! P_j <- Phi P_j Phi + Q * d          (predict; Q scaled by elapsed clock)
 //! s    = z' P_j z + R_j / w_row       (innovation variance)
 //! k    = P_j z / s                    (gain)
 //! b_j <- b_j + k (y_j - z' b_j)
 //! P_j <- P_j - k z' P_j
 //! ```
+//!
+//! **Reversion (ENHANCEMENTS E41).** `revert_halflife` gives each slot a
+//! reversion halflife `r_i`: between observations the coefficient mean
+//! shrinks toward zero by `2^(-d/r_i)`, so a coefficient no row has
+//! supported for a while is forgotten rather than carried. `r_i = inf` (the
+//! default) is `Phi = I`, the random walk, and costs nothing. The pull is
+//! toward zero in the *standardized* coordinates when `standardize` is on:
+//! a slope toward "no effect", the intercept toward "the target averages
+//! zero"; give the intercept `inf` to leave it a random walk. With `Q`
+//! from `coef_halflife` a reverting slot settles at prior variance
+//! `q_i d / (1 - phi_i^2)`, a stationary AR(1) instead of an unbounded walk.
 //!
 //! **Process noise from a per-factor halflife.** On standardized features, the
 //! steady-state gain of a random-walk-beta filter matches EW-RLS with halflife
@@ -53,6 +65,12 @@ pub struct KalmanCfg {
     pub p0: f64,
     pub share_p: bool,
     pub min_periods: f64,
+    /// Per-slot reversion halflife in clock units (length 1 or `k_total`,
+    /// intercept first): the coefficient mean shrinks toward zero by
+    /// `2^(-d/r_i)` per row before the process noise is added. `f64::INFINITY`
+    /// (the default) is the random walk. See the module doc.
+    #[serde(default = "default_revert")]
+    pub revert_halflife: Vec<f64>,
     /// Standardize features internally before filtering (default).
     ///
     /// On by default because the halflife-derived process noise
@@ -67,6 +85,10 @@ pub struct KalmanCfg {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_revert() -> Vec<f64> {
+    vec![f64::INFINITY]
 }
 
 impl KalmanCfg {
@@ -94,6 +116,12 @@ impl KalmanCfg {
                 return Err("kalman: halflife values must be > 0 (inf pins)".into());
             }
         }
+        if self.revert_halflife.len() != 1 && self.revert_halflife.len() != k {
+            return Err(format!("kalman: revert_halflife must have length 1 or {k}"));
+        }
+        if self.revert_halflife.iter().any(|&h| h.is_nan() || h <= 0.0) {
+            return Err("kalman: revert_halflife values must be > 0 (inf = random walk)".into());
+        }
         if self.p0 <= 0.0 {
             return Err("kalman: p0 must be > 0".into());
         }
@@ -101,6 +129,23 @@ impl KalmanCfg {
             return Err("kalman: obs_var must be > 0".into());
         }
         Ok(())
+    }
+
+    /// Whether any slot reverts (`Phi != I`). The default random walk skips
+    /// the transition entirely, so it stays bit-identical to before E41.
+    fn reverts(&self) -> bool {
+        self.revert_halflife.iter().any(|h| h.is_finite())
+    }
+
+    /// The transition factor of slot `i` over a clock delta `d`,
+    /// `2^(-d/r_i)`, spelled as [`Decay::factor`] is.
+    fn phi(&self, i: usize, d_clock: f64) -> f64 {
+        let r = if self.revert_halflife.len() == 1 {
+            self.revert_halflife[0]
+        } else {
+            self.revert_halflife[i]
+        };
+        Decay::Halflife(r).factor(d_clock)
     }
 
     /// Per-slot halflife, broadcast to `k_total`.
@@ -135,6 +180,10 @@ pub struct Kalman {
     pz: Vec<f64>,
     #[serde(skip)]
     gain: Vec<f64>,
+    /// This row's transition factors, one per slot (only filled when a
+    /// slot reverts).
+    #[serde(skip)]
+    phi: Vec<f64>,
 }
 
 impl Kalman {
@@ -158,6 +207,7 @@ impl Kalman {
             zs: vec![0.0; k],
             pz: vec![0.0; k],
             gain: vec![0.0; k],
+            phi: vec![1.0; k],
             cfg,
         })
     }
@@ -309,6 +359,33 @@ impl Kalman {
             self.zs = vec![0.0; k];
             self.pz = vec![0.0; k];
             self.gain = vec![0.0; k];
+            self.phi = vec![1.0; k];
+        }
+    }
+
+    /// `b <- Phi b`, `P <- Phi P Phi` for a clock delta `d_clock`: the
+    /// coefficient means shrink toward zero and the covariance with them.
+    /// A no-op (and skipped) under the default random walk.
+    fn transition(&mut self, d_clock: f64) {
+        if !self.cfg.reverts() {
+            return;
+        }
+        let k = self.cfg.k_total();
+        for (i, ph) in self.phi.iter_mut().enumerate() {
+            *ph = self.cfg.phi(i, d_clock);
+        }
+        for b in &mut self.beta {
+            for (bi, ph) in b.iter_mut().zip(&self.phi) {
+                *bi *= ph;
+            }
+        }
+        for p in &mut self.p {
+            for i in 0..k {
+                let pi = self.phi[i];
+                for (pij, pj) in p[i * k..(i + 1) * k].iter_mut().zip(&self.phi) {
+                    *pij *= pi * pj;
+                }
+            }
         }
     }
 }
@@ -327,6 +404,10 @@ impl OnlineModel for Kalman {
         } else {
             self.zbuf.copy_from_slice(x);
         }
+
+        // The clock has moved by `d_clock` since the last row: the state
+        // is propagated before it predicts (`predict` does the same).
+        self.transition(d_clock);
 
         // Standardized regressors from the stats BEFORE this row's update.
         let s = self.scales();
@@ -363,8 +444,8 @@ impl OnlineModel for Kalman {
                 };
                 if s2 > 0.0 { s2 } else { 1.0 }
             });
-            // Process step: P += Q * d_clock (only for the target that owns P,
-            // or once when shared).
+            // Process step: P += Q * d_clock, after the transition above
+            // (only for the target that owns P, or once when shared).
             if !self.cfg.share_p || j == 0 {
                 let q = self.q_vec(sigma2);
                 let p = &mut self.p[pi];
@@ -448,15 +529,27 @@ impl OnlineModel for Kalman {
         }
     }
 
-    fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
+    fn predict(&self, x: &[f64], d_clock: f64) -> Step {
         let m = self.cfg.n_targets;
         let n_eff = self.cov.n_eff();
         let mut pred = vec![f64::NAN; m];
         if n_eff >= self.cfg.min_periods {
             let zs = self.standardized(x);
+            // The same numbers `step` would emit: its transition scales
+            // `b_i` by `phi_i` before the dot product, and `b * phi` is
+            // `phi * b` to the bit.
+            let reverts = self.cfg.reverts();
             for (j, p) in pred.iter_mut().enumerate() {
                 if self.wj[j] > 0.0 {
-                    *p = zs.iter().zip(&self.beta[j]).map(|(z, b)| z * b).sum();
+                    *p = if reverts {
+                        zs.iter()
+                            .zip(&self.beta[j])
+                            .enumerate()
+                            .map(|(i, (z, b))| z * (b * self.cfg.phi(i, d_clock)))
+                            .sum()
+                    } else {
+                        zs.iter().zip(&self.beta[j]).map(|(z, b)| z * b).sum()
+                    };
                 }
             }
         }
@@ -518,6 +611,7 @@ mod tests {
             p0: 1.0,
             share_p: false,
             min_periods: 10.0,
+            revert_halflife: vec![f64::INFINITY],
             standardize: true,
         }
     }
@@ -794,6 +888,7 @@ mod tests {
             p0,
             share_p: false,
             min_periods: 0.0,
+            revert_halflife: vec![f64::INFINITY],
             standardize: false,
         })
         .unwrap();
@@ -1003,5 +1098,218 @@ mod tests {
         let st = m.step(&[0.5], &[Some(1.0), None], 1.0, 1.0);
         assert!(st.pred[1].is_finite());
         assert_eq!(m.beta[1], before);
+    }
+
+    // ---- reversion (ENHANCEMENTS E41) ----
+
+    fn revert_cfg(r: Vec<f64>) -> KalmanCfg {
+        KalmanCfg {
+            revert_halflife: r,
+            ..cfg(2, 1, vec![100.0])
+        }
+    }
+
+    #[test]
+    fn revert_halflife_defaults_to_the_random_walk_when_a_state_file_omits_it() {
+        let json = r#"{
+            "n_features": 2, "n_targets": 1, "add_intercept": true,
+            "decay": {"Halflife": 200.0}, "halflife": [100.0], "q": null,
+            "obs_var": null, "p0": 1.0, "share_p": false, "min_periods": 10.0
+        }"#;
+        let cfg: KalmanCfg = serde_json::from_str(json).expect("should load without the field");
+        assert_eq!(cfg.revert_halflife, vec![f64::INFINITY]);
+        assert!(!cfg.reverts());
+    }
+
+    #[test]
+    fn revert_halflife_is_validated() {
+        for (r, msg) in [
+            (vec![10.0, 10.0], "length 1 or 3"),
+            (vec![0.0], "must be > 0"),
+            (vec![-5.0], "must be > 0"),
+            (vec![f64::NAN], "must be > 0"),
+            (vec![f64::INFINITY, 10.0, f64::NEG_INFINITY], "must be > 0"),
+        ] {
+            let err = Kalman::new(revert_cfg(r.clone())).unwrap_err();
+            assert!(err.contains(msg), "{r:?}: {err}");
+        }
+        for r in [
+            vec![f64::INFINITY],
+            vec![10.0],
+            vec![f64::INFINITY, 5.0, 1e300],
+        ] {
+            Kalman::new(revert_cfg(r)).unwrap();
+        }
+    }
+
+    #[test]
+    fn an_infinite_revert_halflife_is_bit_identical_to_the_default() {
+        // Spelled as a scalar or per slot, `inf` must not touch a number:
+        // the transition is skipped, not multiplied by 1.
+        let a = fit(cfg(2, 1, vec![100.0]), 200, 5);
+        let b = fit(revert_cfg(vec![f64::INFINITY]), 200, 5);
+        let c = fit(revert_cfg(vec![f64::INFINITY; 3]), 200, 5);
+        assert_eq!(a.beta, b.beta);
+        assert_eq!(a.p, b.p);
+        assert_eq!(a.beta, c.beta);
+        assert_eq!(a.p, c.p);
+        assert_eq!(
+            a.predict(&[0.3, 0.7], 2.5).pred,
+            c.predict(&[0.3, 0.7], 2.5).pred
+        );
+    }
+
+    #[test]
+    fn reversion_is_exact_between_observations() {
+        // With nothing to learn from (null targets), the mean shrinks by
+        // exactly `2^(-d/r_i)` per slot over the elapsed clock and the
+        // covariance by `phi_i phi_j` (with `q = 0` so nothing is added
+        // back), whatever the clock's spacing. On the unstandardized
+        // filter so the reported coefficients are the state itself.
+        let r = vec![f64::INFINITY, 20.0, 5.0];
+        let mut m = Kalman::new(KalmanCfg {
+            q: Some(vec![0.0; 3]),
+            standardize: false,
+            ..revert_cfg(r.clone())
+        })
+        .unwrap();
+        let mut s = 11u64;
+        for i in 0..80 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = 0.4 + 1.5 * x[0] - 2.0 * x[1] + 0.05 * lcg(&mut s);
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let b0 = m.beta[0].clone();
+        let p0 = m.p[0].clone();
+        let gaps = [0.5, 3.0, 1.0, 0.0, 7.25, 2.0];
+        for d in gaps {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(&x, &[None], d, 1.0);
+        }
+        let total: f64 = gaps.iter().sum();
+        let phi: Vec<f64> = r.iter().map(|h| (-(total / h)).exp2()).collect();
+        assert_eq!(phi[0], 1.0);
+        for i in 0..3 {
+            let want = b0[i] * phi[i];
+            assert!(
+                (m.beta[0][i] - want).abs() <= 1e-12 * want.abs().max(1e-300),
+                "slot {i}: {} vs {want}",
+                m.beta[0][i]
+            );
+            for j in 0..3 {
+                let want = p0[i * 3 + j] * phi[i] * phi[j];
+                assert!(
+                    (m.p[0][i * 3 + j] - want).abs() <= 1e-12 * want.abs().max(1e-300),
+                    "P[{i},{j}]: {} vs {want}",
+                    m.p[0][i * 3 + j]
+                );
+            }
+        }
+        // The intercept slot, `inf`, was left alone to the bit.
+        assert_eq!(m.beta[0][0], b0[0]);
+        assert_eq!(m.p[0][0], p0[0]);
+        // And the state is what `coefficients` reports: unstandardized.
+        assert_eq!(m.coefficients()[0], m.beta[0]);
+    }
+
+    #[test]
+    fn a_reverting_slot_forgets_a_stale_effect_and_a_random_walk_keeps_it() {
+        // 300 rows identify a slope of 2 on `x1`, then `x1` goes flat at
+        // zero for 300 rows: no row says anything about that slope any more.
+        // The random walk carries the 2 for ever; the reverting filter lets
+        // it go at `2^(-d/r)`. Predictions agree either way (`x1 = 0`), so
+        // this is only visible in the coefficients -- the point of E41 is
+        // what the filter believes when the evidence dries up.
+        let run = |r: Vec<f64>| {
+            let mut m = Kalman::new(KalmanCfg {
+                standardize: false,
+                ..revert_cfg(r)
+            })
+            .unwrap();
+            let mut s = 12u64;
+            for i in 0..600 {
+                let x1 = if i < 300 { lcg(&mut s) } else { 0.0 };
+                let x = [lcg(&mut s), x1];
+                let y = 0.5 * x[0] + 2.0 * x[1] + 0.05 * lcg(&mut s);
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            m.coefficients()[0].clone()
+        };
+        let walk = run(vec![f64::INFINITY]);
+        let revert = run(vec![f64::INFINITY, f64::INFINITY, 30.0]);
+        assert!(
+            (walk[2] - 2.0).abs() < 0.1,
+            "random walk keeps the slope: {walk:?}"
+        );
+        // 300 rows at halflife 30 is 2^-10 of the slope.
+        assert!(
+            revert[2].abs() < 2.0 * 2f64.powi(-9),
+            "reverting slot forgets it: {revert:?}"
+        );
+        // The slope still in evidence is learned equally well by both.
+        assert!((walk[1] - 0.5).abs() < 0.05, "{walk:?}");
+        assert!((revert[1] - 0.5).abs() < 0.05, "{revert:?}");
+    }
+
+    #[test]
+    fn reversion_is_applied_once_per_row_under_share_p() {
+        // One shared `P`, two targets: the transition runs once, not once
+        // per target, or the shared covariance would shrink twice.
+        let r = vec![f64::INFINITY, 10.0, 10.0];
+        let mut m = Kalman::new(KalmanCfg {
+            q: Some(vec![0.0; 3]),
+            share_p: true,
+            standardize: false,
+            ..revert_cfg(r)
+        })
+        .unwrap();
+        m.cfg.n_targets = 2;
+        let mut m = Kalman::new(m.cfg.clone()).unwrap();
+        let mut s = 13u64;
+        for i in 0..50 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(
+                &x,
+                &[Some(x[0]), Some(-x[1])],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let p0 = m.p[0].clone();
+        let b0 = m.beta.clone();
+        m.step(&[0.1, 0.2], &[None, None], 10.0, 1.0);
+        // phi = 2^-1 for both slopes over d = 10 at halflife 10.
+        assert!((m.p[0][4] - p0[4] * 0.25).abs() <= 1e-12 * p0[4].abs());
+        assert!((m.p[0][1] - p0[1] * 0.5).abs() <= 1e-12 * p0[1].abs());
+        for (after, before) in m.beta.iter().zip(&b0) {
+            assert!((after[1] - before[1] * 0.5).abs() <= 1e-12 * before[1].abs());
+        }
+    }
+
+    #[test]
+    fn a_zero_weight_row_still_advances_the_transition() {
+        // Weight 0 means "advance the clock, learn nothing": the reversion
+        // is clock, so it applies; the measurement update does not.
+        let mut m = Kalman::new(KalmanCfg {
+            q: Some(vec![0.0; 3]),
+            standardize: false,
+            ..revert_cfg(vec![4.0])
+        })
+        .unwrap();
+        let mut s = 14u64;
+        for i in 0..40 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(
+                &x,
+                &[Some(x[0] + x[1])],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let b0 = m.beta[0].clone();
+        m.step(&[0.3, 0.3], &[Some(100.0)], 4.0, 0.0);
+        for (i, (after, before)) in m.beta[0].iter().zip(&b0).enumerate() {
+            assert!((after - 0.5 * before).abs() <= 1e-12 * before.abs(), "{i}");
+        }
     }
 }

@@ -154,8 +154,11 @@ class ModelBank:
         residual; absent, those are null. The session column is optional and
         feeds ``session_gap``; a weight column is not read. A trend model
         (``holt``) extrapolates over the clock distance from the row it last
-        learned, capped by ``max_dclock``; the coefficient models predict from
-        their current coefficients regardless of the clock.
+        learned, capped by ``max_dclock``, and a ``kalman`` with
+        ``revert_halflife`` shrinks its coefficients over that distance
+        exactly as the next ``fit_predict`` row would; the other coefficient
+        models predict from their current coefficients regardless of the
+        clock.
 
         Per field: ``n_eff``, ``lam_selected``, ``sigma``, the residual
         quantiles, autocorrelation and the metrics are the values the bank

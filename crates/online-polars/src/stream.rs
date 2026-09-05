@@ -294,6 +294,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             obs_var,
             p0,
             share_p,
+            revert_halflife,
             standardize,
         } => {
             let cfg = KalmanCfg {
@@ -307,6 +308,9 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 p0: p0.unwrap_or(1.0),
                 share_p: *share_p,
                 min_periods: spec.min_periods_or_default(),
+                revert_halflife: revert_halflife
+                    .as_ref()
+                    .map_or_else(|| vec![f64::INFINITY], FloatOrList::to_vec),
                 standardize: *standardize,
             };
             Ok(AnyModel::Kalman(Box::new(Kalman::new(cfg)?)))
