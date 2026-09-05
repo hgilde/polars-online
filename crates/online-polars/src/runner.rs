@@ -222,6 +222,10 @@ impl RunConfig {
         for s in &self.specs {
             s.validate()?;
         }
+        // The bank's own checks -- a duplicate name, a `seqtest` comparison
+        // naming a spec the bank has not got or a residual a side does not
+        // emit -- so that a dry run reports them and not the first chunk.
+        Bank::new(self.specs.clone())?;
         Ok(())
     }
 

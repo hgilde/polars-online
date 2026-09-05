@@ -24,7 +24,7 @@ from collections.abc import Iterable, Sequence
 
 import polars as pl
 
-__all__ = ["metrics", "rolling_metrics", "compare_specs", "unpack"]
+__all__ = ["metrics", "rolling_metrics", "compare_specs", "unpack", "seqtest"]
 
 
 def _pred_fields(df: pl.DataFrame, spec_name: str) -> list[str]:
@@ -36,12 +36,17 @@ def _pred_fields(df: pl.DataFrame, spec_name: str) -> list[str]:
     if not fields:
         msg = (
             f"column {spec_name!r} has no prediction fields (pred_*) to unpack; "
-            "an ew_cov struct holds statistics, a kmeans or micro struct assignments and "
-            "an ew_class struct a class and its posteriors, not predictions"
+            "an ew_cov struct holds statistics, a kmeans or micro struct assignments, "
+            "an ew_class struct a class and its posteriors and a seqtest struct "
+            "evidence, not predictions"
         )
         raise TypeError(msg)
     return fields
 
+
+#: `online_core::INPUT_BOUND`: a magnitude beyond it is a missing value to
+#: the bank (docs/PLAN.md section 3), so it is one to :func:`seqtest` too.
+_INPUT_BOUND = 1e100
 
 #: Column names :func:`unpack` produces. Input columns with these names are
 #: dropped rather than duplicated (the target's values come back as ``y``).
@@ -215,3 +220,132 @@ def compare_specs(
     ]
     cols = ["spec", *frames[0].columns[:-1]] if frames else []
     return pl.concat(frames).select(cols) if frames else pl.DataFrame()
+
+
+def _resid_fields(df: pl.DataFrame, spec_name: str) -> list[str]:
+    dtype = df.schema.get(spec_name)
+    if dtype is None:
+        raise KeyError(spec_name)
+    if not isinstance(dtype, pl.Struct):
+        msg = f"column {spec_name!r} is not a model-output struct"
+        raise TypeError(msg)
+    return [f.name for f in dtype.fields if f.name.startswith("resid_")]
+
+
+def seqtest(
+    df: pl.DataFrame,
+    *,
+    targets: Sequence[str] | None = None,
+    a: str | None = None,
+    b: str | None = None,
+    a_suffix: str = "",
+    b_suffix: str = "",
+    by: Iterable[str] = (),
+    min_periods: float = 0.0,
+    name: str = "seqtest",
+) -> pl.DataFrame:
+    """:func:`polars_online.spec.seqtest` in polars expressions, over a frame
+    in memory: the same e-processes, the same fields, row for row.
+
+    Column mode (no ``a``/``b``): ``targets`` name the columns whose sign is
+    tested. Compare mode: ``a`` and ``b`` name two output structs of ``df``
+    (two specs the bank ran), ``targets`` the residuals both carry -- ``t``
+    for ``resid_<t><a_suffix>`` of ``a`` against ``resid_<t><b_suffix>`` of
+    ``b``; every ``t`` they share when ``None`` -- and the sign tested is
+    that of ``|resid_b| - |resid_a|``, positive when ``a`` was closer.
+
+    Returns ``df`` with a struct column ``name`` holding, per target ``t``
+    and read *before* the row, as the bank emits them: ``log_e_pos_<t>``,
+    ``log_e_neg_<t>``, ``n_pos_<t>``, ``n_neg_<t>`` in column mode,
+    ``log_e_a_<t>``, ``log_e_b_<t>``, ``wins_a_<t>``, ``wins_b_<t>`` in
+    compare mode, then ``n_eff`` -- the rows before this one in its ``by``
+    group -- with every other field null until ``n_eff`` reaches
+    ``min_periods``.
+    ``by`` runs one process per group, in row order (``.over(by)``). A null,
+    zero or NaN value bets nothing and counts nothing, as in the bank; what
+    the bank adds is the clock (``session``, ``on_clock_reset``), which a
+    frame in memory has not got.
+
+    Per target, with ``s`` the sign and the counts *before* the row::
+
+        lam_pos = max(0, (n_pos - n_neg) / (n_pos + n_neg + 1))
+        log_e_pos += log1p(lam_pos * s)         (lam_neg, log_e_neg likewise)
+
+    ``tests/test_seqtest.py`` holds the bank's struct to this one to the
+    last bit; the difference is that the bank is O(state) over a stream and
+    this is O(rows) over a frame.
+
+    Raises ``ValueError`` for ``a`` without ``b`` (or the reverse), for
+    column mode without ``targets``, and for a target neither side has a
+    residual for (naming the fields it does have); ``KeyError`` for a spec
+    the frame has not got, ``TypeError`` for one that is not a struct.
+    """
+    keys = list(by)
+    if (a is None) != (b is None):
+        msg = "seqtest: a and b go together; name both specs to compare them, or neither"
+        raise ValueError(msg)
+    if a is not None and b is not None:
+        have = {a: _resid_fields(df, a), b: _resid_fields(df, b)}
+        if targets is None:
+            # `resid_<t><a_suffix>` of a, for every t with `resid_<t><b_suffix>` in b.
+            bodies = [f.removeprefix("resid_") for f in have[a] if f.endswith(a_suffix)]
+            stems = [x[: len(x) - len(a_suffix)] for x in bodies]
+            targets = [t for t in stems if f"resid_{t}{b_suffix}" in have[b]]
+            if not targets:
+                msg = (
+                    f"seqtest: {a!r} and {b!r} share no residual field (with a_suffix "
+                    f"{a_suffix!r}, b_suffix {b_suffix!r}); {a!r} has {have[a]}, "
+                    f"{b!r} has {have[b]}"
+                )
+                raise ValueError(msg)
+        for t in targets:
+            for side, suffix in ((a, a_suffix), (b, b_suffix)):
+                want = f"resid_{t}{suffix}"
+                if want not in have[side]:
+                    msg = (
+                        f"seqtest: target {t!r} names no residual of {side!r}: it has no field "
+                        f"{want!r} (its residual fields are {have[side]})"
+                    )
+                    raise ValueError(msg)
+        signs = {
+            t: pl.col(b).struct.field(f"resid_{t}{b_suffix}").abs()
+            - pl.col(a).struct.field(f"resid_{t}{a_suffix}").abs()
+            for t in targets
+        }
+        names = ("log_e_a", "log_e_b", "wins_a", "wins_b")
+    else:
+        if targets is None:
+            msg = "seqtest: targets name the columns whose sign is tested (or give a and b)"
+            raise ValueError(msg)
+        signs = {t: pl.col(t) for t in targets}
+        names = ("log_e_pos", "log_e_neg", "n_pos", "n_neg")
+
+    def over(e: pl.Expr) -> pl.Expr:
+        return e.over(keys) if keys else e
+
+    def before(e: pl.Expr) -> pl.Expr:
+        """The running sum of ``e`` over the rows before this one."""
+        return over(e.cum_sum().shift(1, fill_value=0))
+
+    n_eff = over(pl.int_range(pl.len())).cast(pl.Float64)
+    ready = n_eff >= min_periods
+    fields: list[pl.Expr] = []
+    for t, d in signs.items():
+        # What the bank does not learn from -- null, NaN, an infinity, a
+        # magnitude beyond its input bound (docs/PLAN.md section 3) -- is no
+        # sign here either. Polars orders NaN above every float, so without
+        # this `NaN > 0` would be a positive sign.
+        d = d.cast(pl.Float64)
+        d = pl.when(d.is_finite() & (d.abs() <= _INPUT_BOUND)).then(d)
+        s = pl.when(d > 0).then(1.0).when(d < 0).then(-1.0).otherwise(0.0)
+        n_pos = before((d > 0).cast(pl.Int64).fill_null(0))
+        n_neg = before((d < 0).cast(pl.Int64).fill_null(0))
+        n1 = (n_pos + n_neg + 1).cast(pl.Float64)
+        lam_pos = pl.max_horizontal((n_pos - n_neg).cast(pl.Float64) / n1, 0.0)
+        lam_neg = pl.max_horizontal((n_neg - n_pos).cast(pl.Float64) / n1, 0.0)
+        log_e_pos = before((lam_pos * s).log1p())
+        log_e_neg = before((-lam_neg * s).log1p())
+        for label, e in zip(names, (log_e_pos, log_e_neg, n_pos, n_neg), strict=True):
+            fields.append(pl.when(ready).then(e).alias(f"{label}_{t}"))
+    fields.append(n_eff.alias("n_eff"))
+    return df.with_columns(pl.struct(fields).alias(name))

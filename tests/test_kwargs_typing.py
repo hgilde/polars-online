@@ -20,6 +20,11 @@ from polars_online import _expr, _kwargs, _spec
 # What the expression supplies itself, and so does not take as a keyword
 # (the expression's own column is ew_class's label).
 EXPR_SUPPLIES = {"name", "targets", "features", "group", "label"}
+# What a builder takes that an expression cannot: seqtest's `a`/`b` compare
+# two specs of a bank, and an expression is one spec. The namespace method
+# refuses them at runtime, and its TypedDict leaves them out so that a type
+# checker does too (test_seqtest.py::test_the_expression_refuses_a_comparison).
+EXPR_OMITS: dict[str, set[str]] = {"seqtest": {"a", "b", "a_suffix", "b_suffix"}}
 NAMESPACE_METHODS = [
     "ewridge",
     "rls",
@@ -35,6 +40,7 @@ NAMESPACE_METHODS = [
     "kmeans",
     "micro",
     "ew_class",
+    "seqtest",
 ]
 
 
@@ -84,14 +90,15 @@ def test_each_namespace_typed_dict_mirrors_its_builder(name):
     builder = _unwrapped(getattr(_spec, name))
     td = _typed_dict_behind(getattr(_expr.OnlineNamespace, name))
 
-    own = {k: v for k, v in _hints(builder).items() if k not in EXPR_SUPPLIES | {"common"}}
+    skip = EXPR_SUPPLIES | EXPR_OMITS.get(name, set()) | {"common"}
+    own = {k: v for k, v in _hints(builder).items() if k not in skip}
     shared = {k: v for k, v in _common_hints().items() if k not in EXPR_SUPPLIES}
     assert typing.get_type_hints(td) == {**shared, **own}, name
 
     required = {
         p.name
         for p in inspect.signature(builder).parameters.values()
-        if p.default is inspect.Parameter.empty and p.name not in EXPR_SUPPLIES | {"common"}
+        if p.default is inspect.Parameter.empty and p.name not in skip
     }
     assert set(td.__required_keys__) == required, name
 

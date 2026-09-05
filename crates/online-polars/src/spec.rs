@@ -665,6 +665,61 @@ pub enum ModelKind {
         /// the class accumulates data, like `ew_cov`'s `precision_prior`.
         precision_prior: f64,
     },
+    /// Sequential test of a sign by betting (docs/ENHANCEMENTS.md E42;
+    /// PLAN §11a, task 30): per target, two e-processes, one for "positive"
+    /// and one for "negative", each a Kelly bettor with a
+    /// Krichevsky–Trofimov stake on the sign counts so far. The outputs are
+    /// the two log e-values and the two counts, read before the row is
+    /// learned, so `exp(log_e) >= 1/alpha` at any row is evidence at level
+    /// `alpha` -- anytime-valid, under no assumption but that the signs are
+    /// not predictable from the past. No features, no decay, no `weight`
+    /// (every learned row is one trial); a null or zero target bets nothing.
+    ///
+    /// Two specs of the same bank are compared by naming them as `a` and
+    /// `b`: each target `t` then names a residual field both specs carry
+    /// (`resid_<t>`, plus the side's grid suffix when it has one), the sign
+    /// tested is that of `|resid_b| - |resid_a|` -- positive when `a` was
+    /// closer on the row -- and the fields are `log_e_a_<t>`, `log_e_b_<t>`,
+    /// `wins_a_<t>`, `wins_b_<t>`. The bank runs `a` and `b` first, so the
+    /// comparison reads the same out-of-sample residuals the two structs
+    /// report.
+    #[serde(rename = "seqtest")]
+    SeqTest {
+        /// The spec whose predictions are hoped to be better.
+        #[serde(default)]
+        a: Option<String>,
+        /// The spec it is compared with.
+        #[serde(default)]
+        b: Option<String>,
+        /// The grid suffix of `a`'s residual field, when `a` is a grid:
+        /// `resid_<t><a_suffix>`, e.g. `__r0.1` or `@h50`. Default none.
+        #[serde(default)]
+        a_suffix: Option<String>,
+        /// The same for `b`.
+        #[serde(default)]
+        b_suffix: Option<String>,
+    },
+}
+
+/// The two sides of a `seqtest` comparison, as [`ModelKind::compares`]
+/// reads them off the spec: each side's spec name and the grid suffix its
+/// residual fields carry (`""` for a single instance).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Compare<'a> {
+    pub a: &'a str,
+    pub b: &'a str,
+    pub a_suffix: &'a str,
+    pub b_suffix: &'a str,
+}
+
+impl Compare<'_> {
+    /// The residual field target `t` names on each side.
+    pub fn fields(&self, t: &str) -> (String, String) {
+        (
+            format!("resid_{t}{}", self.a_suffix),
+            format!("resid_{t}{}", self.b_suffix),
+        )
+    }
 }
 
 impl ModelKind {
@@ -674,7 +729,7 @@ impl ModelKind {
     /// to the enum, so a new variant fails a test until it is listed here.
     pub const KINDS: &'static [&'static str] = &[
         "ew_ridge", "lasso", "kalman", "huber", "quantile", "ftrl", "ew_cov", "sgd", "pa", "holt",
-        "rls", "kmeans", "micro", "ew_class",
+        "rls", "kmeans", "micro", "ew_class", "seqtest",
     ];
 
     pub fn kind_name(&self) -> &'static str {
@@ -693,6 +748,7 @@ impl ModelKind {
             ModelKind::KMeans { .. } => "kmeans",
             ModelKind::Micro { .. } => "micro",
             ModelKind::EwClass { .. } => "ew_class",
+            ModelKind::SeqTest { .. } => "seqtest",
         }
     }
 
@@ -708,14 +764,37 @@ impl ModelKind {
     }
 
     /// True for the models that predict no target as a number: the
-    /// unsupervised three and `ew_class`, whose target is a label it
-    /// classifies. Their outputs are statistics, assignments or posteriors
+    /// unsupervised three, `ew_class`, whose target is a label it
+    /// classifies, and `seqtest`, whose targets are the signs it tests.
+    /// Their outputs are statistics, assignments, posteriors or e-values
     /// read from the state *before* each row, and nothing residual-based
     /// (`sigma`, `resid_z`, metrics, quantiles, conformal, autocorrelation,
     /// drift, selection, averaging) applies to them; their slots are
     /// whatever rides in `pred`, not targets × combos.
     pub fn predicts_no_target(&self) -> bool {
-        self.is_unsupervised() || matches!(self, ModelKind::EwClass { .. })
+        self.is_unsupervised()
+            || matches!(self, ModelKind::EwClass { .. } | ModelKind::SeqTest { .. })
+    }
+
+    /// The two specs a `seqtest` compares, when it compares rather than
+    /// tests columns. Such a spec's targets name residual fields, read from
+    /// the two specs' own output in the bank, not columns of the frame; the
+    /// bank runs it after them.
+    pub fn compares(&self) -> Option<Compare<'_>> {
+        match self {
+            ModelKind::SeqTest {
+                a: Some(a),
+                b: Some(b),
+                a_suffix,
+                b_suffix,
+            } => Some(Compare {
+                a,
+                b,
+                a_suffix: a_suffix.as_deref().unwrap_or(""),
+                b_suffix: b_suffix.as_deref().unwrap_or(""),
+            }),
+            _ => None,
+        }
     }
 }
 
@@ -862,6 +941,13 @@ impl Spec {
                 self.name
             )),
             (None, None) => match &self.model {
+                // An e-process does not forget: its validity is the product
+                // of every bet made, so there is nothing a decay could apply
+                // to. One undecayed instance, and `halflife`/`lam` refused
+                // below rather than ignored.
+                ModelKind::SeqTest { .. } => {
+                    Ok(vec![(String::new(), Decay::Halflife(f64::INFINITY))])
+                }
                 // For Holt the level halflife *is* the spec's halflife --
                 // `build_one` defaults one from the other, so they are one
                 // knob under two names -- and a spec that gives
@@ -974,7 +1060,11 @@ impl Spec {
     }
 
     fn default_min_periods(&self) -> f64 {
-        (self.k() + usize::from(self.add_intercept)) as f64
+        match self.model {
+            // An e-value is valid from the first row (it is 1 before it).
+            ModelKind::SeqTest { .. } => 0.0,
+            _ => (self.k() + usize::from(self.add_intercept)) as f64,
+        }
     }
 
     /// The threshold the *model* uses: the smallest across targets, so a model
@@ -998,9 +1088,10 @@ impl Spec {
         if self.targets.is_empty() {
             return Err(format!("spec {:?}: targets must be non-empty", self.name));
         }
-        // Holt has no features by construction; every other model needs at
-        // least one to regress on. Both directions are errors: silently
-        // ignoring features passed to Holt would look like they were used.
+        // Holt has no features by construction, and neither has seqtest;
+        // every other model needs at least one to regress on. Both
+        // directions are errors: silently ignoring features passed to Holt
+        // would look like they were used.
         if matches!(self.model, ModelKind::Holt { .. }) {
             if !self.features.is_empty() {
                 return Err(format!(
@@ -1008,6 +1099,74 @@ impl Spec {
                      target's own level and trend. Use a regression model to use features.",
                     self.name,
                     self.features.len()
+                ));
+            }
+        } else if let ModelKind::SeqTest {
+            a,
+            b,
+            a_suffix,
+            b_suffix,
+        } = &self.model
+        {
+            if !self.features.is_empty() {
+                return Err(format!(
+                    "spec {:?}: seqtest takes no features (got {}); it tests the sign of \
+                     each target. Put the columns whose sign is tested in targets.",
+                    self.name,
+                    self.features.len()
+                ));
+            }
+            // The two are one switch: a comparison needs both sides.
+            match (a, b) {
+                (Some(_), None) | (None, Some(_)) => {
+                    return Err(format!(
+                        "spec {:?}: seqtest a and b go together (got {}); name both specs \
+                         to compare them, or neither to test the sign of the targets",
+                        self.name,
+                        if a.is_some() { "a only" } else { "b only" }
+                    ));
+                }
+                // One spec against itself is a tie on every row -- unless
+                // the suffixes pick two instances of its grid, which is a
+                // comparison like any other.
+                (Some(a), Some(b)) if a == b && a_suffix == b_suffix => {
+                    return Err(format!(
+                        "spec {:?}: seqtest a and b are both {a:?} with the same suffix; a \
+                         spec against itself is a tie on every row (a_suffix/b_suffix \
+                         compare two instances of its grid)",
+                        self.name
+                    ));
+                }
+                (Some(a), Some(b)) if a == &self.name || b == &self.name => {
+                    return Err(format!(
+                        "spec {:?}: seqtest a/b name the spec itself; it has no residuals",
+                        self.name
+                    ));
+                }
+                (None, None) if a_suffix.is_some() || b_suffix.is_some() => {
+                    return Err(format!(
+                        "spec {:?}: seqtest a_suffix/b_suffix pick a side's grid instance; \
+                         they need a and b",
+                        self.name
+                    ));
+                }
+                _ => {}
+            }
+            // The stake is a function of the trial counts, so a trial is a
+            // row, not a weight, and the wealth is a product that no decay
+            // can apply to. Refused rather than ignored, as elsewhere.
+            if self.weight.is_some() {
+                return Err(format!(
+                    "spec {:?}: weight does not apply to seqtest (every learned row is one \
+                     trial; null the target to skip a row)",
+                    self.name
+                ));
+            }
+            if self.halflife.is_some() || self.lam.is_some() {
+                return Err(format!(
+                    "spec {:?}: halflife/lam do not apply to seqtest (an e-process does not \
+                     forget; use session or on_clock_reset = \"reset_state\" to restart it)",
+                    self.name
                 ));
             }
         } else if self.features.is_empty() {
@@ -1437,6 +1596,9 @@ impl Spec {
                     ));
                 }
             }
+            // Checked above, with the features: its refusals come before the
+            // shared checks so that `halflife` is named for what it is here.
+            ModelKind::SeqTest { .. } => {}
             ModelKind::Ftrl {
                 alpha,
                 beta,

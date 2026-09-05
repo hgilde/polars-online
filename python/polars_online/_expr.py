@@ -43,6 +43,7 @@ from polars_online._kwargs import (
     PaKwargs,
     QuantileKwargs,
     RlsKwargs,
+    SeqTestKwargs,
     SgdKwargs,
 )
 
@@ -422,6 +423,32 @@ class OnlineNamespace:
         names, exprs = _features(features)
         spec = _spec.ew_class("online", label=self._target(), features=names, **kwargs)
         return _run(spec, self._expr, exprs)
+
+    def seqtest(
+        self, extra_targets: list[str] | None = None, **kwargs: Unpack[SeqTestKwargs]
+    ) -> pl.Expr:
+        """Sequential test of this column's sign -- two e-processes, one per
+        direction, read at any row.
+
+        No features: the column is the test. The struct holds ``log_e_pos``,
+        ``log_e_neg``, ``n_pos``, ``n_neg`` and ``n_eff``, all read before
+        the row is counted. The builder's ``a``/``b`` compare two specs of a
+        bank and an expression is one spec, so they are not taken here: to
+        compare two models over a frame in memory, test the sign of
+        ``|resid_b| - |resid_a|`` as a column, or run the bank
+        (``lf.online.fit_predict``, ``ModelBank``), where ``a``/``b`` read
+        the other specs' residuals.
+        """
+        sides = [k for k in ("a", "b", "a_suffix", "b_suffix") if k in kwargs]
+        if sides:
+            msg = (
+                f"online: seqtest {', '.join(sides)} compare two specs of a bank, and an "
+                "expression is one spec; test the sign of (|resid_b| - |resid_a|) as a "
+                "column, or give the seqtest spec to ModelBank / lf.online.fit_predict"
+            )
+            raise TypeError(msg)
+        spec = _spec.seqtest("online", targets=self._targets(extra_targets), **kwargs)
+        return _run(spec, self._expr, [])
 
 
 def online(expr: pl.Expr) -> OnlineNamespace:

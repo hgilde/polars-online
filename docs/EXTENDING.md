@@ -109,23 +109,33 @@ example; `git show --stat aa96ad3` is this list as a diff.
 8. **`src/bank.rs`**: nothing, unless the outputs are not one `pred`/`resid`
    pair per target per combo — `ew_cov` (statistics, no target), `kmeans`
    (an assignment and two distances, no target), `micro` (a label, an id, a
-   flag, two counts), `ew_class` (a class and its posteriors) and `lasso`
-   (a path) are the five cases, in `output_index` — or the coefficient
+   flag, two counts), `ew_class` (a class and its posteriors), `seqtest`
+   (two log e-values and two counts per target, no `coef`) and `lasso`
+   (a path) are the six cases, in `output_index` — or the coefficient
    vector is not `[intercept] + features` per (target, combo) slot:
    `coef_fields` names the slots, and `holt` (`level`, `trend`), `ew_cov`
-   (none), `kmeans` (`k` slots `cluster{j}` in place of the targets, one
-   coordinate per feature), `ew_class` (one slot per class, named by the
-   class, one coordinate per feature) and `micro` (none: its `coef` is one
-   row per *live* summary, so the length is not a property of the spec, and
-   `coef_index` refuses it by name) are its special cases. An output that is
-   not an `f64` needs its own `Source` variant and dtype: `Source::Cluster`
-   reads a small count out of the `pred` buffer and materializes it as
-   `i32`, `Source::Id` an `i64`, `Source::Flag` a `Boolean`, `Source::Label`
-   a class index materialized as its name (`F64Column::finish_label`; NaN is
-   null for all four). An *input* that is not an `f64` column needs its own
-   reader in `extract`: `ew_class`'s label goes through `label_column`
-   (`key_column`, so it is cast to String like `group`, then mapped to the
-   class index, with an undeclared value an error naming the row).
+   and `seqtest` (none), `kmeans` (`k` slots `cluster{j}` in place of the
+   targets, one coordinate per feature), `ew_class` (one slot per class,
+   named by the class, one coordinate per feature) and `micro` (none: its
+   `coef` is one row per *live* summary, so the length is not a property of
+   the spec, and `coef_index` refuses it by name) are its special cases. An
+   output that is not an `f64` needs its own `Source` variant and dtype:
+   `Source::Cluster` reads a small count out of the `pred` buffer and
+   materializes it as `i32`, `Source::Id` an `i64` (`micro`'s id, `seqtest`'s
+   counts), `Source::Flag` a `Boolean`, `Source::Label` a class index
+   materialized as its name (`F64Column::finish_label`; NaN is null for all
+   four). An *input* that is not an `f64` column needs its own reader in
+   `extract`: `ew_class`'s label goes through `label_column` (`key_column`,
+   so it is cast to String like `group`, then mapped to the class index,
+   with an undeclared value an error naming the row). An input that is
+   *another spec's output* — `seqtest`'s `a`/`b` comparison reads
+   `resid_<t>` from the two sides' structs — makes the spec a phase-two
+   spec: `ModelKind::compares()` names the sides, `resolve_compare` checks
+   them at `Bank::new`, and `fit_predict` / `predict_on_pool` run every
+   other spec first, then fill the comparison's targets from the assembled
+   structs (`compare_targets`), returning the columns in spec order. A new
+   model that reads another's output goes through the same two switches,
+   not a third phase.
    *Check*: `test_portability.TestOutputSchemaStability
    .test_names_match_the_realized_struct` compares the declared field names
    with the struct the bank actually produces, for every model in its list,
@@ -159,7 +169,12 @@ spec, and the plugin's `online_run` is the bank.
     in-memory warning (PLAN §6) is issued inside `_run`, so the method gets
     it for free; add the method to `TestTheExpressionWarnsThatItRunsInMemory
     ._calls` in `test_expr.py`, which holds that dict to `model_kinds()` and
-    checks that the warning names the method.
+    checks that the warning names the method. A builder parameter that
+    cannot mean anything over one expression — `seqtest`'s `a`/`b`/
+    `a_suffix`/`b_suffix` name two specs of a bank — is left out of the
+    TypedDict, listed in `test_kwargs_typing.EXPR_OMITS`, and refused by the
+    method at runtime with the way to write it (`test_seqtest.py::
+    test_the_expression_refuses_a_comparison_and_says_how_to_write_it`).
     *Check*: `test_the_namespace_methods_are_the_builders` holds the class to
     that list, and `test_model_registry::test_every_builder_has_a_namespace
     _method` holds the list to the builders.
@@ -188,11 +203,12 @@ spec, and the plugin's `online_run` is the bank.
     `test_portability.TestOutputSchemaStability._ALL_MODELS`. Every entry is
     `(builder name, the least it needs to be constructible)`. The sweeps
     assert on `pred` and `resid`, so a model with no prediction (`ew_cov`,
-    `kmeans`, `micro`, `ew_class`) sits them out through
+    `kmeans`, `micro`, `ew_class`, `seqtest`) sits them out through
     `test_model_registry.REGRESSIONS` and gets its own schema test instead
     (`test_portability.TestOutputSchemaStability.test_kmeans_names_match
     _the_realized_struct`, `test_micro_names_match_the_realized_struct`,
-    `test_ew_class_names_match_the_realized_struct`) and
+    `test_ew_class_names_match_the_realized_struct`,
+    `test_seqtest_names_match_the_realized_struct`) and
     its own chunk-invariance, save/load, null-row and zero-weight tests in
     its step-13 file.
     *Check*: `test_model_registry::test_the_sweeps_cover_every_regression

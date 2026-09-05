@@ -35,6 +35,7 @@ __all__ = [
     "PaKwargs",
     "QuantileKwargs",
     "RlsKwargs",
+    "SeqTestKwargs",
     "SgdKwargs",
 ]
 
@@ -208,3 +209,12 @@ class EwClassKwargs(ExprKwargs, total=False):
     classes: Required[list[str]]
     covariance: str | None
     precision_prior: Required[float]
+
+
+class SeqTestKwargs(ExprKwargs, total=False):
+    """``seqtest``'s own parameters -- ``a``, ``b``, ``a_suffix``,
+    ``b_suffix`` -- compare two specs of a bank, and an expression is one
+    spec, so the namespace method takes none of them (it refuses them at
+    runtime, too): over an expression the test is column mode on the
+    calling column, and a comparison is column mode on the residual
+    difference the caller computes."""

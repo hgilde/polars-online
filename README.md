@@ -16,7 +16,7 @@ the same whether the stream arrives as one chunk or a thousand.
 
 ## What you get
 
-**Thirteen model families, one set of stream semantics.** A spec's clock, decay,
+**Fourteen model families, one set of stream semantics.** A spec's clock, decay,
 grouping and warm-up mean the same thing whichever model it names.
 
 | model | what it is |
@@ -34,6 +34,7 @@ grouping and warm-up mean the same thing whichever model it names.
 | `kmeans` | exponentially weighted k-means — out-of-sample cluster labels, with a split–merge move that finds a cluster born after seeding |
 | `micro` | density-based clustering — DenStream micro-clusters linked into clusters of any shape and number; flags the rows that belong to none |
 | `ew_class` | Gaussian classification — QDA, LDA or naive Bayes on one `ew_cov` state per class; a label column in, out-of-sample posteriors out |
+| `seqtest` | a sequential test of a sign by betting — an e-process you can read at any row; on its own a column's sign, with `a`/`b` whether one spec of the bank predicts closer than another |
 
 **Three ways to run a bank, same numbers from each.** A Python loop over
 chunks (`ModelBank`); a Polars query (`lf.online.fit_predict(specs)` is a
@@ -584,7 +585,13 @@ After the fact, `po.eval` reads the output frame:
 po.eval.metrics(out, "ridge", by=["bond_id"])                       # R², IC, hit rate, MSE
 po.eval.rolling_metrics(out, "ridge", clock="t", window=3600.0)     # per clock window
 po.eval.compare_specs(out, ["ridge", "kalman"])                     # one table, many specs
+po.eval.seqtest(out, a="kalman", b="ridge", by=["bond_id"])        # is kalman closer? evidence per row
 ```
+
+`compare_specs` says which spec had the lower error over the frame.
+`seqtest` says how sure you can be, at every row, and is the same test the
+[`seqtest`](#seqtest--a-sequential-test-of-a-sign-by-betting) model runs
+inside a bank, streaming.
 
 ## Models
 
@@ -1000,6 +1007,58 @@ are one class to it. Measured at 400k rows, six features and three classes:
 0.9M rows/s full, 1.8M shared, 5M diagonal. On three Gaussian classes with
 their own covariances the accuracy sits within 0.001 of the Bayes rate the
 generating parameters allow, and the posteriors are calibrated to about 0.01.
+
+### `seqtest` — a sequential test of a sign, by betting
+
+Not a regression. A `seqtest` asks whether a column tends to be positive —
+or, with `a` and `b`, whether one spec of the bank predicts closer than
+another — and answers with evidence you can read at any row, as often as you
+like, and act on the first time it is enough. A p-value cannot be used that
+way; an e-process can. Per target it keeps the wealth of two gamblers, one
+betting that the next sign is positive and one that it is negative. Each
+stakes the Krichevsky–Trofimov fraction set by the counts so far, and never
+bets against its own lead:
+
+```
+s = sign(y)                    n⁺, n⁻: the signs counted before this row,  n = n⁺ + n⁻
+λ⁺ = max(0, (n⁺ − n⁻) / (n + 1))          λ⁻ = max(0, (n⁻ − n⁺) / (n + 1))
+ln E⁺ ← ln E⁺ + ln(1 + λ⁺ s)              ln E⁻ ← ln E⁻ + ln(1 − λ⁻ s)
+```
+
+Under the null — given everything so far, the next sign is no more likely
+positive than negative — `E⁺` is a nonnegative supermartingale, and Ville's
+inequality gives `P(E⁺ ever reaches 1/α) ≤ α`. So `log_e_pos ≥ ln 20`
+rejects at the 5% level however many times you looked, and however the
+rows depend on each other. No distribution is assumed and the size of the
+values is invisible: 60% small gains and 40% huge losses is "positive". Where
+the clip never binds the wealth has the closed form `2ⁿ B(n⁺+½, n⁻+½) / π`,
+the Beta(½, ½) mixture, and the tests hold the bank to it; the two sides'
+average is an e-value for the two-sided question. The struct holds
+`log_e_pos_<t>`, `log_e_neg_<t>`, `n_pos_<t>`, `n_neg_<t>` and `n_eff`, all
+as they stood **before** the row. A zero, a null or a NaN is a tie: it bets
+nothing and counts nothing. A trial is a row, so there is no `weight` and no
+`halflife` — a spec that gives them is refused — and `session` or
+`on_clock_reset="reset_state"` restarts the test.
+
+With `a` and `b` the test compares two specs of the bank: the sign tested is
+`|resid_b| − |resid_a|`, positive when `a` came closer, and the fields are
+`log_e_a_<t>`, `log_e_b_<t>`, `wins_a_<t>`, `wins_b_<t>`. The bank runs a
+comparison after the specs it names, on the out-of-sample residuals their
+structs report; a row where either side is null — warm-up, a skipped row —
+is no trial. `a_suffix` and `b_suffix` pick a grid instance (`"@h500"`,
+`"__r0.5@h500"`). A comparison inside a bank is chunk-invariant, saved with
+the state and streams like everything else; `po.eval.seqtest` is the same
+computation over a frame you already have.
+
+```python
+common = dict(targets=["y"], features=["x0", "x1"], clock="t", max_dclock=300.0, group="bond_id")
+ridge = po.spec.ewridge("ridge", halflife=500.0, **common)
+kalman = po.spec.kalman("kalman", halflife=500.0, coef_halflife=100.0, **common)
+closer = po.spec.seqtest("closer", targets=["y"], a="kalman", b="ridge", group="bond_id")
+out = po.ModelBank([ridge, kalman, closer]).fit_predict(df)
+verdict = out.group_by("bond_id").agg(pl.col("closer").struct.field("log_e_a_y").max())
+# log_e_a_y >= ln(20): on that bond, kalman beat ridge at the 5% level, read at any row
+```
 
 ## Parallelism
 

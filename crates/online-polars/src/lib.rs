@@ -55,5 +55,5 @@ pub use runner::{
     DEFAULT_CHUNK_ROWS, Format, Input, Output, RunConfig, RunOptions, RunStats, run, run_config,
     run_config_on,
 };
-pub use spec::{FloatOrList, ModelKind, Num, SessionGapSpec, Spec};
+pub use spec::{Compare, FloatOrList, ModelKind, Num, SessionGapSpec, Spec};
 pub use stream::{AnyModel, ChunkOut, Stream, StreamState, build_models, combo_labels};

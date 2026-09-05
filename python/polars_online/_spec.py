@@ -214,6 +214,7 @@ __all__ = [
     "pa",
     "quantile",
     "rls",
+    "seqtest",
     "sgd",
 ]
 
@@ -379,6 +380,7 @@ def _numeric_keys() -> frozenset[str]:
         kmeans,
         micro,
         ew_class,
+        seqtest,
     )
     for fn in (_common, *builders):
         for key, hint in typing.get_type_hints(getattr(fn, "__wrapped__", fn)).items():
@@ -455,7 +457,8 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
     sits beside ``pred_y__r0.5@h500``), then ``target``, ``halflife`` (or
     ``lam``), ``ridge``, ``feature_set``, ``lambda`` (lasso path point) and
     ``term`` -- ``"intercept"``, a feature name, or ``"level"`` /
-    ``"trend"`` for ``holt``. Empty for ``ew_cov``, which has none.
+    ``"trend"`` for ``holt``. Empty for ``ew_cov`` and ``seqtest``, which
+    have none.
 
     The names carry the ``coef_`` prefix and the target because a bare
     ``x1`` would collide with the feature column of that name in the same
@@ -515,12 +518,16 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
     table per instance, with the field each list sits in and the column
     name each entry unnests to. ``ValueError`` for a spec that is not
     valid, as for :func:`output_fields`, for an ``ew_cov`` spec, which has
-    no coefficients, and for a ``micro`` spec, whose ``coef`` has as many
-    rows as there are established summaries and so no fixed layout.
+    no coefficients, for a ``seqtest`` spec, which emits evidence, and for a
+    ``micro`` spec, whose ``coef`` has as many rows as there are
+    established summaries and so no fixed layout.
     """
     kind = spec.get("model", {}).get("type")
     if kind == "ew_cov":
         msg = "ew_cov emits statistics, not coefficients"
+        raise ValueError(msg)
+    if kind == "seqtest":
+        msg = "seqtest emits evidence (log e-values and counts), not coefficients"
         raise ValueError(msg)
     if kind == "micro":
         msg = (
@@ -1375,6 +1382,87 @@ def ew_class(
         msg = f"spec {json.dumps(name)}: ew_class() takes `label`, not targets"
         raise TypeError(msg)
     return _common(name, model, targets=[label], features=features, **common)
+
+
+@_checked
+def seqtest(
+    name: str,
+    *,
+    targets: list[str],
+    a: str | None = None,
+    b: str | None = None,
+    a_suffix: str | None = None,
+    b_suffix: str | None = None,
+    features: list[str] | None = None,
+    **common: Unpack[CommonKwargs],
+) -> dict[str, Any]:
+    """Sequential test of a sign by betting -- an e-process, read at any row
+    (ENHANCEMENTS E42, Task 30).
+
+    Per target the row's value is reduced to its sign ``s`` in ``{-1, 0, +1}``
+    and two bettors play it, one per direction. With ``n_pos`` and ``n_neg``
+    the counts of positive and negative rows *before* this one and
+    ``n = n_pos + n_neg``::
+
+        lam_pos = max(0, (n_pos - n_neg) / (n + 1))    lam_neg = max(0, (n_neg - n_pos) / (n + 1))
+        E_pos  *= 1 + lam_pos * s                     E_neg  *= 1 - lam_neg * s
+
+    ``(n_pos - n_neg) / (n + 1)`` is ``2p - 1`` for the Krichevsky-Trofimov
+    estimate ``p = (n_pos + 1/2) / (n + 1)`` of ``P(s = +1)``: the stake a
+    gambler with a ``Beta(1/2, 1/2)`` prior puts on the next sign, clipped so
+    that each side bets only on the direction it tests. Both stakes are
+    computed from the rows before, so under its null -- given everything
+    before it, a row is at least as likely to be negative as positive --
+    ``E_pos`` is a non-negative supermartingale with ``E_pos[0] = 1``, and
+    Ville's inequality gives ``P(max_t E_pos[t] >= 1/alpha) <= alpha``.
+    That is the whole guarantee: ``log_e_pos >= log(1/alpha)`` on *any* row
+    rejects "no more positives than negatives" at level ``alpha``, the
+    stream can be read at every row and stopped the moment it crosses, and
+    nothing about ``y`` but its sign is assumed -- no independence of the
+    sizes, no bound, no variance. What it does not test is the size: a
+    stream up by a hair 60% of the time and down by a mile the rest rejects.
+    ``(E_pos + E_neg) / 2`` is the two-sided e-value.
+
+    The struct holds, per target ``t`` and read *before* the row is learned:
+    ``log_e_pos_<t>`` and ``log_e_neg_<t>`` (``log E``, so ``0`` is no
+    evidence and ``log(20) = 3.0`` is level ``0.05``), ``n_pos_<t>`` and
+    ``n_neg_<t>`` (``Int64`` counts), and ``n_eff``. A zero or null target
+    bets nothing and counts nothing; a ``weight`` of 0 skips the row, any
+    other weight is one trial (``weight`` is refused: every learned row is
+    one trial). There is no ``halflife``/``lam``: a process that forgot its
+    losses would not be an e-process; ``session`` or ``on_clock_reset =
+    "reset_state"`` restarts it. ``min_periods`` defaults to 0. No
+    ``features`` (the column is the test; the keyword is taken so that a
+    frame namespace can pass ``[]``), no ``coef``, and nothing residual-based
+    applies -- there is no prediction.
+
+    **Comparing two specs.** Given ``a`` and ``b``, the names of two other
+    specs of the same bank, each target ``t`` names a residual field both
+    carry -- ``resid_<t>`` on each side, plus the side's grid suffix when it
+    is a grid (``a_suffix="@h50"`` picks ``resid_<t>@h50`` of ``a``;
+    ``"__r0.1"`` a ridge instance) -- and the sign tested is that of
+    ``|resid_b| - |resid_a|``: positive when ``a`` was closer on the row.
+    Any loss that grows with ``|resid|`` (squared, absolute, Huber) gives the
+    same sign, so this is a test of "``a`` beats ``b``" under any of them,
+    and the fields read ``log_e_a_<t>``, ``log_e_b_<t>``, ``wins_a_<t>``,
+    ``wins_b_<t>``, ``n_eff``. The bank runs ``a`` and ``b`` first, so the
+    comparison reads the same out-of-sample residuals their structs report;
+    a row where either side is null (warm-up, a skipped row) is a row the
+    test sits out. A spec named against itself with the same suffix (two
+    instances of one grid, ``a_suffix="@h20"`` against ``b_suffix="@h400"``,
+    is a comparison like any other), a side that is not in the bank or is
+    itself a ``seqtest``, and a target neither side has a residual for are
+    refused by name. ``po.eval.seqtest`` is the same
+    computation in polars expressions over a frame in memory.
+    """
+    model: dict[str, Any] = {
+        "type": "seqtest",
+        "a": a,
+        "b": b,
+        "a_suffix": a_suffix,
+        "b_suffix": b_suffix,
+    }
+    return _common(name, model, targets=targets, features=features or [], **common)
 
 
 #: The model types with no target column: their outputs are read from the

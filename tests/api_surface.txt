@@ -191,6 +191,15 @@
     ridge = None
     coef0 = None
     common
+  seqtest:
+    name
+    targets
+    a = None
+    b = None
+    a_suffix = None
+    b_suffix = None
+    features = None
+    common
   sgd:
     name
     targets
@@ -241,6 +250,7 @@
   pa
   quantile
   rls
+  seqtest
   sgd
 
 [frame namespaces]  # lf.online.<method> -> LazyFrame; df.online.<method> -> DataFrame
@@ -608,3 +618,19 @@
     p_b
     n_eff
     coef
+  seqtest minimal:
+    log_e_pos_y
+    log_e_neg_y
+    n_pos_y
+    n_neg_y
+    log_e_pos_z
+    log_e_neg_z
+    n_pos_z
+    n_neg_z
+    n_eff
+  seqtest comparing two specs:
+    log_e_a_y
+    log_e_b_y
+    wins_a_y
+    wins_b_y
+    n_eff

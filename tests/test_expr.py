@@ -348,6 +348,7 @@ class TestTheExpressionWarnsThatItRunsInMemory:
                     features=["x0"], classes=["a", "b"], precision_prior=1.0, halflife=2.0
                 ),
             ),
+            "seqtest": ("seqtest", lambda: ns.seqtest()),
         }
 
     def test_every_method_warns_and_names_the_call_that_streams(self):

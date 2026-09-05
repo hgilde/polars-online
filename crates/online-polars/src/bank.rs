@@ -327,6 +327,12 @@ fn extract(
         })
     };
     let targets = || -> PolarsResult<Vec<Vec<f64>>> {
+        // A comparison's targets are residual fields of two other specs'
+        // output, which the bank fills in once those have run
+        // (`compare_targets`); the frame is not read for them.
+        if spec.model.compares().is_some() {
+            return Ok(Vec::new());
+        }
         map_maybe_par(&spec.targets, par, |c| {
             if optional(c) {
                 Ok(vec![f64::NAN; df.height()])
@@ -430,6 +436,126 @@ fn extract(
 /// One stream's flat output buffers for a chunk. Fallible because a strict
 /// clock policy can refuse a row (`on_clock_reset = "error"`).
 type StreamRows = PolarsResult<ChunkOut>;
+
+/// Run one phase of a chunk through its streams, learning: every `(spec,
+/// group)` task in parallel, each into its own buffers.
+fn process(
+    work: Vec<(usize, &Vec<usize>, usize, &mut Stream)>,
+    specs: &[Spec],
+    cfgs: &[ClockCfg],
+    cols: &[SpecColumns],
+) -> Vec<(usize, StreamRows)> {
+    work.into_par_iter()
+        .map(|(si, idx, base, stream)| {
+            let spec = &specs[si];
+            let sc = &cols[si];
+            let r = (|| {
+                let mut out = ChunkOut::new(spec, stream.n_models(), stream.n_slots(), idx.len());
+                stream
+                    .process_chunk(
+                        spec,
+                        &cfgs[si],
+                        &sc.features,
+                        &sc.targets,
+                        sc.clock.as_deref(),
+                        sc.session.as_deref(),
+                        sc.weight.as_deref(),
+                        idx,
+                        base,
+                        &mut out,
+                    )
+                    .map_err(|(raw, i)| backwards_clock(spec, raw, i))?;
+                Ok(out)
+            })();
+            (si, r)
+        })
+        .collect()
+}
+
+/// [`process`] without the learning: [`Stream::predict_chunk`] per task.
+fn score(
+    work: Vec<(usize, &Vec<usize>, usize, &Stream)>,
+    specs: &[Spec],
+    cfgs: &[ClockCfg],
+    cols: &[SpecColumns],
+) -> Vec<(usize, StreamRows)> {
+    work.into_par_iter()
+        .map(|(si, idx, base, stream)| {
+            let spec = &specs[si];
+            let sc = &cols[si];
+            let r = (|| {
+                let mut out = ChunkOut::new(spec, stream.n_models(), stream.n_slots(), idx.len());
+                stream
+                    .predict_chunk(
+                        spec,
+                        &cfgs[si],
+                        &sc.features,
+                        &sc.targets,
+                        sc.clock.as_deref(),
+                        sc.session.as_deref(),
+                        idx,
+                        base,
+                        &mut out,
+                    )
+                    .map_err(|(raw, i)| backwards_clock(spec, raw, i))?;
+                Ok(out)
+            })();
+            (si, r)
+        })
+        .collect()
+}
+
+/// Assemble the structs of the specs `pick` selects, in parallel, into
+/// `out` (docs/PERFORMANCE.md P4).
+fn assemble_phase(
+    specs: &[Spec],
+    derived: &[SpecDerived],
+    n: usize,
+    rows: &[Vec<ChunkOut>],
+    out: &mut [Option<Column>],
+    pick: impl Fn(usize) -> bool + Sync,
+) -> PolarsResult<()> {
+    let built: Vec<(usize, Column)> = (0..specs.len())
+        .into_par_iter()
+        .filter(|si| pick(*si))
+        .map(|si| Ok((si, assemble(&specs[si], &derived[si], n, &rows[si])?)))
+        .collect::<PolarsResult<_>>()?;
+    for (si, c) in built {
+        out[si] = Some(c);
+    }
+    Ok(())
+}
+
+/// A comparison's targets once its two sides have run: per target `t`,
+/// `|resid_b| - |resid_a|` from the two structs -- positive when `a` was
+/// closer on the row -- in the spec's layout order, NaN where either side
+/// is null (a row one side did not predict is no trial). Any loss that
+/// grows with `|resid|` orders the two sides the same way, so the sign is
+/// the same test for absolute, squared or Huber loss.
+fn compare_targets(
+    spec: &Spec,
+    (a, b): (usize, usize),
+    out: &[Option<Column>],
+    layout: Layout<'_>,
+) -> PolarsResult<Vec<Vec<f64>>> {
+    let cmp = spec.model.compares().expect("resolved as a comparison");
+    let side = |si: usize, field: &str| -> PolarsResult<Vec<f64>> {
+        let col = out[si]
+            .as_ref()
+            .expect("the two sides of a comparison are assembled in the first phase");
+        let field = col.struct_()?.field_by_name(field)?;
+        Ok(field.f64()?.iter().map(|v| v.unwrap_or(f64::NAN)).collect())
+    };
+    spec.targets
+        .iter()
+        .map(|t| {
+            let (fa, fb) = cmp.fields(t);
+            let (ra, rb) = (side(a, &fa)?, side(b, &fb)?);
+            let d = ra.iter().zip(&rb).map(|(x, y)| y.abs() - x.abs()).collect();
+            Ok(gathered(d, layout))
+        })
+        .collect()
+}
 
 /// The error for a backwards clock under `on_clock_reset = "error"`: names the
 /// spec, the column, the size of the step back, the row, and the way out.
@@ -671,6 +797,10 @@ pub struct SpecDerived {
     m: usize,
     /// Slots one instance owns: `m * nc`, or the statistic count for `ew_cov`.
     per_model: usize,
+    /// For a `seqtest` that compares two specs: their indices in the bank,
+    /// `(a, b)`. Resolved once in [`Bank::new`], which also checks that the
+    /// residual fields the targets name exist on both.
+    compare: Option<(usize, usize)>,
 }
 
 impl SpecDerived {
@@ -708,8 +838,61 @@ impl SpecDerived {
             nc,
             m,
             per_model,
+            compare: None,
         }
     }
+}
+
+/// The residual fields of a spec's output, for a comparison to name.
+fn resid_fields(spec: &Spec) -> Vec<String> {
+    output_fields(spec)
+        .into_iter()
+        .filter(|f| f.starts_with("resid_"))
+        .collect()
+}
+
+/// Resolve a `seqtest` comparison against the bank's specs: `a` and `b`
+/// must be specs of the bank, and every target `t` must name a residual
+/// field of both (`resid_<t>`, plus the side's grid suffix). The error names
+/// what is there instead.
+fn resolve_compare(specs: &[Spec], spec: &Spec) -> Result<Option<(usize, usize)>, String> {
+    let Some(cmp) = spec.model.compares() else {
+        return Ok(None);
+    };
+    let mut idx = [0; 2];
+    for (k, (side, name)) in [("a", cmp.a), ("b", cmp.b)].into_iter().enumerate() {
+        let Some(si) = specs.iter().position(|s| s.name == name) else {
+            let have: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+            return Err(format!(
+                "spec {:?}: seqtest {side} = {name:?} is not a spec of this bank (the bank \
+                 has {have:?})",
+                spec.name
+            ));
+        };
+        if matches!(specs[si].model, ModelKind::SeqTest { .. }) {
+            return Err(format!(
+                "spec {:?}: seqtest {side} = {name:?} is itself a seqtest and has no \
+                 residuals; compare two specs that predict",
+                spec.name
+            ));
+        }
+        let resid = resid_fields(&specs[si]);
+        for t in &spec.targets {
+            let fields = cmp.fields(t);
+            let want = if k == 0 { fields.0 } else { fields.1 };
+            if !resid.contains(&want) {
+                return Err(format!(
+                    "spec {:?}: seqtest target {t:?} names no residual of {side} = {name:?}: \
+                     it has no field {want:?} (its residual fields are {resid:?}); a target \
+                     is the part after \"resid_\", and {side}_suffix the grid part after \
+                     that",
+                    spec.name
+                ));
+            }
+        }
+        idx[k] = si;
+    }
+    Ok(Some((idx[0], idx[1])))
 }
 
 impl Bank {
@@ -754,7 +937,14 @@ impl Bank {
             .iter()
             .map(|s| s.clock_cfg())
             .collect::<Result<Vec<_>, _>>()?;
-        let derived = specs.iter().map(SpecDerived::new).collect();
+        let derived = specs
+            .iter()
+            .map(|s| {
+                let mut d = SpecDerived::new(s);
+                d.compare = resolve_compare(&specs, s)?;
+                Ok(d)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let states = specs.iter().map(|_| HashMap::new()).collect();
         Ok(Self {
             specs,
@@ -902,7 +1092,7 @@ impl Bank {
     /// the next row's `pred` is computed from it. The layout is
     /// `polars_online.spec.coef_index`'s: (target x combo) slots, each with
     /// its terms in order. `None` before a stream's first solve, and for a
-    /// model without coefficients (`ew_cov`). The first solve is the solve
+    /// model without coefficients (`ew_cov`, `seqtest`). The first solve is the solve
     /// schedule's to decide (`solve_every`, `max_rows_between_solves`), not
     /// `min_periods`: `pred` waits for `min_periods`, `coef` does not, so a
     /// row's `n_eff` says how much weight is behind it.
@@ -999,7 +1189,7 @@ impl Bank {
         let layouts: Vec<Option<Vec<usize>>> = groups.iter().map(|g| layout_of(g, n)).collect();
         let t_group = t0.elapsed();
         let t1 = std::time::Instant::now();
-        let cols: Vec<SpecColumns> = self
+        let mut cols: Vec<SpecColumns> = self
             .specs
             .par_iter()
             .zip(layouts.par_iter())
@@ -1071,57 +1261,59 @@ impl Bank {
             return Err(e);
         }
 
-        let done: Vec<(usize, StreamRows)> = work
-            .into_par_iter()
-            .map(|(si, idx, base, stream)| {
-                let spec = &specs[si];
-                let cfg = &cfgs[si];
-                let sc = &cols[si];
-                let r = (|| {
-                    let mut out =
-                        ChunkOut::new(spec, stream.n_models(), stream.n_slots(), idx.len());
-                    stream
-                        .process_chunk(
-                            spec,
-                            cfg,
-                            &sc.features,
-                            &sc.targets,
-                            sc.clock.as_deref(),
-                            sc.session.as_deref(),
-                            sc.weight.as_deref(),
-                            idx,
-                            base,
-                            &mut out,
-                        )
-                        .map_err(|(raw, i)| backwards_clock(spec, raw, i))?;
-                    Ok(out)
-                })();
-                (si, r)
-            })
-            .collect();
-
+        // Two phases: a `seqtest` that compares two specs reads the residuals
+        // they report for this chunk, so those run and assemble first, and
+        // the comparisons after (docs/ENHANCEMENTS.md E42). The clock check
+        // above covered both, so nothing in either phase can refuse the
+        // chunk; the `forget` paths below are the tripwire that keeps that
+        // true if a stream ever grows another way to fail.
+        let (work2, work1): (Vec<_>, Vec<_>) = work
+            .into_iter()
+            .partition(|(si, ..)| derived[*si].compare.is_some());
+        let mut out: Vec<Option<Column>> = specs.iter().map(|_| None).collect();
         let mut per_spec_rows: Vec<Vec<ChunkOut>> = (0..specs.len()).map(|_| Vec::new()).collect();
-        for (si, r) in done {
+        for (si, r) in process(work1, specs, cfgs, &cols) {
             match r {
-                Ok(out) => per_spec_rows[si].push(out),
+                Ok(o) => per_spec_rows[si].push(o),
                 Err(e) => {
+                    drop(work2);
                     forget(&mut self.states, &fresh);
                     return Err(e);
                 }
             }
         }
-        let t_process = t2.elapsed();
+        let mut t_process = t2.elapsed();
         let t3 = std::time::Instant::now();
-
         // Specs assemble independently (docs/PERFORMANCE.md P4).
-        let out: Vec<Column> = specs
-            .par_iter()
-            .zip(derived.par_iter())
-            .zip(per_spec_rows.par_iter())
-            .map(|((spec, d), rows)| assemble(spec, d, n, rows))
-            .collect::<PolarsResult<_>>()?;
+        assemble_phase(specs, derived, n, &per_spec_rows, &mut out, |si| {
+            derived[si].compare.is_none()
+        })?;
+        let mut t_assemble = t3.elapsed();
+        if !work2.is_empty() {
+            let t4 = std::time::Instant::now();
+            for (si, d) in derived.iter().enumerate() {
+                if let Some(ab) = d.compare {
+                    cols[si].targets =
+                        compare_targets(&specs[si], ab, &out, layouts[si].as_deref())?;
+                }
+            }
+            for (si, r) in process(work2, specs, cfgs, &cols) {
+                match r {
+                    Ok(o) => per_spec_rows[si].push(o),
+                    Err(e) => {
+                        forget(&mut self.states, &fresh);
+                        return Err(e);
+                    }
+                }
+            }
+            t_process += t4.elapsed();
+            let t5 = std::time::Instant::now();
+            assemble_phase(specs, derived, n, &per_spec_rows, &mut out, |si| {
+                derived[si].compare.is_some()
+            })?;
+            t_assemble += t5.elapsed();
+        }
         if timing {
-            let t_assemble = t3.elapsed();
             let total = t0.elapsed();
             eprintln!(
                 "ONLINE_TIMING rows={n} extract={:.1}ms group={:.1}ms process={:.1}ms \
@@ -1135,7 +1327,10 @@ impl Bank {
             );
         }
         self.rows_fed += n as u64;
-        Ok(out)
+        Ok(out
+            .into_iter()
+            .map(|c| c.expect("every spec is assembled in one of the two phases"))
+            .collect())
     }
 
     /// Score one chunk against the bank as it stands, learning nothing
@@ -1167,7 +1362,7 @@ impl Bank {
             .map(|s| group_indices(df, s))
             .collect::<PolarsResult<_>>()?;
         let layouts: Vec<Option<Vec<usize>>> = groups.iter().map(|g| layout_of(g, n)).collect();
-        let cols: Vec<SpecColumns> = self
+        let mut cols: Vec<SpecColumns> = self
             .specs
             .par_iter()
             .zip(layouts.par_iter())
@@ -1175,6 +1370,7 @@ impl Bank {
             .collect::<PolarsResult<_>>()?;
 
         let specs = &self.specs;
+        let derived = &self.derived;
         let cfgs = &self.clock_cfgs;
         let mut work: Vec<(usize, &Vec<usize>, usize, &Stream)> = Vec::new();
         for (si, hm) in self.states.iter().enumerate() {
@@ -1187,38 +1383,37 @@ impl Bank {
             }
         }
         work.sort_by_key(|(_, idx, _, _)| std::cmp::Reverse(idx.len()));
-        let done: Vec<(usize, ChunkOut)> = work
-            .into_par_iter()
-            .map(|(si, idx, base, stream)| {
-                let spec = &specs[si];
-                let sc = &cols[si];
-                let mut out = ChunkOut::new(spec, stream.n_models(), stream.n_slots(), idx.len());
-                stream
-                    .predict_chunk(
-                        spec,
-                        &cfgs[si],
-                        &sc.features,
-                        &sc.targets,
-                        sc.clock.as_deref(),
-                        sc.session.as_deref(),
-                        idx,
-                        base,
-                        &mut out,
-                    )
-                    .map_err(|(raw, i)| backwards_clock(spec, raw, i))?;
-                Ok((si, out))
-            })
-            .collect::<PolarsResult<_>>()?;
+        // The same two phases as `fit_predict`: a comparison scores the
+        // residuals its two sides report for this chunk.
+        let (work2, work1): (Vec<_>, Vec<_>) = work
+            .into_iter()
+            .partition(|(si, ..)| derived[*si].compare.is_some());
+        let mut out: Vec<Option<Column>> = specs.iter().map(|_| None).collect();
         let mut per_spec_rows: Vec<Vec<ChunkOut>> = (0..specs.len()).map(|_| Vec::new()).collect();
-        for (si, out) in done {
-            per_spec_rows[si].push(out);
+        for (si, r) in score(work1, specs, cfgs, &cols) {
+            per_spec_rows[si].push(r?);
         }
-        specs
-            .par_iter()
-            .zip(self.derived.par_iter())
-            .zip(per_spec_rows.par_iter())
-            .map(|((spec, d), rows)| assemble(spec, d, n, rows))
-            .collect()
+        assemble_phase(specs, derived, n, &per_spec_rows, &mut out, |si| {
+            derived[si].compare.is_none()
+        })?;
+        if !work2.is_empty() {
+            for (si, d) in derived.iter().enumerate() {
+                if let Some(ab) = d.compare {
+                    cols[si].targets =
+                        compare_targets(&specs[si], ab, &out, layouts[si].as_deref())?;
+                }
+            }
+            for (si, r) in score(work2, specs, cfgs, &cols) {
+                per_spec_rows[si].push(r?);
+            }
+            assemble_phase(specs, derived, n, &per_spec_rows, &mut out, |si| {
+                derived[si].compare.is_some()
+            })?;
+        }
+        Ok(out
+            .into_iter()
+            .map(|c| c.expect("every spec is assembled in one of the two phases"))
+            .collect())
     }
 
     /// The bank as versioned msgpack: the specs, every group's state and the
@@ -1402,8 +1597,8 @@ enum Source {
     /// small non-negative integer as an f64 (NaN = null), materialized as
     /// `i32`.
     Cluster(usize),
-    /// A `micro` id or label: monotone and never reused, so `i64`, the same
-    /// way.
+    /// A `micro` id or label, or a `seqtest` count: monotone and never
+    /// reused, so `i64`, the same way.
     Id(usize),
     /// A `micro` flag: `1.0` / `0.0` in the `pred` buffer (NaN = null),
     /// materialized as `Boolean`.
@@ -1470,9 +1665,10 @@ impl FieldMeta {
 }
 
 /// Every coefficient a spec reports, in `coef` list order, with the name
-/// [`CoefField`] gives it. Empty for `ew_cov`, which has none, and for
-/// `micro`, whose `coef` is one `[id, label, n, radius, c_1 .. c_p]` row per
-/// potential summary -- as many as there are, so no position has a name.
+/// [`CoefField`] gives it. Empty for `ew_cov` and `seqtest`, which have
+/// none, and for `micro`, whose `coef` is one `[id, label, n, radius, c_1 ..
+/// c_p]` row per potential summary -- as many as there are, so no position
+/// has a name.
 ///
 /// The layout is the models' (`online_core`): per instance, one `coef` list
 /// holding `(target, combo)` slots in the order the `pred` fields declare
@@ -1491,7 +1687,9 @@ impl FieldMeta {
 pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
     if matches!(
         spec.model,
-        crate::ModelKind::EwCov { .. } | crate::ModelKind::Micro { .. }
+        crate::ModelKind::EwCov { .. }
+            | crate::ModelKind::Micro { .. }
+            | crate::ModelKind::SeqTest { .. }
     ) {
         return Vec::new();
     }
@@ -1773,6 +1971,44 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
                     .src(Source::Coef(mi)),
             );
         }
+        return fields;
+    }
+    // seqtest predicts nothing: per target, the two log e-values and the two
+    // sign counts they are staked on (read before the row is learned), then
+    // `n_eff`. One undecayed instance, so no suffix and no decay on the
+    // fields; no `coef`. A comparison names its fields by the two sides.
+    if let crate::ModelKind::SeqTest { .. } = &spec.model {
+        let n_slots = online_core::SEQTEST_SLOTS;
+        let names: [&str; 4] = if spec.model.compares().is_some() {
+            ["log_e_a", "log_e_b", "wins_a", "wins_b"]
+        } else {
+            ["log_e_pos", "log_e_neg", "n_pos", "n_neg"]
+        };
+        let mut fields = Vec::new();
+        for (t_i, t) in spec.targets.iter().enumerate() {
+            let at = |slot: usize| t_i * n_slots + slot;
+            fields.push(
+                FieldMeta::new(format!("{}_{t}", names[0]), names[0])
+                    .target(t)
+                    .src(Source::Stat(at(0))),
+            );
+            fields.push(
+                FieldMeta::new(format!("{}_{t}", names[1]), names[1])
+                    .target(t)
+                    .src(Source::Stat(at(1))),
+            );
+            fields.push(
+                FieldMeta::new(format!("{}_{t}", names[2]), names[2])
+                    .target(t)
+                    .src(Source::Id(at(2))),
+            );
+            fields.push(
+                FieldMeta::new(format!("{}_{t}", names[3]), names[3])
+                    .target(t)
+                    .src(Source::Id(at(3))),
+            );
+        }
+        fields.push(FieldMeta::new("n_eff".into(), "n_eff").src(Source::NEff(0)));
         return fields;
     }
     let combos = crate::stream::combos(spec);
@@ -2063,6 +2299,7 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
         nc,
         m,
         per_model,
+        compare: _,
     } = d;
     let (n_models, nc, m, per_model) = (*n_models, *nc, *m, *per_model);
     // `ew_cov` emits named statistics rather than pred/resid pairs, and has no

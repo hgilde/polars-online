@@ -69,6 +69,7 @@ mod model;
 mod pa;
 mod rls;
 mod robust;
+mod seqtest;
 mod sgd;
 mod solve;
 mod stats;
@@ -94,6 +95,7 @@ pub use model::{
 pub use pa::{Pa, PaCfg, PaMode};
 pub use rls::{Rls, RlsCfg};
 pub use robust::{Robust, RobustCfg, RobustLoss};
+pub use seqtest::{SLOTS as SEQTEST_SLOTS, SeqTest, SeqTestCfg};
 pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::{quad_forms_logdet, solve_spd};
 pub use stats::{EwAutoCorr, P2Quantile, SlotMetrics};
@@ -109,7 +111,8 @@ pub use stats::{EwAutoCorr, P2Quantile, SlotMetrics};
 ///   converted on load; every other model is unchanged. `kmeans` and `micro`
 ///   (0.2.0) added `ModelState` variants without a bump: no existing layout moved,
 ///   and a 0.1 build meets a bank holding one as an unknown variant at
-///   deserialization rather than as a version it refuses.
+///   deserialization rather than as a version it refuses. `ew_class` and
+///   `seqtest` (0.2.0) likewise.
 pub const SCHEMA_VERSION: u32 = 2;
 
 /// Oldest state layout this build still loads.

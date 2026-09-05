@@ -480,6 +480,33 @@ class TestOutputSchemaStability:
         n_instances = len(halflife) if isinstance(halflife, list) else 1
         assert [f.dtype for f in out.schema["m"].fields] == per_instance * n_instances
 
+    @pytest.mark.parametrize("compare", [False, True], ids=["column", "compare"])
+    def test_seqtest_names_match_the_realized_struct(self, compare):
+        """`seqtest` predicts nothing: two `f64` log e-values and two `i64`
+        counts per target, then `n_eff`; no instances (nothing decays), no
+        `coef`. The comparison renames the four and reads the sides'
+        residuals, so it is realized inside a bank holding them."""
+        if compare:
+            sides = [
+                po.spec.ewridge("a", targets=["y0"], features=["x0"], halflife=50.0),
+                po.spec.ewridge("b", targets=["y0"], features=["x1"], halflife=50.0),
+            ]
+            spec = po.spec.seqtest("m", targets=["y0"], a="a", b="b", min_periods=2.0)
+        else:
+            sides = []
+            spec = po.spec.seqtest("m", targets=["y0", "x0"], min_periods=2.0)
+        out = po.ModelBank([*sides, spec]).fit_predict(_frame().drop("g"))
+        assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
+        idx = po.spec.output_index(spec)
+        names = {pl.Float64: "f64", pl.Int64: "i64"}
+        for f in out.schema["m"].fields:
+            declared = idx.filter(pl.col("field") == f.name)["dtype"].item()
+            assert names[f.dtype] == declared, (f, declared)
+        per_target = [pl.Float64, pl.Float64, pl.Int64, pl.Int64]
+        n_targets = len(spec["targets"])
+        assert [f.dtype for f in out.schema["m"].fields] == per_target * n_targets + [pl.Float64]
+        assert "coef" not in po.spec.output_fields(spec)
+
 
 class TestConfigParsing:
     """T-W3/T-W4: the CLI reads a TOML config as text. Windows checkouts can

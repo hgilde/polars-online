@@ -56,6 +56,7 @@ from polars_online._spec import (
     pa,
     quantile,
     rls,
+    seqtest,
     sgd,
 )
 
@@ -77,5 +78,6 @@ __all__ = [
     "pa",
     "quantile",
     "rls",
+    "seqtest",
     "sgd",
 ]

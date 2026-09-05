@@ -520,7 +520,26 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       distance, chunk invariance, save/load, groups, the expression, the
       lazy path, the CLI, every refusal by name); 7 core unit tests, the
       contract with and without reversion, two goldens.
-- [ ] 30. **E42: a sequential e-process test** between two specs' losses.
+- [x] 30. **E42: a sequential e-process test** — `seqtest`, a model in two
+      modes: the sign of each target column, or, with `a`/`b`, whether one
+      spec of the bank predicts closer than another (`|resid_b| − |resid_a|`).
+      Two one-sided Kelly bettors per target at the Krichevsky–Trofimov
+      stake on the counts before the row; `log_e_pos/neg`, `n_pos/neg`,
+      `n_eff` (`log_e_a/b`, `wins_a/b` in compare mode), all before the
+      row. The bank runs in two phases (every other spec, then the
+      comparisons over the residuals just assembled) and returns columns in
+      spec order. Verified by a scalar replay to 1e-12, the closed-form KT
+      wealth `2ⁿ B(n⁺+½, n⁻+½)/π` through `math.lgamma`, `po.eval.seqtest`
+      bit-identical to the bank on 1M rows (column) and 300k (compare), the
+      guarantee as a crossing rate over 20k fair-coin and 20k dependent-null
+      streams (2.2% at α = 5%, 0.4% at 1%), power at 60% / 55%, and the
+      edge cases (ties, nulls, ±inf, beyond-bound, denormals, integers,
+      warm-up with `n_eff` through it, per-target `min_periods`, chunk
+      invariance incl. interleaved-group comparisons, save/load, pickle,
+      groups and a null key, session and clock restarts, lazy path, runner,
+      CLI incl. `--dry-run`, the expression and its `a`/`b` refusal, two
+      comparisons in one bank, scoring, a refused chunk, every refusal by
+      name); 14 core unit tests, the contract, two goldens, 9 bank tests.
 - [ ] 31. **Performance and parallel-performance deep dive** over the new models and
       enhancements (`docs/PERFORMANCE.md`, `benchmark.py`, `scaling_bench.py`).
 - [ ] 32. **Prepare 0.2.0**: version bump, CHANGELOG, README and VALIDATION numbers
@@ -1012,6 +1031,94 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   when off. The step's pre-existing per-row `scales()` and `q_vec()`
   allocations (one `Vec` each, per target for `q_vec`) are the first thing
   task 31 should remove.
+
+**Task 30's decisions: `seqtest`, 2026-09-05.**
+
+- *A model, not a diagnostic flag.* ENHANCEMENTS E42 asked for a test
+  between two specs. Built as a spec kind (`type = "seqtest"`) rather than
+  an `emit_*` flag on the sides, because the test has its own targets (the
+  residual fields it compares), its own warm-up and reset policy, its own
+  state to save, and a second use the flag could never have: on its own it
+  tests the sign of any column. `targets` name the columns (column mode) or
+  the residual suffixes `t` of `resid_<t>` (compare mode).
+- *The bet.* Per target two one-sided e-processes, `E⁺` for "positive" and
+  `E⁻` for "negative", each `E ← E·(1 + λ s)` with the Krichevsky–Trofimov
+  stake on the counts *before* the row, `λ⁺ = max(0, (n⁺ − n⁻)/(n + 1))` —
+  the Beta(½,½) posterior mean `2p̂ − 1`, clipped at zero so a side never
+  bets against its own lead. Two consequences the tests pin: the losing
+  side's `log_e` is *exactly* 0 while it has never led (assert `<= 0`, not
+  `< 0`), and `1 − λ ≥ 1/(n + 1)` bounds a lost bet at `ln(n + 1)`, so the
+  wealth is finite forever. Where the clip never binds the wealth is the KT
+  mixture `2ⁿ B(n⁺ + ½, n⁻ + ½)/π` in closed form; a `+ + −` repeating
+  pattern keeps `n⁺ ≥ n⁻` on every prefix, so its `+` side is the exact
+  Beta integral and its `−` side is 0 — the oracle for the recursion, held
+  through `math.lgamma` (no scipy). The two-sided e-value is `(E⁺ + E⁻)/2`,
+  emitted as its parts. Not the Waudby-Smith–Ramdas aGRAPA stake: KT is
+  parameter-free, has the closed form, and its regret to the best fixed
+  stake is `½ ln n + O(1)`, which is what the power measurements show.
+- *A trial is a row.* Ties (zero), nulls, NaN and beyond-bound values bet
+  nothing and count nothing, but the row is seen (`n_eff` advances, so
+  `min_periods` means what it means everywhere). No `weight` (the stake is
+  a function of counts; a weighted bettor's e-process is not the KT
+  mixture) and no `halflife`/`lam` (a product of bets cannot decay and stay
+  an e-value); both refused by name, as are `features` and every residual
+  diagnostic (`predicts_no_target`). `session_gap="reset"` and
+  `on_clock_reset="reset_state"` restart the test; a clock otherwise only
+  admits or refuses rows.
+- *Compare mode is column mode on `|resid_b| − |resid_a|`*, positive when
+  `a` came closer — the same sign under any loss that grows with `|resid|`
+  (squared, absolute, Huber), so the test is of "`a` beats `b`" under all of
+  them at once. A row where either side is null (warm-up, a skipped row) is
+  a tie. `a_suffix`/`b_suffix` pick a grid instance (`resid_y__r0.5@h20`);
+  one spec against itself is refused only with equal suffixes, because two
+  instances of one grid are a comparison like any other. Tested by
+  computing the difference as a column and running column mode on it: the
+  fields agree bit for bit, including `n_eff`.
+- *The two-phase bank.* `fit_predict` runs `check_clock` on every stream
+  first (so a refused chunk still updates nothing, in either phase), then
+  every non-comparison spec in parallel as before into `out:
+  Vec<Option<Column>>`, then each comparison reading its two sides' residual
+  fields from the structs in `out` (`compare_targets`), and returns the
+  columns in spec order whichever phase produced them. A comparison
+  therefore never needs the sides to be listed before it; `resolve_compare`
+  at `Bank::new` refuses a side that is not in the bank, is itself a
+  `seqtest`, or lacks the residual field, naming the fields it has.
+  `predict_on_pool` does the same with the scored sides, so scoring reads
+  the state before the chunk and compares what it scored. The comparison's
+  own `group` is independent of the sides' (grouped sides can be compared
+  pooled).
+- *`RunConfig::validate` builds the bank.* The CLI's `--dry-run` used to
+  validate specs one by one and would have said "config OK" to a
+  comparison whose side was not in the config; it now runs `Bank::new` and
+  reports duplicate names and comparison mismatches before opening the
+  input.
+- *The expression form.* `pl.col("d").online.seqtest()` is column mode on
+  its column (`extra_targets` for more); `a`/`b`/`a_suffix`/`b_suffix` are
+  omitted from `SeqTestKwargs` (`EXPR_OMITS` in the typing test) and
+  refused at runtime with the way to write it: the difference as a column,
+  or the spec in a bank. The kwargs TypedDict says so in its docstring.
+- *`po.eval.seqtest`* mirrors the builder's keyword shape (`targets`, `a`,
+  `b`, `a_suffix`, `b_suffix`, `by`, `min_periods`) and is the same
+  recursion in polars expressions (`cum_sum().shift(1)` under `over`),
+  bit-identical to the bank in both modes. Two gotchas it absorbs: polars
+  orders NaN above every float, so `NaN > 0` is `True` and the sign must
+  be masked by the bank's admission rule (`is_finite & abs <= 1e100`)
+  first; and the bank emits `n_eff` through warm-up while the other fields
+  are null, so the twin gates every field but `n_eff`.
+- *Validity is a rate.* `E[E_t] ≤ 1` is not a test of an e-process (a
+  process that never bets passes it); the guarantee is
+  `P(sup E ≥ 1/α) ≤ α`, so the tests run twenty thousand streams as groups
+  of one bank and count the ones whose peak crosses. Fair coin, 300 rows:
+  2.2% at α = 5%, 0.4% at 1% (a lower bound of 0.5% / 0.05% catches a
+  bettor that never bets); a dependent null with `P(+ | last +) = 0.3`,
+  `P(+ | last −) = 0.5` — not i.i.d., still never favouring +; the two-sided
+  average under 5%. Power, 2000 streams: 60% positive crosses 20 within
+  1000 rows in 99.9%; 55% in 12% / 59% / 100% at 200 / 1000 / 4000 rows.
+  Six million rows in half a second, so these run in the default suite.
+- *What it does not claim.* A test of the *sign*, by design and by
+  docstring: 60% gains of 1e-9 against 40% losses of 1e6 is "positive". A
+  test of the mean would need bounded losses or clipping, which E42 ruled
+  out; the sign-conditional null is the one that holds for dependent rows.
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without

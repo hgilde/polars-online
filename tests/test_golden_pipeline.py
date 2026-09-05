@@ -166,6 +166,23 @@ def specs() -> list[dict]:
             group="g",
             min_periods=4.0,
         ),
+        # No weight and no halflife: a test counts trials and does not forget.
+        po.spec.seqtest(
+            "seqtest", targets=["y0"], clock="t", max_dclock=6.0, group="g", min_periods=4.0
+        ),
+        # The two-phase bank: reads the ridge grid's `resid_y0__r0.5` and
+        # kalman's `resid_y0` from the structs assembled above it.
+        po.spec.seqtest(
+            "seqtest_compare",
+            targets=["y0"],
+            a="ridge",
+            a_suffix="__r0.5",
+            b="kalman",
+            clock="t",
+            max_dclock=6.0,
+            group="g",
+            min_periods=4.0,
+        ),
     ]
 
 
@@ -411,6 +428,36 @@ GOLDEN: dict[str, float | str | None] = {
     "ew_class.n_eff@25": 7.999488060097996,
     "ew_class.n_eff@60": 12.473100285951407,
     "ew_class.n_eff@119": 14.963784088176922,
+    "seqtest.log_e_pos_y0@25": 0.0,
+    "seqtest.log_e_pos_y0@60": 0.0,
+    "seqtest.log_e_pos_y0@119": 0.0,
+    "seqtest.log_e_neg_y0@25": 2.797424236204631,
+    "seqtest.log_e_neg_y0@60": -1.7626699454934798,
+    "seqtest.log_e_neg_y0@119": 5.481151387104117,
+    "seqtest.n_pos_y0@25": 1,
+    "seqtest.n_pos_y0@60": 13,
+    "seqtest.n_pos_y0@119": 14,
+    "seqtest.n_neg_y0@25": 10,
+    "seqtest.n_neg_y0@60": 16,
+    "seqtest.n_neg_y0@119": 43,
+    "seqtest.n_eff@25": 12.0,
+    "seqtest.n_eff@60": 30.0,
+    "seqtest.n_eff@119": 59.0,
+    "seqtest_compare.log_e_a_y0@25": 0.0,
+    "seqtest_compare.log_e_a_y0@60": 8.308417683424773,
+    "seqtest_compare.log_e_a_y0@119": -0.18642010174481427,
+    "seqtest_compare.log_e_b_y0@25": 0.2719337154836418,
+    "seqtest_compare.log_e_b_y0@60": -0.9808292530117262,
+    "seqtest_compare.log_e_b_y0@119": -1.4020427180880297,
+    "seqtest_compare.wins_a_y0@25": 1,
+    "seqtest_compare.wins_a_y0@60": 21,
+    "seqtest_compare.wins_a_y0@119": 30,
+    "seqtest_compare.wins_b_y0@25": 5,
+    "seqtest_compare.wins_b_y0@60": 2,
+    "seqtest_compare.wins_b_y0@119": 22,
+    "seqtest_compare.n_eff@25": 12.0,
+    "seqtest_compare.n_eff@60": 30.0,
+    "seqtest_compare.n_eff@119": 59.0,
 }
 
 

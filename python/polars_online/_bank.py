@@ -242,7 +242,8 @@ class ModelBank:
         ``spec`` and ``group`` are as for :meth:`gram`: ``KeyError`` /
         ``IndexError`` for a spec the bank has not got, and a group it has
         never seen gives an empty frame with the same columns. ``ValueError``
-        for an ``ew_cov`` spec, which emits statistics, not coefficients.
+        for an ``ew_cov`` spec, which emits statistics, not coefficients,
+        and for a ``seqtest`` spec, which emits evidence.
         """
         idx = self._spec_index(spec)
         layout = coef_index(self.specs[idx])

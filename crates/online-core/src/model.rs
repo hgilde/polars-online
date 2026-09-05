@@ -59,6 +59,7 @@ pub enum ModelState {
     KMeans(Box<crate::KMeans>),
     Micro(Box<crate::Micro>),
     EwClass(Box<crate::EwClass>),
+    SeqTest(Box<crate::SeqTest>),
 }
 
 #[derive(Debug, Error)]
@@ -91,6 +92,7 @@ impl ModelState {
             ModelState::KMeans(_) => "kmeans",
             ModelState::Micro(_) => "micro",
             ModelState::EwClass(_) => "ew_class",
+            ModelState::SeqTest(_) => "seqtest",
         }
     }
 }

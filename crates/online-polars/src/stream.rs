@@ -6,7 +6,8 @@ use online_core::{
     EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, Holt, HoltCfg,
     INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, Micro,
     MicroCfg, ModelState, OnlineModel, P2Quantile, Pa, PaCfg, PaMode, PageHinkley, Rls, RlsCfg,
-    Robust, RobustCfg, RobustLoss, SeedRule, Sgd, SgdCfg, SgdLoss, SlotMetrics, State, StateError,
+    Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss,
+    SlotMetrics, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +29,7 @@ pub enum AnyModel {
     KMeans(Box<KMeans>),
     Micro(Box<Micro>),
     EwClass(Box<EwClass>),
+    SeqTest(Box<SeqTest>),
 }
 
 /// Bind the boxed model of whichever variant `$self` is, then run `$body`.
@@ -54,6 +56,7 @@ macro_rules! dispatch {
             AnyModel::KMeans($m) => $body,
             AnyModel::Micro($m) => $body,
             AnyModel::EwClass($m) => $body,
+            AnyModel::SeqTest($m) => $body,
         }
     };
 }
@@ -98,7 +101,8 @@ impl AnyModel {
             | AnyModel::Pa(_)
             | AnyModel::Holt(_)
             | AnyModel::KMeans(_)
-            | AnyModel::Micro(_) => 0,
+            | AnyModel::Micro(_)
+            | AnyModel::SeqTest(_) => 0,
         }
     }
 
@@ -135,6 +139,9 @@ impl AnyModel {
             AnyModel::Micro(m) => m.coefficients(),
             // The class means, one row per class (NaN for a class not seen).
             AnyModel::EwClass(m) => Some(m.coefficients()),
+            // seqtest has no coefficients: its outputs are the e-values and
+            // the counts they are staked on.
+            AnyModel::SeqTest(_) => None,
         }
     }
 
@@ -157,6 +164,7 @@ impl AnyModel {
             ModelState::KMeans(_) => Ok(AnyModel::KMeans(Box::new(KMeans::restore(s)?))),
             ModelState::Micro(_) => Ok(AnyModel::Micro(Box::new(Micro::restore(s)?))),
             ModelState::EwClass(_) => Ok(AnyModel::EwClass(Box::new(EwClass::restore(s)?))),
+            ModelState::SeqTest(_) => Ok(AnyModel::SeqTest(Box::new(SeqTest::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -606,6 +614,14 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::EwClass(Box::new(EwClass::new(cfg)?)))
         }
+        // No decay to build with: `decays()` gives one undecayed instance.
+        ModelKind::SeqTest { .. } => {
+            let cfg = SeqTestCfg {
+                n_targets: spec.m(),
+                min_periods: spec.min_periods_or_default(),
+            };
+            Ok(AnyModel::SeqTest(Box::new(SeqTest::new(cfg)?)))
+        }
     }
 }
 
@@ -678,7 +694,8 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
         | ModelKind::Holt { .. }
         | ModelKind::KMeans { .. }
         | ModelKind::Micro { .. }
-        | ModelKind::EwClass { .. } => vec![Combo::default()],
+        | ModelKind::EwClass { .. }
+        | ModelKind::SeqTest { .. } => vec![Combo::default()],
         ModelKind::Lasso { lasso_path, .. } => lasso_path
             .iter()
             .map(|l| Combo {

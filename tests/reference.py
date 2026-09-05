@@ -710,3 +710,84 @@ def ftrl_ref(
         st["w_sum"] = lam * st["w_sum"] + w[i]
 
     return {"pred": pred, "resid": resid, "n_eff": n_eff, "coef": coef}
+
+
+def seqtest_ref(
+    Y: np.ndarray,
+    w: np.ndarray | None = None,
+    reset: np.ndarray | None = None,
+    min_periods: float = 0.0,
+) -> dict[str, np.ndarray]:
+    """Sequential sign test oracle (docs/ENHANCEMENTS.md E42): per target,
+    two Kelly bettors with a Krichevsky-Trofimov stake on the sign counts.
+
+    ``Y`` is ``(n, m)`` with NaN for a null. Per row and target, with the
+    counts *before* the row and ``s`` the sign of ``Y[i, j]``::
+
+        lam_pos = max(0, (n_pos - n_neg) / (n_pos + n_neg + 1))
+        lam_neg = max(0, (n_neg - n_pos) / (n_pos + n_neg + 1))
+        log_e_pos += log1p(lam_pos * s);  log_e_neg += log1p(-lam_neg * s)
+
+    A null, zero (or NaN) value bets nothing and counts nothing; a weight of
+    0 skips the row; any other weight is one trial and counts itself toward
+    ``n_eff``. No decay, so no clock. ``reset[i]`` restarts the state before
+    row ``i`` (a session change under ``session_gap="reset"``, a backwards
+    clock under ``on_clock_reset="reset_state"``). Outputs are the state
+    before the row, NaN while ``n_eff < min_periods`` (``n_eff`` always).
+    """
+    import math
+
+    n, m = Y.shape
+    if w is None:
+        w = np.ones(n)
+    if reset is None:
+        reset = np.zeros(n, dtype=bool)
+    log_e_pos = np.full((n, m), np.nan)
+    log_e_neg = np.full((n, m), np.nan)
+    n_pos = np.full((n, m), np.nan)
+    n_neg = np.full((n, m), np.nan)
+    n_eff = np.full(n, np.nan)
+
+    def init():
+        return {
+            "pos": np.zeros(m),
+            "neg": np.zeros(m),
+            "lp": np.zeros(m),
+            "ln": np.zeros(m),
+            "w": 0.0,
+        }
+
+    st = init()
+    for i in range(n):
+        if reset[i]:
+            st = init()
+        n_eff[i] = st["w"]
+        if st["w"] >= min_periods:
+            log_e_pos[i] = st["lp"]
+            log_e_neg[i] = st["ln"]
+            n_pos[i] = st["pos"]
+            n_neg[i] = st["neg"]
+        if not w[i] > 0.0:
+            continue
+        for j in range(m):
+            y = Y[i, j]
+            if np.isnan(y) or y == 0.0:
+                continue
+            s = 1.0 if y > 0.0 else -1.0
+            n1 = st["pos"][j] + st["neg"][j] + 1.0
+            lam_pos = max(0.0, (st["pos"][j] - st["neg"][j]) / n1)
+            lam_neg = max(0.0, (st["neg"][j] - st["pos"][j]) / n1)
+            st["lp"][j] += math.log1p(lam_pos * s)
+            st["ln"][j] += math.log1p(-lam_neg * s)
+            if s > 0.0:
+                st["pos"][j] += 1.0
+            else:
+                st["neg"][j] += 1.0
+        st["w"] += w[i]
+    return {
+        "log_e_pos": log_e_pos,
+        "log_e_neg": log_e_neg,
+        "n_pos": n_pos,
+        "n_neg": n_neg,
+        "n_eff": n_eff,
+    }

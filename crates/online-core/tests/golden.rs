@@ -391,6 +391,29 @@ fn holt_golden() {
 }
 
 #[test]
+fn seqtest_golden() {
+    // Slot 0 is the log e-value for "the target is positive", slot 1 the one
+    // for "negative": together they pin the stake, the wealth update and the
+    // counts (a wrong count moves the next stake).
+    let mut m = SeqTest::new(SeqTestCfg {
+        n_targets: 1,
+        min_periods: 0.0,
+    })
+    .unwrap();
+    check("seqtest", &signature_of(&mut m, 0, false), GOLDEN_SEQTEST);
+    let mut m = SeqTest::new(SeqTestCfg {
+        n_targets: 1,
+        min_periods: 0.0,
+    })
+    .unwrap();
+    check(
+        "seqtest_neg",
+        &signature_of(&mut m, 1, false),
+        GOLDEN_SEQTEST_NEG,
+    );
+}
+
+#[test]
 fn ew_cov_golden() {
     // Slots in emission order: mean x0, mean x1, var x0, var x1, corr x0x1.
     // The correlation is the one that reads every accumulator at once.
@@ -575,6 +598,12 @@ const GOLDEN_PA: &[f64] = &[
 const GOLDEN_SGD_SIMPLEX: &[f64] = &[0.5169094734826561, 1.109247996359838, -0.020146022626397198];
 const GOLDEN_PA_BOX: &[f64] = &[0.5287388518302499, 1.679384820401434, 0.15906888911203854];
 const GOLDEN_HOLT: &[f64] = &[0.6940554404209057, 0.5781242794831807, 0.2548083372371531];
+const GOLDEN_SEQTEST: &[f64] = &[-0.6443570163905132, -1.086393303225433, -0.9577414997686987];
+const GOLDEN_SEQTEST_NEG: &[f64] = &[
+    -0.9917118216489557,
+    -0.9917118216489557,
+    -0.9917118216489557,
+];
 const GOLDEN_EW_COV: &[f64] = &[
     -0.3469363807058677,
     -0.1331528573613194,

@@ -506,7 +506,7 @@ fn every_state_kind_is_distinct_and_named() {
     // returns a constant would make "expected X, found Y" meaningless.
     let kinds = [
         "ew_ridge", "rls", "lasso", "kalman", "robust", "ftrl", "sgd", "pa", "holt", "ew_cov",
-        "kmeans", "micro",
+        "kmeans", "micro", "ew_class", "seqtest",
     ];
     let mut seen = std::collections::HashSet::new();
     for k in kinds {
@@ -579,6 +579,31 @@ fn ew_class() {
     }
 }
 
+fn seqtest_cfg() -> SeqTestCfg {
+    SeqTestCfg {
+        n_targets: 2,
+        min_periods: 3.0,
+    }
+}
+
+#[test]
+fn seqtest() {
+    // A test of the sign of each target: no features, four slots per target
+    // (the two log e-values and the two counts), and no decay at all -- an
+    // e-process that forgot would not be one -- so `n_eff` is the plain
+    // weight sum and a clock gap changes nothing.
+    let m = SeqTest::new(seqtest_cfg()).unwrap();
+    assert_eq!(m.n_targets(), 2);
+    assert_eq!(m.n_features(), 0, "seqtest reads no features");
+    assert_eq!(m.n_outputs(), 2 * SEQTEST_SLOTS);
+    let r = probe_with(m, 2, Some(&SeqTest::n_eff));
+    assert_eq!(r.kind, "seqtest");
+    assert_eq!(r.pred_len, 2 * SEQTEST_SLOTS);
+    assert_eq!(r.n_eff, vec![0.0, 1.0, 2.0, 40.0]);
+    assert_eq!(r.after_gap, r.before_gap + 1.0, "no decay over a gap");
+    assert!(r.roundtrips);
+}
+
 /// The variants of `ModelState` this file probes. A model added to the enum
 /// and not to this list fails here, which is the reminder to write its
 /// `*_cfg()` and probe above (docs/EXTENDING.md).
@@ -597,6 +622,7 @@ const PROBED: &[&str] = &[
     "KMeans",
     "Micro",
     "EwClass",
+    "SeqTest",
 ];
 
 #[test]
@@ -959,6 +985,36 @@ fn holt_recovers_from_bounded_extremes() {
 }
 
 #[test]
+fn seqtest_is_indifferent_to_bounded_extremes() {
+    // The e-process reads only the sign of each target, so a row at the
+    // bound is one more trial like any other: no accumulator holds the
+    // magnitude, and the state after the script equals a twin's that was
+    // fed the signs alone. (The twin criteria above do not apply: a test
+    // never forgets, so a copy that saw more rows is a different test.)
+    let rows = bounded_script(2);
+    let mut model = SeqTest::new(seqtest_cfg()).unwrap();
+    let mut twin = SeqTest::new(seqtest_cfg()).unwrap();
+    for (i, r) in rows.iter().enumerate() {
+        let d = if i == 0 { 0.0 } else { 1.0 };
+        let a = model.step(&r.x, &r.y, d, r.w);
+        let signs: Vec<Option<f64>> = r.y.iter().map(|y| y.map(f64::signum)).collect();
+        let b = twin.step(&[], &signs, d, r.w);
+        assert!(a.n_eff.is_finite(), "n_eff is {} at row {i}", a.n_eff);
+        assert!(
+            a.pred.iter().all(|p| p.is_finite() || a.n_eff < 3.0),
+            "row {i}: {:?}",
+            a.pred
+        );
+        same_step("seqtest", i, &a, &b);
+    }
+    assert_eq!(model, twin);
+    // A weight at the bound counts itself, once; the rows after it are
+    // lost in its rounding but the counts and the wealth go on moving.
+    assert!(model.n_eff() >= BOUND);
+    assert!(model.n_pos()[0] + model.n_neg()[0] > 30_000.0);
+}
+
+#[test]
 fn kmeans_recovers_from_bounded_extremes() {
     // The extreme rows drag a centre to the bound and blow the metric up;
     // the split–merge check re-places the emptied centre and the moments
@@ -1223,6 +1279,11 @@ fn pa_predict_is_the_step() {
 #[test]
 fn holt_predict_is_the_step() {
     predict_is_the_step_without_the_step(|| Holt::new(holt_cfg()).unwrap(), 2, false);
+}
+
+#[test]
+fn seqtest_predict_is_the_step() {
+    predict_is_the_step_without_the_step(|| SeqTest::new(seqtest_cfg()).unwrap(), 2, false);
 }
 
 #[test]

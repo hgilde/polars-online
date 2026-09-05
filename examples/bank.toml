@@ -50,3 +50,24 @@ min_periods = 20.0
 type = "kalman"
 coef_halflife = 3600.0
 # revert_halflife = ["inf", 7200.0, 7200.0, 7200.0]  # slopes revert toward zero; intercept stays a random walk
+
+# Which of the two is closer, row by row: a sequential test on the sign of
+# `|resid_kalman| - |resid_ridge|`, anytime-valid at every row
+# (`exp(log_e_a) >= 20` is evidence for the ridge at the 5% level). The
+# target names the residual field of both sides, `resid_y`; the ridge is a
+# grid, so `a_suffix` picks its instance (`resid_y__r0.000001`). A mismatch
+# is refused with the residual fields each side has; `--dry-run` lists
+# them. The bank runs the two sides first.
+[[specs]]
+name = "ridge_vs_kalman"
+targets = ["y"]
+features = []
+clock = "t"
+max_dclock = 300.0
+group = "group"
+
+[specs.model]
+type = "seqtest"
+a = "ridge"
+a_suffix = "__r0.000001"
+b = "kalman"

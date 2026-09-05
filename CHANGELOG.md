@@ -222,6 +222,43 @@ carries breaking changes.
   tracking error (0.86× dense), a slot left at `inf` is within 0.2% of the
   unmodified filter, and a random-walk truth is still best tracked by the
   random walk (`tests/test_kalman_revert.py`).
+- **`seqtest`: a sequential test of a sign, by betting** (`po.spec.seqtest`,
+  `docs/ENHANCEMENTS.md` E42, task 30). Not a regression: per target it keeps
+  two e-processes — the wealth of a gambler betting the next sign is
+  positive, and of one betting it is negative, each staking the
+  Krichevsky–Trofimov fraction `max(0, (n⁺−n⁻)/(n+1))` of the counts so far
+  — so `log_e_pos ≥ ln(1/α)` rejects "no more likely positive than negative,
+  given the past" at level α by Ville's inequality, read at any row, as
+  often as you like, with no distribution assumed. Fields, all as they
+  stood *before* the row: `log_e_pos_<t>`, `log_e_neg_<t>`, `n_pos_<t>`,
+  `n_neg_<t>` (`i64`) and `n_eff`; a zero, null or NaN is a tie that bets
+  and counts nothing. **With `a` and `b` it compares two specs of the
+  bank**: the sign tested is `|resid_b| − |resid_a|` (positive when `a` came
+  closer), the fields are `log_e_a_<t>`, `log_e_b_<t>`, `wins_a_<t>`,
+  `wins_b_<t>`, `a_suffix`/`b_suffix` pick a grid instance, and a row where
+  either side is null is no trial. The bank runs in two phases — every
+  other spec, then the comparisons, reading the residuals from the structs
+  just assembled — and returns the columns in spec order; a refused chunk
+  updates neither phase; `ModelBank.predict` compares the scored sides.
+  `weight`, `halflife`/`lam`, `features` and every residual diagnostic are
+  refused by name (a trial is a row; an e-process does not forget);
+  `session` and `on_clock_reset="reset_state"` restart it. `coef_fields` is
+  empty and `coef_index`/`ModelBank.coef` refuse it. The expression form
+  runs column mode on its column and refuses `a`/`b` with the way to write
+  the comparison. **`po.eval.seqtest(df, targets=, a=, b=, by=)`** is the
+  same computation in polars expressions over a frame you already have,
+  bit-identical to the bank in both modes. Rust: `online_core::{SeqTest,
+  SeqTestCfg}`, `ModelKind::SeqTest { a, b, a_suffix, b_suffix }`,
+  `ModelState::SeqTest`; TOML `type = "seqtest"`, `a = "ridge"`, `b =
+  "kalman"`. Verified against a scalar replay (`tests/reference.py::
+  seqtest_ref`) to 1e-12, the closed-form KT wealth `2ⁿ B(n⁺+½, n⁻+½)/π`
+  through `math.lgamma`, the twin on a million rows, and the guarantee
+  itself: over twenty thousand fair-coin streams, and twenty thousand
+  dependent ones still under the null, the crossing rate of `1/α` stays
+  under α at 0.05 and 0.01 (`tests/test_seqtest.py`).
+- **`--dry-run` and `RunConfig::validate` build the bank**, so a duplicate
+  spec name or a comparison naming a spec the bank has not got is reported
+  before the input is opened, not on the first chunk.
 
 ### Changed
 
