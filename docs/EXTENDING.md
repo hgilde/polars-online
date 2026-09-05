@@ -241,6 +241,20 @@ the registry tests will fail in between, which is what they are for.
 
 ## Adding an output or a parameter instead
 
+- **A new *common* parameter** (one every model takes, like `label_delay`):
+  the field goes on `Spec` in `crates/online-polars/src/spec.rs` with
+  `#[serde(default)]` and its validation in `Spec::validate`; on
+  `ExprKwargs` in `python/polars_online/_kwargs.py`; and in `_common`'s
+  signature *and* the dict it builds, in `python/polars_online/_spec.py`.
+  The API snapshot (`tests/api_surface.txt`) records the new keyword and its
+  default, and regenerating it is the diff to read.
+  **A spec field changes the bytes of every bank file**, since each carries
+  its specs — so it is a layout change under hard rule 5: bump
+  `SCHEMA_VERSION`, and freeze a fixture for the new one once the layout has
+  stopped moving (task 44). If the Python builders write a default the field
+  would not otherwise have, add it to `Spec::fill_defaults` too, or a TOML
+  spec and the same spec in Python will save different bytes
+  (`tests/test_no_output.py` compares the two state files).
 - **A new output field** on every model: `FieldMeta` in
   `crates/online-polars/src/bank.rs` carries the name and dtype
   (IMPROVEMENTS X1), the emit flag goes on `Spec` and `CommonKwargs`, and

@@ -126,9 +126,14 @@ justifies them and `test_validation_doc.py` pins that they are still the
 measured optimum, but nothing pins the *values* as a contract.
 
 **4. State files and the TOML config.** Already the best-guarded: versioned
-msgpack, `SCHEMA_VERSION` plus a bank `format_version`, frozen schema-1 and
-schema-2 fixtures, and a documented rule (hard rule 5) to keep a
-previous-version loader. This is the model the rest should follow.
+msgpack, `SCHEMA_VERSION` plus a bank `format_version`, a frozen fixture per
+schema (`state_v1.rs`, `state_schema2.rs`, `state_schema3.rs`,
+`state_schema4.rs`), and a documented rule (hard rule 5) to keep a
+previous-version loader. This is the model the rest should follow. Each
+fixture asks only what a converter must preserve — it loads, it continues
+the stream to the bit, and it re-saves byte-identically while the writer is
+unchanged — so the last of those becomes the upgrade test the moment the
+writer moves, which is exactly what happened to schema 3 at task 40.
 
 ## S — The mechanism: one API snapshot test — **done**
 
