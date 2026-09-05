@@ -599,8 +599,9 @@ to run at the width, target count and block count its design allows.
 - [x] 40. **`label_delay`** (E47): a common parameter that holds each learned
       row until the clock reaches `t + delay`; plus `po.prep.embargo` for the
       doubled-stream recipe.
-- [ ] 41. **Symmetric-half Gram update** (E48): upper triangle mirrored,
-      bit-identical, half the flops.
+- [x] 41. **The Gram update, measured** (E48): the symmetric-half idea is
+      rejected — it is neither bit-identical nor faster — and the deviation
+      hoist that *is* both ships in its place.
 - [ ] 42. **Mergeable evaluation sums** (E49): `po.eval.sums` /
       `merge_sums` / `from_sums`.
 - [ ] 43. **A run with no per-row output** (E50): `po.run(output=None,
@@ -1630,6 +1631,41 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   (`state_v1.rs`, `state_schema2.rs`, `state_schema3.rs`); schema 4's waits
   until the tasks that may still add spec fields (41–43) have landed, so it
   is frozen once rather than three times.
+
+**Task 41's decisions: E48 measured and rejected, 2026-09-05.**
+
+- *The premise was wrong, and measuring is what showed it.* E48 said
+  mirroring the upper triangle is "bit-identical (the products commute in
+  IEEE)". The products do commute; the association does not.
+  `c[i][j] = a*b*d_i*d_j` is `((a·b)·d_i)·d_j` and the transposed entry is
+  `((a·b)·d_j)·d_i`, whose intermediates round differently — so the matrix
+  the library has always kept is symmetric to about 1e-16 and *not* to the
+  bit, and mirroring moves every golden value. Writing it as
+  `(a·b)·(d_i·d_j)` would make it exactly symmetric, and is itself a
+  different rounding from today's. Either way E48's "the goldens, unchanged"
+  cannot hold.
+- *And it is slower, by 49% to 107%.* The mirror store `c[j*k+i]` walks a
+  new cache line for every `j`: the loop touches the whole matrix twice
+  instead of once, defeats the prefetcher and cannot vectorise. Halving the
+  flops and doubling the traffic is a pessimisation at every width where a
+  triangle would be worth having. Five variants, six widths, two runs, each
+  checked bit-for-bit before being timed (docs/PERFORMANCE.md §14).
+- *What shipped instead is on the same loop and is bit-identical.* The
+  deviations are computed once into a row scratch — the old form recomputed
+  `x[j] - m[j]` once per *row of the matrix*, `k²` subtractions where `k`
+  will do — and the inner loop runs over `c`'s row slice zipped with that
+  scratch, so `c`, `x` and `m` are not indexed by `j` and the bounds checks
+  that kept it scalar are gone. −14% at k = 4, −63% at 16, −45% at 64,
+  −22% to −27% from 200 up, and the goldens do not move.
+- *The scratch is a buffer, not state.* `#[serde(skip)]` and a `PartialEq`
+  that always returns true, so a state file carries none of it and a
+  round-tripped accumulator still compares equal to the one that wrote it.
+  It refills itself on the first row after a load; a test asserts both.
+- *The rejection is kept as a test, not only as prose.*
+  `the_two_triangles_are_equal_but_not_bit_equal` fails if the two ever
+  become bit-equal, and its message points at §14 — so the next person to
+  reach for the shortcut finds out why it was not taken, in the place they
+  would reach for it.
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without

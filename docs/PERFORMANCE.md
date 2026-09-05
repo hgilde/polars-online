@@ -1366,3 +1366,66 @@ recursion is the per-row cost and cannot be split within a group, and
   two-pass moment per chunk merged with Chan's formula gives different
   bits under different chunkings), so the per-row form stays; an opt-out
   is the answer if a wide, cheap model ever needs one.
+
+## 14. The Gram update, measured (E48, 2026-09-05)
+
+`EwCov::update` is the hottest loop in the library: every Gram model runs it
+once a row, `O(k²)`. E48 proposed halving its flops by computing the upper
+triangle and mirroring it, "bit-identical (the products commute in IEEE)"
+with "the goldens, unchanged". **Both halves of that turned out to be
+wrong**, and a different change to the same loop turned out to be worth 14%
+to 65%.
+
+Five variants, each run over the same rows at six widths, twice, on this
+machine; ratios only, and every variant checked bit-for-bit against the
+current code before being timed. (`hoisted` = deviations computed once into
+a scratch; `zipped` = the inner loop over slice iterators instead of
+indices; `h+zip` = both; `upper` = E48's proposal; `both_sym` = the
+symmetric association `(a·b)·(dᵢdⱼ)`.)
+
+| k | hoisted | both_sym | zipped | **h+zip** | upper (E48) |
+|---|---|---|---|---|---|
+| 4 | −9% | −1% | −28% | **−14%** | −21% |
+| 16 | −22% | −8% | −55% | **−63%** | −16% |
+| 64 | −26% | −16% | −23% | **−45%** | **+64%** |
+| 200 | −19% | −20% | −1% | **−24%** | **+54%** |
+| 400 | −22% | −20% | +3% | **−27%** | **+53%** |
+| 800 | −21% | −21% | +1% | **−22%** | **+107%** |
+
+**E48's mirror is not bit-identical.** The products do commute, but the
+association does not: the loop computes `a*b*dᵢ*dⱼ`, which is
+`((a·b)·dᵢ)·dⱼ`, and the transposed entry computes `((a·b)·dⱼ)·dᵢ`. The
+intermediate rounds differently, so today's co-moment matrix is *not*
+exactly symmetric — the two triangles differ in the last bit or two, and
+mirroring one onto the other changes every golden value. Writing it as
+`(a·b)·(dᵢ·dⱼ)` would make the matrix exactly symmetric, but that is itself
+a different rounding from today's (`both_sym` above, "NO" on bit-equality),
+so the goldens move either way.
+
+**And it is slower, by a lot.** The mirror store `c[j*k + i]` walks a new
+cache line for every `j`, so the loop touches the whole matrix twice
+instead of once, defeats the prefetcher and cannot vectorise. The flops
+halve and the traffic does not: +49% to +107% at every width where a
+triangle would be worth having. E48's "0.20 ns per element per row, both
+triangles" was measured; the conclusion drawn from it was not.
+
+**What is worth having** is `h+zip`, which is bit-identical and shipped
+(task 41):
+
+- the deviations `x − m` are computed **once** into a row scratch, where the
+  old loop recomputed `x[j] − m[j]` inside every row of the matrix — `k²`
+  subtractions where `k` will do;
+- the inner loop runs over `c`'s row slice zipped with the scratch, so `c`,
+  `x` and `m` are not indexed by `j` and the bounds checks that were keeping
+  the loop scalar are gone.
+
+Same operations in the same order, so every golden value is unchanged and no
+state file moves. The scratch is `#[serde(skip)]` and its `PartialEq` is
+`true`, so it is not part of the state and a round-tripped accumulator still
+compares equal to the one that wrote it; it refills itself on the first row
+after a load.
+
+The lesson is the same one §12 and §13 keep teaching: at these widths the
+loop is bound by how it touches memory, not by how many multiplies it does.
+A change that halves the arithmetic and doubles the traffic is a
+pessimisation, and the only way to know which one a change is, is to run it.

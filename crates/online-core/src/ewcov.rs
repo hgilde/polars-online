@@ -51,6 +51,18 @@ pub fn variance_is_usable(var: f64, _raw_second_moment: f64) -> bool {
     var > 0.0 && var.is_finite()
 }
 
+/// A reusable row buffer that is not state: two accumulators with the same
+/// moments are the same accumulator whatever is left in their scratch, and a
+/// state file carries none of it.
+#[derive(Debug, Clone, Default)]
+struct Scratch(Vec<f64>);
+
+impl PartialEq for Scratch {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EwCov {
     k: usize,
@@ -85,6 +97,12 @@ pub struct EwCov {
     /// paid for when partial correlations are read.
     #[serde(default, alias = "inv_prior")]
     precision_prior: f64,
+    /// Row scratch: `x - m`, the deviations the co-moment update needs `k`
+    /// times each (docs/ENHANCEMENTS.md E48). Not part of the state -- serde
+    /// skips it and [`PartialEq`] ignores it, so a round-tripped accumulator
+    /// still compares equal to the one that wrote it.
+    #[serde(skip)]
+    dev: Scratch,
     /// Decaying scale `s` on that prior. It must decay by the *same* factor
     /// `a` the co-moments do, not by `lam`, so that `M` stays a fixed multiple
     /// of what it would be with a constant prior:
@@ -103,6 +121,7 @@ impl EwCov {
             prior_scale: 1.0,
             m: vec![0.0; k],
             c: vec![0.0; k * k],
+            dev: Scratch(Vec::with_capacity(k)),
             precision_prior: 0.0,
             precision_scale: 1.0,
         }
@@ -269,13 +288,24 @@ impl EwCov {
         let b = w / w_new; // weight of the new point
         // Weighted Welford: co-moments are updated from the deviations against
         // the OLD mean, then the mean is advanced.
+        //
+        // The deviations are computed once into `dev` and the inner loop runs
+        // over slices rather than indices (docs/ENHANCEMENTS.md E48). Both
+        // matter and both are free: the old form recomputed `x[j] - m[j]`
+        // once per *row* of the matrix -- `k^2` subtractions where `k` will
+        // do -- and indexed `c`, `x` and `m` by `j`, whose bounds checks kept
+        // the loop from vectorising. Same operations in the same order, so
+        // every golden value is unchanged; 14% off at `k = 4`, 65% at
+        // `k = 16`, 45% at `k = 64` and 24% from there up.
         let k = self.k;
+        let d = &mut self.dev.0;
+        d.clear();
+        d.extend(x.iter().zip(self.m.iter()).map(|(xi, mi)| xi - mi));
         for i in 0..k {
-            let di = x[i] - self.m[i];
-            let row = i * k;
-            for (j, mj) in self.m.iter().enumerate().take(k) {
-                let dj = x[j] - mj;
-                self.c[row + j] = a * self.c[row + j] + a * b * di * dj;
+            let ab_di = a * b * d[i];
+            let row = &mut self.c[i * k..(i + 1) * k];
+            for (cj, &dj) in row.iter_mut().zip(d.iter()) {
+                *cj = a * *cj + ab_di * dj;
             }
         }
         // The precision prior decays with the co-moments. `a == 0` only on
@@ -286,8 +316,8 @@ impl EwCov {
         } else {
             self.precision_scale * a
         };
-        for (mi, xi) in self.m.iter_mut().zip(x) {
-            *mi += b * (xi - *mi);
+        for (mi, &di) in self.m.iter_mut().zip(d.iter()) {
+            *mi += b * di;
         }
         self.w_sum = w_new;
         if let Some(q) = self.q_sum.as_mut() {
@@ -1973,6 +2003,82 @@ mod tests {
         let ew = EwCov::new(2);
         assert!(!ew.has_precision_prior());
         assert!(ew.precision().is_none());
+    }
+
+    /// E48 (task 41): the row scratch is a buffer, not state. A restored
+    /// accumulator has an empty one and must produce the same bits as the
+    /// accumulator that wrote it -- which it does, because the scratch is
+    /// refilled from scratch on every row.
+    #[test]
+    fn the_row_scratch_is_not_state() {
+        let mut a = EwCov::new(5);
+        let mut s = 3u64;
+        let row = |st: &mut u64| -> Vec<f64> {
+            (0..5)
+                .map(|_| {
+                    *st = st.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    ((*st >> 11) as f64) / ((1u64 << 53) as f64) - 0.5
+                })
+                .collect()
+        };
+        for _ in 0..40 {
+            a.update(&row(&mut s), 0.97, 1.5);
+        }
+        // A round trip leaves the scratch empty and the accumulator equal.
+        let bytes = rmp_serde::to_vec_named(&a).unwrap();
+        let mut b: EwCov = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(a, b, "the scratch must not make two equal states unequal");
+        assert!(b.dev.0.is_empty(), "a state file carries no scratch");
+        // And both continue to the bit from there.
+        let mut s2 = s;
+        for _ in 0..40 {
+            a.update(&row(&mut s), 0.97, 1.5);
+            b.update(&row(&mut s2), 0.97, 1.5);
+        }
+        assert_eq!(a.comoments(), b.comoments());
+        assert_eq!(a.means(), b.means());
+        assert_eq!(a.n_eff().to_bits(), b.n_eff().to_bits());
+    }
+
+    /// The co-moment matrix is symmetric to the eye but **not** to the bit:
+    /// `c[i][j]` is `((a*b)*d_i)*d_j` and `c[j][i]` is `((a*b)*d_j)*d_i`,
+    /// which round differently. E48 proposed mirroring one triangle onto the
+    /// other and called it bit-identical; this is why it is not
+    /// (docs/PERFORMANCE.md section 14). Kept as a test so the next person to
+    /// reach for that shortcut finds the reason it was not taken.
+    #[test]
+    fn the_two_triangles_are_equal_but_not_bit_equal() {
+        let mut ew = EwCov::new(6);
+        let mut s = 11u64;
+        for _ in 0..200 {
+            let x: Vec<f64> = (0..6)
+                .map(|_| {
+                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    100.0 + ((s >> 11) as f64) / ((1u64 << 53) as f64)
+                })
+                .collect();
+            ew.update(&x, 0.99, 1.0);
+        }
+        let mut differing = 0;
+        for i in 0..6 {
+            for j in (i + 1)..6 {
+                let (u, l) = (ew.cov(i, j), ew.cov(j, i));
+                assert!(
+                    (u - l).abs() < 1e-9 * u.abs().max(1.0),
+                    "not symmetric at all"
+                );
+                if u.to_bits() != l.to_bits() {
+                    differing += 1;
+                }
+            }
+        }
+        assert!(
+            differing > 0,
+            "if the triangles ever become bit-equal, E48's mirror is back on \
+             the table -- but check docs/PERFORMANCE.md section 14 first: it \
+             measured 49% to 107% *slower*, because the mirror store walks a \
+             new cache line per element"
+        );
     }
 
     #[test]

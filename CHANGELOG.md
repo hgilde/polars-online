@@ -17,6 +17,19 @@ carries breaking changes.
   list; `stats=None` still means `["mean", "std", "corr"]`. Before this the
   constructor refused an empty list, so accumulating a Gram over a wide
   set of columns meant emitting every mean on every row.
+- **The Gram update is 14-63% faster, bit for bit** (`docs/ENHANCEMENTS.md`
+  E48, task 41). `EwCov::update` is the hottest loop in the library, run
+  once a row by every Gram model. It now computes the deviations `x - m`
+  once into a row scratch instead of recomputing `x[j] - m[j]` inside every
+  row of the matrix, and runs its inner loop over slice iterators so the
+  bounds checks that were keeping it scalar are gone. Same operations in the
+  same order: every golden value is unchanged and no state file moves. -14%
+  at k = 4, -63% at 16, -45% at 64, -22% to -27% from 200 up.
+  E48's actual proposal -- compute one triangle and mirror it -- was
+  measured and **rejected**: it is not bit-identical (the products commute
+  but the association does not, so the two triangles differ in the last bit)
+  and it is 49% to 107% *slower*, because the mirror store walks a new cache
+  line per element. `docs/PERFORMANCE.md` section 14 has the numbers.
 - **`label_delay`: a target that is only known later is learned later**
   (`docs/ENHANCEMENTS.md` E47, task 40). A common parameter in clock units:
   each row is scored where it sits and learned from only once the model's
