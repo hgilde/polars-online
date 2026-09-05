@@ -36,6 +36,7 @@ from polars_online._kwargs import (
     HoltKwargs,
     HuberKwargs,
     KalmanKwargs,
+    KMeansKwargs,
     LassoKwargs,
     PaKwargs,
     QuantileKwargs,
@@ -126,10 +127,9 @@ def _run(spec: dict[str, Any], target_expr: pl.Expr, feature_exprs: list[pl.Expr
         )
         raise TypeError(msg)
     _warn_in_memory(spec["model"]["type"], target_expr.meta.output_name())
-    # ew_cov has no target: its first feature *is* the calling column, so it
-    # must not be passed twice.
-    is_ew_cov = spec["model"]["type"] == "ew_cov"
-    if is_ew_cov:
+    # ew_cov and kmeans have no target: their first feature *is* the calling
+    # column, so it must not be passed twice.
+    if spec["model"]["type"] in _spec.UNSUPERVISED:
         args: list[pl.Expr] = []
     else:
         # The calling expression supplies the first target; any `extra_targets`
@@ -382,6 +382,18 @@ class OnlineNamespace:
         """
         spec = _spec.holt("online", targets=self._targets(extra_targets), **kwargs)
         return _run(spec, self._expr, [])
+
+    def kmeans(self, others: list[Feature], **kwargs: Unpack[KMeansKwargs]) -> pl.Expr:
+        """EW k-means over this column together with ``others``.
+
+        Like ``ew_cov`` this has no target: the column the expression is
+        called on becomes the first feature. ``k`` is required. The struct
+        holds ``cluster``, ``dist``, ``dist2``, ``n_eff`` and ``coef`` (the
+        centres).
+        """
+        names, exprs = _features(others)
+        spec = _spec.kmeans("online", features=[self._target(), *names], **kwargs)
+        return _run(spec, self._expr, [self._expr, *exprs])
 
 
 def online(expr: pl.Expr) -> OnlineNamespace:

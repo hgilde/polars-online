@@ -384,7 +384,210 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       Rust crates; whether to build it is the user's call and §9 costs it.
       Research sources stay under the gitignored `.cache/research/`.
 
+- [x] 23. **`kmeans` — online k-means in the crates.** `crates/online-core/src/cluster/`
+      (`summary.rs`: the §6.1 mean-form summary and the diagonal feature moments the
+      metric reads; `kmeans.rs`: seeding over a bounded warm-up buffer, the assignment,
+      the checkpointed centre update, the split–merge move on its own clock), every
+      step of `docs/EXTENDING.md`, a from-scratch numpy reference
+      (`tests/reference_cluster.py`) held bit-exact, the prototype as a second oracle,
+      large streams, and the edge cases §11a lists.
+      Built 2026-09-05, on branch `clustering-build`: `ModelState::KMeans`, the spec
+      variant with `k`, `warm_rows`, `seed_rule`, `seed`, `update_every`,
+      `split_merge`, `sm_every`, `dead_frac`, `standardize`; outputs `cluster` (`i32`),
+      `dist`, `dist2`, `n_eff`, centres as `coef` (`cluster{j}` slots, one per
+      feature; `coef_index` and `unnest` follow); `ModelKind::is_unsupervised`
+      refuses every residual diagnostic by name for it and for `ew_cov`. The far-row
+      design §11a records replaced the doc's first split–merge move after its
+      measurements failed (a seeding artefact had been read as recovery). Tests: 61
+      in `tests/test_kmeans.py` (22 bit-exact against the oracle, large streams to
+      40k rows, the null-row / zero-weight / constant-feature / min_periods /
+      chunk-invariance / save-load edges, the stranded-centre and jumped-blob
+      recoveries with their latencies pinned), the core golden and contract suites,
+      the Python golden pipeline on three OSes.
+- [ ] 24. **`micro` — DenStream-style micro-clusters with a linkage macro step.**
+      `cluster/micro.rs` on the same summary; ids monotone and never reused; the label
+      is the id the row would be absorbed by, computed before the update; `macro_link`
+      derived from the observed spacing at each checkpoint (§6.5) with the parameter
+      as an override; accuracy measured in-test against a numpy DBSCAN on moons and
+      rings.
+- [ ] 25. **E36: adaptive conformal intervals** (`pred_lo`/`pred_hi`/`coverage`) on every
+      regression model, O(1) state per slot; oracle + large-data coverage tests.
+- [ ] 26. **E37 + E38 on `ew_cov`:** Mahalanobis distance (`stats: "mahal"`) and EW-PCA at
+      checkpoints (`pca`, `pca_every`); oracles via `gram()` and numpy.
+- [ ] 27. **E39: class-conditional `ew_cov`** (`class` column, per-class moments).
+- [ ] 28. **E40: constrained coefficients** on `sgd` / `pa` (box and sign constraints).
+- [ ] 29. **E41: diagonal transition `φ^d`** on `kalman` (coefficient dynamics).
+- [ ] 30. **E42: a sequential e-process test** between two specs' losses.
+- [ ] 31. **Performance and parallel-performance deep dive** over the new models and
+      enhancements (`docs/PERFORMANCE.md`, `benchmark.py`, `scaling_bench.py`).
+- [ ] 32. **Prepare 0.2.0**: version bump, CHANGELOG, README and VALIDATION numbers
+      regenerated, gate and CI green. Tag and Release dispatch are the user's steps.
+
 ## 11a. Decisions made while implementing
+
+**Building the clustering (tasks 23–24), 2026-09-04.** The user chose
+`kmeans` + `micro` (CLUSTERING §0's exposure), all of E36–E42, a branch
+(`clustering-build`) pushed after each task for CI with `main` fast-forwarded
+at the end, and a prepared 0.2.0 that they tag. Decisions taken against the
+prototypes and the doc, recorded so the numbers can be re-derived:
+
+- *Unsupervised is one thing.* `ModelKind::is_unsupervised()` (`ew_cov`,
+  `kmeans`, `micro`) replaces the `ew_cov`-only exemptions: the target/feature
+  leak check, the `emit_selected`/`emit_averaged` refusals, the plugin's input
+  names and the expression's packing. The residual diagnostics (`emit_sigma`,
+  `emit_resid_z`, `emit_metrics`, `resid_quantiles`, `emit_autocorr`,
+  `emit_drift`) are **refused** for all three; `ew_cov` used to accept and
+  silently ignore them (CHANGELOG).
+- *Scope of `kmeans`.* Hard assignment, split–merge on a slower clock, the four
+  seeding rules. The prototype's Huber weights, spherical distance, fuzzy
+  memberships and stand-alone reseed rule are not built (§7 measured none of
+  them earning a place). Parameters: `k`, `warm_rows` (500), `seed_rule`
+  (`lloyd`; `first | farthest | kmeanspp | lloyd`), `seed` (0), `update_every`
+  (1), `split_merge` (0.5), `sm_every` (100), `dead_frac` (0.05),
+  `standardize` (true, a metric — never the coordinates, §10).
+- *One accumulator, always in mean form.* A cluster is `(n, c, R)`; rows since
+  the last checkpoint accumulate into a per-cluster **batch** summary of the
+  same shape (`W`, mean of `z`, mean of `d²`), and the checkpoint merges batch
+  into cluster: `n' = n + W`, `c' = c + (W/n')(z̄ − c)`, `R' = R + (W/n')(d̄² − R)`.
+  With `update_every = 1` the batch is one row and this *is* MacQueen's step;
+  no sum ever exceeds the largest input, so the bound rows of the contract
+  test cannot overflow it (the prototype's `(n·C + S)/(n + W)` can). `R` for
+  `kmeans` is the EW mean of each row's squared distance to the centre it
+  was assigned to, *at assignment* — out-of-sample, like `sigma`. For
+  `micro` it is Welford's centred radius², DenStream's definition.
+- *The metric.* Diagonal EW moments (`FeatureMoments`, O(p)) rather than the
+  full `EwCov`: `mw_i = 1/v_i` where `v_i > 0` and finite, else 1, read from
+  the moments *before* the row. Distances are `Σ mw_i (x_i − c_i)²`; a row at
+  the input bound against a variance at the opposite scale gives `d² = ∞`
+  rather than NaN, and an infinite `d²` is not learned into `R` (the centre
+  still moves; the radius learns nothing from a row it cannot measure).
+- *Seeding.* Buffer `warm_rows` rows (the buffer is capped at
+  `max(warm_rows, 1000)`, where duplicates are allowed as seeds); every buffered
+  weight is multiplied by each row's `lam` (the product form, exact in both
+  implementations; the prototype's `exp(L − L_row)` agrees to ~1e-9 at a
+  finite halflife). `kmeanspp`/`lloyd` draw from **splitmix64** seeded by
+  `seed`, `u = (x >> 11)·2⁻⁵³`, weighted choice = first index whose cumulative
+  weight exceeds `u·total`, uniform `⌊u·n⌋` when the weights sum to zero; Lloyd
+  is 10 weighted iterations, first minimum wins, a cluster with no weight
+  keeps its centre. The same generator is written out in
+  `tests/reference_cluster.py`, so the Python reference is bit-exact.
+- *The far row (final design below, 2026-09-05).* A check runs every
+  `sm_every` learned rows at a checkpoint: merge the closest pair when
+  `d_ij / (r_i + r_j) < split_merge` and re-place the freed centre on the
+  heaviest far summary; **else** if the lightest cluster is dead
+  (`n_j < dead_frac · n_eff / k`) re-place it the same way. The dead rule is
+  what recovers a centre parked at the input bound with nothing to win; the
+  prototype's ratio condition (`reseed_factor`) never fires on a single
+  uniform blob and was dropped. `k ≥ 3` for the merge, as measured.
+- *`micro` decides at unit weight.* The absorption test (merged radius ≤ `eps`)
+  is made with weight 1 whatever the row's weight, and the update then applies
+  the weight. `predict` has no weight, so this is what makes `predict` the
+  step without the step for a model whose label *is* the decision; a heavy row
+  can push a radius past `eps` once, and the next rows see the larger radius.
+- *`micro`'s threshold.* `macro_link = None` derives the linkage threshold at
+  every checkpoint as 1.5× the p90 (nearest rank) of the nearest-neighbour
+  spacing among the potential micro-clusters — §6.5's rule; a value is
+  `macro_link · eps`, the prototype's constant. Default `eps` is `0.4·√p` in
+  the standardized metric (§7.8: the clean-mixture setting; shapes need
+  0.07–0.1·√p and a larger `max_clusters`). `beta_mu` 3, `max_clusters` 200,
+  `prune_every` 100. Age decay per micro-cluster is a product of `lam`s.
+- *Outputs.* `kmeans`: `cluster` (i32, null before seeding or under
+  `min_periods`), `dist`, `dist2` (second-nearest; null at `k = 1`), `n_eff`,
+  `coef` = the `k × p` centres flat, named `coef_cluster{j}_{feature}` by
+  `coef_fields`. `micro`: `cluster` (i32 macro label of the nearest potential
+  micro-cluster), `dist`, `micro` (i32, the id the row would join, or the id a
+  new one would get), `outlier` (bool), `n_clusters` (i32), `n_micro` (i32),
+  `n_eff`, `coef` = per potential micro-cluster in id order
+  `[id, label, weight, radius, centre…]` — ragged, so `coef_fields` is empty
+  and `coef_index` refuses it as it does `ew_cov`. Two new `Source`s carry the
+  integer and boolean columns out of the `pred` buffer.
+- *Contract tests.* `kmeans`/`micro` get the shared probe, the `PROBED` entry,
+  a golden signature, and a recovery criterion of their own under the names
+  the parity scanner requires (`Recovery::Fit`): after the bound rows, the
+  tail's outputs are finite and its mean `dist²` is within the tolerance of
+  a twin that never saw them — 1e-6 as the margin, measured 2.9e-15
+  (standardized) and 0 (raw).
+
+**Task 23's deep testing: what the split–merge move can and cannot repair,
+2026-09-05.** Every claim below was measured through the Rust bank on
+`scripts/clustering_experiments.py`'s fixtures (N = 20000, p = 4, k = 5,
+halflife 3000, 20 seeds, last-quarter ARI) and the stranded fixture in
+`tests/test_kmeans.py`; the numbers are what the tests pin.
+
+- *The doc's regime claim was a seeding artefact.* CLUSTERING §7.6 reported
+  "split–merge recovers a regime change in 1500 rows" because the prototype's
+  one k-means++ start had put two seeds in one blob, which the merge then
+  freed. With `lloyd` seeding the plain model scores 1.000 / 1.000 / 0.926 /
+  1.000 over the four segments of that fixture with no move at all. The real
+  case is a *stranded* centre: a blob dies and another is born far from every
+  centre (fixture `stranded`, 4 blobs, halflife 1000). The move recovers it
+  to a tail ARI of 1.000 against 0.71–0.73 without.
+- *Far rows are summarised, never learned.* A row is far when `d² > f · R̃`,
+  `f = 1 + FAR_SIGMAS · sqrt(2/p)` (`FAR_SIGMAS = 4`: `d²/R̃ ~ χ²_p/p` has sd
+  `sqrt(2/p)`; a Gaussian blob crosses the cut 0.7% of the time in 2-D, 0.4%
+  in 4-D), `R̃` the mean of the trusted radii (`RADIUS_ROWS = 10` learned rows
+  and `r2 > 0`) leaving out the largest, or that one alone; with no trusted
+  radius nothing is far (or everything would be). A far row goes to its
+  cluster's far summary (Welford) and nowhere else — not the centre, the
+  radius or the weight. Two designs in between failed the regime unit test:
+  far rows moving the centre but not the radius drag a centre off its own
+  blob and break the closest-pair ratio; far rows counting in `n` but not
+  the centre keep a jumped blob's centre alive forever.
+- *The winsorized radius is what makes the cut safe.* At each check
+  `r2_j ← (n_j r2_j + F_j · cut) / (n_j + F_j)`: far rows count in the
+  radius as if they sat at the cut. A burst of outliers widens it a little
+  (steady state ≈ 1.17× at 5% far); a cluster whose rows are all far widens
+  by `(n + f F)/(n + F)` per check — the contract test's bound rows had left
+  the cut at 1.3e-149 with every radius at 2.7e-150 and `n_dead = 406`, a
+  trap that never opened until this. The per-cluster ratchet cut tried
+  before it was dropped: it blocks the wide-cluster split a freed centre
+  needs.
+- *Where a freed centre goes.* The heaviest far summary's mean, with the
+  typical radius `R̃` and half the source's weight (a newborn with the far
+  weight dies at the next check at `dead_frac = 0.25`). A merge, which costs
+  a live cluster, is gated: the source must hold at least `FAR_ROWS = 3` rows
+  weighing `FAR_SHARE = 5%` of the window's learned weight `V`, the pair's own
+  summaries pooled. Without the gates newborns placed on 1–9 outliers with
+  `r2` 10–30 poisoned the ratio and merged real blobs (min ARI 0.051 on the
+  outlier fixture; now 0.768, the same symmetric split-blob miss as without
+  outliers). A dead centre, already lost, takes any far rows, its own
+  included.
+- *Seeding trims by the same rule.* Rows whose `d²` to the EW mean exceeds
+  `f` times the buffer's weighted mean `d²` do not choose the seeds (the
+  whole buffer does when the rest cannot give `k` distinct seeds) and are
+  replayed as far rows. Outliers 5% + drift: 0.984 mean ARI, the plain 0.749
+  before.
+- *Latency, measured.* A stranded centre is re-placed `log2(1/dead_frac)`
+  halflives after its blob vanished: 4500 rows at the default 0.05 and
+  halflife 1000 (formula 4320), 2000–2500 at 0.25 (formula 2000); at
+  halflife 3000 the default does not fire within the 10000 rows the regime
+  fixture leaves (0.784, 18/20 misses, against 0.824 without the move, whose
+  nearest centre at least drifts toward the new blob — far rows do not drag)
+  while 0.25 scores 0.933 with 1/20 misses. The price of `dead_frac`: a blob
+  lighter than `dead_frac / k` of the stream loses its centre whenever any
+  row is far. The default stays 0.05; the README says when to raise it.
+  With `k = 1`, or when every cluster sees far rows, the typical radius
+  widens with the cut and the rows are learned again after
+  `log(D²/r2) / log((n + f F)/(n + F))` checks (659 rows for a 20-sd jump
+  at halflife 200). One jumped blob among `k ≥ 2` waits for the dead rule:
+  its cluster's widening radius is the largest, which `R̃` leaves out.
+- *Blind spot.* A cluster owning two blobs: all its rows are within its own
+  radius, and their far mean is its own centre. `lloyd` seeding is what
+  prevents it; the drift fixture's 1/20 miss is such a pair at ratio ≈ 0.6
+  (> 0.5 by design: a legitimate wide cluster looks the same).
+- *Rejected on measurement, not to be retried:* D²-weighted reservoir of far
+  rows (outlier-prone, random); the max-ratio far row (picks outliers by
+  construction); a recent-share dead test over `sm_every` windows (a second
+  time scale; kills quiet clusters; outlier trickles defeat ratio tests);
+  ISODATA per-feature variance split (k·p state, blind to bimodality in
+  general position); in-place coincident split as a trigger (splits wide
+  clusters); self re-placement when far weight exceeds own intake
+  (ping-pong). A possible follow-on, not built: a cohesion-gated fast
+  re-placement (a far summary whose `r2` is blob-like against `R̃`) would cut
+  the stranded latency from halflives to one check.
+- *Oracle.* `tests/reference_cluster.py` mirrors every operation in order and
+  the 22 oracle tests are bit-exact; 61 kmeans tests in all.
+
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without

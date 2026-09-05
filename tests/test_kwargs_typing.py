@@ -31,6 +31,7 @@ NAMESPACE_METHODS = [
     "sgd",
     "pa",
     "holt",
+    "kmeans",
 ]
 
 

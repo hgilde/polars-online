@@ -72,8 +72,14 @@ example; `git show --stat aa96ad3` is this list as a diff.
    so its snake_case name is the spec `type` — with `#[serde(default)]` on
    every optional field; its arm in `kind_name()`; a clause in
    `Spec::validate` only for a constraint that crosses the spec (`holt` takes
-   no features; `ew_cov` no targets) — per-parameter checks stay in step 1;
-   and the name in **`ModelKind::KINDS`**.
+   no features; `ew_cov` and `kmeans` no targets) — per-parameter checks stay
+   in step 1; and the name in **`ModelKind::KINDS`**. A model that predicts
+   no target goes into `ModelKind::is_unsupervised` too: `validate` then
+   refuses every residual-based flag (`emit_sigma`, `emit_metrics`,
+   `resid_quantiles`, ...) for it by name, rather than emitting nothing.
+   *Check*: `test_diagnostics::test_rejected_for_ew_cov` and
+   `test_kmeans::TestRefusals::test_residual_diagnostics_are_refused_by_name`
+   pin the refusal, the latter for both models and every flag.
    *Check*: `kind_name` is exhaustive. `kinds_lists_every_variant_in_order`
    fails until `KINDS` matches the enum, and `KINDS` is what every Python
    check below reads.
@@ -92,11 +98,15 @@ example; `git show --stat aa96ad3` is this list as a diff.
    `test_semantics_all_models::test_save_load_mid_stream`) catch that once
    the model is in their lists, which step 16 enforces.
 8. **`src/bank.rs`**: nothing, unless the outputs are not one `pred`/`resid`
-   pair per target per combo — `ew_cov` (statistics, no target) and `lasso`
-   (a path) are the two cases, in `output_index` — or the coefficient vector
-   is not `[intercept] + features` per (target, combo) slot: `coef_fields`
-   names the slots, and `holt` (`level`, `trend`) and `ew_cov` (none) are
-   its two special cases.
+   pair per target per combo — `ew_cov` (statistics, no target), `kmeans`
+   (an assignment and two distances, no target) and `lasso` (a path) are the
+   three cases, in `output_index` — or the coefficient vector is not
+   `[intercept] + features` per (target, combo) slot: `coef_fields` names
+   the slots, and `holt` (`level`, `trend`), `ew_cov` (none) and `kmeans`
+   (`k` slots `cluster{j}` in place of the targets, one coordinate per
+   feature) are its three special cases. An output that is not an `f64`
+   needs its own `Source` variant and dtype: `Source::Cluster` reads the
+   centre index out of the `pred` buffer and materializes it as `i32`.
    *Check*: `test_portability.TestOutputSchemaStability
    .test_names_match_the_realized_struct` compares the declared field names
    with the struct the bank actually produces, for every model in its list,
@@ -157,7 +167,13 @@ spec, and the plugin's `online_run` is the bank.
 14. **Per-model sweeps**: one entry each in `test_semantics_all_models.MODELS`,
     `test_properties.MODELS`, `test_edge_cases.MODELS` and
     `test_portability.TestOutputSchemaStability._ALL_MODELS`. Every entry is
-    `(builder name, the least it needs to be constructible)`.
+    `(builder name, the least it needs to be constructible)`. The sweeps
+    assert on `pred` and `resid`, so a model with no target (`ew_cov`,
+    `kmeans`) sits them out through `test_model_registry.REGRESSIONS` and
+    gets its own schema test instead
+    (`test_portability.TestOutputSchemaStability.test_kmeans_names_match
+    _the_realized_struct`) and its own chunk-invariance, save/load, null-row
+    and zero-weight tests in its step-13 file.
     *Check*: `test_model_registry::test_the_sweeps_cover_every_regression
     _model`.
 15. **`tests/test_model_registry.py`**: the model's `MINIMAL` entry. This is

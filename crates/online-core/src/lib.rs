@@ -54,6 +54,7 @@
 //! See `docs/PLAN.md` §2 and §4.
 
 mod clock;
+mod cluster;
 mod drift;
 mod ewcov;
 mod ewridge;
@@ -70,6 +71,7 @@ mod solve;
 mod stats;
 
 pub use clock::{ClockAdvance, ClockCfg, ClockState, Decay, OnClockReset, SessionGap};
+pub use cluster::{ClusterSummary, FeatureMoments, KMeans, KMeansCfg, SeedRule, SplitMix64, dist2};
 pub use drift::PageHinkley;
 pub use ewcov::{EwCov, EwCovCfg, EwCovModel, EwCovStat, partial_corr, variance_is_usable};
 pub use ewridge::{EwRidge, EwRidgeCfg};
@@ -95,7 +97,10 @@ pub use stats::{EwAutoCorr, P2Quantile, SlotMetrics};
 /// - 1: initial layout.
 /// - 2: `rls` stores the information factor `R` and `u = R^-T b` instead of
 ///   the covariance `P` (docs/IMPROVEMENTS.md C5). Schema-1 `rls` states are
-///   converted on load; every other model is unchanged.
+///   converted on load; every other model is unchanged. `kmeans` (0.2.0)
+///   added a `ModelState` variant without a bump: no existing layout moved,
+///   and a 0.1 build meets a bank holding one as an unknown variant at
+///   deserialization rather than as a version it refuses.
 pub const SCHEMA_VERSION: u32 = 2;
 
 /// Oldest state layout this build still loads.

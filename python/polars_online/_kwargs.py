@@ -27,6 +27,7 @@ __all__ = [
     "FtrlKwargs",
     "HoltKwargs",
     "HuberKwargs",
+    "KMeansKwargs",
     "KalmanKwargs",
     "LassoKwargs",
     "PaKwargs",
@@ -166,3 +167,15 @@ class PaKwargs(ExprKwargs, total=False):
 class HoltKwargs(ExprKwargs, total=False):
     level_halflife: float | None
     trend_halflife: float | None
+
+
+class KMeansKwargs(ExprKwargs, total=False):
+    k: Required[int]
+    warm_rows: int | None
+    seed_rule: str | None
+    seed: int | None
+    update_every: int | None
+    split_merge: float | None
+    sm_every: int | None
+    dead_frac: float | None
+    standardize: bool | None

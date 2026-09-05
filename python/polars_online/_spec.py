@@ -205,6 +205,7 @@ __all__ = [
     "holt",
     "huber",
     "kalman",
+    "kmeans",
     "lasso",
     "output_fields",
     "pa",
@@ -356,7 +357,8 @@ def ewridge(
 def _numeric_keys() -> frozenset[str]:
     """Every parameter, across the builders, whose annotation admits a float."""
     keys = set()
-    for fn in (_common, ewridge, rls, lasso, kalman, huber, quantile, ftrl, ew_cov, sgd, pa, holt):
+    builders = (ewridge, rls, lasso, kalman, huber, quantile, ftrl, ew_cov, sgd, pa, holt, kmeans)
+    for fn in (_common, *builders):
         for key, hint in typing.get_type_hints(getattr(fn, "__wrapped__", fn)).items():
             leaves = {hint, *typing.get_args(hint)}
             leaves |= {a for h in list(leaves) for a in typing.get_args(h)}
@@ -476,7 +478,9 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
     ``coef`` is flat: (target x combo) slots, each contributing its terms in
     order. This maps ``position`` -> (``target``, combo metadata, ``term``),
     where ``term`` is ``"intercept"``, a feature name, or -- for ``holt`` --
-    ``"level"`` / ``"trend"``::
+    ``"level"`` / ``"trend"``. For ``kmeans`` the slots are the centres, so
+    ``target`` reads ``"cluster0"``, ``"cluster1"``, ... and ``term`` is the
+    feature whose coordinate the position holds::
 
         ci = po.spec.coef_index(spec)
         pos = ci.filter(
@@ -959,5 +963,111 @@ def holt(
     }
     return _common(name, model, targets=targets, features=features or [], **common)
 
+
+@_checked
+def kmeans(
+    name: str,
+    *,
+    features: list[str],
+    k: int,
+    warm_rows: int | None = None,
+    seed_rule: str | None = None,
+    seed: int | None = None,
+    update_every: int | None = None,
+    split_merge: float | None = None,
+    sm_every: int | None = None,
+    dead_frac: float | None = None,
+    standardize: bool | None = None,
+    **common: Unpack[CommonKwargs],
+) -> dict[str, Any]:
+    """Exponentially weighted k-means over the feature columns
+    (docs/CLUSTERING.md section 6.2; docs/PLAN.md section 11a).
+
+    Not a regression: there are no targets. Each row is assigned to the
+    nearest centre *before* it is learned, so the outputs are out-of-sample
+    like every prediction here. Per instance the struct holds ``cluster``
+    (``i32``, the nearest centre's index), ``dist`` (the distance to it),
+    ``dist2`` (the distance to the runner-up; null when ``k == 1``),
+    ``n_eff`` and ``coef`` (the centres, ``k`` rows of ``len(features)``
+    flattened, cluster-major -- :func:`coef_index` lays it out).
+
+    Every centre is the decayed weighted mean of the rows assigned to it,
+    the same recursion as ``ew_cov``'s mean::
+
+        n'_j  = lam * n_j + w
+        c'_j  = (lam * n_j * c_j + w * x) / n'_j       for the nearest j
+
+    and, alongside it, the EW squared radius ``r2_j`` (the mean of
+    ``|x - c_j|^2`` over the rows assigned there) that the split-merge rule
+    reads. Rows are folded into per-centre batches and applied every
+    ``update_every`` learned rows, so ``update_every=1`` is plain sequential
+    k-means and a larger value a mini-batch one.
+
+    ``standardize`` (default ``True``) measures distances in units of each
+    feature's EW standard deviation, tracked alongside the centres; the
+    coordinates themselves are never rescaled, so the centres stay in the
+    features' units.
+
+    **Seeding.** The first ``max(warm_rows, k)`` learned rows (default 500)
+    are buffered, then the centres are placed by ``seed_rule``: ``"lloyd"``
+    (default: k-means++ then ten weighted Lloyd iterations over the buffer),
+    ``"kmeanspp"``, ``"farthest"`` (Gonzalez, from the first row) or
+    ``"first"`` (the first ``k`` distinct rows). ``seed`` (default 0) drives
+    the two random rules; the same seed gives the same centres. The buffer
+    is replayed into the centres and freed, so the model is O(state) again
+    from that row on. Outputs are null until seeding and until ``n_eff``
+    reaches ``min_periods``.
+
+    **Split-merge** (``split_merge``, default 0.5; ``0`` disables). A row
+    farther from its centre than a blob of the typical radius produces (about
+    four standard deviations of ``|x - c|^2`` above it) is *far*: it is
+    scored, but summarised instead of learned, so it neither drags the centre
+    nor widens the radius. Every ``sm_every`` learned rows (default 100) the
+    two closest centres are compared: if their distance is under
+    ``split_merge`` times the sum of their radii, and enough far rows have
+    gathered somewhere (at least three, and five per cent of the window's
+    weight), they are merged and the freed centre is placed at the far rows'
+    mean, so a cluster that appears after seeding gets a centre without
+    anyone restarting. ``dead_frac`` (default 0.05; ``0`` disables) re-places
+    a centre whose weight has decayed below ``dead_frac * n_eff / k`` the
+    same way, on whatever far rows there are: a centre whose cluster vanished
+    is re-placed ``log2(1 / dead_frac)`` halflives later (4.3 at the default,
+    2 at 0.25), and a cluster lighter than ``dead_frac / k`` of the stream
+    loses its centre whenever any row is far. Far rows still count in the
+    radius at each check as if they sat at the cut, so a cut the data has
+    outgrown widens until the rows are learned again. Seeding leaves rows far
+    from the buffer's mean out of the choice of seeds by the same rule.
+
+    Values are read from the state *before* each row, so a ``kmeans`` output
+    can be used as a feature for that same row without leaking it. Nothing
+    residual-based applies (``emit_sigma``, ``emit_metrics``, drift, ...);
+    each is refused by name.
+    """
+    model: dict[str, Any] = {
+        "type": "kmeans",
+        "k": k,
+        "warm_rows": warm_rows,
+        "seed_rule": seed_rule,
+        "seed": seed,
+        "update_every": update_every,
+        "split_merge": split_merge,
+        "sm_every": sm_every,
+        "dead_frac": dead_frac,
+        "standardize": standardize,
+    }
+    if "targets" in common:
+        msg = (
+            f"spec {json.dumps(name)}: kmeans() takes no targets; its clusters are over "
+            "the features"
+        )
+        raise TypeError(msg)
+    # `targets` is required by the common-parameter schema but unused here.
+    return _common(name, model, targets=[features[0]], features=features, **common)
+
+
+#: The model types that predict no target: their outputs are read from the
+#: state before each row, their ``targets`` mirror ``features[0]`` for the
+#: plumbing, and nothing residual-based applies to them.
+UNSUPERVISED = frozenset({"ew_cov", "kmeans"})
 
 _NUMERIC_KEYS = _numeric_keys()

@@ -3,9 +3,10 @@
 
 use online_core::{
     ClockState, Decay, EwAutoCorr, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl,
-    FtrlCfg, FtrlLoss, Holt, HoltCfg, INPUT_BOUND, Kalman, KalmanCfg, Lasso, LassoCfg,
-    LearningRate, ModelState, OnlineModel, P2Quantile, Pa, PaCfg, PaMode, PageHinkley, Rls, RlsCfg,
-    Robust, RobustCfg, RobustLoss, Sgd, SgdCfg, SgdLoss, SlotMetrics, State, StateError,
+    FtrlCfg, FtrlLoss, Holt, HoltCfg, INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg, Lasso,
+    LassoCfg, LearningRate, ModelState, OnlineModel, P2Quantile, Pa, PaCfg, PaMode, PageHinkley,
+    Rls, RlsCfg, Robust, RobustCfg, RobustLoss, SeedRule, Sgd, SgdCfg, SgdLoss, SlotMetrics, State,
+    StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +25,7 @@ pub enum AnyModel {
     Sgd(Box<Sgd>),
     Pa(Box<Pa>),
     Holt(Box<Holt>),
+    KMeans(Box<KMeans>),
 }
 
 /// Bind the boxed model of whichever variant `$self` is, then run `$body`.
@@ -47,6 +49,7 @@ macro_rules! dispatch {
             AnyModel::Sgd($m) => $body,
             AnyModel::Pa($m) => $body,
             AnyModel::Holt($m) => $body,
+            AnyModel::KMeans($m) => $body,
         }
     };
 }
@@ -88,7 +91,8 @@ impl AnyModel {
             | AnyModel::EwCov(_)
             | AnyModel::Sgd(_)
             | AnyModel::Pa(_)
-            | AnyModel::Holt(_) => 0,
+            | AnyModel::Holt(_)
+            | AnyModel::KMeans(_) => 0,
         }
     }
 
@@ -118,6 +122,8 @@ impl AnyModel {
             AnyModel::Sgd(m) => Some(m.coefficients()),
             AnyModel::Pa(m) => Some(m.coefficients().to_vec()),
             AnyModel::Holt(m) => Some(m.coefficients()),
+            // The centres, k rows of p; absent until seeded.
+            AnyModel::KMeans(m) => m.coefficients(),
         }
     }
 
@@ -137,6 +143,7 @@ impl AnyModel {
             ModelState::Sgd(_) => Ok(AnyModel::Sgd(Box::new(Sgd::restore(s)?))),
             ModelState::Pa(_) => Ok(AnyModel::Pa(Box::new(Pa::restore(s)?))),
             ModelState::Holt(_) => Ok(AnyModel::Holt(Box::new(Holt::restore(s)?))),
+            ModelState::KMeans(_) => Ok(AnyModel::KMeans(Box::new(KMeans::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -460,6 +467,44 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::Holt(Box::new(Holt::new(cfg)?)))
         }
+        ModelKind::KMeans {
+            k,
+            warm_rows,
+            seed_rule,
+            seed,
+            update_every,
+            split_merge,
+            sm_every,
+            dead_frac,
+            standardize,
+        } => {
+            let seed_rule = match seed_rule.as_deref() {
+                None | Some("lloyd") => SeedRule::Lloyd,
+                Some("kmeanspp") => SeedRule::Kmeanspp,
+                Some("farthest") => SeedRule::Farthest,
+                Some("first") => SeedRule::First,
+                // Unreachable after `Spec::validate`; a stale string is a bug
+                // in the caller, not a runtime condition to swallow.
+                Some(other) => return Err(format!("unknown kmeans seed_rule {other:?}")),
+            };
+            let cfg = KMeansCfg {
+                n_features: spec.k(),
+                k: *k,
+                decay,
+                // One `min_periods` for the whole model: the spec's first
+                // (and only) entry, defaulting like the regressions do.
+                min_periods: spec.min_periods_per_target()[0],
+                warm_rows: warm_rows.unwrap_or(500),
+                seed_rule,
+                seed: seed.unwrap_or(0),
+                update_every: update_every.unwrap_or(1),
+                split_merge: split_merge.unwrap_or(0.5),
+                sm_every: sm_every.unwrap_or(100),
+                dead_frac: dead_frac.unwrap_or(0.05),
+                standardize: standardize.unwrap_or(true),
+            };
+            Ok(AnyModel::KMeans(Box::new(KMeans::new(cfg)?)))
+        }
     }
 }
 
@@ -529,7 +574,8 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
         | ModelKind::EwCov { .. }
         | ModelKind::Sgd { .. }
         | ModelKind::Pa { .. }
-        | ModelKind::Holt { .. } => vec![Combo::default()],
+        | ModelKind::Holt { .. }
+        | ModelKind::KMeans { .. } => vec![Combo::default()],
         ModelKind::Lasso { lasso_path, .. } => lasso_path
             .iter()
             .map(|l| Combo {

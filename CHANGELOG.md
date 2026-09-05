@@ -7,7 +7,58 @@ carries breaking changes.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`kmeans`: exponentially weighted k-means** (`po.spec.kmeans`,
+  `docs/PLAN.md` §11a, task 23). The first model with no target: every
+  column of interest goes in `features`, and each row's outputs are read
+  from the centres *before* the row is learned — `cluster` (the nearest
+  centre's index, `i32`), `dist` and `dist2` (the distance to it and to the
+  runner-up), `n_eff`, and the centres as `coef` (`k` slots `cluster{j}`,
+  one coordinate per feature; `po.spec.coef_index` lays them out and
+  `unnest` names them `coef_cluster0_x1`). Distances are in units of each
+  feature's EW standard deviation unless `standardize=False`. Seeding waits
+  for `warm_rows` learned rows, then `lloyd` (default; ten restarts of ten
+  iterations over the buffer), `kmeanspp`, `farthest` or `first`; centres
+  update every `update_every` rows. Halflife, clock, weight, group and
+  `min_periods` mean what they mean everywhere else, and a null or
+  non-finite feature row is skipped with its clock tick folded into the next
+  row's, as for every other model.
+- **A split–merge move for `kmeans`**, on by default (`split_merge=0.5`,
+  `sm_every=100`, `dead_frac=0.05`; `split_merge=0` gives plain k-means).
+  Rows farther from every centre than `1 + 4·sqrt(2/p)` typical radii are
+  summarised per cluster instead of learned, so an outlier neither drags a
+  centre nor widens its radius. At each check the two closest clusters merge
+  when their centres are within `split_merge` summed radii, and a cluster
+  lighter than `dead_frac·n_eff/k` is declared dead; the freed centre goes
+  to the far rows' mean, once those are at least three rows and five per
+  cent of the window's weight. Measured on a blob born after seeding: tail
+  ARI 1.000 after `log2(1/dead_frac)` halflives (4.3 by default, 2 at
+  `dead_frac=0.25`), where plain k-means never recovers (0.71–0.73). Five
+  per cent uniform outliers: ARI 0.984, no spurious move. What it repairs
+  and what it costs is in the README's `kmeans` section.
+- Rust: `online_core::{KMeans, KMeansCfg, SeedRule, ClusterSummary,
+  FeatureMoments, SplitMix64, dist2}`; `ModelState::KMeans`. The state
+  schema stays at 2 — a new variant, not a new layout — so a 0.2 bank that
+  holds a `kmeans` model fails to load on 0.1 at deserialization rather than
+  by version.
+- `tests/reference_cluster.py`: a numpy oracle for the whole recursion
+  (seeding, standardization, the batch update, far rows, split–merge), held
+  bit-exact by `tests/test_kmeans.py`.
+
+### Changed
+
+- **Residual diagnostics are refused for a model that predicts no target.**
+  `ew_cov` already refused `emit_selected` and `emit_averaged`; it and
+  `kmeans` now refuse `emit_sigma`, `emit_resid_z`, `emit_metrics`,
+  `resid_quantiles`, `emit_autocorr` and `emit_drift` too, by name
+  (`"emit_sigma does not apply to ew_cov (it has no predictions, so no
+  residuals)"`), where `ew_cov` used to accept the flag and silently emit
+  nothing for it. A spec that set one of them on `ew_cov` must drop it.
+- `Decay::factor` computes `exp2(-d/h)` rather than `0.5.powf(d/h)`. A
+  release build already did (LLVM rewrites the one into the other), so no
+  released number moves; a debug build now agrees with it bit for bit, and
+  so can a reference in another language.
 
 ## [0.1.1] — 2026-09-04
 

@@ -329,6 +329,45 @@ fn ew_cov_golden() {
     check("ew_cov", &signature(&mut m, 4), GOLDEN_EW_COV);
 }
 
+fn kmeans_cfg(rule: SeedRule) -> KMeansCfg {
+    KMeansCfg {
+        n_features: 2,
+        k: 3,
+        decay: Decay::Halflife(20.0),
+        min_periods: 3.0,
+        warm_rows: 12,
+        seed_rule: rule,
+        seed: 0,
+        update_every: 1,
+        split_merge: 0.5,
+        sm_every: 10,
+        dead_frac: 0.05,
+        standardize: true,
+    }
+}
+
+#[test]
+fn kmeans_golden() {
+    // Slot 1 is the distance to the assigned centre under the standardized
+    // metric: it reads the centres, the feature moments and the assignment
+    // at once. Slot 0 pins the assignment itself, seeded by the generator.
+    let mut m = KMeans::new(kmeans_cfg(SeedRule::Lloyd)).unwrap();
+    check("kmeans", &signature(&mut m, 1), GOLDEN_KMEANS);
+    let mut m = KMeans::new(kmeans_cfg(SeedRule::Lloyd)).unwrap();
+    check(
+        "kmeans_cluster",
+        &signature(&mut m, 0),
+        GOLDEN_KMEANS_CLUSTER,
+    );
+    // The `first` rule with a checkpoint every seven rows: the batch path.
+    let mut m = KMeans::new(KMeansCfg {
+        update_every: 7,
+        ..kmeans_cfg(SeedRule::First)
+    })
+    .unwrap();
+    check("kmeans_first", &signature(&mut m, 2), GOLDEN_KMEANS_FIRST);
+}
+
 // --- generated; see the module docs ---
 const GOLDEN_EW_RIDGE: &[f64] = &[
     0.23958810892448523,
@@ -372,3 +411,6 @@ const GOLDEN_EW_COV: &[f64] = &[
     -0.1331528573613194,
     -0.013968574548668105,
 ];
+const GOLDEN_KMEANS: &[f64] = &[0.5834101526098997, 0.8292779994915372, 0.923506490724854];
+const GOLDEN_KMEANS_CLUSTER: &[f64] = &[2.0, 0.0, 2.0];
+const GOLDEN_KMEANS_FIRST: &[f64] = &[1.8013837727258295, 2.935845007414875, 1.351429916256865];

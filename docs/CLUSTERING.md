@@ -1040,6 +1040,14 @@ Fixed-`k` models need a structural move to survive a component dying and
 another being born; a variable-`k` model handles it for free, which is its one
 decisive advantage.
 
+**Correction (task 23, 2026-09-05).** The `kmeans split-merge` row above is a
+seeding artefact: the prototype's single k-means++ start had put two seeds in
+one blob, and the merge freed one of them. Seeded with `lloyd`'s restarts the
+plain model scores 1.000 1.000 0.926 1.000 on this stream with no move at all.
+The move's real case is a *stranded* centre, and what it does there is
+measured in PLAN §11a (2026-09-05): a freed centre lands on the new blob in
+one move, the freeing itself waits `log2(1/dead_frac)` halflives.
+
 **ODAC** on eight variables in three correlated blocks, with variable 7
 switching to block 0 at `n/2`:
 

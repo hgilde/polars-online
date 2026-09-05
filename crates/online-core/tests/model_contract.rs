@@ -402,12 +402,48 @@ fn ew_cov_model() {
     assert!(r.roundtrips);
 }
 
+fn kmeans_cfg() -> KMeansCfg {
+    KMeansCfg {
+        n_features: K,
+        k: 3,
+        decay: decay(),
+        min_periods: 3.0,
+        warm_rows: 10,
+        seed_rule: SeedRule::Lloyd,
+        seed: 0,
+        update_every: 1,
+        split_merge: 0.5,
+        sm_every: 50,
+        dead_frac: 0.05,
+        standardize: true,
+    }
+}
+
+#[test]
+fn kmeans() {
+    let cfg = kmeans_cfg();
+    // No targets: it emits an assignment and two distances.
+    let m = KMeans::new(cfg).unwrap();
+    assert_eq!(m.n_targets(), 0, "kmeans has no targets");
+    assert_eq!(m.n_features(), K);
+    assert_eq!(m.n_outputs(), 3, "cluster, dist, dist2");
+    let r = probe_with(m, 0, Some(&KMeans::n_eff));
+    assert_eq!(r.kind, "kmeans");
+    assert_eq!(r.pred_len, r.n_outputs);
+    assert_eq!(r.n_eff[0], 0.0);
+    assert_eq!(r.n_eff[1], 1.0);
+    assert!((r.n_eff[2] - (0.5f64.powf(1.0 / HALFLIFE) + 1.0)).abs() < 1e-12);
+    assert!((r.after_gap - (r.before_gap * 0.5f64.powi(10) + 1.0)).abs() < 1e-9);
+    assert!(r.roundtrips);
+}
+
 #[test]
 fn every_state_kind_is_distinct_and_named() {
     // `ModelState::kind` names the model in every state error; a mutation that
     // returns a constant would make "expected X, found Y" meaningless.
     let kinds = [
         "ew_ridge", "rls", "lasso", "kalman", "robust", "ftrl", "sgd", "pa", "holt", "ew_cov",
+        "kmeans",
     ];
     let mut seen = std::collections::HashSet::new();
     for k in kinds {
@@ -433,6 +469,10 @@ fn every_state_kind_is_distinct_and_named() {
         State::new(ModelState::EwCov(EwCov::new(1))).model.kind(),
         "ew_cov"
     );
+    assert_eq!(
+        KMeans::new(kmeans_cfg()).unwrap().state().model.kind(),
+        "kmeans"
+    );
 }
 
 /// The variants of `ModelState` this file probes. A model added to the enum
@@ -450,6 +490,7 @@ const PROBED: &[&str] = &[
     "Sgd",
     "Pa",
     "Holt",
+    "KMeans",
 ];
 
 #[test]
@@ -597,6 +638,12 @@ enum Recovery {
     /// points of the band, so agreement with the twin is not a property they
     /// have; being as accurate as the twin is.
     Tube(f64),
+    /// Every output is finite, and the mean squared distance to the assigned
+    /// centre (slot 1, squared) over the tail is within this relative
+    /// tolerance of the twin's. For a clustering model: two histories settle
+    /// on two labelings of the same data, so neither the label nor the
+    /// distance of one row is a property two copies share, but the fit is.
+    Fit(f64),
 }
 
 /// The stream layer accepts any finite value with `|v| <= BOUND`, so a model
@@ -618,6 +665,7 @@ fn recovers_from_bounded_extremes<M: OnlineModel>(
     let n = rows.len();
     let mut seen = [false, false];
     let mut worst = 0.0f64;
+    let mut fit = [0.0f64, 0.0];
     for (i, r) in rows.iter().enumerate() {
         let d = if seen[0] { 1.0 } else { 0.0 };
         seen[0] = true;
@@ -662,6 +710,16 @@ fn recovers_from_bounded_extremes<M: OnlineModel>(
                         worst = worst.max(err);
                     }
                 }
+                Recovery::Fit(_) => {
+                    assert!(
+                        pb.is_finite(),
+                        "{kind}: the twin's slot {slot} is {pb} at row {i}"
+                    );
+                    if slot == 1 {
+                        fit[0] += pa * pa;
+                        fit[1] += pb * pb;
+                    }
+                }
             }
         }
     }
@@ -670,6 +728,20 @@ fn recovers_from_bounded_extremes<M: OnlineModel>(
             eprintln!("{kind}: worst relative disagreement with the twin {worst:.2e}")
         }
         Recovery::Tube(_) => eprintln!("{kind}: worst relative error of model or twin {worst:.2e}"),
+        Recovery::Fit(tol) => {
+            let err = (fit[0] - fit[1]).abs() / fit[1];
+            eprintln!(
+                "{kind}: tail mean squared distance {} vs the twin's {} ({err:.2e})",
+                fit[0] / 1000.0,
+                fit[1] / 1000.0
+            );
+            assert!(
+                err <= tol,
+                "{kind}: tail fit {} vs the twin's {} (tol {tol})",
+                fit[0],
+                fit[1]
+            );
+        }
     }
 }
 
@@ -768,6 +840,28 @@ fn pa_recovers_from_bounded_extremes() {
 #[test]
 fn holt_recovers_from_bounded_extremes() {
     recovers_from_bounded_extremes(|| Holt::new(holt_cfg()).unwrap(), 2, Recovery::Twin(1e-9));
+}
+
+#[test]
+fn kmeans_recovers_from_bounded_extremes() {
+    // The extreme rows drag a centre to the bound and blow the metric up;
+    // the split–merge check re-places the emptied centre and the moments
+    // decay back, so the tail is fitted as well as the twin fits it
+    // (measured: the two agree to 1e-14; the tolerance is the margin).
+    for standardize in [true, false] {
+        for rule in [SeedRule::First, SeedRule::Lloyd] {
+            let cfg = KMeansCfg {
+                standardize,
+                seed_rule: rule,
+                ..kmeans_cfg()
+            };
+            recovers_from_bounded_extremes(
+                move || KMeans::new(cfg.clone()).unwrap(),
+                0,
+                Recovery::Fit(1e-6),
+            );
+        }
+    }
 }
 
 #[test]
@@ -952,6 +1046,18 @@ fn pa_predict_is_the_step() {
 #[test]
 fn holt_predict_is_the_step() {
     predict_is_the_step_without_the_step(|| Holt::new(holt_cfg()).unwrap(), 2, false);
+}
+
+#[test]
+fn kmeans_predict_is_the_step() {
+    predict_is_the_step_without_the_step(|| KMeans::new(kmeans_cfg()).unwrap(), 0, false);
+    let cfg = KMeansCfg {
+        update_every: 7,
+        seed_rule: SeedRule::Farthest,
+        standardize: false,
+        ..kmeans_cfg()
+    };
+    predict_is_the_step_without_the_step(move || KMeans::new(cfg.clone()).unwrap(), 0, false);
 }
 
 #[test]

@@ -56,6 +56,7 @@ pub enum ModelState {
     Sgd(Box<crate::Sgd>),
     Pa(Box<crate::Pa>),
     Holt(Box<crate::Holt>),
+    KMeans(Box<crate::KMeans>),
 }
 
 #[derive(Debug, Error)]
@@ -85,6 +86,7 @@ impl ModelState {
             ModelState::Sgd(_) => "sgd",
             ModelState::Pa(_) => "pa",
             ModelState::Holt(_) => "holt",
+            ModelState::KMeans(_) => "kmeans",
         }
     }
 }

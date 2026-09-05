@@ -23,7 +23,16 @@ impl Decay {
                 if h.is_infinite() {
                     1.0
                 } else {
-                    0.5f64.powf(d_clock / h)
+                    // Spelled `exp2(-x)` rather than `0.5.powf(x)`: LLVM
+                    // rewrites the latter into the former at any
+                    // optimisation level above zero (`pow(2^n, x)` ->
+                    // `exp2(n x)`, SimplifyLibCalls), and the two libm
+                    // calls differ in the last bit. Writing it out makes a
+                    // debug build agree with a release build, and lets a
+                    // reference in another language (`math.exp2` in
+                    // `tests/reference_cluster.py`) reproduce the factor
+                    // bit for bit.
+                    (-(d_clock / h)).exp2()
                 }
             }
             Decay::Lam(l) => l.powf(d_clock),

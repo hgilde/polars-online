@@ -540,6 +540,43 @@ pub enum ModelKind {
         #[serde(default)]
         coef0: Option<Vec<Vec<f64>>>,
     },
+    /// Exponentially weighted k-means (docs/CLUSTERING.md §6.2; PLAN §11a,
+    /// task 23). No targets: every column of interest goes in `features`, and
+    /// the outputs are the nearest centre's index and two distances, read
+    /// before the row is learned.
+    #[serde(rename = "kmeans")]
+    KMeans {
+        /// Number of clusters, `>= 1`.
+        k: usize,
+        /// Learned rows buffered before seeding. Default 500; at least `k`.
+        #[serde(default)]
+        warm_rows: Option<usize>,
+        /// "lloyd" (default), "kmeanspp", "farthest" or "first".
+        #[serde(default)]
+        seed_rule: Option<String>,
+        /// Seed of the generator behind "kmeanspp" and "lloyd". Default 0.
+        #[serde(default)]
+        seed: Option<u64>,
+        /// Learned rows between centre updates. Default 1 (every row).
+        #[serde(default)]
+        update_every: Option<u32>,
+        /// Merge the two closest clusters when their centres are closer than
+        /// this many summed radii, re-placing the freed centre at the
+        /// farthest row seen. Default 0.5; `0` disables split–merge.
+        #[serde(default)]
+        split_merge: Option<f64>,
+        /// Learned rows between split–merge checks. Default 100.
+        #[serde(default)]
+        sm_every: Option<u32>,
+        /// A cluster lighter than `dead_frac · n_eff / k` at a check is
+        /// re-placed. Default 0.05; `0` disables the dead rule.
+        #[serde(default)]
+        dead_frac: Option<f64>,
+        /// Measure distances in units of each feature's EW standard
+        /// deviation. Default true.
+        #[serde(default)]
+        standardize: Option<bool>,
+    },
 }
 
 impl ModelKind {
@@ -549,7 +586,7 @@ impl ModelKind {
     /// to the enum, so a new variant fails a test until it is listed here.
     pub const KINDS: &'static [&'static str] = &[
         "ew_ridge", "lasso", "kalman", "huber", "quantile", "ftrl", "ew_cov", "sgd", "pa", "holt",
-        "rls",
+        "rls", "kmeans",
     ];
 
     pub fn kind_name(&self) -> &'static str {
@@ -565,7 +602,17 @@ impl ModelKind {
             ModelKind::Sgd { .. } => "sgd",
             ModelKind::Pa { .. } => "pa",
             ModelKind::Holt { .. } => "holt",
+            ModelKind::KMeans { .. } => "kmeans",
         }
+    }
+
+    /// True for the models that predict no target: `ew_cov` and `kmeans`.
+    /// Their `targets` mirror `features[0]` for plumbing, their outputs are
+    /// statistics or assignments read from the state *before* each row, and
+    /// nothing residual-based (`sigma`, `resid_z`, metrics, quantiles,
+    /// autocorrelation, drift, selection, averaging) applies to them.
+    pub fn is_unsupervised(&self) -> bool {
+        matches!(self, ModelKind::EwCov { .. } | ModelKind::KMeans { .. })
     }
 }
 
@@ -868,12 +915,13 @@ impl Spec {
         // it is exactly the accident a long column list invites, and the
         // resulting backtest looks wonderful right up until deployment.
         //
-        // `ew_cov` is exempt *by design*, not oversight: it predicts nothing.
-        // Its "targets" mirror its columns for plumbing, and its statistics
-        // are read from the state BEFORE each row, which is what makes an
-        // ew_cov output safe to use as a same-row feature (E1).
-        let is_ew_cov = matches!(self.model, ModelKind::EwCov { .. });
-        if let Some(leak) = (!is_ew_cov)
+        // The unsupervised models are exempt *by design*, not oversight: they
+        // predict no target. Their "targets" mirror their columns for
+        // plumbing, and their outputs are read from the state BEFORE each
+        // row, which is what makes an ew_cov statistic or a kmeans
+        // assignment safe to use as a same-row feature (E1).
+        let unsupervised = self.model.is_unsupervised();
+        if let Some(leak) = (!unsupervised)
             .then(|| self.features.iter().find(|f| self.targets.contains(f)))
             .flatten()
         {
@@ -938,19 +986,30 @@ impl Spec {
         if self.average_eta.is_some_and(|v| v <= 0.0 || v.is_nan()) {
             return Err(format!("spec {:?}: average_eta must be > 0", self.name));
         }
-        if self.emit_averaged && matches!(self.model, ModelKind::EwCov { .. }) {
-            return Err(format!(
-                "spec {:?}: emit_averaged does not apply to ew_cov (it has no predictions)",
-                self.name
-            ));
-        }
-        if self.emit_selected {
-            if matches!(self.model, ModelKind::EwCov { .. }) {
+        // Nothing residual-based applies to a model that predicts no target.
+        // Refused rather than ignored: a flag that silently emits nothing
+        // looks like a bug in the output, not in the spec.
+        if unsupervised {
+            let asked = [
+                ("emit_sigma", self.emit_sigma),
+                ("emit_resid_z", self.emit_resid_z),
+                ("emit_metrics", self.emit_metrics),
+                ("resid_quantiles", self.resid_quantiles.is_some()),
+                ("emit_autocorr", self.emit_autocorr),
+                ("emit_drift", self.emit_drift),
+                ("emit_averaged", self.emit_averaged),
+                ("emit_selected", self.emit_selected),
+            ];
+            if let Some((flag, _)) = asked.iter().find(|(_, on)| *on) {
                 return Err(format!(
-                    "spec {:?}: emit_selected does not apply to ew_cov (it has no predictions)",
-                    self.name
+                    "spec {:?}: {flag} does not apply to {} (it has no predictions, so no \
+                     residuals)",
+                    self.name,
+                    self.model.kind_name()
                 ));
             }
+        }
+        if self.emit_selected {
             let n_slots = self.decays()?.len() * crate::combo_labels(self).len();
             if n_slots < 2 {
                 return Err(format!(
@@ -1067,6 +1126,47 @@ impl Spec {
                 if precision_prior.is_some_and(|p| p <= 0.0 || !p.is_finite()) {
                     return Err(format!(
                         "spec {:?}: precision_prior must be finite and > 0",
+                        self.name
+                    ));
+                }
+            }
+            ModelKind::KMeans {
+                k,
+                seed_rule,
+                update_every,
+                split_merge,
+                sm_every,
+                dead_frac,
+                ..
+            } => {
+                if *k == 0 {
+                    return Err(format!("spec {:?}: kmeans k must be >= 1", self.name));
+                }
+                if let Some(rule) = seed_rule {
+                    const OK: [&str; 4] = ["first", "farthest", "kmeanspp", "lloyd"];
+                    if !OK.contains(&rule.as_str()) {
+                        return Err(format!(
+                            "spec {:?}: unknown kmeans seed_rule {rule:?}; expected one of {}",
+                            self.name,
+                            OK.join(", ")
+                        ));
+                    }
+                }
+                if update_every.is_some_and(|v| v == 0) {
+                    return Err(format!("spec {:?}: update_every must be >= 1", self.name));
+                }
+                if sm_every.is_some_and(|v| v == 0) {
+                    return Err(format!("spec {:?}: sm_every must be >= 1", self.name));
+                }
+                if split_merge.is_some_and(|v| v < 0.0 || !v.is_finite()) {
+                    return Err(format!(
+                        "spec {:?}: split_merge must be finite and >= 0 (0 disables it)",
+                        self.name
+                    ));
+                }
+                if dead_frac.is_some_and(|v| v < 0.0 || !v.is_finite()) {
+                    return Err(format!(
+                        "spec {:?}: dead_frac must be finite and >= 0 (0 disables it)",
                         self.name
                     ));
                 }

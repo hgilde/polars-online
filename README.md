@@ -16,7 +16,7 @@ the same whether the stream arrives as one chunk or a thousand.
 
 ## What you get
 
-**Ten model families, one set of stream semantics.** A spec's clock, decay,
+**Eleven model families, one set of stream semantics.** A spec's clock, decay,
 grouping and warm-up mean the same thing whichever model it names.
 
 | model | what it is |
@@ -31,6 +31,7 @@ grouping and warm-up mean the same thing whichever model it names.
 | `ftrl` | FTRL-proximal logistic regression, L1-sparse |
 | `ew_cov` | running mean, variance, covariance, correlation and partial correlation |
 | `holt` | Holt's linear trend — the no-feature baseline |
+| `kmeans` | exponentially weighted k-means — out-of-sample cluster labels, with a split–merge move that finds a cluster born after seeding |
 
 **Three ways to run a bank, same numbers from each.** A Python loop over
 chunks (`ModelBank`); a Polars query (`lf.online.fit_predict(specs)` is a
@@ -737,6 +738,50 @@ choose.
 po.spec.holt("baseline", targets=["y"], clock="t", max_dclock=600.0,
              level_halflife=200.0, trend_halflife=2000.0)
 ```
+
+### `kmeans` — exponentially weighted k-means
+
+The one model with no target: it labels each row with the nearest of `k`
+centres, read before the row is learned, so the label is out-of-sample like
+every prediction here.
+
+```
+j*   = argmin_j ‖x − c_j‖²          distances in units of each feature's EW sd
+n'_j = λn_j + w                      c'_j = c_j + (w/n'_j)(x − c_j)     for j = j*
+```
+
+Each centre is the EW mean of the rows assigned to it — `ew_cov`'s mean
+recursion, per cluster. The struct holds `cluster`, `dist` (to the centre),
+`dist2` (to the runner-up), `n_eff`, and `coef` = the centres, `k` rows of
+`len(features)`.
+
+```python
+km = po.spec.kmeans("km", features=["x0", "x1", "x2"], k=3, clock="t",
+                    halflife=2000.0, max_dclock=300.0, warm_rows=100)
+out = po.ModelBank([km]).fit_predict(df).unnest("km")
+po.spec.coef_index(km)        # target = "cluster0".., term = the feature
+```
+
+Seeding waits for `warm_rows` rows (default 500), then places the centres
+with `seed_rule="lloyd"`: the best of ten k-means++ starts by inertia. One
+start lands in the wrong partition a third of the time on five blobs in four
+dimensions; the restarts tell them apart. The rows are replayed and the
+buffer freed, so the model is O(k·p) from then on.
+
+**What split–merge repairs.** A row far outside its cluster (about four
+standard deviations of `dist²` above the typical radius) is scored but not
+learned: it is summarised. Every `sm_every` rows the two closest centres are
+compared, and if they are closer than `split_merge` times the sum of their
+radii — two centres in one blob — one is freed and placed on the far rows,
+provided enough have gathered to be a cluster's worth. A centre whose blob
+vanished decays; once under `dead_frac` of an equal share it is re-placed
+the same way. That takes `log2(1/dead_frac)` halflives: 4.3 at the default
+0.05, 2 at 0.25. Raise `dead_frac` when regimes change faster than that;
+the price is that a cluster lighter than `dead_frac/k` of the stream loses
+its centre whenever any row is far. What the move cannot see is one centre
+owning two blobs, whose rows are all within its own radius — seeding with
+`lloyd` is what prevents it. Set `split_merge=0` for plain sequential
+k-means.
 
 ## Parallelism
 

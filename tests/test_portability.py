@@ -372,24 +372,44 @@ class TestOutputSchemaStability:
         out = po.ModelBank([spec]).fit_predict(_frame().drop("g"))
         assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
 
-    @pytest.mark.parametrize(
-        "extra",
-        [{}, {"emit_sigma": True}, {"emit_metrics": True}],
-        ids=["plain", "sigma", "metrics"],
-    )
-    def test_ew_cov_names_match_the_realized_struct(self, extra):
-        """`ew_cov` is the one model with no targets, so its declared schema is
-        built from the statistics and column pairs rather than from targets."""
+    @pytest.mark.parametrize("coef_every", [0, 7], ids=["plain", "coef_every"])
+    def test_ew_cov_names_match_the_realized_struct(self, coef_every):
+        """`ew_cov` has no targets, so its declared schema is built from the
+        statistics and column pairs rather than from targets. (It used to be
+        parametrized over `emit_sigma` / `emit_metrics`, which it silently
+        ignored; since 0.2.0 an unsupervised spec refuses them by name.)"""
         spec = po.spec.ew_cov(
             "m",
             features=["x0", "x1"],
             stats=["mean", "var", "std", "cov", "corr"],
             halflife=50.0,
             min_periods=2.0,
-            **extra,
+            coef_every=coef_every,
         )
         out = po.ModelBank([spec]).fit_predict(_frame().drop("g"))
         assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
+
+    @pytest.mark.parametrize("halflife", [50.0, [20.0, 50.0]], ids=["one", "grid"])
+    @pytest.mark.parametrize("coef_every", [0, 7], ids=["plain", "coef_every"])
+    def test_kmeans_names_match_the_realized_struct(self, halflife, coef_every):
+        """`kmeans` has no targets either: an `i32` assignment, two distances,
+        `n_eff` and the centres as `coef`, per instance."""
+        spec = po.spec.kmeans(
+            "m",
+            features=["x0", "x1"],
+            k=2,
+            warm_rows=5,
+            halflife=halflife,
+            min_periods=2.0,
+            coef_every=coef_every,
+        )
+        out = po.ModelBank([spec]).fit_predict(_frame().drop("g"))
+        assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
+        idx = po.spec.output_index(spec)
+        names = {pl.Float64: "f64", pl.Int32: "i32", pl.List(pl.Float64): "list[f64]"}
+        for f in out.schema["m"].fields:
+            declared = idx.filter(pl.col("field") == f.name)["dtype"].item()
+            assert names[f.dtype] == declared, (f, declared)
 
 
 class TestConfigParsing:

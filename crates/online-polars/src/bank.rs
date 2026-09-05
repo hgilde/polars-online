@@ -637,8 +637,15 @@ impl SpecDerived {
         let n_models = spec.decays().expect("validated").len();
         let nc = crate::stream::combos(spec).len();
         let m = spec.m();
-        let per_model = if matches!(spec.model, crate::ModelKind::EwCov { .. }) {
-            schema.iter().filter(|f| f.kind != "n_eff").count() / n_models
+        // The unsupervised models' slots are whatever rides in the `pred`
+        // buffer (statistics, or an assignment and its distances), which the
+        // schema says with `Source::Stat` / `Source::Cluster`.
+        let per_model = if spec.model.is_unsupervised() {
+            schema
+                .iter()
+                .filter(|f| matches!(f.src, Source::Stat(_) | Source::Cluster(_)))
+                .count()
+                / n_models
         } else {
             m * nc
         };
@@ -1334,8 +1341,12 @@ enum Source {
     SelPred(usize),
     SelName(usize),
     AvgPred(usize),
-    /// An `ew_cov` statistic, which rides in the `pred` buffer.
+    /// An `ew_cov` statistic, or a `kmeans` distance, which rides in the
+    /// `pred` buffer.
     Stat(usize),
+    /// A `kmeans` assignment: the `pred` buffer holds the centre's index as
+    /// an f64 (NaN = null), materialized as `i32`.
+    Cluster(usize),
 }
 
 impl FieldMeta {
@@ -1367,6 +1378,7 @@ impl FieldMeta {
             Source::Drift(_) => DataType::Boolean,
             Source::SelName(_) => DataType::String,
             Source::Coef(_) => DataType::List(Box::new(DataType::Float64)),
+            Source::Cluster(_) => DataType::Int32,
             Source::Unset => unreachable!("every field is given a source in output_index"),
             _ => DataType::Float64,
         }
@@ -1400,12 +1412,23 @@ impl FieldMeta {
 /// (`EwRidgeModel::solve` scatters each combo's solution into `k_total`
 /// columns) -- or `level`, `trend` for `holt`. Rendered here, beside the
 /// field names, from the same combos and suffixes, so the two cannot drift.
+///
+/// `kmeans` reports its centres here: `k` slots named `cluster{j}` in place
+/// of the targets, each the centre's coordinate per feature, so
+/// `coef_cluster0_x1` is centre 0's `x1` and `coef_index` lays the list out
+/// as `(cluster, feature)`.
 pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
     if matches!(spec.model, crate::ModelKind::EwCov { .. }) {
         return Vec::new();
     }
+    let slots: Vec<String> = match &spec.model {
+        crate::ModelKind::KMeans { k, .. } => (0..*k).map(|j| format!("cluster{j}")).collect(),
+        _ => spec.targets.clone(),
+    };
     let terms: Vec<String> = if matches!(spec.model, crate::ModelKind::Holt { .. }) {
         vec!["level".into(), "trend".into()]
+    } else if matches!(spec.model, crate::ModelKind::KMeans { .. }) {
+        spec.features.clone()
     } else {
         let mut t = Vec::with_capacity(spec.features.len() + 1);
         if spec.add_intercept {
@@ -1423,7 +1446,7 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
             online_core::Decay::Lam(l) => (None, Some(*l)),
         };
         let mut position = 0;
-        for t in &spec.targets {
+        for t in &slots {
             for c in &combos {
                 for term in &terms {
                     out.push(CoefField {
@@ -1511,6 +1534,45 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
                 FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
                     .decay(d)
                     .src(Source::NEff(mi)),
+            );
+        }
+        return fields;
+    }
+    // kmeans is not a regression either: per instance, the nearest centre
+    // and two distances (read before the row is learned), `n_eff`, and the
+    // centres as `coef`.
+    if matches!(spec.model, crate::ModelKind::KMeans { .. }) {
+        let n_slots = 3;
+        let mut fields = Vec::new();
+        for (mi, (suffix, d)) in decays.iter().enumerate() {
+            let over = |mut f: FieldMeta| {
+                f.columns = Some(spec.features.clone());
+                f
+            };
+            fields.push(over(
+                FieldMeta::new(format!("cluster{suffix}"), "cluster")
+                    .decay(d)
+                    .src(Source::Cluster(mi * n_slots)),
+            ));
+            fields.push(over(
+                FieldMeta::new(format!("dist{suffix}"), "dist")
+                    .decay(d)
+                    .src(Source::Stat(mi * n_slots + 1)),
+            ));
+            fields.push(over(
+                FieldMeta::new(format!("dist2{suffix}"), "dist2")
+                    .decay(d)
+                    .src(Source::Stat(mi * n_slots + 2)),
+            ));
+            fields.push(
+                FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                    .decay(d)
+                    .src(Source::NEff(mi)),
+            );
+            fields.push(
+                FieldMeta::new(format!("coef{suffix}"), "coef")
+                    .decay(d)
+                    .src(Source::Coef(mi)),
             );
         }
         return fields;
@@ -1699,6 +1761,19 @@ impl F64Column {
         let validity = (self.valid.unset_bits() > 0).then(|| self.valid.into());
         Float64Chunked::from_vec_validity(name, self.values, validity).into_series()
     }
+
+    /// The same column as `i32`, for a value that is an index (a `kmeans`
+    /// assignment). Every set value is a small non-negative integer by
+    /// construction; the null rows carry NaN and are masked, not cast.
+    fn finish_i32(self, name: PlSmallStr) -> Series {
+        let validity = (self.valid.unset_bits() > 0).then(|| self.valid.into());
+        let values: Vec<i32> = self
+            .values
+            .iter()
+            .map(|&v| if v.is_finite() { v as i32 } else { 0 })
+            .collect();
+        Int32Chunked::from_vec_validity(name, values, validity).into_series()
+    }
 }
 
 /// Scatter one value per processed row of every chunk into a column:
@@ -1743,7 +1818,8 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
     // targets or coefficients — but its values ride in the same `pred` buffer
     // and the schema says so (`Source::Stat`), so one assembler covers both
     // (docs/SIMPLIFICATION.md S2). Only `pred` and `n_eff` are populated for
-    // it; every other buffer is length zero and never indexed.
+    // it; every other buffer is length zero and never indexed. `kmeans` is
+    // the same shape with an `i32` slot (`Source::Cluster`) and `coef`.
     let n_levels = spec.resid_quantiles.as_ref().map_or(0, Vec::len);
 
     // Online selection across every slot of a target: pick the slot with the
@@ -1857,6 +1933,10 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
             Ok(match f.src {
                 Source::Pred(i) | Source::Stat(i) => {
                     scatter(n, chunks, false, |ch, nr, ri| ch.pred[at(ch, nr, i, ri)]).finish(name)
+                }
+                Source::Cluster(i) => {
+                    scatter(n, chunks, false, |ch, nr, ri| ch.pred[at(ch, nr, i, ri)])
+                        .finish_i32(name)
                 }
                 Source::Resid(i) => {
                     scatter(n, chunks, false, |ch, nr, ri| ch.resid[at(ch, nr, i, ri)]).finish(name)

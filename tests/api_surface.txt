@@ -109,6 +109,19 @@
     share_p = False
     standardize = True
     common
+  kmeans:
+    name
+    features
+    k
+    warm_rows = None
+    seed_rule = None
+    seed = None
+    update_every = None
+    split_merge = None
+    sm_every = None
+    dead_frac = None
+    standardize = None
+    common
   lasso:
     name
     targets
@@ -191,6 +204,7 @@
   holt
   huber
   kalman
+  kmeans
   lasso
   pa
   quantile
@@ -477,3 +491,9 @@
     cov_x0_x1
     corr_x0_x1
     n_eff
+  kmeans minimal:
+    cluster
+    dist
+    dist2
+    n_eff
+    coef

@@ -112,6 +112,20 @@ def specs() -> list[dict]:
             group="g",
             min_periods=4.0,
         ),
+        po.spec.kmeans(
+            "kmeans",
+            features=["x0", "x1"],
+            k=2,
+            warm_rows=8,
+            split_merge=0.5,
+            sm_every=10,
+            clock="t",
+            max_dclock=6.0,
+            halflife=25.0,
+            weight="w",
+            group="g",
+            min_periods=4.0,
+        ),
     ]
 
 
@@ -267,6 +281,18 @@ GOLDEN: dict[str, float | None] = {
     "moments.n_eff@25": 7.999488060097996,
     "moments.n_eff@60": 12.473100285951407,
     "moments.n_eff@119": 14.963784088176922,
+    "kmeans.cluster@25": 1,
+    "kmeans.cluster@60": 0,
+    "kmeans.cluster@119": 0,
+    "kmeans.dist@25": 1.0657683037801138,
+    "kmeans.dist@60": 2.0686144858219824,
+    "kmeans.dist@119": 0.345516814446269,
+    "kmeans.dist2@25": 2.9549386449346025,
+    "kmeans.dist2@60": 3.1351140254811636,
+    "kmeans.dist2@119": 1.8593223277713318,
+    "kmeans.n_eff@25": 7.999488060097996,
+    "kmeans.n_eff@60": 12.473100285951407,
+    "kmeans.n_eff@119": 14.963784088176922,
 }
 
 

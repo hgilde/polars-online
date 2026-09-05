@@ -43,10 +43,12 @@ MINIMAL: dict[str, dict[str, object]] = {
     "sgd": {"learning_rate": 0.01},
     "pa": {},
     "holt": {"features": None},
+    "kmeans": {"targets": None, "features": ["x0", "x1"], "k": 2},
 }
 
-#: The sweeps fit a target, so ``ew_cov`` -- moments, no target -- sits them out.
-REGRESSIONS = frozenset(MINIMAL) - {"ew_cov"}
+#: The sweeps fit a target, so the unsupervised models -- ``ew_cov`` (moments)
+#: and ``kmeans`` (assignments), no target -- sit them out.
+REGRESSIONS = frozenset(MINIMAL) - {"ew_cov", "kmeans"}
 
 
 def _build(name: str) -> dict:

@@ -85,6 +85,11 @@ def test_ew_cov_has_no_targets():
         po.spec.ew_cov("m", features=["x0", "y"], targets=["y"], halflife=10.0)
 
 
+def test_kmeans_has_no_targets():
+    with pytest.raises(TypeError, match='spec "m": kmeans\\(\\) takes no targets'):
+        po.spec.kmeans("m", features=["x0", "y"], targets=["y"], k=2, halflife=10.0)
+
+
 VALUES = [
     (po.spec.ewridge, dict(coef_every=-1), "coef_every must be >= 0, got -1"),
     (po.spec.lasso, dict(lasso_path=[0.1], max_cd_iters=-1), "max_cd_iters must be >= 0"),
@@ -122,6 +127,7 @@ BUILDERS = {
     po.spec.sgd: {},
     po.spec.pa: {},
     po.spec.holt: dict(features=None),
+    po.spec.kmeans: dict(features=["x0", "y"], targets=None, k=2),
 }
 
 
