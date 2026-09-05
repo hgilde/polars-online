@@ -161,11 +161,13 @@ the fragility: the precision matrix is now solved from the co-moments
 (`M = C + s·prior·I`, `s` decaying with the co-moments) are unchanged, and
 the golden outputs match to `1e-12`.
 
-State layout: `SCHEMA_VERSION` is 2. Schema-1 `rls` states (`P`, `β`) are
-converted on load (`R` from the reverse-Cholesky of `P`, `u = Rβ`); schema-1
-`ew_cov` states load with the stored inverse ignored. `MIN_SCHEMA_VERSION`
-records the oldest layout a build still loads, and both `check_schema` and
-the bank accept the range.
+State layout: `SCHEMA_VERSION` was 2 here (3 since task 33, 2026-09-05,
+when `kalman` and `sgd` moved their standardizer from a full `EwCov` to
+its diagonal; schema-2 states of both convert on load by taking that
+diagonal). Schema-1 `rls` states (`P`, `β`) are converted on load (`R` from
+the reverse-Cholesky of `P`, `u = Rβ`); schema-1 `ew_cov` states load with
+the stored inverse ignored. `MIN_SCHEMA_VERSION` records the oldest layout
+a build still loads, and both `check_schema` and the bank accept the range.
 
 ### C3 — `fit_predict` is not atomic under `on_clock_reset="error"` — *done*
 

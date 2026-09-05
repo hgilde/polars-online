@@ -60,6 +60,7 @@ mod constraint;
 mod drift;
 mod ewclass;
 mod ewcov;
+mod ewdiag;
 mod ewridge;
 mod ftrl;
 mod holt;
@@ -84,6 +85,7 @@ pub use constraint::Constraint;
 pub use drift::PageHinkley;
 pub use ewclass::{Covariance, EwClass, EwClassCfg};
 pub use ewcov::{EwCov, EwCovCfg, EwCovModel, EwCovStat, Pca, partial_corr, variance_is_usable};
+pub use ewdiag::EwDiag;
 pub use ewridge::{EwRidge, EwRidgeCfg};
 pub use ftrl::{Ftrl, FtrlCfg, FtrlLoss};
 pub use holt::{Holt, HoltCfg};
@@ -113,7 +115,12 @@ pub use stats::{EwAutoCorr, P2Quantile, SlotMetrics};
 ///   and a 0.1 build meets a bank holding one as an unknown variant at
 ///   deserialization rather than as a version it refuses. `ew_class` and
 ///   `seqtest` (0.2.0) likewise.
-pub const SCHEMA_VERSION: u32 = 2;
+/// - 3: `kalman` and `sgd` standardize with an [`EwDiag`] (means and
+///   variances, O(k) a row) instead of a full [`EwCov`] they only ever read
+///   the diagonal of (docs/PERFORMANCE.md §13). Schema-2 states of both are
+///   converted on load by taking that diagonal, which is the same numbers;
+///   every other model is unchanged.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Oldest state layout this build still loads.
 pub const MIN_SCHEMA_VERSION: u32 = 1;

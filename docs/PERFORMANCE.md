@@ -1320,11 +1320,21 @@ recursion is the per-row cost and cannot be split within a group, and
 
 **What is left, and why.**
 
-- *`kalman`'s standardizer* is a full `EwCov` over the features of which
+- *`kalman`'s standardizer* was a full `EwCov` over the features of which
   the filter reads the diagonal: O(k²) of comoment updates per row for
-  k variances. A diagonal accumulator is O(k), but it is a serialized
-  field, so a layout change: `SCHEMA_VERSION` bump plus a loader for the
-  old one (rule 5). Deferred to a release with another reason to bump.
+  k variances — and `sgd`'s `scale_features` the same. Deferred here as a
+  serialized layout change; **done in task 33** (2026-09-05) once the user
+  chose to take the schema bump this early: `EwDiag` (`ewdiag.rs`) is
+  `EwCov`'s diagonal operation for operation, `SCHEMA_VERSION` 2 → 3, and
+  schema-2 states convert on load by taking the diagonal. Bit-exact — the
+  Task 31 dump recipe against a build of the previous commit, plus a unit
+  test that compares the two accumulators as `u64` bits — and, per 400k
+  rows on one thread, the two builds run back to back: `kalman` k = 20
+  223 → 179 ms (with reversion 250 → 211), k = 50 1065 → 908; `sgd` with
+  `scale_features` k = 20 109 → 62, k = 50 279 → 121, the scaled simplex
+  266 → 227 and 657 → 504; `sgd` without scaling unchanged. The
+  standardizer is updated on every row whether or not `standardize` is
+  on (it carries `n_eff`), so `standardize=False` gains the same.
 - *`pca_every=1`* is an O(k³) eigendecomposition per row by request; the
   cadence knob is the answer (40× at every hundredth row), and the
   docstring says so.

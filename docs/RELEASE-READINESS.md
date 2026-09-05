@@ -126,9 +126,9 @@ justifies them and `test_validation_doc.py` pins that they are still the
 measured optimum, but nothing pins the *values* as a contract.
 
 **4. State files and the TOML config.** Already the best-guarded: versioned
-msgpack, `SCHEMA_VERSION` plus a bank `format_version`, a frozen v1 fixture,
-and a documented rule (hard rule 5) to keep a previous-version loader. This is
-the model the rest should follow.
+msgpack, `SCHEMA_VERSION` plus a bank `format_version`, frozen schema-1 and
+schema-2 fixtures, and a documented rule (hard rule 5) to keep a
+previous-version loader. This is the model the rest should follow.
 
 ## S — The mechanism: one API snapshot test — **done**
 

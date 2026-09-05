@@ -19,6 +19,7 @@ predict before update, O(state) memory, chunk invariance, `n_eff` before
 the row — and every number the 0.1 models produce is unchanged. One
 breaking change: a residual diagnostic set on a model that has no
 predictions is refused by name, where `ew_cov` used to accept it silently.
+State files are written in schema 3; files from 0.1.x load.
 
 ### Added
 
@@ -307,6 +308,23 @@ predictions is refused by name, where `ew_cov` used to accept it silently.
   validity is assembled as a packed bitmap, and a single-group chunk is
   copied rather than scattered. Thread scaling at 14 threads over 64
   groups: `ew_cov` 276 → 152 ms, `ew_class` 324 → 191 per 800k rows.
+- **`kalman` and `sgd` standardize with a diagonal accumulator**
+  (`EwDiag`; task 33). Both kept a full exponentially weighted covariance
+  of the features and read only its diagonal — O(k²) of co-moment updates
+  a row for k variances. The replacement is that diagonal, operation for
+  operation, so every output is unchanged to the bit (a dump over twelve
+  configurations, with groups, weights, two targets, a save/load mid-stream
+  and `predict`, compares bit-identical against the previous build), and,
+  per 400k rows on one thread: `kalman` at k = 20 223 → 179 ms, at k = 50
+  1065 → 908; `sgd` with `scale_features` at k = 20 109 → 62, at k = 50
+  279 → 121. **State schema 3.** The two models' serialized layout changed,
+  so `SCHEMA_VERSION` is 3 (`po.schema_version()`); bank files written by
+  0.1.x (schema 2) still load — a schema-2 `kalman` or `sgd` state is
+  converted by taking the diagonal it was already using, and continues the
+  stream identically — and a real 0.1 bank file is frozen as a fixture
+  (`crates/online-polars/tests/state_schema2.rs`) alongside the schema-1
+  one. The bank `format_version` is unchanged at 2. A 0.1.x build cannot
+  read a file saved by 0.2.0, as before for any newer schema.
 - **README *Performance*: the other families** — a second table
   (`scripts/benchmark.py --markdown`) for conformal intervals, `sgd`, `pa`
   and the simplex, `kalman` with reversion, `ew_cov` with and without the

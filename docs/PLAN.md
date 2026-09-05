@@ -552,6 +552,17 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       stride.
 - [x] 32. **Prepare 0.2.0**: version bump, CHANGELOG, README and VALIDATION numbers
       regenerated, gate and CI green. Tag and Release dispatch are the user's steps.
+- [x] 33. **Diagonal standardizer for `kalman` and `sgd`** (`EwDiag`), the O(k²)
+      → O(k) item Task 31 deferred; `SCHEMA_VERSION` 2 → 3 with schema-2 loaders
+      for both models and a frozen schema-2 bank fixture
+      (`crates/online-polars/tests/state_schema2.rs`). Bit-exact: the Task 31
+      dump recipe against a build of the previous commit, plus `EwDiag` vs
+      `EwCov` compared as bits. Per 400k rows at k = 20: `kalman` 223 → 179 ms,
+      `sgd` with `scale_features` 109 → 62; at k = 50 1065 → 908 and 279 → 121.
+- [ ] 34. **Last-row diagnostics in the bank file**: the output-struct fields as
+      of the last training row, per (spec, group), saved with the state and
+      readable from a loaded bank without the output frame. Additive field, no
+      format bump (the `rows_fed` precedent).
 
 ## 11a. Decisions made while implementing
 
@@ -1205,6 +1216,50 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   without a tag) and the annotated tag `v0.2.0` are the user's steps, as
   for 0.1.1: the tag goes on the commit whose rehearsal and CI are green,
   and the `v*` ruleset makes it permanent.
+
+**Task 33's decisions: the diagonal standardizer and schema 3, 2026-09-05.**
+
+- *The deferral was the user's to overturn, and they did.* Task 31 left
+  `kalman`'s standardizer alone because a diagonal accumulator is a
+  serialized layout change (rule 5). Asked, the user said a schema change
+  is fine this early in the project; the same waste in `sgd`'s
+  `scale_features` scaler goes in the same bump rather than a later one.
+- *Bit-exact by construction, then proved.* `EwDiag::update` is the
+  diagonal path of `EwCov::update` with the same operation order (`a·c +
+  a·b·d·d`, the deviation against the old mean, the mean updated after);
+  Rust does not reassociate or fuse, so the bits agree. A unit test
+  compares the two accumulators as `u64` bits over an adversarial stream
+  (zero-weight first row and run, weights 0/1/2.5, two decay factors,
+  offsets and scales apart by orders of magnitude, k = 1, 2, 5), and the
+  Task 31 dump recipe — twelve configurations, groups, weights, two
+  targets, a save/load mid-stream, `predict`, coefficients — compares
+  bit-identical against a wheel built from the previous commit.
+- *Migration by field name, not by luck.* A compact msgpack struct is an
+  array, so `#[serde(untagged)]` layouts are newtype variants (the `rls`
+  v1→v2 precedent). `kalman` renamed `cov` → `stats`, so the two layouts
+  are told apart by name. `sgd`'s scaler is `Option` with
+  `#[serde(default)]`: renaming it would make every schema-2 file load
+  with `None` — silently, the file's scaler discarded — so the name stays
+  and the layouts are told apart by `EwDiag`'s `deny_unknown_fields`
+  (an `EwCov` map carries three names it does not know) plus a shape
+  check (an `EwCov` array has `k²` entries where `k` are expected), each
+  tested in both encodings. The conversion is `EwDiag::diagonal_of`: the
+  numbers the model was already reading, so a schema-2 state continues
+  the stream identically to one that never left schema 3.
+- *A real 0.1 file, frozen before the change.* `state_schema2.rs` carries
+  a 4126-byte bank written by the pre-change build (a hex constant, rule
+  1) — `kalman` standardized with intercept and `sgd` with
+  `scale_features`, a group column — and checks it loads, continues the
+  stream to the bit against a fresh bank, and re-saves as schema 3. The
+  bank `format_version` stays 2: the envelope did not change.
+  `tests/api_surface.txt` records `schema_version = 3` (a deliberate,
+  reviewed diff). The JSON-mutation refusal test lives in `online-core`,
+  not the bank test: `serde_json` writes `inf` as `null`, so a bank
+  file's `revert_halflife = [inf]` cannot survive that round trip.
+- *`standardize=False` gains too.* The standardizer is updated on every
+  row regardless (it carries `n_eff`), so the raw `kalman` runs 213 → 172
+  ms as well. Reported as before/after from two wheels run back to back
+  on the same (loaded) machine — the ratio is the claim.
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without

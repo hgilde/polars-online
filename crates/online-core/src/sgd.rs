@@ -27,7 +27,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
-use crate::{Constraint, Decay};
+use crate::{Constraint, Decay, EwCov, EwDiag};
 
 /// Loss function, and with it the link (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -152,11 +152,12 @@ impl SgdCfg {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "SgdWire")]
 pub struct Sgd {
     cfg: SgdCfg,
-    /// Running feature moments, when `scale_features` is on.
+    /// Running feature means and variances, when `scale_features` is on.
     #[serde(default)]
-    scaler: Option<crate::EwCov>,
+    scaler: Option<EwDiag>,
     /// Coefficients per target.
     beta: Vec<Vec<f64>>,
     /// AdaGrad accumulators per target (empty for the other schedules).
@@ -172,6 +173,76 @@ pub struct Sgd {
     learned: Vec<bool>,
 }
 
+/// The layouts `Sgd` loads. A schema-2 `scaler` was a full [`EwCov`] of
+/// which only the diagonal was read; that diagonal is the schema-3
+/// [`EwDiag`], so the conversion copies the same numbers. Newtype variants
+/// for the reason `RlsWire` gives. The field keeps its name (it is optional,
+/// and a renamed optional field would default to `None` on an old file —
+/// silently dropping the standardization), so the two layouts are told
+/// apart by [`EwDiag`] refusing an `EwCov`'s fields and shape.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SgdWire {
+    Current(SgdV3),
+    Schema2(SgdV2),
+}
+
+#[derive(Deserialize)]
+struct SgdV3 {
+    cfg: SgdCfg,
+    #[serde(default)]
+    scaler: Option<EwDiag>,
+    beta: Vec<Vec<f64>>,
+    g2: Vec<Vec<f64>>,
+    w_sum: f64,
+}
+
+#[derive(Deserialize)]
+struct SgdV2 {
+    cfg: SgdCfg,
+    #[serde(default)]
+    scaler: Option<EwCov>,
+    beta: Vec<Vec<f64>>,
+    g2: Vec<Vec<f64>>,
+    w_sum: f64,
+}
+
+impl TryFrom<SgdWire> for Sgd {
+    type Error = String;
+
+    fn try_from(w: SgdWire) -> Result<Self, String> {
+        let (cfg, scaler, beta, g2, w_sum) = match w {
+            SgdWire::Current(v) => (v.cfg, v.scaler, v.beta, v.g2, v.w_sum),
+            SgdWire::Schema2(v) => (
+                v.cfg,
+                v.scaler.as_ref().map(EwDiag::diagonal_of),
+                v.beta,
+                v.g2,
+                v.w_sum,
+            ),
+        };
+        let k = cfg.k_total();
+        let m = cfg.n_targets;
+        if scaler.as_ref().is_some_and(|sc| sc.k() != k)
+            || beta.len() != m
+            || beta.iter().any(|b| b.len() != k)
+            || g2.iter().any(|g| g.len() != k)
+        {
+            return Err("sgd: state has the wrong shape".into());
+        }
+        Ok(Self {
+            cfg,
+            scaler,
+            beta,
+            g2,
+            w_sum,
+            zbuf: vec![],
+            pbuf: crate::constraint::Scratch::default(),
+            learned: Vec::new(),
+        })
+    }
+}
+
 impl Sgd {
     pub fn new(cfg: SgdCfg) -> Result<Self, String> {
         cfg.validate()?;
@@ -182,7 +253,7 @@ impl Sgd {
         } else {
             Vec::new()
         };
-        let scaler = cfg.scale_features.then(|| crate::EwCov::new(k));
+        let scaler = cfg.scale_features.then(|| EwDiag::new(k));
         let mut beta = vec![vec![0.0; k]; m];
         if let Some(c) = &cfg.constraint {
             let off = usize::from(cfg.add_intercept);
@@ -249,7 +320,7 @@ impl Sgd {
                         return 1.0;
                     }
                     let v = sc.var(i);
-                    if crate::variance_is_usable(v, sc.raw(i, i)) {
+                    if crate::variance_is_usable(v, sc.raw(i)) {
                         v.sqrt()
                     } else {
                         1.0
@@ -1106,5 +1177,116 @@ mod tests {
         assert!(Sgd::new(c).is_err());
         assert!(Sgd::new(cfg(1, SgdLoss::Quantile { tau: 0.0 })).is_err());
         assert!(Sgd::new(cfg(1, SgdLoss::Huber { delta: -1.0 })).is_err());
+    }
+
+    /// A schema-2 state scaled with a full `EwCov` under `scaler`; loading
+    /// one must give the model that would have been saved as schema 3, to the
+    /// bit: the diagonal it read then is the `EwDiag` it reads now. The
+    /// field keeps its name, so this is also the test that the two layouts
+    /// are told apart by the accumulator's shape alone.
+    #[test]
+    fn loads_a_schema_2_state() {
+        use crate::{MIN_SCHEMA_VERSION, SCHEMA_VERSION};
+        const { assert!(MIN_SCHEMA_VERSION <= 2 && SCHEMA_VERSION >= 3) };
+
+        #[derive(Serialize)]
+        struct SgdV2 {
+            cfg: SgdCfg,
+            scaler: Option<EwCov>,
+            beta: Vec<Vec<f64>>,
+            g2: Vec<Vec<f64>>,
+            w_sum: f64,
+        }
+        #[derive(Serialize)]
+        enum ModelStateV2 {
+            Sgd(SgdV2),
+        }
+        #[derive(Serialize)]
+        struct StateV2 {
+            schema_version: u32,
+            model: ModelStateV2,
+        }
+
+        // AdaGrad, a box constraint (projected in the standardized
+        // coordinates, so the scales are read there too), decay, and
+        // features on different offsets and scales.
+        let mut c = cfg(2, SgdLoss::Squared);
+        c.scale_features = true;
+        c.schedule = LearningRate::AdaGrad;
+        c.decay = Decay::Halflife(80.0);
+        c.constraint = Some(Constraint {
+            lo: vec![-2.0, -2.0],
+            hi: vec![2.0, 2.0],
+            sum: None,
+        });
+        let mut m1 = Sgd::new(c).unwrap();
+        let mut full = EwCov::new(3);
+        let mut s = 17u64;
+        let rows: Vec<([f64; 2], f64)> = (0..150)
+            .map(|_| {
+                let x = [1000.0 + lcg(&mut s), 0.01 * lcg(&mut s)];
+                (x, 0.5 * (x[0] - 1000.0) + 30.0 * x[1] + 0.05 * lcg(&mut s))
+            })
+            .collect();
+        for (i, (x, y)) in rows[..90].iter().enumerate() {
+            let (d, w) = if i == 0 {
+                (0.0, 0.0)
+            } else {
+                (1.0, 1.0 + (i % 2) as f64)
+            };
+            m1.step(x, &[Some(*y)], d, w);
+            full.update(&[1.0, x[0], x[1]], m1.cfg.decay.factor(d), w);
+        }
+        assert_eq!(m1.scaler.as_ref().unwrap(), &EwDiag::diagonal_of(&full));
+
+        let v2 = StateV2 {
+            schema_version: 2,
+            model: ModelStateV2::Sgd(SgdV2 {
+                cfg: m1.cfg.clone(),
+                scaler: Some(full),
+                beta: m1.beta.clone(),
+                g2: m1.g2.clone(),
+                w_sum: m1.w_sum,
+            }),
+        };
+        for bytes in [
+            rmp_serde::to_vec_named(&v2).unwrap(),
+            rmp_serde::to_vec(&v2).unwrap(),
+        ] {
+            let st: State = rmp_serde::from_slice(&bytes).unwrap();
+            assert_eq!(st.schema_version, 2);
+            let mut m2 = Sgd::restore(&st).unwrap();
+            assert_eq!(m2.scaler, m1.scaler);
+            assert_eq!(m2.beta, m1.beta);
+            assert_eq!(m2.g2, m1.g2);
+            assert_eq!(m2.w_sum, m1.w_sum);
+            assert_eq!(m2.coefficients(), m1.coefficients());
+            let mut m1 = m1.clone();
+            for (x, y) in &rows[90..] {
+                let a = m1.step(x, &[Some(*y)], 1.0, 1.0);
+                let b = m2.step(x, &[Some(*y)], 1.0, 1.0);
+                assert_eq!(a.pred[0].to_bits(), b.pred[0].to_bits());
+                assert_eq!(a.n_eff.to_bits(), b.n_eff.to_bits());
+            }
+            let again = Sgd::restore(&m2.state()).unwrap();
+            assert_eq!(again.scaler, m2.scaler);
+        }
+    }
+
+    /// Without `scale_features` there is no scaler in either schema, and a
+    /// file written before the field existed (no `scaler` key at all) still
+    /// loads as one without.
+    #[test]
+    fn a_state_without_a_scaler_loads_in_every_layout() {
+        let mut c = cfg(2, SgdLoss::Squared);
+        c.decay = Decay::Halflife(50.0); // JSON has no `inf`
+        let m = Sgd::new(c).unwrap();
+        let mut v = serde_json::to_value(&m).unwrap();
+        assert!(v["scaler"].is_null());
+        let back: Sgd = serde_json::from_value(v.clone()).unwrap();
+        assert!(back.scaler.is_none());
+        v.as_object_mut().unwrap().remove("scaler");
+        let back: Sgd = serde_json::from_value(v).unwrap();
+        assert!(back.scaler.is_none());
     }
 }

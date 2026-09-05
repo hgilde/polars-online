@@ -32,9 +32,11 @@
 //! may be scalar or per factor; `halflife = inf` gives `q_i = 0`, pinning that
 //! coefficient. An explicit `q` overrides the derivation.
 //!
-//! Features are standardized internally using a shared [`EwCov`] over `z`, so
-//! `q_i` is on a comparable scale across features; `R_j` defaults to the EW
-//! residual variance `sigma^2_j` unless `obs_var` is given.
+//! Features are standardized internally against a shared [`EwDiag`] over `z`
+//! (EW means and variances, O(k) a row; a full `EwCov` until schema 3, of
+//! which only the diagonal was ever read), so `q_i` is on a comparable scale
+//! across features; `R_j` defaults to the EW residual variance `sigma^2_j`
+//! unless `obs_var` is given.
 //!
 //! `P` is per target because the Riccati recursion depends on `R_j`. With
 //! `share_p` the filter keeps one `P` driven by the mean `sigma^2` across
@@ -43,7 +45,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
-use crate::{Decay, EwCov};
+use crate::{Decay, EwCov, EwDiag};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KalmanCfg {
@@ -150,10 +152,12 @@ impl KalmanCfg {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "KalmanWire")]
 pub struct Kalman {
     cfg: KalmanCfg,
-    /// Standardization stats over `z` (shared across targets).
-    cov: EwCov,
+    /// Standardization stats over `z` (shared across targets): the means and
+    /// variances the scales are read from.
+    stats: EwDiag,
     /// Per target: coefficient mean on the standardized scale.
     beta: Vec<Vec<f64>>,
     /// Per target (or one when `share_p`): covariance, row-major `k*k`.
@@ -182,6 +186,92 @@ pub struct Kalman {
     qbuf: Vec<f64>,
 }
 
+/// The layouts `Kalman` loads. Schema-2 files standardized with a full
+/// [`EwCov`] under `cov`; its diagonal is what the model read, and is what
+/// the schema-3 `stats` holds, so the conversion is a copy of the same
+/// numbers. Newtype variants for the reason `RlsWire` gives: the compact
+/// msgpack encoding writes structs as arrays. The two are told apart by the
+/// field name in a map and by [`EwDiag`]'s refusal of an `EwCov`'s shape in
+/// an array.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum KalmanWire {
+    Current(KalmanV3),
+    Schema2(KalmanV2),
+}
+
+#[derive(Deserialize)]
+struct KalmanV3 {
+    cfg: KalmanCfg,
+    stats: EwDiag,
+    beta: Vec<Vec<f64>>,
+    p: Vec<Vec<f64>>,
+    sig2: Vec<f64>,
+    wsig: Vec<f64>,
+    wj: Vec<f64>,
+}
+
+#[derive(Deserialize)]
+struct KalmanV2 {
+    cfg: KalmanCfg,
+    cov: EwCov,
+    beta: Vec<Vec<f64>>,
+    p: Vec<Vec<f64>>,
+    sig2: Vec<f64>,
+    wsig: Vec<f64>,
+    wj: Vec<f64>,
+}
+
+impl TryFrom<KalmanWire> for Kalman {
+    type Error = String;
+
+    fn try_from(w: KalmanWire) -> Result<Self, String> {
+        let (cfg, stats, beta, p, sig2, wsig, wj) = match w {
+            KalmanWire::Current(v) => (v.cfg, v.stats, v.beta, v.p, v.sig2, v.wsig, v.wj),
+            KalmanWire::Schema2(v) => (
+                v.cfg,
+                EwDiag::diagonal_of(&v.cov),
+                v.beta,
+                v.p,
+                v.sig2,
+                v.wsig,
+                v.wj,
+            ),
+        };
+        let k = cfg.k_total();
+        let m = cfg.n_targets;
+        let n_p = if cfg.share_p { 1 } else { m };
+        if stats.k() != k
+            || beta.len() != m
+            || beta.iter().any(|b| b.len() != k)
+            || p.len() != n_p
+            || p.iter().any(|p| p.len() != k * k)
+            || sig2.len() != m
+            || wsig.len() != m
+            || wj.len() != m
+        {
+            return Err("kalman: state has the wrong shape".into());
+        }
+        // The scratch buffers are sized by `ensure_buffers` on the first use.
+        Ok(Self {
+            cfg,
+            stats,
+            beta,
+            p,
+            sig2,
+            wsig,
+            wj,
+            zbuf: vec![],
+            zs: vec![],
+            pz: vec![],
+            gain: vec![],
+            phi: vec![],
+            sbuf: vec![],
+            qbuf: vec![],
+        })
+    }
+}
+
 impl Kalman {
     pub fn new(cfg: KalmanCfg) -> Result<Self, String> {
         cfg.validate()?;
@@ -193,7 +283,7 @@ impl Kalman {
             p_init[i * k + i] = cfg.p0;
         }
         Ok(Self {
-            cov: EwCov::new(k),
+            stats: EwDiag::new(k),
             beta: vec![vec![0.0; k]; m],
             p: vec![p_init; n_p],
             sig2: vec![0.0; m],
@@ -256,7 +346,7 @@ impl Kalman {
     }
 
     pub fn n_eff(&self) -> f64 {
-        self.cov.n_eff()
+        self.stats.n_eff()
     }
 
     /// Feature scales used for standardization: sd for features, 1 for the
@@ -276,8 +366,8 @@ impl Kalman {
             *s = if !self.cfg.standardize || i < off {
                 1.0
             } else {
-                let v = self.cov.var(i);
-                let raw = self.cov.raw(i, i);
+                let v = self.stats.var(i);
+                let raw = self.stats.raw(i);
                 if crate::variance_is_usable(v, raw) {
                     v.sqrt()
                 } else {
@@ -305,7 +395,7 @@ impl Kalman {
                 // b0_std is on centered features: unshift by the feature means.
                 let mut b0 = b[0];
                 for (i, ci) in c.iter().enumerate().skip(off) {
-                    b0 -= ci * self.cov.mean(i);
+                    b0 -= ci * self.stats.mean(i);
                 }
                 c[0] = b0;
             }
@@ -352,7 +442,7 @@ impl Kalman {
                 if !self.cfg.standardize || i < off {
                     raw
                 } else {
-                    (raw - self.cov.mean(i)) / s[i]
+                    (raw - self.stats.mean(i)) / s[i]
                 }
             })
             .collect()
@@ -431,13 +521,13 @@ impl OnlineModel for Kalman {
             } else if i < off {
                 1.0
             } else {
-                (self.zbuf[i] - self.cov.mean(i)) / s[i]
+                (self.zbuf[i] - self.stats.mean(i)) / s[i]
             };
         }
         self.sbuf = s;
 
         // ---- predict (state before the update) ----
-        let n_eff = self.cov.n_eff();
+        let n_eff = self.stats.n_eff();
         let ready = n_eff >= self.cfg.min_periods;
         let mut pred = vec![f64::NAN; m];
         if ready {
@@ -537,7 +627,7 @@ impl OnlineModel for Kalman {
         }
 
         // Standardization stats update last, so this row's z used the prior stats.
-        self.cov.update(&self.zbuf, lam, weight);
+        self.stats.update(&self.zbuf, lam, weight);
 
         Step {
             pred,
@@ -548,7 +638,7 @@ impl OnlineModel for Kalman {
 
     fn predict(&self, x: &[f64], d_clock: f64) -> Step {
         let m = self.cfg.n_targets;
-        let n_eff = self.cov.n_eff();
+        let n_eff = self.stats.n_eff();
         let mut pred = vec![f64::NAN; m];
         if n_eff >= self.cfg.min_periods {
             let zs = self.standardized(x);
@@ -1328,5 +1418,131 @@ mod tests {
         for (i, (after, before)) in m.beta[0].iter().zip(&b0).enumerate() {
             assert!((after - 0.5 * before).abs() <= 1e-12 * before.abs(), "{i}");
         }
+    }
+
+    /// A schema-2 state standardized with a full `EwCov` under `cov`; loading
+    /// one must give the model that would have been saved as schema 3, to the
+    /// bit: the diagonal it read then is the `EwDiag` it reads now.
+    #[test]
+    fn loads_a_schema_2_state() {
+        use crate::{MIN_SCHEMA_VERSION, SCHEMA_VERSION};
+        const { assert!(MIN_SCHEMA_VERSION <= 2 && SCHEMA_VERSION >= 3) };
+
+        // The schema-2 layout, as `rmp_serde::to_vec_named` wrote it.
+        #[derive(Serialize)]
+        struct KalmanV2 {
+            cfg: KalmanCfg,
+            cov: EwCov,
+            beta: Vec<Vec<f64>>,
+            p: Vec<Vec<f64>>,
+            sig2: Vec<f64>,
+            wsig: Vec<f64>,
+            wj: Vec<f64>,
+        }
+        #[derive(Serialize)]
+        enum ModelStateV2 {
+            Kalman(KalmanV2),
+        }
+        #[derive(Serialize)]
+        struct StateV2 {
+            schema_version: u32,
+            model: ModelStateV2,
+        }
+
+        // Two targets, one null now and then, a zero-weight first row, and
+        // features on different offsets, so the standardizer has work to do.
+        let mut c = cfg(2, 2, vec![100.0, 50.0, f64::INFINITY]);
+        c.revert_halflife = vec![f64::INFINITY, 300.0, 300.0];
+        let mut m1 = Kalman::new(c).unwrap();
+        // The full accumulator a schema-2 model kept, fed what `stats` is.
+        let mut cov = EwCov::new(3);
+        let mut s = 91u64;
+        let rows: Vec<([f64; 2], [Option<f64>; 2])> = (0..150)
+            .map(|i| {
+                let x = [lcg(&mut s), 100.0 + 5.0 * lcg(&mut s)];
+                let y0 = 2.0 * x[0] - 0.1 * x[1] + 0.1 * lcg(&mut s);
+                let y1 = if i % 7 == 3 { None } else { Some(-y0 + 1.0) };
+                (x, [Some(y0), y1])
+            })
+            .collect();
+        for (i, (x, y)) in rows[..90].iter().enumerate() {
+            let (d, w) = if i == 0 {
+                (0.0, 0.0)
+            } else {
+                (1.0, 1.0 + (i % 3) as f64)
+            };
+            m1.step(x, y, d, w);
+            cov.update(&[1.0, x[0], x[1]], m1.cfg.decay.factor(d), w);
+        }
+        assert_eq!(
+            m1.stats,
+            EwDiag::diagonal_of(&cov),
+            "the fixture must be the model's own numbers"
+        );
+
+        let v2 = StateV2 {
+            schema_version: 2,
+            model: ModelStateV2::Kalman(KalmanV2 {
+                cfg: m1.cfg.clone(),
+                cov,
+                beta: m1.beta.clone(),
+                p: m1.p.clone(),
+                sig2: m1.sig2.clone(),
+                wsig: m1.wsig.clone(),
+                wj: m1.wj.clone(),
+            }),
+        };
+        // Bank files are map-encoded; the compact array encoding must load too.
+        for bytes in [
+            rmp_serde::to_vec_named(&v2).unwrap(),
+            rmp_serde::to_vec(&v2).unwrap(),
+        ] {
+            let st: State = rmp_serde::from_slice(&bytes).unwrap();
+            assert_eq!(st.schema_version, 2);
+            let mut m2 = Kalman::restore(&st).unwrap();
+            assert_eq!(m2.stats, m1.stats);
+            assert_eq!(m2.beta, m1.beta);
+            assert_eq!(m2.p, m1.p);
+            assert_eq!((&m2.sig2, &m2.wsig, &m2.wj), (&m1.sig2, &m1.wsig, &m1.wj));
+            assert_eq!(m2.coefficients(), m1.coefficients());
+            let mut m1 = m1.clone();
+            for (x, y) in &rows[90..] {
+                let a = m1.step(x, y, 1.0, 1.0);
+                let b = m2.step(x, y, 1.0, 1.0);
+                assert_eq!(a.n_eff.to_bits(), b.n_eff.to_bits());
+                for (a, b) in a.pred.iter().zip(&b.pred) {
+                    assert_eq!(a.to_bits(), b.to_bits(), "{a} vs {b}");
+                }
+            }
+            // And what the loaded model saves is schema 3, which loads again.
+            let again = Kalman::restore(&m2.state()).unwrap();
+            assert_eq!(again.stats, m2.stats);
+        }
+    }
+
+    /// The other half: a schema-3 state must not be mistaken for a schema-2
+    /// one, and a map with neither `stats` nor `cov` is refused rather than
+    /// defaulted.
+    #[test]
+    fn a_state_without_the_standardizer_is_refused() {
+        let mut c = cfg(2, 1, vec![100.0]);
+        c.revert_halflife = vec![500.0]; // JSON has no `inf`
+        let m = fit(c, 30, 5);
+        let v = serde_json::to_value(&m).unwrap();
+        // The control: the same value loads with the field present.
+        let back: Kalman = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(back.stats, m.stats);
+        let mut v = v;
+        v.as_object_mut().unwrap().remove("stats");
+        assert!(serde_json::from_value::<Kalman>(v).is_err());
+        // A `cov` of the wrong shape is not a schema-2 state either.
+        let mut v = serde_json::to_value(&m).unwrap();
+        let obj = v.as_object_mut().unwrap();
+        obj.remove("stats");
+        obj.insert("cov".into(), serde_json::to_value(EwCov::new(2)).unwrap());
+        assert!(
+            serde_json::from_value::<Kalman>(v).is_err(),
+            "k = 2 for a k_total of 3"
+        );
     }
 }
