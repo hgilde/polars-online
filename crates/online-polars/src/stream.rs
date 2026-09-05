@@ -4,9 +4,9 @@
 use online_core::{
     ClockState, Decay, EwAutoCorr, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl,
     FtrlCfg, FtrlLoss, Holt, HoltCfg, INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg, Lasso,
-    LassoCfg, LearningRate, ModelState, OnlineModel, P2Quantile, Pa, PaCfg, PaMode, PageHinkley,
-    Rls, RlsCfg, Robust, RobustCfg, RobustLoss, SeedRule, Sgd, SgdCfg, SgdLoss, SlotMetrics, State,
-    StateError,
+    LassoCfg, LearningRate, Micro, MicroCfg, ModelState, OnlineModel, P2Quantile, Pa, PaCfg,
+    PaMode, PageHinkley, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, SeedRule, Sgd, SgdCfg,
+    SgdLoss, SlotMetrics, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +26,7 @@ pub enum AnyModel {
     Pa(Box<Pa>),
     Holt(Box<Holt>),
     KMeans(Box<KMeans>),
+    Micro(Box<Micro>),
 }
 
 /// Bind the boxed model of whichever variant `$self` is, then run `$body`.
@@ -50,6 +51,7 @@ macro_rules! dispatch {
             AnyModel::Pa($m) => $body,
             AnyModel::Holt($m) => $body,
             AnyModel::KMeans($m) => $body,
+            AnyModel::Micro($m) => $body,
         }
     };
 }
@@ -92,7 +94,8 @@ impl AnyModel {
             | AnyModel::Sgd(_)
             | AnyModel::Pa(_)
             | AnyModel::Holt(_)
-            | AnyModel::KMeans(_) => 0,
+            | AnyModel::KMeans(_)
+            | AnyModel::Micro(_) => 0,
         }
     }
 
@@ -124,6 +127,9 @@ impl AnyModel {
             AnyModel::Holt(m) => Some(m.coefficients()),
             // The centres, k rows of p; absent until seeded.
             AnyModel::KMeans(m) => m.coefficients(),
+            // micro: one row per potential summary -- ragged, and absent
+            // until there is one.
+            AnyModel::Micro(m) => m.coefficients(),
         }
     }
 
@@ -144,6 +150,7 @@ impl AnyModel {
             ModelState::Pa(_) => Ok(AnyModel::Pa(Box::new(Pa::restore(s)?))),
             ModelState::Holt(_) => Ok(AnyModel::Holt(Box::new(Holt::restore(s)?))),
             ModelState::KMeans(_) => Ok(AnyModel::KMeans(Box::new(KMeans::restore(s)?))),
+            ModelState::Micro(_) => Ok(AnyModel::Micro(Box::new(Micro::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -505,6 +512,27 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::KMeans(Box::new(KMeans::new(cfg)?)))
         }
+        ModelKind::Micro {
+            eps,
+            beta_mu,
+            max_clusters,
+            prune_every,
+            macro_link,
+            standardize,
+        } => {
+            let cfg = MicroCfg {
+                n_features: spec.k(),
+                decay,
+                min_periods: spec.min_periods_per_target()[0],
+                eps: *eps,
+                beta_mu: beta_mu.unwrap_or(3.0),
+                max_clusters: max_clusters.unwrap_or(200),
+                prune_every: prune_every.unwrap_or(100),
+                macro_link: *macro_link,
+                standardize: standardize.unwrap_or(true),
+            };
+            Ok(AnyModel::Micro(Box::new(Micro::new(cfg)?)))
+        }
     }
 }
 
@@ -575,7 +603,8 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
         | ModelKind::Sgd { .. }
         | ModelKind::Pa { .. }
         | ModelKind::Holt { .. }
-        | ModelKind::KMeans { .. } => vec![Combo::default()],
+        | ModelKind::KMeans { .. }
+        | ModelKind::Micro { .. } => vec![Combo::default()],
         ModelKind::Lasso { lasso_path, .. } => lasso_path
             .iter()
             .map(|l| Combo {

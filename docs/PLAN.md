@@ -404,12 +404,28 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       chunk-invariance / save-load edges, the stranded-centre and jumped-blob
       recoveries with their latencies pinned), the core golden and contract suites,
       the Python golden pipeline on three OSes.
-- [ ] 24. **`micro` — DenStream-style micro-clusters with a linkage macro step.**
+- [x] 24. **`micro` — DenStream-style micro-clusters with a linkage macro step.**
       `cluster/micro.rs` on the same summary; ids monotone and never reused; the label
       is the id the row would be absorbed by, computed before the update; `macro_link`
       derived from the observed spacing at each checkpoint (§6.5) with the parameter
       as an override; accuracy measured in-test against a numpy DBSCAN on moons and
       rings.
+      Built 2026-09-05, on branch `clustering-build`: `ModelState::Micro`, the spec
+      variant with `eps` (required), `beta_mu`, `max_clusters`, `prune_every`,
+      `macro_link`, `standardize`; outputs `cluster` (`i64` macro label), `dist`,
+      `micro` (`i64` id), `outlier` (`bool`), `n_clusters`, `n_micro` (`i32`),
+      `n_eff`, and a ragged `coef` (`Source::Id` and `Source::Flag` are new; the
+      id and the label are separate columns, so §6.5's rule 2 holds for the id and
+      the label is still a cluster). The admission rule, the derived link, the ξ
+      semantics and the two failure regimes are in §11a below. Tests: 63 cases in
+      `tests/test_micro.py` (17 bit-exact against the oracle over four geometries,
+      seven knob settings, nulls/weights/clock gaps and `predict`; 20k-row shapes
+      against an in-test DBSCAN ceiling, 200k rows in 4-D, a cluster born and one
+      dying, 5% noise; ids, the cap, promotion and pruning traced row by row, a
+      heavy row, the infinite halflife, standardization, chunk invariance,
+      save/load, groups, the ragged `coef`, the expression and CLI paths, every
+      refusal), 21 core unit tests, the golden and contract suites, the Python
+      golden pipeline.
 - [ ] 25. **E36: adaptive conformal intervals** (`pred_lo`/`pred_hi`/`coverage`) on every
       regression model, O(1) state per slot; oracle + large-data coverage tests.
 - [ ] 26. **E37 + E38 on `ew_cov`:** Mahalanobis distance (`stats: "mahal"`) and EW-PCA at
@@ -587,6 +603,83 @@ halflife 3000, 20 seeds, last-quarter ARI) and the stranded fixture in
   the stranded latency from halflives to one check.
 - *Oracle.* `tests/reference_cluster.py` mirrors every operation in order and
   the 22 oracle tests are bit-exact; 61 kmeans tests in all.
+
+**Task 24's decisions: what `micro` admits, links and prunes, 2026-09-05.**
+Measured through the oracle (`tests/reference_cluster.py`, n = 6000, halflife
+3000, `prune_every` 100) on the shapes of `scripts/clustering_experiments.py`,
+then through the Rust bank at 20k–200k rows; ARI against the truth, DBSCAN on
+a 3000-row sample as the ceiling. What the tests pin is what is written here.
+
+- *The label and the id are two columns.* §6.5's rule 2 ("a row's label is
+  the id it would be absorbed by") is kept for `micro`; `cluster` is the macro
+  label of the nearest *potential* summary, null while there is none, so a
+  row that opens a summary still reads the cluster it sits next to. The
+  doc's ARI complaint about variable-`k` (purity 1, ARI 0.4–0.8) was about
+  ids; on labels the built model scores 1.000 where DBSCAN does.
+- *The admission rule is DenStream's, at unit weight, with a capped radius.*
+  A row is admitted where a unit row would be (`merged_radius2(λn, r2, d2, 1)
+  ≤ E`, `E = eps²p`), potential summaries first, then outlier ones, else it
+  opens a summary; it is then absorbed with its full weight and `r2 ← min(r2,
+  E)`. Without the cap a heavy row overshoots the bound and the summary
+  admits nothing — not even a row at its centre — until decay brings `n`
+  under `E/(r2 − E)`, halflives later; capped, it is merely full. The
+  alternative measured and rejected, admission by distance to the centre
+  (`d2 ≤ E`, weight-independent): ARI radius / distance — moons .05
+  0.999/0.670, .07 0.999/0.997, .1 1.000/0.999; rings .05 0.788/0.512, .07
+  1.000/0.741, .1 1.000/0.834, .14 0.000/1.000; varied .05 0.866/0.700, .07
+  0.950/0.790, .1 0.972/0.934, .14 0.088/0.559; highdim20 .2 0.875/null, .25
+  1.000/1.000, .4 0.000/1.000. The distance rule fragments at the working
+  `eps` (twice the live summaries, 3–5× the outlier share) and only wins
+  where the radius rule has already bridged. `predict` decides with
+  `factor(d_clock)` applied to every `n`, bit-exact with `step`.
+- *The derived link.* `L = max(2·eps√p, 1.5 × p90 of the nearest-neighbour
+  spacing among potential summaries)`, nearest rank, recomputed at every
+  checkpoint; `macro_link` given makes it `macro_link·eps√p` (0 links
+  nothing, 2 only summaries that touch). A sweep of (quantile, factor) put
+  q0.9 / 1.5 best overall: moons 0.996–1.000 at eps .05–.14 (ceiling
+  0.999); rings 0.787 / 1.000 / 1.000 / 0.000 at .05 / .07 / .1 / .14 (the
+  ring gap is 3.55·eps√p, under `L` = 4.55 at .14); varied 0.86 / 0.95 /
+  0.972 / 0.088 (the varied-density limit of one global threshold: `L` 4.0
+  > gap 2.9 at .14); aniso ≈ 0.57 (ceiling 0.68, not density-separable);
+  highdim20 null at eps ≤ .14, 0.997 / 1.000 at .25 / .3 (`L` = the floor),
+  0.000 at .4 (one summary per cluster). A promoted summary attaches to the
+  nearest potential one within `L` at once (attach-on-promotion), so a new
+  cluster has a label before its first checkpoint.
+- *Pruning is DenStream's ξ, on a learned-row schedule, with no grace.* An
+  outlier summary is dropped at a checkpoint when `n < ξ(age) = (λ^age λ^Tp −
+  1)/(λ^Tp − 1)`, `Tp = ⌈h log2(β/(β − 1))⌉`: ξ = 1 at birth and rises to
+  β, so a lone-row summary is dropped at the first checkpoint after the one
+  it was born on (born on the checkpoint row itself it survives that one:
+  age 0, weight 1 not below 1). A potential summary is dropped under β and
+  lingers `h log2(n₀/β)` after its rows stop. Zero-weight rows do not count
+  toward a checkpoint. `prune_every` 25 fragments sparse shapes (rings@.1 →
+  0.059) because a one-row summary never sees a second checkpoint; a
+  one-checkpoint grace repaired that and bridged `varied` (0.972 → 0.771) —
+  no grace, default 100. An infinite halflife prunes nothing; only the cap
+  applies, evicting the lightest outlier summary, else the lightest
+  potential one.
+- *Two failure regimes, both readable off the outputs, neither guarded.*
+  `eps` too small: every row an `outlier`, `cluster` null, `n_micro`
+  cycling — no summary reaches β before ξ takes it. `eps` too coarse for
+  the derived link: `n_micro ≈ k`, each cluster one summary, the p90 spacing
+  *is* the inter-cluster spacing and everything bridges into one cluster
+  (4-D blobs sd 0.6 at eps .3, constant-feature fixture at .1, highdim20 at
+  .4). A regime guard (refuse to link when `n_micro` is small) was measured
+  and rejected: it fragments the shapes the link exists for. Rule of thumb,
+  in the README: `eps` ≈ the within-cluster spread per standardized
+  coordinate, 0.07 for 2-D shapes, 0.3 for separated Gaussians in 20-D.
+- *At scale (Rust bank, halflife 3000).* 20k rows: moons .07 → 1.000, rings
+  .1 → 1.000, varied .1 → 0.984 (sample ceiling 0.956), highdim20 .3 →
+  1.000 (0.728). 200k rows of 4-D blobs, halflife 20000: eps .2 / .25 →
+  1.000 / 0.999 with ≤ 200 live summaries. Stranded fixture, halflife 1000:
+  the newborn cluster is labelled 31 rows after its first row, the dead one
+  lingers 5.5 halflives (`h log2(n₀/β)`), then `n_clusters` returns to 4;
+  tail ARI 1.0. 5% uniform noise at eps .07: 94% of noise rows flagged, 0.3%
+  of real rows, ARI on the real rows 1.0; at .14 the noise bridges the
+  clusters. sd-0.8 blobs in 4-D: .25 → 0.995, but .2 and .3 → four clusters
+  (two bridged) — the working band narrows as clusters approach.
+- *Oracle.* `reference_cluster.py`'s `Micro` mirrors every operation in
+  order; 17 bit-exact cases; 63 micro tests in all.
 
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**

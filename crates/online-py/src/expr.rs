@@ -65,7 +65,7 @@ fn online_output(_input_fields: &[Field], kwargs: OnlineKwargs) -> PolarsResult<
 /// clock / session / weight that the spec uses. Polars strips input names, so
 /// they are reattached here.
 fn input_names(spec: &Spec) -> Vec<&str> {
-    // The unsupervised models (ew_cov, kmeans) have no target column: their
+    // The unsupervised models (ew_cov, kmeans, micro) have no target column: their
     // features are the whole input.
     let mut names: Vec<&str> = if spec.model.is_unsupervised() {
         Vec::new()

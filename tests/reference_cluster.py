@@ -630,3 +630,322 @@ def kmeans_ref(
     out["coef"] = [None if coef is None else [v for c in coef for v in c]]
     out["model"] = [model]
     return out
+
+
+# -- micro ------------------------------------------------------------------
+
+LINK_FACTOR = 1.5
+LINK_FLOOR = 2.0
+LINK_QUANTILE = 0.9
+
+
+# `(target, nearest_potential, outlier)`: where a row goes, what it is scored against.
+Decision = tuple[int | None, tuple[int, float] | None, bool]
+
+
+def merged_radius2(n: float, r2: float, q: float, w: float) -> float:
+    """The merged radius² DenStream's absorption test reads, as `merged_radius2`."""
+    n_new = n + w
+    if n_new <= 0.0 or not math.isfinite(q):
+        return r2
+    a, b = n / n_new, w / n_new
+    return a * r2 + a * b * q
+
+
+@dataclass
+class MicroCluster:
+    id: int
+    s: Summary
+    age: float
+    potential: bool
+    label: int
+
+
+@dataclass
+class MicroRef:
+    """`online_core::Micro`, operation for operation (docs/CLUSTERING.md
+    section 6.5): DenStream-style micro-clusters on the shared summary, a
+    linkage macro step at each checkpoint."""
+
+    p: int
+    eps: float
+    halflife: float = math.inf
+    lam: float | None = None
+    min_periods: float = 0.0
+    beta_mu: float = 3.0
+    max_clusters: int = 200
+    prune_every: int = 100
+    macro_link: float | None = None
+    standardize: bool = True
+    moments: Moments = field(init=False)
+    mw: list[float] = field(init=False)
+    eps2: float = field(init=False)
+    mc: list[MicroCluster] = field(default_factory=list)
+    next_id: int = 0
+    since: int = 0
+    n_clusters: int = 0
+    link2: float = field(init=False)
+    n_evicted: int = 0
+    n_pruned: int = 0
+
+    def __post_init__(self) -> None:
+        self.moments = Moments.new(self.p)
+        self.mw = [1.0] * self.p
+        self.eps2 = self.eps * self.eps * float(self.p)
+        if self.macro_link is None:
+            self.link2 = LINK_FLOOR * LINK_FLOOR * self.eps2
+        else:
+            self.link2 = self.macro_link * self.macro_link * self.eps2
+
+    def factor(self, d: float) -> float:
+        if self.lam is not None:
+            return self.lam**d
+        if math.isinf(self.halflife):
+            return 1.0
+        return math.exp2(-(d / self.halflife))
+
+    @property
+    def n_eff(self) -> float:
+        return self.moments.w
+
+    def coefficients(self) -> list[list[float]] | None:
+        rows = [
+            [float(m.id), float(m.label), m.s.n, math.sqrt(max(m.s.r2, 0.0)), *m.s.c]
+            for m in self.mc
+            if m.potential
+        ]
+        return rows or None
+
+    def nearest(self, z: list[float], potential: bool) -> tuple[int, float] | None:
+        best: tuple[int, float] | None = None
+        for j, m in enumerate(self.mc):
+            if m.potential != potential:
+                continue
+            d = dist2(m.s.c, z, self.mw)
+            if best is None or d < best[1]:
+                best = (j, d)
+        return best
+
+    def admits(self, j: int, d2: float, lam: float) -> bool:
+        s = self.mc[j].s
+        return merged_radius2(s.n * lam, s.r2, d2, 1.0) <= self.eps2
+
+    def decide(self, z: list[float], lam: float) -> Decision:
+        """`(target, nearest_potential, outlier)` for a unit row, as `Micro::decide`."""
+        near_p = self.nearest(z, True)
+        if near_p is not None and self.admits(near_p[0], near_p[1], lam):
+            return near_p[0], near_p, False
+        near_o = self.nearest(z, False)
+        if near_o is not None and self.admits(near_o[0], near_o[1], lam):
+            return near_o[0], near_p, True
+        return None, near_p, True
+
+    def score(self, dec: Decision | None, n_eff: float) -> list[float]:
+        pred = [NAN] * 6
+        if dec is None or n_eff < self.min_periods:
+            return pred
+        target, near_p, outlier = dec
+        if near_p is not None:
+            pred[0] = float(self.mc[near_p[0]].label)
+            pred[1] = math.sqrt(near_p[1])
+        pred[2] = float(self.next_id if target is None else self.mc[target].id)
+        pred[3] = 1.0 if outlier else 0.0
+        pred[4] = float(self.n_clusters)
+        pred[5] = float(len(self.mc))
+        return pred
+
+    def learn_row(self, z: list[float], w: float, dec: Decision) -> None:
+        target = dec[0]
+        if target is None:
+            self.create(z, w)
+        else:
+            m = self.mc[target]
+            m.s.absorb(z, w, self.mw)
+            m.s.r2 = min(m.s.r2, self.eps2)
+            if not m.potential and m.s.n >= self.beta_mu:
+                m.potential = True
+                self.attach(target)
+        self.since += 1
+        if self.since >= self.prune_every:
+            self.since = 0
+            self.checkpoint()
+
+    def create(self, z: list[float], w: float) -> None:
+        if len(self.mc) >= self.max_clusters:
+            j = self._lightest(False)
+            if j is None:
+                j = self._lightest(True)
+            assert j is not None
+            self.drop_at(j)
+            self.n_evicted += 1
+        potential = w >= self.beta_mu
+        mid = self.next_id
+        self.next_id += 1
+        self.mc.append(MicroCluster(mid, Summary(w, list(z), 0.0), 0.0, potential, mid))
+        if potential:
+            self.attach(len(self.mc) - 1)
+
+    def attach(self, j: int) -> None:
+        best: tuple[int, float] | None = None
+        for o, m in enumerate(self.mc):
+            if o == j or not m.potential:
+                continue
+            d = dist2(m.s.c, self.mc[j].s.c, self.mw)
+            if best is None or d < best[1]:
+                best = (o, d)
+        if best is not None and self.link2 > 0.0 and best[1] <= self.link2:
+            self.mc[j].label = self.mc[best[0]].label
+        else:
+            self.mc[j].label = self.mc[j].id
+            self.n_clusters += 1
+
+    def _lightest(self, potential: bool) -> int | None:
+        best: tuple[int, float] | None = None
+        for j, m in enumerate(self.mc):
+            if m.potential == potential and (best is None or m.s.n < best[1]):
+                best = (j, m.s.n)
+        return None if best is None else best[0]
+
+    def drop_at(self, j: int) -> None:
+        gone = self.mc.pop(j)
+        if gone.potential and not any(m.potential and m.label == gone.label for m in self.mc):
+            self.n_clusters -= 1
+
+    def halflife_units(self) -> float:
+        if self.lam is None:
+            return self.halflife
+        return math.inf if self.lam >= 1.0 else -math.log(2.0) / math.log(self.lam)
+
+    def prune_horizon(self) -> tuple[float, float] | None:
+        h = self.halflife_units()
+        if not math.isfinite(h) or self.beta_mu <= 1.0:
+            return None
+        tp = math.ceil(h * math.log2(self.beta_mu / (self.beta_mu - 1.0)))
+        f_tp = self.factor(float(tp))
+        return (float(tp), f_tp) if f_tp < 1.0 else None
+
+    def checkpoint(self) -> None:
+        horizon = self.prune_horizon()
+        for j in range(len(self.mc) - 1, -1, -1):
+            m = self.mc[j]
+            if m.potential:
+                dead = m.s.n < self.beta_mu
+            elif horizon is not None:
+                age_decay = self.factor(m.age)
+                xi = (age_decay * horizon[1] - 1.0) / (horizon[1] - 1.0)
+                dead = m.s.n < xi
+            else:
+                dead = False
+            if dead:
+                self.drop_at(j)
+                self.n_pruned += 1
+        self.link_potential()
+
+    def link_potential(self) -> None:
+        idx = [j for j, m in enumerate(self.mc) if m.potential]
+        n = len(idx)
+        d2 = [[0.0] * n for _ in range(n)]
+        for a in range(n):
+            for b in range(a + 1, n):
+                d = dist2(self.mc[idx[a]].s.c, self.mc[idx[b]].s.c, self.mw)
+                d2[a][b] = d
+                d2[b][a] = d
+        if self.macro_link is None and n >= 2:
+            nn = sorted(min(d2[a][b] for b in range(n) if b != a) for a in range(n))
+            rank = min(max(math.ceil(LINK_QUANTILE * float(n)), 1), n) - 1
+            p90 = math.sqrt(nn[rank])
+            link = max(LINK_FACTOR * p90, LINK_FLOOR * math.sqrt(self.eps2))
+            self.link2 = link * link
+        parent = list(range(n))
+
+        def find(a: int) -> int:
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        if self.link2 > 0.0:
+            for a in range(n):
+                for b in range(a + 1, n):
+                    if d2[a][b] <= self.link2:
+                        ra, rb = find(a), find(b)
+                        if ra != rb:
+                            parent[max(ra, rb)] = min(ra, rb)
+        count = 0
+        for a in range(n):
+            root = find(a)
+            if root == a:
+                count += 1
+            self.mc[idx[a]].label = self.mc[idx[root]].id
+        self.n_clusters = count
+
+    def step(self, x: list[float], d: float, w: float) -> tuple[list[float], float]:
+        lam = self.factor(d)
+        n_before = self.moments.w
+        valid = all(math.isfinite(v) for v in x)
+        learn = w > 0.0 and math.isfinite(w) and valid
+        self.moments.decay(lam)
+        for m in self.mc:
+            m.s.decay(lam)
+            m.age += d
+        dec = self.decide(x, 1.0) if valid else None
+        pred = self.score(dec, n_before)
+        if learn and dec is not None:
+            self.moments.absorb(x, w)
+            self.learn_row(x, w, dec)
+        self.mw = self.moments.metric(self.standardize)
+        return pred, n_before
+
+    def predict(self, x: list[float], d: float = 0.0) -> tuple[list[float], float]:
+        valid = all(math.isfinite(v) for v in x)
+        dec = self.decide(x, self.factor(d)) if valid else None
+        return self.score(dec, self.moments.w), self.moments.w
+
+
+MICRO_FIELDS = ("cluster", "dist", "micro", "outlier", "n_clusters", "n_micro")
+
+
+def micro_ref(
+    rows: list[list[float | None]],
+    *,
+    eps: float,
+    clock: list[float] | None = None,
+    weight: list[float | None] | None = None,
+    max_dclock: float = math.inf,
+    **params: object,
+) -> dict[str, list]:
+    """The bank's `micro` output over `rows`, as lists with ``None`` for
+    null: ``cluster`` (ints), ``dist``, ``micro`` (ints), ``outlier``
+    (bools), ``n_clusters``, ``n_micro`` (ints), ``n_eff`` and ``coef`` (the
+    flat potential-summary blocks after the last accepted row -- ``None``
+    while there is none). Same stream plumbing as `kmeans_ref`.
+    """
+    p = len(rows[0])
+    model = MicroRef(p=p, eps=eps, **params)  # type: ignore[arg-type]
+    out: dict[str, list] = {key: [] for key in (*MICRO_FIELDS, "n_eff")}
+    pending = 0.0
+    for i, row in enumerate(rows):
+        w = 1.0 if weight is None else weight[i]
+        if clock is None:
+            d = 0.0 if i == 0 else 1.0
+        else:
+            d = 0.0 if i == 0 else min(clock[i] - clock[i - 1], max_dclock)
+        pending += d
+        accept = all(_usable(v) for v in row) and _usable(w)
+        if not accept:
+            for key in out:
+                out[key].append(None)
+            continue
+        pred, n_eff = model.step([float(v) for v in row], pending, float(w))  # type: ignore[arg-type]
+        pending = 0.0
+        out["cluster"].append(None if math.isnan(pred[0]) else int(pred[0]))
+        out["dist"].append(None if math.isnan(pred[1]) else pred[1])
+        out["micro"].append(None if math.isnan(pred[2]) else int(pred[2]))
+        out["outlier"].append(None if math.isnan(pred[3]) else pred[3] == 1.0)
+        out["n_clusters"].append(None if math.isnan(pred[4]) else int(pred[4]))
+        out["n_micro"].append(None if math.isnan(pred[5]) else int(pred[5]))
+        out["n_eff"].append(n_eff)
+    coef = model.coefficients()
+    out["coef"] = [None if coef is None else [v for c in coef for v in c]]
+    out["model"] = [model]
+    return out

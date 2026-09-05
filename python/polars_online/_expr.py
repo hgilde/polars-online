@@ -38,6 +38,7 @@ from polars_online._kwargs import (
     KalmanKwargs,
     KMeansKwargs,
     LassoKwargs,
+    MicroKwargs,
     PaKwargs,
     QuantileKwargs,
     RlsKwargs,
@@ -127,8 +128,8 @@ def _run(spec: dict[str, Any], target_expr: pl.Expr, feature_exprs: list[pl.Expr
         )
         raise TypeError(msg)
     _warn_in_memory(spec["model"]["type"], target_expr.meta.output_name())
-    # ew_cov and kmeans have no target: their first feature *is* the calling
-    # column, so it must not be passed twice.
+    # ew_cov, kmeans and micro have no target: their first feature *is* the
+    # calling column, so it must not be passed twice.
     if spec["model"]["type"] in _spec.UNSUPERVISED:
         args: list[pl.Expr] = []
     else:
@@ -393,6 +394,19 @@ class OnlineNamespace:
         """
         names, exprs = _features(others)
         spec = _spec.kmeans("online", features=[self._target(), *names], **kwargs)
+        return _run(spec, self._expr, [self._expr, *exprs])
+
+    def micro(self, others: list[Feature], **kwargs: Unpack[MicroKwargs]) -> pl.Expr:
+        """Density-based (micro-cluster) clustering over this column together
+        with ``others``.
+
+        Like ``kmeans`` this has no target: the column the expression is
+        called on becomes the first feature. ``eps`` is required. The struct
+        holds ``cluster``, ``dist``, ``micro``, ``outlier``, ``n_clusters``,
+        ``n_micro``, ``n_eff`` and ``coef`` (the established summaries).
+        """
+        names, exprs = _features(others)
+        spec = _spec.micro("online", features=[self._target(), *names], **kwargs)
         return _run(spec, self._expr, [self._expr, *exprs])
 
 

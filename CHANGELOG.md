@@ -45,12 +45,38 @@ carries breaking changes.
 - `tests/reference_cluster.py`: a numpy oracle for the whole recursion
   (seeding, standardization, the batch update, far rows, split–merge), held
   bit-exact by `tests/test_kmeans.py`.
+- **`micro`: density-based clustering** (`po.spec.micro`, `docs/PLAN.md`
+  §11a, task 24): DenStream-style micro-clusters — a decayed weight, a
+  centre and a Welford radius each — with a single-linkage step over the
+  established ones, so clusters can have any shape and any number, rows
+  that belong to none are flagged, and a cluster can be born or die
+  mid-stream. Per row, all read before the row is learned: `cluster` (the
+  label of the nearest established summary, `i64`, null while there is
+  none), `dist`, `micro` (the id of the summary the row goes to, or opens),
+  `outlier` (`bool`: no established summary takes it), `n_clusters` and
+  `n_micro` (`i32`), `n_eff`, and `coef` = one `[id, label, n, radius,
+  centre…]` row per established summary, ragged (`coef_fields` is empty and
+  `coef_index` refuses it, like `ew_cov`). Parameters: `eps` (required, the
+  per-standardized-coordinate radius bound), `beta_mu` (3), `max_clusters`
+  (200), `prune_every` (100), `macro_link` (derived from the spacing the
+  summaries show unless set; `2` links only summaries that touch),
+  `standardize` (true). A row is admitted where a unit row would be and
+  absorbed with its full weight; the radius is capped at `eps` after every
+  absorption. Measured at 20k rows against the truth: moons, rings and five
+  Gaussians in twenty dimensions ARI 1.000, 5% uniform noise flagged 94% /
+  real rows 0.3%, a cluster born mid-stream labelled within 200 rows. How
+  to choose `eps`, and the two ways to get it wrong, are in the README's
+  `micro` section.
+- Rust: `online_core::{Micro, MicroCfg, MicroCluster, merged_radius2}`;
+  `ModelState::Micro` (schema still 2, as for `kmeans`). Two `Source`
+  kinds (`Id`, `Flag`) carry `i64` and boolean fields out of the `pred`
+  buffer, so a struct can now hold `Int64` and `Boolean` columns.
 
 ### Changed
 
 - **Residual diagnostics are refused for a model that predicts no target.**
-  `ew_cov` already refused `emit_selected` and `emit_averaged`; it and
-  `kmeans` now refuse `emit_sigma`, `emit_resid_z`, `emit_metrics`,
+  `ew_cov` already refused `emit_selected` and `emit_averaged`; it,
+  `kmeans` and `micro` now refuse `emit_sigma`, `emit_resid_z`, `emit_metrics`,
   `resid_quantiles`, `emit_autocorr` and `emit_drift` too, by name
   (`"emit_sigma does not apply to ew_cov (it has no predictions, so no
   residuals)"`), where `ew_cov` used to accept the flag and silently emit

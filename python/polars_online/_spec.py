@@ -207,6 +207,7 @@ __all__ = [
     "kalman",
     "kmeans",
     "lasso",
+    "micro",
     "output_fields",
     "pa",
     "quantile",
@@ -357,7 +358,21 @@ def ewridge(
 def _numeric_keys() -> frozenset[str]:
     """Every parameter, across the builders, whose annotation admits a float."""
     keys = set()
-    builders = (ewridge, rls, lasso, kalman, huber, quantile, ftrl, ew_cov, sgd, pa, holt, kmeans)
+    builders = (
+        ewridge,
+        rls,
+        lasso,
+        kalman,
+        huber,
+        quantile,
+        ftrl,
+        ew_cov,
+        sgd,
+        pa,
+        holt,
+        kmeans,
+        micro,
+    )
     for fn in (_common, *builders):
         for key, hint in typing.get_type_hints(getattr(fn, "__wrapped__", fn)).items():
             leaves = {hint, *typing.get_args(hint)}
@@ -492,11 +507,19 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
     Every instance's list has this layout; :func:`coef_fields` is the same
     table per instance, with the field each list sits in and the column
     name each entry unnests to. ``ValueError`` for a spec that is not
-    valid, as for :func:`output_fields`, and for an ``ew_cov`` spec, which
-    has no coefficients.
+    valid, as for :func:`output_fields`, for an ``ew_cov`` spec, which has
+    no coefficients, and for a ``micro`` spec, whose ``coef`` has as many
+    rows as there are established summaries and so no fixed layout.
     """
-    if spec.get("model", {}).get("type") == "ew_cov":
+    kind = spec.get("model", {}).get("type")
+    if kind == "ew_cov":
         msg = "ew_cov emits statistics, not coefficients"
+        raise ValueError(msg)
+    if kind == "micro":
+        msg = (
+            "micro's coef is one [id, label, n, radius, c_1, ..., c_p] row per established "
+            "summary, as many as there are; it has no fixed layout to index"
+        )
         raise ValueError(msg)
     cf = coef_fields(spec)
     first = cf["field"][0]
@@ -1065,9 +1088,117 @@ def kmeans(
     return _common(name, model, targets=[features[0]], features=features, **common)
 
 
+@_checked
+def micro(
+    name: str,
+    *,
+    features: list[str],
+    eps: float,
+    beta_mu: float | None = None,
+    max_clusters: int | None = None,
+    prune_every: int | None = None,
+    macro_link: float | None = None,
+    standardize: bool | None = None,
+    **common: Unpack[CommonKwargs],
+) -> dict[str, Any]:
+    """Density-based clustering over the feature columns: DenStream-style
+    micro-clusters with a linkage macro step (docs/CLUSTERING.md section
+    6.5; docs/PLAN.md section 11a).
+
+    Not a regression: there are no targets, and unlike :func:`kmeans` there
+    is no fixed number of clusters -- the model keeps a bounded set of small
+    summaries (micro-clusters), each a decayed weight, centre and radius,
+    and reads clusters off them as the chains of summaries that touch. That
+    finds clusters of any shape (moons, rings), reports rows that belong to
+    none, and lets clusters appear and vanish as the stream moves.
+
+    Per instance the struct holds, all read *before* the row is learned:
+
+    - ``cluster`` (``i64``): the label of the nearest established summary,
+      null while there is none;
+    - ``dist``: the distance to that summary's centre;
+    - ``micro`` (``i64``): the id of the summary this row goes to -- the one
+      it opens, when none can take it;
+    - ``outlier`` (``bool``): whether no established summary takes it;
+    - ``n_clusters`` and ``n_micro`` (``i32``): live clusters and live
+      summaries, so churn is visible without diffing labels;
+    - ``n_eff``, and ``coef``: the established summaries, one
+      ``[id, label, n, radius, c_1, ..., c_p]`` row each, flattened (as many
+      rows as there are, so :func:`coef_index` does not apply).
+
+    Ids are monotone and never reused; a label is the smallest id in its
+    chain, so it survives everything but the loss of that summary.
+
+    **Math.** A summary is ``(n, c, r2)``: decayed weight, centre, and the
+    EW mean squared distance of its rows from the centre (DenStream's
+    radius, with the fading function being the decay). Distances are
+    measured in the metric ``mw_i = 1 / var_i`` when ``standardize`` (the
+    default), so ``eps`` is a bound per standardized coordinate and the
+    bound in the metric is ``E = eps^2 p`` for ``p`` features. Each row::
+
+        n_j <- lam n_j                                   every summary
+        j   = the nearest potential summary, if absorbing a unit row keeps
+              a r2_j + a b |x - c_j|^2 <= E,   a = n_j/(n_j+1), b = 1/(n_j+1)
+              else the nearest outlier summary by the same test
+              else a new summary at x with the next id
+        n_j <- n_j + w,  c_j <- c_j + w/n_j (x - c_j),  r2_j <- min(., E)
+
+    A summary is *potential* (established) once ``n >= beta_mu`` (default
+    3) and *outlier* below; a new one is opened at the cap ``max_clusters``
+    (default 200) by evicting the lightest outlier summary, else the
+    lightest potential one. Every ``prune_every`` learned rows (default
+    100) a checkpoint drops potential summaries lighter than ``beta_mu``
+    and outlier summaries lighter than DenStream's ``xi(age)`` -- the
+    weight a summary that had been gathering a row per clock unit since it
+    opened would need to reach ``beta_mu`` within ``Tp`` more, with
+    ``Tp = ceil(h log2(beta_mu / (beta_mu - 1)))`` for halflife ``h``; with
+    no decay nothing is pruned, only capped -- and then links the potential
+    summaries by single linkage: centres within ``L`` of each other share
+    a label. ``L`` is ``macro_link`` times ``eps sqrt(p)`` when given
+    (``0`` links nothing, so each summary is its own cluster; ``2`` links
+    summaries that touch), and otherwise derived at each checkpoint from
+    the spacing the summaries already show -- 1.5 times the 90th percentile
+    of the nearest-neighbour distance, never below ``2 eps sqrt(p)`` -- so
+    that a chain along a shape holds without a constant that fragments one
+    shape and bridges another.
+
+    **Choosing eps.** ``eps`` is the within-cluster spread the model should
+    read as *one* cluster, per standardized coordinate: about 0.07 for
+    two-dimensional shapes, 0.3 for well-separated Gaussians in twenty
+    dimensions. Two failures are silent and read off the outputs: if
+    nearly every row is an ``outlier`` and ``cluster`` stays null, ``eps``
+    is too small (no summary reaches ``beta_mu`` before it is pruned); if
+    ``n_micro`` is about the number of clusters, ``eps`` is too coarse for
+    the derived link, which then bridges them -- lower ``eps``, or set
+    ``macro_link`` (2 links only summaries that touch).
+
+    A row of weight ``w`` is admitted where a unit row would be and
+    absorbed with its full weight; a zero-weight row advances the clock and
+    learns nothing. Values are read from the state *before* each row, so a
+    ``micro`` output can be used as a feature for that same row without
+    leaking it. Nothing residual-based applies (``emit_sigma``,
+    ``emit_metrics``, drift, ...); each is refused by name.
+    """
+    model: dict[str, Any] = {
+        "type": "micro",
+        "eps": eps,
+        "beta_mu": beta_mu,
+        "max_clusters": max_clusters,
+        "prune_every": prune_every,
+        "macro_link": macro_link,
+        "standardize": standardize,
+    }
+    if "targets" in common:
+        msg = (
+            f"spec {json.dumps(name)}: micro() takes no targets; its clusters are over the features"
+        )
+        raise TypeError(msg)
+    return _common(name, model, targets=[features[0]], features=features, **common)
+
+
 #: The model types that predict no target: their outputs are read from the
 #: state before each row, their ``targets`` mirror ``features[0]`` for the
 #: plumbing, and nothing residual-based applies to them.
-UNSUPERVISED = frozenset({"ew_cov", "kmeans"})
+UNSUPERVISED = frozenset({"ew_cov", "kmeans", "micro"})
 
 _NUMERIC_KEYS = _numeric_keys()

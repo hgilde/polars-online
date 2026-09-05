@@ -577,6 +577,39 @@ pub enum ModelKind {
         #[serde(default)]
         standardize: Option<bool>,
     },
+    /// DenStream-style micro-clusters with a linkage macro step
+    /// (docs/CLUSTERING.md §6.5; PLAN §11a, task 24). No targets: the
+    /// outputs are the nearest cluster's label and distance, the
+    /// micro-cluster id the row goes to, an outlier flag and two counts,
+    /// read before the row is learned; the potential summaries ride in
+    /// `coef`, one row each.
+    #[serde(rename = "micro")]
+    Micro {
+        /// Bound on a summary's RMS radius per standardized coordinate:
+        /// `eps √p` in the metric. Required, finite, `> 0`.
+        eps: f64,
+        /// Weight at which a summary becomes potential (DenStream's βµ).
+        /// Default 3.
+        #[serde(default)]
+        beta_mu: Option<f64>,
+        /// Cap on live summaries; at the cap the lightest outlier summary is
+        /// evicted, else the lightest potential one. Default 200.
+        #[serde(default)]
+        max_clusters: Option<usize>,
+        /// Learned rows between checkpoints (pruning, then linkage).
+        /// Default 100.
+        #[serde(default)]
+        prune_every: Option<u32>,
+        /// Single-linkage threshold in units of `eps √p`; `0` links nothing.
+        /// Default: derived from the spacing of the potential summaries at
+        /// each checkpoint.
+        #[serde(default)]
+        macro_link: Option<f64>,
+        /// Measure distances in units of each feature's EW standard
+        /// deviation. Default true.
+        #[serde(default)]
+        standardize: Option<bool>,
+    },
 }
 
 impl ModelKind {
@@ -586,7 +619,7 @@ impl ModelKind {
     /// to the enum, so a new variant fails a test until it is listed here.
     pub const KINDS: &'static [&'static str] = &[
         "ew_ridge", "lasso", "kalman", "huber", "quantile", "ftrl", "ew_cov", "sgd", "pa", "holt",
-        "rls", "kmeans",
+        "rls", "kmeans", "micro",
     ];
 
     pub fn kind_name(&self) -> &'static str {
@@ -603,16 +636,21 @@ impl ModelKind {
             ModelKind::Pa { .. } => "pa",
             ModelKind::Holt { .. } => "holt",
             ModelKind::KMeans { .. } => "kmeans",
+            ModelKind::Micro { .. } => "micro",
         }
     }
 
-    /// True for the models that predict no target: `ew_cov` and `kmeans`.
-    /// Their `targets` mirror `features[0]` for plumbing, their outputs are
-    /// statistics or assignments read from the state *before* each row, and
-    /// nothing residual-based (`sigma`, `resid_z`, metrics, quantiles,
-    /// autocorrelation, drift, selection, averaging) applies to them.
+    /// True for the models that predict no target: `ew_cov`, `kmeans` and
+    /// `micro`. Their `targets` mirror `features[0]` for plumbing, their
+    /// outputs are statistics or assignments read from the state *before*
+    /// each row, and nothing residual-based (`sigma`, `resid_z`, metrics,
+    /// quantiles, autocorrelation, drift, selection, averaging) applies to
+    /// them.
     pub fn is_unsupervised(&self) -> bool {
-        matches!(self, ModelKind::EwCov { .. } | ModelKind::KMeans { .. })
+        matches!(
+            self,
+            ModelKind::EwCov { .. } | ModelKind::KMeans { .. } | ModelKind::Micro { .. }
+        )
     }
 }
 
@@ -1167,6 +1205,39 @@ impl Spec {
                 if dead_frac.is_some_and(|v| v < 0.0 || !v.is_finite()) {
                     return Err(format!(
                         "spec {:?}: dead_frac must be finite and >= 0 (0 disables it)",
+                        self.name
+                    ));
+                }
+            }
+            ModelKind::Micro {
+                eps,
+                beta_mu,
+                max_clusters,
+                prune_every,
+                macro_link,
+                ..
+            } => {
+                if !(eps.is_finite() && *eps > 0.0) {
+                    return Err(format!(
+                        "spec {:?}: micro eps must be finite and > 0",
+                        self.name
+                    ));
+                }
+                if beta_mu.is_some_and(|v| !(v.is_finite() && v > 0.0)) {
+                    return Err(format!(
+                        "spec {:?}: beta_mu must be finite and > 0",
+                        self.name
+                    ));
+                }
+                if max_clusters.is_some_and(|v| v == 0) {
+                    return Err(format!("spec {:?}: max_clusters must be >= 1", self.name));
+                }
+                if prune_every.is_some_and(|v| v == 0) {
+                    return Err(format!("spec {:?}: prune_every must be >= 1", self.name));
+                }
+                if macro_link.is_some_and(|v| v < 0.0 || !v.is_finite()) {
+                    return Err(format!(
+                        "spec {:?}: macro_link must be finite and >= 0 (0 links nothing)",
                         self.name
                     ));
                 }

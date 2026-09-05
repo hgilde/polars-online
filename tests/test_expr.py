@@ -339,6 +339,7 @@ class TestTheExpressionWarnsThatItRunsInMemory:
             "holt": ("holt", lambda: ns.holt(halflife=2.0)),
             "ew_cov": ("ew_cov", lambda: ns.ew_cov(others=["x0"], halflife=2.0)),
             "kmeans": ("kmeans", lambda: ns.kmeans(others=["x0"], k=2, halflife=2.0)),
+            "micro": ("micro", lambda: ns.micro(others=["x0"], eps=0.3, halflife=2.0)),
         }
 
     def test_every_method_warns_and_names_the_call_that_streams(self):

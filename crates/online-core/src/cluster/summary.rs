@@ -24,6 +24,20 @@ pub fn dist2(c: &[f64], z: &[f64], mw: &[f64]) -> f64 {
     acc
 }
 
+/// The radius² a summary of weight `n` and radius² `r2` would have after
+/// absorbing weight `w` at squared distance `q` from its centre — the merged
+/// radius DenStream's absorption test reads, and exactly what
+/// [`ClusterSummary::absorb`] then stores. `r2` unchanged when the merged
+/// weight is not positive or `q` is not finite, as `absorb` leaves it.
+pub fn merged_radius2(n: f64, r2: f64, q: f64, w: f64) -> f64 {
+    let n_new = n + w;
+    if n_new <= 0.0 || !q.is_finite() {
+        return r2;
+    }
+    let (a, b) = (n / n_new, w / n_new);
+    a * r2 + a * b * q
+}
+
 /// One cluster: weight `n`, centre `c`, radius² `r2`.
 ///
 /// `r2` is whatever the model defines it as — `kmeans` keeps the EW mean of
@@ -139,19 +153,9 @@ impl ClusterSummary {
     }
 
     /// What [`absorb`](Self::absorb) would leave in `r2`, without absorbing:
-    /// the merged radius² DenStream's absorption test reads.
+    /// [`merged_radius2`] at this summary's weight and radius.
     pub fn radius2_after(&self, z: &[f64], w: f64, mw: &[f64]) -> f64 {
-        let n_new = self.n + w;
-        if n_new <= 0.0 {
-            return self.r2;
-        }
-        let (a, b) = (self.n / n_new, w / n_new);
-        let q = dist2(&self.c, z, mw);
-        if q.is_finite() {
-            a * self.r2 + a * b * q
-        } else {
-            self.r2
-        }
+        merged_radius2(self.n, self.r2, dist2(&self.c, z, mw), w)
     }
 
     /// Welford merge of two centred summaries, with the cross term:

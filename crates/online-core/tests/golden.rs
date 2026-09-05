@@ -368,6 +368,40 @@ fn kmeans_golden() {
     check("kmeans_first", &signature(&mut m, 2), GOLDEN_KMEANS_FIRST);
 }
 
+fn micro_cfg() -> MicroCfg {
+    MicroCfg {
+        n_features: 2,
+        decay: Decay::Halflife(20.0),
+        min_periods: 3.0,
+        eps: 0.35,
+        beta_mu: 2.0,
+        max_clusters: 8,
+        prune_every: 7,
+        macro_link: None,
+        standardize: true,
+    }
+}
+
+#[test]
+fn micro_golden() {
+    // Slot 1 is the distance to the nearest potential summary under the
+    // standardized metric: it reads the centres, the moments and the
+    // promotion rule at once. Slot 0 pins the labels the linkage assigns
+    // with the derived threshold; slot 2 the ids, which read the cap and
+    // the pruning.
+    let mut m = Micro::new(micro_cfg()).unwrap();
+    check("micro", &signature(&mut m, 1), GOLDEN_MICRO);
+    let mut m = Micro::new(micro_cfg()).unwrap();
+    check("micro_cluster", &signature(&mut m, 0), GOLDEN_MICRO_CLUSTER);
+    let mut m = Micro::new(MicroCfg {
+        macro_link: Some(0.0),
+        standardize: false,
+        ..micro_cfg()
+    })
+    .unwrap();
+    check("micro_id", &signature(&mut m, 2), GOLDEN_MICRO_ID);
+}
+
 // --- generated; see the module docs ---
 const GOLDEN_EW_RIDGE: &[f64] = &[
     0.23958810892448523,
@@ -414,3 +448,6 @@ const GOLDEN_EW_COV: &[f64] = &[
 const GOLDEN_KMEANS: &[f64] = &[0.5834101526098997, 0.8292779994915372, 0.923506490724854];
 const GOLDEN_KMEANS_CLUSTER: &[f64] = &[2.0, 0.0, 2.0];
 const GOLDEN_KMEANS_FIRST: &[f64] = &[1.8013837727258295, 2.935845007414875, 1.351429916256865];
+const GOLDEN_MICRO: &[f64] = &[0.3004267420269594, 0.8769688913202295, 1.4153400286799591];
+const GOLDEN_MICRO_CLUSTER: &[f64] = &[1.0, 6.0, 6.0];
+const GOLDEN_MICRO_ID: &[f64] = &[0.0, 3.0, 0.0];

@@ -28,6 +28,7 @@ __all__ = [
     "HoltKwargs",
     "HuberKwargs",
     "KMeansKwargs",
+    "MicroKwargs",
     "KalmanKwargs",
     "LassoKwargs",
     "PaKwargs",
@@ -178,4 +179,13 @@ class KMeansKwargs(ExprKwargs, total=False):
     split_merge: float | None
     sm_every: int | None
     dead_frac: float | None
+    standardize: bool | None
+
+
+class MicroKwargs(ExprKwargs, total=False):
+    eps: Required[float]
+    beta_mu: float | None
+    max_clusters: int | None
+    prune_every: int | None
+    macro_link: float | None
     standardize: bool | None

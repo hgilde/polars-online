@@ -16,7 +16,7 @@ the same whether the stream arrives as one chunk or a thousand.
 
 ## What you get
 
-**Eleven model families, one set of stream semantics.** A spec's clock, decay,
+**Twelve model families, one set of stream semantics.** A spec's clock, decay,
 grouping and warm-up mean the same thing whichever model it names.
 
 | model | what it is |
@@ -32,6 +32,7 @@ grouping and warm-up mean the same thing whichever model it names.
 | `ew_cov` | running mean, variance, covariance, correlation and partial correlation |
 | `holt` | Holt's linear trend — the no-feature baseline |
 | `kmeans` | exponentially weighted k-means — out-of-sample cluster labels, with a split–merge move that finds a cluster born after seeding |
+| `micro` | density-based clustering — DenStream micro-clusters linked into clusters of any shape and number; flags the rows that belong to none |
 
 **Three ways to run a bank, same numbers from each.** A Python loop over
 chunks (`ModelBank`); a Polars query (`lf.online.fit_predict(specs)` is a
@@ -782,6 +783,61 @@ its centre whenever any row is far. What the move cannot see is one centre
 owning two blobs, whose rows are all within its own radius — seeding with
 `lloyd` is what prevents it. Set `split_merge=0` for plain sequential
 k-means.
+
+### `micro` — density-based clustering, any shape
+
+`kmeans` needs `k` and finds round clusters. `micro` finds clusters of any
+shape, does not need their number, flags the rows that belong to none, and
+follows clusters that appear and vanish. It is DenStream's micro-clusters
+with a linkage step over them.
+
+A summary is a small cluster: a decayed weight `n`, a centre `c` and a
+radius `r`, the EW root-mean-square distance of its rows from the centre.
+Each row goes to the nearest summary that can take it without its radius
+passing `eps`, in units of each feature's EW sd. If none can, the row opens
+one. A summary with `n ≥ beta_mu` is established. Every `prune_every` rows
+the light summaries are dropped and the established ones are linked:
+centres within `L` of each other share a label, and `L` is read from the
+spacing the summaries already show unless `macro_link` sets it.
+
+```
+n_j  ← λ n_j                                               every summary
+j*   = nearest summary that keeps  a r²_j + a b ‖x − c_j‖² ≤ eps² p,
+       a = n_j/(n_j + 1),  b = 1/(n_j + 1);  else a new one at x
+n_j* ← n_j* + w     c_j* ← c_j* + (w/n_j*)(x − c_j*)     r²_j* ← min(·, eps² p)
+```
+
+The struct holds `cluster` (the label of the nearest established summary,
+null while there is none), `dist` (to its centre), `micro` (the id of the
+summary the row goes to), `outlier` (no established summary takes it),
+`n_clusters`, `n_micro`, `n_eff`, and `coef` = the established summaries,
+one `[id, label, n, radius, c_1 … c_p]` row each. All are read before the
+row is learned. Ids are monotone and never reused; a label is the smallest
+id in its chain, so it outlives everything but that summary.
+
+```python
+mc = po.spec.micro("mc", features=["x0", "x1"], eps=0.1, clock="t",
+                   halflife=2000.0, max_dclock=300.0, min_periods=50.0)
+out = po.ModelBank([mc]).fit_predict(df).unnest("mc")
+out.select("cluster", "outlier", "n_clusters", "n_micro").tail(3)
+```
+
+**Choosing `eps`.** It is the spread the model should read as *one*
+cluster, per standardized coordinate: about 0.07 for two-dimensional
+shapes, 0.3 for well-separated Gaussians in twenty dimensions. Both ways to
+get it wrong show in the outputs. If nearly every row is an `outlier` and
+`cluster` stays null, `eps` is too small: no summary reaches `beta_mu`
+before it is pruned. If `n_micro` is about the number of clusters, `eps` is
+too coarse: each cluster is one summary, so the derived `L` reads the
+spacing *between* clusters and bridges them into one. Lower `eps`, or set
+`macro_link=2` to link only summaries that touch.
+
+Measured at 20k rows with the `eps` above: moons, rings and five Gaussians
+in twenty dimensions all score ARI 1.000 against the truth, where `kmeans`
+cannot follow the first two. Noise drawn uniformly over the box is flagged
+`outlier` 94% of the time, real rows 0.3%. A cluster born mid-stream has a
+label within 200 rows; one whose rows stop lingers `halflife · log2(n /
+beta_mu)`, with `n` the weight it had.
 
 ## Parallelism
 

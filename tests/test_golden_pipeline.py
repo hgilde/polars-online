@@ -126,6 +126,19 @@ def specs() -> list[dict]:
             group="g",
             min_periods=4.0,
         ),
+        po.spec.micro(
+            "micro",
+            features=["x0", "x1"],
+            eps=0.5,
+            beta_mu=2.0,
+            prune_every=10,
+            clock="t",
+            max_dclock=6.0,
+            halflife=25.0,
+            weight="w",
+            group="g",
+            min_periods=4.0,
+        ),
     ]
 
 
@@ -293,6 +306,27 @@ GOLDEN: dict[str, float | None] = {
     "kmeans.n_eff@25": 7.999488060097996,
     "kmeans.n_eff@60": 12.473100285951407,
     "kmeans.n_eff@119": 14.963784088176922,
+    "micro.cluster@25": None,
+    "micro.cluster@60": 2,
+    "micro.cluster@119": 5,
+    "micro.dist@25": None,
+    "micro.dist@60": 2.146534886929419,
+    "micro.dist@119": 0.39263853440307234,
+    "micro.micro@25": 5,
+    "micro.micro@60": 10,
+    "micro.micro@119": 7,
+    "micro.outlier@25": True,
+    "micro.outlier@60": True,
+    "micro.outlier@119": False,
+    "micro.n_clusters@25": 0,
+    "micro.n_clusters@60": 1,
+    "micro.n_clusters@119": 1,
+    "micro.n_micro@25": 2,
+    "micro.n_micro@60": 6,
+    "micro.n_micro@119": 4,
+    "micro.n_eff@25": 7.999488060097996,
+    "micro.n_eff@60": 12.473100285951407,
+    "micro.n_eff@119": 14.963784088176922,
 }
 
 

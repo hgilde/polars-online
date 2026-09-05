@@ -255,7 +255,9 @@ def _unnest_exprs(schema: pl.Schema, specs: list[dict[str, Any]]) -> list[pl.Exp
             )
             raise ValueError(msg)
         coefs = coef_fields(spec)
-        lists = set(idx.filter(pl.col("kind") == "coef")["field"])
+        # A `coef` with no named positions (`micro`: one row per established
+        # summary, as many as there are) stays the list it is.
+        lists = set(idx.filter(pl.col("kind") == "coef")["field"]) & set(coefs["field"])
         for field in fields:
             col = pl.col(column).struct.field(field)
             if field not in lists:

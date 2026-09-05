@@ -134,6 +134,16 @@
     max_cd_iters = None
     cd_tol = None
     common
+  micro:
+    name
+    features
+    eps
+    beta_mu = None
+    max_clusters = None
+    prune_every = None
+    macro_link = None
+    standardize = None
+    common
   output_fields:
     spec
   output_index:
@@ -206,6 +216,7 @@
   kalman
   kmeans
   lasso
+  micro
   pa
   quantile
   rls
@@ -495,5 +506,14 @@
     cluster
     dist
     dist2
+    n_eff
+    coef
+  micro minimal:
+    cluster
+    dist
+    micro
+    outlier
+    n_clusters
+    n_micro
     n_eff
     coef

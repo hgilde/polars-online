@@ -146,6 +146,7 @@ def describe_api() -> str:
             ),
         ),
         ("kmeans", dict(features=["x0", "x1"], k=2, halflife=100.0)),
+        ("micro", dict(features=["x0", "x1"], eps=0.3, halflife=100.0)),
     ]:
         s = getattr(po.spec, model)("m", min_periods=2.0, **kw)
         w(f"  {model} minimal:")

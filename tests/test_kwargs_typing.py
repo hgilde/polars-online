@@ -32,6 +32,7 @@ NAMESPACE_METHODS = [
     "pa",
     "holt",
     "kmeans",
+    "micro",
 ]
 
 

@@ -437,13 +437,52 @@ fn kmeans() {
     assert!(r.roundtrips);
 }
 
+fn micro_cfg() -> MicroCfg {
+    // eps and beta_mu sized for a 20-halflife window over the harness's
+    // uniform rows: a summary must reach beta_mu before it decays back.
+    MicroCfg {
+        n_features: K,
+        decay: decay(),
+        min_periods: 3.0,
+        eps: 0.6,
+        beta_mu: 2.0,
+        max_clusters: 50,
+        prune_every: 10,
+        macro_link: None,
+        standardize: true,
+    }
+}
+
+#[test]
+fn micro() {
+    let cfg = micro_cfg();
+    // No targets: a label, a distance, a micro-cluster id, an outlier flag
+    // and two counts.
+    let m = Micro::new(cfg).unwrap();
+    assert_eq!(m.n_targets(), 0, "micro has no targets");
+    assert_eq!(m.n_features(), K);
+    assert_eq!(
+        m.n_outputs(),
+        6,
+        "cluster, dist, micro, outlier, n_clusters, n_micro"
+    );
+    let r = probe_with(m, 0, Some(&Micro::n_eff));
+    assert_eq!(r.kind, "micro");
+    assert_eq!(r.pred_len, r.n_outputs);
+    assert_eq!(r.n_eff[0], 0.0);
+    assert_eq!(r.n_eff[1], 1.0);
+    assert!((r.n_eff[2] - (0.5f64.powf(1.0 / HALFLIFE) + 1.0)).abs() < 1e-12);
+    assert!((r.after_gap - (r.before_gap * 0.5f64.powi(10) + 1.0)).abs() < 1e-9);
+    assert!(r.roundtrips);
+}
+
 #[test]
 fn every_state_kind_is_distinct_and_named() {
     // `ModelState::kind` names the model in every state error; a mutation that
     // returns a constant would make "expected X, found Y" meaningless.
     let kinds = [
         "ew_ridge", "rls", "lasso", "kalman", "robust", "ftrl", "sgd", "pa", "holt", "ew_cov",
-        "kmeans",
+        "kmeans", "micro",
     ];
     let mut seen = std::collections::HashSet::new();
     for k in kinds {
@@ -473,6 +512,10 @@ fn every_state_kind_is_distinct_and_named() {
         KMeans::new(kmeans_cfg()).unwrap().state().model.kind(),
         "kmeans"
     );
+    assert_eq!(
+        Micro::new(micro_cfg()).unwrap().state().model.kind(),
+        "micro"
+    );
 }
 
 /// The variants of `ModelState` this file probes. A model added to the enum
@@ -491,6 +534,7 @@ const PROBED: &[&str] = &[
     "Pa",
     "Holt",
     "KMeans",
+    "Micro",
 ];
 
 #[test]
@@ -865,6 +909,30 @@ fn kmeans_recovers_from_bounded_extremes() {
 }
 
 #[test]
+fn micro_recovers_from_bounded_extremes() {
+    // A row of weight 1e100 makes a summary nothing moves until it has
+    // decayed below `beta_mu` (332 halflives) and is pruned; a row at the
+    // bound opens a summary there that the xi rule prunes at the next
+    // checkpoint. By the tail both histories tile the unit square afresh,
+    // and two tilings agree on the mean squared distance to the nearest
+    // potential summary only loosely (measured: to about a tenth).
+    for standardize in [true, false] {
+        for macro_link in [None, Some(0.0)] {
+            let cfg = MicroCfg {
+                standardize,
+                macro_link,
+                ..micro_cfg()
+            };
+            recovers_from_bounded_extremes(
+                move || Micro::new(cfg.clone()).unwrap(),
+                0,
+                Recovery::Fit(0.5),
+            );
+        }
+    }
+}
+
+#[test]
 fn ew_cov_recovers_from_bounded_extremes() {
     recovers_from_bounded_extremes(
         || EwCovModel::new(ew_cov_model_cfg()).unwrap(),
@@ -1058,6 +1126,18 @@ fn kmeans_predict_is_the_step() {
         ..kmeans_cfg()
     };
     predict_is_the_step_without_the_step(move || KMeans::new(cfg.clone()).unwrap(), 0, false);
+}
+
+#[test]
+fn micro_predict_is_the_step() {
+    predict_is_the_step_without_the_step(|| Micro::new(micro_cfg()).unwrap(), 0, false);
+    let cfg = MicroCfg {
+        macro_link: Some(2.5),
+        standardize: false,
+        max_clusters: 6,
+        ..micro_cfg()
+    };
+    predict_is_the_step_without_the_step(move || Micro::new(cfg.clone()).unwrap(), 0, false);
 }
 
 #[test]

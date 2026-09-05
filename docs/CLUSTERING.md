@@ -721,6 +721,18 @@ not mixing components, it is splitting one component across several ids over
 time. That is inherent, and the fixed-`k` models are the ones to use when a
 stable label matters.
 
+**Built 2026-09-05 as `micro` (PLAN task 24; the decisions and the numbers
+are in PLAN §11a).** The derived threshold above is what shipped: 1.5× the
+p90 nearest-neighbour spacing, never below `2·eps·√p`, with `macro_link` as
+the override. Three things the build settled that this section left open: a
+row of any weight is *admitted* as a unit row and *absorbed* with its weight,
+with the radius capped at `eps` after every absorption; the label a row gets
+is the macro label of the nearest potential micro-cluster (`cluster`) and the
+id it goes to is a separate column (`micro`), so rule 2 holds for the id and
+the label is still a cluster; and the ARI complaint above does not apply to
+the built model — moons, rings and 20-D Gaussians score 1.000 at 20k rows,
+because the macro label, not the id, is what the row carries.
+
 ### 6.6 `som`, `gng`, `odac`
 
 **`som`** is a fixed `rows × cols` grid; each neuron is an EW mean and a row of

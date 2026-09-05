@@ -639,11 +639,16 @@ impl SpecDerived {
         let m = spec.m();
         // The unsupervised models' slots are whatever rides in the `pred`
         // buffer (statistics, or an assignment and its distances), which the
-        // schema says with `Source::Stat` / `Source::Cluster`.
+        // schema says with `Source::Stat` / `Cluster` / `Id` / `Flag`.
         let per_model = if spec.model.is_unsupervised() {
             schema
                 .iter()
-                .filter(|f| matches!(f.src, Source::Stat(_) | Source::Cluster(_)))
+                .filter(|f| {
+                    matches!(
+                        f.src,
+                        Source::Stat(_) | Source::Cluster(_) | Source::Id(_) | Source::Flag(_)
+                    )
+                })
                 .count()
                 / n_models
         } else {
@@ -1341,12 +1346,19 @@ enum Source {
     SelPred(usize),
     SelName(usize),
     AvgPred(usize),
-    /// An `ew_cov` statistic, or a `kmeans` distance, which rides in the
-    /// `pred` buffer.
+    /// An `ew_cov` statistic, or a `kmeans` / `micro` distance, which rides
+    /// in the `pred` buffer.
     Stat(usize),
-    /// A `kmeans` assignment: the `pred` buffer holds the centre's index as
-    /// an f64 (NaN = null), materialized as `i32`.
+    /// A `kmeans` assignment, or a `micro` count: the `pred` buffer holds a
+    /// small non-negative integer as an f64 (NaN = null), materialized as
+    /// `i32`.
     Cluster(usize),
+    /// A `micro` id or label: monotone and never reused, so `i64`, the same
+    /// way.
+    Id(usize),
+    /// A `micro` flag: `1.0` / `0.0` in the `pred` buffer (NaN = null),
+    /// materialized as `Boolean`.
+    Flag(usize),
 }
 
 impl FieldMeta {
@@ -1379,6 +1391,8 @@ impl FieldMeta {
             Source::SelName(_) => DataType::String,
             Source::Coef(_) => DataType::List(Box::new(DataType::Float64)),
             Source::Cluster(_) => DataType::Int32,
+            Source::Id(_) => DataType::Int64,
+            Source::Flag(_) => DataType::Boolean,
             Source::Unset => unreachable!("every field is given a source in output_index"),
             _ => DataType::Float64,
         }
@@ -1403,7 +1417,9 @@ impl FieldMeta {
 }
 
 /// Every coefficient a spec reports, in `coef` list order, with the name
-/// [`CoefField`] gives it. Empty for `ew_cov`, which has none.
+/// [`CoefField`] gives it. Empty for `ew_cov`, which has none, and for
+/// `micro`, whose `coef` is one `[id, label, n, radius, c_1 .. c_p]` row per
+/// potential summary -- as many as there are, so no position has a name.
 ///
 /// The layout is the models' (`online_core`): per instance, one `coef` list
 /// holding `(target, combo)` slots in the order the `pred` fields declare
@@ -1418,7 +1434,10 @@ impl FieldMeta {
 /// `coef_cluster0_x1` is centre 0's `x1` and `coef_index` lays the list out
 /// as `(cluster, feature)`.
 pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
-    if matches!(spec.model, crate::ModelKind::EwCov { .. }) {
+    if matches!(
+        spec.model,
+        crate::ModelKind::EwCov { .. } | crate::ModelKind::Micro { .. }
+    ) {
         return Vec::new();
     }
     let slots: Vec<String> = match &spec.model {
@@ -1563,6 +1582,62 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
                 FieldMeta::new(format!("dist2{suffix}"), "dist2")
                     .decay(d)
                     .src(Source::Stat(mi * n_slots + 2)),
+            ));
+            fields.push(
+                FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                    .decay(d)
+                    .src(Source::NEff(mi)),
+            );
+            fields.push(
+                FieldMeta::new(format!("coef{suffix}"), "coef")
+                    .decay(d)
+                    .src(Source::Coef(mi)),
+            );
+        }
+        return fields;
+    }
+    // micro: per instance, the nearest cluster's label and distance, the
+    // micro-cluster id the row goes to, an outlier flag, two counts (all
+    // read before the row is learned), `n_eff`, and the potential summaries
+    // as `coef`.
+    if matches!(spec.model, crate::ModelKind::Micro { .. }) {
+        let n_slots = 6;
+        let mut fields = Vec::new();
+        for (mi, (suffix, d)) in decays.iter().enumerate() {
+            let over = |mut f: FieldMeta| {
+                f.columns = Some(spec.features.clone());
+                f
+            };
+            let at = |slot: usize| mi * n_slots + slot;
+            fields.push(over(
+                FieldMeta::new(format!("cluster{suffix}"), "cluster")
+                    .decay(d)
+                    .src(Source::Id(at(0))),
+            ));
+            fields.push(over(
+                FieldMeta::new(format!("dist{suffix}"), "dist")
+                    .decay(d)
+                    .src(Source::Stat(at(1))),
+            ));
+            fields.push(over(
+                FieldMeta::new(format!("micro{suffix}"), "micro")
+                    .decay(d)
+                    .src(Source::Id(at(2))),
+            ));
+            fields.push(over(
+                FieldMeta::new(format!("outlier{suffix}"), "outlier")
+                    .decay(d)
+                    .src(Source::Flag(at(3))),
+            ));
+            fields.push(over(
+                FieldMeta::new(format!("n_clusters{suffix}"), "n_clusters")
+                    .decay(d)
+                    .src(Source::Cluster(at(4))),
+            ));
+            fields.push(over(
+                FieldMeta::new(format!("n_micro{suffix}"), "n_micro")
+                    .decay(d)
+                    .src(Source::Cluster(at(5))),
             ));
             fields.push(
                 FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
@@ -1762,9 +1837,10 @@ impl F64Column {
         Float64Chunked::from_vec_validity(name, self.values, validity).into_series()
     }
 
-    /// The same column as `i32`, for a value that is an index (a `kmeans`
-    /// assignment). Every set value is a small non-negative integer by
-    /// construction; the null rows carry NaN and are masked, not cast.
+    /// The same column as `i32`, for a value that is an index or a count (a
+    /// `kmeans` assignment, a `micro` count). Every set value is a small
+    /// non-negative integer by construction; the null rows carry NaN and are
+    /// masked, not cast.
     fn finish_i32(self, name: PlSmallStr) -> Series {
         let validity = (self.valid.unset_bits() > 0).then(|| self.valid.into());
         let values: Vec<i32> = self
@@ -1773,6 +1849,29 @@ impl F64Column {
             .map(|&v| if v.is_finite() { v as i32 } else { 0 })
             .collect();
         Int32Chunked::from_vec_validity(name, values, validity).into_series()
+    }
+
+    /// The same column as `i64`, for an id that only ever grows (a `micro`
+    /// id or label).
+    fn finish_i64(self, name: PlSmallStr) -> Series {
+        let validity = (self.valid.unset_bits() > 0).then(|| self.valid.into());
+        let values: Vec<i64> = self
+            .values
+            .iter()
+            .map(|&v| if v.is_finite() { v as i64 } else { 0 })
+            .collect();
+        Int64Chunked::from_vec_validity(name, values, validity).into_series()
+    }
+
+    /// The same column as `Boolean`, for a `1.0` / `0.0` flag.
+    fn finish_bool(self, name: PlSmallStr) -> Series {
+        let values: Vec<Option<bool>> = self
+            .values
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| self.valid.get(i).then_some(v == 1.0))
+            .collect();
+        Series::new(name, values.as_slice())
     }
 }
 
@@ -1937,6 +2036,12 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
                 Source::Cluster(i) => {
                     scatter(n, chunks, false, |ch, nr, ri| ch.pred[at(ch, nr, i, ri)])
                         .finish_i32(name)
+                }
+                Source::Id(i) => scatter(n, chunks, false, |ch, nr, ri| ch.pred[at(ch, nr, i, ri)])
+                    .finish_i64(name),
+                Source::Flag(i) => {
+                    scatter(n, chunks, false, |ch, nr, ri| ch.pred[at(ch, nr, i, ri)])
+                        .finish_bool(name)
                 }
                 Source::Resid(i) => {
                     scatter(n, chunks, false, |ch, nr, ri| ch.resid[at(ch, nr, i, ri)]).finish(name)

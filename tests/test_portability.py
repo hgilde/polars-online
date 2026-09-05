@@ -411,6 +411,38 @@ class TestOutputSchemaStability:
             declared = idx.filter(pl.col("field") == f.name)["dtype"].item()
             assert names[f.dtype] == declared, (f, declared)
 
+    @pytest.mark.parametrize("halflife", [50.0, [20.0, 50.0]], ids=["one", "grid"])
+    @pytest.mark.parametrize("coef_every", [0, 7], ids=["plain", "coef_every"])
+    def test_micro_names_match_the_realized_struct(self, halflife, coef_every):
+        """`micro` has four integer-like outputs of three widths -- `i64` ids
+        (`cluster`, `micro`), a `bool` flag and `i32` counts -- plus a
+        distance, `n_eff` and the summaries as a ragged `coef` list."""
+        spec = po.spec.micro(
+            "m",
+            features=["x0", "x1"],
+            eps=0.5,
+            halflife=halflife,
+            min_periods=2.0,
+            coef_every=coef_every,
+        )
+        out = po.ModelBank([spec]).fit_predict(_frame().drop("g"))
+        assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
+        idx = po.spec.output_index(spec)
+        names = {
+            pl.Float64: "f64",
+            pl.Int32: "i32",
+            pl.Int64: "i64",
+            pl.Boolean: "bool",
+            pl.List(pl.Float64): "list[f64]",
+        }
+        for f in out.schema["m"].fields:
+            declared = idx.filter(pl.col("field") == f.name)["dtype"].item()
+            assert names[f.dtype] == declared, (f, declared)
+        per_instance = [pl.Int64, pl.Float64, pl.Int64, pl.Boolean, pl.Int32, pl.Int32]
+        per_instance += [pl.Float64, pl.List(pl.Float64)]
+        n_instances = len(halflife) if isinstance(halflife, list) else 1
+        assert [f.dtype for f in out.schema["m"].fields] == per_instance * n_instances
+
 
 class TestConfigParsing:
     """T-W3/T-W4: the CLI reads a TOML config as text. Windows checkouts can

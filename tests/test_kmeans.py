@@ -731,7 +731,7 @@ class TestRefusals:
     def test_unpack_says_what_a_kmeans_struct_holds(self):
         X, _ = blobs(n=100, seed=35)
         out = po.ModelBank([spec(warm_rows=10)]).fit_predict(frame(X))
-        with pytest.raises(TypeError, match="kmeans struct assignments"):
+        with pytest.raises(TypeError, match="a kmeans or micro struct assignments"):
             po.eval.unpack(out, "m")
 
     def test_the_cli_runs_it(self, tmp_path, online_cli):
