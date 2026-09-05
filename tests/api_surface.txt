@@ -222,6 +222,7 @@
 [ModelBank]
   __reduce__
   coef
+  describe
   drop_groups
   fit_predict
   fit_predict_batches
@@ -236,6 +237,7 @@
   save
   save_bytes
   solve_failures
+  summary
 
 [expression namespace]  # pl.col(...).online.<method>
   ew_class

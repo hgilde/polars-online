@@ -44,7 +44,7 @@ and stays so.
 | step | `ModelBank` | `po.run` / TOML / CLI | plan `lf.online.*` (and `df.online.*`, `po.fit_predict`) |
 |---|---|---|---|
 | (1) fit online, bounded | `bank.fit_predict(chunk)` in a `collect_batches` loop; `fit_predict_batches(iter)` | `po.run(input=path\|lf\|df\|iter, output=path, specs=)` — polars reads in chunks, the bank fits, a writer thread writes; O(state + chunk) | `lf.online.fit_predict(specs).sink_parquet(..)` / `.collect_batches()` — O(chunk) |
-| (2) export state | `bank.save(path)` (atomic), `bank.save_bytes()`, `pickle`; inspect with `groups()`, `coef()`, `last_row()`, `gram()` | `save_state=` / `[save_state]` / `--save-state`, written after the output is committed | **none** — the bank was dropped when the source ended (E33: "no `save_state`"); now `save_state=` (§4) |
+| (2) export state | `bank.save(path)` (atomic), `bank.save_bytes()`, `pickle`; inspect with `groups()`, `coef()`, `last_row()`, `summary()`, `describe()`, `gram()` | `save_state=` / `[save_state]` / `--save-state`, written after the output is committed | **none** — the bank was dropped when the source ended (E33: "no `save_state`"); now `save_state=` (§4) |
 | (3) load, predict, no update | `ModelBank.load(path).predict(df)`; `load_bytes` | `po.run(load_state=, predict=True)`; `--resume p --predict` | `lf.online.predict(bank_or_path)` — pure, the bank does not move |
 | (4) load, update | `ModelBank.load(p).fit_predict(df)` then `save` | `po.run(load_state=, save_state=)`; `--resume p --save-state p` | `lf.online.fit_predict(load_state=p)` learns on from `p`, **could not save**; now `load_state=p, save_state=p` |
 
@@ -57,7 +57,8 @@ The state file itself is one msgpack blob for the whole bank
 `schema_version`, package version, the specs, per spec a sorted list of
 (group key, stream state — the models, the diagnostic accumulators and,
 since 0.2.0, the output row of the last learned row that `last_row()`
-reads), `rows_fed`), written through `atomic.rs` — a
+reads and the data summary that `summary()` and `describe()` read),
+`rows_fed`), written through `atomic.rs` — a
 temporary sibling, fsync, rename over the destination (named `.{file}.tmp{pid}`
 at the time of the research; `.{file}.tmp{pid}-{seq}` since decision 4, §7).
 Serialization is deterministic (groups sorted), so two saves of the same

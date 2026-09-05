@@ -225,7 +225,7 @@ fn a_schema_2_state_file_still_loads() {
     assert!(Bank::load_bytes(&bytes(), Some(&specs)).is_ok());
     // Written before the last learned row travelled with the state
     // (docs/PLAN.md task 34): a row of nulls per group, for both specs.
-    let bank = bank.unwrap();
+    let mut bank = bank.unwrap();
     for si in 0..specs.len() {
         let (keys, col) = bank.last_row(si, None).unwrap();
         assert!(!keys.is_empty());
@@ -233,6 +233,49 @@ fn a_schema_2_state_file_still_loads() {
             assert_eq!(f.null_count(), keys.len(), "{}", f.name());
         }
     }
+    // And before the data summary did (task 35): null but for what the
+    // stream always kept, as loaded and after more rows -- a count that
+    // began partway would read as the whole history.
+    let no_summary = |bank: &Bank, what: &str| {
+        for (si, spec) in specs.iter().enumerate() {
+            let s = bank.summary(si, None).unwrap();
+            assert!(s.height() > 0);
+            for c in s.columns() {
+                match c.name().as_str() {
+                    "group" | "rows_processed" => {
+                        assert_eq!(c.null_count(), 0, "{what}: {}", c.name())
+                    }
+                    _ => assert_eq!(
+                        c.null_count(),
+                        s.height(),
+                        "{what}: {} should be null",
+                        c.name()
+                    ),
+                }
+            }
+            let d = bank.describe(si, None).unwrap();
+            assert_eq!(
+                d.height(),
+                s.height() * (spec.features.len() + spec.targets.len())
+            );
+            for c in d.columns() {
+                match c.name().as_str() {
+                    "group" | "column" | "role" => assert_eq!(c.null_count(), 0),
+                    _ => assert_eq!(
+                        c.null_count(),
+                        d.height(),
+                        "{what}: {} should be null",
+                        c.name()
+                    ),
+                }
+            }
+        }
+    };
+    no_summary(&bank, "as loaded");
+    bank.fit_predict(&frame(60, 20)).unwrap();
+    no_summary(&bank, "after more rows");
+    let again = Bank::load_bytes(&bank.save_bytes().unwrap(), Some(&specs)).unwrap();
+    no_summary(&again, "after save/load");
 }
 
 #[test]

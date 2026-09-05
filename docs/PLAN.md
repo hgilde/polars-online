@@ -168,7 +168,10 @@ with the same clock as everything else. Output `pred` is a probability; `resid =
 - `state()` / `save(path)` / `load(path)`: msgpack (`rmp-serde`) with header
   `{schema_version, package_version, spec}`; loading checks the spec matches.
   Each stream's state also carries the output row of the last row it learned
-  from, read back as `ModelBank.last_row()` (task 34).
+  from, read back as `ModelBank.last_row()` (task 34), and a summary of what
+  it was fed — row counts, weight sum, clock range, schedule events and
+  per-column Welford moments — read back as `ModelBank.summary()` and
+  `ModelBank.describe()` (task 35).
 - Python: `ModelBank(specs).fit_predict(df) -> df` (appends struct columns) and
   `predict(df) -> df`, the same columns scored against the bank as it stands with nothing
   updated — every row from the same state, the clock distance measured from the last learned
@@ -566,6 +569,17 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       readable from a loaded bank without the output frame
       (`ModelBank.last_row()`, `Bank::last_row`). Additive field, no format
       bump (the `rows_fed` precedent).
+- [x] 35. **The training data in the bank file**: per (spec, group), what the
+      stream was fed -- row counts (fed, processed, skipped, learned, zero
+      weight), the weight sum, the clock range, session changes, backwards
+      clocks and resets, and per-column count / nulls / mean / std / min /
+      max over every row fed -- saved with the state, read back as
+      `ModelBank.summary()` and `ModelBank.describe()`. Undecayed, in row
+      order (Welford), so chunking cannot move a bit. Additive field, no
+      format bump; a 0.1.x file reports nulls. With it, the state-file tests
+      made rigorous: every facet equal across save/load, a re-save byte
+      for byte the first, truncated and bit-flipped files refused without a
+      panic, and a frozen 0.2.0 fixture (`state_schema3.rs`).
 
 ## 11a. Decisions made while implementing
 
@@ -1304,6 +1318,62 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   frame, not an error, so a glob over saved files can ask for one group
   everywhere. The CLI is untouched: it exposes neither `coef` nor an
   inspect facility, and the data is read through `ModelBank.load`.
+
+**Task 35's decisions: the training data in the bank file, 2026-09-05.**
+
+- *Fed after the clock commits, so a refused row feeds nothing.*
+  `Stream::process_chunk` plans every row on a copy of the clock state
+  and commits when the whole chunk is accepted; `DataSummary::feed_row`
+  runs on the committed plans, one call per row, so a chunk that a
+  backwards clock refuses under `on_clock_reset = "error"` leaves the
+  summary where it was, as it leaves the models. No per-chunk clone of
+  the summary is needed for that.
+- *Undecayed, in row order, one Welford per column.* The summary answers
+  "what was this trained on", and a decayed count would answer "what does
+  it remember" — `n_eff` already does. Row-order Welford with a shared
+  reciprocal per row (`inv = 1/rows_fed` when the column has no nulls, its
+  own `1/count` otherwise — bit-identical to plain Welford, proved by a
+  unit test) makes the numbers a function of the row sequence alone, so
+  chunking cannot move a bit; that is asserted with `to_bits` in
+  `tests/summary.rs` and `tests/test_summary.py`. A two-pass-per-chunk
+  merge (Chan) would vectorise but is not chunk-invariant, so it was not
+  used. Measured cost: about a nanosecond per input column per row (`sgd`
+  at k = 20 from 95 to 112 ns/row, `kalman` unchanged within noise), always
+  on; an opt-out is a candidate if a wide, cheap model needs it.
+- *The models' notion of a usable value.* A column's `count` is the rows
+  `online_core::INPUT_BOUND` admits — finite and at most `1e100` — and
+  everything else is `null_count`, so `describe`'s counts are the counts
+  the models saw. A `seqtest` comparison's one "target" is its own
+  difference of residuals, an `ew_class` label is its class index with
+  counts only, and an unsupervised model's mirrored target is dropped from
+  `describe` (its features are the data). Events are the clock schedule's
+  own: `session_changed` when both sessions are known and differ,
+  `backwards` when the clock fell within a session (a new session owns its
+  clock), `reset` when either policy reset the model.
+- *Additive, so no format bump; a legacy file never grows one.*
+  `StreamState.summary: Option<DataSummary>` with `#[serde(default)]`;
+  `Stream::restore` keeps `None` for a file written before it, and `None`
+  stays `None` through more rows and a re-save, so the frame reports nulls
+  rather than a count that began partway. `rows_processed` and
+  `last_clock`, which the stream always kept, are filled in either way
+  (`state_v1.rs`, `state_schema2.rs` check the frozen fixtures for this).
+  A saved summary is validated against its spec and its own arithmetic —
+  column count, counts against `rows_seen`, finite moments, a range that
+  is a range, events no more than rows — and refused with the spec named.
+- *Testing the file, not the round trip.* Beyond every facet equal across
+  save/load and a byte-for-byte re-save, `tests/summary.rs` truncates a
+  real file at every length and flips bits through it, requiring each
+  result to be refused or to load into a bank whose every accessor works
+  (most flips land in f64 payload and load; the test asserts both
+  outcomes occur). `state_schema3.rs` freezes a 0.2.0 file with a last
+  row and a summary as a hex constant, pins its counts by hand, and
+  requires the next layout to load it, continue it to the bit and, while
+  the writer is unchanged, re-save it byte for byte.
+- *Python stacks specs with a `spec` column.* `ModelBank.summary(spec=None,
+  group=None)` and `describe(...)` return every spec by default with `spec`
+  first; the schemas are fixed across specs so plain `concat` stacks them.
+  An unseen group or a fresh bank is an empty frame of the right schema,
+  not an error. The CLI is untouched, as for `last_row`.
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without

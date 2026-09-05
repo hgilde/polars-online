@@ -248,6 +248,13 @@ the registry tests will fail in between, which is what they are for.
   `crates/online-polars/src/stream.rs` and switch it on in the rich spec of
   `crates/online-polars/tests/last_row.rs`, whose field-for-field comparison
   of the saved last row against the frame is what catches the omission.
+- **A new kind of input column** (beyond features, targets and the weight):
+  `DataSummary::layout` and `feed_row` in `crates/online-polars/src/summary.rs`
+  decide which columns `describe()` lists and in what order, and
+  `Bank::describe`'s `keep` decides which get moments. `tests/summary.rs`
+  pins the frame's column names and compares every statistic to an oracle
+  computed over the frame, so a column the summary does not know is a
+  failing count there.
 - **A new parameter** on one model: the `Cfg` field and its validation in
   `new` (step 1), the `ModelKind` field with `#[serde(default)]` (step 6), the
   `build_one` default (step 7), the builder keyword (step 9), the

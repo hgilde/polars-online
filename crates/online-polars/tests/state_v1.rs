@@ -121,6 +121,64 @@ fn a_v1_state_file_still_loads() {
     }
 }
 
+/// Written before the data summary travelled with the state (docs/PLAN.md
+/// task 35): the file has no count of what its streams were fed, so the
+/// summary is null except for what the stream always kept -- and it stays
+/// null as the stream goes on, rather than starting a count partway that
+/// would read as the whole history. The rows fed from here are counted in
+/// the bank's own `rows_seen`, as before.
+#[test]
+fn a_v1_state_has_no_data_summary_and_never_grows_one() {
+    let spec = spec_from_fixture();
+    let mut bank = Bank::load_bytes(&bytes(), Some(std::slice::from_ref(&spec))).unwrap();
+    let no_summary = |bank: &Bank, what: &str| {
+        let s = bank.summary(0, None).unwrap();
+        assert_eq!(s.height(), 2, "{what}: one row per group");
+        for c in s.columns() {
+            match c.name().as_str() {
+                "group" | "rows_processed" => assert_eq!(c.null_count(), 0, "{what}: {}", c.name()),
+                // The fixture is on a row-count clock: null with or without a summary.
+                _ => assert_eq!(c.null_count(), 2, "{what}: {} should be null", c.name()),
+            }
+        }
+        let d = bank.describe(0, None).unwrap();
+        assert_eq!(d.height(), 2 * (spec.features.len() + spec.targets.len()));
+        for c in d.columns() {
+            match c.name().as_str() {
+                "group" | "column" | "role" => assert_eq!(c.null_count(), 0),
+                _ => assert_eq!(
+                    c.null_count(),
+                    d.height(),
+                    "{what}: {} should be null",
+                    c.name()
+                ),
+            }
+        }
+    };
+    no_summary(&bank, "as loaded");
+    bank.fit_predict(&frame(60, 20)).unwrap();
+    no_summary(&bank, "after more rows");
+    let s = bank.summary(0, None).unwrap();
+    assert_eq!(
+        s.column("rows_processed")
+            .unwrap()
+            .u64()
+            .unwrap()
+            .iter()
+            .map(|v| v.unwrap())
+            .sum::<u64>(),
+        80,
+        "rows processed is the stream's own count and keeps going"
+    );
+    // A re-save keeps it absent: not a count that began at the load.
+    let again = Bank::load_bytes(
+        &bank.save_bytes().unwrap(),
+        Some(std::slice::from_ref(&spec)),
+    )
+    .unwrap();
+    no_summary(&again, "after save/load");
+}
+
 #[test]
 fn a_v1_state_continues_the_stream_correctly() {
     // Loading v1 and continuing must match a run that never left this version.

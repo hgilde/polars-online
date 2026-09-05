@@ -291,6 +291,28 @@ impl PyModelBank {
         ))
     }
 
+    /// What each group of a spec has been fed (`Bank::summary`), one row per
+    /// group.
+    #[pyo3(signature = (spec, group=None))]
+    fn summary(slf: &Bound<'_, Self>, spec: usize, group: Option<&str>) -> PyResult<PyDataFrame> {
+        let this = slf.try_borrow().map_err(|_| busy("summary"))?;
+        this.inner
+            .summary(spec, group)
+            .map(PyDataFrame)
+            .map_err(PyValueError::new_err)
+    }
+
+    /// Per-column statistics of what each group of a spec has been fed
+    /// (`Bank::describe`), one row per (group, column).
+    #[pyo3(signature = (spec, group=None))]
+    fn describe(slf: &Bound<'_, Self>, spec: usize, group: Option<&str>) -> PyResult<PyDataFrame> {
+        let this = slf.try_borrow().map_err(|_| busy("describe"))?;
+        this.inner
+            .describe(spec, group)
+            .map(PyDataFrame)
+            .map_err(PyValueError::new_err)
+    }
+
     fn spec_names(slf: &Bound<'_, Self>) -> PyResult<Vec<String>> {
         let this = slf.try_borrow().map_err(|_| busy("spec_names"))?;
         Ok(this.inner.specs().iter().map(|s| s.name.clone()).collect())

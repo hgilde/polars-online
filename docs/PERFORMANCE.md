@@ -1357,3 +1357,12 @@ recursion is the per-row cost and cannot be split within a group, and
 - *A zero-filled `pred`* (fresh pages from the allocator instead of a
   NaN fill) was rejected: NaN is the "never written" sentinel the
   assembly turns into null, and zero is a value.
+- *The data summary (task 35)* is one Welford step per input column per
+  row, always on, and costs about a nanosecond per column-row: from two
+  builds run back to back on the same machine, 400k rows, one group,
+  best of five — `sgd` k = 5 53 → 59 ns/row, k = 20 95 → 112; `ewridge`
+  k = 5 97 → 99, k = 20 265 → 276; `kalman` k = 5 101 → 107, k = 20
+  449 → 451. Chunk invariance rules out the vectorisable alternative (a
+  two-pass moment per chunk merged with Chan's formula gives different
+  bits under different chunkings), so the per-row form stays; an opt-out
+  is the answer if a wide, cheap model ever needs one.

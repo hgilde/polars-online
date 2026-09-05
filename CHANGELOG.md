@@ -20,7 +20,8 @@ the row — and every number the 0.1 models produce is unchanged. One
 breaking change: a residual diagnostic set on a model that has no
 predictions is refused by name, where `ew_cov` used to accept it silently.
 State files are written in schema 3 and carry the last learned row's
-output (`ModelBank.last_row()`); files from 0.1.x load.
+output (`ModelBank.last_row()`) and a summary of the data each group was
+fed (`ModelBank.summary()`, `ModelBank.describe()`); files from 0.1.x load.
 
 ### Added
 
@@ -289,6 +290,35 @@ output (`ModelBank.last_row()`); files from 0.1.x load.
   a file from 0.1.x loads and reports a null row, as does a group that has
   not learned from a row yet; a chunk that ends in skipped rows keeps the
   row before them, and `predict` never moves it.
+- **`ModelBank.summary(spec=None, group=None)` and
+  `ModelBank.describe(spec=None, group=None)`: what each group was fed, as
+  frames**, from a live bank or a loaded state file (`docs/PLAN.md` §11a,
+  task 35). `summary` is one row per `(spec, group)`: `rows_fed`,
+  `rows_processed`, `rows_skipped`, `rows_learned`, `rows_zero_weight`,
+  `weight_sum`, `clock_min`, `clock_max`, `last_clock`, `session_changes`,
+  `clock_backwards`, `resets`. `describe` is one row per input column per
+  `(spec, group)` — `column`, `role` (`feature`, `target`, `weight`),
+  `count`, `null_count`, `mean`, `std`, `min`, `max` — over every row fed,
+  counting a null, NaN, infinity or magnitude beyond `1e100` as the models
+  do, as missing; a label column carries counts only and an unsupervised
+  model lists its features. Undecayed and accumulated in row order
+  (Welford), so chunking cannot move a bit; `predict` does not move them.
+  The state file carries the summary (`Bank::summary`, `Bank::describe`,
+  `DataSummary` in Rust), an additive field with no format bump: a file
+  from before it loads and reports nulls for everything but
+  `rows_processed` and `last_clock`, which the stream always kept, and
+  never grows a summary — a count that began partway would read as the
+  whole history. A loaded summary is checked against its spec and its own
+  arithmetic (`Stream::restore`), so a file whose summary is not its spec's
+  is refused, not reported. Costs about a nanosecond per input column per
+  row.
+- **The state-file tests made rigorous** alongside it: every facet of a
+  bank (coefficients, last row, summary, column statistics) equal across
+  save and load; a loaded bank re-saves byte for byte; every truncation and
+  a sweep of bit flips of a real file are refused or loaded, never a panic;
+  and a frozen 0.2.0 fixture (`crates/online-polars/tests/state_schema3.rs`)
+  that the next layout change has to keep loading, with its summary and last
+  row intact and its stream continued to the bit.
 
 ### Changed
 

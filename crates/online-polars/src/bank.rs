@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::spec::{ModelKind, Spec};
 use crate::stream::{AnyModel, ChunkOut, Stream, StreamState, combo_labels};
+use crate::summary::{DataSummary, Role, SummaryRow, describe_frame, summary_frame};
 
 /// One stream's group key. A null group value is its own key, distinct from any
 /// string a user might have in the column — notably the literal `"<null>"`,
@@ -1198,6 +1199,92 @@ impl Bank {
             .collect::<Result<_, String>>()?;
         let col = assemble(s, d, keys.len(), &chunks).map_err(|e| e.to_string())?;
         Ok((keys.into_iter().cloned().collect(), col))
+    }
+
+    /// What each group of `spec` has been fed (docs/PLAN.md task 35), one
+    /// row per group sorted by key: `group`, `rows_fed`, `rows_processed`,
+    /// `rows_skipped`, `rows_learned`, `rows_zero_weight`, `weight_sum`,
+    /// `clock_min`, `clock_max`, `last_clock`, `session_changes`,
+    /// `clock_backwards`, `resets`. The counts are over every row routed to
+    /// the group since its state began, undecayed, and survive
+    /// [`Bank::save_bytes`] / [`Bank::load_bytes`]; a group restored from a
+    /// file written before the summary existed has `group`, `rows_processed`
+    /// and `last_clock` and nulls elsewhere. `clock_min`/`clock_max` are
+    /// null on a row-count clock. [`Bank::predict`] moves none of it.
+    ///
+    /// `group` narrows the frame to one group; a group the bank has never
+    /// seen gives an empty frame, not an error.
+    ///
+    /// # Errors
+    ///
+    /// `spec` out of range.
+    pub fn summary(&self, spec: usize, group: Option<&str>) -> Result<DataFrame, String> {
+        let keys = self.sorted_keys(spec, group)?;
+        let states = &self.states[spec];
+        let rows: Vec<SummaryRow<'_>> = keys
+            .iter()
+            .map(|k| {
+                let stream = &states[*k];
+                SummaryRow {
+                    group: k.as_str(),
+                    rows_processed: stream.rows_seen,
+                    last_clock: stream.clock.last_clock(),
+                    summary: stream.summary(),
+                }
+            })
+            .collect();
+        summary_frame(&rows).map_err(|e| e.to_string())
+    }
+
+    /// Per-column statistics of what each group of `spec` has been fed
+    /// (docs/PLAN.md task 35): one row per (group, input column) in spec
+    /// order -- features, then targets, then the weight column -- with
+    /// `group`, `column`, `role` (`"feature"`, `"target"`, `"weight"`),
+    /// `count`, `null_count`, `mean`, `std` (sample, `ddof = 1`; null below
+    /// two values), `min`, `max`. A value counts when finite and within the
+    /// input bound, as the models take it, and is a null otherwise. An
+    /// unsupervised model's targets are not listed (it has none; the spec's
+    /// mirror a feature), an `ew_class` label column has its counts only, a
+    /// comparison's targets are named as the spec names them. A group
+    /// restored from a file written before the summary existed lists its
+    /// columns with every number null.
+    ///
+    /// `group` narrows the frame to one group; a group the bank has never
+    /// seen gives an empty frame, not an error.
+    ///
+    /// # Errors
+    ///
+    /// `spec` out of range.
+    pub fn describe(&self, spec: usize, group: Option<&str>) -> Result<DataFrame, String> {
+        let keys = self.sorted_keys(spec, group)?;
+        let (s, states) = (&self.specs[spec], &self.states[spec]);
+        let layout = DataSummary::layout(s);
+        let keep = |_ci: usize, role: Role| -> Option<bool> {
+            match role {
+                Role::Target if s.model.is_unsupervised() => None,
+                Role::Target if matches!(s.model, ModelKind::EwClass { .. }) => Some(false),
+                _ => Some(true),
+            }
+        };
+        let streams: Vec<(Option<&str>, Option<&DataSummary>)> = keys
+            .iter()
+            .map(|k| (k.as_str(), states[*k].summary()))
+            .collect();
+        describe_frame(&layout, &keep, &streams).map_err(|e| e.to_string())
+    }
+
+    /// The keys of `spec`'s groups, sorted, narrowed to `group` when given.
+    fn sorted_keys(&self, spec: usize, group: Option<&str>) -> Result<Vec<&GroupKey>, String> {
+        let states = self
+            .states
+            .get(spec)
+            .ok_or_else(|| format!("spec index {spec} out of range"))?;
+        let mut keys: Vec<&GroupKey> = match group {
+            Some(g) => states.keys().filter(|k| k.as_str() == Some(g)).collect(),
+            None => states.keys().collect(),
+        };
+        keys.sort();
+        Ok(keys)
     }
 
     /// Outputs are attached with `with_column`, which replaces a column of

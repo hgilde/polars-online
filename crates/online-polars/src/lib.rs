@@ -44,6 +44,7 @@ mod pool;
 mod runner;
 mod spec;
 mod stream;
+mod summary;
 
 pub use bank::{
     Bank, Coef, CoefField, FieldMeta, Gram, GroupKey, PAR_MIN_ROWS, coef_fields, output_fields,
@@ -57,3 +58,4 @@ pub use runner::{
 };
 pub use spec::{Compare, FloatOrList, ModelKind, Num, SessionGapSpec, Spec};
 pub use stream::{AnyModel, ChunkOut, LastRow, Stream, StreamState, build_models, combo_labels};
+pub use summary::{ColumnStats, DataSummary, Role};

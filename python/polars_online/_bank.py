@@ -319,6 +319,87 @@ class ModelBank:
             )
         return pl.concat(frames, how="diagonal_relaxed")
 
+    def summary(self, spec: str | int | None = None, group: str | None = None) -> pl.DataFrame:
+        """What each stream has been fed: one row per (spec, group).
+
+        Counts and ranges over every row routed to the group since its state
+        began -- undecayed, so they say what the model was trained on rather
+        than what it still remembers -- and kept in the state file, so a bank
+        loaded from a file says it too. The columns:
+
+        ``spec``, ``group``
+            As :meth:`groups` reports them.
+        ``rows_fed``
+            Rows routed to the group, skipped or not.
+        ``rows_processed``
+            Rows the models saw: every feature and the weight usable.
+        ``rows_skipped``
+            ``rows_fed - rows_processed``: a null, NaN, infinite or
+            out-of-bound feature or weight.
+        ``rows_learned``
+            Processed rows with a positive weight and, for a model with
+            targets, at least one usable target.
+        ``rows_zero_weight``
+            Processed rows with weight 0 (the clock moved; nothing learned).
+        ``weight_sum``
+            Sum of the processed rows' weights (1 per row without a weight
+            column).
+        ``clock_min``, ``clock_max``, ``last_clock``
+            The clock range fed and the last value; null on a row-count clock.
+        ``session_changes``
+            Rows whose session differed from the previous row's.
+        ``clock_backwards``
+            Rows whose clock fell below the previous row's within a session
+            (what ``on_clock_reset`` decided about).
+        ``resets``
+            Rows at which ``session_gap="reset"`` or
+            ``on_clock_reset="reset_state"`` restarted the stream.
+
+        ``spec`` narrows to one spec (``KeyError`` / ``IndexError`` for one
+        the bank has not got), ``group`` to one group; a group never seen
+        gives an empty frame. A state file written before 0.2.0 carries no
+        summary: its groups report ``spec``, ``group``, ``rows_processed``
+        and ``last_clock``, and nulls elsewhere -- for good, since a count
+        that began at the load would read as the whole history.
+        :meth:`predict` moves none of it, and feeding the same rows in one
+        chunk or a thousand gives the same numbers to the bit.
+        """
+        names = self._native.spec_names()
+        picked = range(len(names)) if spec is None else [self._spec_index(spec)]
+        frames = [
+            self._native.summary(i, group).select(pl.lit(names[i]).alias("spec"), pl.all())
+            for i in picked
+        ]
+        return pl.concat(frames)
+
+    def describe(self, spec: str | int | None = None, group: str | None = None) -> pl.DataFrame:
+        """Per-column statistics of what each stream has been fed: one row per
+        (spec, group, input column), in spec order -- features, then targets,
+        then the weight column.
+
+        ``column`` and ``role`` (``"feature"``, ``"target"``, ``"weight"``)
+        name the column; ``count`` and ``null_count`` partition the rows fed
+        (a value counts when finite and within the input bound, as the models
+        take it, and is a null otherwise -- polars nulls, NaN, infinities and
+        magnitudes beyond the bound alike); ``mean``, ``std`` (sample,
+        ``ddof=1``; null below two values), ``min`` and ``max`` are over the
+        counted values, undecayed and in row order, so chunking cannot move
+        them. An unsupervised model lists no targets, an ``ew_class`` label
+        column has its counts only, and a comparison's target is the
+        difference of residuals it tests, named as the spec names it.
+
+        ``spec`` and ``group`` narrow the frame as in :meth:`summary`. A
+        state file written before 0.2.0 lists its columns with every number
+        null; see :meth:`summary`.
+        """
+        names = self._native.spec_names()
+        picked = range(len(names)) if spec is None else [self._spec_index(spec)]
+        frames = [
+            self._native.describe(i, group).select(pl.lit(names[i]).alias("spec"), pl.all())
+            for i in picked
+        ]
+        return pl.concat(frames)
+
     def gram(self, spec: str | int, group: str | None = None) -> list[dict[str, Any]]:
         """The EW accumulators behind a spec's fit, per group and instance.
 

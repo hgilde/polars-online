@@ -520,6 +520,38 @@ table = pl.concat(
 A group that has not learned from a row yet, or a file written by 0.1.x,
 gives a row of nulls, and `predict` does not move the row.
 
+### What it was fed
+
+The state file also carries what each group has seen: how many rows, what
+became of them, the clock's range, and a count and moments for every input
+column. A saved model can say what it was trained on without the data at
+hand:
+
+```python
+bank = po.ModelBank.load("bank.state", specs=[spec])
+fed = bank.summary("ridge")    # one row per group: rows_fed, rows_processed, rows_skipped, rows_learned, ..., clock_min, clock_max
+cols = bank.describe("ridge")  # one row per input column per group: column, role, count, null_count, mean, std, min, max
+```
+
+`summary` counts rows. `rows_fed` were routed to the group; `rows_processed`
+the model accepted, `rows_skipped` it did not (a feature or the weight was
+missing); `rows_learned` moved the fit (a weight above zero and a target
+present) and `rows_zero_weight` advanced the clock and nothing else. With
+them come `weight_sum`, the clock's first and last values, `last_clock`,
+and what the clock schedule met: `session_changes`, `clock_backwards`,
+`resets`. `describe` is `DataFrame.describe` for each feature, target and
+weight column over the rows fed, counting as the models count: a null, a
+NaN, an infinity or a magnitude beyond `1e100` is a `null_count`, not a
+value. A label column has counts only, and an unsupervised model lists its
+features.
+
+Neither decays: they are plain counts over the whole stream, computed in
+row order, so they are the same whatever the chunking, to the bit. `predict`
+does not move them. A file written before 0.2.0 reports nulls for both — a
+count that began partway would read as the whole history — while
+`rows_processed` and `last_clock`, which the stream always kept, are
+filled in.
+
 ### Output field names
 
 You index the result struct by strings, so the names are a contract. The

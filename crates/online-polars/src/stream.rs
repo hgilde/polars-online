@@ -12,6 +12,7 @@ use online_core::{
 use serde::{Deserialize, Serialize};
 
 use crate::spec::{FloatOrList, ModelKind, Spec};
+use crate::summary::DataSummary;
 
 /// Enum dispatch over the models the bank can run (serde-friendly).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -735,6 +736,11 @@ pub struct StreamState {
     /// `None` before the first, and in files written before it existed.
     #[serde(default)]
     pub last_row: Option<LastRow>,
+    /// What the stream was fed (docs/PLAN.md task 35). `None` in files
+    /// written before it existed, and then for the life of the stream: a
+    /// count that began partway would read as a count.
+    #[serde(default)]
+    pub summary: Option<DataSummary>,
 }
 
 /// Live per-stream state.
@@ -772,6 +778,10 @@ pub struct Stream {
     /// What the output struct said on the last row this stream learned
     /// from, kept for [`Stream::save`] (docs/PLAN.md task 34).
     last_row: Option<LastRow>,
+    /// Counts, clock range and per-column statistics over every row fed
+    /// (docs/PLAN.md task 35). `None` only for a stream restored from a file
+    /// written before the summary existed.
+    summary: Option<DataSummary>,
 }
 
 impl Stream {
@@ -800,6 +810,14 @@ impl Stream {
     /// kept across [`Stream::save`] and [`Stream::restore`].
     pub fn last_row(&self) -> Option<&LastRow> {
         self.last_row.as_ref()
+    }
+
+    /// What this stream has been fed (docs/PLAN.md task 35), accumulated
+    /// by [`Stream::process_chunk`] and kept across [`Stream::save`] and
+    /// [`Stream::restore`]. `None` for a stream restored from a file
+    /// written before the summary existed.
+    pub fn summary(&self) -> Option<&DataSummary> {
+        self.summary.as_ref()
     }
 
     /// Keep the last learned row of a run's buffers as [`Self::last_row`]:
@@ -1176,6 +1194,7 @@ impl Stream {
             rows_seen: 0,
             scratch: slots.iter().map(|_| Scratch::default()).collect(),
             last_row: None,
+            summary: Some(DataSummary::new(spec)),
         })
     }
 
@@ -1192,6 +1211,7 @@ impl Stream {
             metrics: self.metrics.clone(),
             conformal: self.conformal.clone(),
             last_row: self.last_row.clone(),
+            summary: self.summary.clone(),
         }
     }
 
@@ -1237,6 +1257,16 @@ impl Stream {
             last.to_chunk(spec, stream.n_models(), stream.n_slots(), 0)?;
             stream.last_row = Some(last.clone());
         }
+        // A file from before the summary existed leaves it `None` for good:
+        // the alternative, counting from here on, would report a number
+        // that looks like the whole history and is not.
+        stream.summary = match &saved.summary {
+            Some(summary) => {
+                summary.validate(spec, saved.rows_seen)?;
+                Some(summary.clone())
+            }
+            None => None,
+        };
         Ok(stream)
     }
 
@@ -1337,7 +1367,11 @@ impl Stream {
             // null, NaN, infinity and the bound.
             let w = weight.map(|w| w[i]);
             let accept = features.iter().all(|f| usable(f[i])) && w.map(usable).unwrap_or(true);
-            let adv = clock_state.advance(cfg, clock.map(|c| c[i]), session.map(|s| s[i]), accept);
+            let c = clock.map(|c| c[i]);
+            // A clock below the previous row's, before the schedule decides
+            // what to do about it; the summary counts them (task 35).
+            let below = matches!((c, clock_state.last_clock()), (Some(c), Some(p)) if c < p);
+            let adv = clock_state.advance(cfg, c, session.map(|s| s[i]), accept);
             // `on_clock_reset = "error"`: hand the offending delta back so the
             // caller can name the row and column.
             if let Some(raw) = adv.backwards {
@@ -1358,6 +1392,8 @@ impl Stream {
                 d_clock: adv.d_clock,
                 reset: adv.reset,
                 blend: !adv.reset && adv.session_changed,
+                session_changed: adv.session_changed,
+                backwards: below && !adv.session_changed,
                 accept,
                 want_coef,
                 w: w.unwrap_or(1.0),
@@ -1366,6 +1402,27 @@ impl Stream {
 
         self.clock = clock_state;
         self.rows_seen = rows_seen;
+
+        // ---- the data summary (docs/PLAN.md task 35) ----
+        // After the clock is committed, so a refused row above has fed
+        // nothing; per row in row order, so chunking cannot move a bit.
+        if let Some(summary) = self.summary.as_mut() {
+            for plan in &plans {
+                let i = plan.i;
+                summary.feed_row(
+                    features,
+                    targets,
+                    weight.map(|w| w[i]),
+                    clock.map(|c| c[i]),
+                    i,
+                );
+                summary.events(plan.session_changed, plan.backwards, plan.reset);
+                if plan.accept {
+                    let has_target = targets.is_empty() || targets.iter().any(|t| usable(t[i]));
+                    summary.accepted(plan.w, has_target);
+                }
+            }
+        }
 
         // ---- pass 2: the instances ----
         let drift_resets = spec.drift_action.as_deref() == Some("reset");
@@ -1498,6 +1555,8 @@ impl Stream {
                 d_clock: adv.d_clock,
                 reset: false,
                 blend: false,
+                session_changed: false,
+                backwards: false,
                 accept,
                 want_coef: false,
                 w: 1.0,
@@ -1755,6 +1814,10 @@ struct RowPlan {
     d_clock: f64,
     reset: bool,
     blend: bool,
+    /// The session id differed from the previous row's.
+    session_changed: bool,
+    /// The clock fell below the previous row's within a session.
+    backwards: bool,
     accept: bool,
     want_coef: bool,
     w: f64,
