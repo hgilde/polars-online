@@ -838,6 +838,11 @@ def ew_cov(
 
     ``stats`` selects which to emit, from ``mean``, ``var``, ``std``, ``cov``,
     ``corr``, ``partial_corr`` and ``mahal`` (default: mean, std, corr).
+    ``stats=[]`` emits nothing but ``n_eff`` and accumulates all the same
+    (docs/ENHANCEMENTS.md E43): the spec's value is then its state -- the
+    Gram read back with :meth:`ModelBank.gram`, the moments with
+    :meth:`ModelBank.describe` -- which is the form for a wide set of columns,
+    where emitting even the means is k values per row nobody reads.
     ``partial_corr`` is the correlation between two columns *controlling for
     every other column*, read off the precision matrix as
     ``-P_ij / sqrt(P_ii P_jj)``. It needs ``precision_prior``: the precision

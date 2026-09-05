@@ -7,7 +7,16 @@ carries breaking changes.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`ew_cov` with `stats=[]`** accumulates only (`docs/ENHANCEMENTS.md`
+  E43, task 36): the spec learns the same moments, emits nothing but
+  `n_eff`, and its value is its state — `ModelBank.gram()`,
+  `ModelBank.describe()`, `ModelBank.summary()`. `pca` and
+  `mahal_quantiles` still add their outputs without a statistic in the
+  list; `stats=None` still means `["mean", "std", "corr"]`. Before this the
+  constructor refused an empty list, so accumulating a Gram over a wide
+  set of columns meant emitting every mean on every row.
 
 ## [0.2.0] — 2026-09-05
 

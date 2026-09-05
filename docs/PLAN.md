@@ -581,6 +581,32 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       for byte the first, truncated and bit-flipped files refused without a
       panic, and a frozen 0.2.0 fixture (`state_schema3.rs`).
 
+Tasks 36–43 are `docs/ENHANCEMENTS.md` §9 (E43–E53): what the bank needs
+to run at the width, target count and block count its design allows.
+
+- [x] 36. **`ew_cov` with no per-row output** (E43): `stats=[]` is legal and
+      means "accumulate only"; the spec emits `n_eff` and its value is its
+      state (`gram()`, `describe()`, `summary()`).
+- [ ] 37. **`marginal` model** (E44): per-(feature, target) EW mean, variance,
+      covariance, Σw and Σw² — `O(p·T)` per row, `n_eff` the only output —
+      read as a long frame by `ModelBank.marginal()`.
+- [ ] 38. **Complete the Gram export** (E45): `gram()` gains per-target means
+      and variances and Kish `n_kish` (features and per target); Σw² tracked
+      beside Σw. Additive fields, legacy states report `None`.
+- [ ] 39. **`po.gram`** (E46): merge / subset / correlation / solve /
+      lasso_path / coef_stats / vif / condition over `gram()` dicts, numpy
+      only, each held against the model that computes the same thing online.
+- [ ] 40. **`label_delay`** (E47): a common parameter that holds each learned
+      row until the clock reaches `t + delay`; plus `po.prep.embargo` for the
+      doubled-stream recipe.
+- [ ] 41. **Symmetric-half Gram update** (E48): upper triangle mirrored,
+      bit-identical, half the flops.
+- [ ] 42. **Mergeable evaluation sums** (E49): `po.eval.sums` /
+      `merge_sums` / `from_sums`.
+- [ ] 43. **A run with no per-row output** (E50): `po.run(output=None,
+      save_state=)`, `online --no-output`; with it E53, `targets` optional
+      in TOML for the unsupervised models.
+
 ## 11a. Decisions made while implementing
 
 **Building the clustering (tasks 23–24), 2026-09-04.** The user chose
@@ -1374,6 +1400,34 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   first; the schemas are fixed across specs so plain `concat` stacks them.
   An unseen group or a fresh bank is an empty frame of the right schema,
   not an error. The CLI is untouched, as for `last_row`.
+
+**Task 36's decisions: `stats=[]` on `ew_cov`, 2026-09-05.**
+
+- *One line.* The whole change to the model is the removal of the
+  `validate()` clause that refused an empty `stats`. `n_outputs()` was
+  already the sum of the statistic slots, the Mahalanobis quantiles and
+  the PCA slots, so an empty list gives 0 + those; the stream already
+  tolerated a model with zero slots (`nc = n_slots / m_targets`, floored
+  at 1, with `m_targets = 0` for `ew_cov`); the output struct is then
+  `{n_eff}` alone. Nothing in `online-polars` or `online-py` changed.
+- *`None` and `[]` differ.* `stats=None` (Python) and a missing `stats`
+  (TOML) still default to `["mean", "std", "corr"]`; only the explicit
+  empty list means accumulate only. Changing the default would turn every
+  existing `ew_cov` spec silent.
+- *The extra slots do not need a statistic.* `pca=r` and
+  `mahal_quantiles=[…]` add their outputs on `stats=[]` as on any list —
+  they were never tied to an entry in it — except that `mahal_quantiles`
+  without `"mahal"` still errors, because a quantile of a score that is
+  not computed is a configuration mistake, not a request.
+- *Same state to the bit.* The core test drives a bare and a full spec
+  over the same weighted, clocked rows and asserts `cov()` equal, `n_eff`
+  bit-equal, and the bare state restoring to itself; the Python test
+  checks `gram()` of the bare spec against the full spec and against
+  `np.cov(bias=True)`, then runs the empty list through every surface —
+  `fit_predict`, chunked, `LazyFrame.online.fit_predict`, `po.run` with
+  `save_state` and `ModelBank.load`, the expression plugin under its
+  warning, and the CLI from TOML (`[specs.model] type = "ew_cov"`,
+  `stats = []`).
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without

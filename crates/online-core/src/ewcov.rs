@@ -370,6 +370,11 @@ pub enum EwCovStat {
 pub struct EwCovCfg {
     pub n_features: usize,
     pub decay: crate::Decay,
+    /// Statistics to emit per row, in this order. Empty is legal and means
+    /// **accumulate only** (docs/ENHANCEMENTS.md E43): the model learns the
+    /// same moments, emits nothing but `n_eff`, and its value is its state
+    /// — the Gram read back through [`EwCovModel::cov`], or the PCA and
+    /// Mahalanobis slots below, which do not need a statistic in this list.
     pub stats: Vec<EwCovStat>,
     pub min_periods: f64,
     /// Prior for the precision matrix `(C + s·prior·I)⁻¹`. Required by
@@ -397,9 +402,6 @@ impl EwCovCfg {
     pub fn validate(&self) -> Result<(), String> {
         if self.n_features == 0 {
             return Err("ew_cov: at least one column is required".into());
-        }
-        if self.stats.is_empty() {
-            return Err("ew_cov: at least one statistic is required".into());
         }
         let pairwise =
             |s: &EwCovStat| matches!(s, EwCovStat::Cov | EwCovStat::Corr | EwCovStat::PartialCorr);
@@ -933,7 +935,9 @@ mod tests {
         };
 
         err(model_cfg(0, vec![Mean]), "at least one column");
-        err(model_cfg(2, vec![]), "at least one statistic");
+        // No statistics is "accumulate only" (E43), not an error.
+        model_cfg(2, vec![]).validate().unwrap();
+        assert_eq!(model_cfg(2, vec![]).n_outputs(), 0);
 
         // Per-column stats are fine with a single column; pairwise ones are not.
         model_cfg(1, vec![Mean, Var, Std]).validate().unwrap();
@@ -1460,6 +1464,47 @@ mod tests {
         );
         // The relationship is strongly negative, so a sign error is visible.
         assert!(corr01 < -0.9, "{corr01}");
+    }
+
+    #[test]
+    fn accumulate_only_learns_the_same_state_and_emits_nothing() {
+        // `stats = []` (docs/ENHANCEMENTS.md E43): no slots, the same
+        // accumulator. The two models must agree to the bit, because the
+        // whole point is that the state is the product.
+        use crate::OnlineModel;
+        use EwCovStat::*;
+        let mut full = EwCovModel::new(model_cfg(3, vec![Mean, Var, Corr])).unwrap();
+        let mut bare = EwCovModel::new(model_cfg(3, vec![])).unwrap();
+        assert_eq!(bare.n_outputs(), 0);
+        assert!(EwCovModel::labels(&["a".into(), "b".into(), "c".into()], &[], &[], 0).is_empty());
+        let mut s = 11u64;
+        for i in 0..200 {
+            let x = [lcg(&mut s), 5.0 * lcg(&mut s) + 1.0, lcg(&mut s) - 2.0];
+            let (d, w) = (
+                if i == 0 { 0.0 } else { 0.7 },
+                if i % 7 == 0 { 0.0 } else { 1.5 },
+            );
+            let sf = full.step(&x, &[], d, w);
+            let sb = bare.step(&x, &[], d, w);
+            assert!(sb.pred.is_empty(), "no slots");
+            assert_eq!(sb.n_eff.to_bits(), sf.n_eff.to_bits());
+            assert_eq!(sf.pred.len(), 3 + 3 + 3);
+            let (p, pf) = (bare.predict(&x, 0.0), full.predict(&x, 0.0));
+            assert!(p.pred.is_empty() && p.n_eff.to_bits() == pf.n_eff.to_bits());
+        }
+        assert_eq!(bare.cov(), full.cov(), "identical accumulators");
+        // The state round-trips and restores into the same accumulator.
+        let again = EwCovModel::restore(&bare.state()).unwrap();
+        assert_eq!(again.cov(), bare.cov());
+        // PCA and Mahalanobis slots stand on their own, without a statistic.
+        let mut cfg = model_cfg(3, vec![]);
+        cfg.pca = 1;
+        cfg.pca_every = 1;
+        cfg.validate().unwrap();
+        assert_eq!(cfg.n_outputs(), 3 + 3);
+        let mut cfg = model_cfg(3, vec![]);
+        cfg.mahal_quantiles = vec![0.9];
+        assert!(cfg.validate().unwrap_err().contains("needs \"mahal\""));
     }
 
     #[test]

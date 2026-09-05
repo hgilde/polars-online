@@ -869,6 +869,12 @@ component `pc<j>_score`. The eigendecomposition costs O(k³), so
 the last loadings; each refresh keeps the sign of the previous one, so a
 loading never flips between rows.
 
+`stats=[]` is legal and means accumulate only. The spec learns the same
+moments and emits nothing but `n_eff`; its value is its state, read back
+with `bank.gram("mv")` or `bank.describe()`. That is the form for a wide
+set of columns, where emitting even the means is k values per row nobody
+reads. `pca` and `mahal_quantiles` stand without a statistic in the list.
+
 ```python
 mv = po.spec.ew_cov("mv", features=["x0", "x1", "x2"], clock="t", max_dclock=300.0,
                     halflife=500.0, stats=["mahal"], precision_prior=1e-6,

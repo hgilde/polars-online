@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use online_polars::{RunConfig, run_config};
+use online_polars::{Bank, RunConfig, run_config};
 use polars::prelude::*;
 
 fn tmp(name: &str) -> PathBuf {
@@ -201,6 +201,95 @@ fn resume_from_state_continues_the_stream() {
     assert_eq!(resumed, full, "resuming must reproduce the unbroken run");
 
     for p in [&input, &full_out, &half_a, &half_b, &state, &out_a, &out_b] {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// `stats = []` on `ew_cov` from TOML (docs/ENHANCEMENTS.md E43, task 36):
+/// the run writes a struct holding `n_eff` alone, and the saved state carries
+/// the Gram the run accumulated. The same TOML with `stats` missing still
+/// means mean/std/corr -- the empty list is explicit. `targets` mirrors
+/// `features[0]`, as `po.spec.ew_cov` fills it in (`ModelKind::is_unsupervised`);
+/// making it optional in TOML is E53.
+#[test]
+fn accumulate_only_ew_cov_writes_n_eff_alone() {
+    let input = tmp("bare-in.parquet");
+    write_input(&input, 1000).unwrap();
+    let output = tmp("bare-out.parquet");
+    let state = tmp("bare.state");
+    let toml = format!(
+        r#"
+input = "{}"
+output = "{}"
+save_state = "{}"
+chunk_rows = 256
+
+[[specs]]
+name = "g"
+targets = ["x0"]
+features = ["x0", "x1"]
+clock = "t"
+halflife = 50.0
+max_dclock = 10.0
+group = "group"
+
+[specs.model]
+type = "ew_cov"
+stats = []
+"#,
+        toml_path(&input),
+        toml_path(&output),
+        toml_path(&state)
+    );
+    let cfg: RunConfig = toml::from_str(&toml).unwrap();
+    let stats = run_config(&cfg, |_| Ok(())).unwrap();
+    assert_eq!(stats.rows, 1000);
+
+    let df = ParquetReader::new(std::fs::File::open(&output).unwrap())
+        .finish()
+        .unwrap();
+    let fields = df
+        .column("g")
+        .unwrap()
+        .struct_()
+        .unwrap()
+        .fields_as_series();
+    let names: Vec<&str> = fields.iter().map(|f| f.name().as_str()).collect();
+    assert_eq!(
+        names,
+        ["n_eff"],
+        "an empty `stats` emits n_eff and nothing else"
+    );
+    let n_eff = fields[0].f64().unwrap();
+    assert!(
+        n_eff.last().unwrap() > 0.0,
+        "the model learned every row it saw"
+    );
+
+    let bank = Bank::load(&state, Some(&cfg.specs)).unwrap();
+    let grams = bank.gram(0, None).unwrap();
+    assert_eq!(grams.len(), 2, "one Gram per group");
+    for g in &grams {
+        assert_eq!(g.k, 2);
+        assert!(g.n_eff > 0.0);
+        assert!(g.comoments.iter().all(|v| v.is_finite()));
+        assert!(g.cross_moments.is_empty(), "ew_cov has no targets");
+    }
+
+    // Without the line, the default list: three statistics over two columns.
+    let default_toml = toml.replace("stats = []\n", "");
+    assert!(
+        default_toml.len() < toml.len(),
+        "the test removed the stats line"
+    );
+    let default_cfg: RunConfig = toml::from_str(&default_toml).unwrap();
+    let fields = online_polars::output_fields(&default_cfg.specs[0]);
+    assert!(
+        fields.len() > 1,
+        "`stats` missing still means mean/std/corr: {fields:?}"
+    );
+
+    for p in [&input, &output, &state] {
         let _ = std::fs::remove_file(p);
     }
 }

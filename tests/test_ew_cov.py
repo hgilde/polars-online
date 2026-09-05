@@ -278,3 +278,74 @@ class TestPartialCorrelation:
         b = po.ModelBank.load(p, specs=[spec])
         rest = df.slice(200, 200)
         assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
+
+
+class TestAccumulateOnly:
+    """E43: ``stats=[]`` learns the same moments and emits nothing but ``n_eff``.
+
+    The spec's value is its state, so every accessor that reads the state --
+    ``gram``, ``describe``, ``summary`` -- must agree with a spec that also
+    emitted, on every surface that runs a spec.
+    """
+
+    def _pair(self):
+        bare = _spec(("x0", "x1", "x2"), stats=[])
+        full = po.spec.ew_cov(
+            "f", features=["x0", "x1", "x2"], stats=["mean", "corr"], halflife=NO_DECAY
+        )
+        return bare, full
+
+    def test_emits_only_n_eff_and_keeps_the_same_state(self):
+        df = _df(n=1200)
+        bare, full = self._pair()
+        assert po.spec.output_fields(bare) == ["n_eff"]
+        bank = po.ModelBank([bare, full])
+        out = bank.fit_predict(df)
+        assert out.schema["c"] == pl.Struct({"n_eff": pl.Float64})
+        assert out["c"].struct.field("n_eff").to_list()[-1] == df.height - 1
+        g, f = bank.gram("c")[0], bank.gram("f")[0]
+        assert np.array_equal(g["comoments"], f["comoments"])
+        assert np.array_equal(g["means"], f["means"])
+        assert g["n_eff"] == f["n_eff"] == df.height
+        # And against numpy: the state is the product, so it is what is tested.
+        x = df.select("x0", "x1", "x2").to_numpy()
+        assert np.allclose(g["comoments"], np.cov(x, rowvar=False, bias=True))
+        assert np.allclose(g["means"], x.mean(axis=0))
+        desc = bank.describe("c")
+        assert desc.height == 3 and desc["count"].to_list() == [df.height] * 3
+        assert bank.summary("c")["rows_learned"].item() == df.height
+
+    def test_every_surface_runs_it(self, tmp_path):
+        df = _df(n=900)
+        bare, _ = self._pair()
+        ref = po.ModelBank([bare])
+        one = ref.fit_predict(df).select("c").unnest("c")
+        # Chunked, lazy, runner and expression: the same n_eff column, and the
+        # same Gram wherever a state comes out.
+        bank = po.ModelBank([bare])
+        many = pl.concat([bank.fit_predict(df.slice(i, 101)) for i in range(0, df.height, 101)])
+        assert many.select("c").unnest("c").equals(one)
+        assert np.array_equal(bank.gram("c")[0]["comoments"], ref.gram("c")[0]["comoments"])
+        lazy = df.lazy().online.fit_predict([bare]).collect().select("c").unnest("c")
+        assert lazy.equals(one)
+        src, dst, state = tmp_path / "in.parquet", tmp_path / "out.parquet", tmp_path / "s.state"
+        df.write_parquet(src)
+        po.run(input=src, output=dst, specs=[bare], save_state=state)
+        assert pl.read_parquet(dst).select("c").unnest("c").equals(one)
+        loaded = po.ModelBank.load(state)
+        assert np.array_equal(loaded.gram("c")[0]["comoments"], ref.gram("c")[0]["comoments"])
+        with pytest.warns(po.InMemoryExpressionWarning):
+            expr = df.select(
+                pl.col("x0").online.ew_cov(["x1", "x2"], stats=[], halflife=NO_DECAY).alias("c")
+            )
+        assert expr.select("c").unnest("c").equals(one)
+
+    def test_pca_and_mahal_stand_without_a_statistic(self):
+        df = _df(n=600)
+        spec = _spec(("x0", "x1", "x2"), stats=[], pca=1, pca_every=50)
+        fields = po.spec.output_fields(spec)
+        assert fields[0] == "pc0_var" and fields[-1] == "n_eff" and "mean_x0" not in fields
+        out = po.ModelBank([spec]).fit_predict(df)
+        assert out["c"].struct.field("pc0_score").drop_nulls().len() > 0
+        with pytest.raises(ValueError, match='needs "mahal"'):
+            _spec(("x0", "x1"), stats=[], mahal_quantiles=[0.9])
