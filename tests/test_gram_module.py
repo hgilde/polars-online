@@ -488,6 +488,44 @@ class TestItWorksOnEveryGramItIsGiven:
         loaded = po.ModelBank.load(tmp_path / "b.state")
         assert pg.solve(loaded.gram("m")[0]) == pytest.approx(pg.solve(bank.gram("m")[0]), rel=0)
 
+    @pytest.mark.parametrize(
+        ("label", "kw"),
+        [
+            ("ridge", {}),
+            ("no intercept", {"add_intercept": False}),
+            ("feature sets", {"feature_sets": {"a": ["x0"], "b": ["x1", "x2"]}}),
+        ],
+    )
+    def test_the_axes_are_named_for_every_shape_of_spec(self, label, kw):
+        """`columns` and `targets` are derived from the spec, not from the
+        matrix, so they have to agree with it however the spec is shaped --
+        an intercept or not, a feature-set grid or not."""
+        df, _ = stream(n=600, k=3, seed=19)
+        g = fit(df, **kw).gram("m")[0]
+        k = len(g["means"])
+        assert len(g["columns"]) == k
+        assert g["comoments"].shape == (k, k)
+        assert len(g["targets"]) == len(g["cross_moments"]) == len(g["target_weights"])
+        assert (pg.INTERCEPT in g["columns"]) is kw.get("add_intercept", True)
+        assert pg.solve(g).shape == (k,)
+
+    def test_a_lasso_gram_names_its_axes_too(self):
+        df, _ = stream(n=800, k=2, seed=20)
+        spec = po.spec.lasso(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            lasso_path=[0.1, 0.0],
+            lam=1.0,
+            min_periods=3.0,
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        g = bank.gram("m")[0]
+        assert g["columns"] == [pg.INTERCEPT, "x0", "x1"]
+        assert g["targets"] == ["y"]
+        assert pg.lasso_path(g, [0.05]).shape == (1, 3)
+
     def test_a_gram_from_a_dict_without_columns_says_so(self):
         with pytest.raises(KeyError, match="no 'columns'"):
             pg.vif({"comoments": np.eye(2), "means": np.zeros(2)})
