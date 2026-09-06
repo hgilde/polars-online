@@ -350,6 +350,10 @@ class TestTheExpressionWarnsThatItRunsInMemory:
             ),
             "seqtest": ("seqtest", lambda: ns.seqtest()),
             "marginal": ("marginal", lambda: ns.marginal(**common)),
+            "corrchange": (
+                "corrchange",
+                lambda: ns.corrchange(others=["x0"], horizon=20),
+            ),
             "deco": ("deco", lambda: ns.deco(others=["x0"], halflife=2.0)),
             "hmm": (
                 "hmm",

@@ -1515,6 +1515,51 @@ table = bank.marginal("pairs")             # group, instance, feature, target, n
 one_bond = bank.marginal("pairs", group="b0")   # 10 rows: five features by two targets
 ```
 
+### `corrchange` — has the correlation structure changed?
+
+Two tests, because there are two questions.
+
+`kind="monitor"` is the **closed-sample** constancy test of Wied, Krämer and
+Dehling (2012), run over consecutive spans of `horizon` rows. At the last row
+of a span, per pair:
+
+```
+Q = max_{2≤j≤T} (j/√T)·|ρ̂_j − ρ̂_T| / D̂
+```
+
+with `ρ̂_j` the correlation of the span's first `j` rows and `D̂` the
+delta-method long-run standard deviation of `ρ̂`. Under the null `Q` converges
+to `sup|B|`, a Brownian bridge, so the critical value is the Kolmogorov
+quantile — computed from the series, not pinned, and it reproduces the
+published 1.3581 at 5%. That published null is the point: the test's size and
+power are held to the paper's own tables (`.035` at ρ = 0 and `T = 500`,
+`.587` power on a `0.5 → 0.7` break), not to numbers this implementation
+happened to produce.
+
+```python
+c = po.spec.corrchange("break", features=["x0", "x1"], horizon=500)
+out = df.online.fit_predict([c]).unnest("break")   # stat, crit, flag, since_flag
+```
+
+The price is a delay of at most `horizon` rows: nothing is reported until a
+span closes. The paper's own *sequential* form, with a boundary function, is
+Wied and Galeano (2013), which has not been read here.
+
+`scalar=True` runs the same CUSUM on the **equicorrelation** of the
+standardised row (`deco`'s `u`) — one statistic however many columns, and a
+test of its level rather than of a pair.
+
+`kind="window"` asks how *big* the change is instead: `‖vech(R̂_pre − R̂_post)‖`
+over two adjacent windows, against a fixed `crit` or a **permutation**
+quantile — `n_perm` shuffles of the pooled rows between the windows, in
+blocks of `perm_block` so serial dependence does not make the null too
+liberal. Not a sign-flip null, which a first reading of the literature
+suggests: negating a whole row leaves every correlation exactly where it was.
+
+The flag rate per row is not `alpha` for the window kind: two windows that
+slide by one row are almost the same windows, so a statistic above the
+quantile stays above it for a run of rows.
+
 ### `hmm` — which regime are we in
 
 `ew_class` classifies a row against *labelled* Gaussians. An `hmm` does the

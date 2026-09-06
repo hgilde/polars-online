@@ -850,6 +850,59 @@ pub enum ModelKind {
         #[serde(default)]
         tvtp_coef: Option<Vec<Vec<f64>>>,
     },
+    /// Has the correlation structure changed? (docs/ENHANCEMENTS.md E59)
+    ///
+    /// `"monitor"` is Wied, Krämer & Dehling's closed-sample constancy
+    /// test, run over consecutive spans of `horizon` rows; `"window"` is
+    /// the size of the change between two adjacent windows, against a fixed
+    /// threshold or a permutation critical value.
+    #[serde(rename = "corrchange")]
+    CorrChange {
+        /// `"monitor"` (default) or `"window"`.
+        #[serde(default)]
+        kind: Option<String>,
+        /// `"monitor"`: the span length `T`. Required there.
+        #[serde(default)]
+        horizon: Option<usize>,
+        /// `"window"`: the length of each of the two windows. Required
+        /// there.
+        #[serde(default)]
+        window: Option<usize>,
+        /// Nominal level; default 0.05.
+        #[serde(default)]
+        alpha: Option<f64>,
+        /// `"bonferroni"` (default) over the pairs, or `"none"`.
+        #[serde(default)]
+        alpha_adjust: Option<String>,
+        /// `"monitor"`: the Bartlett bandwidth, `⌊ln T⌋` when unset.
+        #[serde(default)]
+        bandwidth: Option<usize>,
+        /// `"monitor"`: run the CUSUM on the equicorrelation of the
+        /// standardised row instead of every pair.
+        #[serde(default)]
+        scalar: Option<bool>,
+        /// `"window"`: a fixed critical value; unset draws a permutation
+        /// one.
+        #[serde(default)]
+        crit: Option<f64>,
+        #[serde(default)]
+        n_perm: Option<usize>,
+        #[serde(default)]
+        permute_every: Option<usize>,
+        /// Permute blocks of this many consecutive rows (default 1), so
+        /// serial dependence does not make the null too liberal.
+        #[serde(default)]
+        perm_block: Option<usize>,
+        /// `"l1"` (default) or `"linf"` over the strict upper triangle.
+        #[serde(default)]
+        norm: Option<String>,
+        #[serde(default)]
+        seed: Option<u64>,
+        /// Empty the rings at a flag and start over (`"window"` only;
+        /// `"monitor"`'s spans are disjoint already).
+        #[serde(default)]
+        reset: Option<bool>,
+    },
 }
 
 /// The two sides of a `seqtest` comparison, as [`ModelKind::compares`]
@@ -879,8 +932,26 @@ impl ModelKind {
     /// check themselves against (docs/EXTENDING.md); `kinds_tests` holds it
     /// to the enum, so a new variant fails a test until it is listed here.
     pub const KINDS: &'static [&'static str] = &[
-        "ew_ridge", "lasso", "kalman", "huber", "quantile", "ftrl", "ew_cov", "sgd", "pa", "holt",
-        "rls", "kmeans", "micro", "ew_class", "seqtest", "marginal", "deco", "rcov", "hmm",
+        "ew_ridge",
+        "lasso",
+        "kalman",
+        "huber",
+        "quantile",
+        "ftrl",
+        "ew_cov",
+        "sgd",
+        "pa",
+        "holt",
+        "rls",
+        "kmeans",
+        "micro",
+        "ew_class",
+        "seqtest",
+        "marginal",
+        "deco",
+        "rcov",
+        "hmm",
+        "corrchange",
     ];
 
     pub fn kind_name(&self) -> &'static str {
@@ -904,6 +975,7 @@ impl ModelKind {
             ModelKind::Deco { .. } => "deco",
             ModelKind::Rcov { .. } => "rcov",
             ModelKind::Hmm { .. } => "hmm",
+            ModelKind::CorrChange { .. } => "corrchange",
         }
     }
 
@@ -920,6 +992,7 @@ impl ModelKind {
                 | ModelKind::Deco { .. }
                 | ModelKind::Rcov { .. }
                 | ModelKind::Hmm { .. }
+                | ModelKind::CorrChange { .. }
         )
     }
 
@@ -1206,7 +1279,9 @@ impl Spec {
                 // A realised covariance is a sum over a block, not a
                 // decayed mean: the block boundary is `group_close`'s, and
                 // `halflife`/`lam` are refused below rather than ignored.
-                ModelKind::SeqTest { .. } | ModelKind::Rcov { .. } => {
+                ModelKind::SeqTest { .. }
+                | ModelKind::Rcov { .. }
+                | ModelKind::CorrChange { .. } => {
                     Ok(vec![(String::new(), Decay::Halflife(f64::INFINITY))])
                 }
                 // For Holt the level halflife *is* the spec's halflife --
@@ -1341,6 +1416,8 @@ impl Spec {
             // The states are seeded from `warm_rows`, which is the real
             // gate; `min_periods` on top of it would be a second one.
             ModelKind::Hmm { .. } => 0.0,
+            // The span or the windows are the gate.
+            ModelKind::CorrChange { .. } => 0.0,
             _ => (self.k() + usize::from(self.add_intercept)) as f64,
         }
     }
@@ -1968,6 +2045,17 @@ impl Spec {
             // Every parameter check is `DecoCfg::validate`'s, so that the
             // CLI, the bank and the plugin all get the same messages; only
             // the block *names* are resolved here, where the feature list is.
+            ModelKind::CorrChange { scalar, .. } => {
+                if !scalar.unwrap_or(false) && (self.halflife.is_some() || self.lam.is_some()) {
+                    return Err(format!(
+                        "spec {:?}: halflife/lam apply to corrchange only with scalar = true \
+                         (they parametrise the standardiser); neither kind decays anything else",
+                        self.name
+                    ));
+                }
+                crate::stream::corrchange_cfg(self)
+                    .map_err(|e| format!("spec {:?}: {e}", self.name))?;
+            }
             ModelKind::Hmm { exog_tvtp, .. } => {
                 if exog_tvtp.is_some() && self.targets.len() != 1 {
                     return Err(format!(

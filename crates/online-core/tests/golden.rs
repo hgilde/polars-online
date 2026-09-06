@@ -413,6 +413,39 @@ fn seqtest_golden() {
     );
 }
 
+/// `corrchange` reports only where a span closes, so its signature is the
+/// statistic at the three span ends a 60-row stream at `horizon = 20` has.
+#[test]
+fn corrchange_golden() {
+    let mut m = CorrChange::new(CorrChangeCfg {
+        n_features: 2,
+        kind: CorrChangeKind::Monitor,
+        horizon: 20,
+        window: 10,
+        alpha: 0.05,
+        alpha_adjust: "bonferroni".into(),
+        bandwidth: None,
+        scalar: false,
+        decay: Decay::Halflife(20.0),
+        crit: None,
+        n_perm: 20,
+        permute_every: 10,
+        perm_block: 1,
+        norm: ChangeNorm::L1,
+        seed: 5,
+        reset: false,
+    })
+    .unwrap();
+    let mut out = Vec::new();
+    for (x, y, d, w) in stream() {
+        let step = m.step(&x, &y, d, w);
+        if step.pred[0].is_finite() {
+            out.push(step.pred[0]);
+        }
+    }
+    check("corrchange", &out, GOLDEN_CORRCHANGE);
+}
+
 /// Slot 5 is `loglik`, which reads the transition matrix, both densities
 /// and the softmax at once -- the whole filter in one number.
 #[test]
@@ -698,6 +731,7 @@ fn ew_class_golden() {
 }
 
 // --- generated; see the module docs ---
+const GOLDEN_CORRCHANGE: &[f64] = &[0.8309362886202545, 0.7835655084137085, 0.7901008765733364];
 const GOLDEN_HMM: &[f64] = &[-1.2214037865778806, -2.5882597876282167, -0.883627291469858];
 const GOLDEN_RCOV: &[f64] = &[15.118271471980519, -2.2219191583655915, 22.721761773534745];
 const GOLDEN_RCOV_PREAVG: &[f64] = &[9.410243164612856, -1.8070645542417443, 21.4716237436384];

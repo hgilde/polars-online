@@ -2875,6 +2875,7 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
             | crate::ModelKind::SeqTest { .. }
             | crate::ModelKind::Marginal {}
             | crate::ModelKind::Rcov { .. }
+            | crate::ModelKind::CorrChange { .. }
     ) {
         return Vec::new();
     }
@@ -3247,6 +3248,33 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
                 FieldMeta::new(format!("coef{suffix}"), "coef")
                     .decay(d)
                     .src(Source::Coef(mi)),
+            );
+        }
+        return fields;
+    }
+    // corrchange is a test, not a model of the data: per instance the
+    // statistic, its critical value, the flag and the rows since the last
+    // one. Nothing is reported except where a span closes.
+    if matches!(spec.model, crate::ModelKind::CorrChange { .. }) {
+        let labels = online_core::CorrChange::labels();
+        let n_slots = labels.len();
+        let mut fields = Vec::new();
+        for (mi, (suffix, d)) in decays.iter().enumerate() {
+            for (slot, l) in labels.iter().enumerate() {
+                let at = mi * n_slots + slot;
+                let src = match l.as_str() {
+                    "flag" => Source::Flag(at),
+                    "since_flag" => Source::Id(at),
+                    _ => Source::Stat(at),
+                };
+                let mut m = FieldMeta::new(format!("{l}{suffix}"), l).decay(d).src(src);
+                m.columns = Some(spec.features.clone());
+                fields.push(m);
+            }
+            fields.push(
+                FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                    .decay(d)
+                    .src(Source::NEff(mi)),
             );
         }
         return fields;

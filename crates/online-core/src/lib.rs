@@ -57,6 +57,7 @@ mod clock;
 mod cluster;
 mod conformal;
 mod constraint;
+mod corrchange;
 mod deco;
 mod drift;
 mod ewclass;
@@ -87,6 +88,9 @@ pub use cluster::{
 };
 pub use conformal::{Conformal, norm_ppf};
 pub use constraint::Constraint;
+pub use corrchange::{
+    ChangeNorm, CorrChange, CorrChangeCfg, CorrChangeKind, kolmogorov_cdf, kolmogorov_quantile,
+};
 pub use deco::{Deco, DecoCfg, DecoDynamics};
 pub use drift::PageHinkley;
 pub use ewclass::{Covariance, EwClass, EwClassCfg};

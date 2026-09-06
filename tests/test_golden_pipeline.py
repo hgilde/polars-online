@@ -168,6 +168,20 @@ def specs() -> list[dict]:
         ),
         # Only `n_eff` per row; the pairs are read from the state at the end.
         po.spec.marginal("marginal", **common),
+        # A constancy test over spans of 30 rows, so the 120-row stream
+        # closes several per group.
+        # A cap above the stream's 9-unit gaps: at `max_dclock = 6` every
+        # gap is capped, `clear_lags` abandons the span (task 47), and no
+        # span ever closes -- which is correct and pins nothing.
+        po.spec.corrchange(
+            "corrchange",
+            features=["x0", "x1"],
+            horizon=20,
+            alpha=0.05,
+            clock="t",
+            max_dclock=100.0,
+            group="g",
+        ),
         # A hidden Markov model: the states are given, so the pinned
         # numbers are the filter's and not the seeding's.
         po.spec.hmm(
@@ -255,6 +269,13 @@ def signature() -> dict[str, float | str | None]:
                 where = f"[{pair['group']}/{pair['feature']}]@end"
                 for field in ("n_eff", "n_kish", "corr", "beta", "t"):
                     sig[f"{name}.{field}{where}"] = pair[field]
+        # `corrchange` reports only where a span closes, and the picks
+        # above are ordinary rows, so the statistics are pinned in the
+        # order they were produced.
+        if spec["model"]["type"] == "corrchange":
+            stats = out[name].struct.field("stat").drop_nulls().to_list()
+            for i, v in enumerate(stats):
+                sig[f"{name}.stat#{i}"] = v
     # `rcov` emits nothing per row: its value is the block a group close
     # produces, so that is what is pinned.
     for row in bank.closed_groups(drop=False).iter_rows(named=True):
@@ -559,6 +580,25 @@ GOLDEN: dict[str, float | str | None] = {
     "rcov.rcov0[rcov/b/m]": 26.699805838320067,
     "rcov.rcov1[rcov/b/m]": -8.814701767556427,
     "rcov.rcov2[rcov/b/m]": 935.9427443212545,
+    "corrchange.stat@25": None,
+    "corrchange.stat@60": None,
+    "corrchange.stat@119": None,
+    "corrchange.crit@25": None,
+    "corrchange.crit@60": None,
+    "corrchange.crit@119": None,
+    "corrchange.flag@25": None,
+    "corrchange.flag@60": None,
+    "corrchange.flag@119": None,
+    "corrchange.since_flag@25": None,
+    "corrchange.since_flag@60": None,
+    "corrchange.since_flag@119": None,
+    "corrchange.n_eff@25": 11.0,
+    "corrchange.n_eff@60": 29.0,
+    "corrchange.n_eff@119": 57.0,
+    "corrchange.stat#0": 0.4187229847749789,
+    "corrchange.stat#1": 0.8327434734281521,
+    "corrchange.stat#2": 0.4018108796040254,
+    "corrchange.stat#3": 0.7687800247316329,
     "hmm.p_0@25": 0.0019837560822976905,
     "hmm.p_0@60": 0.7065450485379252,
     "hmm.p_0@119": 3.2936921872049095e-07,

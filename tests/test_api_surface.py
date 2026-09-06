@@ -192,6 +192,7 @@ def describe_api() -> str:
                 halflife=100.0,
             ),
         ),
+        ("corrchange", dict(features=["x0", "x1"], horizon=100)),
         (
             "hmm",
             dict(features=["x0", "x1"], k=3, precision_prior=0.1, halflife=100.0),

@@ -135,7 +135,12 @@ fn probe_with<M: OnlineModel>(
 /// move under `clear_lags`. Everything else must not: `clear_lags` is not a
 /// reset, and a model that quietly threw away a mean here would look like a
 /// decay bug three chunks later (docs/PLAN.md task 47).
-const KEEPS_LAGS: &[&str] = &["rcov"];
+const KEEPS_LAGS: &[&str] = &["rcov", "corrchange"];
+
+/// Models that report on some rows and not others by design -- a span-based
+/// test writes its statistic where the span closes -- so the predict-parity
+/// helper cannot ask for 300 rows with every slot ready.
+const SPARSE_OUTPUT: &[&str] = &["corrchange"];
 
 fn check(r: &Report, kind: &str, targets: usize, combos: usize) {
     assert_eq!(r.kind, kind, "state kind");
@@ -765,6 +770,46 @@ fn hmm() {
     assert!(r.roundtrips);
 }
 
+fn corrchange_cfg() -> CorrChangeCfg {
+    CorrChangeCfg {
+        n_features: K,
+        kind: CorrChangeKind::Monitor,
+        horizon: 20,
+        window: 10,
+        alpha: 0.05,
+        alpha_adjust: "bonferroni".into(),
+        bandwidth: None,
+        scalar: false,
+        decay: decay(),
+        crit: None,
+        n_perm: 20,
+        permute_every: 10,
+        perm_block: 1,
+        norm: ChangeNorm::L1,
+        seed: 5,
+        reset: false,
+    }
+}
+
+#[test]
+fn corrchange() {
+    // A test, not a model of the data: no targets, four slots (the
+    // statistic, its critical value, the flag and the rows since the last
+    // one), and `n_eff` on the shared recursion.
+    let m = CorrChange::new(corrchange_cfg()).unwrap();
+    assert_eq!(m.n_targets(), 0);
+    assert_eq!(m.n_features(), K);
+    assert_eq!(m.n_outputs(), 4, "stat, crit, flag, since_flag");
+    let r = probe_with(m, 0, Some(&CorrChange::n_eff));
+    assert_eq!(r.kind, "corrchange");
+    assert_eq!(r.pred_len, r.n_outputs);
+    assert_eq!(r.n_eff[0], 0.0);
+    assert_eq!(r.n_eff[1], 1.0);
+    assert!((r.n_eff[2] - (0.5f64.powf(1.0 / HALFLIFE) + 1.0)).abs() < 1e-12);
+    assert!((r.after_gap - (r.before_gap * 0.5f64.powi(10) + 1.0)).abs() < 1e-9);
+    assert!(r.roundtrips);
+}
+
 /// The variants of `ModelState` this file probes. A model added to the enum
 /// and not to this list fails here, which is the reminder to write its
 /// `*_cfg()` and probe above (docs/EXTENDING.md).
@@ -788,6 +833,7 @@ const PROBED: &[&str] = &[
     "Deco",
     "Rcov",
     "Hmm",
+    "CorrChange",
 ];
 
 #[test]
@@ -1410,9 +1456,16 @@ fn predict_is_the_step_without_the_step<M: OnlineModel>(
         }
     }
     // The stream must actually have exercised the ready path, or the test
-    // would pass on NaN == NaN alone.
+    // would pass on NaN == NaN alone. A model that reports only where a
+    // span closes has far fewer such rows, and that is the point of it:
+    // `SPARSE_OUTPUT` says how many are enough.
+    let want = if SPARSE_OUTPUT.contains(&kind) {
+        10
+    } else {
+        300
+    };
     assert!(
-        ready > 300,
+        ready > want,
         "{kind}: only {ready} rows had every slot ready"
     );
 }
@@ -1566,6 +1619,29 @@ fn marginal_predict_is_the_step() {
     // No slots to compare, so this holds `n_eff` and `extra` alone -- and
     // that `predict` did not move the state.
     predict_is_the_step_without_the_step(|| Marginal::new(marginal_cfg()).unwrap(), 2, false);
+}
+
+#[test]
+fn corrchange_predict_is_the_step() {
+    predict_is_the_step_without_the_step(|| CorrChange::new(corrchange_cfg()).unwrap(), 0, true);
+}
+
+#[test]
+fn corrchange_recovers_from_bounded_extremes() {
+    // A test of the data, not a model of it: what must hold is that the
+    // state stays finite and it goes on testing. A statistic computed over
+    // a span containing a 1e100 row is whatever it is; the twin, which
+    // never saw that row, is testing a different span.
+    let rows = bounded_script(0);
+    let mut m = CorrChange::new(corrchange_cfg()).unwrap();
+    let mut reported = 0;
+    for r in &rows {
+        let step = m.step(&r.x, &r.y, 1.0, r.w);
+        assert!(step.n_eff.is_finite());
+        reported += usize::from(step.pred[0].is_finite());
+    }
+    assert!(reported > 100, "spans go on closing");
+    assert!(m.n_eff().is_finite());
 }
 
 #[test]

@@ -16,6 +16,36 @@ carries breaking changes.
 
 ### Added
 
+- **`corrchange`: has the correlation structure changed?**
+  (`docs/ENHANCEMENTS.md` E59, task 54). Two tests. `kind="monitor"` is Wied,
+  Krämer & Dehling's **closed-sample** constancy test run over consecutive
+  spans of `horizon` rows, with the paper's `D̂`, Kolmogorov critical values
+  computed from the series (1.3581 at 5%), and Bonferroni over the pairs —
+  and its size and power held to the paper's own Tables 1 and 2 rather than
+  to numbers this implementation produced. `scalar=True` runs the same CUSUM
+  on `deco`'s equicorrelation, which is one statistic however many columns.
+  `kind="window"` measures how big a change is between two adjacent windows,
+  against a fixed threshold or a **permutation** quantile — not a sign-flip
+  null, which leaves every correlation exactly where it was.
+
+  The sequential form with a boundary function is Wied & Galeano (2013),
+  unread here; it stays an ENHANCEMENTS §10 follow-up.
+
+- **`corrchange`: has the correlation structure changed?**
+  (`docs/ENHANCEMENTS.md` E59, task 54). Two tests. `kind="monitor"` is Wied,
+  Kramer & Dehling's **closed-sample** constancy test run over consecutive
+  spans of `horizon` rows, with the paper's `D`, Kolmogorov critical values
+  computed from the series (1.3581 at 5%), and Bonferroni over the pairs --
+  and its size and power held to the paper's own Tables 1 and 2 rather than
+  to numbers this implementation produced. `scalar=True` runs the same CUSUM
+  on `deco`'s equicorrelation, which is one statistic however many columns.
+  `kind="window"` measures how big a change is between two adjacent windows,
+  against a fixed threshold or a **permutation** quantile -- not a sign-flip
+  null, which leaves every correlation exactly where it was.
+
+  The sequential form with a boundary function is Wied & Galeano (2013),
+  unread here; it stays an ENHANCEMENTS section 10 follow-up.
+
 - **`hmm`: a Gaussian hidden Markov model, filtered online**
   (`docs/ENHANCEMENTS.md` E60, task 53). `ew_class` without the labels:
   Hamilton's filter one row at a time, each state's accumulator taking the

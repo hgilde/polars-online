@@ -21,6 +21,7 @@ from typing import Required, TypedDict
 
 __all__ = [
     "CommonKwargs",
+    "CorrChangeKwargs",
     "DecoKwargs",
     "EwClassKwargs",
     "EwCovKwargs",
@@ -269,3 +270,20 @@ class HmmKwargs(ExprKwargs, total=False):
     seed: int | None
     exog_tvtp: str | None
     tvtp_coef: list[list[float]] | None
+
+
+class CorrChangeKwargs(ExprKwargs, total=False):
+    kind: str
+    horizon: int | None
+    window: int | None
+    alpha: float
+    alpha_adjust: str
+    bandwidth: int | None
+    scalar: bool
+    crit: float | None
+    n_perm: int | None
+    permute_every: int | None
+    perm_block: int | None
+    norm: str
+    seed: int | None
+    reset: bool

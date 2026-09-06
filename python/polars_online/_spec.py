@@ -200,6 +200,7 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
 
 
 __all__ = [
+    "corrchange",
     "deco",
     "hmm",
     "rcov",
@@ -1636,6 +1637,97 @@ def deco(
 
 
 @_checked
+def corrchange(
+    name: str,
+    *,
+    features: list[str],
+    kind: str = "monitor",
+    horizon: int | None = None,
+    window: int | None = None,
+    alpha: float = 0.05,
+    alpha_adjust: str = "bonferroni",
+    bandwidth: int | None = None,
+    scalar: bool = False,
+    crit: float | None = None,
+    n_perm: int | None = None,
+    permute_every: int | None = None,
+    perm_block: int | None = None,
+    norm: str = "l1",
+    seed: int | None = None,
+    reset: bool = False,
+    **common: Unpack[CommonKwargs],
+) -> dict[str, Any]:
+    """Has the correlation structure changed? (ENHANCEMENTS E59, Task 54)
+
+    Two tests, because there are two questions.
+
+    ``kind="monitor"`` is the **closed-sample** constancy test of Wied,
+    Krämer & Dehling (2012), run over consecutive spans of ``horizon``
+    rows. At the last row of a span, per pair::
+
+        Q = max_{2<=j<=T} (j/sqrt(T)) * |rho_j - rho_T| / D
+
+    with ``rho_j`` the sample correlation of the span's first ``j`` rows and
+    ``D`` the delta-method long-run standard deviation of ``rho``: the five
+    raw moments ``(x^2, y^2, x, y, xy)`` centred at their span means, their
+    Bartlett long-run covariance at bandwidth ``floor(ln T)``, mapped to
+    ``(var_x, var_y, cov)`` and then to ``rho``. Under the null ``Q``
+    converges to ``sup|B|``, a Brownian bridge, so the critical value is the
+    Kolmogorov quantile -- **computed** from the series, not pinned, and it
+    reproduces the published 1.3581 at 5%. Over the pairs the statistic is
+    the maximum and the level is ``alpha / npairs`` (``alpha_adjust``).
+
+    The paper's own sequential form, with a boundary function, is Wied &
+    Galeano (2013), which nobody here has read; the closed test run span by
+    span is what ships. The cost is a delay of at most ``horizon`` rows and
+    the benefit is a null with published tables — the size and power in
+    their Tables 1 and 2 are what `tests/test_corrchange.py` holds it to.
+
+    ``scalar=True`` runs the same CUSUM on the **equicorrelation** of the
+    standardised row (`deco`'s ``u``) instead of every pair, which is one
+    statistic however many columns there are. ``halflife``/``lam``
+    parametrise that standardiser and are accepted only there; neither kind
+    decays anything else, so they are refused otherwise.
+
+    ``kind="window"`` is ``norm(vech(R_pre - R_post))`` over two adjacent
+    windows of ``window`` rows -- how *big* the change is, rather than
+    whether the span was constant. ``crit`` is a fixed threshold; without
+    one the critical value is a **permutation** quantile: ``n_perm`` draws
+    of the pooled rows shuffled between the two windows, in blocks of
+    ``perm_block`` so that serial dependence does not make the null too
+    liberal, redrawn every ``permute_every`` rows.
+
+    It is not a sign-flip null, which is what a first reading of the
+    literature suggests: negating a whole row leaves every ``x x'`` and so
+    every correlation matrix exactly where it was, so a sign-flip null has
+    no spread at all.
+
+    Outputs ``stat``, ``crit``, ``flag`` and ``since_flag`` (learned rows
+    since the last flag), plus ``n_eff``; all null except where a statistic
+    is due. ``reset=True`` empties the windows at a flag (``"window"``
+    only -- ``"monitor"``'s spans are disjoint already).
+    """
+    model: dict[str, Any] = {
+        "type": "corrchange",
+        "kind": kind,
+        "horizon": horizon,
+        "window": window,
+        "alpha": alpha,
+        "alpha_adjust": alpha_adjust,
+        "bandwidth": bandwidth,
+        "scalar": scalar,
+        "crit": crit,
+        "n_perm": n_perm,
+        "permute_every": permute_every,
+        "perm_block": perm_block,
+        "norm": norm,
+        "seed": seed,
+        "reset": reset,
+    }
+    return _common(name, model, targets=[features[0]], features=features, **common)
+
+
+@_checked
 def hmm(
     name: str,
     *,
@@ -1837,6 +1929,6 @@ def rcov(
 #: plumbing, and nothing residual-based applies to them. ``ew_class`` is
 #: not one -- its label column travels as the target -- though it predicts
 #: no number either, and refuses the residual switches the same way.
-UNSUPERVISED = frozenset({"ew_cov", "kmeans", "micro", "deco", "rcov", "hmm"})
+UNSUPERVISED = frozenset({"ew_cov", "kmeans", "micro", "deco", "rcov", "hmm", "corrchange"})
 
 _NUMERIC_KEYS = _numeric_keys()

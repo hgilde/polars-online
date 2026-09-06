@@ -30,6 +30,7 @@ from polars.plugins import register_plugin_function
 
 from polars_online import _spec
 from polars_online._kwargs import (
+    CorrChangeKwargs,
     DecoKwargs,
     EwClassKwargs,
     EwCovKwargs,
@@ -368,6 +369,17 @@ class OnlineNamespace:
         """
         names, exprs = _features(others)
         spec = _spec.deco("online", features=[self._target(), *names], **kwargs)
+        return _run(spec, self._expr, [self._expr, *exprs])
+
+    def corrchange(self, others: list[Feature], **kwargs: Unpack[CorrChangeKwargs]) -> pl.Expr:
+        """A correlation-constancy test over this column together with
+        ``others``.
+
+        No target, as for ``ew_cov``: the calling column becomes the first
+        feature.
+        """
+        names, exprs = _features(others)
+        spec = _spec.corrchange("online", features=[self._target(), *names], **kwargs)
         return _run(spec, self._expr, [self._expr, *exprs])
 
     def hmm(self, others: list[Feature], **kwargs: Unpack[HmmKwargs]) -> pl.Expr:

@@ -2,13 +2,13 @@
 //! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
 
 use online_core::{
-    ClockState, Conformal, Constraint, Covariance, Decay, Deco, DecoCfg, DecoDynamics, EwAutoCorr,
-    EwClass, EwClassCfg, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg,
-    FtrlLoss, Hmm, HmmCfg, Holt, HoltCfg, INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg, Lasso,
-    LassoCfg, LearningRate, Marginal, MarginalCfg, Micro, MicroCfg, ModelState, OnlineModel,
-    P2Quantile, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg, Robust,
-    RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss, SlotMetrics, State,
-    StateError,
+    ChangeNorm, ClockState, Conformal, Constraint, CorrChange, CorrChangeCfg, CorrChangeKind,
+    Covariance, Decay, Deco, DecoCfg, DecoDynamics, EwAutoCorr, EwClass, EwClassCfg, EwCovCfg,
+    EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, Hmm, HmmCfg, Holt,
+    HoltCfg, INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate,
+    Marginal, MarginalCfg, Micro, MicroCfg, ModelState, OnlineModel, P2Quantile, Pa, PaCfg, PaMode,
+    PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, SeedRule,
+    SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss, SlotMetrics, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +36,7 @@ pub enum AnyModel {
     Deco(Box<Deco>),
     Rcov(Box<Rcov>),
     Hmm(Box<Hmm>),
+    CorrChange(Box<CorrChange>),
 }
 
 /// Bind the boxed model of whichever variant `$self` is, then run `$body`.
@@ -67,6 +68,7 @@ macro_rules! dispatch {
             AnyModel::Deco($m) => $body,
             AnyModel::Rcov($m) => $body,
             AnyModel::Hmm($m) => $body,
+            AnyModel::CorrChange($m) => $body,
         }
     };
 }
@@ -122,7 +124,8 @@ impl AnyModel {
             | AnyModel::SeqTest(_)
             | AnyModel::Marginal(_)
             | AnyModel::Deco(_)
-            | AnyModel::Rcov(_) => 0,
+            | AnyModel::Rcov(_)
+            | AnyModel::CorrChange(_) => 0,
         }
     }
 
@@ -178,6 +181,8 @@ impl AnyModel {
                     .map(|s| m.state_cov(s).means().to_vec())
                     .collect(),
             ),
+            // corrchange has no coefficients: its outputs are the test.
+            AnyModel::CorrChange(_) => None,
         }
     }
 
@@ -205,6 +210,9 @@ impl AnyModel {
             ModelState::Deco(_) => Ok(AnyModel::Deco(Box::new(Deco::restore(s)?))),
             ModelState::Rcov(_) => Ok(AnyModel::Rcov(Box::new(Rcov::restore(s)?))),
             ModelState::Hmm(_) => Ok(AnyModel::Hmm(Box::new(Hmm::restore(s)?))),
+            ModelState::CorrChange(_) => {
+                Ok(AnyModel::CorrChange(Box::new(CorrChange::restore(s)?)))
+            }
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -690,7 +698,79 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             cfg.decay = decay;
             Ok(AnyModel::Hmm(Box::new(Hmm::new(cfg)?)))
         }
+        ModelKind::CorrChange { .. } => {
+            let mut cfg = corrchange_cfg(spec)?;
+            cfg.decay = decay;
+            Ok(AnyModel::CorrChange(Box::new(CorrChange::new(cfg)?)))
+        }
     }
+}
+
+/// A `corrchange` spec's [`CorrChangeCfg`]; every parameter check is the
+/// model's.
+pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
+    let ModelKind::CorrChange {
+        kind,
+        horizon,
+        window,
+        alpha,
+        alpha_adjust,
+        bandwidth,
+        scalar,
+        crit,
+        n_perm,
+        permute_every,
+        perm_block,
+        norm,
+        seed,
+        reset,
+    } = &spec.model
+    else {
+        return Err("not a corrchange spec".into());
+    };
+    let kind = match kind.as_deref() {
+        None | Some("monitor") => CorrChangeKind::Monitor,
+        Some("window") => CorrChangeKind::Window,
+        Some(other) => {
+            return Err(format!(
+                "unknown corrchange kind {other:?}; expected \"monitor\" or \"window\""
+            ));
+        }
+    };
+    if kind == CorrChangeKind::Monitor && horizon.is_none() {
+        return Err(
+            "corrchange: kind = \"monitor\" needs `horizon`, the span the test runs over".into(),
+        );
+    }
+    if kind == CorrChangeKind::Window && window.is_none() {
+        return Err("corrchange: kind = \"window\" needs `window`".into());
+    }
+    Ok(CorrChangeCfg {
+        n_features: spec.k(),
+        kind,
+        horizon: horizon.unwrap_or(0),
+        window: window.unwrap_or(0),
+        alpha: alpha.unwrap_or(0.05),
+        alpha_adjust: alpha_adjust.clone().unwrap_or_else(|| "bonferroni".into()),
+        bandwidth: *bandwidth,
+        scalar: scalar.unwrap_or(false),
+        decay: online_core::Decay::Lam(1.0),
+        crit: *crit,
+        n_perm: n_perm.unwrap_or(200),
+        permute_every: permute_every.unwrap_or(50),
+        perm_block: perm_block.unwrap_or(1),
+        norm: match norm.as_deref() {
+            None | Some("l1") => ChangeNorm::L1,
+            Some("linf") => ChangeNorm::LInf,
+            Some(other) => {
+                return Err(format!(
+                    "unknown corrchange norm {other:?}; expected \"l1\" or \"linf\""
+                ));
+            }
+        },
+        seed: seed.unwrap_or(0),
+        reset: reset.unwrap_or(false),
+    })
 }
 
 /// An `hmm` spec's [`HmmCfg`]. The decay is the caller's; every other check
@@ -939,7 +1019,8 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
         | ModelKind::Marginal {}
         | ModelKind::Deco { .. }
         | ModelKind::Rcov { .. }
-        | ModelKind::Hmm { .. } => vec![Combo::default()],
+        | ModelKind::Hmm { .. }
+        | ModelKind::CorrChange { .. } => vec![Combo::default()],
         ModelKind::Lasso { lasso_path, .. } => lasso_path
             .iter()
             .map(|l| Combo {

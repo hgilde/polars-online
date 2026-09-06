@@ -693,7 +693,7 @@ note, not a task.
       longhand `numpy` filter at fixed parameters; `predict` is the step
       without the step; recovery of Π and the means on task 52's streams as a
       `docs/REGIMES.md` experiment; the sweeps.
-- [ ] 54. **`corrchange`** (E59): the Wied–Krämer–Dehling (2012)
+- [x] 54. **`corrchange`** (E59): the Wied–Krämer–Dehling (2012)
       closed-sample constancy test run span by span (`horizon` rows, the
       paper's `D̂`, Kolmogorov critical values, Bonferroni over pairs) and
       the two-window `vech` statistic with a permutation critical value.
@@ -2880,6 +2880,37 @@ entries, distance 2.13 and rank 3. Four notes.
   `max_dclock` breach; `reset` both ways; the clock-rescaling test; the
   sweeps; `MINIMAL["corrchange"] = {"features": ["x0", "x1"], "window": 8,
   "crit": 0.5}`.
+
+*Task 54 as built, 2026-09-06.* The re-scoping held: WKD's size and power
+tables are reproduced, at `T = 500` and at both `T` for the power. Five
+notes.
+
+- *`scalar = true` is a **mean** CUSUM, not a correlation one.* The first
+  implementation pushed `[u, u]` into the pair machinery, whose correlation
+  is exactly 1 on every prefix, so the statistic was identically zero. The
+  equicorrelation is already one number: what there is to test is its
+  *level*, `max_j (j/√T)·|ūⱼ − ū_T| / D̂ᵤ` with the Bartlett long-run sd of
+  `u`. The ring is one column wide under `scalar`.
+- *`predict` computes the span-closing statistic too.* The first version
+  reported nothing from `predict`, which breaks the contract on exactly the
+  rows that matter. `read(x, weight)` is now a pure function of the state
+  and the row that both `step` and `predict` call; the permutation critical
+  value is **refreshed after** the row is reported, so the two cannot see
+  different ones.
+- *The predict-parity helper needed a `SPARSE_OUTPUT` list.* It asks for 300
+  of 400 rows to have every slot ready, and a span-based model has one row
+  in `horizon`. Ten is enough there, and the list says which models it is
+  for.
+- *The window kind's flag rate per row is not `alpha`.* Two windows that
+  slide by one row are almost the same windows, so a statistic above the
+  quantile stays above it for a run of rows. Measured: 9 % of rows on a
+  stationary stream against 27 % on a broken one, which is the separation
+  the test asserts. Documented in the docstring and the README.
+- *A capped clock gap abandons the span, and that is visible.* The golden
+  pipeline's stream jumps 9 units every 17 rows; at `max_dclock = 6` every
+  jump is capped, task 47's `clear_lags` empties the ring, and **no span
+  ever closes**. Correct, and it pins nothing, so that spec uses a cap above
+  the gaps. `tests/test_corrchange.py` asserts the abandonment directly.
 
 *Task 55 — `bocpd` (E61).*
 

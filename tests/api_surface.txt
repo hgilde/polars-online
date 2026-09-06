@@ -58,6 +58,24 @@
     spec
   coef_index:
     spec
+  corrchange:
+    name
+    features
+    kind = 'monitor'
+    horizon = None
+    window = None
+    alpha = 0.05
+    alpha_adjust = 'bonferroni'
+    bandwidth = None
+    scalar = False
+    crit = None
+    n_perm = None
+    permute_every = None
+    perm_block = None
+    norm = 'l1'
+    seed = None
+    reset = False
+    common
   deco:
     name
     features
@@ -294,6 +312,7 @@
   summary
 
 [expression namespace]  # pl.col(...).online.<method>
+  corrchange
   deco
   ew_class
   ew_cov
@@ -752,6 +771,12 @@
     lagcorr_x0_x1_l5
     lagcorr_x1_x0_l5
     lagcorr_x1_x1_l5
+    n_eff
+  corrchange minimal:
+    stat
+    crit
+    flag
+    since_flag
     n_eff
   hmm minimal:
     p_0
