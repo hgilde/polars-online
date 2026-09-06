@@ -1519,6 +1519,29 @@ many rows. 187k rows/s at the default cadence, and a `crit` given as a
 number skips the whole thing. The monitor kind pays only at a span's close,
 where it walks the span once: 389k rows/s at `horizon = 500`.
 
+### And they go wide
+
+The unit of parallel work is a stream, and the new models are streams like
+any other. 200k rows, four features, one group against 64, on a 14-core
+machine (10 performance + 4 efficiency):
+
+| model | 1 group | 64 groups | speedup |
+|---|---|---|---|
+| `deco` | 3.22M | 20.1M | 6.3× |
+| `hmm` | 1.32M | 10.8M | 8.2× |
+| `bocpd` | 0.42M | 2.93M | 7.0× |
+| `corrchange`, window | 0.19M | 1.97M | 10.5× |
+
+Nothing here serializes: the slowest model in the library gains the most,
+because its per-stream work is the largest thing the pool has to schedule.
+`corrchange`'s permutation draws from a per-stream `SplitMix64` seeded from
+the spec's `seed` alone, which is the library's convention (`kmeans` seeds
+the same way): every group runs the same permutation *pattern* over its own
+rows. That is what makes a stream's output depend on its own rows and
+nothing else — the property the chunk-invariance and group-independence
+sweeps pin — and it costs only that two groups' critical values are drawn
+with the same shuffles rather than independent ones.
+
 `ew_cov` with `lags = 1..5` runs at 1.15M rows/s against 2.12M for the same
 spec without them — five more `k × k` outer products a row, and the ring of
 rows they need. The lag block is the whole cost of the Epps inversion in
