@@ -25,6 +25,7 @@ a bank, and a failed run never replaces an output or a state file.
 from polars_online import (
     _expr,  # noqa: F401  (registers the expression namespace)
     _frame,  # noqa: F401  (registers the frame namespaces)
+    corr,
     eval,
     gram,
     prep,
@@ -42,6 +43,7 @@ __all__ = [
     "InMemoryExpressionWarning",
     "ModelBank",
     "__version__",
+    "corr",
     "eval",
     "fit_predict",
     "gram",

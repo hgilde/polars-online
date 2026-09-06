@@ -92,6 +92,13 @@ def describe_api() -> str:
             w(f"  {label}.online.{name}{sig}")
     w("")
 
+    w("[helper modules]  # po.<module>.<function>, the numpy-side arithmetic")
+    for mod in ("corr", "eval", "gram", "prep"):
+        w(f"  {mod}:")
+        for name in sorted(getattr(po, mod).__all__):
+            w(f"    {name}")
+    w("")
+
     w("[output field grammar]  # the strings users index the output struct by")
     cases: list[tuple[str, dict]] = [
         ("ewridge minimal", dict(targets=["y"], features=["x0"], halflife=100.0)),

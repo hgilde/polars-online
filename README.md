@@ -673,6 +673,35 @@ po.run(input=by_block.lazy(), specs=[blocks], closed_groups="blocks.parquet")
 write it too. What has closed and not been read is saved with the state, so
 a driver that saves between chunks does not lose rows silently.
 
+### Reading a correlation matrix
+
+`po.gram` solves and diagnoses a design matrix. `po.corr` is its
+complement: the arithmetic that comes *after* a correlation matrix, in the
+same style — numpy only, pure functions, each held against the paper it
+comes from.
+
+```python
+r = po.corr.matrix(closed.head(1))       # an array, a gram() dict, or a closed row
+fixed, dist, iters = po.corr.nearest(r)  # Higham's nearest correlation matrix
+shrunk, alpha = po.corr.shrink(r, alpha=0.2)
+lo, hi = po.corr.mp_edge(n=2000, m=50)   # where pure noise puts its eigenvalues
+```
+
+| function | what it does |
+|---|---|
+| `to_z`, `from_z` | Fisher's transform, clipped so a degenerate ±1 is finite |
+| `nearest(A, W)` | Higham (2002): the nearest correlation matrix, by alternating projections with Dykstra's correction. Returns the matrix, the distance and the iteration count |
+| `shrink(R, target, alpha, x)` | Ledoit–Wolf shrinkage towards a constant-correlation or identity target; the optimal intensity needs the rows, and the docstring says why |
+| `equicorr`, `equicorr_row`, `equicorr_loglik` | `deco`'s three quantities, offline |
+| `absorption`, `shift` | the absorption ratio and its standardised shift |
+| `spectral`, `from_spectral` | the top eigenpairs and the completion back to a correlation matrix |
+| `block_means`, `from_blocks` | mean correlation within and between labelled blocks, and back |
+| `mp_edge`, `mp_density` | the Marchenko–Pastur edges and density: which eigenvalues are noise |
+| `signal_share` | how much of a correlation's movement across blocks is not the sampling floor |
+| `loss` | `qlike`, `z_mse` or Engle–Colacito `minvar`, each zero or minimal at the truth |
+| `epps_invert` | the correlation at a coarser scale from `ew_cov`'s lagged co-moments |
+| `fisher_se` | the standard error of a correlation, with the AR(1) inflation and its caveats |
+
 ### Labels that arrive late
 
 A target that is a forward quantity — the next five minutes' return, the

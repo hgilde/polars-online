@@ -671,7 +671,7 @@ note, not a task.
       returns; Parzen PSD on adversarial streams; the `ψ`/`Φ` constants at
       their closed forms; a block with fewer than `2·jitter` rows gives nulls;
       zero-weight rows stay out of the ring; chunk invariance.
-- [ ] 51. **`po.corr`** (E62): the correlation-matrix helpers in `gram.py`'s
+- [x] 51. **`po.corr`** (E62): the correlation-matrix helpers in `gram.py`'s
       style — Fisher z, Higham's nearest correlation matrix, constant-target
       shrinkage, equicorrelation, absorption, spectral and block forms,
       Marchenko–Pastur edges, signal share, forecast losses, the Epps
@@ -2630,6 +2630,34 @@ still open.
   both assumptions — zero true correlation, linear dependence — and that
   the factor is invalid under ARCH-type innovations. One `phi` without the
   other is an error.
+
+*Task 51 as built, 2026-09-06.* The design stood, and Higham's published
+values came out exactly: the 3×3's `[.7607, .1573]` and distance 0.5278 with
+a singular result whose null vector is `[−.4814, .7324, −.4814]`, the 4×4's
+entries, distance 2.13 and rank 3. Four notes.
+
+- *The iteration count is 20, not 19.* Same run, same fixed point; the
+  difference is bookkeeping — this counts the iteration in which the
+  convergence test passed. The count is still asserted, because it pins the
+  algorithm and not just where it lands, and the test says which convention
+  it is.
+- *`nearest` returns `Y`, the algorithm's own answer.* `Y_k` has an
+  **exactly** unit diagonal and is PSD only to `tol` — the iteration
+  converges to the boundary of the cone, and `tol` is how close. Polishing
+  it with one more eigenvalue clip would break the diagonal again, so the
+  docstring states the bound and the test asserts `> −1e-8` at `tol =
+  1e-10`. Measured over 200 random symmetric inputs, the worst smallest
+  eigenvalue was `−9e-9` at `tol = 1e-8`.
+- *A one-factor sample shrinks all the way.* The first `shrink` test asked
+  for `0 < δ̂* < 1` on an equicorrelated sample and got exactly 1 — correctly,
+  because such a sample *is* the constant-correlation target and there is
+  nothing in the sample matrix worth keeping over it. The interior case
+  needs a target that is wrong, so the test uses two blocks with different
+  within-block correlations, and the saturating case became a test of its
+  own.
+- *`api_surface.txt` gained a `[helper modules]` section.* `po.corr`'s
+  function names are API and nothing pinned them; the section lists
+  `corr`, `eval`, `gram` and `prep`'s `__all__`, which pins all four.
 
 *Task 52 — `po.sim.regimes` (E64).*
 

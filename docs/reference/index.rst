@@ -22,4 +22,5 @@ polars-online``.
    namespaces
    eval
    gram
+   corr
    prep

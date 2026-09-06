@@ -550,6 +550,16 @@ def _readme_blocks() -> list[tuple[int, str]]:
 README_BLOCKS = _readme_blocks()
 
 
+def _closed_rows(df: pl.DataFrame) -> pl.DataFrame:
+    """What `bank.closed_groups()` gives for the README's block example."""
+    spec = po.spec.ew_cov(
+        "cov", features=["x0", "x1"], lam=1.0, group="block", group_close="monotone"
+    )
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df.with_columns(block=pl.int_range(pl.len()) // 100))
+    return bank.closed_groups()
+
+
 def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     """What the README's prose has already introduced by the time a block runs:
     a frame with every column it names, a spec with the grid its field-name
@@ -633,6 +643,9 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
             group_close="monotone",
         ),
         "by_block": df.with_columns(block=pl.int_range(pl.len()) // 100),
+        # The "one row per finished group" block's output, which the
+        # "reading a correlation matrix" section reads.
+        "closed": _closed_rows(df),
         # The "series that tick at their own times" section's long input:
         # three symbols, each at its own instants.
         "ticks": pl.concat(

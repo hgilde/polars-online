@@ -16,6 +16,18 @@ carries breaking changes.
 
 ### Added
 
+- **`po.corr`: correlation matrices, read and repaired**
+  (`docs/ENHANCEMENTS.md` E62, task 51). `po.gram`'s complement, in the same
+  style: numpy only, pure functions, one longhand check each. Higham's
+  nearest correlation matrix (his Algorithm 3.3 with Dykstra's correction,
+  and his own published examples as the test — the matrices, the distances,
+  the null vector, the rank and the iteration count), Ledoit–Wolf shrinkage
+  with the optimal intensity from the rows, Fisher's transform, the
+  equicorrelation trio that pins `deco` offline, the absorption ratio,
+  spectral and block summaries, the Marchenko–Pastur edges and density,
+  `signal_share`, three forecast losses, the Epps inversion over `ew_cov`'s
+  lagged co-moments, and `fisher_se` with its AR(1) inflation.
+
 - **`rcov`: a block's realised covariance, robust to microstructure noise**
   (`docs/ENHANCEMENTS.md` E57, task 50). Three estimators over a group's
   returns: `plain` (`Σ x x'`, which equals `n` times an `ew_cov(lam=1)`'s
