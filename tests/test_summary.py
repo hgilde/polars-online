@@ -98,11 +98,20 @@ def test_schema_and_one_row_per_group_for_every_model(fitted):
             assert got == want, f"{spec['name']} / {g}"
 
 
+#: A spec that closes on session starts its stream over at each change
+#: (E54), so its live summary is the *current span's*, not the whole
+#: stream's. Its counts are checked where they belong, against the closed
+#: rows in `test_closed_groups.py` and `test_rcov.py`.
+CLOSES = {s["name"] for s in specs() if s.get("group_close")}
+
+
 def test_summary_is_the_frame_s_count_per_group(fitted):
     df, bank, out = fitted
     s = bank.summary()
     for spec in specs():
         name = spec["name"]
+        if name in CLOSES:
+            continue
         features = spec.get("features", [])
         weight = spec.get("weight")
         needed = [usable(c) for c in features] + ([usable(weight)] if weight else [])
@@ -164,6 +173,8 @@ def test_describe_is_the_frame_s_statistics_per_column(fitted):
     d = bank.describe()
     for spec in specs():
         name = spec["name"]
+        if name in CLOSES:
+            continue
         for column, role in columns_of(spec):
             if name == "seqtest_compare" and role == "target":
                 a = out["ridge"].struct.field("resid_y0__r0.5")

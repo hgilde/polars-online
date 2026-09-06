@@ -168,6 +168,20 @@ def specs() -> list[dict]:
         ),
         # Only `n_eff` per row; the pairs are read from the state at the end.
         po.spec.marginal("marginal", **common),
+        # A block's realised covariance. The stream's groups interleave, so
+        # the close is on the session, not monotone; the block itself is
+        # pinned below, since nothing but `n_eff` is emitted per row.
+        po.spec.rcov(
+            "rcov",
+            features=["x0", "x1"],
+            kind="kernel",
+            bandwidth=3,
+            clock="t",
+            max_dclock=6.0,
+            group="g",
+            group_close="session",
+            session="session",
+        ),
         # One number for the whole correlation matrix. The stream has two
         # feature columns, so this is the unblocked form; the block path is
         # pinned by the core golden and by the numpy oracle in test_deco.py.
@@ -224,6 +238,14 @@ def signature() -> dict[str, float | str | None]:
                 where = f"[{pair['group']}/{pair['feature']}]@end"
                 for field in ("n_eff", "n_kish", "corr", "beta", "t"):
                     sig[f"{name}.{field}{where}"] = pair[field]
+    # `rcov` emits nothing per row: its value is the block a group close
+    # produces, so that is what is pinned.
+    for row in bank.closed_groups(drop=False).iter_rows(named=True):
+        where = f"[{row['spec']}/{row['group']}/{row['session']}]"
+        sig[f"{row['spec']}.rcov_n{where}"] = row["rcov_n"]
+        sig[f"{row['spec']}.bandwidth{where}"] = row["bandwidth_used"]
+        for i, v in enumerate(row["rcov"] or []):
+            sig[f"{row['spec']}.rcov{i}{where}"] = v
     return sig
 
 
@@ -507,6 +529,19 @@ GOLDEN: dict[str, float | str | None] = {
     "seqtest_compare.n_eff@25": 12.0,
     "seqtest_compare.n_eff@60": 30.0,
     "seqtest_compare.n_eff@119": 59.0,
+    "rcov.n_eff@25": 11.0,
+    "rcov.n_eff@60": 0.0,
+    "rcov.n_eff@119": 28.0,
+    "rcov.rcov_n[rcov/a/m]": 27,
+    "rcov.bandwidth[rcov/a/m]": 3,
+    "rcov.rcov0[rcov/a/m]": 45.47665651654075,
+    "rcov.rcov1[rcov/a/m]": 71.46767586881931,
+    "rcov.rcov2[rcov/a/m]": 267.0853708068551,
+    "rcov.rcov_n[rcov/b/m]": 27,
+    "rcov.bandwidth[rcov/b/m]": 3,
+    "rcov.rcov0[rcov/b/m]": 26.699805838320067,
+    "rcov.rcov1[rcov/b/m]": -8.814701767556427,
+    "rcov.rcov2[rcov/b/m]": 935.9427443212545,
     "deco.u@25": 0.4167923065360934,
     "deco.u@60": 0.9917268375727508,
     "deco.u@119": 0.8186317956712209,

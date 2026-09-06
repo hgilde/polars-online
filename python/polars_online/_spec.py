@@ -201,6 +201,7 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
 
 __all__ = [
     "deco",
+    "rcov",
     "ew_class",
     "ew_cov",
     "ewridge",
@@ -1633,11 +1634,107 @@ def deco(
     return _common(name, model, targets=[features[0]], features=features, **common)
 
 
+@_checked
+def rcov(
+    name: str,
+    *,
+    features: list[str],
+    kind: str = "kernel",
+    kernel: str = "parzen",
+    bandwidth: int | None = None,
+    jitter: int = 2,
+    theta: float = 1.0,
+    psd: bool = True,
+    n_max: int | None = None,
+    h_max: int | None = None,
+    window: int | None = None,
+    noise_stride: int | None = None,
+    iv_stride: int | None = None,
+    **common: Unpack[CommonKwargs],
+) -> dict[str, Any]:
+    """A block's realised covariance, robust to microstructure noise
+    (ENHANCEMENTS E57, Task 50).
+
+    A plain realised covariance over ticks is biased by noise -- each price
+    is the efficient one plus an error, and the error's variance accumulates
+    with every tick -- and attenuated by asynchrony. Both are estimated away
+    by published estimators that are **sums over lags**, which is exactly
+    what a stream can accumulate.
+
+    Rows are **returns**: difference upstream (`.diff().over(by)` after
+    :func:`polars_online.prep.refresh_time`). There is no decay and no
+    per-row output but ``n_eff``, because the value is the block: ``rcov``
+    requires ``group`` and ``group_close``, and the estimate rides in the
+    row that close emits (:meth:`ModelBank.closed_groups`).
+
+    ``kind="plain"`` is ``sum(x x')``, which at close equals ``n`` times an
+    ``ew_cov(lam=1)``'s uncentred second moment to the bit -- the
+    cross-check, and the reference the other two are measured against.
+
+    ``kind="kernel"`` (the default) is Barndorff-Nielsen, Hansen, Lunde &
+    Shephard's multivariate realised kernel::
+
+        K = sum_{h=-H}^{H} k(h/(H+1)) * Gamma_h
+        Gamma_h = sum_j x_j x'_{j-h},  Gamma_{-h} = Gamma_h'
+
+    with the Parzen kernel -- a positive-definite function, so ``K`` is PSD
+    up to rounding, and 0.97 efficient against the quadratic spectral's
+    0.93; the Bartlett kernel is not consistent here and is not offered. The
+    end points are jittered by averaging the first and last ``jitter``
+    observations; ``1`` is no jitter, and the paper's own ``m = 1..4`` move
+    the estimate by under 0.5 %, so the default of 2 is immaterial.
+    ``bandwidth`` is a fixed ``H``; left out it is their
+    ``H = ceil(c* xi^{4/5} n^{3/5})`` with ``c* = 3.5134``, which needs
+    ``n_max`` -- the ring has to be sized before the first row and ``n`` is
+    known only at the close. ``n_max`` is a sizing hint, not a limit: a
+    longer block runs, clipped, and reports ``bandwidth_used``.
+
+    ``kind="preavg"`` is Christensen, Kinnebrock & Podolskij's modulated
+    realised covariance: the returns are pre-averaged over ``k_n =
+    floor(theta * sqrt(n_max))`` with ``g(x) = min(x, 1-x)``, which averages
+    the noise away, and the residual bias is subtracted. ``psd=False`` is
+    that balanced, bias-corrected form (optimal rate, not guaranteed PSD);
+    ``psd=True`` (the default) is the longer window without the bias term,
+    and clips any negative eigenvalue, reporting ``psd_repaired``.
+
+    ``noise_stride`` (default 1) and ``iv_stride`` (default 20) are the two
+    subsampled grids behind an automatic bandwidth: the noise variance
+    ``omega2`` from the dense one, deliberately biased upward as BNHLS
+    accept, and the integrated variance ``iv_sparse`` from the sparse one,
+    each averaged over the stride's offsets.
+
+    The closed row carries ``rcov`` and ``rcorr`` (``vech`` of the upper
+    triangle), ``rcov_n``, ``rcov_kind``, ``bandwidth_used``, ``omega2``,
+    ``iv_sparse``, ``iq`` (a realised-quarticity proxy, and labelled one)
+    and ``psd_repaired``; all null for a block too short to estimate from.
+
+    ``weight`` is taken only as 0 or 1 -- a sum over returns has no
+    fractional row -- and a zero-weight row advances the clock and enters no
+    ring. ``halflife``/``lam`` are refused: the block boundary is
+    ``group_close``'s, not a decay's.
+    """
+    model: dict[str, Any] = {
+        "type": "rcov",
+        "kind": kind,
+        "kernel": kernel,
+        "bandwidth": bandwidth,
+        "jitter": jitter,
+        "theta": theta,
+        "psd": psd,
+        "n_max": n_max,
+        "h_max": h_max,
+        "window": window,
+        "noise_stride": noise_stride,
+        "iv_stride": iv_stride,
+    }
+    return _common(name, model, targets=[features[0]], features=features, **common)
+
+
 #: The model types with no target column: their outputs are read from the
 #: state before each row, their ``targets`` mirror ``features[0]`` for the
 #: plumbing, and nothing residual-based applies to them. ``ew_class`` is
 #: not one -- its label column travels as the target -- though it predicts
 #: no number either, and refuses the residual switches the same way.
-UNSUPERVISED = frozenset({"ew_cov", "kmeans", "micro", "deco"})
+UNSUPERVISED = frozenset({"ew_cov", "kmeans", "micro", "deco", "rcov"})
 
 _NUMERIC_KEYS = _numeric_keys()

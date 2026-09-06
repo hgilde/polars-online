@@ -241,6 +241,19 @@ def test_a_session_close_is_chunk_invariant(size):
     assert want.closed_groups().equals(got.closed_groups())
 
 
+def test_a_closing_streams_live_summary_is_the_current_span():
+    """The other half of `test_summary.py`'s skip: a session close restarts
+    the stream, so `summary()` counts the span it is in, and the spans
+    before it are in the closed rows."""
+    sess = ["m"] * 5 + ["t"] * 7
+    df = frame(["a"], n_per=12, session=sess)
+    bank = po.ModelBank([cov_spec(group_close="session", session="s")])
+    bank.fit_predict(df)
+    live = bank.summary()
+    assert live["rows_fed"].to_list() == [7], "the second span"
+    assert bank.closed_groups()["rows_fed"].to_list() == [5], "and the first"
+
+
 def test_a_zero_row_chunk_and_an_unseen_group_close_nothing():
     bank = po.ModelBank([cov_spec(group_close="monotone")])
     bank.fit_predict(frame(["a"]).clear())

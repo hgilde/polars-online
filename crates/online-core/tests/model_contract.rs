@@ -135,7 +135,7 @@ fn probe_with<M: OnlineModel>(
 /// move under `clear_lags`. Everything else must not: `clear_lags` is not a
 /// reset, and a model that quietly threw away a mean here would look like a
 /// decay bug three chunks later (docs/PLAN.md task 47).
-const KEEPS_LAGS: &[&str] = &[];
+const KEEPS_LAGS: &[&str] = &["rcov"];
 
 fn check(r: &Report, kind: &str, targets: usize, combos: usize) {
     assert_eq!(r.kind, kind, "state kind");
@@ -691,6 +691,40 @@ fn deco() {
     assert!(r.roundtrips);
 }
 
+fn rcov_cfg() -> RcovCfg {
+    RcovCfg {
+        n_features: K,
+        kind: RcovKind::Kernel,
+        kernel: "parzen".into(),
+        bandwidth: Some(3),
+        jitter: 2,
+        theta: 1.0,
+        psd: false,
+        n_max: Some(100),
+        h_max: None,
+        window: None,
+        noise_stride: 1,
+        iv_stride: 20,
+    }
+}
+
+#[test]
+fn rcov() {
+    // A block estimator: no targets, no output slots, and no decay -- the
+    // block is the value, read at the group's close. `n_eff` is the plain
+    // count of returns, so a clock gap changes nothing.
+    let m = Rcov::new(rcov_cfg()).unwrap();
+    assert_eq!(m.n_targets(), 0);
+    assert_eq!(m.n_features(), K);
+    assert_eq!(m.n_outputs(), 0, "rcov reports nothing per row");
+    let r = probe_with(m, 0, Some(&Rcov::n_eff));
+    assert_eq!(r.kind, "rcov");
+    assert_eq!(r.pred_len, 0);
+    assert_eq!(r.n_eff, vec![0.0, 1.0, 2.0, 40.0]);
+    assert_eq!(r.after_gap, r.before_gap + 1.0, "no decay over a gap");
+    assert!(r.roundtrips);
+}
+
 /// The variants of `ModelState` this file probes. A model added to the enum
 /// and not to this list fails here, which is the reminder to write its
 /// `*_cfg()` and probe above (docs/EXTENDING.md).
@@ -712,6 +746,7 @@ const PROBED: &[&str] = &[
     "SeqTest",
     "Marginal",
     "Deco",
+    "Rcov",
 ];
 
 #[test]
@@ -1490,6 +1525,28 @@ fn marginal_predict_is_the_step() {
     // No slots to compare, so this holds `n_eff` and `extra` alone -- and
     // that `predict` did not move the state.
     predict_is_the_step_without_the_step(|| Marginal::new(marginal_cfg()).unwrap(), 2, false);
+}
+
+#[test]
+fn rcov_predict_is_the_step() {
+    // No slots, so this holds `n_eff` and that `predict` moved nothing.
+    predict_is_the_step_without_the_step(|| Rcov::new(rcov_cfg()).unwrap(), 0, false);
+}
+
+#[test]
+fn rcov_recovers_from_bounded_extremes() {
+    // A 1e100 return dominates the sums for good -- there is no decay to
+    // wash it out -- so the twin comparison is not the contract here; what
+    // is, is that the state stays finite and the model goes on accepting
+    // rows.
+    let rows = bounded_script(0);
+    let mut m = Rcov::new(rcov_cfg()).unwrap();
+    for r in &rows {
+        let step = m.step(&r.x, &r.y, 1.0, r.w);
+        assert!(step.n_eff.is_finite());
+    }
+    let e = m.estimate();
+    assert!(e.rcov.expect("a block").iter().all(|v| !v.is_nan()));
 }
 
 #[test]

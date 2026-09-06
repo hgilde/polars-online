@@ -16,6 +16,22 @@ carries breaking changes.
 
 ### Added
 
+- **`rcov`: a block's realised covariance, robust to microstructure noise**
+  (`docs/ENHANCEMENTS.md` E57, task 50). Three estimators over a group's
+  returns: `plain` (`Σ x x'`, which equals `n` times an `ew_cov(lam=1)`'s
+  uncentred second moment at close, to the bit), `kernel` (the multivariate
+  realised kernel of Barndorff-Nielsen, Hansen, Lunde & Shephard, Parzen
+  weights and jittered end points) and `preavg` (Christensen, Kinnebrock &
+  Podolskij's modulated realised covariance). No decay and nothing per row
+  but `n_eff`: the value is the block, emitted in the `group_close` row with
+  `rcov`, `rcorr`, `rcov_n`, `bandwidth_used`, `omega2`, `iv_sparse`, `iq`
+  and `psd_repaired`.
+
+  Nothing reads a future row: the jittered *end* point is formed at close
+  from observations already in state, and a product enters `Γ̂_h` only once
+  both legs are final. `weight` is 0 or 1 only, and the block is the same
+  from one chunk or a thousand.
+
 - **`po.prep.refresh_time`: asynchronous series on a common grid**
   (`docs/ENHANCEMENTS.md` E58, task 49). Barndorff-Nielsen, Hansen, Lunde &
   Shephard's refresh-time rule — a grid point wherever every series has

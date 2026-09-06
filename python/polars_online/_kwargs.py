@@ -36,6 +36,7 @@ __all__ = [
     "MarginalKwargs",
     "PaKwargs",
     "QuantileKwargs",
+    "RcovKwargs",
     "RlsKwargs",
     "SeqTestKwargs",
     "SgdKwargs",
@@ -237,3 +238,17 @@ class DecoKwargs(ExprKwargs, total=False):
 class MarginalKwargs(ExprKwargs, total=False):
     """``marginal`` has no parameters of its own: the pairs are fixed by the
     calling column and the features, and everything else is shared."""
+
+
+class RcovKwargs(ExprKwargs, total=False):
+    kind: str
+    kernel: str
+    bandwidth: int | None
+    jitter: int
+    theta: float
+    psd: bool
+    n_max: int | None
+    h_max: int | None
+    window: int | None
+    noise_stride: int | None
+    iv_stride: int | None

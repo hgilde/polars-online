@@ -62,6 +62,7 @@ pub enum ModelState {
     SeqTest(Box<crate::SeqTest>),
     Marginal(Box<crate::Marginal>),
     Deco(Box<crate::Deco>),
+    Rcov(Box<crate::Rcov>),
 }
 
 #[derive(Debug, Error)]
@@ -97,6 +98,7 @@ impl ModelState {
             ModelState::SeqTest(_) => "seqtest",
             ModelState::Marginal(_) => "marginal",
             ModelState::Deco(_) => "deco",
+            ModelState::Rcov(_) => "rcov",
         }
     }
 }

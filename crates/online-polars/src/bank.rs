@@ -419,6 +419,21 @@ fn extract(
                         spec.name, c, v[j], source_row(layout, j)
                     );
                 }
+                // `rcov` sums returns over a block; a fractional weight has
+                // no meaning there, so it takes a weight only as "this row
+                // is a return" or "this row is not" (E57).
+                if matches!(spec.model, ModelKind::Rcov { .. }) {
+                    if let Some(j) = v
+                        .iter()
+                        .position(|f| f.is_finite() && *f != 0.0 && *f != 1.0)
+                    {
+                        polars_bail!(ComputeError:
+                            "spec {:?}: weight column {:?} has {} at row {}; rcov takes 0 or 1 \
+                             (a realised covariance is a sum over returns, not a weighted mean)",
+                            spec.name, c, v[j], source_row(layout, j)
+                        );
+                    }
+                }
                 Ok(Some(v))
             }
             None => Ok(None),
@@ -498,6 +513,24 @@ fn close_rows(
                     .collect(),
                 _ => Vec::new(),
             };
+            let rcov = match model {
+                AnyModel::Rcov(m) => {
+                    let e = m.estimate();
+                    let k = spec.k();
+                    Some(RcovRow {
+                        rcov: e.rcov.as_ref().map(|c| vech(c, k)),
+                        rcorr: e.rcorr.as_ref().map(|c| vech(c, k)),
+                        n: e.n,
+                        kind: e.kind.to_string(),
+                        bandwidth_used: e.bandwidth_used,
+                        omega2: e.omega2,
+                        iv_sparse: e.iv_sparse,
+                        iq: e.iq,
+                        psd_repaired: e.psd_repaired,
+                    })
+                }
+                _ => None,
+            };
             ClosedRow {
                 spec: si,
                 group: key.clone(),
@@ -516,6 +549,7 @@ fn close_rows(
                 eig_vals: None,
                 eig_vecs: None,
                 pairs,
+                rcov,
                 at,
             }
         })
@@ -1176,6 +1210,12 @@ pub struct ClosedRow {
     /// A `marginal` spec's pairs, in [`Bank::marginal`] order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pairs: Vec<PairRow>,
+    /// An `rcov` spec's block (docs/ENHANCEMENTS.md E57): the realised
+    /// covariance and correlation as `vech` of the upper triangle, the
+    /// effective return count, the estimator, and the noise diagnostics
+    /// behind an automatic bandwidth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rcov: Option<RcovRow>,
     /// Position of the closing row within the chunk that closed it: the
     /// first row of the new session, or the first row of the greater key.
     /// The queue's order, and not part of the row itself.
@@ -1236,6 +1276,7 @@ fn closed_frame(specs: &[Spec], rows: &[ClosedRow]) -> PolarsResult<DataFrame> {
     });
     let has_pca = any(|s| matches!(s.model, ModelKind::EwCov { pca: Some(_), .. }));
     let has_pairs = any(|s| matches!(s.model, ModelKind::Marginal {}));
+    let has_rcov = any(|s| matches!(s.model, ModelKind::Rcov { .. }));
     let opt = |v: f64| v.is_finite().then_some(v);
 
     let mut cols: Vec<Column> = vec![
@@ -1378,7 +1419,55 @@ fn closed_frame(specs: &[Spec], rows: &[ClosedRow]) -> PolarsResult<DataFrame> {
             }));
         }
     }
+    if has_rcov {
+        let block =
+            |f: fn(&RcovRow) -> Option<Vec<f64>>| move |r: &ClosedRow| r.rcov.as_ref().and_then(f);
+        cols.push(list_f64("rcov", rows, block(|b| b.rcov.clone())));
+        cols.push(list_f64("rcorr", rows, block(|b| b.rcorr.clone())));
+        cols.push(Column::new(
+            "rcov_n".into(),
+            rows.iter()
+                .map(|r| r.rcov.as_ref().map(|b| b.n))
+                .collect::<Vec<_>>(),
+        ));
+        cols.push(Column::new(
+            "rcov_kind".into(),
+            rows.iter()
+                .map(|r| r.rcov.as_ref().map(|b| b.kind.as_str()))
+                .collect::<Vec<_>>(),
+        ));
+        cols.push(Column::new(
+            "bandwidth_used".into(),
+            rows.iter()
+                .map(|r| r.rcov.as_ref().and_then(|b| b.bandwidth_used))
+                .collect::<Vec<_>>(),
+        ));
+        cols.push(list_f64("omega2", rows, block(|b| b.omega2.clone())));
+        cols.push(list_f64("iv_sparse", rows, block(|b| b.iv_sparse.clone())));
+        cols.push(list_f64("iq", rows, block(|b| b.iq.clone())));
+        cols.push(Column::new(
+            "psd_repaired".into(),
+            rows.iter()
+                .map(|r| r.rcov.as_ref().map(|b| b.psd_repaired))
+                .collect::<Vec<_>>(),
+        ));
+    }
     DataFrame::new(rows.len(), cols)
+}
+
+/// A closed `rcov` group's block, as the row carries it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RcovRow {
+    /// `vech` of the upper triangle with the diagonal, as `comoments` is.
+    pub rcov: Option<Vec<f64>>,
+    pub rcorr: Option<Vec<f64>>,
+    pub n: i64,
+    pub kind: String,
+    pub bandwidth_used: Option<i64>,
+    pub omega2: Option<Vec<f64>>,
+    pub iv_sparse: Option<Vec<f64>>,
+    pub iq: Option<Vec<f64>>,
+    pub psd_repaired: bool,
 }
 
 /// One decay instance's coefficients, from [`Bank::coef`].
@@ -2785,6 +2874,7 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
             | crate::ModelKind::Micro { .. }
             | crate::ModelKind::SeqTest { .. }
             | crate::ModelKind::Marginal {}
+            | crate::ModelKind::Rcov { .. }
     ) {
         return Vec::new();
     }
@@ -3233,9 +3323,13 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
         fields.push(FieldMeta::new("n_eff".into(), "n_eff").src(Source::NEff(0)));
         return fields;
     }
-    // marginal emits nothing per row but `n_eff`, one per instance: its
-    // pairs are read from the state (`Bank::marginal`).
-    if let crate::ModelKind::Marginal {} = &spec.model {
+    // rcov and marginal emit nothing per row but `n_eff`, one per instance:
+    // rcov's value is the block it emits at the group's close, marginal's
+    // are the pairs `Bank::marginal` reads from the state.
+    if matches!(
+        spec.model,
+        crate::ModelKind::Marginal {} | crate::ModelKind::Rcov { .. }
+    ) {
         return decays
             .iter()
             .enumerate()

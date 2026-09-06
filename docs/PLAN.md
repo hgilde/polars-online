@@ -662,7 +662,7 @@ note, not a task.
       Poisson streams; an 8/9/10-tick three-series example with `N = 7` and
       retained fraction `21/27`; a synchronous input returned unchanged;
       identical output from 1 and 1000 batches.
-- [ ] 50. **`rcov`** (E57): the multivariate realised kernel, the
+- [x] 50. **`rcov`** (E57): the multivariate realised kernel, the
       pre-averaged (modulated) realised covariance and the plain realised
       covariance as a group-scoped, undecayed `OnlineModel` whose value is its
       E54 row. Acceptance: `kind = "plain"` equals `n ×` `ew_cov(lam = 1)`'s
@@ -2483,6 +2483,33 @@ no-op for every model that has declared no ring (`KEEPS_LAGS`, empty today).
   `k = 1`); the short-block nulls; a zero-weight row absent from the ring
   (the estimate equals the one from the stream with that row removed);
   chunk invariance; the sweeps, with the residual flags refused.
+
+*Task 50 as built, 2026-09-06.* The design stood; five notes, one of them
+still open.
+
+- **CKP §3 was not read, and the source says so.** `psd = true`'s longer
+  window is `kₙ = ⌈θ·n^{0.6}⌉` with the bias term dropped -- Hautsch &
+  Podolskij's reading, as ANSWERS flagged. `RcovCfg::window_for` carries the
+  comment; if §3 disagrees, that line and the dropped term move together.
+  Everything else in the model is from the papers directly.
+- *The jitter bound is a claim about a block, not a handful of rows.* BNHLS
+  say `m = 1..4` move the estimate by under 0.5 %; at 300 returns per block
+  it is 0.8 %, because the jitter is an end effect. At 1000 it is 0.11 %,
+  and the test runs there.
+- *A `Point`'s legs must both be final before it enters `Γ̂_h`.* The ring
+  keeps `m + 1` raw returns so `x_{t−m}` can be finalised at row `t`; the
+  first `m` are kept separately for the leading jittered return, and the
+  trailing one is formed at close from the *last* `m` of that ring -- not
+  all `m + 1`, which was the first bug the longhand oracle caught.
+- *The pre-averaged window starts one row later than the ring fills.* CKP's
+  `Ȳᵢ = Σ_{j=1}^{kₙ−1} g(j/kₙ)·x_{i+j}` skips `x_i`, so the window is the
+  `kₙ − 1` returns *after* the oldest in a ring of `kₙ`. Filling a ring of
+  `kₙ − 1` and reading it whole is off by one window, which the longhand
+  oracle also caught.
+- *A session close restarts the stream, so a closing spec's live `summary()`
+  is the current span's.* `test_summary.py`'s whole-stream oracle skips
+  those specs, and `test_closed_groups.py` asserts the other half: the spans
+  before the current one are in the closed rows.
 
 *Task 51 — `po.corr` (E62).*
 

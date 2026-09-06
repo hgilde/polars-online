@@ -6,8 +6,9 @@ use online_core::{
     EwClass, EwClassCfg, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg,
     FtrlLoss, Holt, HoltCfg, INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg, Lasso, LassoCfg,
     LearningRate, Marginal, MarginalCfg, Micro, MicroCfg, ModelState, OnlineModel, P2Quantile, Pa,
-    PaCfg, PaMode, PageHinkley, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, SeedRule, SeqTest,
-    SeqTestCfg, Sgd, SgdCfg, SgdLoss, SlotMetrics, State, StateError,
+    PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg, Robust, RobustCfg,
+    RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss, SlotMetrics, State,
+    StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +34,7 @@ pub enum AnyModel {
     SeqTest(Box<SeqTest>),
     Marginal(Box<Marginal>),
     Deco(Box<Deco>),
+    Rcov(Box<Rcov>),
 }
 
 /// Bind the boxed model of whichever variant `$self` is, then run `$body`.
@@ -62,6 +64,7 @@ macro_rules! dispatch {
             AnyModel::SeqTest($m) => $body,
             AnyModel::Marginal($m) => $body,
             AnyModel::Deco($m) => $body,
+            AnyModel::Rcov($m) => $body,
         }
     };
 }
@@ -115,7 +118,8 @@ impl AnyModel {
             | AnyModel::Micro(_)
             | AnyModel::SeqTest(_)
             | AnyModel::Marginal(_)
-            | AnyModel::Deco(_) => 0,
+            | AnyModel::Deco(_)
+            | AnyModel::Rcov(_) => 0,
         }
     }
 
@@ -161,6 +165,9 @@ impl AnyModel {
             // The levels themselves, one row: `coef_fields` names one slot
             // per correlation value, term `rho`.
             AnyModel::Deco(m) => Some(vec![m.rho().to_vec()]),
+            // rcov has no coefficients: its value is the block it emits at
+            // the group's close.
+            AnyModel::Rcov(_) => None,
         }
     }
 
@@ -186,6 +193,7 @@ impl AnyModel {
             ModelState::SeqTest(_) => Ok(AnyModel::SeqTest(Box::new(SeqTest::restore(s)?))),
             ModelState::Marginal(_) => Ok(AnyModel::Marginal(Box::new(Marginal::restore(s)?))),
             ModelState::Deco(_) => Ok(AnyModel::Deco(Box::new(Deco::restore(s)?))),
+            ModelState::Rcov(_) => Ok(AnyModel::Rcov(Box::new(Rcov::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -663,7 +671,55 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             cfg.decay = decay;
             Ok(AnyModel::Deco(Box::new(Deco::new(cfg)?)))
         }
+        // No decay to build with, so the one undecayed instance `decays()`
+        // gives is the only one.
+        ModelKind::Rcov { .. } => Ok(AnyModel::Rcov(Box::new(Rcov::new(rcov_cfg(spec)?)?))),
     }
+}
+
+/// An `rcov` spec's [`RcovCfg`]. Every parameter check is the model's, so
+/// `Spec::validate`, the CLI and the plugin get one set of messages.
+pub fn rcov_cfg(spec: &Spec) -> Result<RcovCfg, String> {
+    let ModelKind::Rcov {
+        kind,
+        kernel,
+        bandwidth,
+        jitter,
+        theta,
+        psd,
+        n_max,
+        h_max,
+        window,
+        noise_stride,
+        iv_stride,
+    } = &spec.model
+    else {
+        return Err("not an rcov spec".into());
+    };
+    let kind = match kind.as_deref() {
+        None | Some("kernel") => RcovKind::Kernel,
+        Some("preavg") => RcovKind::Preavg,
+        Some("plain") => RcovKind::Plain,
+        Some(other) => {
+            return Err(format!(
+                "unknown rcov kind {other:?}; expected \"kernel\", \"preavg\" or \"plain\""
+            ));
+        }
+    };
+    Ok(RcovCfg {
+        n_features: spec.k(),
+        kind,
+        kernel: kernel.clone().unwrap_or_else(|| "parzen".into()),
+        bandwidth: *bandwidth,
+        jitter: jitter.unwrap_or(2),
+        theta: theta.unwrap_or(1.0),
+        psd: psd.unwrap_or(true),
+        n_max: *n_max,
+        h_max: *h_max,
+        window: *window,
+        noise_stride: noise_stride.unwrap_or(1),
+        iv_stride: iv_stride.unwrap_or(20),
+    })
 }
 
 /// A `deco` spec's [`DecoCfg`], with the block *names* resolved to feature
@@ -799,7 +855,8 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
         | ModelKind::EwClass { .. }
         | ModelKind::SeqTest { .. }
         | ModelKind::Marginal {}
-        | ModelKind::Deco { .. } => vec![Combo::default()],
+        | ModelKind::Deco { .. }
+        | ModelKind::Rcov { .. } => vec![Combo::default()],
         ModelKind::Lasso { lasso_path, .. } => lasso_path
             .iter()
             .map(|l| Combo {

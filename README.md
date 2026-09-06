@@ -1457,6 +1457,53 @@ table = bank.marginal("pairs")             # group, instance, feature, target, n
 one_bond = bank.marginal("pairs", group="b0")   # 10 rows: five features by two targets
 ```
 
+### `rcov` — a block's realised covariance, robust to noise
+
+A realised covariance over ticks is the sum of outer products of returns.
+Over real tick data it is wrong twice: each price is the efficient one plus
+a measurement error, and the error's variance accumulates with every tick;
+and if the series are not observed together, the correlation is attenuated
+towards zero. Both are estimated away by published estimators that are sums
+over lags — which is exactly what a stream can accumulate.
+
+`rcov` has no decay and no per-row output but `n_eff`. Its value is the
+block, emitted when the group closes, so it needs `group` and `group_close`
+and the estimate rides in that row.
+
+```python
+r = po.spec.rcov("rk", features=["x0", "x1"], kind="kernel",
+                 group="block", group_close="monotone", n_max=2000)
+bank = po.ModelBank([r])
+bank.fit_predict(by_block.select("x0", "x1", "block"))
+blocks = bank.closed_groups()      # rcov, rcorr, rcov_n, bandwidth_used, ...
+```
+
+Rows are **returns**: difference upstream. Three kinds:
+
+| `kind` | what it is |
+|---|---|
+| `plain` | `Σ x x'`. Equals `n` × an `ew_cov(lam=1)`'s uncentred second moment at close, to the bit — the cross-check, and the reference the other two are measured against |
+| `kernel` | the multivariate realised kernel (Barndorff-Nielsen, Hansen, Lunde & Shephard 2011), `Σ_h k(h/(H+1))·Γ̂_h` with Parzen weights and jittered end points |
+| `preavg` | the modulated realised covariance (Christensen, Kinnebrock & Podolskij 2010): returns pre-averaged over `k_n = ⌊θ√n⌋` with `g(x) = min(x, 1−x)`, less the residual bias |
+
+Parzen is the only kernel: the Bartlett kernel is not consistent for this
+estimator, and Parzen's 0.97 efficiency beats the quadratic spectral's 0.93.
+`bandwidth` is a fixed `H`; left out it is `H = ⌈c*·ξ̂^{4/5}·n^{3/5}⌉` with
+`c* = 3.5134`, which needs `n_max` — the ring has to be sized before the
+first row and `n` is known only at the close. `n_max` is a sizing hint, not
+a limit: a longer block runs, clipped, and reports `bandwidth_used`.
+
+The closed row carries `rcov` and `rcorr` (`vech` of the upper triangle),
+`rcov_n`, `rcov_kind`, `bandwidth_used`, `omega2` and `iv_sparse` (the noise
+variance and sparse integrated variance behind the bandwidth), `iq` (a
+realised-quarticity proxy, labelled one) and `psd_repaired`. A block too
+short to estimate from gives nulls, not an error.
+
+Nothing reads a future row: the jittered *end* point is formed at close from
+observations already in state, and a product enters `Γ̂_h` only once both
+legs are final. `weight` is taken as 0 or 1 only — a sum over returns has no
+fractional row.
+
 ### `deco` — one correlation for the whole matrix
 
 A correlation matrix of `m` series has `m(m−1)/2` free entries. A stream

@@ -202,6 +202,21 @@
     max_rows_between_solves = None
     quantile_eps = None
     common
+  rcov:
+    name
+    features
+    kind = 'kernel'
+    kernel = 'parzen'
+    bandwidth = None
+    jitter = 2
+    theta = 1.0
+    psd = True
+    n_max = None
+    h_max = None
+    window = None
+    noise_stride = None
+    iv_stride = None
+    common
   rls:
     name
     targets
@@ -274,6 +289,7 @@
   micro
   pa
   quantile
+  rcov
   rls
   seqtest
   sgd
@@ -671,6 +687,8 @@
     lagcorr_x0_x1_l5
     lagcorr_x1_x0_l5
     lagcorr_x1_x1_l5
+    n_eff
+  rcov minimal:
     n_eff
   deco minimal:
     u

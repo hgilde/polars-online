@@ -351,12 +351,28 @@ class TestTheExpressionWarnsThatItRunsInMemory:
             "seqtest": ("seqtest", lambda: ns.seqtest()),
             "marginal": ("marginal", lambda: ns.marginal(**common)),
             "deco": ("deco", lambda: ns.deco(others=["x0"], halflife=2.0)),
+            "rcov": ("rcov", lambda: ns.rcov(others=["x0"], n_max=10)),
         }
+
+    #: Models with no expression form at all: `rcov`'s value is the block a
+    #: group close emits, and an expression has neither a group nor a close.
+    #: The method exists and refuses by name, so it is here rather than
+    #: missing from the namespace.
+    NO_EXPRESSION = {"rcov"}
+
+    def test_a_model_with_no_expression_form_refuses_by_name(self):
+        calls = self._calls()
+        assert set(calls) >= self.NO_EXPRESSION, "a skipped kind has no entry"
+        for kind in self.NO_EXPRESSION:
+            with pytest.raises(TypeError, match="has no expression form"):
+                calls[kind][1]()
 
     def test_every_method_warns_and_names_the_call_that_streams(self):
         calls = self._calls()
         assert set(calls) == set(po._polars_online.model_kinds())
         for kind, (method, call) in calls.items():
+            if kind in self.NO_EXPRESSION:
+                continue
             with pytest.warns(po.InMemoryExpressionWarning) as rec:
                 call()
             assert len(rec) == 1, kind

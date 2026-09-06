@@ -49,12 +49,21 @@ MINIMAL: dict[str, dict[str, object]] = {
     "seqtest": {"features": None, "halflife": None},
     "marginal": {},
     "deco": {"targets": None, "features": ["x0", "x1"]},
+    "rcov": {
+        "targets": None,
+        "features": ["x0", "x1"],
+        "halflife": None,
+        "group": "g",
+        "group_close": "monotone",
+        "n_max": 100,
+    },
 }
 
 #: The sweeps fit a numeric target, so the models that predict none --
 #: ``ew_cov`` (moments), ``kmeans`` and ``micro`` (assignments, no target),
 #: ``ew_class`` (a label), ``seqtest`` (evidence), ``marginal`` (pairwise
-#: moments, read from the state), ``deco`` (an equicorrelation) -- sit them
+#: moments, read from the state), ``deco`` (an equicorrelation), ``rcov``
+#: (a block's realised covariance, read at the group's close) -- sit them
 #: out.
 REGRESSIONS = frozenset(MINIMAL) - {
     "ew_cov",
@@ -64,6 +73,7 @@ REGRESSIONS = frozenset(MINIMAL) - {
     "seqtest",
     "marginal",
     "deco",
+    "rcov",
 }
 
 

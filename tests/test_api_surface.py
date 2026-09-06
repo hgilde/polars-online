@@ -185,6 +185,10 @@ def describe_api() -> str:
                 halflife=100.0,
             ),
         ),
+        (
+            "rcov",
+            dict(features=["x0", "x1"], group="g", group_close="monotone", n_max=500),
+        ),
         ("deco", dict(features=["x0", "x1", "x2"], halflife=100.0)),
         (
             "deco blocked",

@@ -71,6 +71,7 @@ mod lasso;
 mod marginal;
 mod model;
 mod pa;
+mod rcov;
 mod rls;
 mod robust;
 mod seqtest;
@@ -103,6 +104,10 @@ pub use model::{
     Extra, INPUT_BOUND, ModelState, OnlineModel, State, StateError, Step, check_schema,
 };
 pub use pa::{Pa, PaCfg, PaMode};
+pub use rcov::{
+    Rcov, RcovCfg, RcovEstimate, RcovKind, parzen, parzen_c_star, phi_11, phi_12, phi_22, preavg_g,
+    psi1, psi2,
+};
 pub use rls::{Rls, RlsCfg};
 pub use robust::{Robust, RobustCfg, RobustLoss};
 pub use seqtest::{SLOTS as SEQTEST_SLOTS, SeqTest, SeqTestCfg};

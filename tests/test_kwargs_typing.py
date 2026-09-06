@@ -30,6 +30,7 @@ EXPR_SUPPLIES = {"name", "targets", "features", "group", "group_close", "label"}
 EXPR_OMITS: dict[str, set[str]] = {"seqtest": {"a", "b", "a_suffix", "b_suffix"}}
 NAMESPACE_METHODS = [
     "deco",
+    "rcov",
     "ewridge",
     "rls",
     "lasso",

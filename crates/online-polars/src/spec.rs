@@ -759,6 +759,49 @@ pub enum ModelKind {
         #[serde(default)]
         blocks: Option<Vec<(String, Vec<String>)>>,
     },
+    /// A block's realised covariance, robust to microstructure noise
+    /// (docs/ENHANCEMENTS.md E57). Rows are **returns**; there is no decay
+    /// and no per-row output but `n_eff`, because the model's value is its
+    /// state at the group's close -- so it requires `group` and
+    /// `group_close`, and the block rides in that row.
+    #[serde(rename = "rcov")]
+    Rcov {
+        /// `"kernel"` (default), `"preavg"` or `"plain"`.
+        #[serde(default)]
+        kind: Option<String>,
+        /// Only `"parzen"`.
+        #[serde(default)]
+        kernel: Option<String>,
+        /// A fixed `H`, or omitted for BNHLS's automatic rule (which needs
+        /// `n_max`).
+        #[serde(default)]
+        bandwidth: Option<usize>,
+        /// Observations averaged at each end; default 2, `1` is none.
+        #[serde(default)]
+        jitter: Option<usize>,
+        /// Pre-averaging window scale, `kₙ = ⌊θ√n_max⌋`; default 1.
+        #[serde(default)]
+        theta: Option<f64>,
+        /// Clip negative eigenvalues at close; default true.
+        #[serde(default)]
+        psd: Option<bool>,
+        /// The block's expected length, which sizes the ring before the
+        /// first row.
+        #[serde(default)]
+        n_max: Option<usize>,
+        /// Ring depth, if not the default from `n_max`.
+        #[serde(default)]
+        h_max: Option<usize>,
+        /// A fixed pre-averaging window instead of `⌊θ√n_max⌋`.
+        #[serde(default)]
+        window: Option<usize>,
+        /// Subsampling stride for the noise estimate; default 1.
+        #[serde(default)]
+        noise_stride: Option<usize>,
+        /// Subsampling stride for the sparse variance; default 20.
+        #[serde(default)]
+        iv_stride: Option<usize>,
+    },
 }
 
 /// The two sides of a `seqtest` comparison, as [`ModelKind::compares`]
@@ -789,7 +832,7 @@ impl ModelKind {
     /// to the enum, so a new variant fails a test until it is listed here.
     pub const KINDS: &'static [&'static str] = &[
         "ew_ridge", "lasso", "kalman", "huber", "quantile", "ftrl", "ew_cov", "sgd", "pa", "holt",
-        "rls", "kmeans", "micro", "ew_class", "seqtest", "marginal", "deco",
+        "rls", "kmeans", "micro", "ew_class", "seqtest", "marginal", "deco", "rcov",
     ];
 
     pub fn kind_name(&self) -> &'static str {
@@ -811,6 +854,7 @@ impl ModelKind {
             ModelKind::SeqTest { .. } => "seqtest",
             ModelKind::Marginal {} => "marginal",
             ModelKind::Deco { .. } => "deco",
+            ModelKind::Rcov { .. } => "rcov",
         }
     }
 
@@ -825,6 +869,7 @@ impl ModelKind {
                 | ModelKind::KMeans { .. }
                 | ModelKind::Micro { .. }
                 | ModelKind::Deco { .. }
+                | ModelKind::Rcov { .. }
         )
     }
 
@@ -1108,7 +1153,10 @@ impl Spec {
                 // of every bet made, so there is nothing a decay could apply
                 // to. One undecayed instance, and `halflife`/`lam` refused
                 // below rather than ignored.
-                ModelKind::SeqTest { .. } => {
+                // A realised covariance is a sum over a block, not a
+                // decayed mean: the block boundary is `group_close`'s, and
+                // `halflife`/`lam` are refused below rather than ignored.
+                ModelKind::SeqTest { .. } | ModelKind::Rcov { .. } => {
                     Ok(vec![(String::new(), Decay::Halflife(f64::INFINITY))])
                 }
                 // For Holt the level halflife *is* the spec's halflife --
@@ -1238,6 +1286,8 @@ impl Spec {
             // The standardiser needs a variance per feature before the row
             // can be standardised at all; three rows is where it has one.
             ModelKind::Deco { .. } => 3.0,
+            // Nothing is gated: `rcov` reports nothing per row.
+            ModelKind::Rcov { .. } => 0.0,
             _ => (self.k() + usize::from(self.add_intercept)) as f64,
         }
     }
@@ -1865,6 +1915,25 @@ impl Spec {
             // Every parameter check is `DecoCfg::validate`'s, so that the
             // CLI, the bank and the plugin all get the same messages; only
             // the block *names* are resolved here, where the feature list is.
+            ModelKind::Rcov { .. } => {
+                if self.group.is_none() || self.group_close.is_none() {
+                    return Err(format!(
+                        "spec {:?}: rcov needs `group` and `group_close`; its value is the block \
+                         it emits when the group closes, and a stream with no close never emits \
+                         one",
+                        self.name
+                    ));
+                }
+                if self.halflife.is_some() || self.lam.is_some() {
+                    return Err(format!(
+                        "spec {:?}: halflife/lam do not apply to rcov (a realised covariance is \
+                         a sum over a block, not a decayed mean); the block boundary is \
+                         group_close's",
+                        self.name
+                    ));
+                }
+                crate::stream::rcov_cfg(self).map_err(|e| format!("spec {:?}: {e}", self.name))?;
+            }
             ModelKind::Deco { blocks, .. } => {
                 if let Some(blocks) = blocks {
                     for (name, cols) in blocks {

@@ -44,6 +44,7 @@ from polars_online._kwargs import (
     MicroKwargs,
     PaKwargs,
     QuantileKwargs,
+    RcovKwargs,
     RlsKwargs,
     SeqTestKwargs,
     SgdKwargs,
@@ -367,6 +368,23 @@ class OnlineNamespace:
         names, exprs = _features(others)
         spec = _spec.deco("online", features=[self._target(), *names], **kwargs)
         return _run(spec, self._expr, [self._expr, *exprs])
+
+    def rcov(self, others: list[Feature], **kwargs: Unpack[RcovKwargs]) -> pl.Expr:
+        """Refused: ``rcov`` has no expression form.
+
+        Its value is the block it emits when a group closes, and an
+        expression has neither a group (``.over()`` does the grouping, and
+        the plugin never sees it) nor a close (it returns one column of the
+        frame's own height, with nowhere to put a block). Run it in a
+        :class:`ModelBank` with ``group=`` and ``group_close=`` and read the
+        blocks with :meth:`ModelBank.closed_groups`.
+        """
+        msg = (
+            "online: rcov has no expression form -- its value is the block it emits when a "
+            "group closes, and an expression has no group and no close. Run it in a ModelBank "
+            "with group= and group_close=, and read the blocks with closed_groups()."
+        )
+        raise TypeError(msg)
 
     def sgd(
         self,

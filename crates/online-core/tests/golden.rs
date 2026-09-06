@@ -413,6 +413,57 @@ fn seqtest_golden() {
     );
 }
 
+/// `rcov` reports nothing per row, so its signature is the block: the
+/// kernel estimate's three distinct entries after the whole stream.
+#[test]
+fn rcov_golden() {
+    let mut m = Rcov::new(RcovCfg {
+        n_features: 2,
+        kind: RcovKind::Kernel,
+        kernel: "parzen".into(),
+        bandwidth: Some(3),
+        jitter: 2,
+        theta: 1.0,
+        psd: false,
+        n_max: Some(60),
+        h_max: None,
+        window: None,
+        noise_stride: 1,
+        iv_stride: 20,
+    })
+    .unwrap();
+    for (x, y, d, w) in stream() {
+        m.step(&x, &y, d, w);
+    }
+    let cov = m.estimate().rcov.expect("a block");
+    check("rcov", &[cov[0], cov[1], cov[3]], GOLDEN_RCOV);
+}
+
+/// The pre-averaged estimate on the same stream: the other arithmetic.
+#[test]
+fn rcov_preavg_golden() {
+    let mut m = Rcov::new(RcovCfg {
+        n_features: 2,
+        kind: RcovKind::Preavg,
+        kernel: "parzen".into(),
+        bandwidth: None,
+        jitter: 2,
+        theta: 1.0,
+        psd: false,
+        n_max: Some(60),
+        h_max: None,
+        window: Some(6),
+        noise_stride: 1,
+        iv_stride: 20,
+    })
+    .unwrap();
+    for (x, y, d, w) in stream() {
+        m.step(&x, &y, d, w);
+    }
+    let cov = m.estimate().rcov.expect("a block");
+    check("rcov_preavg", &[cov[0], cov[1], cov[3]], GOLDEN_RCOV_PREAVG);
+}
+
 #[test]
 fn deco_golden() {
     // Slot 1 is `rho`, the level the whole model is for: it reads the
@@ -622,6 +673,8 @@ fn ew_class_golden() {
 }
 
 // --- generated; see the module docs ---
+const GOLDEN_RCOV: &[f64] = &[15.118271471980519, -2.2219191583655915, 22.721761773534745];
+const GOLDEN_RCOV_PREAVG: &[f64] = &[9.410243164612856, -1.8070645542417443, 21.4716237436384];
 const GOLDEN_DECO: &[f64] = &[
     -0.05328065158114557,
     -0.10464551302436545,
