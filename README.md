@@ -1126,8 +1126,10 @@ out = po.ModelBank([revert]).fit_predict(df)
 *API:* [`po.spec.huber`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.huber) and [`po.spec.quantile`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.quantile) — *Rust:* [`robust.rs`](crates/online-core/src/robust.rs)
 
 IRLS reweighting on the ridge update, using each row's *prior* residual so
-the reweighting stays out-of-sample. Huber: `w = min(1, δσ/|r|)`; quantile:
-the check-loss weights at level τ. Weights are per target, so `S` is per
+the reweighting stays out-of-sample. Huber: `w = min(1, δσ/|r|)`. Quantile at
+level τ: the check loss's own IRLS weight, `2τσ/|r|` above the fit and
+`2(1−τ)σ/|r|` below it, with `|r|` floored at `quantile_eps · σ` so a residual
+near zero cannot blow the weight up. Weights are per target, so `S` is per
 target here.
 
 ### `sgd` — stochastic gradient descent

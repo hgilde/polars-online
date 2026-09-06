@@ -21,6 +21,10 @@
 //!          = 2 * (1 - tau) * s / max(|r|, eps * s)    otherwise
 //! ```
 //!
+//! `s` is the EW residual std of that target as the row arrives, and is taken
+//! as 1 until one exists (no rows yet, or every residual so far exactly zero),
+//! so the first rows are weighted in the residual's own units.
+//!
 //! Because the weights are per target, the `S` accumulator is per target here
 //! (one [`EwCov`] each) — unlike [`crate::EwRidge`], which shares one.
 
