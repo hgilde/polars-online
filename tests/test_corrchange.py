@@ -71,13 +71,27 @@ def test_a_constant_correlation_is_not_flagged_and_a_break_is():
     assert broken["stat"][n - 1] > broken["crit"][n - 1]
 
 
-def test_the_size_is_the_papers():
-    """Their Table 1 at the 5% level and `T = 500` reads `.040 / .035 /
-    .041` for `rho = -0.5 / 0 / 0.5`. **`|rho| <= 0.5` only**: the test
-    over-rejects at `|rho| = 0.9` for `T <= 500` (`.142` in their own
-    table), which is the paper's finding, not a defect here."""
-    n, reps = 500, 200
-    for rho, want in ((0.0, 0.035), (0.5, 0.041)):
+def test_the_size_is_near_nominal_on_gaussian_pairs():
+    """On **Gaussian** pairs the rejection rate is near the 5% it asks for.
+
+    That is the property to hold here, and it is not quite the paper's
+    table. WKD's Table 1 is for "i.i.d. bivariate `t_5` innovations" and
+    reads `.040 / .035 / .041` at `T = 500` for `rho = -0.5 / 0 / 0.5`. At
+    `rho = 0` every distribution agrees with it. At `rho = 0.5` the phrase
+    does not pin the distribution down, and the two readings straddle their
+    number: a shared-scale multivariate `t_5` (tail-dependent) over-rejects
+    at about `.07`, independent `t_5` marginals under-reject at about
+    `.025`, and Gaussian pairs land near nominal. `docs/REGIMES.md` §2
+    measures all three at 2000 replications; the table cannot be matched to
+    a decimal without the paper's exact DGP, so what is pinned here is the
+    level the test claims for itself.
+
+    **`|rho| <= 0.5` only**: the test over-rejects at `|rho| = 0.9` for
+    `T <= 500` (`.142` in their own table), which is the paper's finding,
+    not a defect here.
+    """
+    n, reps, want = 500, 200, 0.05
+    for rho in (0.0, 0.5):
         flags = 0
         for r in range(reps):
             out = run(pair(n, rho, seed=1000 + r), horizon=n, alpha_adjust="none")
@@ -89,7 +103,13 @@ def test_the_size_is_the_papers():
 
 def test_the_power_is_at_least_the_papers():
     """Their Table 2: a `0.5 -> 0.7` break at `T/2` rejects `.587` of the
-    time at `T = 500`."""
+    time at `T = 500`.
+
+    One-sided, and on Gaussian pairs, where this implementation is well
+    above their figure (`.82` at 2000 replications). Under a shared-scale
+    `t_5` it is below it (`.43` size-adjusted) -- the same DGP ambiguity as
+    the size test above, measured in `docs/REGIMES.md` §3.
+    """
     n, reps, want = 500, 120, 0.587
     flags = 0
     for r in range(reps):

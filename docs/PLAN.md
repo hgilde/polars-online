@@ -2881,12 +2881,21 @@ entries, distance 2.13 and rank 3. Four notes.
   sweeps; `MINIMAL["corrchange"] = {"features": ["x0", "x1"], "window": 8,
   "crit": 0.5}`.
 
-*Task 54 as built, 2026-09-06.* The re-scoping held: the size matches WKD's
-Table 1 in every cell. The power does **not** match Table 2 — it is well
-above it (0.87 against 0.587 at `T = 500`), and the gate's assertion is
-one-sided for that reason. Task 56's `docs/REGIMES.md` measures both at 2000
-and 1000 replications, shows that size-adjusting barely moves the power, and
-records the excess as unexplained. Five notes.
+*Task 54 as built, 2026-09-06.* The re-scoping held. **The comparison with
+WKD's tables did not, and task 56's `docs/REGIMES.md` is where that was
+found**: their Tables 1 and 2 are for "i.i.d. bivariate `t₅` innovations",
+the gate's tests draw *Gaussian* pairs, and the two are not interchangeable.
+Measured at 2000 replications across three DGPs: at `ρ = 0` everything
+agrees with the paper; at `|ρ| = 0.5` a shared-scale `t₅` makes this
+implementation liberal (`.075` against their `.040`) and independent `t₅`
+marginals conservative (`.025`), with their number between the two, while
+Gaussian pairs sit at the nominal 5 %. Size-adjusted power is *below* their
+table under either `t₅` (`.43` and `.47` against `.587`) and well above it
+on Gaussian pairs. The gate's size test now pins **the nominal level on
+Gaussian pairs**, which is a property this implementation has, instead of a
+`t₅` table it does not reproduce; §3 of the document states the hypothesis
+(a fourth-moment `D̂` under a distribution with barely any kurtosis) and
+says outright that it is untested. Five notes.
 
 - *`scalar = true` is a **mean** CUSUM, not a correlation one.* The first
   implementation pushed `[u, u]` into the pair machinery, whose correlation
@@ -3064,11 +3073,18 @@ records the excess as unexplained. Five notes.
   instance's coefficient is a NaN and `NaN != NaN`. Schema 5 compares the
   debug rendering, where a NaN in the same slot is a match.
 - *`docs/REGIMES.md` and `scripts/regime_experiments.py`.* Five experiments,
-  twelve seconds, committed rather than gate-regenerated (the
+  35 seconds, committed rather than gate-regenerated (the
   `docs/CLUSTERING.md` §7 precedent). Three of them are the ones §11a asked
   for; the fourth compares `corrchange(window)` and `bocpd` on the same
   break, which is where the two detectors' trade shows, and the fifth is the
   Epps curve with an `L` sweep of the lag inversion.
+- *And the size study is why the experiments were worth running.* The first
+  draft compared Gaussian draws against WKD's `t₅` table and concluded that
+  this implementation is more powerful than the paper. It is not: under
+  either reading of their DGP it is *less* powerful once the size is
+  adjusted, and its size at `|ρ| = 0.5` swings from `.075` to `.025`
+  depending on which bivariate `t₅` is meant. Task 54's note and its gate
+  test are corrected; the document reports all three DGPs side by side.
 - *The seeds are `zlib.crc32`, not `hash()`.* Python randomises string
   hashing per process, so the first draft's numbers changed run to run. An
   experiment in a committed document has to give the reader the numbers it

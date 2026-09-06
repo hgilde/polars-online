@@ -150,6 +150,28 @@ def recovery(seeds: int = 8) -> None:
 # --- task 54: is the monitor the size its paper says? ------------------------
 
 
+def _draw(t: int, rho: np.ndarray | float, rng: np.random.Generator, dist: str) -> np.ndarray:
+    """A bivariate sample with correlation `rho` (per row, if it is a
+    vector). WKD's tables are for **`t_5` innovations**, which is why the
+    experiments report that and the Gaussian case side by side: the test is
+    distribution-free in the limit, and how far from the limit `T = 500` is
+    depends on the tail."""
+    z = rng.standard_normal((t, 2))
+    x = np.column_stack([z[:, 0], rho * z[:, 0] + np.sqrt(1 - np.asarray(rho) ** 2) * z[:, 1]])
+    nu = 5
+    if dist == "t5":
+        # A multivariate t: one chi-square scale per row, shared by both
+        # coordinates, which leaves the correlation at `rho` and makes the
+        # extremes arrive in both at once.
+        return x / np.sqrt(rng.chisquare(nu, size=(t, 1)) / nu)
+    if dist == "t5_indep":
+        # The other reading of "bivariate t_5": each coordinate its own
+        # scale. Same marginals, no tail dependence, and -- measured -- a
+        # different size.
+        return x / np.sqrt(rng.chisquare(nu, size=(t, 2)) / nu)
+    return x
+
+
 def _monitor_flags(x: np.ndarray, horizon: int, alpha: float) -> list[bool]:
     df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
     spec = po.spec.corrchange(
@@ -161,7 +183,13 @@ def _monitor_flags(x: np.ndarray, horizon: int, alpha: float) -> list[bool]:
 
 def size(reps: int = 2000, alpha: float = 0.05) -> None:
     """Wied, Krämer & Dehling (2012) Table 1: the rejection rate of the
-    constancy test on i.i.d. Gaussian pairs, which is its size."""
+    constancy test under the null, which is its size.
+
+    Their table is for **`t_5` innovations**, so that is the column the
+    comparison is against; the Gaussian column is beside it because the test
+    is distribution-free only in the limit and this is how far from it
+    `T = 500` is.
+    """
     _rule("Size: the monitor against WKD Table 1")
     published = {
         (-0.5, 500): 0.040,
@@ -171,29 +199,42 @@ def size(reps: int = 2000, alpha: float = 0.05) -> None:
         (0.0, 1000): 0.034,
         (0.5, 1000): 0.039,
     }
+    se = np.sqrt(alpha * (1 - alpha) / reps)
     rows = []
     for t in (500, 1000):
         for rho in (-0.5, 0.0, 0.5):
-            hits = 0
-            for r in range(reps):
-                rng = np.random.default_rng(_seed(t, round(rho, 3), r))
-                z = rng.standard_normal((t, 2))
-                x = np.column_stack([z[:, 0], rho * z[:, 0] + np.sqrt(1 - rho**2) * z[:, 1]])
-                hits += sum(_monitor_flags(x, t, alpha))
-            got = hits / reps
-            se = np.sqrt(alpha * (1 - alpha) / reps)
+            cells = {}
+            for dist in ("t5", "t5_indep", "normal"):
+                hits = 0
+                for r in range(reps):
+                    rng = np.random.default_rng(_seed(t, round(rho, 3), r, dist))
+                    hits += sum(_monitor_flags(_draw(t, rho, rng, dist), t, alpha))
+                cells[dist] = hits / reps
             rows.append(
                 [
                     t,
                     rho,
-                    f"{got:.3f}",
                     f"{published[(rho, t)]:.3f}",
-                    f"{'yes' if abs(got - published[(rho, t)]) < 3 * se else 'NO'}",
+                    f"{cells['t5']:.3f}",
+                    f"{cells['t5_indep']:.3f}",
+                    f"{cells['normal']:.3f}",
                 ]
             )
-    _table(["T", "rho", "measured", "WKD Table 1", "within 3 s.e."], rows)
+    _table(
+        ["T", "rho", "WKD Table 1", "t5 shared scale", "t5 independent", "Gaussian"],
+        rows,
+    )
     se = np.sqrt(alpha * (1 - alpha) / reps)
     print(f"\n{reps} replications each; nominal {alpha}, s.e. {se:.4f}")
+    print(
+        "\nAt `rho = 0` every distribution agrees with the paper. At"
+        '\n`|rho| = 0.5` the two readings of "i.i.d. bivariate t_5" straddle'
+        "\nit -- tail dependence makes the test liberal, independent tails make"
+        "\nit conservative -- and Gaussian pairs land near the nominal 5 %. The"
+        "\npaper's phrase does not say which, so the table cannot be matched to"
+        "\na decimal; what this implementation can be held to is the level it"
+        "\nasks for, which is what `tests/test_corrchange.py` pins."
+    )
 
 
 def _monitor_stat(x: np.ndarray, horizon: int) -> float:
@@ -203,11 +244,6 @@ def _monitor_stat(x: np.ndarray, horizon: int) -> float:
     )
     out = po.ModelBank([spec]).fit_predict(df)["c"].struct.unnest()
     return float(out["stat"].drop_nulls().to_list()[0])
-
-
-def _pair(t: int, rho: np.ndarray | float, rng: np.random.Generator) -> np.ndarray:
-    z = rng.standard_normal((t, 2))
-    return np.column_stack([z[:, 0], rho * z[:, 0] + np.sqrt(1 - np.asarray(rho) ** 2) * z[:, 1]])
 
 
 def power(reps: int = 1000, alpha: float = 0.05) -> None:
@@ -221,38 +257,34 @@ def power(reps: int = 1000, alpha: float = 0.05) -> None:
     published = {500: 0.587, 1000: 0.830}
     rows = []
     for t in (500, 1000):
-        null = np.array(
-            [
-                _monitor_stat(_pair(t, 0.5, np.random.default_rng(_seed("null", t, r))), t)
-                for r in range(reps)
-            ]
-        )
-        q = float(np.quantile(null, 1 - alpha))
-        rho = np.where(np.arange(t) < t // 2, 0.5, 0.7)
-        broken = np.array(
-            [
-                _monitor_stat(_pair(t, rho, np.random.default_rng(_seed("broken", t, r))), t)
-                for r in range(reps)
-            ]
-        )
-        rows.append(
-            [
-                t,
-                f"{(broken > 1.3581).mean():.3f}",
-                f"{(broken > q).mean():.3f}",
-                f"{q:.3f}",
-                f"{published[t]:.3f}",
-            ]
-        )
-    _table(
-        ["T", "power", "size-adjusted", "empirical 95%", "WKD Table 2"],
-        rows,
-    )
+        for dist in ("t5", "t5_indep", "normal"):
+
+            def stat(kind: str, rho: np.ndarray | float, r: int, t: int = t, dist: str = dist):
+                rng = np.random.default_rng(_seed(kind, t, r, dist))
+                return _monitor_stat(_draw(t, rho, rng, dist), t)
+
+            null = np.array([stat("null", 0.5, r) for r in range(reps)])
+            q = float(np.quantile(null, 1 - alpha))
+            rho = np.where(np.arange(t) < t // 2, 0.5, 0.7)
+            broken = np.array([stat("broken", rho, r) for r in range(reps)])
+            rows.append(
+                [
+                    t,
+                    dist,
+                    f"{(broken > 1.3581).mean():.3f}",
+                    f"{(broken > q).mean():.3f}",
+                    f"{q:.3f}",
+                    f"{published[t]:.3f}" if dist == "t5" else "",
+                ]
+            )
+    _table(["T", "innovations", "power", "size-adjusted", "empirical 95%", "WKD Table 2"], rows)
     print(
         f"\n{reps} replications each, nominal {alpha}, asymptotic critical value 1.3581."
-        "\n**This is more powerful than their table**, and the size study says the null"
-        "\nis calibrated, so the excess is not an inflated size: size-adjusting moves it"
-        "\nvery little. Unexplained, and recorded rather than smoothed over."
+        "\nThe power depends on the DGP the same way the size does, and by more:"
+        "\non Gaussian pairs this implementation is well above WKD's table, on a"
+        "\ntail-dependent t_5 it is below it, and the readings bracket their"
+        "\nfigure. The size-adjusted column is the one to read across"
+        "\ndistributions, since it takes the null quantile from the same draw."
     )
 
 
