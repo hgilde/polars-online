@@ -462,6 +462,14 @@ class ModelBank:
             Per-target Kish effective sample size, ``target_weights**2 /
             sum(w**2)`` over that target's rows; ``nan`` for a target that has
             not seen a weighted row. Empty for ``ew_cov``.
+        ``lags``, ``lag_comoments``
+            The lags an ``ew_cov(lags=[...])`` accumulates at, in the order
+            given, and their cross-moments as an ``(L, k, k)`` array:
+            ``lag_comoments[l][a][b]`` is ``E_w[d_a(t) * d_b(t - lags[l])]``,
+            both deviations against the mean before the row (ENHANCEMENTS
+            E56). Both ``None`` for a spec without ``lags``. The matrix is
+            **not** symmetric for a lag above zero -- `a` leading `b` is not
+            `b` leading `a` -- and lag 0 would be ``comoments`` exactly.
 
         The target moments are what makes the export a *complete* sufficient
         statistic (ENHANCEMENTS E45). With the cross-moments alone there is no
@@ -541,9 +549,10 @@ class ModelBank:
             columns = [_INTERCEPT, *columns]
         targets = [] if unsupervised else list(spec_dict["targets"])
         out = []
-        for row in self._native.gram(idx, group):
+        for row, lag in self._native.gram(idx, group):
             g, instance, k, n_eff, n_kish, means, como, cross, tw = row[:9]
             tmeans, tvars, tkish = row[9:]
+            lags = None if lag is None else lag[0]
             out.append(
                 {
                     "group": g,
@@ -566,6 +575,10 @@ class ModelBank:
                     "target_n_kish": None
                     if tkish is None
                     else np.asarray([np.nan if v is None else v for v in tkish], dtype=float),
+                    "lags": None if lags is None else list(lags),
+                    "lag_comoments": None
+                    if lag is None
+                    else np.asarray(lag[1]).reshape(len(lag[0]), k, k),
                 }
             )
         return out

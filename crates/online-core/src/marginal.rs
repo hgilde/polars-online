@@ -521,6 +521,7 @@ mod tests {
             mahal_quantiles: Vec::new(),
             pca: 0,
             pca_every: 1,
+            lags: Vec::new(),
         })
         .unwrap();
         let mut s = 99u64;
@@ -693,6 +694,7 @@ mod tests {
                 mahal_quantiles: vec![],
                 pca: 0,
                 pca_every: 1,
+                lags: Vec::new(),
             })
             .unwrap()
             .state(),

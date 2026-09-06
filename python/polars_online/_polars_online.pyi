@@ -21,18 +21,22 @@ class ModelBank:
         self, spec: int, group: str | None = None
     ) -> list[
         tuple[
-            str | None,  # group
-            str,  # instance
-            int,  # k
-            float,  # n_eff
-            float | None,  # n_kish
-            list[float],  # means
-            list[float],  # comoments, k*k row-major
-            list[list[float]],  # cross_moments, one row per target
-            list[float],  # target_weights
-            list[float] | None,  # target_means
-            list[float] | None,  # target_vars
-            list[float | None] | None,  # target_n_kish
+            tuple[
+                str | None,  # group
+                str,  # instance
+                int,  # k
+                float,  # n_eff
+                float | None,  # n_kish
+                list[float],  # means
+                list[float],  # comoments, k*k row-major
+                list[list[float]],  # cross_moments, one row per target
+                list[float],  # target_weights
+                list[float] | None,  # target_means
+                list[float] | None,  # target_vars
+                list[float | None] | None,  # target_n_kish
+            ],
+            # (lags, L*k*k cross-moments), or None without lags (E56)
+            tuple[list[int], list[float]] | None,
         ]
     ]: ...
     def coef(

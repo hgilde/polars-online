@@ -648,7 +648,7 @@ note, not a task.
       by the stream on a session change or a capped gap (a reset already
       rebuilds the model). The rule every row-lagged state follows from here
       on, with its EXTENDING.md step. Enabling task for 48, 50 and 54.
-- [ ] 48. **Lagged co-moments on `ew_cov`** (E56): `lags=[...]`, `stats=[...,
+- [x] 48. **Lagged co-moments on `ew_cov`** (E56): `lags=[...]`, `stats=[...,
       "lagcorr"]`, `C_ℓ' = a·C_ℓ + a·b·d_t d'_{t−ℓ}` with both deviations
       against the pre-row mean; `gram()` gains `lags` and `lag_comoments`;
       the E54 row carries both. Acceptance: `ℓ = 0` equals `comoments` to the
@@ -2288,6 +2288,30 @@ no-op for every model that has declared no ring (`KEEPS_LAGS`, empty today).
   gap just under `max_dclock`) does not; a spec with `lags` and one without
   give bit-identical `n_eff`, `n_kish`, `means`, `comoments`; chunk
   invariance; the sweeps.
+
+*Task 48 as built, 2026-09-06.* The design stood. Four notes.
+
+- *The `vech` stops at the contemporaneous matrix.* The closed row packs
+  `comoments` as the upper triangle (task 45) because that matrix is
+  symmetric to 1e-16; a **lagged** matrix is not symmetric at all, so
+  `lag_comoments` is the full `L·k·k`, and `po.gram.from_row` reshapes
+  rather than reflecting.
+- *`ew_cov` is not in `KEEPS_LAGS`.* The contract probe builds it without
+  lags, so `clear_lags` is a no-op there and the check still holds it to
+  "the bytes did not move". The behavioural test lives in
+  `tests/test_ew_cov.py`, where the ring is exercised through the stream --
+  which is the only place the three clearing events exist.
+- *The clearing test had to isolate the cap from the decay.* A longer gap
+  decays the state more, so "gap of 4 versus no gap" differs in the 11th
+  digit whatever the ring does. At `halflife = inf` the factor is exactly
+  1, so a gap changes *nothing* but the ring, and the test runs there: a gap
+  of 4 under a ceiling of 5 is bit-identical to no gap, a gap of 50 under
+  the same ceiling is not, and the same gap of 50 under a ceiling of 100 is
+  bit-identical again. That last case is what separates "capped" from
+  "long".
+- *pyo3 converts tuples up to twelve elements* and `GramRow` was already
+  twelve, so the lag block rides as a nested `(lags, comoments)` pair beside
+  it rather than as two more slots.
 
 *Task 49 — `po.prep.refresh_time` (E58).*
 

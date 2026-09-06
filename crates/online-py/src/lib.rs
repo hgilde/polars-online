@@ -81,6 +81,12 @@ type GramRow = (
     Option<Vec<Option<f64>>>,
 );
 
+/// One [`GramRow`] with its lag block beside it (docs/ENHANCEMENTS.md E56):
+/// `(lags, L*k*k cross-moments)`, or `None` for a spec without lags. A pair
+/// rather than two more slots because pyo3 converts tuples up to twelve
+/// elements and the row is already twelve.
+type GramRowWithLags = (GramRow, Option<(Vec<usize>, Vec<f64>)>);
+
 /// `(group, instance, n_eff, coef)` — one decay instance's flat `coef` list,
 /// `None` before its first solve; `ModelBank.coef` lays it out with
 /// `coef_index`.
@@ -240,7 +246,11 @@ impl PyModelBank {
     /// flat tuples the Python layer reshapes into numpy arrays: see
     /// [`GramRow`].
     #[pyo3(signature = (spec, group=None))]
-    fn gram(slf: &Bound<'_, Self>, spec: usize, group: Option<&str>) -> PyResult<Vec<GramRow>> {
+    fn gram(
+        slf: &Bound<'_, Self>,
+        spec: usize,
+        group: Option<&str>,
+    ) -> PyResult<Vec<GramRowWithLags>> {
         let this = slf.try_borrow().map_err(|_| busy("gram"))?;
         Ok(this
             .inner
@@ -249,18 +259,21 @@ impl PyModelBank {
             .into_iter()
             .map(|g| {
                 (
-                    g.group.0,
-                    g.instance,
-                    g.k,
-                    g.n_eff,
-                    g.n_kish,
-                    g.means,
-                    g.comoments,
-                    g.cross_moments,
-                    g.target_weights,
-                    g.target_means,
-                    g.target_vars,
-                    g.target_n_kish,
+                    (
+                        g.group.0,
+                        g.instance,
+                        g.k,
+                        g.n_eff,
+                        g.n_kish,
+                        g.means,
+                        g.comoments,
+                        g.cross_moments,
+                        g.target_weights,
+                        g.target_means,
+                        g.target_vars,
+                        g.target_n_kish,
+                    ),
+                    g.lags.zip(g.lag_comoments),
                 )
             })
             .collect())

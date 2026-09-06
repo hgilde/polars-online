@@ -827,6 +827,7 @@ def ew_cov(
     mahal_quantiles: list[float] | None = None,
     pca: int | None = None,
     pca_every: int | None = None,
+    lags: list[int] | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Exponentially weighted moments of the feature columns (docs/PLAN.md 4.7).
@@ -883,6 +884,28 @@ def ew_cov(
     (default 1, O(k^3) each) after the row is folded in; between refreshes
     the loadings are frozen, so a row's scores never depend on chunking.
 
+    ``lags`` accumulates **lagged** cross-moments beside the contemporaneous
+    ones (ENHANCEMENTS E56): with ``W`` and ``m`` the weight and mean before
+    the row, and both deviations taken against that mean,
+
+    .. code-block:: text
+
+        C_l' = a * C_l + a * b * (x_t - m) (x_{t-l} - m)'
+
+    which is the same ``a`` and ``b`` the co-moments use -- so lag 0 would be
+    ``comoments`` exactly. Lags are counted in **learned rows within the
+    group**, not clock units, and must be strictly increasing and ``>= 1``;
+    the list order is the output order. The ring of past rows is emptied on a
+    session change and on a clock gap beyond ``max_dclock``, the two events
+    after which "the row `l` back" no longer means a row `l` ago; a
+    zero-weight row ages the matrices and does not enter the ring.
+
+    Read them from :meth:`ModelBank.gram` as ``lags`` and ``lag_comoments``
+    (an ``(L, k, k)`` array), or add ``"lagcorr"`` to ``stats`` to emit
+    ``lagcorr_<a>_<b>_l<l>`` = ``C_l[a,b] / sqrt(C_0[a,a] * C_0[b,b])`` per
+    lag and **ordered** pair, the auto terms included: ``k**2`` slots a lag,
+    because the lagged matrix is not symmetric.
+
     Values are read from the state *before* each row, so an ``ew_cov`` output
     can be used as a feature for that same row without leaking it.
     """
@@ -893,6 +916,7 @@ def ew_cov(
         "mahal_quantiles": mahal_quantiles,
         "pca": pca,
         "pca_every": pca_every,
+        "lags": lags,
     }
     if "targets" in common:
         msg = (

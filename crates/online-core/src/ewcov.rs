@@ -528,6 +528,12 @@ pub enum EwCovStat {
     /// `sqrt((x − μ)ᵀ (C + s·prior·I)⁻¹ (x − μ))`, read before the row is
     /// learned (docs/ENHANCEMENTS.md E37). One slot. Needs `precision_prior`.
     Mahal,
+    /// Lagged cross-correlation `C_ℓ[a,b] / √(C₀[a,a]·C₀[b,b])` for every
+    /// lag and **ordered** pair, the auto terms included: `k²` slots a lag
+    /// (docs/ENHANCEMENTS.md E56). The matrix is not symmetric for `ℓ > 0`
+    /// -- `a` leading `b` is not `b` leading `a` -- which is why both
+    /// orientations are emitted. Needs `lags`.
+    LagCorr,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -560,6 +566,12 @@ pub struct EwCovCfg {
     /// stream was chunked. `1` refreshes on every row.
     #[serde(default)]
     pub pca_every: usize,
+    /// Lags to accumulate cross-moments at, in output order
+    /// (docs/ENHANCEMENTS.md E56): strictly increasing and `>= 1`. Empty for
+    /// none, which is what every accumulator did before task 48 -- so a
+    /// state written then still loads, with no ring.
+    #[serde(default)]
+    pub lags: Vec<usize>,
 }
 
 impl EwCovCfg {
@@ -588,6 +600,19 @@ impl EwCovCfg {
         }
         if !self.mahal_quantiles.is_empty() && !self.stats.contains(&EwCovStat::Mahal) {
             return Err("ew_cov: mahal_quantiles needs \"mahal\" in `stats`".into());
+        }
+        if self.stats.contains(&EwCovStat::LagCorr) && self.lags.is_empty() {
+            return Err(
+                "ew_cov: lagcorr needs `lags` (which lags to accumulate, e.g. lags = [1, 2, 5])"
+                    .into(),
+            );
+        }
+        if !self.lags.is_empty() {
+            // The list's own rules live with the accumulator, so the CLI, the
+            // bank and the plugin all get one message.
+            crate::EwLagCov::new(self.n_features, self.lags.clone())
+                .map(|_| ())
+                .map_err(|e| format!("ew_cov: {e}"))?;
         }
         for &q in &self.mahal_quantiles {
             if !(q > 0.0 && q < 1.0) {
@@ -620,6 +645,9 @@ impl EwCovCfg {
                 EwCovStat::Mean | EwCovStat::Var | EwCovStat::Std => k,
                 EwCovStat::Cov | EwCovStat::Corr | EwCovStat::PartialCorr => pairs,
                 EwCovStat::Mahal => 1,
+                // Both orientations and the auto terms: the lagged matrix is
+                // not symmetric.
+                EwCovStat::LagCorr => self.lags.len() * k * k,
             })
             .sum();
         stats + self.mahal_quantiles.len() + self.pca * (k + 3)
@@ -730,6 +758,12 @@ pub struct EwCovModel {
     /// Learned rows since the last refresh.
     #[serde(default)]
     since_pca: usize,
+    /// Lagged cross-moments, when the spec asks for lags (E56). Skipped when
+    /// absent, so an accumulator without them writes the bytes it always
+    /// did, and a state written before task 48 loads with `None` and starts
+    /// a fresh ring under a spec that has since gained `lags`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lag: Option<crate::EwLagCov>,
 }
 
 impl EwCovModel {
@@ -744,12 +778,18 @@ impl EwCovModel {
             .iter()
             .map(|&q| crate::P2Quantile::new(q))
             .collect::<Result<Vec<_>, _>>()?;
+        let lag = if cfg.lags.is_empty() {
+            None
+        } else {
+            Some(crate::EwLagCov::new(cfg.n_features, cfg.lags.clone())?)
+        };
         Ok(Self {
             cfg,
             cov,
             mahal_q,
             pca: None,
             since_pca: 0,
+            lag,
         })
     }
 
@@ -810,6 +850,11 @@ impl EwCovModel {
         &self.cov
     }
 
+    /// The lagged cross-moments, when the spec asked for lags (E56).
+    pub fn lag(&self) -> Option<&crate::EwLagCov> {
+        self.lag.as_ref()
+    }
+
     pub fn cfg(&self) -> &EwCovCfg {
         &self.cfg
     }
@@ -827,6 +872,7 @@ impl EwCovModel {
         stats: &[EwCovStat],
         mahal_quantiles: &[f64],
         pca: usize,
+        lags: &[usize],
     ) -> Vec<String> {
         let mut out = Vec::new();
         for stat in stats {
@@ -856,6 +902,15 @@ impl EwCovModel {
                     }
                 }
                 EwCovStat::Mahal => out.push("mahal".to_string()),
+                EwCovStat::LagCorr => {
+                    for l in lags {
+                        for a in names {
+                            for b in names {
+                                out.push(format!("lagcorr_{a}_{b}_l{l}"));
+                            }
+                        }
+                    }
+                }
             }
         }
         for q in mahal_quantiles {
@@ -920,6 +975,34 @@ impl EwCovModel {
                     }
                 }
                 EwCovStat::Mahal => out.push(self.mahal(x)),
+                EwCovStat::LagCorr => {
+                    // `C_l[a,b] / sqrt(C_0[a,a] * C_0[b,b])`: the lagged
+                    // covariance over the contemporaneous standard
+                    // deviations, so a value of 1 means "a now is b `l` rows
+                    // ago, scaled". Not clamped: unlike a contemporaneous
+                    // correlation it is not bounded by 1 in finite samples,
+                    // and clamping would hide that.
+                    let std: Vec<f64> = (0..k).map(|i| self.cov.var(i).sqrt()).collect();
+                    match &self.lag {
+                        Some(lag) => {
+                            for li in 0..lag.lags().len() {
+                                for a in 0..k {
+                                    for b in 0..k {
+                                        let d = std[a] * std[b];
+                                        out.push(if d > 0.0 {
+                                            lag.get(li, a, b) / d
+                                        } else {
+                                            f64::NAN
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        None => {
+                            out.extend(std::iter::repeat_n(f64::NAN, self.cfg.lags.len() * k * k))
+                        }
+                    }
+                }
             }
         }
         for q in &self.mahal_q {
@@ -979,7 +1062,14 @@ impl crate::OnlineModel for EwCovModel {
                 }
             }
         }
-        self.cov.update(x, self.cfg.decay.factor(d_clock), weight);
+        let lam = self.cfg.decay.factor(d_clock);
+        // Before the accumulator moves: the lagged update reads the same
+        // pre-row weight and mean `EwCov::update` is about to consume, which
+        // is what makes `l = 0` its co-moments to the bit.
+        if let Some(lag) = self.lag.as_mut() {
+            lag.update(x, self.cov.means(), self.cov.n_eff(), lam, weight);
+        }
+        self.cov.update(x, lam, weight);
         if self.cfg.pca > 0 {
             // A checkpoint after the update, counted in learned rows, so the
             // components a row is scored on never depend on the chunking and
@@ -1012,10 +1102,28 @@ impl crate::OnlineModel for EwCovModel {
         crate::State::new(crate::ModelState::EwCovModel(Box::new(self.clone())))
     }
 
+    fn clear_lags(&mut self) {
+        if let Some(lag) = self.lag.as_mut() {
+            lag.clear();
+        }
+    }
+
     fn restore(s: &crate::State) -> Result<Self, crate::StateError> {
         crate::check_schema(s)?;
         match &s.model {
-            crate::ModelState::EwCovModel(m) => Ok((**m).clone()),
+            crate::ModelState::EwCovModel(m) => {
+                let mut m = (**m).clone();
+                // A state written before task 48, resumed under a spec that
+                // has since gained `lags`: the ring cannot be recovered, so
+                // it starts empty and the matrices from zero.
+                if m.lag.is_none() && !m.cfg.lags.is_empty() {
+                    m.lag = Some(
+                        crate::EwLagCov::new(m.cfg.n_features, m.cfg.lags.clone())
+                            .map_err(crate::StateError::Invalid)?,
+                    );
+                }
+                Ok(m)
+            }
             other => Err(crate::StateError::WrongModel {
                 expected: "ew_cov",
                 found: other.kind(),
@@ -1087,6 +1195,7 @@ mod tests {
             mahal_quantiles: Vec::new(),
             pca: 0,
             pca_every: 0,
+            lags: Vec::new(),
         }
     }
 
@@ -1388,6 +1497,136 @@ mod tests {
     }
 
     #[test]
+    fn lagcorr_fields_and_values_follow_the_lags() {
+        let k = 2;
+        let mut cfg = model_cfg(k, vec![EwCovStat::Corr, EwCovStat::LagCorr]);
+        cfg.decay = crate::Decay::Halflife(30.0);
+        cfg.lags = vec![1, 3];
+        let names = ["a".to_string(), "b".to_string()];
+        let labels = EwCovModel::labels(&names, &cfg.stats, &[], 0, &cfg.lags);
+        assert_eq!(
+            labels,
+            [
+                "corr_a_b",
+                "lagcorr_a_a_l1",
+                "lagcorr_a_b_l1",
+                "lagcorr_b_a_l1",
+                "lagcorr_b_b_l1",
+                "lagcorr_a_a_l3",
+                "lagcorr_a_b_l3",
+                "lagcorr_b_a_l3",
+                "lagcorr_b_b_l3",
+            ]
+        );
+        assert_eq!(cfg.n_outputs(), labels.len());
+
+        // `b` is `a` delayed by one row, so `lagcorr_b_a_l1` -- b now against
+        // a one row ago -- goes to 1 and `lagcorr_a_b_l1` does not.
+        let mut m = EwCovModel::new(cfg).unwrap();
+        let mut s = 4u64;
+        let mut prev = 0.0;
+        let mut last = Vec::new();
+        for i in 0..400 {
+            let a = lcg(&mut s);
+            let x = [a, prev];
+            prev = a;
+            last =
+                crate::OnlineModel::step(&mut m, &x, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0).pred;
+        }
+        // Slots: corr_a_b, then the four at lag 1, then the four at lag 3.
+        assert!(last[3] > 0.95, "lagcorr_b_a_l1 is {}", last[3]);
+        assert!(last[2].abs() < 0.2, "lagcorr_a_b_l1 is {}", last[2]);
+        // And the auto terms at lag 1 are the series' own autocorrelation,
+        // which for white noise is near zero.
+        assert!(last[1].abs() < 0.2 && last[4].abs() < 0.2);
+    }
+
+    #[test]
+    fn clear_lags_empties_the_ring_and_leaves_the_moments() {
+        let mut cfg = model_cfg(2, vec![EwCovStat::Corr]);
+        cfg.lags = vec![2];
+        let mut m = EwCovModel::new(cfg).unwrap();
+        let mut s = 7u64;
+        for i in 0..30 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            crate::OnlineModel::step(&mut m, &x, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let moments = m.cov().clone();
+        let lagged = m.lag().unwrap().comoments().to_vec();
+        assert_eq!(m.lag().unwrap().depth(), 2);
+        crate::OnlineModel::clear_lags(&mut m);
+        assert_eq!(m.lag().unwrap().depth(), 0);
+        assert_eq!(m.cov(), &moments, "clear_lags is not a reset");
+        assert_eq!(m.lag().unwrap().comoments(), &lagged[..]);
+    }
+
+    #[test]
+    fn lags_do_not_move_the_contemporaneous_moments() {
+        let mut plain = EwCovModel::new(model_cfg(3, vec![EwCovStat::Corr])).unwrap();
+        let mut cfg = model_cfg(3, vec![EwCovStat::Corr]);
+        cfg.lags = vec![1, 2, 5];
+        let mut lagged = EwCovModel::new(cfg).unwrap();
+        let mut s = 21u64;
+        for i in 0..200 {
+            let x = [lcg(&mut s), lcg(&mut s), lcg(&mut s)];
+            let (d, w) = (if i == 0 { 0.0 } else { 1.0 }, (i % 4) as f64 * 0.5);
+            let a = crate::OnlineModel::step(&mut plain, &x, &[], d, w);
+            let b = crate::OnlineModel::step(&mut lagged, &x, &[], d, w);
+            assert_eq!(a.n_eff, b.n_eff);
+            // NaN is not equal to itself, and both are NaN before warmup.
+            assert!(
+                a.pred
+                    .iter()
+                    .zip(&b.pred)
+                    .all(|(x, y)| x == y || (x.is_nan() && y.is_nan())),
+                "{:?} vs {:?}",
+                a.pred,
+                b.pred
+            );
+        }
+        assert_eq!(plain.cov(), lagged.cov(), "the accumulator is untouched");
+    }
+
+    #[test]
+    fn a_state_without_lags_resumes_under_a_spec_that_has_them() {
+        let mut m = EwCovModel::new(model_cfg(2, vec![EwCovStat::Corr])).unwrap();
+        let mut s = 3u64;
+        for i in 0..20 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            crate::OnlineModel::step(&mut m, &x, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        // A pre-task-48 state: no `lag` field at all. Rewrite the config the
+        // way a resumed spec would and restore.
+        let mut state = crate::OnlineModel::state(&m);
+        if let crate::ModelState::EwCovModel(inner) = &mut state.model {
+            inner.cfg.lags = vec![1];
+            inner.lag = None;
+        }
+        let restored = <EwCovModel as crate::OnlineModel>::restore(&state).unwrap();
+        let lag = restored.lag().expect("a fresh ring");
+        assert_eq!(lag.depth(), 0);
+        assert!(lag.comoments().iter().all(|c| *c == 0.0));
+        assert_eq!(restored.cov(), m.cov(), "the moments came through");
+    }
+
+    #[test]
+    fn a_bad_lag_configuration_is_refused_by_name() {
+        let mut cfg = model_cfg(2, vec![EwCovStat::LagCorr]);
+        assert!(
+            EwCovModel::new(cfg.clone())
+                .unwrap_err()
+                .contains("lagcorr needs `lags`")
+        );
+        cfg.stats = vec![EwCovStat::Corr];
+        cfg.lags = vec![2, 1];
+        assert!(
+            EwCovModel::new(cfg)
+                .unwrap_err()
+                .contains("strictly increasing")
+        );
+    }
+
+    #[test]
     fn pca_fields_follow_the_stats_and_are_frozen_between_refreshes() {
         // Outputs: mean_a, mean_b, then pc0_var, pc0_share, pc0_a, pc0_b,
         // pc0_score. With `pca_every = 3` the loadings change only every
@@ -1521,7 +1760,7 @@ mod tests {
         ] {
             let mut c = model_cfg(3, stats.clone());
             c.precision_prior = Some(1e-6);
-            let labels = EwCovModel::labels(&names, &stats, &[], 0);
+            let labels = EwCovModel::labels(&names, &stats, &[], 0, &[]);
             assert_eq!(c.n_outputs(), labels.len(), "{stats:?}");
 
             let mut m = EwCovModel::new(c).unwrap();
@@ -1550,33 +1789,33 @@ mod tests {
         use EwCovStat::*;
         let names: Vec<String> = ["x", "y", "z"].iter().map(|s| s.to_string()).collect();
         assert_eq!(
-            EwCovModel::labels(&names, &[Mean], &[], 0),
+            EwCovModel::labels(&names, &[Mean], &[], 0, &[]),
             ["mean_x", "mean_y", "mean_z"]
         );
         assert_eq!(
-            EwCovModel::labels(&names, &[Var], &[], 0),
+            EwCovModel::labels(&names, &[Var], &[], 0, &[]),
             ["var_x", "var_y", "var_z"]
         );
         assert_eq!(
-            EwCovModel::labels(&names, &[Std], &[], 0),
+            EwCovModel::labels(&names, &[Std], &[], 0, &[]),
             ["std_x", "std_y", "std_z"]
         );
         // Upper triangle only, and never a self-pair.
         assert_eq!(
-            EwCovModel::labels(&names, &[Cov], &[], 0),
+            EwCovModel::labels(&names, &[Cov], &[], 0, &[]),
             ["cov_x_y", "cov_x_z", "cov_y_z"]
         );
         assert_eq!(
-            EwCovModel::labels(&names, &[Corr], &[], 0),
+            EwCovModel::labels(&names, &[Corr], &[], 0, &[]),
             ["corr_x_y", "corr_x_z", "corr_y_z"]
         );
         assert_eq!(
-            EwCovModel::labels(&names, &[PartialCorr], &[], 0),
+            EwCovModel::labels(&names, &[PartialCorr], &[], 0, &[]),
             ["pcorr_x_y", "pcorr_x_z", "pcorr_y_z"]
         );
         // Stats concatenate in the order given, not a canonical order.
         assert_eq!(
-            EwCovModel::labels(&names, &[Corr, Mean], &[], 0)
+            EwCovModel::labels(&names, &[Corr, Mean], &[], 0, &[])
                 .first()
                 .unwrap(),
             "corr_x_y"
@@ -1640,7 +1879,9 @@ mod tests {
         let mut full = EwCovModel::new(model_cfg(3, vec![Mean, Var, Corr])).unwrap();
         let mut bare = EwCovModel::new(model_cfg(3, vec![])).unwrap();
         assert_eq!(bare.n_outputs(), 0);
-        assert!(EwCovModel::labels(&["a".into(), "b".into(), "c".into()], &[], &[], 0).is_empty());
+        assert!(
+            EwCovModel::labels(&["a".into(), "b".into(), "c".into()], &[], &[], 0, &[]).is_empty()
+        );
         let mut s = 11u64;
         for i in 0..200 {
             let x = [lcg(&mut s), 5.0 * lcg(&mut s) + 1.0, lcg(&mut s) - 2.0];

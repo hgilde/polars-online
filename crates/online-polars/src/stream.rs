@@ -429,6 +429,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             mahal_quantiles,
             pca,
             pca_every,
+            lags,
         } => {
             let names = stats
                 .clone()
@@ -443,6 +444,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     "corr" => Ok(EwCovStat::Corr),
                     "partial_corr" => Ok(EwCovStat::PartialCorr),
                     "mahal" => Ok(EwCovStat::Mahal),
+                    "lagcorr" => Ok(EwCovStat::LagCorr),
                     other => Err(format!("unknown ew_cov statistic {other:?}")),
                 })
                 .collect::<Result<Vec<_>, String>>()?;
@@ -455,6 +457,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 mahal_quantiles: mahal_quantiles.clone().unwrap_or_default(),
                 pca: pca.unwrap_or(0),
                 pca_every: pca_every.map_or(1, |e| e as usize),
+                lags: lags.clone().unwrap_or_default(),
             };
             Ok(AnyModel::EwCov(Box::new(EwCovModel::new(cfg)?)))
         }

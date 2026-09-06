@@ -431,6 +431,7 @@ fn ew_cov_model_cfg() -> EwCovCfg {
         mahal_quantiles: Vec::new(),
         pca: 0,
         pca_every: 0,
+        lags: Vec::new(),
     }
 }
 

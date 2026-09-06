@@ -176,6 +176,15 @@ def describe_api() -> str:
             dict(targets=["y"], a="ridge", b="kalman", a_suffix="@h50"),
         ),
         ("marginal", dict(targets=["y", "z"], features=["x0", "x1"], halflife=100.0)),
+        (
+            "ew_cov with lags",
+            dict(
+                features=["x0", "x1"],
+                stats=["corr", "lagcorr"],
+                lags=[1, 5],
+                halflife=100.0,
+            ),
+        ),
         ("deco", dict(features=["x0", "x1", "x2"], halflife=100.0)),
         (
             "deco blocked",

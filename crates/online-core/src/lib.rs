@@ -62,6 +62,7 @@ mod drift;
 mod ewclass;
 mod ewcov;
 mod ewdiag;
+mod ewlagcov;
 mod ewridge;
 mod ftrl;
 mod holt;
@@ -91,6 +92,7 @@ pub use ewcov::{
     EwCov, EwCovCfg, EwCovModel, EwCovStat, Pca, TargetMoments, partial_corr, variance_is_usable,
 };
 pub use ewdiag::EwDiag;
+pub use ewlagcov::EwLagCov;
 pub use ewridge::{EwRidge, EwRidgeCfg};
 pub use ftrl::{Ftrl, FtrlCfg, FtrlLoss};
 pub use holt::{Holt, HoltCfg};

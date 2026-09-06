@@ -16,6 +16,21 @@ carries breaking changes.
 
 ### Added
 
+- **Lagged co-moments on `ew_cov`** (`docs/ENHANCEMENTS.md` E56, tasks 47
+  and 48). `ew_cov(lags=[1, 2, 5])` accumulates `E_w[d_t d'_{t−ℓ}]` beside
+  the contemporaneous co-moments, with both deviations against the mean
+  before the row — the same `a` and `b`, so lag 0 would be `comoments`
+  exactly. Read them from `gram()` as `lags` and `lag_comoments`, from a
+  closed group's row, or as `lagcorr_<a>_<b>_l<ℓ>` output fields by adding
+  `"lagcorr"` to `stats` (both orientations: a lagged matrix is not
+  symmetric).
+
+  With it, the rule for anything a model keeps *by row*: the ring is emptied
+  on a session change and on a clock gap beyond `max_dclock`, through a new
+  `OnlineModel::clear_lags` the stream calls at those two events and no
+  others. `po.gram.merge` reports no lags for a pooled Gram — the pairings
+  across a part boundary are what no part holds — and `subset` slices them.
+
 - **`deco`: one correlation for the whole matrix** (`docs/ENHANCEMENTS.md`
   E55, task 46). Engle & Kelly's dynamic equicorrelation as an
   `OnlineModel`, `O(m)` a row where a full correlation matrix is `O(m²)`.

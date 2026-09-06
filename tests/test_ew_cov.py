@@ -349,3 +349,215 @@ class TestAccumulateOnly:
         assert out["c"].struct.field("pc0_score").drop_nulls().len() > 0
         with pytest.raises(ValueError, match='needs "mahal"'):
             _spec(("x0", "x1"), stats=[], mahal_quantiles=[0.9])
+
+
+class TestLaggedComoments:
+    """E56: `E_w[d_t d'_{t-l}]` beside the contemporaneous co-moments.
+
+    The recursion centres **both** legs at the mean before the row, which is
+    the choice that makes lag 0 coincide with `comoments`; the oracle below
+    is that recursion written out, not some other definition of an EW lagged
+    covariance.
+    """
+
+    @staticmethod
+    def _oracle(x, lags, halflife, weights=None):
+        """The recursion longhand: means, co-moments and lagged matrices."""
+        lam = 1.0 if np.isinf(halflife) else 2.0 ** (-1.0 / halflife)
+        n, k = x.shape
+        w_sum = 0.0
+        m = np.zeros(k)
+        c = np.zeros((k, k))
+        lag = {ell: np.zeros((k, k)) for ell in lags}
+        ring: list[np.ndarray] = []
+        for t in range(n):
+            w = 1.0 if weights is None else float(weights[t])
+            w_new = lam * w_sum + w
+            if w_new <= 0.0:
+                continue
+            a, b = lam * w_sum / w_new, w / w_new
+            d = x[t] - m
+            for ell in lags:
+                if len(ring) >= ell:
+                    lag[ell] = a * lag[ell] + a * b * np.outer(d, ring[-ell] - m)
+                else:
+                    lag[ell] = a * lag[ell]
+            c = a * c + a * b * np.outer(d, d)
+            m = m + b * d
+            w_sum = w_new
+            if w > 0.0:
+                ring.append(x[t].copy())
+                ring = ring[-max(lags) :]
+        return m, c, lag
+
+    def test_the_recursion_is_the_longhand_one(self):
+        df = _df(n=800)
+        lags = [1, 3]
+        spec = _spec(("x0", "x1", "x2"), lags=lags, halflife=200.0)
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        g = bank.gram("c")[0]
+        x = df.select("x0", "x1", "x2").to_numpy()
+        m, c, lag = self._oracle(x, lags, 200.0)
+        assert np.allclose(g["means"], m, rtol=0, atol=1e-12)
+        assert np.allclose(g["comoments"], c, rtol=0, atol=1e-12)
+        assert g["lags"] == lags
+        for i, ell in enumerate(lags):
+            assert np.allclose(g["lag_comoments"][i], lag[ell], rtol=1e-12, atol=1e-14)
+
+    def test_a_lagged_matrix_is_not_symmetric(self):
+        """`b` is `a` one row back, so `C_1[b, a]` is the variance and
+        `C_1[a, b]` is not. A symmetric implementation would pass every
+        magnitude test and this one."""
+        n = 600
+        rng = np.random.default_rng(3)
+        a = rng.standard_normal(n)
+        df = pl.DataFrame({"x0": a, "x1": np.concatenate([[0.0], a[:-1]])})
+        spec = _spec(("x0", "x1"), lags=[1], stats=["lagcorr"], halflife=150.0)
+        out = po.ModelBank([spec]).fit_predict(df)
+        assert _last(out, "lagcorr_x1_x0_l1") > 0.98
+        assert abs(_last(out, "lagcorr_x0_x1_l1")) < 0.15
+
+    def test_lags_leave_the_contemporaneous_moments_bit_identical(self):
+        df = _df(n=700)
+        cols = ("x0", "x1", "x2")
+        plain = po.ModelBank([_spec(cols, halflife=200.0)])
+        lagged = po.ModelBank([_spec(cols, lags=[1, 2, 4], halflife=200.0)])
+        a = plain.fit_predict(df)["c"].struct.unnest()
+        b = lagged.fit_predict(df)["c"].struct.unnest()
+        assert a.equals(b), "the emitted statistics moved"
+        ga, gb = plain.gram("c")[0], lagged.gram("c")[0]
+        for key in ("n_eff", "n_kish"):
+            assert ga[key] == gb[key]
+        assert np.array_equal(ga["means"], gb["means"])
+        assert np.array_equal(ga["comoments"], gb["comoments"])
+        assert ga["lags"] is None and gb["lags"] == [1, 2, 4]
+
+    @pytest.mark.parametrize("size", [1, 13, 300, 800])
+    def test_chunk_invariance(self, size):
+        df = _df(n=800)
+        spec = _spec(("x0", "x1"), lags=[1, 5], stats=["lagcorr"], halflife=200.0)
+        want = po.ModelBank([spec]).fit_predict(df)
+        bank = po.ModelBank([spec])
+        got = pl.concat([bank.fit_predict(df[i : i + size]) for i in range(0, df.height, size)])
+        assert want.equals(got)
+
+    def test_the_ring_clears_on_a_capped_gap_a_session_change_and_a_reset(self):
+        """Task 47's events, and a fourth that is not one: a gap just under
+        `max_dclock` leaves the ring alone."""
+        n = 60
+        rng = np.random.default_rng(5)
+        base = pl.DataFrame(
+            {
+                "x0": rng.standard_normal(n),
+                "x1": rng.standard_normal(n),
+                "t": np.arange(float(n)),
+                "s": ["m"] * n,
+            }
+        )
+
+        # `inf` is exactly no decay, so a clock gap changes *nothing* about
+        # the numbers except through the ring: any difference below is the
+        # clearing, not the decay.
+        def run(df, **kw):
+            kw.setdefault("max_dclock", 5.0)
+            spec = _spec(
+                ("x0", "x1"),
+                lags=[1],
+                stats=["lagcorr"],
+                halflife=NO_DECAY,
+                clock="t",
+                min_periods=0.0,
+                **kw,
+            )
+            out = po.ModelBank([spec]).fit_predict(df)
+            # The row after the break is the one with no partner one row back,
+            # so its lag matrix only aged: the value it reports is the level
+            # before it, and the row after *that* is the first to pair again.
+            return out["c"].struct.field("lagcorr_x0_x0_l1").to_list()
+
+        plain = run(base)
+        # A gap of 4 at row 30: under the ceiling, so nothing is cleared.
+        under = base.with_columns(
+            t=pl.when(pl.int_range(pl.len()) >= 30).then(pl.col("t") + 4.0).otherwise(pl.col("t"))
+        )
+        assert run(under) == plain, "a gap under max_dclock is not a break"
+        # The same frame with a ceiling above the gap: also not a break, which
+        # separates "the gap was capped" from "the gap was long".
+        # A gap of 50: capped, so the ring goes.
+        over = base.with_columns(
+            t=pl.when(pl.int_range(pl.len()) >= 30).then(pl.col("t") + 50.0).otherwise(pl.col("t"))
+        )
+        assert run(over, max_dclock=100.0) == plain
+        capped = run(over)
+        assert capped[:30] == plain[:30]
+        assert capped[31] != plain[31], "the row after a capped gap saw a stale partner"
+        # A session change at the same row.
+        sess = base.with_columns(
+            s=pl.when(pl.int_range(pl.len()) >= 30).then(pl.lit("a")).otherwise(pl.lit("m"))
+        )
+        changed = run(sess, session="s", session_gap=1.0)
+        assert changed[:30] == plain[:30]
+        assert changed[31] != plain[31]
+        # And a reset rebuilds the model, ring included.
+        reset = run(sess, session="s", session_gap="reset")
+        assert reset[31] != plain[31]
+
+    def test_a_state_without_lags_resumes_under_a_spec_that_has_them(self):
+        df = _df(n=200)
+        bare = _spec(("x0", "x1"), halflife=200.0)
+        bank = po.ModelBank([bare])
+        bank.fit_predict(df[:100])
+        data = bank.save_bytes()
+        # The same spec plus lags: the moments come through, the ring starts
+        # empty and the matrices from zero.
+        with_lags = _spec(("x0", "x1"), lags=[1], halflife=200.0)
+        # The saved specs are checked, so the resume is explicitly unchecked.
+        resumed = po.ModelBank.load_bytes(data)
+        assert resumed.gram("c")[0]["lags"] is None
+        fresh = po.ModelBank([with_lags])
+        fresh.fit_predict(df[:100])
+        assert np.array_equal(fresh.gram("c")[0]["comoments"], resumed.gram("c")[0]["comoments"])
+
+    def test_merge_reports_no_lags_and_subset_slices_them(self):
+        df = _df(n=400)
+        spec = _spec(("x0", "x1", "x2"), lags=[1, 2], halflife=1e9)
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        g = bank.gram("c")[0]
+        pooled = po.gram.merge([g, g])
+        assert pooled["lags"] is None and pooled["lag_comoments"] is None
+        sub = po.gram.subset(g, ["x0", "x2"])
+        assert sub["lag_comoments"].shape == (2, 2, 2)
+        assert np.array_equal(
+            sub["lag_comoments"][0], g["lag_comoments"][0][np.ix_([0, 2], [0, 2])]
+        )
+
+    def test_a_bad_lag_list_is_refused_by_name(self):
+        for lags, message in (
+            ([0, 1], "must be >= 1"),
+            ([2, 1], "strictly increasing"),
+            ([1, 1], "strictly increasing"),
+        ):
+            with pytest.raises(ValueError, match=message):
+                _spec(("x0", "x1"), lags=lags)
+        with pytest.raises(ValueError, match="lagcorr needs `lags`"):
+            _spec(("x0", "x1"), stats=["lagcorr"])
+
+    def test_the_closed_row_carries_the_lags(self):
+        df = _df(n=200).with_columns(g=pl.int_range(pl.len()) // 100)
+        spec = po.spec.ew_cov(
+            "c",
+            features=["x0", "x1"],
+            halflife=1e9,
+            lags=[1, 2],
+            group="g",
+            group_close="monotone",
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        row = bank.closed_groups()
+        assert row["lags"][0].to_list() == [1, 2]
+        assert len(row["lag_comoments"][0]) == 2 * 2 * 2
+        g = po.gram.from_row(row)
+        assert g["lags"] == [1, 2] and g["lag_comoments"].shape == (2, 2, 2)

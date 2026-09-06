@@ -487,6 +487,13 @@ pub enum ModelKind {
         /// Learned rows between refreshes of the components (default 1).
         #[serde(default)]
         pca_every: Option<u32>,
+        /// Lags to accumulate cross-moments at, in output order
+        /// (docs/ENHANCEMENTS.md E56): strictly increasing and `>= 1`,
+        /// counted in *learned rows within the group*. Read from `gram()`
+        /// as `lags`/`lag_comoments`, or emitted as `lagcorr_<a>_<b>_l<l>`
+        /// by adding `"lagcorr"` to `stats`.
+        #[serde(default)]
+        lags: Option<Vec<usize>>,
     },
     /// Stochastic gradient descent with pluggable losses (ENHANCEMENTS E16).
     /// O(k) per row, no solves, and the only model here that takes count
@@ -1625,9 +1632,18 @@ impl Spec {
                 mahal_quantiles,
                 pca,
                 pca_every,
+                lags,
             } => {
-                const OK: [&str; 7] =
-                    ["mean", "var", "std", "cov", "corr", "partial_corr", "mahal"];
+                const OK: [&str; 8] = [
+                    "mean",
+                    "var",
+                    "std",
+                    "cov",
+                    "corr",
+                    "partial_corr",
+                    "mahal",
+                    "lagcorr",
+                ];
                 if let Some(stats) = stats {
                     for st in stats {
                         if !OK.contains(&st.as_str()) {
@@ -1664,6 +1680,22 @@ impl Spec {
                         "spec {:?}: precision_prior must be finite and > 0",
                         self.name
                     ));
+                }
+                let has_lagcorr = stats
+                    .as_ref()
+                    .is_some_and(|st| st.iter().any(|s| s == "lagcorr"));
+                if has_lagcorr && lags.as_ref().is_none_or(|l| l.is_empty()) {
+                    return Err(format!(
+                        "spec {:?}: ew_cov lagcorr needs `lags` (which lags to accumulate, e.g. \
+                         lags = [1, 2, 5])",
+                        self.name
+                    ));
+                }
+                if let Some(lags) = lags {
+                    // The list's own rules are the accumulator's, so the CLI,
+                    // the bank and the plugin all get one message.
+                    online_core::EwLagCov::new(self.k().max(1), lags.clone())
+                        .map_err(|e| format!("spec {:?}: ew_cov {e}", self.name))?;
                 }
                 if let Some(levels) = mahal_quantiles {
                     let has_mahal = stats

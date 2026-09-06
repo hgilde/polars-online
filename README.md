@@ -1102,6 +1102,33 @@ odd = scores.filter(pl.col("mahal") > pl.col("mahal_q0.99"))   # the joint outli
 first = scores.select("pc0_share", "pc0_x0", "pc0_x1", "pc0_x2", "pc0_score")
 ```
 
+`lags` accumulates the same co-moments one step further out: how column `a`
+now moves with column `b` `ℓ` rows ago. With `W` and `m` the weight and mean
+before the row, and both deviations taken against that mean,
+
+```
+C_ℓ' = a·C_ℓ + a·b·(x_t − m)(x_{t−ℓ} − m)'
+```
+
+with the same `a` and `b` the co-moments use — so lag 0 would be `comoments`
+exactly. Lags count **learned rows within the group**, not clock units, and
+must be strictly increasing and ≥ 1. Read them from `bank.gram("mv")` as
+`lags` and `lag_comoments` (an `(L, k, k)` array), or add `"lagcorr"` to
+`stats` to emit `lagcorr_<a>_<b>_l<ℓ>` per lag and **ordered** pair — both
+orientations, because a lagged matrix is not symmetric: `a` leading `b` is
+not `b` leading `a`.
+
+```python
+lagged = po.spec.ew_cov("lagged", features=["x0", "x1"], halflife=500.0,
+                        stats=["corr", "lagcorr"], lags=[1, 5])
+lead = po.ModelBank([lagged]).fit_predict(df).unnest("lagged")
+```
+
+The ring of past rows is emptied on a session change and on a clock gap
+beyond `max_dclock` — the two events after which "the row `ℓ` back" no longer
+means a row `ℓ` ago — and a zero-weight row ages the matrices without
+entering it. Nothing else moves: clearing the ring is not a reset.
+
 ### `ftrl` — online logistic regression
 
 FTRL-proximal (McMahan et al. 2013) for binary targets, with the accumulators

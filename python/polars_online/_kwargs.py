@@ -158,6 +158,7 @@ class EwCovKwargs(ExprKwargs, total=False):
     mahal_quantiles: list[float] | None
     pca: int | None
     pca_every: int | None
+    lags: list[int] | None
 
 
 class SgdKwargs(ExprKwargs, total=False):

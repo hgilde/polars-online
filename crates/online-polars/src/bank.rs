@@ -996,6 +996,10 @@ pub(crate) fn vech(m: &[f64], k: usize) -> Vec<f64> {
 /// block, so "a closed row equals `gram()` read at the same point" holds by
 /// construction and the test is the tripwire that keeps it so.
 pub(crate) fn gram_of(key: &GroupKey, label: &str, model: &AnyModel) -> Option<Gram> {
+    let lag = match model {
+        AnyModel::EwCov(m) => m.lag(),
+        _ => None,
+    };
     let (cov, cross, weights, tm, targetless) = match model {
         AnyModel::EwRidge(m) => (
             m.cov(),
@@ -1040,6 +1044,8 @@ pub(crate) fn gram_of(key: &GroupKey, label: &str, model: &AnyModel) -> Option<G
         target_vars,
         target_n_kish,
         target_weights: weights,
+        lags: lag.map(|l| l.lags().to_vec()),
+        lag_comoments: lag.map(|l| l.comoments().to_vec()),
     })
 }
 
@@ -1090,6 +1096,13 @@ pub struct Gram {
     /// Per-target Kish effective sample size, `W_t^2 / Q_t`; an entry is
     /// `None` for a target that has not seen a weighted row.
     pub target_n_kish: Option<Vec<Option<f64>>>,
+    /// The lags an `ew_cov(lags = ...)` accumulates at, in output order, and
+    /// their cross-moments as `L * k * k` row-major within a lag
+    /// (docs/ENHANCEMENTS.md E56). `None` for a spec without lags.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lags: Option<Vec<usize>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lag_comoments: Option<Vec<f64>>,
 }
 
 /// One (feature, target) pair of a closed `marginal` group, the columns
@@ -1315,6 +1328,24 @@ fn closed_frame(specs: &[Spec], rows: &[ClosedRow]) -> PolarsResult<DataFrame> {
             r.gram
                 .as_ref()
                 .map(|g| g.cross_moments.iter().flatten().copied().collect())
+        }));
+    }
+    if any(|s| matches!(s.model, ModelKind::EwCov { lags: Some(_), .. })) {
+        let mut b = ListPrimitiveChunkedBuilder::<Int64Type>::new(
+            "lags".into(),
+            rows.len(),
+            4,
+            DataType::Int64,
+        );
+        for r in rows {
+            match r.gram.as_ref().and_then(|g| g.lags.as_ref()) {
+                Some(v) => b.append_values_iter(v.iter().map(|&l| l as i64)),
+                None => b.append_null(),
+            }
+        }
+        cols.push(b.finish().into_series().into());
+        cols.push(list_f64("lag_comoments", rows, |r| {
+            r.gram.as_ref().and_then(|g| g.lag_comoments.clone())
         }));
     }
     cols.push(list_f64("coef", rows, |r| r.coef.clone()));
@@ -2607,6 +2638,10 @@ pub struct FieldMeta {
     pub lambda: Option<f64>,
     /// Quantile level (`absresid_q*` fields).
     pub quantile: Option<f64>,
+    /// Lag, in learned rows, of an `ew_cov` `lagcorr_*` field
+    /// (docs/ENHANCEMENTS.md E56); `None` for every other field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lag: Option<usize>,
     /// Columns an `ew_cov` statistic is over.
     pub columns: Option<Vec<String>>,
     /// The polars dtype the field is materialized with, as its string form
@@ -2678,6 +2713,7 @@ impl FieldMeta {
             feature_set: None,
             lambda: None,
             quantile: None,
+            lag: None,
             columns: None,
             dtype: String::new(),
             src: Source::Unset,
@@ -2920,6 +2956,7 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
         stats,
         mahal_quantiles,
         pca,
+        lags,
         ..
     } = &spec.model
     {
@@ -2935,34 +2972,57 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
                 "cov" => online_core::EwCovStat::Cov,
                 "partial_corr" => online_core::EwCovStat::PartialCorr,
                 "mahal" => online_core::EwCovStat::Mahal,
+                "lagcorr" => online_core::EwCovStat::LagCorr,
                 _ => online_core::EwCovStat::Corr,
             })
             .collect();
         let levels: Vec<f64> = mahal_quantiles.clone().unwrap_or_default();
         let r = pca.unwrap_or(0);
-        let labels = online_core::EwCovModel::labels(&spec.features, &kinds, &levels, r);
+        let lags: Vec<usize> = lags.clone().unwrap_or_default();
+        let labels = online_core::EwCovModel::labels(&spec.features, &kinds, &levels, r, &lags);
         // Statistic kind, the columns it is over and its quantile level, in
         // label order: the same walk `labels` makes (per stat: each column,
         // each i<j pair, or all of them; then the levels; then `k + 3` per
         // component, all over every column).
         let all = spec.features.clone();
-        let mut meta: Vec<(String, Vec<String>, Option<f64>)> = Vec::new();
+        // Statistic kind, the columns it is over, its quantile level and its
+        // lag, in label order.
+        type StatMeta = (String, Vec<String>, Option<f64>, Option<usize>);
+        let mut meta: Vec<StatMeta> = Vec::new();
         for (name, kind) in names.iter().zip(&kinds) {
             match kind {
                 online_core::EwCovStat::Mean
                 | online_core::EwCovStat::Var
                 | online_core::EwCovStat::Std => {
                     for col in &spec.features {
-                        meta.push((name.clone(), vec![col.clone()], None));
+                        meta.push((name.clone(), vec![col.clone()], None, None));
                     }
                 }
-                online_core::EwCovStat::Mahal => meta.push((name.clone(), all.clone(), None)),
+                online_core::EwCovStat::Mahal => meta.push((name.clone(), all.clone(), None, None)),
+                // One entry per (lag, ordered pair), the auto terms
+                // included: both orientations, since the lagged matrix is
+                // not symmetric.
+                online_core::EwCovStat::LagCorr => {
+                    for &l in &lags {
+                        for a in &spec.features {
+                            for b in &spec.features {
+                                meta.push((
+                                    name.clone(),
+                                    vec![a.clone(), b.clone()],
+                                    None,
+                                    Some(l),
+                                ));
+                            }
+                        }
+                    }
+                }
                 _ => {
                     for i in 0..spec.features.len() {
                         for j in (i + 1)..spec.features.len() {
                             meta.push((
                                 name.clone(),
                                 vec![spec.features[i].clone(), spec.features[j].clone()],
+                                None,
                                 None,
                             ));
                         }
@@ -2971,26 +3031,27 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
             }
         }
         for &q in &levels {
-            meta.push(("mahal_q".into(), all.clone(), Some(q)));
+            meta.push(("mahal_q".into(), all.clone(), Some(q), None));
         }
         for _ in 0..r {
-            meta.push(("pc_var".into(), all.clone(), None));
-            meta.push(("pc_share".into(), all.clone(), None));
+            meta.push(("pc_var".into(), all.clone(), None, None));
+            meta.push(("pc_share".into(), all.clone(), None, None));
             for col in &spec.features {
-                meta.push(("pc_loading".into(), vec![col.clone()], None));
+                meta.push(("pc_loading".into(), vec![col.clone()], None, None));
             }
-            meta.push(("pc_score".into(), all.clone(), None));
+            meta.push(("pc_score".into(), all.clone(), None, None));
         }
         debug_assert_eq!(meta.len(), labels.len());
         let n_slots = labels.len();
         let mut fields = Vec::new();
         for (mi, (suffix, d)) in decays.iter().enumerate() {
-            for (slot, (l, (kind, cols, q))) in labels.iter().zip(&meta).enumerate() {
+            for (slot, (l, (kind, cols, q, lag))) in labels.iter().zip(&meta).enumerate() {
                 let mut m = FieldMeta::new(format!("{l}{suffix}"), kind)
                     .decay(d)
                     .src(Source::Stat(mi * n_slots + slot));
                 m.columns = Some(cols.clone());
                 m.quantile = *q;
+                m.lag = *lag;
                 fields.push(m);
             }
             fields.push(

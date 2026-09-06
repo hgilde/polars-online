@@ -147,6 +147,10 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
     ``lam**(2*dt)`` before merging (the means and co-moments are unaffected,
     being weighted means already).
 
+    ``lags`` and ``lag_comoments`` come back ``None``: a lagged cross-moment
+    pairs a row with the row `l` back *within its own part*, and the pairings
+    across a part boundary are what no part holds.
+
     Every part must have the same ``columns`` and ``targets``; a part with no
     ``n_kish`` or no target moments (a state saved by 0.2.0 or earlier) makes
     the merge report ``None`` for those, since the sums behind them are not
@@ -227,6 +231,12 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "target_n_kish": None
         if tq is None
         else np.divide(tw * tw, tq, out=np.full_like(tq, np.nan), where=tq > 0.0),
+        # A lagged cross-moment pairs a row with the row `l` back *in its own
+        # part*, and the pairing across a part boundary is exactly what no
+        # part holds. There is no Chan-style update for it, so a pooled Gram
+        # reports none rather than a plausible wrong one (E56).
+        "lags": None,
+        "lag_comoments": None,
     }
 
 
@@ -327,6 +337,10 @@ def from_row(row: Any) -> dict[str, Any]:
         "target_means": None if d.get("target_means") is None else _floats(np, d["target_means"]),
         "target_vars": None if d.get("target_vars") is None else _floats(np, d["target_vars"]),
         "target_n_kish": None if tkish is None else _floats(np, tkish),
+        "lags": None if d.get("lags") is None else [int(v) for v in d["lags"]],
+        "lag_comoments": None
+        if d.get("lag_comoments") is None
+        else _floats(np, d["lag_comoments"]).reshape(len(d["lags"]), k, k),
     }
 
 
@@ -374,12 +388,16 @@ def subset(g: dict[str, Any], cols: Sequence[str | int]) -> dict[str, Any]:
     names = _columns(g)
     como = np.asarray(g["comoments"], dtype=float)
     cross = np.asarray(g["cross_moments"], dtype=float)
+    lag = g.get("lag_comoments")
     return {
         **g,
         "columns": [names[i] for i in idx],
         "means": np.asarray(g["means"], dtype=float)[idx],
         "comoments": como[np.ix_(idx, idx)],
         "cross_moments": cross[:, idx] if cross.size else cross,
+        # The lagged matrices are over the same axes, so they slice the same
+        # way -- in both, since a lagged matrix is not symmetric.
+        "lag_comoments": None if lag is None else np.asarray(lag, dtype=float)[:, idx][:, :, idx],
     }
 
 

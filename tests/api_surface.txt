@@ -80,6 +80,7 @@
     mahal_quantiles = None
     pca = None
     pca_every = None
+    lags = None
     common
   ewridge:
     name
@@ -659,6 +660,17 @@
     wins_b_y
     n_eff
   marginal minimal:
+    n_eff
+  ew_cov with lags:
+    corr_x0_x1
+    lagcorr_x0_x0_l1
+    lagcorr_x0_x1_l1
+    lagcorr_x1_x0_l1
+    lagcorr_x1_x1_l1
+    lagcorr_x0_x0_l5
+    lagcorr_x0_x1_l5
+    lagcorr_x1_x0_l5
+    lagcorr_x1_x1_l5
     n_eff
   deco minimal:
     u
