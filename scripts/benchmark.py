@@ -137,9 +137,20 @@ def main() -> None:
 
     # --- the other families, and the second-pass options, at k=20 ---
     df = make_labelled(rows, 20)
+    # A monotone group key, for the models whose value is a closed block.
+    df = df.with_columns((pl.int_range(pl.len()) // 1000).cast(pl.Int64).alias("block"))
     no_target = {k: v for k, v in common.items() if k != "targets"}
     four = dict(no_target, features=[f"b{j}" for j in range(4)])
     classes = ["0", "1", "2"]
+
+    def no_decay(base: dict, drop_weight: bool = False) -> dict:
+        """The models with no decay of their own refuse `halflife`, and
+        `min_periods` is theirs to default."""
+        out = {k: v for k, v in base.items() if k not in ("halflife", "min_periods")}
+        if drop_weight:
+            out.pop("weight", None)
+        return out
+
     others = [
         (
             "ew_ridge + conformal",
@@ -206,6 +217,78 @@ def main() -> None:
             "seqtest",
             "sign of one column",
             po.spec.seqtest("m", targets=["y0"], clock="t", max_dclock=100.0),
+        ),
+        # The correlation families (tasks 45-56). `rcov` and `corrchange`
+        # need a group that closes and a span that closes; `bocpd`'s cost is
+        # the length of its run vector, which is what `max_run` bounds.
+        ("deco", "k=20, ew dynamics", po.spec.deco("m", **no_target)),
+        (
+            "deco, blocks",
+            "k=20 in 4 blocks",
+            po.spec.deco(
+                "m",
+                blocks={f"b{j}": [f"x{5 * j + i}" for i in range(5)] for j in range(4)},
+                **no_target,
+            ),
+        ),
+        ("hmm", "4 features, K=2", po.spec.hmm("m", k=2, precision_prior=1.0, **four)),
+        ("hmm", "k=20, K=2", po.spec.hmm("m", k=2, precision_prior=1.0, **no_target)),
+        (
+            "corrchange, monitor",
+            "4 features, horizon 500",
+            po.spec.corrchange("m", horizon=500, **no_decay(four)),
+        ),
+        (
+            "corrchange, window",
+            "4 features, window 100, permute every 500",
+            po.spec.corrchange(
+                "m",
+                kind="window",
+                window=100,
+                n_perm=100,
+                permute_every=500,
+                seed=0,
+                **no_decay(four),
+            ),
+        ),
+        (
+            "bocpd",
+            "4 features, diag, max_run 200",
+            po.spec.bocpd("m", truncate=1e-6, max_run=200, **no_decay(four)),
+        ),
+        (
+            "bocpd",
+            "4 features, diag, max_run 20",
+            po.spec.bocpd("m", truncate=1e-6, max_run=20, **no_decay(four)),
+        ),
+        (
+            "bocpd, gaussian",
+            "4 features, full covariance, max_run 200",
+            po.spec.bocpd(
+                "m",
+                emission="gaussian",
+                prior_nu=6.0,
+                truncate=1e-6,
+                max_run=200,
+                **no_decay(four),
+            ),
+        ),
+        (
+            "rcov",
+            "4 features, kernel, groups of 1000",
+            po.spec.rcov(
+                "m",
+                kind="kernel",
+                group="block",
+                group_close="monotone",
+                n_max=2000,
+                **no_decay(four, drop_weight=True),
+            ),
+        ),
+        (
+            "ew_cov, lags",
+            "k=20: mean, cov, lags 1-5",
+            po.spec.ew_cov("m", stats=["mean", "cov"], lags=[1, 2, 3, 4, 5], **no_target),
         ),
     ]
     other_results: list[tuple[str, str, float]] = []

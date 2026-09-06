@@ -36,6 +36,18 @@ carries breaking changes.
   curve, where refresh time recovers 0.54 of a true 0.8 and the lag
   inversion 0.76.
 
+- **The five new models are in the benchmark and in
+  `docs/PERFORMANCE.md` §15**, so the README's throughput table covers them
+  and a regression shows up where every other model's would. Two findings
+  worth the knob names: **`bocpd`'s `truncate` is not a tuning knob, it is
+  what makes the model finite** — the run vector grows by one entry a row,
+  so `truncate = 0` is `O(rows²)` (measured halving at 5k/10k/20k rows) and
+  the default `1e-6` is flat in the length of the stream; and **`rcov` pays
+  at the close, not per row** — `plain` is free, the BNHLS `kernel` is
+  `O(n·H)` with the automatic bandwidth, so 0.21 ms, 2.7 ms and 44 ms per
+  close at 1,000, 5,000 and 20,000 rows a block, and `preavg` is the one to
+  reach for on very large blocks.
+
 - **`bocpd`: how long has this regime lasted?** (`docs/ENHANCEMENTS.md`
   E61, task 55). Adams & MacKay's run-length posterior, their Algorithm 1 in
   log space, with a normal-inverse-gamma (`emission="diag"`) or

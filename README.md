@@ -1981,16 +1981,16 @@ Apple M-series, single process, best of 3, 200k rows per run
 
 | configuration | notes | rows/sec |
 |---|---|---|
-| `ewridge` k=5 | 1 target, 1 halflife | 10,870,697 |
-| `ewridge` k=20 | 1 target, 1 halflife | 3,923,931 |
-| `ewridge` k=50 | 1 target, 1 halflife | 1,002,231 |
-| `ewridge` k=20 | 10 targets | 2,330,458 |
-| `ewridge` k=20 | 5 halflives | 2,354,953 |
-| `rls` | k=20, 1 target | 1,963,308 |
-| `kalman` | k=20, 1 target | 1,851,327 |
-| `lasso` | k=20, 1 target (3-point path) | 2,033,627 |
-| `huber` | k=20, 1 target | 3,975,119 |
-| `ftrl` | k=20, 1 target | 6,995,830 |
+| `ewridge` k=5 | 1 target, 1 halflife | 10,306,024 |
+| `ewridge` k=20 | 1 target, 1 halflife | 4,122,355 |
+| `ewridge` k=50 | 1 target, 1 halflife | 1,040,742 |
+| `ewridge` k=20 | 10 targets | 2,340,621 |
+| `ewridge` k=20 | 5 halflives | 2,355,548 |
+| `rls` | k=20, 1 target | 1,843,129 |
+| `kalman` | k=20, 1 target | 2,122,805 |
+| `lasso` | k=20, 1 target (3-point path) | 2,060,329 |
+| `huber` | k=20, 1 target | 4,175,881 |
+| `ftrl` | k=20, 1 target | 6,006,156 |
 
 Targets share one `S` accumulator, so 10 targets cost far less than 10× one.
 Each halflife in a grid is its own accumulator, but they run in parallel, so
@@ -2003,20 +2003,20 @@ and rows:
 
 | configuration | notes | rows/sec |
 |---|---|---|
-| `ewridge` + `conformal` | k=20, 90% interval | 3,917,766 |
-| `sgd` | k=20, squared loss | 11,578,457 |
-| `sgd` | k=20, `coef_min=0`, `coef_sum=1` | 2,766,116 |
-| `pa` | k=20 | 15,681,764 |
-| `kalman` | k=20, `revert_halflife` | 1,617,287 |
-| `ew_cov` | k=20: mean, std, corr (230 statistics) | 1,921,119 |
-| `ew_cov` | k=20: mean, mahal, `mahal_q0.99` | 763,732 |
-| `ew_class` | k=20, 3 classes, full covariance | 508,747 |
-| `ew_class` | k=20, 3 classes, shared covariance | 586,333 |
-| `ew_class` | k=20, 3 classes, diagonal | 2,690,399 |
-| `kmeans` | 4 features, K=8 | 6,747,259 |
-| `kmeans` | k=20, K=8 | 3,317,180 |
-| `micro` | 4 features, `eps=1` | 18,391,650 |
-| `seqtest` | sign of one column | 27,480,862 |
+| `ewridge` + `conformal` | k=20, 90% interval | 4,097,559 |
+| `sgd` | k=20, squared loss | 8,961,276 |
+| `sgd` | k=20, `coef_min=0`, `coef_sum=1` | 2,481,671 |
+| `pa` | k=20 | 11,150,059 |
+| `kalman` | k=20, `revert_halflife` | 1,844,755 |
+| `ew_cov` | k=20: mean, std, corr (230 statistics) | 2,117,751 |
+| `ew_cov` | k=20: mean, mahal, `mahal_q0.99` | 750,903 |
+| `ew_class` | k=20, 3 classes, full covariance | 495,968 |
+| `ew_class` | k=20, 3 classes, shared covariance | 577,082 |
+| `ew_class` | k=20, 3 classes, diagonal | 2,824,922 |
+| `kmeans` | 4 features, K=8 | 6,118,711 |
+| `kmeans` | k=20, K=8 | 3,103,963 |
+| `micro` | 4 features, `eps=1` | 15,060,666 |
+| `seqtest` | sign of one column | 22,436,196 |
 
 A conformal interval is free: it reads the residual the model already has.
 A simplex constraint sorts `2k` breakpoints per row, so it costs `sgd`
@@ -2026,6 +2026,46 @@ speed of one `ewridge`. The Mahalanobis distance and the full-covariance
 for `mahal` and one per *learned* row for `ew_class` — the classes a row
 does not touch keep theirs. `kmeans` and `micro` cost a distance to each
 centre; `seqtest` a handful of operations.
+
+The correlation families, on the same machine and rows:
+
+| configuration | notes | rows/sec |
+|---|---|---|
+| `deco` | k=20, one equicorrelation | 2,666,809 |
+| `deco` | k=20 in 4 blocks | 1,892,836 |
+| `rcov` | 4 features, kernel, blocks of 1000 | 3,864,849 |
+| `ew_cov` | k=20: mean, cov, lags 1–5 | 1,148,104 |
+| `hmm` | 4 features, K=2 | 1,343,086 |
+| `hmm` | k=20, K=2 | 353,258 |
+| `bocpd` | 4 features, diagonal | 1,009,075 |
+| `bocpd` | 4 features, full covariance | 585,180 |
+| `corrchange` | 4 features, monitor, `horizon=500` | 388,557 |
+| `corrchange` | 4 features, window 100, permute every 500 | 187,407 |
+
+`deco` is one number for the whole matrix and costs `O(m)` a row, which is
+why it runs at `ew_cov`'s speed and not at a covariance matrix's. `rcov`
+accumulates per row and pays for its kernel only when the block closes.
+`hmm` factorizes a `k × k` covariance per state per row, which is
+`ew_class`'s cost with the classes hidden. `bocpd` costs
+`O(runs · d²)`, and the length of the run vector is the whole story —
+see below.
+
+**`truncate` is not a tuning knob on `bocpd`, it is what makes it finite.**
+The run vector grows by one entry every row, so with `truncate = 0` the
+model is `O(rows²)`: measured at 1,897 / 947 / 472 rows/s on 5k / 10k / 20k
+rows, halving each time the stream doubles. At the default `1e-6` it is
+flat in the length of the stream, and the knob is a direct dial on
+throughput — 204k, 324k and 687k rows/s at `1e-8`, `1e-6` and `1e-4` on
+i.i.d. Gaussian rows. `max_run` is the belt to that pair of braces and
+usually never binds. One consequence worth knowing: **`bocpd` is faster on
+data that actually breaks**, because a changepoint collapses the posterior
+onto a short run — the 1.0M rows/s in the table is on data with regimes,
+against 324k on a stationary stream.
+
+`corrchange`'s window kind is the slowest model here, and deliberately: the
+permutation null re-draws `n_perm` statistics every `permute_every` rows.
+At the default cadence that is a `O(n_perm · window · k²)` job amortized
+over 500 rows; `crit` given as a number skips it entirely.
 
 Grouped data goes wider, as [Parallelism](#parallelism) shows: 8.2M rows/s
 at k=20 over 64 groups.

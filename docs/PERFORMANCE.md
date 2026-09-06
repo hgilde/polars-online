@@ -1429,3 +1429,97 @@ The lesson is the same one §12 and §13 keep teaching: at these widths the
 loop is bound by how it touches memory, not by how many multiplies it does.
 A change that halves the arithmetic and doubles the traffic is a
 pessimisation, and the only way to know which one a change is, is to run it.
+
+## 15. The correlation families, and the two knobs that are not knobs (2026-09-06)
+
+Tasks 45–56 added five models. `scripts/benchmark.py` gained a row for each,
+so the README's throughput table now covers them and a regression in one of
+them shows up where every other model's would. What follows is what the
+measurements say beyond the table — Apple M-series, single process, best of
+2 or 3, and ratios are the part to read.
+
+### `bocpd`: `truncate` is what makes it finite
+
+The run vector grows by one entry every row, so the cost of a row is
+`O(runs · d²)` and the cost of a *stream* is quadratic unless something
+bounds the vector. That is not a subtlety, it is the whole performance
+profile:
+
+| `truncate` | `max_run` | rows | rows/s |
+|---|---|---|---|
+| 0 | ∞ | 5,000 | 1,897 |
+| 0 | ∞ | 10,000 | 947 |
+| 0 | ∞ | 20,000 | 472 |
+| 1e-8 | ∞ | 20,000 | 203,699 |
+| **1e-6** (default) | ∞ | 20,000 | 323,533 |
+| 1e-4 | ∞ | 20,000 | 687,188 |
+| 1e-6 | 200 | 20,000 | 338,783 |
+| 1e-6 | 20 | 20,000 | 396,467 |
+
+The first three rows halve as the stream doubles, which is the `O(rows²)`
+written out. Turning truncation on is a 400–1,400× change at 20k rows and
+unbounded beyond it, and the knob is then a direct dial on throughput: each
+factor of 100 in `truncate` is roughly a factor of 2 in rows/s, because it
+is choosing how many runs stay alive. `max_run` barely moves anything at the
+default `truncate` — by the time the vector is 200 long, truncation has
+already dropped everything below `1e-6` — so it is the belt to truncation's
+braces, there for the case where the data keeps a long tail of runs
+genuinely alive.
+
+`tests/test_bocpd.py` measures what the knob *costs* in answers rather than
+speed: `truncate = 1e-4` moves `p_change` by less than `1e-3` against
+`truncate = 0` over 400 rows, and leaves `run_mode` identical.
+
+**And `bocpd` is faster on data that breaks.** A changepoint collapses the
+posterior onto a short run, so the vector shortens: 1.0M rows/s on the
+benchmark's blob features against 324k on i.i.d. Gaussian rows, same
+parameters. A model that costs more when nothing is happening is an odd
+shape, and it is the right way round — the interesting streams are cheap.
+
+### `rcov`: the cost is at the close, and the kernel chooses it
+
+Per row `rcov` only accumulates. Everything expensive happens when the group
+closes, and which estimator is asked for decides how expensive. 100k rows,
+four features, blocks of the stated size, throughput over the whole stream:
+
+| rows per block | `plain` | `kernel` | `preavg` |
+|---|---|---|---|
+| 200 | 24.8M | 8.8M | 20.0M |
+| 1,000 | 36.2M | 4.8M | 23.6M |
+| 5,000 | 43.0M | 1.8M | 16.8M |
+| 20,000 | 30.1M | 0.45M | 5.8M |
+
+`plain` is free and flat: the close is an `O(k²)` read of an accumulator.
+The other two are paid per block and grow with it. Per close, `kernel` costs
+0.21 ms, 2.7 ms and 44 ms at 1,000, 5,000 and 20,000 rows — about `n^1.6`,
+which is exactly `O(n·H)` with the BNHLS automatic bandwidth `H ∝ n^{3/5}`.
+`preavg` is `O(n·k_n)` with `k_n = ⌊θ√n⌋` and a much smaller constant, so it
+stays within a factor of 5 of `plain` until the blocks are very large.
+
+The practical reading: a session-length block of a few thousand rows costs
+single-digit milliseconds a close under the kernel, which is nothing beside
+the session. A block of tens of thousands is where the kernel starts to be a
+choice rather than a default, and `preavg` is the estimator to reach for.
+
+### The other three
+
+`deco` is `O(m)` a row by construction — it estimates one number, not a
+matrix — and runs at `ew_cov`'s speed with 20 columns. Blocking it costs
+about 40%, since it computes one `u` per block and per pair of blocks.
+
+`hmm` factorizes a `k × k` covariance per state per row, so it is
+`ew_class`'s cost with the classes hidden: 1.34M rows/s at four features and
+two states, 353k at twenty features. `covariance="diag"` is the way out at
+width, as it is for `ew_class`.
+
+`corrchange`'s window kind is the slowest model in the library, and by
+design: the permutation null re-draws `n_perm` statistics every
+`permute_every` rows, an `O(n_perm · window · k²)` job amortized over that
+many rows. 187k rows/s at the default cadence, and a `crit` given as a
+number skips the whole thing. The monitor kind pays only at a span's close,
+where it walks the span once: 389k rows/s at `horizon = 500`.
+
+`ew_cov` with `lags = 1..5` runs at 1.15M rows/s against 2.12M for the same
+spec without them — five more `k × k` outer products a row, and the ring of
+rows they need. The lag block is the whole cost of the Epps inversion in
+`docs/REGIMES.md` §6, and it is a fifth of a `mahal`.
