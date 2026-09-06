@@ -7,15 +7,7 @@ carries breaking changes.
 
 ## [Unreleased]
 
-### Changed
-
-- **Documentation pass (task 58).** The README links every model to its
-  builder in the API reference and to its Rust source, gains a table of
-  contents, and groups the stream-preparation and fit-reading sections;
-  every builder docstring states each keyword's default; `docs/README.md`
-  maps every document to what it is for, and each document under `docs/`
-  opens with a dated status line saying what became of it. Nothing that
-  runs changed.
+Nothing yet.
 
 ## [0.2.0] — 2026-09-06
 
@@ -709,6 +701,18 @@ accept it silently.
   Mahalanobis distance, the three `ew_class` covariances, `kmeans`,
   `micro` and `seqtest`; the regression table regenerated on the same
   build.
+- **A documentation pass over everything** (task 58). Each of the twenty
+  model sections in the README now links to its builder in the API
+  reference, whose docstring lists every keyword with its default, and to
+  its Rust module, whose comment states the recursion; the README gains a
+  table of contents and groups what a stream needs before a bank sees it
+  (*Preparing a stream*) and what a bank can tell you afterwards (*Reading
+  the fit*). Every builder docstring was checked against the code that
+  reads it, so a default in the reference is the default the model uses.
+  `docs/README.md` is new and says which document to read for what; every
+  document under `docs/` opens with a dated line saying what became of it,
+  and `docs/STATE-WORKFLOW.md` opens with the four-step workflow itself
+  rather than the research behind it. Nothing that runs changed.
 
 ### Fixed
 

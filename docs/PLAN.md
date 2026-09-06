@@ -1,7 +1,7 @@
 # polars-online — design and plan
 
-Status as of 2026-09-06: design frozen 2026-08-29; **tasks 1–58 done** — 1–57
-released as 0.2.0, 58 (the documentation pass) follows it. Items marked
+Status as of 2026-09-06: design frozen 2026-08-29; **tasks 1–58 done**,
+released as 0.2.0. Items marked
 **[validate]** were defaults chosen without data; task 12 checked them on
 public data, and `docs/VALIDATION.md` is the regenerated record.
 

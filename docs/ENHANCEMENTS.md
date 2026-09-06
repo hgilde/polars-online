@@ -1,8 +1,8 @@
 # Suggested enhancements
 
 Status as of 2026-09-06: **everything through E64 is built, declined or
-noted, and every task in `docs/PLAN.md` §11 is done.** The exceptions are
-recorded decisions, not gaps: E28/E29 (declined), E51/E52 (P3, open), E63 (a
+noted, and every task in `docs/PLAN.md` §11 is done**, released as 0.2.0.
+The exceptions are recorded decisions, not gaps: E28/E29 (declined), E51/E52 (P3, open), E63 (a
 note). Twenty-one models — the ten regressions and smoothers (`ewridge`,
 `rls`, `lasso`, `kalman`, `huber`, `quantile`, `sgd`, `pa`, `ftrl`, `holt`),
 the moment and monitor family (`ew_cov`, `ew_class`, `marginal`, `seqtest`),
