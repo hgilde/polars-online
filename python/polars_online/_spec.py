@@ -1910,6 +1910,17 @@ def hmm(
     never forgets, and the mixture is left short one state. A larger
     ``precision_prior``, filtering with given states (``learn=False``), or
     cleaning the input upstream are the mitigations.
+
+    **A regime that lives only in the covariance needs the covariances to
+    start from.** The default seeding is k-means over the rows, and two
+    zero-mean states differ in nothing k-means can see, so it splits them by
+    *direction* and the filter never recovers: measured at 56 % accuracy on
+    a two-state stream, against 98 % for the same filter given ``covs``.
+    Pass ``means`` and ``covs``, or give it a feature in which the regime is
+    a shift in location. And keep ``precision_prior`` small against the
+    data's scale -- a ridge of 1.0 on a covariance whose entries are about
+    1.0 halves every correlation, which in that stream is the whole of the
+    signal. Both are measured in ``docs/REGIMES.md`` §1.
     """
     model: dict[str, Any] = {
         "type": "hmm",

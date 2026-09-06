@@ -16,7 +16,7 @@ the same whether the stream arrives as one chunk or a thousand.
 
 ## What you get
 
-**Fifteen model families, one set of stream semantics.** A spec's clock, decay,
+**Twenty model families, one set of stream semantics.** A spec's clock, decay,
 grouping and warm-up mean the same thing whichever model it names.
 
 | model | what it is |
@@ -36,6 +36,11 @@ grouping and warm-up mean the same thing whichever model it names.
 | `ew_class` | Gaussian classification — QDA, LDA or naive Bayes on one `ew_cov` state per class; a label column in, out-of-sample posteriors out |
 | `seqtest` | a sequential test of a sign by betting — an e-process you can read at any row; on its own a column's sign, with `a`/`b` whether one spec of the bank predicts closer than another |
 | `marginal` | every (feature, target) pair's running mean, variance, covariance, correlation, slope and t — O(p·T) per row for a wide set of columns, kept in the state and read back as a frame |
+| `deco` | one correlation for the whole matrix — Engle & Kelly's equicorrelation, or one per block and per pair of blocks, in O(m) a row |
+| `rcov` | a block's realised covariance, robust to microstructure noise — the Barndorff-Nielsen–Hansen–Lunde–Shephard kernel or Christensen–Kinnebrock–Podolskij pre-averaging, emitted when a group closes |
+| `hmm` | a Gaussian hidden Markov model, filtered online — `ew_class` without the labels, with a transition matrix that can be learned |
+| `corrchange` | has the correlation structure changed — the Wied–Krämer–Dehling constancy test span by span, or the size of a change between two windows against a permutation null |
+| `bocpd` | how long has this regime lasted — Adams & MacKay's run-length posterior, so the answer is the age of the regime and not a flag |
 
 **Three ways to run a bank, same numbers from each.** A Python loop over
 chunks (`ModelBank`); a Polars query (`lf.online.fit_predict(specs)` is a
@@ -2197,6 +2202,7 @@ uv run maturin develop --release -m crates/online-py/Cargo.toml
 uv run pytest                                          # Python tests
 uv run --group docs sphinx-build -W docs/reference docs/_build/html   # API reference
 uv run python scripts/validate.py > docs/VALIDATION.md # re-run the [validate] experiments
+uv run python scripts/regime_experiments.py all        # the docs/REGIMES.md experiments
 uv run python scripts/benchmark.py                     # throughput
 ```
 
@@ -2212,6 +2218,7 @@ time.
 - Design and task list: [docs/PLAN.md](docs/PLAN.md)
 - Saving, serving, resuming: [docs/STATE-WORKFLOW.md](docs/STATE-WORKFLOW.md)
 - Measured defaults: [docs/VALIDATION.md](docs/VALIDATION.md)
+- What the regime detectors find: [docs/REGIMES.md](docs/REGIMES.md)
 - Where the time and memory go: [docs/PERFORMANCE.md](docs/PERFORMANCE.md)
 - Adding a model: [docs/EXTENDING.md](docs/EXTENDING.md)
 

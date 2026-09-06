@@ -711,7 +711,7 @@ note, not a task.
       detected; truncation changing nothing above `truncate`; the robust
       variant ignoring one 20-σ row where the Gaussian one restarts; the
       sweeps.
-- [ ] 56. **Freeze a schema-5 fixture and close the batch**:
+- [x] 56. **Freeze a schema-5 fixture and close the batch**:
       `state_schema5.rs` as task 44 froze schema 4, once 45–55 have stopped
       moving the layout, carrying a monotone bank with an undrained closed
       row, an `ew_cov` with `lags`, and one of each new model; ENHANCEMENTS
@@ -2881,9 +2881,12 @@ entries, distance 2.13 and rank 3. Four notes.
   sweeps; `MINIMAL["corrchange"] = {"features": ["x0", "x1"], "window": 8,
   "crit": 0.5}`.
 
-*Task 54 as built, 2026-09-06.* The re-scoping held: WKD's size and power
-tables are reproduced, at `T = 500` and at both `T` for the power. Five
-notes.
+*Task 54 as built, 2026-09-06.* The re-scoping held: the size matches WKD's
+Table 1 in every cell. The power does **not** match Table 2 — it is well
+above it (0.87 against 0.587 at `T = 500`), and the gate's assertion is
+one-sided for that reason. Task 56's `docs/REGIMES.md` measures both at 2000
+and 1000 replications, shows that size-adjusting barely moves the power, and
+records the excess as unexplained. Five notes.
 
 - *`scalar = true` is a **mean** CUSUM, not a correlation one.* The first
   implementation pushed `[u, u]` into the pair machinery, whose correlation
@@ -3044,6 +3047,42 @@ notes.
   `[Unreleased]` listing the schema bump first; `docs/RELEASE-READINESS.md`
   for the new surface. E63 stays a note: the `weight=` recipe it describes
   is already expressible, and nothing in this batch adds `weight_from`.
+
+*Task 56 as built, 2026-09-06.*
+
+- *The fixture.* `crates/online-polars/tests/state_schema5.rs`, six specs on
+  a 60-row stream with a **monotone** group key: an `ew_cov` with
+  `lags = [1, 12]` and `group_close = "monotone"`, an `rcov` (whose whole
+  output is a closed group's block), a `deco`, a sessioned `hmm`, a
+  `corrchange` mid-span and a `bocpd`. Two groups have closed and nobody
+  read them, so the file carries the queue and the high-water key; the third
+  group holds ten rows, which is fewer than the lag ring wants, so the ring
+  is frozen partly filled with the long lag still empty. `state_schema4.rs`
+  is untouched and still loads, continues to the bit and re-saves as 5.
+- *One departure from `state_schema4.rs`'s shape.* Its `assert_same_state`
+  compares coefficients with `assert_eq!`, which cannot work here: a gated
+  instance's coefficient is a NaN and `NaN != NaN`. Schema 5 compares the
+  debug rendering, where a NaN in the same slot is a match.
+- *`docs/REGIMES.md` and `scripts/regime_experiments.py`.* Five experiments,
+  twelve seconds, committed rather than gate-regenerated (the
+  `docs/CLUSTERING.md` §7 precedent). Three of them are the ones §11a asked
+  for; the fourth compares `corrchange(window)` and `bocpd` on the same
+  break, which is where the two detectors' trade shows, and the fifth is the
+  Epps curve with an `L` sweep of the lag inversion.
+- *The seeds are `zlib.crc32`, not `hash()`.* Python randomises string
+  hashing per process, so the first draft's numbers changed run to run. An
+  experiment in a committed document has to give the reader the numbers it
+  claims.
+- *What the experiments found, beyond the tables.* `hmm`'s default seeding
+  (k-means over the rows) **cannot find a regime that lives in the
+  covariance**: it splits two zero-mean states by direction and lands at
+  chance, where the same filter given the covariances is at 98 %. And a
+  `precision_prior` of 1.0 on data of variance 1.0 halves every correlation
+  and collapses the accuracy — `bocpd`'s `prior_scale` lesson in a second
+  model. Both are in the document and in `hmm`'s docstring.
+- *ENHANCEMENTS §10 needed nothing.* Every row already carried its task
+  number and its departures, written as each task landed; E63 stays a note
+  by design.
 
 *Answers folded in, 2026-09-05.* `docs/ANSWERS-E54-E64.md` was read against
 every "confirm from the paper" above, and the blocks were edited in place
