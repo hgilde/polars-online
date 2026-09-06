@@ -11,11 +11,14 @@
 //!          = d * s / |r|       otherwise
 //! ```
 //!
-//! Quantile (check loss at level tau), the IRLS weight of the check function:
+//! Quantile (check loss at level tau), the IRLS weight of the check function,
+//! with `eps = quantile_eps` flooring `|r|` in units of `s` so a near-zero
+//! residual cannot produce an unbounded weight, and the whole thing scaled by
+//! `s` so the weights are O(1) rather than O(1/s):
 //!
 //! ```text
-//! w_robust = tau / max(|r|, eps)        if r > 0
-//!          = (1 - tau) / max(|r|, eps)  otherwise
+//! w_robust = 2 * tau       * s / max(|r|, eps * s)    if r > 0
+//!          = 2 * (1 - tau) * s / max(|r|, eps * s)    otherwise
 //! ```
 //!
 //! Because the weights are per target, the `S` accumulator is per target here

@@ -1,8 +1,11 @@
 # Online clustering, every family that can be made to fit
 
-Status as of 2026-09-04: **investigation in progress on the branch
-`online-clustering`; designs prototyped in numpy and measured; nothing in the
-Rust crates.** The question the user asked was to do "all the clustering types
+Status as of 2026-09-06: **investigation complete, and two of its designs
+shipped — `kmeans` (task 23) and `micro` (task 24), `crates/online-core/src/cluster/`,
+`po.spec.kmeans` and `po.spec.micro`, with `docs/PLAN.md` §11h recording what
+the build changed from the prototypes.** The numbers below are the numpy
+prototypes' and are kept as the record of why those two designs were chosen.
+The question the user asked was to do "all the clustering types
 that may be possible online" — so this document surveys every family the field
 has produced, decides each against this library's contract, prototypes the ones
 that pass, and measures them. It reopens the one-line exclusion in
@@ -118,11 +121,11 @@ material stays out of the repo.
   on convex data — so the honest exposure is `kmeans` for convex data and
   `micro` for shapes, with the trade stated. The one DBSCAN-faithful design
   inside the bar, batch DBSCAN over a retained sample, is unmeasured (§12).
-- **Nothing is in the crates.** §9 costs a Rust build; the decision is the
-  user's. The narrowest useful build is one model, `kmeans`, with the
-  split–merge move and the seeding buffer; `micro` is about the same again, on
-  the shared summary `kmeans` needs. Merged to `main` 2026-09-04 as
-  documentation and numpy prototypes.
+- **What was built.** §9 costed a Rust build, and the narrowest useful one
+  — `kmeans` with the split–merge move and the seeding buffer, then `micro` on
+  the shared summary `kmeans` needs — is what shipped (tasks 23–24, `docs/PLAN.md`
+  §11h). This document was merged to `main` 2026-09-04 as documentation and
+  numpy prototypes; the models followed on the `clustering-build` branch.
 
 ---
 

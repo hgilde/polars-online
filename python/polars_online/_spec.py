@@ -324,8 +324,14 @@ def ewridge(
     ``(S + ridge * D) beta_j = r_j`` (D = identity minus the intercept slot) on a
     schedule (``solve_every`` clock units, default halflife/50 -- every row for
     ``halflife=inf`` and for ``lam``, so set it with a large finite halflife
-    or the default never comes due). Predictions use
-    the last solved coefficients and the state *before* the row's update.
+    or the default never comes due; ``max_rows_between_solves`` caps the
+    schedule in rows, and is off by default). Predictions use the last solved
+    coefficients and the state *before* the row's update.
+
+    ``ridge`` defaults to ``1e-6``. With ``standardize`` (default ``False``)
+    the solve is done in correlation form and unscaled afterwards, and a
+    feature whose variance is zero is dropped from the solve rather than
+    blowing it up.
     ``ridge`` may be a list (one fit per value, reported side by side) and
     ``feature_sets`` names subsets of ``features``, each a fit of its own
     reported as ``pred_<t>__<set>`` -- the full set is fitted only when it
@@ -572,11 +578,11 @@ def rls(
     is folded in by Givens rotations and ``beta`` read off by one
     back-substitution, O(k^2) per row with no solve staleness and none of the
     covariance recursion's drift (docs/IMPROVEMENTS.md C5). ``ridge`` sets
-    ``A0 = ridge I`` (``P0 = I / ridge``) and (unlike ew_ridge) penalizes the
-    intercept.
+    ``A0 = ridge I`` (``P0 = I / ridge``; default 1.0) and (unlike ew_ridge)
+    penalizes the intercept.
 
     Null policy deviation: a row with ANY null target is predict-only for all
-    targets, because P is shared across targets.
+    targets, because the factor ``R`` is shared across targets.
     """
     model: dict[str, Any] = {"type": "rls", "ridge": ridge, "coef0": coef0}
     return _common(name, model, targets=targets, features=features, **common)
@@ -616,6 +622,12 @@ def lasso(
     halflife), reported as it stood before the row -- the lambda this row was
     scored with, not the one its own error then elected. Outputs carry one
     pred/resid pair per path point.
+
+    ``l1_ratio`` defaults to 1 (the lasso). ``solve_every`` and
+    ``max_rows_between_solves`` schedule the solves as for :func:`ewridge`;
+    within a solve, coordinate descent stops after ``max_cd_iters`` sweeps
+    (default 100) or when no coefficient moves by more than ``cd_tol``
+    (default ``1e-10``).
     """
     model: dict[str, Any] = {
         "type": "lasso",
@@ -663,6 +675,12 @@ def kalman(
     (intercept first); ``inf`` pins that coefficient. An explicit ``q``
     overrides the derivation. Observation noise is the EW residual variance
     unless ``obs_var`` is given.
+
+    ``p0`` is the initial coefficient covariance, ``P_0 = p0 I`` (default
+    1.0). With ``standardize`` (default ``True``) the filter runs on
+    standardized features, so ``coef_halflife`` and ``p0`` mean the same
+    thing whatever the columns' scale; the reported coefficients are in the
+    original units either way.
 
     ``revert_halflife`` gives each slot a reversion halflife ``r_i``: between
     observations the coefficient shrinks toward zero by ``2^(-d / r_i)``, so a
@@ -722,6 +740,8 @@ def huber(
 
     The weights are per target, so ``S`` is per target here (one accumulator
     each), unlike ew_ridge which shares one. Default ``huber_delta`` is 1.5.
+    ``ridge`` (default ``1e-6``), ``standardize``, ``solve_every`` and
+    ``max_rows_between_solves`` mean what they mean for :func:`ewridge`.
     """
     model: dict[str, Any] = {
         "type": "huber",
@@ -755,8 +775,10 @@ def quantile(
         w_robust = 2 * tau       * s / max(|r|, eps * s)   if r > 0
                  = 2 * (1 - tau) * s / max(|r|, eps * s)   otherwise
 
-    ``quantile_eps`` floors ``|r|`` (in units of the EW residual std) so a
-    near-zero residual cannot produce an unbounded weight.
+    ``quantile_eps`` (default ``1e-3``) floors ``|r|`` (in units of the EW
+    residual std) so a near-zero residual cannot produce an unbounded weight.
+    ``ridge`` (default ``1e-6``), ``standardize``, ``solve_every`` and
+    ``max_rows_between_solves`` mean what they mean for :func:`ewridge`.
     """
     model: dict[str, Any] = {
         "type": "quantile",
@@ -796,14 +818,16 @@ def ftrl(
     with the accumulators decayed on the same clock as every other model here,
     so it forgets on the same schedule::
 
-        n_i  <- lam * n_i ;  z_i <- lam * z_i
-        b_i  = 0 if |z_i| <= l1 else
-               -(z_i - sign(z_i) l1) / ((beta + sqrt(n_i)) / alpha + l2)
-        p    = sigmoid(z . b)
-        g_i  = (p - y) * z_i * w
-        z_i += g_i - ((sqrt(n_i + g_i^2) - sqrt(n_i)) / alpha) * b_i
-        n_i += g_i^2
+        n_i   <- lam * n_i ;  zz_i <- lam * zz_i
+        b_i   = 0 if |zz_i| <= l1 else
+                -(zz_i - sign(zz_i) l1) / ((beta + sqrt(n_i)) / alpha + l2)
+        p     = sigmoid(z . b)
+        g_i   = (p - y) * z_i * w
+        zz_i += g_i - ((sqrt(n_i + g_i^2) - sqrt(n_i)) / alpha) * b_i
+        n_i  += g_i^2
 
+    (``z`` is the row's feature vector, intercept included; ``zz`` and ``n``
+    are the two per-coordinate accumulators.)
     ``pred`` is the probability from the state *before* the update, so it is
     out-of-sample like every other model, and ``resid = y - p``. Defaults
     ``alpha=0.1, beta=1.0, l1=0.0, l2=1.0``. Non-0/1 targets are clamped into
@@ -838,18 +862,24 @@ def ew_cov(
 
     Not a regression: there are no targets and no coefficients, just running
     statistics of the columns you name, decayed on the same clock as every
-    model here::
+    model here. The means and the **centred** co-moments ``C`` are kept as
+    weighted means, updated in Welford's form::
 
-        W'    = lam * W + w
-        m'_i  = (lam * W * m_i + w * x_i) / W'
-        S'_ij = (lam * W * S_ij + w * x_i x_j) / W'
+        W'     = lam * W + w
+        a      = lam * W / W'        b = w / W'        (a + b = 1)
+        delta  = x - m
+        m'     = m + b * delta
+        C'_ij  = a * C_ij + a * b * delta_i * delta_j
 
-    with ``var_i = S_ii - m_i^2``, ``cov_ij = S_ij - m_i m_j`` and
-    ``corr_ij = cov_ij / sqrt(var_i var_j)``. One O(k^2) update per row, which
+    so ``var_i = C_ii``, ``cov_ij = C_ij`` and
+    ``corr_ij = C_ij / sqrt(C_ii C_jj)`` are read off directly, and a
+    variance stays accurate when the columns sit on a large offset (the raw
+    ``E[x^2] - m^2`` form loses it). One O(k^2) update per row, which
     replaces the O(k^2) *passes* a pure-Polars pairwise EW correlation needs.
 
     ``stats`` selects which to emit, from ``mean``, ``var``, ``std``, ``cov``,
-    ``corr``, ``partial_corr`` and ``mahal`` (default: mean, std, corr).
+    ``corr``, ``partial_corr``, ``mahal`` and ``lagcorr`` (default: mean, std,
+    corr).
     ``stats=[]`` emits nothing but ``n_eff`` and accumulates all the same
     (docs/ENHANCEMENTS.md E43): the spec's value is then its state -- the
     Gram read back with :meth:`ModelBank.gram`, the moments with
@@ -991,6 +1021,13 @@ def sgd(
     ``huber_delta`` here is in **target units**, unlike the ``huber`` model
     where it is in units of the residual std.
 
+    Defaults: ``learning_rate=0.01``, ``l2=0.0``, ``huber_delta=1.0``,
+    ``quantile`` must be given for that loss, ``eps=0.1`` (the half-width of
+    the insensitive tube, in target units), ``power=0.5`` for
+    ``inv_scaling``. ``scale_features`` (default ``False``) takes the step in
+    standardized coordinates, which is the difference between one learning
+    rate for every column and one per scale.
+
     **Constrained coefficients** (ENHANCEMENTS E40). ``coef_min`` and
     ``coef_max`` bound each slope (one number for every feature, or a list
     with one entry per feature; ``-inf`` / ``inf`` for no bound) and
@@ -1056,6 +1093,9 @@ def pa(
         pa1   tau = min(c, loss / s)         (capped at c)
         pa2   tau = loss / (s + 1 / (2c))    (damped by c)
         b    += tau * sign(y - p) * z
+
+    ``mode`` is ``"pa"``, ``"pa1"`` (the default) or ``"pa2"``; ``c``
+    defaults to 1.0 and ``eps`` to 0.1, in target units.
 
     A row weight below 1 scales ``tau``, so a half-weight row moves the fit
     half as far; a weight above 1 counts as 1. The update is a projection onto
@@ -1467,9 +1507,8 @@ def seqtest(
     ``log_e_pos_<t>`` and ``log_e_neg_<t>`` (``log E``, so ``0`` is no
     evidence and ``log(20) = 3.0`` is level ``0.05``), ``n_pos_<t>`` and
     ``n_neg_<t>`` (``Int64`` counts), and ``n_eff``. A zero or null target
-    bets nothing and counts nothing; a ``weight`` of 0 skips the row, any
-    other weight is one trial (``weight`` is refused: every learned row is
-    one trial). There is no ``halflife``/``lam``: a process that forgot its
+    bets nothing and counts nothing. ``weight`` is refused: every learned
+    row is one trial. There is no ``halflife``/``lam``: a process that forgot its
     losses would not be an e-process; ``session`` or ``on_clock_reset =
     "reset_state"`` restarts it. ``min_periods`` defaults to 0. No
     ``features`` (the column is the test; the keyword is taken so that a
@@ -1729,7 +1768,11 @@ def bocpd(
     gives the same answer the step would for that row.
 
     ``prior_scale`` is the prior scale of the variance: a positive number,
-    or a symmetric positive-definite ``d x d`` matrix. ``min_periods`` gates
+    or a symmetric positive-definite ``d x d`` matrix (default: the
+    identity). ``prior_mean`` is ``mu_0`` (default: zeros), ``prior_kappa``
+    the weight of that mean in rows (default 1.0), and ``prior_nu`` the
+    degrees of freedom (default ``d + 2``, the smallest that gives the
+    Wishart a mean). ``min_periods`` gates
     what is reported, never what is learned. A row whose predictive cannot
     be evaluated reports nulls, leaves the posterior where it stands, and is
     counted in :meth:`ModelBank.solve_failures`.
@@ -1821,6 +1864,13 @@ def corrchange(
     since the last flag), plus ``n_eff``; all null except where a statistic
     is due. ``reset=True`` empties the windows at a flag (``"window"``
     only -- ``"monitor"``'s spans are disjoint already).
+
+    ``horizon`` (at least 8) is required by ``"monitor"`` and ``window`` (at
+    least 3) by ``"window"``. ``bandwidth`` overrides the Bartlett bandwidth
+    ``floor(ln T)``. ``norm`` is ``"l1"`` (the default) or ``"linf"``.
+    ``n_perm`` defaults to 200, ``permute_every`` to 50 and ``perm_block``
+    to 1; ``seed`` (default 0) seeds the permutation draws, so two runs with
+    the same seed report the same critical values.
 
     A row is always part of the span reported **on** it -- the report comes
     before the update, which is what makes the flag out of sample -- so a
@@ -1935,6 +1985,12 @@ def hmm(
     Outputs ``p_<k>``, ``p1_<k>``, ``state``, ``loglik`` and ``n_eff``, with
     the state means as ``coef``.
 
+    ``covariance`` is ``"full"`` (the default), ``"shared"`` or
+    ``"diagonal"``, as for :func:`ew_class`. ``warm_rows`` defaults to 50;
+    ``seed_rule`` is ``"lloyd"`` (the default), ``"first"``, ``"farthest"``
+    or ``"kmeanspp"``, and ``seed`` (default 0) seeds it, so the warm-up is
+    reproducible.
+
     **A limitation worth knowing.** A single extreme row can be captured by
     one state, moving its mean far from the data; in mean form a state with
     zero responsibility keeps its moments, so a state that stops winning
@@ -2026,15 +2082,22 @@ def rcov(
     ``H = ceil(c* xi^{4/5} n^{3/5})`` with ``c* = 3.5134``, which needs
     ``n_max`` -- the ring has to be sized before the first row and ``n`` is
     known only at the close. ``n_max`` is a sizing hint, not a limit: a
-    longer block runs, clipped, and reports ``bandwidth_used``.
+    longer block runs, clipped, and reports ``bandwidth_used``. ``h_max``
+    fixes the ring depth itself (default ``ceil(c* n_max^{3/5})`` under the
+    automatic bandwidth, the depth at which the noise equals the block's
+    integrated variance); it must not cap the ring below a fixed
+    ``bandwidth``. ``kernel`` takes only ``"parzen"``.
 
     ``kind="preavg"`` is Christensen, Kinnebrock & Podolskij's modulated
     realised covariance: the returns are pre-averaged over ``k_n =
     floor(theta * sqrt(n_max))`` with ``g(x) = min(x, 1-x)``, which averages
     the noise away, and the residual bias is subtracted. ``psd=False`` is
     that balanced, bias-corrected form (optimal rate, not guaranteed PSD);
-    ``psd=True`` (the default) is the longer window without the bias term,
-    and clips any negative eigenvalue, reporting ``psd_repaired``.
+    ``psd=True`` (the default) is the longer window ``k_n =
+    ceil(theta * n_max^0.6)`` without the bias term, and clips any negative
+    eigenvalue, reporting ``psd_repaired``. ``window`` fixes ``k_n`` outright
+    (at least 2) instead of deriving it from ``n_max``, for ``"preavg"``
+    only.
 
     ``noise_stride`` (default 1) and ``iv_stride`` (default 20) are the two
     subsampled grids behind an automatic bandwidth: the noise variance

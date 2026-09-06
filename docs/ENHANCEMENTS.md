@@ -1,26 +1,32 @@
 # Suggested enhancements
 
-Status as of 2026-09-05: **every task in `docs/PLAN.md` §11 bar 18 and every
-enhancement in §1–§8 are complete, bar E28/E29, which are recorded decisions
-not to; §9 (E43–E53), the 2026-09-05 list for wide, many-target,
-many-block work, is being built in order.** Ten models (`ewridge`, `rls`, `lasso`,
-`kalman`, `huber`, `quantile`, `sgd`, `pa`, `ftrl`, `holt`) plus `ew_cov`, three
-entry points with identical numerics (the expression plugin, the original
-one, is the in-memory form and warns on every use since 2026-09-03 — PLAN
-§6 and E34 below), chunk invariance and out-of-sample-ness enforced by tests,
-release CI defined, defaults validated on public data.
+Status as of 2026-09-06: **everything through E64 is built, declined or
+noted, and every task in `docs/PLAN.md` §11 is done.** The exceptions are
+recorded decisions, not gaps: E28/E29 (declined), E51/E52 (P3, open), E63 (a
+note). Twenty-one models — the ten regressions and smoothers (`ewridge`,
+`rls`, `lasso`, `kalman`, `huber`, `quantile`, `sgd`, `pa`, `ftrl`, `holt`),
+the moment and monitor family (`ew_cov`, `ew_class`, `marginal`, `seqtest`),
+the two clusterers (`kmeans`, `micro`) and the regime detectors of §10
+(`deco`, `rcov`, `hmm`, `corrchange`, `bocpd`) — reached through three entry points
+with identical numerics (the expression plugin, the original one, is the
+in-memory form and warns on every use since 2026-09-03 — PLAN §6 and E34
+below). Chunk invariance and out-of-sample-ness are enforced by tests,
+release CI runs on three OSes, and the defaults are validated on public data.
 
 This document lists what *followed from* those goals: first the gaps against our
 own plan, then features our models were one step away from, then a comparison
 against [river](https://riverml.xyz) (the reference online-ML library) and
 [Pathway](https://pathway.com) (a Rust-engined live-data framework) — both what
 we adopted and what we deliberately leave out. Everything marked **done** is
-implemented and tested. The forward-looking parts are §4 (the standing list of
-what we will *not* build, two entries of which — trees and clustering — have
-since been investigated to prototype level and are open), §5 (two candidates
-the river audit left undecided, and §5.1, the 2026-09-04 inventory of what
-else fits the online contract: E36–E42, all built) and §6 (the accessor the
-accumulators were missing, done).
+implemented and tested. Read it as a record: §1–§3 are the first round
+(E1–E27), §4 is the standing list of what we will *not* build (two entries of
+which were reopened — clustering became `kmeans` and `micro`, tasks 23–24;
+trees stay open at prototype level), §5 holds the river audit's undecided
+candidates and §5.1 the inventory of what else fits the online contract
+(E36–E42, all built), §6 the accessor the accumulators were missing, §9 the
+wide and many-block work (E43–E53) and §10 the asynchronous-correlation work
+(E54–E64). The closing section says what was verified against river and
+what was not.
 
 Priorities: **P1** = promised by PLAN.md or fixes a real sharp edge; **P2** =
 cheap and clearly goal-aligned; **P3** = worthwhile, larger.
@@ -130,9 +136,8 @@ two items it found that are arguably *in* scope are in §5.
   "memory is O(state), not O(data)".
 - **Clustering / naive Bayes / multiclass softmax**: not regression on ordered
   streams (PLAN §4.6 scopes classification to binary). *Clustering reassessed
-  2026-09-04 in [`CLUSTERING.md`](CLUSTERING.md) §4 (investigated on the
-  branch `online-clustering`, merged the same day — documentation and numpy
-  prototypes, nothing in the crates): every workable family reduces to
+  2026-09-04 in [`CLUSTERING.md`](CLUSTERING.md) §4, and built as `kmeans`
+  and `micro` (tasks 23–24, PLAN §11h): every workable family reduces to
   `EwCov`'s decayed weighted mean with an assignment in front of it, so bounded
   state, determinism, chunk invariance and the damped window are all met — nine
   designs are prototyped and measured. "Not regression" stays true and the bank
@@ -251,9 +256,10 @@ deterministic, decayed on the clock, predict-before-update — with §2's
 rejection codes (R needs the rows back, G grows with `n`, X randomness on the
 output path, S no static schema, C passes the bar and is excluded by
 convention). What already exists is above (E1–E35; `sgd` carries the GLM
-losses, Poisson included); what is investigated to prototype level is trees
-([`BOOSTED-TREES.md`](BOOSTED-TREES.md)) and clustering
-([`CLUSTERING.md`](CLUSTERING.md)), both open; what is surveyed is B1–B6 in
+losses, Poisson included); trees are investigated to prototype level
+([`BOOSTED-TREES.md`](BOOSTED-TREES.md)) and open; clustering
+([`CLUSTERING.md`](CLUSTERING.md)) was investigated the same way and then
+built as `kmeans` and `micro` (tasks 23–24); what is surveyed is B1–B6 in
 [`BEYOND-O-STATE.md`](BEYOND-O-STATE.md). One correction to that survey: **B1,
 adaptive conformal intervals, passes the `O(state)` rule as written** — its own
 memory line says so (`O(1/ε)`, on top of E23's P²) — so it belongs here rather
@@ -281,8 +287,9 @@ term in `holt`.
 
 **Ranked**, by gap × fit × cost: E36 first (passes as-is, and every model gains
 an interval with a guarantee), E37 with E38 second (no new state; `ew_cov`
-becomes anomaly detection and factor structure), then the two open
-investigations — trees and clustering, the largest jumps and the largest costs
+becomes anomaly detection and factor structure), then the two
+investigations — trees (still open) and clustering (built as `kmeans` and
+`micro`, tasks 23–24), the largest jumps and the largest costs
 — then E39 (built, task 27), then B2 rolling-window regression once
 the retained-rows convention (`CLUSTERING.md` §12, DBSCAN over a retained
 sample) is settled. E40 (built, task 28) was the portfolio-weights ask;

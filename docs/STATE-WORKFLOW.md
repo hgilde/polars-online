@@ -10,6 +10,50 @@ that updates a `ModelBank` object, or takes one as `load_state` — was
 decided against: the file is the state's one form on the plan surface,
 and a bank object stays the loop's (§1, §3 B/E).
 
+## The workflow, in four steps
+
+This is the part to read if you want to *use* the state workflow; the
+numbered sections after it are the research that decided it. Every surface —
+the plan, the eager frame, `ModelBank`, `po.run` and the CLI — uses the same
+two words, `load_state` and `save_state`, and a state file is the same file
+whichever of them wrote it.
+
+**1. Fit, and keep the state.** A plan learns as it streams, and writes the
+bank when the source has fed it its last row:
+
+```python
+(pl.scan_parquet("2025.parquet")
+   .online.fit_predict([spec], save_state="ridge.state")
+   .sink_parquet("2025_scored.parquet"))
+```
+
+The write is atomic — a reader sees the old file or the new one — and it
+happens only on a run that reaches the end: an error, or a plan that polars
+abandons, leaves the file as it was. `po.run("bank.toml", ...)` and the CLI
+do the same from a `save_state` in the TOML.
+
+**2. Inspect it.** The file is a `ModelBank`: `po.ModelBank.load(path)` gives
+the object back, with `coef()` (the betas), `last_row()`, `summary()` and
+`describe()` (what it was fed), `gram()` and the rest, none of which needs a
+row of data; `save_bytes()` / `load_bytes()` are the same state as bytes,
+for a store that is not a file.
+
+**3. Serve from it, learning nothing.** `lf.online.predict("ridge.state")`
+scores every row against the state as it stands and never updates it, so
+the same rows score the same way twice, on any thread count. `po.run(...,
+predict=True)` is the batch form; it refuses `save_state`.
+
+**4. Learn on from it.** `lf.online.fit_predict(load_state="ridge.state",
+save_state="ridge.state")` resumes and replaces; the specs come from the
+file, and a `load_state` that is not a bank this build can read, or whose
+specs disagree with the ones passed, is a `ValueError` before any row is
+read. A dated `save_state` per batch of data (`ridge-2026-01.state`) keeps a
+rerun from consuming the state it needs.
+
+What each step guarantees — the write tied to the source's end, idempotence
+under re-execution, the copy of an in-process bank, and the rest — is the
+rule list R1–R7 in §4; why the alternatives were rejected is §3 and §7.
+
 ## 0. The ask, and the answer in one paragraph
 
 Four steps: **(1)** fit a model online in bounded memory; **(2)** export the

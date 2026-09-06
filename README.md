@@ -14,6 +14,24 @@ the same whether the stream arrives as one chunk or a thousand.
 > py-polars, and the response to a red one is decided in advance. Details in
 > [Versioning and the Polars pin](#versioning-and-the-polars-pin).
 
+**Contents.** [What you get](#what-you-get) ·
+[Install](#install) ·
+[Quick start](#quick-start) ·
+[How a bank sees a stream](#how-a-bank-sees-a-stream) ·
+[Running a bank](#running-a-bank) ·
+[Memory](#memory-which-calls-stream) ·
+[Saving, loading and serving](#saving-loading-and-serving) ·
+[Preparing a stream](#preparing-a-stream) ·
+[Reading the fit](#reading-the-fit) ·
+[Diagnostics, selection and evaluation](#diagnostics-selection-and-evaluation) ·
+[Models](#models) ·
+[Parallelism](#parallelism) ·
+[Performance](#performance) ·
+[What this is not](#what-this-is-not) ·
+[Versioning and the Polars pin](#versioning-and-the-polars-pin) ·
+[Testing](#testing) ·
+[Development](#development)
+
 ## What you get
 
 **Twenty model families, one set of stream semantics.** A spec's clock, decay,
@@ -21,26 +39,26 @@ grouping and warm-up mean the same thing whichever model it names.
 
 | model | what it is |
 |---|---|
-| `ewridge` | exponentially weighted ridge on sufficient statistics — the workhorse; grids over ridge values, feature sets and halflives come almost free |
-| `rls` | recursive least squares, in the numerically safe square-root form |
-| `lasso` | lasso / elastic-net path with online λ selection |
-| `kalman` | Kalman filter with random-walk coefficients |
-| `huber`, `quantile` | robust and quantile regression |
-| `sgd` | stochastic gradient descent with squared, Huber, quantile, ε-insensitive, Poisson and logistic losses |
-| `pa` | passive-aggressive regression — no learning rate |
-| `ftrl` | FTRL-proximal logistic regression, L1-sparse |
-| `ew_cov` | running mean, variance, covariance, correlation, partial correlation, Mahalanobis distance and PCA |
-| `holt` | Holt's linear trend — the no-feature baseline |
-| `kmeans` | exponentially weighted k-means — out-of-sample cluster labels, with a split–merge move that finds a cluster born after seeding |
-| `micro` | density-based clustering — DenStream micro-clusters linked into clusters of any shape and number; flags the rows that belong to none |
-| `ew_class` | Gaussian classification — QDA, LDA or naive Bayes on one `ew_cov` state per class; a label column in, out-of-sample posteriors out |
-| `seqtest` | a sequential test of a sign by betting — an e-process you can read at any row; on its own a column's sign, with `a`/`b` whether one spec of the bank predicts closer than another |
-| `marginal` | every (feature, target) pair's running mean, variance, covariance, correlation, slope and t — O(p·T) per row for a wide set of columns, kept in the state and read back as a frame |
-| `deco` | one correlation for the whole matrix — Engle & Kelly's equicorrelation, or one per block and per pair of blocks, in O(m) a row |
-| `rcov` | a block's realised covariance, robust to microstructure noise — the Barndorff-Nielsen–Hansen–Lunde–Shephard kernel or Christensen–Kinnebrock–Podolskij pre-averaging, emitted when a group closes |
-| `hmm` | a Gaussian hidden Markov model, filtered online — `ew_class` without the labels, with a transition matrix that can be learned |
-| `corrchange` | has the correlation structure changed — the Wied–Krämer–Dehling constancy test span by span, or the size of a change between two windows against a permutation null |
-| `bocpd` | how long has this regime lasted — Adams & MacKay's run-length posterior, so the answer is the age of the regime and not a flag |
+| [`ewridge`](#ewridge--ew-ridge-on-sufficient-statistics) | exponentially weighted ridge on sufficient statistics — the workhorse; grids over ridge values, feature sets and halflives come almost free |
+| [`rls`](#rls--recursive-least-squares) | recursive least squares, in the numerically safe square-root form |
+| [`lasso`](#lasso--lasso-path-with-free-λ-selection) | lasso / elastic-net path with online λ selection |
+| [`kalman`](#kalman--random-walk-β-dynamic-linear-model) | Kalman filter with random-walk coefficients |
+| [`huber`](#huber--quantile--robust-regression), [`quantile`](#huber--quantile--robust-regression) | robust and quantile regression |
+| [`sgd`](#sgd--stochastic-gradient-descent) | stochastic gradient descent with squared, Huber, quantile, ε-insensitive, Poisson and logistic losses |
+| [`pa`](#pa--passive-aggressive-regression) | passive-aggressive regression — no learning rate |
+| [`ftrl`](#ftrl--online-logistic-regression) | FTRL-proximal logistic regression, L1-sparse |
+| [`ew_cov`](#ew_cov--exponentially-weighted-moments) | running mean, variance, covariance, correlation, partial correlation, Mahalanobis distance and PCA |
+| [`holt`](#holt--holts-linear-trend) | Holt's linear trend — the no-feature baseline |
+| [`kmeans`](#kmeans--exponentially-weighted-k-means) | exponentially weighted k-means — out-of-sample cluster labels, with a split–merge move that finds a cluster born after seeding |
+| [`micro`](#micro--density-based-clustering-any-shape) | density-based clustering — DenStream micro-clusters linked into clusters of any shape and number; flags the rows that belong to none |
+| [`ew_class`](#ew_class--gaussian-classification-on-ew_cov-moments) | Gaussian classification — QDA, LDA or naive Bayes on one `ew_cov` state per class; a label column in, out-of-sample posteriors out |
+| [`seqtest`](#seqtest--a-sequential-test-of-a-sign-by-betting) | a sequential test of a sign by betting — an e-process you can read at any row; on its own a column's sign, with `a`/`b` whether one spec of the bank predicts closer than another |
+| [`marginal`](#marginal--every-pairs-moments-kept-in-the-state) | every (feature, target) pair's running mean, variance, covariance, correlation, slope and t — O(p·T) per row for a wide set of columns, kept in the state and read back as a frame |
+| [`deco`](#deco--one-correlation-for-the-whole-matrix) | one correlation for the whole matrix — Engle & Kelly's equicorrelation, or one per block and per pair of blocks, in O(m) a row |
+| [`rcov`](#rcov--a-blocks-realised-covariance-robust-to-noise) | a block's realised covariance, robust to microstructure noise — the Barndorff-Nielsen–Hansen–Lunde–Shephard kernel or Christensen–Kinnebrock–Podolskij pre-averaging, emitted when a group closes |
+| [`hmm`](#hmm--which-regime-are-we-in) | a Gaussian hidden Markov model, filtered online — `ew_class` without the labels, with a transition matrix that can be learned |
+| [`corrchange`](#corrchange--has-the-correlation-structure-changed) | has the correlation structure changed — the Wied–Krämer–Dehling constancy test span by span, or the size of a change between two windows against a permutation null |
+| [`bocpd`](#bocpd--how-long-has-this-regime-lasted) | how long has this regime lasted — Adams & MacKay's run-length posterior, so the answer is the age of the regime and not a flag |
 
 **Three ways to run a bank, same numbers from each.** A Python loop over
 chunks (`ModelBank`); a Polars query (`lf.online.fit_predict(specs)` is a
@@ -58,7 +76,7 @@ least squares over everything it has seen, in any row order.
 **Two guarantees.** Predictions are out-of-sample by construction. Output is
 chunk-invariant. Both are tests, not intentions.
 
-**Tested the way those guarantees demand.** Around 470 Rust tests and 1,700
+**Tested the way those guarantees demand.** About 650 Rust tests and 2,200
 pytest cases: numpy oracles to ~1e-13, cross-checks against river,
 hypothesis-generated adversarial streams, chunk and thread invariance, golden
 numbers on every OS, the README's own code blocks executed. CI runs all of it
@@ -92,7 +110,8 @@ aarch64 glibc) are on PyPI; those and the CLI binaries are attached to each
 GitHub release. Python 3.12+.
 The wheel is ~19 MB to download and ~59 MB installed: it statically links the
 Rust half of Polars, so nothing beyond `polars` itself has to be present at
-run time. `numpy` is an optional extra, needed only by `ModelBank.gram()`.
+run time. `numpy` is an optional extra: only `ModelBank.gram()` and the
+`po.gram`, `po.corr` and `po.sim` toolkits need it.
 
 From source, with [uv](https://docs.astral.sh/uv/) and a stable Rust toolchain:
 
@@ -162,7 +181,7 @@ Per-row decay is `λ = 0.5 ** (Δclock / halflife)`.
 | `weight` | row weight column |
 | `min_periods` | in `n_eff` units; outputs are null until it is reached. A list gives one threshold per target. Warm-up gates output, not learning |
 | `coef_every` | snapshot the coefficients every N rows (`0` = only on each chunk's last row) |
-| `label_delay` | hold each row back from *learning* until the clock has moved this much further on. For a target that is only known later |
+| `label_delay` | hold each row back from *learning* until the clock has moved this much further on. For a target that is only known later — see [Labels that arrive late](#labels-that-arrive-late) |
 
 `n_eff` is the exponentially weighted observation count: the weight behind
 the state that produced *this row's* prediction, measured before the row's
@@ -482,7 +501,92 @@ stream's session and clock policies still hold.
 [docs/STATE-WORKFLOW.md](docs/STATE-WORKFLOW.md) walks the whole workflow:
 fit, save, serve, learn on, with what each step guarantees.
 
+## Preparing a stream
+
+Two things a stream may need before a bank sees it: a target that is not
+known at the row it sits on, and series that do not tick together.
+
+### Labels that arrive late
+
+A target that is a forward quantity — the next five minutes' return, the
+next day's fill rate — is not known at the row it sits on. A stream that
+learns it there hands the model that much of the future before it predicts
+the rows in between. Every "out-of-sample" number after that is
+contaminated, and with an autocorrelated feature even a pure noise column
+starts to look predictive.
+
+`label_delay` is the fix, and it is one parameter:
+
+```python
+spec = po.spec.ewridge("fwd", targets=["ret_5m"], features=["x0", "x1"],
+                       clock="ts", max_dclock=3600.0, halflife=1800.0,
+                       label_delay=300.0)     # the return takes 5 minutes to be known
+```
+
+Each row is **scored** where it sits and **learned from** 300 clock units
+later. Everything downstream of the label moves with it: the prediction,
+`sigma`, `resid_z`, the metrics, drift, the conformal interval, `n_eff` and
+`min_periods` all see only labels that had really arrived.
+
+The clock is the model's own — the raw column capped by `max_dclock`, with
+skipped rows' time folded in — which is what makes release depend on the
+clock alone and so survive any chunking. With no `clock` column that is one
+unit per accepted row, so `label_delay=20` is twenty rows. Two events empty
+the buffer: a **reset** drops it (the state those rows would teach is being
+thrown away), and a **session change** releases it in order (one session's
+clock does not measure time in the next). Rows still waiting when the stream
+ends are simply never learned from — their labels never matured.
+
+The buffer lives in the state and is saved with it, so a run that stops
+mid-stream resumes with the same rows still waiting. It costs one row's
+values per row inside the delay, per group.
+
+`po.prep.embargo` writes the same thing out as data: every row twice, a
+zero-weight prediction at `t` and a lesson at `t + delay`, merged back into
+clock order. That is the recipe to reach for when the delay has to be
+visible in the frame, or for an engine that is not this one. The native path
+is tested against it field by field and agrees to the bit — except for
+`resid_quantiles`, `emit_autocorr` and `emit_drift`, which take no row
+weight, so in the doubled stream a zero-weight row feeds them as much as its
+learn copy does and every residual lands twice. `label_delay` feeds them
+once.
+
+### Series that tick at their own times
+
+Two series observed at different instants cannot be correlated directly. A
+fine common grid attenuates the correlation towards zero (the Epps effect)
+and filling forward invents observations that were never made.
+
+`po.prep.refresh_time` puts them on the grid Barndorff-Nielsen, Hansen, Lunde
+and Shephard defined: a point wherever **every** series has ticked at least
+once since the last one, each carrying its last observed value.
+
+```python
+from polars_online import prep
+
+grid = prep.refresh_time(ticks, series="symbol", names=["AAA", "BBB", "CCC"],
+                         time="t", value="px").collect()
+```
+
+The input is long — one row per tick, with the series named in a column. The
+output has one row per grid point: `time_refresh`, one `<s>_value` per
+series, `n_ticks_<s>` since the previous point, and `retained_fraction`,
+which is how much of the data survived. Look at that last one before
+trusting a correlation computed on the result: the grid runs at the pace of
+the slowest series, so a fast one loses most of its ticks.
+
+`pairs=True` runs an independent two-series grid per pair instead, which
+keeps far more when one series is slow. Rows must be in time order; a
+backwards time is an error naming the row, and nothing is interpolated.
+
+The output looks synchronous and is not: each value is up to one of its own
+inter-tick intervals old. `n_ticks_<s>` is that staleness made visible — the
+series with the largest count is the one holding the grid up.
+
 ## Reading the fit
+
+What a bank can tell you about its fit — and about what it was fed — with
+no data at hand, and the grammar of the field names it writes.
 
 ### Coefficients
 
@@ -562,7 +666,7 @@ resid_var = g["target_vars"][0] - slopes @ g["comoments"][1:, 1:] @ slopes
 r2 = 1 - resid_var / g["target_vars"][0]
 ```
 
-A state saved by 0.2.0 or earlier has no `Σw²` and no target moments, and
+A state saved by 0.1.x has no `Σw²` and no target moments, and
 they cannot be recovered from what it does have — those four keys are `None`
 there, for that state's whole remaining life. Reading any of this back needs
 `numpy`, which is an optional extra.
@@ -603,38 +707,6 @@ while `gram()` is as of the last row. And `merge` pools parts that share a
 weighting — shards of a pass, groups being combined — not two halves of a
 decayed stream in time order, where each part's weights are relative to its
 own last row; the docstring gives the rescaling for that case.
-
-### Series that tick at their own times
-
-Two series observed at different instants cannot be correlated directly. A
-fine common grid attenuates the correlation towards zero (the Epps effect)
-and filling forward invents observations that were never made.
-
-`po.prep.refresh_time` puts them on the grid Barndorff-Nielsen, Hansen, Lunde
-and Shephard defined: a point wherever **every** series has ticked at least
-once since the last one, each carrying its last observed value.
-
-```python
-from polars_online import prep
-
-grid = prep.refresh_time(ticks, series="symbol", names=["AAA", "BBB", "CCC"],
-                         time="t", value="px").collect()
-```
-
-The input is long — one row per tick, with the series named in a column. The
-output has one row per grid point: `time_refresh`, one `<s>_value` per
-series, `n_ticks_<s>` since the previous point, and `retained_fraction`,
-which is how much of the data survived. Look at that last one before
-trusting a correlation computed on the result: the grid runs at the pace of
-the slowest series, so a fast one loses most of its ticks.
-
-`pairs=True` runs an independent two-series grid per pair instead, which
-keeps far more when one series is slow. Rows must be in time order; a
-backwards time is an error naming the row, and nothing is interpolated.
-
-The output looks synchronous and is not: each value is up to one of its own
-inter-tick intervals old. `n_ticks_<s>` is that staleness made visible — the
-series with the largest count is the one holding the grid up.
 
 ### One row per finished group
 
@@ -688,35 +760,6 @@ po.run(input=by_block.lazy(), specs=[blocks], closed_groups="blocks.parquet")
 write it too. What has closed and not been read is saved with the state, so
 a driver that saves between chunks does not lose rows silently.
 
-### Data whose truth is known
-
-A regime detector is a claim about a stream, and a claim needs a stream
-whose answer is written down. `po.sim.regimes` produces one from a seed,
-with the awkward parts included — series that tick at their own times,
-prices observed with noise, autocorrelated returns, a volatility that moves
-with the regime, an intraday pattern and a volume clock — and hands back the
-truth beside the data.
-
-```python
-out = po.sim.regimes(4, states=[0.2, 0.7],
-                     transition=[[0.98, 0.02], [0.02, 0.98]],
-                     n_blocks=8, bars_per_block=500,
-                     phi=0.3, noise=0.01, async_rates=[1.0, 1.0, 0.4, 0.4],
-                     seed=0)
-bars, truth = out["bars"], out["truth_blocks"]
-```
-
-`bars` is what a consumer sees: **levels** `x_1 … x_m` (so
-`po.prep.refresh_time` and then `.diff()` apply), a clock, a session and an
-optional volume. `truth_rows` gives the block, state, volatility multiplier
-and interpolation fraction per bar; `truth_blocks` gives each block's true
-correlation matrix. Two calls with the same seed are byte-identical.
-
-Under `async_rates` a bar where a series drew no tick carries `null`, so
-both the sparse and the previous-tick forms are one line away. `durations`
-makes each state last exactly as long as it says; `design="smooth"`
-interpolates the matrix across a boundary instead of stepping.
-
 ### Reading a correlation matrix
 
 `po.gram` solves and diagnoses a design matrix. `po.corr` is its
@@ -745,51 +788,6 @@ lo, hi = po.corr.mp_edge(n=2000, m=50)   # where pure noise puts its eigenvalues
 | `loss` | `qlike`, `z_mse` or Engle–Colacito `minvar`, each zero or minimal at the truth |
 | `epps_invert` | the correlation at a coarser scale from `ew_cov`'s lagged co-moments |
 | `fisher_se` | the standard error of a correlation, with the AR(1) inflation and its caveats |
-
-### Labels that arrive late
-
-A target that is a forward quantity — the next five minutes' return, the
-next day's fill rate — is not known at the row it sits on. A stream that
-learns it there hands the model that much of the future before it predicts
-the rows in between. Every "out-of-sample" number after that is
-contaminated, and with an autocorrelated feature even a pure noise column
-starts to look predictive.
-
-`label_delay` is the fix, and it is one parameter:
-
-```python
-spec = po.spec.ewridge("fwd", targets=["ret_5m"], features=["x0", "x1"],
-                       clock="ts", max_dclock=3600.0, halflife=1800.0,
-                       label_delay=300.0)     # the return takes 5 minutes to be known
-```
-
-Each row is **scored** where it sits and **learned from** 300 clock units
-later. Everything downstream of the label moves with it: the prediction,
-`sigma`, `resid_z`, the metrics, drift, the conformal interval, `n_eff` and
-`min_periods` all see only labels that had really arrived.
-
-The clock is the model's own — the raw column capped by `max_dclock`, with
-skipped rows' time folded in — which is what makes release depend on the
-clock alone and so survive any chunking. With no `clock` column that is one
-unit per accepted row, so `label_delay=20` is twenty rows. Two events empty
-the buffer: a **reset** drops it (the state those rows would teach is being
-thrown away), and a **session change** releases it in order (one session's
-clock does not measure time in the next). Rows still waiting when the stream
-ends are simply never learned from — their labels never matured.
-
-The buffer lives in the state and is saved with it, so a run that stops
-mid-stream resumes with the same rows still waiting. It costs one row's
-values per row inside the delay, per group.
-
-`po.prep.embargo` writes the same thing out as data: every row twice, a
-zero-weight prediction at `t` and a lesson at `t + delay`, merged back into
-clock order. That is the recipe to reach for when the delay has to be
-visible in the frame, or for an engine that is not this one. The native path
-is tested against it field by field and agrees to the bit — except for
-`resid_quantiles`, `emit_autocorr` and `emit_drift`, which take no row
-weight, so in the doubled stream a zero-weight row feeds them as much as its
-learn copy does and every residual lands twice. `label_delay` feeds them
-once.
 
 ### The last row
 
@@ -976,6 +974,35 @@ parallel-axis term) rather than raw `Σy` and `Σy²`: a target sitting around
 1e8 with unit spread destroys the raw form's variance entirely, and this one
 does not notice. `weight=` names a column to weight the rows by.
 
+### Data whose truth is known
+
+A regime detector is a claim about a stream, and a claim needs a stream
+whose answer is written down. `po.sim.regimes` produces one from a seed,
+with the awkward parts included — series that tick at their own times,
+prices observed with noise, autocorrelated returns, a volatility that moves
+with the regime, an intraday pattern and a volume clock — and hands back the
+truth beside the data.
+
+```python
+out = po.sim.regimes(4, states=[0.2, 0.7],
+                     transition=[[0.98, 0.02], [0.02, 0.98]],
+                     n_blocks=8, bars_per_block=500,
+                     phi=0.3, noise=0.01, async_rates=[1.0, 1.0, 0.4, 0.4],
+                     seed=0)
+bars, truth = out["bars"], out["truth_blocks"]
+```
+
+`bars` is what a consumer sees: **levels** `x_1 … x_m` (so
+`po.prep.refresh_time` and then `.diff()` apply), a clock, a session and an
+optional volume. `truth_rows` gives the block, state, volatility multiplier
+and interpolation fraction per bar; `truth_blocks` gives each block's true
+correlation matrix. Two calls with the same seed are byte-identical.
+
+Under `async_rates` a bar where a series drew no tick carries `null`, so
+both the sparse and the previous-tick forms are one line away. `durations`
+makes each state last exactly as long as it says; `design="smooth"`
+interpolates the matrix across a boundary instead of stepping.
+
 ## Models
 
 All accumulators are exponentially weighted **means**, not sums, so they stay
@@ -984,7 +1011,13 @@ weighted Welford update), so the variance is right even when features sit on
 a large offset. `z` denotes `[1, x]` when an intercept is configured, `w` the
 row weight, `λ` the row's decay.
 
+Each model links to its builder in the API reference, whose docstring lists
+every keyword with its default, and to its Rust source under
+`crates/online-core/src/`, where the module comment states the recursion.
+
 ### `ewridge` — EW ridge on sufficient statistics
+
+*API:* [`po.spec.ewridge`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge) — *Rust:* [`ewridge.rs`](crates/online-core/src/ewridge.rs)
 
 ```
 W'   = λW + w                       S' = (λW·S + w·z zᵀ) / W'
@@ -1005,6 +1038,8 @@ blowing up.
 
 ### `rls` — recursive least squares
 
+*API:* [`po.spec.rls`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rls) — *Rust:* [`rls.rs`](crates/online-core/src/rls.rs)
+
 ```
 A ← λA + w zzᵀ       b_j ← λb_j + w y_j z        β_j = A⁻¹ b_j
 A₀ = ridge·I         b₀ = ridge·coef0
@@ -1022,6 +1057,8 @@ factor is shared.
 
 ### `lasso` — lasso path with free λ selection
 
+*API:* [`po.spec.lasso`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.lasso) — *Rust:* [`lasso.rs`](crates/online-core/src/lasso.rs)
+
 Coordinate descent on the standardized statistics, warm-started along the
 path and across solves:
 
@@ -1036,6 +1073,8 @@ out-of-sample squared error over the path — costs nothing extra, and is
 reported as it stood *before* the row, like every other output.
 
 ### `kalman` — random-walk-β dynamic linear model
+
+*API:* [`po.spec.kalman`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kalman) — *Rust:* [`kalman.rs`](crates/online-core/src/kalman.rs)
 
 ```
 β_j ← Φβ_j    P_j ← ΦP_jΦ + Q·Δclock    Φ = diag(2^(−Δclock/r_i))
@@ -1084,12 +1123,16 @@ out = po.ModelBank([revert]).fit_predict(df)
 
 ### `huber` / `quantile` — robust regression
 
+*API:* [`po.spec.huber`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.huber) and [`po.spec.quantile`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.quantile) — *Rust:* [`robust.rs`](crates/online-core/src/robust.rs)
+
 IRLS reweighting on the ridge update, using each row's *prior* residual so
 the reweighting stays out-of-sample. Huber: `w = min(1, δσ/|r|)`; quantile:
 the check-loss weights at level τ. Weights are per target, so `S` is per
 target here.
 
 ### `sgd` — stochastic gradient descent
+
+*API:* [`po.spec.sgd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.sgd) — *Rust:* [`sgd.rs`](crates/online-core/src/sgd.rs)
 
 ```
 eta = zᵀβ        p = link(eta)        gᵢ = (dL/d eta)·zᵢ·w + l2·βᵢ        βᵢ -= lrᵢ·gᵢ
@@ -1141,6 +1184,8 @@ assert min(last[1:]) >= 0.0 and abs(sum(last[1:]) - 1.0) < 1e-12
 
 ### `pa` — passive-aggressive regression
 
+*API:* [`po.spec.pa`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.pa) — *Rust:* [`pa.rs`](crates/online-core/src/pa.rs)
+
 ```
 loss = max(0, |y − p| − eps)      s = ‖z‖²
 pa    τ = loss / s          pa1  τ = min(c, loss/s)      pa2  τ = loss / (s + 1/(2c))
@@ -1160,6 +1205,8 @@ keep `c` small: each row moves the fit only as far as `c` allows and the
 projection takes the rest back.
 
 ### `ew_cov` — exponentially weighted moments
+
+*API:* [`po.spec.ew_cov`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_cov) — *Rust:* [`ewcov.rs`](crates/online-core/src/ewcov.rs)
 
 ```
 W'   = λW + w        m'ᵢ = (λW·mᵢ + w·xᵢ) / W'      S'ᵢⱼ = (λW·Sᵢⱼ + w·xᵢxⱼ) / W'
@@ -1236,6 +1283,8 @@ entering it. Nothing else moves: clearing the ring is not a reset.
 
 ### `ftrl` — online logistic regression
 
+*API:* [`po.spec.ftrl`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ftrl) — *Rust:* [`ftrl.rs`](crates/online-core/src/ftrl.rs)
+
 FTRL-proximal (McMahan et al. 2013) for binary targets, with the accumulators
 decayed on the same clock as everything else:
 
@@ -1250,6 +1299,8 @@ with `loss="squared"` it is the linear prediction — sparse linear regression
 with no solves, and L1 support, which `ewridge` does not have.
 
 ### `holt` — Holt's linear trend
+
+*API:* [`po.spec.holt`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.holt) — *Rust:* [`holt.rs`](crates/online-core/src/holt.rs)
 
 The one model that takes no features: it extrapolates the target's own level
 and trend.
@@ -1274,6 +1325,8 @@ po.spec.holt("baseline", targets=["y"], clock="t", max_dclock=600.0,
 ```
 
 ### `kmeans` — exponentially weighted k-means
+
+*API:* [`po.spec.kmeans`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kmeans) — *Rust:* [`cluster/kmeans.rs`](crates/online-core/src/cluster/kmeans.rs)
 
 The one model with no target: it labels each row with the nearest of `k`
 centres, read before the row is learned, so the label is out-of-sample like
@@ -1318,6 +1371,8 @@ owning two blobs, whose rows are all within its own radius — seeding with
 k-means.
 
 ### `micro` — density-based clustering, any shape
+
+*API:* [`po.spec.micro`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.micro) — *Rust:* [`cluster/micro.rs`](crates/online-core/src/cluster/micro.rs)
 
 `kmeans` needs `k` and finds round clusters. `micro` finds clusters of any
 shape, does not need their number, flags the rows that belong to none, and
@@ -1374,6 +1429,8 @@ beta_mu)`, with `n` the weight it had.
 
 ### `ew_class` — Gaussian classification on `ew_cov` moments
 
+*API:* [`po.spec.ew_class`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_class) — *Rust:* [`ewclass.rs`](crates/online-core/src/ewclass.rs)
+
 A label column in place of a numeric target. The model keeps one `ew_cov`
 state per class — a weight `n_c`, a mean `μ_c` and a centered covariance
 `C_c` — and scores a row by Bayes' rule over Gaussian classes. `covariance`
@@ -1426,6 +1483,8 @@ generating parameters allow, and the posteriors are calibrated to about 0.01.
 
 ### `seqtest` — a sequential test of a sign, by betting
 
+*API:* [`po.spec.seqtest`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.seqtest) — *Rust:* [`seqtest.rs`](crates/online-core/src/seqtest.rs)
+
 Not a regression. A `seqtest` asks whether a column tends to be positive —
 or, with `a` and `b`, whether one spec of the bank predicts closer than
 another — and answers with evidence you can read at any row, as often as you
@@ -1477,6 +1536,8 @@ verdict = out.group_by("bond_id").agg(pl.col("closer").struct.field("log_e_a_y")
 ```
 
 ### `marginal` — every pair's moments, kept in the state
+
+*API:* [`po.spec.marginal`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.marginal) — *Rust:* [`marginal.rs`](crates/online-core/src/marginal.rs)
 
 A `marginal` is not a regression and not a joint fit. It keeps the
 exponentially weighted moments of each (feature, target) pair on its own,
@@ -1532,6 +1593,8 @@ one_bond = bank.marginal("pairs", group="b0")   # 10 rows: five features by two 
 
 ### `corrchange` — has the correlation structure changed?
 
+*API:* [`po.spec.corrchange`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.corrchange) — *Rust:* [`corrchange.rs`](crates/online-core/src/corrchange.rs)
+
 Two tests, because there are two questions.
 
 `kind="monitor"` is the **closed-sample** constancy test of Wied, Krämer and
@@ -1576,6 +1639,8 @@ slide by one row are almost the same windows, so a statistic above the
 quantile stays above it for a run of rows.
 
 ### `hmm` — which regime are we in
+
+*API:* [`po.spec.hmm`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.hmm) — *Rust:* [`hmm.rs`](crates/online-core/src/hmm.rs)
 
 `ew_class` classifies a row against *labelled* Gaussians. An `hmm` does the
 same arithmetic with no labels: the state is hidden, and a transition matrix
@@ -1626,6 +1691,8 @@ are the mitigations.
 
 ### `rcov` — a block's realised covariance, robust to noise
 
+*API:* [`po.spec.rcov`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rcov) — *Rust:* [`rcov.rs`](crates/online-core/src/rcov.rs)
+
 A realised covariance over ticks is the sum of outer products of returns.
 Over real tick data it is wrong twice: each price is the efficient one plus
 a measurement error, and the error's variance accumulates with every tick;
@@ -1672,6 +1739,8 @@ legs are final. `weight` is taken as 0 or 1 only — a sum over returns has no
 fractional row.
 
 ### `deco` — one correlation for the whole matrix
+
+*API:* [`po.spec.deco`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.deco) — *Rust:* [`deco.rs`](crates/online-core/src/deco.rs)
 
 A correlation matrix of `m` series has `m(m−1)/2` free entries. A stream
 cannot keep them all moving without O(m²) work a row, and most of them are
@@ -1728,6 +1797,8 @@ out = df.online.fit_predict([eq, blocked])
 ```
 
 ### `bocpd` — how long has this regime lasted?
+
+*API:* [`po.spec.bocpd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.bocpd) — *Rust:* [`bocpd.rs`](crates/online-core/src/bocpd.rs)
 
 Every other detector here answers "has something changed?" with a statistic.
 `bocpd` (Adams & MacKay 2007) keeps a posterior over the **run length** — how
@@ -1906,7 +1977,7 @@ execution, by design (see [What this is not](#what-this-is-not)).
 Two knobs because the two counts do different things. Polars' also sizes
 what its parquet reader holds in flight — it prefetches row groups ahead of
 the consumer, so more threads is a bigger pile of decoded rows
-([Memory](#performance), below) — while the bank's count buys speed and
+([Memory](#memory-which-calls-stream), above) — while the bank's count buys speed and
 nothing else. So a run that has to fit in a smaller box keeps polars small
 and gives the bank every core:
 
@@ -1982,7 +2053,7 @@ The same 12M rows and 64 groups, one spec, 14 threads:
 - **A smaller box** — lower it, but expect little below the default: most
   of the first gigabyte is polars' reader prefetch, not the chunks, and
   `POLARS_MAX_THREADS` or `POLARS_ROW_GROUP_PREFETCH_SIZE` is what shrinks
-  that ([Memory](#performance), below).
+  that ([Memory](#memory-which-calls-stream), above).
 
 ## Performance
 
@@ -2180,8 +2251,8 @@ is a minor release; narrowing it is breaking. See
 
 The guarantees above are only worth what checks them, so the suite is built
 around oracles and invariants rather than expected values typed in by hand.
-Around 640 Rust tests and 2,200 pytest cases (from 1,250-odd functions), all
-green on three OSes; [docs/TESTING.md](docs/TESTING.md) is the ledger of what
+About 650 Rust tests and 2,200 pytest cases (from some 1,250 test functions),
+all green on three OSes; [docs/TESTING.md](docs/TESTING.md) is the ledger of what
 each part proves and what it has found.
 
 **Against references.** `ewridge` and `rls` match numpy references in
@@ -2195,7 +2266,7 @@ row, its EW moments in closed form and in the limit, its quantile and Huber
 models statistically — and two convention differences are pinned as tests
 rather than left as surprises.
 
-**Invariants, for all ten models.** Chunk invariance at the bank, expression
+**Invariants, for every model.** Chunk invariance at the bank, expression
 and CLI levels (one chunk, seven, four hundred, one row at a time, with a
 save and load in the middle); thread count 1 against 8; group independence;
 expression ≡ bank; `predict` ≡ `fit_predict` of the next row, field for
@@ -2269,6 +2340,7 @@ does it for VS Code's terminal. `cargo` runs via `uv run` because `online-py`
 builds against pyo3's `abi3-py312` and needs a 3.12+ interpreter at build
 time.
 
+- Every document, and which to read for what: [docs/README.md](docs/README.md)
 - API reference: <https://hgilde.github.io/polars-online/> — built from the
   docstrings and published from every green push to `main`
 - Design and task list: [docs/PLAN.md](docs/PLAN.md)

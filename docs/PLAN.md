@@ -1,7 +1,15 @@
 # polars-online — design and plan
 
-Status: design frozen 2026-08-29, no code yet. Items marked **[validate]** are defaults
-chosen without data; check them in the evaluation harness (task 12) before relying on them.
+Status as of 2026-09-06: design frozen 2026-08-29; **tasks 1–58 done** — 1–57
+released as 0.2.0, 58 (the documentation pass) follows it. Items marked
+**[validate]** were defaults chosen without data; task 12 checked them on
+public data, and `docs/VALIDATION.md` is the regenerated record.
+
+How to read this file: §1–§10 are the original design, kept as written. §11 is the
+task list, ticked as each task landed. §11a holds the decisions taken while building
+— the place to look when the code does something §1–§10 did not say. §11b–§11h point
+at the follow-on documents, and §12 records the questions the design left open and
+what became of them. `docs/README.md` maps every document.
 
 ## 1. Goal
 
@@ -97,6 +105,12 @@ per spec, named by the user.
 ## 4. Models
 
 Build order matters: 4.1 is the workhorse and its accumulators are reused by 4.2–4.4.
+
+These are the seven original designs. The models added afterwards — `sgd`, `pa`,
+`holt`, `kmeans`, `micro`, `ew_class`, `seqtest`, `marginal`, `deco`, `rcov`, `hmm`,
+`corrchange` and `bocpd` — are designed in `docs/ENHANCEMENTS.md` (by E number) and
+`docs/CLUSTERING.md`, decided in §11a under their task numbers, and stated as
+recursions in the README's Models section and in each model's Rust module comment.
 
 ### 4.1 EW-ridge (sufficient statistics) — primary
 State: `S = EW Σ w·x·xᵀ` (k×k, intercept included), `r_j = EW Σ w·x·y_j` per target,
@@ -732,6 +746,17 @@ note, not a task.
       the `predict == step` contract extended to the value a model reads out
       of the targets slot, and hard rule 8's recursion checked against
       zero-weight rows for every model.
+- [x] 58. **Documentation pass, 2026-09-06.** Every document read against the
+      code and brought current; the README gains a table of contents, a link
+      from each model to its builder in the API reference and to its Rust
+      source, and two regroupings (*Preparing a stream*, *Reading the fit*);
+      every builder docstring states each keyword's default, checked against
+      `stream.rs`; `docs/README.md` maps every document to what it is for;
+      each document under `docs/` opens with a dated status line. Section
+      numbers and file names are unchanged, because the code cites them
+      (§11a records the rule). Acceptance: the README's blocks still run
+      (`TestReadmeExamples`), every builder still has its README heading
+      (`test_the_readme_documents_every_model`), `sphinx-build -W` is clean.
 
 ## 11a. Decisions made while implementing
 
@@ -3782,12 +3807,38 @@ a decision rather than a repair, this is what was decided.
   27 → 21 effective returns over three capped gaps). Each carries a comment
   saying which fix moved it.
 
-## 11b. Follow-on documents
+**The documentation pass (task 58), 2026-09-06.** Three rules, so the next
+pass does not have to rediscover them:
 
-- `docs/ENHANCEMENTS.md` — plan-debt items (`ew_cov` surface, strict clock,
-  negative-weight validation, ...) and a feature comparison against river.
-- `docs/TESTING.md` — coverage scorecard against §9, found edge-case defects,
-  and the oracle/river cross-check backlog.
+- *Files and section numbers stay where they are.* The code and the README
+  cite `docs/PERFORMANCE.md §11`, `docs/PLAN.md §4.4`, `E56`, `C5`, `T-D4`
+  and the like, and a renumbering would silently break every one of those
+  pointers. Reorganisation happens *inside* a file — a guide-first section
+  in front of a research record (`STATE-WORKFLOW.md`), a reader's map under
+  a status line (`PERFORMANCE.md`, `TESTING.md`), two sections swapped into
+  numeric order (`PERFORMANCE.md` §5/§6) — and `docs/README.md` is the map
+  across files.
+- *A record is not rewritten when the code moves on.* Every document under
+  `docs/` opens with a dated status line that says what became of it; the
+  body below keeps its date. So `CLUSTERING.md` still says "nothing in the
+  crates" in a 2026-09-04 sentence, and its status line says `kmeans` and
+  `micro` shipped.
+- *The README is the guide and the docstrings are the reference; neither
+  repeats the other.* Each model's README section states the recursion and
+  links to its builder (every keyword with its default) and to its Rust
+  module (the recursion as code, with the module comment stating it). A
+  default lives in the docstring and in `stream.rs`, and the docstring was
+  checked against `stream.rs` for every builder.
+
+## Follow-on documents
+
+Each of §11b–§11h below summarises one document under `docs/` and says what
+became of it. Three more carry no section of their own:
+
+- `docs/ENHANCEMENTS.md` — every model and feature after the first seven
+  (E1–E64): proposed, measured, built or declined.
+- `docs/TESTING.md` — coverage scorecard against §9, the defects the suite
+  found, and the oracle/river cross-checks.
 - `docs/STATE-WORKFLOW.md` — research (2026-09-03) on carrying state out of a
   streamed plan: what polars does with a Python source, measured; the
   candidate forms; the rules `save_state=` on the plan follows and the

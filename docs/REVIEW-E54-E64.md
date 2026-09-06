@@ -1,5 +1,10 @@
 # Review of tasks 45–56 (E54–E64): items to fix
 
+Status as of 2026-09-06: **all 29 items resolved in task 57** (commit
+`1ce14c2`, and B4's revert in the 0.2.0 release commit). The paragraph after
+the intro says how to read the ticks; the items are kept as written, as the
+record of what the review found.
+
 A code review of the closed-group queue, `deco`, `clear_lags`, `ew_cov`
 lags, `po.prep.refresh_time`, `rcov`, `po.corr`, `po.sim.regimes`, `hmm`,
 `corrchange` and `bocpd`, as merged at `ac007e3` (2026-09-06). Each item

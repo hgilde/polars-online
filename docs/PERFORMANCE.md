@@ -1,7 +1,8 @@
 # Performance: measurements and the parallelism plan
 
-Status as of 2026-09-05: **P1–P11 all done**, numbers refreshed in §8, the
-chunk plan revisited in §12 and the new families surveyed in §13. Headline,
+Status as of 2026-09-06: **P1–P11 all done**, numbers refreshed in §8, the
+chunk plan revisited in §12, the new families surveyed in §13 and the
+correlation families of tasks 45–56 in §15. Headline,
 against the baseline in §1: **2.8× single stream at k=5, 2.0× at k=20, 2.0×
 on grouped data, 2.1× on a single-stream grid, 3.9× on a multi-spec bank,
 1.23× on the CLI end to end**, and thread scaling from 3.2× to 6.2× on ten
@@ -21,6 +22,14 @@ process, `ONLINE_TIMING=1` for the section rows. Regenerate the raw numbers
 with `cargo run --release -p online-core --example core_bench` (and
 `--example rls_bench` for the `rls` A/B in §8) and
 `ONLINE_TIMING=1 uv run python scripts/benchmark.py`.
+
+Where to look for what: **§11** if memory is the question (which surface is
+O(data) and which is O(state), with the numbers), **§8** for what a row
+costs per model today, **§12** for chunk size and thread count, **§13** and
+**§15** for the wide-row and correlation families, **§5** for what was tried
+and rejected. §1–§4 are the original 2026-08-30 baseline, plan and outcome,
+kept as the record. Section numbers are cited from the code and the README,
+so they stay where they are.
 
 ## 1. The measured baseline
 
@@ -312,31 +321,6 @@ buffer and the `Step` the model returns — real work at this point, not
 bookkeeping. The recursion inside one instance stays sequential by construction
 (§2 item 7); everything around it is now parallel.
 
-## 6. The allocator (2026-08-31)
-
-Found while answering "won't two copies of Polars in one process go wrong?".
-The answer is no — the Arrow C Data Interface keeps each side freeing its own
-memory — but the investigation turned up that pyo3-polars ships
-`PolarsAllocator`, which routes a plugin's allocations through py-polars' own
-allocator, and we were not installing it. Two allocator arenas in one process,
-neither able to reuse the other's pages.
-
-One line, `#[global_allocator]`. Attributed by A/B/A on an otherwise identical
-tree, because two changes had landed between the first two measurements and the
-gain was too large to assign by assumption: **5,716,246 → 8,165,418 →
-5,614,830** rows/s at k=5, bounding machine drift at ~2%.
-
-| case | before | after | |
-|---|---:|---:|---:|
-| ew_ridge k=5 | 5.62M rows/s | **8.02M** | +43% |
-| ew_ridge k=20 | 2.80M | **3.26M** | +16% |
-| ew_ridge k=50 | 855k | **900k** | +5% |
-
-The gradient is the tell: largest at small `k`, where per-chunk allocation is a
-big share of the work, and smallest at `k=50`, where the O(k³) solve dominates
-and the allocator barely matters. Performance was not the reason for the
-change; it is the reason it is recorded here.
-
 ## 5. Rejected, and why
 
 Recorded so each omission is a decision. The first three were rejected up
@@ -375,6 +359,31 @@ useful kind.
   closed by docs/IMPROVEMENTS.md P1: the "flat from ten groups on" curve was
   the signature of serial per-group evaluation, and one packed struct input
   puts the plugin on polars' parallel path. See P5 above.
+
+## 6. The allocator (2026-08-31)
+
+Found while answering "won't two copies of Polars in one process go wrong?".
+The answer is no — the Arrow C Data Interface keeps each side freeing its own
+memory — but the investigation turned up that pyo3-polars ships
+`PolarsAllocator`, which routes a plugin's allocations through py-polars' own
+allocator, and we were not installing it. Two allocator arenas in one process,
+neither able to reuse the other's pages.
+
+One line, `#[global_allocator]`. Attributed by A/B/A on an otherwise identical
+tree, because two changes had landed between the first two measurements and the
+gain was too large to assign by assumption: **5,716,246 → 8,165,418 →
+5,614,830** rows/s at k=5, bounding machine drift at ~2%.
+
+| case | before | after | |
+|---|---:|---:|---:|
+| ew_ridge k=5 | 5.62M rows/s | **8.02M** | +43% |
+| ew_ridge k=20 | 2.80M | **3.26M** | +16% |
+| ew_ridge k=50 | 855k | **900k** | +5% |
+
+The gradient is the tell: largest at small `k`, where per-chunk allocation is a
+big share of the work, and smallest at `k=50`, where the O(k³) solve dominates
+and the allocator barely matters. Performance was not the reason for the
+change; it is the reason it is recorded here.
 
 ## 7. Bugs found by this review
 

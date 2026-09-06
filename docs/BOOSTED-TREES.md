@@ -1,7 +1,8 @@
 # Gradient-boosted trees, as online as possible
 
-Status as of 2026-09-03: **investigation complete; a design is prototyped in
-numpy and measured; nothing in the Rust crates.** The question was how far
+Status as of 2026-09-06: **investigation complete (2026-09-03, task 21); a
+design is prototyped in numpy and measured; nothing in the Rust crates, and
+the build decision is open** (`docs/ENHANCEMENTS.md` §4). The question was how far
 gradient-boosted trees can be pushed toward this library's contract — one
 row at a time, bounded memory, chunk-invariant, out-of-sample by
 construction, clock-decayed — and what that does to parallel fitting and

@@ -11,8 +11,12 @@ and not a to-do.
 The registry is `ModelKind::KINDS` in `crates/online-polars/src/spec.rs` — the
 spec `type` names, in enum order — reached from Python as
 `polars_online._polars_online.model_kinds()`. Everything else is held to it.
-`holt` (commit `aa96ad3`) is the most recent addition and a complete worked
-example; `git show --stat aa96ad3` is this list as a diff.
+Two commits are complete worked examples of this list: `holt` (commit
+`aa96ad3`, the smallest possible model, 17 files) and `bocpd` (commit
+`47d3b35`, task 55, the most recent addition — 23 files, because it also
+touches the golden files, the model contract, the API snapshot and the kwargs
+typing test, which did not exist when `holt` was added). `git show --stat
+<commit>` on either is this list as a diff.
 
 ## 1. The recursion — `crates/online-core`
 

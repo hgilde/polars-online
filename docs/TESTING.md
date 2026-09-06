@@ -1,8 +1,15 @@
 # Test coverage and testing improvements
 
-Status as of 2026-09-06: **637 Rust tests + 1,236 pytest functions** (2,191
-cases, plus 2 opt-in soak tests), all green, run in CI on three OSes. The
-coverage figures below are from the 2026-08-30 run.
+Status as of 2026-09-06: **about 650 Rust tests and 1,250 pytest functions**
+(some 2,200 cases, plus 2 opt-in soak tests), all green, run in CI on three
+OSes on every push. The coverage figures below are from the 2026-08-30 run.
+
+How to read this file: §0 is what mutation testing found and what changed
+because of it; §1 is the scorecard against `docs/PLAN.md` §9; §2 is the
+improvement list, most of it done and marked so; the FFI section is the
+crash-safety audit; "What is left" at the end is current. Rows that say
+**blocked** or **never executed** were written before the repo had CI and are
+kept as the record — the last section says what cleared them.
 
 Measured coverage (`./scripts/coverage.sh`): **96% of the Python package**, and
 **75% region / 73% line** of the Rust workspace. The Rust figure understates
@@ -57,7 +64,7 @@ construction, which is how `bocpd`'s line 6 survived twelve unit tests.
 | T-E11 soak | **Done** — 10M rows through one state in ~6.5s: `n_eff` stays bounded and does not drift between the start and end of the stream, the fit is still accurate, and a 2M-row state serializes to under 4KB (memory is O(state), not O(data)). Opt-in via `pytest -m soak`. |
 | T-D4 coverage | **Done** (reported, not gating) — `scripts/coverage.sh`; numbers above. |
 | T-D5 mutation re-run | **Done, three passes.** Run 1 (before the follow-up work): **2616 mutants, 501 missed**. Run 2 (after): 104 missed — but see the warning below, that number was wrong. Run 3 (`--iterate`, 690 mutants in 14 min on an idle machine): **217 missed**, the honest current figure. 8.3% surviving, down from 31% (517/1645) at the first-ever pass, despite the crate having grown by 60%. The misses were not scattered: they clustered almost perfectly on the code whose *only* tests live in `tests/*.py`, because `cargo mutants` runs `cargo test` and cannot see the Python suite. Eight commits of Rust-side oracles followed; see "What the mutation run actually found" below. |
-| T-D1 / Windows CI | **Blocked on credentials** — see "Windows and cross-platform" below. `origin` is `github.com/hgilde/polars-online` and 24 commits are ready, but this machine has no GitHub auth (no keychain entry, no SSH key, no token, no `gh`), so nothing has ever been pushed and **no CI job has ever run on Windows**. |
+| T-D1 / Windows CI | **Done** (was: blocked on credentials — see "Windows and cross-platform" below). The repo has been pushed since 2026-08-31 and CI runs on Windows on every push; the "What is left" section has the Windows results. |
 
 This document assesses what the tests actually prove, then lists concrete
 improvements — with emphasis on edge cases and on comparing behavior against
@@ -179,7 +186,7 @@ Scorecard against PLAN §9's eight test classes:
 | 6. Expression ≡ bank | Done for every model, incl. grids and `.over()`. Since 2026-09-03 every expression call also warns that it is the in-memory form (PLAN §6); `test_expr.py::TestTheExpressionWarnsThatItRunsInMemory` holds every method to that, and the suite silences the warning globally in `pyproject.toml`. |
 | 6b. `predict` ≡ `fit_predict` of the next row | Done (E31): `tests/test_predict.py` holds row `i` of `predict(df)` to row 0 of `fit_predict(df.slice(i, 1))` on a fresh clone, field for field, for all ten models with every diagnostic on, and across every session/clock policy; `crates/online-core/tests/model_contract.rs` holds each model's `predict` to its `step` row by row. |
 | 6c. Runner ≡ bank, every source and format | Done (E32): `crates/online-polars/tests/runner.rs` and `tests/test_runner.py` hold every input format (parquet, ipc, csv, ndjson), every output format, and every Python source (path, `LazyFrame`, `DataFrame`, list, generator — with `keep_columns`, a UDF plan, and the failure paths) to the numbers `ModelBank` gives on the same rows, CSV's flattened columns and JSON-text `coef` decoded bit-exact. A format is bound in the tests, never in the API. |
-| 7. Cross-platform state | **Defined but never executed on real runners.** The test file and the macOS→Windows/Linux artifact hand-off exist in `release.yml`, but no workflow run has happened (no remote/tag yet). Locally only same-OS round-trip + byte-determinism are proven. |
+| 7. Cross-platform state | Done: the macOS→Windows/Linux artifact hand-off in `release.yml` has run for every release since 0.1.0, and `ci.yml` loads states on all three OSes on every push (was: defined but never executed, before the repo had a remote). |
 | 8. Benchmark | Done (`scripts/benchmark.py`, numbers in README). |
 
 **Do we compare edge cases against reference implementations?** Now yes, for
@@ -255,14 +262,14 @@ Findings first — both verified against the current build:
 ### D. Windows and cross-platform
 
 Windows is a **stated deployment target** (CLAUDE.md: "Dev on macOS (arm64);
-deploy on macOS and Windows"), and it is the least-verified part of the project:
-no CI job has ever executed there. Running the workflows is the prerequisite,
-but "run CI" is not itself a test plan — these are the specific things Windows
-can break that macOS never will.
+deploy on macOS and Windows"), and when this section was written it was the
+least-verified part of the project: no CI job had executed there. It runs on
+every push now, but "run CI" is not itself a test plan — these are the
+specific things Windows can break that macOS never will, and what each found.
 
 | # | P | Case | Why it can differ on Windows |
 |---|---|---|---|
-| T-W1 | **P1** | **Run `ci.yml` on `windows-latest` at all** | `cargo test --workspace`, `maturin develop`, and all 134 pytest functions have never executed on Windows. Everything below is speculative until this runs once. |
+| T-W1 | ~~P1~~ **done** | **Run `ci.yml` on `windows-latest` at all** | Written when `cargo test --workspace`, `maturin develop` and the pytest suite had never executed on Windows. They have since 2026-08-31, on every push; the first run found nine test bugs and no library bug ("What is left", below). |
 | T-W2 | **P1** | **Cross-OS state hand-off** (`release.yml`: write on macOS, load on Windows/Linux) | PLAN §9 class 7 and hard rule 5. The msgpack payload has no host-dependent parts *by construction*, and `save_bytes` is asserted deterministic locally — but that is an argument, not a test. |
 | T-W3 | P1 (partly) | **Path handling through the CLI** — escaped Windows-style paths and paths with spaces are now tested through the CLI on any OS; actual resolution on Windows still needs a runner. |
 | T-W3b | ~~P1~~ **found a real bug, fixed** | The first Windows CI run ever attempted failed exactly here: three `online-cli` tests died on `toml::de::Error` — "too few unicode value digits" — because the test interpolated `C:\Users\runner\...` straight into a TOML *basic* string, where `\U` begins a unicode escape. TOML was right and the caller was wrong, which makes it the same trap any Windows user hand-writing a config falls into, with an error message that says nothing about paths. Fixed in three places: the test escapes properly; the CLI's parse error now names all three valid forms (literal string, doubled backslashes, forward slashes) whenever the config contains a backslash; and the README documents it. Two new tests run **on every OS**, because the mistake is about the config text rather than the host — `test_an_unescaped_windows_path_is_rejected_with_a_usable_hint` and a parametrized check that each recommended form actually parses and runs. Those would have caught this on Linux, before a Windows runner existed. Drive letters and UNC *resolution* still need a real Windows runner. |
@@ -278,7 +285,7 @@ can break that macOS never will.
 
 | # | P | Improvement |
 |---|---|---|
-| T-D1 | P1 **blocked** | **Actually run the workflows once.** Until then T-W1/T-W2 and the wheel builds are untested claims. *Blocked on GitHub credentials on this machine*: no keychain entry for github.com, no SSH key, no `GH_TOKEN`, and `gh` is not installed, so `git push` cannot authenticate. Unblock with any of `gh auth login` / an SSH key / a PAT — note the token needs the **`workflow` scope**, since this push adds `.github/workflows/`. |
+| T-D1 | ~~P1~~ **done** (2026-08-31) | **Actually run the workflows once.** Until then T-W1/T-W2 and the wheel builds are untested claims. *Was blocked on GitHub credentials on this machine*: no keychain entry for github.com, no SSH key, no `GH_TOKEN`, and `gh` is not installed, so `git push` cannot authenticate. Unblock with any of `gh auth login` / an SSH key / a PAT — note the token needs the **`workflow` scope**, since this push adds `.github/workflows/`. |
 | T-D2 | ~~P2~~ **done** | **Property-based testing** (hypothesis) over generated adversarial streams, asserting for all ten models: chunk invariance under any chunk size, save/load transparency at any split, outputs finite-or-null, skipped rows report no `n_eff`, group independence, and that a row's own target never influences its own prediction. A Rust-side `proptest` pass on `online-core` remains possible but is largely redundant now. |
 | T-D3 | ~~P2~~ **done** | Determinism across parallelism: the bank is run in subprocesses at `POLARS_ONLINE_MAX_THREADS=1` and `=8`, over six groups at 400 rows and 37 groups at 5000 (above `PAR_MIN_ROWS`, a halflife grid with every optional output on), and the outputs must be identical field for field. |
 | T-D4 | ~~P3~~ **done** | Coverage: `scripts/coverage.sh` reports 96% Python, 75%/73% Rust (caveat above); CI reports the Python figure non-gating. **Mutation testing** (`scripts/mutants.sh`) has now been run in full over `online-core`: **1645 mutants, 517 missed / 1104 caught / 24 unviable**. The misses concentrated exactly where the Rust unit tests lean on the *Python* oracle suite, which `cargo test` cannot see — `robust.rs` 68% missed, `kalman.rs` 38%, `ewridge.rs` 36%. Fixed with `crates/online-core/tests/golden.rs`: one fixed 60-row stream per model with the exact expected predictions embedded, which pins the arithmetic against any mutation. Measured effect on the worst file: **`robust.rs` went from 162 missed / 77 caught to 42 / 197**, a 74% reduction from one test. The residue is mostly accessors (`n_features -> 0`) and validation-branch comparisons, which are low value. Still open: re-running the full pass to get the new headline number, and making it periodic in CI. **2026-09-02:** `golden.rs` had signatures for seven of the eleven kinds; `sgd`, `pa`, `holt` and `ew_cov` (the four with longhand-recursion oracles in their own modules rather than numpy references) now have one each, `sgd` two, and `test_model_registry::test_the_core_golden_file_pins_every_model` holds the file to `KINDS`. Each new pin was mutated once (the Huber clamp, the PA-II damping, the trend smoothing, the variance floor) and each caught its own. The same day, `test_every_builder_has_a_per_model_test_file` gave EXTENDING step 13 its check, and `ewridge`/`rls` their own `test_<model>.py` out of `test_bank.py`. |
@@ -356,20 +363,18 @@ pushed, and CI has run on all three platforms.
   Windows, so the golden comparison is genuinely cross-platform now.
 - **T-W5**, **T-W3b**, **T-W8**, **T-W2** — all executed as part of that run.
 
-**The one open item, and it is a real one:**
+**Since cleared (2026-09-06):**
 
 - The tenth Windows failure — a `UnicodeEncodeError` in
-  `examples/pathway_integration.py` — was fixed and pinned by a test, but
-  **the fix has never run on Windows.** The cost policy took Windows off push
-  (see the COST POLICY comment in `ci.yml`), so the next Windows result comes
-  from the Monday schedule, or from a manual `workflow_dispatch` — which also
-  pulls in macOS at 10x, so the schedule is much the cheaper way to find out.
-  Until then, treat Windows as *green-except-one-known-fix-unverified*.
+  `examples/pathway_integration.py` — was fixed and pinned by a test. The
+  cost policy had taken Windows off push while the repo was private (see the
+  COST POLICY comment in `ci.yml`); the repo is public, every push runs all
+  three OSes, and Windows has been green on every release since 0.1.0.
 
-- **PyPI** — the name is still free (both spellings, re-checked 2026-08-31).
-  What remains is registering this repository and workflow as a trusted
-  publisher, which needs the account, and deciding the `polars==1.44.1` pin
-  question recorded in `docs/RELEASE-READINESS.md`.
+- **PyPI** — `polars-online` is published there (0.1.0 on 2026-09-03, 0.1.1
+  on 2026-09-04) through the trusted-publisher `release.yml`. The Polars pin
+  question is settled as `polars>=1.34.0,<2` — `docs/RELEASE-READINESS.md`,
+  "The Polars pin".
 
 Two things are worth doing periodically rather than once:
 

@@ -1,6 +1,10 @@
 # What relaxing O(state) would unlock
 
-Status as of 2026-08-31: **survey, nothing proposed for implementation.** A scoping
+Status as of 2026-09-06: **survey; since then B1 was built as E36 (adaptive
+conformal intervals, task 25 — its memory is `O(1/ε)` and passes the O(state)
+rule as written), B5's multi-lag structure arrived as `ew_cov(lags=)` (E56)
+and B6 as `label_delay` (E47), buffering the row rather than the label; B2,
+B3 and B4 stay unbuilt.** Written 2026-08-31 as a scoping
 question: if this library were willing to hold memory that grows with a *window* or a
 *sketch* — `O(W·k)`, `O(1/ε)`, `O(log n)` — rather than strictly `O(k²)` state, how
 many genuinely new things could it offer, excluding anything already well served by a

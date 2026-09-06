@@ -1,7 +1,11 @@
 # Release readiness and API stability
 
-Status as of 2026-08-31: **proposed.** Two questions — what is left before
-this repo goes public, and what would make its API safe to promise.
+Status as of 2026-09-06: **done, and kept as the record.** Written
+2026-08-31 as a proposal; the repo went public the same day, 0.1.0 was
+released 2026-09-03 and 0.1.1 on 2026-09-04, and 0.2.0 is being released as
+this line is written. The sections are dated where they were added, so read
+each as of its date. Two questions — what was left before this repo went
+public, and what makes its API safe to promise.
 
 ---
 
@@ -64,17 +68,19 @@ licence now lands in the sdist and in the wheel's
 
 ## R4 — Repository settings *(needs the web UI; not scriptable from here)*
 
-- Branch protection on `main`: require CI to pass, no force-push. Right now a
-  bad push cannot be caught by anything.
+- Branch protection on `main`: require CI to pass, no force-push. Without
+  it a bad push cannot be caught by anything; the working rule since has
+  been to fast-forward `main` only from a branch whose CI run is green.
 - Description and topics (`polars`, `online-learning`, `streaming`,
   `regression`, `rust`) — this is how anyone finds it.
 - Enable private vulnerability reporting, which `SECURITY.md` already tells
   people to use.
 
-## R5 — Green CI on all three platforms first
+## R5 — Green CI on all three platforms first — **done**
 
-Do not make it public with a red badge. As of now Windows and Linux fixes are
-in flight; macOS was green on the first run. Flip only after a full run passes.
+Do not make it public with a red badge. When this was written Windows and
+Linux fixes were in flight and macOS was green on the first run; all three
+were green before the flip, and every release since has waited for them.
 
 ## R6 — History scan — **done, and it found something**
 
@@ -814,6 +820,9 @@ Short, in the README and CONTRIBUTING:
   It is the right tool for a published Rust API and pure overhead otherwise.
 
 ## Suggested order
+
+All four steps happened in this order on 2026-08-31, bar the R4 settings
+that need the web UI.
 
 1. **R1, R2, R3** — small, mechanical, and all three are things a reviewer of a
    public repo checks in the first minute.

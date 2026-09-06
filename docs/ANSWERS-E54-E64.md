@@ -1,6 +1,9 @@
 # Answers to the open points in `docs/PLAN.md` §11a, *Preparing E54–E64 for implementation*
 
-Written 2026-09-05 against the papers themselves. Each answer says whether
+Written 2026-09-05 against the papers themselves, before tasks 45–56 were
+built; the implementations followed these answers, and where a build
+departed from one — `bocpd`'s line 6, `hmm`'s two corrections, `rcov`'s
+window — `docs/PLAN.md` §11a says so under the task. Each answer says whether
 it comes from a full reading of the source (**verified**) or is a
 convention / memory item the implementer should still check (**check**).
 Nothing below changes a decision already taken in §11a; it supplies the

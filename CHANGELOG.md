@@ -7,7 +7,15 @@ carries breaking changes.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **Documentation pass (task 58).** The README links every model to its
+  builder in the API reference and to its Rust source, gains a table of
+  contents, and groups the stream-preparation and fit-reading sections;
+  every builder docstring states each keyword's default; `docs/README.md`
+  maps every document to what it is for, and each document under `docs/`
+  opens with a dated status line saying what became of it. Nothing that
+  runs changed.
 
 ## [0.2.0] — 2026-09-06
 

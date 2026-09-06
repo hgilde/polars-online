@@ -1,7 +1,8 @@
 # Regimes: what the detectors find, measured
 
-The five models this batch added -- `deco`, `rcov`, `hmm`, `corrchange` and
-`bocpd` -- are all claims about a stream, and a claim needs a stream whose
+The five models that tasks 45–56 added (E54–E64, 2026-09-06) -- `deco`,
+`rcov`, `hmm`, `corrchange` and `bocpd` -- are all claims about a stream,
+and a claim needs a stream whose
 answer is written down. `po.sim.regimes` produces one; this document is what
 the detectors do on it, and on the Monte-Carlo draws whose null is published.
 

@@ -18,9 +18,10 @@ Prerequisites are [uv](https://docs.astral.sh/uv/) and a stable Rust toolchain
 
 **Run `./scripts/gate.sh` before every commit, and let it pass.** It runs
 `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace`,
-`ruff format --check`, `ruff check`, `mypy`, a `maturin develop` rebuild, and
-`pytest` — in that order, and it prints `gate: PASS` or `gate: FAIL` as its
-last line.
+`ruff format --check`, `ruff check`, `mypy`, a `maturin develop` rebuild,
+`pytest`, and a `sphinx-build -W` of the API reference (so a docstring that
+is not valid RST fails the gate, not the docs deploy) — in that order, and it
+prints `gate: PASS` or `gate: FAIL` as its last line.
 
 Two things it exists to prevent, both of which happened before it did:
 
@@ -94,6 +95,8 @@ measurement said so; that is a good outcome, not a failed one.
 - Reference the task ID where there is one (`P3`, `E12`, `T-W5`).
 - Update the relevant doc in the same commit: `docs/PLAN.md`,
   `docs/ENHANCEMENTS.md`, `docs/TESTING.md`, `docs/PERFORMANCE.md`.
+  [`docs/README.md`](docs/README.md) says which document holds what. Keep
+  section numbers where they are — the code and the README cite them.
 
 ## Licensing of contributions
 

@@ -1,5 +1,11 @@
 # Improvements review: testing, performance, usability, extensibility
 
+Status as of 2026-09-06: **every item is done or rejected, except C8**, the
+CLI's NDJSON output under the system allocator, which waits on a decision
+that CLAUDE.md rule 12 reserves for the maintainer (an allocator for the
+CLI is a new static link). This is the record of a pre-release pass
+(2026-09-01 to 2026-09-02); items are cited from the code by their letters.
+
 A pre-release pass over the code with one question per axis: what would a
 user hit in the first week, what is slower than it needs to be, what is
 harder to extend than it needs to be, and what is untested. Every finding
