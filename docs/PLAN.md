@@ -783,6 +783,14 @@ note, not a task.
       built and an object that exists, holds the table to the registry, and
       holds every model section to its `*API:*` and `*Rust:*` lines — all four
       checked against a deliberately broken README.
+- [x] 61. **The leak test's statistic, 2026-09-06.** `assert_plateaus` compared
+      the first and last of its post-warm-up marks, which cannot distinguish a
+      late allocator step from a slope — the distinction its own docstring
+      claims. It failed `main` on a tree whose previous run was green. It now
+      takes the median block-to-block gap over five blocks; the CI trace that
+      failed reads 0.0 KB/iter, a sustained 14 KB/iter leak still reads 14.
+      Acceptance: the file's 16 tests, and the three traces (the real one, a
+      leak, a step) checked against the statistic directly.
 
 ## 11a. Decisions made while implementing
 

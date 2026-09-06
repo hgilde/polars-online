@@ -17,6 +17,7 @@ forever, while a real leak grows without bound. So the primitive compares the
 
 import gc
 import os
+import statistics
 import subprocess
 import sys
 import textwrap
@@ -35,13 +36,23 @@ def rss_kb() -> float:
     return PROC.memory_info().rss / 1024
 
 
-def assert_plateaus(fn, *, blocks=4, per_block=120, warmup=40, kb_per_iter=4.0):
+def assert_plateaus(fn, *, blocks=5, per_block=120, warmup=40, kb_per_iter=4.0):
     """Run `fn` in blocks and require RSS growth to flatten.
 
     The first block absorbs one-off costs — thread stacks, arena growth, the
-    plugin's library cache. Later blocks are compared against each other, so a
-    step passes and a slope fails.
+    plugin's library cache. The rest are compared against each other *one gap
+    at a time*, and the statistic is the median gap: a leak grows in every
+    block, so its median gap is the leak rate, while a one-off step moves a
+    single gap and leaves the median where it was.
+
+    Comparing the tail's first mark against its last — which this did until
+    2026-09-06 — cannot tell those two apart, and said so on `main`: marks of
+    [361112, 364160, 364160, 367644] KB, two of them identical to the page and
+    the last a single 3.4 MB step, read as 14.5 KB/iter and failed a commit
+    whose previous run on the same tree was green. Three gaps is the minimum
+    that lets a median outvote one step, hence five blocks.
     """
+    assert blocks >= 4, "the median gap needs at least three gaps after the first block"
     for _ in range(warmup):
         fn()
     gc.collect()
@@ -53,15 +64,14 @@ def assert_plateaus(fn, *, blocks=4, per_block=120, warmup=40, kb_per_iter=4.0):
         gc.collect()
         marks.append(rss_kb())
 
-    # Growth per iteration across everything after the first block.
-    tail = marks[1:]
-    grown = tail[-1] - tail[0]
-    iters = per_block * (len(tail) - 1)
-    per_iter = grown / iters
+    # Growth per iteration, block against block, over everything after the first.
+    gaps = [(b - a) / per_block for a, b in zip(marks[1:], marks[2:], strict=False)]
+    per_iter = statistics.median(gaps)
     assert per_iter < kb_per_iter, (
-        f"RSS still climbing after the first block: {per_iter:.2f} KB/iter "
-        f"over {iters} iterations (marks, KB: {[round(m) for m in marks]}). "
-        "A plateau is expected; a slope means something is not being released."
+        f"RSS still climbing after the first block: {per_iter:.2f} KB/iter, the "
+        f"median of {[round(g, 2) for g in gaps]} (marks, KB: "
+        f"{[round(m) for m in marks]}). A plateau is expected; a slope means "
+        "something is not being released."
     )
 
 

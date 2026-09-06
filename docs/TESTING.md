@@ -296,7 +296,7 @@ Two copies of Polars live in this process and data crosses on the Arrow C Data
 Interface, where a `SeriesExport` carries a `release` callback back into the
 binary that produced it. Nothing else in the suite would notice if that
 contract were broken: a leak is invisible and a double-free is a crash that
-takes pytest with it. `tests/test_ffi_memory.py` (16 tests, ~5 s) covers it.
+takes pytest with it. `tests/test_ffi_memory.py` (16 tests, ~7 s) covers it.
 
 **The assertion is "plateaus", not "does not grow."** Allocators do not return
 pages eagerly, rayon spawns workers lazily, and Polars caches the loaded
@@ -306,6 +306,16 @@ whereas native Polars `.over()` slowly *returns* memory. A naive "RSS must not
 grow" test would have failed on that step forever. So `assert_plateaus`
 discards the first block and compares the rest against each other: a step
 passes, a slope fails.
+
+**The statistic is the median block-to-block gap** (five blocks of 120, so
+three gaps), and it is that because the first version was not. Comparing the
+tail's first mark against its last cannot tell a late step from a slope, and
+on 2026-09-06 it failed `main` on marks of
+[361112, 364160, 364160, 367644] KB — two blocks identical to the page, then
+one 3.4 MB step — reporting 14.5 KB/iter on a tree whose previous run was
+green. The median gap reads the same trace as 0.0 KB/iter and still reads a
+sustained 14 KB/iter leak as 14. A heuristic that cries wolf on a release
+day is worse than a looser one that does not.
 
 Covered: repeated `fit_predict`; bank churn; the expression plugin; `.over()`
 across groups; multi-chunk inputs (a chunked Series exports one `ArrowArray`

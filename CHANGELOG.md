@@ -26,6 +26,15 @@ carries breaking changes.
   Python objects the anchors are built from, so a rename breaks the suite
   rather than the page.
 
+### Fixed
+
+- **The FFI leak test no longer mistakes an allocator step for a leak**
+  (task 61). `assert_plateaus` compared the first and last of its
+  post-warm-up marks, so one late 3.4 MB jump read as a 14.5 KB/iter slope
+  and failed a `main` run whose previous run on the same tree was green. The
+  statistic is now the median block-to-block gap over five blocks, which
+  reads that trace as 0.0 KB/iter and a sustained leak unchanged. Test-only.
+
 ## [0.2.0] — 2026-09-06
 
 A large release. 0.1.x had eleven regression and filtering models; 0.2.0
