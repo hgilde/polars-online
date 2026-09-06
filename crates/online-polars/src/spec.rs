@@ -717,6 +717,41 @@ pub enum ModelKind {
     /// reported -- a correlation of two rows is ±1 whatever the data.
     #[serde(rename = "marginal")]
     Marginal {},
+    /// Dynamic equicorrelation (Engle & Kelly 2012; docs/ENHANCEMENTS.md
+    /// E55): one number for the whole correlation matrix, `O(m)` a row where
+    /// a full one is `O(m²)`.
+    ///
+    /// The row is standardised against an [`online_core::EwDiag`]'s pre-row
+    /// means and variances, and the average pairwise correlation of the
+    /// standardised row is a closed form in two sums. `blocks` estimates one
+    /// number per named block and one per pair of blocks instead of a single
+    /// one, which is the useful middle between "one correlation" and "all of
+    /// them". Outputs `u` (the row's own estimate), `rho` (the level before
+    /// the row), `loglik` (the row's Gaussian density under it) and `n_eff`;
+    /// with blocks, one `u_*` and one `rho_*` per value and a single
+    /// `loglik`. `halflife`/`lam` are the spec's and are required, since
+    /// both the standardiser and the level decay on them.
+    #[serde(rename = "deco")]
+    Deco {
+        /// `"ew"` (default): `rho' = a·rho + b·u`, the exponentially
+        /// weighted mean of the row estimates. `"linear"`: Engle–Kelly
+        /// eq. 21 with correlation targeting, `rho' = (1 − α − β)·rho_bar' +
+        /// α·u + β·rho`, which needs `alpha` and `beta`.
+        #[serde(default)]
+        dynamics: Option<String>,
+        #[serde(default)]
+        alpha: Option<f64>,
+        #[serde(default)]
+        beta: Option<f64>,
+        /// Named groups of features, in emission order; every feature must
+        /// be in exactly one, and a block needs at least two. Omitted, the
+        /// model estimates one number over every feature.
+        /// `feature_sets`' shape: a Python dict, serialised as a list of
+        /// `[name, columns]` pairs so the order the caller wrote is the
+        /// order the outputs come in.
+        #[serde(default)]
+        blocks: Option<Vec<(String, Vec<String>)>>,
+    },
 }
 
 /// The two sides of a `seqtest` comparison, as [`ModelKind::compares`]
@@ -747,7 +782,7 @@ impl ModelKind {
     /// to the enum, so a new variant fails a test until it is listed here.
     pub const KINDS: &'static [&'static str] = &[
         "ew_ridge", "lasso", "kalman", "huber", "quantile", "ftrl", "ew_cov", "sgd", "pa", "holt",
-        "rls", "kmeans", "micro", "ew_class", "seqtest", "marginal",
+        "rls", "kmeans", "micro", "ew_class", "seqtest", "marginal", "deco",
     ];
 
     pub fn kind_name(&self) -> &'static str {
@@ -768,6 +803,7 @@ impl ModelKind {
             ModelKind::EwClass { .. } => "ew_class",
             ModelKind::SeqTest { .. } => "seqtest",
             ModelKind::Marginal {} => "marginal",
+            ModelKind::Deco { .. } => "deco",
         }
     }
 
@@ -778,7 +814,10 @@ impl ModelKind {
     pub fn is_unsupervised(&self) -> bool {
         matches!(
             self,
-            ModelKind::EwCov { .. } | ModelKind::KMeans { .. } | ModelKind::Micro { .. }
+            ModelKind::EwCov { .. }
+                | ModelKind::KMeans { .. }
+                | ModelKind::Micro { .. }
+                | ModelKind::Deco { .. }
         )
     }
 
@@ -1189,6 +1228,9 @@ impl Spec {
             // count: two rows give a correlation of ±1, three the first one
             // with any content.
             ModelKind::Marginal {} => 3.0,
+            // The standardiser needs a variance per feature before the row
+            // can be standardised at all; three rows is where it has one.
+            ModelKind::Deco { .. } => 3.0,
             _ => (self.k() + usize::from(self.add_intercept)) as f64,
         }
     }
@@ -1788,6 +1830,25 @@ impl Spec {
             // targets, no column on both sides, a decay, `min_periods` per
             // target, no residual diagnostics) are all it needs.
             ModelKind::Marginal {} => {}
+            // Every parameter check is `DecoCfg::validate`'s, so that the
+            // CLI, the bank and the plugin all get the same messages; only
+            // the block *names* are resolved here, where the feature list is.
+            ModelKind::Deco { blocks, .. } => {
+                if let Some(blocks) = blocks {
+                    for (name, cols) in blocks {
+                        for c in cols {
+                            if !self.features.contains(c) {
+                                return Err(format!(
+                                    "spec {:?}: deco block {name:?} names {c:?}, which is not a \
+                                     feature of this spec",
+                                    self.name
+                                ));
+                            }
+                        }
+                    }
+                }
+                crate::stream::deco_cfg(self).map_err(|e| format!("spec {:?}: {e}", self.name))?;
+            }
             ModelKind::Ftrl {
                 alpha,
                 beta,

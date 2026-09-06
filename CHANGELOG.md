@@ -16,6 +16,23 @@ carries breaking changes.
 
 ### Added
 
+- **`deco`: one correlation for the whole matrix** (`docs/ENHANCEMENTS.md`
+  E55, task 46). Engle & Kelly's dynamic equicorrelation as an
+  `OnlineModel`, `O(m)` a row where a full correlation matrix is `O(m²)`.
+  The row is standardised against an `EwDiag`'s pre-row moments and their
+  Lemma 2.3 closed form gives the row's estimate; the level follows either
+  `EwCov`'s mean recursion (`dynamics="ew"`) or the paper's eq. 21 with
+  correlation targeting (`"linear"`, with `alpha` and `beta`). `blocks`
+  estimates one number per named block and one per pair of blocks instead,
+  through a `K x K` Woodbury factorization rather than an `n x n` one.
+  Outputs `u`, `rho`, `loglik` and `n_eff`, all read before the row.
+
+  Two facts the docstring and the README state plainly, because both are
+  easy to assume otherwise: `u` is a **downward biased** estimate of the
+  equicorrelation (the paper's own remark — `E[u]` is about 0.20 for a true
+  0.30 at six columns), and `rho` is **not** an `ew_cov`'s `corr` over the
+  same columns, the mean of a ratio not being the ratio of means.
+
 - **Closed-group emission: a group's accumulators, emitted when it is
   finished** (`docs/ENHANCEMENTS.md` E54, task 45). A new common parameter
   `group_close = "monotone" | "session"`. Under `"monotone"` a key smaller

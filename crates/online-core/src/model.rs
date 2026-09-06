@@ -61,6 +61,7 @@ pub enum ModelState {
     EwClass(Box<crate::EwClass>),
     SeqTest(Box<crate::SeqTest>),
     Marginal(Box<crate::Marginal>),
+    Deco(Box<crate::Deco>),
 }
 
 #[derive(Debug, Error)]
@@ -95,6 +96,7 @@ impl ModelState {
             ModelState::EwClass(_) => "ew_class",
             ModelState::SeqTest(_) => "seqtest",
             ModelState::Marginal(_) => "marginal",
+            ModelState::Deco(_) => "deco",
         }
     }
 }

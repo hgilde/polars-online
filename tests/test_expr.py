@@ -350,6 +350,7 @@ class TestTheExpressionWarnsThatItRunsInMemory:
             ),
             "seqtest": ("seqtest", lambda: ns.seqtest()),
             "marginal": ("marginal", lambda: ns.marginal(**common)),
+            "deco": ("deco", lambda: ns.deco(others=["x0"], halflife=2.0)),
         }
 
     def test_every_method_warns_and_names_the_call_that_streams(self):

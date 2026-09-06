@@ -200,6 +200,7 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
 
 
 __all__ = [
+    "deco",
     "ew_class",
     "ew_cov",
     "ewridge",
@@ -1532,11 +1533,87 @@ def marginal(
     return _common(name, model, targets=targets, features=features, **common)
 
 
+@_checked
+def deco(
+    name: str,
+    *,
+    features: list[str],
+    dynamics: str = "ew",
+    alpha: float | None = None,
+    beta: float | None = None,
+    blocks: dict[str, list[str]] | None = None,
+    **common: Unpack[CommonKwargs],
+) -> dict[str, Any]:
+    """Dynamic equicorrelation: one number for the whole correlation matrix,
+    ``O(m)`` a row (Engle & Kelly 2012; ENHANCEMENTS E55, Task 46).
+
+    A correlation matrix of ``m`` series has ``m(m-1)/2`` free entries, and a
+    stream cannot keep them all moving without ``O(m^2)`` a row. DECO
+    replaces them with their average and estimates *that*. The row is
+    standardised against the pre-row means and variances of an ``EwDiag``,
+    ``r_i = (x_i - m_i)/sqrt(v_i)``, and with ``S1 = sum(r)`` and
+    ``S2 = sum(r*r)`` over the ``n`` features the row's estimate is their
+    Lemma 2.3::
+
+        u = (S1**2 - S2) / ((n - 1) * S2)      = mean_{i!=j} r_i r_j / mean_i r_i**2
+
+    which lies in ``(-1/(n-1), 1)``. The level then follows one of two
+    dynamics, on the model's own clock with decay factor ``lam`` and row
+    weight ``w``::
+
+        "ew":      W' = lam*W + w,  a = lam*W/W',  b = w/W'
+                   rho' = a*rho + b*u                       (rho = u at W = 0)
+        "linear":  rho' = (1 - alpha - beta)*rho_bar' + alpha*u + beta*rho
+
+    where ``rho_bar`` is the ``"ew"`` recursion run alongside as the target
+    of the linear one. ``"linear"`` needs ``alpha`` and ``beta``, both
+    ``>= 0`` with ``alpha + beta < 1``; ``"ew"`` refuses them.
+    ``halflife``/``lam`` are required either way -- both the standardiser and
+    the level decay on them.
+
+    Two departures from the paper, on purpose. Its eq. 21 has a free
+    intercept and it applies correlation targeting to the DCC ``Q``
+    recursion, not to the linear one; writing the intercept as
+    ``(1 - alpha - beta) * rho_bar`` is our reparameterisation, chosen
+    because a streaming model has no sample on which to fit a free
+    intercept. And the paper permits ``alpha + beta`` slightly above 1 under
+    numerical bounds where this refuses it. The paper also notes that ``u``
+    is a **downward biased** estimate of the equicorrelation -- ``E[u]`` is
+    about 0.20 for a true 0.30 at ``m = 6`` -- and offers an alternative
+    ``1 - (1/(n-1)) * sum((r_i - rbar)**2)``, which this does not.
+
+    ``blocks`` maps a name to a subset of ``features``: the model then
+    estimates one number per block and one per pair of blocks, which is the
+    useful middle between one correlation and all of them. Every feature
+    must be in exactly one block, and a block needs at least two.
+
+    Outputs, all read from the state **before** the row (so they are safe as
+    features for that same row): ``u``, ``rho`` (the level before the row),
+    ``loglik`` (the row's Gaussian log-density in standardised coordinates
+    under that level) and ``n_eff``. With ``K`` named blocks the first two
+    become ``u_<A>`` per block then ``u_<A>_<B>`` per pair, and ``rho_*``
+    likewise, with one ``loglik`` over all of them; ``coef`` is the
+    correlation values in that order. ``u`` and ``loglik`` are null until
+    every feature has a positive pre-row variance.
+
+    Not a regression: no targets, and nothing residual-based applies. Needs
+    at least two features.
+    """
+    model: dict[str, Any] = {
+        "type": "deco",
+        "dynamics": dynamics,
+        "alpha": alpha,
+        "beta": beta,
+        "blocks": [[k, list(v)] for k, v in blocks.items()] if blocks else None,
+    }
+    return _common(name, model, targets=[features[0]], features=features, **common)
+
+
 #: The model types with no target column: their outputs are read from the
 #: state before each row, their ``targets`` mirror ``features[0]`` for the
 #: plumbing, and nothing residual-based applies to them. ``ew_class`` is
 #: not one -- its label column travels as the target -- though it predicts
 #: no number either, and refuses the residual switches the same way.
-UNSUPERVISED = frozenset({"ew_cov", "kmeans", "micro"})
+UNSUPERVISED = frozenset({"ew_cov", "kmeans", "micro", "deco"})
 
 _NUMERIC_KEYS = _numeric_keys()

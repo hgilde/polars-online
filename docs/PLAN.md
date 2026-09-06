@@ -635,7 +635,7 @@ note, not a task.
       `label_delay` are each refused by name; the last group never closes
       and stays readable through `gram()`; a mid-stream save/load keeps the
       unclosed groups, the high-water mark and any undrained rows.
-- [ ] 46. **`deco`** (E55): Engle–Kelly equicorrelation as an `OnlineModel`,
+- [x] 46. **`deco`** (E55): Engle–Kelly equicorrelation as an `OnlineModel`,
       `O(m)` a row on `EwDiag`-standardised features; `dynamics = "ew" |
       "linear"`, `blocks`; outputs `u`, `rho`, `loglik`, `n_eff`, `coef =
       [rho]`. Acceptance: `u` equals the longhand pair sum; one pair under
@@ -2163,6 +2163,42 @@ them.
   `EwDiag` **to the bit** — same `a`, `b`, same order of operations, or the
   test says which differs; the clock-rescaling test; `MINIMAL["deco"] =
   {"features": ["x0", "x1"]}` in `test_model_registry`.
+
+*Task 46 as built, 2026-09-06.* The design stood; four corrections and one
+departure, all measured.
+
+- **The plan's `ew_cov` equality is false.** It said a one-pair `"ew"`
+  `deco` equals `ew_cov(stats = ["corr"])` on the same standardised columns
+  *to the bit*. It does not, and not by a little: on a two-column stream
+  with a true correlation of 0.6, `rho` settles near **0.32** and `corr` near
+  **0.60**. The EW mean of a ratio is not the ratio of EW means, and `u` is
+  the downward biased estimator Engle & Kelly themselves flag (`E[u]` is
+  0.20 at a true 0.30 with six columns, 0.60 at a true 0.80 — measured by
+  Monte Carlo, and reproduced by the model to 0.02). What *is* bit-identical,
+  and is what the test asserts, is `rho` against an `ew_cov(stats = ["mean"])`
+  over the `u` sequence at the same halflife.
+- *Which is why the recursion is written `ρ + b·(u − ρ)`* rather than the
+  algebraically equal `a·ρ + b·u`: that is the order `EwCov::update` writes
+  its mean in, and the two differ in the last bit. Written the other way the
+  agreement above was 7e-16, not exact.
+- *One code path for blocked and unblocked.* The unblocked model is one block
+  holding every feature, and the `K × K` Woodbury form reduces to the closed
+  `(1−ρ)^{n−1}(1+(n−1)ρ)` at `K = 1` — a unit test asserts that reduction, so
+  there is one implementation of the density and two tests of it. A single
+  *named* block is the unblocked model under a name: same three slots,
+  labelled `u_<A>`, `rho_<A>`, `loglik`.
+- *One shared weight for the level.* `rho`'s accumulated weight is not the
+  standardiser's: a row whose `u` is not finite (a zero-variance feature)
+  teaches the level nothing and must not decay it either. All the values of
+  a blocked model advance together, on that one weight; a row where any
+  block's `u` is undefined moves none of them.
+- **Departure: `label_delay` is accepted, not refused.** The batch-wide rule
+  says the new no-target models refuse it, "nothing to hold back". `ew_cov`,
+  whose shape `deco` copies, accepts it today, and it does hold something
+  back — the accumulator update. Refusing it for one and not the other would
+  be a surprise, so `deco` accepts it and a test says so. The same reasoning
+  will apply to 50, 53, 54 and 55 unless one of them has a real reason to
+  differ.
 
 *Task 47 — the ring-clearing signal.*
 

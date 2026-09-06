@@ -176,6 +176,15 @@ def describe_api() -> str:
             dict(targets=["y"], a="ridge", b="kalman", a_suffix="@h50"),
         ),
         ("marginal", dict(targets=["y", "z"], features=["x0", "x1"], halflife=100.0)),
+        ("deco", dict(features=["x0", "x1", "x2"], halflife=100.0)),
+        (
+            "deco blocked",
+            dict(
+                features=["x0", "x1", "x2", "x3"],
+                halflife=100.0,
+                blocks={"a": ["x0", "x1"], "b": ["x2", "x3"]},
+            ),
+        ),
     ]:
         s = getattr(po.spec, model.split(" ")[0])("m", min_periods=2.0, **kw)
         w(f"  {model}{'' if ' ' in model else ' minimal'}:")

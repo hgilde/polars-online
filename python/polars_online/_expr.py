@@ -30,6 +30,7 @@ from polars.plugins import register_plugin_function
 
 from polars_online import _spec
 from polars_online._kwargs import (
+    DecoKwargs,
     EwClassKwargs,
     EwCovKwargs,
     EwridgeKwargs,
@@ -354,6 +355,17 @@ class OnlineNamespace:
         """
         names, exprs = _features(others)
         spec = _spec.ew_cov("online", features=[self._target(), *names], **kwargs)
+        return _run(spec, self._expr, [self._expr, *exprs])
+
+    def deco(self, others: list[Feature], **kwargs: Unpack[DecoKwargs]) -> pl.Expr:
+        """Dynamic equicorrelation of this column together with ``others``.
+
+        No target, as for ``ew_cov``: the column the expression is called on
+        becomes the first feature. ``blocks`` names subsets of the whole
+        feature list, this column included.
+        """
+        names, exprs = _features(others)
+        spec = _spec.deco("online", features=[self._target(), *names], **kwargs)
         return _run(spec, self._expr, [self._expr, *exprs])
 
     def sgd(

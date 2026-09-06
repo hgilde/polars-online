@@ -2752,6 +2752,41 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
     ) {
         return Vec::new();
     }
+    // deco's `coef` is the correlation values themselves, one slot each,
+    // named for the block or the pair of blocks they belong to.
+    if matches!(spec.model, crate::ModelKind::Deco { .. }) {
+        let names = crate::stream::deco_block_names(spec);
+        let labels = online_core::Deco::labels(&names);
+        let values: Vec<&String> = labels
+            .iter()
+            .filter(|l| l.as_str() == "rho" || l.starts_with("rho_"))
+            .collect();
+        let mut out = Vec::new();
+        for (suffix, d) in spec.decays().expect("validated") {
+            for (position, l) in values.iter().enumerate() {
+                let slot = l.strip_prefix("rho_").unwrap_or("rho");
+                out.push(CoefField {
+                    field: format!("coef{suffix}"),
+                    position,
+                    name: format!("coef_{slot}{suffix}"),
+                    target: slot.to_string(),
+                    halflife: match d {
+                        online_core::Decay::Halflife(h) => Some(h),
+                        online_core::Decay::Lam(_) => None,
+                    },
+                    lam: match d {
+                        online_core::Decay::Lam(l) => Some(l),
+                        online_core::Decay::Halflife(_) => None,
+                    },
+                    ridge: None,
+                    feature_set: None,
+                    lambda: None,
+                    term: "rho".to_string(),
+                });
+            }
+        }
+        return out;
+    }
     let slots: Vec<String> = match &spec.model {
         crate::ModelKind::KMeans { k, .. } => (0..*k).map(|j| format!("cluster{j}")).collect(),
         crate::ModelKind::EwClass { classes, .. } => classes.clone(),
@@ -2812,6 +2847,73 @@ pub fn output_fields(spec: &Spec) -> Vec<String> {
 /// Every output field with its metadata, in struct order.
 pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
     let decays = spec.decays().expect("validated");
+    // deco is not a regression either: its slots are the row's own
+    // equicorrelation estimate, the level before the row and the row's
+    // log-density under it -- one of each unblocked, one `u_*` and one
+    // `rho_*` per value and a single `loglik` with blocks.
+    if matches!(spec.model, crate::ModelKind::Deco { .. }) {
+        let names = crate::stream::deco_block_names(spec);
+        let labels = online_core::Deco::labels(&names);
+        let n_slots = labels.len();
+        // The columns a slot is over: its block, its pair of blocks, or all
+        // of them for `loglik` and the unblocked scalars.
+        let blocks = crate::stream::deco_cfg(spec).expect("validated");
+        let all = spec.features.clone();
+        let cols_of = |slot: usize| -> Vec<String> {
+            if names.is_empty() {
+                return all.clone();
+            }
+            let k = names.len();
+            let m = k + k * (k - 1) / 2;
+            if slot >= 2 * m {
+                return all.clone();
+            }
+            let v = slot % m;
+            let of = |b: usize| -> Vec<String> {
+                blocks.blocks[b].iter().map(|&i| all[i].clone()).collect()
+            };
+            if v < k {
+                return of(v);
+            }
+            let mut p = k;
+            for i in 0..k {
+                for j in (i + 1)..k {
+                    if p == v {
+                        let mut cols = of(i);
+                        cols.extend(of(j));
+                        return cols;
+                    }
+                    p += 1;
+                }
+            }
+            all.clone()
+        };
+        let mut fields = Vec::new();
+        for (mi, (suffix, d)) in decays.iter().enumerate() {
+            for (slot, l) in labels.iter().enumerate() {
+                // The kind is the label without its block suffix, so
+                // `u_tech` and `u_banks` are both `u` to a reader of the
+                // index.
+                let kind = l.split('_').next().unwrap_or(l).to_string();
+                let mut m = FieldMeta::new(format!("{l}{suffix}"), &kind)
+                    .decay(d)
+                    .src(Source::Stat(mi * n_slots + slot));
+                m.columns = Some(cols_of(slot));
+                fields.push(m);
+            }
+            fields.push(
+                FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                    .decay(d)
+                    .src(Source::NEff(mi)),
+            );
+            fields.push(
+                FieldMeta::new(format!("coef{suffix}"), "coef")
+                    .decay(d)
+                    .src(Source::Coef(mi)),
+            );
+        }
+        return fields;
+    }
     // ew_cov is not a regression: its slots are named statistics, not
     // pred/resid pairs, and it has no targets or coefficients.
     if let crate::ModelKind::EwCov {

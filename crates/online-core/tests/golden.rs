@@ -414,6 +414,41 @@ fn seqtest_golden() {
 }
 
 #[test]
+fn deco_golden() {
+    // Slot 1 is `rho`, the level the whole model is for: it reads the
+    // standardiser, the row estimate and the recursion at once. The
+    // `"linear"` dynamics is the busier path -- it runs the `"ew"` recursion
+    // alongside as its target -- so that is the one pinned.
+    let mut m = Deco::new(DecoCfg {
+        n_features: 2,
+        decay: Decay::Halflife(20.0),
+        dynamics: DecoDynamics::Linear,
+        alpha: Some(0.05),
+        beta: Some(0.9),
+        blocks: Vec::new(),
+        min_periods: 3.0,
+    })
+    .unwrap();
+    check("deco", &signature(&mut m, 1), GOLDEN_DECO);
+}
+
+#[test]
+fn deco_loglik_golden() {
+    // Slot 2 is `loglik`, which is the only consumer of the block algebra.
+    let mut m = Deco::new(DecoCfg {
+        n_features: 2,
+        decay: Decay::Halflife(20.0),
+        dynamics: DecoDynamics::Ew,
+        alpha: None,
+        beta: None,
+        blocks: Vec::new(),
+        min_periods: 3.0,
+    })
+    .unwrap();
+    check("deco_loglik", &signature(&mut m, 2), GOLDEN_DECO_LOGLIK);
+}
+
+#[test]
 fn ew_cov_golden() {
     // Slots in emission order: mean x0, mean x1, var x0, var x1, corr x0x1.
     // The correlation is the one that reads every accumulator at once.
@@ -586,6 +621,12 @@ fn ew_class_golden() {
 }
 
 // --- generated; see the module docs ---
+const GOLDEN_DECO: &[f64] = &[
+    -0.05328065158114557,
+    -0.10464551302436545,
+    -0.036211528292942816,
+];
+const GOLDEN_DECO_LOGLIK: &[f64] = &[-2.2831901919538913, -3.7586606055778677, -1.896095909765855];
 const GOLDEN_EW_RIDGE: &[f64] = &[
     0.23958810892448523,
     2.1453177394610767,

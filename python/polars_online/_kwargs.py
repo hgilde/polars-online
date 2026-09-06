@@ -21,6 +21,7 @@ from typing import Required, TypedDict
 
 __all__ = [
     "CommonKwargs",
+    "DecoKwargs",
     "EwClassKwargs",
     "EwCovKwargs",
     "EwridgeKwargs",
@@ -223,6 +224,13 @@ class SeqTestKwargs(ExprKwargs, total=False):
     runtime, too): over an expression the test is column mode on the
     calling column, and a comparison is column mode on the residual
     difference the caller computes."""
+
+
+class DecoKwargs(ExprKwargs, total=False):
+    dynamics: str
+    alpha: float | None
+    beta: float | None
+    blocks: dict[str, list[str]] | None
 
 
 class MarginalKwargs(ExprKwargs, total=False):

@@ -2,12 +2,12 @@
 //! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
 
 use online_core::{
-    ClockState, Conformal, Constraint, Covariance, Decay, EwAutoCorr, EwClass, EwClassCfg,
-    EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, Holt, HoltCfg,
-    INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, Marginal,
-    MarginalCfg, Micro, MicroCfg, ModelState, OnlineModel, P2Quantile, Pa, PaCfg, PaMode,
-    PageHinkley, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd,
-    SgdCfg, SgdLoss, SlotMetrics, State, StateError,
+    ClockState, Conformal, Constraint, Covariance, Decay, Deco, DecoCfg, DecoDynamics, EwAutoCorr,
+    EwClass, EwClassCfg, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg,
+    FtrlLoss, Holt, HoltCfg, INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg, Lasso, LassoCfg,
+    LearningRate, Marginal, MarginalCfg, Micro, MicroCfg, ModelState, OnlineModel, P2Quantile, Pa,
+    PaCfg, PaMode, PageHinkley, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, SeedRule, SeqTest,
+    SeqTestCfg, Sgd, SgdCfg, SgdLoss, SlotMetrics, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +32,7 @@ pub enum AnyModel {
     EwClass(Box<EwClass>),
     SeqTest(Box<SeqTest>),
     Marginal(Box<Marginal>),
+    Deco(Box<Deco>),
 }
 
 /// Bind the boxed model of whichever variant `$self` is, then run `$body`.
@@ -60,6 +61,7 @@ macro_rules! dispatch {
             AnyModel::EwClass($m) => $body,
             AnyModel::SeqTest($m) => $body,
             AnyModel::Marginal($m) => $body,
+            AnyModel::Deco($m) => $body,
         }
     };
 }
@@ -106,7 +108,8 @@ impl AnyModel {
             | AnyModel::KMeans(_)
             | AnyModel::Micro(_)
             | AnyModel::SeqTest(_)
-            | AnyModel::Marginal(_) => 0,
+            | AnyModel::Marginal(_)
+            | AnyModel::Deco(_) => 0,
         }
     }
 
@@ -149,6 +152,9 @@ impl AnyModel {
             // marginal has no coefficients and no outputs: its pairs are
             // read from the state by `Bank::marginal`.
             AnyModel::Marginal(_) => None,
+            // The levels themselves, one row: `coef_fields` names one slot
+            // per correlation value, term `rho`.
+            AnyModel::Deco(m) => Some(vec![m.rho().to_vec()]),
         }
     }
 
@@ -173,6 +179,7 @@ impl AnyModel {
             ModelState::EwClass(_) => Ok(AnyModel::EwClass(Box::new(EwClass::restore(s)?))),
             ModelState::SeqTest(_) => Ok(AnyModel::SeqTest(Box::new(SeqTest::restore(s)?))),
             ModelState::Marginal(_) => Ok(AnyModel::Marginal(Box::new(Marginal::restore(s)?))),
+            ModelState::Deco(_) => Ok(AnyModel::Deco(Box::new(Deco::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -642,6 +649,72 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::Marginal(Box::new(Marginal::new(cfg)?)))
         }
+        ModelKind::Deco { .. } => {
+            let mut cfg = deco_cfg(spec)?;
+            cfg.decay = decay;
+            Ok(AnyModel::Deco(Box::new(Deco::new(cfg)?)))
+        }
+    }
+}
+
+/// A `deco` spec's [`DecoCfg`], with the block *names* resolved to feature
+/// positions. The decay is the caller's (one instance per halflife); every
+/// other check is `DecoCfg::validate`'s, so `Spec::validate` gets the same
+/// messages the model would give.
+pub fn deco_cfg(spec: &Spec) -> Result<DecoCfg, String> {
+    let ModelKind::Deco {
+        dynamics,
+        alpha,
+        beta,
+        blocks,
+    } = &spec.model
+    else {
+        return Err("not a deco spec".into());
+    };
+    let dynamics = match dynamics.as_deref() {
+        None | Some("ew") => DecoDynamics::Ew,
+        Some("linear") => DecoDynamics::Linear,
+        Some(other) => {
+            return Err(format!(
+                "unknown deco dynamics {other:?}; expected \"ew\" or \"linear\""
+            ));
+        }
+    };
+    let blocks = match blocks {
+        None => Vec::new(),
+        Some(named) => named
+            .iter()
+            .map(|(name, cols)| {
+                cols.iter()
+                    .map(|c| {
+                        spec.features.iter().position(|f| f == c).ok_or_else(|| {
+                            format!("deco block {name:?} names {c:?}, which is not a feature")
+                        })
+                    })
+                    .collect::<Result<Vec<usize>, String>>()
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+    };
+    Ok(DecoCfg {
+        n_features: spec.k(),
+        decay: online_core::Decay::Lam(1.0),
+        dynamics,
+        alpha: *alpha,
+        beta: *beta,
+        blocks,
+        min_periods: spec.min_periods_or_default(),
+    })
+}
+
+/// The block names of a `deco` spec, in emission order; empty when it has
+/// none, which is the unblocked model.
+pub fn deco_block_names(spec: &Spec) -> Vec<String> {
+    match &spec.model {
+        ModelKind::Deco {
+            blocks: Some(named),
+            ..
+        } => named.iter().map(|(n, _)| n.clone()).collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -716,7 +789,8 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
         | ModelKind::Micro { .. }
         | ModelKind::EwClass { .. }
         | ModelKind::SeqTest { .. }
-        | ModelKind::Marginal {} => vec![Combo::default()],
+        | ModelKind::Marginal {}
+        | ModelKind::Deco { .. } => vec![Combo::default()],
         ModelKind::Lasso { lasso_path, .. } => lasso_path
             .iter()
             .map(|l| Combo {

@@ -56,6 +56,14 @@
     spec
   coef_index:
     spec
+  deco:
+    name
+    features
+    dynamics = 'ew'
+    alpha = None
+    beta = None
+    blocks = None
+    common
   ew_class:
     name
     features
@@ -251,6 +259,7 @@
   summary
 
 [expression namespace]  # pl.col(...).online.<method>
+  deco
   ew_class
   ew_cov
   ewridge
@@ -651,3 +660,19 @@
     n_eff
   marginal minimal:
     n_eff
+  deco minimal:
+    u
+    rho
+    loglik
+    n_eff
+    coef
+  deco blocked:
+    u_a
+    u_b
+    u_a_b
+    rho_a
+    rho_b
+    rho_a_b
+    loglik
+    n_eff
+    coef

@@ -631,6 +631,37 @@ fn marginal() {
     assert_eq!(r.pred_len, 0);
 }
 
+fn deco_cfg() -> DecoCfg {
+    DecoCfg {
+        n_features: K,
+        decay: decay(),
+        dynamics: DecoDynamics::Ew,
+        alpha: None,
+        beta: None,
+        blocks: Vec::new(),
+        min_periods: 3.0,
+    }
+}
+
+#[test]
+fn deco() {
+    // One number for the whole correlation matrix: no targets, three slots
+    // (`u`, `rho`, `loglik`), and `n_eff` -- the standardiser's accumulated
+    // weight -- on the same recursion as every other model.
+    let m = Deco::new(deco_cfg()).unwrap();
+    assert_eq!(m.n_targets(), 0, "deco has no targets");
+    assert_eq!(m.n_features(), K);
+    assert_eq!(m.n_outputs(), 3, "u, rho, loglik");
+    let r = probe_with(m, 0, Some(&Deco::n_eff));
+    assert_eq!(r.kind, "deco");
+    assert_eq!(r.pred_len, r.n_outputs);
+    assert_eq!(r.n_eff[0], 0.0);
+    assert_eq!(r.n_eff[1], 1.0);
+    assert!((r.n_eff[2] - (0.5f64.powf(1.0 / HALFLIFE) + 1.0)).abs() < 1e-12);
+    assert!((r.after_gap - (r.before_gap * 0.5f64.powi(10) + 1.0)).abs() < 1e-9);
+    assert!(r.roundtrips);
+}
+
 /// The variants of `ModelState` this file probes. A model added to the enum
 /// and not to this list fails here, which is the reminder to write its
 /// `*_cfg()` and probe above (docs/EXTENDING.md).
@@ -651,6 +682,7 @@ const PROBED: &[&str] = &[
     "EwClass",
     "SeqTest",
     "Marginal",
+    "Deco",
 ];
 
 #[test]
@@ -1114,6 +1146,15 @@ fn micro_recovers_from_bounded_extremes() {
 }
 
 #[test]
+fn deco_recovers_from_bounded_extremes() {
+    // A 1e100 row makes every standardised value huge, so `u` is at its
+    // bounds for a while and `loglik` is very negative; the state must stay
+    // finite and the outputs must return to a clean twin's once the row has
+    // decayed away.
+    recovers_from_bounded_extremes(|| Deco::new(deco_cfg()).unwrap(), 0, Recovery::Twin(1e-9));
+}
+
+#[test]
 fn ew_cov_recovers_from_bounded_extremes() {
     recovers_from_bounded_extremes(
         || EwCovModel::new(ew_cov_model_cfg()).unwrap(),
@@ -1420,6 +1461,11 @@ fn marginal_predict_is_the_step() {
     // No slots to compare, so this holds `n_eff` and `extra` alone -- and
     // that `predict` did not move the state.
     predict_is_the_step_without_the_step(|| Marginal::new(marginal_cfg()).unwrap(), 2, false);
+}
+
+#[test]
+fn deco_predict_is_the_step() {
+    predict_is_the_step_without_the_step(|| Deco::new(deco_cfg()).unwrap(), 0, true);
 }
 
 #[test]

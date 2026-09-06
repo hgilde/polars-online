@@ -14,6 +14,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from polars_online import _spec
 from test_golden_pipeline import specs, stream
 
 BOUND = 1e100
@@ -62,8 +63,11 @@ def usable(name: str) -> pl.Expr:
 def columns_of(spec: dict) -> list[tuple[str, str]]:
     """The input columns ``describe`` lists for a spec, with their roles."""
     cols = [(f, "feature") for f in spec.get("features", [])]
-    model = spec["model"]["type"]
-    if model not in ("ew_cov", "kmeans", "micro"):
+    # A model with no target column has its `targets` mirrored from
+    # `features[0]` for the plumbing (E53), and `describe` reports that column
+    # once, as the feature it is. The set is the package's, not a copy: a new
+    # unsupervised model used to fail here as a naming mismatch.
+    if spec["model"]["type"] not in _spec.UNSUPERVISED:
         cols += [(t, "target") for t in spec.get("targets", [])]
     if spec.get("weight"):
         cols.append((spec["weight"], "weight"))

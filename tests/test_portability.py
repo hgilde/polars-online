@@ -448,6 +448,38 @@ class TestOutputSchemaStability:
         assert [f.dtype for f in out.schema["m"].fields] == per_instance * n_instances
 
     @pytest.mark.parametrize("halflife", [50.0, [20.0, 50.0]], ids=["one", "grid"])
+    @pytest.mark.parametrize(
+        "blocks",
+        [None, {"all": ["x0", "x1", "x2"]}, {"a": ["x0", "x1"], "b": ["x2", "x3"]}],
+        ids=["plain", "one_block", "two_blocks"],
+    )
+    def test_deco_names_match_the_realized_struct(self, halflife, blocks):
+        """`deco` predicts no target: `u`, `rho` and `loglik` per correlation
+        value, `n_eff`, and the levels as `coef`."""
+        features = (
+            ["x0", "x1", "x2"]
+            if blocks is None or len(blocks) == 1
+            else [
+                "x0",
+                "x1",
+                "x2",
+                "x3",
+            ]
+        )
+        spec = po.spec.deco(
+            "m",
+            features=features,
+            blocks=blocks,
+            halflife=halflife,
+            min_periods=2.0,
+        )
+        df = _frame().drop("g").with_columns(x2=pl.col("x0") * 0.5, x3=pl.col("x1") * -0.5)
+        out = po.ModelBank([spec]).fit_predict(df)
+        assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
+        idx = po.spec.output_index(spec)
+        assert [f["field"] for f in idx.iter_rows(named=True)] == po.spec.output_fields(spec)
+
+    @pytest.mark.parametrize("halflife", [50.0, [20.0, 50.0]], ids=["one", "grid"])
     @pytest.mark.parametrize("coef_every", [0, 7], ids=["plain", "coef_every"])
     def test_ew_class_names_match_the_realized_struct(self, halflife, coef_every):
         """`ew_class` predicts a label: a `str` class, one `f64` posterior per

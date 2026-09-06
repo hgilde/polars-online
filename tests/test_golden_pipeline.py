@@ -168,6 +168,22 @@ def specs() -> list[dict]:
         ),
         # Only `n_eff` per row; the pairs are read from the state at the end.
         po.spec.marginal("marginal", **common),
+        # One number for the whole correlation matrix. The stream has two
+        # feature columns, so this is the unblocked form; the block path is
+        # pinned by the core golden and by the numpy oracle in test_deco.py.
+        po.spec.deco(
+            "deco",
+            features=["x0", "x1"],
+            dynamics="linear",
+            alpha=0.05,
+            beta=0.9,
+            clock="t",
+            max_dclock=6.0,
+            halflife=25.0,
+            weight="w",
+            group="g",
+            min_periods=4.0,
+        ),
         # No weight and no halflife: a test counts trials and does not forget.
         po.spec.seqtest(
             "seqtest", targets=["y0"], clock="t", max_dclock=6.0, group="g", min_periods=4.0
@@ -491,6 +507,18 @@ GOLDEN: dict[str, float | str | None] = {
     "seqtest_compare.n_eff@25": 12.0,
     "seqtest_compare.n_eff@60": 30.0,
     "seqtest_compare.n_eff@119": 59.0,
+    "deco.u@25": 0.4167923065360934,
+    "deco.u@60": 0.9917268375727508,
+    "deco.u@119": 0.8186317956712209,
+    "deco.rho@25": 0.576990565121172,
+    "deco.rho@60": -0.10467461411897723,
+    "deco.rho@119": 0.1305973026310276,
+    "deco.loglik@25": -3.9973745744499514,
+    "deco.loglik@60": -6.086831238680253,
+    "deco.loglik@119": -2.204162773258124,
+    "deco.n_eff@25": 7.999488060097996,
+    "deco.n_eff@60": 12.473100285951407,
+    "deco.n_eff@119": 14.963784088176922,
 }
 
 

@@ -41,6 +41,7 @@ rather than ignored.
 from polars_online._spec import (
     coef_fields,
     coef_index,
+    deco,
     ew_class,
     ew_cov,
     ewridge,
@@ -71,6 +72,7 @@ __all__ = [
     "kalman",
     "kmeans",
     "lasso",
+    "deco",
     "marginal",
     "micro",
     "output_fields",

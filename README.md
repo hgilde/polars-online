@@ -1398,6 +1398,62 @@ table = bank.marginal("pairs")             # group, instance, feature, target, n
 one_bond = bank.marginal("pairs", group="b0")   # 10 rows: five features by two targets
 ```
 
+### `deco` — one correlation for the whole matrix
+
+A correlation matrix of `m` series has `m(m−1)/2` free entries. A stream
+cannot keep them all moving without O(m²) work a row, and most of them are
+estimated from too little data to be worth moving. `deco` (Engle & Kelly
+2012) replaces them with their average and estimates that, in O(m) a row.
+
+The row is standardised against the pre-row means and variances of an
+`EwDiag`, `r_i = (x_i − m_i)/√v_i`. With `S₁ = Σ r_i` and `S₂ = Σ r_i²` over
+`n` features, the row's estimate is their Lemma 2.3:
+
+```
+u = (S₁² − S₂) / ((n − 1)·S₂)        = mean of r_i·r_j over i ≠ j, over mean r_i²
+```
+
+and the level follows one of two dynamics, on the model's own clock:
+
+```
+"ew":      W' = λW + w,  b = w/W'      ρ' = ρ + b·(u − ρ)
+"linear":  ρ' = (1 − α − β)·ρ̄' + α·u + β·ρ      (ρ̄ the "ew" level)
+```
+
+`"ew"` is `EwCov`'s mean form, so `rho` is exactly what an
+`ew_cov(stats=["mean"])` over the `u` sequence would report. `"linear"` is
+the paper's eq. 21 with correlation targeting, which needs `alpha` and
+`beta` with `alpha + beta < 1`.
+
+| output | meaning |
+|---|---|
+| `u` | this row's own estimate, read before the row is learned from |
+| `rho` | the level as it stood before the row |
+| `loglik` | the row's Gaussian log-density in standardised coordinates under that level |
+| `n_eff` | as everywhere: the weight behind the state before this row |
+
+Two things to know. `u` is a **downward biased** estimate of the
+equicorrelation — the paper says so, and it is a ratio of two averages, so
+`E[u]` is about 0.20 for a true 0.30 at six columns. Use it as a signal that
+moves with the market's correlation, not as the correlation. And `rho` is
+not the same thing as an `ew_cov`'s `corr` over the columns; the mean of a
+ratio is not the ratio of means, and the gap is large.
+
+`blocks` maps a name to a subset of the features. The model then estimates
+one number per block and one per pair of blocks — the useful middle between
+one correlation and all of them — and the outputs become `u_<A>`, `u_<A>_<B>`
+and their `rho_*` twins, with one `loglik` over all of them. Every feature
+must be in exactly one block, and a block needs at least two.
+
+```python
+eq = po.spec.deco("eq", features=["x0", "x1", "x2"],
+                  clock="t", max_dclock=300.0, halflife=500.0)
+blocked = po.spec.deco("blocks", features=["x0", "x1", "x2", "signal_a"],
+                       blocks={"fast": ["x0", "x1"], "slow": ["x2", "signal_a"]},
+                       halflife=500.0)
+out = df.online.fit_predict([eq, blocked])
+```
+
 ## Parallelism
 
 The unit of work is a *stream*: one spec on one group (with no `group`, one
