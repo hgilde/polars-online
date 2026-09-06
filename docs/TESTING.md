@@ -1,6 +1,6 @@
 # Test coverage and testing improvements
 
-Status as of 2026-09-05: **466 Rust tests + 920 pytest functions** (1,700
+Status as of 2026-09-06: **637 Rust tests + 1,236 pytest functions** (2,191
 cases, plus 2 opt-in soak tests), all green, run in CI on three OSes. The
 coverage figures below are from the 2026-08-30 run.
 
@@ -12,6 +12,19 @@ compiled extension, invisible to the Rust instrumentation. The genuinely thin
 spots it does reveal are `online-cli/src/main.rs` (argument plumbing, covered
 instead by the CLI integration tests through `run_config`) and
 `online-core/src/robust.rs` (75%).
+
+**The 2026-09 batch (tasks 45–56) added five models and four helper
+modules**, and its testing pattern is worth naming because it is what found
+the defects: **every recursion got a longhand oracle written from the paper,
+not from the code**, and the oracle was allowed to disagree. It did, six
+times — `deco`'s `rho` was not `ew_cov`'s `corr`, `hmm`'s Π seeding was not
+the prior mean, `corrchange`'s scalar CUSUM was identically zero, `bocpd`
+implemented Algorithm 1's line 6 with the new run holding one row of the old
+regime, `rcov`'s pre-averaging window was off by one, and the `corrchange`
+size study was comparing Gaussian draws against a `t₅` table. Each is
+recorded in `docs/PLAN.md` §11a with what it measured. The one that is easy
+to get wrong: an oracle written *from the implementation* agrees with it by
+construction, which is how `bocpd`'s line 6 survived twelve unit tests.
 
 **Progress on this document's own backlog** (updated as items land):
 
