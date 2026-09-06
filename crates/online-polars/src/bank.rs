@@ -2876,6 +2876,7 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
             | crate::ModelKind::Marginal {}
             | crate::ModelKind::Rcov { .. }
             | crate::ModelKind::CorrChange { .. }
+            | crate::ModelKind::Bocpd { .. }
     ) {
         return Vec::new();
     }
@@ -3248,6 +3249,36 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
                 FieldMeta::new(format!("coef{suffix}"), "coef")
                     .decay(d)
                     .src(Source::Coef(mi)),
+            );
+        }
+        return fields;
+    }
+    // bocpd's value is a posterior over run lengths: per instance, the
+    // changepoint mass, the run-length mode and mean, a predictive mean per
+    // column and the row's log score.
+    if matches!(spec.model, crate::ModelKind::Bocpd { .. }) {
+        let labels = online_core::Bocpd::labels(&spec.features);
+        let n_slots = labels.len();
+        let mut fields = Vec::new();
+        for (mi, (suffix, d)) in decays.iter().enumerate() {
+            for (slot, l) in labels.iter().enumerate() {
+                let at = mi * n_slots + slot;
+                let src = if l == "run_mode" {
+                    Source::Id(at)
+                } else {
+                    Source::Stat(at)
+                };
+                let kind = l.split('_').next().unwrap_or(l);
+                let mut m = FieldMeta::new(format!("{l}{suffix}"), kind)
+                    .decay(d)
+                    .src(src);
+                m.columns = Some(spec.features.clone());
+                fields.push(m);
+            }
+            fields.push(
+                FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                    .decay(d)
+                    .src(Source::NEff(mi)),
             );
         }
         return fields;

@@ -20,6 +20,7 @@ optional at runtime and the test below could not see the required ones.
 from typing import Required, TypedDict
 
 __all__ = [
+    "BocpdKwargs",
     "CommonKwargs",
     "CorrChangeKwargs",
     "DecoKwargs",
@@ -287,3 +288,16 @@ class CorrChangeKwargs(ExprKwargs, total=False):
     norm: str
     seed: int | None
     reset: bool
+
+
+class BocpdKwargs(ExprKwargs, total=False):
+    hazard: float
+    hazard_col: str | None
+    emission: str
+    prior_mean: list[float] | None
+    prior_kappa: float | None
+    prior_nu: float | None
+    prior_scale: list[float] | None
+    robust_beta: float | None
+    truncate: float | None
+    max_run: int | None

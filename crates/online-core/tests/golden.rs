@@ -413,6 +413,28 @@ fn seqtest_golden() {
     );
 }
 
+/// Slot 0 is `p_change`, which reads the whole run-length posterior and
+/// every run's predictive at once.
+#[test]
+fn bocpd_golden() {
+    let mut m = Bocpd::new(BocpdCfg {
+        n_features: 2,
+        hazard: 30.0,
+        hazard_from_row: false,
+        emission: BocpdEmission::Diag,
+        prior_mean: None,
+        prior_kappa: 1.0,
+        prior_nu: Some(2.0),
+        prior_scale: Some(vec![1.0]),
+        robust_beta: 0.0,
+        truncate: 1e-8,
+        max_run: 100,
+        min_periods: 0.0,
+    })
+    .unwrap();
+    check("bocpd", &signature(&mut m, 0), GOLDEN_BOCPD);
+}
+
 /// `corrchange` reports only where a span closes, so its signature is the
 /// statistic at the three span ends a 60-row stream at `horizon = 20` has.
 #[test]
@@ -731,6 +753,11 @@ fn ew_class_golden() {
 }
 
 // --- generated; see the module docs ---
+const GOLDEN_BOCPD: &[f64] = &[
+    0.04569628282014217,
+    0.06001605700856869,
+    0.043037423690500565,
+];
 const GOLDEN_CORRCHANGE: &[f64] = &[0.8309362886202545, 0.7835655084137085, 0.7901008765733364];
 const GOLDEN_HMM: &[f64] = &[-1.2214037865778806, -2.5882597876282167, -0.883627291469858];
 const GOLDEN_RCOV: &[f64] = &[15.118271471980519, -2.2219191583655915, 22.721761773534745];

@@ -903,6 +903,38 @@ pub enum ModelKind {
         #[serde(default)]
         reset: Option<bool>,
     },
+    /// Bayesian online changepoint detection (docs/ENHANCEMENTS.md E61): a
+    /// posterior over how long the current run has lasted, updated one row
+    /// at a time.
+    #[serde(rename = "bocpd")]
+    Bocpd {
+        /// Expected rows between changepoints; `H = 1/hazard`. Default 250.
+        #[serde(default)]
+        hazard: Option<f64>,
+        /// A column carrying the hazard per row, instead of one number.
+        #[serde(default)]
+        hazard_col: Option<String>,
+        /// `"gaussian"`, `"diag"` (default) or `"robust"`.
+        #[serde(default)]
+        emission: Option<String>,
+        #[serde(default)]
+        prior_mean: Option<Vec<f64>>,
+        #[serde(default)]
+        prior_kappa: Option<f64>,
+        #[serde(default)]
+        prior_nu: Option<f64>,
+        /// A scalar for `sI`, or a `d x d` matrix. **Set it from the data's
+        /// scale.**
+        #[serde(default)]
+        prior_scale: Option<Vec<f64>>,
+        /// `"robust"`'s β.
+        #[serde(default)]
+        robust_beta: Option<f64>,
+        #[serde(default)]
+        truncate: Option<f64>,
+        #[serde(default)]
+        max_run: Option<usize>,
+    },
 }
 
 /// The two sides of a `seqtest` comparison, as [`ModelKind::compares`]
@@ -952,6 +984,7 @@ impl ModelKind {
         "rcov",
         "hmm",
         "corrchange",
+        "bocpd",
     ];
 
     pub fn kind_name(&self) -> &'static str {
@@ -976,6 +1009,7 @@ impl ModelKind {
             ModelKind::Rcov { .. } => "rcov",
             ModelKind::Hmm { .. } => "hmm",
             ModelKind::CorrChange { .. } => "corrchange",
+            ModelKind::Bocpd { .. } => "bocpd",
         }
     }
 
@@ -993,6 +1027,7 @@ impl ModelKind {
                 | ModelKind::Rcov { .. }
                 | ModelKind::Hmm { .. }
                 | ModelKind::CorrChange { .. }
+                | ModelKind::Bocpd { .. }
         )
     }
 
@@ -1281,7 +1316,8 @@ impl Spec {
                 // `halflife`/`lam` are refused below rather than ignored.
                 ModelKind::SeqTest { .. }
                 | ModelKind::Rcov { .. }
-                | ModelKind::CorrChange { .. } => {
+                | ModelKind::CorrChange { .. }
+                | ModelKind::Bocpd { .. } => {
                     Ok(vec![(String::new(), Decay::Halflife(f64::INFINITY))])
                 }
                 // For Holt the level halflife *is* the spec's halflife --
@@ -1418,6 +1454,10 @@ impl Spec {
             ModelKind::Hmm { .. } => 0.0,
             // The span or the windows are the gate.
             ModelKind::CorrChange { .. } => 0.0,
+            // On row one the run-length posterior has no run older than
+            // one, so `P(r <= 1)` is 1 whatever the row: one row of
+            // warm-up, and the prior is the gate after it.
+            ModelKind::Bocpd { .. } => 1.0,
             _ => (self.k() + usize::from(self.add_intercept)) as f64,
         }
     }
@@ -2045,6 +2085,23 @@ impl Spec {
             // Every parameter check is `DecoCfg::validate`'s, so that the
             // CLI, the bank and the plugin all get the same messages; only
             // the block *names* are resolved here, where the feature list is.
+            ModelKind::Bocpd { hazard_col, .. } => {
+                if hazard_col.is_some() && self.targets.len() != 1 {
+                    return Err(format!(
+                        "spec {:?}: bocpd hazard_col rides in the targets slot, so the spec must \
+                         have exactly one",
+                        self.name
+                    ));
+                }
+                if self.halflife.is_some() || self.lam.is_some() {
+                    return Err(format!(
+                        "spec {:?}: halflife/lam do not apply to bocpd; the run-length posterior \
+                         is what forgets, and `hazard` is how fast",
+                        self.name
+                    ));
+                }
+                crate::stream::bocpd_cfg(self).map_err(|e| format!("spec {:?}: {e}", self.name))?;
+            }
             ModelKind::CorrChange { scalar, .. } => {
                 if !scalar.unwrap_or(false) && (self.halflife.is_some() || self.lam.is_some()) {
                     return Err(format!(

@@ -1712,6 +1712,82 @@ blocked = po.spec.deco("blocks", features=["x0", "x1", "x2", "signal_a"],
 out = df.online.fit_predict([eq, blocked])
 ```
 
+### `bocpd` — how long has this regime lasted?
+
+Every other detector here answers "has something changed?" with a statistic.
+`bocpd` (Adams & MacKay 2007) keeps a posterior over the **run length** — how
+many rows since the last break — so the answer carries the age of the regime
+with it. "We are forty rows into a regime" is different information from
+"something broke".
+
+Their Algorithm 1, with `H = 1/hazard` and `π_r` run `r`'s posterior
+predictive for this row:
+
+```
+growth:      P(r_t = r+1, x_1:t) = P(r_t-1 = r, x_1:t-1)·π_r·(1 − H)
+changepoint: P(r_t = 0,   x_1:t) = Σ_r P(r_t-1 = r, x_1:t-1)·π_r·H
+```
+
+Each run keeps its own conjugate sufficient statistics, so slot `r` holds
+exactly the `r` rows that hypothesis says came before this one in the run —
+and slot 0 holds none, so its predictive is the prior's. That is what makes
+"a new run starts here" a hypothesis the data can vote on.
+
+| output | meaning |
+|---|---|
+| `p_change` | `P(r_t ≤ 1)` given this row: the alarm |
+| `run_mode` | the most likely run length, before the row — so **`t − run_mode` is the row the run began on** |
+| `run_mean` | the posterior mean run length, before the row |
+| `pred_<f>` | the pre-row predictive mean of each feature, mixed over runs |
+| `logscore` | the row's log predictive density under that mixture |
+| `n_eff` | as everywhere: the weight behind the state before this row |
+
+**`run_mode` is the answer; `p_change` is the alarm.** The two are not the
+same quality of signal. `p_change` is a per-row likelihood ratio, so it is
+spiky and its height depends on the size of the break against the prior
+scale: a ten-fold variance step takes it to 0.83 on the row itself, a
+four-sigma mean shift with a diffuse prior barely lifts it, and a change in
+correlation alone never moves it at all. The run length finds all three, one
+to three rows later, and dates them to the right row.
+
+It is `P(r ≤ 1)` and not `P(r = 0)` because the changepoint branch and the
+growth branch share the same predictive, which makes the normalised mass at
+`r = 0` *exactly* `H` on every row whatever the data. Row one of a group
+reports nothing at all: `P(r ≤ 1)` is 1 there however the row looks.
+
+`prior_scale` is the prior guess at the variance and is the one parameter
+you must set from your data. Too large and the model goes quiet — no row is
+ever surprising under a predictive that wide, and a real break is never
+found. `prior_nu` and `prior_scale` are `2a` and `2b` in the gamma
+parametrisation, which is how Adams and MacKay give their own finance
+example (`a = 1`, `b = 1e-4`, `hazard = 250`).
+
+`emission="diag"` (the default) is a normal-inverse-gamma per feature;
+`"gaussian"` is a normal-inverse-Wishart over all of them, which costs
+`O(runs·d²)` a row and is the one that can see a break in the *correlation*
+with the marginals unchanged.
+
+`emission="robust"` weights each row's contribution by
+`(π(x)/π(mode))**robust_beta` — in what the run learns *and* in the message
+it passes on. A 20-σ row is then atypical under every run, every tempered
+likelihood is about 1, and nothing moves. Without it that one row is a
+changepoint (`p_change` 0.91) and the run it starts carries the outlier in
+its mean. The knob is a trade: a whole new regime is a run of individually
+forgiven rows, so at `robust_beta` above about 0.2 nothing is ever detected
+again. The default of 0.1 ignores the outlier and still dates a four-sigma
+shift to the right row.
+
+```python
+b = po.spec.bocpd("regime", features=["ret"], hazard=250.0,
+                  prior_nu=2.0, prior_scale=[2e-4], group="bond_id")
+out = df.online.fit_predict([b]).unnest("regime")
+run_started_at = pl.int_range(pl.len()) - pl.col("run_mode")
+```
+
+`hazard_col` reads the hazard per row from a column, declared in the target
+slot the way a weight is — a wider prior on a quiet session, a narrower one
+across a data release.
+
 ## Parallelism
 
 The unit of work is a *stream*: one spec on one group (with no `group`, one

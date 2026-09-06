@@ -704,7 +704,7 @@ note, not a task.
       and detection delay of the window kind on task 52's streams in
       `docs/REGIMES.md`. The Wied–Galeano (2013) sequential detector is a
       §10 follow-up, not part of this task.
-- [ ] 55. **`bocpd`** (E61): Adams–MacKay run-length recursion with
+- [x] 55. **`bocpd`** (E61): Adams–MacKay run-length recursion with
       normal-inverse-Wishart, per-feature normal-inverse-gamma and the robust
       diffusion-score-matching posterior; tail truncation. Acceptance: a
       longhand `numpy` Algorithm 1 on a univariate stream; a variance step
@@ -2963,6 +2963,68 @@ notes.
   single 20-σ row where the Gaussian one restarts; a zero-weight row leaving
   the posterior untouched; the hazard column; chunk invariance and save/load
   through the sweeps; `MINIMAL["bocpd"] = {"features": ["x0"]}`.
+
+*Task 55 as built, 2026-09-06.*
+
+- *`p_r0` is not a quantity.* Algorithm 1 puts the **same** predictive on
+  the growth and the changepoint branch, so the normalised mass at `r = 0`
+  is `H·Σ Jπ / Σ Jπ` = **exactly the hazard, on every row, whatever the
+  data**. §11a asked for it and expected it to spike; it cannot. What ships
+  is `p_change = P(rₜ ≤ 1)`, which adds the run that started one row ago —
+  the one evaluated against the *prior* predictive on the break row.
+- *And `run_mode` is the output to read.* It is the run length before the
+  row, so **`t − run_mode` is the row the current run began on**, and that
+  is what a caller wants. Measured on three fixtures: a tenfold variance
+  step, a four-sigma mean shift and a correlation-only break are all dated
+  to the right row within one to three rows of it, while `p_change` reaches
+  0.83 on the first, barely lifts on the second and never moves on the
+  third. The docstring, the README and the module docs all lead with the
+  run length and call `p_change` the alarm.
+- *Line 6 of Algorithm 1 was implemented wrongly first, and it matters.*
+  `ν⁽ʳ⁺¹⁾_{t+1} = ν⁽ʳ⁾_t + u(xₜ)` with `ν⁽⁰⁾_{t+1} = ν_prior`: slot `j`
+  holds exactly the `j` rows the hypothesis `rₜ = j` says precede the next
+  row, so the slot pushed at the front holds **nothing**. Letting it take
+  the row too puts one row of the old regime inside every "brand new run".
+  The symptom was subtle — every run's estimated start was one row early,
+  and a 20-σ row produced `p_change = 0.09` instead of `0.91`, because the
+  hypothesis that it started a run was evaluated with the row before it
+  already in the run. The longhand oracle had been written from the code and
+  so agreed with it; the ANSWERS quotation of line 6 is what settled it.
+  Both the Rust and the numpy oracles now write line 6 out.
+- *Each run carries its own length.* The slot index stops being the run
+  length the moment `truncate` drops a run from the middle of the vector or
+  `max_run` folds the tail, and it never was one under a fractional row
+  weight or the robust emission's. `Run.len` counts rows; `run_mode` and
+  `run_mean` read it.
+- *`min_periods` gates the report, never the update.* The first version
+  returned early before computing the recursion, so row one of every group
+  was silently dropped from the model. The default is `1.0`, which nulls
+  exactly that row: `P(r ≤ 1)` is 1 there whatever the data, since no run is
+  older than one.
+- *The robust emission tempers the message as well as the statistics.*
+  Weighting only what a run learns leaves the outlier declaring a
+  changepoint (measured: `p_change` 0.85) with clean statistics behind it,
+  which is the worst of both. Using the same `w(x) = (π/π(mode))^β` on the
+  likelihood in the recursion makes a row that is atypical for *every* run
+  multiply every joint by about 1, so nothing moves at all. That is the
+  plan's acceptance test, and it now passes.
+- *`robust_beta` is a trade, and 0.1 is the measured default.* A whole new
+  regime is a run of individually forgiven rows, so tempering too hard blinds
+  the model: at 0.05 and 0.1 a four-sigma shift is still found within five
+  rows and dated to within one, at 0.3, 0.5 and 1.0 it is never found at
+  all. Both halves are pinned, so the note cannot go stale.
+- *`prior_scale` too large is silence, not false alarms.* The plan said to
+  set it from the data's scale; measured, the failure mode is that a
+  predictive that wide finds no row surprising, and a real break is never
+  detected (a four-sigma break on variance-1e-6 data: dated exactly at
+  `prior_scale = 1e-6`, invisible from 1e-3 up).
+- *`hazard_col` is explicit.* The hazard rides in the target slot, and a
+  `hazard_from_row` flag in the config says to read it — without one, a
+  `bocpd` in a bank with a regression target read the target as a hazard and
+  poisoned itself with a NaN.
+- *The default emission is `"diag"`.* `O(runs·d)` against `O(runs·d²)`, and
+  `"gaussian"` is what to reach for when the break is in the correlation
+  with the marginals unchanged, which is a test in `tests/test_bocpd.py`.
 
 *Task 56 — the schema-5 fixture and the close of the batch.*
 

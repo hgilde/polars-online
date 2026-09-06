@@ -29,6 +29,7 @@ EXPR_SUPPLIES = {"name", "targets", "features", "group", "group_close", "label"}
 # checker does too (test_seqtest.py::test_the_expression_refuses_a_comparison).
 EXPR_OMITS: dict[str, set[str]] = {"seqtest": {"a", "b", "a_suffix", "b_suffix"}}
 NAMESPACE_METHODS = [
+    "bocpd",
     "corrchange",
     "deco",
     "hmm",

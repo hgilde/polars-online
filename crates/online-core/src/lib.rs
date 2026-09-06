@@ -53,6 +53,7 @@
 //! into capped, session-aware deltas, and every model decays by them.
 //! See `docs/PLAN.md` §2 and §4.
 
+mod bocpd;
 mod clock;
 mod cluster;
 mod conformal;
@@ -81,6 +82,7 @@ mod sgd;
 mod solve;
 mod stats;
 
+pub use bocpd::{Bocpd, BocpdCfg, BocpdEmission};
 pub use clock::{ClockAdvance, ClockCfg, ClockState, Decay, OnClockReset, SessionGap};
 pub use cluster::{
     ClusterSummary, FeatureMoments, KMeans, KMeansCfg, LINK_FACTOR, LINK_FLOOR, LINK_QUANTILE,

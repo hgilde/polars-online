@@ -810,6 +810,40 @@ fn corrchange() {
     assert!(r.roundtrips);
 }
 
+fn bocpd_cfg() -> BocpdCfg {
+    BocpdCfg {
+        n_features: K,
+        hazard: 50.0,
+        hazard_from_row: false,
+        emission: BocpdEmission::Diag,
+        prior_mean: None,
+        prior_kappa: 1.0,
+        prior_nu: Some(2.0),
+        prior_scale: Some(vec![1.0]),
+        robust_beta: 0.0,
+        truncate: 1e-6,
+        max_run: 200,
+        min_periods: 0.0,
+    }
+}
+
+#[test]
+fn bocpd() {
+    // A posterior over run lengths, not a fit: no targets, `4 + d` slots,
+    // and `n_eff` the plain weight sum -- the recursion does not decay, so
+    // a clock gap changes nothing.
+    let m = Bocpd::new(bocpd_cfg()).unwrap();
+    assert_eq!(m.n_targets(), 0);
+    assert_eq!(m.n_features(), K);
+    assert_eq!(m.n_outputs(), 4 + K);
+    let r = probe_with(m, 0, Some(&Bocpd::n_eff));
+    assert_eq!(r.kind, "bocpd");
+    assert_eq!(r.pred_len, r.n_outputs);
+    assert_eq!(r.n_eff, vec![0.0, 1.0, 2.0, 40.0]);
+    assert_eq!(r.after_gap, r.before_gap + 1.0, "no decay over a gap");
+    assert!(r.roundtrips);
+}
+
 /// The variants of `ModelState` this file probes. A model added to the enum
 /// and not to this list fails here, which is the reminder to write its
 /// `*_cfg()` and probe above (docs/EXTENDING.md).
@@ -834,6 +868,7 @@ const PROBED: &[&str] = &[
     "Rcov",
     "Hmm",
     "CorrChange",
+    "Bocpd",
 ];
 
 #[test]
@@ -1619,6 +1654,29 @@ fn marginal_predict_is_the_step() {
     // No slots to compare, so this holds `n_eff` and `extra` alone -- and
     // that `predict` did not move the state.
     predict_is_the_step_without_the_step(|| Marginal::new(marginal_cfg()).unwrap(), 2, false);
+}
+
+#[test]
+fn bocpd_predict_is_the_step() {
+    predict_is_the_step_without_the_step(|| Bocpd::new(bocpd_cfg()).unwrap(), 0, true);
+}
+
+#[test]
+fn bocpd_recovers_from_bounded_extremes() {
+    // A 1e100 row is a changepoint by any reading, and the posterior is
+    // path-dependent, so a clean twin is not the criterion. What must hold
+    // is a finite state, a run posterior that stays a distribution, and a
+    // model that goes on reporting.
+    let rows = bounded_script(0);
+    let mut m = Bocpd::new(bocpd_cfg()).unwrap();
+    for r in &rows {
+        let step = m.step(&r.x, &r.y, 1.0, r.w);
+        assert!(step.n_eff.is_finite());
+        let p = m.run_posterior();
+        assert!(p.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)));
+        assert!((p.iter().sum::<f64>() - 1.0).abs() < 1e-9);
+    }
+    assert!(m.run_posterior().len() <= 200, "max_run holds");
 }
 
 #[test]

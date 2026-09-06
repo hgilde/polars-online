@@ -2,13 +2,14 @@
 //! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
 
 use online_core::{
-    ChangeNorm, ClockState, Conformal, Constraint, CorrChange, CorrChangeCfg, CorrChangeKind,
-    Covariance, Decay, Deco, DecoCfg, DecoDynamics, EwAutoCorr, EwClass, EwClassCfg, EwCovCfg,
-    EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, Hmm, HmmCfg, Holt,
-    HoltCfg, INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate,
-    Marginal, MarginalCfg, Micro, MicroCfg, ModelState, OnlineModel, P2Quantile, Pa, PaCfg, PaMode,
-    PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg, Robust, RobustCfg, RobustLoss, SeedRule,
-    SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss, SlotMetrics, State, StateError,
+    Bocpd, BocpdCfg, BocpdEmission, ChangeNorm, ClockState, Conformal, Constraint, CorrChange,
+    CorrChangeCfg, CorrChangeKind, Covariance, Decay, Deco, DecoCfg, DecoDynamics, EwAutoCorr,
+    EwClass, EwClassCfg, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg,
+    FtrlLoss, Hmm, HmmCfg, Holt, HoltCfg, INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg, Lasso,
+    LassoCfg, LearningRate, Marginal, MarginalCfg, Micro, MicroCfg, ModelState, OnlineModel,
+    P2Quantile, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg, Robust,
+    RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss, SlotMetrics, State,
+    StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -37,6 +38,7 @@ pub enum AnyModel {
     Rcov(Box<Rcov>),
     Hmm(Box<Hmm>),
     CorrChange(Box<CorrChange>),
+    Bocpd(Box<Bocpd>),
 }
 
 /// Bind the boxed model of whichever variant `$self` is, then run `$body`.
@@ -69,6 +71,7 @@ macro_rules! dispatch {
             AnyModel::Rcov($m) => $body,
             AnyModel::Hmm($m) => $body,
             AnyModel::CorrChange($m) => $body,
+            AnyModel::Bocpd($m) => $body,
         }
     };
 }
@@ -125,7 +128,8 @@ impl AnyModel {
             | AnyModel::Marginal(_)
             | AnyModel::Deco(_)
             | AnyModel::Rcov(_)
-            | AnyModel::CorrChange(_) => 0,
+            | AnyModel::CorrChange(_)
+            | AnyModel::Bocpd(_) => 0,
         }
     }
 
@@ -183,6 +187,8 @@ impl AnyModel {
             ),
             // corrchange has no coefficients: its outputs are the test.
             AnyModel::CorrChange(_) => None,
+            // bocpd has none either: its value is the run-length posterior.
+            AnyModel::Bocpd(_) => None,
         }
     }
 
@@ -213,6 +219,7 @@ impl AnyModel {
             ModelState::CorrChange(_) => {
                 Ok(AnyModel::CorrChange(Box::new(CorrChange::restore(s)?)))
             }
+            ModelState::Bocpd(_) => Ok(AnyModel::Bocpd(Box::new(Bocpd::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -703,7 +710,59 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             cfg.decay = decay;
             Ok(AnyModel::CorrChange(Box::new(CorrChange::new(cfg)?)))
         }
+        // No decay: the run-length posterior is what forgets.
+        ModelKind::Bocpd { .. } => Ok(AnyModel::Bocpd(Box::new(Bocpd::new(bocpd_cfg(spec)?)?))),
     }
+}
+
+/// A `bocpd` spec's [`BocpdCfg`]; every parameter check is the model's.
+pub fn bocpd_cfg(spec: &Spec) -> Result<BocpdCfg, String> {
+    let ModelKind::Bocpd {
+        hazard,
+        hazard_col,
+        emission,
+        prior_mean,
+        prior_kappa,
+        prior_nu,
+        prior_scale,
+        robust_beta,
+        truncate,
+        max_run,
+    } = &spec.model
+    else {
+        return Err("not a bocpd spec".into());
+    };
+    Ok(BocpdCfg {
+        n_features: spec.k(),
+        hazard: hazard.unwrap_or(250.0),
+        hazard_from_row: hazard_col.is_some(),
+        emission: match emission.as_deref() {
+            None | Some("diag") => BocpdEmission::Diag,
+            Some("gaussian") => BocpdEmission::Gaussian,
+            Some("robust") => BocpdEmission::Robust,
+            Some(other) => {
+                return Err(format!(
+                    "unknown bocpd emission {other:?}; expected \"gaussian\", \"diag\" or \
+                     \"robust\""
+                ));
+            }
+        },
+        prior_mean: prior_mean.clone(),
+        prior_kappa: prior_kappa.unwrap_or(1.0),
+        prior_nu: *prior_nu,
+        prior_scale: prior_scale.clone(),
+        // Measured (`bocpd.rs`, `a_sustained_shift_survives_a_small_beta_
+        // _and_not_a_large_one`): 0.1 ignores a 20-sigma row outright and
+        // still finds a real shift within five rows; above ~0.2 nothing is
+        // ever detected.
+        robust_beta: robust_beta.unwrap_or(match emission.as_deref() {
+            Some("robust") => 0.1,
+            _ => 0.0,
+        }),
+        truncate: truncate.unwrap_or(1e-6),
+        max_run: max_run.unwrap_or(10_000),
+        min_periods: spec.min_periods_or_default(),
+    })
 }
 
 /// A `corrchange` spec's [`CorrChangeCfg`]; every parameter check is the
@@ -1020,7 +1079,8 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
         | ModelKind::Deco { .. }
         | ModelKind::Rcov { .. }
         | ModelKind::Hmm { .. }
-        | ModelKind::CorrChange { .. } => vec![Combo::default()],
+        | ModelKind::CorrChange { .. }
+        | ModelKind::Bocpd { .. } => vec![Combo::default()],
         ModelKind::Lasso { lasso_path, .. } => lasso_path
             .iter()
             .map(|l| Combo {

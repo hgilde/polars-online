@@ -65,6 +65,7 @@ pub enum ModelState {
     Rcov(Box<crate::Rcov>),
     Hmm(Box<crate::Hmm>),
     CorrChange(Box<crate::CorrChange>),
+    Bocpd(Box<crate::Bocpd>),
 }
 
 #[derive(Debug, Error)]
@@ -103,6 +104,7 @@ impl ModelState {
             ModelState::Rcov(_) => "rcov",
             ModelState::Hmm(_) => "hmm",
             ModelState::CorrChange(_) => "corrchange",
+            ModelState::Bocpd(_) => "bocpd",
         }
     }
 }

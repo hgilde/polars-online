@@ -200,6 +200,7 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
 
 
 __all__ = [
+    "bocpd",
     "corrchange",
     "deco",
     "hmm",
@@ -1637,6 +1638,108 @@ def deco(
 
 
 @_checked
+def bocpd(
+    name: str,
+    *,
+    features: list[str],
+    hazard: float = 250.0,
+    hazard_col: str | None = None,
+    emission: str = "diag",
+    prior_mean: list[float] | None = None,
+    prior_kappa: float | None = None,
+    prior_nu: float | None = None,
+    prior_scale: list[float] | None = None,
+    robust_beta: float | None = None,
+    truncate: float | None = None,
+    max_run: int | None = None,
+    **common: Unpack[CommonKwargs],
+) -> dict[str, Any]:
+    """Bayesian online changepoint detection (Adams & MacKay 2007;
+    ENHANCEMENTS E61, Task 55).
+
+    Every other detector here answers "has something changed?" with a
+    statistic. This one keeps a **posterior over how long the current run
+    has lasted**, so the answer carries the age of the regime with it:
+    "we are 40 rows into a regime" is different information from "something
+    broke".
+
+    Their Algorithm 1, in log space, with ``H = 1/hazard``::
+
+        growth:      P(r_t = r+1, x_1:t) = P(r_t-1 = r, x_1:t-1) pi_r (1 - H)
+        changepoint: P(r_t = 0,   x_1:t) = sum_r P(r_t-1 = r, x_1:t-1) pi_r H
+
+    where ``pi_r`` is run ``r``'s posterior predictive for this row. Slot
+    ``r`` keeps the conjugate statistics of exactly the ``r`` rows that
+    hypothesis says preceded this one in the run -- so slot 0 holds none and
+    its predictive is the prior's, which is what makes "a new run starts
+    here" something the data can vote on. A row costs ``O(runs * d^2)``, and
+    the run vector would grow by one every row, so runs below ``truncate``
+    of the mass are dropped and ``max_run`` folds the tail into the last
+    kept run.
+
+    Outputs ``p_change``, ``run_mode`` and ``run_mean``, ``pred_<f>`` (the
+    pre-row predictive mean), ``logscore`` (the row's log predictive
+    density) and ``n_eff``. ``halflife``/``lam`` are refused: the run-length
+    posterior is what forgets and ``hazard`` is how fast.
+
+    **``run_mode`` is the answer and ``p_change`` is the alarm**, and they
+    are not the same quality of signal. ``run_mode`` is the run length
+    before the row, so ``t - run_mode`` is the row the current run began on.
+    ``p_change`` is a per-row likelihood ratio: spiky, and as big as the
+    break is against the prior scale. Measured -- a tenfold variance step
+    takes it to 0.83 on the row itself; a four-sigma mean shift under a
+    diffuse prior barely lifts it; a change in correlation alone never moves
+    it. The run length finds all three within a few rows and dates them to
+    the right row.
+
+    It is ``P(r_t <= 1)`` and not ``P(r_t = 0)`` because the changepoint
+    branch and the growth branch share the same predictive, which makes the
+    normalised mass at ``r = 0`` *exactly* ``H`` on every row whatever the
+    data. Row one of a group reports nothing: ``P(r <= 1)`` is 1 there
+    however the row looks.
+
+    ``emission="diag"`` (the default) is a normal-inverse-gamma per feature
+    and ``"gaussian"`` a normal-inverse-Wishart over all of them; both are
+    exact conjugate updates, and the second is the one that can see a break
+    in the *correlation* with the marginals unchanged. ``prior_scale`` is
+    the prior guess at the variance and is the one parameter to set from
+    your data: too large and the model goes quiet, because no row is ever
+    surprising under a predictive that wide and a real break is never found.
+    ``prior_nu`` and ``prior_scale`` are ``2a`` and ``2b`` in the gamma
+    parametrisation, which is how Adams and MacKay give their own finance
+    example (``a = 1``, ``b = 1e-4``, ``hazard = 250``).
+
+    ``emission="robust"`` weights each row by ``(pi(x)/pi(mode))**robust_beta``
+    -- in what the run learns *and* in the message it passes on, so a
+    20-sigma row is atypical under every run, every tempered likelihood is
+    about 1, and nothing moves. Without it that one row *is* a changepoint
+    (``p_change`` 0.91) and the run it starts carries the outlier in its
+    mean. The knob is a trade: a whole new regime is a run of individually
+    forgiven rows, so above about ``robust_beta = 0.2`` nothing is ever
+    detected again. The default, 0.1, ignores the outlier and still dates a
+    four-sigma shift to the right row.
+
+    ``hazard_col`` reads the hazard per row from a column (declared in the
+    targets slot, the way a weight is) instead of one number.
+    """
+    model: dict[str, Any] = {
+        "type": "bocpd",
+        "hazard": hazard,
+        "hazard_col": hazard_col,
+        "emission": emission,
+        "prior_mean": prior_mean,
+        "prior_kappa": prior_kappa,
+        "prior_nu": prior_nu,
+        "prior_scale": prior_scale,
+        "robust_beta": robust_beta,
+        "truncate": truncate,
+        "max_run": max_run,
+    }
+    targets = [hazard_col] if hazard_col is not None else [features[0]]
+    return _common(name, model, targets=targets, features=features, **common)
+
+
+@_checked
 def corrchange(
     name: str,
     *,
@@ -1929,6 +2032,8 @@ def rcov(
 #: plumbing, and nothing residual-based applies to them. ``ew_class`` is
 #: not one -- its label column travels as the target -- though it predicts
 #: no number either, and refuses the residual switches the same way.
-UNSUPERVISED = frozenset({"ew_cov", "kmeans", "micro", "deco", "rcov", "hmm", "corrchange"})
+UNSUPERVISED = frozenset(
+    {"ew_cov", "kmeans", "micro", "deco", "rcov", "hmm", "corrchange", "bocpd"}
+)
 
 _NUMERIC_KEYS = _numeric_keys()

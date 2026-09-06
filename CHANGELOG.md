@@ -16,6 +16,30 @@ carries breaking changes.
 
 ### Added
 
+- **`bocpd`: how long has this regime lasted?** (`docs/ENHANCEMENTS.md`
+  E61, task 55). Adams & MacKay's run-length posterior, their Algorithm 1 in
+  log space, with a normal-inverse-gamma (`emission="diag"`) or
+  normal-inverse-Wishart (`"gaussian"`) conjugate emission per run, a
+  hazard that can be read per row from a column, and `truncate` / `max_run`
+  to keep the run vector finite. Outputs `p_change`, `run_mode`, `run_mean`,
+  `pred_<f>`, `logscore` and `n_eff`.
+
+  **`run_mode` is the answer and `p_change` is the alarm.** `run_mode` is
+  the pre-row run length, so `t − run_mode` is the row the current run began
+  on; a variance step, a mean shift and a correlation break are all dated to
+  the right row within a few rows of it. `p_change` is `P(r ≤ 1)` — `P(r =
+  0)` is exactly the hazard on every row whatever the data, which is why it
+  is not what is reported — and it is a per-row likelihood ratio, so it
+  spikes on a variance step (0.83) and barely lifts on a mean shift.
+
+  `emission="robust"` tempers each row by `(π(x)/π(mode))**robust_beta` in
+  what the run learns *and* in the message it passes, so one 20-σ row is a
+  non-event where the plain model calls it a changepoint and swallows it.
+  The knob trades against detection: above about 0.2 nothing is ever found,
+  and the default is 0.1. This is a β-power weighting and **not** the
+  diffusion-score-matching posterior of Altamirano, Briol & Knoblauch
+  (2023), which stays a follow-up.
+
 - **`corrchange`: has the correlation structure changed?**
   (`docs/ENHANCEMENTS.md` E59, task 54). Two tests. `kind="monitor"` is Wied,
   Krämer & Dehling's **closed-sample** constancy test run over consecutive
@@ -30,21 +54,6 @@ carries breaking changes.
 
   The sequential form with a boundary function is Wied & Galeano (2013),
   unread here; it stays an ENHANCEMENTS §10 follow-up.
-
-- **`corrchange`: has the correlation structure changed?**
-  (`docs/ENHANCEMENTS.md` E59, task 54). Two tests. `kind="monitor"` is Wied,
-  Kramer & Dehling's **closed-sample** constancy test run over consecutive
-  spans of `horizon` rows, with the paper's `D`, Kolmogorov critical values
-  computed from the series (1.3581 at 5%), and Bonferroni over the pairs --
-  and its size and power held to the paper's own Tables 1 and 2 rather than
-  to numbers this implementation produced. `scalar=True` runs the same CUSUM
-  on `deco`'s equicorrelation, which is one statistic however many columns.
-  `kind="window"` measures how big a change is between two adjacent windows,
-  against a fixed threshold or a **permutation** quantile -- not a sign-flip
-  null, which leaves every correlation exactly where it was.
-
-  The sequential form with a boundary function is Wied & Galeano (2013),
-  unread here; it stays an ENHANCEMENTS section 10 follow-up.
 
 - **`hmm`: a Gaussian hidden Markov model, filtered online**
   (`docs/ENHANCEMENTS.md` E60, task 53). `ew_class` without the labels:

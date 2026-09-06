@@ -55,6 +55,7 @@ MINIMAL: dict[str, dict[str, object]] = {
         "halflife": None,
         "horizon": 20,
     },
+    "bocpd": {"targets": None, "features": ["x0", "x1"], "halflife": None},
     "hmm": {
         "targets": None,
         "features": ["x0", "x1"],
@@ -76,7 +77,8 @@ MINIMAL: dict[str, dict[str, object]] = {
 #: ``ew_class`` (a label), ``seqtest`` (evidence), ``marginal`` (pairwise
 #: moments, read from the state), ``deco`` (an equicorrelation), ``rcov``
 #: (a block's realised covariance, read at the group's close), ``hmm`` (a
-#: hidden state), ``corrchange`` (a test statistic) -- sit them out.
+#: hidden state), ``corrchange`` (a test statistic), ``bocpd`` (a posterior
+#: over run lengths) -- sit them out.
 REGRESSIONS = frozenset(MINIMAL) - {
     "ew_cov",
     "kmeans",
@@ -88,6 +90,7 @@ REGRESSIONS = frozenset(MINIMAL) - {
     "rcov",
     "hmm",
     "corrchange",
+    "bocpd",
 }
 
 

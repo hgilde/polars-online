@@ -39,6 +39,7 @@ rather than ignored.
 """
 
 from polars_online._spec import (
+    bocpd,
     coef_fields,
     coef_index,
     corrchange,
@@ -76,6 +77,7 @@ __all__ = [
     "kalman",
     "kmeans",
     "lasso",
+    "bocpd",
     "corrchange",
     "deco",
     "marginal",

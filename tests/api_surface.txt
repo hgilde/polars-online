@@ -54,6 +54,20 @@
   group_close = None
 
 [spec constructors]  # keyword names AND defaults are API
+  bocpd:
+    name
+    features
+    hazard = 250.0
+    hazard_col = None
+    emission = 'diag'
+    prior_mean = None
+    prior_kappa = None
+    prior_nu = None
+    prior_scale = None
+    robust_beta = None
+    truncate = None
+    max_run = None
+    common
   coef_fields:
     spec
   coef_index:
@@ -312,6 +326,7 @@
   summary
 
 [expression namespace]  # pl.col(...).online.<method>
+  bocpd
   corrchange
   deco
   ew_class
@@ -771,6 +786,14 @@
     lagcorr_x0_x1_l5
     lagcorr_x1_x0_l5
     lagcorr_x1_x1_l5
+    n_eff
+  bocpd minimal:
+    p_change
+    run_mode
+    run_mean
+    pred_x0
+    pred_x1
+    logscore
     n_eff
   corrchange minimal:
     stat

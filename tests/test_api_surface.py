@@ -192,6 +192,7 @@ def describe_api() -> str:
                 halflife=100.0,
             ),
         ),
+        ("bocpd", dict(features=["x0", "x1"], prior_scale=[1.0])),
         ("corrchange", dict(features=["x0", "x1"], horizon=100)),
         (
             "hmm",
