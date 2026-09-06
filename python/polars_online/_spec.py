@@ -254,6 +254,7 @@ def _common(
     drift_action: str = "flag",
     label_delay: float | None = None,
     group: str | None = None,
+    group_close: str | None = None,
 ) -> dict[str, Any]:
     spec = {
         "name": name,
@@ -288,6 +289,7 @@ def _common(
         "drift_action": drift_action,
         "label_delay": label_delay,
         "group": group,
+        "group_close": group_close,
     }
     validate_spec(_json(spec))
     return spec

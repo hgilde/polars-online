@@ -98,6 +98,44 @@ def _save_path(save_state: State | None) -> str | None:
     return path
 
 
+_WRITE: dict[str, str] = {
+    "parquet": "write_parquet",
+    "ipc": "write_ipc",
+    "csv": "write_csv",
+    "ndjson": "write_ndjson",
+}
+
+
+def _closed_path(closed_groups: State | None, specs: Iterable[dict[str, Any]]) -> str | None:
+    """The ``closed_groups`` sidecar path, checked while the plan is built:
+    a directory that is not there, an extension that names no format, and a
+    bank with nothing to close are all reported now (E54)."""
+    if closed_groups is None:
+        return None
+    path = os.fspath(closed_groups)
+    parent = os.path.dirname(os.path.abspath(path))
+    if not os.path.isdir(parent):
+        msg = f"closed_groups: {parent!r} is not a directory"
+        raise FileNotFoundError(msg)
+    # Raises ValueError naming the extensions it knows.
+    _native.format_of_path(path)
+    if not any(spec.get("group_close") for spec in specs):
+        msg = (
+            "closed_groups names a file but no spec closes groups; add "
+            'group_close = "monotone" or "session" to the spec whose groups should be emitted'
+        )
+        raise ValueError(msg)
+    return path
+
+
+def _write_closed(path: str, frames: list[pl.DataFrame], schema: pl.DataFrame) -> None:
+    """The drained closed rows as one file, in the format the extension
+    names. An empty run writes the empty frame with the schema, as an empty
+    output does."""
+    df = pl.concat(frames) if frames else schema
+    getattr(df, _WRITE[_native.format_of_path(path)])(path)
+
+
 def _spec_columns(specs: Iterable[dict[str, Any]]) -> set[str]:
     cols: set[str] = set()
     for spec in specs:
@@ -115,6 +153,7 @@ def _source(
     step: Callable[[ModelBank, pl.DataFrame], pl.DataFrame],
     chunk_rows: int | None,
     save_state: State | None = None,
+    closed_groups: State | None = None,
 ) -> pl.LazyFrame:
     """``lf`` streamed through ``step`` on a bank from ``make_bank``, as a plan."""
     if chunk_rows is not None and chunk_rows < 1:
@@ -129,6 +168,8 @@ def _source(
     bank = make_bank()
     schema = step(bank, pl.DataFrame(schema=in_schema)).schema
     needed = _spec_columns(bank.specs)
+    closed_path = _closed_path(closed_groups, bank.specs)
+    closed_schema = bank.closed_groups()
 
     def source(
         with_columns: list[str] | None,
@@ -154,11 +195,16 @@ def _source(
             plan = plan.select([c for c in in_schema if c in wanted])
         bank = make_bank()
         seen = 0
+        closed: list[pl.DataFrame] = []
         for chunk in plan.collect_batches(chunk_size=rows, maintain_order=True):
             if n_rows is not None:
                 chunk = chunk.head(n_rows - seen)
             out = step(bank, chunk)
             seen += chunk.height
+            if closed_path is not None:
+                # Drained per chunk so the bank's queue stays bounded; the
+                # file is written once, at the end, as `po.run` writes it.
+                closed.append(bank.closed_groups())
             if predicate is not None:
                 out = out.filter(predicate)
             if with_columns is not None:
@@ -175,6 +221,8 @@ def _source(
         # drains a Python source first), so the state is written even then;
         # `po.run` saves after its output is committed, for callers who need
         # the two tied together.
+        if closed_path is not None:
+            _write_closed(closed_path, closed, closed_schema)
         if save_path is not None:
             bank.save(save_path)
 
@@ -187,10 +235,16 @@ def _fit_predict_lazy(
     load_state: State | None,
     save_state: State | None,
     chunk_rows: int | None,
+    closed_groups: State | None = None,
 ) -> pl.LazyFrame:
     specs = list(specs) if specs is not None else None
     return _source(
-        lf, _bank(specs, load_state, "fit_predict"), ModelBank.fit_predict, chunk_rows, save_state
+        lf,
+        _bank(specs, load_state, "fit_predict"),
+        ModelBank.fit_predict,
+        chunk_rows,
+        save_state,
+        closed_groups,
     )
 
 
@@ -290,6 +344,7 @@ class LazyFrameOnlineNamespace:
         *,
         load_state: State | None = None,
         save_state: State | None = None,
+        closed_groups: State | None = None,
         chunk_rows: int | None = None,
     ) -> pl.LazyFrame:
         """The plan's rows plus one struct column per spec, learning as it goes.
@@ -341,8 +396,18 @@ class LazyFrameOnlineNamespace:
         carrying the bank's message, and so is a ``save_state`` that cannot
         be written when the run ends, carrying the ``OSError``'s message and
         the path.
+
+        ``closed_groups`` writes the groups that finished during the run to a
+        sidecar file, in the format its extension names
+        (:meth:`ModelBank.closed_groups`, ENHANCEMENTS E54). The queue is
+        drained after every chunk, so the bank stays bounded, and the one
+        file is written where ``save_state`` is written and under the same
+        rules and caveats: only when the source reaches its last row, once
+        per execution of the plan, and twice with the same bytes for a plan
+        used twice in one query. It needs a spec with ``group_close``; a
+        run in which nothing closed writes an empty frame with the schema.
         """
-        return _fit_predict_lazy(self._lf, specs, load_state, save_state, chunk_rows)
+        return _fit_predict_lazy(self._lf, specs, load_state, save_state, chunk_rows, closed_groups)
 
     def predict(self, bank: ModelBank | State, *, chunk_rows: int | None = None) -> pl.LazyFrame:
         """The plan's rows scored against ``bank`` as it stands, learning nothing.
@@ -415,12 +480,17 @@ class DataFrameOnlineNamespace:
         *,
         load_state: State | None = None,
         save_state: State | None = None,
+        closed_groups: State | None = None,
     ) -> pl.DataFrame:
         """``ModelBank(specs).fit_predict(df)`` -- the frame plus one struct
         column per spec, from a bank that is then dropped, or saved to
         ``save_state`` first (:meth:`ModelBank.save`); ``load_state`` starts
         it from a saved bank instead of the specs. Keep a bank of your own to
         feed it more rows.
+
+        ``closed_groups`` writes the groups that finished to a sidecar file
+        in the format its extension names, before ``save_state``
+        (:meth:`ModelBank.closed_groups`).
 
         Raises what :class:`ModelBank`, :meth:`ModelBank.fit_predict`,
         :meth:`ModelBank.load` and :meth:`ModelBank.save` raise, and
@@ -429,7 +499,10 @@ class DataFrameOnlineNamespace:
         before the fit, not after it."""
         save_path = _save_path(save_state)
         bank = _bank(specs, load_state, "fit_predict")()
+        closed_path = _closed_path(closed_groups, bank.specs)
         out = bank.fit_predict(self._df)
+        if closed_path is not None:
+            _write_closed(closed_path, [bank.closed_groups()], bank.closed_groups())
         if save_path is not None:
             bank.save(save_path)
         return out
@@ -459,6 +532,7 @@ def fit_predict(
     *,
     load_state: State | None = None,
     save_state: State | None = None,
+    closed_groups: State | None = None,
     chunk_rows: int | None = None,
 ) -> pl.LazyFrame: ...
 
@@ -470,6 +544,7 @@ def fit_predict(
     *,
     load_state: State | None = None,
     save_state: State | None = None,
+    closed_groups: State | None = None,
     chunk_rows: int | None = None,
 ) -> pl.DataFrame: ...
 
@@ -480,6 +555,7 @@ def fit_predict(
     *,
     load_state: State | None = None,
     save_state: State | None = None,
+    closed_groups: State | None = None,
     chunk_rows: int | None = None,
 ) -> pl.LazyFrame | pl.DataFrame:
     """``frame.online.fit_predict(...)`` as a plain function, so that a type checker can see it.
@@ -494,10 +570,10 @@ def fit_predict(
     otherwise raises what the namespace method does.
     """
     if isinstance(frame, pl.LazyFrame):
-        return _fit_predict_lazy(frame, specs, load_state, save_state, chunk_rows)
+        return _fit_predict_lazy(frame, specs, load_state, save_state, chunk_rows, closed_groups)
     _check_frame(frame, "fit_predict")
     return DataFrameOnlineNamespace(frame).fit_predict(
-        specs, load_state=load_state, save_state=save_state
+        specs, load_state=load_state, save_state=save_state, closed_groups=closed_groups
     )
 
 

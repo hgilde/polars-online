@@ -320,7 +320,7 @@ fn a_schema_2_state_saves_as_the_current_schema_and_loads_again() {
     // pinned number moves with `SCHEMA_VERSION`, and the point of the test is
     // that a schema-2 file comes out the other side as a current one.
     assert_eq!(h["schema_version"], online_core::SCHEMA_VERSION);
-    assert_eq!(h["schema_version"], 4);
+    assert_eq!(h["schema_version"], 5);
     let mut again = Bank::load_bytes(&upgraded, Some(&specs)).unwrap();
     let mut fresh = Bank::new(specs).unwrap();
     fresh.fit_predict(&frame(0, 60)).unwrap();

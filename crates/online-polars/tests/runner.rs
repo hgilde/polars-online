@@ -113,6 +113,7 @@ fn config(input: &Path, output: &Path) -> RunConfig {
         save_state: None,
         keep_columns: vec![],
         predict: false,
+        closed_groups: None,
         specs: vec![spec()],
     }
 }

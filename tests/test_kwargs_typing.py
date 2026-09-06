@@ -18,8 +18,11 @@ import polars_online as po
 from polars_online import _expr, _kwargs, _spec
 
 # What the expression supplies itself, and so does not take as a keyword
-# (the expression's own column is ew_class's label).
-EXPR_SUPPLIES = {"name", "targets", "features", "group", "label"}
+# (the expression's own column is ew_class's label). `group_close` goes with
+# `group`: `.over()` has no end-of-group signal to close on, and an
+# expression returns one column of the frame's height, with nowhere to put a
+# closed row (E54, test_closed_groups.py).
+EXPR_SUPPLIES = {"name", "targets", "features", "group", "group_close", "label"}
 # What a builder takes that an expression cannot: seqtest's `a`/`b` compare
 # two specs of a bank, and an expression is one spec. The namespace method
 # refuses them at runtime, and its TypedDict leaves them out so that a type
@@ -73,9 +76,10 @@ def test_the_namespace_methods_are_the_builders():
 def test_common_kwargs_mirror_the_shared_parameters():
     shared = {k: v for k, v in _common_hints().items() if k not in ("targets", "features")}
     assert typing.get_type_hints(_kwargs.CommonKwargs) == shared
-    # The expression form is the same minus the group, which is .over()'s job.
+    # The expression form is the same minus the group, which is .over()'s
+    # job, and the close policy that goes with it (E54).
     assert typing.get_type_hints(_kwargs.ExprKwargs) == {
-        k: v for k, v in shared.items() if k != "group"
+        k: v for k, v in shared.items() if k not in ("group", "group_close")
     }
     assert _kwargs.CommonKwargs.__required_keys__ == frozenset()
 

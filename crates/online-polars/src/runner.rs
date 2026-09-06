@@ -175,6 +175,16 @@ pub struct RunConfig {
     /// refused, since there is nothing new to save.
     #[serde(default)]
     pub predict: bool,
+    /// Write the groups that closed during the run here, as a sidecar frame
+    /// beside `output` (docs/ENHANCEMENTS.md E54). Its format comes from the
+    /// extension, exactly as `output`'s does.
+    ///
+    /// Needs at least one spec with `group_close`; refused with `predict`,
+    /// which closes nothing. `output` may be empty at the same time: that is
+    /// the accumulate-only pass whose product is the closed rows and the
+    /// state.
+    #[serde(default)]
+    pub closed_groups: Option<PathBuf>,
     /// The model specs to run.
     pub specs: Vec<Spec>,
 }
@@ -213,12 +223,29 @@ impl RunConfig {
         if self.chunk_rows == 0 {
             return Err("chunk_rows must be > 0".into());
         }
-        if self.no_output() && self.save_state.is_none() {
+        if self.no_output() && self.save_state.is_none() && self.closed_groups.is_none() {
             return Err(
-                "a run needs somewhere to put its work: an `output` path, or `save_state` \
-                 for a run whose product is the state (--no-output)"
+                "a run needs somewhere to put its work: an `output` path, `closed_groups`, or \
+                 `save_state` for a run whose product is the state (--no-output)"
                     .into(),
             );
+        }
+        if let Some(p) = &self.closed_groups {
+            if self.predict {
+                return Err(
+                    "predict = true does not learn, so no group ever closes and closed_groups \
+                     would be an empty file; drop one or the other"
+                        .into(),
+                );
+            }
+            if !self.specs.iter().any(|s| s.group_close.is_some()) {
+                return Err(
+                    "closed_groups names a file but no spec closes groups; add group_close = \
+                     \"monotone\" or \"session\" to the spec whose groups should be emitted"
+                        .into(),
+                );
+            }
+            Format::from_path(p)?;
         }
         if self.predict {
             if self.load_state.is_none() {
@@ -270,6 +297,14 @@ impl RunConfig {
     pub fn output_format(&self) -> Result<Format, String> {
         self.output_format
             .map_or_else(|| Format::from_path(&self.output), Ok)
+    }
+
+    /// The `closed_groups` sidecar's path and format, when there is one.
+    pub fn closed_groups_target(&self) -> Result<Option<(&Path, Format)>, String> {
+        match &self.closed_groups {
+            Some(p) => Ok(Some((p.as_path(), Format::from_path(p)?))),
+            None => Ok(None),
+        }
     }
 
     /// The lazy scan of `input` this config describes, `keep_columns` applied.
@@ -441,6 +476,12 @@ pub fn run_config_on(
     if let Some(p) = &cfg.save_state {
         check_parent("saving state", p)?;
     }
+    let closed_target = cfg
+        .closed_groups_target()
+        .map_err(|e| polars_err!(ComputeError: "{}", e))?;
+    if let Some((p, _)) = closed_target {
+        check_parent("writing closed groups", p)?;
+    }
     let mut bank = cfg.open_bank()?;
     let opts = RunOptions {
         chunk_rows: cfg.chunk_rows,
@@ -455,6 +496,17 @@ pub fn run_config_on(
         }
     };
     let stats = run(&mut bank, input, out, opts, progress)?;
+    // The sidecar goes out before the state, so a state file always has the
+    // closed rows that go with it: the drain empties the bank's queue, and
+    // the state saved next is the state after the file was written. A run
+    // in which nothing closed writes an empty frame with the schema, as an
+    // empty output does.
+    if let Some((path, format)) = closed_target {
+        let df = bank
+            .closed_groups(None, true)
+            .map_err(|e| polars_err!(ComputeError: "{}", e))?;
+        write_one(path, format, df)?;
+    }
     if let Some(p) = &cfg.save_state {
         bank.save(p).map_err(|e| io_err("saving state", p, e))?;
     }
@@ -712,6 +764,19 @@ fn write_file(path: &Path, format: Format, rx: Receiver<Write_>) -> PolarsResult
         }
         e => e,
     })
+}
+
+/// One frame to one file, through [`write_file`]'s atomic path: a temporary
+/// sibling renamed into place when the frame is complete. The `closed_groups`
+/// sidecar (E54), which is written once at the end of a run rather than
+/// appended per chunk -- E35's rule, one code path.
+fn write_one(path: &Path, format: Format, df: DataFrame) -> PolarsResult<()> {
+    let (tx, rx) = sync_channel::<Write_>(2);
+    tx.send(Write_::Chunk(df))
+        .and_then(|()| tx.send(Write_::End))
+        .expect("the receiver is alive until this function returns");
+    drop(tx);
+    write_file(path, format, rx).map(|_| ())
 }
 
 fn write_frames(path: &Path, format: Format, rx: Receiver<Write_>) -> PolarsResult<Duration> {

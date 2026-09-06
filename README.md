@@ -148,6 +148,7 @@ Per-row decay is `λ = 0.5 ** (Δclock / halflife)`.
 | `targets`, `features` | column names, ≥1 target; targets share one `X'X`. Columns must be numeric (any width, `Decimal` and `Boolean` included; cast to `f64`) — a String column is refused rather than cast to null. Columns the spec does not name pass through untouched |
 | `add_intercept` | default `True` |
 | `group` | one state per key |
+| `group_close` | `"monotone"` or `"session"`: emit the group's accumulators when it is finished and drop the stream, which is what bounds a bank over an unbounded key space. Read them with `bank.closed_groups()` |
 | `weight` | row weight column |
 | `min_periods` | in `n_eff` units; outputs are null until it is reached. A list gives one threshold per target. Warm-up gates output, not learning |
 | `coef_every` | snapshot the coefficients every N rows (`0` = only on each chunk's last row) |
@@ -592,6 +593,53 @@ while `gram()` is as of the last row. And `merge` pools parts that share a
 weighting — shards of a pass, groups being combined — not two halves of a
 decayed stream in time order, where each part's weights are relative to its
 own last row; the docstring gives the rescaling for that case.
+
+### One row per finished group
+
+A bank keeps one state per group key, for the life of the bank. On a stream
+whose key space keeps growing — a day id, a session id, a block number — that
+is unbounded memory for state nobody will read again.
+
+`group_close` says when a group is finished. The bank then emits its
+accumulators as one row and drops the stream.
+
+```python
+blocks = po.spec.ew_cov("cov", features=["x0", "x1"], lam=1.0,
+                        group="block", group_close="monotone")
+by_block = df.with_columns(block=pl.int_range(pl.len()) // 100)
+
+bank = po.ModelBank([blocks])
+bank.fit_predict(by_block)
+
+closed = bank.closed_groups()          # one row per finished block
+first = po.gram.from_row(closed.head(1))
+corr = po.gram.correlation(first)      # everything in po.gram works on it
+```
+
+`"monotone"` means the key column never goes backwards, so a key smaller
+than the largest one fed so far is finished; a chunk whose keys are out of
+order is refused, naming the row. `"session"` closes a group where its
+`session` value changes. Either way the last group never closes — nothing
+proves it is finished — and stays readable through `gram()`.
+
+The row is the `gram()` a driver would have read at that moment, bit for
+bit: one builder makes both. It carries the span's own `rows_fed`,
+`rows_learned` and clock range beside the moments, `coef` for a model that
+has one, the eigendecomposition for an `ew_cov` with `pca`, and a
+`marginal`'s pairs.
+
+A run writes the same rows to a sidecar file, which with no output at all is
+the whole shape of an accumulate-only pass — read a stream that does not fit
+in memory, write one row per block:
+
+```python
+po.run(input=by_block.lazy(), specs=[blocks], closed_groups="blocks.parquet")
+```
+
+(`by_block` and `blocks` are from the block above.)
+`lf.online.fit_predict(closed_groups=path)` and `online --closed-groups path`
+write it too. What has closed and not been read is saved with the state, so
+a driver that saves between chunks does not lose rows silently.
 
 ### Labels that arrive late
 

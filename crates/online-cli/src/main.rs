@@ -72,6 +72,13 @@ struct Cli {
     #[arg(long)]
     save_state: Option<PathBuf>,
 
+    /// Write the groups that closed during the run to this file, beside the
+    /// output (docs/ENHANCEMENTS.md E54). Its format comes from the
+    /// extension. Needs a spec with `group_close`; overrides the config's
+    /// `closed_groups`.
+    #[arg(long)]
+    closed_groups: Option<PathBuf>,
+
     /// Score instead of learn: every row gets the loaded bank's prediction
     /// as it stands and the bank is not updated (sets the config's
     /// `predict`). Needs `--resume` or `load_state`.
@@ -149,6 +156,9 @@ fn run() -> Result<(), String> {
     if let Some(p) = cli.save_state {
         cfg.save_state = Some(p);
     }
+    if let Some(p) = cli.closed_groups {
+        cfg.closed_groups = Some(p);
+    }
     // What a spec may leave out, filled before anything reads it (E53).
     cfg.fill_defaults();
     cfg.validate()?;
@@ -178,6 +188,9 @@ fn run() -> Result<(), String> {
                     .map_or_else(|| "nothing".into(), |p| p.display().to_string())
             ),
         }
+        if let Some((p, f)) = cfg.closed_groups_target()? {
+            println!("closed groups: {} ({})", p.display(), f.name());
+        }
         println!("chunk_rows: {}", cfg.chunk_rows);
         if cfg.predict {
             println!("mode: predict (score against the loaded state, learn nothing)");
@@ -202,6 +215,9 @@ fn run() -> Result<(), String> {
         stats.chunks,
         cfg.output.display()
     );
+    if let Some(p) = &cfg.closed_groups {
+        println!("wrote closed groups to {}", p.display());
+    }
     if let Some(p) = &cfg.save_state {
         println!("saved state to {}", p.display());
     }

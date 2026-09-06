@@ -974,6 +974,30 @@ pub struct Spec {
     /// ModelBank/CLI only; one state per key. The expression API uses `.over()`.
     #[serde(default)]
     pub group: Option<String>,
+    /// Emit a group's accumulators when the stream can prove no further row
+    /// will join it, and drop the stream (docs/ENHANCEMENTS.md E54).
+    ///
+    /// `"monotone"`: the group column is non-decreasing, so a key smaller
+    /// than the largest key of the chunk just fed is finished. Requires
+    /// `group`, and refuses a chunk whose keys are out of order, naming the
+    /// row.
+    ///
+    /// `"session"`: a group's span ends where its `session` value changes.
+    /// Requires `session`; refused with `session_gap`, which is a second
+    /// prescription for the same event (the close *is* the reset, with an
+    /// emission).
+    ///
+    /// `None` (the default) keeps every group for the life of the bank,
+    /// which is what makes a bank over an unbounded key space grow without
+    /// bound. The closed rows queue in the bank and are read with
+    /// `closed_groups()`, written to the `closed_groups` sidecar by a run,
+    /// or both.
+    ///
+    /// Refused with `label_delay`: a closed group cannot release the rows it
+    /// is holding, so its row would differ from the `gram()` a driver reads
+    /// at the same point -- which is the one thing the closed row promises.
+    #[serde(default)]
+    pub group_close: Option<String>,
 }
 
 impl Spec {
@@ -1005,6 +1029,17 @@ impl Spec {
         if self.drift_action.is_none() {
             self.drift_action = Some("flag".into());
         }
+    }
+
+    /// Does this spec close a group when its `session` value changes
+    /// (docs/ENHANCEMENTS.md E54)?
+    pub fn closes_on_session(&self) -> bool {
+        self.group_close.as_deref() == Some("session")
+    }
+
+    /// Does this spec close a group once a larger key has been seen?
+    pub fn closes_monotone(&self) -> bool {
+        self.group_close.as_deref() == Some("monotone")
     }
 
     pub fn k(&self) -> usize {
@@ -1119,9 +1154,14 @@ impl Spec {
                 ));
             }
         };
-        if self.session.is_some() && session_gap.is_none() {
+        // `group_close = "session"` is itself the prescription for a session
+        // change -- emit the span and start over -- so it takes the place of
+        // `session_gap` rather than sitting beside it (E54); `validate`
+        // refuses the pair.
+        if self.session.is_some() && session_gap.is_none() && !self.closes_on_session() {
             return Err(format!(
-                "spec {:?}: session_gap is required when session is given",
+                "spec {:?}: session_gap is required when session is given (or \
+                 group_close = \"session\", which closes the group at the change instead)",
                 self.name
             ));
         }
@@ -1186,6 +1226,44 @@ impl Spec {
             } else {
                 format!("spec {:?}: targets must be non-empty", self.name)
             });
+        }
+        if let Some(gc) = &self.group_close {
+            if !["monotone", "session"].contains(&gc.as_str()) {
+                return Err(format!(
+                    "spec {:?}: group_close must be \"monotone\" or \"session\" (got {gc:?})",
+                    self.name
+                ));
+            }
+            if self.group.is_none() {
+                return Err(format!(
+                    "spec {:?}: group_close needs a group column; without one the bank keeps a \
+                     single stream, which is never finished",
+                    self.name
+                ));
+            }
+            if self.label_delay.is_some() {
+                return Err(format!(
+                    "spec {:?}: group_close does not work with label_delay; a closed group \
+                     cannot release the rows it is still holding, so its row would not equal \
+                     the gram() read at the same point",
+                    self.name
+                ));
+            }
+            if gc == "session" {
+                if self.session.is_none() {
+                    return Err(format!(
+                        "spec {:?}: group_close = \"session\" needs a session column to close on",
+                        self.name
+                    ));
+                }
+                if self.session_gap.is_some() {
+                    return Err(format!(
+                        "spec {:?}: group_close = \"session\" and session_gap are two \
+                         prescriptions for one event; the close is the reset, with an emission",
+                        self.name
+                    ));
+                }
+            }
         }
         if let Some(d) = self.label_delay {
             if d.is_nan() || !d.is_finite() || d <= 0.0 {

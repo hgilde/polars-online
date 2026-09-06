@@ -324,6 +324,22 @@ impl PyModelBank {
 
     /// The pairs of a `marginal` spec (`Bank::marginal`), one row per
     /// (group, instance, feature, target).
+    /// The groups that have closed and not been read (`Bank::closed_groups`),
+    /// oldest first, as one long frame. `drop` removes them from the queue.
+    #[pyo3(signature = (spec=None, drop=true))]
+    fn closed_groups(
+        slf: &Bound<'_, Self>,
+        spec: Option<usize>,
+        drop: bool,
+    ) -> PyResult<PyDataFrame> {
+        let mut this = slf.try_borrow_mut().map_err(|_| busy("closed_groups"))?;
+        Ok(PyDataFrame(
+            this.inner
+                .closed_groups(spec, drop)
+                .map_err(PyValueError::new_err)?,
+        ))
+    }
+
     #[pyo3(signature = (spec, group=None))]
     fn marginal(slf: &Bound<'_, Self>, spec: usize, group: Option<&str>) -> PyResult<PyDataFrame> {
         let this = slf.try_borrow().map_err(|_| busy("marginal"))?;

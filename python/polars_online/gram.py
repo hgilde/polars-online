@@ -32,6 +32,7 @@ __all__ = [
     "coef_stats",
     "condition",
     "correlation",
+    "from_row",
     "lasso_path",
     "merge",
     "solve",
@@ -226,6 +227,106 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "target_n_kish": None
         if tq is None
         else np.divide(tw * tw, tq, out=np.full_like(tq, np.nan), where=tq > 0.0),
+    }
+
+
+def _row_mapping(row: Any) -> dict[str, Any]:
+    """One closed row as a mapping, from a one-row frame, a row of
+    ``iter_rows(named=True)``, or a mapping already."""
+    to_dicts = getattr(row, "to_dicts", None)
+    if to_dicts is not None:  # a polars DataFrame
+        rows = to_dicts()
+        if len(rows) != 1:
+            msg = f"from_row() takes one closed row; this frame has {len(rows)}"
+            raise ValueError(msg)
+        return dict(rows[0])
+    try:
+        return dict(row)
+    except (TypeError, ValueError) as e:
+        msg = (
+            "from_row() takes a one-row frame from ModelBank.closed_groups(), a row of its "
+            f"iter_rows(named=True), or a mapping; got {type(row).__name__}"
+        )
+        raise TypeError(msg) from e
+
+
+def _unvech(np: Any, flat: Any, k: int) -> Any:
+    """The symmetric ``k x k`` matrix whose upper triangle, row by row, is
+    ``flat`` -- the inverse of the closed row's packing."""
+    v = np.asarray([np.nan if x is None else x for x in flat], dtype=float)
+    want = k * (k + 1) // 2
+    if v.size != want:
+        msg = f"comoments has {v.size} entries; a {k}-column Gram packs {want}"
+        raise ValueError(msg)
+    m = np.zeros((k, k))
+    iu = np.triu_indices(k)
+    m[iu] = v
+    return m + np.triu(m, 1).T
+
+
+def _floats(np: Any, v: Any) -> Any:
+    """A list column's values as floats, with null read as ``nan`` -- the
+    frame writes null where the state says NaN (an undefined ``corr``, a
+    target with no weighted row)."""
+    return np.asarray([np.nan if x is None else x for x in v], dtype=float)
+
+
+def from_row(row: Any) -> dict[str, Any]:
+    """A closed group's row (docs/ENHANCEMENTS.md E54) as the mapping
+    :meth:`~polars_online.ModelBank.gram` returns, so everything in this
+    module works on it::
+
+        for row in bank.closed_groups().iter_rows(named=True):
+            g = po.gram.from_row(row)
+            beta = po.gram.solve(g, target=0)
+
+    Takes a one-row frame, a row of ``iter_rows(named=True)``, or a mapping.
+    The row's ``comoments`` is the upper triangle with the diagonal, row by
+    row, and its ``cross_moments`` is row-major ``(n_targets, k)``; this
+    expands both.
+
+    The result is what ``gram()`` would have returned for that group **bit
+    for bit, except the co-moment matrix's lower triangle**, which is the
+    upper one mirrored. The two differ in the last bit or so and not more:
+    the accumulator updates ``C[i][j]`` and ``C[j][i]`` with the same two
+    products in the opposite order, which does not commute in IEEE
+    arithmetic (docs/PERFORMANCE.md §14). Everything read off the matrix --
+    a solve, a correlation, a condition number -- is unaffected at that
+    scale, and the packed half is what makes the closed row half the size.
+
+    A row of a kind that keeps no accumulators (its ``columns`` is null)
+    raises ``ValueError``: there is no Gram to make.
+    """
+    np = _np()
+    d = _row_mapping(row)
+    cols = d.get("columns")
+    if cols is None:
+        name = d.get("spec", "this spec")
+        msg = (
+            f"closed row for {name!r} has no accumulators to make a Gram from; only "
+            "ewridge, lasso and ew_cov keep a co-moment matrix"
+        )
+        raise ValueError(msg)
+    columns = list(cols)
+    k = len(columns)
+    targets = list(d.get("targets") or [])
+    cross = _floats(np, d.get("cross_moments") or [])
+    n_kish = d.get("n_kish")
+    tkish = d.get("target_n_kish")
+    return {
+        "group": d.get("group"),
+        "instance": d.get("instance"),
+        "columns": columns,
+        "targets": targets,
+        "n_eff": float(d["n_eff"]),
+        "n_kish": None if n_kish is None else float(n_kish),
+        "means": _floats(np, d["means"]),
+        "comoments": _unvech(np, d["comoments"], k),
+        "cross_moments": cross.reshape(len(targets), k) if targets else np.zeros((0, k)),
+        "target_weights": _floats(np, d.get("target_weights") or []),
+        "target_means": None if d.get("target_means") is None else _floats(np, d["target_means"]),
+        "target_vars": None if d.get("target_vars") is None else _floats(np, d["target_vars"]),
+        "target_n_kish": None if tkish is None else _floats(np, tkish),
     }
 
 

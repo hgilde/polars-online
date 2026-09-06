@@ -77,9 +77,12 @@ class ExprKwargs(TypedDict, total=False):
 
 
 class CommonKwargs(ExprKwargs, total=False):
-    """What the builders take as ``**common``: the above plus the group."""
+    """What the builders take as ``**common``: the above plus the group and
+    its close policy. The expression namespace has neither -- it groups with
+    ``.over()``, which has no end-of-group signal to close on."""
 
     group: str | None
+    group_close: str | None
 
 
 # --- one per model: the builder's own parameters, over the shared ones -------

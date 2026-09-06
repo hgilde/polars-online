@@ -133,7 +133,14 @@ pub use stats::{EwAutoCorr, P2Quantile, SlotMetrics};
 ///   changed. Task 38's `Sum w^2` and target moments rode into schema 3
 ///   without a bump: they are skipped when absent, so a schema-3 file's
 ///   bytes did not move.
-pub const SCHEMA_VERSION: u32 = 4;
+/// - 5: the spec gained `group_close` (docs/ENHANCEMENTS.md E54), and a
+///   stream that closes on session keeps the session value of the span it is
+///   in. Additive with defaults again, so a schema-4 file loads, continues to
+///   the bit and re-saves as 5; the bump is because every spec's bytes moved.
+///   The rest of the E54-E64 batch rides on 5 without a further bump:
+///   appended `ModelState` variants, `Option` fields that skip when absent,
+///   and new `BankFile` map keys with defaults are all additive.
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Oldest state layout this build still loads.
 pub const MIN_SCHEMA_VERSION: u32 = 1;

@@ -609,6 +609,60 @@ class ModelBank:
         """
         return self._native.marginal(self._spec_index(spec), group)
 
+    def closed_groups(self, spec: str | int | None = None, *, drop: bool = True) -> pl.DataFrame:
+        """The groups that have finished and not yet been read
+        (docs/ENHANCEMENTS.md E54), oldest first, as one long frame.
+
+        A spec with ``group_close`` emits a group's accumulators at the
+        moment the bank can prove no further row will join it -- a key
+        smaller than the largest one fed so far under ``"monotone"``, or a
+        session that has ended under ``"session"`` -- and then drops the
+        stream. That is what keeps a bank over an unbounded key space
+        bounded: without it, every key ever seen stays in memory.
+
+        One row per (group, decay instance), with the common columns
+
+        ``spec``, ``group``, ``instance``, ``session``
+            Which stream closed. ``session`` is the value of the span that
+            ended under ``group_close = "session"``, and null under
+            ``"monotone"``.
+        ``n_eff``, ``n_kish``
+            As :meth:`gram` reports them, at the moment of the close.
+        ``rows_fed``, ``rows_learned``, ``clock_min``, ``clock_max``
+            The span's own :meth:`summary` counts and clock range.
+
+        and then a block per kind, present when any spec of the bank closes
+        groups and is of that kind, null on the rows of other kinds:
+        ``columns``, ``means``, ``comoments``, ``targets``, ``target_means``,
+        ``target_vars``, ``target_weights``, ``target_n_kish`` and
+        ``cross_moments`` for a kind that keeps accumulators;
+        ``coef`` for every kind that reports one; ``eig_vals`` and
+        ``eig_vecs`` for an ``ew_cov`` with ``pca``; ``pair_*`` for a
+        ``marginal``.
+
+        ``comoments`` is the **upper triangle with the diagonal**, row by
+        row (``k(k+1)/2`` numbers), and ``cross_moments`` is row-major
+        ``(n_targets, k)``. :func:`polars_online.gram.from_row` expands both
+        and hands back exactly what :meth:`gram` would have returned for that
+        group -- field for field and bit for bit, since one builder makes
+        them both. The exact solve on a closed group is then one line::
+
+            po.gram.solve(po.gram.from_row(row))
+
+        ``drop`` (the default) removes what it returns from the queue, which
+        is what a driver draining per chunk wants; ``drop=False`` peeks. The
+        streams are dropped when they close, never when this is called: a
+        bank's memory must not depend on the caller polling. What is
+        undrained **is** saved with the state, so a driver that saves between
+        chunks does not lose rows silently.
+
+        ``spec`` narrows the frame to one spec's rows (a name or a position;
+        ``KeyError`` / ``IndexError`` for one the bank has not got).
+        :meth:`predict` never closes anything.
+        """
+        idx = None if spec is None else self._spec_index(spec)
+        return self._native.closed_groups(idx, drop)
+
     def solve_failures(self) -> dict[str, dict[str | None, int]]:
         """Jittered or failed matrix factorizations so far, per spec and group.
 

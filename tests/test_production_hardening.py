@@ -623,6 +623,16 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
         "np": np,
         "po": po,
         "df": df,
+        # The "one row per finished group" section introduces both, and the
+        # run block after it reuses them.
+        "blocks": po.spec.ew_cov(
+            "cov",
+            features=["x0", "x1"],
+            lam=1.0,
+            group="block",
+            group_close="monotone",
+        ),
+        "by_block": df.with_columns(block=pl.int_range(pl.len()) // 100),
         "today": df,
         "lf": df.lazy(),
         "spec": spec,

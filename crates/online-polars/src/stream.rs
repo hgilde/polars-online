@@ -786,6 +786,12 @@ pub struct StreamState {
     /// did.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending: Vec<PendingRow>,
+    /// The session value of the span this stream is in, under `group_close =
+    /// "session"` (docs/ENHANCEMENTS.md E54): the closed row reports it, and
+    /// the clock keeps only a hash. Written only by a spec that closes on
+    /// session, so no other spec's bytes move.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_session: Option<String>,
 }
 
 /// Live per-stream state.
@@ -832,6 +838,9 @@ pub struct Stream {
     /// (docs/PLAN.md task 35). `None` only for a stream restored from a file
     /// written before the summary existed.
     summary: Option<DataSummary>,
+    /// The session value of the span this stream is in (E54); see
+    /// [`StreamState::last_session`].
+    pub last_session: Option<String>,
 }
 
 impl Stream {
@@ -1247,6 +1256,7 @@ impl Stream {
             summary: Some(DataSummary::new(spec)),
             label_delay: spec.label_delay,
             pending: Vec::new(),
+            last_session: None,
         })
     }
 
@@ -1265,6 +1275,7 @@ impl Stream {
             last_row: self.last_row.clone(),
             summary: self.summary.clone(),
             pending: self.pending.clone(),
+            last_session: self.last_session.clone(),
         }
     }
 
@@ -1310,6 +1321,7 @@ impl Stream {
         // gets whatever the file holds, which is what "resume this stream"
         // means (E47).
         stream.pending = saved.pending.clone();
+        stream.last_session = saved.last_session.clone();
         // Checked here, where a file that is not its spec's is refused with
         // the models, rather than at the first read.
         if let Some(last) = &saved.last_row {

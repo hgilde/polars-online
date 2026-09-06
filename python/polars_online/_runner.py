@@ -44,6 +44,7 @@ def run(
     chunk_rows: int | None = None,
     load_state: str | os.PathLike[str] | None = None,
     save_state: str | os.PathLike[str] | None = None,
+    closed_groups: str | os.PathLike[str] | None = None,
     predict: bool | None = None,
     input_format: str | None = None,
     output_format: str | None = None,
@@ -87,6 +88,17 @@ def run(
     ``keep_columns`` selects input columns before the bank sees them (and
     before the scan reads them). ``progress(rows, chunks)`` is called after
     each chunk; raising in it stops the run without publishing the output.
+
+    ``closed_groups`` writes the groups that finished during the run to a
+    sidecar file beside the output, in the format its extension names
+    (ENHANCEMENTS E54; see :meth:`ModelBank.closed_groups` for the schema).
+    It needs a spec with ``group_close`` and refuses ``predict``, which
+    closes nothing. The file is written once, at the end, through a
+    temporary renamed into place -- before ``save_state``, so a state file
+    always has the closed rows that go with it. ``output`` may be left out at
+    the same time: that is the accumulate-only pass whose product is the
+    closed groups. A run in which nothing closed writes an empty frame with
+    the schema.
 
     ``predict=True`` scores instead of learning: every row gets what the bank
     loaded from ``load_state`` predicts for it as it stands
@@ -139,6 +151,7 @@ def run(
         "chunk_rows": chunk_rows,
         "load_state": load_state,
         "save_state": save_state,
+        "closed_groups": closed_groups,
         "predict": predict,
         "input_format": input_format,
         "output_format": output_format,
@@ -160,7 +173,7 @@ def run(
     if source is None:
         msg = "run() needs an input: a path, a LazyFrame, a DataFrame, or an iterable of DataFrames"
         raise ValueError(msg)
-    for key in ("output", "load_state", "save_state"):
+    for key in ("output", "load_state", "save_state", "closed_groups"):
         if cfg.get(key) is not None:
             cfg[key] = os.fspath(cfg[key])
     if not cfg.get("specs"):

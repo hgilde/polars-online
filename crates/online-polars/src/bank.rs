@@ -106,6 +106,13 @@ struct SpecColumns {
     clock: Option<Vec<f64>>,
     session: Option<Vec<u64>>,
     weight: Option<Vec<f64>>,
+    /// The session column's *values*, in the frame's own row order, for a
+    /// spec that closes a group on a session change (E54): the closed row
+    /// reports the span's session, and `session` above is a hash. Read at
+    /// one row per closed span, so it is the series rather than a gathered
+    /// `Vec<Option<String>>` -- which would allocate a string per row of the
+    /// chunk to use one of them.
+    session_str: Option<Series>,
 }
 
 /// A column lookup that says which spec asked and what it asked for. Polars'
@@ -382,16 +389,15 @@ fn extract(
             None => Ok(None),
         }
     };
-    let session = || -> PolarsResult<Option<Vec<u64>>> {
+    let session = || -> PolarsResult<(Option<Vec<u64>>, Option<Series>)> {
         match &spec.session {
             Some(c) if !optional(c) => {
                 let s = key_column(df, spec, "session", c)?;
-                Ok(Some(gathered(
-                    s.str()?.iter().map(session_hash).collect(),
-                    layout,
-                )))
+                let hashes = gathered(s.str()?.iter().map(session_hash).collect(), layout);
+                let vals = spec.closes_on_session().then(|| s.clone());
+                Ok((Some(hashes), vals))
             }
-            _ => Ok(None),
+            _ => Ok((None, None)),
         }
     };
     let weight = || -> PolarsResult<Option<Vec<f64>>> {
@@ -425,18 +431,199 @@ fn extract(
         || join_maybe_par(par, features, targets),
         || join_maybe_par(par, clock, || join_maybe_par(par, session, weight)),
     );
+    let (session, session_str) = session?;
     Ok(SpecColumns {
         features: features?,
         targets: targets?,
         clock: clock?,
-        session: session?,
+        session,
         weight: weight?,
+        session_str,
     })
 }
 
 /// One stream's flat output buffers for a chunk. Fallible because a strict
 /// clock policy can refuse a row (`on_clock_reset = "error"`).
 type StreamRows = PolarsResult<ChunkOut>;
+
+/// The [`ClosedRow`]s of one stream at the moment it closes: one per decay
+/// instance, the state exactly as it stands (docs/ENHANCEMENTS.md E54).
+///
+/// `at` is where the closing row sits in the chunk -- the first row of the
+/// new session, or the first row of the greater key -- which is what orders
+/// the bank's queue. The PCA block is left empty; the bank fills it as the
+/// row is queued, so that the sign continuity depends on queue order alone
+/// and not on which thread got there first.
+fn close_rows(
+    si: usize,
+    spec: &Spec,
+    key: &GroupKey,
+    stream: &Stream,
+    at: usize,
+) -> Vec<ClosedRow> {
+    let summary = stream.summary();
+    let session = spec
+        .closes_on_session()
+        .then(|| stream.last_session.clone())
+        .flatten();
+    stream
+        .models
+        .iter()
+        .map(|(label, model)| {
+            let gram = gram_of(key, label, model);
+            let pairs = match model {
+                AnyModel::Marginal(m) => spec
+                    .targets
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(t_i, t)| {
+                        spec.features.iter().enumerate().map(move |(j, f)| {
+                            let p = m.pair(t_i, j);
+                            PairRow {
+                                feature: f.clone(),
+                                target: t.clone(),
+                                n_eff: p.n_eff,
+                                n_kish: p.n_kish,
+                                mean_x: p.mean_x,
+                                var_x: p.var_x,
+                                mean_y: p.mean_y,
+                                var_y: p.var_y,
+                                cov: p.cov,
+                                corr: p.corr,
+                                beta: p.beta,
+                                t: p.t,
+                            }
+                        })
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            ClosedRow {
+                spec: si,
+                group: key.clone(),
+                instance: label.clone(),
+                session: session.clone(),
+                n_eff: model.n_eff(),
+                n_kish: gram.as_ref().and_then(|g| g.n_kish),
+                rows_fed: summary.map(|s| s.rows_fed),
+                rows_learned: summary.map(|s| s.rows_learned),
+                clock_min: summary.and_then(|s| s.clock_min),
+                clock_max: summary.and_then(|s| s.clock_max),
+                gram,
+                coef: model
+                    .coefficients()
+                    .map(|c| c.into_iter().flatten().collect()),
+                eig_vals: None,
+                eig_vecs: None,
+                pairs,
+                at,
+            }
+        })
+        .collect()
+}
+
+/// Refuse a chunk whose group keys are not in non-decreasing order, or
+/// whose first key is below what this spec has already closed past
+/// (docs/ENHANCEMENTS.md E54).
+///
+/// This is what makes interleaving an *error* rather than a wrong answer:
+/// [`group_indices`] partitions by first appearance, so the rows of `A, B,
+/// A` would be gathered into one run per key and the close would emit `A`
+/// while its later rows were still to come. The check runs before any model
+/// is touched, beside `check_clock`, so a refused chunk leaves the bank as
+/// it was.
+///
+/// `slot` is scratch: the group each row belongs to, so the walk compares
+/// two `GroupKey`s rather than re-reading the column.
+fn check_monotone(
+    spec: &Spec,
+    groups: &[(GroupKey, Vec<usize>)],
+    n: usize,
+    integer: bool,
+    high_water: Option<&GroupKey>,
+) -> PolarsResult<()> {
+    use std::cmp::Ordering::*;
+    if groups.is_empty() {
+        return Ok(());
+    }
+    if let Some((_, idx)) = groups.iter().find(|(k, _)| k.as_str().is_none()) {
+        polars_bail!(ComputeError:
+            "spec {:?}: row {} has a null group; group_close = \"monotone\" orders the keys, \
+             and a null has no place in that order (a null key is an ordinary group under \
+             group_close = \"session\")",
+            spec.name, idx[0]
+        );
+    }
+    let mut slot = vec![usize::MAX; n];
+    for (gi, (_, idx)) in groups.iter().enumerate() {
+        for &r in idx {
+            slot[r] = gi;
+        }
+    }
+    let mut prev = usize::MAX;
+    for (r, &gi) in slot.iter().enumerate() {
+        if gi == usize::MAX {
+            continue;
+        }
+        if prev != usize::MAX
+            && gi != prev
+            && key_cmp(&groups[gi].0, &groups[prev].0, integer) == Less
+        {
+            polars_bail!(ComputeError:
+                "spec {:?}: row {}: group {} after group {} -- group_close = \"monotone\" needs \
+                 the keys in non-decreasing order (sort the input by {:?}, or use \
+                 group_close = \"session\")",
+                spec.name, r, groups[gi].0, groups[prev].0,
+                spec.group.as_deref().unwrap_or("")
+            );
+        }
+        prev = gi;
+    }
+    if let Some(hw) = high_water {
+        // A mark stored under one dtype and read under another is a
+        // different key: `"10"` orders after `"9"` as an integer and before
+        // it as a string, so the mark would let through exactly the groups
+        // it exists to refuse.
+        if integer && hw.as_str().is_none_or(|k| k.parse::<i128>().is_err()) {
+            polars_bail!(ComputeError:
+                "spec {:?}: the saved high-water key {} is not an integer, and the group column \
+                 {:?} is; the state was saved under a different key column",
+                spec.name, hw, spec.group.as_deref().unwrap_or("")
+            );
+        }
+        // The first key of the chunk is the smallest, the walk above having
+        // passed; anything below the mark belongs to a group this bank has
+        // already emitted and dropped.
+        if key_cmp(&groups[0].0, hw, integer) == Less {
+            polars_bail!(ComputeError:
+                "spec {:?}: row {}: group {} is below {}, which this bank has already closed \
+                 past; a closed group cannot be reopened",
+                spec.name, groups[0].1[0], groups[0].0, hw
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The rows of `idx` at which this stream's session value changes, under
+/// `group_close = "session"` (E54). Each is the first row of a new span, so
+/// the span before it closes there.
+///
+/// Read from the session hashes the columns already carry and the stream's
+/// own last hash, in row order: a boundary is a property of two consecutive
+/// rows, which is what makes the split chunk-invariant.
+fn session_bounds(stream: &Stream, sess: &[u64], n: usize, base: usize) -> Vec<usize> {
+    let mut prev = stream.clock.prev_session();
+    let mut bounds = Vec::new();
+    for ri in 0..n {
+        let h = sess[base + ri];
+        if prev.is_some_and(|p| p != h) {
+            bounds.push(ri);
+        }
+        prev = Some(h);
+    }
+    bounds
+}
 
 /// Run one phase of a chunk through its streams, learning: every `(spec,
 /// group)` task in parallel, each in runs of [`ChunkOut::run_rows`] rows
@@ -445,51 +632,88 @@ type StreamRows = PolarsResult<ChunkOut>;
 /// the same computation as one, and `last` keeps the coefficient report on
 /// the chunk's final row.
 fn process(
-    work: Vec<(usize, &Vec<usize>, usize, &mut Stream)>,
+    work: Vec<(usize, &GroupKey, &Vec<usize>, usize, &mut Stream)>,
     specs: &[Spec],
     cfgs: &[ClockCfg],
     cols: &[SpecColumns],
-) -> Vec<(usize, StreamRows)> {
-    work.into_par_iter()
-        .flat_map_iter(|(si, idx, base, stream)| {
+) -> (Vec<(usize, StreamRows)>, Vec<ClosedRow>) {
+    type TaskOut = (Vec<(usize, StreamRows)>, Vec<ClosedRow>);
+    let per_task: Vec<TaskOut> = work
+        .into_par_iter()
+        .map(|(si, key, idx, base, stream)| {
             let spec = &specs[si];
             let sc = &cols[si];
-            let (n_models, n_slots) = (stream.n_models(), stream.n_slots());
-            let run_rows = ChunkOut::run_rows(spec, n_models, n_slots);
-            let mut outs: Vec<(usize, StreamRows)> =
-                Vec::with_capacity(idx.len().div_ceil(run_rows));
-            let mut off = 0;
-            for run in idx.chunks(run_rows) {
-                let last = off + run.len() == idx.len();
-                let mut out = ChunkOut::new(spec, n_models, n_slots, run.len());
-                let r = stream.process_chunk(
-                    spec,
-                    &cfgs[si],
-                    &sc.features,
-                    &sc.targets,
-                    sc.clock.as_deref(),
-                    sc.session.as_deref(),
-                    sc.weight.as_deref(),
-                    run,
-                    base + off,
-                    &mut out,
-                    last,
-                );
-                off += run.len();
-                match r {
-                    Ok(()) => {
-                        stream.remember_last(&out);
-                        outs.push((si, Ok(out)));
-                    }
-                    Err((raw, i)) => {
-                        outs.push((si, Err(backwards_clock(spec, raw, i))));
-                        break;
+            let mut outs: Vec<(usize, StreamRows)> = Vec::new();
+            let mut closed: Vec<ClosedRow> = Vec::new();
+            // A session close splits the run: the rows before the boundary
+            // are the span, the stream emits its row and starts over, and
+            // the rows after are a fresh stream's first rows (E54). Every
+            // segment gets its own buffers, exactly as the cache-sized runs
+            // below do, so nothing else in the chunk path changes.
+            let bounds = match (spec.closes_on_session(), sc.session.as_deref()) {
+                (true, Some(sess)) => session_bounds(stream, sess, idx.len(), base),
+                _ => Vec::new(),
+            };
+            let mut starts: Vec<usize> = Vec::with_capacity(bounds.len() + 1);
+            starts.push(0);
+            starts.extend_from_slice(&bounds);
+            let session_of = |row: usize| -> Option<String> {
+                let s = sc.session_str.as_ref()?;
+                s.str().ok()?.get(row).map(str::to_string)
+            };
+            'segments: for (seg, &start) in starts.iter().enumerate() {
+                let end = starts.get(seg + 1).copied().unwrap_or(idx.len());
+                if seg > 0 {
+                    // The span before this row is finished.
+                    closed.extend(close_rows(si, spec, key, stream, idx[start]));
+                    *stream = Stream::new(spec).expect("the spec built this stream once");
+                }
+                let (n_models, n_slots) = (stream.n_models(), stream.n_slots());
+                let run_rows = ChunkOut::run_rows(spec, n_models, n_slots);
+                let mut off = start;
+                for run in idx[start..end].chunks(run_rows) {
+                    let last = off + run.len() == idx.len();
+                    let mut out = ChunkOut::new(spec, n_models, n_slots, run.len());
+                    let r = stream.process_chunk(
+                        spec,
+                        &cfgs[si],
+                        &sc.features,
+                        &sc.targets,
+                        sc.clock.as_deref(),
+                        sc.session.as_deref(),
+                        sc.weight.as_deref(),
+                        run,
+                        base + off,
+                        &mut out,
+                        last,
+                    );
+                    off += run.len();
+                    match r {
+                        Ok(()) => {
+                            stream.remember_last(&out);
+                            outs.push((si, Ok(out)));
+                        }
+                        Err((raw, i)) => {
+                            outs.push((si, Err(backwards_clock(spec, raw, i))));
+                            break 'segments;
+                        }
                     }
                 }
+                // The span's session value, for the row it will close with.
+                if end > start && sc.session_str.is_some() {
+                    stream.last_session = session_of(idx[end - 1]);
+                }
             }
-            outs
+            (outs, closed)
         })
-        .collect()
+        .collect();
+    let mut outs = Vec::new();
+    let mut closed = Vec::new();
+    for (o, c) in per_task {
+        outs.extend(o);
+        closed.extend(c);
+    }
+    (outs, closed)
 }
 
 /// [`process`] without the learning: [`Stream::predict_chunk`] per task.
@@ -649,6 +873,56 @@ fn group_indices(df: &DataFrame, spec: &Spec) -> PolarsResult<Vec<(GroupKey, Vec
     }
 }
 
+/// The order `group_close = "monotone"` reads keys in.
+///
+/// [`GroupKey`] holds every key as a string and its derived `Ord` is
+/// therefore lexicographic, which puts `"10"` before `"9"` -- a monotone
+/// close on that order would close group 10 before group 9 had arrived. So
+/// the comparison is the *column's*: integer keys compare as integers (the
+/// text is what [`integer_groups`] formatted, so it parses), and everything
+/// else -- String and Categorical, both rendered as strings by [`extract`]
+/// -- compares bytewise, which is what a string column's own sort does.
+///
+/// A null key has no place in either order; `"monotone"` refuses one at the
+/// pre-check, so `None` here only ever meets `None`.
+pub(crate) fn key_cmp(a: &GroupKey, b: &GroupKey, integer: bool) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a.as_str(), b.as_str()) {
+        (Some(a), Some(b)) if integer => match (a.parse::<i128>(), b.parse::<i128>()) {
+            (Ok(a), Ok(b)) => a.cmp(&b),
+            // Unreachable through `group_indices`, which formats these keys
+            // itself; a state file whose key text is not a number falls back
+            // to the bytes rather than panicking.
+            _ => a.cmp(b),
+        },
+        (Some(a), Some(b)) => a.as_bytes().cmp(b.as_bytes()),
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Less,
+        (Some(_), None) => Ordering::Greater,
+    }
+}
+
+/// Is this spec's group column an integer one, so that [`key_cmp`] compares
+/// its keys as numbers? `Err` names a dtype `"monotone"` cannot order.
+fn group_key_is_integer(df: &DataFrame, spec: &Spec) -> PolarsResult<bool> {
+    let Some(g) = &spec.group else {
+        return Ok(false);
+    };
+    let dt = column(df, spec, "group", g)?.dtype().clone();
+    if dt.is_integer() {
+        return Ok(true);
+    }
+    if matches!(dt, DataType::String | DataType::Categorical(..)) {
+        return Ok(false);
+    }
+    polars_bail!(ComputeError:
+        "spec {:?}: group_close = \"monotone\" needs a group column it can order, and {:?} is \
+         {}; use an integer, String or Categorical key (a float or a temporal column can be \
+         cast to one)",
+        spec.name, g, dt
+    )
+}
+
 /// [`group_indices`] over an integer column: `bucket` maps a value to its
 /// 64-bit identity (sign extension is a bijection, so `as u64` serves every
 /// signed width), and the key text is formatted once per distinct group.
@@ -679,6 +953,96 @@ where
     order
 }
 
+/// The axes a spec's [`Gram`] is indexed by: its columns (the features,
+/// with the intercept in front when the spec has one) and its targets. The
+/// Python `ModelBank.gram` builds the same two lists from the spec dict, and
+/// `tests/test_closed_groups.py` holds the two to each other.
+pub(crate) fn gram_axes(spec: &Spec) -> (Vec<String>, Vec<String>) {
+    // `ew_cov` accumulates over the features alone -- no target, and so no
+    // constant column to regress one on.
+    let unsupervised = matches!(spec.model, ModelKind::EwCov { .. });
+    let mut columns = spec.features.clone();
+    if spec.add_intercept && !unsupervised {
+        columns.insert(0, "intercept".to_string());
+    }
+    let targets = if unsupervised {
+        Vec::new()
+    } else {
+        spec.targets.clone()
+    };
+    (columns, targets)
+}
+
+/// The upper triangle of a row-major `k * k` symmetric matrix, with the
+/// diagonal, row by row: `k(k+1)/2` numbers instead of `k^2`, which is what
+/// the closed row carries (`po.gram.from_row` expands it). A co-moment
+/// matrix is symmetric to 1e-16 and not to the bit (E48), so the half that
+/// is kept is named: the upper one.
+pub(crate) fn vech(m: &[f64], k: usize) -> Vec<f64> {
+    let mut out = Vec::with_capacity(k * (k + 1) / 2);
+    for i in 0..k {
+        for j in i..k {
+            out.push(m[i * k + j]);
+        }
+    }
+    out
+}
+
+/// One model instance's [`Gram`], or `None` for a kind that keeps no
+/// co-moment matrix (`rls` and `kalman` track an inverse; the gradient
+/// models keep no second moment at all).
+///
+/// The one builder behind both [`Bank::gram`] and a [`ClosedRow`]'s Gram
+/// block, so "a closed row equals `gram()` read at the same point" holds by
+/// construction and the test is the tripwire that keeps it so.
+pub(crate) fn gram_of(key: &GroupKey, label: &str, model: &AnyModel) -> Option<Gram> {
+    let (cov, cross, weights, tm, targetless) = match model {
+        AnyModel::EwRidge(m) => (
+            m.cov(),
+            m.cross_moments().to_vec(),
+            m.target_weights().to_vec(),
+            m.target_moments(),
+            false,
+        ),
+        AnyModel::Lasso(m) => (
+            m.cov(),
+            m.cross_moments().to_vec(),
+            m.target_weights().to_vec(),
+            m.target_moments(),
+            false,
+        ),
+        // No targets, so no cross-moments: the matrix is the whole output.
+        AnyModel::EwCov(m) => (m.cov(), Vec::new(), Vec::new(), None, true),
+        _ => return None,
+    };
+    // Empty says "this model has no targets"; `None` says "this state was
+    // written before task 38 and cannot say". They are different answers, so
+    // `ew_cov` reports empty, not `None`.
+    let (target_means, target_vars, target_n_kish) = if targetless {
+        (Some(Vec::new()), Some(Vec::new()), Some(Vec::new()))
+    } else {
+        (
+            tm.map(|t| t.means().to_vec()),
+            tm.map(|t| t.vars().to_vec()),
+            tm.map(|t| t.n_kish(&weights)),
+        )
+    };
+    Some(Gram {
+        group: key.clone(),
+        instance: label.to_string(),
+        k: cov.k(),
+        n_eff: cov.n_eff(),
+        n_kish: cov.n_kish(),
+        means: cov.means().to_vec(),
+        comoments: cov.comoments().to_vec(),
+        cross_moments: cross,
+        target_means,
+        target_vars,
+        target_n_kish,
+        target_weights: weights,
+    })
+}
+
 /// One instance's EW accumulators, as returned by [`Bank::gram`].
 ///
 /// Values are in the features' original units. `comoments` is **centered**
@@ -694,7 +1058,7 @@ where
 ///
 /// The intercept, when the spec has one, is column 0: a constant 1, so it has
 /// zero variance in `comoments` and `raw[0][j] == means[j]`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Gram {
     pub group: GroupKey,
     /// The decay instance's suffix (`"@h500"`, or `""` for a single instance).
@@ -726,6 +1090,264 @@ pub struct Gram {
     /// Per-target Kish effective sample size, `W_t^2 / Q_t`; an entry is
     /// `None` for a target that has not seen a weighted row.
     pub target_n_kish: Option<Vec<Option<f64>>>,
+}
+
+/// One (feature, target) pair of a closed `marginal` group, the columns
+/// [`Bank::marginal`] reports for it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PairRow {
+    pub feature: String,
+    pub target: String,
+    pub n_eff: f64,
+    pub n_kish: f64,
+    pub mean_x: f64,
+    pub var_x: f64,
+    pub mean_y: f64,
+    pub var_y: f64,
+    pub cov: f64,
+    pub corr: f64,
+    pub beta: f64,
+    pub t: f64,
+}
+
+/// One group's accumulators at the moment the bank could prove that no
+/// further row would join it (docs/ENHANCEMENTS.md E54), one per decay
+/// instance.
+///
+/// The row is the state *as it stood*, so it equals the [`Bank::gram`] a
+/// driver would have read at the same point, field for field and bit for
+/// bit -- both are built by [`gram_of`], which is what keeps that true. The
+/// stream is dropped once the row is made, which is the point: a bank over
+/// an unbounded key space stays bounded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClosedRow {
+    /// Index of the spec in the bank; the frame carries its name.
+    pub spec: usize,
+    pub group: GroupKey,
+    /// The decay instance's suffix (`"@h500"`, or `""` for one instance).
+    pub instance: String,
+    /// The session value of the span just closed, under `group_close =
+    /// "session"`; `None` under `"monotone"`, and for a null session value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    pub n_eff: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_kish: Option<f64>,
+    /// Rows fed and rows learned from over the span, from the stream's own
+    /// [`DataSummary`]; `None` only for a stream restored from a file
+    /// written before task 35's summary existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows_fed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows_learned: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock_min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock_max: Option<f64>,
+    /// The accumulators, for a kind that keeps them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gram: Option<Gram>,
+    /// The flat `coef` list as of the last solve, for a kind that reports
+    /// one; the exact solve on the closed Gram is
+    /// `po.gram.solve(po.gram.from_row(row))`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coef: Option<Vec<f64>>,
+    /// `ew_cov(pca = r)`: the eigenvalues of this row's own `comoments`,
+    /// descending, and the loadings row-major `r * k`. Filled by the bank
+    /// as the row is queued, so the sign continuity is a function of queue
+    /// order alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eig_vals: Option<Vec<f64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eig_vecs: Option<Vec<f64>>,
+    /// A `marginal` spec's pairs, in [`Bank::marginal`] order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pairs: Vec<PairRow>,
+    /// Position of the closing row within the chunk that closed it: the
+    /// first row of the new session, or the first row of the greater key.
+    /// The queue's order, and not part of the row itself.
+    #[serde(skip)]
+    pub at: usize,
+}
+
+/// A `list[f64]` column: one list per row, `None` where the row has none,
+/// and null inside for a value that is not finite -- `coef`'s rule, and
+/// `marginal()`'s (a constant column's `corr` is NaN there and null here).
+fn list_f64(name: &str, rows: &[ClosedRow], f: impl Fn(&ClosedRow) -> Option<Vec<f64>>) -> Column {
+    let mut b = ListPrimitiveChunkedBuilder::<Float64Type>::new(
+        name.into(),
+        rows.len(),
+        8,
+        DataType::Float64,
+    );
+    for r in rows {
+        match f(r) {
+            Some(v) => b.append_iter(v.iter().map(|x| x.is_finite().then_some(*x))),
+            None => b.append_null(),
+        }
+    }
+    b.finish().into_series().into()
+}
+
+/// A `list[str]` column, as [`list_f64`].
+fn list_str(
+    name: &str,
+    rows: &[ClosedRow],
+    f: impl Fn(&ClosedRow) -> Option<Vec<String>>,
+) -> Column {
+    let mut b = ListStringChunkedBuilder::new(name.into(), rows.len(), 8);
+    for r in rows {
+        match f(r) {
+            Some(v) => b.append_values_iter(v.iter().map(String::as_str)),
+            None => b.append_null(),
+        }
+    }
+    b.finish().into_series().into()
+}
+
+/// The frame [`Bank::closed_groups`] returns: the common columns always,
+/// and a kind's block when **any** spec of the bank closes groups and is of
+/// that kind, null on the rows of other kinds (docs/ENHANCEMENTS.md E54).
+///
+/// One schema per bank, not per call: a driver concatenating a run's drains
+/// needs every frame to have the same columns, whatever happened to close in
+/// that chunk.
+fn closed_frame(specs: &[Spec], rows: &[ClosedRow]) -> PolarsResult<DataFrame> {
+    let closing: Vec<&Spec> = specs.iter().filter(|s| s.group_close.is_some()).collect();
+    let any = |f: fn(&Spec) -> bool| closing.iter().any(|s| f(s));
+    let has_gram = any(|s| {
+        matches!(
+            s.model,
+            ModelKind::EwRidge { .. } | ModelKind::Lasso { .. } | ModelKind::EwCov { .. }
+        )
+    });
+    let has_pca = any(|s| matches!(s.model, ModelKind::EwCov { pca: Some(_), .. }));
+    let has_pairs = any(|s| matches!(s.model, ModelKind::Marginal {}));
+    let opt = |v: f64| v.is_finite().then_some(v);
+
+    let mut cols: Vec<Column> = vec![
+        Column::new(
+            "spec".into(),
+            rows.iter()
+                .map(|r| specs[r.spec].name.as_str())
+                .collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "group".into(),
+            rows.iter().map(|r| r.group.as_str()).collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "instance".into(),
+            rows.iter().map(|r| r.instance.as_str()).collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "session".into(),
+            rows.iter()
+                .map(|r| r.session.as_deref())
+                .collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "n_eff".into(),
+            rows.iter().map(|r| opt(r.n_eff)).collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "n_kish".into(),
+            rows.iter()
+                .map(|r| r.n_kish.and_then(opt))
+                .collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "rows_fed".into(),
+            rows.iter()
+                .map(|r| r.rows_fed.map(|v| v as i64))
+                .collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "rows_learned".into(),
+            rows.iter()
+                .map(|r| r.rows_learned.map(|v| v as i64))
+                .collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "clock_min".into(),
+            rows.iter()
+                .map(|r| r.clock_min.and_then(opt))
+                .collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "clock_max".into(),
+            rows.iter()
+                .map(|r| r.clock_max.and_then(opt))
+                .collect::<Vec<_>>(),
+        ),
+    ];
+    if has_gram {
+        let axes = |r: &ClosedRow| gram_axes(&specs[r.spec]);
+        cols.push(list_str("columns", rows, |r| {
+            r.gram.as_ref().map(|_| axes(r).0)
+        }));
+        cols.push(list_f64("means", rows, |r| {
+            r.gram.as_ref().map(|g| g.means.clone())
+        }));
+        cols.push(list_f64("comoments", rows, |r| {
+            r.gram.as_ref().map(|g| vech(&g.comoments, g.k))
+        }));
+        cols.push(list_str("targets", rows, |r| {
+            r.gram.as_ref().map(|_| axes(r).1)
+        }));
+        cols.push(list_f64("target_means", rows, |r| {
+            r.gram.as_ref().and_then(|g| g.target_means.clone())
+        }));
+        cols.push(list_f64("target_vars", rows, |r| {
+            r.gram.as_ref().and_then(|g| g.target_vars.clone())
+        }));
+        cols.push(list_f64("target_weights", rows, |r| {
+            r.gram.as_ref().map(|g| g.target_weights.clone())
+        }));
+        cols.push(list_f64("target_n_kish", rows, |r| {
+            r.gram.as_ref().and_then(|g| {
+                g.target_n_kish
+                    .as_ref()
+                    .map(|v| v.iter().map(|x| x.unwrap_or(f64::NAN)).collect())
+            })
+        }));
+        cols.push(list_f64("cross_moments", rows, |r| {
+            r.gram
+                .as_ref()
+                .map(|g| g.cross_moments.iter().flatten().copied().collect())
+        }));
+    }
+    cols.push(list_f64("coef", rows, |r| r.coef.clone()));
+    if has_pca {
+        cols.push(list_f64("eig_vals", rows, |r| r.eig_vals.clone()));
+        cols.push(list_f64("eig_vecs", rows, |r| r.eig_vecs.clone()));
+    }
+    if has_pairs {
+        let empty = |r: &ClosedRow| r.pairs.is_empty();
+        cols.push(list_str("pair_feature", rows, |r| {
+            (!empty(r)).then(|| r.pairs.iter().map(|p| p.feature.clone()).collect())
+        }));
+        cols.push(list_str("pair_target", rows, |r| {
+            (!empty(r)).then(|| r.pairs.iter().map(|p| p.target.clone()).collect())
+        }));
+        for (name, f) in [
+            ("pair_n_eff", (|p: &PairRow| p.n_eff) as fn(&PairRow) -> f64),
+            ("pair_n_kish", |p| p.n_kish),
+            ("pair_mean_x", |p| p.mean_x),
+            ("pair_var_x", |p| p.var_x),
+            ("pair_mean_y", |p| p.mean_y),
+            ("pair_var_y", |p| p.var_y),
+            ("pair_cov", |p| p.cov),
+            ("pair_corr", |p| p.corr),
+            ("pair_beta", |p| p.beta),
+            ("pair_t", |p| p.t),
+        ] {
+            cols.push(list_f64(name, rows, move |r| {
+                (!empty(r)).then(|| r.pairs.iter().map(f).collect())
+            }));
+        }
+    }
+    DataFrame::new(rows.len(), cols)
 }
 
 /// One decay instance's coefficients, from [`Bank::coef`].
@@ -800,6 +1422,17 @@ struct BankFile {
     /// so a file without it still loads and reports the streams' own count.
     #[serde(default)]
     rows_fed: u64,
+    /// Closed rows nobody has drained yet (E54). A map key with a default,
+    /// so a file written without one still loads and a bank that closes
+    /// nothing writes the same bytes it always did.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    closed: Vec<ClosedRow>,
+    /// `(spec index, high-water key)` for the specs that have one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    high_water: Vec<(usize, GroupKey)>,
+    /// `(spec index, instance, components)` for the PCA sign continuity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pca_prev: Vec<(usize, String, online_core::Pca)>,
 }
 
 pub struct Bank {
@@ -810,6 +1443,22 @@ pub struct Bank {
     /// Rows fed so far. Kept at the bank level because a stream's `rows_seen`
     /// goes with it when its group is dropped.
     rows_fed: u64,
+    /// Rows of groups that have closed and not yet been read, oldest first
+    /// (docs/ENHANCEMENTS.md E54). Saved with the bank: a driver that saves
+    /// between chunks without draining would otherwise lose them silently.
+    closed: Vec<ClosedRow>,
+    /// Per spec under `group_close = "monotone"`: the largest key seen, past
+    /// which no group may reopen.
+    high_water: Vec<Option<GroupKey>>,
+    /// The last closed row's components per (spec, decay instance), so an
+    /// `ew_cov(pca = r)` row's loadings keep their sign across a group and
+    /// across a save/load.
+    pca_prev: HashMap<(usize, String), online_core::Pca>,
+    /// Whether each spec's group column is an integer one, so that
+    /// [`key_cmp`] orders its keys as numbers. Learned from the first chunk
+    /// a `"monotone"` spec sees and false until then; the queue's key order
+    /// reads it.
+    key_integer: Vec<bool>,
 }
 
 /// Everything `assemble` needs that follows from the `Spec` alone.
@@ -986,12 +1635,18 @@ impl Bank {
             })
             .collect::<Result<Vec<_>, String>>()?;
         let states = specs.iter().map(|_| HashMap::new()).collect();
+        let high_water = specs.iter().map(|_| None).collect();
+        let key_integer = vec![false; specs.len()];
         Ok(Self {
             specs,
             clock_cfgs,
             derived,
             states,
             rows_fed: 0,
+            closed: Vec::new(),
+            high_water,
+            pca_prev: HashMap::new(),
+            key_integer,
         })
     }
 
@@ -1093,54 +1748,8 @@ impl Bank {
         keys.sort();
         let mut out = Vec::new();
         for key in keys {
-            let stream = &states[key];
-            for (label, model) in &stream.models {
-                let (cov, cross, weights, tm, targetless) = match model {
-                    AnyModel::EwRidge(m) => (
-                        m.cov(),
-                        m.cross_moments().to_vec(),
-                        m.target_weights().to_vec(),
-                        m.target_moments(),
-                        false,
-                    ),
-                    AnyModel::Lasso(m) => (
-                        m.cov(),
-                        m.cross_moments().to_vec(),
-                        m.target_weights().to_vec(),
-                        m.target_moments(),
-                        false,
-                    ),
-                    // No targets, so no cross-moments: the matrix is the whole
-                    // output.
-                    AnyModel::EwCov(m) => (m.cov(), Vec::new(), Vec::new(), None, true),
-                    _ => continue,
-                };
-                // Empty says "this model has no targets"; `None` says "this
-                // state was written before task 38 and cannot say". They are
-                // different answers, so `ew_cov` reports empty, not `None`.
-                let (target_means, target_vars, target_n_kish) = if targetless {
-                    (Some(Vec::new()), Some(Vec::new()), Some(Vec::new()))
-                } else {
-                    (
-                        tm.map(|t| t.means().to_vec()),
-                        tm.map(|t| t.vars().to_vec()),
-                        tm.map(|t| t.n_kish(&weights)),
-                    )
-                };
-                out.push(Gram {
-                    group: key.clone(),
-                    instance: label.clone(),
-                    k: cov.k(),
-                    n_eff: cov.n_eff(),
-                    n_kish: cov.n_kish(),
-                    means: cov.means().to_vec(),
-                    comoments: cov.comoments().to_vec(),
-                    cross_moments: cross,
-                    target_means,
-                    target_vars,
-                    target_n_kish,
-                    target_weights: weights,
-                });
+            for (label, model) in &states[key].models {
+                out.extend(gram_of(key, label, model));
             }
         }
         Ok(out)
@@ -1463,6 +2072,24 @@ impl Bank {
             .par_iter()
             .map(|s| group_indices(df, s))
             .collect::<PolarsResult<_>>()?;
+        // `group_close = "monotone"` reads the keys in the column's own
+        // order, not `GroupKey`'s lexicographic one, and refuses a chunk
+        // whose keys are out of order -- before any model is touched, beside
+        // the clock check below (E54).
+        let mut integer_keys = vec![false; self.specs.len()];
+        for (si, spec) in self.specs.iter().enumerate() {
+            if spec.closes_monotone() {
+                integer_keys[si] = group_key_is_integer(df, spec)?;
+                self.key_integer[si] = integer_keys[si];
+                check_monotone(
+                    spec,
+                    &groups[si],
+                    n,
+                    integer_keys[si],
+                    self.high_water[si].as_ref(),
+                )?;
+            }
+        }
         let layouts: Vec<Option<Vec<usize>>> = groups.iter().map(|g| layout_of(g, n)).collect();
         let t_group = t0.elapsed();
         let t1 = std::time::Instant::now();
@@ -1500,19 +2127,19 @@ impl Bank {
         // Each task owns a disjoint `&mut Stream`, so the borrow checker needs
         // them pulled out of the maps up front. `base` is where the group's
         // run starts in the laid-out columns.
-        let mut work: Vec<(usize, &Vec<usize>, usize, &mut Stream)> = Vec::new();
+        let mut work: Vec<(usize, &GroupKey, &Vec<usize>, usize, &mut Stream)> = Vec::new();
         for (si, hm) in self.states.iter_mut().enumerate() {
             let mut taken: HashMap<&GroupKey, &mut Stream> = hm.iter_mut().collect();
             let mut base = 0;
             for (key, idx) in &groups[si] {
                 let stream = taken.remove(key).expect("stream materialized above");
-                work.push((si, idx, base, stream));
+                work.push((si, key, idx, base, stream));
                 base += idx.len();
             }
         }
         // Longest stream first: with a few big groups and many small ones,
         // starting the big ones last leaves cores idle at the tail.
-        work.sort_by_key(|(_, idx, _, _)| std::cmp::Reverse(idx.len()));
+        work.sort_by_key(|(_, _, idx, _, _)| std::cmp::Reverse(idx.len()));
 
         // Under `on_clock_reset = "error"` the chunk is refused as a whole:
         // every stream checks its clock schedule on a copy before any model is
@@ -1520,7 +2147,7 @@ impl Bank {
         // was -- the streams the chunk would have created included, so that
         // `groups()` lists what the bank has learned from -- and the corrected
         // chunk can be fed. A no-op under every other policy.
-        let checked = work.par_iter().try_for_each(|(si, idx, base, stream)| {
+        let checked = work.par_iter().try_for_each(|(si, _, idx, base, stream)| {
             let sc = &cols[*si];
             stream
                 .check_clock(
@@ -1549,7 +2176,10 @@ impl Bank {
             .partition(|(si, ..)| derived[*si].compare.is_some());
         let mut out: Vec<Option<Column>> = specs.iter().map(|_| None).collect();
         let mut per_spec_rows: Vec<Vec<ChunkOut>> = (0..specs.len()).map(|_| Vec::new()).collect();
-        for (si, r) in process(work1, specs, cfgs, &cols) {
+        let mut closed: Vec<ClosedRow> = Vec::new();
+        let (rows1, closed1) = process(work1, specs, cfgs, &cols);
+        closed.extend(closed1);
+        for (si, r) in rows1 {
             match r {
                 Ok(o) => per_spec_rows[si].push(o),
                 Err(e) => {
@@ -1574,7 +2204,9 @@ impl Bank {
                         compare_targets(&specs[si], ab, &out, layouts[si].as_deref())?;
                 }
             }
-            for (si, r) in process(work2, specs, cfgs, &cols) {
+            let (rows2, closed2) = process(work2, specs, cfgs, &cols);
+            closed.extend(closed2);
+            for (si, r) in rows2 {
                 match r {
                     Ok(o) => per_spec_rows[si].push(o),
                     Err(e) => {
@@ -1590,6 +2222,41 @@ impl Bank {
             })?;
             t_assemble += t5.elapsed();
         }
+        // ---- the monotone close batch (E54) ----
+        // After both phases and in key order: every group below the chunk's
+        // largest key is finished, whatever the chunking, because every row
+        // of it precedes the first row of a greater key.
+        for si in 0..self.specs.len() {
+            if !self.specs[si].closes_monotone() || groups[si].is_empty() {
+                continue;
+            }
+            let integer = integer_keys[si];
+            let starts: Vec<(GroupKey, usize)> = groups[si]
+                .iter()
+                .map(|(k, idx)| (k.clone(), idx[0]))
+                .collect();
+            let max_key = starts.last().expect("the chunk has a group").0.clone();
+            let mut closing: Vec<GroupKey> = self.states[si]
+                .keys()
+                .filter(|k| key_cmp(k, &max_key, integer) == std::cmp::Ordering::Less)
+                .cloned()
+                .collect();
+            closing.sort_by(|a, b| key_cmp(a, b, integer));
+            for key in closing {
+                // The closing row is the first row of the first greater key
+                // in this chunk; a group closed without a row of its own here
+                // closes at the chunk's first row.
+                let at = starts.partition_point(|(k, _)| {
+                    key_cmp(k, &key, integer) != std::cmp::Ordering::Greater
+                });
+                let at = starts.get(at).map_or(0, |(_, r)| *r);
+                let stream = self.states[si].remove(&key).expect("key came from the map");
+                closed.extend(close_rows(si, &self.specs[si], &key, &stream, at));
+            }
+            self.high_water[si] = Some(max_key);
+        }
+        self.queue_closed(closed);
+
         if timing {
             let total = t0.elapsed();
             eprintln!(
@@ -1693,6 +2360,78 @@ impl Bank {
             .collect())
     }
 
+    /// Append a chunk's closed rows to the queue in the one order row order
+    /// implies: by the row that closed them, then by key, then by instance
+    /// (docs/ENHANCEMENTS.md E54). Streams are processed in parallel, so
+    /// this sort is what makes the queue a function of the data alone.
+    ///
+    /// The `ew_cov(pca = r)` block is computed here rather than at the
+    /// close, for the same reason: the loadings are signed for continuity
+    /// with the previous closed row of the same (spec, instance), and
+    /// "previous" has to mean previous in the queue.
+    fn queue_closed(&mut self, mut rows: Vec<ClosedRow>) {
+        if rows.is_empty() {
+            return;
+        }
+        rows.sort_by(|a, b| {
+            // Only rows of one spec ever reach the key comparison, the tuple
+            // above having separated the specs, so one spec's flag decides.
+            let integer = self.key_integer[a.spec];
+            (a.at, a.spec)
+                .cmp(&(b.at, b.spec))
+                .then_with(|| key_cmp(&a.group, &b.group, integer))
+                .then_with(|| a.instance.cmp(&b.instance))
+        });
+        for row in rows.iter_mut() {
+            let ModelKind::EwCov { pca: Some(r), .. } = self.specs[row.spec].model else {
+                continue;
+            };
+            let Some(g) = &row.gram else { continue };
+            let key = (row.spec, row.instance.clone());
+            let prev = self.pca_prev.get(&key);
+            if let Some(p) = online_core::Pca::of(&g.comoments, g.k, r, prev) {
+                row.eig_vals = Some(p.eig.clone());
+                row.eig_vecs = Some(p.loadings.clone());
+                self.pca_prev.insert(key, p);
+            }
+        }
+        self.closed.extend(rows);
+    }
+
+    /// The groups that have closed and not been read (docs/ENHANCEMENTS.md
+    /// E54), oldest first, as one long frame; see [`ClosedRow`] and
+    /// `docs/PLAN.md` §11a for the schema. `spec` narrows it to one spec's
+    /// rows. `drop` removes what it returns from the queue -- the ordinary
+    /// use, a drain per chunk -- and `false` peeks at it.
+    ///
+    /// A bank whose specs have no `group_close` never queues anything and
+    /// always answers with an empty frame of the schema.
+    ///
+    /// # Errors
+    ///
+    /// `spec` out of range, or a frame the columns cannot make.
+    pub fn closed_groups(&mut self, spec: Option<usize>, drop: bool) -> Result<DataFrame, String> {
+        if let Some(si) = spec {
+            if si >= self.specs.len() {
+                return Err(format!("spec index {si} out of range"));
+            }
+        }
+        let taken: Vec<ClosedRow> = if drop {
+            let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.closed)
+                .into_iter()
+                .partition(|r| spec.is_none_or(|si| r.spec == si));
+            self.closed = rest;
+            mine
+        } else {
+            self.closed
+                .iter()
+                .filter(|r| spec.is_none_or(|si| r.spec == si))
+                .cloned()
+                .collect()
+        };
+        closed_frame(&self.specs, &taken).map_err(|e| e.to_string())
+    }
+
     /// The bank as versioned msgpack: the specs, every group's state and the
     /// row count, behind a magic string and two version numbers
     /// (`BANK_FORMAT_VERSION` for this envelope, `online_core::SCHEMA_VERSION`
@@ -1716,6 +2455,22 @@ impl Bank {
                     v
                 })
                 .collect(),
+            closed: self.closed.clone(),
+            high_water: self
+                .high_water
+                .iter()
+                .enumerate()
+                .filter_map(|(si, k)| k.clone().map(|k| (si, k)))
+                .collect(),
+            pca_prev: {
+                let mut v: Vec<(usize, String, online_core::Pca)> = self
+                    .pca_prev
+                    .iter()
+                    .map(|((si, inst), p)| (*si, inst.clone(), p.clone()))
+                    .collect();
+                v.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+                v
+            },
         };
         rmp_serde::to_vec_named(&file).map_err(|e| e.to_string())
     }
@@ -1779,6 +2534,19 @@ impl Bank {
         // A file from before the counter existed: every spec sees every row,
         // so the first spec's streams have the count, less any dropped group
         // and less the rows the null policy skipped.
+        bank.closed = file.closed.clone();
+        for (si, key) in &file.high_water {
+            // A key stored under a column dtype the bank no longer has is a
+            // different key: `"10"` orders after `"9"` as an integer and
+            // before it as a string, so the mark would let through exactly
+            // the groups it exists to refuse.
+            if let Some(slot) = bank.high_water.get_mut(*si) {
+                *slot = Some(key.clone());
+            }
+        }
+        for (si, inst, pca) in &file.pca_prev {
+            bank.pca_prev.insert((*si, inst.clone()), pca.clone());
+        }
         bank.rows_fed = if file.rows_fed > 0 {
             file.rows_fed
         } else {

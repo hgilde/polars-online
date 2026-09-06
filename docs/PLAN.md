@@ -620,7 +620,7 @@ and the oracles are in §11a under *Preparing E54–E64 for implementation* —
 and every new model walks `docs/EXTENDING.md`'s eighteen steps. E63 is a
 note, not a task.
 
-- [ ] 45. **Closed-group emission** (E54): `group_close = "monotone" |
+- [x] 45. **Closed-group emission** (E54): `group_close = "monotone" |
       "session"` as a common parameter; `ModelBank.closed_groups(spec=None,
       *, drop=True)`; the sidecar table through `po.run(closed_groups=)`,
       `lf.online.fit_predict(closed_groups=)` and `online --closed-groups`;
@@ -2060,6 +2060,44 @@ which also says which items it could *not* verify.
   `marginal` spec in one bank; the sidecar equal to `pl.concat` of the
   driver's `closed_groups()` frames; `predict=True` with `closed_groups`
   refused in all three entry points.
+
+*Task 45 as built, 2026-09-06.* The design above stood; five things were
+decided at the keyboard and are here so the next reader does not re-derive
+them.
+
+- *`group_close = "session"` replaces `session_gap`, it does not sit beside
+  it.* `clock_cfg()` has always required `session_gap` whenever `session` is
+  given -- a session change has to say what the delta is -- and the block
+  above refuses the pair. Both cannot hold, so the close is now itself the
+  prescription: `session_gap` is required for a session column *unless* the
+  spec closes on it, where the answer is "emit the span and start over".
+- *The session split lives in `process`, not in `process_chunk`.* The bank
+  already cuts a stream's rows into cache-sized runs, each with its own
+  `ChunkOut`; a session segment is one more cut of the same kind, so
+  `Stream::process_chunk` is untouched and the buffers, the assembly and the
+  `last`-row coefficient report all keep working as they did. The boundaries
+  come from `ClockState::prev_session()` and the session hashes the columns
+  already carry, walked in row order -- a property of two consecutive rows,
+  which is what makes the split chunk-invariant.
+- *The PCA is computed when the row is queued, not when the group closes.*
+  Streams close in parallel, and the loadings are signed for continuity with
+  the previous closed row of the same (spec, instance) -- so "previous" has
+  to mean previous in the queue, or the signs would depend on which thread
+  got there first. `Bank::queue_closed` sorts by `(closing row, spec, key,
+  instance)` and then fills `eig_vals`/`eig_vecs` in that order.
+- *`from_row` mirrors the packed half, and the mirror is not bit-exact.* The
+  row carries `vech` of the upper triangle, half the bytes; `po.gram.from_row`
+  reflects it. The reflected lower triangle differs from `gram()`'s in the
+  last bit or so, because the accumulator adds the same two products in the
+  opposite order for `C[i][j]` and `C[j][i]` and IEEE multiplication of a
+  three-term product does not commute -- E48's finding, in the same library.
+  The acceptance therefore holds bit for bit on the half the row carries and
+  to `1e-15` on the reflection, and the docstring says so. Storing the full
+  `k*k` would make the mirror exact at twice the size; the half was chosen.
+- *`rows_fed` and `rows_learned` are nullable.* They come from the stream's
+  `DataSummary`, which is `None` for a stream restored from a file written
+  before task 35. Null is the true answer there; a zero would read as a
+  count.
 
 *Task 46 — `deco` (E55).*
 

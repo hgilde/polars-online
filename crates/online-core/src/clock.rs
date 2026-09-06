@@ -130,6 +130,16 @@ impl ClockState {
         self.prev_clock
     }
 
+    /// The hash of the last row's session value, `None` before the first row
+    /// or on a stream with no session column. A caller that has to know where
+    /// a session boundary falls *before* the rows are processed -- the E54
+    /// close-on-session split -- reads it here and walks the column itself,
+    /// rather than advancing a copy of the clock and discarding everything
+    /// else the advance decided.
+    pub fn prev_session(&self) -> Option<u64> {
+        self.prev_session
+    }
+
     /// Advance by one row. `clock = None` means a row-count clock (delta 1).
     /// `accept = false` marks a skipped (feature-null) row: its delta is folded
     /// into `pending` instead of being returned.

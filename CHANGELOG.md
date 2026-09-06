@@ -7,7 +7,41 @@ carries breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **State schema 4 → 5.** The spec every bank file carries gained
+  `group_close` (below), so every file's bytes moved. A schema-4 file loads,
+  continues to the bit and re-saves as 5; nothing in a model's own state
+  changed.
+
 ### Added
+
+- **Closed-group emission: a group's accumulators, emitted when it is
+  finished** (`docs/ENHANCEMENTS.md` E54, task 45). A new common parameter
+  `group_close = "monotone" | "session"`. Under `"monotone"` a key smaller
+  than the largest one fed so far is finished; under `"session"` a group's
+  span ends where its `session` value changes. Either way the bank emits one
+  row per (group, decay instance) — the accumulators exactly as they stood,
+  `n_eff`, `n_kish`, the span's row counts and clock range, the Gram as list
+  columns, `coef`, an `ew_cov(pca=r)`'s eigendecomposition, a `marginal`'s
+  pairs — and **drops the stream**. That is what keeps a bank over an
+  unbounded key space bounded.
+
+  Read the rows with `ModelBank.closed_groups(spec=None, *, drop=True)`, or
+  write them as a sidecar file with `po.run(closed_groups=path)`,
+  `lf.online.fit_predict(closed_groups=path)` or `online --closed-groups
+  path`; the sidecar is written once, at the end, through a temporary
+  renamed into place. `po.gram.from_row(row)` reads a row back as a
+  `gram()` mapping, so `po.gram.solve(po.gram.from_row(row))` is the exact
+  solve on a closed group. The closed row **is** the `gram()` a driver would
+  have read at that point, bit for bit — one builder makes both.
+
+  With `output=None` that is the whole shape of an accumulate-only pass:
+  read a stream that does not fit in memory, write one row per block.
+  `"monotone"` refuses a chunk whose keys are out of order (naming the row),
+  a null key, and a key column it cannot order; `group_close` is refused
+  without `group`, with `label_delay`, and — for `"session"` — without
+  `session` or with `session_gap`.
 
 - **`label_delay`: a target that is only known later is learned later**
   (`docs/ENHANCEMENTS.md` E47, task 40). A common parameter in clock units:

@@ -130,6 +130,16 @@ def _run(spec: dict[str, Any], target_expr: pl.Expr, feature_exprs: list[pl.Expr
             f"stream per group with .over({spec['group']!r}) instead"
         )
         raise TypeError(msg)
+    if spec.get("group_close") is not None:
+        # `.over()` has no end-of-group signal to close on, and nowhere to
+        # put a closed row: an expression returns one column of the frame's
+        # own height (E54).
+        msg = (
+            "online: group_close is not an expression parameter; a closed group's row is a "
+            "frame of its own, which an expression cannot return. Use a ModelBank, "
+            "lf.online.fit_predict(closed_groups=...) or po.run(closed_groups=...)."
+        )
+        raise TypeError(msg)
     _warn_in_memory(spec["model"]["type"], target_expr.meta.output_name())
     # ew_cov, kmeans and micro have no target: their first feature *is* the
     # calling column, so it must not be passed twice.
