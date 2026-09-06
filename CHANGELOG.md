@@ -16,6 +16,14 @@ carries breaking changes.
 
 ### Added
 
+- **`po.sim.regimes`: a seeded simulator for correlation regimes**
+  (`docs/ENHANCEMENTS.md` E64, task 52). A stream of `m` series whose
+  correlation changes by regime, with the parts that make a detector's job
+  real: asynchronous observation, microstructure noise on the level, AR(1)
+  returns, a volatility that moves with the state, a diurnal pattern and a
+  volume clock. Returns `bars` (levels, clock, session, volume),
+  `truth_rows` and `truth_blocks`, all byte-identical for a given seed.
+
 - **`po.corr`: correlation matrices, read and repaired**
   (`docs/ENHANCEMENTS.md` E62, task 51). `po.gram`'s complement, in the same
   style: numpy only, pure functions, one longhand check each. Higham's

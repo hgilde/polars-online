@@ -673,6 +673,35 @@ po.run(input=by_block.lazy(), specs=[blocks], closed_groups="blocks.parquet")
 write it too. What has closed and not been read is saved with the state, so
 a driver that saves between chunks does not lose rows silently.
 
+### Data whose truth is known
+
+A regime detector is a claim about a stream, and a claim needs a stream
+whose answer is written down. `po.sim.regimes` produces one from a seed,
+with the awkward parts included — series that tick at their own times,
+prices observed with noise, autocorrelated returns, a volatility that moves
+with the regime, an intraday pattern and a volume clock — and hands back the
+truth beside the data.
+
+```python
+out = po.sim.regimes(4, states=[0.2, 0.7],
+                     transition=[[0.98, 0.02], [0.02, 0.98]],
+                     n_blocks=8, bars_per_block=500,
+                     phi=0.3, noise=0.01, async_rates=[1.0, 1.0, 0.4, 0.4],
+                     seed=0)
+bars, truth = out["bars"], out["truth_blocks"]
+```
+
+`bars` is what a consumer sees: **levels** `x_1 … x_m` (so
+`po.prep.refresh_time` and then `.diff()` apply), a clock, a session and an
+optional volume. `truth_rows` gives the block, state, volatility multiplier
+and interpolation fraction per bar; `truth_blocks` gives each block's true
+correlation matrix. Two calls with the same seed are byte-identical.
+
+Under `async_rates` a bar where a series drew no tick carries `null`, so
+both the sparse and the previous-tick forms are one line away. `durations`
+makes each state last exactly as long as it says; `design="smooth"`
+interpolates the matrix across a boundary instead of stepping.
+
 ### Reading a correlation matrix
 
 `po.gram` solves and diagnoses a design matrix. `po.corr` is its

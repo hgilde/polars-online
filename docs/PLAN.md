@@ -679,7 +679,7 @@ note, not a task.
       examples; PSD and unit diagonal on random inputs; `qlike` zero at
       `fcst = real` and positive elsewhere; `equicorr_row` equals task 46's
       `u`; every function held to a longhand check.
-- [ ] 52. **`po.sim.regimes`** (E64): the seeded regime simulator, `numpy`
+- [x] 52. **`po.sim.regimes`** (E64): the seeded regime simulator, `numpy`
       only, with asynchronous observation, noise, AR(1), a volatility state,
       a diurnal factor and a volume process; returns `bars`, `truth_rows`,
       `truth_blocks`. Acceptance: block correlations recover the per-state
@@ -2715,6 +2715,23 @@ entries, distance 2.13 and rank 3. Four notes.
   `Rₜ` under `"smooth"` PSD; `session` and `clock` consistent with
   `session_bars` and `volume`; two calls with the same seed byte-identical
   (`DataFrame.equals` on all three frames); schema and lengths fixed.
+
+*Task 52 as built, 2026-09-06.* The design stood. Three notes.
+
+- *The documented truth is the innovation correlation, and the tests say
+  so.* An AR filter moves the *return* correlation of a pair with unequal
+  `φ`; the per-state recovery test therefore runs at `phi = 0`, and `phi`
+  gets its own test through the lag-1 autocorrelation. Task 51's
+  `fisher_se` inflation is the tool for the other case.
+- *Noise goes on the level, not the return.* That is what the literature
+  models and what makes the observed return an MA(1) with a negative first
+  autocorrelation -- measured at `−0.2` or below at `noise = 2` against
+  `|ρ₁| < 0.03` clean, which is the microstructure effect `rcov` undoes.
+- *The Cholesky factor is cached by `(state, previous state, diurnal bar,
+  mix)`.* Under `"step"` with no diurnal that is one factorisation per
+  state, which is what the row asked for; under `"smooth"` the mix is part
+  of the key, so a ramp of `smooth_bars` costs that many factorisations and
+  no more.
 
 *Task 53 — `hmm` (E60).*
 

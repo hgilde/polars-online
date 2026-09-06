@@ -29,6 +29,7 @@ from polars_online import (
     eval,
     gram,
     prep,
+    sim,
     spec,
 )
 from polars_online._bank import ModelBank
@@ -53,6 +54,7 @@ __all__ = [
     "prep",
     "run",
     "schema_version",
+    "sim",
     "spec",
     "thread_pool_size",
     "unnest",

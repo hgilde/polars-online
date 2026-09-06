@@ -24,3 +24,4 @@ polars-online``.
    gram
    corr
    prep
+   sim
