@@ -27,7 +27,10 @@ carries breaking changes.
   at 2000 and 1000 replications, across three data-generating processes,
   which found that **their tables cannot be matched without knowing which
   bivariate `t₅` they used** — the two readings straddle their figure, and
-  the gate's test now pins the nominal level on Gaussian pairs instead;
+  the gate's test now pins the nominal level on Gaussian pairs instead; the
+  denominator behind both, `D̂`, against the closed-form value it estimates,
+  which is exact on Gaussian pairs and 15 % low with a 40 % scatter on a
+  `t₅` and so accounts for the whole difference;
   `corrchange(window)` against `bocpd` on the same break, which is 29 rows
   and 51 flags per 1000 quiet rows against 98 rows and 0.68; and the Epps
   curve, where refresh time recovers 0.54 of a true 0.8 and the lag

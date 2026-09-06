@@ -2915,9 +2915,18 @@ Gaussian pairs sit at the nominal 5 %. Size-adjusted power is *below* their
 table under either `t₅` (`.43` and `.47` against `.587`) and well above it
 on Gaussian pairs. The gate's size test now pins **the nominal level on
 Gaussian pairs**, which is a property this implementation has, instead of a
-`t₅` table it does not reproduce; §3 of the document states the hypothesis
-(a fourth-moment `D̂` under a distribution with barely any kurtosis) and
-says outright that it is untested. Five notes.
+`t₅` table it does not reproduce.
+
+**And the cause is one number, measured (§4 of that document).** `D̂` is the
+delta-method sd of `√T·ρ̂`, and for an elliptical law the quantity it
+estimates is `(1−ρ²)√(1+κ)` in closed form. Against that: on Gaussian pairs
+`D̂` is exact and tight (0.750 against 0.750 at `T = 2000`, sd 0.03); on a
+tail-dependent `t₅` it is **15 % low, no better at `T = 2000` than at
+`T = 500`**, with a scatter 40 % of its own size. It is built from fourth
+moments and a `t₅` has kurtosis only just (`ν > 4` by one), so there is no
+rate at which it settles. Too small a denominator is the liberal size; the
+scatter is the lost size-adjusted power. The estimator is not wrong — it is
+right where the delta method promises it will be. Five notes.
 
 - *`scalar = true` is a **mean** CUSUM, not a correlation one.* The first
   implementation pushed `[u, u]` into the pair machinery, whose correlation
@@ -3107,6 +3116,13 @@ says outright that it is untested. Five notes.
   adjusted, and its size at `|ρ| = 0.5` swings from `.075` to `.025`
   depending on which bivariate `t₅` is meant. Task 54's note and its gate
   test are corrected; the document reports all three DGPs side by side.
+- *A sixth experiment, `dhat`, turns that from a hypothesis into a
+  measurement.* `D̂` is recovered from the reported statistic (the longhand
+  numerator divided by it) and compared with the closed-form elliptical
+  value it estimates. Exact on Gaussian pairs, 15 % low and wildly scattered
+  on a `t₅`, and no better at four times the sample. Both symptoms in the
+  two sections above are that one number, and the document says so instead
+  of calling them unexplained.
 - *The seeds are `zlib.crc32`, not `hash()`.* Python randomises string
   hashing per process, so the first draft's numbers changed run to run. An
   experiment in a committed document has to give the reader the numbers it
