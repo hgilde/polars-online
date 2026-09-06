@@ -693,13 +693,17 @@ note, not a task.
       longhand `numpy` filter at fixed parameters; `predict` is the step
       without the step; recovery of Π and the means on task 52's streams as a
       `docs/REGIMES.md` experiment; the sweeps.
-- [ ] 54. **`corrchange`** (E59): the Wied–Krämer–Dehling / Wied–Galeano
-      sequential constancy monitor and the two-window `vech` statistic with a
-      permutation critical value. Acceptance: the monitor's size at the
-      nominal level and its power on a `0.5 → 0.7` step within Monte-Carlo
-      error; the window statistic against longhand `numpy`; run length to
-      false alarm and detection delay on task 52's streams in
-      `docs/REGIMES.md`.
+- [ ] 54. **`corrchange`** (E59): the Wied–Krämer–Dehling (2012)
+      closed-sample constancy test run span by span (`horizon` rows, the
+      paper's `D̂`, Kolmogorov critical values, Bonferroni over pairs) and
+      the two-window `vech` statistic with a permutation critical value.
+      Acceptance: the monitor's size and power reproduce WKD's Table 1
+      (`.040/.035/.041` at `T = 500`; `.587` power on a `0.5 → 0.7` step)
+      to Monte-Carlo error; `D̂` and `Q` against longhand `numpy` to
+      `1e-12`; the window statistic to the bit; run length to false alarm
+      and detection delay of the window kind on task 52's streams in
+      `docs/REGIMES.md`. The Wied–Galeano (2013) sequential detector is a
+      §10 follow-up, not part of this task.
 - [ ] 55. **`bocpd`** (E61): Adams–MacKay run-length recursion with
       normal-inverse-Wishart, per-feature normal-inverse-gamma and the robust
       diffusion-score-matching posterior; tail truncation. Acceptance: a
@@ -2076,6 +2080,12 @@ which also says which items it could *not* verify.
   geometric mean of the two blocks' mean squares, in `[−1, 1]` by
   Cauchy–Schwarz. A block of one feature has no within term: refuse blocks
   of size `< 2` by name. Every feature must be in exactly one block.
+  ANSWERS confirms the closed forms against Engle–Kelly (2012), and two
+  things the paper says that the docstring repeats: `uₜ` is a downward
+  biased estimate of the equicorrelation (their §2.2), and an alternative
+  `u^var = 1 − (1/(n−1))·Σᵢ(rᵢ − r̄)²` exists — the variance-of-standardised
+  returns form — which this task does **not** offer (one estimator, the
+  Lemma 2.3 one, until a use asks for the other).
 - *Dynamics.* `"ew"`: `rho' = a·rho + b·u` with `a = λW/W'`, `b = w/W'`,
   `W' = λW + w` — `EwCov::update`'s mean form; at `W = 0` that is `rho = u`;
   `W' = 0` (a zero-weight first row) skips. `rho` is NaN before its first
@@ -2084,7 +2094,15 @@ which also says which items it could *not* verify.
   alongside as the target and `rho` starts at the first `u`; `α, β ≥ 0`,
   `α + β < 1`, refused otherwise and refused under `"ew"`. `halflife`/`lam`
   are required under both (the standardiser and `rho_bar` decay on them).
-  Reported `rho` is the level **before** the row.
+  Reported `rho` is the level **before** the row. Two departures from the
+  paper, recorded here so nobody "fixes" them back (ANSWERS, verified
+  against Engle–Kelly): eq. 21 has a free intercept `ω`, and the paper
+  applies correlation targeting to the DECO-DCC `Q` recursion (its eq. 5),
+  not to the linear one — writing the intercept as `(1 − α − β)·rho_bar`
+  is *our* reparameterisation, chosen because it removes a free parameter
+  that has no sample to be fitted on in a streaming model; and the paper
+  lets `α + β` sit slightly above 1 under numerical bounds, where our `α +
+  β < 1` is the stricter, stationary choice. The docstring says both.
 - *`loglik`.* The row's Gaussian log-density under the pre-row `rho`, in
   standardised coordinates: `−½·[n·ln 2π + ln det R + r'R⁻¹r]` with `det R
   = (1−ρ)^{n−1}(1 + (n−1)ρ)` and `r'R⁻¹r = (S₂ − ρ·S₁²/(1 + (n−1)ρ))/(1−ρ)`.
@@ -2205,14 +2223,21 @@ which also says which items it could *not* verify.
   series' last value, `n_ticks_<s>` = ticks of `s` since the previous point,
   `retained_fraction` = `m / Σ_s n_ticks_s` for the interval, and `keep`
   columns at their value on the completing tick. Then every flag clears
-  and the counts restart. `pairs=True` runs an independent two-series state
+  and the counts restart. The docstring carries BNHLS §2.1's caveat
+  (ANSWERS): the refresh vector is treated as observed at `time_refresh`,
+  though each series' value is stale by up to one of its own inter-tick
+  intervals — the price of a common grid, and why `n_ticks_<s>` is emitted
+  (a large count on one series is that series' staleness made visible).
+  `pairs=True` runs an independent two-series state
   per pair and emits the long frame `(by?, pair, time_refresh, a_value,
   b_value, n_ticks_a, n_ticks_b)` with `pair = "a|b"` in `names` order.
 - *Tests.* A longhand Python loop over the same rows on random Poisson
   streams (the oracle), with `by` and with `pairs`; §10's three-series
-  example — `n = 8, 9, 10` ticks giving `N = 7` and `21/27` retained — if
-  the paper's tick times are to hand, else a constructed one asserting
-  `N ≤ min nᵢ` and `retained = N·m/Σnᵢ` against the loop; a synchronous
+  example — `n = 8, 9, 10` ticks giving `N = 7` and `21/27` retained, which
+  ANSWERS verified against BNHLS but whose tick times exist only as the
+  paper's figure — so the test is a constructed three-series stream with
+  those tick counts that the loop reduces to exactly `N = 7`, asserting
+  `N ≤ min nᵢ` and `retained = N·m/Σnᵢ = 21/27`; a synchronous
   input (every series ticks at every time) returned with `n_ticks = 1` and
   `retained_fraction = 1` everywhere; a volume clock as `time`; identical
   frames from 1 and 1000 batches; the unknown-series and backwards-time
@@ -2242,38 +2267,64 @@ which also says which items it could *not* verify.
   ..Xₙ)`, so the effective return series is `x̃₁ = X_m − X̃₀` (formed from
   the first `m` raw returns once row `m` is in), the raw `x_{m+1} ..
   x_{n−m}`, and `x̃_end = X̃ₙ − X_{n−m}` (formed at close from the last `m`
-  raw returns); `n_eff_returns = n − 2m + 2`. **Products enter `Γ̂_h` only
-  once both legs are final**: at row `t`, add `x_{t−m}·x'_{t−m−h}` for `h ≤
+  raw returns); `n_eff_returns = n − 2m + 2`. BNHLS §2.2 (ANSWERS,
+  verified): `m = 1` is mean-square optimal for their flat-top form and
+  `m = 1 … 4` moves the estimate under 0.5 % — so `jitter` defaults to `2`
+  as §10 asked and the docstring says the choice is immaterial at that
+  scale; their worked `m = 2` is exactly `X̃₀ = ½(X_{τ₀} + X_{τ₁})`, `X̃ₙ =
+  ½(X_{τ_{N−1}} + X_{τ_N})`, which the formula above reproduces. **Products
+  enter `Γ̂_h` only once both legs are final**: at row `t`, add `x_{t−m}·x'_{t−m−h}` for `h ≤
   h_max` (the return `m` rows back can no longer be replaced by the end
   jitter); at close, add the products of `x̃_end` with the last `h_max` final
   returns. That is what makes the state a ring of `h_max + m` vectors and
   the close `O(h_max·k²)`, with no retraction. Bandwidth: `bandwidth` an
-  integer `H` (then `h_max = H`, `n_max` unneeded) or `"auto"`: per feature
-  `ξ̂ᵢ² = ω̂ᵢ²/IV̂ᵢ` with `ω̂ᵢ² = RV_dense,ᵢ/(2n)` and `IV̂ᵢ` the realised
-  variance on a sparse subsample (`noise_stride`, default 20 ticks, averaged
-  over offsets), `Hᵢ = c*·ξ̂ᵢ^{4/5}·n^{3/5}`, `c* = 3.5134` (Parzen), `H =
-  ⌈mean Hᵢ⌉` clipped to `h_max`, reported as `bandwidth_used`. `"auto"`
-  requires `n_max`, from which `h_max` defaults to `⌈c*·n_max^{3/5}⌉` (`ξ̂
-  = 1`, a noise variance equal to the block's integrated variance, beyond
-  which the estimator is not worth having); `h_max` may be given. `n_max`
-  is a sizing hint, not a limit: a longer block runs, clipped, and says so.
-  Parzen is a positive-definite function, so `K` is PSD up to rounding;
+  integer `H` (then `h_max = H`, `n_max` unneeded) or `"auto"`, BNHLS §4.1
+  as ANSWERS read it: `c* = ((12)²/0.269)^{1/5} = 3.5134` for Parzen (the
+  kernel constant `k''(0)²/∫k² = 12²/0.269`); per feature `ξ̂ᵢ² =
+  ω̂ᵢ²/IV̂ᵢ`, with `IV̂ᵢ` the realised variance on a sparse grid
+  (`iv_stride`, default 20 rows, averaged over the `iv_stride` offsets —
+  their 20-minute RV) and `ω̂ᵢ²` the mean over `q` offsets of
+  `RV_dense^{(i)}/(2n^{(i)})` taken on every `q`-th return (`noise_stride`,
+  default `1`, i.e. the full dense grid; their `q ≈ 25` trades or `≈ 70`
+  quotes for a ~2-minute grid — the estimate is deliberately upward biased,
+  which their §4.1 accepts, and a stride above 1 is the caller's call); `Hᵢ
+  = c*·ξ̂ᵢ^{4/5}·n^{3/5}`, `H = ⌈mean Hᵢ⌉` clipped to `h_max`, reported as
+  `bandwidth_used`. `"auto"` requires `n_max`, from which `h_max` defaults
+  to `⌈c*·n_max^{3/5}⌉` (`ξ̂ = 1`, a noise variance equal to the block's
+  integrated variance, beyond which the estimator is not worth having);
+  `h_max` may be given. `n_max` is a sizing hint, not a limit: a longer
+  block runs, clipped, and says so. Parzen is a positive-definite function,
+  so `K` is PSD up to rounding (BNHLS: the Bartlett kernel is *not*
+  consistent for this estimator, and Parzen's efficiency 0.97 beats the
+  quadratic-spectral 0.93 — the reason it is the only kernel offered);
   `psd=True` clips negative eigenvalues at `0` and sets `psd_repaired` when
   it had to.
 - *`kind = "preavg"` (CKP 2010; Hautsch–Podolskij 2013 for the constants).*
   `g(x) = min(x, 1−x)`, `Ȳᵢ = Σ_{j=1}^{kₙ−1} g(j/kₙ)·x_{i+j}`; `MRC = n/(n −
   kₙ + 2) · 1/(ψ₂^{kₙ}·kₙ) · Σᵢ ȲᵢȲᵢ' − ψ₁^{kₙ}/(θ²·ψ₂^{kₙ}) · 1/(2n) ·
-  Σⱼ xⱼxⱼ'` with the finite-sample `ψ₁^{k} = k·Σ_{j=1}^{k}(g(j/k) −
-  g((j−1)/k))²`, `ψ₂^{k} = (1/k)·Σ_{j=1}^{k−1} g(j/k)²` (limits `1`,
-  `1/12`; the `Φ` constants `1/6`, `1/96`, `151/80640` are checked in the
-  test as the closed forms of the corresponding integrals, and are not used
-  by the estimator). `psd=False` is that balanced, bias-corrected form
+  Σⱼ xⱼxⱼ'`, `kₙ = ⌊θ·√n⌋` (CKP's floor, ANSWERS — not the ceiling the
+  first draft had), with the finite-sample constants as CKP write them:
+  `ψ₁^{k} = k·Σ_{i=1}^{k}(g(i/k) − g((i−1)/k))²`, `ψ₂^{k} = (1/k)·
+  Σ_{i=1}^{k−1} g(i/k)²` (limits `ψ₁ = 1`, `ψ₂ = 1/12`). The `Φ` constants
+  appear only in the asymptotic variance, which the estimator does not
+  report, so the estimator does not use them; the test still pins the
+  limits `Φ₁₁ = 1/6`, `Φ₁₂ = 1/96`, `Φ₂₂ = 151/80640` against the
+  finite-sample forms `φ₁^k(j) = Σ_{i=j+1}^{k−1}(g((i−1)/k) −
+  g(i/k))·(g((i−j−1)/k) − g((i−j)/k))`, `φ₂^k(j) = Σ_{i=j+1}^{k−1}
+  g(i/k)·g((i−j)/k)`, `Φ₁₁^k = k·(Σⱼ φ₁^k(j)² − ½φ₁^k(0)²)`, `Φ₁₂^k =
+  (1/k)·(Σⱼ φ₁^k(j)φ₂^k(j) − ½φ₁^k(0)φ₂^k(0))` (and `Φ₂₂^k` by the same
+  pattern), because they are the check that `g` and the `ψ` sums are coded
+  as the paper has them. `psd=False` is that balanced, bias-corrected form
   (optimal rate, not guaranteed PSD; clipped and flagged as the kernel is);
-  `psd=True` is the longer window `kₙ = ⌈θ·n^{1/2+δ}⌉`, `δ = 0.1`, without
-  the bias term. `kₙ` must be fixed before the block starts, so it is
-  `⌈θ·√n_max⌉` (or `⌈θ·n_max^{0.6}⌉`) from a required `n_max`, or a given
-  `window`. Streaming: a ring of `kₙ − 1` returns; each arriving return
-  completes one `Ȳ`, whose outer product is added — `O(kₙ·k + k²)` a row.
+  `psd=True` is CKP §3's longer window without the bias term — **the
+  exponent and the dropped term are taken from CKP §3 during
+  implementation; the `kₙ = ⌈θ·n^{1/2+δ}⌉`, `δ = 0.1` of the first draft is
+  Hautsch–Podolskij's reading and stands only if §3 agrees** (the one open
+  read in this task; ANSWERS did not cover §3). `kₙ` must be fixed before
+  the block starts, so it is `⌊θ·√n_max⌋` (or the §3 form on `n_max`) from
+  a required `n_max`, or a given `window`. Streaming: a ring of `kₙ − 1`
+  returns; each arriving return completes one `Ȳ`, whose outer product is
+  added — `O(kₙ·k + k²)` a row.
 - *The row's `rcov` block.* `rcov` list[f64] (vech, as `comoments`), `rcorr`
   list[f64] (vech, unit diagonal), `rcov_n` i64 (effective returns),
   `rcov_kind` str, `bandwidth_used` i64 (null for `plain`/`preavg`),
@@ -2306,32 +2357,54 @@ which also says which items it could *not* verify.
 - *`to_z` / `from_z`.* `atanh` / `tanh` with the input clipped at `|ρ| ≤ 1 −
   1e-6` (`z ≈ 7.25`) so a unit off-diagonal from a degenerate block is
   finite; the clip is in the docstring.
-- *`nearest(A, W=None, *, tol=1e-8, max_iter=100)`.* Higham (2002):
-  alternating projections onto the PSD cone (eigenvalue clipping in the
-  `W^{1/2}`-weighted norm) and onto the unit-diagonal set, with Dykstra's
-  correction; returns `(X, dist, iters)` where `dist` is the weighted
-  Frobenius distance. **The partial-eigensolve path §10 mentions is
-  dropped**: `numpy.linalg.eigh` is the only eigensolver on the dependency
-  list, and the matrices this library produces are small enough that a
-  full decomposition per iteration is the cheaper code. Tests: Higham's
-  3×3 example `[[1, 1, 0], [1, 1, 1], [0, 1, 1]]` → `[[1, .7607, .1573],
-  [.7607, 1, .7607], [.1573, .7607, 1]]`, and the 4×4 tridiagonal
-  `2, −1` matrix of his `nearcorr` example → `[[1, −.8084, .1916, .1068],
-  [−.8084, 1, −.6562, .1916], [.1916, −.6562, 1, −.8084], [.1068, .1916,
-  −.8084, 1]]` — these are as published, from memory; the implementer
-  verifies them against the paper before pinning, at `1e-4`; PSD (smallest
-  eigenvalue `≥ −1e-10`) and unit diagonal on random symmetric inputs; a
-  matrix already a correlation matrix returned in one iteration.
-- *`shrink(R, target="constant", alpha=None, X=None)`.* Ledoit–Wolf (2004,
-  the constant-correlation target `F` with `r̄` the mean off-diagonal). The
-  optimal intensity `δ* = clip((π̂ − ρ̂)/γ̂ / T, 0, 1)` needs the row data
-  `X` (`T × k`, the standardised rows): `π̂ = Σᵢⱼ (1/T) Σₜ (xᵢₜxⱼₜ − sᵢⱼ)²`
-  cannot be formed from `R` and `T` alone, so §10's `T=None` becomes `X=None`
-  and the function requires `alpha` or `X` (recorded so the next reader does
-  not try to recover `π̂` from the matrix). `target="identity"` is the
-  other target offered. Test: the fixture is a small `X` with `δ*` worked
-  longhand from the paper's `π̂`, `ρ̂`, `γ̂` formulae; `alpha=0` returns `R`,
-  `alpha=1` returns `F`.
+- *`nearest(A, W=None, *, tol=1e-8, max_iter=100)`.* Higham (2002),
+  Algorithm 3.3 exactly: `ΔS₀ = 0`, `Y₀ = A`; for `k = 1, 2, …`: `R_k =
+  Y_{k−1} − ΔS_{k−1}` (Dykstra's correction), `X_k = P_S(R_k)`, `ΔS_k = X_k
+  − R_k`, `Y_k = P_U(X_k)`; with diagonal `W`, `P_U` sets the diagonal to 1
+  and `P_S(A) = W^{−1/2}·(W^{1/2}AW^{1/2})₊·W^{−1/2}`, `(·)₊` the
+  eigenvalue clip at zero. Stop (his test 4.1) when the largest of
+  `‖X_k − X_{k−1}‖_∞/‖X_k‖_∞`, `‖Y_k − Y_{k−1}‖_∞/‖Y_k‖_∞`, `‖Y_k −
+  X_k‖_∞/‖Y_k‖_∞` is below `tol`. Returns `(X, dist, iters)`, `dist` the
+  weighted Frobenius distance. **The partial-eigensolve path §10 mentions
+  is dropped**: `numpy.linalg.eigh` is the only eigensolver on the
+  dependency list, and the matrices this library produces are small enough
+  that a full decomposition per iteration is the cheaper code. Tests, with
+  the values ANSWERS verified against the paper (§2 and §4): `A = [[1, 1,
+  0], [1, 1, 1], [0, 1, 1]]` (eigenvalues `1 ± √2`, `1`) → `[[1, .7607,
+  .1573], [.7607, 1, .7607], [.1573, .7607, 1]]`, `‖A − X‖_F = 0.5278`,
+  `X` singular with null vector `[−.4814, .7324, −.4814]` (and `ee'`, the
+  obvious guess, is at distance `√2`); `A = tridiag(−1, 2, −1)` of order 4
+  → `[[1, −.8084, .1916, .1068], [−.8084, 1, −.6562, .1916], [.1916,
+  −.6562, 1, −.8084], [.1068, .1916, −.8084, 1]]`, `‖A − X‖_F = 2.13`,
+  rank 3, **19 iterations at `tol = 1e-8`** (linear convergence, a factor
+  ≈ 3 per iteration — assert the count, it pins the algorithm and not just
+  the fixed point); entries at `1e-4`, distances at `1e-3`. Bounds worth a
+  test each: a diagonal `A` gives `I`; a PSD `A` with diagonal `≤ 1` gives
+  `A` with its diagonal set to 1; a unit-diagonal `A` with `t` nonpositive
+  eigenvalues gives an `X` with at least `t` zero eigenvalues (Theorem
+  2.5 — the 4×4 example's rank 3). PSD (smallest eigenvalue `≥ −1e-10`) and
+  unit diagonal on random symmetric inputs; a correlation matrix returned
+  in one iteration.
+- *`shrink(R, target="constant", alpha=None, X=None)`.* Ledoit & Wolf
+  (2004), the constant-correlation target: `fᵢᵢ = sᵢᵢ`, `fᵢⱼ = r̄·√(sᵢᵢsⱼⱼ)`
+  with `r̄ = 2/((N−1)N)·Σ_{i<j} rᵢⱼ` — on a correlation matrix `sᵢᵢ = 1`
+  and `F` is the equicorrelation matrix at `r̄`. The intensity `δ̂* =
+  max{0, min{κ̂/T, 1}}`, `κ̂ = (π̂ − ρ̂)/γ̂`, with (their Appendices A–B,
+  verified in ANSWERS)
+
+  `π̂ = Σᵢⱼ π̂ᵢⱼ`, `π̂ᵢⱼ = (1/T)·Σₜ ((yᵢₜ − ȳᵢ)(yⱼₜ − ȳⱼ) − sᵢⱼ)²`;
+  `ρ̂ = Σᵢ π̂ᵢᵢ + Σ_{i≠j} (r̄/2)·(√(sⱼⱼ/sᵢᵢ)·ϑ̂ᵢᵢ,ᵢⱼ + √(sᵢᵢ/sⱼⱼ)·ϑ̂ⱼⱼ,ᵢⱼ)`,
+  `ϑ̂ᵢᵢ,ᵢⱼ = (1/T)·Σₜ ((yᵢₜ − ȳᵢ)² − sᵢᵢ)·((yᵢₜ − ȳᵢ)(yⱼₜ − ȳⱼ) − sᵢⱼ)`;
+  `γ̂ = Σᵢⱼ (fᵢⱼ − sᵢⱼ)²`.
+
+  `π̂` and `ϑ̂` are fourth-moment sums over the rows, so the intensity needs
+  the row data `X` (`T × k`, the standardised rows) and cannot be formed
+  from `R` and `T` — §10's `T=None` becomes `X=None` and the function
+  requires `alpha` or `X` (recorded so the next reader does not try to
+  recover `π̂` from the matrix). `target="identity"` is the other target
+  offered. Tests: a small `X` fixture with `δ̂*` worked longhand from the
+  formulae above; `alpha=0` returns `R`, `alpha=1` returns `F`; the result
+  is positive definite whenever `F` is.
 - *`equicorr(R)` / `equicorr_row(r)` / `equicorr_loglik(r, rho)`.* The mean
   off-diagonal; task 46's `u` on one standardised row; task 46's closed-form
   log-density — all offline, and the pins for the model's own tests.
@@ -2349,9 +2422,12 @@ which also says which items it could *not* verify.
   of `R[i, j]` over `i ∈ a`, `j ∈ b`, excluding `i = j`; returns `(B,
   counts)`; `from_blocks` rebuilds the block-equicorrelation matrix with a
   unit diagonal. `block_means(from_blocks(B)) == B` is the test.
-- *`mp_edge(n, m, sigma2=1.0)`* = `σ²(1 ± 1/√Q)²`, `Q = n/m`; test the closed
-  form (`Q = 1 → (0, 4σ²)`) and a random Wishart spectrum lying inside the
-  edges (a margin for finite `n`).
+- *`mp_edge(n, m, sigma2=1.0)`* = `σ²(1 + 1/Q ± 2√(1/Q))` = `σ²(1 ±
+  1/√Q)²`, `Q = n/m ≥ 1` (Laloux, Cizeau, Bouchaud & Potters 1999,
+  verified); the density `ρ(λ) = (Q/2πσ²)·√((λ₊ − λ)(λ − λ₋))/λ` is offered
+  as `mp_density(lam, n, m, sigma2)` for a plot. Tests: `Q = 1 → (0, 4σ²)`;
+  a random Wishart spectrum lying inside the edges up to a finite-`n`
+  margin.
 - *`signal_share(z_blocks, n_eff_blocks)`.* Per pair over `B` blocks: `clip(1
   − mean_b(1/(n_b − 3)) / var_b(z_b), 0, 1)` — the share of the between-block
   variance of Fisher-z that the sampling floor does not explain; `1-D`
@@ -2362,18 +2438,32 @@ which also says which items it could *not* verify.
   `R̂ = R` (the test); `"z_mse"`: `Σ_{i<j} (ẑᵢⱼ − zᵢⱼ)² · (n − 3)` with `n`
   required; `"minvar"`: `w'Rw` with `w = R̂⁻¹μ / (μ'R̂⁻¹μ)`, `μ` defaulting
   to ones (Engle–Colacito, minimised over `R̂` at `R̂ = R` — a second test).
-- *`epps_invert(gram_or_row, *, max_lag=None)`.* From task 48's `lags` and
-  `lag_comoments`: `ρ̂ₐᵦ = (C₀[a, b] + Σ_ℓ (C_ℓ[a, b] + C_ℓ[b, a])) /
-  √(C₀[a, a]·C₀[b, b])`, the lagged-cross-correlation sum that undoes the
-  Epps attenuation of a synchronised-but-lagged pair (Tóth–Kertész eq. 12
-  in its discrete form), over the lags present or the first `max_lag`.
-  Test: a simulated pair where `b` is `a` delayed by two rows — the
-  contemporaneous correlation near zero, the inverted one near the truth.
+- *`epps_invert(gram_or_row, *, L)`.* Tóth–Kertész eq. 12 exactly
+  (ANSWERS, verified): the correlation at scale `L` rows from the lagged
+  co-moments at scale 1 carries **triangular** weights on the numerator
+  *and* both denominators, and both orientations of the cross term —
+
+  `ρ̂_L[a, b] = Σ_{x=−(L−1)}^{L−1} (L − |x|)·C_x[a, b] / √(Σ_x (L −
+  |x|)·C_x[a, a] · Σ_x (L − |x|)·C_x[b, b])`, with `C_{−x}[a, b] = C_x[b, a]`,
+
+  i.e. numerator `L·C₀[a, b] + Σ_{ℓ=1}^{L−1} (L − ℓ)·(C_ℓ[a, b] + C_ℓ[b,
+  a])` and auto terms `L·C₀[a, a] + 2·Σ_{ℓ=1}^{L−1} (L − ℓ)·C_ℓ[a, a]`.
+  The flat sum the first draft had is the `L → ∞` limit and is dropped;
+  `L` is required, and the input must carry every lag `1 … L−1` (the
+  docstring says `lags=list(range(1, L))`; a missing lag is an error naming
+  it). Test: a simulated pair where `b` is `a` delayed by two rows — the
+  scale-1 correlation near zero, `ρ̂_L` at `L = 8` near the truth — and the
+  identity at `L = 1` (the plain correlation).
 - *`fisher_se(n, rho=None, phi_a=None, phi_b=None)`.* `1/√(n − 3)` is the
   standard error of `z`; with `rho` the delta-method error of `ρ` itself,
-  `(1 − ρ²)/√(n − 3)`; with both `phi` the Bartlett inflation `√((1 +
-  φₐφᵦ)/(1 − φₐφᵦ))` for an AR(1) pair. One `phi` without the other is an
-  error.
+  `(1 − ρ²)/√(n − 3)`; with both `phi` the inflation `√((1 + φₐφᵦ)/(1 −
+  φₐφᵦ))` for an AR(1) pair — Bartlett's `Var(r) ≈ (1/n)·Σₖ ρₐ(k)ρᵦ(k)`
+  under zero true cross-correlation, which for two AR(1)s sums to `(1 +
+  φₐφᵦ)/(1 − φₐφᵦ)` (the geometric series `1 + 2·Σ_{k≥1}(φₐφᵦ)ᵏ`; a test
+  asserts the closed form against the partial sum). The docstring says
+  both assumptions — zero true correlation, linear dependence — and that
+  the factor is invalid under ARCH-type innovations. One `phi` without the
+  other is an error.
 
 *Task 52 — `po.sim.regimes` (E64).*
 
@@ -2492,64 +2582,93 @@ which also says which items it could *not* verify.
 
 *Task 54 — `corrchange` (E59).*
 
-- *`kind="monitor"`.* The training span of `train` learned rows gives
-  `ρ̂_train` per pair and `D̂`, the long-run standard deviation of the
-  correlation estimator by the delta method: the gradient of `ρ` in the
-  five moments `(x, y, x², y², xy)` applied to their Bartlett-kernel
-  long-run covariance at bandwidth `⌊log T⌋` (Wied, Krämer & Dehling 2012
-  — the implementer confirms the base of the log from the paper; the
-  training span's moments are a ring of `train` rows, the only memory
-  the kind needs). Then, at monitored row `j` (counted from the start of
-  the span, training included), `stat = (j/√T)·|ρ̂ⱼ − ρ̂_train| / D̂` with
-  `ρ̂ⱼ` cumulative and `T = train + horizon` — a required `horizon`, because
-  the statistic has no `T` without one — and `crit` = the sup|B(z)|
-  quantile at `alpha` (`1.358` at 5%, `1.628` at 1%: the closed-sample
-  test's null) or a number. **What is not settled here, and is the
-  implementer's first job**: those quantiles are exact for WKD's
-  closed-sample statistic, which centres on `ρ̂_T`; the sequential form
-  above centres on `ρ̂_train`, and Wied & Galeano (2013) give it its own
-  boundary function and table. Take theirs; the acceptance criterion is
-  written so that a wrong constant fails it (below). Over the pairs, `stat`
-  is the maximum and the flagging pair is not reported (the row is one
-  flag). `scalar=True` monitors task 46's `u` instead — the same CUSUM on
-  the running mean of a scalar with `D̂` its Bartlett long-run variance, on
-  rows an `EwDiag` standardises; `halflife`/`lam` are accepted under
-  `scalar=True` only (they parametrise that standardiser) and refused by
-  name otherwise, since neither kind decays anything else.
+- *`kind="monitor"` is WKD's closed-sample test, span by span.* §10's
+  sequential form centres on a training-span `ρ̂_train` and needs the
+  boundary function and critical values of Wied & Galeano (2013), which
+  `docs/ANSWERS-E54-E64.md` could not read (paywalled) and offers no
+  constant for. What *can* be pinned against published tables is the
+  closed-sample fluctuation test of Wied, Krämer & Dehling (2012), so that
+  is what ships: the stream is cut into consecutive spans of `horizon`
+  learned rows (`T = horizon`, required; `train` is gone — the test has no
+  training span), and at the last row of a span, per pair,
+
+  `Q = max_{2≤j≤T} (j/√T)·|ρ̂ⱼ − ρ̂_T| / D̂`,
+
+  `ρ̂ⱼ` the sample correlation of the span's first `j` rows and `D̂` the
+  delta-method long-run standard deviation of `ρ̂` over the span: the five
+  raw moments `Uₜ = (x², y², x, y, xy)` centred at their span means, their
+  Bartlett-kernel long-run covariance `Σ̂ = (1/T)·Σₜ Σᵤ k((t−u)/γ_T)·VₜVᵤ'`
+  with `k(x) = 1 − |x|` and `γ_T = ⌊ln T⌋` — the paper writes `[log T]`
+  without a base, and the natural log is the only reading that gives a
+  usable bandwidth (`6` at `T = 500`; base 10 gives `2`); exposed as
+  `bandwidth=None` meaning that default — mapped to `(σ_x², σ_y², σ_xy)` by
+  `D₂` (rows `(1, 0, −2μ_x, 0, 0)`, `(0, 1, 0, −2μ_y, 0)`, `(0, 0, −μ_y,
+  −μ_x, 1)`) and to `ρ` by `D₃ = (−½σ_xy σ_y σ_x⁻³, −½σ_xy σ_x σ_y⁻³,
+  1/(σ_xσ_y))`: `D̂² = D₃D₂Σ̂D₂'D₃'`. (The paper's `D̂` is the reciprocal and
+  multiplies the statistic — the same number.) Under `H₀`, `Q →_d
+  sup_{0≤z≤1}|B(z)|`, so `crit` is the Kolmogorov quantile **computed** from
+  `P(sup|B| ≤ x) = 1 − 2·Σ_{k≥1} (−1)^{k−1}·exp(−2k²x²)` at `alpha`, not a
+  pinned constant — `1.3581` at 5%, `1.6276` at 1%, `1.2239` at 10% are what
+  the function must reproduce (a test). Over the pairs `stat` is the
+  maximum and `crit` is taken at `alpha/npairs` (Bonferroni; the paper
+  leaves the correction open; offering `alpha_adjust="none"` is
+  *implementer's call*). The statistic needs `ρ̂ⱼ` for every `j` *and*
+  `ρ̂_T`, so the span's rows sit in a ring of `horizon` rows and the
+  statistic is one `O(T·k² + T·γ_T·k²)` pass at the span's end — per row,
+  only the push. Outputs are null except on a span's last row, where
+  `stat`, `crit` and `flag` are written; the delay is at most `horizon`
+  rows, which is the price of a known null. `scalar=True` runs the same
+  CUSUM on task 46's `u`: `max_j (j/√T)·|ūⱼ − ū_T| / D̂ᵤ`, `D̂ᵤ` the Bartlett
+  long-run standard deviation of `u` over the span, on rows an `EwDiag`
+  standardises; `halflife`/`lam` are accepted under `scalar=True` only (they
+  parametrise that standardiser) and refused by name otherwise, since
+  neither kind decays anything else. The sequential Wied–Galeano detector
+  stays in §10 as the step after this one, to be taken when its paper has
+  been read; it does not block the task.
 - *`kind="window"`.* Two adjacent rings of `window` rows; `stat =
   ‖vech(R̂_pre − R̂_post)‖` in ℓ₁ or ℓ∞ over the strict upper triangle, each
   `R̂` the sample correlation of its window (scale-free, so no
   standardiser). `crit` a number, or `"permute"`: **not §10's sign flips** —
   negating a whole row leaves every `xₜxₜ'` and so every correlation matrix
-  unchanged, so a sign-flip null has zero spread. The exchangeable null for
-  "the two windows share a distribution" is a permutation of the pooled
-  `2·window` rows between the windows: `n_perm` draws, the `(1 − alpha)`
-  quantile of the permuted statistics, recomputed every `permute_every`
-  rows (each draw is `O(window·k²)` from scratch — the reason it is not per
-  row), with `perm_block` (default `1`) permuting blocks of consecutive rows
-  so that serially dependent rows do not make the null too liberal. A
-  fixed-seed generator in state keeps the draws chunk-invariant.
+  unchanged, so a sign-flip null has zero spread (ANSWERS confirms). The
+  exchangeable null for "the two windows share a distribution" is a
+  permutation of the pooled `2·window` rows between the windows: `n_perm`
+  draws, the `(1 − alpha)` quantile of the permuted statistics, recomputed
+  every `permute_every` rows (each draw is `O(window·k²)` from scratch — the
+  reason it is not per row), with `perm_block` (default `1`) permuting
+  blocks of consecutive rows so that serially dependent rows do not make
+  the null too liberal. A fixed-seed generator in state keeps the draws
+  chunk-invariant.
 - *Outputs and state.* `stat`, `crit` (null until a critical value exists),
   `flag` (`Source::Flag`), `since_flag` (`Source::Id`; learned rows since
-  the last flag, null before the first), `n_eff`. `reset=True` restarts the
-  training span (`monitor`) or empties both rings (`window`) at a flag;
-  `reset=False` keeps monitoring and the flag simply stays up while the
-  statistic is over. Task 47's `clear_lags` empties the rings and, for
-  `monitor`, restarts the span — a break in the clock is a break in the
-  data the statistic assumes contiguous. `ModelState::CorrChange`,
+  the last flag, null before the first), `n_eff`. `reset=True` empties both
+  rings at a flag (`window`; `monitor`'s spans are disjoint by
+  construction, so `reset` does not apply to it); `reset=False` keeps
+  monitoring and the flag simply stays up while the statistic is over.
+  Task 47's `clear_lags` empties the rings and, for `monitor`, abandons the
+  current span and starts a new one — a break in the clock is a break in
+  the data the statistic assumes contiguous. `ModelState::CorrChange`,
   appended. `n_outputs() = 5`.
-- *Tests.* Size: `kind="monitor"` on i.i.d. Gaussian pairs, the empirical
-  flag rate at `alpha = 0.05` within the binomial Monte-Carlo band over
-  `≥ 300` seeds in the gate (`≥ 2000` in the `docs/REGIMES.md` experiment);
-  power on a `0.5 → 0.7` step at `T = 500` and `1000` within Monte-Carlo
-  error of the paper's table (the implementer reads the numbers off the
-  paper); `kind="window"` against a longhand numpy statistic to the bit and
-  the permutation quantile against a numpy re-draw with the same seed;
-  average run length to false alarm and mean detection delay on task 52's
-  streams recorded in `docs/REGIMES.md`; rings emptied across a session
-  change and a `max_dclock` breach; `reset` both ways; the clock-rescaling
-  test; the sweeps; `MINIMAL["corrchange"] = {"features": ["x0", "x1"],
-  "window": 8, "crit": 0.5}`.
+- *Tests.* `kind="monitor"` against WKD's Tables 1–2 (5000 replications,
+  5%, i.i.d. bivariate `t₅` innovations), which ANSWERS transcribes: size
+  at `T = 500` is `.040 / .035 / .041` at `ρ = −0.5 / 0 / 0.5` and at `T =
+  1000` `.038 / .034 / .039` — the gate's size test uses `|ρ| ≤ 0.5` (the
+  test over-rejects at `|ρ| = 0.9` for `T ≤ 500`: `.142`–`.144`, which is
+  the paper's finding, not a bug) and the paper's numbers as its
+  expectation with a binomial band, over `≥ 300` seeds in the gate and `≥
+  2000` in the `docs/REGIMES.md` experiment; size-adjusted power on `0.5 →
+  0.7` at `T/2`, `.587` at `T = 500` and `.830` at `T = 1000`, within
+  Monte-Carlo error; `D̂` and `Q` on one span against a longhand numpy
+  computation to `1e-12`; the Kolmogorov quantiles above; `kind="window"`
+  against a longhand numpy statistic to the bit and the permutation
+  quantile against a numpy re-draw with the same seed; average run length
+  to false alarm and mean detection delay of the `window` kind on task
+  52's streams recorded in `docs/REGIMES.md` (the monitor's false-alarm
+  rate per span *is* its size, already pinned); rings emptied across a
+  session change and a
+  `max_dclock` breach; `reset` both ways; the clock-rescaling test; the
+  sweeps; `MINIMAL["corrchange"] = {"features": ["x0", "x1"], "window": 8,
+  "crit": 0.5}`.
 
 *Task 55 — `bocpd` (E61).*
 
@@ -2557,7 +2676,8 @@ which also says which items it could *not* verify.
   `P(rₜ = r+1, x₁:ₜ) = P(rₜ₋₁ = r, x₁:ₜ₋₁)·πₜ^{(r)}·(1 − H)`, the changepoint
   branch `P(rₜ = 0, x₁:ₜ) = Σᵣ P(rₜ₋₁ = r, x₁:ₜ₋₁)·πₜ^{(r)}·H`, `H = 1/hazard`
   with `hazard` a number or a column read per row (declared like `weight`,
-  not a feature). Truncation: runs whose normalised mass is below
+  not a feature); ANSWERS confirms the two branches against the paper's
+  Algorithm 1. Truncation: runs whose normalised mass is below
   `truncate` are dropped and the vector renormalised; `max_run` caps its
   length by folding the tail into the last kept run. The vector and one
   sufficient-statistic block per kept run are the state; the cost is
@@ -2576,7 +2696,9 @@ which also says which items it could *not* verify.
   sufficient statistics), and the acceptance test below is what pins it.
   `robust_beta` with another emission, or `prior_*` that do not fit the
   emission, are refused by name. Univariate use (one feature) is allowed and
-  is the paper's own setting.
+  is the paper's own setting. ANSWERS did not verify the ABK 2023 posterior
+  (PMLR 202, open access) — it is the second of the two reads left to the
+  implementer, alongside CKP §3 in task 50.
 - *Outputs.* `p_r0` — the posterior mass of `rₜ = 0`, i.e. that *this* row
   started a run, computed from the row (`kmeans`-`dist` style, and the
   docstring says so; the pre-row probability of a changepoint is `H` itself
@@ -2588,8 +2710,13 @@ which also says which items it could *not* verify.
   `ModelState::Bocpd`, appended.
 - *Tests.* Against a longhand numpy Algorithm 1 on a synthetic univariate
   mean-shift stream, the full run-length posterior to `1e-10` at every row
-  (`truncate = 0`); a variance step detected (`p_r0` peaks within a stated
-  delay); `truncate = 1e-4` changing no reported output by more than
+  (`truncate = 0`); a variance step detected on Adams–MacKay's own finance
+  fixture shape (ANSWERS, their §3): zero-mean Gaussian rows with a
+  piecewise-constant variance, the `"diag"` emission with a gamma prior on
+  the inverse variance (`a = 1`, `b = 1e-4`, their values — `prior_nu = 2a`,
+  `prior_scale = 2b` in the inverse-gamma parametrisation the emission
+  exposes), `hazard = 250` (their `λ_gap`), `p_r0` peaking within a stated
+  delay of each step; `truncate = 1e-4` changing no reported output by more than
   `1e-4` against `truncate = 0`; the robust variant's `p_r0` unmoved by a
   single 20-σ row where the Gaussian one restarts; a zero-weight row leaving
   the posterior untouched; the hazard column; chunk invariance and save/load
@@ -2613,6 +2740,64 @@ which also says which items it could *not* verify.
   `[Unreleased]` listing the schema bump first; `docs/RELEASE-READINESS.md`
   for the new surface. E63 stays a note: the `weight=` recipe it describes
   is already expressible, and nothing in this batch adds `weight_from`.
+
+*Answers folded in, 2026-09-05.* `docs/ANSWERS-E54-E64.md` was read against
+every "confirm from the paper" above, and the blocks were edited in place
+rather than annotated, so a task block is still read top to bottom. What
+it changed, in order of consequence:
+
+- **Task 54 is re-scoped.** The `kind="monitor"` of the first draft — a
+  training span, a sequential boundary, an open-ended alarm — was written
+  as Wied–Krämer–Dehling 2012 and that paper has no such boundary: its test
+  is a *closed-sample* fluctuation test on a span of known length `T`, and
+  the sequential detector is Wied & Galeano 2013, which nobody has read.
+  The monitor now runs the WKD test **span by span** (`horizon` required,
+  `train` gone), with the paper's `D̂` (three-way delta method over the five
+  raw moments, Bartlett long-run covariance, `γ_T = ⌊ln T⌋`), critical values
+  from the Kolmogorov series (`1.358` at 5 %), Bonferroni over pairs, and
+  its size and power *pinned to WKD's Table 1* — `.040/.035/.041` at `T =
+  500`, `.587` power on a `0.5 → 0.7` step — instead of "within Monte-Carlo
+  error" of a nominal figure. The `train` semantics and the ARL experiment
+  move to the `window` kind, which is unchanged (ANSWERS confirms the
+  sign-flip null has zero spread, so the row permutation stands). The
+  Wied–Galeano sequential form is an ENHANCEMENTS §10 follow-up, not a
+  blocker.
+- **`epps_invert` gets `L` and the triangular weights.** Tóth–Kertész
+  eq. 12 weights the numerator *and both denominators* by `(L − |x|)`; the
+  flat sum the draft had is its `L → ∞` limit. The signature is now
+  `epps_invert(gram_or_row, *, L)`, and the input must carry lags `1 …
+  L−1`.
+- **`rcov`**: `kₙ = ⌊θ√n⌋` (floor, as CKP write it), the finite-sample `ψ`
+  and `Φ` sums as the paper has them, and the auto-bandwidth's two grids
+  named as BNHLS use them (`iv_stride` for the sparse `IV̂`, `noise_stride`
+  for `ω̂²`, with its deliberate upward bias stated). The one thing ANSWERS
+  did not read — CKP §3's longer window for `psd=True` — is marked as the
+  implementer's read; the draft's `δ = 0.1` is Hautsch–Podolskij's and
+  stands only if §3 agrees.
+- **`po.corr`**: Higham's examples, distances, null vector, rank and
+  iteration count are now the paper's, not memory's, and `nearest` is
+  pinned to Algorithm 3.3 with his convergence test 4.1 and the three
+  bound tests his theorems give; `shrink` carries the Ledoit–Wolf `π̂`, `ρ̂`,
+  `γ̂` formulae as its oracle; `mp_edge` is verified and gains
+  `mp_density`; `fisher_se`'s AR(1) factor is derived from Bartlett's
+  formula and its two assumptions are named.
+- **`deco`**: the correlation-targeted intercept and `α + β < 1` are
+  recorded as *our* departures from Engle–Kelly, with the paper's
+  downward-bias remark and its unoffered `u^var` alternative noted.
+- **`bocpd`**: the variance-step test uses Adams–MacKay's own finance
+  fixture shape (`"diag"`, gamma prior `a = 1`, `b = 1e-4`, `hazard = 250`);
+  the ABK 2023 robust posterior stays an implementer's read.
+- **`refresh_time`**: the `N = 7`, `21/27` example is verified but its tick
+  times are only a figure, so the test constructs a stream with those
+  counts; the staleness caveat of BNHLS §2.1 goes in the docstring.
+- **`hmm`** (task 53) and the batch-wide decisions: confirmed as written,
+  nothing changed.
+
+Two reads remain with the implementer — ABK 2023 (open access) for
+`bocpd`'s robust emission and CKP §3 for `rcov`'s PSD window — and one
+paper is deferred, Wied & Galeano 2013. Neither read blocks a task from
+starting; each is a named paragraph in its block with the acceptance test
+that pins it. The batch is ready to implement.
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without

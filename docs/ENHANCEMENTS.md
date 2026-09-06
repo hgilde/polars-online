@@ -379,6 +379,15 @@ implemented; all are **scheduled** as `docs/PLAN.md` tasks 45–56
 (2026-09-05), whose §11a block *Preparing E54–E64 for implementation*
 resolves what each row left open and corrects the two places a row was
 wrong about the maths (E59's permutation null, E60's transition estimate).
+The points that block left to the papers are answered in
+`docs/ANSWERS-E54-E64.md` and folded back into it the same day. One
+correction of substance for a reader of this section: E59's "sequential
+constancy monitor" cites Wied–Krämer–Dehling (2012), whose test is a
+*closed-sample* fluctuation test — the sequential form with a boundary is
+Wied & Galeano (2013), unread. Task 54 therefore ships the WKD test run
+span by span (a `horizon`, the paper's `D̂`, its size and power tables as
+the acceptance) and the Wied–Galeano detector is a follow-up item here
+once that paper has been read.
 
 Three constraints came with them and are worth stating once, because they
 are the library's own and every item keeps them. **Nothing looks ahead**:
