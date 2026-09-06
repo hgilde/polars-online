@@ -193,6 +193,10 @@ def describe_api() -> str:
             ),
         ),
         (
+            "hmm",
+            dict(features=["x0", "x1"], k=3, precision_prior=0.1, halflife=100.0),
+        ),
+        (
             "rcov",
             dict(features=["x0", "x1"], group="g", group_close="monotone", n_max=500),
         ),

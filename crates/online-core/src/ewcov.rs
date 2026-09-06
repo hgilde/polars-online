@@ -133,6 +133,38 @@ impl EwCov {
     /// `prior` regularizes the inverse and must be `> 0`: the centered
     /// co-moment matrix starts at zero and is singular until `k` independent
     /// rows have been seen, so there is nothing to invert without it.
+    /// An accumulator standing at the given weight, means and **centred**
+    /// co-moments, rather than at zero: the state a caller who already has
+    /// the moments wants to filter with (`hmm`'s `means`/`covs`, a state
+    /// lifted out of a fitted `ew_class`).
+    ///
+    /// The decaying prior scale starts at 1, as it does for a fresh
+    /// accumulator, so the ridge behaves as if this were the first row.
+    pub fn from_moments(
+        k: usize,
+        w_sum: f64,
+        means: &[f64],
+        comoments: &[f64],
+        prior: f64,
+    ) -> Result<Self, String> {
+        if means.len() != k || comoments.len() != k * k {
+            return Err(format!(
+                "EwCov::from_moments: {k} columns need {k} means and {} co-moments, got {} and {}",
+                k * k,
+                means.len(),
+                comoments.len()
+            ));
+        }
+        if w_sum < 0.0 || !w_sum.is_finite() {
+            return Err("EwCov::from_moments: w_sum must be finite and >= 0".into());
+        }
+        let mut ew = Self::with_precision_prior(k, prior)?;
+        ew.w_sum = w_sum;
+        ew.m.copy_from_slice(means);
+        ew.c.copy_from_slice(comoments);
+        Ok(ew)
+    }
+
     pub fn with_precision_prior(k: usize, prior: f64) -> Result<Self, String> {
         if prior <= 0.0 || !prior.is_finite() {
             return Err("EwCov::with_precision_prior: prior must be finite and > 0".into());

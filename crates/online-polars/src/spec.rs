@@ -802,6 +802,54 @@ pub enum ModelKind {
         #[serde(default)]
         iv_stride: Option<usize>,
     },
+    /// A Gaussian hidden Markov model, filtered online
+    /// (docs/ENHANCEMENTS.md E60). `ew_class` without the labels: the state
+    /// is hidden, and a transition matrix carries information from one row
+    /// to the next.
+    #[serde(rename = "hmm")]
+    Hmm {
+        /// Hidden states, `>= 2`.
+        k: usize,
+        /// `"full"` (default), `"shared"` or `"diag"`, as `ew_class`.
+        #[serde(default)]
+        covariance: Option<String>,
+        /// Ridge on every state covariance; **required**, since a state's
+        /// centred co-moments start at zero.
+        precision_prior: f64,
+        /// Update the states and the transition counts; default true.
+        #[serde(default)]
+        learn: Option<bool>,
+        /// Dirichlet pseudo-count per cell of the transition matrix
+        /// (default 1). With `transition` it is spread over that matrix, so
+        /// the given one is the prior mean.
+        #[serde(default)]
+        transition_prior: Option<f64>,
+        /// A `K x K` row-stochastic matrix, flattened row-major.
+        #[serde(default)]
+        transition: Option<Vec<f64>>,
+        /// State means, `K x d` row-major; with `covs`, there is no warm-up.
+        #[serde(default)]
+        means: Option<Vec<f64>>,
+        /// State covariances, `K` matrices of `d x d`, row-major.
+        #[serde(default)]
+        covs: Option<Vec<f64>>,
+        /// Learned rows buffered before the states are seeded (default 50).
+        #[serde(default)]
+        warm_rows: Option<usize>,
+        /// `"first"`, `"farthest"`, `"kmeanspp"` or `"lloyd"` (default), as
+        /// `kmeans`.
+        #[serde(default)]
+        seed_rule: Option<String>,
+        #[serde(default)]
+        seed: Option<u64>,
+        /// A column whose value drives the transition matrix through
+        /// `tvtp_coef`; declared like `weight`, not a feature.
+        #[serde(default)]
+        exog_tvtp: Option<String>,
+        /// `[A, B]`, each `K x K` row-major: `Π(t) = softmax(A + B·z)`.
+        #[serde(default)]
+        tvtp_coef: Option<Vec<Vec<f64>>>,
+    },
 }
 
 /// The two sides of a `seqtest` comparison, as [`ModelKind::compares`]
@@ -832,7 +880,7 @@ impl ModelKind {
     /// to the enum, so a new variant fails a test until it is listed here.
     pub const KINDS: &'static [&'static str] = &[
         "ew_ridge", "lasso", "kalman", "huber", "quantile", "ftrl", "ew_cov", "sgd", "pa", "holt",
-        "rls", "kmeans", "micro", "ew_class", "seqtest", "marginal", "deco", "rcov",
+        "rls", "kmeans", "micro", "ew_class", "seqtest", "marginal", "deco", "rcov", "hmm",
     ];
 
     pub fn kind_name(&self) -> &'static str {
@@ -855,6 +903,7 @@ impl ModelKind {
             ModelKind::Marginal {} => "marginal",
             ModelKind::Deco { .. } => "deco",
             ModelKind::Rcov { .. } => "rcov",
+            ModelKind::Hmm { .. } => "hmm",
         }
     }
 
@@ -870,6 +919,7 @@ impl ModelKind {
                 | ModelKind::Micro { .. }
                 | ModelKind::Deco { .. }
                 | ModelKind::Rcov { .. }
+                | ModelKind::Hmm { .. }
         )
     }
 
@@ -1288,6 +1338,9 @@ impl Spec {
             ModelKind::Deco { .. } => 3.0,
             // Nothing is gated: `rcov` reports nothing per row.
             ModelKind::Rcov { .. } => 0.0,
+            // The states are seeded from `warm_rows`, which is the real
+            // gate; `min_periods` on top of it would be a second one.
+            ModelKind::Hmm { .. } => 0.0,
             _ => (self.k() + usize::from(self.add_intercept)) as f64,
         }
     }
@@ -1915,6 +1968,16 @@ impl Spec {
             // Every parameter check is `DecoCfg::validate`'s, so that the
             // CLI, the bank and the plugin all get the same messages; only
             // the block *names* are resolved here, where the feature list is.
+            ModelKind::Hmm { exog_tvtp, .. } => {
+                if exog_tvtp.is_some() && self.targets.len() != 1 {
+                    return Err(format!(
+                        "spec {:?}: hmm exog_tvtp rides in the targets slot, so the spec must \
+                         have exactly one",
+                        self.name
+                    ));
+                }
+                crate::stream::hmm_cfg(self).map_err(|e| format!("spec {:?}: {e}", self.name))?;
+            }
             ModelKind::Rcov { .. } => {
                 if self.group.is_none() || self.group_close.is_none() {
                     return Err(format!(

@@ -1515,6 +1515,55 @@ table = bank.marginal("pairs")             # group, instance, feature, target, n
 one_bond = bank.marginal("pairs", group="b0")   # 10 rows: five features by two targets
 ```
 
+### `hmm` — which regime are we in
+
+`ew_class` classifies a row against *labelled* Gaussians. An `hmm` does the
+same arithmetic with no labels: the state is hidden, and a transition matrix
+carries information from one row to the next. That is the difference between
+"which regime does this row look like" and "which regime are we in", and the
+second is usually the question.
+
+Hamilton's filter, one row at a time, from the filtered `p` the previous row
+left:
+
+```
+p1_l   = Σ_k p_k·Π_kl                      the predicted state
+f_l    = N(x | μ_l, Σ_l + r_l·I)           the state's density
+loglik = ln Σ_l p1_l·f_l                   the row's surprise
+p_l   ← p1_l·f_l / Σ                       the filtered state
+```
+
+Everything reported is read before the row is learned from. Each state's
+accumulator then takes the row at weight `w·p_l` — the responsibilities sum
+to `w`, so `n_eff` is the shared recursion untouched — and the transition
+matrix is learned from the **filtered joint of consecutive states**,
+`ξ_kl = p_k(t−1)·Π_kl·f_l / Σ`, with a Dirichlet pseudo-count keeping a
+never-visited row a distribution.
+
+```python
+h = po.spec.hmm("regime", features=["x0", "x1"], k=2, precision_prior=1e-2,
+                halflife=500.0, warm_rows=400)
+out = df.online.fit_predict([h]).unnest("regime")   # p_0, p_1, p1_0, p1_1, state, loglik
+```
+
+What the chain buys, measured: on two-dimensional blobs 1.5 apart, a
+memoryless nearest-centre rule *given the true centres* is 85% right and the
+filter is 99%.
+
+`precision_prior` is required — a state's centred co-moments start at zero,
+and a zero matrix has no density. Give `means` and `covs` to filter with
+known states (`learn=False` to freeze them), or let it seed from the first
+`warm_rows` learned rows with `kmeans`' rule; every output is null until
+then, so **`warm_rows` should span more than one regime** or the seeds are
+two halves of one. `exog_tvtp` drives the matrix from a column instead,
+through fixed `tvtp_coef`.
+
+One limitation worth knowing: a single extreme row can be captured by one
+state, and in mean form a state with zero responsibility keeps its moments —
+so a state that stops winning never forgets, and the mixture is left short
+one state. A larger `precision_prior`, given states, or cleaning upstream
+are the mitigations.
+
 ### `rcov` — a block's realised covariance, robust to noise
 
 A realised covariance over ticks is the sum of outer products of returns.

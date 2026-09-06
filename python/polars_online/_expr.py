@@ -35,6 +35,7 @@ from polars_online._kwargs import (
     EwCovKwargs,
     EwridgeKwargs,
     FtrlKwargs,
+    HmmKwargs,
     HoltKwargs,
     HuberKwargs,
     KalmanKwargs,
@@ -367,6 +368,16 @@ class OnlineNamespace:
         """
         names, exprs = _features(others)
         spec = _spec.deco("online", features=[self._target(), *names], **kwargs)
+        return _run(spec, self._expr, [self._expr, *exprs])
+
+    def hmm(self, others: list[Feature], **kwargs: Unpack[HmmKwargs]) -> pl.Expr:
+        """A hidden Markov model over this column together with ``others``.
+
+        No target, as for ``ew_cov``: the calling column becomes the first
+        feature.
+        """
+        names, exprs = _features(others)
+        spec = _spec.hmm("online", features=[self._target(), *names], **kwargs)
         return _run(spec, self._expr, [self._expr, *exprs])
 
     def rcov(self, others: list[Feature], **kwargs: Unpack[RcovKwargs]) -> pl.Expr:

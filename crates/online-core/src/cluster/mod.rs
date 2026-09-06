@@ -1,7 +1,7 @@
 //! Online clustering (docs/CLUSTERING.md): every model here is the mean-form
 //! accumulator of [`summary`] with an assignment rule in front of it.
 
-mod kmeans;
+pub(crate) mod kmeans;
 mod micro;
 mod summary;
 

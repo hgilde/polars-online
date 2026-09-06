@@ -16,6 +16,18 @@ carries breaking changes.
 
 ### Added
 
+- **`hmm`: a Gaussian hidden Markov model, filtered online**
+  (`docs/ENHANCEMENTS.md` E60, task 53). `ew_class` without the labels:
+  Hamilton's filter one row at a time, each state's accumulator taking the
+  row at its responsibility, and the transition matrix learned from the
+  **filtered joint of consecutive states** with a Dirichlet prior. Outputs
+  `p_<k>`, `p1_<k>`, `state`, `loglik` and `n_eff`, all read before the row,
+  with the state means as `coef`. `exog_tvtp` drives the matrix from a
+  column instead.
+
+  Measured: on two-dimensional blobs 1.5 apart, a memoryless nearest-centre
+  rule *given the true centres* is 85% right and the filter is 99%.
+
 - **`po.sim.regimes`: a seeded simulator for correlation regimes**
   (`docs/ENHANCEMENTS.md` E64, task 52). A stream of `m` series whose
   correlation changes by regime, with the parts that make a detector's job

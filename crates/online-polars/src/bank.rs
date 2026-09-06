@@ -2915,6 +2915,8 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
     }
     let slots: Vec<String> = match &spec.model {
         crate::ModelKind::KMeans { k, .. } => (0..*k).map(|j| format!("cluster{j}")).collect(),
+        // One slot per hidden state, named as `kmeans` names its centres.
+        crate::ModelKind::Hmm { k, .. } => (0..*k).map(|j| format!("state{j}")).collect(),
         crate::ModelKind::EwClass { classes, .. } => classes.clone(),
         _ => spec.targets.clone(),
     };
@@ -2922,7 +2924,9 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
         vec!["level".into(), "trend".into()]
     } else if matches!(
         spec.model,
-        crate::ModelKind::KMeans { .. } | crate::ModelKind::EwClass { .. }
+        crate::ModelKind::KMeans { .. }
+            | crate::ModelKind::EwClass { .. }
+            | crate::ModelKind::Hmm { .. }
     ) {
         spec.features.clone()
     } else {
@@ -3234,6 +3238,43 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
                     .decay(d)
                     .src(Source::Cluster(at(5))),
             ));
+            fields.push(
+                FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
+                    .decay(d)
+                    .src(Source::NEff(mi)),
+            );
+            fields.push(
+                FieldMeta::new(format!("coef{suffix}"), "coef")
+                    .decay(d)
+                    .src(Source::Coef(mi)),
+            );
+        }
+        return fields;
+    }
+    // hmm's state is hidden: per instance, the filtered and predicted
+    // posteriors, the state, the row's log-likelihood, `n_eff` and the
+    // state means as `coef`.
+    if let crate::ModelKind::Hmm { k, .. } = &spec.model {
+        let labels = online_core::Hmm::labels(*k);
+        let n_slots = labels.len();
+        let mut fields = Vec::new();
+        for (mi, (suffix, d)) in decays.iter().enumerate() {
+            for (slot, l) in labels.iter().enumerate() {
+                let at = mi * n_slots + slot;
+                // `state` is a small count, so it rides in `pred` and comes
+                // out as an `i32`.
+                let src = if l == "state" {
+                    Source::Cluster(at)
+                } else {
+                    Source::Stat(at)
+                };
+                let mut m =
+                    FieldMeta::new(format!("{l}{suffix}"), l.split('_').next().unwrap_or(l))
+                        .decay(d)
+                        .src(src);
+                m.columns = Some(spec.features.clone());
+                fields.push(m);
+            }
             fields.push(
                 FieldMeta::new(format!("n_eff{suffix}"), "n_eff")
                     .decay(d)

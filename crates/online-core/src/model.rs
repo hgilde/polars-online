@@ -63,6 +63,7 @@ pub enum ModelState {
     Marginal(Box<crate::Marginal>),
     Deco(Box<crate::Deco>),
     Rcov(Box<crate::Rcov>),
+    Hmm(Box<crate::Hmm>),
 }
 
 #[derive(Debug, Error)]
@@ -99,6 +100,7 @@ impl ModelState {
             ModelState::Marginal(_) => "marginal",
             ModelState::Deco(_) => "deco",
             ModelState::Rcov(_) => "rcov",
+            ModelState::Hmm(_) => "hmm",
         }
     }
 }

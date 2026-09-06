@@ -413,6 +413,31 @@ fn seqtest_golden() {
     );
 }
 
+/// Slot 5 is `loglik`, which reads the transition matrix, both densities
+/// and the softmax at once -- the whole filter in one number.
+#[test]
+fn hmm_golden() {
+    let mut m = Hmm::new(HmmCfg {
+        n_features: 2,
+        k: 2,
+        decay: Decay::Halflife(20.0),
+        covariance: Covariance::Full,
+        precision_prior: 1e-2,
+        min_periods: 3.0,
+        learn: true,
+        transition_prior: 1.0,
+        transition: Some(vec![0.9, 0.1, 0.2, 0.8]),
+        means: Some(vec![-0.5, -0.5, 0.5, 0.5]),
+        covs: Some(vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0]),
+        warm_rows: 10,
+        seed_rule: SeedRule::First,
+        seed: 1,
+        tvtp: None,
+    })
+    .unwrap();
+    check("hmm", &signature(&mut m, 5), GOLDEN_HMM);
+}
+
 /// `rcov` reports nothing per row, so its signature is the block: the
 /// kernel estimate's three distinct entries after the whole stream.
 #[test]
@@ -673,6 +698,7 @@ fn ew_class_golden() {
 }
 
 // --- generated; see the module docs ---
+const GOLDEN_HMM: &[f64] = &[-1.2214037865778806, -2.5882597876282167, -0.883627291469858];
 const GOLDEN_RCOV: &[f64] = &[15.118271471980519, -2.2219191583655915, 22.721761773534745];
 const GOLDEN_RCOV_PREAVG: &[f64] = &[9.410243164612856, -1.8070645542417443, 21.4716237436384];
 const GOLDEN_DECO: &[f64] = &[

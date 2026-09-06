@@ -27,6 +27,7 @@ __all__ = [
     "EwridgeKwargs",
     "ExprKwargs",
     "FtrlKwargs",
+    "HmmKwargs",
     "HoltKwargs",
     "HuberKwargs",
     "KMeansKwargs",
@@ -252,3 +253,19 @@ class RcovKwargs(ExprKwargs, total=False):
     window: int | None
     noise_stride: int | None
     iv_stride: int | None
+
+
+class HmmKwargs(ExprKwargs, total=False):
+    k: Required[int]
+    precision_prior: Required[float]
+    covariance: str
+    learn: bool
+    transition_prior: float | None
+    transition: list[float] | None
+    means: list[float] | None
+    covs: list[float] | None
+    warm_rows: int | None
+    seed_rule: str | None
+    seed: int | None
+    exog_tvtp: str | None
+    tvtp_coef: list[list[float]] | None

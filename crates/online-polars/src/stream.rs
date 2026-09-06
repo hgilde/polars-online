@@ -4,10 +4,10 @@
 use online_core::{
     ClockState, Conformal, Constraint, Covariance, Decay, Deco, DecoCfg, DecoDynamics, EwAutoCorr,
     EwClass, EwClassCfg, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg,
-    FtrlLoss, Holt, HoltCfg, INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg, Lasso, LassoCfg,
-    LearningRate, Marginal, MarginalCfg, Micro, MicroCfg, ModelState, OnlineModel, P2Quantile, Pa,
-    PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg, Robust, RobustCfg,
-    RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss, SlotMetrics, State,
+    FtrlLoss, Hmm, HmmCfg, Holt, HoltCfg, INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg, Lasso,
+    LassoCfg, LearningRate, Marginal, MarginalCfg, Micro, MicroCfg, ModelState, OnlineModel,
+    P2Quantile, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg, Robust,
+    RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss, SlotMetrics, State,
     StateError,
 };
 use serde::{Deserialize, Serialize};
@@ -35,6 +35,7 @@ pub enum AnyModel {
     Marginal(Box<Marginal>),
     Deco(Box<Deco>),
     Rcov(Box<Rcov>),
+    Hmm(Box<Hmm>),
 }
 
 /// Bind the boxed model of whichever variant `$self` is, then run `$body`.
@@ -65,6 +66,7 @@ macro_rules! dispatch {
             AnyModel::Marginal($m) => $body,
             AnyModel::Deco($m) => $body,
             AnyModel::Rcov($m) => $body,
+            AnyModel::Hmm($m) => $body,
         }
     };
 }
@@ -107,6 +109,7 @@ impl AnyModel {
             AnyModel::Lasso(m) => m.solve_failures,
             AnyModel::Robust(m) => m.solve_failures,
             AnyModel::EwClass(m) => m.solve_failures,
+            AnyModel::Hmm(m) => m.solve_failures,
             AnyModel::Rls(_)
             | AnyModel::Kalman(_)
             | AnyModel::Ftrl(_)
@@ -168,6 +171,13 @@ impl AnyModel {
             // rcov has no coefficients: its value is the block it emits at
             // the group's close.
             AnyModel::Rcov(_) => None,
+            // The state means, one row per state, as `ew_class` reports its
+            // class means.
+            AnyModel::Hmm(m) => Some(
+                (0..m.cfg().k)
+                    .map(|s| m.state_cov(s).means().to_vec())
+                    .collect(),
+            ),
         }
     }
 
@@ -194,6 +204,7 @@ impl AnyModel {
             ModelState::Marginal(_) => Ok(AnyModel::Marginal(Box::new(Marginal::restore(s)?))),
             ModelState::Deco(_) => Ok(AnyModel::Deco(Box::new(Deco::restore(s)?))),
             ModelState::Rcov(_) => Ok(AnyModel::Rcov(Box::new(Rcov::restore(s)?))),
+            ModelState::Hmm(_) => Ok(AnyModel::Hmm(Box::new(Hmm::restore(s)?))),
             other => Err(StateError::WrongModel {
                 expected: "a bank-supported model",
                 found: other.kind(),
@@ -674,7 +685,78 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         // No decay to build with, so the one undecayed instance `decays()`
         // gives is the only one.
         ModelKind::Rcov { .. } => Ok(AnyModel::Rcov(Box::new(Rcov::new(rcov_cfg(spec)?)?))),
+        ModelKind::Hmm { .. } => {
+            let mut cfg = hmm_cfg(spec)?;
+            cfg.decay = decay;
+            Ok(AnyModel::Hmm(Box::new(Hmm::new(cfg)?)))
+        }
     }
+}
+
+/// An `hmm` spec's [`HmmCfg`]. The decay is the caller's; every other check
+/// is the model's, so `Spec::validate` gets the same messages.
+pub fn hmm_cfg(spec: &Spec) -> Result<HmmCfg, String> {
+    let ModelKind::Hmm {
+        k,
+        covariance,
+        precision_prior,
+        learn,
+        transition_prior,
+        transition,
+        means,
+        covs,
+        warm_rows,
+        seed_rule,
+        seed,
+        exog_tvtp,
+        tvtp_coef,
+    } = &spec.model
+    else {
+        return Err("not an hmm spec".into());
+    };
+    let tvtp = match (exog_tvtp, tvtp_coef) {
+        (Some(_), Some(ab)) if ab.len() == 2 => Some((ab[0].clone(), ab[1].clone())),
+        (Some(_), _) => {
+            return Err(
+                "hmm exog_tvtp needs tvtp_coef = [A, B], each a K x K matrix flattened row-major"
+                    .into(),
+            );
+        }
+        (None, Some(_)) => {
+            return Err("hmm tvtp_coef needs exog_tvtp (the column it reads)".into());
+        }
+        (None, None) => None,
+    };
+    Ok(HmmCfg {
+        n_features: spec.k(),
+        k: *k,
+        decay: online_core::Decay::Lam(1.0),
+        covariance: match covariance {
+            Some(c) => Covariance::parse(c)?,
+            None => Covariance::Full,
+        },
+        precision_prior: *precision_prior,
+        min_periods: spec.min_periods_or_default(),
+        learn: learn.unwrap_or(true),
+        transition_prior: transition_prior.unwrap_or(1.0),
+        transition: transition.clone(),
+        means: means.clone(),
+        covs: covs.clone(),
+        warm_rows: warm_rows.unwrap_or(50),
+        seed_rule: match seed_rule.as_deref() {
+            None | Some("lloyd") => SeedRule::Lloyd,
+            Some("first") => SeedRule::First,
+            Some("farthest") => SeedRule::Farthest,
+            Some("kmeanspp") => SeedRule::Kmeanspp,
+            Some(other) => {
+                return Err(format!(
+                    "unknown hmm seed_rule {other:?}; expected first, farthest, kmeanspp or lloyd"
+                ));
+            }
+        },
+        seed: seed.unwrap_or(0),
+        tvtp,
+    })
 }
 
 /// An `rcov` spec's [`RcovCfg`]. Every parameter check is the model's, so
@@ -856,7 +938,8 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
         | ModelKind::SeqTest { .. }
         | ModelKind::Marginal {}
         | ModelKind::Deco { .. }
-        | ModelKind::Rcov { .. } => vec![Combo::default()],
+        | ModelKind::Rcov { .. }
+        | ModelKind::Hmm { .. } => vec![Combo::default()],
         ModelKind::Lasso { lasso_path, .. } => lasso_path
             .iter()
             .map(|l| Combo {

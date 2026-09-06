@@ -201,6 +201,7 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
 
 __all__ = [
     "deco",
+    "hmm",
     "rcov",
     "ew_class",
     "ew_cov",
@@ -1635,6 +1636,107 @@ def deco(
 
 
 @_checked
+def hmm(
+    name: str,
+    *,
+    features: list[str],
+    k: int,
+    precision_prior: float,
+    covariance: str = "full",
+    learn: bool = True,
+    transition_prior: float | None = None,
+    transition: list[float] | None = None,
+    means: list[float] | None = None,
+    covs: list[float] | None = None,
+    warm_rows: int | None = None,
+    seed_rule: str | None = None,
+    seed: int | None = None,
+    exog_tvtp: str | None = None,
+    tvtp_coef: list[list[float]] | None = None,
+    **common: Unpack[CommonKwargs],
+) -> dict[str, Any]:
+    """A Gaussian hidden Markov model, filtered online (ENHANCEMENTS E60,
+    Task 53).
+
+    ``ew_class`` classifies a row against *labelled* Gaussians. This does
+    the same arithmetic with no labels: the state is hidden, and a
+    transition matrix carries information from one row to the next. That is
+    the difference between "which regime does this row look like" and
+    "which regime are we in", and the second is usually the question.
+
+    Hamilton's filter, one row at a time. Before the row, from the filtered
+    ``p`` the previous row left (uniform before the first)::
+
+        p1_l   = sum_k p_k * Pi_kl                     the predicted state
+        f_l    = N(x | mu_l, Sigma_l + r_l I)          the state's density
+        loglik = log sum_l p1_l f_l                    the row's surprise
+        p_l   <- p1_l f_l / sum                        the filtered state
+
+    Everything reported is read **before** the row is learned from, so an
+    ``hmm`` output is safe as a feature for that same row. The densities go
+    through the same path ``ew_class`` uses, with the same decaying
+    ``precision_prior`` ridge -- **required** here as it is there, because a
+    state's centred co-moments start at zero and a zero matrix has no
+    density.
+
+    Each state's accumulator then takes the row at weight ``w * p_l``. The
+    responsibilities sum to ``w``, so ``n_eff`` is the shared recursion
+    untouched. The transition matrix is learned from the **filtered joint of
+    consecutive states**::
+
+        xi_kl = p_k(t-1) Pi_kl f_l / sum over all pairs
+        A_kl <- decay * A_kl + w * xi_kl
+        Pi_kl = (A_kl + tau_kl) / sum_l (A_kl + tau_kl)
+
+    with ``tau`` a Dirichlet pseudo-count per cell (``transition_prior``,
+    default 1), which is what keeps a never-visited row of ``Pi`` a
+    distribution. Giving ``transition`` spreads that mass over the given
+    matrix instead of flat, so the given matrix is the prior mean.
+
+    ``means`` and ``covs`` (``K x d`` and ``K`` matrices of ``d x d``, both
+    flattened row-major) give the states outright and there is no warm-up.
+    Otherwise the first ``warm_rows`` learned rows are buffered, ``kmeans``'
+    ``seed_rule`` chooses centres among them, and the buffer is replayed
+    through those centres as hard assignments -- every output is null until
+    then, as ``kmeans``' are. ``learn=False`` with no states given is
+    refused: there would be nothing to filter with.
+
+    ``exog_tvtp`` names a column (declared like ``weight``, not a feature)
+    whose value drives the matrix instead: ``Pi_kl(t) = softmax_l(A_kl +
+    B_kl z_t)`` from the fixed ``tvtp_coef = [A, B]``. The count-based
+    learning is off under it; ``A`` and ``B`` are fitted elsewhere.
+
+    Outputs ``p_<k>``, ``p1_<k>``, ``state``, ``loglik`` and ``n_eff``, with
+    the state means as ``coef``.
+
+    **A limitation worth knowing.** A single extreme row can be captured by
+    one state, moving its mean far from the data; in mean form a state with
+    zero responsibility keeps its moments, so a state that stops winning
+    never forgets, and the mixture is left short one state. A larger
+    ``precision_prior``, filtering with given states (``learn=False``), or
+    cleaning the input upstream are the mitigations.
+    """
+    model: dict[str, Any] = {
+        "type": "hmm",
+        "k": k,
+        "covariance": covariance,
+        "precision_prior": precision_prior,
+        "learn": learn,
+        "transition_prior": transition_prior,
+        "transition": transition,
+        "means": means,
+        "covs": covs,
+        "warm_rows": warm_rows,
+        "seed_rule": seed_rule,
+        "seed": seed,
+        "exog_tvtp": exog_tvtp,
+        "tvtp_coef": tvtp_coef,
+    }
+    targets = [exog_tvtp] if exog_tvtp is not None else [features[0]]
+    return _common(name, model, targets=targets, features=features, **common)
+
+
+@_checked
 def rcov(
     name: str,
     *,
@@ -1735,6 +1837,6 @@ def rcov(
 #: plumbing, and nothing residual-based applies to them. ``ew_class`` is
 #: not one -- its label column travels as the target -- though it predicts
 #: no number either, and refuses the residual switches the same way.
-UNSUPERVISED = frozenset({"ew_cov", "kmeans", "micro", "deco", "rcov"})
+UNSUPERVISED = frozenset({"ew_cov", "kmeans", "micro", "deco", "rcov", "hmm"})
 
 _NUMERIC_KEYS = _numeric_keys()

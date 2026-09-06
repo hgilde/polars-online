@@ -351,6 +351,10 @@ class TestTheExpressionWarnsThatItRunsInMemory:
             "seqtest": ("seqtest", lambda: ns.seqtest()),
             "marginal": ("marginal", lambda: ns.marginal(**common)),
             "deco": ("deco", lambda: ns.deco(others=["x0"], halflife=2.0)),
+            "hmm": (
+                "hmm",
+                lambda: ns.hmm(others=["x0"], k=2, precision_prior=0.1, halflife=2.0),
+            ),
             "rcov": ("rcov", lambda: ns.rcov(others=["x0"], n_max=10)),
         }
 

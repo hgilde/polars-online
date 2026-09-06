@@ -49,6 +49,12 @@ MINIMAL: dict[str, dict[str, object]] = {
     "seqtest": {"features": None, "halflife": None},
     "marginal": {},
     "deco": {"targets": None, "features": ["x0", "x1"]},
+    "hmm": {
+        "targets": None,
+        "features": ["x0", "x1"],
+        "k": 2,
+        "precision_prior": 0.1,
+    },
     "rcov": {
         "targets": None,
         "features": ["x0", "x1"],
@@ -63,8 +69,8 @@ MINIMAL: dict[str, dict[str, object]] = {
 #: ``ew_cov`` (moments), ``kmeans`` and ``micro`` (assignments, no target),
 #: ``ew_class`` (a label), ``seqtest`` (evidence), ``marginal`` (pairwise
 #: moments, read from the state), ``deco`` (an equicorrelation), ``rcov``
-#: (a block's realised covariance, read at the group's close) -- sit them
-#: out.
+#: (a block's realised covariance, read at the group's close), ``hmm`` (a
+#: hidden state) -- sit them out.
 REGRESSIONS = frozenset(MINIMAL) - {
     "ew_cov",
     "kmeans",
@@ -74,6 +80,7 @@ REGRESSIONS = frozenset(MINIMAL) - {
     "marginal",
     "deco",
     "rcov",
+    "hmm",
 }
 
 
