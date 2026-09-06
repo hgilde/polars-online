@@ -246,9 +246,19 @@ jobs:
 
   # Publishing is a separate job so that a tag can build and attach artifacts
   # without also pushing to PyPI. Uses trusted publishing (OIDC), so there is
-  # no API token to store or rotate. The `pypi` environment has no required
-  # reviewers (checked 2026-09-03), so a tag publishes as soon as the build
-  # is green; add reviewers to the environment to make this step manual.
+  # no API token to store or rotate.
+  #
+  # THE HUMAN GATE IS HERE. Since 2026-09-06 the `pypi` environment has the
+  # owner as a required reviewer (self-review allowed -- with one reviewer,
+  # preventing it would deadlock every release), so this job parks on "Review
+  # deployments" until someone approves, and it only ever asks once every
+  # other job is green. That is deliberate: the gate sits in front of the one
+  # step nothing can undo, and in front of nothing else. A failed wheel is
+  # re-run, a docs deploy needs no approval, and a tag that turns out wrong is
+  # simply never approved -- `v*` tags cannot be deleted or moved (ruleset
+  # "release tags are immutable", no bypass), and PyPI never lets a version
+  # number be reused, so a broken release is superseded by the next version
+  # rather than replaced.
   #
   # Registered on PyPI on 2026-09-03 as a pending trusted publisher for
   # `polars-online` (owner hgilde, repository polars-online, workflow

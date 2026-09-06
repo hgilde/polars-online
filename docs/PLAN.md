@@ -791,6 +791,17 @@ note, not a task.
       failed reads 0.0 KB/iter, a sustained 14 KB/iter leak still reads 14.
       Acceptance: the file's 16 tests, and the three traces (the real one, a
       leak, a step) checked against the statistic directly.
+- [x] 62. **The release gate, 2026-09-06.** The `Pypi` environment now has the
+      owner as a required reviewer (self-review allowed, or one reviewer
+      deadlocks it), so `publish to PyPI` waits for a click that is only asked
+      for once every wheel, the sdist and the state hand-off are green. The
+      gate is in front of the one step nothing can undo and in front of
+      nothing else: rehearsals, re-runs, the GitHub release and the Pages
+      deploy all proceed unattended. A wrong tag is left unapproved rather
+      than moved — `refs/tags/v*` has `deletion` and `update` rules with no
+      bypass — and the fix ships as the next version, which is PyPI's rule
+      too. Recorded in the comment above the `publish` job and in
+      `docs/RELEASE-READINESS.md`, "The release gate".
 
 ## 11a. Decisions made while implementing
 
