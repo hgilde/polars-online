@@ -1861,7 +1861,12 @@ became a task above. What follows is what the implementer needs beyond the
 §10 row: the decisions the row left open, resolved; the places the row was
 wrong about the code, corrected; and the exact seams each task touches.
 Where a choice is genuinely free it is marked *implementer's call*; nothing
-else is.
+else is. The points this block leaves to be confirmed from the papers —
+the log base and `D̂` of the constancy monitor and its size/power tables,
+Higham's example matrices, the Ledoit–Wolf intensity formulae, the
+pre-averaging constants, the kernel bandwidth rule, the Epps-inversion
+weights, the LDECO conventions — are answered in `docs/ANSWERS-E54-E64.md`,
+which also says which items it could *not* verify.
 
 *Batch-wide.*
 
