@@ -41,6 +41,7 @@
 mod atomic;
 mod bank;
 mod pool;
+mod refresh;
 mod runner;
 mod spec;
 mod stream;
@@ -52,6 +53,7 @@ pub use bank::{
 };
 pub use online_core;
 pub use pool::{THREADS_VAR, pool, thread_pool_size};
+pub use refresh::{RefreshCols, RefreshTime};
 pub use runner::{
     DEFAULT_CHUNK_ROWS, Format, Input, Output, RunConfig, RunOptions, RunStats, run, run_config,
     run_config_on,

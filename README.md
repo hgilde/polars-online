@@ -594,6 +594,38 @@ weighting — shards of a pass, groups being combined — not two halves of a
 decayed stream in time order, where each part's weights are relative to its
 own last row; the docstring gives the rescaling for that case.
 
+### Series that tick at their own times
+
+Two series observed at different instants cannot be correlated directly. A
+fine common grid attenuates the correlation towards zero (the Epps effect)
+and filling forward invents observations that were never made.
+
+`po.prep.refresh_time` puts them on the grid Barndorff-Nielsen, Hansen, Lunde
+and Shephard defined: a point wherever **every** series has ticked at least
+once since the last one, each carrying its last observed value.
+
+```python
+from polars_online import prep
+
+grid = prep.refresh_time(ticks, series="symbol", names=["AAA", "BBB", "CCC"],
+                         time="t", value="px").collect()
+```
+
+The input is long — one row per tick, with the series named in a column. The
+output has one row per grid point: `time_refresh`, one `<s>_value` per
+series, `n_ticks_<s>` since the previous point, and `retained_fraction`,
+which is how much of the data survived. Look at that last one before
+trusting a correlation computed on the result: the grid runs at the pace of
+the slowest series, so a fast one loses most of its ticks.
+
+`pairs=True` runs an independent two-series grid per pair instead, which
+keeps far more when one series is slow. Rows must be in time order; a
+backwards time is an error naming the row, and nothing is interpolated.
+
+The output looks synchronous and is not: each value is up to one of its own
+inter-tick intervals old. `n_ticks_<s>` is that staleness made visible — the
+series with the largest count is the one holding the grid up.
+
 ### One row per finished group
 
 A bank keeps one state per group key, for the life of the bank. On a stream

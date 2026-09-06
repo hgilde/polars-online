@@ -633,6 +633,18 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
             group_close="monotone",
         ),
         "by_block": df.with_columns(block=pl.int_range(pl.len()) // 100),
+        # The "series that tick at their own times" section's long input:
+        # three symbols, each at its own instants.
+        "ticks": pl.concat(
+            pl.DataFrame(
+                {
+                    "symbol": [s] * 100,
+                    "t": np.cumsum(rng.exponential(1.0, 100)),
+                    "px": rng.standard_normal(100),
+                }
+            )
+            for s in ("AAA", "BBB", "CCC")
+        ).sort("t"),
         "today": df,
         "lf": df.lazy(),
         "spec": spec,

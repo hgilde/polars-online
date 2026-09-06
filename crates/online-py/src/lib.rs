@@ -406,6 +406,68 @@ impl PyModelBank {
 
 /// The name of the format `path`'s extension says it is, or a `ValueError`
 /// naming the extensions the runner knows. One extension table, in Rust.
+/// Refresh-time sampling (`online_polars::RefreshTime`, E58): fed frames of
+/// the long input in stream order, it returns the grid points each chunk
+/// completed. State lives across calls, so any chunking gives one grid.
+#[pyclass(name = "RefreshTime", module = "polars_online._polars_online")]
+struct PyRefreshTime {
+    inner: online_polars::RefreshTime,
+    series: String,
+    time: String,
+    value: String,
+    by: Option<String>,
+    keep: Vec<String>,
+}
+
+#[pymethods]
+impl PyRefreshTime {
+    #[new]
+    #[pyo3(signature = (names, series, time, value, by=None, pairs=false, keep=None))]
+    fn new(
+        names: Vec<String>,
+        series: String,
+        time: String,
+        value: String,
+        by: Option<String>,
+        pairs: bool,
+        keep: Option<Vec<String>>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: online_polars::RefreshTime::new(names, pairs).map_err(PyValueError::new_err)?,
+            series,
+            time,
+            value,
+            by,
+            keep: keep.unwrap_or_default(),
+        })
+    }
+
+    /// The grid points completed by this chunk, in order.
+    fn feed(slf: &Bound<'_, Self>, df: PyDataFrame) -> PyResult<PyDataFrame> {
+        let mut this = slf.try_borrow_mut().map_err(|_| busy("feed"))?;
+        // Destructured so the sampler and the column names are separate
+        // borrows: `feed` needs `&mut` on the one and `&` on the others.
+        let PyRefreshTime {
+            inner,
+            series,
+            time,
+            value,
+            by,
+            keep,
+        } = &mut *this;
+        let cols = online_polars::RefreshCols {
+            series,
+            time,
+            value,
+            by: by.as_deref(),
+            keep,
+        };
+        Ok(PyDataFrame(
+            inner.feed(&df.0, &cols).map_err(|e| run_err(&e))?,
+        ))
+    }
+}
+
 #[pyfunction]
 fn format_of_path(path: &str) -> PyResult<&'static str> {
     online_polars::Format::from_path(std::path::Path::new(path))
@@ -599,6 +661,7 @@ fn model_kinds() -> Vec<&'static str> {
 #[pymodule]
 fn _polars_online(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyModelBank>()?;
+    m.add_class::<PyRefreshTime>()?;
     m.add_function(wrap_pyfunction!(native_version, m)?)?;
     m.add_function(wrap_pyfunction!(schema_version, m)?)?;
     m.add_function(wrap_pyfunction!(thread_pool_size, m)?)?;

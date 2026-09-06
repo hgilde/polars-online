@@ -16,6 +16,18 @@ carries breaking changes.
 
 ### Added
 
+- **`po.prep.refresh_time`: asynchronous series on a common grid**
+  (`docs/ENHANCEMENTS.md` E58, task 49). Barndorff-Nielsen, Hansen, Lunde &
+  Shephard's refresh-time rule — a grid point wherever every series has
+  ticked at least once since the last one, each carrying its last observed
+  value — as a Rust operator (`crates/online-polars/src/refresh.rs`) wrapped
+  as a lazy source, so a tick stream too long to hold still is. Long input,
+  one row per grid point out: `time_refresh`, `<s>_value`, `n_ticks_<s>` and
+  `retained_fraction`, plus `by` and `keep` columns. `pairs=True` runs an
+  independent two-series grid per pair, which keeps far more of the data
+  when one series is slow. Nothing is interpolated, and the grid is the same
+  from one chunk or a thousand.
+
 - **Lagged co-moments on `ew_cov`** (`docs/ENHANCEMENTS.md` E56, tasks 47
   and 48). `ew_cov(lags=[1, 2, 5])` accumulates `E_w[d_t d'_{t−ℓ}]` beside
   the contemporaneous co-moments, with both deviations against the mean

@@ -155,7 +155,11 @@ def test_the_native_stub_names_the_built_module():
     stub = Path(native.__file__).with_name("_polars_online.pyi").read_text()
     tree = ast.parse(stub)
     functions = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
-    (cls,) = [n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ModelBank"]
-    methods = {n.name for n in cls.body if isinstance(n, ast.FunctionDef)} - {"__init__"}
-    assert functions == {n for n in dir(native) if not n.startswith("_")} - {"ModelBank"}
-    assert methods == {n for n in dir(native.ModelBank) if not n.startswith("_")}
+    classes = {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}
+    exported = {n for n in dir(native) if not n.startswith("_")}
+    assert functions == exported - set(classes)
+    assert set(classes) <= exported, "the stub declares a class the module has not got"
+    for name, cls in classes.items():
+        methods = {n.name for n in cls.body if isinstance(n, ast.FunctionDef)} - {"__init__"}
+        want = {n for n in dir(getattr(native, name)) if not n.startswith("_")}
+        assert methods == want, name

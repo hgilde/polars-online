@@ -655,7 +655,7 @@ note, not a task.
       bit; the longhand `numpy` recursion agrees; the ring clears on the
       three events of task 47 and on nothing else; `n_eff` and Kish are
       bit-identical to the spec without `lags`; chunk invariance.
-- [ ] 49. **`po.prep.refresh_time`** (E58): refresh-time sampling as a Rust
+- [x] 49. **`po.prep.refresh_time`** (E58): refresh-time sampling as a Rust
       operator in `online-polars` (`refresh.rs`, no model), exposed through
       `online-py` and wrapped as a lazy IO-plugin source in `po.prep`, the way
       `lf.online.fit_predict` is. Acceptance: a longhand Python loop on
@@ -2362,6 +2362,25 @@ no-op for every model that has declared no ring (`KEEPS_LAGS`, empty today).
   `retained_fraction = 1` everywhere; a volume clock as `time`; identical
   frames from 1 and 1000 batches; the unknown-series and backwards-time
   errors.
+
+*Task 49 as built, 2026-09-06.* The design stood; three notes.
+
+- *The `N = 7`, `21/27` example is constructed, and says so.* ANSWERS
+  verified the numbers against BNHLS, but their tick *times* exist only as a
+  figure, so the test builds a 27-tick stream with their counts (8, 9, 10)
+  and asserts the reduction: seven points, three values kept each, the
+  per-interval fractions `3/5, 3/4, 3/4, 3/4, 3/4, 1, 1`, and `N <= min nᵢ`.
+  The first attempt at such a stream gave eight points -- seven clean cycles
+  plus a tail that completed one more -- so the extras had to be placed
+  *inside* an interval, before its completing tick. That is the property
+  worth remembering: a repeat only drops a tick when it precedes the tick
+  that closes the set.
+- *`retained_fraction` is per interval, not cumulative.* `m / Σ n_ticks` for
+  that point. The paper's `21/27` is the aggregate, which the test computes
+  as `3·N / total`.
+- *The slice pushdown counts output rows.* Unlike the bank's source, where
+  `head(n)` limits what the *bank is fed*, here the grid is what the query
+  sliced: `head(5)` means five grid points, however many ticks that took.
 
 *Task 50 — `rcov` (E57).*
 

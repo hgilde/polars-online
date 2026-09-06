@@ -7,6 +7,21 @@ from collections.abc import Callable, Iterator
 
 import polars as pl
 
+class RefreshTime:
+    """Refresh-time sampling (E58), fed frames of the long input in order."""
+
+    def __init__(
+        self,
+        names: list[str],
+        series: str,
+        time: str,
+        value: str,
+        by: str | None = None,
+        pairs: bool = False,
+        keep: list[str] | None = None,
+    ) -> None: ...
+    def feed(self, df: pl.DataFrame) -> pl.DataFrame: ...
+
 class ModelBank:
     def __init__(self, specs_json: str) -> None: ...
     def fit_predict(self, df: pl.DataFrame) -> list[pl.Series]: ...
