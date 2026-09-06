@@ -390,8 +390,8 @@ pub struct Bocpd {
     cfg: BocpdCfg,
     /// One per kept run length, shortest first (`runs[0]` is `r = 0`).
     runs: Vec<Run>,
-    /// `ln P(rₜ = r, x₁:ₜ)`, aligned with `runs`, normalised after every
-    /// row so it cannot drift away from zero over a long stream.
+    /// `ln P(rₜ = r, x₁:ₜ)`, aligned with `runs`. Unnormalised; see
+    /// [`Bocpd::prune`] for why it is left that way.
     logjoint: Vec<f64>,
     n_eff: f64,
     /// Rows whose predictive could not be evaluated -- a scale matrix that
@@ -639,11 +639,17 @@ impl Bocpd {
         (out, Some((new, weights)))
     }
 
-    /// Drop the runs below `truncate`, fold the tail at `max_run`, and
-    /// renormalise so the joint stays a log *posterior* plus zero rather
-    /// than drifting by the row's log evidence for the length of the stream
-    /// (docs/REVIEW-E54-E64.md B4). Every output is a difference against
-    /// `z`, so the subtraction changes no reported number.
+    /// Drop the runs below `truncate` and fold the tail at `max_run`.
+    ///
+    /// The joint is **not** renormalised, deliberately. Subtracting `z` here
+    /// would keep it near zero, and every output is a difference against `z`
+    /// so no reported number would move -- but `z` comes out of `ln`, and
+    /// libm's last bit is not the same on every platform. Feeding it back
+    /// into the state made a bank saved on one OS continue differently on
+    /// another: `state_schema5.rs`'s frozen file stopped reproducing on
+    /// Linux, having been written on macOS. The drift it would have fixed is
+    /// about 1.4 nats a row, so it costs nothing until well past 1e9 rows
+    /// (docs/REVIEW-E54-E64.md B4, reverted 2026-09-06).
     fn prune(&mut self) {
         let z = log_sum_exp(&self.logjoint);
         if !z.is_finite() {
@@ -685,11 +691,6 @@ impl Bocpd {
             self.runs.truncate(cut);
             let last = self.logjoint.len() - 1;
             self.logjoint[last] = tail;
-        }
-        // Whatever survived, re-based on its own total.
-        let z = log_sum_exp(&self.logjoint);
-        if z.is_finite() {
-            self.logjoint.iter_mut().for_each(|l| *l -= z);
         }
     }
 }

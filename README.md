@@ -83,8 +83,13 @@ and nothing else, and a test holds it to that. Details under
 
 ## Install
 
+```sh
+pip install polars-online      # or: uv add polars-online
+```
+
 Wheels for macOS (arm64, x86_64), Windows x64 and Linux (x64 glibc and musl,
-aarch64 glibc) plus the CLI binaries are attached to each release. Python 3.12+.
+aarch64 glibc) are on PyPI; those and the CLI binaries are attached to each
+GitHub release. Python 3.12+.
 The wheel is ~19 MB to download and ~59 MB installed: it statically links the
 Rust half of Polars, so nothing beyond `polars` itself has to be present at
 run time. `numpy` is an optional extra, needed only by `ModelBank.gram()`.
@@ -2175,7 +2180,7 @@ is a minor release; narrowing it is breaking. See
 
 The guarantees above are only worth what checks them, so the suite is built
 around oracles and invariants rather than expected values typed in by hand.
-Around 470 Rust tests and 1,700 pytest cases (from 920-odd functions), all
+Around 640 Rust tests and 2,200 pytest cases (from 1,250-odd functions), all
 green on three OSes; [docs/TESTING.md](docs/TESTING.md) is the ledger of what
 each part proves and what it has found.
 

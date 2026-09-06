@@ -720,7 +720,8 @@ note, not a task.
       up to the batch.
 - [x] 57. **Fix what the review of 45–56 found** (`docs/REVIEW-E54-E64.md`):
       29 items -- four of them wrong answers rather than missing guards --
-      each with the test that catches it. The four: `ew_cov`'s lag ring read
+      each with the test that catches it, and one (B4) made and then
+      reverted when Linux CI showed what it cost. The four: `ew_cov`'s lag ring read
       its depth from `VecDeque::capacity()` and never refilled after a save
       taken before it was full (L1); `rcov`'s `clear_lags` dropped the
       end-jitter ring instead of closing the stretch, losing `m` returns and
@@ -3763,6 +3764,19 @@ a decision rather than a repair, this is what was decided.
   records for task 38's sums. The schema-5 fixture was re-frozen anyway,
   because the `hmm` state in it was written by the model H1 corrected; the
   layout did not move and the file exercises the same loader.
+- *B4 was reverted, and the revert is the finding.* Renormalising `bocpd`'s
+  `logjoint` per row is exact on paper and free -- every output is a
+  difference against `z` -- but `z` comes out of `ln`, and libm's last bit
+  is not the same on glibc and Apple's. Feeding it back into the **state**
+  made a bank saved on macOS continue differently on Linux:
+  `state_schema5.rs`'s frozen file stopped reproducing and its three tests
+  failed on `ubuntu-latest` alone (CI 34037072202), where the same fixture
+  had been green on all three OSes before. That is the general rule worth
+  keeping: **a libm result may be compared or reported, but putting one into
+  the state costs cross-platform reproducibility.** The joint stays
+  unnormalised; `prune`'s docstring and the review item both say why, and
+  the drift it would have fixed is ~1.4 nats a row, so it costs nothing
+  before about 1e9 rows.
 - *Three goldens moved, all deliberately*: `GOLDEN_HMM` (H1),
   `state_schema5.rs` (H1), and the `rcov` rows of the pipeline golden (R2,
   27 → 21 effective returns over three capped gaps). Each carries a comment

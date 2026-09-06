@@ -14,8 +14,8 @@ Ordered by "would embarrass us if a stranger found it first".
 Apache-2.0 `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`, issue
 and PR templates, an outward-facing README, `release.yml` with wheels for six
 platforms plus an sdist and PyPI trusted publishing, the name `polars-online`
-verified free, and a test suite that is the repo's strongest argument (230 Rust
-+ ~680 pytest, with golden and hardening layers).
+verified free, and a test suite that is the repo's strongest argument (~640 Rust
++ ~2,200 pytest, with golden and hardening layers).
 
 ## R1 — Least-privilege workflow permissions — **done**
 

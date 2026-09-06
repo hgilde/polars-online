@@ -16,8 +16,11 @@ fine, but one of the two has to move.
 Order: by severity, then by module. Tick items here as they land, with the
 commit; keep the numbering.
 
-**All 29 are fixed** (`docs/PLAN.md` task 57, 2026-09-06), each with the test
-named under it; a ✅ on the heading says so. Where an item asked for a
+**Twenty-eight of the 29 are fixed** (`docs/PLAN.md` task 57, 2026-09-06),
+each with the test named under it; a ✅ on the heading says so. The
+twenty-ninth, B4, was made and then **reverted**: it cost cross-platform
+bit-reproducibility of a saved state, which is worth more than the tidiness
+it bought. Its heading carries ⛔ and the item says what happened. Where an item asked for a
 decision rather than a repair, the decision is in `docs/PLAN.md` §11a under
 *Fixing the review of 45–56*, and the item's own text below is left as it was
 written -- it is the record of what was wrong, not of what the code does now.
@@ -305,7 +308,7 @@ for ever; a `d×d` `prior_scale` is not checked SPD; a non-finite
 `prior_mean` is accepted. `test_bocpd.py` refuses a 2-vector `prior_scale`
 and nothing else about it.
 
-### B4 — `logjoint` is never renormalised ✅
+### B4 — `logjoint` is never renormalised — **reverted, deliberately** ⛔
 
 `crates/online-core/src/bocpd.rs:546–555, 581`
 
@@ -316,6 +319,18 @@ is large enough for the subtraction to lose digits — at roughly 1.4 nats a
 row that is past 1e9 rows before it costs 1e-7, so it is tidiness, not a
 bug. Subtracting `z` in `prune` makes it exact for ever at no cost. Test:
 `logjoint.max()` stays bounded over a long stream.
+
+**Done and undone (2026-09-06).** The subtraction was made, and Linux CI
+caught what it cost: `z` comes out of `ln`, and libm's last bit is not the
+same on every platform, so feeding it back into the *state* made a bank
+saved on macOS continue differently on Linux. `state_schema5.rs`'s frozen
+file stopped reproducing and its three tests failed on `ubuntu-latest`
+alone, where the same fixture had been green on all three OSes before.
+Reverting made it green again — checked directly, not inferred: with the
+revert, the pre-task-57 fixture's `bocpd` state matches this build bit for
+bit. A cosmetic normalisation is not worth a cross-OS reproducibility
+regression, so the joint stays unnormalised and `prune`'s docstring says
+why. **Do not reintroduce it.**
 
 ### H4 — `hmm` given moments ✅
 

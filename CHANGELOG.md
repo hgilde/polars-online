@@ -7,85 +7,31 @@ carries breaking changes.
 
 ## [Unreleased]
 
-### Fixed
+Nothing yet.
 
-- **A review of the E54–E64 batch, and every item it found**
-  (`docs/REVIEW-E54-E64.md`, task 57). Twenty-nine items, each with the test
-  that catches it; four of them were wrong answers rather than missing
-  guards, and three moved a golden.
+## [0.2.0] — 2026-09-06
 
-  - **`ew_cov` lags: a bank saved before the ring was full never filled it
-    again.** The ring's depth was read back from `VecDeque::capacity()`,
-    which a clone or a msgpack round-trip shrinks to the length it holds, so
-    a save taken on a short stream — or just after a session change or a
-    capped gap, both of which empty the ring — left the deeper lags decaying
-    to nothing for the rest of the run.
-  - **`rcov`: a clock break inside a block corrupted the estimate.** A gap
-    over `max_dclock`, or a session change, dropped the end-jitter ring
-    instead of closing the stretch: the `m` returns waiting in it were lost
-    and the first return after the break was emitted `m + 1` times, with the
-    reported `n` unchanged so nothing downstream could tell. A break now
-    splits the block into **stretches**, each closed the way the last one
-    is, and the lagged sums add over them — so no product pairs two returns
-    across the break, and an unbroken block is unchanged to the bit.
-  - **`hmm`: `min_periods` withheld the row from the filter, not just from
-    the output.** A warm-up row was never learned from, and under decay an
-    `n_eff` that plateaued below the threshold meant a filter that never
-    learned at all — every row null, for ever. It now gates the report
-    alone, as it does in every other model here.
-  - **`bocpd`: a hazard column value of 1 or less silently dropped the
-    row.** It reported nulls and left the posterior where it stood while
-    `n_eff` counted it. Such a value is now refused naming the row (null
-    still falls back to the spec's own `hazard`), and a row whose predictive
-    cannot be evaluated is counted in `solve_failures`.
-  - **`predict` reads the targets slot** where a model takes a parameter
-    from it: `bocpd`'s `hazard_col` and `hmm`'s `exog_tvtp` used to answer
-    from the configured default, so `ModelBank.predict` disagreed with
-    `fit_predict` on every row where the column differed. Both now give the
-    step's answer, and the `predict == step` contract tests it with a column
-    that varies.
-  - **`hmm` and `corrchange` did not decay `n_eff` on a zero-weight row**,
-    so `min_periods` quietly meant a different number of rows for them after
-    any weightless stretch (hard rule 8). The model contract now checks the
-    recursion against zero-weight rows for every model, without naming a
-    decay: a zero-weight row must advance the clock and nothing else.
-  - **`label_delay` replayed across a capped gap after the ring was
-    cleared.** Only the matured rows were released on a gap over
-    `max_dclock`, so the ones still waiting were learned *after* the models
-    dropped their row-lagged state — pairing rows across the very break the
-    clear was for. All pending rows are now released on a capped gap, as
-    they already were on a session change.
-  - **`prep.refresh_time` returned the `by` column as text** whatever it
-    came in as, so the result did not join back to its own input (and did
-    not match the schema the lazy plan declared).
-  - **A high-water mark is now refused in both directions.** A mark written
-    under an integer key column and read under a text one let through
-    exactly the groups it exists to refuse (`"9" > "10"` bytewise); the flag
-    is saved with the bank.
-  - Validation gaps closed, each with the case that reaches it: `bocpd`'s
-    `prior_scale` (positive, symmetric, positive definite) and `prior_mean`
-    (finite); `hmm`'s given `covs` (symmetric and positive definite — a
-    state with no density takes no responsibility for any row);
-    `corrchange`'s `crit`; `rcov`'s `window`, `n_max` and `h_max` against
-    `bandwidth`; `deco`'s block list written by hand (a duplicate name, an
-    empty list); `corr.nearest` on non-finite input and `max_iter = 0`;
-    `corr.shrink` on fewer than two rows; and `sim.regimes` normalises a
-    transition row that `np.allclose` accepts but `rng.choice` does not.
-  - Documented rather than changed, with a test pinning each: ties in
-    `refresh_time` are broken by row order; a zero-weight `corrchange` row
-    is reported as if it would be learned; `eig_vecs` are signed for
-    continuity with the previous *closed group*; a `Categorical` group key
-    is ordered bytewise, so a frame sorted by its physical order is refused.
+A large release. 0.1.x had eleven regression and filtering models; 0.2.0
+adds **ten more** — `kmeans` and `micro` (clustering), `ew_class`
+(classification), `seqtest` (a sequential test of a sign), `marginal`
+(per-pair moments), `deco` (equicorrelation), `rcov` (a block's realised
+covariance), `hmm` (a hidden Markov filter), `corrchange` (is the
+correlation structure constant?) and `bocpd` (how long has this regime
+lasted?) — and the options and plumbing they wanted: conformal intervals,
+the Mahalanobis distance, EW-PCA and lagged co-moments on `ew_cov`,
+constrained coefficients on `sgd` and `pa`, coefficient reversion on
+`kalman`, a label delay, refresh-time sampling, a closed-group queue that
+bounds a bank over an unbounded key space, and the `po.corr` and `po.sim`
+modules beside them. Throughput went up 2.0–2.8× and thread scaling from
+3.2× to 6.2× on ten cores.
 
-### Changed
-
-- **State schema 4 → 5.** The spec every bank file carries gained
-  `group_close` (below), so every file's bytes moved. A schema-4 file loads,
-  continues to the bit and re-saves as 5; nothing in a model's own state
-  changed. `crates/online-polars/tests/state_schema5.rs` freezes the new
-  layout the way `state_schema4.rs` froze the old one: a bank with two
-  closed groups nobody has read, an `ew_cov` with a partly filled lag ring,
-  and one of each new model mid-stream.
+Every model keeps the contract — predict before update, O(state) memory,
+chunk invariance, `n_eff` before the row — and **every number the 0.1
+models produce is unchanged**, checked by a bit-identical dump over twelve
+configurations. State files are written in schema 5, and files from 0.1.x
+load and continue. One breaking change: a residual diagnostic set on a
+model that has no predictions is refused by name, where `ew_cov` used to
+accept it silently.
 
 ### Added
 
@@ -318,7 +264,7 @@ carries breaking changes.
   from a saved Gram; with it they can, and `n_kish = n_eff² / Σw²` is the
   sample size they divide by (`n_eff` counts weight, not rows). A target's
   variance is bit-identical to an `ew_cov` over that column. A state saved by
-  0.2.0 or earlier has none of them and reports `None` for all four for the
+  0.1.x has none of them and reports `None` for all four for the
   rest of its life — the sums cannot be replayed, and a partial one paired
   with a whole-stream `n_eff` would be wrong by the length of the history.
   Such a state still loads, still continues to the bit, and still re-saves
@@ -385,28 +331,6 @@ carries breaking changes.
   but the association does not, so the two triangles differ in the last bit)
   and it is 49% to 107% *slower*, because the mirror store walks a new cache
   line per element. `docs/PERFORMANCE.md` section 14 has the numbers.
-- **`SCHEMA_VERSION` is 4** (`po.schema_version()`). Every spec's bytes
-  moved, because the spec each bank file carries gained `label_delay`; a
-  stream also carries the rows it has accepted but not yet learned from.
-  Both are additive with defaults, so a schema-3 file loads, continues to
-  the bit and re-saves in the new layout, and `MIN_SCHEMA_VERSION` is still
-  1. Nothing in a model's own state changed.
-
-## [0.2.0] — 2026-09-05
-
-Two clustering models, a classifier, a sequential test, and four options
-the existing models did not have: conformal intervals, the Mahalanobis
-distance and EW-PCA on `ew_cov`, constrained coefficients on `sgd` and
-`pa`, coefficient reversion on `kalman`. Every model keeps the contract —
-predict before update, O(state) memory, chunk invariance, `n_eff` before
-the row — and every number the 0.1 models produce is unchanged. One
-breaking change: a residual diagnostic set on a model that has no
-predictions is refused by name, where `ew_cov` used to accept it silently.
-State files are written in schema 3 and carry the last learned row's
-output (`ModelBank.last_row()`) and a summary of the data each group was
-fed (`ModelBank.summary()`, `ModelBank.describe()`); files from 0.1.x load.
-
-### Added
 
 - **`kmeans`: exponentially weighted k-means** (`po.spec.kmeans`,
   `docs/PLAN.md` §11a, task 23). The first model with no target: every
@@ -705,6 +629,23 @@ fed (`ModelBank.summary()`, `ModelBank.describe()`); files from 0.1.x load.
 
 ### Changed
 
+- **`SCHEMA_VERSION` is 5** (`po.schema_version()`), up from 2 in 0.1.x, in
+  three steps that are each additive with defaults — so **a 0.1.x bank file
+  loads, continues the stream to the bit, and re-saves in the new layout**,
+  and `MIN_SCHEMA_VERSION` is still 1. Schema 3 is `kalman`'s and `sgd`'s
+  standardiser (below); schema 4 is the spec gaining `label_delay`, and a
+  stream carrying the rows it has accepted but not yet learned from; schema
+  5 is the spec gaining `group_close`, and a stream that closes on session
+  keeping the session value of the span it is in. Nothing in a model's own
+  state changed in 4 or 5 — the bumps are because every spec's bytes moved,
+  which is what hard rule 5 asks to be told about. Each layout is frozen as
+  a fixture with a real file's bytes (`state_v1.rs`, `state_schema2.rs`
+  through `state_schema5.rs`); the schema-5 one carries a bank with two
+  closed groups nobody has read, an `ew_cov` with a partly filled lag ring,
+  and one of each new model mid-stream. The bank `format_version` is
+  unchanged at 2. A 0.1.x build cannot read a file saved by 0.2.0, as
+  before for any newer schema.
+
 - **Residual diagnostics are refused for a model that predicts no target.**
   `ew_cov` already refused `emit_selected` and `emit_averaged`; it,
   `kmeans`, `micro` and `ew_class` now refuse `emit_sigma`, `emit_resid_z`,
@@ -760,6 +701,83 @@ fed (`ModelBank.summary()`, `ModelBank.describe()`); files from 0.1.x load.
   Mahalanobis distance, the three `ew_class` covariances, `kmeans`,
   `micro` and `seqtest`; the regression table regenerated on the same
   build.
+
+### Fixed
+
+- **A review of the E54–E64 batch, and every item it found**
+  (`docs/REVIEW-E54-E64.md`, task 57). Twenty-nine items: twenty-eight
+  fixed, each with the test that catches it, and one made and then reverted
+  (below) when CI showed what it cost. Four were wrong answers rather than
+  missing guards, and three moved a golden.
+
+  - **`ew_cov` lags: a bank saved before the ring was full never filled it
+    again.** The ring's depth was read back from `VecDeque::capacity()`,
+    which a clone or a msgpack round-trip shrinks to the length it holds, so
+    a save taken on a short stream — or just after a session change or a
+    capped gap, both of which empty the ring — left the deeper lags decaying
+    to nothing for the rest of the run.
+  - **`rcov`: a clock break inside a block corrupted the estimate.** A gap
+    over `max_dclock`, or a session change, dropped the end-jitter ring
+    instead of closing the stretch: the `m` returns waiting in it were lost
+    and the first return after the break was emitted `m + 1` times, with the
+    reported `n` unchanged so nothing downstream could tell. A break now
+    splits the block into **stretches**, each closed the way the last one
+    is, and the lagged sums add over them — so no product pairs two returns
+    across the break, and an unbroken block is unchanged to the bit.
+  - **`hmm`: `min_periods` withheld the row from the filter, not just from
+    the output.** A warm-up row was never learned from, and under decay an
+    `n_eff` that plateaued below the threshold meant a filter that never
+    learned at all — every row null, for ever. It now gates the report
+    alone, as it does in every other model here.
+  - **`bocpd`: a hazard column value of 1 or less silently dropped the
+    row.** It reported nulls and left the posterior where it stood while
+    `n_eff` counted it. Such a value is now refused naming the row (null
+    still falls back to the spec's own `hazard`), and a row whose predictive
+    cannot be evaluated is counted in `solve_failures`.
+  - **`predict` reads the targets slot** where a model takes a parameter
+    from it: `bocpd`'s `hazard_col` and `hmm`'s `exog_tvtp` used to answer
+    from the configured default, so `ModelBank.predict` disagreed with
+    `fit_predict` on every row where the column differed. Both now give the
+    step's answer, and the `predict == step` contract tests it with a column
+    that varies.
+  - **`hmm` and `corrchange` did not decay `n_eff` on a zero-weight row**,
+    so `min_periods` quietly meant a different number of rows for them after
+    any weightless stretch (hard rule 8). The model contract now checks the
+    recursion against zero-weight rows for every model, without naming a
+    decay: a zero-weight row must advance the clock and nothing else.
+  - **`label_delay` replayed across a capped gap after the ring was
+    cleared.** Only the matured rows were released on a gap over
+    `max_dclock`, so the ones still waiting were learned *after* the models
+    dropped their row-lagged state — pairing rows across the very break the
+    clear was for. All pending rows are now released on a capped gap, as
+    they already were on a session change.
+  - **`prep.refresh_time` returned the `by` column as text** whatever it
+    came in as, so the result did not join back to its own input (and did
+    not match the schema the lazy plan declared).
+  - **A high-water mark is now refused in both directions.** A mark written
+    under an integer key column and read under a text one let through
+    exactly the groups it exists to refuse (`"9" > "10"` bytewise); the flag
+    is saved with the bank.
+  - Validation gaps closed, each with the case that reaches it: `bocpd`'s
+    `prior_scale` (positive, symmetric, positive definite) and `prior_mean`
+    (finite); `hmm`'s given `covs` (symmetric and positive definite — a
+    state with no density takes no responsibility for any row);
+    `corrchange`'s `crit`; `rcov`'s `window`, `n_max` and `h_max` against
+    `bandwidth`; `deco`'s block list written by hand (a duplicate name, an
+    empty list); `corr.nearest` on non-finite input and `max_iter = 0`;
+    `corr.shrink` on fewer than two rows; and `sim.regimes` normalises a
+    transition row that `np.allclose` accepts but `rng.choice` does not.
+  - One item was fixed and then **reverted**: renormalising `bocpd`'s
+    run-length log-joint is exact on paper, but `z` comes out of `ln` and
+    libm's last bit differs between platforms, so feeding it into the state
+    made a bank saved on macOS continue differently on Linux. A libm result
+    may be compared or reported; putting one into the state costs
+    cross-platform reproducibility, which is worth more than the tidiness.
+  - Documented rather than changed, with a test pinning each: ties in
+    `refresh_time` are broken by row order; a zero-weight `corrchange` row
+    is reported as if it would be learned; `eig_vecs` are signed for
+    continuity with the previous *closed group*; a `Categorical` group key
+    is ordered bytewise, so a frame sorted by its physical order is refused.
 
 ## [0.1.1] — 2026-09-04
 
