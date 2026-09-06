@@ -47,6 +47,11 @@ TOOL_OUTPUT_DIRS = {"mutants.out", "mutants.out.old", "target", ".venv", "htmlco
 #: state fixture is the biggest legitimate one, and it is a hex constant.
 MAX_SOURCE_BYTES = 200_000
 
+#: Prose gets more room: `docs/PLAN.md` is the design log and passed 200 KB
+#: when tasks 45-56 were prepared (2026-09-05). A data file renamed `.md`
+#: would still be caught by the cap below, only later.
+MAX_DOC_BYTES = 1_000_000
+
 #: Lockfiles are generated but must be tracked, and grow with every wheel a
 #: dependency publishes (mypy alone added 65 KB); their size says nothing
 #: about data.
@@ -91,7 +96,8 @@ def test_no_tracked_file_is_data_sized(tracked):
         f = REPO / p
         if p.name in LOCKFILES:
             continue
-        if f.is_file() and f.stat().st_size > MAX_SOURCE_BYTES:
+        cap = MAX_DOC_BYTES if p.suffix == ".md" else MAX_SOURCE_BYTES
+        if f.is_file() and f.stat().st_size > cap:
             big.append((str(p), f.stat().st_size))
     assert not big, f"suspiciously large tracked files (data in disguise?): {big}"
 

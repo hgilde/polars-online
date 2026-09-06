@@ -611,6 +611,110 @@ to run at the width, target count and block count its design allows.
       `state_v1.rs`, `state_schema2.rs` and `state_schema3.rs` freeze theirs,
       now that tasks 40–43 have stopped moving the layout.
 
+Tasks 45–56 build `docs/ENHANCEMENTS.md` §10 (E54–E64) in the order that
+section gives, plus the two tasks the examination found were missing: 47,
+the ring-clearing signal three of the models need and no model currently
+receives, and 56, the fixture that closes the batch. Each is written to be
+built without re-deriving the design — the decisions, the maths, the state
+and the oracles are in §11a under *Preparing E54–E64 for implementation* —
+and every new model walks `docs/EXTENDING.md`'s eighteen steps. E63 is a
+note, not a task.
+
+- [ ] 45. **Closed-group emission** (E54): `group_close = "monotone" |
+      "session"` as a common parameter; `ModelBank.closed_groups(spec=None,
+      *, drop=True)`; the sidecar table through `po.run(closed_groups=)`,
+      `lf.online.fit_predict(closed_groups=)` and `online --closed-groups`;
+      `po.gram.from_row`. `SCHEMA_VERSION` 4 → 5: a spec field moved every
+      bank file's bytes (the `label_delay` precedent); schema-4 files load
+      and continue to the bit. Acceptance: a closed row equals `gram()` read
+      at the same point, field for field and bit for bit; `eig_*` equals
+      `numpy.linalg.eigh` of the row's own `comoments`; the sidecar's bytes
+      are invariant to chunking; a smaller later key, a null key, a
+      non-orderable key dtype, `group_close` without `group`, `"session"`
+      without `session` or with `session_gap`, and `group_close` with
+      `label_delay` are each refused by name; the last group never closes
+      and stays readable through `gram()`; a mid-stream save/load keeps the
+      unclosed groups, the high-water mark and any undrained rows.
+- [ ] 46. **`deco`** (E55): Engle–Kelly equicorrelation as an `OnlineModel`,
+      `O(m)` a row on `EwDiag`-standardised features; `dynamics = "ew" |
+      "linear"`, `blocks`; outputs `u`, `rho`, `loglik`, `n_eff`, `coef =
+      [rho]`. Acceptance: `u` equals the longhand pair sum; one pair under
+      `"ew"` equals `ew_cov`'s `corr` on the same standardised columns to the
+      bit; `loglik` equals a dense `numpy` Gaussian density; one block holding
+      every feature reproduces the unblocked `u`; a zero-weight first row is
+      guarded; the standard sweeps and the clock-rescaling test pass.
+- [ ] 47. **The ring-clearing signal**: `ClockAdvance::capped`,
+      `RowPlan::capped`, `OnlineModel::clear_lags` (a default no-op), called
+      by the stream on a session change or a capped gap (a reset already
+      rebuilds the model). The rule every row-lagged state follows from here
+      on, with its EXTENDING.md step. Enabling task for 48, 50 and 54.
+- [ ] 48. **Lagged co-moments on `ew_cov`** (E56): `lags=[...]`, `stats=[...,
+      "lagcorr"]`, `C_ℓ' = a·C_ℓ + a·b·d_t d'_{t−ℓ}` with both deviations
+      against the pre-row mean; `gram()` gains `lags` and `lag_comoments`;
+      the E54 row carries both. Acceptance: `ℓ = 0` equals `comoments` to the
+      bit; the longhand `numpy` recursion agrees; the ring clears on the
+      three events of task 47 and on nothing else; `n_eff` and Kish are
+      bit-identical to the spec without `lags`; chunk invariance.
+- [ ] 49. **`po.prep.refresh_time`** (E58): refresh-time sampling as a Rust
+      operator in `online-polars` (`refresh.rs`, no model), exposed through
+      `online-py` and wrapped as a lazy IO-plugin source in `po.prep`, the way
+      `lf.online.fit_predict` is. Acceptance: a longhand Python loop on
+      Poisson streams; an 8/9/10-tick three-series example with `N = 7` and
+      retained fraction `21/27`; a synchronous input returned unchanged;
+      identical output from 1 and 1000 batches.
+- [ ] 50. **`rcov`** (E57): the multivariate realised kernel, the
+      pre-averaged (modulated) realised covariance and the plain realised
+      covariance as a group-scoped, undecayed `OnlineModel` whose value is its
+      E54 row. Acceptance: `kind = "plain"` equals `n ×` `ew_cov(lam = 1)`'s
+      raw second moment at close, to the bit; the kernel and the pre-averaged
+      estimator each equal a longhand `numpy` implementation on the same
+      returns; Parzen PSD on adversarial streams; the `ψ`/`Φ` constants at
+      their closed forms; a block with fewer than `2·jitter` rows gives nulls;
+      zero-weight rows stay out of the ring; chunk invariance.
+- [ ] 51. **`po.corr`** (E62): the correlation-matrix helpers in `gram.py`'s
+      style — Fisher z, Higham's nearest correlation matrix, constant-target
+      shrinkage, equicorrelation, absorption, spectral and block forms,
+      Marchenko–Pastur edges, signal share, forecast losses, the Epps
+      inversion, Fisher standard errors. Acceptance: Higham's published
+      examples; PSD and unit diagonal on random inputs; `qlike` zero at
+      `fcst = real` and positive elsewhere; `equicorr_row` equals task 46's
+      `u`; every function held to a longhand check.
+- [ ] 52. **`po.sim.regimes`** (E64): the seeded regime simulator, `numpy`
+      only, with asynchronous observation, noise, AR(1), a volatility state,
+      a diurnal factor and a volume process; returns `bars`, `truth_rows`,
+      `truth_blocks`. Acceptance: block correlations recover the per-state
+      matrices within the Fisher-z floor; the Epps curve of an asynchronous
+      run rises with the sampling interval; a seed reproduces bytes.
+- [ ] 53. **`hmm`** (E60): the Hamilton filter over `K` Gaussian states with
+      responsibility-weighted `EwCov`/`EwDiag` updates, an EW transition
+      estimate from the filtered joint, `kmeans` seeding, `exog_tvtp`.
+      Acceptance: the reduction to `ew_class` (Π uniform, `learn = False`,
+      the states built from a fitted `ew_class`'s own `EwCov`s) to the bit; a
+      longhand `numpy` filter at fixed parameters; `predict` is the step
+      without the step; recovery of Π and the means on task 52's streams as a
+      `docs/REGIMES.md` experiment; the sweeps.
+- [ ] 54. **`corrchange`** (E59): the Wied–Krämer–Dehling / Wied–Galeano
+      sequential constancy monitor and the two-window `vech` statistic with a
+      permutation critical value. Acceptance: the monitor's size at the
+      nominal level and its power on a `0.5 → 0.7` step within Monte-Carlo
+      error; the window statistic against longhand `numpy`; run length to
+      false alarm and detection delay on task 52's streams in
+      `docs/REGIMES.md`.
+- [ ] 55. **`bocpd`** (E61): Adams–MacKay run-length recursion with
+      normal-inverse-Wishart, per-feature normal-inverse-gamma and the robust
+      diffusion-score-matching posterior; tail truncation. Acceptance: a
+      longhand `numpy` Algorithm 1 on a univariate stream; a variance step
+      detected; truncation changing nothing above `truncate`; the robust
+      variant ignoring one 20-σ row where the Gaussian one restarts; the
+      sweeps.
+- [ ] 56. **Freeze a schema-5 fixture and close the batch**:
+      `state_schema5.rs` as task 44 froze schema 4, once 45–55 have stopped
+      moving the layout, carrying a monotone bank with an undrained closed
+      row, an `ew_cov` with `lags`, and one of each new model; ENHANCEMENTS
+      §10's rows gain their task numbers; the README's model table, the
+      CHANGELOG's `[Unreleased]` and `docs/RELEASE-READINESS.md` are brought
+      up to the batch.
+
 ## 11a. Decisions made while implementing
 
 **Building the clustering (tasks 23–24), 2026-09-04.** The user chose
@@ -1746,6 +1850,764 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
 - *The other three fixtures stay exactly as they are.* Their module docs
   already say so, and `state_schema3.rs`'s byte-identity test has taken its
   upgrade branch — which is what it was written to do.
+
+**Preparing E54–E64 for implementation (tasks 45–56), 2026-09-05.** The
+eleven items of ENHANCEMENTS §10 were read against the code they land in —
+`model.rs`, `clock.rs`, `ewcov.rs`, `ewdiag.rs`, `ewclass.rs`,
+`cluster/kmeans.rs`, `stats.rs`, `drift.rs`; `stream.rs`, `bank.rs`,
+`spec.rs`, `runner.rs`, `summary.rs`; `_bank.py`, `_frame.py`, `_runner.py`,
+`_spec.py`, `_kwargs.py`, `prep.py`, `gram.py`; `EXTENDING.md` — and each
+became a task above. What follows is what the implementer needs beyond the
+§10 row: the decisions the row left open, resolved; the places the row was
+wrong about the code, corrected; and the exact seams each task touches.
+Where a choice is genuinely free it is marked *implementer's call*; nothing
+else is.
+
+*Batch-wide.*
+
+- *Order.* 45 → 46 → 47 → 48 → 49 → 50 → 51 → 52 → 53 → 54 → 55 → 56, as
+  §10 gives it, with 47 inserted before the first model that needs it and 52
+  (`po.sim`) before the three detectors whose experiments need a stream with
+  a known truth. 47 is small and must land before 48; 49 is independent of
+  everything and can be built at any point.
+- *One schema bump for the batch.* Task 45 adds a field to `Spec`, and every
+  bank file carries its specs, so every file's bytes move: `SCHEMA_VERSION`
+  4 → 5 there, with a loader that is the existing one (`#[serde(default)]`
+  fields; a schema-4 file loads, continues to the bit and re-saves as 5),
+  and the `lib.rs` history entry. Everything after 45 rides on 5 without a
+  further bump: appended `ModelState` variants (`Deco`, `Rcov`, `Hmm`,
+  `CorrChange`, `Bocpd`), `Option` fields with `skip_serializing_if` on
+  `EwCovModel` and `StreamState`, and new map keys on `BankFile` with
+  `#[serde(default)]` (the file is written with `to_vec_named`, so a key is
+  additive). Task 56 freezes `state_schema5.rs` once the layout has stopped
+  moving — Task 44's reason: a fixture regenerated proves nothing.
+- *The model shape.* 46, 50, 53, 54 and 55 are `ew_cov`'s shape: `n_targets()
+  = 0`, `is_unsupervised` and `predicts_no_target` both true, `fill_defaults`
+  writing `targets = [features[0]]`, the residual-side flags (`emit_sigma`,
+  `emit_resid_z`, `emit_metrics`, `conformal`, `resid_quantiles`,
+  `emit_autocorr`, `emit_drift`, `emit_selected`, `emit_averaged`) refused
+  by name with `ew_cov`'s messages, `label_delay` refused (nothing to hold
+  back), the leak check exempted where `ew_cov` is (grep `ew_cov` in
+  `tests/` and `scripts/leakcheck.sh`), non-`f64` outputs through the
+  `Source` variants that exist (`Cluster`, `Flag`, `Id`). Each needs ≥ 2
+  features except `bocpd`; refuse fewer by name.
+- *The clock-rescaling test, once per new model.* `Decay::factor` is
+  `exp2(−d/h)`; scaling the clock column and the halflife by the same power
+  of two leaves `d/h` bit-identical, so the output must be bit-identical at
+  `c = 2^k` and equal to `1e-12` at `c = 3`. Put it in each model's
+  `tests/test_<model>.py`; it is the "clocks are numbers" property §10 asks
+  for, stated so it can fail.
+- *Where things go.* Core: `crates/online-core/src/{deco,rcov,hmm,corrchange,
+  bocpd}.rs`. Stream layer: `refresh.rs` in `online-polars` (task 49), the
+  close path in `bank.rs`/`stream.rs` (45). Python: `corr.py`, `sim.py`, a
+  second function in `prep.py`, `from_row` in `gram.py`. Docs: a `docs/
+  REGIMES.md` for the detector experiments (53, 54), generated by
+  `scripts/regime_experiments.py` and committed, *not* regenerated by the
+  gate — the `docs/CLUSTERING.md` §7 precedent, chosen over
+  `docs/VALIDATION.md` because `test_validation_doc.py` regenerates that file
+  on every run and a Monte-Carlo experiment does not belong in a 0.4 s test.
+- *Dependencies.* None new in Rust (`faer` already does the eigenwork;
+  nothing is statically linked that was not). `numpy` only in Python, and
+  only in `corr.py`, `sim.py` and the tests — the `gram.py` import guard
+  with the install hint. No scipy, no scikit-learn.
+- *Every task ends the same way.* `scripts/gate.sh` unpiped; `api_surface.txt`
+  regenerated with `UPDATE_API_SURFACE=1` and the diff read; Sphinx `-W`
+  over `docs/reference` (new modules need a page there); README `### <name>`
+  heading for a model, whose code blocks the tests execute; CHANGELOG
+  `[Unreleased]`; the §10 row's status; one commit per task with its number.
+
+*Task 45 — closed-group emission (E54).*
+
+- *Native order, not `GroupKey` order.* `GroupKey` holds integer keys as
+  decimal strings and its derived `Ord` is lexicographic, so `"10" < "9"`;
+  a monotone close on that order would close group 10 before 9 arrived.
+  Add `fn key_cmp(a: &GroupKey, b: &GroupKey, integer: bool) -> Ordering`
+  in `bank.rs`: integer compare (`i128` parse, the keys are what
+  `integer_groups` formatted) when the group column's dtype is integer,
+  bytewise on the string otherwise (String and Categorical, which `extract`
+  already renders as strings). Any other dtype under `"monotone"` is refused
+  by name at the first chunk (`group_indices` knows the dtype). A null key
+  under `"monotone"` is refused naming the row (a null has no order); under
+  `"session"` it is an ordinary key.
+- *The pre-check is what makes interleaving an error.* `group_indices`
+  partitions a chunk by first appearance and would silently gather the rows
+  of `A, B, A` into one run per key. So, before any model is touched and
+  beside `check_clock` (the refusal must leave the bank as it was; the
+  `forget` path takes back the streams the chunk materialised), walk the
+  key column in row order: it must be non-decreasing under `key_cmp`, and
+  its first key `≥` the spec's high-water mark. The first offending row is
+  named with both keys: `row 1234: group 7 after group 9 — group_close =
+  "monotone" needs keys in non-decreasing order`. `label_delay` with
+  `group_close` is refused by name at `validate`: a closed group cannot
+  release the rows it is holding, and the closed row would then differ from
+  the `gram()` a driver reads — the acceptance equality would be false by
+  construction.
+- *The monotone close batch.* After both phases and `rows_fed`, per spec
+  with `"monotone"`: `max_key` = the chunk's largest key; every stream whose
+  key is `< max_key` closes, in `key_cmp` order; then `high_water =
+  Some(max_key)`. Content is chunk-invariant because every row of a closing
+  group precedes the first row of a greater key, whatever the chunking;
+  order is chunk-invariant because a batch closes in key order and a group
+  never closes before a smaller one. The high-water mark is per spec, saved
+  as a `GroupKey` string in a new `BankFile` key (`#[serde(default,
+  skip_serializing_if = ...)]`, written only when some spec has one), and
+  compared under the *current* column dtype on load — a stored key that no
+  longer parses under it is an error naming both.
+- *The session close is a split of the run.* `Stream::process_chunk` learns
+  whether the spec closes on session (`ClockCfg` or a parallel flag; the
+  stream already builds every `RowPlan` in pass 1). When a plan carries
+  `session_changed` at `ri`, the run is processed as two segments: rows
+  `< ri` as today, then `close_into(&mut self.closed)` — one `ClosedRow` per
+  instance from the stream as it stands, then `*self = Stream::new(spec)` so
+  the new session's first row is a first row (Δ = 0, fresh clock, fresh
+  summary) — then rows `≥ ri`. Chunk-invariant because a session boundary is
+  a property of two consecutive accepted rows. `Stream::closed` is
+  transient (`#[serde(skip)]`) and is drained by the bank at the end of
+  every `fit_predict`. `"session"` requires `session`; with `session_gap` it
+  is refused by name (two prescriptions for one event — the close *is* the
+  reset, with an emission). Sessions are stored hashed (`prev_session:
+  Option<u64>`), so the closed row's `session` value needs the last session
+  *value* kept: a `StreamState` field `#[serde(default, skip_serializing_if
+  = "Option::is_none")] last_session: Option<String>`, written only under
+  `"session"` so no other spec's bytes move.
+- *Queue order.* One `Bank::closed: Vec<ClosedRow>`, appended per chunk in
+  the order `(global index of the closing row, key_cmp)`: for a session
+  close the closing row is the first row of the new session, for a monotone
+  close it is the first row of the greater key; the global index is
+  `rows_fed` before the chunk plus the row's position in it. Streams are
+  processed in parallel, so this sort is what makes the queue's order a
+  function of row order alone.
+- *`closed_groups(spec=None, *, drop=True)`.* Returns the queue as one long
+  frame, narrowed by `spec`; `drop=True` removes what it returned from the
+  queue, `drop=False` peeks. Streams are dropped at close time, never at
+  the call — a bank's memory must not depend on the caller polling. The
+  undrained queue **is** saved (`BankFile` key, skipped when empty): a
+  driver that saves between chunks without draining would otherwise lose
+  rows silently. `Bank::predict` never closes anything; `closed_groups=`
+  with `predict` is refused in `RunConfig::validate`, the CLI and
+  `po.run`.
+- *The row.* One frame schema per bank: the common columns always, a
+  kind's block when any spec of that kind in the bank has `group_close`,
+  null on other kinds' rows. Common: `spec` str, `group` str (null for a
+  null key), `instance` str (the decay suffix, `""` for one instance),
+  `session` str (the closed span's session value under `"session"`, null
+  under `"monotone"`), `n_eff` f64, `n_kish` f64 (null before a weighted
+  row), `rows_fed` i64, `rows_learned` i64, `clock_min` f64, `clock_max`
+  f64 (null on a row-count clock). The last four are `DataSummary`'s
+  fields, already computed and saved; §10's `clock_first`/`clock_last` are
+  renamed to them rather than defined a second time — the two differ only
+  when a clock ran backwards inside a group, and the summary's names are
+  what the state already reports. Gram block (`ew_ridge`, `lasso`,
+  `ew_cov`): `columns` list[str], `means` list[f64], `comoments` list[f64]
+  (vech of the upper triangle with the diagonal, row-major, `k(k+1)/2`),
+  `targets` list[str], `target_means`, `target_vars`, `target_n_kish`
+  list[f64], `cross_moments` list[f64] (targets × k, row-major), `lags`
+  list[i64] and `lag_comoments` list[f64] (task 48; `L × k × k`
+  row-major; null without `lags`). `coef` list[f64] for every kind that
+  reports one, laid out as `coef()` reports it — **as of the last solve**,
+  the meaning `coef()` already has; the exact solve on the closed Gram is
+  `po.gram.solve(po.gram.from_row(row))`, one line, and the docstring says
+  so. `eig_vals` list[f64] (r, descending) and `eig_vecs` list[f64]
+  (`r × k` row-major) for `ew_cov(pca=r)`: `Pca::of` on the row's own
+  `comoments` with `prev` = the last closed row's vectors for the same
+  (spec, instance), kept in a `BankFile` map key so continuity survives a
+  save/load; `Pca`'s own first-refresh sign rule. Marginal block: every
+  column of `marginal()` as a list in `marginal()` order, prefixed `pair_`.
+  `rcov` block: task 50's. The other kinds (`rls`, `kalman`, `holt`,
+  `kmeans`, `micro`, `ew_class`, `seqtest`, `sgd`, `pa`, `ftrl`, `robust`)
+  emit the common columns and `coef` where they have one; `group_close` is
+  still worth having on them for the memory bound.
+- *One builder for the row and for `gram()`.* Lift the `match model` in
+  `Bank::gram` into `fn gram_of(key, label, model) -> Option<Gram>` and call
+  it from both; the acceptance equality then holds by construction and the
+  test is the tripwire that keeps it so.
+- *Sidecar.* `RunConfig.closed_groups: Option<PathBuf>`, format from the
+  extension as `output`'s is, CSV flattening as `output`'s; refused with
+  `predict`, and refused when no spec has `group_close` ("closed_groups
+  names a file but no spec closes groups" — the file would be empty by
+  construction). Written atomically at the end through a second writer
+  thread on the `write_file` path — temp sibling, rename, published only
+  when the run completes, before `save_state` — and **not** appended per
+  chunk: E35's rule, one code path. `output=None` with `closed_groups=` is
+  the accumulate-only pass. A run in which nothing closed writes an empty
+  frame with the schema, as the empty-output rule does. The IO plugin
+  (`lf.online.fit_predict(closed_groups=path)`) drains `closed_groups()`
+  after every chunk into a list and writes the one file when the source
+  reaches the last row, under `save_state`'s rules and caveats
+  (`_frame.py`, `docs/STATE-WORKFLOW.md`). CLI: `--closed-groups PATH`.
+- *Python.* `group_close` is `CommonKwargs`-only, beside `group`; the
+  expression namespace has no groups and does not take it (a test says so).
+  `_common` writes `None` when unset, `fill_defaults` writes nothing, so a
+  TOML spec and a Python spec serialise to the same bytes.
+  `po.gram.from_row(row)` takes a one-row frame or a dict, expands the
+  `vech` and the row-major lists, and returns a `gram()` dict that
+  round-trips through `solve`, `correlation`, `subset`, `coef_stats`; the
+  test is `from_row(closed_row) == bank.gram(...)[i]` field for field.
+- *Tests, beyond §10's list.* `A, B, A` in one chunk refused naming row 2;
+  `"10"` after `"9"` accepted on an integer column and closed in the order
+  9, 10; a Categorical key closed bytewise; save/load mid-stream then a
+  smaller key refused from the loaded bank; `closed_groups(drop=False)`
+  twice returns the same frame; the union schema with an `ew_cov` and a
+  `marginal` spec in one bank; the sidecar equal to `pl.concat` of the
+  driver's `closed_groups()` frames; `predict=True` with `closed_groups`
+  refused in all three entry points.
+
+*Task 46 — `deco` (E55).*
+
+- *Standardisation is `kalman(standardize=True)`'s.* One `EwDiag` over the
+  features, decayed on the model's clock; the row is standardised against
+  the **pre-row** means and variances (`r_i = (x_i − m_i)/√v_i`), then the
+  diag is updated. `u` is NaN until every feature has a positive pre-row
+  variance; a zero-variance feature thereafter is NaN for that row (no
+  substitution of 1, unlike `kalman`, whose coefficient scale is what that
+  rule protects).
+- *`u` and its block form.* With `S₁ = Σᵢ rᵢ`, `S₂ = Σᵢ rᵢ²` over `n`
+  features: `u = (S₁² − S₂)/((n − 1)·S₂)`, Lemma 2.3's
+  `Σ_{i≠j} rᵢrⱼ/((n−1)Σrᵢ²)`, in `(−1/(n−1), 1)` except at `S₂ = 0`
+  (NaN). Blocks: `u` is the ratio of the mean off-diagonal product to the
+  mean squared entry, so within block `A`: `u_A = (S₁ₐ² − S₂ₐ)/((n_A −
+  1)·S₂ₐ)`, and between `A` and `B`: `u_AB = S₁ₐ·S₁_B / √(n_A·n_B·S₂ₐ·S₂_B)`
+  — the same ratio with the cross term `(Σ_A r)(Σ_B r)/(n_A n_B)` over the
+  geometric mean of the two blocks' mean squares, in `[−1, 1]` by
+  Cauchy–Schwarz. A block of one feature has no within term: refuse blocks
+  of size `< 2` by name. Every feature must be in exactly one block.
+- *Dynamics.* `"ew"`: `rho' = a·rho + b·u` with `a = λW/W'`, `b = w/W'`,
+  `W' = λW + w` — `EwCov::update`'s mean form; at `W = 0` that is `rho = u`;
+  `W' = 0` (a zero-weight first row) skips. `rho` is NaN before its first
+  update. `"linear"` (LDECO eq. 21 with correlation targeting): `rho' = (1 −
+  α − β)·rho_bar' + α·u + β·rho`, where `rho_bar` is the `"ew"` recursion run
+  alongside as the target and `rho` starts at the first `u`; `α, β ≥ 0`,
+  `α + β < 1`, refused otherwise and refused under `"ew"`. `halflife`/`lam`
+  are required under both (the standardiser and `rho_bar` decay on them).
+  Reported `rho` is the level **before** the row.
+- *`loglik`.* The row's Gaussian log-density under the pre-row `rho`, in
+  standardised coordinates: `−½·[n·ln 2π + ln det R + r'R⁻¹r]` with `det R
+  = (1−ρ)^{n−1}(1 + (n−1)ρ)` and `r'R⁻¹r = (S₂ − ρ·S₁²/(1 + (n−1)ρ))/(1−ρ)`.
+  `ρ` is clamped into `(−1/(n−1) + 1e-9, 1 − 1e-9)` **for the density
+  only**; the emitted `rho` is not clamped. With blocks, `R = D + U·P·U'`
+  (`D = diag(1 − ρ_{A(i)A(i)})`, `U` the `n × K` block indicator, `P` the
+  `K × K` matrix of block correlations): Woodbury and the matrix
+  determinant lemma give `R⁻¹r` and `ln det R` from a `K × K` solve, `O(n +
+  K³)`; the test is a dense `numpy.linalg.slogdet`/`solve`. NaN whenever
+  `rho` is.
+- *Outputs and state.* `u`, `rho`, `loglik`, `n_eff`; with blocks `u_<A>`
+  per block then `u_<A>_<B>` per pair in `blocks` order, `rho_*` likewise,
+  one `loglik`. `coef` = the `rho` values in that order, one slot per
+  value, term `rho` (`coef_fields` gets a `Deco` arm). `ModelState::Deco {
+  diag, rho: Vec<f64>, rho_bar: Vec<f64>, w_sum, q_sum, dynamics, alpha,
+  beta, blocks }`, appended. `n_outputs()` = `3` unblocked, `2·(K +
+  K(K−1)/2) + 1` blocked.
+- *Tests.* §10's, plus: `rho` under `"ew"` with one pair against
+  `ew_cov(stats=["corr"])` on the columns standardised by the same
+  `EwDiag` **to the bit** — same `a`, `b`, same order of operations, or the
+  test says which differs; the clock-rescaling test; `MINIMAL["deco"] =
+  {"features": ["x0", "x1"]}` in `test_model_registry`.
+
+*Task 47 — the ring-clearing signal.*
+
+- *What is missing.* `ClockAdvance` has `d_clock`, `reset`, `accepted`,
+  `backwards`, `session_changed` — nothing says the cap was hit — and a
+  model is told nothing about a session change unless it is `EwRidge`
+  (`AnyModel::blend_toward_long_run`). §10's rule "cleared by a
+  `max_dclock` breach or a session change" therefore has no carrier.
+- *The carrier.* `ClockAdvance::capped: bool`, true iff `max_dclock` is set
+  and the gap-adjusted raw delta (pending time folded in) exceeded it, so
+  `d_clock == max_dclock` was substituted; set in `ClockState::advance`,
+  never on a row-count clock. `RowPlan::capped` copies it (false on a
+  replayed `label_delay` row, as `session_changed` is). `OnlineModel::
+  clear_lags(&mut self) {}` — a default no-op every model inherits; the
+  stream calls `inst.model.clear_lags()` in pass 2 for `plan.session_changed
+  || plan.capped` when `!plan.reset` (a reset already rebuilds the instance,
+  ring included). Not called from `predict_chunk`, which mutates nothing.
+- *The rule, stated once.* Row-lagged state is a function of the learned
+  rows of the group since the last reset, session change or capped gap, in
+  order; it is chunk-invariant because all three are properties of the row
+  sequence. EXTENDING.md gains the step: "if the model keeps row-lagged
+  state, override `clear_lags` and add the three-event test"; the
+  `model_contract.rs` probe gains a `clear_lags` call on every model,
+  asserting `predict` unchanged for the models that do not override it.
+
+*Task 48 — lagged co-moments on `ew_cov` (E56).*
+
+- *Parameters.* `lags: Option<Vec<usize>>` on `ModelKind::EwCov`, strictly
+  increasing and `≥ 1`, refused otherwise (the list order is the output
+  order, so it is not sorted in silence). `"lagcorr"` in `stats` requires
+  `lags`; `lags` without `"lagcorr"` accumulates only.
+- *Update.* `EwCovModel` owns an `EwLagCov { lags, ring: VecDeque<Vec<f64>>
+  (capacity max lag), c: Vec<f64> (L × k × k) }`. Per learned row, before
+  `cov.update`: `W = cov.n_eff()`, `W' = λW + w`, `a = λW/W'`, `b = w/W'` —
+  the same expressions as `EwCov::update`, on the same operands, so the
+  same bits — and `d_t = x − m_old` with `m_old = cov.means()`. For each
+  `ℓ`: if the ring holds `x_{t−ℓ}`, `C_ℓ ← a·C_ℓ + a·b·d_t·(x_{t−ℓ} −
+  m_old)'`; otherwise `C_ℓ ← a·C_ℓ` (`EwAutoCorr`'s rule for a lag not yet
+  seen). Then `cov.update`, then push `x` onto the ring. A row enters the
+  ring iff it entered `cov` (the zero-weight and skipped rows that only
+  decay do not); when `cov` decays without a row, `c` decays by the same
+  factor. `ℓ = 0` would be `comoments` exactly, and the test that says so
+  is the guard on the shared arithmetic.
+- *Clearing.* `clear_lags` empties the ring and nothing else: the ring is
+  the row memory, `c` is a decayed statistic and keeps decaying.
+- *Outputs.* `lagcorr_<a>_<b>_l<ℓ>` = `C_ℓ[a,b] / √(C₀[a,a]·C₀[b,b])`, NaN
+  when undefined, emitted at `"lagcorr"`'s position in `stats`: for each
+  lag, for each `a`, for each `b` (both orientations and the auto terms,
+  `k²` per lag). `EwCovModel::labels` and the `ew_cov` arm of
+  `output_index` walk it the same way (`columns = [a, b]`, a new
+  `FieldMeta.lag: Option<usize>`).
+- *State and export.* `ModelState::EwCovModel` gains `#[serde(default,
+  skip_serializing_if = "Option::is_none")] lags: Option<EwLagState>`;
+  legacy states read `None` and the spec's `lags` starts a fresh ring.
+  `Gram` gains `lags: Option<Vec<usize>>`, `lag_comoments: Option<Vec<f64>>`;
+  the Python dict gains the same keys (`None` without lags); `po.gram.merge`
+  sets them `None` and says why (a ring boundary is not mergeable
+  Chan-style); `subset` slices them. The E54 row's `lags`/`lag_comoments`
+  columns come from here.
+- *Tests.* A longhand `numpy` implementation of the recursion above (not of
+  some other definition of an EW lagged covariance: this one centres both
+  legs at the current pre-row mean, which is the choice that makes `ℓ = 0`
+  coincide); with `lam = 1`, unit weights and `ℓ = 0`, `numpy.cov(ddof=0)`;
+  the three clearing events each empty the ring and a fourth non-event (a
+  gap just under `max_dclock`) does not; a spec with `lags` and one without
+  give bit-identical `n_eff`, `n_kish`, `means`, `comoments`; chunk
+  invariance; the sweeps.
+
+*Task 49 — `po.prep.refresh_time` (E58).*
+
+- *A Rust operator, not a Python generator.* The recursion `τ_{j+1} = max_i
+  (first tick of series i after τ_j)` is a sequential scan no window
+  expression writes, and a per-row Python loop over ticks is the cost this
+  library exists to avoid. So: `crates/online-polars/src/refresh.rs`,
+  `RefreshTime::new(names, pairs)`, `feed(&DataFrame) -> PolarsResult<
+  DataFrame>`, state per `by` key (a `HashMap<GroupKey, _>` as the bank
+  keeps) of last time, last value, ticks since the last refresh and an
+  updated flag per series — `O(m)`, or `O(m²)` pairwise; exposed through
+  `online-py` as a class with `feed`, and wrapped in `prep.py` as a lazy
+  IO-plugin source the way `_frame.py` wraps the bank, so the result is a
+  `LazyFrame` that streams and honours the projection, predicate and slice
+  polars pushes into a Python source.
+- *Signature.* `refresh_time(lf, *, series, names, time, value, by=None,
+  pairs=False, keep=()) -> pl.LazyFrame`. `names` is new against §10 and
+  required: the output columns `<s>_value` are the schema a lazy plan must
+  declare before a row is read, so the set of series cannot be discovered
+  from the data. A row whose `series` is not in `names` is an error naming
+  it (dropping it would hide a misspelling). Long input only: §10's "wide
+  frame already on a common grid" is already synchronised, and the long
+  form is one `unpivot` away — the docstring gives that line.
+- *Semantics.* Rows must be in `time` order within `by`; a backwards time
+  is an error naming the row. A null `value` is not an update. A grid point
+  is emitted at the tick that completes the set — every series updated
+  since the previous point — with `time_refresh` = that tick's time (=
+  max over series of their last update, Definition 1), `<s>_value` = each
+  series' last value, `n_ticks_<s>` = ticks of `s` since the previous point,
+  `retained_fraction` = `m / Σ_s n_ticks_s` for the interval, and `keep`
+  columns at their value on the completing tick. Then every flag clears
+  and the counts restart. `pairs=True` runs an independent two-series state
+  per pair and emits the long frame `(by?, pair, time_refresh, a_value,
+  b_value, n_ticks_a, n_ticks_b)` with `pair = "a|b"` in `names` order.
+- *Tests.* A longhand Python loop over the same rows on random Poisson
+  streams (the oracle), with `by` and with `pairs`; §10's three-series
+  example — `n = 8, 9, 10` ticks giving `N = 7` and `21/27` retained — if
+  the paper's tick times are to hand, else a constructed one asserting
+  `N ≤ min nᵢ` and `retained = N·m/Σnᵢ` against the loop; a synchronous
+  input (every series ticks at every time) returned with `n_ticks = 1` and
+  `retained_fraction = 1` everywhere; a volume clock as `time`; identical
+  frames from 1 and 1000 batches; the unknown-series and backwards-time
+  errors.
+
+*Task 50 — `rcov` (E57).*
+
+- *Shape.* A group-scoped `OnlineModel` in `rcov.rs` with `n_outputs() = 0`
+  (per row, `n_eff` alone — the count of returns in the block so far),
+  `n_targets() = 0`, no decay: `halflife`/`lam` refused by name, `group` and
+  `group_close` required, `weight` accepted only as `0` or `1` (any other
+  value is an error naming the row); its value is the block computed at
+  close, `Rcov::estimate(&self) -> RcovEstimate`, which `close_stream` calls
+  for the `AnyModel::Rcov` arm and writes into the E54 row's `rcov` block.
+  Input rows are **returns** (the caller differences upstream; `refresh_time`
+  emits levels and `.diff().over(by)` is the line), which is what every
+  formula below is written on. `ModelState::Rcov`, appended.
+- *`kind = "plain"`.* `Σⱼ xⱼxⱼ'`, accumulated as it arrives, no ring. Equal
+  at close to `n × EwCov::raw` under `lam = 1`, unit weights, to the bit —
+  the cross-check §10 names, and the reference the other two kinds are
+  measured against.
+- *`kind = "kernel"` (BNHLS 2011).* `K = Σ_{h=−H}^{H} k(h/(H+1))·Γ̂_h`,
+  `Γ̂_h = Σ_{j=|h|+1}^{n} xⱼx'_{j−h}`, `Γ̂_{−h} = Γ̂_h'`. Parzen: `k(x) = 1 −
+  6x² + 6x³` on `[0, ½]`, `2(1−x)³` on `(½, 1]`, `0` beyond — the only
+  kernel offered (`kernel="parzen"`; another name is refused). End-point
+  jitter with `m = jitter`: `X̃₀ = mean(X₀..X_{m−1})`, `X̃ₙ = mean(X_{n−m+1}
+  ..Xₙ)`, so the effective return series is `x̃₁ = X_m − X̃₀` (formed from
+  the first `m` raw returns once row `m` is in), the raw `x_{m+1} ..
+  x_{n−m}`, and `x̃_end = X̃ₙ − X_{n−m}` (formed at close from the last `m`
+  raw returns); `n_eff_returns = n − 2m + 2`. **Products enter `Γ̂_h` only
+  once both legs are final**: at row `t`, add `x_{t−m}·x'_{t−m−h}` for `h ≤
+  h_max` (the return `m` rows back can no longer be replaced by the end
+  jitter); at close, add the products of `x̃_end` with the last `h_max` final
+  returns. That is what makes the state a ring of `h_max + m` vectors and
+  the close `O(h_max·k²)`, with no retraction. Bandwidth: `bandwidth` an
+  integer `H` (then `h_max = H`, `n_max` unneeded) or `"auto"`: per feature
+  `ξ̂ᵢ² = ω̂ᵢ²/IV̂ᵢ` with `ω̂ᵢ² = RV_dense,ᵢ/(2n)` and `IV̂ᵢ` the realised
+  variance on a sparse subsample (`noise_stride`, default 20 ticks, averaged
+  over offsets), `Hᵢ = c*·ξ̂ᵢ^{4/5}·n^{3/5}`, `c* = 3.5134` (Parzen), `H =
+  ⌈mean Hᵢ⌉` clipped to `h_max`, reported as `bandwidth_used`. `"auto"`
+  requires `n_max`, from which `h_max` defaults to `⌈c*·n_max^{3/5}⌉` (`ξ̂
+  = 1`, a noise variance equal to the block's integrated variance, beyond
+  which the estimator is not worth having); `h_max` may be given. `n_max`
+  is a sizing hint, not a limit: a longer block runs, clipped, and says so.
+  Parzen is a positive-definite function, so `K` is PSD up to rounding;
+  `psd=True` clips negative eigenvalues at `0` and sets `psd_repaired` when
+  it had to.
+- *`kind = "preavg"` (CKP 2010; Hautsch–Podolskij 2013 for the constants).*
+  `g(x) = min(x, 1−x)`, `Ȳᵢ = Σ_{j=1}^{kₙ−1} g(j/kₙ)·x_{i+j}`; `MRC = n/(n −
+  kₙ + 2) · 1/(ψ₂^{kₙ}·kₙ) · Σᵢ ȲᵢȲᵢ' − ψ₁^{kₙ}/(θ²·ψ₂^{kₙ}) · 1/(2n) ·
+  Σⱼ xⱼxⱼ'` with the finite-sample `ψ₁^{k} = k·Σ_{j=1}^{k}(g(j/k) −
+  g((j−1)/k))²`, `ψ₂^{k} = (1/k)·Σ_{j=1}^{k−1} g(j/k)²` (limits `1`,
+  `1/12`; the `Φ` constants `1/6`, `1/96`, `151/80640` are checked in the
+  test as the closed forms of the corresponding integrals, and are not used
+  by the estimator). `psd=False` is that balanced, bias-corrected form
+  (optimal rate, not guaranteed PSD; clipped and flagged as the kernel is);
+  `psd=True` is the longer window `kₙ = ⌈θ·n^{1/2+δ}⌉`, `δ = 0.1`, without
+  the bias term. `kₙ` must be fixed before the block starts, so it is
+  `⌈θ·√n_max⌉` (or `⌈θ·n_max^{0.6}⌉`) from a required `n_max`, or a given
+  `window`. Streaming: a ring of `kₙ − 1` returns; each arriving return
+  completes one `Ȳ`, whose outer product is added — `O(kₙ·k + k²)` a row.
+- *The row's `rcov` block.* `rcov` list[f64] (vech, as `comoments`), `rcorr`
+  list[f64] (vech, unit diagonal), `rcov_n` i64 (effective returns),
+  `rcov_kind` str, `bandwidth_used` i64 (null for `plain`/`preavg`),
+  `omega2`, `iv_sparse`, `iq` list[f64] per feature — `iq` the realised
+  quarticity `(n_s/3)·Σ x_s⁴` on the sparse grid, a proxy and labelled one —
+  `psd_repaired` bool. All null when the block is too short (`n < 2m`
+  for the kernel, `n < kₙ` for pre-averaging; `n < 2` for `plain`'s
+  `rcorr`) — nulls, never a panic.
+- *Tests.* `plain` to the bit against `ew_cov(lam=1)`; the kernel and the
+  MRC against longhand `numpy` on the same synchronised returns (from task
+  49 over task 52's asynchronous bars) to `1e-10` relative; the jittered
+  end formed from state alone (a test that feeds the block one row at a
+  time and checks the close equals the offline computation on the full
+  block — this is the acceptance for "nothing reads a future row"); the
+  auto bandwidth against its formula on a block with known `ω²` and `IV`;
+  PSD on adversarial streams (a constant series, a series that is one spike,
+  `k = 1`); the short-block nulls; a zero-weight row absent from the ring
+  (the estimate equals the one from the stream with that row removed);
+  chunk invariance; the sweeps, with the residual flags refused.
+
+*Task 51 — `po.corr` (E62).*
+
+- *Shape.* `python/polars_online/corr.py`, `gram.py`'s pattern exactly: the
+  `_np()` import guard with the install hint, pure functions over arrays,
+  `gram()` dicts and E54 rows (a helper `_matrix(obj)` accepts an array, a
+  dict with `comoments`/`columns`, or a row and returns the `k × k`
+  correlation), one longhand check per function in `tests/test_corr.py`.
+  Nothing here touches Rust or the models; it lands as `po.corr`, listed in
+  `api_surface.txt` and in a Sphinx page beside `po.gram`.
+- *`to_z` / `from_z`.* `atanh` / `tanh` with the input clipped at `|ρ| ≤ 1 −
+  1e-6` (`z ≈ 7.25`) so a unit off-diagonal from a degenerate block is
+  finite; the clip is in the docstring.
+- *`nearest(A, W=None, *, tol=1e-8, max_iter=100)`.* Higham (2002):
+  alternating projections onto the PSD cone (eigenvalue clipping in the
+  `W^{1/2}`-weighted norm) and onto the unit-diagonal set, with Dykstra's
+  correction; returns `(X, dist, iters)` where `dist` is the weighted
+  Frobenius distance. **The partial-eigensolve path §10 mentions is
+  dropped**: `numpy.linalg.eigh` is the only eigensolver on the dependency
+  list, and the matrices this library produces are small enough that a
+  full decomposition per iteration is the cheaper code. Tests: Higham's
+  3×3 example `[[1, 1, 0], [1, 1, 1], [0, 1, 1]]` → `[[1, .7607, .1573],
+  [.7607, 1, .7607], [.1573, .7607, 1]]`, and the 4×4 tridiagonal
+  `2, −1` matrix of his `nearcorr` example → `[[1, −.8084, .1916, .1068],
+  [−.8084, 1, −.6562, .1916], [.1916, −.6562, 1, −.8084], [.1068, .1916,
+  −.8084, 1]]` — these are as published, from memory; the implementer
+  verifies them against the paper before pinning, at `1e-4`; PSD (smallest
+  eigenvalue `≥ −1e-10`) and unit diagonal on random symmetric inputs; a
+  matrix already a correlation matrix returned in one iteration.
+- *`shrink(R, target="constant", alpha=None, X=None)`.* Ledoit–Wolf (2004,
+  the constant-correlation target `F` with `r̄` the mean off-diagonal). The
+  optimal intensity `δ* = clip((π̂ − ρ̂)/γ̂ / T, 0, 1)` needs the row data
+  `X` (`T × k`, the standardised rows): `π̂ = Σᵢⱼ (1/T) Σₜ (xᵢₜxⱼₜ − sᵢⱼ)²`
+  cannot be formed from `R` and `T` alone, so §10's `T=None` becomes `X=None`
+  and the function requires `alpha` or `X` (recorded so the next reader does
+  not try to recover `π̂` from the matrix). `target="identity"` is the
+  other target offered. Test: the fixture is a small `X` with `δ*` worked
+  longhand from the paper's `π̂`, `ρ̂`, `γ̂` formulae; `alpha=0` returns `R`,
+  `alpha=1` returns `F`.
+- *`equicorr(R)` / `equicorr_row(r)` / `equicorr_loglik(r, rho)`.* The mean
+  off-diagonal; task 46's `u` on one standardised row; task 46's closed-form
+  log-density — all offline, and the pins for the model's own tests.
+- *`absorption(R, k)`* = `Σ_{i≤k} λᵢ / Σᵢ λᵢ` (Kritzman et al.), and
+  *`shift(ar_fast, ar_slow, *, scale=None)`* = `(ar_fast − ar_slow)/scale`
+  elementwise over two aligned arrays, `scale` defaulting to
+  `std(ar_slow)` over the sample — the standardised shift as published, with
+  the caller choosing the two windows.
+- *`spectral(R, r)` / `from_spectral(vals, vecs, *, unit_diag=True)`.* The
+  top-`r` eigenpairs descending with `Pca`'s first-refresh sign rule (the
+  largest-magnitude entry of each vector positive), and the completion
+  `VΛV' + diag(1 − diag(VΛV'))` — the remainder is non-negative because the
+  dropped components are PSD, so the result is a correlation matrix.
+- *`block_means(R, labels)` / `from_blocks(B, labels)`.* `B[a, b]` the mean
+  of `R[i, j]` over `i ∈ a`, `j ∈ b`, excluding `i = j`; returns `(B,
+  counts)`; `from_blocks` rebuilds the block-equicorrelation matrix with a
+  unit diagonal. `block_means(from_blocks(B)) == B` is the test.
+- *`mp_edge(n, m, sigma2=1.0)`* = `σ²(1 ± 1/√Q)²`, `Q = n/m`; test the closed
+  form (`Q = 1 → (0, 4σ²)`) and a random Wishart spectrum lying inside the
+  edges (a margin for finite `n`).
+- *`signal_share(z_blocks, n_eff_blocks)`.* Per pair over `B` blocks: `clip(1
+  − mean_b(1/(n_b − 3)) / var_b(z_b), 0, 1)` — the share of the between-block
+  variance of Fisher-z that the sampling floor does not explain; `1-D`
+  input returns a scalar.
+- *`loss(fcst, real, kind, *, mu=None, n=None)`.* `"qlike"`: `tr(R̂⁻¹R) −
+  log det(R̂⁻¹R) − k`, which is §10's `log|R̂| + tr(R̂⁻¹R)` shifted by the
+  forecast-free constant `log|R| + k` so that it is `≥ 0` with equality iff
+  `R̂ = R` (the test); `"z_mse"`: `Σ_{i<j} (ẑᵢⱼ − zᵢⱼ)² · (n − 3)` with `n`
+  required; `"minvar"`: `w'Rw` with `w = R̂⁻¹μ / (μ'R̂⁻¹μ)`, `μ` defaulting
+  to ones (Engle–Colacito, minimised over `R̂` at `R̂ = R` — a second test).
+- *`epps_invert(gram_or_row, *, max_lag=None)`.* From task 48's `lags` and
+  `lag_comoments`: `ρ̂ₐᵦ = (C₀[a, b] + Σ_ℓ (C_ℓ[a, b] + C_ℓ[b, a])) /
+  √(C₀[a, a]·C₀[b, b])`, the lagged-cross-correlation sum that undoes the
+  Epps attenuation of a synchronised-but-lagged pair (Tóth–Kertész eq. 12
+  in its discrete form), over the lags present or the first `max_lag`.
+  Test: a simulated pair where `b` is `a` delayed by two rows — the
+  contemporaneous correlation near zero, the inverted one near the truth.
+- *`fisher_se(n, rho=None, phi_a=None, phi_b=None)`.* `1/√(n − 3)` is the
+  standard error of `z`; with `rho` the delta-method error of `ρ` itself,
+  `(1 − ρ²)/√(n − 3)`; with both `phi` the Bartlett inflation `√((1 +
+  φₐφᵦ)/(1 − φₐφᵦ))` for an AR(1) pair. One `phi` without the other is an
+  error.
+
+*Task 52 — `po.sim.regimes` (E64).*
+
+- *Shape.* `python/polars_online/sim.py`, numpy only, `np.random.default_
+  rng(seed)` for every draw, returning `{"bars", "truth_rows",
+  "truth_blocks"}` as `pl.DataFrame`s. Everything after `m` is keyword-only
+  (§10's positional list puts required names after defaulted ones):
+  `regimes(m, *, states, transition, n_blocks, bars_per_block,
+  durations=None, design="step", smooth_bars=0, phi=0.0, vol_state=0.0,
+  async_rates=None, noise=0.0, diurnal=None, session_bars=None,
+  volume=None, seed=0)`.
+- *The chain.* `states` is a list of `K` correlation matrices (`m × m`,
+  checked for a unit diagonal and PSD) or `K` floats, each an
+  equicorrelation; `transition` is `K × K` row-stochastic and drives one
+  state per block; `durations` (per state, in blocks) makes the sojourn
+  deterministic and uses `transition` with its diagonal removed to pick the
+  next state — the recurring-state design. `design="step"` switches at the
+  block boundary; `design="smooth"` interpolates the correlation matrix
+  linearly over `smooth_bars` bars around it (a convex combination of two
+  correlation matrices is one).
+- *The series.* Latent returns `εₜ ~ N(0, Rₜ)` by Cholesky per distinct
+  `Rₜ` (cached — one factorisation per state under `"step"`), `yᵢₜ = φᵢ
+  yᵢ,ₜ₋₁ + εᵢₜ` with `phi` a scalar or per-series list (the documented
+  truth is the innovation correlation; the AR filter moves the return
+  correlation of unequal-`φ` pairs, which is what task 51's `fisher_se`
+  inflation is for), scaled by `exp(vol_state · sₜ)` — a scalar `vol_state`
+  makes volatility rise with the state index, a list gives it per state.
+  `diurnal`, a list of `session_bars` multipliers in `(0, 1]`, scales the
+  off-diagonal of `Rₜ` at bar `t mod session_bars` (a mix toward the
+  identity, so PSD is kept); `session_bars` defaults to `bars_per_block`;
+  `session = t // session_bars`. `volume`, `(mean, shape)`, draws a Gamma
+  volume per bar with the mean scaled by the same `exp(vol_state · sₜ)`;
+  `clock` is cumulative volume when `volume` is given and `t` otherwise.
+- *Observation.* `xᵢ` are **levels** — the cumulative sum of the latent
+  returns plus `noise · N(0, 1)` i.i.d. per observed bar (microstructure
+  noise on the level, so the observed return is an MA(1) as the literature
+  models it) — because levels are what `refresh_time` and then `.diff()`
+  expect. Under `async_rates` (per-series expected ticks per bar) a bar with
+  `Poisson(rateᵢ) = 0` ticks carries `null` for `xᵢ` — previous-tick
+  sampling is the caller's `forward_fill`, so both the sparse and the
+  filled forms are one line away, and `unpivot` on the non-null rows is
+  `refresh_time`'s long input.
+- *Frames.* `bars`: `instrument` (a constant string `"sim"`, the join key a
+  multi-instrument caller would vary), `t`, `clock`, `session`, `x_1 … x_m`,
+  `volume` (null when `volume=None`). `truth_rows`: `t`, `block`, `state`,
+  `vol_mult`, `mix` (the `"smooth"` fraction, `0` otherwise). `truth_blocks`:
+  `block`, `state`, `n_bars`, `corr` (vech of the block's mean true
+  correlation — the state's matrix under `"step"`).
+- *Tests.* Per-state matrices recovered from the block sample correlations,
+  pooled over the blocks in each state, within `3·SE` of the Fisher-z noise
+  floor; a `phi` recovered from the lag-1 autocorrelation; the Epps curve of
+  an asynchronous simulation — the sample correlation of previous-tick
+  returns at sampling intervals `1, 5, 20, 100` bars — increasing toward the
+  truth; `noise > 0` giving a negative lag-1 return autocorrelation; every
+  `Rₜ` under `"smooth"` PSD; `session` and `clock` consistent with
+  `session_bars` and `volume`; two calls with the same seed byte-identical
+  (`DataFrame.equals` on all three frames); schema and lengths fixed.
+
+*Task 53 — `hmm` (E60).*
+
+- *The filter.* Before the row: `p̃ₗ = Σₖ pₖ Πₖₗ` from the filtered `p`
+  left by the previous row (uniform `1/K` before the first). Emitted from
+  that alone: `p_<k>` = `p` (the filtered posterior before the row), `p1_<k>`
+  = `p̃`, `state = argmax p̃` (first maximum wins, `i32` through
+  `Source::Cluster`). Then, with the *pre-row* parameters, `fₗ = N(x | μₗ,
+  Σₗ + rₗI)` through the `quad_forms_logdet` + softmax path `ew_class`
+  already uses — the same `precision_prior` ridge with the same decaying
+  scale, and `precision_prior` **required** as it is there (§10's `None`
+  default is not an option: a state's centred co-moments start at zero) —
+  `loglik = ln Σₗ p̃ₗ fₗ` (a row output computed from the row, as `kmeans`'s
+  `dist` is), and `pₗ ← p̃ₗ fₗ / Σ`.
+- *Learning.* Each state's `EwCov` (or `EwDiag` under `covariance="diag"`)
+  takes the row at weight `w · pₗ` — the responsibilities sum to `w`, so the
+  model-level `n_eff` is the shared recursion unchanged. **Π is not §10's
+  `EW mean of pₖ(t−1)·pₗ(t)/pₖ(t−1)`**: that ratio is `pₗ(t)`, whose mean
+  does not depend on `k` and cannot identify a transition matrix. The
+  quantity that does is the filtered joint of consecutive states, `ξₖₗ =
+  pₖ(t−1)·Πₖₗ·fₗ / Σ_{k'l'} p_{k'}(t−1)·Π_{k'l'}·f_{l'}`; the counts `Aₖₗ ←
+  decay·Aₖₗ + w·ξₖₗ` decay on the clock like every accumulator, and `Πₖₗ =
+  (Aₖₗ + τ)/Σₗ(Aₖₗ + τ)` with `transition_prior = τ` a Dirichlet
+  pseudo-count per cell (default `1.0`; it is what keeps a never-visited
+  row of Π a distribution). `transition` given seeds `A` at `τ·K·Π₀`, so the
+  given matrix is the prior mean; `None` means uniform, which is what makes
+  the reduction test below exact. `exog_tvtp=col` reads one more column
+  (declared like `weight` and `clock`, not a feature) and sets `Πₖₗ(t) =
+  softmaxₗ(Aₖₗ + Bₖₗ·xcol,t)` from the fixed `tvtp_coef = (A, B)`; the
+  count-based learning of Π is off under it (`A`, `B` are not estimated
+  here — a fitted-elsewhere form, like `transition` with `learn=False`).
+- *Seeding.* `means`/`covs` given: no warm-up. Else `kmeans`'s recipe on a
+  buffer of `warm_rows` learned rows — `seed_centres` (`pub(crate)`, same
+  crate, no visibility change) under `seed_rule`, then the buffer replayed
+  through the frozen seeds as hard assignments to initialise each state's
+  moments — and, as in `kmeans`, every output is null until seeded; the
+  buffer is state, and its rows carry their weights and decay as `kmeans`'s
+  do. `learn=False` with nothing given is refused: there would be nothing
+  to filter with.
+- *Outputs and coefficients.* `p_<k>`, `p1_<k>`, `state`, `loglik`, `n_eff`;
+  `coef` = the state means in `ew_class`'s layout so `coef()` and
+  `last_row()` carry them; `predict` = the step without the step (`p`, `p̃`,
+  `state`, `loglik` under the current parameters, nothing moved).
+  `ModelState::Hmm {states: Vec<ModelState>, p, a, dynamics…, buffer}`,
+  appended. Cost `O(K² + K·d²)` (`O(K² + K·d)` diagonal).
+- *Tests.* The reduction: build an `ew_class` and an `hmm` whose states are
+  that classifier's own fitted `EwCov` states (`means`/`covs` from
+  `ew_class`'s `ModelState`), `transition=None`, `learn=False`, and feed
+  both a stream whose `ew_class` labels are balanced — `p` equals the
+  classifier's posteriors to the bit, because both run the same
+  `quad_forms_logdet` and softmax on the same numbers; a longhand numpy
+  Hamilton filter at fixed parameters (`learn=False`) to `1e-12`; recovery of
+  Π and the state means on task 52's streams within stated tolerances, as
+  the `docs/REGIMES.md` experiment (generated by `scripts/regime_experiments.
+  py`, committed, not gate-regenerated — slow); predict parity; a zero-weight
+  first row leaving `p` and every state untouched; the clock-rescaling test;
+  the sweeps; `MINIMAL["hmm"] = {"k": 2, "features": ["x0", "x1"],
+  "precision_prior": 0.1}`.
+
+*Task 54 — `corrchange` (E59).*
+
+- *`kind="monitor"`.* The training span of `train` learned rows gives
+  `ρ̂_train` per pair and `D̂`, the long-run standard deviation of the
+  correlation estimator by the delta method: the gradient of `ρ` in the
+  five moments `(x, y, x², y², xy)` applied to their Bartlett-kernel
+  long-run covariance at bandwidth `⌊log T⌋` (Wied, Krämer & Dehling 2012
+  — the implementer confirms the base of the log from the paper; the
+  training span's moments are a ring of `train` rows, the only memory
+  the kind needs). Then, at monitored row `j` (counted from the start of
+  the span, training included), `stat = (j/√T)·|ρ̂ⱼ − ρ̂_train| / D̂` with
+  `ρ̂ⱼ` cumulative and `T = train + horizon` — a required `horizon`, because
+  the statistic has no `T` without one — and `crit` = the sup|B(z)|
+  quantile at `alpha` (`1.358` at 5%, `1.628` at 1%: the closed-sample
+  test's null) or a number. **What is not settled here, and is the
+  implementer's first job**: those quantiles are exact for WKD's
+  closed-sample statistic, which centres on `ρ̂_T`; the sequential form
+  above centres on `ρ̂_train`, and Wied & Galeano (2013) give it its own
+  boundary function and table. Take theirs; the acceptance criterion is
+  written so that a wrong constant fails it (below). Over the pairs, `stat`
+  is the maximum and the flagging pair is not reported (the row is one
+  flag). `scalar=True` monitors task 46's `u` instead — the same CUSUM on
+  the running mean of a scalar with `D̂` its Bartlett long-run variance, on
+  rows an `EwDiag` standardises; `halflife`/`lam` are accepted under
+  `scalar=True` only (they parametrise that standardiser) and refused by
+  name otherwise, since neither kind decays anything else.
+- *`kind="window"`.* Two adjacent rings of `window` rows; `stat =
+  ‖vech(R̂_pre − R̂_post)‖` in ℓ₁ or ℓ∞ over the strict upper triangle, each
+  `R̂` the sample correlation of its window (scale-free, so no
+  standardiser). `crit` a number, or `"permute"`: **not §10's sign flips** —
+  negating a whole row leaves every `xₜxₜ'` and so every correlation matrix
+  unchanged, so a sign-flip null has zero spread. The exchangeable null for
+  "the two windows share a distribution" is a permutation of the pooled
+  `2·window` rows between the windows: `n_perm` draws, the `(1 − alpha)`
+  quantile of the permuted statistics, recomputed every `permute_every`
+  rows (each draw is `O(window·k²)` from scratch — the reason it is not per
+  row), with `perm_block` (default `1`) permuting blocks of consecutive rows
+  so that serially dependent rows do not make the null too liberal. A
+  fixed-seed generator in state keeps the draws chunk-invariant.
+- *Outputs and state.* `stat`, `crit` (null until a critical value exists),
+  `flag` (`Source::Flag`), `since_flag` (`Source::Id`; learned rows since
+  the last flag, null before the first), `n_eff`. `reset=True` restarts the
+  training span (`monitor`) or empties both rings (`window`) at a flag;
+  `reset=False` keeps monitoring and the flag simply stays up while the
+  statistic is over. Task 47's `clear_lags` empties the rings and, for
+  `monitor`, restarts the span — a break in the clock is a break in the
+  data the statistic assumes contiguous. `ModelState::CorrChange`,
+  appended. `n_outputs() = 5`.
+- *Tests.* Size: `kind="monitor"` on i.i.d. Gaussian pairs, the empirical
+  flag rate at `alpha = 0.05` within the binomial Monte-Carlo band over
+  `≥ 300` seeds in the gate (`≥ 2000` in the `docs/REGIMES.md` experiment);
+  power on a `0.5 → 0.7` step at `T = 500` and `1000` within Monte-Carlo
+  error of the paper's table (the implementer reads the numbers off the
+  paper); `kind="window"` against a longhand numpy statistic to the bit and
+  the permutation quantile against a numpy re-draw with the same seed;
+  average run length to false alarm and mean detection delay on task 52's
+  streams recorded in `docs/REGIMES.md`; rings emptied across a session
+  change and a `max_dclock` breach; `reset` both ways; the clock-rescaling
+  test; the sweeps; `MINIMAL["corrchange"] = {"features": ["x0", "x1"],
+  "window": 8, "crit": 0.5}`.
+
+*Task 55 — `bocpd` (E61).*
+
+- *The recursion.* Adams & MacKay (2007) in log space: the growth branch
+  `P(rₜ = r+1, x₁:ₜ) = P(rₜ₋₁ = r, x₁:ₜ₋₁)·πₜ^{(r)}·(1 − H)`, the changepoint
+  branch `P(rₜ = 0, x₁:ₜ) = Σᵣ P(rₜ₋₁ = r, x₁:ₜ₋₁)·πₜ^{(r)}·H`, `H = 1/hazard`
+  with `hazard` a number or a column read per row (declared like `weight`,
+  not a feature). Truncation: runs whose normalised mass is below
+  `truncate` are dropped and the vector renormalised; `max_run` caps its
+  length by folding the tail into the last kept run. The vector and one
+  sufficient-statistic block per kept run are the state; the cost is
+  `O(runs · d²)` a row (`O(runs · d)` diagonal).
+- *Emissions.* `"gaussian"`: normal-inverse-Wishart, `(μ₀, κ₀, ν₀, Ψ₀)` from
+  `prior_mean` (default zeros), `prior_kappa` (`1.0`), `prior_nu` (default
+  `d + 2`), `prior_scale` (a scalar `s` for `Ψ₀ = sI`, or a `d × d` matrix;
+  default `1.0`, and the docstring says to set it from the data's scale);
+  per run the statistics `(n, Σx, Σxx')` and the predictive `t_{ν−d+1}(μₙ,
+  Ψₙ(κₙ+1)/(κₙ(ν−d+1)))`. `"diag"`: normal-inverse-gamma per feature, the
+  predictive a product of Student-t densities. `"robust"`: the
+  diffusion-score-matching conjugate posterior of Altamirano, Briol &
+  Knoblauch (2023) with `robust_beta` its one hyperparameter — the plan
+  does not restate its equations; the implementer takes them from the
+  paper (its Gaussian case is closed form, quadratic in weighted
+  sufficient statistics), and the acceptance test below is what pins it.
+  `robust_beta` with another emission, or `prior_*` that do not fit the
+  emission, are refused by name. Univariate use (one feature) is allowed and
+  is the paper's own setting.
+- *Outputs.* `p_r0` — the posterior mass of `rₜ = 0`, i.e. that *this* row
+  started a run, computed from the row (`kmeans`-`dist` style, and the
+  docstring says so; the pre-row probability of a changepoint is `H` itself
+  under a constant hazard and carries nothing); `run_mode` and `run_mean`
+  from the run-length posterior **before** the row (`Source::Id` and `f64`);
+  `pred_<f>` the pre-row predictive mean (mixture over runs); `logscore` the
+  log predictive density of the row under the pre-row mixture; `n_eff`.
+  `predict` returns the pre-row quantities without moving. `coef` empty.
+  `ModelState::Bocpd`, appended.
+- *Tests.* Against a longhand numpy Algorithm 1 on a synthetic univariate
+  mean-shift stream, the full run-length posterior to `1e-10` at every row
+  (`truncate = 0`); a variance step detected (`p_r0` peaks within a stated
+  delay); `truncate = 1e-4` changing no reported output by more than
+  `1e-4` against `truncate = 0`; the robust variant's `p_r0` unmoved by a
+  single 20-σ row where the Gaussian one restarts; a zero-weight row leaving
+  the posterior untouched; the hazard column; chunk invariance and save/load
+  through the sweeps; `MINIMAL["bocpd"] = {"features": ["x0"]}`.
+
+*Task 56 — the schema-5 fixture and the close of the batch.*
+
+- *Fixture.* `crates/online-polars/tests/state_schema5.rs` in
+  `state_schema4.rs`'s form — hex bytes in the source, a `print_fixture`
+  generator, the "what it says" / "loads with everything" / "continues to
+  the bit" / "re-saves byte-identically" tests — from a bank whose specs
+  cover the batch: a `group_close = "monotone"` spec with a closed row
+  undrained and a `high_water`, an `ew_cov` with `lags` and a partially
+  filled ring, and one of `deco`, `rcov`, `hmm`, `corrchange`, `bocpd`
+  each mid-stream. `state_schema4.rs` stays untouched and must load through
+  the schema-5 reader (rule 5's loader).
+- *Docs.* Every §10 row gets its task number and "done" as §9's did; the
+  README's model table and a `### <name>` per new model with a runnable
+  block; `docs/REGIMES.md` complete with the three experiments (task 53's
+  recovery, task 54's size/power/ARL, task 52's Epps curve); CHANGELOG
+  `[Unreleased]` listing the schema bump first; `docs/RELEASE-READINESS.md`
+  for the new surface. E63 stays a note: the `weight=` recipe it describes
+  is already expressible, and nothing in this batch adds `weight_from`.
 
 **The chunk plan, revisited: P9–P11 and a fan-out floor, 2026-09-04.**
 Asked whether the per-chunk parallel plan could be faster without

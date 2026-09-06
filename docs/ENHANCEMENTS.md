@@ -373,9 +373,12 @@ streaming operator, and lives with the analysis.
 A second consumer wrote its needs as an API spec against this build: block
 correlation over many series observed at different times and contaminated by
 microstructure noise, with regime detection over the result. Its items are
-below unchanged in substance. They are **unscheduled** — none is
-implemented — and each is stated the way §9's were: what, the API, the
-outputs, the state, the cost, and the test that pins it.
+below unchanged in substance. Each is stated the way §9's were: what, the
+API, the outputs, the state, the cost, and the test that pins it. None is
+implemented; all are **scheduled** as `docs/PLAN.md` tasks 45–56
+(2026-09-05), whose §11a block *Preparing E54–E64 for implementation*
+resolves what each row left open and corrects the two places a row was
+wrong about the maths (E59's permutation null, E60's transition estimate).
 
 Three constraints came with them and are worth stating once, because they
 are the library's own and every item keeps them. **Nothing looks ahead**:
