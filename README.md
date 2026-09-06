@@ -39,29 +39,29 @@ grouping and warm-up mean the same thing whichever model it names.
 
 | model | what it is |
 |---|---|
-| [`ewridge`](#ewridge--ew-ridge-on-sufficient-statistics) | exponentially weighted ridge on sufficient statistics — the workhorse; grids over ridge values, feature sets and halflives come almost free |
-| [`rls`](#rls--recursive-least-squares) | recursive least squares, in the numerically safe square-root form |
-| [`lasso`](#lasso--lasso-path-with-free-λ-selection) | lasso / elastic-net path with online λ selection |
-| [`kalman`](#kalman--random-walk-β-dynamic-linear-model) | Kalman filter with random-walk coefficients |
-| [`huber`](#huber--quantile--robust-regression), [`quantile`](#huber--quantile--robust-regression) | robust and quantile regression |
-| [`sgd`](#sgd--stochastic-gradient-descent) | stochastic gradient descent with squared, Huber, quantile, ε-insensitive, Poisson and logistic losses |
-| [`pa`](#pa--passive-aggressive-regression) | passive-aggressive regression — no learning rate |
-| [`ftrl`](#ftrl--online-logistic-regression) | FTRL-proximal logistic regression, L1-sparse |
-| [`ew_cov`](#ew_cov--exponentially-weighted-moments) | running mean, variance, covariance, correlation, partial correlation, Mahalanobis distance and PCA |
-| [`holt`](#holt--holts-linear-trend) | Holt's linear trend — the no-feature baseline |
-| [`kmeans`](#kmeans--exponentially-weighted-k-means) | exponentially weighted k-means — out-of-sample cluster labels, with a split–merge move that finds a cluster born after seeding |
-| [`micro`](#micro--density-based-clustering-any-shape) | density-based clustering — DenStream micro-clusters linked into clusters of any shape and number; flags the rows that belong to none |
-| [`ew_class`](#ew_class--gaussian-classification-on-ew_cov-moments) | Gaussian classification — QDA, LDA or naive Bayes on one `ew_cov` state per class; a label column in, out-of-sample posteriors out |
-| [`seqtest`](#seqtest--a-sequential-test-of-a-sign-by-betting) | a sequential test of a sign by betting — an e-process you can read at any row; on its own a column's sign, with `a`/`b` whether one spec of the bank predicts closer than another |
-| [`marginal`](#marginal--every-pairs-moments-kept-in-the-state) | every (feature, target) pair's running mean, variance, covariance, correlation, slope and t — O(p·T) per row for a wide set of columns, kept in the state and read back as a frame |
-| [`deco`](#deco--one-correlation-for-the-whole-matrix) | one correlation for the whole matrix — Engle & Kelly's equicorrelation, or one per block and per pair of blocks, in O(m) a row |
-| [`rcov`](#rcov--a-blocks-realised-covariance-robust-to-noise) | a block's realised covariance, robust to microstructure noise — the Barndorff-Nielsen–Hansen–Lunde–Shephard kernel or Christensen–Kinnebrock–Podolskij pre-averaging, emitted when a group closes |
-| [`hmm`](#hmm--which-regime-are-we-in) | a Gaussian hidden Markov model, filtered online — `ew_class` without the labels, with a transition matrix that can be learned |
-| [`corrchange`](#corrchange--has-the-correlation-structure-changed) | has the correlation structure changed — the Wied–Krämer–Dehling constancy test span by span, or the size of a change between two windows against a permutation null |
-| [`bocpd`](#bocpd--how-long-has-this-regime-lasted) | how long has this regime lasted — Adams & MacKay's run-length posterior, so the answer is the age of the regime and not a flag |
+| [`ewridge`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge) · [math](#ewridge--ew-ridge-on-sufficient-statistics) | exponentially weighted ridge on sufficient statistics — the workhorse; grids over ridge values, feature sets and halflives come almost free |
+| [`rls`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rls) · [math](#rls--recursive-least-squares) | recursive least squares, in the numerically safe square-root form |
+| [`lasso`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.lasso) · [math](#lasso--lasso-path-with-free-λ-selection) | lasso / elastic-net path with online λ selection |
+| [`kalman`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kalman) · [math](#kalman--random-walk-β-dynamic-linear-model) | Kalman filter with random-walk coefficients |
+| [`huber`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.huber) · [`quantile`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.quantile) · [math](#huber--quantile--robust-regression) | robust and quantile regression |
+| [`sgd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.sgd) · [math](#sgd--stochastic-gradient-descent) | stochastic gradient descent with squared, Huber, quantile, ε-insensitive, Poisson and logistic losses |
+| [`pa`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.pa) · [math](#pa--passive-aggressive-regression) | passive-aggressive regression — no learning rate |
+| [`ftrl`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ftrl) · [math](#ftrl--online-logistic-regression) | FTRL-proximal logistic regression, L1-sparse |
+| [`ew_cov`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_cov) · [math](#ew_cov--exponentially-weighted-moments) | running mean, variance, covariance, correlation, partial correlation, Mahalanobis distance and PCA |
+| [`holt`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.holt) · [math](#holt--holts-linear-trend) | Holt's linear trend — the no-feature baseline |
+| [`kmeans`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kmeans) · [math](#kmeans--exponentially-weighted-k-means) | exponentially weighted k-means — out-of-sample cluster labels, with a split–merge move that finds a cluster born after seeding |
+| [`micro`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.micro) · [math](#micro--density-based-clustering-any-shape) | density-based clustering — DenStream micro-clusters linked into clusters of any shape and number; flags the rows that belong to none |
+| [`ew_class`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_class) · [math](#ew_class--gaussian-classification-on-ew_cov-moments) | Gaussian classification — QDA, LDA or naive Bayes on one `ew_cov` state per class; a label column in, out-of-sample posteriors out |
+| [`seqtest`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.seqtest) · [math](#seqtest--a-sequential-test-of-a-sign-by-betting) | a sequential test of a sign by betting — an e-process you can read at any row; on its own a column's sign, with `a`/`b` whether one spec of the bank predicts closer than another |
+| [`marginal`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.marginal) · [math](#marginal--every-pairs-moments-kept-in-the-state) | every (feature, target) pair's running mean, variance, covariance, correlation, slope and t — O(p·T) per row for a wide set of columns, kept in the state and read back as a frame |
+| [`deco`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.deco) · [math](#deco--one-correlation-for-the-whole-matrix) | one correlation for the whole matrix — Engle & Kelly's equicorrelation, or one per block and per pair of blocks, in O(m) a row |
+| [`rcov`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rcov) · [math](#rcov--a-blocks-realised-covariance-robust-to-noise) | a block's realised covariance, robust to microstructure noise — the Barndorff-Nielsen–Hansen–Lunde–Shephard kernel or Christensen–Kinnebrock–Podolskij pre-averaging, emitted when a group closes |
+| [`hmm`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.hmm) · [math](#hmm--which-regime-are-we-in) | a Gaussian hidden Markov model, filtered online — `ew_class` without the labels, with a transition matrix that can be learned |
+| [`corrchange`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.corrchange) · [math](#corrchange--has-the-correlation-structure-changed) | has the correlation structure changed — the Wied–Krämer–Dehling constancy test span by span, or the size of a change between two windows against a permutation null |
+| [`bocpd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.bocpd) · [math](#bocpd--how-long-has-this-regime-lasted) | how long has this regime lasted — Adams & MacKay's run-length posterior, so the answer is the age of the regime and not a flag |
 
 **Three ways to run a bank, same numbers from each.** A Python loop over
-chunks (`ModelBank`); a Polars query (`lf.online.fit_predict(specs)` is a
+chunks ([`ModelBank`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank)); a Polars query ([`lf.online.fit_predict(specs)`](https://hgilde.github.io/polars-online/namespaces.html#polars_online._frame.LazyFrameOnlineNamespace.fit_predict) is a
 `LazyFrame` you `collect`, `sink` or batch like any other); or a file-to-file
 job (`po.run(...)` from Python, or the `online` CLI from a TOML with no Python
 at all). There is also an expression form for a frame in memory — it cannot
@@ -111,7 +111,7 @@ GitHub release. Python 3.12+.
 The wheel is ~19 MB to download and ~59 MB installed: it statically links the
 Rust half of Polars, so nothing beyond `polars` itself has to be present at
 run time. `numpy` is an optional extra: only `ModelBank.gram()` and the
-`po.gram`, `po.corr` and `po.sim` toolkits need it.
+[`po.gram`](https://hgilde.github.io/polars-online/gram.html#module-polars_online.gram), [`po.corr`](https://hgilde.github.io/polars-online/corr.html#module-polars_online.corr) and `po.sim` toolkits need it.
 
 From source, with [uv](https://docs.astral.sh/uv/) and a stable Rust toolchain:
 
@@ -304,7 +304,7 @@ Things worth knowing about the plan:
   or `load_state`), so collecting twice gives the same frame, and `head(n)`
   learns from the first `n` rows and no more.
 - **`save_state` writes when the run reaches the last row**, atomically, and
-  the same bytes a `ModelBank` or `po.run` would write. A run abandoned early
+  the same bytes a `ModelBank` or [`po.run`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.run) would write. A run abandoned early
   or ended by a bank error leaves the file untouched. A failure *after* the
   bank does not stop the bank, so the state is written although the query
   failed; if the two must be tied together, `po.run` saves only after its
@@ -334,7 +334,7 @@ opens in the clock.
 ```
 
 `df.online.fit_predict(specs)` is the eager twin. `po.fit_predict(frame, ...)`,
-`po.predict(frame, bank)` and `po.unnest(frame, specs)` are the same calls as
+[`po.predict(frame, bank)`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.predict) and [`po.unnest(frame, specs)`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.unnest) are the same calls as
 plain functions, for a type checker, which cannot see a registered namespace.
 
 ### As a job: `po.run` and the `online` CLI
@@ -429,7 +429,7 @@ column polars hands it. And that is the catch: polars gives a stateful user
 expression its whole column at once, in either engine, so wrapping the
 expression in a lazy query does not make it stream. On the 12M-row file
 below, it peaks at **7.3 GB against 1.35 GB** for the plan. Every call
-therefore warns with `polars_online.InMemoryExpressionWarning`; using the
+therefore warns with [`polars_online.InMemoryExpressionWarning`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.InMemoryExpressionWarning); using the
 expression on a frame in memory on purpose is fine, and one line says so:
 
 ```python
@@ -438,7 +438,7 @@ import warnings
 warnings.filterwarnings("ignore", category=po.InMemoryExpressionWarning)
 ```
 
-`po.online(pl.col("y"))` is the same namespace as a plain function.
+[`po.online(pl.col("y"))`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.online) is the same namespace as a plain function.
 [docs/PLAN.md](docs/PLAN.md) §6 has the design and the condition under which
 the warning would go away.
 
@@ -541,7 +541,7 @@ The buffer lives in the state and is saved with it, so a run that stops
 mid-stream resumes with the same rows still waiting. It costs one row's
 values per row inside the delay, per group.
 
-`po.prep.embargo` writes the same thing out as data: every row twice, a
+[`po.prep.embargo`](https://hgilde.github.io/polars-online/prep.html#polars_online.prep.embargo) writes the same thing out as data: every row twice, a
 zero-weight prediction at `t` and a lesson at `t + delay`, merged back into
 clock order. That is the recipe to reach for when the delay has to be
 visible in the frame, or for an engine that is not this one. The native path
@@ -557,7 +557,7 @@ Two series observed at different instants cannot be correlated directly. A
 fine common grid attenuates the correlation towards zero (the Epps effect)
 and filling forward invents observations that were never made.
 
-`po.prep.refresh_time` puts them on the grid Barndorff-Nielsen, Hansen, Lunde
+[`po.prep.refresh_time`](https://hgilde.github.io/polars-online/prep.html#polars_online.prep.refresh_time) puts them on the grid Barndorff-Nielsen, Hansen, Lunde
 and Shephard defined: a point wherever **every** series has ticked at least
 once since the last one, each carrying its last observed value.
 
@@ -868,8 +868,8 @@ outside it. Every name, default and signature is pinned by
 `tests/test_api_surface.py` against a checked-in snapshot, so a change is a
 reviewable diff and a version bump, never a silent rename of your columns.
 
-You never have to build these strings. `po.spec.output_index(spec)` lists
-every field with the values its name encodes, and `po.spec.coef_fields(spec)`
+You never have to build these strings. [`po.spec.output_index(spec)`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.output_index) lists
+every field with the values its name encodes, and [`po.spec.coef_fields(spec)`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.coef_fields)
 does the same for the `coef` lists — one row per coefficient with its list,
 position, and the column `unnest` gives it — so selecting is a filter, not
 string formatting:
@@ -909,7 +909,7 @@ describe:
 | `emit_selected` | `selected_<t>`, `pred_<t>__selected` | online model selection across ridge values, feature sets and halflives, by lowest EW out-of-sample error |
 | `emit_averaged` | `pred_<t>__averaged` | `softmax(−eta · EW error)` blend over the same slots — hedges where `emit_selected` commits |
 | `emit_drift` | `drift_<slot>` | Page-Hinkley break detection on the residual stream; `drift_action="reset"` also restarts the stream |
-| `emit_metrics` | `ic_<slot>`, `r2_<slot>`, `hit_rate_<slot>` | the numbers `po.eval` computes, kept in O(state) beside the model |
+| `emit_metrics` | `ic_<slot>`, `r2_<slot>`, `hit_rate_<slot>` | the numbers [`po.eval`](https://hgilde.github.io/polars-online/eval.html#module-polars_online.eval) computes, kept in O(state) beside the model |
 | `resid_quantiles` | `absresid_q<p>_<slot>` | P² quantiles of \|resid\| — a distribution-free interval where `sigma` gives a Gaussian one |
 | `emit_autocorr` | `autocorr_<slot>` | EW residual autocorrelation; non-zero means the model is mis-specified |
 | `conformal=0.9` | `lo_<slot>`, `hi_<slot>`, `coverage_<slot>` | an adaptive conformal interval at that coverage, distribution-free, and the coverage it has actually delivered |
@@ -977,7 +977,7 @@ does not notice. `weight=` names a column to weight the rows by.
 ### Data whose truth is known
 
 A regime detector is a claim about a stream, and a claim needs a stream
-whose answer is written down. `po.sim.regimes` produces one from a seed,
+whose answer is written down. [`po.sim.regimes`](https://hgilde.github.io/polars-online/sim.html#module-polars_online.sim) produces one from a seed,
 with the awkward parts included — series that tick at their own times,
 prices observed with noise, autocorrelated returns, a volatility that moves
 with the regime, an intraday pattern and a volume clock — and hands back the
@@ -1524,7 +1524,7 @@ comparison after the specs it names, on the out-of-sample residuals their
 structs report; a row where either side is null — warm-up, a skipped row —
 is no trial. `a_suffix` and `b_suffix` pick a grid instance (`"@h500"`,
 `"__r0.5@h500"`). A comparison inside a bank is chunk-invariant, saved with
-the state and streams like everything else; `po.eval.seqtest` is the same
+the state and streams like everything else; [`po.eval.seqtest`](https://hgilde.github.io/polars-online/eval.html#polars_online.eval.seqtest) is the same
 computation over a frame you already have.
 
 ```python
@@ -1969,7 +1969,7 @@ thread per core. The bank builds its pool at the first bank call and polars
 its own at import, so each must be set before that point, as above, or in
 the shell (`POLARS_ONLINE_MAX_THREADS=8 python fit.py`), which is the form
 that always works; set later, the variable is ignored, and
-`po.thread_pool_size()` says what took (`pl.thread_pool_size()` for
+[`po.thread_pool_size()`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.thread_pool_size) says what took (`pl.thread_pool_size()` for
 polars'). A value that is not a count is refused by name at the first bank
 call. It changes the speed and nothing else: `tests/test_portability.py`
 runs the same stream at 1 and 8 threads in separate processes and requires

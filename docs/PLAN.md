@@ -768,6 +768,21 @@ note, not a task.
       that exists, every README anchor to a heading and every reference link to
       a built page, and each of those five assertions was checked against a
       deliberately broken copy.
+- [x] 60. **The README links into the API reference, 2026-09-06.** The model
+      table's name links each model to its builder's entry in the Python API
+      reference, and a `math` link beside it still reaches the section below;
+      the first prose mention of each public object — `ModelBank`, `po.run`,
+      the frame namespace, `po.eval`, `po.gram`, `po.corr`, `po.prep`,
+      `po.sim`, the spec helpers, `InMemoryExpressionWarning` — links to its
+      entry too. The Python reference is the destination everywhere: it is the
+      surface a caller uses, and it is what the docstrings are built from. The
+      `*Rust:*` links stay source links, because rustdoc is neither built in CI
+      nor published (the crates are not on crates.io, so there is no docs.rs);
+      if it is ever published, that line is where it goes. Acceptance:
+      `tests/test_api_links.py` resolves every reference link to a page that is
+      built and an object that exists, holds the table to the registry, and
+      holds every model section to its `*API:*` and `*Rust:*` lines — all four
+      checked against a deliberately broken README.
 
 ## 11a. Decisions made while implementing
 

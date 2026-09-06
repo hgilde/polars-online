@@ -17,6 +17,14 @@ carries breaking changes.
   repo root and, through `html_extra_path`, from the API reference, so one
   file cannot drift from itself; `tests/test_llms_txt.py` holds its model
   names, links and README anchors to the registry and the tree.
+- **The README links into the API reference** (task 60). Each model in the
+  table of models links to its builder's entry, with a `math` link beside it
+  to the section below; the first mention of `ModelBank`, `po.run`,
+  `lf.online.fit_predict`, `po.eval`, `po.gram`, `po.corr`, `po.prep`,
+  `po.sim`, the spec helpers and `InMemoryExpressionWarning` links to its
+  entry. `tests/test_api_links.py` resolves every such link against the
+  Python objects the anchors are built from, so a rename breaks the suite
+  rather than the page.
 
 ## [0.2.0] — 2026-09-06
 
