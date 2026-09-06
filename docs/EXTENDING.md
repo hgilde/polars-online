@@ -91,8 +91,9 @@ example; `git show --stat aa96ad3` is this list as a diff.
    `resid_quantiles`, `conformal`, ...) for it by name, rather than emitting
    nothing, and the bank counts its output slots from the schema. A model
    with **no target column at all** goes into `ModelKind::is_unsupervised`
-   as well (`ew_cov`, `kmeans`, `micro`): the leak check exempts it and the
-   expression packs no target for it. `ew_class` is the model that is the
+   as well (`ew_cov`, `kmeans`, `micro`, `deco`, `rcov`, `hmm`, `corrchange`,
+   `bocpd`): the leak check exempts it and the expression packs no target for
+   it. `ew_class` is the model that is the
    first and not the second — its label column travels as `targets[0]`, so
    everything that reads the target column by name (`keep_columns`, the
    lazy source's projection, the expression's packing) works unchanged.
@@ -103,6 +104,23 @@ example; `git show --stat aa96ad3` is this list as a diff.
    *Check*: `kind_name` is exhaustive. `kinds_lists_every_variant_in_order`
    fails until `KINDS` matches the enum, and `KINDS` is what every Python
    check below reads.
+
+   Two more arms in the same file, easy to miss because nothing is exhaustive
+   over them. **`Spec::decays()`** must list a model that has no decay at all
+   — `seqtest` counts trials, `rcov` accumulates a block, `corrchange` runs a
+   test and `bocpd` has a run-length posterior instead — or the spec will
+   demand a `halflife` it cannot use; `validate` should then refuse
+   `halflife`/`lam` for it by name. And **`default_min_periods`** takes an arm
+   whenever the schema's own warm-up is the gate rather than `k + 1`
+   (`corrchange`'s span, `bocpd`'s row one, `hmm`'s `warm_rows`).
+   *Check*: neither is exhaustive; `tests/test_<model>.py` is where the
+   refusal and the gate get pinned.
+
+   A model whose value is a **block** rather than a row — `rcov` — is a third
+   shape again: it needs `group` and `group_close`, emits `n_eff` alone per
+   row, and its output leaves the bank through `Bank::closed_groups` when the
+   group closes. `Spec::validate` refuses it without the two columns, and
+   `tests/test_closed_groups.py` is the file that covers the queue.
 7. **`src/stream.rs`**: an `AnyModel::<Model>(Box<...>)` variant and its arm
    in the `dispatch!` macro; arms in `solve_failures` (0 for a model that
    never factorizes) and `coefficients` (the per-target layout the `coef`
@@ -123,8 +141,14 @@ example; `git show --stat aa96ad3` is this list as a diff.
    flag, two counts), `ew_class` (a class and its posteriors), `seqtest`
    (two log e-values and two counts per target, no `coef`), `marginal`
    (`n_eff` alone: its pairs are state, read by `Bank::marginal` as a
-   frame, and a spec that is not a `marginal` is refused there by name)
-   and `lasso` (a path) are the seven cases, in `output_index` — or the
+   frame, and a spec that is not a `marginal` is refused there by name),
+   `lasso` (a path), `deco` (`u`, `rho` and a `loglik`, per block and per
+   pair of blocks), `rcov` (`n_eff` alone: its block leaves through
+   `Bank::closed_groups`), `hmm` (a state and its posteriors, `ew_class`'s
+   shape without the labels), `corrchange` (a statistic, a critical value, a
+   flag and a counter, on the rows where a span closes) and `bocpd` (a
+   changepoint probability, two run lengths, a predictive mean per feature
+   and a log score) are the cases, in `output_index` — or the
    coefficient vector is not `[intercept] + features` per (target, combo)
    slot: `coef_fields` names the slots, and `holt` (`level`, `trend`),
    `ew_cov`, `seqtest` and `marginal` (none), `kmeans` (`k` slots `cluster{j}` in place of the
@@ -216,14 +240,18 @@ spec, and the plugin's `online_run` is the bank.
     `test_portability.TestOutputSchemaStability._ALL_MODELS`. Every entry is
     `(builder name, the least it needs to be constructible)`. The sweeps
     assert on `pred` and `resid`, so a model with no prediction (`ew_cov`,
-    `kmeans`, `micro`, `ew_class`, `seqtest`, `marginal`) sits them out through
+    `kmeans`, `micro`, `ew_class`, `seqtest`, `marginal`, `deco`, `rcov`,
+    `hmm`, `corrchange`, `bocpd`) sits them out through
     `test_model_registry.REGRESSIONS` and gets its own schema test instead
     (`test_portability.TestOutputSchemaStability.test_kmeans_names_match
     _the_realized_struct`, `test_micro_names_match_the_realized_struct`,
     `test_ew_class_names_match_the_realized_struct`,
     `test_seqtest_names_match_the_realized_struct`) and
     its own chunk-invariance, save/load, null-row and zero-weight tests in
-    its step-13 file.
+    its step-13 file. A model that reports on *some* rows by design — a
+    span-based test writes its statistic where the span closes — also goes
+    into `model_contract.rs`'s `SPARSE_OUTPUT`, or the predict-parity helper
+    will ask it for 300 rows with every slot filled and fail.
     *Check*: `test_model_registry::test_the_sweeps_cover_every_regression
     _model`.
 15. **`tests/test_model_registry.py`**: the model's `MINIMAL` entry. This is
