@@ -655,9 +655,14 @@ corr = po.gram.correlation(first)      # everything in po.gram works on it
 
 `"monotone"` means the key column never goes backwards, so a key smaller
 than the largest one fed so far is finished; a chunk whose keys are out of
-order is refused, naming the row. `"session"` closes a group where its
-`session` value changes. Either way the last group never closes — nothing
-proves it is finished — and stays readable through `gram()`.
+order is refused, naming the row. An integer key column is ordered as
+numbers; anything else is ordered as text, so `"9"` comes after `"10"`. Sort
+by the same rule the bank reads, or the chunk is refused: a `Categorical`
+column sorts by its physical order by default, which is the order the
+categories were first seen, so sort it with `pl.col("k").cast(pl.String)` or
+cast the column itself. `"session"` closes a group where its `session` value
+changes. Either way the last group never closes — nothing proves it is
+finished — and stays readable through `gram()`.
 
 The row is the `gram()` a driver would have read at that moment, bit for
 bit: one builder makes both. It carries the span's own `rows_fed`,

@@ -198,6 +198,22 @@ pub trait OnlineModel: Sized {
     /// `predict(x, d) == step(x, y, d, w)` on `pred`, `n_eff` and `extra`,
     /// row by row (docs/ENHANCEMENTS.md E31).
     fn predict(&self, x: &[f64], d_clock: f64) -> Step;
+
+    /// [`Self::predict`] for a model that reads a number out of the
+    /// **targets** slot rather than regressing it: `bocpd`'s hazard column
+    /// and `hmm`'s exogenous column ride there, the way a label does, and
+    /// `predict` alone cannot see them -- so it answered from the
+    /// configured default and disagreed with the step on every row where
+    /// the column differed from it (docs/REVIEW-E54-E64.md C1).
+    ///
+    /// The default ignores `y`, which is right for every model that only
+    /// regresses its targets: `predict` is out-of-sample precisely because
+    /// it does not read the row's answer.
+    fn predict_with(&self, x: &[f64], y: &[Option<f64>], d_clock: f64) -> Step {
+        let _ = y;
+        self.predict(x, d_clock)
+    }
+
     /// Drop whatever this model keeps that is indexed by *rows back* -- a
     /// ring of past feature vectors, a partially filled window -- because
     /// the rows behind it are no longer adjacent to the next one

@@ -204,7 +204,13 @@ def _source(
             if closed_path is not None:
                 # Drained per chunk so the bank's queue stays bounded; the
                 # file is written once, at the end, as `po.run` writes it.
-                closed.append(bank.closed_groups())
+                # So the sidecar's rows -- one per closed (group, instance)
+                # -- are held until then: bounded by the number of closes,
+                # not by the input, and empty drains cost nothing
+                # (docs/REVIEW-E54-E64.md G3).
+                drained = bank.closed_groups()
+                if drained.height:
+                    closed.append(drained)
             if predicate is not None:
                 out = out.filter(predicate)
             if with_columns is not None:

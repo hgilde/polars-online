@@ -295,6 +295,25 @@ def test_a_zero_weight_row_is_not_a_row_of_the_span():
         ({"kind": "window", "horizon": None, "window": 20, "scalar": True}, "scalar applies to"),
         ({"halflife": 100.0}, "apply to corrchange only with scalar"),
         ({"emit_sigma": True}, "does not apply to corrchange"),
+        # docs/REVIEW-E54-E64.md CC1 and CC3: a critical value that never
+        # flags or always does, and the permutation knobs.
+        ({"crit": float("nan")}, "crit must not be NaN"),
+        ({"crit": 0.0}, "crit is the critical value"),
+        ({"crit": -1.0}, "crit is the critical value"),
+        ({"crit": float("inf")}, "crit must be finite"),
+        ({"bandwidth": 0}, "bandwidth must be >= 1"),
+        (
+            {"kind": "window", "horizon": None, "window": 20, "perm_block": 0},
+            "perm_block must be 1..=",
+        ),
+        (
+            {"kind": "window", "horizon": None, "window": 20, "perm_block": 21},
+            "perm_block must be 1..=",
+        ),
+        (
+            {"kind": "window", "horizon": None, "window": 20, "permute_every": 0},
+            "permute_every must be >= 1",
+        ),
     ],
 )
 def test_a_bad_spec_is_refused_by_name(kw, message):

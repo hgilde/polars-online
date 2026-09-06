@@ -1537,7 +1537,8 @@ impl Spec {
         if let Some(d) = self.label_delay {
             if d.is_nan() || !d.is_finite() || d <= 0.0 {
                 return Err(format!(
-                    "spec {:?}: label_delay must be finite and > 0 (got {d}); 0 is no delay,                      which is the default",
+                    "spec {:?}: label_delay must be finite and > 0 (got {d}); 0 is no delay, \
+                     which is the default",
                     self.name
                 ));
             }

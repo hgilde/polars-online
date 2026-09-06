@@ -608,16 +608,21 @@ GOLDEN: dict[str, float | str | None] = {
     "rcov.n_eff@25": 11.0,
     "rcov.n_eff@60": 0.0,
     "rcov.n_eff@119": 28.0,
-    "rcov.rcov_n[rcov/a/m]": 27,
+    # Re-frozen 2026-09-06: this spec has `max_dclock`, and a gap over it
+    # now splits the block into stretches instead of dropping the returns
+    # waiting in the end-jitter ring and re-emitting the first return after
+    # the gap (docs/REVIEW-E54-E64.md R2). Three gaps in each block, each
+    # costing `2*jitter - 2 = 2` effective returns: 27 -> 21.
+    "rcov.rcov_n[rcov/a/m]": 21,
     "rcov.bandwidth[rcov/a/m]": 3,
-    "rcov.rcov0[rcov/a/m]": 45.47665651654075,
-    "rcov.rcov1[rcov/a/m]": 71.46767586881931,
-    "rcov.rcov2[rcov/a/m]": 267.0853708068551,
-    "rcov.rcov_n[rcov/b/m]": 27,
+    "rcov.rcov0[rcov/a/m]": 21.95819492943922,
+    "rcov.rcov1[rcov/a/m]": 62.2773177861597,
+    "rcov.rcov2[rcov/a/m]": 353.6268031231857,
+    "rcov.rcov_n[rcov/b/m]": 21,
     "rcov.bandwidth[rcov/b/m]": 3,
-    "rcov.rcov0[rcov/b/m]": 26.699805838320067,
-    "rcov.rcov1[rcov/b/m]": -8.814701767556427,
-    "rcov.rcov2[rcov/b/m]": 935.9427443212545,
+    "rcov.rcov0[rcov/b/m]": 20.168462820112076,
+    "rcov.rcov1[rcov/b/m]": 17.798995434502125,
+    "rcov.rcov2[rcov/b/m]": 762.0001389768797,
     "corrchange.stat@25": None,
     "corrchange.stat@60": None,
     "corrchange.stat@119": None,

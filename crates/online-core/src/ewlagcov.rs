@@ -158,7 +158,13 @@ impl EwLagCov {
         // A zero-weight row aged the matrices above and teaches nothing, so
         // it is not a row for a later one to be lagged against.
         if w > 0.0 {
-            if self.ring.len() == self.ring.capacity().max(1) {
+            // The depth is `max(lags)`, read from the lags themselves and
+            // never from `ring.capacity()`: `VecDeque::clone` (which
+            // `state()` goes through) and deserialization both allocate
+            // exactly `len`, so a ring saved while it was short would keep
+            // that length for ever and the deeper lags would only decay.
+            let max_lag = *self.lags.last().expect("non-empty, strictly increasing");
+            if self.ring.len() >= max_lag {
                 self.ring.pop_front();
             }
             self.ring.push_back(x.to_vec());
@@ -297,6 +303,42 @@ mod tests {
             assert!(lc.depth() <= 4);
         }
         assert_eq!(lc.depth(), 4);
+    }
+
+    /// The depth is `max(lags)`, not whatever the ring happens to have
+    /// allocated. `VecDeque::clone` and `serde` both hand back a deque with
+    /// capacity `len`, so a ring copied while it was short used to be stuck
+    /// at that length: the deeper lags then only decayed, for ever. Copy at
+    /// every depth from empty to full and check the copy goes on filling.
+    #[test]
+    fn a_ring_copied_while_short_goes_on_filling() {
+        let all = rows(12, 2, 7);
+        for cut in 0..=5usize {
+            let (mut lc, mut cov) = (EwLagCov::new(2, vec![1, 3]).unwrap(), EwCov::new(2));
+            for x in &all[..cut] {
+                lc.update(x, cov.means(), cov.n_eff(), 0.99, 1.0);
+                cov.update(x, 0.99, 1.0);
+            }
+            // Both a plain clone and a msgpack round-trip: `state()` goes
+            // through the first, a state file through the second.
+            let bytes = rmp_serde::to_vec(&lc).unwrap();
+            for copy in [lc.clone(), rmp_serde::from_slice(&bytes).unwrap()] {
+                let (mut copy, mut ccov) = (copy, cov.clone());
+                let (mut lc, mut cov) = (lc.clone(), cov.clone());
+                for x in &all[cut..] {
+                    copy.update(x, ccov.means(), ccov.n_eff(), 0.99, 1.0);
+                    ccov.update(x, 0.99, 1.0);
+                    lc.update(x, cov.means(), cov.n_eff(), 0.99, 1.0);
+                    cov.update(x, 0.99, 1.0);
+                }
+                assert_eq!(copy.depth(), 3, "cut {cut}: the copy's ring stayed short");
+                assert_eq!(
+                    copy.comoments(),
+                    lc.comoments(),
+                    "cut {cut}: the copy drifted from the run it came from"
+                );
+            }
+        }
     }
 
     #[test]

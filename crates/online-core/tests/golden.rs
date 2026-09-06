@@ -759,7 +759,11 @@ const GOLDEN_BOCPD: &[f64] = &[
     0.043037423690500565,
 ];
 const GOLDEN_CORRCHANGE: &[f64] = &[0.8309362886202545, 0.7835655084137085, 0.7901008765733364];
-const GOLDEN_HMM: &[f64] = &[-1.2214037865778806, -2.5882597876282167, -0.883627291469858];
+// Re-frozen 2026-09-06: `hmm`'s `min_periods` used to withhold a row from
+// the *update* as well as from the report, so the first rows of this stream
+// (`min_periods = 3`) never reached the filter. It now gates the report
+// alone, as it does in every other model (docs/REVIEW-E54-E64.md H1).
+const GOLDEN_HMM: &[f64] = &[-1.1511065244639265, -2.6218190023816343, -0.875789289803333];
 const GOLDEN_RCOV: &[f64] = &[15.118271471980519, -2.2219191583655915, 22.721761773534745];
 const GOLDEN_RCOV_PREAVG: &[f64] = &[9.410243164612856, -1.8070645542417443, 21.4716237436384];
 const GOLDEN_DECO: &[f64] = &[

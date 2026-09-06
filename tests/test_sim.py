@@ -293,6 +293,20 @@ def test_a_bad_call_is_refused_by_name(kw, message):
         two_state(**opts)
 
 
+def test_a_row_that_only_just_sums_to_one_still_draws():
+    """`np.allclose` accepts a row summing to `1 + 1e-6`; numpy's own
+    `rng.choice` does not, and used to raise from inside the draw with
+    nothing to say which row (docs/REVIEW-E54-E64.md S1)."""
+    out = sim.regimes(
+        2,
+        states=[0.0, 0.5],
+        transition=[[0.9, 0.100001], [0.1, 0.9]],
+        n_blocks=20,
+        bars_per_block=10,
+    )
+    assert out["bars"].height == 200
+
+
 def test_fewer_than_two_series_is_refused():
     with pytest.raises(ValueError, match="at least two series"):
         sim.regimes(1, states=[0.5], transition=[[1.0]], n_blocks=1, bars_per_block=10)

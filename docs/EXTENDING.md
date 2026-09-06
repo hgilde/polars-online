@@ -27,8 +27,12 @@ example; `git show --stat aa96ad3` is this list as a diff.
    written out longhand, an equivalent model configured differently, or the
    optimality conditions — not a golden number alone. `n_eff` is the weight
    before this row's update and before its own decay (CLAUDE.md rule 8), and
-   a zero-weight first row must not divide 0/0 (rule 9). No `unsafe`, `f64`
-   everywhere.
+   a zero-weight first row must not divide 0/0 (rule 9). A zero-weight row
+   **still decays** `n_eff` — it advances the clock and nothing else, which
+   `zero_weight_rows_only_advance_the_clock` checks without naming a decay:
+   the stream with the row and the stream without it, its clock delta
+   carried into the next row, must report the same `n_eff`. No `unsafe`,
+   `f64` everywhere.
    *Check*: the trait. A missing method is a compile error; the shared
    contract is step 3.
    *Row-lagged state*: a model that keeps a ring of past rows — a lag ring,
@@ -41,7 +45,25 @@ example; `git show --stat aa96ad3` is this list as a diff.
    *Check*: `probe_with` in `tests/model_contract.rs` serializes the state,
    calls `clear_lags`, and requires the bytes to be identical unless the
    model is listed in `KEEPS_LAGS` — so a model that quietly clears a mean
-   fails, and so does one with a ring that forgot to declare itself.
+   fails, and so does one with a ring that forgot to declare itself. It then
+   restores a copy from the *cleared* state and requires the two to report
+   the same rows from there. **Read a ring's depth from the configuration,
+   never from a container's `capacity()`**: a clone and a msgpack round-trip
+   both shrink the capacity to the length it holds, so a ring copied while
+   short would keep that depth for ever (docs/REVIEW-E54-E64.md L1). The
+   contract's copy is taken with an *empty* ring, which grows back; the case
+   that bites is a partly filled one, so the model's own unit tests need a
+   save/restore at every depth from empty to full.
+   *A parameter in the targets slot*: a model that reads a number out of
+   `y` rather than regressing it — `bocpd`'s hazard column, `hmm`'s
+   exogenous column — also overrides **`predict_with(x, y, d_clock)`**, or
+   `predict` answers from the configured default and disagrees with the step
+   on every row where the column differs (docs/REVIEW-E54-E64.md C1). The
+   default ignores `y`, which is right for every model that regresses its
+   targets: that is what makes `predict` out of sample.
+   *Check*: `predict_is_the_step_without_the_step` calls `predict_with`, and
+   `a_value_in_the_targets_slot_reaches_predict` feeds a column that varies
+   and counts the rows where ignoring it would change the answer.
 2. **`src/lib.rs`**: `pub use <model>::{<Model>, <Model>Cfg};`.
    *Check*: the compiler, as soon as `online-polars` names the type.
 3. **`src/model.rs`**: a `ModelState::<Model>(Box<...>)` variant and its arm

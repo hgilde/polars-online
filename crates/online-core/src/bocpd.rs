@@ -221,6 +221,37 @@ impl BocpdCfg {
             if v.iter().any(|x| !x.is_finite()) {
                 return Err("bocpd: prior_scale must be finite".into());
             }
+            // A scale matrix that is not positive definite gives a
+            // predictive with no density: every row would report nulls and
+            // count as a failure, with nothing to say why
+            // (docs/REVIEW-E54-E64.md B2).
+            if v.len() == 1 && v[0] <= 0.0 {
+                return Err(format!(
+                    "bocpd: a scalar prior_scale is the prior scale of the variance and must be \
+                     > 0 (got {})",
+                    v[0]
+                ));
+            }
+            if v.len() == d * d {
+                for i in 0..d {
+                    for j in (i + 1)..d {
+                        let (a, b) = (v[i * d + j], v[j * d + i]);
+                        if (a - b).abs() > 1e-12 * (1.0 + a.abs().max(b.abs())) {
+                            return Err(format!(
+                                "bocpd: a matrix prior_scale must be symmetric; [{i}][{j}] is \
+                                 {a} and [{j}][{i}] is {b}"
+                            ));
+                        }
+                    }
+                }
+                if !matches!(SpdFactor::of(v, d), Some(f) if f.attempts() == 0) {
+                    return Err(
+                        "bocpd: a matrix prior_scale must be positive definite -- it is the \
+                         prior's scale matrix Ψ₀, and the predictive has no density without one"
+                            .into(),
+                    );
+                }
+            }
         }
         if let Some(m) = &self.prior_mean {
             if m.len() != d {
@@ -228,6 +259,9 @@ impl BocpdCfg {
                     "bocpd: prior_mean must be {d} values, got {}",
                     m.len()
                 ));
+            }
+            if m.iter().any(|x| !x.is_finite()) {
+                return Err("bocpd: prior_mean must be finite".into());
             }
         }
         if self.robust_beta < 0.0 || !self.robust_beta.is_finite() {
@@ -342,6 +376,10 @@ fn log_sum_exp(v: &[f64]) -> f64 {
     top + v.iter().map(|x| (x - top).exp()).sum::<f64>().ln()
 }
 
+fn is_zero(v: &u64) -> bool {
+    *v == 0
+}
+
 /// What [`Bocpd::read`] hands the update: the new log joint over run
 /// lengths, and the weight each existing run takes the row at.
 type Update = (Vec<f64>, Vec<f64>);
@@ -352,9 +390,20 @@ pub struct Bocpd {
     cfg: BocpdCfg,
     /// One per kept run length, shortest first (`runs[0]` is `r = 0`).
     runs: Vec<Run>,
-    /// `ln P(rₜ = r, x₁:ₜ)`, aligned with `runs`.
+    /// `ln P(rₜ = r, x₁:ₜ)`, aligned with `runs`, normalised after every
+    /// row so it cannot drift away from zero over a long stream.
     logjoint: Vec<f64>,
     n_eff: f64,
+    /// Rows whose predictive could not be evaluated -- a scale matrix that
+    /// would not factorize, or a non-finite value reaching the emission.
+    /// The row reports nulls and the posterior does not move; without a
+    /// count that is silent (docs/REVIEW-E54-E64.md B1).
+    ///
+    /// Skipped when zero, so a state that never hit one writes the bytes it
+    /// always did and no schema bump is owed (see [`crate::SCHEMA_VERSION`],
+    /// which records the same rule for task 38's sums).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub solve_failures: u64,
 }
 
 impl Bocpd {
@@ -366,6 +415,7 @@ impl Bocpd {
             runs: vec![Run::new(d, full)],
             logjoint: vec![0.0],
             n_eff: 0.0,
+            solve_failures: 0,
             cfg,
         })
     }
@@ -482,6 +532,18 @@ impl Bocpd {
         }
     }
 
+    /// This row's hazard: the value in the targets slot under
+    /// `hazard_from_row`, the configured one otherwise. A missing value
+    /// falls back to the configured hazard; an unusable one (`<= 1`, or not
+    /// finite) is refused by the plumbing before it reaches here.
+    fn hazard_of(&self, y: &[Option<f64>]) -> f64 {
+        if self.cfg.hazard_from_row {
+            y.first().copied().flatten().unwrap_or(self.cfg.hazard)
+        } else {
+            self.cfg.hazard
+        }
+    }
+
     /// The row's outputs, and what the update needs: the new log joint and
     /// the per-run weights the row enters with.
     fn read(&self, x: &[f64], hazard: f64) -> (Vec<f64>, Option<Update>) {
@@ -577,7 +639,11 @@ impl Bocpd {
         (out, Some((new, weights)))
     }
 
-    /// Drop the runs below `truncate` and fold the tail at `max_run`.
+    /// Drop the runs below `truncate`, fold the tail at `max_run`, and
+    /// renormalise so the joint stays a log *posterior* plus zero rather
+    /// than drifting by the row's log evidence for the length of the stream
+    /// (docs/REVIEW-E54-E64.md B4). Every output is a difference against
+    /// `z`, so the subtraction changes no reported number.
     fn prune(&mut self) {
         let z = log_sum_exp(&self.logjoint);
         if !z.is_finite() {
@@ -620,17 +686,17 @@ impl Bocpd {
             let last = self.logjoint.len() - 1;
             self.logjoint[last] = tail;
         }
+        // Whatever survived, re-based on its own total.
+        let z = log_sum_exp(&self.logjoint);
+        if z.is_finite() {
+            self.logjoint.iter_mut().for_each(|l| *l -= z);
+        }
     }
 }
 
 impl crate::OnlineModel for Bocpd {
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
-        let hazard = if self.cfg.hazard_from_row {
-            y.first().copied().flatten().unwrap_or(self.cfg.hazard)
-        } else {
-            self.cfg.hazard
-        };
-        let (pred, extra) = self.read(x, hazard);
+        let (pred, extra) = self.read(x, self.hazard_of(y));
         let out = crate::Step {
             pred,
             n_eff: self.n_eff,
@@ -639,11 +705,16 @@ impl crate::OnlineModel for Bocpd {
         let _ = d_clock;
         if weight <= 0.0 {
             // Advance the clock and learn nothing: the posterior does not
-            // move and no run sees the row.
+            // move and no run sees the row. Nothing here decays, so `n_eff`
+            // -- the accumulated weight -- does not move either.
             return out;
         }
         self.n_eff += weight;
         let Some((new, weights)) = extra else {
+            // The predictive could not be evaluated: the row reports nulls
+            // and the posterior stands. Counted, so a run of them is
+            // visible in `diagnostics` rather than silent (B1).
+            self.solve_failures += 1;
             return out;
         };
         let full = self.full();
@@ -671,6 +742,16 @@ impl crate::OnlineModel for Bocpd {
     fn predict(&self, x: &[f64], _d_clock: f64) -> crate::Step {
         crate::Step {
             pred: self.read(x, self.cfg.hazard).0,
+            n_eff: self.n_eff,
+            extra: None,
+        }
+    }
+
+    /// The hazard rides in `y[0]` under `hazard_from_row`, so the answer
+    /// depends on it exactly as the step's does (C1).
+    fn predict_with(&self, x: &[f64], y: &[Option<f64>], _d_clock: f64) -> crate::Step {
+        crate::Step {
+            pred: self.read(x, self.hazard_of(y)).0,
             n_eff: self.n_eff,
             extra: None,
         }
@@ -1198,6 +1279,36 @@ mod tests {
                 ..cfg(1)
             },
             "prior_scale is a scalar or a 1x1 matrix",
+        );
+        bad(
+            BocpdCfg {
+                prior_scale: Some(vec![0.0]),
+                ..cfg(1)
+            },
+            "scalar prior_scale",
+        );
+        bad(
+            BocpdCfg {
+                n_features: 2,
+                prior_scale: Some(vec![1.0, 0.5, 0.4, 1.0]),
+                ..cfg(2)
+            },
+            "must be symmetric",
+        );
+        bad(
+            BocpdCfg {
+                n_features: 2,
+                prior_scale: Some(vec![1.0, 2.0, 2.0, 1.0]),
+                ..cfg(2)
+            },
+            "positive definite",
+        );
+        bad(
+            BocpdCfg {
+                prior_mean: Some(vec![f64::NAN]),
+                ..cfg(1)
+            },
+            "prior_mean must be finite",
         );
     }
 }

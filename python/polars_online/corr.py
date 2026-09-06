@@ -144,14 +144,25 @@ def nearest(
     ``tol`` if that matters; clipping it here would break the diagonal
     again.
 
-    ``a`` must be square; it is symmetrised on the way in, since an
-    "almost-correlation" matrix from two different estimates of the same
+    ``a`` must be square and finite; it is symmetrised on the way in, since
+    an "almost-correlation" matrix from two different estimates of the same
     pair is the case this exists for. ``w`` is the diagonal of ``W`` as a
-    vector, all positive.
+    vector, all positive. ``max_iter`` must be at least 1: returning the
+    input unprojected, with a distance of 0, would say it was already a
+    correlation matrix.
     """
     np = _np()
     x = matrix(a)
     k = x.shape[0]
+    # A NaN propagates through the eigendecomposition and comes back as a
+    # matrix of NaNs with a NaN distance -- an answer, and a wrong one
+    # (docs/REVIEW-E54-E64.md K1).
+    if not np.all(np.isfinite(x)):
+        msg = "corr.nearest: a must be finite; there is no nearest correlation matrix to a NaN"
+        raise ValueError(msg)
+    if max_iter < 1:
+        msg = f"corr.nearest: max_iter must be >= 1, got {max_iter}"
+        raise ValueError(msg)
     x = 0.5 * (x + x.T)
     if w is None:
         wv = np.ones(k)
@@ -231,6 +242,15 @@ def shrink(
     from (the standardised rows), or pass ``alpha`` yourself. One of the two
     is required.
 
+    **``x`` has to be the sample ``r`` is of.** ``s_ij`` above is the plain
+    covariance of ``x``, and ``gamma`` compares the target with it, so an
+    ``r`` that is some other estimate of the same pairs -- a decayed one out
+    of a bank, say -- makes ``kappa`` a comparison of two different
+    matrices. The intensity is still in ``[0, 1]`` and the result still a
+    shrunk matrix, but it is not the optimal intensity for the ``r`` handed
+    in (docs/REVIEW-E54-E64.md K2). Pass ``alpha`` yourself when the two
+    cannot be the same sample. ``x`` needs at least two rows.
+
     Returns ``(shrunk, alpha)``. The result is positive definite whenever
     the target is and ``alpha > 0``, which is the point: a sample
     correlation matrix from fewer rows than columns is singular, and this is
@@ -268,6 +288,12 @@ def shrink(
             msg = f"corr.shrink: x must be T x {k}, got {xa.shape}"
             raise ValueError(msg)
         t = xa.shape[0]
+        if t < 2:
+            msg = (
+                f"corr.shrink: x needs at least 2 rows to estimate the intensity, got {t}; "
+                "pass `alpha` instead"
+            )
+            raise ValueError(msg)
         d = xa - xa.mean(axis=0)
         # `s_ij` as the paper defines it, over the same rows.
         sam = d.T @ d / t

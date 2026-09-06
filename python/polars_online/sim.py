@@ -98,6 +98,11 @@ def _chain(
     if (p < 0).any() or not np.allclose(p.sum(axis=1), 1.0):
         msg = "sim.regimes: transition must be row-stochastic (non-negative rows summing to 1)"
         raise ValueError(msg)
+    # `np.allclose` accepts a row summing to `1 + 1e-6`; `rng.choice` does
+    # not, and raises from inside numpy with nothing to say which row. The
+    # rows are a valid distribution by the test above, so normalise them and
+    # draw from that (docs/REVIEW-E54-E64.md S1).
+    p = p / p.sum(axis=1, keepdims=True)
     if durations is None:
         out = [0]
         for _ in range(1, n_blocks):

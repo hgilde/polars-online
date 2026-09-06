@@ -662,6 +662,12 @@ class ModelBank:
 
             po.gram.solve(po.gram.from_row(row))
 
+        ``eig_vecs`` are signed for continuity with the **previous closed
+        row of the same (spec, instance)** -- the previous group, not the
+        previous chunk of the same one -- so a component's sign is stable
+        along the sequence of closes and a sign flip between two rows is a
+        real rotation rather than an eigensolver's arbitrary choice.
+
         ``drop`` (the default) removes what it returns from the queue, which
         is what a driver draining per chunk wants; ``drop=False`` peeks. The
         streams are dropped when they close, never when this is called: a
@@ -686,6 +692,10 @@ class ModelBank:
         collinear features, or far too few observations for the feature count),
         not that anything crashed. Models that do not factorize -- rls, kalman,
         ftrl -- always report 0.
+
+        ``bocpd`` counts rows here too: a row whose predictive could not be
+        evaluated reports nulls and leaves the run-length posterior where it
+        stands, and the count is what makes a run of them visible.
         """
         names = self._native.spec_names()
         return {

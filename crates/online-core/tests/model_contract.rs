@@ -92,9 +92,18 @@ fn probe_with<M: OnlineModel>(
     let mut restored = M::restore(&rmp_serde::from_slice(&bytes).unwrap()).unwrap();
 
     let mut s2 = s;
-    let undecayed = row(&mut m, &mut s, 1.0).n_eff;
-    let continued = row(&mut restored, &mut s2, 1.0).n_eff;
-    let roundtrips = (continued - undecayed).abs() < 1e-12;
+    let undecayed = row(&mut m, &mut s, 1.0);
+    let continued = row(&mut restored, &mut s2, 1.0);
+    // Every slot, not only `n_eff`: a state that restores its weights but
+    // loses a ring reports the same `n_eff` and a different row (the
+    // `ew_cov` lag ring did exactly that, docs/REVIEW-E54-E64.md L1).
+    let roundtrips = (continued.n_eff - undecayed.n_eff).abs() < 1e-12
+        && continued.pred.len() == undecayed.pred.len()
+        && continued
+            .pred
+            .iter()
+            .zip(&undecayed.pred)
+            .all(|(a, b)| a == b || (a.is_nan() && b.is_nan()));
 
     // `n_eff` is read before the row's own decay, so a gap shows up on the row
     // *after* the one that carries it.
@@ -117,6 +126,27 @@ fn probe_with<M: OnlineModel>(
          with a ring is missing from KEEPS_LAGS)"
     );
 
+    // A state saved with an *empty* ring must resume like the model it was
+    // copied from. Read a ring's depth from a container's capacity instead
+    // of from the configuration and it never refills after this copy, which
+    // is what `ew_cov`'s lags did (docs/REVIEW-E54-E64.md L1).
+    let mut after_clear =
+        M::restore(&rmp_serde::from_slice(&rmp_serde::to_vec(&m.state()).unwrap()).unwrap())
+            .unwrap();
+    let mut s3 = s;
+    for i in 0..8 {
+        let a = row(&mut m, &mut s, 1.0);
+        let b = row(&mut after_clear, &mut s3, 1.0);
+        assert!(
+            a.pred.len() == b.pred.len()
+                && a.pred
+                    .iter()
+                    .zip(&b.pred)
+                    .all(|(x, y)| x == y || (x.is_nan() && y.is_nan())),
+            "{kind}: a state saved just after clear_lags diverged by row {i}"
+        );
+    }
+
     Report {
         kind,
         n_features: m.n_features(),
@@ -135,7 +165,7 @@ fn probe_with<M: OnlineModel>(
 /// move under `clear_lags`. Everything else must not: `clear_lags` is not a
 /// reset, and a model that quietly threw away a mean here would look like a
 /// decay bug three chunks later (docs/PLAN.md task 47).
-const KEEPS_LAGS: &[&str] = &["rcov", "corrchange"];
+const KEEPS_LAGS: &[&str] = &["rcov", "corrchange", "ew_cov"];
 
 /// Models that report on some rows and not others by design -- a span-based
 /// test writes its statistic where the span closes -- so the predict-parity
@@ -430,13 +460,20 @@ fn ew_cov_model_cfg() -> EwCovCfg {
     EwCovCfg {
         n_features: K,
         decay: decay(),
-        stats: vec![EwCovStat::Mean, EwCovStat::Var, EwCovStat::Corr],
+        stats: vec![
+            EwCovStat::Mean,
+            EwCovStat::Var,
+            EwCovStat::Corr,
+            EwCovStat::LagCorr,
+        ],
         min_periods: 3.0,
         precision_prior: None,
         mahal_quantiles: Vec::new(),
         pca: 0,
         pca_every: 0,
-        lags: Vec::new(),
+        // The probe carries lags so that the save/restore and `clear_lags`
+        // arms above see a model with a ring in them (L1).
+        lags: vec![1, 3],
     }
 }
 
@@ -449,8 +486,8 @@ fn ew_cov_model() {
     assert_eq!(m.n_features(), K);
     assert_eq!(
         m.n_outputs(),
-        2 + 2 + 1,
-        "mean and var per column, one pair"
+        2 + 2 + 1 + 2 * K * K,
+        "mean and var per column, one pair, and a k x k block per lag"
     );
     let r = probe_with(m, 0, Some(&EwCovModel::n_eff));
     assert_eq!(r.kind, "ew_cov");
@@ -1483,7 +1520,10 @@ fn predict_is_the_step_without_the_step<M: OnlineModel>(
             (_, v) if v > 0.8 => 3.0,
             _ => 1.0,
         };
-        let p = m.predict(&x, d);
+        // `predict_with`, not `predict`: two models read a number out of
+        // the targets slot, and the parity that matters is against the
+        // answer the step gives for the same row (C1).
+        let p = m.predict_with(&x, &y, d);
         let step = m.step(&x, &y, d, w);
         same_step(kind, i, &p, &step);
         if step.pred.iter().all(|v| v.is_finite()) {
@@ -1503,6 +1543,59 @@ fn predict_is_the_step_without_the_step<M: OnlineModel>(
         ready > want,
         "{kind}: only {ready} rows had every slot ready"
     );
+    zero_weight_rows_only_advance_the_clock(&build, targets, binary, kind);
+}
+
+/// Hard rules 8 and 9, together and without naming a decay: a zero-weight
+/// row advances the clock and teaches nothing, so the `n_eff` a stream
+/// reports after one must equal the `n_eff` of the same stream with that row
+/// *left out* and its clock delta carried into the next row. For an
+/// exponential decay `lam(a)·lam(b) = lam(a + b)`, so the two agree exactly
+/// whatever the halflife -- and a model that forgets to decay `n_eff` on the
+/// row it learns nothing from does not (docs/REVIEW-E54-E64.md H3/C2).
+fn zero_weight_rows_only_advance_the_clock<M: OnlineModel>(
+    build: &impl Fn() -> M,
+    targets: usize,
+    binary: bool,
+    kind: &'static str,
+) {
+    let (mut with, mut without) = (build(), build());
+    let mut s = 20260906u64;
+    let mut carried = 0.0;
+    for i in 0..80 {
+        let x: Vec<f64> = (0..K).map(|_| lcg(&mut s) * 3.0).collect();
+        let y: Vec<Option<f64>> = (0..targets)
+            .map(|j| {
+                let lin = 0.5 * (j as f64 + 1.0) + x[0] - 0.5 * x[1];
+                Some(if binary { f64::from(lin > 0.5) } else { lin })
+            })
+            .collect();
+        let d = match i {
+            0 => 0.0,
+            _ if i % 5 == 0 => 3.0,
+            _ => 1.0,
+        };
+        if i % 7 == 3 {
+            with.step(&x, &y, d, 0.0);
+            carried += d;
+            continue;
+        }
+        let a = with.step(&x, &y, d, 1.0);
+        let b = without.step(&x, &y, d + carried, 1.0);
+        // `n_eff` is read *before* the row's own decay, so on the row that
+        // carries the skipped one's delta the two are one decay apart by
+        // construction; they must agree on every other row, and the row
+        // after the carry is the one that says the streams re-converged.
+        let compare = carried == 0.0;
+        carried = 0.0;
+        assert!(
+            !compare || (a.n_eff - b.n_eff).abs() <= 1e-9 * b.n_eff.abs().max(1.0),
+            "{kind}: row {i}: n_eff {} in the stream with a zero-weight row, {} in the one \
+             without it -- a zero-weight row must advance the clock and nothing else",
+            a.n_eff,
+            b.n_eff
+        );
+    }
 }
 
 #[test]
@@ -1705,6 +1798,64 @@ fn corrchange_recovers_from_bounded_extremes() {
 #[test]
 fn hmm_predict_is_the_step() {
     predict_is_the_step_without_the_step(|| Hmm::new(hmm_cfg()).unwrap(), 0, true);
+}
+
+/// `bocpd`'s hazard and `hmm`'s exogenous value ride in the **targets**
+/// slot, which `predict` does not see: it answered from the configured
+/// default instead and disagreed with the step on every row where the
+/// column differed from it. `predict_with` is the one the plumbing calls
+/// (docs/REVIEW-E54-E64.md C1, B3, H2).
+#[test]
+fn a_value_in_the_targets_slot_reaches_predict() {
+    let mut s = 20260906u64;
+    let mut bo = Bocpd::new(BocpdCfg {
+        hazard_from_row: true,
+        ..bocpd_cfg()
+    })
+    .unwrap();
+    let a = vec![2.0, -2.0, -2.0, 2.0];
+    let b = vec![1.5, -1.5, -1.5, 1.5];
+    let mut hm = Hmm::new(HmmCfg {
+        tvtp: Some((a, b)),
+        ..hmm_cfg()
+    })
+    .unwrap();
+    // The row's value has to *matter*, or the parity below is vacuous:
+    // count the rows where ignoring it gives a different answer.
+    let (mut bo_moved, mut hm_moved) = (0usize, 0usize);
+    for i in 0..300 {
+        let x: Vec<f64> = (0..K).map(|_| lcg(&mut s) * 3.0).collect();
+        // A hazard between 2 and 1000, never the configured 50; an
+        // exogenous value swinging either side of the default 0.
+        let hz = [Some(2.0 + 499.0 * (1.0 + lcg(&mut s)))];
+        let z = [Some(3.0 * lcg(&mut s))];
+        let d = if i == 0 { 0.0 } else { 1.0 };
+
+        let p = bo.predict_with(&x, &hz, d);
+        bo_moved += usize::from(!same_pred(&p, &bo.predict(&x, d)));
+        same_step("bocpd", i, &p, &bo.step(&x, &hz, d, 1.0));
+
+        let p = hm.predict_with(&x, &z, d);
+        hm_moved += usize::from(!same_pred(&p, &hm.predict(&x, d)));
+        same_step("hmm", i, &p, &hm.step(&x, &z, d, 1.0));
+    }
+    assert!(
+        bo_moved > 200,
+        "bocpd: the hazard moved only {bo_moved} rows"
+    );
+    assert!(
+        hm_moved > 200,
+        "hmm: the exogenous value moved only {hm_moved} rows"
+    );
+}
+
+/// Whether two steps report the same slots; `same_step` asserts it.
+fn same_pred(a: &Step, b: &Step) -> bool {
+    a.pred.len() == b.pred.len()
+        && a.pred
+            .iter()
+            .zip(&b.pred)
+            .all(|(x, y)| x == y || (x.is_nan() && y.is_nan()))
 }
 
 #[test]

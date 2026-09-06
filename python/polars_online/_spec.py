@@ -1722,7 +1722,17 @@ def bocpd(
     four-sigma shift to the right row.
 
     ``hazard_col`` reads the hazard per row from a column (declared in the
-    targets slot, the way a weight is) instead of one number.
+    targets slot, the way a weight is) instead of one number. A null or
+    non-finite value there falls back to ``hazard``; a value of 1 or less is
+    an error naming the row, since a hazard is the expected rows between
+    changepoints. :meth:`ModelBank.predict` reads the column too, so it
+    gives the same answer the step would for that row.
+
+    ``prior_scale`` is the prior scale of the variance: a positive number,
+    or a symmetric positive-definite ``d x d`` matrix. ``min_periods`` gates
+    what is reported, never what is learned. A row whose predictive cannot
+    be evaluated reports nulls, leaves the posterior where it stands, and is
+    counted in :meth:`ModelBank.solve_failures`.
     """
     model: dict[str, Any] = {
         "type": "bocpd",
@@ -1811,6 +1821,12 @@ def corrchange(
     since the last flag), plus ``n_eff``; all null except where a statistic
     is due. ``reset=True`` empties the windows at a flag (``"window"``
     only -- ``"monitor"``'s spans are disjoint already).
+
+    A row is always part of the span reported **on** it -- the report comes
+    before the update, which is what makes the flag out of sample -- so a
+    zero-weight row is reported as if it would be learned, and then does not
+    enter the span, does not advance ``since_flag`` for the rows after it,
+    and does not reset it if it flags.
     """
     model: dict[str, Any] = {
         "type": "corrchange",
@@ -1892,16 +1908,29 @@ def hmm(
 
     ``means`` and ``covs`` (``K x d`` and ``K`` matrices of ``d x d``, both
     flattened row-major) give the states outright and there is no warm-up.
-    Otherwise the first ``warm_rows`` learned rows are buffered, ``kmeans``'
-    ``seed_rule`` chooses centres among them, and the buffer is replayed
-    through those centres as hard assignments -- every output is null until
-    then, as ``kmeans``' are. ``learn=False`` with no states given is
-    refused: there would be nothing to filter with.
+    Each ``covs`` block must be symmetric and positive definite -- a state
+    with no density takes no responsibility for any row -- and the pair
+    enters at **one row's weight**, so under ``learn=True`` the stream
+    washes the given states out at the ordinary rate and under
+    ``learn=False`` they are held exactly. Otherwise the first ``warm_rows``
+    learned rows are buffered, ``kmeans``' ``seed_rule`` chooses centres
+    among them, and the buffer is replayed through those centres as hard
+    assignments -- every output is null until then, as ``kmeans``' are.
+    ``learn=False`` with no states given is refused: there would be nothing
+    to filter with.
+
+    ``min_periods`` gates what is **reported**, never what is learned: a row
+    below it moves the filter and shows nulls, as it does in every other
+    model here.
 
     ``exog_tvtp`` names a column (declared like ``weight``, not a feature)
     whose value drives the matrix instead: ``Pi_kl(t) = softmax_l(A_kl +
     B_kl z_t)`` from the fixed ``tvtp_coef = [A, B]``. The count-based
-    learning is off under it; ``A`` and ``B`` are fitted elsewhere.
+    learning is off under it; ``A`` and ``B`` are fitted elsewhere. A row
+    whose ``exog_tvtp`` is null or non-finite is filtered with ``z = 0``,
+    the base transition, and is otherwise an ordinary row.
+    :meth:`ModelBank.predict` reads the column too, so it gives the same
+    answer the step would for that row.
 
     Outputs ``p_<k>``, ``p1_<k>``, ``state``, ``loglik`` and ``n_eff``, with
     the state means as ``coef``.
@@ -2022,6 +2051,15 @@ def rcov(
     fractional row -- and a zero-weight row advances the clock and enters no
     ring. ``halflife``/``lam`` are refused: the block boundary is
     ``group_close``'s, not a decay's.
+
+    A gap over ``max_dclock``, or a session change, splits the block into
+    **stretches**: the returns on either side of it are not adjacent, and a
+    covariance of adjacent returns is the whole statistic. Each stretch is
+    closed as the last one is -- leading jitter, interior, trailing jitter --
+    and the lagged sums add over stretches, so no product pairs two returns
+    across the break. A stretch too short to reach its trailing jitter
+    contributes only what it had already emitted, and ``rcov_n`` says how
+    many effective returns there were in total.
     """
     model: dict[str, Any] = {
         "type": "rcov",

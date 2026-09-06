@@ -211,6 +211,61 @@ def test_exog_tvtp_reads_the_column():
     assert out["p1_1"][350] > out["p1_1"][50] or out["p1_0"][50] < 1.0
 
 
+def test_min_periods_gates_the_report_not_the_update():
+    """`min_periods` withholds output and nothing else, as it does in every
+    other model here. It used to withhold the row from the *filter* too, so
+    a warm-up row was never learned from -- and under decay an `n_eff` that
+    plateaued below it meant a filter that never learned at all
+    (docs/REVIEW-E54-E64.md H1)."""
+    df = blobs(n=600, run=50, seed=12)
+    base = run(df, min_periods=0.0)
+    gated = run(df, min_periods=200.0)
+    # Once past the threshold the two are the same filter, bit for bit.
+    for col in ("p_0", "p_1", "state", "loglik"):
+        assert base[col][250:].equals(gated[col][250:]), col
+    # And below it, nulls rather than numbers.
+    assert gated["p_0"][:150].null_count() == 150
+
+    # Under decay `n_eff` plateaus; a `min_periods` above the plateau must
+    # still be reached by the row count, not silently never.
+    decayed = run(df, halflife=20.0, min_periods=25.0)
+    assert decayed["p_0"].null_count() < df.height
+
+
+def test_predict_reads_the_exogenous_column():
+    """`exog_tvtp` rides in the targets slot, which `predict` sees too: the
+    transition matrix is a function of it, so `predict` must give the step's
+    answer for that row and not the one for `z = 0`
+    (docs/REVIEW-E54-E64.md H2, C1)."""
+    rng = np.random.default_rng(3)
+    df = blobs(n=400, run=40, seed=13).with_columns(z=rng.standard_normal(400) * 3.0)
+    kw = dict(
+        exog_tvtp="z",
+        tvtp_coef=[[2.0, -2.0, -2.0, 2.0], [1.5, -1.5, -1.5, 1.5]],
+        warm_rows=50,
+    )
+    step = run(df, **kw)
+    bank = po.ModelBank([spec(**kw)])
+    bank.fit_predict(df.head(300))
+    got = bank.predict(df.slice(300, 1))["h"].struct.unnest()
+    for col in ("p_0", "p1_0", "p1_1", "state", "loglik"):
+        assert got[col][0] == pytest.approx(step[col][300], rel=1e-12, abs=1e-12), col
+
+
+def test_a_missing_exogenous_value_is_the_base_transition():
+    """Null or non-finite means "no value here", which is `z = 0`; the row
+    is otherwise an ordinary row."""
+    df = blobs(n=200, run=40, seed=14).with_columns(z=pl.lit(0.0))
+    kw = dict(
+        exog_tvtp="z",
+        tvtp_coef=[[2.0, -2.0, -2.0, 2.0], [1.5, -1.5, -1.5, 1.5]],
+        warm_rows=50,
+    )
+    zeros = run(df, **kw)
+    nulls = run(df.with_columns(z=pl.lit(None, dtype=pl.Float64)), **kw)
+    assert zeros["p_0"].equals(nulls["p_0"])
+
+
 @pytest.mark.parametrize(
     ("kw", "message"),
     [
@@ -224,6 +279,29 @@ def test_exog_tvtp_reads_the_column():
         ({"tvtp_coef": [[0.0] * 4, [0.0] * 4]}, "tvtp_coef needs exog_tvtp"),
         ({"exog_tvtp": "z"}, "needs tvtp_coef"),
         ({"emit_sigma": True}, "does not apply to hmm"),
+        # docs/REVIEW-E54-E64.md H4: given states that cannot be filtered
+        # with. Every row would be a solve failure and every output a null.
+        (
+            {
+                "means": [-1.0, -1.0, 1.0, 1.0],
+                "covs": [1.0, 0.5, 0.4, 1.0, 1.0, 0.0, 0.0, 1.0],
+            },
+            "covs.0. must be symmetric",
+        ),
+        (
+            {
+                "means": [-1.0, -1.0, 1.0, 1.0],
+                "covs": [1.0, 2.0, 2.0, 1.0, 1.0, 0.0, 0.0, 1.0],
+            },
+            "covs.0. must be positive definite",
+        ),
+        (
+            {
+                "means": [float("nan"), -1.0, 1.0, 1.0],
+                "covs": [1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0],
+            },
+            "means must not be NaN",
+        ),
     ],
 )
 def test_a_bad_spec_is_refused_by_name(kw, message):

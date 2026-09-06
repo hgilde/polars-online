@@ -170,6 +170,30 @@ def two_factor(n, seed):
     return np.column_stack(cols)
 
 
+def test_nearest_refuses_what_it_cannot_answer():
+    """A NaN used to propagate through the eigendecomposition and come back
+    as a matrix of NaNs with a NaN distance -- an answer, and a wrong one.
+    ``max_iter = 0`` used to return the input unprojected with a distance of
+    0, which reads as "already a correlation matrix"
+    (docs/REVIEW-E54-E64.md K1)."""
+    with pytest.raises(ValueError, match="must be finite"):
+        corr.nearest(np.array([[1.0, np.nan], [np.nan, 1.0]]))
+    with pytest.raises(ValueError, match="must be finite"):
+        corr.nearest(np.array([[1.0, np.inf], [np.inf, 1.0]]))
+    with pytest.raises(ValueError, match="max_iter must be >= 1"):
+        corr.nearest(np.array([[1.2, 0.5], [0.5, 1.0]]), max_iter=0)
+
+
+def test_shrink_needs_two_rows_to_estimate_an_intensity():
+    """A fourth moment of one row is not one; it used to give `alpha = 0`
+    in silence, and no rows at all a bare ZeroDivisionError
+    (docs/REVIEW-E54-E64.md K2)."""
+    r = np.eye(2)
+    for t in (0, 1):
+        with pytest.raises(ValueError, match="at least 2 rows"):
+            corr.shrink(r, x=np.zeros((t, 2)))
+
+
 def test_shrink_is_ledoit_and_wolfs_intensity():
     x = two_factor(120, 2)
     d = x - x.mean(axis=0)
@@ -412,6 +436,30 @@ def test_epps_invert_recovers_a_lagged_pair():
     assert corr.epps_invert(g, L=1)[0, 1] == pytest.approx(plain, rel=1e-12)
 
 
+def test_epps_invert_at_l_one_is_the_plain_correlation():
+    """The identity the docstring promises, and the boundary of the lag
+    requirement: `L = 1` needs no lags at all (docs/REVIEW-E54-E64.md K3)."""
+    x = sample(n=400, k=3, rho=0.4, seed=21)
+    df = pl.DataFrame({f"x{i}": x[:, i] for i in range(3)})
+    spec = po.spec.ew_cov("c", features=["x0", "x1", "x2"], lam=1.0, stats=[])
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df)
+    g = bank.gram("c")[0]
+    assert np.allclose(corr.epps_invert(g, L=1), po.gram.correlation(g))
+    with pytest.raises(ValueError, match="L must be >= 1"):
+        corr.epps_invert(g, L=0)
+
+
+def test_mp_edges_at_and_below_the_square_case():
+    """`Q = n/m` at 1 puts the lower edge at 0 -- the spectrum reaches the
+    origin -- and below 1 the matrix is singular, so the lower edge is 0
+    and the mass at it is the rank deficiency (K3)."""
+    lo, hi = corr.mp_edge(n=20, m=20)
+    assert lo == pytest.approx(0.0) and hi == pytest.approx(4.0)
+    lo, hi = corr.mp_edge(n=5, m=20)
+    assert lo >= 0.0 and hi > lo
+
+
 def test_epps_invert_names_a_missing_lag():
     df = pl.DataFrame({"x0": [1.0, 2.0, 3.0], "x1": [2.0, 1.0, 4.0]})
     bank = po.ModelBank(
@@ -435,6 +483,10 @@ def test_fisher_se_is_its_closed_forms():
     partial = 1.0 + 2.0 * sum((pa * pb) ** k for k in range(1, 400))
     assert corr.fisher_se(103, phi_a=pa, phi_b=pb) == pytest.approx(0.1 * partial**0.5)
     assert corr.fisher_se(3) != corr.fisher_se(3)  # nan below the floor
+    # The boundary itself: `n - 3` is the divisor, so 4 is the first `n`
+    # with a finite answer and 3 is the last without (K3).
+    assert np.isnan(corr.fisher_se(3)) and np.isfinite(corr.fisher_se(4))
+    assert corr.fisher_se(4) == pytest.approx(1.0)
     with pytest.raises(ValueError, match="go together"):
         corr.fisher_se(100, phi_a=0.5)
     with pytest.raises(ValueError, match=r"must be in \(-1, 1\)"):

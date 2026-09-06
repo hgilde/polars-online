@@ -95,9 +95,14 @@ impl AnyModel {
         dispatch!(self, m => m.step(x, y, d_clock, weight))
     }
 
-    /// The step's answer without the step ([`OnlineModel::predict`]).
-    pub fn predict(&self, x: &[f64], d_clock: f64) -> online_core::Step {
-        dispatch!(self, m => m.predict(x, d_clock))
+    /// The step's answer without the step
+    /// ([`OnlineModel::predict_with`]). `y` is passed because two models
+    /// read a number out of the targets slot -- `bocpd`'s hazard column and
+    /// `hmm`'s exogenous column -- and their answer depends on it; every
+    /// other model ignores it, which is what makes `predict` out of sample
+    /// (docs/REVIEW-E54-E64.md C1).
+    pub fn predict(&self, x: &[f64], y: &[Option<f64>], d_clock: f64) -> online_core::Step {
+        dispatch!(self, m => m.predict_with(x, y, d_clock))
     }
 
     /// Drop the row-lagged state ([`OnlineModel::clear_lags`]); a no-op for
@@ -106,7 +111,8 @@ impl AnyModel {
         dispatch!(self, m => m.clear_lags())
     }
 
-    /// Cumulative count of jittered or failed factorizations (docs/PLAN.md §7).
+    /// Cumulative count of jittered or failed factorizations (docs/PLAN.md §7),
+    /// and for `bocpd` of rows whose predictive could not be evaluated.
     /// Models that do not factorize (rls, kalman, ftrl) report 0.
     pub fn solve_failures(&self) -> u64 {
         match self {
@@ -115,6 +121,7 @@ impl AnyModel {
             AnyModel::Robust(m) => m.solve_failures,
             AnyModel::EwClass(m) => m.solve_failures,
             AnyModel::Hmm(m) => m.solve_failures,
+            AnyModel::Bocpd(m) => m.solve_failures,
             AnyModel::Rls(_)
             | AnyModel::Kalman(_)
             | AnyModel::Ftrl(_)
@@ -128,8 +135,7 @@ impl AnyModel {
             | AnyModel::Marginal(_)
             | AnyModel::Deco(_)
             | AnyModel::Rcov(_)
-            | AnyModel::CorrChange(_)
-            | AnyModel::Bocpd(_) => 0,
+            | AnyModel::CorrChange(_) => 0,
         }
     }
 
@@ -943,6 +949,14 @@ pub fn rcov_cfg(spec: &Spec) -> Result<RcovCfg, String> {
     })
 }
 
+/// The named blocks of a `deco` spec, if it has any.
+fn blocks_named(model: &ModelKind) -> Option<&Vec<(String, Vec<String>)>> {
+    match model {
+        ModelKind::Deco { blocks, .. } => blocks.as_ref(),
+        _ => None,
+    }
+}
+
 /// A `deco` spec's [`DecoCfg`], with the block *names* resolved to feature
 /// positions. The decay is the caller's (one instance per halflife); every
 /// other check is `DecoCfg::validate`'s, so `Spec::validate` gets the same
@@ -968,6 +982,15 @@ pub fn deco_cfg(spec: &Spec) -> Result<DecoCfg, String> {
     };
     let blocks = match blocks {
         None => Vec::new(),
+        Some(named) if named.is_empty() => {
+            // An empty list is not "one block of everything" and not the
+            // unblocked form either; whichever was meant, say which
+            // (docs/REVIEW-E54-E64.md D1).
+            return Err(
+                "deco blocks is empty; leave it out for the unblocked equicorrelation, or name                  at least one block"
+                    .into(),
+            );
+        }
         Some(named) => named
             .iter()
             .map(|(name, cols)| {
@@ -981,6 +1004,17 @@ pub fn deco_cfg(spec: &Spec) -> Result<DecoCfg, String> {
             })
             .collect::<Result<Vec<_>, String>>()?,
     };
+    // A JSON or TOML spec writes `blocks` as an array of pairs, so two of
+    // them can carry the same name; the collision then surfaces as two
+    // output fields called `u_u` rather than as the block list's problem.
+    if let Some(named) = blocks_named(&spec.model) {
+        let mut seen = std::collections::HashSet::new();
+        if let Some((dup, _)) = named.iter().find(|(n, _)| !seen.insert(n.as_str())) {
+            return Err(format!(
+                "deco block {dup:?} is named twice; block names are the output labels, so they                  have to be distinct"
+            ));
+        }
+    }
     Ok(DecoCfg {
         n_features: spec.k(),
         decay: online_core::Decay::Lam(1.0),
@@ -2011,7 +2045,15 @@ impl Stream {
                 for row in self.pending.iter_mut() {
                     row.remaining -= plan.d_clock;
                 }
-                let ready = if plan.session_changed {
+                // A session change and a capped gap both say the rows
+                // behind this one are no longer adjacent to it, and both
+                // make the models drop what is indexed by rows back when
+                // this row is scored. Everything still waiting has to be
+                // learned *before* that happens, or it is replayed into a
+                // ring that was just cleared for it -- pairing rows across
+                // the very break the clear was for
+                // (docs/REVIEW-E54-E64.md L2).
+                let ready = if plan.session_changed || plan.capped {
                     self.pending.len()
                 } else {
                     self.pending
@@ -2576,7 +2618,7 @@ fn run_instance(
         let mut step = if learn {
             inst.model.get_mut().step(&sc.xs, &sc.ys, plan.d_clock, w)
         } else {
-            inst.model.get().predict(&sc.xs, plan.d_clock)
+            inst.model.get().predict(&sc.xs, &sc.ys, plan.d_clock)
         };
         let n_slots = step.pred.len();
         // `ew_cov` has no targets; its slots are statistics, so every one

@@ -186,10 +186,10 @@ def refresh_time(
         ``m / sum(n_ticks)``: how many of the interval's ticks the grid kept.
         Look at it before trusting a correlation computed on the result.
 
-    plus the ``by`` column and any ``keep`` columns, at their value on the
-    completing tick. ``pairs=True`` runs an independent two-series grid per
-    unordered pair instead -- which keeps far more of the data when one
-    series is slow -- and returns the long frame ``(by?, pair,
+    plus the ``by`` column -- in the dtype it came in as -- and any ``keep``
+    columns, at their value on the completing tick. ``pairs=True`` runs an
+    independent two-series grid per unordered pair instead -- which keeps far
+    more of the data when one series is slow -- and returns the long frame ``(by?, pair,
     time_refresh, a_value, b_value, n_ticks_a, n_ticks_b,
     retained_fraction)`` with ``pair = "a|b"`` in ``names`` order.
 
@@ -205,6 +205,13 @@ def refresh_time(
     null ``value`` is a tick that observed nothing, so it does not update the
     series. Feeding the input in one chunk or a thousand gives the same grid:
     a point is a property of the ticks up to it.
+
+    **Ties are broken by row order**: "strictly after ``tau_j``" is read
+    against the row sequence, so a tick carrying the same timestamp as the
+    one that just closed a point, but later in the frame, belongs to the
+    next interval. That is what lets a point be emitted the moment its last
+    series ticks, which is what makes the result chunk-invariant. Sort the
+    input by ``time`` *and* by the order you want within a timestamp.
 
     ``ValueError`` for fewer than two ``names`` or a duplicate, and for a
     column the frame has not got.

@@ -7,6 +7,76 @@ carries breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A review of the E54–E64 batch, and every item it found**
+  (`docs/REVIEW-E54-E64.md`, task 57). Twenty-nine items, each with the test
+  that catches it; four of them were wrong answers rather than missing
+  guards, and three moved a golden.
+
+  - **`ew_cov` lags: a bank saved before the ring was full never filled it
+    again.** The ring's depth was read back from `VecDeque::capacity()`,
+    which a clone or a msgpack round-trip shrinks to the length it holds, so
+    a save taken on a short stream — or just after a session change or a
+    capped gap, both of which empty the ring — left the deeper lags decaying
+    to nothing for the rest of the run.
+  - **`rcov`: a clock break inside a block corrupted the estimate.** A gap
+    over `max_dclock`, or a session change, dropped the end-jitter ring
+    instead of closing the stretch: the `m` returns waiting in it were lost
+    and the first return after the break was emitted `m + 1` times, with the
+    reported `n` unchanged so nothing downstream could tell. A break now
+    splits the block into **stretches**, each closed the way the last one
+    is, and the lagged sums add over them — so no product pairs two returns
+    across the break, and an unbroken block is unchanged to the bit.
+  - **`hmm`: `min_periods` withheld the row from the filter, not just from
+    the output.** A warm-up row was never learned from, and under decay an
+    `n_eff` that plateaued below the threshold meant a filter that never
+    learned at all — every row null, for ever. It now gates the report
+    alone, as it does in every other model here.
+  - **`bocpd`: a hazard column value of 1 or less silently dropped the
+    row.** It reported nulls and left the posterior where it stood while
+    `n_eff` counted it. Such a value is now refused naming the row (null
+    still falls back to the spec's own `hazard`), and a row whose predictive
+    cannot be evaluated is counted in `solve_failures`.
+  - **`predict` reads the targets slot** where a model takes a parameter
+    from it: `bocpd`'s `hazard_col` and `hmm`'s `exog_tvtp` used to answer
+    from the configured default, so `ModelBank.predict` disagreed with
+    `fit_predict` on every row where the column differed. Both now give the
+    step's answer, and the `predict == step` contract tests it with a column
+    that varies.
+  - **`hmm` and `corrchange` did not decay `n_eff` on a zero-weight row**,
+    so `min_periods` quietly meant a different number of rows for them after
+    any weightless stretch (hard rule 8). The model contract now checks the
+    recursion against zero-weight rows for every model, without naming a
+    decay: a zero-weight row must advance the clock and nothing else.
+  - **`label_delay` replayed across a capped gap after the ring was
+    cleared.** Only the matured rows were released on a gap over
+    `max_dclock`, so the ones still waiting were learned *after* the models
+    dropped their row-lagged state — pairing rows across the very break the
+    clear was for. All pending rows are now released on a capped gap, as
+    they already were on a session change.
+  - **`prep.refresh_time` returned the `by` column as text** whatever it
+    came in as, so the result did not join back to its own input (and did
+    not match the schema the lazy plan declared).
+  - **A high-water mark is now refused in both directions.** A mark written
+    under an integer key column and read under a text one let through
+    exactly the groups it exists to refuse (`"9" > "10"` bytewise); the flag
+    is saved with the bank.
+  - Validation gaps closed, each with the case that reaches it: `bocpd`'s
+    `prior_scale` (positive, symmetric, positive definite) and `prior_mean`
+    (finite); `hmm`'s given `covs` (symmetric and positive definite — a
+    state with no density takes no responsibility for any row);
+    `corrchange`'s `crit`; `rcov`'s `window`, `n_max` and `h_max` against
+    `bandwidth`; `deco`'s block list written by hand (a duplicate name, an
+    empty list); `corr.nearest` on non-finite input and `max_iter = 0`;
+    `corr.shrink` on fewer than two rows; and `sim.regimes` normalises a
+    transition row that `np.allclose` accepts but `rng.choice` does not.
+  - Documented rather than changed, with a test pinning each: ties in
+    `refresh_time` are broken by row order; a zero-weight `corrchange` row
+    is reported as if it would be learned; `eig_vecs` are signed for
+    continuity with the previous *closed group*; a `Categorical` group key
+    is ordered bytewise, so a frame sorted by its physical order is refused.
+
 ### Changed
 
 - **State schema 4 → 5.** The spec every bank file carries gained

@@ -137,6 +137,16 @@ pub struct CorrChangeCfg {
 
 impl CorrChangeCfg {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(c) = self.crit {
+            // A NaN never flags and a non-positive one flags every row, both
+            // in silence (docs/REVIEW-E54-E64.md CC1).
+            if !(c > 0.0 && c.is_finite()) {
+                return Err(format!(
+                    "corrchange: crit is the critical value the statistic is compared with and \
+                     must be finite and > 0 (got {c}); leave it out for the tabulated one"
+                ));
+            }
+        }
         if self.n_features < 2 {
             return Err(
                 "corrchange: at least two columns are needed; a correlation is between two \
@@ -575,11 +585,17 @@ impl CorrChange {
     /// A pure function of the state and the row, so `step` and `predict`
     /// share it -- which is what makes `predict` the step's answer without
     /// the step even on the row that closes a span.
-    fn read(&self, x: &[f64], weight: f64) -> Vec<f64> {
+    /// A row's report: the statistic for the span **ending at this row**,
+    /// the critical value in force, the flag and the rows since the last
+    /// one. The row itself is always part of the span reported here -- it
+    /// is reported before the update, which is what makes the flag out of
+    /// sample -- so a row that will not be learned (`weight = 0`) is
+    /// reported as if it would be, and then does not enter the ring, does
+    /// not advance `since` for the rows after it and does not reset it if
+    /// it flags. That is the reading `predict` has to give too, since
+    /// `predict` does not know the weight (docs/REVIEW-E54-E64.md CC2).
+    fn read(&self, x: &[f64]) -> Vec<f64> {
         let mut pred = vec![f64::NAN; Self::n_outputs_for()];
-        if weight <= 0.0 {
-            return pred;
-        }
         let Some(row) = self.ring_row(x) else {
             return pred;
         };
@@ -640,6 +656,10 @@ impl crate::OnlineModel for CorrChange {
         let out = self.predict(x, d_clock);
         let lam = self.cfg.decay.factor(d_clock);
         if weight <= 0.0 {
+            // Hard rule 8: `n_eff` is the accumulated weight before the
+            // row's update and before its own decay, and a zero-weight row
+            // still decays it (docs/REVIEW-E54-E64.md H3).
+            self.n_eff *= lam;
             if self.cfg.scalar {
                 self.diag.update(x, lam, 0.0);
             }
@@ -692,7 +712,7 @@ impl crate::OnlineModel for CorrChange {
 
     fn predict(&self, x: &[f64], _d_clock: f64) -> crate::Step {
         crate::Step {
-            pred: self.read(x, 1.0),
+            pred: self.read(x),
             n_eff: self.n_eff,
             extra: None,
         }
@@ -1162,6 +1182,47 @@ mod tests {
         assert_eq!(a.n_eff(), b.n_eff());
     }
 
+    /// What a zero-weight row *reports*: the span it would close if it were
+    /// learned -- the row is always part of its own report, which is what
+    /// makes the flag out of sample -- and then it leaves nothing behind.
+    /// `since` does not advance across it and a flag on it does not reset
+    /// the count (docs/REVIEW-E54-E64.md CC2).
+    #[test]
+    fn a_zero_weight_row_reports_the_span_it_would_have_closed() {
+        let mut n = Normals::new(41);
+        let mut m = CorrChange::new(CorrChangeCfg {
+            horizon: 20,
+            ..cfg(2, CorrChangeKind::Monitor)
+        })
+        .unwrap();
+        // Nineteen rows: the twentieth closes the span, so the row under
+        // test is one that actually reports.
+        for _ in 0..19 {
+            m.step(&n.pair(0.3), &[], 1.0, 1.0);
+        }
+        let before = (m.depth(), m.since_flag);
+        // The same row twice, once weightless and once not: the report is
+        // the same both times, and only the second one moves the model.
+        let row = n.pair(0.3);
+        let zero = m.step(&row, &[], 1.0, 0.0);
+        assert_eq!(
+            (m.depth(), m.since_flag),
+            before,
+            "a zero-weight row entered the span"
+        );
+        assert!(zero.pred[0].is_finite(), "the span still closes here");
+        let learned = m.step(&row, &[], 1.0, 1.0);
+        for (slot, (a, b)) in zero.pred.iter().zip(&learned.pred).enumerate() {
+            assert!(
+                a == b || (a.is_nan() && b.is_nan()),
+                "slot {slot}: weightless said {a}, learned said {b}"
+            );
+        }
+        // The learned row closed the span, so the ring starts over; the
+        // weightless one before it left no trace at all.
+        assert_eq!(m.depth(), 0, "the span did not close on the learned row");
+    }
+
     #[test]
     fn clear_lags_abandons_the_span() {
         let mut n = Normals::new(31);
@@ -1251,6 +1312,42 @@ mod tests {
                 ..cfg(2, CorrChangeKind::Window)
             },
             "scalar applies to",
+        );
+        // docs/REVIEW-E54-E64.md CC1 and CC3: the cases `validate` refuses
+        // and nothing exercised.
+        for c in [f64::NAN, 0.0, -1.0, f64::INFINITY] {
+            bad(
+                CorrChangeCfg {
+                    crit: Some(c),
+                    ..cfg(2, CorrChangeKind::Monitor)
+                },
+                "crit is the critical value",
+            );
+        }
+        for b in [0usize, 51] {
+            bad(
+                CorrChangeCfg {
+                    kind: CorrChangeKind::Window,
+                    perm_block: b,
+                    ..cfg(2, CorrChangeKind::Window)
+                },
+                "perm_block must be 1..=",
+            );
+        }
+        bad(
+            CorrChangeCfg {
+                kind: CorrChangeKind::Window,
+                permute_every: 0,
+                ..cfg(2, CorrChangeKind::Window)
+            },
+            "permute_every must be >= 1",
+        );
+        bad(
+            CorrChangeCfg {
+                bandwidth: Some(0),
+                ..cfg(2, CorrChangeKind::Monitor)
+            },
+            "bandwidth must be >= 1",
         );
     }
 }

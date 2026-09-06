@@ -347,7 +347,31 @@ fn extract(
             } else if let ModelKind::EwClass { classes, .. } = &spec.model {
                 label_column(df, spec, c, classes, layout)
             } else {
-                f64_column(df, spec, "target", c, layout)
+                let v = f64_column(df, spec, "target", c, layout)?;
+                // `bocpd`'s hazard column rides in the targets slot and is
+                // not a target: it is a parameter, and a value the model
+                // cannot use makes the row report nulls and vanish from the
+                // posterior with nothing said. Null and non-finite mean
+                // "no value here" and fall back to `hazard`, as everywhere
+                // else; a finite one that is not a hazard is an error
+                // (docs/REVIEW-E54-E64.md B1).
+                if matches!(
+                    spec.model,
+                    ModelKind::Bocpd {
+                        hazard_col: Some(_),
+                        ..
+                    }
+                ) {
+                    if let Some(j) = v.iter().position(|f| f.is_finite() && *f <= 1.0) {
+                        polars_bail!(ComputeError:
+                            "spec {:?}: hazard column {:?} has {} at row {}; a hazard is the \
+                             expected rows between changepoints and must be > 1 (use null to \
+                             fall back to the spec's own hazard)",
+                            spec.name, c, v[j], source_row(layout, j)
+                        );
+                    }
+                }
+                Ok(v)
             }
         })
     };
@@ -605,7 +629,9 @@ fn check_monotone(
         {
             polars_bail!(ComputeError:
                 "spec {:?}: row {}: group {} after group {} -- group_close = \"monotone\" needs \
-                 the keys in non-decreasing order (sort the input by {:?}, or use \
+                 the keys in non-decreasing order, read as numbers for an integer column and as \
+                 text otherwise (sort the input by {:?} under that same order -- a Categorical \
+                 column sorts by its physical order unless you cast it to String -- or use \
                  group_close = \"session\")",
                 spec.name, r, groups[gi].0, groups[prev].0,
                 spec.group.as_deref().unwrap_or("")
@@ -1553,6 +1579,13 @@ struct BankFile {
     /// `(spec index, instance, components)` for the PCA sign continuity.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pca_prev: Vec<(usize, String, online_core::Pca)>,
+    /// `(spec index, integer keys)` for the `"monotone"` specs that have
+    /// seen a chunk, so a resume can tell a mark written under an integer
+    /// column from one written under a text column (E54,
+    /// docs/REVIEW-E54-E64.md G1). Absent in files written before the guard,
+    /// where the flag is simply unknown.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    key_integer: Vec<(usize, bool)>,
 }
 
 pub struct Bank {
@@ -1576,9 +1609,11 @@ pub struct Bank {
     pca_prev: HashMap<(usize, String), online_core::Pca>,
     /// Whether each spec's group column is an integer one, so that
     /// [`key_cmp`] orders its keys as numbers. Learned from the first chunk
-    /// a `"monotone"` spec sees and false until then; the queue's key order
-    /// reads it.
-    key_integer: Vec<bool>,
+    /// a `"monotone"` spec sees, `None` until then; the queue's key order
+    /// reads it, and a resume compares it with the column it now has so a
+    /// high-water mark cannot be read under the wrong ordering
+    /// (docs/REVIEW-E54-E64.md G1).
+    key_integer: Vec<Option<bool>>,
 }
 
 /// Everything `assemble` needs that follows from the `Spec` alone.
@@ -1756,7 +1791,7 @@ impl Bank {
             .collect::<Result<Vec<_>, String>>()?;
         let states = specs.iter().map(|_| HashMap::new()).collect();
         let high_water = specs.iter().map(|_| None).collect();
-        let key_integer = vec![false; specs.len()];
+        let key_integer = vec![None; specs.len()];
         Ok(Self {
             specs,
             clock_cfgs,
@@ -2200,7 +2235,29 @@ impl Bank {
         for (si, spec) in self.specs.iter().enumerate() {
             if spec.closes_monotone() {
                 integer_keys[si] = group_key_is_integer(df, spec)?;
-                self.key_integer[si] = integer_keys[si];
+                // The mark and the keys have to be read in the same order.
+                // The forward direction -- an integer column against a mark
+                // that is not an integer -- `check_monotone` catches from
+                // the mark itself; this catches the other one, where the
+                // mark was written under an integer column and the column
+                // is text now, so `"9" > "10"` would let a closed group
+                // reopen (docs/REVIEW-E54-E64.md G1).
+                if let (Some(hw), Some(prev)) = (&self.high_water[si], self.key_integer[si]) {
+                    if prev != integer_keys[si] {
+                        let (was, now) = if prev {
+                            ("integer", "text")
+                        } else {
+                            ("text", "integer")
+                        };
+                        polars_bail!(ComputeError:
+                            "spec {:?}: the high-water key {} was saved under a {} group column \
+                             {:?} and this chunk's is {}; the two order keys differently, so the \
+                             mark cannot be honoured",
+                            spec.name, hw, was, spec.group.as_deref().unwrap_or(""), now
+                        );
+                    }
+                }
+                self.key_integer[si] = Some(integer_keys[si]);
                 check_monotone(
                     spec,
                     &groups[si],
@@ -2496,7 +2553,7 @@ impl Bank {
         rows.sort_by(|a, b| {
             // Only rows of one spec ever reach the key comparison, the tuple
             // above having separated the specs, so one spec's flag decides.
-            let integer = self.key_integer[a.spec];
+            let integer = self.key_integer[a.spec].unwrap_or(false);
             (a.at, a.spec)
                 .cmp(&(b.at, b.spec))
                 .then_with(|| key_cmp(&a.group, &b.group, integer))
@@ -2591,6 +2648,12 @@ impl Bank {
                 v.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
                 v
             },
+            key_integer: self
+                .key_integer
+                .iter()
+                .enumerate()
+                .filter_map(|(si, k)| k.map(|k| (si, k)))
+                .collect(),
         };
         rmp_serde::to_vec_named(&file).map_err(|e| e.to_string())
     }
@@ -2666,6 +2729,11 @@ impl Bank {
         }
         for (si, inst, pca) in &file.pca_prev {
             bank.pca_prev.insert((*si, inst.clone()), pca.clone());
+        }
+        for (si, integer) in &file.key_integer {
+            if let Some(slot) = bank.key_integer.get_mut(*si) {
+                *slot = Some(*integer);
+            }
         }
         bank.rows_fed = if file.rows_fed > 0 {
             file.rows_fed

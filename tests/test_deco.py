@@ -12,6 +12,8 @@ test of its own: `rho` is **not** an `ew_cov`'s `corr` on the same
 standardised columns. See `test_rho_is_not_the_correlation_of_the_columns`.
 """
 
+import json
+
 import numpy as np
 import polars as pl
 import pytest
@@ -412,6 +414,24 @@ def test_a_bad_spec_is_refused_by_name(kw, message):
     opts.update(kw)
     with pytest.raises(ValueError, match=message):
         po.spec.deco("d", **opts)
+
+
+def test_a_block_list_written_by_hand_is_checked_too():
+    """The Python builder takes ``blocks`` as a dict, so it cannot express a
+    duplicate name or an empty list -- but a TOML or JSON spec writes an
+    array of pairs and can. Both are refused where the block list is read,
+    saying what is wrong with the list (docs/REVIEW-E54-E64.md D1)."""
+    base = po.spec.deco(
+        "d", features=cols(4), halflife=HALFLIFE, blocks={"a": ["x0", "x1"], "b": ["x2", "x3"]}
+    )
+    for blocks, message in (
+        ([["a", ["x0", "x1"]], ["a", ["x2", "x3"]]], "named twice"),
+        ([], "blocks is empty"),
+    ):
+        raw = json.loads(json.dumps(base))
+        raw["model"]["blocks"] = blocks
+        with pytest.raises(ValueError, match=message):
+            po.ModelBank([raw])
 
 
 def test_label_delay_is_accepted_as_ew_cov_accepts_it():

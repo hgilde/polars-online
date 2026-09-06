@@ -76,7 +76,10 @@ pub struct HmmCfg {
     /// A `K*K` row-stochastic matrix to seed the counts at `τ·K·Π₀`, so it
     /// is the prior mean; `None` is uniform.
     pub transition: Option<Vec<f64>>,
-    /// State means, `K*d` row-major: given, there is no warm-up.
+    /// State means, `K*d` row-major: given, there is no warm-up. The pair
+    /// enters the accumulators at **weight 1** -- one row's worth -- so the
+    /// given states are a starting point that the stream washes out under
+    /// `learn = true`, and are held exactly under `learn = false`.
     pub means: Option<Vec<f64>>,
     /// State covariances, `K*d*d` row-major, beside `means`.
     pub covs: Option<Vec<f64>>,
@@ -135,6 +138,32 @@ impl HmmCfg {
                         "hmm: covs must be {k} matrices of {d}x{d}, got {}",
                         c.len()
                     ));
+                }
+                if m.iter().chain(c.iter()).any(|v| !v.is_finite()) {
+                    return Err("hmm: means and covs must be finite".into());
+                }
+                // A state covariance that will not factorize has no density,
+                // so every row would be a solve failure and every output a
+                // null, with nothing said (docs/REVIEW-E54-E64.md H4).
+                for s in 0..k {
+                    let block = &c[s * d * d..(s + 1) * d * d];
+                    for i in 0..d {
+                        for j in (i + 1)..d {
+                            let (a, b) = (block[i * d + j], block[j * d + i]);
+                            if (a - b).abs() > 1e-12 * (1.0 + a.abs().max(b.abs())) {
+                                return Err(format!(
+                                    "hmm: covs[{s}] must be symmetric; [{i}][{j}] is {a} and \
+                                     [{j}][{i}] is {b}"
+                                ));
+                            }
+                        }
+                    }
+                    if !matches!(SpdFactor::of(block, d), Some(f) if f.attempts() == 0) {
+                        return Err(format!(
+                            "hmm: covs[{s}] must be positive definite; a state with no density \
+                             takes no responsibility for any row"
+                        ));
+                    }
                 }
             }
             (None, None) => {
@@ -267,6 +296,15 @@ impl Hmm {
         out
     }
 
+    /// The exogenous value rides in `y[0]` when `tvtp` is configured: the
+    /// plumbing declares it like `weight`, and the model reads one number.
+    fn exog_of(&self, y: &[Option<f64>]) -> Option<f64> {
+        self.cfg
+            .tvtp
+            .as_ref()
+            .and_then(|_| y.first().copied().flatten())
+    }
+
     /// `Π(t)` from the exogenous value, when `tvtp` is configured.
     fn transition_at(&self, exog: Option<f64>) -> Vec<f64> {
         let k = self.cfg.k;
@@ -388,7 +426,7 @@ impl Hmm {
     fn read(&self, x: &[f64], exog: Option<f64>) -> (Vec<f64>, Option<Update>) {
         let k = self.cfg.k;
         let nan = vec![f64::NAN; Self::n_outputs_for(k)];
-        if !self.seeded || self.n_eff < self.cfg.min_periods {
+        if !self.seeded {
             return (nan, None);
         }
         let pi = self.transition_at(exog);
@@ -432,6 +470,15 @@ impl Hmm {
         out.extend_from_slice(&pred);
         out.push(best as f64);
         out.push(loglik);
+        // `min_periods` gates what is *reported*, never what is learned: a
+        // gated row still moves the filter, as it does in every other model
+        // here. Returning `None` instead withheld the row from the update
+        // and counted it as a solve failure, so under decay a filter whose
+        // `n_eff` plateaued below `min_periods` never learned at all
+        // (docs/REVIEW-E54-E64.md H1).
+        if self.n_eff < self.cfg.min_periods {
+            return (nan, Some((post, logf)));
+        }
         (out, Some((post, logf)))
     }
 
@@ -467,15 +514,7 @@ impl Hmm {
 
 impl crate::OnlineModel for Hmm {
     fn step(&mut self, x: &[f64], _y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
-        // The exogenous value rides in `y[0]` when `tvtp` is configured:
-        // the plumbing declares it like `weight`, and the model reads one
-        // number.
-        let exog = self
-            .cfg
-            .tvtp
-            .as_ref()
-            .and_then(|_| _y.first().copied().flatten());
-        let (pred, extra) = self.read(x, exog);
+        let (pred, extra) = self.read(x, self.exog_of(_y));
         let out = crate::Step {
             pred,
             n_eff: self.n_eff,
@@ -484,7 +523,11 @@ impl crate::OnlineModel for Hmm {
         let lam = self.cfg.decay.factor(d_clock);
         if weight <= 0.0 {
             // Advance the clock and learn nothing: the counts age with the
-            // accumulators, and `p` does not move.
+            // accumulators, `n_eff` decays with them -- hard rule 8, the
+            // same recursion in every model, which is what makes
+            // `min_periods` mean the same number of rows across a bank
+            // (docs/REVIEW-E54-E64.md H3) -- and `p` does not move.
+            self.n_eff *= lam;
             if self.cfg.learn {
                 self.a.iter_mut().for_each(|v| *v *= lam);
                 for s in self.states.iter_mut() {
@@ -543,6 +586,17 @@ impl crate::OnlineModel for Hmm {
         let exog = self.cfg.tvtp.as_ref().map(|_| 0.0);
         crate::Step {
             pred: self.read(x, exog).0,
+            n_eff: self.n_eff,
+            extra: None,
+        }
+    }
+
+    /// The exogenous value rides in `y[0]` under `tvtp`, and `Π(t)` is a
+    /// function of it, so the answer depends on it exactly as the step's
+    /// does (docs/REVIEW-E54-E64.md C1/H2).
+    fn predict_with(&self, x: &[f64], y: &[Option<f64>], _d_clock: f64) -> crate::Step {
+        crate::Step {
+            pred: self.read(x, self.exog_of(y)).0,
             n_eff: self.n_eff,
             extra: None,
         }
@@ -903,6 +957,28 @@ mod tests {
                 ..cfg(2, 2)
             },
             "warm_rows must be at least k",
+        );
+        // docs/REVIEW-E54-E64.md H4: given states that cannot be filtered
+        // with. Two 2x2 blocks, the first one wrong in each case.
+        let given = |c: Vec<f64>| HmmCfg {
+            means: Some(vec![-1.0, -1.0, 1.0, 1.0]),
+            covs: Some(c),
+            ..cfg(2, 2)
+        };
+        bad(
+            given(vec![1.0, 0.5, 0.4, 1.0, 1.0, 0.0, 0.0, 1.0]),
+            "covs[0] must be symmetric",
+        );
+        bad(
+            given(vec![1.0, 2.0, 2.0, 1.0, 1.0, 0.0, 0.0, 1.0]),
+            "covs[0] must be positive definite",
+        );
+        bad(
+            HmmCfg {
+                means: Some(vec![f64::NAN, 0.0, 1.0, 1.0]),
+                ..given(vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0])
+            },
+            "means and covs must be finite",
         );
     }
 }

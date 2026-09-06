@@ -718,6 +718,19 @@ note, not a task.
       §10's rows gain their task numbers; the README's model table, the
       CHANGELOG's `[Unreleased]` and `docs/RELEASE-READINESS.md` are brought
       up to the batch.
+- [x] 57. **Fix what the review of 45–56 found** (`docs/REVIEW-E54-E64.md`):
+      29 items -- four of them wrong answers rather than missing guards --
+      each with the test that catches it. The four: `ew_cov`'s lag ring read
+      its depth from `VecDeque::capacity()` and never refilled after a save
+      taken before it was full (L1); `rcov`'s `clear_lags` dropped the
+      end-jitter ring instead of closing the stretch, losing `m` returns and
+      re-emitting the next one `m + 1` times (R2); `hmm`'s `min_periods`
+      gated the *update* as well as the report, so under decay a filter
+      could never learn at all (H1); `bocpd` silently dropped a row whose
+      hazard column was `<= 1` (B1). Acceptance: a regression test per item,
+      the `predict == step` contract extended to the value a model reads out
+      of the targets slot, and hard rule 8's recursion checked against
+      zero-weight rows for every model.
 
 ## 11a. Decisions made while implementing
 
@@ -3707,6 +3720,53 @@ returns / volume / trade-count z-scores, targets = strictly future returns.
   ubuntu/macos/windows. Lint = `cargo fmt --check`, `cargo clippy -D warnings`,
   `ruff format --check`, `ruff check`. Test = `cargo test --workspace`, `maturin develop`,
   `pytest`. Wheel/binary release jobs are task 16.
+
+**Fixing the review of 45–56 (task 57), 2026-09-06.** Read
+`docs/REVIEW-E54-E64.md` for the items themselves. Where the review asked for
+a decision rather than a repair, this is what was decided.
+
+- *A clock break inside an `rcov` block splits it into **stretches** (R2,
+  R10).* The alternative was to refuse `clock`/`max_dclock`/`session` on an
+  rcov spec, which would have made the bug unreachable and the model less
+  useful -- tick data is exactly where a clock belongs. Each stretch is closed
+  the way the group's last one is (leading jitter, interior, trailing
+  jitter) and `Γ̂_h` is the sum over stretches, so no product pairs two
+  returns across the break. A stretch too short to fill its tail contributes
+  what it already emitted. The rewrite carries the phase in `head` rather
+  than in a count against `n`, so **no state field was added** and an
+  unbroken block is unchanged to the bit.
+- *`predict` gets the targets slot, rather than the plumbing refusing it
+  (C1).* `OnlineModel::predict_with(x, y, d_clock)` is a defaulted trait
+  method that ignores `y`; `bocpd` and `hmm` override it. That keeps
+  `predict` out of sample for every model that regresses its targets -- the
+  default *is* the old `predict` -- while the two that read a parameter out
+  of that slot answer for the row's value. `AnyModel::predict` takes `y` and
+  the contract's parity probe calls `predict_with`.
+- *A hazard column value `<= 1` is an error, not a null (B1).* It is a
+  parameter, not a target: null and non-finite still mean "no value here"
+  and fall back to `hazard`, and a finite value that is not a hazard is
+  refused naming the row, the way a negative weight is. A row whose
+  predictive cannot be evaluated is counted in `solve_failures` instead of
+  vanishing.
+- *`corrchange` reports a zero-weight row as if it would be learned (CC2).*
+  A row is always part of the span reported *on* it -- that is what makes
+  the flag out of sample -- and `predict` cannot know the weight, so the
+  parity contract fixes the answer. The dead `weight <= 0` branch in `read`
+  went; the behaviour is in the docstring.
+- *Ties in `refresh_time` are broken by row order (RT4).* Buffering a
+  completed grid point until a strictly greater timestamp arrived would cost
+  the chunk-invariance the sampler has now, and tick data carries its own
+  sequence. Documented, with a test that pins it.
+- *No schema bump.* `bocpd.solve_failures` and `BankFile.key_integer` are
+  both skipped when they carry nothing, so a state that never hit either
+  writes the bytes it always did -- the rule `SCHEMA_VERSION`'s own doc
+  records for task 38's sums. The schema-5 fixture was re-frozen anyway,
+  because the `hmm` state in it was written by the model H1 corrected; the
+  layout did not move and the file exercises the same loader.
+- *Three goldens moved, all deliberately*: `GOLDEN_HMM` (H1),
+  `state_schema5.rs` (H1), and the `rcov` rows of the pipeline golden (R2,
+  27 → 21 effective returns over three capped gaps). Each carries a comment
+  saying which fix moved it.
 
 ## 11b. Follow-on documents
 

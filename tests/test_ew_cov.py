@@ -519,6 +519,31 @@ class TestLaggedComoments:
         fresh.fit_predict(df[:100])
         assert np.array_equal(fresh.gram("c")[0]["comoments"], resumed.gram("c")[0]["comoments"])
 
+    @pytest.mark.parametrize("cut", [1, 2, 3, 10])
+    def test_a_state_saved_mid_ring_resumes_identically(self, cut):
+        """A bank saved before the lag ring is full must go on filling it.
+
+        The ring's depth used to be read back from `VecDeque::capacity()`,
+        which a clone or a msgpack round-trip shrinks to the length it holds:
+        a bank saved after fewer than `max(lags)` rows -- a short stream, or
+        one just past a session change or a capped gap -- then kept that
+        depth for ever and the deeper lags only decayed
+        (docs/REVIEW-E54-E64.md L1).
+        """
+        df = _df(n=60)
+        spec = _spec(("x0", "x1"), lags=[1, 2, 3], halflife=1e9)
+        whole = po.ModelBank([spec])
+        whole.fit_predict(df)
+
+        part = po.ModelBank([spec])
+        part.fit_predict(df[:cut])
+        resumed = po.ModelBank.load_bytes(part.save_bytes())
+        resumed.fit_predict(df[cut:])
+
+        a = whole.gram("c")[0]["lag_comoments"]
+        b = resumed.gram("c")[0]["lag_comoments"]
+        assert np.array_equal(a, b), f"cut {cut}: {a} != {b}"
+
     def test_merge_reports_no_lags_and_subset_slices_them(self):
         df = _df(n=400)
         spec = _spec(("x0", "x1", "x2"), lags=[1, 2], halflife=1e9)

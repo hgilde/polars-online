@@ -180,6 +180,52 @@ def test_groups_keep_their_own_grids():
         assert got.equals(want)
 
 
+@pytest.mark.parametrize(
+    "dtype", [pl.Int64, pl.UInt32, pl.String, pl.Categorical, pl.Enum(["x", "y"])]
+)
+def test_the_by_column_comes_back_in_the_dtype_it_went_in_as(dtype):
+    """The keys are held as text inside, but the column goes back out in the
+    dtype it came in as -- so the result joins to the frame it came from,
+    and matches the schema the lazy plan declared
+    (docs/REVIEW-E54-E64.md RT1)."""
+    labels = [0, 1] if dtype in (pl.Int64, pl.UInt32) else ["x", "y"]
+    parts = [
+        poisson_ticks(n=60, seed=4 + i).with_columns(g=pl.lit(k).cast(dtype))
+        for i, k in enumerate(labels)
+    ]
+    df = pl.concat(parts).sort("t")
+    lazy = prep.refresh_time(df, series="series", names=NAMES, time="t", value="v", by="g")
+    out = lazy.collect()
+    assert out.schema["g"] == dtype
+    assert lazy.collect_schema()["g"] == dtype
+    assert sorted(out["g"].cast(pl.String).unique().to_list()) == sorted(str(k) for k in labels)
+
+
+def test_a_tie_at_a_grid_point_belongs_to_the_next_interval():
+    """ "Strictly after tau_j" is read against the row sequence: a tick with
+    the same timestamp as the one that just closed a point, but later in the
+    frame, starts the next interval. That is what lets a point be emitted
+    where its last series ticks rather than held for a greater timestamp,
+    and it is what makes the result chunk-invariant
+    (docs/REVIEW-E54-E64.md RT4)."""
+    df = pl.DataFrame(
+        {
+            "series": ["a", "b", "b", "a", "a", "b"],
+            "t": [1.0, 1.0, 1.0, 2.0, 3.0, 3.0],
+            "v": [1.0, 2.0, 2.5, 3.0, 4.0, 5.0],
+        }
+    )
+    out = prep.refresh_time(df, series="series", names=["a", "b"], time="t", value="v").collect()
+    # Three points. The first closes on b's tick at t = 1 with b = 2.0; b's
+    # *second* tick at t = 1 is after that point, so it belongs to the next
+    # interval -- which a then completes at t = 2, carrying b = 2.5, a
+    # value observed at t = 1. Read the timestamp alone and there would be
+    # two points, at t = 1 and t = 3.
+    assert out["time_refresh"].to_list() == [1.0, 2.0, 3.0]
+    assert out["b_value"].to_list() == [2.0, 2.5, 5.0]
+    assert out["a_value"].to_list() == [1.0, 3.0, 4.0]
+
+
 def test_keep_columns_take_the_completing_ticks_value():
     df = poisson_ticks(n=60).with_row_index("i").with_columns(pl.col("i").cast(pl.Int64))
     out = run(df, keep=["i"])

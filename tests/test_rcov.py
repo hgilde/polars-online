@@ -296,11 +296,53 @@ def test_the_block_survives_a_refresh_time_grid():
         ({"kind": "plain", "bandwidth": 3}, "bandwidth applies to"),
         ({"kind": "kernel", "window": 3}, "window applies to"),
         ({"emit_sigma": True}, "does not apply to rcov"),
+        # docs/REVIEW-E54-E64.md R9: settings that used to be accepted and
+        # then quietly gave a block that never accumulates, or a kernel with
+        # no lags in its ring.
+        ({"kind": "preavg", "window": 0}, "window must be >= 2"),
+        ({"kind": "preavg", "window": 1}, "window must be >= 2"),
+        ({"n_max": 0}, "n_max is the block's expected length"),
+        ({"h_max": 0, "bandwidth": 4}, "caps the ring below bandwidth"),
     ],
 )
 def test_a_bad_spec_is_refused_by_name(kw, message):
     with pytest.raises(ValueError, match=message):
         spec(**kw)
+
+
+def test_a_clock_break_splits_the_block_into_stretches():
+    """A gap over ``max_dclock`` says the returns on either side of it are
+    not adjacent, and a covariance of adjacent returns is the statistic. The
+    block is then the two stretches added, and every return is still emitted
+    exactly once (docs/REVIEW-E54-E64.md R2).
+
+    The tail used to be dropped instead: the returns waiting in the
+    end-jitter ring were lost and the first return after the gap was emitted
+    ``jitter + 1`` times.
+    """
+    df = ticks(n=200, blocks=2)
+    n = df.height
+    t = np.arange(float(n))
+    t[50:] += 1000.0  # one gap, inside the first block
+    df = df.with_columns(t=pl.Series(t))
+    kw = dict(kind="kernel", bandwidth=0, h_max=0, clock="t", max_dclock=5.0)
+
+    broken, _ = block(df, **kw)
+    row = broken.filter(pl.col("group") == "0").row(0, named=True)
+
+    # The same two stretches as blocks of their own, with no gap in either.
+    halves = [df.head(50), df.slice(50, 50)]
+    got = np.zeros(3)
+    total = 0
+    for i, half in enumerate(halves):
+        piece = half.with_columns(b=pl.lit(i, dtype=pl.Int64), t=pl.lit(None, dtype=pl.Float64))
+        piece = pl.concat([piece, piece.tail(1).with_columns(b=pl.lit(9, dtype=pl.Int64))])
+        out, _ = block(piece, kind="kernel", bandwidth=0, h_max=0)
+        r = out.filter(pl.col("group") == str(i)).row(0, named=True)
+        got += np.asarray(r["rcov"])
+        total += r["rcov_n"]
+    assert row["rcov_n"] == total
+    assert np.allclose(row["rcov"], got)
 
 
 def test_a_fractional_weight_is_refused_naming_the_row():

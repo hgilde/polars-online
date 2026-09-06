@@ -261,6 +261,47 @@ def test_the_hazard_can_be_read_from_a_column():
     assert mixed["run_mode"][199] < 40
 
 
+def test_an_unusable_hazard_in_the_column_is_refused_naming_the_row():
+    """A hazard is the expected rows between changepoints, so 1 or less is
+    not one. Such a row used to report nulls and vanish from the posterior
+    with nothing said (docs/REVIEW-E54-E64.md B1); null still means "no
+    value here" and falls back to the spec's own hazard."""
+    x = normals(60, 21)
+    h = np.full(60, 40.0)
+    h[17] = 0.5
+    with pytest.raises(ValueError, match="row 17; a hazard is the expected rows"):
+        run(x, hazard_col="h", h=h, prior_scale=[1.0], prior_nu=2.0)
+
+    # Null falls back, and the fallback is the ordinary run.
+    h = np.full(60, 40.0)
+    h[17] = np.nan
+    df = pl.DataFrame({"x0": x, "h": h})
+    spec = po.spec.bocpd(
+        "b", features=["x0"], hazard=40.0, hazard_col="h", prior_scale=[1.0], prior_nu=2.0
+    )
+    got = po.ModelBank([spec]).fit_predict(df)["b"].struct.unnest()
+    want = run(x, hazard=40.0, prior_scale=[1.0], prior_nu=2.0)
+    assert got["p_change"].to_list()[1:] == pytest.approx(want["p_change"].to_list()[1:])
+
+
+def test_predict_reads_the_hazard_column():
+    """The hazard rides in the targets slot, which `predict` sees too: it
+    must give the step's answer for that row, not the one for the spec's own
+    hazard (docs/REVIEW-E54-E64.md B3, C1)."""
+    x = normals(200, 23)
+    h = np.where(np.arange(200) % 2 == 0, 20.0, 500.0)
+    df = pl.DataFrame({"x0": x, "h": h})
+    spec = po.spec.bocpd(
+        "b", features=["x0"], hazard=50.0, hazard_col="h", prior_scale=[1.0], prior_nu=2.0
+    )
+    step = po.ModelBank([spec]).fit_predict(df)["b"].struct.unnest()
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df.head(150))
+    got = bank.predict(df.slice(150, 1))["b"].struct.unnest()
+    for col in ("p_change", "run_mode", "run_mean", "pred_x0", "logscore"):
+        assert got[col][0] == pytest.approx(step[col][150], rel=1e-12, abs=1e-12), col
+
+
 def test_a_zero_weight_row_advances_nothing():
     x = normals(60, 19)
     w = np.ones(60)
@@ -379,6 +420,11 @@ def test_chunks_and_a_reload_do_not_move_it():
         (dict(truncate=1.0), "truncate must be in"),
         (dict(max_run=0), "max_run"),
         (dict(robust_beta=-1.0), "robust_beta"),
+        # docs/REVIEW-E54-E64.md B2: priors that give a predictive with no
+        # density, so every row would report nulls with nothing said.
+        (dict(prior_scale=[0.0]), "scalar prior_scale"),
+        (dict(prior_scale=[-1.0]), "scalar prior_scale"),
+        (dict(prior_mean=[float("nan")]), "prior_mean"),
     ],
 )
 def test_bad_parameters_are_refused(kwargs, message):

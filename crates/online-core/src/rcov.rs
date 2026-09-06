@@ -49,6 +49,18 @@
 //! return `m` rows back can no longer turn out to be part of the end jitter.
 //! That is what makes the state a ring of `h_max + m` vectors, the close
 //! `O(h_max·k²)`, and the whole thing chunk-invariant.
+//!
+//! # A break inside a block
+//!
+//! Nothing here decays, so `halflife` is refused -- but a clock still
+//! matters: a gap over `max_dclock`, or a session change, says the returns
+//! on either side of it are not adjacent, and a covariance of adjacent
+//! returns is the whole statistic. Such a break splits the group into
+//! **stretches** ([`crate::OnlineModel::clear_lags`]). Each stretch is
+//! closed as the group's last one is -- leading jitter, interior, trailing
+//! jitter -- and `Γ̂_h` is the sum over stretches, so no product ever pairs
+//! two returns across the break. A stretch that ends before its tail is
+//! full contributes only what it had already emitted.
 
 use std::collections::VecDeque;
 
@@ -396,6 +408,31 @@ impl RcovCfg {
                     .into(),
             );
         }
+        if let Some(w) = self.window {
+            if w < 2 {
+                return Err(format!(
+                    "rcov: window must be >= 2 (got {w}); the pre-averaged return is a weighted \
+                     sum over `window − 1` returns, so below 2 there is nothing to average and \
+                     no block ever accumulates"
+                ));
+            }
+        }
+        if self.n_max == Some(0) {
+            return Err(
+                "rcov: n_max is the block's expected length in returns and must be >= 1; the \
+                 ring and the window are sized from it"
+                    .into(),
+            );
+        }
+        if let (Some(h), Some(b)) = (self.h_max, self.bandwidth) {
+            if h < b {
+                return Err(format!(
+                    "rcov: h_max = {h} caps the ring below bandwidth = {b}, so the lags the \
+                     bandwidth asks for are not there and it is silently reduced to {h}; raise \
+                     h_max or lower the bandwidth"
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -433,7 +470,9 @@ pub struct Rcov {
     raw: Vec<f64>,
     /// The first `jitter` returns, for the leading jittered return.
     head: Vec<Vec<f64>>,
-    /// The last `jitter` raw returns, for the trailing one.
+    /// The last `jitter` raw returns of the current stretch, which are the
+    /// ones still eligible for the trailing jitter: everything older has
+    /// been emitted.
     tail: VecDeque<Vec<f64>>,
     /// The last `h_max` *final* returns, for the lagged products.
     fin: VecDeque<Vec<f64>>,
@@ -461,7 +500,7 @@ impl Rcov {
             w_sum: 0.0,
             raw: vec![0.0; k * k],
             head: Vec::with_capacity(cfg.jitter),
-            tail: VecDeque::with_capacity(cfg.jitter + 1),
+            tail: VecDeque::with_capacity(cfg.jitter.max(1)),
             fin: VecDeque::with_capacity(h_max.max(1)),
             gamma: vec![0.0; (h_max + 1) * k * k],
             emitted: 0,
@@ -512,8 +551,9 @@ impl Rcov {
     fn trail(&self) -> Vec<f64> {
         let m = self.cfg.jitter;
         let mut out = vec![0.0; self.k()];
-        // The ring keeps `m + 1` raw returns so that `x_{t−m}` can be
-        // finalised; only the last `m` are the end jitter.
+        // The ring holds the `m` returns that have not been emitted, which
+        // are exactly the end jitter -- fewer while the stretch is still
+        // short of them.
         let take = self.tail.len().min(m);
         let skip = self.tail.len() - take;
         for (idx, x) in self.tail.iter().skip(skip).enumerate() {
@@ -569,20 +609,28 @@ impl Rcov {
         self.n += 1;
         let m = self.cfg.jitter;
         if self.cfg.kind == RcovKind::Kernel {
+            // Which phase of the stretch this return is in is carried by
+            // `head`, not by a count against `n`: a break in the clock
+            // (`clear_lags`) starts a new stretch part-way through the
+            // group, and the phases have to restart with it
+            // (docs/REVIEW-E54-E64.md R2).
             if self.head.len() < m {
+                // The leading jitter: the first `m` returns of the stretch
+                // make one effective return between them and nothing else.
                 self.head.push(x.to_vec());
-            }
-            if self.tail.len() == m + 1 {
-                self.tail.pop_front();
-            }
-            self.tail.push_back(x.to_vec());
-            // `x_{t−m}` can no longer become part of the end jitter.
-            if self.n == m as u64 {
-                let y = self.lead();
-                self.emit(y);
-            } else if self.n > 2 * m as u64 {
-                let y = self.tail.front().expect("m + 1 kept").clone();
-                self.emit(y);
+                if self.head.len() == m {
+                    let y = self.lead();
+                    self.emit(y);
+                }
+            } else {
+                // The interior: a return leaves the tail -- and so can no
+                // longer become part of the end jitter -- when the `m` after
+                // it have arrived.
+                if self.tail.len() == m {
+                    let y = self.tail.pop_front().expect("m kept");
+                    self.emit(y);
+                }
+                self.tail.push_back(x.to_vec());
             }
         }
         if self.cfg.kind == RcovKind::Preavg {
@@ -641,31 +689,38 @@ impl Rcov {
             }
             RcovKind::Kernel => {
                 let m = self.cfg.jitter as u64;
-                if self.n < 2 * m {
+                // The last stretch contributes a trailing jitter only if it
+                // ran far enough to fill the tail; one cut short by a break
+                // contributes what it emitted before the break and no more.
+                // With no break the two agree: `n >= 2m` is exactly a full
+                // tail, so an unbroken group is unchanged to the bit.
+                let closes = self.tail.len() == self.cfg.jitter;
+                if self.n < 2 * m || (self.emitted == 0 && !closes) {
                     return short(0);
                 }
                 let h_max = self.cfg.ring_for().unwrap_or(0);
                 // The trailing jittered return, formed here from state.
                 let mut gamma = self.gamma.clone();
-                let y = self.trail();
-                let mut fin = self.fin.clone();
-                for h in 0..=h_max {
-                    let past = if h == 0 {
-                        Some(&y)
-                    } else {
-                        fin.len().checked_sub(h).map(|i| &fin[i])
-                    };
-                    let Some(past) = past else { continue };
-                    let block = h * k * k;
-                    for (i, &yi) in y.iter().enumerate() {
-                        let row = &mut gamma[block + i * k..block + (i + 1) * k];
-                        for (g, &pj) in row.iter_mut().zip(past) {
-                            *g += yi * pj;
+                if closes {
+                    let y = self.trail();
+                    let fin = &self.fin;
+                    for h in 0..=h_max {
+                        let past = if h == 0 {
+                            Some(&y)
+                        } else {
+                            fin.len().checked_sub(h).map(|i| &fin[i])
+                        };
+                        let Some(past) = past else { continue };
+                        let block = h * k * k;
+                        for (i, &yi) in y.iter().enumerate() {
+                            let row = &mut gamma[block + i * k..block + (i + 1) * k];
+                            for (g, &pj) in row.iter_mut().zip(past) {
+                                *g += yi * pj;
+                            }
                         }
                     }
                 }
-                fin.push_back(y);
-                let n_eff = self.emitted as i64 + 1;
+                let n_eff = self.emitted as i64 + i64::from(closes);
                 let h = self.bandwidth(n_eff as f64).min(h_max);
                 let mut out = vec![0.0; k * k];
                 for lag in 0..=h {
@@ -841,10 +896,24 @@ impl crate::OnlineModel for Rcov {
 
     fn clear_lags(&mut self) {
         // A break in the clock is a break in the block: the rings pair rows
-        // that are no longer adjacent.
+        // that are no longer adjacent. The stretch that ends here is closed
+        // the way `estimate` closes the last one -- its trailing jitter
+        // emitted against the returns it *is* adjacent to -- and the next
+        // return starts a new stretch, leading jitter and all. Dropping the
+        // tail instead lost the `m` returns in it and then re-emitted the
+        // first return after the break `m + 1` times
+        // (docs/REVIEW-E54-E64.md R2).
+        if self.cfg.kind == RcovKind::Kernel && self.tail.len() == self.cfg.jitter {
+            let y = self.trail();
+            self.emit(y);
+        }
+        // A stretch that never got past its leading jitter contributes what
+        // it already emitted and no more: a partial end jitter is not the
+        // paper's statistic, and there is no way to un-emit the lead.
+        self.head.clear();
+        self.tail.clear();
         self.fin.clear();
         self.pre_ring.clear();
-        self.tail.clear();
     }
 
     fn state(&self) -> crate::State {
@@ -854,7 +923,19 @@ impl crate::OnlineModel for Rcov {
     fn restore(s: &crate::State) -> Result<Self, crate::StateError> {
         crate::check_schema(s)?;
         match &s.model {
-            crate::ModelState::Rcov(m) => Ok((**m).clone()),
+            crate::ModelState::Rcov(m) => {
+                let mut m = (**m).clone();
+                // A state written before the stretch rewrite kept `m + 1`
+                // returns in the tail, its front already emitted. The tail
+                // now holds exactly the unemitted `m`, and a longer one
+                // would never reach the emission test again -- so drop the
+                // extra from the front, which is the entry that had already
+                // gone (docs/REVIEW-E54-E64.md R2).
+                while m.tail.len() > m.cfg.jitter {
+                    m.tail.pop_front();
+                }
+                Ok(m)
+            }
             other => Err(crate::StateError::WrongModel {
                 expected: "rcov",
                 found: other.kind(),
@@ -1292,6 +1373,103 @@ mod tests {
         assert_eq!(m.n, n);
     }
 
+    /// A break splits the group into stretches: the estimate is what the two
+    /// stretches give as separate groups, added. At `H = 0` that is exactly
+    /// `Σ ỹỹ'` over each stretch's own effective returns, so the two sides
+    /// are comparable term by term -- and with `jitter = 1` the effective
+    /// returns are the raw ones, so both sides are `plain` as well.
+    ///
+    /// The tail used to be dropped rather than closed: the `m` returns in it
+    /// were lost and the first return after the break was re-emitted until
+    /// the ring refilled, which at `m = 1` moved the estimate by
+    /// `−x_10 x_10' + x_11 x_11'` (docs/REVIEW-E54-E64.md R2).
+    #[test]
+    fn a_break_splits_the_group_into_stretches() {
+        let rows = returns(20, 2, 77, 0.1);
+        for m in 1..=3usize {
+            let kern = || {
+                Rcov::new(RcovCfg {
+                    bandwidth: Some(0),
+                    h_max: Some(0),
+                    jitter: m,
+                    ..cfg(2, RcovKind::Kernel)
+                })
+                .unwrap()
+            };
+            let piece = |rows: &[Vec<f64>]| {
+                let mut p = kern();
+                feed(&mut p, rows);
+                p.estimate()
+            };
+            let (a, b) = (piece(&rows[..10]), piece(&rows[10..]));
+
+            let mut broken = kern();
+            feed(&mut broken, &rows[..10]);
+            broken.clear_lags();
+            feed(&mut broken, &rows[10..]);
+            let got = broken.estimate();
+            for ((g, x), y) in got
+                .rcov
+                .as_ref()
+                .unwrap()
+                .iter()
+                .zip(a.rcov.as_ref().unwrap())
+                .zip(b.rcov.as_ref().unwrap())
+            {
+                assert!(
+                    (g - (x + y)).abs() < 1e-9,
+                    "jitter {m}: broken {g} != {x} + {y}"
+                );
+            }
+            assert_eq!(got.n, a.n + b.n, "jitter {m}: effective returns");
+        }
+        // `jitter = 1` is no jitter at all, so every effective return is a
+        // raw one and both runs are the plain sum of squares.
+        let mut plain = Rcov::new(cfg(2, RcovKind::Plain)).unwrap();
+        feed(&mut plain, &rows);
+        let want = plain.estimate().rcov.unwrap();
+        for cut in [rows.len(), 10] {
+            let mut m = Rcov::new(RcovCfg {
+                bandwidth: Some(0),
+                h_max: Some(0),
+                jitter: 1,
+                ..cfg(2, RcovKind::Kernel)
+            })
+            .unwrap();
+            feed(&mut m, &rows[..cut]);
+            if cut < rows.len() {
+                m.clear_lags();
+                feed(&mut m, &rows[cut..]);
+            }
+            let got = m.estimate();
+            for (g, w) in got.rcov.unwrap().iter().zip(&want) {
+                assert!((g - w).abs() < 1e-9, "cut {cut}: {g} != plain {w}");
+            }
+            assert_eq!(got.n, rows.len() as i64, "cut {cut}: every return emitted");
+        }
+    }
+
+    /// A stretch too short to fill the tail contributes what it emitted and
+    /// no more, and a group made only of such stretches reports nothing
+    /// rather than a covariance built from no returns.
+    #[test]
+    fn a_group_of_stretches_shorter_than_the_jitter_reports_nothing() {
+        let rows = returns(9, 2, 5, 0.1);
+        let mut m = Rcov::new(RcovCfg {
+            bandwidth: Some(0),
+            h_max: Some(0),
+            jitter: 4,
+            ..cfg(2, RcovKind::Kernel)
+        })
+        .unwrap();
+        for chunk in rows.chunks(3) {
+            feed(&mut m, chunk);
+            m.clear_lags();
+        }
+        let e = m.estimate();
+        assert!(e.rcov.is_none() && e.n == 0, "{e:?}");
+    }
+
     #[test]
     fn a_bad_configuration_is_refused_by_name() {
         let bad = |c: RcovCfg, msg: &str| {
@@ -1311,6 +1489,31 @@ mod tests {
                 ..cfg(2, RcovKind::Kernel)
             },
             "jitter must be >= 1",
+        );
+        for w in [0, 1] {
+            bad(
+                RcovCfg {
+                    window: Some(w),
+                    ..cfg(2, RcovKind::Preavg)
+                },
+                "window must be >= 2",
+            );
+        }
+        bad(
+            RcovCfg {
+                n_max: Some(0),
+                bandwidth: None,
+                ..cfg(2, RcovKind::Kernel)
+            },
+            "n_max is the block's expected length",
+        );
+        bad(
+            RcovCfg {
+                h_max: Some(0),
+                bandwidth: Some(4),
+                ..cfg(2, RcovKind::Kernel)
+            },
+            "caps the ring below bandwidth",
         );
         bad(
             RcovCfg {

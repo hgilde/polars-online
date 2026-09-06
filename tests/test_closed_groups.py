@@ -203,6 +203,46 @@ def test_a_categorical_key_closes_bytewise():
     assert bank.closed_groups()["group"].to_list() == ["a", "b"]
 
 
+def test_a_categorical_key_in_physical_order_is_refused_naming_the_sort():
+    """Bytewise is the order for anything but an integer column, and a
+    ``Categorical`` sorts by its *physical* order by default -- the order the
+    categories were first seen -- so a frame sorted by such a column can be
+    out of order for the bank. The refusal says so
+    (docs/REVIEW-E54-E64.md G2)."""
+    df = frame(["c", "a", "b"]).with_columns(pl.col("g").cast(pl.Categorical))
+    # Physically sorted (c, a, b is the order they appear) and lexically not.
+    bank = po.ModelBank([cov_spec(group_close="monotone")])
+    with pytest.raises(ValueError, match="Categorical column sorts by its physical order"):
+        bank.fit_predict(df)
+    # Cast to String and sort by that, and it goes through.
+    fixed = df.with_columns(pl.col("g").cast(pl.String)).sort("g", maintain_order=True)
+    po.ModelBank([cov_spec(group_close="monotone")]).fit_predict(fixed)
+
+
+def test_a_high_water_mark_read_under_the_wrong_dtype_is_refused_both_ways():
+    """A mark and the keys have to be ordered the same way, or the mark lets
+    through exactly the groups it exists to refuse: ``"10"`` comes after
+    ``"9"`` as an integer and before it as text
+    (docs/REVIEW-E54-E64.md G1)."""
+    spec = cov_spec(group_close="monotone")
+
+    # Saved under an integer column, resumed under a text one.
+    bank = po.ModelBank([spec])
+    bank.fit_predict(frame([9, 10, 11]))
+    again = po.ModelBank.load_bytes(bank.save_bytes(), [spec])
+    with pytest.raises(ValueError, match="saved under a integer group column"):
+        again.fit_predict(frame(["12", "13"]))
+
+    # And the other way. A file written before the flag existed does not
+    # carry it, and there the mark itself gives the mismatch away -- "c"
+    # cannot be an integer key; both refusals are in `check_monotone`.
+    bank = po.ModelBank([spec])
+    bank.fit_predict(frame(["a", "b", "c"]))
+    again = po.ModelBank.load_bytes(bank.save_bytes(), [spec])
+    with pytest.raises(ValueError, match="saved under a text group column"):
+        again.fit_predict(frame([9, 10]))
+
+
 def test_a_group_split_across_chunks_closes_once_and_at_the_same_numbers():
     df = frame(["a", "b", "c"], n_per=7)
     whole = po.ModelBank([cov_spec(group_close="monotone")])

@@ -22,6 +22,17 @@
 //! `retained_fraction` reports how many survived, which is the number to look
 //! at before trusting a correlation computed on the result.
 //!
+//! **Ties are broken by row order.** "Strictly after `tau_j`" is read
+//! against the row sequence, not the timestamp alone: a tick that carries
+//! the same timestamp as the one that just closed a grid point, but arrives
+//! later in the frame, belongs to the next interval. Tick data comes in
+//! sequence and a timestamp is rarely finer than the sequence, so row order
+//! is the tiebreak the stream actually has -- and it is what makes the
+//! sampler chunk-invariant, since a point can be emitted the moment its last
+//! series ticks rather than held back until a strictly greater timestamp
+//! arrives (docs/REVIEW-E54-E64.md RT4). Sort the input by time *and* by the
+//! order you want within a timestamp.
+//!
 //! **The staleness caveat** (their §2.1) is worth stating, because the output
 //! looks synchronous and is not: a refresh vector is *treated* as observed at
 //! `time_refresh`, but each series' value is up to one of its own inter-tick
@@ -316,13 +327,24 @@ impl RefreshTime {
         let time = time.f64()?;
         let mut out: Vec<Column> = Vec::new();
         if let Some(b) = cols.by {
-            out.push(Column::new(
+            // The keys are held as text, because that is what a group key
+            // is here -- but the column goes back out in the dtype it came
+            // in as, so the result joins to the input it came from
+            // (docs/REVIEW-E54-E64.md RT1). The cast cannot fail: every
+            // string here was produced by casting a value of that dtype.
+            let dtype = df.column(b)?.dtype().clone();
+            let col = Column::new(
                 b.into(),
                 points
                     .iter()
                     .map(|(k, ..)| k.as_str().map(str::to_string))
                     .collect::<Vec<_>>(),
-            ));
+            );
+            out.push(if dtype == DataType::String {
+                col
+            } else {
+                col.cast(&dtype)?
+            });
         }
         let pair_of = |pi: usize| {
             let (a, b) = self.pairs[pi];

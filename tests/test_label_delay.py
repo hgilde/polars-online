@@ -329,6 +329,56 @@ class TestTheStreamContract:
         no_delay.fit_predict(df.head(190))
         assert bank.gram("m")[0]["n_eff"] == pytest.approx(no_delay.gram("m")[0]["n_eff"], rel=1e-6)
 
+    def test_a_capped_gap_releases_the_buffer_before_the_lag_ring_clears(self):
+        """A gap over ``max_dclock`` says the rows behind it are no longer
+        adjacent, and the models drop what is indexed by rows back when the
+        row carrying it is scored. Everything still waiting has to be learned
+        *before* that, or it is replayed into a ring that was just cleared
+        for it, pairing rows across the very break the clear was for
+        (docs/REVIEW-E54-E64.md L2).
+
+        ``ew_cov`` with a lag is the model that shows it: the lagged
+        co-moments are exactly a pairing of adjacent rows.
+        """
+        n = 60
+        delay = 5.0
+        rng = np.random.default_rng(4)
+        t = np.arange(float(n))
+        t[30:] += 500.0  # one gap, far over the cap
+        df = pl.DataFrame({"x0": rng.standard_normal(n), "x1": rng.standard_normal(n), "t": t})
+
+        def cov(**kw):
+            # `max_dclock` below the delay is what makes this bite: the
+            # capped row's own delta is clipped to 2, so it does not mature
+            # the whole buffer on its way past.
+            return po.spec.ew_cov(
+                "c",
+                features=["x0", "x1"],
+                lags=[1, 2],
+                halflife=1e9,
+                clock="t",
+                max_dclock=2.0,
+                min_periods=3.0,
+                **kw,
+            )
+
+        # The delayed run learns the same rows in the same order as the plain
+        # one -- the delay only moves *when* -- so once every row has matured
+        # the lagged matrices must agree.
+        plain = po.ModelBank([cov()])
+        plain.fit_predict(df)
+        delayed = po.ModelBank([cov(label_delay=delay)])
+        delayed.fit_predict(df)
+        a = plain.gram("c")[0]
+        b = delayed.gram("c")[0]
+        # The last few rows of the delayed run are still waiting, so compare
+        # the run that stops where its buffer does.
+        matured = int(np.searchsorted(t, t[-1] - delay, side="right"))
+        short = po.ModelBank([cov()])
+        short.fit_predict(df.head(matured))
+        assert np.allclose(b["lag_comoments"], short.gram("c")[0]["lag_comoments"])
+        assert not np.allclose(a["lag_comoments"], np.zeros_like(a["lag_comoments"]))
+
 
 class TestTheSurfaces:
     def test_the_lazy_plan_and_the_bank_agree(self):
