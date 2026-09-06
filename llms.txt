@@ -1,0 +1,112 @@
+# polars-online
+
+> Streaming / online regression, clustering and regime models for Polars. A Rust core,
+> reachable four ways with identical numerics: a chunk-fed `ModelBank`, a `LazyFrame`
+> plan that streams, a runner and CLI over files, and an expression for a frame already
+> in memory. Memory is O(state), not O(data), so a model fits a stream that does not
+> fit in RAM.
+
+Python 3.12+, `polars>=1.34,<2`. `pip install polars-online`. `numpy` is an optional
+extra, needed only by `po.gram`, `po.corr` and `po.sim`. No pandas.
+
+The two surfaces that stream, in full:
+
+```python
+import polars as pl
+import polars_online as po
+
+spec = po.spec.ewridge(
+    "ridge",
+    targets=["ret"], features=["signal_a", "signal_b"],
+    clock="ts", halflife=600.0,   # decay in the clock column's own units
+    group="bond_id",              # one independent state per bond
+)
+
+# As a loop: feed chunks of any size; the state is yours to save
+bank = po.ModelBank([spec])
+for chunk in chunks:
+    out = bank.fit_predict(chunk)     # one struct column per spec, named after it
+bank.save("bank.state")
+
+# As a plan: the same numbers, streamed by polars, state written when the source ends
+(pl.scan_parquet("ticks/*.parquet")
+   .online.fit_predict([spec], save_state="bank.state")
+   .sink_parquet("fitted.parquet"))
+```
+
+## Rules that are easy to get wrong
+
+- **One name differs between the two spellings**: the Python builder is
+  `po.spec.ewridge(...)`, and the same model in a spec dict or a TOML file is
+  `type = "ew_ridge"`. Every other model is spelled identically in both places.
+- **Predictions are out-of-sample by construction.** A row's `pred` is computed from the
+  state as it stands *before* the update that uses that row's target. Never fit a row
+  and then score it; the library has already done the honest thing.
+- **Chunk invariance is a guarantee.** The same stream fed as one chunk or a thousand
+  gives identical output, bit for bit, and a test enforces it.
+- **Decay runs on the clock, not on row count.** `halflife` is in the units of the
+  `clock` column, and `max_dclock`, `session` / `session_gap` and `on_clock_reset` say
+  what happens across a gap, a session boundary or a clock that goes backwards.
+- **`n_eff` is accumulated weight**, before this row's update and before its own decay —
+  the same definition in every model. `min_periods` is in those units, so it is a
+  weight, not a number of rows.
+- **A zero-weight row is legal** and means "advance the clock, learn nothing", including
+  as the first row of a stream.
+- **Only two surfaces stream**: `ModelBank` in a loop, and `lf.online.fit_predict(...)`
+  as a plan. The expression `pl.col("y").online.<model>(...)` is the in-memory form —
+  polars hands a stateful user expression its whole column — so it warns
+  (`InMemoryExpressionWarning`) on every use and must not be suggested for data that
+  does not fit in memory.
+- **State has one vocabulary everywhere**: `load_state` and `save_state`, on the plan,
+  in `po.run`, in the TOML and on the CLI. A state file is versioned msgpack, written
+  atomically, and loads on macOS, Linux and Windows alike.
+- **Every spec adds one struct column** named after the spec, holding `pred_<target>`,
+  `resid_<target>`, `n_eff`, `coef` and whatever diagnostics are switched on.
+  `frame.online.unnest(specs)` flattens it into plain columns.
+
+## Start here
+
+- [README](https://github.com/hgilde/polars-online#readme): the guide — how a bank sees
+  a stream, the four surfaces, every model with its update equations, performance
+- [Quick start](https://github.com/hgilde/polars-online#quick-start): the smallest
+  complete example
+- [How a bank sees a stream](https://github.com/hgilde/polars-online#how-a-bank-sees-a-stream):
+  clock, decay, groups, weights, warm-up, nulls, row order — the semantics every model
+  shares
+- [Models](https://github.com/hgilde/polars-online#models): all 21, each with its
+  recursion, its builder and its Rust source
+
+## API reference
+
+- [Spec builders](https://hgilde.github.io/polars-online/spec.html): every model's
+  builder, with every keyword and its default
+- [ModelBank, run, fit_predict, predict](https://hgilde.github.io/polars-online/polars_online.html):
+  the objects and functions the package exports
+- [Frame and expression namespaces](https://hgilde.github.io/polars-online/namespaces.html):
+  `lf.online.*`, `df.online.*`, `pl.col(...).online.*`
+- [Evaluation](https://hgilde.github.io/polars-online/eval.html) ·
+  [Gram accessors](https://hgilde.github.io/polars-online/gram.html) ·
+  [Correlation toolkit](https://hgilde.github.io/polars-online/corr.html) ·
+  [Stream preparation](https://hgilde.github.io/polars-online/prep.html) ·
+  [Simulation](https://hgilde.github.io/polars-online/sim.html)
+
+## Guides
+
+- [State workflow](https://github.com/hgilde/polars-online/blob/main/docs/STATE-WORKFLOW.md):
+  fit, save, serve, learn on — what each step guarantees
+- [Performance](https://github.com/hgilde/polars-online/blob/main/docs/PERFORMANCE.md):
+  where time and memory go, chunk size, thread count, every measurement
+- [Regimes](https://github.com/hgilde/polars-online/blob/main/docs/REGIMES.md): what the
+  detectors find on data whose truth is known, and what they miss
+- [Extending](https://github.com/hgilde/polars-online/blob/main/docs/EXTENDING.md):
+  every layer a new model touches, with the test that catches skipping each one
+
+## Optional
+
+- [The document map](https://github.com/hgilde/polars-online/blob/main/docs/README.md):
+  which document to read for what, guides and records
+- [Changelog](https://github.com/hgilde/polars-online/blob/main/CHANGELOG.md) ·
+  [Validation](https://github.com/hgilde/polars-online/blob/main/docs/VALIDATION.md),
+  where the defaults come from ·
+  [Testing](https://github.com/hgilde/polars-online/blob/main/docs/TESTING.md), what the
+  suite proves

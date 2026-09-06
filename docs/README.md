@@ -33,9 +33,10 @@ what happened next.
 | [BEYOND-O-STATE.md](BEYOND-O-STATE.md) | what relaxing the O(state) rule to O(window) would unlock — a survey; three of its six candidates were since built inside the rule (conformal intervals, `ew_cov` lags, `label_delay`) |
 | [BOOSTED-TREES.md](BOOSTED-TREES.md) | how far gradient-boosted trees can be pushed toward the library's contract — a numpy prototype, measured, nothing in Rust |
 
-Two more documents live at the top of the repository: `CHANGELOG.md`, one
-entry per release with what changed and why, and `CONTRIBUTING.md`, the gate
-and the commit conventions.
+Three more documents live at the top of the repository: `CHANGELOG.md`, one
+entry per release with what changed and why; `CONTRIBUTING.md`, the gate and
+the commit conventions; and `llms.txt`, the map a coding agent reads before
+it writes against this library.
 
 The code cites these by section number (`docs/PERFORMANCE.md §11`,
 `docs/PLAN.md §4.4`, `E56`, `C5`), so sections keep their numbers even where

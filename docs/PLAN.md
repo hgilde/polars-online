@@ -757,6 +757,17 @@ note, not a task.
       (§11a records the rule). Acceptance: the README's blocks still run
       (`TestReadmeExamples`), every builder still has its README heading
       (`test_the_readme_documents_every_model`), `sphinx-build -W` is clean.
+- [x] 59. **`llms.txt`, 2026-09-06.** The [llmstxt.org](https://llmstxt.org)
+      map for coding agents at the repo root, copied into the docs build by
+      `html_extra_path` so the same file answers at
+      `hgilde.github.io/polars-online/llms.txt`. It carries the two streaming
+      surfaces in full and the rules an assistant otherwise guesses wrong,
+      chief among them that `po.spec.ewridge` is `type = "ew_ridge"` in a spec
+      dict — the one name spelled two ways. Acceptance: `tests/test_llms_txt.py`
+      holds every model name to the registry, every repository link to a file
+      that exists, every README anchor to a heading and every reference link to
+      a built page, and each of those five assertions was checked against a
+      deliberately broken copy.
 
 ## 11a. Decisions made while implementing
 

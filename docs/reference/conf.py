@@ -34,6 +34,12 @@ python_use_unqualified_type_names = True
 html_theme = "furo"
 html_title = f"polars-online {release}"
 html_static_path: list[str] = []
+# `llms.txt` (llmstxt.org) is written for coding agents and lives at the repo
+# root, where GitHub serves it; copying it verbatim into the build root puts it
+# at https://hgilde.github.io/polars-online/llms.txt as well, so one file serves
+# both and cannot drift from itself. tests/test_llms_txt.py holds its contents
+# to the registry.
+html_extra_path = ["../../llms.txt"]
 # The design notes live beside this directory as Markdown; Sphinx must not
 # try to read them.
 exclude_patterns = ["_build"]

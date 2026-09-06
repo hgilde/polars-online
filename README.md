@@ -2343,6 +2343,8 @@ builds against pyo3's `abi3-py312` and needs a 3.12+ interpreter at build
 time.
 
 - Every document, and which to read for what: [docs/README.md](docs/README.md)
+- A map for coding agents, at the repo root and on the docs site:
+  [llms.txt](llms.txt) ([llmstxt.org](https://llmstxt.org))
 - API reference: <https://hgilde.github.io/polars-online/> — built from the
   docstrings and published from every green push to `main`
 - Design and task list: [docs/PLAN.md](docs/PLAN.md)

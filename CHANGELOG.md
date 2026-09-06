@@ -7,7 +7,16 @@ carries breaking changes.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`llms.txt`** (task 59), the [llmstxt.org](https://llmstxt.org) map for
+  coding agents: the two streaming surfaces in full, the rules an assistant
+  otherwise guesses wrong (predict-before-update, chunk invariance, decay on
+  the clock, `n_eff` as a weight, the in-memory expression form), and links
+  into the README, the API reference and the guides. It is served from the
+  repo root and, through `html_extra_path`, from the API reference, so one
+  file cannot drift from itself; `tests/test_llms_txt.py` holds its model
+  names, links and README anchors to the registry and the tree.
 
 ## [0.2.0] — 2026-09-06
 
