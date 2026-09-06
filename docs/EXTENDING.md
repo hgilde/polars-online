@@ -31,6 +31,17 @@ example; `git show --stat aa96ad3` is this list as a diff.
    everywhere.
    *Check*: the trait. A missing method is a compile error; the shared
    contract is step 3.
+   *Row-lagged state*: a model that keeps a ring of past rows — a lag ring,
+   a window — implements **`clear_lags`** as well, dropping that ring and
+   nothing else (docs/PLAN.md task 47). The stream calls it on a session
+   change and on a capped clock gap (`ClockAdvance::capped`), which are the
+   two events after which "the row `ℓ` back" no longer means a row `ℓ` ago;
+   a reset already rebuilds the model, and an ordinary gap is what decay is
+   for. It is **not** a reset: means, co-moments and `n_eff` must not move.
+   *Check*: `probe_with` in `tests/model_contract.rs` serializes the state,
+   calls `clear_lags`, and requires the bytes to be identical unless the
+   model is listed in `KEEPS_LAGS` — so a model that quietly clears a mean
+   fails, and so does one with a ring that forgot to declare itself.
 2. **`src/lib.rs`**: `pub use <model>::{<Model>, <Model>Cfg};`.
    *Check*: the compiler, as soon as `online-polars` names the type.
 3. **`src/model.rs`**: a `ModelState::<Model>(Box<...>)` variant and its arm

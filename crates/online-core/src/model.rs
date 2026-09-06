@@ -190,6 +190,21 @@ pub trait OnlineModel: Sized {
     /// `predict(x, d) == step(x, y, d, w)` on `pred`, `n_eff` and `extra`,
     /// row by row (docs/ENHANCEMENTS.md E31).
     fn predict(&self, x: &[f64], d_clock: f64) -> Step;
+    /// Drop whatever this model keeps that is indexed by *rows back* -- a
+    /// ring of past feature vectors, a partially filled window -- because
+    /// the rows behind it are no longer adjacent to the next one
+    /// (docs/PLAN.md task 47).
+    ///
+    /// The stream calls it on a **session change** and on a **capped clock
+    /// gap** ([`crate::ClockAdvance::capped`]), and on nothing else: a reset
+    /// already rebuilds the model, and an ordinary gap is what decay is for.
+    /// A model with no row-lagged state does nothing, which is every model
+    /// but the ones that keep one -- hence the default.
+    ///
+    /// It is **not** a reset: means, co-moments, coefficients and `n_eff`
+    /// are untouched. Only the lags go.
+    fn clear_lags(&mut self) {}
+
     fn state(&self) -> State;
     fn restore(s: &State) -> Result<Self, StateError>;
     fn n_targets(&self) -> usize;

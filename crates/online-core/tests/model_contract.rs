@@ -40,6 +40,10 @@ struct Report {
     after_gap: f64,
     /// State round-trips through msgpack and continues identically.
     roundtrips: bool,
+    /// `clear_lags` on a warm model left every byte of the state where it
+    /// was. True for every model that keeps nothing indexed by rows back,
+    /// which is the default; a model with a ring says so in `KEEPS_LAGS`.
+    lags_are_a_no_op: bool,
 }
 
 /// `n_eff_of` reads the model's own `n_eff()` accessor, which is inherent
@@ -97,6 +101,22 @@ fn probe_with<M: OnlineModel>(
     let before_gap = row(&mut restored, &mut s2, 10.0 * HALFLIFE).n_eff;
     let after_gap = row(&mut restored, &mut s2, 1.0).n_eff;
 
+    // Task 47: `clear_lags` drops what is indexed by rows back and *nothing
+    // else*. For a model with no such state that is the whole of it, so the
+    // bytes must not move; for one with a ring, only the ring may.
+    let before_clear = rmp_serde::to_vec(&m.state()).unwrap();
+    m.clear_lags();
+    let lags_are_a_no_op = rmp_serde::to_vec(&m.state()).unwrap() == before_clear;
+    // Asserted here rather than in `check`, so that the models with outputs
+    // of their own -- which assert individually instead of calling it -- are
+    // held to it too.
+    assert_eq!(
+        lags_are_a_no_op,
+        !KEEPS_LAGS.contains(&kind),
+        "{kind}: clear_lags moved state that is not a lag ring (or a model \
+         with a ring is missing from KEEPS_LAGS)"
+    );
+
     Report {
         kind,
         n_features: m.n_features(),
@@ -107,11 +127,19 @@ fn probe_with<M: OnlineModel>(
         before_gap,
         after_gap,
         roundtrips,
+        lags_are_a_no_op,
     }
 }
 
+/// The models that keep state indexed by *rows back*, and so may legally
+/// move under `clear_lags`. Everything else must not: `clear_lags` is not a
+/// reset, and a model that quietly threw away a mean here would look like a
+/// decay bug three chunks later (docs/PLAN.md task 47).
+const KEEPS_LAGS: &[&str] = &[];
+
 fn check(r: &Report, kind: &str, targets: usize, combos: usize) {
     assert_eq!(r.kind, kind, "state kind");
+    assert!(r.lags_are_a_no_op || KEEPS_LAGS.contains(&kind));
     assert_eq!(r.n_features, K, "{kind}: n_features");
     assert_eq!(r.n_targets, targets, "{kind}: n_targets");
     assert_eq!(

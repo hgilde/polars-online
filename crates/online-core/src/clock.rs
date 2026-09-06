@@ -105,6 +105,17 @@ pub struct ClockAdvance {
     /// from `reset` so a caller can do something gentler than starting over —
     /// see `session_shrink` (ENHANCEMENTS E6).
     pub session_changed: bool,
+    /// The raw delta asked for more clock than `max_dclock` allows, so the
+    /// delta handed to the models is the ceiling rather than the truth.
+    ///
+    /// Decay copes with that by construction — it only ever forgets more —
+    /// but anything **lagged by rows** does not: the row `ℓ` back is no
+    /// longer `ℓ` rows *ago* in any useful sense once a weekend has passed
+    /// between them. A caller that keeps such a ring clears it here
+    /// ([`crate::OnlineModel::clear_lags`], docs/PLAN.md task 47). Per row,
+    /// not per accumulated gap: it is the one row's jump that breaks
+    /// adjacency.
+    pub capped: bool,
 }
 
 /// Per-stream clock state. Serialized as part of a stream's saved state.
@@ -185,6 +196,7 @@ impl ClockState {
 
         let mut reset = false;
         let mut backwards = None;
+        let mut capped = false;
         let mut d = match raw {
             None => 0.0,
             Some(raw) => {
@@ -194,12 +206,23 @@ impl ClockState {
                             reset = true;
                             0.0
                         }
-                        Some(SessionGap::Gap(g)) => g.clamp(0.0, cfg.max_dclock),
-                        None => raw.clamp(0.0, cfg.max_dclock),
+                        Some(SessionGap::Gap(g)) => {
+                            capped = g > cfg.max_dclock;
+                            g.clamp(0.0, cfg.max_dclock)
+                        }
+                        None => {
+                            capped = raw > cfg.max_dclock;
+                            raw.clamp(0.0, cfg.max_dclock)
+                        }
                     }
                 } else if raw < 0.0 {
                     match cfg.on_clock_reset {
-                        OnClockReset::Max => cfg.max_dclock,
+                        OnClockReset::Max => {
+                            // The policy says "as far apart as they can be",
+                            // which is the ceiling: adjacency is gone.
+                            capped = true;
+                            cfg.max_dclock
+                        }
                         OnClockReset::Zero => 0.0,
                         OnClockReset::ResetState => {
                             reset = true;
@@ -211,6 +234,7 @@ impl ClockState {
                         }
                     }
                 } else {
+                    capped = raw > cfg.max_dclock;
                     raw.min(cfg.max_dclock)
                 }
             }
@@ -233,6 +257,7 @@ impl ClockState {
                 accepted: true,
                 backwards,
                 session_changed,
+                capped,
             }
         } else {
             self.pending += d;
@@ -242,6 +267,7 @@ impl ClockState {
                 accepted: false,
                 backwards,
                 session_changed,
+                capped,
             }
         }
     }
@@ -256,6 +282,85 @@ mod tests {
             max_dclock: max,
             ..Default::default()
         }
+    }
+
+    /// Task 47: `capped` says "this jump was bigger than the model is
+    /// allowed to see", which is the signal anything lagged by *rows* needs.
+    #[test]
+    fn capped_marks_the_rows_whose_gap_hit_the_ceiling() {
+        let cfg = cfg(60.0);
+        let mut c = ClockState::new();
+        // The first row has no delta at all.
+        assert!(!c.advance(&cfg, Some(0.0), None, true).capped);
+        assert!(!c.advance(&cfg, Some(10.0), None, true).capped);
+        // Exactly at the ceiling is not over it.
+        assert!(!c.advance(&cfg, Some(70.0), None, true).capped);
+        let over = c.advance(&cfg, Some(1e6), None, true);
+        assert!(over.capped && over.d_clock == 60.0);
+        // A skipped row's gap breaks adjacency too, so the flag is set
+        // whether or not the row is accepted.
+        assert!(c.advance(&cfg, Some(2e6), None, false).capped);
+        // An infinite ceiling never caps.
+        let mut c = ClockState::new();
+        let none = ClockCfg::default();
+        c.advance(&none, Some(0.0), None, true);
+        assert!(!c.advance(&none, Some(1e300), None, true).capped);
+        // A row-count clock cannot jump.
+        let mut c = ClockState::new();
+        c.advance(&cfg, None, None, true);
+        assert!(!c.advance(&cfg, None, None, true).capped);
+    }
+
+    #[test]
+    fn capped_follows_the_backwards_policy() {
+        // `max` says "as far apart as they can be", which is the ceiling:
+        // adjacency is gone, and the ring must go with it.
+        for (policy, want) in [
+            (OnClockReset::Max, true),
+            (OnClockReset::Zero, false),
+            (OnClockReset::ResetState, false),
+            (OnClockReset::Error, false),
+        ] {
+            let cfg = ClockCfg {
+                max_dclock: 60.0,
+                on_clock_reset: policy,
+                session_gap: None,
+            };
+            let mut c = ClockState::new();
+            c.advance(&cfg, Some(100.0), None, true);
+            assert_eq!(
+                c.advance(&cfg, Some(10.0), None, true).capped,
+                want,
+                "{policy:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_gap_caps_only_when_it_is_over_the_ceiling() {
+        let with_gap = |g: f64| ClockCfg {
+            max_dclock: 60.0,
+            on_clock_reset: OnClockReset::Max,
+            session_gap: Some(SessionGap::Gap(g)),
+        };
+        for (gap, want) in [(30.0, false), (600.0, true)] {
+            let cfg = with_gap(gap);
+            let mut c = ClockState::new();
+            c.advance(&cfg, Some(0.0), Some(1), true);
+            let adv = c.advance(&cfg, Some(1.0), Some(2), true);
+            assert!(adv.session_changed);
+            assert_eq!(adv.capped, want, "gap {gap}");
+        }
+        // A session reset rebuilds the model, so it caps nothing.
+        let cfg = ClockCfg {
+            max_dclock: 60.0,
+            on_clock_reset: OnClockReset::Max,
+            session_gap: Some(SessionGap::Reset),
+        };
+        let mut c = ClockState::new();
+        c.advance(&cfg, Some(0.0), Some(1), true);
+        let adv = c.advance(&cfg, Some(1e6), Some(2), true);
+        assert!(adv.reset && !adv.capped);
     }
 
     #[test]

@@ -643,7 +643,7 @@ note, not a task.
       bit; `loglik` equals a dense `numpy` Gaussian density; one block holding
       every feature reproduces the unblocked `u`; a zero-weight first row is
       guarded; the standard sweeps and the clock-rescaling test pass.
-- [ ] 47. **The ring-clearing signal**: `ClockAdvance::capped`,
+- [x] 47. **The ring-clearing signal**: `ClockAdvance::capped`,
       `RowPlan::capped`, `OnlineModel::clear_lags` (a default no-op), called
       by the stream on a session change or a capped gap (a reset already
       rebuilds the model). The rule every row-lagged state follows from here
@@ -2223,6 +2223,28 @@ departure, all measured.
   state, override `clear_lags` and add the three-event test"; the
   `model_contract.rs` probe gains a `clear_lags` call on every model,
   asserting `predict` unchanged for the models that do not override it.
+
+*Task 47 as built, 2026-09-06.* Three decisions worth keeping.
+
+- *`capped` is per row, not per accumulated gap.* Skipped rows fold their
+  time into the next accepted row's delta, and that total can exceed
+  `max_dclock` without any single jump doing so. It is the one row's jump
+  that breaks adjacency, so that is what the flag reports.
+- *`on_clock_reset = "max"` counts as capped.* The policy's answer to a
+  backwards clock is "as far apart as they can be", which is the ceiling:
+  the rows are not adjacent, and a ring built on them is wrong. `"zero"`,
+  `"reset_state"` and `"error"` do not set it — the first says the rows *are*
+  adjacent, the second rebuilds, the third refuses the chunk.
+- *`predict_chunk` never clears.* Scoring hands each row a copy of the model
+  in the state a learning stream would have reached; a copy that cleared its
+  lags would answer for a stream that had already learned the row. `predict`
+  moves nothing, the ring included.
+
+The call site is in `run_instance`, before the `accept` test (a skipped
+row's gap breaks adjacency too) and under the `else` of `plan.reset`. No
+model keeps a ring yet, so the behavioural test is task 48's; what ships here
+is the flag with its unit tests and the contract check that `clear_lags` is a
+no-op for every model that has declared no ring (`KEEPS_LAGS`, empty today).
 
 *Task 48 — lagged co-moments on `ew_cov` (E56).*
 

@@ -90,6 +90,12 @@ impl AnyModel {
         dispatch!(self, m => m.predict(x, d_clock))
     }
 
+    /// Drop the row-lagged state ([`OnlineModel::clear_lags`]); a no-op for
+    /// a model that keeps none.
+    pub fn clear_lags(&mut self) {
+        dispatch!(self, m => m.clear_lags())
+    }
+
     /// Cumulative count of jittered or failed factorizations (docs/PLAN.md §7).
     /// Models that do not factorize (rls, kalman, ftrl) report 0.
     pub fn solve_failures(&self) -> u64 {
@@ -1540,6 +1546,7 @@ impl Stream {
                 blend: !adv.reset && adv.session_changed,
                 session_changed: adv.session_changed,
                 backwards: below && !adv.session_changed,
+                capped: adv.capped,
                 accept,
                 want_coef,
                 emit: true,
@@ -1695,6 +1702,7 @@ impl Stream {
             blend: false,
             session_changed: false,
             backwards: false,
+            capped: false,
             accept: true,
             want_coef: false,
             emit: false,
@@ -1832,6 +1840,12 @@ impl Stream {
                 blend: false,
                 session_changed: false,
                 backwards: false,
+                // Scoring moves nothing, the lag ring included: the classes
+                // below give the row a *copy* of the model in the state a
+                // learning stream would have reached, and a copy that
+                // cleared its lags would answer for a stream that had
+                // learned the row. `predict` never mutates.
+                capped: false,
                 accept,
                 want_coef: false,
                 emit: true,
@@ -2100,6 +2114,10 @@ struct RowPlan {
     session_changed: bool,
     /// The clock fell below the previous row's within a session.
     backwards: bool,
+    /// The clock jumped further than `max_dclock`, so the delta the models
+    /// see is the ceiling. Anything lagged by *rows* is stale
+    /// (`OnlineModel::clear_lags`, docs/PLAN.md task 47).
+    capped: bool,
     accept: bool,
     want_coef: bool,
     /// Write this row's outputs at `ri`. False for a replayed row: it is a
@@ -2235,10 +2253,20 @@ fn run_instance(
     for plan in plans {
         if plan.reset {
             inst.reset();
-        } else if plan.blend {
-            // A gentler alternative to resetting: revert partway toward the
-            // long-run relationship (ENHANCEMENTS E6).
-            inst.model.get_mut().blend_toward_long_run();
+        } else {
+            if plan.blend {
+                // A gentler alternative to resetting: revert partway toward
+                // the long-run relationship (ENHANCEMENTS E6).
+                inst.model.get_mut().blend_toward_long_run();
+            }
+            // The rows behind this one are no longer adjacent to it: drop
+            // whatever is indexed by rows back, and nothing else
+            // (docs/PLAN.md task 47). Before the `accept` test, because a
+            // skipped row's gap breaks adjacency just as much; not under a
+            // reset, which rebuilds the model whole.
+            if plan.session_changed || plan.capped {
+                inst.model.get_mut().clear_lags();
+            }
         }
         if !plan.accept {
             continue;
