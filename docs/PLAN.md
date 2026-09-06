@@ -685,7 +685,7 @@ note, not a task.
       `truth_blocks`. Acceptance: block correlations recover the per-state
       matrices within the Fisher-z floor; the Epps curve of an asynchronous
       run rises with the sampling interval; a seed reproduces bytes.
-- [ ] 53. **`hmm`** (E60): the Hamilton filter over `K` Gaussian states with
+- [x] 53. **`hmm`** (E60): the Hamilton filter over `K` Gaussian states with
       responsibility-weighted `EwCov`/`EwDiag` updates, an EW transition
       estimate from the filtered joint, `kmeans` seeding, `exog_tvtp`.
       Acceptance: the reduction to `ew_class` (Π uniform, `learn = False`,
@@ -2790,6 +2790,28 @@ entries, distance 2.13 and rank 3. Four notes.
   first row leaving `p` and every state untouched; the clock-rescaling test;
   the sweeps; `MINIMAL["hmm"] = {"k": 2, "features": ["x0", "x1"],
   "precision_prior": 0.1}`.
+
+*Task 53 as built, 2026-09-06 (the model), 2026-09-06 (its experiment).*
+
+- *Π is learned from the filtered joint, not §10's ratio.* Corrected in the
+  plan block above before implementation; `EW mean of pₖ(t−1)·pₗ(t)/pₖ(t−1)`
+  is `pₗ(t)`, whose mean does not depend on `k`.
+- *A given `transition` seeds the Dirichlet prior, not the counts.* Seeding
+  the counts at `τ·K·Π₀` gives `(K·Π₀ + 1)/(2K)`, not `Π₀`, and would need
+  negative counts for a cell below `1/K`.
+- *A normalisation bug the recovery test found.* The filtered joint was
+  normalised about `logf[0]`; a state whose density is astronomically small
+  overflows that to NaN. It is normalised about the largest density now.
+- *The `docs/REGIMES.md` experiment this task's acceptance asked for landed
+  with task 56, and it is the finding that matters most about this model:
+  **the default seeding cannot find a regime that lives in the
+  covariance**. `warm_rows` seeds with k-means over the rows, two zero-mean
+  states differ in nothing k-means can see, and the filter splits them by
+  direction — 56 % accuracy, which is chance, against 98 % for the same
+  filter given `covs`. And a `precision_prior` of 1.0 on data of variance
+  1.0 halves every correlation and collapses it to 58 %. Both are in the
+  docstring, with the two ways out (pass `means`/`covs`, or give it a
+  feature in which the regime is a shift in location).
 
 *Task 54 — `corrchange` (E59).*
 
