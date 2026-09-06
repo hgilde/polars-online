@@ -143,8 +143,12 @@ pub struct BocpdCfg {
     pub robust_beta: f64,
     /// Drop runs below this normalised mass.
     pub truncate: f64,
-    /// Fold the tail of the run vector into the last kept run at this
-    /// length.
+    /// Cap the run vector here, folding every longer run into the last
+    /// kept one. That entry then holds their summed mass and its own
+    /// statistics -- the youngest of the folded group, since the vector
+    /// runs newest-first -- so `max_run` bounds the memory of a run as
+    /// well as the length of the vector, and `run_mode` saturates one
+    /// below it.
     pub max_run: usize,
     pub min_periods: f64,
 }
@@ -603,9 +607,12 @@ impl Bocpd {
             }
         }
         if self.runs.len() > self.cfg.max_run {
-            // Fold the tail into the last kept run: its mass is the sum, and
-            // its statistics are the longest run's, which is the closest
-            // thing to "a run at least this long".
+            // Fold the tail into the last kept run: it takes their summed
+            // mass and keeps its own statistics. The vector runs
+            // newest-first, so that is the *youngest* of the folded group,
+            // and the effect is that no run ever accumulates more than
+            // `max_run` rows -- a bounded memory, not only a bounded
+            // vector. `max_run_folds_the_tail` pins both halves.
             let cut = self.cfg.max_run;
             let tail = log_sum_exp(&self.logjoint[cut - 1..]);
             self.logjoint.truncate(cut);
@@ -975,6 +982,10 @@ mod tests {
         let p = m.run_posterior();
         assert!((p.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         assert!(p[19] > 0.5, "the tail holds the mass of every longer run");
+        // And the memory is bounded with the vector: after 200 rows no run
+        // has seen more than `max_run - 1` of them.
+        let longest = m.runs.iter().map(|r| r.len).fold(0.0, f64::max);
+        assert_eq!(longest, 19.0, "the fold keeps the youngest of the group");
     }
 
     /// The robust emission's whole purpose: a single 20-σ row restarts the

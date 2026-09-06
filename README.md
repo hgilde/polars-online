@@ -1738,6 +1738,12 @@ exactly the `r` rows that hypothesis says came before this one in the run —
 and slot 0 holds none, so its predictive is the prior's. That is what makes
 "a new run starts here" a hypothesis the data can vote on.
 
+The vector would grow by a slot every row. `truncate` drops the runs holding
+less than that share of the mass, and `max_run` folds every longer run into
+the last kept one, which takes their mass and keeps its own statistics — so
+it caps how much history any run holds, and `run_mode` saturates one below
+it.
+
 | output | meaning |
 |---|---|
 | `p_change` | `P(r_t ≤ 1)` given this row: the alarm |

@@ -1674,8 +1674,10 @@ def bocpd(
     its predictive is the prior's, which is what makes "a new run starts
     here" something the data can vote on. A row costs ``O(runs * d^2)``, and
     the run vector would grow by one every row, so runs below ``truncate``
-    of the mass are dropped and ``max_run`` folds the tail into the last
-    kept run.
+    of the mass are dropped and ``max_run`` folds every longer run into the
+    last kept one -- which takes their mass and keeps its own statistics, so
+    it bounds how much history *any* run holds, not only the length of the
+    vector, and ``run_mode`` saturates one below it.
 
     Outputs ``p_change``, ``run_mode`` and ``run_mean``, ``pred_<f>`` (the
     pre-row predictive mean), ``logscore`` (the row's log predictive
