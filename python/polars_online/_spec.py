@@ -1478,12 +1478,30 @@ def ew_class(
     classes: list[str],
     covariance: str | None = None,
     precision_prior: float,
+    window: float | None = None,
+    window_every: int | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Class-conditional Gaussian classifier -- quadratic discriminant
     analysis, linear discriminant analysis or Gaussian naive Bayes -- on the
     EW moments :func:`ew_cov` keeps, one set per class (docs/PLAN.md section
     11a, Task 27).
+
+    ``window`` puts a **hard cutoff** on the history each class's moments are
+    computed from, in clock units (docs/PLAN.md §13): a row older than it
+    contributes to no class. That is what lets a classifier follow class
+    means that move — over a long history the two regimes average together
+    and the labels go to chance.
+
+    **It costs, and only here.** Pure decay leaves a covariance unchanged,
+    which is why ``covariance="full"`` caches its Cholesky factor between
+    rows; a window's truncated covariance moves every row, because the decay
+    carried to the boundary does, so the cache is stale every row and the
+    shape pays one ``O(k**3)`` factorization *per class per row*.
+    ``"diagonal"`` and ``"shared"`` do not factorize per class and are
+    unaffected. Measured at 200k rows and 8 features, a window costs about
+    1.7x on ``"full"``; the other models in this family cost 2.2x to 2.8x
+    (``docs/PERFORMANCE.md`` §16).
 
     Not a regression: ``label`` names the column that holds the class of each
     row, and ``classes`` lists every value it can hold (``targets`` is not a
@@ -1547,6 +1565,8 @@ def ew_class(
         "classes": classes,
         "covariance": covariance,
         "precision_prior": precision_prior,
+        "window": window,
+        "window_every": window_every,
     }
     if "targets" in common:
         msg = f"spec {json.dumps(name)}: ew_class() takes `label`, not targets"

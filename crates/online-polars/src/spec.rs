@@ -712,6 +712,16 @@ pub enum ModelKind {
         /// Ridge on every class covariance, finite and `> 0`; it decays as
         /// the class accumulates data, like `ew_cov`'s `precision_prior`.
         precision_prior: f64,
+        /// Clock units of history each class's moments are computed from,
+        /// with a **hard** cutoff (docs/PLAN.md §13). `covariance = "full"`
+        /// pays one factorization per class per row under a window, because
+        /// the truncated covariance moves every row where a decayed one does
+        /// not; the other shapes are unaffected.
+        #[serde(default)]
+        window: Option<f64>,
+        /// Learned rows between the window's snapshots.
+        #[serde(default)]
+        window_every: Option<usize>,
     },
     /// Sequential test of a sign by betting (docs/ENHANCEMENTS.md E42;
     /// PLAN §11a, task 30): per target, two e-processes, one for "positive"
@@ -2105,7 +2115,19 @@ impl Spec {
                 classes,
                 covariance,
                 precision_prior,
+                window,
+                window_every,
             } => {
+                if let Some(w) = window {
+                    if !w.is_finite() || *w <= 0.0 {
+                        return Err(format!(
+                            "spec {:?}: window must be finite and > 0 (got {w})",
+                            self.name
+                        ));
+                    }
+                } else if window_every.is_some() {
+                    return Err(format!("spec {:?}: window_every needs `window`", self.name));
+                }
                 if self.targets.len() != 1 {
                     return Err(format!(
                         "spec {:?}: ew_class takes exactly one target, the label column (got {})",

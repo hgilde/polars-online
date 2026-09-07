@@ -676,6 +676,8 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             classes,
             covariance,
             precision_prior,
+            window,
+            window_every,
         } => {
             let cfg = EwClassCfg {
                 n_features: spec.k(),
@@ -687,6 +689,8 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     None => Covariance::Full,
                 },
                 precision_prior: *precision_prior,
+                window: *window,
+                window_every: *window_every,
             };
             Ok(AnyModel::EwClass(Box::new(EwClass::new(cfg)?)))
         }

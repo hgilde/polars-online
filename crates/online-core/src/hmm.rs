@@ -692,6 +692,8 @@ mod tests {
             min_periods: 0.0,
             covariance: Covariance::Full,
             precision_prior: 1e-3,
+            window: None,
+            window_every: None,
         })
         .unwrap();
         let rows = stream(200, 3, 1);

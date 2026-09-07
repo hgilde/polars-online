@@ -350,3 +350,37 @@ def test_a_windowed_screen_sees_the_relationship_the_full_history_cancels():
     assert windowed["corr"][0] < -0.9
     # The full history cancels the two regimes to nothing at all.
     assert abs(screen(None)["corr"][0]) < 0.1
+
+
+# --- and on the classifier ---------------------------------------------------
+
+
+def test_a_windowed_classifier_follows_a_swap_the_full_history_blurs():
+    """The class means swap halfway. A window follows them; the whole
+    history averages the two regimes and lands at chance."""
+    n, flip = 400, 250
+    rng = np.random.default_rng(7)
+    lab = np.where(rng.random(n) < 0.5, "a", "b")
+    sign = np.where(np.arange(n) < flip, 1.0, -1.0)
+    x0 = np.where(lab == "a", 2.0, -2.0) * sign + rng.standard_normal(n) * 0.3
+    df = pl.DataFrame({"t": np.arange(n).astype(float), "x0": x0, "c": lab})
+
+    def accuracy(window):
+        spec = po.spec.ew_class(
+            "m",
+            features=["x0"],
+            label="c",
+            classes=["a", "b"],
+            clock="t",
+            halflife=120.0,
+            max_dclock=1e12,
+            min_periods=2.0,
+            covariance="diagonal",
+            precision_prior=1e-3,
+            window=window,
+        )
+        out = po.ModelBank([spec]).fit_predict(df).unnest("m")
+        return (out["class"].tail(100) == df["c"].tail(100)).mean()
+
+    assert accuracy(60.0) > 0.95
+    assert accuracy(None) < 0.7, "the unwindowed classifier should be near chance"

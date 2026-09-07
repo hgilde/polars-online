@@ -26,7 +26,8 @@ with `cargo run --release -p online-core --example core_bench` (and
 Where to look for what: **§11** if memory is the question (which surface is
 O(data) and which is O(state), with the numbers), **§8** for what a row
 costs per model today, **§12** for chunk size and thread count, **§13** and
-**§15** for the wide-row and correlation families, **§5** for what was tried
+**§15** for the wide-row and correlation families, **§16** for what a
+`window` costs and what it does not, **§5** for what was tried
 and rejected. §1–§4 are the original 2026-08-30 baseline, plan and outcome,
 kept as the record. Section numbers are cited from the code and the README,
 so they stay where they are.
@@ -1555,3 +1556,62 @@ with the same shuffles rather than independent ones.
 spec without them — five more `k × k` outer products a row, and the ring of
 rows they need. The lag block is the whole cost of the Epps inversion in
 `docs/REGIMES.md` §6, and it is a fifth of a `mahal`.
+## 16. What a `window` costs (2026-09-07)
+
+Task 63 gave five models a hard cutoff (`docs/PLAN.md` §13). Two questions
+follow, and both are measured here rather than argued.
+
+### The windowless path is unchanged
+
+The concern with a feature like this is that everyone pays for it. They do
+not: when `window` is unset the added work is a single `Option` check per
+call site per row (`self.win.as_ref()?`), the `None` branch *borrows* the
+live accumulators rather than cloning them, and no accumulator arithmetic
+moves. Best of three runs of `cargo run --release -p online-core --example
+core_bench`, the same machine, against a build from before the feature
+(`7cbdaf7`, in a separate worktree and target directory):
+
+| case | before | after | ratio |
+|---|---:|---:|---:|
+| `ewridge` k=5 m=1 | 21,515,055 rows/s | 21,161,072 | 0.984 |
+| `ewridge` k=20 m=1 | 9,768,511 | 9,427,411 | 0.965 |
+| `ewridge` k=50 m=1 | 2,932,569 | 2,875,719 | 0.981 |
+| `ewridge` k=20 m=10 | 5,488,848 | 5,428,447 | 0.989 |
+| `ewridge` solve every row | 484,921 | 504,666 | **1.041** |
+| `ewridge` solve every 25 | 5,478,246 | 5,506,259 | 1.005 |
+
+The signs go both ways, from −3.5% to +4.1%, which is this benchmark's noise
+on an unquiesced machine rather than a cost. Nothing here changes complexity.
+
+### What the window itself costs
+
+200,000 rows, 8 features, one spec, `window = 500` against no window, best of
+three through `ModelBank.fit_predict`:
+
+| model | no window | `window=500` | ratio |
+|---|---:|---:|---:|
+| `ew_cov` (mean + corr) | 27.6 ms | 59.8 ms | 2.2x |
+| `ewridge` | 49.9 ms | 123.3 ms | 2.5x |
+| `lasso` (1 path point) | 55.4 ms | 137.5 ms | 2.5x |
+| `marginal` | 9.5 ms | 26.2 ms | 2.8x |
+| `ew_class` (`covariance="full"`) | 177.9 ms | 308.3 ms | 1.7x |
+
+The 2.2–2.8x is the shape of the mechanism: one snapshot pushed per learned
+row, and an `O(k²)` subtraction and re-centring at every read. It buys a
+guarantee an exponential weight cannot give at any halflife.
+
+**`ew_class` is the one with a structural penalty**, and its 1.7x understates
+it. Pure decay leaves a covariance unchanged — means and centred co-moments
+do not move under `lam` — which is exactly why the `full` shape caches its
+Cholesky factor between rows and only invalidates the class a row updated. A
+*truncated* covariance moves every row, because the decay carried to the
+boundary does, so every class's factor is stale every row: the shape pays one
+`O(k³)` factorization per class per row. It reads as only 1.7x because
+factorization already dominated its baseline (§13 measured the full-covariance
+`ew_class` at 1510 ms per 400k rows before that work). `covariance="diagonal"`
+and `"shared"` do not factorize per class and are unaffected.
+
+Memory is the other axis, and it is the one the feature genuinely changes:
+`O(rows in the window x state)`, where every other model here is `O(state)`.
+`window_every = m` divides that by `m` and shortens the effective window by at
+most one snapshot's spacing — never lengthens it.

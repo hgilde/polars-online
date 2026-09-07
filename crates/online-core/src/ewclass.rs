@@ -96,6 +96,24 @@ pub struct EwClassCfg {
     /// Ridge on every class covariance, finite and `> 0`; decays as the
     /// class accumulates data (see the [module docs](self)).
     pub precision_prior: f64,
+    /// Clock units of history each class's moments are computed from, with a
+    /// **hard** cutoff (docs/PLAN.md §13). Inside the window the weights are
+    /// still exponential.
+    ///
+    /// **This one costs.** Pure decay leaves a class's covariance unchanged,
+    /// which is what lets the `full` shape cache its factor between rows; a
+    /// window's truncated covariance moves every row, because the factor
+    /// `lam^(t-u)` does, so the cache is stale every row and the shape pays
+    /// one `O(k^3)` factorization per class per row. `"diagonal"` and
+    /// `"shared"` do not factorize per class and are unaffected.
+    ///
+    /// **Last, with `window_every`, and they must stay last**: the compact
+    /// msgpack encoding writes a struct as an array.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<f64>,
+    /// Learned rows between the window's snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_every: Option<usize>,
 }
 
 impl EwClassCfg {
@@ -180,6 +198,14 @@ impl Factors {
             *slot = Cached::Stale;
         }
     }
+
+    /// Every class's factor at once: what a `window` needs, since its
+    /// truncated covariance moves on every row.
+    fn invalidate_all(&mut self) {
+        for slot in self.0.iter_mut() {
+            *slot = Cached::Stale;
+        }
+    }
 }
 
 /// Class-conditional Gaussian classifier; see the [module docs](self).
@@ -193,9 +219,28 @@ pub struct EwClass {
     /// Rows whose covariance could not be factorized even with jitter; the
     /// row's outputs are null.
     pub solve_failures: u64,
+    /// The hard-cutoff window, when the spec asks for one. Last among the
+    /// serialized fields, for the reason `EwClassCfg::window` gives;
+    /// `factors` is skipped, so it does not count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    win: Option<Windowed>,
     /// The `full` shape's per-class factors between rows; see [`Factors`].
     #[serde(skip)]
     factors: Factors,
+}
+
+/// The window's clock and the snapshots it subtracts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Windowed {
+    clock: f64,
+    snaps: crate::Snapshots<ClassMoments>,
+}
+
+/// Every class's moments, before a row and decayed to it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct ClassMoments {
+    n_eff: f64,
+    classes: Vec<crate::Moments>,
 }
 
 impl EwClass {
@@ -204,11 +249,19 @@ impl EwClass {
         let classes = (0..cfg.n_classes)
             .map(|_| EwCov::with_precision_prior(cfg.n_features, cfg.precision_prior))
             .collect::<Result<Vec<_>, _>>()?;
+        let win = match cfg.window {
+            Some(w) => Some(Windowed {
+                clock: 0.0,
+                snaps: crate::Snapshots::new(w, cfg.window_every.unwrap_or(1))?,
+            }),
+            None => None,
+        };
         Ok(Self {
             cfg,
             classes,
             n_eff: 0.0,
             solve_failures: 0,
+            win,
             factors: Factors::default(),
         })
     }
@@ -223,8 +276,40 @@ impl EwClass {
     }
 
     /// EW weight of the rows labelled with each class, in label order.
+    /// Each class's accumulator with everything older than the `window`
+    /// subtracted off, or `None` when there is no window or nothing has aged
+    /// out of it yet (docs/PLAN.md §13). Computed once per scoring call: the
+    /// per-class subtraction is `O(k^2)` and the factorization that follows
+    /// is `O(k^3)`.
+    fn view(&self) -> Option<Vec<EwCov>> {
+        let win = self.win.as_ref()?;
+        let (u, old) = win.snaps.boundary()?;
+        if old.n_eff == 0.0 {
+            return None;
+        }
+        let f = self.cfg.decay.factor(win.clock - u);
+        let mut out = Vec::with_capacity(self.classes.len());
+        for (cov, old_c) in self.classes.iter().zip(&old.classes) {
+            match crate::truncated(cov, old_c, f) {
+                Some(t) => out.push(t),
+                // A class with nothing inside the window scores nothing
+                // rather than scoring on rows the window excludes.
+                None => {
+                    let mut empty = cov.clone();
+                    let k = self.cfg.n_features;
+                    empty.set_moments(&vec![0.0; k], &vec![0.0; k * k], 0.0, None);
+                    out.push(empty);
+                }
+            }
+        }
+        Some(out)
+    }
+
     pub fn class_weights(&self) -> Vec<f64> {
-        self.classes.iter().map(EwCov::n_eff).collect()
+        match self.view() {
+            Some(v) => v.iter().map(EwCov::n_eff).collect(),
+            None => self.classes.iter().map(EwCov::n_eff).collect(),
+        }
     }
 
     /// The accumulator of class `c`.
@@ -302,7 +387,13 @@ impl EwClass {
         if !valid || self.n_eff < self.cfg.min_periods {
             return nan();
         }
-        let weights = self.class_weights();
+        // Under a `window`, every class is scored on its truncated moments.
+        let view = self.view();
+        let classes: &[EwCov] = match view.as_ref() {
+            Some(v) => v,
+            None => &self.classes,
+        };
+        let weights: Vec<f64> = classes.iter().map(EwCov::n_eff).collect();
         let total: f64 = weights.iter().sum();
         if total <= 0.0 || total.is_nan() {
             return nan();
@@ -316,7 +407,7 @@ impl EwClass {
                     if weights[c] <= 0.0 {
                         continue;
                     }
-                    let cov = &self.classes[c];
+                    let cov = &classes[c];
                     for (d, (xi, mi)) in delta.iter_mut().zip(x.iter().zip(cov.means())) {
                         *d = xi - mi;
                     }
@@ -351,7 +442,7 @@ impl EwClass {
                 for &c in &seen {
                     let pi = weights[c] / total;
                     let ridge = self.ridge(c);
-                    for (mij, cij) in m.iter_mut().zip(self.classes[c].comoments()) {
+                    for (mij, cij) in m.iter_mut().zip(classes[c].comoments()) {
                         *mij += pi * cij;
                     }
                     for i in 0..k {
@@ -360,7 +451,7 @@ impl EwClass {
                 }
                 let mut deltas = vec![0.0; k * seen.len()];
                 for (j, &c) in seen.iter().enumerate() {
-                    for (i, (xi, mi)) in x.iter().zip(self.classes[c].means()).enumerate() {
+                    for (i, (xi, mi)) in x.iter().zip(classes[c].means()).enumerate() {
                         deltas[j * k + i] = xi - mi;
                     }
                 }
@@ -381,7 +472,7 @@ impl EwClass {
                     if weights[c] <= 0.0 {
                         continue;
                     }
-                    let cov = &self.classes[c];
+                    let cov = &classes[c];
                     let ridge = self.ridge(c);
                     let mut log_det = 0.0;
                     let mut q = 0.0;
@@ -431,6 +522,27 @@ impl OnlineModel for EwClass {
         }
         let learn = valid && weight > 0.0 && weight.is_finite();
         let label = if learn { self.label(y) } else { None };
+        // The snapshot is every class's moments as they stand *before* this
+        // row, decayed to this row's clock, so subtracting it later retains
+        // this row and everything after.
+        if let Some(win) = self.win.as_mut() {
+            let t = win.clock + d_clock;
+            let snap = ClassMoments {
+                n_eff: self.n_eff * lam,
+                classes: self
+                    .classes
+                    .iter()
+                    .map(|c| crate::Moments::of(c, lam))
+                    .collect(),
+            };
+            win.snaps.offer(t, || snap);
+            win.clock = t;
+            win.snaps.trim(t);
+            // A window's truncated covariance moves every row, because the
+            // decay carried to the boundary does, so no cached factor
+            // survives a row. This is the cost the `window` doc states.
+            self.factors.invalidate_all();
+        }
         for (c, cov) in self.classes.iter_mut().enumerate() {
             if label == Some(c) {
                 cov.update(x, lam, weight);
@@ -507,6 +619,8 @@ mod tests {
             min_periods: 0.0,
             covariance,
             precision_prior: 0.1,
+            window: None,
+            window_every: None,
         }
     }
 

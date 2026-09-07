@@ -631,6 +631,8 @@ fn ew_class_cfg() -> EwClassCfg {
         min_periods: 3.0,
         covariance: Covariance::Full,
         precision_prior: 0.1,
+        window: None,
+        window_every: None,
     }
 }
 

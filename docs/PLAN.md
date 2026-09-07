@@ -783,7 +783,7 @@ note, not a task.
       built and an object that exists, holds the table to the registry, and
       holds every model section to its `*API:*` and `*Rust:*` lines — all four
       checked against a deliberately broken README.
-- [ ] 63. **`window`: an EW accumulator with a hard cutoff.** A halflife `h`
+- [x] 63. **`window`: an EW accumulator with a hard cutoff.** A halflife `h`
       with `window = 3h` must guarantee that nothing older than `3h` of clock
       contributes at all — not "contributes 12.5%". Designed in §13 below;
       the colliding names are renamed first (task 63a), the mechanism and
@@ -811,7 +811,7 @@ note, not a task.
         `online-core`, the truncated view, `window` and `window_every` on the
         `ew_cov` spec, refused by name everywhere else. Acceptance: the
         oracle in §13.4.
-  - [~] 63c. **The Gram models.** `ewridge` done 2026-09-07: the Gram, the
+  - [x] 63c. **The Gram models.** `ewridge` done 2026-09-07: the Gram, the
         per-target cross-moments and the residual variance are truncated by
         the same identity, and the solve runs on the result, so the fit
         provably contains no row older than the window. `n_eff`, `sigma` and
@@ -839,7 +839,15 @@ note, not a task.
         had to be added to the enum and four `matches!` patterns updated; and
         every part of the window was written except the ring maintenance in
         `step`, which left it inert until the oracle failed.
-        `ew_class` remains.
+        `ew_class` done the same day, and it is the one that costs: pure
+        decay leaves a covariance unchanged, which is why `covariance="full"`
+        caches its factor between rows, and a *truncated* covariance moves
+        every row — so the cache dies every row and the shape pays one
+        `O(k^3)` factorization per class per row. Stated in the keyword's own
+        docstring and measured in `docs/PERFORMANCE.md` §16, which also shows
+        the windowless path unchanged (±4%, both signs, against a build from
+        before the feature). All five models of §13.2's first row now carry
+        `window`.
         *Two things the tests caught*: the compact msgpack encoding writes a
         struct as an **array**, so a `skip_serializing_if` field must be
         **last** or it shifts every field after it — the state round-trip

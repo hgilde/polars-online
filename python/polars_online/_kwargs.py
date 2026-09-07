@@ -226,6 +226,8 @@ class EwClassKwargs(ExprKwargs, total=False):
     classes: Required[list[str]]
     covariance: str | None
     precision_prior: Required[float]
+    window: float | None
+    window_every: int | None
 
 
 class SeqTestKwargs(ExprKwargs, total=False):

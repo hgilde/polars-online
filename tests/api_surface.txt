@@ -104,6 +104,8 @@
     classes
     covariance = None
     precision_prior
+    window = None
+    window_every = None
     common
   ew_cov:
     name

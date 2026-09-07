@@ -67,6 +67,14 @@ carries breaking changes.
   opposite sign cancel over a long history, so an unwindowed screen can
   report no relationship where there is a strong one — 0.0006 against −0.99
   on the same stream.
+- **`window` on `ew_class`** (task 63c), which completes the set. Each class's
+  moments get the cutoff, so a classifier can follow class means that move:
+  on a stream where they swap halfway, the windowed labels are right 100% of
+  the time over the last hundred rows and the unwindowed ones are at chance.
+  It is also the one that costs — `covariance="full"` pays a factorization
+  per class per row, because a truncated covariance moves every row where a
+  decayed one does not. `docs/PERFORMANCE.md` §16 measures every model's
+  window, and measures that the windowless path is unchanged.
 
 ### Changed
 
