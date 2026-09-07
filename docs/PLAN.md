@@ -255,7 +255,7 @@ hit rate over configurable clock windows; one `group_by` to compare specs. Used 
   time-varying β, irregular clock, session breaks, nulls, and a volume clock that resets per
   session — so oracle tests know the truth.
 - `public_intraday()`: downloads a small free intraday dataset (choose one with a stable URL;
-  crypto minute bars are the pragmatic option), cached under `.cache/`, `pytest.skip` when offline.
+  crypto minute rows are the pragmatic option), cached under `.cache/`, `pytest.skip` when offline.
 
 Test classes:
 1. **Oracle**: on synthetic data, EW-ridge / RLS / Kalman / lasso match `tests/reference.py`
@@ -395,7 +395,7 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       hard geometries (§7.8) being online costs at most 0.04 ARI against batch
       Lloyd's; the family costs everything — every k-means and GMM scores 0.000
       on concentric rings, where `micro` (DenStream-style micro-clusters with a
-      linkage macro step) reaches 0.998 / 0.999 / 0.998 on moons, rings and bars
+      linkage macro step) reaches 0.998 / 0.999 / 0.998 on moons, rings and rows
       against DBSCAN's 1.000, with a measured rule for the threshold that decides
       it. `micro` is the design worth the build decision; §0 of the doc and
       ENHANCEMENTS §4 give the seven reasons and the structural limits. Merged to
@@ -695,7 +695,7 @@ note, not a task.
       `u`; every function held to a longhand check.
 - [x] 52. **`po.sim.regimes`** (E64): the seeded regime simulator, `numpy`
       only, with asynchronous observation, noise, AR(1), a volatility state,
-      a diurnal factor and a volume process; returns `bars`, `truth_rows`,
+      a cycle_profile factor and a volume process; returns `rows`, `truth_rows`,
       `truth_blocks`. Acceptance: block correlations recover the per-state
       matrices within the Fisher-z floor; the Epps curve of an asynchronous
       run rises with the sampling interval; a seed reproduces bytes.
@@ -2596,7 +2596,7 @@ no-op for every model that has declared no ring (`KEEPS_LAGS`, empty today).
   `rcorr`) — nulls, never a panic.
 - *Tests.* `plain` to the bit against `ew_cov(lam=1)`; the kernel and the
   MRC against longhand `numpy` on the same synchronised returns (from task
-  49 over task 52's asynchronous bars) to `1e-10` relative; the jittered
+  49 over task 52's asynchronous rows) to `1e-10` relative; the jittered
   end formed from state alone (a test that feeds the block one row at a
   time and checks the close equals the offline computation on the full
   block — this is the acceptance for "nothing reads a future row"); the
@@ -2784,13 +2784,13 @@ entries, distance 2.13 and rank 3. Four notes.
 *Task 52 — `po.sim.regimes` (E64).*
 
 - *Shape.* `python/polars_online/sim.py`, numpy only, `np.random.default_
-  rng(seed)` for every draw, returning `{"bars", "truth_rows",
+  rng(seed)` for every draw, returning `{"rows", "truth_rows",
   "truth_blocks"}` as `pl.DataFrame`s. Everything after `m` is keyword-only
   (§10's positional list puts required names after defaulted ones):
-  `regimes(m, *, states, transition, n_blocks, bars_per_block,
-  durations=None, design="step", smooth_bars=0, phi=0.0, vol_state=0.0,
-  async_rates=None, noise=0.0, diurnal=None, session_bars=None,
-  volume=None, seed=0)`.
+  `regimes(m, *, states, transition, n_blocks, rows_per_block,
+  durations=None, design="step", smooth_rows=0, phi=0.0, scale_state=0.0,
+  async_rates=None, noise=0.0, cycle_profile=None, cycle_rows=None,
+  activity=None, seed=0)`.
 - *The chain.* `states` is a list of `K` correlation matrices (`m × m`,
   checked for a unit diagonal and PSD) or `K` floats, each an
   equicorrelation; `transition` is `K × K` row-stochastic and drives one
@@ -2798,20 +2798,20 @@ entries, distance 2.13 and rank 3. Four notes.
   deterministic and uses `transition` with its diagonal removed to pick the
   next state — the recurring-state design. `design="step"` switches at the
   block boundary; `design="smooth"` interpolates the correlation matrix
-  linearly over `smooth_bars` bars around it (a convex combination of two
+  linearly over `smooth_rows` rows around it (a convex combination of two
   correlation matrices is one).
 - *The series.* Latent returns `εₜ ~ N(0, Rₜ)` by Cholesky per distinct
   `Rₜ` (cached — one factorisation per state under `"step"`), `yᵢₜ = φᵢ
   yᵢ,ₜ₋₁ + εᵢₜ` with `phi` a scalar or per-series list (the documented
   truth is the innovation correlation; the AR filter moves the return
   correlation of unequal-`φ` pairs, which is what task 51's `fisher_se`
-  inflation is for), scaled by `exp(vol_state · sₜ)` — a scalar `vol_state`
+  inflation is for), scaled by `exp(scale_state · sₜ)` — a scalar `scale_state`
   makes volatility rise with the state index, a list gives it per state.
-  `diurnal`, a list of `session_bars` multipliers in `(0, 1]`, scales the
-  off-diagonal of `Rₜ` at bar `t mod session_bars` (a mix toward the
-  identity, so PSD is kept); `session_bars` defaults to `bars_per_block`;
-  `session = t // session_bars`. `volume`, `(mean, shape)`, draws a Gamma
-  volume per bar with the mean scaled by the same `exp(vol_state · sₜ)`;
+  `cycle_profile`, a list of `cycle_rows` multipliers in `(0, 1]`, scales the
+  off-diagonal of `Rₜ` at bar `t mod cycle_rows` (a mix toward the
+  identity, so PSD is kept); `cycle_rows` defaults to `rows_per_block`;
+  `session = t // cycle_rows`. `volume`, `(mean, shape)`, draws a Gamma
+  volume per bar with the mean scaled by the same `exp(scale_state · sₜ)`;
   `clock` is cumulative volume when `volume` is given and `t` otherwise.
 - *Observation.* `xᵢ` are **levels** — the cumulative sum of the latent
   returns plus `noise · N(0, 1)` i.i.d. per observed bar (microstructure
@@ -2822,20 +2822,20 @@ entries, distance 2.13 and rank 3. Four notes.
   sampling is the caller's `forward_fill`, so both the sparse and the
   filled forms are one line away, and `unpivot` on the non-null rows is
   `refresh_time`'s long input.
-- *Frames.* `bars`: `instrument` (a constant string `"sim"`, the join key a
-  multi-instrument caller would vary), `t`, `clock`, `session`, `x_1 … x_m`,
-  `volume` (null when `volume=None`). `truth_rows`: `t`, `block`, `state`,
-  `vol_mult`, `mix` (the `"smooth"` fraction, `0` otherwise). `truth_blocks`:
-  `block`, `state`, `n_bars`, `corr` (vech of the block's mean true
+- *Frames.* `rows`: `entity` (a constant string `"sim"`, the join key a
+  multi-entity caller would vary), `t`, `clock`, `session`, `x_1 … x_m`,
+  `volume` (null when `activity=None`). `truth_rows`: `t`, `block`, `state`,
+  `scale_mult`, `mix` (the `"smooth"` fraction, `0` otherwise). `truth_blocks`:
+  `block`, `state`, `n_rows`, `corr` (vech of the block's mean true
   correlation — the state's matrix under `"step"`).
 - *Tests.* Per-state matrices recovered from the block sample correlations,
   pooled over the blocks in each state, within `3·SE` of the Fisher-z noise
   floor; a `phi` recovered from the lag-1 autocorrelation; the Epps curve of
   an asynchronous simulation — the sample correlation of previous-tick
-  returns at sampling intervals `1, 5, 20, 100` bars — increasing toward the
+  returns at sampling intervals `1, 5, 20, 100` rows — increasing toward the
   truth; `noise > 0` giving a negative lag-1 return autocorrelation; every
   `Rₜ` under `"smooth"` PSD; `session` and `clock` consistent with
-  `session_bars` and `volume`; two calls with the same seed byte-identical
+  `cycle_rows` and `volume`; two calls with the same seed byte-identical
   (`DataFrame.equals` on all three frames); schema and lengths fixed.
 
 *Task 52 as built, 2026-09-06.* The design stood. Three notes.
@@ -2849,10 +2849,10 @@ entries, distance 2.13 and rank 3. Four notes.
   models and what makes the observed return an MA(1) with a negative first
   autocorrelation -- measured at `−0.2` or below at `noise = 2` against
   `|ρ₁| < 0.03` clean, which is the microstructure effect `rcov` undoes.
-- *The Cholesky factor is cached by `(state, previous state, diurnal bar,
-  mix)`.* Under `"step"` with no diurnal that is one factorisation per
+- *The Cholesky factor is cached by `(state, previous state, cycle_profile bar,
+  mix)`.* Under `"step"` with no cycle_profile that is one factorisation per
   state, which is what the row asked for; under `"smooth"` the mix is part
-  of the key, so a ramp of `smooth_bars` costs that many factorisations and
+  of the key, so a ramp of `smooth_rows` costs that many factorisations and
   no more.
 
 *Task 53 — `hmm` (E60).*
@@ -3763,7 +3763,7 @@ implicitness that caused the problem.
 
 Full numbers in `docs/VALIDATION.md` (regenerate with
 `uv run python scripts/validate.py > docs/VALIDATION.md`). Data: 10 days of
-BTCUSDT 1-minute bars (14,336 rows) from Binance's public dump, features = past
+BTCUSDT 1-minute rows (14,336 rows) from Binance's public dump, features = past
 returns / volume / trade-count z-scores, targets = strictly future returns.
 
 - **`solve_every` = halflife/50 is confirmed as the default.** Sweeping
@@ -4063,7 +4063,7 @@ bit-exact; seeding is the largest source of variance and the right rule depends
 on the outliers expected; a split–merge move on a slower clock than the centre
 update is what makes fixed-`k` k-means survive drift. On hard geometries the
 streaming costs nothing and the family costs everything: `micro` reaches
-DBSCAN's ceiling on moons, rings and bars (0.998 / 0.999 / 0.998 against 1.000)
+DBSCAN's ceiling on moons, rings and rows (0.998 / 0.999 / 0.998 against 1.000)
 where every k-means and GMM scores 0.000 on the rings, with the threshold rule
 measured and derivable at the checkpoint — it is the design worth the build
 decision, for the seven reasons in §0 and ENHANCEMENTS §4. §8 settles the spec
@@ -4081,7 +4081,7 @@ online contract (E36–E42).
   Answered: `min_periods` accepts a list, one entry per target (ENHANCEMENTS E7).
 - ~~Public intraday dataset choice for tests (stable URL, permissive licence).~~
   Answered and in use: Binance's public daily kline dump
-  (`data.binance.vision`, BTCUSDT 1-minute bars) — stable per-day URLs, no
+  (`data.binance.vision`, BTCUSDT 1-minute rows) — stable per-day URLs, no
   auth. `tests/data.py` downloads it on demand, caches under the gitignored
   `.cache/`, and skips when offline, so hard rule 1 holds. It backs both the
   reference comparisons and the defaults measured in `docs/VALIDATION.md`

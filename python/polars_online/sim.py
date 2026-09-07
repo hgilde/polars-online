@@ -3,22 +3,22 @@
 The detectors in this library — `deco`, `hmm`, `corrchange`, `bocpd` — are
 claims about streams whose correlation structure changes. A claim like that
 can only be measured against data whose truth is known, and the truth has to
-include the awkward parts: series that tick at their own times, prices
-observed with microstructure noise, autocorrelated returns, a volatility
-that moves with the regime, an intraday pattern, and a volume clock.
+include the awkward parts: series that report at their own times, levels
+observed with additive noise, autocorrelated increments, a scale
+that moves with the regime, a periodic pattern, and an activity clock.
 
 :func:`regimes` produces all of it from one seed, and hands back the truth
 beside the data:
 
-``bars``
+``rows``
     what a consumer sees: **levels** ``x_1 .. x_m`` (so
     :func:`polars_online.prep.refresh_time` and then ``.diff()`` apply),
-    a clock, a session and an optional volume.
+    a clock, a cycle index and an optional activity count.
 ``truth_rows``
-    per bar: the block, the state, the volatility multiplier and the
+    per row: the block, the state, the scale multiplier and the
     interpolation fraction.
 ``truth_blocks``
-    per block: the state, the bar count, and the block's true correlation
+    per block: the state, the row count, and the block's true correlation
     matrix as ``vech``.
 
 Everything is drawn from ``numpy.random.default_rng(seed)`` in one order, so
@@ -116,12 +116,12 @@ def _chain(
     # row with its own entry removed, so a state never "transitions" to
     # itself and the durations mean what they say.
     off = p - np.diag(np.diag(p))
-    rows = off.sum(axis=1)
+    row_sums = off.sum(axis=1)
     seq: list[int] = []
     s = 0
     while len(seq) < n_blocks:
         seq.extend([s] * d[s])
-        s = int(rng.choice(k, p=off[s] / rows[s])) if rows[s] > 0 else s
+        s = int(rng.choice(k, p=off[s] / row_sums[s])) if row_sums[s] > 0 else s
     return seq[:n_blocks]
 
 
@@ -131,17 +131,17 @@ def regimes(
     states: Sequence[Any],
     transition: Any,
     n_blocks: int,
-    bars_per_block: int,
+    rows_per_block: int,
     durations: Sequence[int] | None = None,
     design: str = "step",
-    smooth_bars: int = 0,
+    smooth_rows: int = 0,
     phi: float | Sequence[float] = 0.0,
-    vol_state: float | Sequence[float] = 0.0,
+    scale_state: float | Sequence[float] = 0.0,
     async_rates: Sequence[float] | None = None,
     noise: float = 0.0,
-    diurnal: Sequence[float] | None = None,
-    session_bars: int | None = None,
-    volume: tuple[float, float] | None = None,
+    cycle_profile: Sequence[float] | None = None,
+    cycle_rows: int | None = None,
+    activity: tuple[float, float] | None = None,
     seed: int = 0,
 ) -> dict[str, pl.DataFrame]:
     """A simulated stream of ``m`` series whose correlation changes by regime.
@@ -149,45 +149,45 @@ def regimes(
     ``states`` is a list of ``K`` correlation matrices (``m x m``, unit
     diagonal, PSD) or ``K`` floats, each an equicorrelation. ``transition``
     is the ``K x K`` row-stochastic matrix that drives one state per block,
-    and there are ``n_blocks`` blocks of ``bars_per_block`` bars.
+    and there are ``n_blocks`` blocks of ``rows_per_block`` rows.
     ``durations`` (one positive block count per state) makes the sojourn
     deterministic instead and draws the *next* state from ``transition``
     with its diagonal removed — the recurring-state design, where each state
     lasts exactly as long as it says.
 
     ``design="step"`` switches at the block boundary. ``design="smooth"``
-    interpolates the correlation matrix linearly over ``smooth_bars`` bars
+    interpolates the correlation matrix linearly over ``smooth_rows`` rows
     around it; a convex combination of two correlation matrices is one, so
     every matrix along the way is valid.
 
     The latent returns are ``eps_t ~ N(0, R_t)``, filtered to
-    ``y_it = phi_i y_i,t-1 + eps_it`` and scaled by ``exp(vol_state * s_t)``.
+    ``y_it = phi_i y_i,t-1 + eps_it`` and scaled by ``exp(scale_state * s_t)``.
     **The documented truth is the innovation correlation**: an AR filter
     moves the *return* correlation of a pair with unequal ``phi``, which is
     exactly what :func:`polars_online.corr.fisher_se`'s inflation is about.
-    ``vol_state`` as a scalar makes volatility rise with the state index; as
+    ``scale_state`` as a scalar makes the noise scale rise with the state index; as
     a list it gives one multiplier exponent per state.
 
-    ``diurnal`` is ``session_bars`` multipliers in ``(0, 1]`` applied to the
-    *off-diagonal* of ``R_t`` at bar ``t mod session_bars`` — a mix towards
-    the identity, so the matrix stays PSD. ``session_bars`` defaults to
-    ``bars_per_block``, and ``session = t // session_bars``.
+    ``cycle_profile`` is ``cycle_rows`` multipliers in ``(0, 1]`` applied to the
+    *off-diagonal* of ``R_t`` at row ``t mod cycle_rows`` — a mix towards
+    the identity, so the matrix stays PSD. ``cycle_rows`` defaults to
+    ``rows_per_block``, and ``session = t // cycle_rows``.
 
-    ``volume`` is ``(mean, shape)`` for a Gamma volume per bar, with the
-    mean scaled by the same volatility multiplier; ``clock`` is then the
-    cumulative volume, and the bar index otherwise.
+    ``activity`` is ``(mean, shape)`` for a Gamma count per row, with the
+    mean scaled by the same scale multiplier; ``clock`` is then the
+    cumulative activity, and the row index otherwise.
 
     ``x_1 .. x_m`` are **levels**: the cumulative sum of the latent returns
-    plus ``noise * N(0, 1)`` per observed bar. Noise on the *level* is what
+    plus ``noise * N(0, 1)`` per observed row. Noise on the *level* is what
     the literature models, and it makes the observed return an MA(1) with a
     negative first autocorrelation — the microstructure effect `rcov`
-    exists to undo. With ``async_rates`` (expected ticks per bar, per
-    series) a bar where series ``i`` drew no tick carries ``null`` for
-    ``x_i``: previous-tick sampling is one ``forward_fill`` away, and
+    exists to undo. With ``async_rates`` (expected observations per row, per
+    series) a row where series ``i`` reported nothing carries ``null`` for
+    ``x_i``: last-observation sampling is one ``forward_fill`` away, and
     ``unpivot`` over the non-null rows is
     :func:`polars_online.prep.refresh_time`'s long input.
 
-    Returns ``{"bars", "truth_rows", "truth_blocks"}``. Two calls with the
+    Returns ``{"rows", "truth_rows", "truth_blocks"}``. Two calls with the
     same ``seed`` give byte-identical frames.
     """
     np = _np()
@@ -197,23 +197,23 @@ def regimes(
     if design not in ("step", "smooth"):
         msg = f'sim.regimes: design must be "step" or "smooth", got {design!r}'
         raise ValueError(msg)
-    if n_blocks < 1 or bars_per_block < 1:
-        msg = "sim.regimes: n_blocks and bars_per_block must be >= 1"
+    if n_blocks < 1 or rows_per_block < 1:
+        msg = "sim.regimes: n_blocks and rows_per_block must be >= 1"
         raise ValueError(msg)
     rng = np.random.default_rng(seed)
     mats = _states(np, states, m)
     k = len(mats)
     chain = _chain(np, rng, transition, n_blocks, k, durations)
-    n = n_blocks * bars_per_block
-    sess_bars = session_bars if session_bars is not None else bars_per_block
-    if sess_bars < 1:
-        msg = "sim.regimes: session_bars must be >= 1"
+    n = n_blocks * rows_per_block
+    cycle_len = cycle_rows if cycle_rows is not None else rows_per_block
+    if cycle_len < 1:
+        msg = "sim.regimes: cycle_rows must be >= 1"
         raise ValueError(msg)
-    if diurnal is not None and len(diurnal) != sess_bars:
-        msg = f"sim.regimes: diurnal needs one multiplier per session bar ({sess_bars})"
+    if cycle_profile is not None and len(cycle_profile) != cycle_len:
+        msg = f"sim.regimes: cycle_profile needs one multiplier per cycle row ({cycle_len})"
         raise ValueError(msg)
-    if diurnal is not None and not all(0.0 < d <= 1.0 for d in diurnal):
-        msg = "sim.regimes: diurnal multipliers must be in (0, 1]"
+    if cycle_profile is not None and not all(0.0 < d <= 1.0 for d in cycle_profile):
+        msg = "sim.regimes: cycle_profile multipliers must be in (0, 1]"
         raise ValueError(msg)
 
     phis = np.asarray(phi, dtype=float)
@@ -225,34 +225,34 @@ def regimes(
     if (np.abs(phis) >= 1.0).any():
         msg = "sim.regimes: |phi| must be < 1 for a stationary series"
         raise ValueError(msg)
-    vol_exp = np.asarray(vol_state, dtype=float)
+    vol_exp = np.asarray(scale_state, dtype=float)
     if vol_exp.ndim == 0:
         vol_exp = vol_exp * np.arange(k, dtype=float)
     elif vol_exp.shape != (k,):
-        msg = f"sim.regimes: vol_state must be a scalar or {k} values"
+        msg = f"sim.regimes: scale_state must be a scalar or {k} values"
         raise ValueError(msg)
 
-    block_of = np.arange(n) // bars_per_block
+    block_of = np.arange(n) // rows_per_block
     state_of = np.array([chain[b] for b in block_of])
     # The interpolation fraction: 0 away from a boundary, ramping to 1
-    # across `smooth_bars` centred on it.
+    # across `smooth_rows` centred on it.
     mix = np.zeros(n)
-    if design == "smooth" and smooth_bars > 0:
-        half = smooth_bars / 2.0
+    if design == "smooth" and smooth_rows > 0:
+        half = smooth_rows / 2.0
         for b in range(1, n_blocks):
-            edge = b * bars_per_block
+            edge = b * rows_per_block
             for t in range(max(0, int(edge - half)), min(n, int(edge + half) + 1)):
-                mix[t] = np.clip(0.5 + (t - edge) / smooth_bars, 0.0, 1.0)
+                mix[t] = np.clip(0.5 + (t - edge) / smooth_rows, 0.0, 1.0)
 
     chol: dict[tuple[int, int, int], Any] = {}
 
     def factor(t: int) -> Any:
         """The Cholesky factor of `R_t`, cached per (state, previous state,
-        diurnal bar) — one factorisation per state under `"step"`."""
+        cycle_profile row) — one factorisation per state under `"step"`."""
         s = int(state_of[t])
         prev = int(state_of[max(0, t - 1)]) if mix[t] > 0.0 else s
-        d = t % sess_bars if diurnal is not None else 0
-        key = (s, prev, d if diurnal is not None else 0)
+        d = t % cycle_len if cycle_profile is not None else 0
+        key = (s, prev, d if cycle_profile is not None else 0)
         if mix[t] > 0.0:
             key = (s, prev, d, round(mix[t], 12))  # type: ignore[assignment]
         if key in chol:
@@ -260,8 +260,8 @@ def regimes(
         r = mats[s]
         if mix[t] > 0.0:
             r = (1.0 - mix[t]) * mats[prev] + mix[t] * mats[s]
-        if diurnal is not None:
-            scale = float(diurnal[d])
+        if cycle_profile is not None:
+            scale = float(cycle_profile[d])
             r = scale * r + (1.0 - scale) * np.eye(m)
         # A correlation matrix on the boundary of the cone needs a nudge for
         # Cholesky; the jitter is at rounding scale.
@@ -286,36 +286,36 @@ def regimes(
     if noise > 0.0:
         levels = levels + noise * rng.standard_normal((n, m))
 
-    vol_col = None
+    activity_col = None
     clock = np.arange(n, dtype=float)
-    if volume is not None:
-        mean, shape = volume
+    if activity is not None:
+        mean, shape = activity
         if mean <= 0.0 or shape <= 0.0:
-            msg = "sim.regimes: volume is (mean, shape), both > 0"
+            msg = "sim.regimes: activity is (mean, shape), both > 0"
             raise ValueError(msg)
-        vol_col = rng.gamma(shape, scale=mean / shape, size=n) * vol
-        clock = np.cumsum(vol_col)
+        activity_col = rng.gamma(shape, scale=mean / shape, size=n) * vol
+        clock = np.cumsum(activity_col)
 
     observed = levels
     if async_rates is not None:
         rates = np.asarray(async_rates, dtype=float)
         if rates.shape != (m,):
-            msg = f"sim.regimes: async_rates needs one expected tick rate per series ({m})"
+            msg = f"sim.regimes: async_rates needs one expected report rate per series ({m})"
             raise ValueError(msg)
         if (rates <= 0).any():
             msg = "sim.regimes: async_rates must be > 0"
             raise ValueError(msg)
-        ticks = rng.poisson(rates, size=(n, m))
-        observed = np.where(ticks > 0, levels, np.nan)
+        reports = rng.poisson(rates, size=(n, m))
+        observed = np.where(reports > 0, levels, np.nan)
 
-    bars = pl.DataFrame(
+    rows = pl.DataFrame(
         {
-            "instrument": ["sim"] * n,
+            "entity": ["sim"] * n,
             "t": np.arange(n, dtype=np.int64),
             "clock": clock,
-            "session": (np.arange(n) // sess_bars).astype(np.int64),
+            "session": (np.arange(n) // cycle_len).astype(np.int64),
             **{f"x_{i + 1}": pl.Series(observed[:, i]).fill_nan(None) for i in range(m)},
-            "volume": vol_col if vol_col is not None else [None] * n,
+            "activity": activity_col if activity_col is not None else [None] * n,
         }
     )
     truth_rows = pl.DataFrame(
@@ -323,14 +323,14 @@ def regimes(
             "t": np.arange(n, dtype=np.int64),
             "block": block_of.astype(np.int64),
             "state": state_of.astype(np.int64),
-            "vol_mult": vol,
+            "scale_mult": vol,
             "mix": mix,
         }
     )
     iu = np.triu_indices(m)
     blocks = []
     for b in range(n_blocks):
-        rows = np.flatnonzero(block_of == b)
+        idx = np.flatnonzero(block_of == b)
         r = np.mean(
             [
                 (
@@ -339,7 +339,7 @@ def regimes(
                     if mix[t] > 0.0
                     else mats[int(state_of[t])]
                 )
-                for t in rows
+                for t in idx
             ],
             axis=0,
         )
@@ -347,7 +347,7 @@ def regimes(
             {
                 "block": b,
                 "state": int(chain[b]),
-                "n_bars": len(rows),
+                "n_rows": len(idx),
                 "corr": r[iu].tolist(),
             }
         )
@@ -356,8 +356,8 @@ def regimes(
         schema={
             "block": pl.Int64,
             "state": pl.Int64,
-            "n_bars": pl.Int64,
+            "n_rows": pl.Int64,
             "corr": pl.List(pl.Float64),
         },
     )
-    return {"bars": bars, "truth_rows": truth_rows, "truth_blocks": truth_blocks}
+    return {"rows": rows, "truth_rows": truth_rows, "truth_blocks": truth_blocks}

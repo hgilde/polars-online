@@ -84,7 +84,7 @@ material stays out of the repo.
   not what limits these models; the k-means assumption is.
 - **For a non-convex shape the answer is micro-clusters with the linkage macro
   step**, and it reaches the batch ceiling: 0.998 on two moons, 0.999 on three
-  concentric rings and 0.998 on parallel bars, against DBSCAN's 1.000. It needs
+  concentric rings and 0.998 on parallel rows, against DBSCAN's 1.000. It needs
   `macro_link` set to chain along the shape — above the largest spacing between
   neighbouring micro-clusters and below the gap between clusters, a window
   that `eps` widens at the price of more micro-clusters (§7.8) — not §6.5's
@@ -1107,7 +1107,7 @@ Everything above runs on isotropic Gaussian blobs, which is precisely the shape
 k-means is optimal for — so §7.3 can say the models are not broken and nothing
 more. These seven streams are chosen to break them: two non-convex (`moons`,
 `rings`), two that defeat a spherical distance (`aniso` — sheared Gaussians;
-`elongated` — three long parallel bars), one with densities an order of
+`elongated` — three long parallel rows), one with densities an order of
 magnitude apart (`varied`), and two asking what `p` does (`highdim20`,
 `highdim50`). 6 000 rows, i.i.d. and shuffled, regular clock, no drift, so the
 only question asked is clustering quality. ARI over the second half, mean ± sd

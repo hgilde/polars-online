@@ -986,13 +986,13 @@ truth beside the data.
 ```python
 out = po.sim.regimes(4, states=[0.2, 0.7],
                      transition=[[0.98, 0.02], [0.02, 0.98]],
-                     n_blocks=8, bars_per_block=500,
+                     n_blocks=8, rows_per_block=500,
                      phi=0.3, noise=0.01, async_rates=[1.0, 1.0, 0.4, 0.4],
                      seed=0)
-bars, truth = out["bars"], out["truth_blocks"]
+rows, truth = out["rows"], out["truth_blocks"]
 ```
 
-`bars` is what a consumer sees: **levels** `x_1 … x_m` (so
+`rows` is what a consumer sees: **levels** `x_1 … x_m` (so
 `po.prep.refresh_time` and then `.diff()` apply), a clock, a session and an
 optional volume. `truth_rows` gives the block, state, volatility multiplier
 and interpolation fraction per bar; `truth_blocks` gives each block's true

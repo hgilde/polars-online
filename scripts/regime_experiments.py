@@ -82,10 +82,10 @@ def recovery(seeds: int = 8) -> None:
             states=[0.1, 0.8],
             transition=[[0.99, 0.01], [0.02, 0.98]],
             n_blocks=10,
-            bars_per_block=400,
+            rows_per_block=400,
             seed=seed,
         )
-        rets = out["bars"].select(pl.col("x_1", "x_2").diff()).drop_nulls()
+        rets = out["rows"].select(pl.col("x_1", "x_2").diff()).drop_nulls()
         df = rets.rename({"x_1": "x0", "x_2": "x1"})
         want = np.asarray(out["truth_rows"]["state"].to_list()[1:], dtype=float)
         sd = df.to_numpy().std(0)
@@ -364,11 +364,11 @@ def _stream(seed: int, *, broken: bool) -> pl.DataFrame:
         # alternation: block 0 in state 0, block 1 in state 1.
         transition=[[0.0, 1.0], [1.0, 0.0]],
         n_blocks=2,
-        bars_per_block=1000,
+        rows_per_block=1000,
         durations=[1, 1],
         seed=seed,
     )
-    rets = out["bars"].select(pl.col("x_1", "x_2", "x_3").diff()).drop_nulls()
+    rets = out["rows"].select(pl.col("x_1", "x_2", "x_3").diff()).drop_nulls()
     return rets.rename({"x_1": "x0", "x_2": "x1", "x_3": "x2"})
 
 
@@ -475,12 +475,12 @@ def epps() -> None:
         states=[truth],
         transition=[[1.0]],
         n_blocks=1,
-        bars_per_block=120_000,
+        rows_per_block=120_000,
         async_rates=[0.25, 0.25],
         seed=7,
     )
-    bars = out["bars"]
-    filled = bars.select(pl.col("x_1", "x_2").forward_fill()).drop_nulls().to_numpy()
+    rows = out["rows"]
+    filled = rows.select(pl.col("x_1", "x_2").forward_fill()).drop_nulls().to_numpy()
     rows = []
     for step in (1, 2, 5, 20, 100, 500):
         r = np.diff(filled[::step], axis=0)
@@ -489,7 +489,7 @@ def epps() -> None:
     print(f"\nthe truth is {truth}")
 
     long = (
-        bars.select("t", "x_1", "x_2")
+        rows.select("t", "x_1", "x_2")
         .unpivot(index="t", variable_name="series", value_name="px")
         .drop_nulls()
         .sort("t")

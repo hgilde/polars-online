@@ -164,7 +164,7 @@ def _one_day(date: str) -> pl.DataFrame:
 
 
 def public_intraday(dates: tuple[str, ...] = _DEFAULT_DATES) -> pl.DataFrame:
-    """BTCUSDT 1-minute bars from Binance's public dump, cached per day.
+    """BTCUSDT 1-minute rows from Binance's public dump, cached per day.
 
     ``dates`` are ``YYYY-MM-DD`` strings; days are concatenated in order, so the
     clock stays monotone. Raises ``RuntimeError("offline")`` when a download
