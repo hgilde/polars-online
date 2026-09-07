@@ -1014,6 +1014,32 @@ note, not a task.
       `test_closed_groups.py` +3. Every finding above has the test that
       fails without it.
 
+- [ ] 68. **README clarity pass, begun 2026-09-07.** Going through the
+      reader-facing prose and fixing phrasing that only parses if the reader
+      already shares the frame the sentence was written in. Three rules, in
+      the order they bind:
+
+      1. **One idea per sentence.** A sentence carrying a rule, its reason
+         and its exception makes the reader hold all three to get any one.
+      2. **A sweep belongs in a table.** A list of eight things behind
+         semicolons is a table that has not been drawn yet. `bocpd` already
+         had a table for its output fields while `micro`, two sections away,
+         had the same content in prose.
+      3. **Name the mechanism, do not allude to it** (the user's rule,
+         2026-09-07, and the one that generalises). "What it costs is state,
+         not data" is clear only to a reader already thinking about memory;
+         "memory use is proportional to the model's state, not the amount of
+         data that has passed through it" needs nothing brought to it. The
+         test is whether a sentence can be understood by someone who has not
+         yet been told what the sentence is about.
+
+      Prose only: no heading moves, no code block changes, no claim altered,
+      so the anchors and `tests/test_examples.py` hold throughout. Progress
+      is measured, not eyeballed -- sentences of 45+ words in the README went
+      from 37 to 25 in the first batch of twelve edits. Rendered for review
+      through GitHub's own `POST /markdown` so the judgment is made on what
+      the repo page will show, not on an approximation.
+
 - [x] 61. **The leak test's statistic, 2026-09-06.** `assert_plateaus` compared
       the first and last of its post-warm-up marks, which cannot distinguish a
       late allocator step from a slope — the distinction its own docstring

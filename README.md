@@ -352,14 +352,18 @@ po.run(input="today.parquet", output="scored.parquet", specs=[spec],
        load_state="bank.state", predict=True)                       # serve: learn nothing
 ```
 
-`input` is anything py-polars can stream: a path in parquet, ipc, csv or
-ndjson (told from the extension, or named with `input_format=`; globs and
-cloud URLs as `pl.scan_*` takes them), a `LazyFrame` with whatever scan
-options it needs, a `DataFrame`, or any iterable of frames in stream order —
-a database cursor, a socket, a generator. `output` is a path in any of the
-four formats. `keep_columns=[...]` selects input columns before the bank sees
-them, and `progress(rows, chunks)` is called after each chunk; raising in it
-stops the run. CSV cannot hold struct columns, so there each spec's struct is
+`input` is anything py-polars can stream:
+
+- a **path** in parquet, ipc, csv or ndjson — told from the extension, or
+  named with `input_format=`; globs and cloud URLs as `pl.scan_*` takes them;
+- a **`LazyFrame`**, with whatever scan options its query needs;
+- a **`DataFrame`**;
+- **any iterable of frames** in stream order — a database cursor, a socket,
+  a generator.
+
+`output` is a path in any of the four formats. `keep_columns=[...]` selects
+input columns before the bank sees them. `progress(rows, chunks)` is called
+after each chunk; raising in it stops the run. CSV cannot hold struct columns, so there each spec's struct is
 flattened to `<spec>.<field>` columns and the `coef` list becomes a JSON
 string that `pl.col("ridge.coef").str.json_decode(pl.List(pl.Float64))` reads
 back bit-exact.
@@ -613,11 +617,11 @@ path = (
 ```
 
 `bank.coef()` is the fit as of the last row each group learned from, with
-`n_eff` for how much weight is behind it. The output's `coef` is the same fit
-snapshotted *after* each row's update (the row's `pred` is from the fit
-*before* it), every `coef_every` rows and on the last row of every chunk; the
-default, `coef_every=0`, is the chunk end only, so the per-row path above
-asks for `coef_every=1` and pays a list of `k` floats per row.
+`n_eff` for how much weight is behind it. The output's `coef` is the same fit, snapshotted *after* each row's update —
+the row's own `pred` comes from the fit *before* it. It is written every
+`coef_every` rows, and on the last row of every chunk. The default,
+`coef_every=0`, is the chunk end only; the per-row path above asks for
+`coef_every=1`, and pays a list of `k` floats per row.
 
 Under a grid — several `ridge` values, `feature_sets`, a `lasso_path`,
 several targets — the list holds one block per (target × grid point).
@@ -919,15 +923,17 @@ forgets smoothly and always; a detector notices a break and says so, within
 a couple of rows of a sign flip.
 
 `conformal` is the interval to use when the residuals are not Gaussian. It
-tracks the `coverage` quantile of `|resid|` directly — the radius grows by
-`conformal_rate · sigma · coverage` on a miss and shrinks by
-`conformal_rate · sigma · (1 − coverage)` on a hit — so its long-run coverage
-is the number you asked for whatever the residuals do, with an error that
-shrinks like `1/T`. `sigma` gives a Gaussian interval; on Gaussian residuals the two
-agree, and on fat-tailed or heteroskedastic ones the Gaussian interval
-over-covers by several points where this one lands on target. It starts at
-`sigma · Φ⁻¹(1 − α/2)` and is null until then, is read before the row like
-everything else, and costs three numbers per slot.
+tracks the `coverage` quantile of `|resid|` directly: the radius grows by
+`conformal_rate · sigma · coverage` on a miss, and shrinks by
+`conformal_rate · sigma · (1 − coverage)` on a hit. So its long-run coverage
+is the number you asked for, whatever the residuals do, with an error that
+shrinks like `1/T`.
+
+`sigma` gives a Gaussian interval instead. On Gaussian residuals the two
+agree; on fat-tailed or heteroskedastic ones the Gaussian interval
+over-covers by several points where this one lands on target. The conformal
+radius starts at `sigma · Φ⁻¹(1 − α/2)` and is null until then. It is read
+before the row, like everything else, and costs three numbers per slot.
 
 ```python
 ci = po.spec.ewridge("ci", targets=["y"], features=["x0", "x1"], clock="t",
@@ -1435,12 +1441,19 @@ j*   = nearest summary that keeps  a r²_j + a b ‖x − c_j‖² ≤ eps² p,
 n_j* ← n_j* + w     c_j* ← c_j* + (w/n_j*)(x − c_j*)     r²_j* ← min(·, eps² p)
 ```
 
-The struct holds `cluster` (the label of the nearest established summary,
-null while there is none), `dist` (to its centre), `micro` (the id of the
-summary the row goes to), `outlier` (no established summary takes it),
-`n_clusters`, `n_micro`, `n_eff`, and `coef` = the established summaries,
-one `[id, label, n, radius, c_1 … c_p]` row each. All are read before the
-row is learned. Ids are monotone and never reused; a label is the smallest
+The struct holds:
+
+| field | meaning |
+|---|---|
+| `cluster` | the label of the nearest established summary; null while there is none |
+| `dist` | the distance to that summary's centre |
+| `micro` | the id of the summary this row goes to |
+| `outlier` | no established summary takes the row |
+| `n_clusters`, `n_micro` | how many of each the state holds |
+| `n_eff` | the weight behind the state before this row |
+| `coef` | the established summaries, one `[id, label, n, radius, c_1 … c_p]` row each |
+
+All are read before the row is learned. Ids are monotone and never reused; a label is the smallest
 id in its chain, so it outlives everything but that summary.
 
 ```python
@@ -1949,9 +1962,9 @@ it.
 
 **`run_mode` is the answer; `p_change` is the alarm.** The two are not the
 same quality of signal. `p_change` is a per-row likelihood ratio, so it is
-spiky and its height depends on the size of the break against the prior
-scale: a ten-fold variance step takes it to 0.83 on the row itself, a
-four-sigma mean shift with a diffuse prior barely lifts it, and a change in
+spiky, and its height depends on the size of the break against the prior
+scale. A ten-fold variance step takes it to 0.83 on the row itself. A
+four-sigma mean shift with a diffuse prior barely lifts it. A change in
 correlation alone never moves it at all. The run length finds all three, one
 to three rows later, and dates them to the right row.
 
@@ -2000,19 +2013,19 @@ stream per spec). On every chunk, each stream in the bank becomes one task on
 the bank's own thread pool (a [rayon](https://github.com/rayon-rs/rayon)
 pool, separate from polars') — one flat pool across all specs and all
 groups, longest stream first so a few big groups do not leave cores idle at
-the tail. Within a stream the rows go one at a time, because
-each row's update depends on the last: that is what makes the numbers
-independent of how the work is split, and it also means a bank with one spec
-and one group is one thread's work per chunk, with polars' own reading and
-writing running in parallel around it.
+the tail. Within a stream the rows go one at a time, because each row's update depends
+on the last. That is what makes the numbers independent of how the work is
+split. It also means a bank with one spec and one group is one thread's work
+per chunk — polars' own reading and writing still run in parallel around it.
 
-So a bank fills the pool with groups, with specs, or with both. A search
-over factor sets is a list of specs, one per set: each is its own
-accumulator — its own standardization, and a null in a factor it does not
-use costs it nothing — with its own grid inside, and every one is a task.
-(Subsets of one list that should share an accumulator are `feature_sets`
-on one spec: one solve each, not one task.) The list runs as one plan in
-one pass, with the thread counts set before anything is built:
+So a bank fills the pool with groups, with specs, or with both.
+
+A search over factor sets is a list of specs, one per set. Each spec is its
+own accumulator, with its own standardization and its own grid inside, and
+each is one task. A null in a factor a spec does not use costs that spec
+nothing. (Subsets of one list that should share an accumulator are
+`feature_sets` on one spec: one solve each, not one task.) The list runs as
+one plan in one pass, with the thread counts set before anything is built:
 
 ```python
 import os
@@ -2076,10 +2089,10 @@ Where the parallelism comes from, then:
 
 Thread count is `POLARS_ONLINE_MAX_THREADS` for the bank's pool and
 `POLARS_MAX_THREADS` for polars' readers and writers; unset, each is one
-thread per core. The bank builds its pool at the first bank call and polars
-its own at import, so each must be set before that point, as above, or in
-the shell (`POLARS_ONLINE_MAX_THREADS=8 python fit.py`), which is the form
-that always works; set later, the variable is ignored, and
+thread per core. The bank builds its pool at the first bank call, and polars builds its own
+at import, so each must be set before that point — as above, or in the shell
+(`POLARS_ONLINE_MAX_THREADS=8 python fit.py`), which is the form that always
+works. Set later, the variable is ignored, and
 [`po.thread_pool_size()`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.thread_pool_size) says what took (`pl.thread_pool_size()` for
 polars'). A value that is not a count is refused by name at the first bank
 call. It changes the speed and nothing else: `tests/test_portability.py`
@@ -2264,11 +2277,13 @@ over 500 rows; `crit` given as a number skips it entirely.
 Grouped data goes wider, as [Parallelism](#parallelism) shows: 8.2M rows/s
 at k=20 over 64 groups.
 
-**Memory** is the state, the chunks in flight (three, so `chunk_rows` is the
-knob — [Chunk size](#chunk-size), above) and whatever polars' reader prefetches — on a 14-thread machine the
-parquet reader front-loads ~0.7 GB of decoded row groups whatever the file's
-length, and `POLARS_ROW_GROUP_PREFETCH_SIZE=1` takes the CLI to 0.15 GB at
-the same speed. The prefetch is sized from the thread count, so
+**Memory** is three things: the state, the chunks in flight, and whatever
+polars' reader prefetches. Three chunks are in flight at once, so
+`chunk_rows` is the knob for the middle one ([Chunk size](#chunk-size),
+above). The prefetch is usually the largest of the three: on a 14-thread
+machine the parquet reader front-loads ~0.7 GB of decoded row groups
+whatever the file's length, and `POLARS_ROW_GROUP_PREFETCH_SIZE=1` takes the
+CLI to 0.15 GB at the same speed. It is sized from the thread count, so
 `POLARS_MAX_THREADS` shrinks it too. Where the time goes, and what to reach
 for, is in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
@@ -2374,18 +2389,25 @@ each part proves and what it has found.
 every row to <1e-9. The lasso is checked against the KKT conditions of its
 objective rather than a ported solver, which cannot share a bug with it.
 [river](https://riverml.xyz) is an independent implementation of several of
-the same algorithms: its FTRL recursion agrees with ours to 1e-12 row for
-row, its EW moments in closed form and in the limit, its quantile and Huber
-models statistically — and two convention differences are pinned as tests
+the same algorithms. Its FTRL recursion agrees with ours to 1e-12 row for
+row; its EW moments agree in closed form and in the limit; its quantile and
+Huber models agree statistically. Two convention differences are pinned as
+tests
 rather than left as surprises.
 
-**Invariants, for every model.** Chunk invariance at the bank, expression
-and CLI levels (one chunk, seven, four hundred, one row at a time, with a
-save and load in the middle); thread count 1 against 8; group independence;
-expression ≡ bank; `predict` ≡ `fit_predict` of the next row, field for
-field with every diagnostic on; runner ≡ bank for every input source and
-format; the null policy, warm-up and clock semantics; the same `n_eff`
-recursion in every model (`crates/online-core/tests/model_contract.rs`).
+**Invariants, for every model.** Each of these is checked at the bank, and
+where it applies at the expression and CLI levels too:
+
+| | |
+|---|---|
+| chunk invariance | one chunk, seven, four hundred, one row at a time, and with a save and load in the middle |
+| thread invariance | 1 thread against 8 |
+| group independence | a group's numbers do not depend on what else is in the bank |
+| the paths agree | expression ≡ bank; runner ≡ bank for every input source and format |
+| `predict` ≡ `fit_predict` | of the next row, field for field, with every diagnostic on |
+| stream semantics | the null policy, warm-up, and the clock |
+| `n_eff` | the same recursion in every model (`crates/online-core/tests/model_contract.rs`) |
+
 Hypothesis generates adversarial streams — mixed nulls, duplicate and
 long-gap clocks, values at ±1e8, zero weights, tiny groups — and asserts the
 strongest one: **changing a row's own target never changes that row's own
@@ -2397,14 +2419,18 @@ whole pipeline — extraction, fan-out, diagnostics, struct assembly — pinned
 to fixed output and compared on every OS, so a divergence in polars'
 vectorized paths on another CPU would show.
 
-**Hardening.** A 30k-row stream with every output switched on, compared
-across chunkings, a mid-stream save and load, and thread counts by digest;
-weight-scale invariance at ×1e±6 (all weights scaled changes nothing but
-`n_eff`); parameter edges from `halflife=1e-3` to `inf`; state files with
-any byte flipped fail cleanly and never panic; two threads calling
-`fit_predict` at once get a clean error; `pickle` and `copy.deepcopy` resume
-bit-exactly; memory safety across the FFI, where two copies of Polars share
-one process; and a 10M-row soak, opt-in with `pytest -m soak`.
+**Hardening.** What the suite does to a bank on purpose:
+
+| | |
+|---|---|
+| everything at once | a 30k-row stream with every output switched on, compared by digest across chunkings, a mid-stream save and load, and thread counts |
+| weight scale | all weights ×1e±6 changes nothing but `n_eff` |
+| parameter edges | `halflife` from `1e-3` to `inf` |
+| a corrupt state file | any byte flipped fails cleanly, and never panics |
+| concurrent misuse | two threads calling `fit_predict` at once get a clean error |
+| copying a bank | `pickle` and `copy.deepcopy` resume bit-exactly |
+| across the FFI | memory safety where two copies of Polars share one process |
+| sustained load | a 10M-row soak, opt-in with `pytest -m soak` |
 
 **Contracts that are files.** The public API — every name, default and
 signature, every output field name — is a checked-in snapshot
