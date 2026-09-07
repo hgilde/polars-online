@@ -175,6 +175,114 @@ def test_one_bank_gives_one_schema_whatever_closed():
     assert by_spec["m"]["comoments"] is None
 
 
+def test_a_closed_marginal_row_carries_its_lags_and_bins():
+    """E66 and E67 ride into the closed row as lists of lists, one inner
+    list per pair, and are -- pair for pair, value for value -- what
+    ``marginal()`` reports on the same rows. The closed row is the only
+    readout for a closed group, so a column it dropped would be lost."""
+    df = frame(["a", "b"], n_per=60, seed=3).with_columns(y=pl.col("x0") * 3.0 + pl.col("x1"))
+    kw = dict(
+        targets=["y"],
+        features=["x0", "x1"],
+        halflife=HALFLIFE,
+        lags=[1, 2],
+        serial_rule="truncated",
+        bin_edges=[[0.0], [-0.5, 0.5]],
+    )
+    closing = po.ModelBank([po.spec.marginal("m", group="g", group_close="monotone", **kw)])
+    closing.fit_predict(df)
+    closed = closing.closed_groups()
+    assert closed.schema["pair_lagcorr_xx"] == pl.List(pl.List(pl.Float64))
+    assert closed.schema["pair_bin_n"] == pl.List(pl.List(pl.Float64))
+    row = closed.row(0, named=True)
+    plain = po.ModelBank([po.spec.marginal("m", **kw)])
+    plain.fit_predict(df.filter(pl.col("g") == "a"))
+    want = plain.marginal("m")
+    assert row["pair_feature"] == want["feature"].to_list() == ["x0", "x1"]
+    for col in (
+        "lagcorr_xx",
+        "lagcorr_yy",
+        "lagcorr_xy",
+        "lagcorr_yx",
+        "n_serial",
+        "t_serial",
+        "phi_x",
+        "phi_y",
+        "bin_edges",
+        "bin_n",
+        "bin_mean_y",
+        "bin_var_y",
+        "split_gain",
+        "split_at",
+        "split_gain_t",
+    ):
+        assert row[f"pair_{col}"] == want[col].to_list(), col
+    assert row["pair_bin_edges"] == [[0.0], [-0.5, 0.5]], "ragged, as given"
+    assert row["pair_phi_x"] == [None, None], "truncated fits no decay"
+    assert row["pair_split_gain"][0] > 0.5, "x0 carries the target, and a cut at 0 sees it"
+
+
+def test_the_lag_and_bin_blocks_follow_the_specs_that_asked():
+    """Two closing marginals, one with lags and bins and one without: one
+    schema for the bank, and on the row of the one that did not ask the
+    columns are null -- the columns ``marginal()`` would not have."""
+    common = dict(
+        targets=["y"], features=["x0", "x1"], halflife=HALFLIFE, group="g", group_close="monotone"
+    )
+    specs = [
+        po.spec.marginal("plain", **common),
+        po.spec.marginal("asked", lags=[1], bin_edges=[[0.0], [0.0]], **common),
+    ]
+    bank = po.ModelBank(specs)
+    empty = bank.closed_groups()
+    bank.fit_predict(frame(["a", "b"], n_per=20).with_columns(y=pl.col("x0")))
+    got = bank.closed_groups()
+    assert dict(empty.schema) == dict(got.schema)
+    by_spec = {r["spec"]: r for r in got.iter_rows(named=True)}
+    assert by_spec["plain"]["pair_corr"] is not None
+    for col in ("pair_lagcorr_xx", "pair_n_serial", "pair_bin_n", "pair_split_gain"):
+        assert by_spec["plain"][col] is None, col
+        assert by_spec["asked"][col] is not None, col
+    # And a bank whose closing marginals asked for neither has neither
+    # block, as `marginal()` has neither column.
+    bare = po.ModelBank([po.spec.marginal("plain", **common)]).closed_groups()
+    assert not any(c.startswith(("pair_lagcorr", "pair_bin", "pair_split")) for c in bare.columns)
+
+
+def test_the_sidecar_carries_the_nested_lists(tmp_path):
+    """Parquet has a form for a list of lists, so the runner's sidecar is
+    the driver's frames with the blocks in them, as it is without."""
+    df = frame(["a", "b", "c"], n_per=30, seed=5).with_columns(y=pl.col("x1") - pl.col("x0"))
+    df.write_parquet(tmp_path / "in.parquet")
+    spec = po.spec.marginal(
+        "m",
+        targets=["y"],
+        features=["x0", "x1"],
+        halflife=HALFLIFE,
+        lags=[1, 3],
+        bins=4,
+        bin_warm_rows=10,
+        group="g",
+        group_close="monotone",
+    )
+    side = tmp_path / "closed.parquet"
+    po.run(
+        input=tmp_path / "in.parquet",
+        output=tmp_path / "out.parquet",
+        specs=[spec],
+        closed_groups=side,
+        chunk_rows=25,
+    )
+    driver = po.ModelBank([spec])
+    frames = []
+    for i in range(0, df.height, 25):
+        driver.fit_predict(df[i : i + 25])
+        frames.append(driver.closed_groups())
+    want = pl.concat(frames)
+    assert want.height == 2 and want["pair_bin_n"].null_count() == 0
+    assert pl.read_parquet(side).equals(want)
+
+
 # --- the schedule ------------------------------------------------------------
 
 

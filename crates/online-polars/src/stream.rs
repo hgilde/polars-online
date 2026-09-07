@@ -234,10 +234,10 @@ impl AnyModel {
     }
 }
 
-/// Bins per feature when `bin_edges` gives the edges without a count, and
-/// the default `bins` the Python layer leaves to us: enough resolution to see
+/// The default `bins` the Python layer leaves to us: enough resolution to see
 /// a threshold or a V, and small enough that the histogram stays a rounding
-/// error next to the pair moments it rides along with.
+/// error next to the pair moments it rides along with. With `bin_edges` the
+/// count is the edges' and this is not read.
 const DEFAULT_BINS: usize = 16;
 
 /// Learned rows held before the bin edges are fixed. A thousand rows put

@@ -799,17 +799,18 @@ pub enum ModelKind {
         /// is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bins: Option<usize>,
-        /// `"quantile"` (equal counts, the default) or `"fixed"` (equal
-        /// widths): how `bins` becomes edges. Ignored with `bin_edges`.
+        /// `"quantile"` (equal weights, the default) or `"fixed"` (equal
+        /// widths): how `bins` becomes edges. Refused with `bin_edges`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bin_rule: Option<String>,
         /// Learned rows to hold before fixing the edges, default 1,000. The
-        /// rows are held and replayed, not spent.
+        /// rows are held and replayed, not spent. Refused with `bin_edges`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bin_warm_rows: Option<usize>,
         /// Explicit interior edges, one strictly increasing list per feature
         /// in feature order. Exact and comparable across runs, and skips the
-        /// warm-up entirely.
+        /// warm-up entirely; `bins`, `bin_rule` and `bin_warm_rows` are the
+        /// learned kind's and refused beside it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bin_edges: Option<Vec<Vec<f64>>>,
         /// Clock units of history the pairs are computed from, with a
@@ -2206,10 +2207,29 @@ impl Spec {
             // Checked above, with the features: its refusals come before the
             // shared checks so that `halflife` is named for what it is here.
             ModelKind::SeqTest { .. } => {}
-            // Nothing of its own: the shared checks (non-empty features and
-            // targets, no column on both sides, a decay, `min_periods` per
-            // target, no residual diagnostics) are all it needs.
-            ModelKind::Marginal { .. } => {}
+            // The shared checks (non-empty features and targets, no column on
+            // both sides, a decay, `min_periods` per target, no residual
+            // diagnostics) and one of its own: given edges and the knobs for
+            // learning them are two ways of saying where the bins are, and a
+            // spec that says both is a spec with a mistake in it. The core
+            // checks the edges and the lags themselves.
+            ModelKind::Marginal {
+                bins,
+                bin_rule,
+                bin_warm_rows,
+                bin_edges,
+                ..
+            } => {
+                if bin_edges.is_some()
+                    && (bins.is_some() || bin_rule.is_some() || bin_warm_rows.is_some())
+                {
+                    return Err(format!(
+                        "spec {:?}: marginal bin_edges fixes the bins outright; bins, bin_rule \
+                         and bin_warm_rows describe learning them and do not apply with it",
+                        self.name
+                    ));
+                }
+            }
             // Every parameter check is `DecoCfg::validate`'s, so that the
             // CLI, the bank and the plugin all get the same messages; only
             // the block *names* are resolved here, where the feature list is.

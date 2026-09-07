@@ -627,9 +627,9 @@ class ModelBank:
             The per-row decays fitted under ``serial_rule="geometric"``; null
             otherwise, and null when fewer than two kept lags are positive.
 
-        With ``bins`` (E67), the nonlinear view. These columns are present
-        whenever the spec asked for bins, holding empty lists and nulls until
-        the edges are fixed:
+        With ``bins`` or ``bin_edges`` (E67), the nonlinear view. These
+        columns are present whenever the spec asked for bins, holding empty
+        lists and nulls until the edges are fixed:
 
         ``bin_edges``
             The feature's interior edges, fixed once and never moved. Ragged:
@@ -638,7 +638,8 @@ class ModelBank:
         ``bin_n``, ``bin_mean_y``, ``bin_var_y``
             The target's weight, mean and variance inside each bin -- the
             feature's response curve. One more entry than ``bin_edges``, since
-            the outer two bins are open.
+            the outer two bins are open. A bin no row has landed in has
+            ``bin_n = 0`` and null for the two moments.
         ``split_gain``, ``split_at``
             The fraction of the target's variance removed by the best single
             cut of the feature, and where that cut falls. Directly comparable
@@ -690,6 +691,17 @@ class ModelBank:
         ``coef`` for every kind that reports one; ``eig_vals`` and
         ``eig_vecs`` for an ``ew_cov`` with ``pca``; ``pair_*`` for a
         ``marginal``.
+
+        The ``pair_*`` block is :meth:`marginal`'s frame turned on its side:
+        ``pair_feature`` and ``pair_target`` name the pairs, and every other
+        ``marginal`` column becomes ``pair_<column>`` holding one entry per
+        pair in the same order. A column that is a list per pair there --
+        the ``lagcorr_*`` family with ``lags``, ``bin_edges``, ``bin_n``,
+        ``bin_mean_y`` and ``bin_var_y`` with ``bins`` -- is a list of lists
+        here, and those blocks follow the same rule as the rest: present when
+        any closing ``marginal`` asked for them, null on the rows of one that
+        did not. A nested list has no CSV form, so a closed frame with them
+        is for parquet or the frame itself.
 
         ``comoments`` is the **upper triangle with the diagonal**, row by
         row (``k(k+1)/2`` numbers), and ``cross_moments`` is row-major

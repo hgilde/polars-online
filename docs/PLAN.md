@@ -940,6 +940,80 @@ note, not a task.
       cheap enough to run: `cargo run --release -p online-core --example
       marg_bench`.
 
+- [x] 67. **Review of tasks 65 and 66, 2026-09-07.** Each changed model
+      read in its current form for bugs, logical errors, performance and
+      the edge cases its tests missed; every finding applied, since nothing
+      had been released or pushed, so the layouts could change with no
+      `SCHEMA_VERSION` bump. What changed, and the decision behind each:
+
+      (a) **A capped gap is a `λ` of zero.** `max_dclock` caps a gap at
+      `max_dclock`, and at `halflife=10`, `max_dclock=1e5` that is
+      `2^-10000 = 0` exactly; the histogram's scale went to zero and every
+      later row added `w/0`. `decay` now folds a factor that would take the
+      scale under `1e-150` into the weights (multiplying by `s` and `λ`
+      separately, since their product is what proved too small) — a zero
+      wipes the histogram, which is what the pair moments do on that row.
+      (b) **Per-bin Welford.** The sketch's `(Σw, Σwy, Σwy²)` loses the
+      variance to cancellation at a modest offset — a target at `1e7` with
+      noise of `1e-3` reported none — while every other accumulator in the
+      crate is mean-form. Each bin now carries `(w, mean, M2)`; same state,
+      one more multiply. The gain is formed as `(d_L/w_L)·(d_L/w_R)/var`,
+      because the undecayed weights reach `1e150` before a fold and three of
+      them multiplied together overflow.
+      (c) **Weighted, point-mass quantile edges.** Plain quantiles of an
+      indicator that is zero on 95% of rows all sit on zero and collapse to
+      no edge, so the 5% that carry the signal share the zeros' bin — the
+      commonest wide-input feature there is, unsplittable. Edges are now
+      placed one at a time, each closing a bin of the remaining weight
+      divided among the remaining bins, and an edge that would close an
+      empty bin moves up to the next value: a point mass fills a bin of its
+      own. Weighted by the row weights, not their decay (which says when a
+      row arrived, not what the feature looks like). `bin_edges` is refused
+      beside `bins`/`bin_rule`/`bin_warm_rows`, and budgeted as a learned
+      histogram is.
+      (d) **A missing target holds the lag moments.** `marglag.rs` decayed
+      them on a row where the target was absent, on top of the ageing `W_t`
+      already carries: a hundred null rows at halflife 20 took a `lagcorr`
+      of 0.75 to `0.75·2^-5` while `corr` stood still, `n_serial` doubled
+      and `t_serial` inflated — invisible at the `halflife=inf` the tests
+      ran at. Now it holds, as the pair moments hold (`a = 1, b = 0`).
+      (e) **`lagcorr_*` are `ew_cov`'s numbers.** The lists were clamped to
+      `[−1, 1]` and the auto terms divided by `var` rather than `sd·sd`;
+      neither is what `ew_cov(lags=, stats=["lagcorr"])` reports for the
+      same columns. Now `C/(sd_a·sd_b)` in every orientation, unclamped — a
+      lagged correlation is not bounded by one in finite samples — and
+      `tests/test_marginal_lags.py` holds the two surfaces bit for bit
+      through weights, a session change and a capped gap.
+      (f) **An empty histogram takes no decay.** `label_delay`'s doubled
+      stream begins with a zero-weight prefix; the pair moments carry no
+      trace of it, but the histogram picked up a scale, which then moved
+      every later weight and read by a rounding — the one last-bit
+      difference in the doubled-stream test. An `empty` flag (true at
+      construction and after a fold takes every weight to zero) makes
+      `decay` a no-op, so `scale == 1` whenever it is set.
+      (g) **The closed-group row carries both blocks.** `ClosedRow`'s pair
+      block had none of the new columns. It now has `pair_lagcorr_*`,
+      `pair_n_serial`, `pair_t_serial`, `pair_phi_*`, `pair_bin_*` and
+      `pair_split_*` — `List(List(Float64))` where `marginal()` has a list
+      per pair — gated on whether any closing spec asked, under
+      `marginal()`'s null rule (NaN only; `±inf` stays, so `pair_t`,
+      `pair_t_serial` and `pair_split_gain_t` are `±inf` where the frame
+      is), which the block had not been following. `Bank::marginal` builds
+      its schema from the spec, so the columns are there before any row and
+      for a group never seen. The CSV sidecar refuses every nested column,
+      so a closed marginal row stays parquet/ipc/ndjson-only as before.
+      (h) Minor: a zero-weight row across a total gap (`λ = 0`, `w = 0`)
+      returned from `learn` before touching `wt`/`qt`, so a target's `n_eff`
+      outlived a gap the model's did not — it now ages them; `check_edges`
+      validates without allocating; docstrings and the design doc rewritten
+      to what shipped.
+
+      Tests: `margbins.rs` 6 → 15, `marginal.rs` 17 → 21,
+      `state_encoding.rs` covers every optional part; `test_marginal_bins.py`
+      13 → 26 functions, `test_marginal_lags.py` 8 → 12,
+      `test_closed_groups.py` +3. Every finding above has the test that
+      fails without it.
+
 - [x] 61. **The leak test's statistic, 2026-09-06.** `assert_plateaus` compared
       the first and last of its post-warm-up marks, which cannot distinguish a
       late allocator step from a slope — the distinction its own docstring

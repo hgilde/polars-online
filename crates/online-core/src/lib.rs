@@ -112,9 +112,10 @@ pub use hmm::{Hmm, HmmCfg};
 pub use holt::{Holt, HoltCfg};
 pub use kalman::{Kalman, KalmanCfg};
 pub use lasso::{Lasso, LassoCfg};
-pub use margbins::{Bin, BinCfg, BinRule, MarginalBins, Split, edges_from};
+pub use margbins::{BinCfg, BinRule};
+pub(crate) use margbins::{MarginalBins, edges_from};
 pub use marginal::{Marginal, MarginalCfg, Pair as MarginalPair, SerialRule};
-pub use marglag::{MarginalLags, PairMix};
+pub(crate) use marglag::{MarginalLags, PairMix};
 pub use model::{
     Extra, INPUT_BOUND, ModelState, OnlineModel, State, StateError, Step, check_schema,
 };

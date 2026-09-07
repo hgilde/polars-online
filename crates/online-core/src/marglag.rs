@@ -57,8 +57,27 @@
 //! is the honest thing to say in the docs and the reason `n_serial` is
 //! documented as a correction rather than an exact count.
 //!
-//! A zero-weight row ages the moments (time passes) but is not pushed: it
-//! taught nothing, so it is not something a later row can be `ℓ` rows after.
+//! A zero-weight row leaves the moments where they are -- the pair update's
+//! own mix on such a row is `a = 1, b = 0` -- and is not pushed: it taught
+//! nothing, so it is not something a later row can be `ℓ` rows after. A row
+//! where a target is absent *is* pushed, since the ring is shared, and that
+//! target's moments hold, as its pair moments do.
+//!
+//! # Why a missing target holds rather than decays
+//!
+//! These are normalized moments, `E_w[·]`, and decay reaches them only
+//! through `a = lam·W/W'` on the rows that learn: `W` carries the ageing,
+//! and `E_w` of a history that has merely aged is the same number. Ageing
+//! them by `lam` on their own on a row where the target is absent -- which
+//! is how the first version of this file read -- takes an `E_w` toward zero
+//! by a factor of `lam` per missing row, and nothing ever puts it back: on a
+//! stream where a target is absent one row in `k`, every lagged
+//! autocorrelation was low by about `1/k`, and after a hundred missing rows
+//! at a halflife of twenty, by `2⁻⁵`. The pair moments held all along
+//! (`W_t·lam`, `Q_t·lam²`, and the means and centred moments untouched), and
+//! `n_serial` divides one by the other, so the two families must age the
+//! same way. `tests/test_marginal_lags.py` holds a lag autocorrelation
+//! across a run of null targets.
 
 use std::collections::VecDeque;
 
@@ -145,12 +164,6 @@ impl MarginalLags {
         self.cyx[li][t * self.p + j]
     }
 
-    /// Rows currently held; a lag deeper than this has decayed but never
-    /// been fed.
-    pub fn depth(&self) -> usize {
-        self.ring_x.len()
-    }
-
     /// Empty the ring, keeping the moments: a session change or a clock gap
     /// beyond `max_dclock` means the next row is not `1` after the last one.
     pub fn clear(&mut self) {
@@ -204,30 +217,25 @@ impl MarginalLags {
         }
     }
 
-    /// Age every moment of a target that is absent this row, so its lagged
-    /// moments decay with its pair moments.
-    pub fn decay_target(&mut self, t: usize, lam: f64) {
-        let row = t * self.p;
-        for li in 0..self.lags.len() {
-            self.cyy[li][t] *= lam;
-            for i in row..row + self.p {
-                self.cxx[li][i] *= lam;
-                self.cxy[li][i] *= lam;
-                self.cyx[li][i] *= lam;
-            }
-        }
-    }
-
-    /// Push a learned row, dropping what has fallen off the deepest lag.
+    /// Push a learned row, dropping what has fallen off the deepest lag. The
+    /// dropped row's buffers are reused, so a full ring allocates nothing
+    /// per row.
     pub fn push(&mut self, x: &[f64], y: &[Option<f64>]) {
-        let max_lag = *self.lags.last().expect("lags is non-empty");
-        self.ring_x.push_back(x.to_vec());
-        self.ring_y.push_back(y.to_vec());
-        if self.ring_x.len() > max_lag {
-            self.ring_x.pop_front();
-            self.ring_y.pop_front();
-        }
-        debug_assert_eq!(self.ring_x.len(), self.ring_y.len());
         debug_assert!(self.t == y.len());
+        let max_lag = *self.lags.last().expect("lags is non-empty");
+        let (mut bx, mut by) = if self.ring_x.len() >= max_lag {
+            let bx = self.ring_x.pop_front().expect("non-empty");
+            let by = self.ring_y.pop_front().expect("non-empty");
+            (bx, by)
+        } else {
+            (Vec::with_capacity(x.len()), Vec::with_capacity(y.len()))
+        };
+        bx.clear();
+        bx.extend_from_slice(x);
+        by.clear();
+        by.extend_from_slice(y);
+        self.ring_x.push_back(bx);
+        self.ring_y.push_back(by);
+        debug_assert_eq!(self.ring_x.len(), self.ring_y.len());
     }
 }

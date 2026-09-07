@@ -70,7 +70,19 @@ fn marginal_round_trips_with_every_optional_part_present_or_absent() {
                     window_every: window.map(|_| 1),
                 };
                 let mut m = online_core::Marginal::new(cfg).unwrap();
-                for i in 0..8 {
+                // Bins have two states worth encoding: the warm-up hold with
+                // rows in it (3 of the 4 it waits for), and the histogram
+                // it becomes. Both must survive, or a bank saved during the
+                // warm-up loses the rows it was holding.
+                for i in 0..3 {
+                    let v = i as f64;
+                    OnlineModel::step(&mut m, &[v, -v], &[Some(v * 0.5)], v, 1.0);
+                }
+                roundtrip(
+                    &m,
+                    &format!("marginal lags={lags:?} window={window:?} bins={bins:?} (held)"),
+                );
+                for i in 3..8 {
                     let v = i as f64;
                     OnlineModel::step(&mut m, &[v, -v], &[Some(v * 0.5)], v, 1.0);
                 }

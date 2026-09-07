@@ -177,6 +177,11 @@ pub struct Pair {
     /// `lagcorr_xy` is the feature *now* against the target `l` rows ago,
     /// `lagcorr_yx` the target now against the feature `l` rows ago. Empty
     /// without `lags`.
+    ///
+    /// Each is the lagged covariance over the two contemporaneous standard
+    /// deviations, as `ew_cov`'s `lagcorr` is, and like it **not clamped**:
+    /// a lagged correlation is not bounded by one in finite samples, and
+    /// clamping would hide that. The serial correction guards itself.
     pub lagcorr_xx: Vec<f64>,
     pub lagcorr_yy: Vec<f64>,
     pub lagcorr_xy: Vec<f64>,
@@ -185,7 +190,8 @@ pub struct Pair {
     /// `1 + 2·Σ_l rho_x(l)·rho_y(l)`, per `serial_rule`; NaN without one.
     pub n_serial: f64,
     /// `corr·sqrt((n_serial − 2)/(1 − corr²))`: the same statistic as `t`
-    /// against a count that has been told about serial dependence.
+    /// against a count that has been told about serial dependence, and
+    /// `±inf` where `t` is.
     pub t_serial: f64,
     /// The fitted per-row decays under `SerialRule::Geometric`; NaN
     /// otherwise, and NaN when fewer than two kept lags had `rho > 0`.
@@ -217,7 +223,8 @@ pub struct Pair {
     /// The edge that achieves it, in the feature's own units.
     pub split_at: f64,
     /// `√((n − 2)·g/(1 − g))`, the `t` its `corr` would need to match that
-    /// gain, against `n_serial` when there is one and `n_kish` otherwise.
+    /// gain, against `n_serial` when there is one and `n_kish` otherwise;
+    /// `+inf` at a gain of one, as `t` is at `corr = ±1`.
     ///
     /// **Optimistic by construction**: the cut was chosen by maximizing over
     /// the `bins − 1` candidates, and this statistic does not know that. Read
@@ -372,26 +379,23 @@ struct HeldRow {
 }
 
 impl Binned {
-    /// Fix the edges and replay everything held, in order, with its decay.
+    /// Fix the edges from the held rows and replay everything held, in
+    /// order, with its decay. Only ever reached for learned edges: given
+    /// ones build the histogram in [`Marginal::new`] and nothing is held.
     fn freeze(&mut self, cfg: &crate::BinCfg, p: usize, n_targets: usize) {
-        let edges = match &cfg.edges {
-            Some(e) => e.clone(),
-            None => (0..p)
-                .map(|j| {
-                    let mut vals: Vec<f64> = self
-                        .held
-                        .iter()
-                        .map(|r| r.x.get(j).copied().unwrap_or(f64::NAN))
-                        .collect();
-                    crate::edges_from(cfg.rule, cfg.n_bins, &mut vals)
-                })
-                .collect(),
-        };
-        // Validated when the model was built, so the shape is known good.
-        let mut hist = match crate::MarginalBins::new(p, n_targets, edges) {
-            Ok(h) => h,
-            Err(_) => return,
-        };
+        debug_assert!(cfg.edges.is_none(), "given edges never hold rows");
+        let edges: Vec<Vec<f64>> = (0..p)
+            .map(|j| {
+                let mut vals: Vec<(f64, f64)> = self
+                    .held
+                    .iter()
+                    .map(|r| (r.x.get(j).copied().unwrap_or(f64::NAN), r.w))
+                    .collect();
+                crate::edges_from(cfg.rule, cfg.n_bins, &mut vals)
+            })
+            .collect();
+        let mut hist = crate::MarginalBins::new(p, n_targets, edges)
+            .expect("edges_from gives one finite, strictly increasing list per feature");
         for row in &self.held {
             hist.decay(row.lam);
             for (t, yt) in row.y.iter().enumerate().take(n_targets) {
@@ -427,17 +431,20 @@ impl Marginal {
             }),
             None => None,
         };
-        let bins = cfg.bins.as_ref().map(|bc| {
-            let hist = bc
-                .edges
-                .as_ref()
-                .and_then(|e| crate::MarginalBins::new(p, t, e.clone()).ok());
-            Box::new(Binned {
-                hist,
-                held: Vec::new(),
-                pending_lam: 1.0,
-            })
-        });
+        let bins = match cfg.bins.as_ref() {
+            None => None,
+            Some(bc) => {
+                let hist = match &bc.edges {
+                    Some(e) => Some(crate::MarginalBins::new(p, t, e.clone())?),
+                    None => None,
+                };
+                Some(Box::new(Binned {
+                    hist,
+                    held: Vec::new(),
+                    pending_lam: 1.0,
+                }))
+            }
+        };
         Ok(Self {
             cfg,
             w_sum: 0.0,
@@ -501,9 +508,6 @@ impl Marginal {
         &self.cfg
     }
 
-    /// The accumulated weight of every learned row, as the next row's
-    /// `n_eff` reports it (CLAUDE.md rule 8).
-    #[inline]
     /// The boundary snapshot and the factor that decays it forward, when a
     /// `window` is set and something has aged out of it.
     fn boundary(&self) -> Option<(&MarginalMoments, f64)> {
@@ -641,18 +645,15 @@ impl Marginal {
         let (mut n_serial, mut t_serial) = (f64::NAN, f64::NAN);
         let (mut phi_x, mut phi_y) = (f64::NAN, f64::NAN);
         if let Some(lag) = self.lag.as_ref() {
+            // `C_l / (sd_a · sd_b)` in every orientation, the auto terms
+            // included -- `ew_cov`'s expression, so the two surfaces agree
+            // to the bit (`tests/test_marginal_lags.py` holds them to it).
             let sd_x = var_x.sqrt();
             let sd_y = var_y.sqrt();
             for li in 0..lag.lags().len() {
-                let norm = |v: f64, d: f64| {
-                    if d > 0.0 {
-                        (v / d).clamp(-1.0, 1.0)
-                    } else {
-                        f64::NAN
-                    }
-                };
-                lagcorr_xx.push(norm(lag.cxx(li, t, j), var_x));
-                lagcorr_yy.push(norm(lag.cyy(li, t), var_y));
+                let norm = |v: f64, d: f64| if d > 0.0 { v / d } else { f64::NAN };
+                lagcorr_xx.push(norm(lag.cxx(li, t, j), sd_x * sd_x));
+                lagcorr_yy.push(norm(lag.cyy(li, t), sd_y * sd_y));
                 lagcorr_xy.push(norm(lag.cxy(li, t, j), sd_x * sd_y));
                 lagcorr_yx.push(norm(lag.cyx(li, t, j), sd_x * sd_y));
             }
@@ -662,7 +663,8 @@ impl Marginal {
                 phi_y = py;
                 if factor.is_finite() && factor > 0.0 {
                     n_serial = n_kish / factor;
-                    if n_serial > 2.0 && corr.is_finite() && corr.abs() < 1.0 {
+                    // `±inf` at `corr = ±1`, as `t` is: the honest value.
+                    if n_serial > 2.0 && corr.is_finite() {
                         t_serial = corr * ((n_serial - 2.0) / (1.0 - corr * corr)).sqrt();
                     }
                 }
@@ -691,7 +693,8 @@ impl Marginal {
                     } else {
                         n_kish
                     };
-                    if n > 2.0 && split.gain < 1.0 {
+                    // `+inf` at a gain of one, as `t` is at `corr = ±1`.
+                    if n > 2.0 {
                         split_gain_t = ((n - 2.0) * split.gain / (1.0 - split.gain)).sqrt();
                     }
                 }
@@ -751,8 +754,11 @@ impl Marginal {
             return;
         };
         for (t, yt) in y.iter().enumerate() {
+            // A target that is absent, or a row with no weight behind it or
+            // on it, moves nothing: these are normalized moments and their
+            // decay rides on `W_t` (the `marglag` module doc says why they
+            // must not be aged on their own).
             let Some(yt) = *yt else {
-                lag.decay_target(t, lam);
                 continue;
             };
             let w_new = lam * self.wt[t] + w;
@@ -797,7 +803,13 @@ impl Marginal {
             let w_new = lam * self.wt[t] + w;
             if w_new <= 0.0 {
                 // No weight in the history and none on this row: nothing to
-                // average, and `a`/`b` would be 0/0 (CLAUDE.md rule 9).
+                // average, and `a`/`b` would be 0/0 (CLAUDE.md rule 9). The
+                // weights still take the row's decay -- `lam = 0` with a
+                // zero-weight row is a clock gap past `max_dclock` on a row
+                // that teaches nothing, and the target's `n_eff` must not
+                // outlive the gap while the model's does not.
+                self.wt[t] = 0.0;
+                self.qt[t] = 0.0;
                 continue;
             }
             let a = lam * self.wt[t] / w_new;
@@ -1840,5 +1852,174 @@ mod tests {
         let constant = m.pair(0, 2);
         assert!(constant.bin_edges.is_empty(), "a constant feature: one bin");
         assert!(constant.split_gain.is_nan(), "and no split to report");
+    }
+
+    /// Two edge lists are the same thing in two layouts: bins learned from
+    /// a warm-up, or given up front. This is the given kind.
+    fn given_edges(edges: Vec<f64>) -> Box<crate::BinCfg> {
+        Box::new(crate::BinCfg {
+            n_bins: 2,
+            edges: Some(vec![edges]),
+            rule: crate::BinRule::Quantile,
+            warm_rows: 2,
+        })
+    }
+
+    /// The lagged moments are normalized (`E_w`), and their decay rides on
+    /// the target's weight through `a = lam·W/W'` on the rows that learn. A
+    /// row where the target is absent must therefore leave them exactly
+    /// where they are, as it leaves the pair moments: ageing them on their
+    /// own biased every lagged autocorrelation toward zero by the missing
+    /// fraction (`marglag` module doc).
+    #[test]
+    fn lag_moments_hold_where_the_target_is_missing() {
+        let mut c = cfg(1, 1);
+        c.lags = vec![1, 2];
+        c.serial_rule = Some(SerialRule::Truncated);
+        let mut m = Marginal::new(c).unwrap();
+        let mut seed = 5u64;
+        let mut x = 0.0;
+        for i in 0..300 {
+            x = 0.9 * x + lcg(&mut seed);
+            let y = x + 0.1 * lcg(&mut seed);
+            OnlineModel::step(&mut m, &[x], &[Some(y)], step_clock(i), 1.0);
+        }
+        let before = m.pair(0, 0);
+        assert!(before.lagcorr_xx[0] > 0.5, "{:?}", before.lagcorr_xx);
+        for _ in 0..100 {
+            x = 0.9 * x + lcg(&mut seed);
+            OnlineModel::step(&mut m, &[x], &[None], 1.0, 1.0);
+        }
+        let after = m.pair(0, 0);
+        assert_eq!(before.var_x, after.var_x, "the pair moments hold");
+        assert_eq!(before.corr, after.corr);
+        assert_eq!(
+            before.lagcorr_xx, after.lagcorr_xx,
+            "so the lag moments hold"
+        );
+        assert_eq!(before.lagcorr_yy, after.lagcorr_yy);
+        assert_eq!(before.lagcorr_xy, after.lagcorr_xy);
+        assert_eq!(before.lagcorr_yx, after.lagcorr_yx);
+        // `n_kish = W²/Q` is scale-free, so the correction is unchanged too
+        // (to rounding: `W` and `Q` aged by `lam` and `lam²` a hundred times).
+        assert!(close(before.n_serial, after.n_serial, 1e-12));
+        assert!(after.n_eff < before.n_eff / 20.0, "only the weight aged");
+    }
+
+    /// A clock gap long enough that `lam` underflows to exactly zero, on a
+    /// row that carries no weight: the model's `n_eff` is zero after it, and
+    /// so must every target's be. The recursion `W' = lam·W + w` gives that
+    /// by itself; the `0/0` guard on `a` and `b` must not skip it.
+    #[test]
+    fn a_zero_weight_row_across_a_total_gap_ages_the_target_weight() {
+        let mut c = cfg(1, 1);
+        c.decay = Decay::Halflife(1.0);
+        let mut m = Marginal::new(c).unwrap();
+        for i in 0..50 {
+            OnlineModel::step(&mut m, &[1.0], &[Some(1.0)], step_clock(i), 1.0);
+        }
+        assert!(m.pair(0, 0).n_eff > 1.9);
+        assert_eq!(Decay::Halflife(1.0).factor(2000.0), 0.0, "a total gap");
+        OnlineModel::step(&mut m, &[1.0], &[Some(1.0)], 2000.0, 0.0);
+        assert_eq!(m.n_eff(), 0.0);
+        let p = m.pair(0, 0);
+        assert_eq!(p.n_eff, 0.0, "the target's weight decayed with the model's");
+        assert!(p.n_kish.is_nan(), "0/0, reported as nothing");
+        // And the stream resumes from nothing, as after a first row.
+        OnlineModel::step(&mut m, &[2.0], &[Some(3.0)], 1.0, 1.0);
+        let p = m.pair(0, 0);
+        assert_eq!((p.n_eff, p.mean_x, p.mean_y), (1.0, 2.0, 3.0));
+    }
+
+    /// The histogram is the pair moments' companion, so a gap that takes the
+    /// pair's weight to nothing (`lam = 0`) must empty it too -- and a chain
+    /// of gaps whose product underflows the scale must not leave it dead.
+    /// The invariant: the bin weights sum to the target's `n_eff`.
+    #[test]
+    fn a_total_gap_empties_the_histogram_with_the_moments() {
+        let sum = |p: &Pair| p.bin_n.iter().sum::<f64>();
+        let mut c = cfg(1, 1);
+        c.decay = Decay::Halflife(1.0);
+        c.bins = Some(given_edges(vec![0.0]));
+        let mut m = Marginal::new(c).unwrap();
+        for i in 0..100 {
+            let x = if i % 2 == 0 { -1.0 } else { 1.0 };
+            OnlineModel::step(&mut m, &[x], &[Some(10.0)], step_clock(i), 1.0);
+        }
+        let p = m.pair(0, 0);
+        assert!(p.bin_n.iter().all(|n| *n > 0.5), "{:?}", p.bin_n);
+        assert!((sum(&p) - p.n_eff).abs() < 1e-9);
+
+        // lam = 0: the old rows weigh nothing, and the histogram says so.
+        OnlineModel::step(&mut m, &[-1.0], &[Some(0.0)], 2000.0, 1.0);
+        let p = m.pair(0, 0);
+        assert_eq!(p.bin_n, vec![1.0, 0.0], "one row, in the left bin");
+        assert_eq!(p.bin_mean_y[0], 0.0, "and nothing of the 10s survives");
+        assert!(p.bin_mean_y[1].is_nan());
+        assert!(p.split_gain.is_nan(), "one bin, no variance, no split");
+        for _ in 0..9 {
+            OnlineModel::step(&mut m, &[-1.0], &[Some(0.0)], 1.0, 1.0);
+        }
+        let p = m.pair(0, 0);
+        assert!(
+            (sum(&p) - p.n_eff).abs() < 1e-9,
+            "{} vs {}",
+            sum(&p),
+            p.n_eff
+        );
+        assert_eq!(p.bin_n[1], 0.0);
+
+        // Two gaps whose factors multiply below the smallest scale the
+        // histogram keeps: it folds, and keeps counting.
+        let mut c = cfg(1, 1);
+        c.decay = Decay::Halflife(1.0);
+        c.bins = Some(given_edges(vec![0.0]));
+        let mut m = Marginal::new(c).unwrap();
+        OnlineModel::step(&mut m, &[-1.0], &[Some(1.0)], 0.0, 1.0);
+        OnlineModel::step(&mut m, &[1.0], &[Some(1.0)], 465.0, 1.0);
+        let p = m.pair(0, 0);
+        assert!(
+            (sum(&p) - p.n_eff).abs() < 1e-9,
+            "{} vs {}",
+            sum(&p),
+            p.n_eff
+        );
+        OnlineModel::step(&mut m, &[1.0], &[Some(1.0)], 700.0, 1.0);
+        for _ in 0..50 {
+            OnlineModel::step(&mut m, &[1.0], &[Some(2.0)], 1.0, 1.0);
+        }
+        let p = m.pair(0, 0);
+        assert!(p.n_eff > 1.99, "{}", p.n_eff);
+        assert!(
+            (sum(&p) - p.n_eff).abs() < 1e-9,
+            "{} vs {}",
+            sum(&p),
+            p.n_eff
+        );
+        assert_eq!(p.bin_n[0], 0.0, "the first row is below f64 range");
+        assert!((p.bin_mean_y[1] - 2.0).abs() < 1e-9, "{}", p.bin_mean_y[1]);
+        assert!(p.bin_var_y[1] < 1e-9, "{}", p.bin_var_y[1]);
+    }
+
+    /// A cut that explains everything: `split_gain` is exactly one, and its
+    /// statistic is `+inf`, as `t` is at `corr = ±1`.
+    #[test]
+    fn a_perfect_split_has_an_infinite_statistic() {
+        let mut c = cfg(1, 1);
+        c.decay = Decay::Halflife(f64::INFINITY);
+        c.bins = Some(given_edges(vec![0.0]));
+        let mut m = Marginal::new(c).unwrap();
+        for i in 0..100 {
+            let x = if i % 2 == 0 { -1.0 } else { 1.0 };
+            let y = if x > 0.0 { 1.0 } else { 0.0 };
+            OnlineModel::step(&mut m, &[x], &[Some(y)], step_clock(i), 1.0);
+        }
+        let p = m.pair(0, 0);
+        assert_eq!(p.split_gain, 1.0);
+        assert_eq!(p.split_at, 0.0);
+        assert_eq!(p.split_gain_t, f64::INFINITY);
+        // The same target is a perfect line in `x`, and `t` agrees.
+        assert_eq!(p.corr, 1.0);
+        assert_eq!(p.t, f64::INFINITY);
     }
 }

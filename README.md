@@ -1638,6 +1638,12 @@ computes, to the bit — and `serial_rule` turns them into Bartlett's correction
 | `t_serial` | the same statistic as `t`, against that count |
 | `phi_x`, `phi_y` | the fitted per-row decays, under `serial_rule="geometric"` |
 
+The four lists are `ew_cov`'s `lagcorr` numbers exactly — the lagged
+covariance over the two standard deviations, not clamped to `[−1, 1]`, since a
+lagged correlation is not bounded by one in a finite sample. A row where the
+target is missing ages its weight and holds the lag moments, as it holds the
+pair's.
+
 Two *independent* AR(1) series with `φ = 0.9` and `0.8` come out at `t = 2.39`
 and `t_serial = 1.03`. The first is a finding; the second is the truth.
 
@@ -1667,12 +1673,21 @@ Read `split_gain_t` as a ranking, not a p-value. The cut was chosen by
 maximising over the candidates, and the statistic does not know that.
 
 Give the edges outright with `bin_edges` — a list per feature, or a dict keyed
-by name — and they are exact and comparable across runs. Otherwise they are
-learned from the first `bin_warm_rows` rows (default 1,000), by quantile or by
-equal width. Those rows are held and replayed, not spent: the histogram is what
-it would have been had the edges been known before the first row. A feature
-keeps only the bins it can support, so a binary feature has two and a constant
-one has a single bin and no split.
+by name — and they are exact and comparable across runs; `bins`, `bin_rule` and
+`bin_warm_rows` describe learning them and are refused beside it. Otherwise
+they are learned from the first `bin_warm_rows` rows (default 1,000), by
+weighted quantile or by equal width. A value that carries more than a bin's
+share — an indicator's zero — fills a bin of its own and the rest share what is
+left, so the 5% of rows that carry the signal are not lost among the zeros.
+Those rows are held and replayed, not spent: the histogram is what it would
+have been had the edges been known before the first row. A feature keeps only
+the bins it can support, so a binary feature has two and a constant one has a
+single bin and no split. Each bin's moments are kept the way every accumulator
+here is kept, so a target at `1e7` keeps its variance.
+
+Both views ride into `bank.closed_groups()` as `pair_*` columns beside the
+others: `pair_split_gain` as a list over the pairs, `pair_lagcorr_xx` and
+`pair_bin_n` as lists of lists.
 
 ```python
 pairs = po.spec.marginal("pairs", targets=["y", "ret"],

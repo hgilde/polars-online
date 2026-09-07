@@ -20,15 +20,27 @@ carries breaking changes.
   at `O(bins)` of state per pair. Edges come from `bin_edges` outright or are
   learned from the first `bin_warm_rows` rows under `bin_rule`; the warm-up
   rows are held and replayed, not spent, so the histogram is what it would
-  have been had the edges been known first.
+  have been had the edges been known first. Each bin's moments are kept in
+  Welford form, so a target far from zero keeps its variance; the quantile
+  rule is weighted and keeps a point mass — an indicator's zero — in a bin
+  of its own; `bin_edges` is refused beside the learned kind's knobs
+  (task 67 review).
 - **`marginal(lags=)` and `n_serial`** (task 65, `docs/ENHANCEMENTS.md` E66).
   `t` is built on `n_kish`, which says nothing about serial dependence: on a
   smooth stream `t` reports evidence that is not there. `lags=` accumulates
   the pair's moments at those lags — bit-identical to `ew_cov(lags=)` — and
   `serial_rule` turns them into Bartlett's correction, reported as
   `n_serial` and `t_serial` beside `t`, with `phi_x`, `phi_y` and the four
-  `lagcorr_*` columns. On two independent AR(1) series at `phi = 0.9` and
-  `0.8`: `t = 2.39`, `t_serial = 1.03`.
+  `lagcorr_*` columns — `ew_cov`'s `lagcorr` numbers exactly, unclamped. On
+  two independent AR(1) series at `phi = 0.9` and `0.8`: `t = 2.39`,
+  `t_serial = 1.03`. A row where the target is missing holds the lag moments
+  as it holds the pair's (task 67 review).
+- **Closed-group rows carry the lag and bin blocks** (task 67). A closing
+  `marginal` with `lags=` or `bins=` adds `pair_lagcorr_*`, `pair_n_serial`,
+  `pair_t_serial`, `pair_phi_*`, `pair_bin_*` and `pair_split_*` beside the
+  other `pair_*` columns — lists of lists where `marginal()` has a list per
+  pair — under `marginal()`'s null rule (NaN is null, `±inf` stays). A bank
+  none of whose closing marginals asked has no such columns.
 - **`docs/OUTPUTS.md`: what every model writes** (task 64,
   `docs/ENHANCEMENTS.md` E65). Every spec adds one struct column and nothing
   said what was in it per model — `hmm`'s `state` and `p1_<j>`, `bocpd`'s

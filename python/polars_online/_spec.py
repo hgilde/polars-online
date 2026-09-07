@@ -1779,10 +1779,14 @@ def marginal(
     The edges are fixed once and never move, so a bin means the same thing
     for the life of the stream. ``bin_edges`` sets them outright — a list per
     feature in ``features`` order, or a dict keyed by feature name — which is
-    exact, reproducible, and comparable across runs and groups. Otherwise
-    they are learned from the first ``bin_warm_rows`` learned rows (default
-    1,000) under ``bin_rule``: ``"quantile"`` (the default) for equal counts,
-    ``"fixed"`` for equal widths between the smallest and largest value seen.
+    exact, reproducible, and comparable across runs and groups; ``bins``,
+    ``bin_rule`` and ``bin_warm_rows`` describe learning them and are refused
+    beside it. Otherwise they are learned from the first ``bin_warm_rows``
+    learned rows (default 1,000) under ``bin_rule``: ``"quantile"`` (the
+    default) for equal *weight* per bin — a value that carries more than a
+    bin's share, an indicator's zero say, fills a bin of its own and the
+    remaining bins share what is left — or ``"fixed"`` for equal widths
+    between the smallest and largest value seen.
 
     Those warm-up rows are **held, not spent**. They wait in memory, and the
     moment the edges exist every one of them is replayed with its own decay,
@@ -1796,7 +1800,12 @@ def marginal(
     binary feature gets two bins whatever ``bins`` says, and a constant one
     gets a single bin and no split. ``bins`` and ``window`` are refused
     together — a window works by subtracting an old snapshot, and a snapshot
-    of the histogram is ``bins`` times the size of one.
+    of the histogram is ``bins`` times the size of one. Decay reaches the
+    histogram the way it reaches the pair moments, so a clock gap past
+    ``max_dclock`` empties it along with them.
+
+    Both blocks ride into :meth:`ModelBank.closed_groups` as ``pair_*``
+    columns, one entry per pair; the per-pair lists become lists of lists.
 
     ``add_intercept`` and ``coef_every`` have nothing to act on here, and
     nothing residual-based applies (there is no prediction), so the residual

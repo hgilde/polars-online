@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use online_core::ClockCfg;
+use polars::chunked_array::builder::AnonymousOwnedListBuilder;
 use polars::prelude::*;
 use polars_arrow::bitmap::{Bitmap, MutableBitmap};
 use polars_utils::aliases::PlHashMap;
@@ -531,6 +532,21 @@ fn close_rows(
                                 corr: p.corr,
                                 beta: p.beta,
                                 t: p.t,
+                                lagcorr_xx: p.lagcorr_xx,
+                                lagcorr_yy: p.lagcorr_yy,
+                                lagcorr_xy: p.lagcorr_xy,
+                                lagcorr_yx: p.lagcorr_yx,
+                                n_serial: p.n_serial,
+                                t_serial: p.t_serial,
+                                phi_x: p.phi_x,
+                                phi_y: p.phi_y,
+                                bin_edges: p.bin_edges,
+                                bin_n: p.bin_n,
+                                bin_mean_y: p.bin_mean_y,
+                                bin_var_y: p.bin_var_y,
+                                split_gain: p.split_gain,
+                                split_at: p.split_at,
+                                split_gain_t: p.split_gain_t,
                             }
                         })
                     })
@@ -1166,7 +1182,11 @@ pub struct Gram {
 }
 
 /// One (feature, target) pair of a closed `marginal` group, the columns
-/// [`Bank::marginal`] reports for it.
+/// [`Bank::marginal`] reports for it: the linear block always, the lag
+/// block (E66) where the spec asked for `lags`, the binned block (E67)
+/// where it asked for `bins` or `bin_edges`. The lists are empty and the
+/// scalars NaN where the spec did not ask, and a row written before the two
+/// blocks existed reads back the same way (bank files are named msgpack).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PairRow {
     pub feature: String,
@@ -1181,6 +1201,42 @@ pub struct PairRow {
     pub corr: f64,
     pub beta: f64,
     pub t: f64,
+    #[serde(default)]
+    pub lagcorr_xx: Vec<f64>,
+    #[serde(default)]
+    pub lagcorr_yy: Vec<f64>,
+    #[serde(default)]
+    pub lagcorr_xy: Vec<f64>,
+    #[serde(default)]
+    pub lagcorr_yx: Vec<f64>,
+    #[serde(default = "nan")]
+    pub n_serial: f64,
+    #[serde(default = "nan")]
+    pub t_serial: f64,
+    #[serde(default = "nan")]
+    pub phi_x: f64,
+    #[serde(default = "nan")]
+    pub phi_y: f64,
+    #[serde(default)]
+    pub bin_edges: Vec<f64>,
+    #[serde(default)]
+    pub bin_n: Vec<f64>,
+    #[serde(default)]
+    pub bin_mean_y: Vec<f64>,
+    #[serde(default)]
+    pub bin_var_y: Vec<f64>,
+    #[serde(default = "nan")]
+    pub split_gain: f64,
+    #[serde(default = "nan")]
+    pub split_at: f64,
+    #[serde(default = "nan")]
+    pub split_gain_t: f64,
+}
+
+/// The core's "not defined", for a field a row written before it existed
+/// does not carry.
+fn nan() -> f64 {
+    f64::NAN
 }
 
 /// One group's accumulators at the moment the bank could prove that no
@@ -1250,9 +1306,24 @@ pub struct ClosedRow {
 }
 
 /// A `list[f64]` column: one list per row, `None` where the row has none,
-/// and null inside for a value that is not finite -- `coef`'s rule, and
-/// `marginal()`'s (a constant column's `corr` is NaN there and null here).
+/// and null inside for a value that is not finite -- `coef`'s rule.
 fn list_f64(name: &str, rows: &[ClosedRow], f: impl Fn(&ClosedRow) -> Option<Vec<f64>>) -> Column {
+    list_f64_by(name, rows, f64::is_finite, f)
+}
+
+/// [`list_f64`] under `marginal()`'s rule: null inside only for NaN, the
+/// core's "undefined" (a constant column's `corr`), while `±inf` stays --
+/// `t` on a perfect fit is `±inf` there and must be `±inf` here.
+fn pair_f64(name: &str, rows: &[ClosedRow], f: impl Fn(&ClosedRow) -> Option<Vec<f64>>) -> Column {
+    list_f64_by(name, rows, |x| !x.is_nan(), f)
+}
+
+fn list_f64_by(
+    name: &str,
+    rows: &[ClosedRow],
+    keep: impl Fn(f64) -> bool,
+    f: impl Fn(&ClosedRow) -> Option<Vec<f64>>,
+) -> Column {
     let mut b = ListPrimitiveChunkedBuilder::<Float64Type>::new(
         name.into(),
         rows.len(),
@@ -1261,7 +1332,7 @@ fn list_f64(name: &str, rows: &[ClosedRow], f: impl Fn(&ClosedRow) -> Option<Vec
     );
     for r in rows {
         match f(r) {
-            Some(v) => b.append_iter(v.iter().map(|x| x.is_finite().then_some(*x))),
+            Some(v) => b.append_iter(v.iter().map(|x| keep(*x).then_some(*x))),
             None => b.append_null(),
         }
     }
@@ -1284,6 +1355,57 @@ fn list_str(
     b.finish().into_series().into()
 }
 
+/// A `list[list[f64]]` column: one list per row with one inner list per
+/// pair, `None` where the row has no such block, and null inside an inner
+/// list for NaN, as [`pair_f64`]. This is how a closed `marginal` row
+/// carries what [`Bank::marginal`] reports as a list column per pair -- the
+/// lag correlations and the bin histogram, whose inner lengths differ from
+/// pair to pair by design.
+fn list_list_f64<'a>(
+    name: &str,
+    rows: &'a [ClosedRow],
+    f: impl Fn(&'a ClosedRow) -> Option<Vec<&'a [f64]>>,
+) -> PolarsResult<Column> {
+    let inner = DataType::List(Box::new(DataType::Float64));
+    let mut b = AnonymousOwnedListBuilder::new(name.into(), rows.len(), Some(inner));
+    for r in rows {
+        match f(r) {
+            Some(lists) => {
+                let mut ib = ListPrimitiveChunkedBuilder::<Float64Type>::new(
+                    PlSmallStr::EMPTY,
+                    lists.len(),
+                    8,
+                    DataType::Float64,
+                );
+                for v in lists {
+                    ib.append_iter(v.iter().map(|x| (!x.is_nan()).then_some(*x)));
+                }
+                b.append_series(&ib.finish().into_series())?;
+            }
+            None => b.append_null(),
+        }
+    }
+    Ok(b.finish().into_series().into())
+}
+
+/// Whether a `marginal` spec asked for the lag block (E66).
+fn spec_lags(s: &Spec) -> bool {
+    matches!(&s.model, ModelKind::Marginal { lags: Some(l), .. } if !l.is_empty())
+}
+
+/// Whether a `marginal` spec asked for the binned block (E67), learned or
+/// given.
+fn spec_bins(s: &Spec) -> bool {
+    matches!(
+        &s.model,
+        ModelKind::Marginal { bins: Some(_), .. }
+            | ModelKind::Marginal {
+                bin_edges: Some(_),
+                ..
+            }
+    )
+}
+
 /// The frame [`Bank::closed_groups`] returns: the common columns always,
 /// and a kind's block when **any** spec of the bank closes groups and is of
 /// that kind, null on the rows of other kinds (docs/ENHANCEMENTS.md E54).
@@ -1302,6 +1424,8 @@ fn closed_frame(specs: &[Spec], rows: &[ClosedRow]) -> PolarsResult<DataFrame> {
     });
     let has_pca = any(|s| matches!(s.model, ModelKind::EwCov { pca: Some(_), .. }));
     let has_pairs = any(|s| matches!(s.model, ModelKind::Marginal { .. }));
+    let has_lags = any(spec_lags);
+    let has_bins = any(spec_bins);
     let has_rcov = any(|s| matches!(s.model, ModelKind::Rcov { .. }));
     let opt = |v: f64| v.is_finite().then_some(v);
 
@@ -1440,9 +1564,68 @@ fn closed_frame(specs: &[Spec], rows: &[ClosedRow]) -> PolarsResult<DataFrame> {
             ("pair_beta", |p| p.beta),
             ("pair_t", |p| p.t),
         ] {
-            cols.push(list_f64(name, rows, move |r| {
+            cols.push(pair_f64(name, rows, move |r| {
                 (!empty(r)).then(|| r.pairs.iter().map(f).collect())
             }));
+        }
+        // The two optional blocks, in `marginal()`'s order and under its
+        // rule: present when any closing spec asked, and on a row whose
+        // spec did not ask, null -- the column `marginal()` would not have.
+        let asked = |r: &ClosedRow, f: fn(&Spec) -> bool| !empty(r) && f(&specs[r.spec]);
+        if has_lags {
+            for (name, f) in [
+                (
+                    "pair_lagcorr_xx",
+                    (|p: &PairRow| p.lagcorr_xx.as_slice()) as fn(&PairRow) -> &[f64],
+                ),
+                ("pair_lagcorr_yy", |p| p.lagcorr_yy.as_slice()),
+                ("pair_lagcorr_xy", |p| p.lagcorr_xy.as_slice()),
+                ("pair_lagcorr_yx", |p| p.lagcorr_yx.as_slice()),
+            ] {
+                cols.push(list_list_f64(name, rows, move |r| {
+                    asked(r, spec_lags).then(|| r.pairs.iter().map(f).collect())
+                })?);
+            }
+            for (name, f) in [
+                (
+                    "pair_n_serial",
+                    (|p: &PairRow| p.n_serial) as fn(&PairRow) -> f64,
+                ),
+                ("pair_t_serial", |p| p.t_serial),
+                ("pair_phi_x", |p| p.phi_x),
+                ("pair_phi_y", |p| p.phi_y),
+            ] {
+                cols.push(pair_f64(name, rows, move |r| {
+                    asked(r, spec_lags).then(|| r.pairs.iter().map(f).collect())
+                }));
+            }
+        }
+        if has_bins {
+            for (name, f) in [
+                (
+                    "pair_bin_edges",
+                    (|p: &PairRow| p.bin_edges.as_slice()) as fn(&PairRow) -> &[f64],
+                ),
+                ("pair_bin_n", |p| p.bin_n.as_slice()),
+                ("pair_bin_mean_y", |p| p.bin_mean_y.as_slice()),
+                ("pair_bin_var_y", |p| p.bin_var_y.as_slice()),
+            ] {
+                cols.push(list_list_f64(name, rows, move |r| {
+                    asked(r, spec_bins).then(|| r.pairs.iter().map(f).collect())
+                })?);
+            }
+            for (name, f) in [
+                (
+                    "pair_split_gain",
+                    (|p: &PairRow| p.split_gain) as fn(&PairRow) -> f64,
+                ),
+                ("pair_split_at", |p| p.split_at),
+                ("pair_split_gain_t", |p| p.split_gain_t),
+            ] {
+                cols.push(pair_f64(name, rows, move |r| {
+                    asked(r, spec_bins).then(|| r.pairs.iter().map(f).collect())
+                }));
+            }
         }
     }
     if has_rcov {
@@ -1945,7 +2128,6 @@ impl Bank {
         let mut feature: Vec<&str> = Vec::new();
         let mut target: Vec<&str> = Vec::new();
         let mut pairs: Vec<online_core::MarginalPair> = Vec::new();
-        let mut asked_for_bins = false;
         for key in keys {
             for (label, model) in &states[key].models {
                 let AnyModel::Marginal(m) = model else {
@@ -1957,7 +2139,6 @@ impl Bank {
                         instance.push(label.as_str());
                         feature.push(f.as_str());
                         target.push(t.as_str());
-                        asked_for_bins |= m.cfg().bins.is_some();
                         pairs.push(m.pair(t_i, j));
                     }
                 }
@@ -1988,13 +2169,10 @@ impl Bank {
             Column::new("beta".into(), num(|p| p.beta)),
             Column::new("t".into(), num(|p| p.t)),
         ];
-        // E66: the lag family, one list column per orientation, plus the
-        // serial-dependence-corrected count and its statistic. Absent
-        // without `lags`, so a spec that does not ask for them gets the
-        // frame it always got.
         // A list column of one field, whose inner lengths may differ from
         // row to row: bins are ragged by design, since a feature keeps only
-        // the edges it can support.
+        // the edges it can support. NaN inside is null inside, as `num`
+        // says it is for the scalars.
         let lists = |f: fn(&online_core::MarginalPair) -> &Vec<f64>| -> Column {
             let mut b = ListPrimitiveChunkedBuilder::<Float64Type>::new(
                 "".into(),
@@ -2003,11 +2181,22 @@ impl Bank {
                 DataType::Float64,
             );
             for p in &pairs {
-                b.append_slice(f(p));
+                b.append_iter(f(p).iter().map(|v| (!v.is_nan()).then_some(*v)));
             }
             b.finish().into_column()
         };
-        if pairs.first().is_some_and(|p| !p.lagcorr_xx.is_empty()) {
+        // Both optional blocks are the spec's to ask for, so the schema is
+        // the spec's: a bank with no groups yet, or a group narrowed to
+        // that the bank has not seen, gives the same columns as one that
+        // has learned -- a caller who asked for them should find them,
+        // holding nulls and empty lists, rather than discover that they
+        // appear later.
+        //
+        // E66: the lag family, one list column per orientation, plus the
+        // serial-dependence-corrected count and its statistic. Absent
+        // without `lags`, so a spec that does not ask for them gets the
+        // frame it always got.
+        if spec_lags(s) {
             cols.push(lists(|p| &p.lagcorr_xx).with_name("lagcorr_xx".into()));
             cols.push(lists(|p| &p.lagcorr_yy).with_name("lagcorr_yy".into()));
             cols.push(lists(|p| &p.lagcorr_xy).with_name("lagcorr_xy".into()));
@@ -2017,11 +2206,9 @@ impl Bank {
             cols.push(Column::new("phi_x".into(), num(|p| p.phi_x)));
             cols.push(Column::new("phi_y".into(), num(|p| p.phi_y)));
         }
-        // E67: the binned view. Present whenever the spec asked for bins,
-        // even before any group has finished its warm-up -- a caller who
-        // asked for these columns should find them, holding empty lists and
-        // nulls, rather than have to discover that they appear later.
-        if asked_for_bins {
+        // E67: the binned view, empty lists and nulls until a group's
+        // warm-up has fixed its edges.
+        if spec_bins(s) {
             cols.push(lists(|p| &p.bin_edges).with_name("bin_edges".into()));
             cols.push(lists(|p| &p.bin_n).with_name("bin_n".into()));
             cols.push(lists(|p| &p.bin_mean_y).with_name("bin_mean_y".into()));
