@@ -125,7 +125,7 @@
     feature_sets = None
     standardize = False
     ridge_decay = False
-    coef0 = None
+    coef_prior = None
     session_shrink = None
     long_halflife = None
     solve_every = None
@@ -197,7 +197,7 @@
     seed = None
     update_every = None
     split_merge = None
-    sm_every = None
+    split_merge_every = None
     dead_frac = None
     standardize = None
     common
@@ -263,9 +263,9 @@
     jitter = 2
     theta = 1.0
     psd = True
-    n_max = None
-    h_max = None
-    preavg_ticks = None
+    block_rows = None
+    max_bandwidth = None
+    preavg_rows = None
     noise_stride = None
     iv_stride = None
     common
@@ -274,7 +274,7 @@
     targets
     features
     ridge = None
-    coef0 = None
+    coef_prior = None
     common
   seqtest:
     name

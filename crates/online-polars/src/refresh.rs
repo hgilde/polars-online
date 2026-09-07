@@ -36,7 +36,7 @@
 //! **The staleness caveat** (their §2.1) is worth stating, because the output
 //! looks synchronous and is not: a refresh vector is *treated* as observed at
 //! `time_refresh`, but each series' value is up to one of its own inter-tick
-//! intervals old. `n_ticks_<s>` is that staleness made visible -- a series
+//! intervals old. `n_obs_<s>` is that staleness made visible -- a series
 //! with a large count between two grid points is the one holding the grid up,
 //! and the one whose value is freshest; a series with a count of 1 has not
 //! moved since it last did.
@@ -192,7 +192,7 @@ impl RefreshTime {
                 out.insert(format!("{n}_value").into(), DataType::Float64);
             }
             for n in &self.names {
-                out.insert(format!("n_ticks_{n}").into(), DataType::Int64);
+                out.insert(format!("n_obs_{n}").into(), DataType::Int64);
             }
             out.insert("retained_fraction".into(), DataType::Float64);
         } else {
@@ -200,8 +200,8 @@ impl RefreshTime {
             out.insert("time_refresh".into(), DataType::Float64);
             out.insert("a_value".into(), DataType::Float64);
             out.insert("b_value".into(), DataType::Float64);
-            out.insert("n_ticks_a".into(), DataType::Int64);
-            out.insert("n_ticks_b".into(), DataType::Int64);
+            out.insert("n_obs_a".into(), DataType::Int64);
+            out.insert("n_obs_b".into(), DataType::Int64);
             out.insert("retained_fraction".into(), DataType::Float64);
         }
         for k in cols.keep {
@@ -381,9 +381,9 @@ impl RefreshTime {
             ));
         }
         let tick_names: Vec<String> = if self.pairs.is_empty() {
-            self.names.iter().map(|n| format!("n_ticks_{n}")).collect()
+            self.names.iter().map(|n| format!("n_obs_{n}")).collect()
         } else {
-            vec!["n_ticks_a".into(), "n_ticks_b".into()]
+            vec!["n_obs_a".into(), "n_obs_b".into()]
         };
         for (si, name) in tick_names.iter().enumerate() {
             out.push(Column::new(
@@ -482,7 +482,7 @@ mod tests {
         let total_ticks: i64 = ["a", "b", "c"]
             .iter()
             .map(|s| {
-                out.column(&format!("n_ticks_{s}"))
+                out.column(&format!("n_obs_{s}"))
                     .unwrap()
                     .i64()
                     .unwrap()
@@ -514,7 +514,7 @@ mod tests {
         let out = rt.feed(&long(&rows), &cols(&[])).unwrap();
         assert_eq!(out.height(), 10);
         for s in ["a", "b"] {
-            let ticks = out.column(&format!("n_ticks_{s}")).unwrap().i64().unwrap();
+            let ticks = out.column(&format!("n_obs_{s}")).unwrap().i64().unwrap();
             assert!(ticks.into_no_null_iter().all(|t| t == 1));
         }
         let r = out.column("retained_fraction").unwrap().f64().unwrap();

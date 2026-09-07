@@ -2,7 +2,7 @@
 //! §11a, task 23): hard assignment to the nearest of `k` centres under a
 //! diagonal metric read from the EW feature moments, mean-form centre
 //! updates through a batch summary merged every `update_every` learned rows,
-//! and a split–merge check every `sm_every` learned rows that frees the
+//! and a split–merge check every `split_merge_every` learned rows that frees the
 //! emptier of the two closest clusters — or a dead one — and re-places it on
 //! the far rows of the cluster that has collected the most of them since the
 //! last check (ISODATA's split, on the rows themselves).
@@ -16,7 +16,7 @@
 //!             F_j* ← absorb(z, w)  when far   (Welford, §6.1);  V += w either way
 //! checkpoint  C_j ← merge_plain(B_j), B_j ← ∅         every update_every rows
 //!             R̃ ← mean of the trusted positive r2_j leaving out the largest (none: nothing is far)
-//! check       every sm_every rows: r2_j ← (n_j r2_j + n(F_j) cut) / (n_j + n(F_j)), R̃ again
+//! check       every split_merge_every rows: r2_j ← (n_j r2_j + n(F_j) cut) / (n_j + n(F_j)), R̃ again
 //!             closest pair (i, j) with d_ij < split_merge (r_i + r_j)
 //!             → l = argmax_l n(F_l) counting F_j as F_i's, only if n(F_l) ≥ FAR_SHARE · V
 //!             and rows(F_l) ≥ FAR_ROWS: C_i ← merge_welford(C_j), F_i ← merge_welford(F_j)
@@ -125,7 +125,7 @@ pub struct KMeansCfg {
     /// this many summed radii; `0` disables split–merge and the dead rule.
     pub split_merge: f64,
     /// Learned rows between split–merge checks, `>= 1`.
-    pub sm_every: u32,
+    pub split_merge_every: u32,
     /// A cluster lighter than `dead_frac · n_eff / k` at a check is dead
     /// and re-placed on the far rows; `0` disables the rule. A centre
     /// whose blob vanished gets there `log2(1/dead_frac)` halflives later
@@ -150,8 +150,8 @@ impl KMeansCfg {
         if self.update_every == 0 {
             return Err("kmeans: update_every must be >= 1".into());
         }
-        if self.sm_every == 0 {
-            return Err("kmeans: sm_every must be >= 1".into());
+        if self.split_merge_every == 0 {
+            return Err("kmeans: split_merge_every must be >= 1".into());
         }
         if !self.split_merge.is_finite() || self.split_merge < 0.0 {
             return Err("kmeans: split_merge must be finite and >= 0".into());
@@ -372,7 +372,7 @@ impl KMeans {
         self.since = 0;
         if self.cfg.split_merge > 0.0 {
             self.refresh_far_cut();
-            if self.since_sm >= self.cfg.sm_every {
+            if self.since_sm >= self.cfg.split_merge_every {
                 self.since_sm = 0;
                 self.winsorize_radii();
                 self.refresh_far_cut();
@@ -898,7 +898,7 @@ mod tests {
             seed: 0,
             update_every: 1,
             split_merge: 0.0,
-            sm_every: 1,
+            split_merge_every: 1,
             dead_frac: 0.0,
             standardize: false,
         }
@@ -1376,7 +1376,7 @@ mod tests {
             let c = KMeansCfg {
                 warm_rows: 20,
                 split_merge,
-                sm_every: 20,
+                split_merge_every: 20,
                 dead_frac: 0.05,
                 ..cfg(3)
             };
@@ -1433,7 +1433,7 @@ mod tests {
         let c = KMeansCfg {
             warm_rows: 3,
             split_merge: 1.0,
-            sm_every: 10,
+            split_merge_every: 10,
             dead_frac: 0.0,
             ..cfg(3)
         };
@@ -1479,7 +1479,7 @@ mod tests {
         let c = KMeansCfg {
             warm_rows: 50,
             split_merge: 0.5,
-            sm_every: 50,
+            split_merge_every: 50,
             ..cfg(1)
         };
         let mut m = KMeans::new(c).unwrap();
@@ -1516,7 +1516,7 @@ mod tests {
         let c = KMeansCfg {
             warm_rows: 3,
             split_merge: 0.0,
-            sm_every: 1,
+            split_merge_every: 1,
             dead_frac: 1.0,
             ..cfg(3)
         };
@@ -1560,7 +1560,7 @@ mod tests {
         let mut m = KMeans::new(KMeansCfg {
             warm_rows: 4,
             split_merge: 0.5,
-            sm_every: 5,
+            split_merge_every: 5,
             dead_frac: 0.1,
             ..cfg(3)
         })
@@ -1591,7 +1591,7 @@ mod tests {
             warm_rows: 3,
             standardize: true,
             split_merge: 0.5,
-            sm_every: 4,
+            split_merge_every: 4,
             dead_frac: 0.1,
             ..cfg(3)
         })
@@ -1653,7 +1653,7 @@ mod tests {
                 ..cfg(1)
             },
             KMeansCfg {
-                sm_every: 0,
+                split_merge_every: 0,
                 ..cfg(1)
             },
             KMeansCfg {

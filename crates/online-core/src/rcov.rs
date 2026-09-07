@@ -47,8 +47,8 @@
 //! The jittered **end** point is formed at close from observations already in
 //! state, and a product enters `Γ̂_h` only once both its legs are final -- a
 //! return `m` rows back can no longer turn out to be part of the end jitter.
-//! That is what makes the state a ring of `h_max + m` vectors, the close
-//! `O(h_max·k²)`, and the whole thing chunk-invariant.
+//! That is what makes the state a ring of `max_bandwidth + m` vectors, the close
+//! `O(max_bandwidth·k²)`, and the whole thing chunk-invariant.
 //!
 //! # A break inside a block
 //!
@@ -296,21 +296,21 @@ pub struct RcovCfg {
     /// Only `"parzen"`; another name is refused.
     pub kernel: String,
     /// A fixed `H`, or `None` for BNHLS's `"auto"` rule (which needs
-    /// `n_max`).
+    /// `block_rows`).
     pub bandwidth: Option<usize>,
     /// Observations averaged at each end, `m`. Default 2; `1` is no jitter.
     pub jitter: usize,
-    /// Pre-averaging window scale: `kₙ = ⌊θ√n_max⌋`.
+    /// Pre-averaging window scale: `kₙ = ⌊θ√block_rows⌋`.
     pub theta: f64,
     /// Clip negative eigenvalues at close.
     pub psd: bool,
     /// The block's expected length, which sizes the ring: `"auto"` and
     /// pre-averaging both need a window fixed before the first row.
-    pub n_max: Option<usize>,
-    /// Ring depth; defaults to `⌈c*·n_max^{3/5}⌉` under `"auto"`.
-    pub h_max: Option<usize>,
-    /// A fixed `kₙ`, instead of `⌊θ√n_max⌋`.
-    pub preavg_ticks: Option<usize>,
+    pub block_rows: Option<usize>,
+    /// Ring depth; defaults to `⌈c*·block_rows^{3/5}⌉` under `"auto"`.
+    pub max_bandwidth: Option<usize>,
+    /// A fixed `kₙ`, instead of `⌊θ√block_rows⌋`.
+    pub preavg_rows: Option<usize>,
     /// Subsampling stride for the noise estimate `ω̂²` (default 1, the dense
     /// grid).
     pub noise_stride: usize,
@@ -323,10 +323,10 @@ impl RcovCfg {
     /// The pre-averaging window this configuration fixes before the block
     /// starts.
     pub fn window_for(&self) -> Option<usize> {
-        if let Some(w) = self.preavg_ticks {
+        if let Some(w) = self.preavg_rows {
             return Some(w);
         }
-        let n = self.n_max? as f64;
+        let n = self.block_rows? as f64;
         Some(
             if self.psd {
                 // CKP §3's longer, PSD configuration. **The exponent is
@@ -343,18 +343,18 @@ impl RcovCfg {
         )
     }
 
-    /// The ring depth: `h_max`, or `⌈c*·n_max^{3/5}⌉` when the bandwidth is
+    /// The ring depth: `max_bandwidth`, or `⌈c*·block_rows^{3/5}⌉` when the bandwidth is
     /// automatic -- the depth at which `ξ̂ = 1`, a noise variance equal to
     /// the block's integrated variance, beyond which the estimator is not
     /// worth having.
     pub fn ring_for(&self) -> Option<usize> {
-        if let Some(h) = self.h_max {
+        if let Some(h) = self.max_bandwidth {
             return Some(h);
         }
         match (self.kind, self.bandwidth) {
             (RcovKind::Kernel, Some(h)) => Some(h),
             (RcovKind::Kernel, None) => {
-                let n = self.n_max? as f64;
+                let n = self.block_rows? as f64;
                 Some(((parzen_c_star() * n.powf(0.6)).ceil() as usize).max(1))
             }
             _ => Some(0),
@@ -388,27 +388,27 @@ impl RcovCfg {
                 self.kind.as_str()
             ));
         }
-        if self.preavg_ticks.is_some() && self.kind != RcovKind::Preavg {
+        if self.preavg_rows.is_some() && self.kind != RcovKind::Preavg {
             return Err(format!(
                 "rcov: window applies to kind = \"preavg\", not {:?}",
                 self.kind.as_str()
             ));
         }
-        if self.kind == RcovKind::Kernel && self.bandwidth.is_none() && self.n_max.is_none() {
+        if self.kind == RcovKind::Kernel && self.bandwidth.is_none() && self.block_rows.is_none() {
             return Err(
-                "rcov: an automatic bandwidth needs `n_max` (the block's expected length): the \
+                "rcov: an automatic bandwidth needs `block_rows` (the block's expected length): the \
                  ring has to be sized before the first row, and `n` is known only at the close"
                     .into(),
             );
         }
         if self.kind == RcovKind::Preavg && self.window_for().is_none() {
             return Err(
-                "rcov: pre-averaging needs `n_max` or an explicit `window`: the window has to be \
+                "rcov: pre-averaging needs `block_rows` or an explicit `window`: the window has to be \
                  fixed before the first row"
                     .into(),
             );
         }
-        if let Some(w) = self.preavg_ticks {
+        if let Some(w) = self.preavg_rows {
             if w < 2 {
                 return Err(format!(
                     "rcov: window must be >= 2 (got {w}); the pre-averaged return is a weighted \
@@ -417,19 +417,19 @@ impl RcovCfg {
                 ));
             }
         }
-        if self.n_max == Some(0) {
+        if self.block_rows == Some(0) {
             return Err(
-                "rcov: n_max is the block's expected length in returns and must be >= 1; the \
+                "rcov: block_rows is the block's expected length in returns and must be >= 1; the \
                  ring and the window are sized from it"
                     .into(),
             );
         }
-        if let (Some(h), Some(b)) = (self.h_max, self.bandwidth) {
+        if let (Some(h), Some(b)) = (self.max_bandwidth, self.bandwidth) {
             if h < b {
                 return Err(format!(
-                    "rcov: h_max = {h} caps the ring below bandwidth = {b}, so the lags the \
+                    "rcov: max_bandwidth = {h} caps the ring below bandwidth = {b}, so the lags the \
                      bandwidth asks for are not there and it is silently reduced to {h}; raise \
-                     h_max or lower the bandwidth"
+                     max_bandwidth or lower the bandwidth"
                 ));
             }
         }
@@ -474,9 +474,9 @@ pub struct Rcov {
     /// ones still eligible for the trailing jitter: everything older has
     /// been emitted.
     tail: VecDeque<Vec<f64>>,
-    /// The last `h_max` *final* returns, for the lagged products.
+    /// The last `max_bandwidth` *final* returns, for the lagged products.
     fin: VecDeque<Vec<f64>>,
-    /// `(h_max + 1) * k * k`: `Γ̂_h` for `h = 0 ..= h_max`.
+    /// `(max_bandwidth + 1) * k * k`: `Γ̂_h` for `h = 0 ..= max_bandwidth`.
     gamma: Vec<f64>,
     /// Effective returns emitted so far.
     emitted: u64,
@@ -493,7 +493,7 @@ impl Rcov {
     pub fn new(cfg: RcovCfg) -> Result<Self, String> {
         cfg.validate()?;
         let k = cfg.n_features;
-        let h_max = cfg.ring_for().unwrap_or(0);
+        let max_bandwidth = cfg.ring_for().unwrap_or(0);
         let kn = cfg.window_for().unwrap_or(0);
         Ok(Self {
             n: 0,
@@ -501,8 +501,8 @@ impl Rcov {
             raw: vec![0.0; k * k],
             head: Vec::with_capacity(cfg.jitter),
             tail: VecDeque::with_capacity(cfg.jitter.max(1)),
-            fin: VecDeque::with_capacity(h_max.max(1)),
-            gamma: vec![0.0; (h_max + 1) * k * k],
+            fin: VecDeque::with_capacity(max_bandwidth.max(1)),
+            gamma: vec![0.0; (max_bandwidth + 1) * k * k],
             emitted: 0,
             pre_ring: VecDeque::with_capacity(kn.max(1) + 1),
             pre_sum: vec![0.0; k * k],
@@ -570,8 +570,8 @@ impl Rcov {
     /// One final effective return into the lagged products.
     fn emit(&mut self, y: Vec<f64>) {
         let k = self.k();
-        let h_max = self.cfg.ring_for().unwrap_or(0);
-        for h in 0..=h_max {
+        let max_bandwidth = self.cfg.ring_for().unwrap_or(0);
+        for h in 0..=max_bandwidth {
             let past = if h == 0 {
                 Some(&y)
             } else {
@@ -586,8 +586,8 @@ impl Rcov {
                 }
             }
         }
-        if h_max > 0 {
-            if self.fin.len() == h_max {
+        if max_bandwidth > 0 {
+            if self.fin.len() == max_bandwidth {
                 self.fin.pop_front();
             }
             self.fin.push_back(y);
@@ -698,13 +698,13 @@ impl Rcov {
                 if self.n < 2 * m || (self.emitted == 0 && !closes) {
                     return short(0);
                 }
-                let h_max = self.cfg.ring_for().unwrap_or(0);
+                let max_bandwidth = self.cfg.ring_for().unwrap_or(0);
                 // The trailing jittered return, formed here from state.
                 let mut gamma = self.gamma.clone();
                 if closes {
                     let y = self.trail();
                     let fin = &self.fin;
-                    for h in 0..=h_max {
+                    for h in 0..=max_bandwidth {
                         let past = if h == 0 {
                             Some(&y)
                         } else {
@@ -721,7 +721,7 @@ impl Rcov {
                     }
                 }
                 let n_eff = self.emitted as i64 + i64::from(closes);
-                let h = self.bandwidth(n_eff as f64).min(h_max);
+                let h = self.bandwidth(n_eff as f64).min(max_bandwidth);
                 let mut out = vec![0.0; k * k];
                 for lag in 0..=h {
                     let w = parzen(lag as f64 / (h as f64 + 1.0));
@@ -978,9 +978,9 @@ mod tests {
             jitter: 2,
             theta: 1.0,
             psd: false,
-            n_max: Some(400),
-            h_max: None,
-            preavg_ticks: None,
+            block_rows: Some(400),
+            max_bandwidth: None,
+            preavg_rows: None,
             noise_stride: 1,
             iv_stride: 20,
         }
@@ -1122,7 +1122,7 @@ mod tests {
         let rows = returns(n, k, 13, 0.5);
         let mut model = Rcov::new(RcovCfg {
             bandwidth: None,
-            preavg_ticks: Some(10),
+            preavg_rows: Some(10),
             ..cfg(k, RcovKind::Preavg)
         })
         .unwrap();
@@ -1225,7 +1225,7 @@ mod tests {
             let (k, n) = (2usize, 120usize);
             let rows = returns(n, k, 17, 0.3);
             let mut a = Rcov::new(RcovCfg {
-                preavg_ticks: (kind == RcovKind::Preavg).then_some(8),
+                preavg_rows: (kind == RcovKind::Preavg).then_some(8),
                 bandwidth: (kind == RcovKind::Kernel).then_some(3),
                 ..cfg(k, kind)
             })
@@ -1272,7 +1272,7 @@ mod tests {
         assert!(m.estimate().rcov.is_none());
         // Pre-averaging with fewer rows than its window.
         let mut m = Rcov::new(RcovCfg {
-            preavg_ticks: Some(20),
+            preavg_rows: Some(20),
             ..cfg(2, RcovKind::Preavg)
         })
         .unwrap();
@@ -1327,7 +1327,7 @@ mod tests {
             ] {
                 let mut m = Rcov::new(RcovCfg {
                     psd: true,
-                    preavg_ticks: (kind == RcovKind::Preavg).then_some(4),
+                    preavg_rows: (kind == RcovKind::Preavg).then_some(4),
                     bandwidth: (kind == RcovKind::Kernel).then_some(2),
                     ..cfg(1, kind)
                 })
@@ -1347,7 +1347,7 @@ mod tests {
         let rows = returns(n, k, 29, 0.5);
         let mut m = Rcov::new(RcovCfg {
             bandwidth: None,
-            n_max: Some(n),
+            block_rows: Some(n),
             ..cfg(k, RcovKind::Kernel)
         })
         .unwrap();
@@ -1356,8 +1356,8 @@ mod tests {
         let (w, v) = (e.omega2.unwrap()[0], e.iv_sparse.unwrap()[0]);
         let xi2 = w / v;
         let want = (parzen_c_star() * xi2.sqrt().powf(0.8) * (e.n as f64).powf(0.6)).ceil() as i64;
-        let h_max = m.cfg().ring_for().unwrap() as i64;
-        assert_eq!(e.bandwidth_used, Some(want.min(h_max)));
+        let max_bandwidth = m.cfg().ring_for().unwrap() as i64;
+        assert_eq!(e.bandwidth_used, Some(want.min(max_bandwidth)));
         assert!(w > 0.0 && v > 0.0);
     }
 
@@ -1390,7 +1390,7 @@ mod tests {
             let kern = || {
                 Rcov::new(RcovCfg {
                     bandwidth: Some(0),
-                    h_max: Some(0),
+                    max_bandwidth: Some(0),
                     jitter: m,
                     ..cfg(2, RcovKind::Kernel)
                 })
@@ -1431,7 +1431,7 @@ mod tests {
         for cut in [rows.len(), 10] {
             let mut m = Rcov::new(RcovCfg {
                 bandwidth: Some(0),
-                h_max: Some(0),
+                max_bandwidth: Some(0),
                 jitter: 1,
                 ..cfg(2, RcovKind::Kernel)
             })
@@ -1457,7 +1457,7 @@ mod tests {
         let rows = returns(9, 2, 5, 0.1);
         let mut m = Rcov::new(RcovCfg {
             bandwidth: Some(0),
-            h_max: Some(0),
+            max_bandwidth: Some(0),
             jitter: 4,
             ..cfg(2, RcovKind::Kernel)
         })
@@ -1493,7 +1493,7 @@ mod tests {
         for w in [0, 1] {
             bad(
                 RcovCfg {
-                    preavg_ticks: Some(w),
+                    preavg_rows: Some(w),
                     ..cfg(2, RcovKind::Preavg)
                 },
                 "window must be >= 2",
@@ -1501,15 +1501,15 @@ mod tests {
         }
         bad(
             RcovCfg {
-                n_max: Some(0),
+                block_rows: Some(0),
                 bandwidth: None,
                 ..cfg(2, RcovKind::Kernel)
             },
-            "n_max is the block's expected length",
+            "block_rows is the block's expected length",
         );
         bad(
             RcovCfg {
-                h_max: Some(0),
+                max_bandwidth: Some(0),
                 bandwidth: Some(4),
                 ..cfg(2, RcovKind::Kernel)
             },
@@ -1518,19 +1518,19 @@ mod tests {
         bad(
             RcovCfg {
                 bandwidth: None,
-                n_max: None,
+                block_rows: None,
                 ..cfg(2, RcovKind::Kernel)
             },
-            "needs `n_max`",
+            "needs `block_rows`",
         );
         bad(
             RcovCfg {
                 bandwidth: None,
-                n_max: None,
-                preavg_ticks: None,
+                block_rows: None,
+                preavg_rows: None,
                 ..cfg(2, RcovKind::Preavg)
             },
-            "needs `n_max` or an explicit `window`",
+            "needs `block_rows` or an explicit `window`",
         );
         bad(
             RcovCfg {
@@ -1541,7 +1541,7 @@ mod tests {
         );
         bad(
             RcovCfg {
-                preavg_ticks: Some(2),
+                preavg_rows: Some(2),
                 ..cfg(2, RcovKind::Kernel)
             },
             "window applies to",

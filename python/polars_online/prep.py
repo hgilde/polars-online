@@ -179,24 +179,24 @@ def refresh_time(
         update, their Definition 1.
     ``<s>_value``
         Each series' last value at that instant.
-    ``n_ticks_<s>``
+    ``n_obs_<s>``
         Ticks of ``s`` since the previous point, the *first* of which is the
         one on the grid.
     ``retained_fraction``
-        ``m / sum(n_ticks)``: how many of the interval's ticks the grid kept.
+        ``m / sum(n_obs)``: how many of the interval's ticks the grid kept.
         Look at it before trusting a correlation computed on the result.
 
     plus the ``by`` column -- in the dtype it came in as -- and any ``keep``
     columns, at their value on the completing tick. ``pairs=True`` runs an
     independent two-series grid per unordered pair instead -- which keeps far
     more of the data when one series is slow -- and returns the long frame ``(by?, pair,
-    time_refresh, a_value, b_value, n_ticks_a, n_ticks_b,
+    time_refresh, a_value, b_value, n_obs_a, n_obs_b,
     retained_fraction)`` with ``pair = "a|b"`` in ``names`` order.
 
     **The staleness caveat** (their §2.1): the output looks synchronous and
     is not. A refresh vector is treated as observed at ``time_refresh``, but
     each series' value is up to one of its own inter-tick intervals old.
-    ``n_ticks_<s>`` is that staleness made visible: the series with the
+    ``n_obs_<s>`` is that staleness made visible: the series with the
     largest count is the one holding the grid up, and the one whose value is
     freshest.
 

@@ -363,7 +363,7 @@ class TestTheExpressionWarnsThatItRunsInMemory:
                 "hmm",
                 lambda: ns.hmm(others=["x0"], k=2, precision_prior=0.1, halflife=2.0),
             ),
-            "rcov": ("rcov", lambda: ns.rcov(others=["x0"], n_max=10)),
+            "rcov": ("rcov", lambda: ns.rcov(others=["x0"], block_rows=10)),
         }
 
     #: Models with no expression form at all: `rcov`'s value is the block a

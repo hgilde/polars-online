@@ -47,14 +47,31 @@ carries breaking changes.
 
 ### Changed
 
+- **State files written before 2026-09-07 no longer load, deliberately.**
+  `MIN_SCHEMA_VERSION` is 6. The naming pass renamed spec keys with no
+  aliases, and a spec denies unknown fields, so an older file names fields no
+  builder has; rejecting it on the version is a better error than failing on
+  a field name nobody chose. The fixtures that proved older files load are
+  gone, as are the schema-1 and schema-2 conversion paths in `rls`, `sgd` and
+  `kalman`. A state saved by 0.2.0 has to be refit. This is a one-off taken
+  while the library is days old — the rule that a loader is kept for the
+  previous version applies from here.
+- **Six more names** (the 2026-09-07 pass): `rcov`'s `n_max` → `block_rows`
+  and `h_max` → `max_bandwidth`, `kmeans`'s `sm_every` →
+  `split_merge_every`, the ridge family's `coef0` → `coef_prior`, `rcov`'s
+  `preavg_ticks` → `preavg_rows`, and `refresh_time`'s `n_ticks_<s>` column →
+  `n_obs_<s>`. "Ticks" assumed market data in a library whose clock is
+  anything monotone; `coef0` read as "the coefficient of feature 0" when it
+  is the prior mean. Names that appear as symbols in a quoted formula
+  (`theta`, `jitter`, `q`, `p0`, `c`, `beta_mu`) were left alone.
 - **`SCHEMA_VERSION` is 6.** The `ew_cov` spec gained two keys, and spec
   fields serialize their nulls, so every spec's bytes moved — the same
   reason 4 and 5 bumped. A schema-5 file loads, continues to the bit and
   re-saves as 6.
 - **Three spec keywords renamed** (task 63a), because a fourth meaning of
   `window` is about to be added and the existing two did not describe what
-  they do. `rcov`'s `window` is the pre-averaging length in ticks and is now
-  `preavg_ticks`. `corrchange`'s `horizon` and `window` were one concept —
+  they do. `rcov`'s `window` is the pre-averaging length, counted in rows,
+  and is now `preavg_rows`. `corrchange`'s `horizon` and `window` were one concept —
   rows per comparison block — under two names, one required by each kind,
   and are now a single `span_rows` required by both (at least 8 for
   `"monitor"`, at least 3 for `"window"`). `bocpd`'s `truncate` is a
@@ -220,7 +237,7 @@ accept it silently.
   ticked at least once since the last one, each carrying its last observed
   value — as a Rust operator (`crates/online-polars/src/refresh.rs`) wrapped
   as a lazy source, so a tick stream too long to hold still is. Long input,
-  one row per grid point out: `time_refresh`, `<s>_value`, `n_ticks_<s>` and
+  one row per grid point out: `time_refresh`, `<s>_value`, `n_obs_<s>` and
   `retained_fraction`, plus `by` and `keep` columns. `pairs=True` runs an
   independent two-series grid per pair, which keeps far more of the data
   when one series is slow. Nothing is interpolated, and the grid is the same
@@ -411,7 +428,7 @@ accept it silently.
   non-finite feature row is skipped with its clock tick folded into the next
   row's, as for every other model.
 - **A split–merge move for `kmeans`**, on by default (`split_merge=0.5`,
-  `sm_every=100`, `dead_frac=0.05`; `split_merge=0` gives plain k-means).
+  `split_merge_every=100`, `dead_frac=0.05`; `split_merge=0` gives plain k-means).
   Rows farther from every centre than `1 + 4·sqrt(2/p)` typical radii are
   summarised per cluster instead of learned, so an outlier neither drags a
   centre nor widens its radius. At each check the two closest clusters merge
@@ -837,7 +854,7 @@ accept it silently.
     `prior_scale` (positive, symmetric, positive definite) and `prior_mean`
     (finite); `hmm`'s given `covs` (symmetric and positive definite — a
     state with no density takes no responsibility for any row);
-    `corrchange`'s `crit`; `rcov`'s `window`, `n_max` and `h_max` against
+    `corrchange`'s `crit`; `rcov`'s `window`, `block_rows` and `max_bandwidth` against
     `bandwidth`; `deco`'s block list written by hand (a duplicate name, an
     empty list); `corr.nearest` on non-finite input and `max_iter = 0`;
     `corr.shrink` on fewer than two rows; and `sim.regimes` normalises a

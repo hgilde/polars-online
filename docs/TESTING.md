@@ -121,7 +121,7 @@ The other four:
 - `EwCovModel::n_targets` returned 1 for a model that regresses nothing;
 - `blend_toward_long_run` had lost its doc comment to a `#[cfg(test)]` helper
   inserted between the comment and the function;
-- `coef0` misconfiguration reported "coef0 must be 1 vectors of length 3".
+- `coef_prior` misconfiguration reported "coef_prior must be 1 vectors of length 3".
 
 **Equivalent mutants** were left alone deliberately: they cannot be killed by
 any test. `Ftrl::weight`'s `zz < 0.0` sign branch is only reachable when

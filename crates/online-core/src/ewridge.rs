@@ -51,12 +51,12 @@ pub struct EwRidgeCfg {
     /// **Whether the prior fades depends on `ridge_decay`, and the difference
     /// matters.** `S` here is a weighted *mean*, not a sum, so it does not grow
     /// with the sample: a plain `ridge` is a fixed per-observation penalty and
-    /// its pull toward `coef0` is **permanent** — "always stay near this
+    /// its pull toward `coef_prior` is **permanent** — "always stay near this
     /// belief". With `ridge_decay` the prior sits on the sum scale and its
     /// weight decays with the data, which is the usual warm start: "begin at
     /// yesterday's fit and let evidence take over".
     #[serde(default)]
-    pub coef0: Option<Vec<Vec<f64>>>,
+    pub coef_prior: Option<Vec<Vec<f64>>>,
     /// Blend toward a slow-moving twin on a session change, instead of the
     /// all-or-nothing choice between `session_gap` and a full reset
     /// (ENHANCEMENTS E6, PLAN §12 open question 1).
@@ -145,17 +145,17 @@ impl EwRidgeCfg {
             }
             _ => {}
         }
-        if let Some(c) = &self.coef0 {
+        if let Some(c) = &self.coef_prior {
             if c.len() != self.n_targets || c.iter().any(|v| v.len() != self.k_total()) {
                 return Err(format!(
-                    "coef0 must be {} vector{} of length {}",
+                    "coef_prior must be {} vector{} of length {}",
                     self.n_targets,
                     if self.n_targets == 1 { "" } else { "s" },
                     self.k_total()
                 ));
             }
             if c.iter().flatten().any(|v| !v.is_finite()) {
-                return Err("coef0 values must be finite".into());
+                return Err("coef_prior values must be finite".into());
             }
         }
         for (name, idx) in &self.feature_sets {
@@ -434,7 +434,7 @@ impl EwRidge {
                 }
                 // Warm start: the prior enters on the same decaying sum scale,
                 // so its weight falls away as data accumulates.
-                if let Some(c0) = &self.cfg.coef0 {
+                if let Some(c0) = &self.cfg.coef_prior {
                     for j in 0..m {
                         for (ai, &zi) in zidx.iter().enumerate() {
                             b[j * kc + ai] += ps * ridge * c0[j][zi];
@@ -447,9 +447,9 @@ impl EwRidge {
                 for i in off..kc {
                     a[i * kc + i] += ridge;
                 }
-                // Warm prior: shrink toward coef0 rather than toward zero, by
+                // Warm prior: shrink toward coef_prior rather than toward zero, by
                 // moving the penalty's target into the right-hand side.
-                if let Some(c0) = &self.cfg.coef0 {
+                if let Some(c0) = &self.cfg.coef_prior {
                     for j in 0..m {
                         for (ai, &zi) in zidx.iter().enumerate() {
                             if ai >= off {
@@ -580,7 +580,7 @@ impl EwRidge {
                     bsub[j * kk + i2] = (b[j * kc + i + 1] - mean(i + 1) * ybar) / s[i];
                     // The prior lives in original units; on the standardized
                     // scale a coefficient is beta * sd, so scale it in.
-                    if let Some(c0) = &self.cfg.coef0 {
+                    if let Some(c0) = &self.cfg.coef_prior {
                         bsub[j * kk + i2] += ridge * c0[j][zidx[i + 1]] * s[i];
                     }
                 }
@@ -778,7 +778,7 @@ mod tests {
             feature_sets: vec![],
             standardize: false,
             ridge_decay: false,
-            coef0: None,
+            coef_prior: None,
             session_shrink: None,
             long_halflife: None,
             min_periods: (k + 1) as f64,
@@ -795,7 +795,7 @@ mod tests {
         c.ridge = vec![10.0];
         c.ridge_decay = true;
         c.standardize = false;
-        c.coef0 = Some(vec![vec![0.0, 5.0, -5.0]]);
+        c.coef_prior = Some(vec![vec![0.0, 5.0, -5.0]]);
         c.min_periods = 0.0;
         let mut m = EwRidge::new(c).unwrap();
 
@@ -832,7 +832,7 @@ mod tests {
     fn coef0_without_ridge_decay_pulls_forever() {
         let mut c = cfg(1, 1);
         c.ridge = vec![10.0];
-        c.coef0 = Some(vec![vec![0.0, 5.0]]);
+        c.coef_prior = Some(vec![vec![0.0, 5.0]]);
         c.min_periods = 0.0;
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 72u64;
@@ -854,7 +854,7 @@ mod tests {
         let run = |prior: Option<Vec<Vec<f64>>>| {
             let mut c = cfg(1, 1);
             c.ridge = vec![50.0];
-            c.coef0 = prior;
+            c.coef_prior = prior;
             c.min_periods = 0.0;
             let mut m = EwRidge::new(c).unwrap();
             let mut s = 73u64;
@@ -883,7 +883,7 @@ mod tests {
         let mut c = cfg(1, 1);
         c.ridge = vec![1e6];
         c.standardize = true;
-        c.coef0 = Some(vec![vec![0.0, 0.02]]);
+        c.coef_prior = Some(vec![vec![0.0, 0.02]]);
         c.min_periods = 0.0;
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 79u64;
@@ -1050,17 +1050,17 @@ mod tests {
     #[test]
     fn coef0_shape_is_validated() {
         let mut c = cfg(2, 1);
-        c.coef0 = Some(vec![vec![0.0, 1.0]]); // too short
+        c.coef_prior = Some(vec![vec![0.0, 1.0]]); // too short
         assert!(EwRidge::new(c).is_err());
         let mut c = cfg(2, 1);
-        c.coef0 = Some(vec![vec![0.0, 1.0, f64::NAN]]);
+        c.coef_prior = Some(vec![vec![0.0, 1.0, f64::NAN]]);
         assert!(EwRidge::new(c).is_err());
-        // coef0 *is* allowed with ridge_decay -- that combination is the
+        // coef_prior *is* allowed with ridge_decay -- that combination is the
         // fading warm start -- so only the shape rules above are enforced.
         let mut c = cfg(2, 1);
         c.ridge_decay = true;
         c.standardize = false;
-        c.coef0 = Some(vec![vec![0.0, 1.0, 2.0]]);
+        c.coef_prior = Some(vec![vec![0.0, 1.0, 2.0]]);
         assert!(EwRidge::new(c).is_ok());
     }
 
@@ -1249,15 +1249,15 @@ mod tests {
 
     #[test]
     fn coef0_solves_the_ridge_problem_it_claims_to() {
-        // With `coef0 = c`, the penalty shrinks toward `c` rather than zero:
+        // With `coef_prior = c`, the penalty shrinks toward `c` rather than zero:
         //     beta = (C + rI)^-1 (d + r c)
         // on the centered accumulators, with the intercept recovered after.
-        // The existing coef0 tests check the *direction* of the pull; this
+        // The existing coef_prior tests check the *direction* of the pull; this
         // pins the closed form, computed by hand from the model's own state.
         let (r, c0) = (0.7, vec![vec![0.0, 3.0, -2.0]]);
         let mut cfg_ = cfg(2, 1);
         cfg_.ridge = vec![r];
-        cfg_.coef0 = Some(c0.clone());
+        cfg_.coef_prior = Some(c0.clone());
         cfg_.min_periods = 3.0;
         let mut m = EwRidge::new(cfg_).unwrap();
         let mut s = 127u64;
@@ -1293,10 +1293,10 @@ mod tests {
         let want0 = m.r[0][0] - got[1] * m.cov.mean(1) - got[2] * m.cov.mean(2);
         assert!((got[0] - want0).abs() < 1e-9, "{} vs {want0}", got[0]);
 
-        // An overwhelming penalty must land on coef0 exactly.
+        // An overwhelming penalty must land on coef_prior exactly.
         let mut cfg_ = cfg(2, 1);
         cfg_.ridge = vec![1e12];
-        cfg_.coef0 = Some(c0.clone());
+        cfg_.coef_prior = Some(c0.clone());
         cfg_.min_periods = 3.0;
         let mut m = EwRidge::new(cfg_).unwrap();
         let mut s = 131u64;
@@ -1305,8 +1305,16 @@ mod tests {
             m.step(&x, &[Some(x[0])], if i == 0 { 0.0 } else { 1.0 }, 1.0);
         }
         let got = &m.coefficients().unwrap()[0];
-        assert!((got[1] - 3.0).abs() < 1e-3, "slope 0 -> coef0: {}", got[1]);
-        assert!((got[2] + 2.0).abs() < 1e-3, "slope 1 -> coef0: {}", got[2]);
+        assert!(
+            (got[1] - 3.0).abs() < 1e-3,
+            "slope 0 -> coef_prior: {}",
+            got[1]
+        );
+        assert!(
+            (got[2] + 2.0).abs() < 1e-3,
+            "slope 1 -> coef_prior: {}",
+            got[2]
+        );
     }
 
     #[test]
@@ -1615,21 +1623,21 @@ mod tests {
             c.long_halflife = Some(100.0);
         });
 
-        // coef0 is one vector per target, each of length k_total (2 + intercept).
+        // coef_prior is one vector per target, each of length k_total (2 + intercept).
         bad(
-            &|c| c.coef0 = Some(vec![vec![0.0; 3], vec![0.0; 3]]),
+            &|c| c.coef_prior = Some(vec![vec![0.0; 3], vec![0.0; 3]]),
             "1 vector of",
         );
-        bad(&|c| c.coef0 = Some(vec![vec![0.0; 2]]), "length 3");
+        bad(&|c| c.coef_prior = Some(vec![vec![0.0; 2]]), "length 3");
         bad(
-            &|c| c.coef0 = Some(vec![vec![0.0, 0.0, f64::NAN]]),
+            &|c| c.coef_prior = Some(vec![vec![0.0, 0.0, f64::NAN]]),
             "finite",
         );
         bad(
-            &|c| c.coef0 = Some(vec![vec![0.0, 0.0, f64::INFINITY]]),
+            &|c| c.coef_prior = Some(vec![vec![0.0, 0.0, f64::INFINITY]]),
             "finite",
         );
-        good(&|c| c.coef0 = Some(vec![vec![1.0, 2.0, 3.0]]));
+        good(&|c| c.coef_prior = Some(vec![vec![1.0, 2.0, 3.0]]));
 
         bad(
             &|c| c.feature_sets = vec![("a".into(), vec![])],

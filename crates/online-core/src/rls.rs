@@ -57,7 +57,7 @@ pub struct RlsCfg {
     /// Prior strength: `P0 = I / ridge`.
     pub ridge: f64,
     /// Initial coefficients per target (length `k_total`), default zeros.
-    pub coef0: Option<Vec<Vec<f64>>>,
+    pub coef_prior: Option<Vec<Vec<f64>>>,
     pub min_periods: f64,
 }
 
@@ -73,9 +73,9 @@ impl RlsCfg {
         if self.ridge <= 0.0 || self.ridge.is_nan() {
             return Err("rls: ridge must be > 0 (it sets P0 = I / ridge)".into());
         }
-        if let Some(c) = &self.coef0 {
+        if let Some(c) = &self.coef_prior {
             if c.len() != self.n_targets || c.iter().any(|v| v.len() != self.k_total()) {
-                return Err("rls: coef0 must be n_targets x k_total".into());
+                return Err("rls: coef_prior must be n_targets x k_total".into());
             }
         }
         Ok(())
@@ -83,7 +83,7 @@ impl RlsCfg {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "RlsWire")]
+#[serde(try_from = "RlsV2")]
 pub struct Rls {
     cfg: RlsCfg,
     /// Cholesky factor of the decayed information matrix, `A = R^T R`: upper
@@ -101,19 +101,9 @@ pub struct Rls {
     ybuf: Vec<f64>,
 }
 
-/// The layouts `Rls` loads. Schema-1 files held the covariance `P` (see the
-/// module docs for why it is gone); they are converted on load.
-///
-/// Newtype variants, not struct variants: an untagged struct variant only
-/// deserializes from a map, and the compact msgpack encoding writes structs
-/// as arrays.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum RlsWire {
-    Current(RlsV2),
-    Schema1(RlsV1),
-}
-
+/// The layout `Rls` loads. Schema-1 files held the covariance `P` instead
+/// (see the module docs for why it is gone); they no longer load at all,
+/// with the rest of the pre-schema-6 states.
 #[derive(Deserialize)]
 struct RlsV2 {
     cfg: RlsCfg,
@@ -124,119 +114,29 @@ struct RlsV2 {
     seen: bool,
 }
 
-#[derive(Deserialize)]
-struct RlsV1 {
-    cfg: RlsCfg,
-    p: Vec<f64>,
-    beta: Vec<Vec<f64>>,
-    w_sum: f64,
-    seen: bool,
-}
-
-impl TryFrom<RlsWire> for Rls {
+impl TryFrom<RlsV2> for Rls {
     type Error = String;
 
-    fn try_from(w: RlsWire) -> Result<Self, String> {
-        match w {
-            RlsWire::Current(RlsV2 {
-                cfg,
-                r,
-                u,
-                beta,
-                w_sum,
-                seen,
-            }) => Ok(Self {
-                cfg,
-                r,
-                u,
-                beta,
-                w_sum,
-                seen,
-                zbuf: vec![],
-                ybuf: vec![],
-            }),
-            RlsWire::Schema1(RlsV1 {
-                cfg,
-                p,
-                beta,
-                w_sum,
-                seen,
-            }) => {
-                let k = cfg.k_total();
-                if p.len() != k * k || beta.len() != cfg.n_targets {
-                    return Err("rls: schema-1 state has the wrong shape".into());
-                }
-                let r = factor_of_inverse(&p, k).ok_or_else(|| {
-                    "rls: schema-1 state's covariance is not positive definite".to_string()
-                })?;
-                // b = A beta = R^T R beta  =>  u = R^-T b = R beta.
-                let u = beta
-                    .iter()
-                    .map(|b| {
-                        (0..k)
-                            .map(|i| (i..k).map(|j| r[i * k + j] * b[j]).sum())
-                            .collect()
-                    })
-                    .collect();
-                Ok(Self {
-                    cfg,
-                    r,
-                    u,
-                    beta,
-                    w_sum,
-                    seen,
-                    zbuf: vec![],
-                    ybuf: vec![],
-                })
-            }
-        }
+    fn try_from(w: RlsV2) -> Result<Self, String> {
+        let RlsV2 {
+            cfg,
+            r,
+            u,
+            beta,
+            w_sum,
+            seen,
+        } = w;
+        Ok(Self {
+            cfg,
+            r,
+            u,
+            beta,
+            w_sum,
+            seen,
+            zbuf: vec![],
+            ybuf: vec![],
+        })
     }
-}
-
-/// Upper-triangular `R` with `R^T R = P^-1`, for a symmetric positive definite
-/// `P` (row-major `k*k`); `None` if `P` is not positive definite.
-///
-/// With `J` the row-reversal permutation and `J P J = L L^T` (Cholesky),
-/// `P^-1 = (J L^-1 J)^T (J L^-1 J)`, and `J L^-1 J` is upper triangular.
-fn factor_of_inverse(p: &[f64], k: usize) -> Option<Vec<f64>> {
-    let flip = |i: usize| k - 1 - i;
-    // L: Cholesky of the reversed P, lower triangular.
-    let mut l = vec![0.0; k * k];
-    for i in 0..k {
-        for j in 0..=i {
-            let mut acc = p[flip(i) * k + flip(j)];
-            for t in 0..j {
-                acc -= l[i * k + t] * l[j * k + t];
-            }
-            if i == j {
-                // Not positive definite (or already broken): nothing to convert.
-                if acc <= 0.0 || !acc.is_finite() {
-                    return None;
-                }
-                l[i * k + i] = acc.sqrt();
-            } else {
-                l[i * k + j] = acc / l[j * k + j];
-            }
-        }
-    }
-    // M = L^-1 by forward substitution, one column at a time.
-    let mut m = vec![0.0; k * k];
-    for col in 0..k {
-        for i in col..k {
-            let mut acc = if i == col { 1.0 } else { 0.0 };
-            for t in col..i {
-                acc -= l[i * k + t] * m[t * k + col];
-            }
-            m[i * k + col] = acc / l[i * k + i];
-        }
-    }
-    let mut r = vec![0.0; k * k];
-    for i in 0..k {
-        for j in 0..k {
-            r[flip(i) * k + flip(j)] = m[i * k + j];
-        }
-    }
-    Some(r)
 }
 
 impl Rls {
@@ -249,10 +149,10 @@ impl Rls {
             r[i * k + i] = root;
         }
         let beta = cfg
-            .coef0
+            .coef_prior
             .clone()
             .unwrap_or_else(|| vec![vec![0.0; k]; cfg.n_targets]);
-        // A_0 = ridge I, b_0 = ridge coef0  =>  u_0 = R_0^-T b_0 = sqrt(ridge) coef0.
+        // A_0 = ridge I, b_0 = ridge coef_prior  =>  u_0 = R_0^-T b_0 = sqrt(ridge) coef_prior.
         let u = beta
             .iter()
             .map(|b| b.iter().map(|v| root * v).collect())
@@ -463,7 +363,7 @@ mod tests {
             add_intercept: true,
             decay: Decay::Halflife(hl),
             ridge,
-            coef0: None,
+            coef_prior: None,
             min_periods: 0.0,
         }
     }
@@ -484,17 +384,17 @@ mod tests {
         bad(&|c| c.ridge = 0.0, "ridge must be > 0");
         bad(&|c| c.ridge = -1.0, "ridge must be > 0");
         bad(&|c| c.ridge = f64::NAN, "ridge must be > 0");
-        // coef0 is one vector per target, each of length k_total (2 + intercept).
+        // coef_prior is one vector per target, each of length k_total (2 + intercept).
         bad(
-            &|c| c.coef0 = Some(vec![vec![0.0; 3], vec![0.0; 3]]),
+            &|c| c.coef_prior = Some(vec![vec![0.0; 3], vec![0.0; 3]]),
             "n_targets x k_total",
         );
         bad(
-            &|c| c.coef0 = Some(vec![vec![0.0; 2]]),
+            &|c| c.coef_prior = Some(vec![vec![0.0; 2]]),
             "n_targets x k_total",
         );
         let mut ok = rls_cfg(2, 1, 100.0, 1.0);
-        ok.coef0 = Some(vec![vec![1.0, 2.0, 3.0]]);
+        ok.coef_prior = Some(vec![vec![1.0, 2.0, 3.0]]);
         ok.validate().unwrap();
         rls_cfg(2, 1, 100.0, 1.0).validate().unwrap();
     }
@@ -537,7 +437,7 @@ mod tests {
             ridge_decay: true,
             session_shrink: None,
             long_halflife: None,
-            coef0: None,
+            coef_prior: None,
             min_periods: 0.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
@@ -640,93 +540,6 @@ mod tests {
                 m1.step(x, &[Some(*y)], 1.0, 1.0).pred,
                 m2.step(x, &[Some(*y)], 1.0, 1.0).pred
             );
-        }
-    }
-
-    /// A schema-1 state carried the covariance `P = (R^T R)^-1` and the
-    /// coefficients; loading one must reproduce the same model.
-    #[test]
-    fn loads_a_schema_1_state() {
-        use crate::{MIN_SCHEMA_VERSION, SCHEMA_VERSION};
-        const { assert!(MIN_SCHEMA_VERSION == 1 && SCHEMA_VERSION >= 2) };
-
-        // The schema-1 layout, as `rmp_serde::to_vec_named` wrote it.
-        #[derive(Serialize)]
-        struct RlsV1 {
-            cfg: RlsCfg,
-            p: Vec<f64>,
-            beta: Vec<Vec<f64>>,
-            w_sum: f64,
-            seen: bool,
-        }
-        #[derive(Serialize)]
-        enum ModelStateV1 {
-            Rls(RlsV1),
-        }
-        #[derive(Serialize)]
-        struct StateV1 {
-            schema_version: u32,
-            model: ModelStateV1,
-        }
-
-        let k = 3;
-        let mut m1 = Rls::new(rls_cfg(2, 2, 50.0, 0.5)).unwrap();
-        let mut s = 43u64;
-        let rows: Vec<([f64; 2], f64)> = (0..120)
-            .map(|_| {
-                let x = [lcg(&mut s), lcg(&mut s)];
-                (x, x[0] - x[1] + 0.2)
-            })
-            .collect();
-        for (i, (x, y)) in rows[..60].iter().enumerate() {
-            m1.step(
-                x,
-                &[Some(*y), Some(-y)],
-                if i == 0 { 0.0 } else { 1.0 },
-                1.0,
-            );
-        }
-        // P = (R^T R)^-1, the way a schema-1 model would have held it.
-        let mut a = vec![0.0; k * k];
-        for i in 0..k {
-            for j in 0..k {
-                a[i * k + j] = (0..k).map(|t| m1.r[t * k + i] * m1.r[t * k + j]).sum();
-            }
-        }
-        let mut eye = vec![0.0; k * k];
-        for i in 0..k {
-            eye[i * k + i] = 1.0;
-        }
-        let (p_cols, _) = crate::solve::solve_spd(&a, &eye, k, k).unwrap();
-        let p: Vec<f64> = (0..k * k).map(|i| p_cols[(i % k) * k + i / k]).collect();
-        let v1 = StateV1 {
-            schema_version: 1,
-            model: ModelStateV1::Rls(RlsV1 {
-                cfg: m1.cfg.clone(),
-                p,
-                beta: m1.beta.clone(),
-                w_sum: m1.w_sum,
-                seen: m1.seen,
-            }),
-        };
-        // Bank files are map-encoded; the compact array encoding must load too.
-        for bytes in [
-            rmp_serde::to_vec_named(&v1).unwrap(),
-            rmp_serde::to_vec(&v1).unwrap(),
-        ] {
-            let st: State = rmp_serde::from_slice(&bytes).unwrap();
-            assert_eq!(st.schema_version, 1);
-            let mut m2 = Rls::restore(&st).unwrap();
-            assert_eq!(m2.beta, m1.beta);
-            assert_eq!(m2.w_sum, m1.w_sum);
-            let mut m1 = m1.clone();
-            for (x, y) in &rows[60..] {
-                let a = m1.step(x, &[Some(*y), Some(-y)], 1.0, 1.0).pred;
-                let b = m2.step(x, &[Some(*y), Some(-y)], 1.0, 1.0).pred;
-                for (a, b) in a.iter().zip(&b) {
-                    assert!((a - b).abs() < 1e-9 * (1.0 + a.abs()), "{a} vs {b}");
-                }
-            }
         }
     }
 }

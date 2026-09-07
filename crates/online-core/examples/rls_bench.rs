@@ -23,7 +23,7 @@ fn main() {
                 add_intercept: true,
                 decay: Decay::Halflife(500.0),
                 ridge: 1.0,
-                coef0: None,
+                coef_prior: None,
                 min_periods: 25.0,
             })
             .unwrap();

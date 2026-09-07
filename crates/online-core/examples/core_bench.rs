@@ -25,7 +25,7 @@ fn cfg(k: usize, m: usize, solve_every_rows: u32) -> EwRidgeCfg {
         feature_sets: vec![],
         standardize: false,
         ridge_decay: false,
-        coef0: None,
+        coef_prior: None,
         session_shrink: None,
         long_halflife: None,
         min_periods: (k + 1) as f64,

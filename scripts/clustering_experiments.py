@@ -237,7 +237,7 @@ def zoo(k: int, p: int, sigma: float, halflife: float = 3000.0, warm: int = 500)
                 seed_rule="lloyd",
                 reseed=True,
                 split_merge=0.5,
-                sm_every=100,
+                split_merge_every=100,
             ),
             p,
         ),
@@ -520,7 +520,7 @@ def exp_decay() -> None:
                 seed_rule="lloyd",
                 reseed=True,
                 split_merge=0.5,
-                sm_every=100,
+                split_merge_every=100,
             )
             gm = GMMCfg(k=K, halflife=hl, warm_rows=500, seed_rule="lloyd", cov="diag")
             cells = []
@@ -616,7 +616,7 @@ def exp_knobs() -> None:
                         seed_rule="lloyd",
                         reseed=True,
                         split_merge=sm,
-                        sm_every=sme,
+                        split_merge_every=sme,
                     ),
                     P,
                 )
@@ -849,7 +849,7 @@ def hard_models(k: int, p: int) -> dict:
                 standardize=True,
                 reseed=True,
                 split_merge=0.5,
-                sm_every=100,
+                split_merge_every=100,
             ),
             p,
         ),

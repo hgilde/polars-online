@@ -271,7 +271,9 @@ class KMeansCfg:
     reseed_factor: float = 3.0  # ...when that row is farther than this many radii
     split_merge: float = 0.0  # > 0: merge two centres closer than this * (r_i + r_j) and
     # re-place the freed one to split the cluster the batch's farthest row belongs to
-    sm_every: int = 100  # learned rows between split-merge attempts (its own, slower clock)
+    split_merge_every: int = (
+        100  # learned rows between split-merge attempts (its own, slower clock)
+    )
     standardize: bool = False
 
 
@@ -402,7 +404,7 @@ class EWKMeans(Stream):
             self.cfg.split_merge > 0.0
             and self.far[1] is not None
             and self.cfg.k > 2
-            and self.since_sm >= self.cfg.sm_every
+            and self.since_sm >= self.cfg.split_merge_every
         ):
             self.since_sm = 0
             self._split_merge()

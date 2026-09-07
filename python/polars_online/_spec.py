@@ -310,7 +310,7 @@ def ewridge(
     feature_sets: dict[str, list[str]] | None = None,
     standardize: bool = False,
     ridge_decay: bool = False,
-    coef0: list[list[float]] | None = None,
+    coef_prior: list[list[float]] | None = None,
     session_shrink: float | None = None,
     long_halflife: float | None = None,
     solve_every: float | None = None,
@@ -337,7 +337,7 @@ def ewridge(
     reported as ``pred_<t>__<set>`` -- the full set is fitted only when it
     is one of them; ``emit_selected`` then reports the fit doing best.
 
-    ``coef0`` shrinks toward a stated belief instead of toward zero, one vector
+    ``coef_prior`` shrinks toward a stated belief instead of toward zero, one vector
     per target in the features' original units. **Whether the prior fades
     depends on ``ridge_decay``**: ``S`` is a weighted *mean*, so a plain
     ``ridge`` is a fixed per-observation penalty whose pull is permanent
@@ -359,7 +359,7 @@ def ewridge(
     confident it is.
 
     Raises as every builder does (:mod:`polars_online.spec`); its own rules:
-    a ``feature_sets`` entry naming a column not in ``features``, a ``coef0``
+    a ``feature_sets`` entry naming a column not in ``features``, a ``coef_prior``
     vector of the wrong length, and ``session_shrink`` without
     ``long_halflife`` are ``ValueError`` naming the problem.
     """
@@ -369,7 +369,7 @@ def ewridge(
         "feature_sets": [[k, list(v)] for k, v in feature_sets.items()] if feature_sets else None,
         "standardize": standardize,
         "ridge_decay": ridge_decay,
-        "coef0": coef0,
+        "coef_prior": coef_prior,
         "session_shrink": session_shrink,
         "long_halflife": long_halflife,
         "solve_every": solve_every,
@@ -566,14 +566,14 @@ def rls(
     targets: list[str],
     features: list[str],
     ridge: float | None = None,
-    coef0: list[list[float]] | None = None,
+    coef_prior: list[list[float]] | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Recursive least squares spec (docs/PLAN.md section 4.2).
 
     Math: decayed ridge least squares solved exactly every row,
     ``A <- lam A + w z z'``, ``b_j <- lam b_j + w y_j z``, ``beta_j = A^-1 b_j``
-    with ``A0 = ridge I`` and ``b0 = ridge coef0``. The state is the Cholesky
+    with ``A0 = ridge I`` and ``b0 = ridge coef_prior``. The state is the Cholesky
     factor ``R`` of ``A`` and ``u_j = R^-T b_j`` (square-root / QR form): a row
     is folded in by Givens rotations and ``beta`` read off by one
     back-substitution, O(k^2) per row with no solve staleness and none of the
@@ -584,7 +584,7 @@ def rls(
     Null policy deviation: a row with ANY null target is predict-only for all
     targets, because the factor ``R`` is shared across targets.
     """
-    model: dict[str, Any] = {"type": "rls", "ridge": ridge, "coef0": coef0}
+    model: dict[str, Any] = {"type": "rls", "ridge": ridge, "coef_prior": coef_prior}
     return _common(name, model, targets=targets, features=features, **common)
 
 
@@ -1231,7 +1231,7 @@ def kmeans(
     seed: int | None = None,
     update_every: int | None = None,
     split_merge: float | None = None,
-    sm_every: int | None = None,
+    split_merge_every: int | None = None,
     dead_frac: float | None = None,
     standardize: bool | None = None,
     **common: Unpack[CommonKwargs],
@@ -1278,7 +1278,7 @@ def kmeans(
     farther from its centre than a blob of the typical radius produces (about
     four standard deviations of ``|x - c|^2`` above it) is *far*: it is
     scored, but summarised instead of learned, so it neither drags the centre
-    nor widens the radius. Every ``sm_every`` learned rows (default 100) the
+    nor widens the radius. Every ``split_merge_every`` learned rows (default 100) the
     two closest centres are compared: if their distance is under
     ``split_merge`` times the sum of their radii, and enough far rows have
     gathered somewhere (at least three, and five per cent of the window's
@@ -1307,7 +1307,7 @@ def kmeans(
         "seed": seed,
         "update_every": update_every,
         "split_merge": split_merge,
-        "sm_every": sm_every,
+        "split_merge_every": split_merge_every,
         "dead_frac": dead_frac,
         "standardize": standardize,
     }
@@ -2089,9 +2089,9 @@ def rcov(
     jitter: int = 2,
     theta: float = 1.0,
     psd: bool = True,
-    n_max: int | None = None,
-    h_max: int | None = None,
-    preavg_ticks: int | None = None,
+    block_rows: int | None = None,
+    max_bandwidth: int | None = None,
+    preavg_rows: int | None = None,
     noise_stride: int | None = None,
     iv_stride: int | None = None,
     **common: Unpack[CommonKwargs],
@@ -2129,23 +2129,23 @@ def rcov(
     the estimate by under 0.5 %, so the default of 2 is immaterial.
     ``bandwidth`` is a fixed ``H``; left out it is their
     ``H = ceil(c* xi^{4/5} n^{3/5})`` with ``c* = 3.5134``, which needs
-    ``n_max`` -- the ring has to be sized before the first row and ``n`` is
-    known only at the close. ``n_max`` is a sizing hint, not a limit: a
-    longer block runs, clipped, and reports ``bandwidth_used``. ``h_max``
-    fixes the ring depth itself (default ``ceil(c* n_max^{3/5})`` under the
+    ``block_rows`` -- the ring has to be sized before the first row and ``n`` is
+    known only at the close. ``block_rows`` is a sizing hint, not a limit: a
+    longer block runs, clipped, and reports ``bandwidth_used``. ``max_bandwidth``
+    fixes the ring depth itself (default ``ceil(c* block_rows^{3/5})`` under the
     automatic bandwidth, the depth at which the noise equals the block's
     integrated variance); it must not cap the ring below a fixed
     ``bandwidth``. ``kernel`` takes only ``"parzen"``.
 
     ``kind="preavg"`` is Christensen, Kinnebrock & Podolskij's modulated
     realised covariance: the returns are pre-averaged over ``k_n =
-    floor(theta * sqrt(n_max))`` with ``g(x) = min(x, 1-x)``, which averages
+    floor(theta * sqrt(block_rows))`` with ``g(x) = min(x, 1-x)``, which averages
     the noise away, and the residual bias is subtracted. ``psd=False`` is
     that balanced, bias-corrected form (optimal rate, not guaranteed PSD);
     ``psd=True`` (the default) is the longer window ``k_n =
-    ceil(theta * n_max^0.6)`` without the bias term, and clips any negative
-    eigenvalue, reporting ``psd_repaired``. ``preavg_ticks`` fixes ``k_n``
-    (at least 2) instead of deriving it from ``n_max``, for ``"preavg"``
+    ceil(theta * block_rows^0.6)`` without the bias term, and clips any negative
+    eigenvalue, reporting ``psd_repaired``. ``preavg_rows`` fixes ``k_n``
+    (at least 2) instead of deriving it from ``block_rows``, for ``"preavg"``
     only.
 
     ``noise_stride`` (default 1) and ``iv_stride`` (default 20) are the two
@@ -2181,9 +2181,9 @@ def rcov(
         "jitter": jitter,
         "theta": theta,
         "psd": psd,
-        "n_max": n_max,
-        "h_max": h_max,
-        "preavg_ticks": preavg_ticks,
+        "block_rows": block_rows,
+        "max_bandwidth": max_bandwidth,
+        "preavg_rows": preavg_rows,
         "noise_stride": noise_stride,
         "iv_stride": iv_stride,
     }

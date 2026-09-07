@@ -601,7 +601,7 @@ Per row, in order:
    and stop.
 6. Otherwise apply §6.1 to the nearest centre.
 7. Every `update_every` learned rows, a checkpoint (a no-op at 1); every
-   `sm_every` learned rows, the split–merge move.
+   `split_merge_every` learned rows, the split–merge move.
 
 **The split–merge move** is the one non-obvious piece and the one that earns
 its place. At a checkpoint, compute the pairwise centre distances (O(k²)) and
@@ -1261,7 +1261,7 @@ one behind the plugin.
 `halflife`, `min_periods`, the per-model `standardize` flag (`spec.rs:358` and
 its siblings — but read as a metric here, §6.1), `coef_every`, plus per model
 `k`, `warm_rows`, `seed_rule`, `seed`, `update_every`, `split_merge`,
-`sm_every`, and for the variable-`k` models `radius` / `eps`, `beta_mu`,
+`split_merge_every`, and for the variable-`k` models `radius` / `eps`, `beta_mu`,
 `max_clusters`, `prune_every`.
 
 **Metrics.** ARI needs only the contingency table and is streamable

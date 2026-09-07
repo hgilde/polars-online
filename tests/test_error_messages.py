@@ -55,7 +55,7 @@ SHAPES = [
     (po.spec.ewridge, dict(session_gap=[1]), "session_gap must be a number or a str, got list"),
     (po.spec.ewridge, dict(coef_every=1.5), "coef_every must be an int, got float 1.5"),
     (po.spec.ewridge, dict(standardize=1), "standardize must be a bool, got int 1"),
-    (po.spec.ewridge, dict(coef0=[1.0, 2.0]), "coef0 must be a list of lists of numbers"),
+    (po.spec.ewridge, dict(coef_prior=[1.0, 2.0]), "coef_prior must be a list of lists of numbers"),
     (
         po.spec.ewridge,
         dict(feature_sets=[("a", ["x0"])]),
@@ -221,7 +221,7 @@ def _members(hint) -> tuple:
 
 def _inf_shaped_like(hint):
     """``"inf"`` in the shape the annotation asks for: bare for a float, nested
-    once per ``list[...]`` otherwise (``q`` -> ``["inf"]``, ``coef0`` ->
+    once per ``list[...]`` otherwise (``q`` -> ``["inf"]``, ``coef_prior`` ->
     ``[["inf"]]``)."""
     members = _members(hint)
     if float in members:

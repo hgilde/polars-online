@@ -131,7 +131,7 @@ def specs() -> list[dict]:
             k=2,
             warm_rows=8,
             split_merge=0.5,
-            sm_every=10,
+            split_merge_every=10,
             clock="t",
             max_dclock=6.0,
             halflife=25.0,

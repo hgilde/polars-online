@@ -570,7 +570,7 @@ grid = prep.refresh_time(ticks, series="symbol", names=["AAA", "BBB", "CCC"],
 
 The input is long — one row per tick, with the series named in a column. The
 output has one row per grid point: `time_refresh`, one `<s>_value` per
-series, `n_ticks_<s>` since the previous point, and `retained_fraction`,
+series, `n_obs_<s>` since the previous point, and `retained_fraction`,
 which is how much of the data survived. Look at that last one before
 trusting a correlation computed on the result: the grid runs at the pace of
 the slowest series, so a fast one loses most of its ticks.
@@ -580,7 +580,7 @@ keeps far more when one series is slow. Rows must be in time order; a
 backwards time is an error naming the row, and nothing is interpolated.
 
 The output looks synchronous and is not: each value is up to one of its own
-inter-tick intervals old. `n_ticks_<s>` is that staleness made visible — the
+inter-tick intervals old. `n_obs_<s>` is that staleness made visible — the
 series with the largest count is the one holding the grid up.
 
 ## Reading the fit
@@ -1029,7 +1029,7 @@ O(k²) per row; Cholesky solves on a schedule (`solve_every` in clock units,
 default `halflife/50`, every row for `halflife=inf` and for `lam`;
 `max_rows_between_solves` caps it in rows). Ridge values and named
 `feature_sets` are expanded at solve time from the same accumulator, so grids
-are nearly free. `coef0` shrinks toward a stated belief rather than toward
+are nearly free. `coef_prior` shrinks toward a stated belief rather than toward
 zero; because `S` is a mean, a plain `ridge` is a permanent per-observation
 penalty, and the fading warm start ("start at yesterday's fit") is
 `ridge_decay`. With `standardize`, the solve is done in correlation form and
@@ -1042,7 +1042,7 @@ blowing up.
 
 ```
 A ← λA + w zzᵀ       b_j ← λb_j + w y_j z        β_j = A⁻¹ b_j
-A₀ = ridge·I         b₀ = ridge·coef0
+A₀ = ridge·I         b₀ = ridge·coef_prior
 ```
 
 Coefficients move every row with no solve staleness. The state is the
@@ -1397,7 +1397,7 @@ buffer freed, so the model is O(k·p) from then on.
 
 **What split–merge repairs.** A row far outside its cluster (about four
 standard deviations of `dist²` above the typical radius) is scored but not
-learned: it is summarised. Every `sm_every` rows the two closest centres are
+learned: it is summarised. Every `split_merge_every` rows the two closest centres are
 compared, and if they are closer than `split_merge` times the sum of their
 radii — two centres in one blob — one is freed and placed on the far rows,
 provided enough have gathered to be a cluster's worth. A centre whose blob
@@ -1746,7 +1746,7 @@ and the estimate rides in that row.
 
 ```python
 r = po.spec.rcov("rk", features=["x0", "x1"], kind="kernel",
-                 group="block", group_close="monotone", n_max=2000)
+                 group="block", group_close="monotone", block_rows=2000)
 bank = po.ModelBank([r])
 bank.fit_predict(by_block.select("x0", "x1", "block"))
 blocks = bank.closed_groups()      # rcov, rcorr, rcov_n, bandwidth_used, ...
@@ -1763,8 +1763,8 @@ Rows are **returns**: difference upstream. Three kinds:
 Parzen is the only kernel: the Bartlett kernel is not consistent for this
 estimator, and Parzen's 0.97 efficiency beats the quadratic spectral's 0.93.
 `bandwidth` is a fixed `H`; left out it is `H = ⌈c*·ξ̂^{4/5}·n^{3/5}⌉` with
-`c* = 3.5134`, which needs `n_max` — the ring has to be sized before the
-first row and `n` is known only at the close. `n_max` is a sizing hint, not
+`c* = 3.5134`, which needs `block_rows` — the ring has to be sized before the
+first row and `n` is known only at the close. `block_rows` is a sizing hint, not
 a limit: a longer block runs, clipped, and reports `bandwidth_used`.
 
 The closed row carries `rcov` and `rcorr` (`vech` of the upper triangle),

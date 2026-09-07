@@ -68,7 +68,7 @@ MINIMAL: dict[str, dict[str, object]] = {
         "halflife": None,
         "group": "g",
         "group_close": "monotone",
-        "n_max": 100,
+        "block_rows": 100,
     },
 }
 

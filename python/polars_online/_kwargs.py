@@ -98,7 +98,7 @@ class EwridgeKwargs(ExprKwargs, total=False):
     feature_sets: dict[str, list[str]] | None
     standardize: bool
     ridge_decay: bool
-    coef0: list[list[float]] | None
+    coef_prior: list[list[float]] | None
     session_shrink: float | None
     long_halflife: float | None
     solve_every: float | None
@@ -107,7 +107,7 @@ class EwridgeKwargs(ExprKwargs, total=False):
 
 class RlsKwargs(ExprKwargs, total=False):
     ridge: float | None
-    coef0: list[list[float]] | None
+    coef_prior: list[list[float]] | None
 
 
 class LassoKwargs(ExprKwargs, total=False):
@@ -204,7 +204,7 @@ class KMeansKwargs(ExprKwargs, total=False):
     seed: int | None
     update_every: int | None
     split_merge: float | None
-    sm_every: int | None
+    split_merge_every: int | None
     dead_frac: float | None
     standardize: bool | None
 
@@ -252,9 +252,9 @@ class RcovKwargs(ExprKwargs, total=False):
     jitter: int
     theta: float
     psd: bool
-    n_max: int | None
-    h_max: int | None
-    preavg_ticks: int | None
+    block_rows: int | None
+    max_bandwidth: int | None
+    preavg_rows: int | None
     noise_stride: int | None
     iv_stride: int | None
 

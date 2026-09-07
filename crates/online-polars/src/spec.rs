@@ -348,6 +348,16 @@ impl<'de> Deserialize<'de> for SessionGapSpec {
 /// the model without a word.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+/// **State files written before 2026-09-07 do not load.** The naming pass
+/// that day renamed six spec keys with no aliases, and a spec is
+/// deserialized with unknown fields denied, so a file naming `coef0` or
+/// `n_max` is refused rather than silently losing the field.
+///
+/// That is a deliberate exception to hard rule 5, taken while the library is
+/// days old and pre-1.0, on the grounds that the names are worth more than
+/// the compatibility: `MIN_SCHEMA_VERSION` is 6, the fixtures that proved
+/// older files load are gone, and a state saved by 0.2.0 has to be refit.
+/// The rule itself stands for every later change.
 pub enum ModelKind {
     EwRidge {
         #[serde(default)]
@@ -361,7 +371,7 @@ pub enum ModelKind {
         /// Shrink toward these coefficients instead of toward zero, one vector
         /// per target of length `n_features + intercept`, in original units.
         #[serde(default)]
-        coef0: Option<Vec<Vec<f64>>>,
+        coef_prior: Option<Vec<Vec<f64>>>,
         /// On a session change, mix the accumulators this far toward a
         /// slow-moving twin: 0 keeps today's fit, 1 reverts to the long run.
         /// Needs `long_halflife`.
@@ -595,7 +605,7 @@ pub enum ModelKind {
         #[serde(default)]
         ridge: Option<f64>,
         #[serde(default)]
-        coef0: Option<Vec<Vec<f64>>>,
+        coef_prior: Option<Vec<Vec<f64>>>,
     },
     /// Exponentially weighted k-means (docs/CLUSTERING.md §6.2; PLAN §11a,
     /// task 23). No targets: every column of interest goes in `features`, and
@@ -624,7 +634,7 @@ pub enum ModelKind {
         split_merge: Option<f64>,
         /// Learned rows between split–merge checks. Default 100.
         #[serde(default)]
-        sm_every: Option<u32>,
+        split_merge_every: Option<u32>,
         /// A cluster lighter than `dead_frac · n_eff / k` at a check is
         /// re-placed. Default 0.05; `0` disables the dead rule.
         #[serde(default)]
@@ -786,13 +796,13 @@ pub enum ModelKind {
         #[serde(default)]
         kernel: Option<String>,
         /// A fixed `H`, or omitted for BNHLS's automatic rule (which needs
-        /// `n_max`).
+        /// `block_rows`).
         #[serde(default)]
         bandwidth: Option<usize>,
         /// Observations averaged at each end; default 2, `1` is none.
         #[serde(default)]
         jitter: Option<usize>,
-        /// Pre-averaging window scale, `kₙ = ⌊θ√n_max⌋`; default 1.
+        /// Pre-averaging window scale, `kₙ = ⌊θ√block_rows⌋`; default 1.
         #[serde(default)]
         theta: Option<f64>,
         /// Clip negative eigenvalues at close; default true.
@@ -801,13 +811,13 @@ pub enum ModelKind {
         /// The block's expected length, which sizes the ring before the
         /// first row.
         #[serde(default)]
-        n_max: Option<usize>,
-        /// Ring depth, if not the default from `n_max`.
+        block_rows: Option<usize>,
+        /// Ring depth, if not the default from `block_rows`.
         #[serde(default)]
-        h_max: Option<usize>,
-        /// A fixed pre-averaging length in ticks instead of `⌊θ√n_max⌋`.
+        max_bandwidth: Option<usize>,
+        /// A fixed pre-averaging length, in rows, instead of `⌊θ√block_rows⌋`.
         #[serde(default)]
-        preavg_ticks: Option<usize>,
+        preavg_rows: Option<usize>,
         /// Subsampling stride for the noise estimate; default 1.
         #[serde(default)]
         noise_stride: Option<usize>,
@@ -1991,7 +2001,7 @@ impl Spec {
                 seed_rule,
                 update_every,
                 split_merge,
-                sm_every,
+                split_merge_every,
                 dead_frac,
                 ..
             } => {
@@ -2011,8 +2021,11 @@ impl Spec {
                 if update_every.is_some_and(|v| v == 0) {
                     return Err(format!("spec {:?}: update_every must be >= 1", self.name));
                 }
-                if sm_every.is_some_and(|v| v == 0) {
-                    return Err(format!("spec {:?}: sm_every must be >= 1", self.name));
+                if split_merge_every.is_some_and(|v| v == 0) {
+                    return Err(format!(
+                        "spec {:?}: split_merge_every must be >= 1",
+                        self.name
+                    ));
                 }
                 if split_merge.is_some_and(|v| v < 0.0 || !v.is_finite()) {
                     return Err(format!(
@@ -2336,7 +2349,7 @@ impl Spec {
                     ));
                 }
             }
-            ModelKind::Rls { ridge, coef0 } => {
+            ModelKind::Rls { ridge, coef_prior } => {
                 if ridge.is_some_and(|r| !positive(r) || !r.is_finite()) {
                     return Err(format!(
                         "spec {:?}: rls ridge must be finite and > 0",
@@ -2344,10 +2357,10 @@ impl Spec {
                     ));
                 }
                 let k_total = self.k() + usize::from(self.add_intercept);
-                if let Some(c) = coef0 {
+                if let Some(c) = coef_prior {
                     if c.len() != self.m() || c.iter().any(|v| v.len() != k_total) {
                         return Err(format!(
-                            "spec {:?}: coef0 must be n_targets x (n_features + intercept)",
+                            "spec {:?}: coef_prior must be n_targets x (n_features + intercept)",
                             self.name
                         ));
                     }
@@ -2356,7 +2369,7 @@ impl Spec {
             ModelKind::EwRidge {
                 ridge,
                 feature_sets,
-                coef0,
+                coef_prior,
                 session_shrink,
                 long_halflife,
                 solve_every,
@@ -2405,11 +2418,11 @@ impl Spec {
                         self.name
                     ));
                 }
-                if let Some(c) = coef0 {
+                if let Some(c) = coef_prior {
                     let k_total = self.k() + usize::from(self.add_intercept);
                     if c.len() != self.m() || c.iter().any(|v| v.len() != k_total) {
                         return Err(format!(
-                            "spec {:?}: coef0 must be {} vectors of length {k_total}",
+                            "spec {:?}: coef_prior must be {} vectors of length {k_total}",
                             self.name,
                             self.m()
                         ));

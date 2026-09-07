@@ -549,7 +549,7 @@ mod tests {
             ridge_decay: false,
             session_shrink: None,
             long_halflife: None,
-            coef0: None,
+            coef_prior: None,
             min_periods: 2.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,

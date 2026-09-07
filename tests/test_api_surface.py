@@ -200,7 +200,7 @@ def describe_api() -> str:
         ),
         (
             "rcov",
-            dict(features=["x0", "x1"], group="g", group_close="monotone", n_max=500),
+            dict(features=["x0", "x1"], group="g", group_close="monotone", block_rows=500),
         ),
         ("deco", dict(features=["x0", "x1", "x2"], halflife=100.0)),
         (

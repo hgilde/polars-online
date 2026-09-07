@@ -304,7 +304,7 @@ class KMeansRef:
     seed: int = 0
     update_every: int = 1
     split_merge: float = 0.5
-    sm_every: int = 100
+    split_merge_every: int = 100
     dead_frac: float = 0.05
     standardize: bool = True
     moments: Moments = field(init=False)
@@ -398,7 +398,7 @@ class KMeansRef:
         self.since = 0
         if self.split_merge > 0.0:
             self.refresh_far_cut()
-            if self.since_sm >= self.sm_every:
+            if self.since_sm >= self.split_merge_every:
                 self.since_sm = 0
                 self.winsorize_radii()
                 self.refresh_far_cut()

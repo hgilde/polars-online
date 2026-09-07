@@ -161,5 +161,5 @@ def test_the_legal_neighbours_still_run(builder, kw):
 
 
 def test_a_nan_deep_in_a_list_names_the_parameter():
-    with pytest.raises(ValueError, match='spec "m": coef0 must not be NaN'):
-        po.spec.ewridge("m", halflife=10.0, coef0=[[0.0, NAN]], **BASE)
+    with pytest.raises(ValueError, match='spec "m": coef_prior must not be NaN'):
+        po.spec.ewridge("m", halflife=10.0, coef_prior=[[0.0, NAN]], **BASE)

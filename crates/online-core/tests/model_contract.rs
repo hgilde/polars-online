@@ -233,7 +233,7 @@ fn ew_ridge_cfg() -> EwRidgeCfg {
         ridge_decay: false,
         session_shrink: None,
         long_halflife: None,
-        coef0: None,
+        coef_prior: None,
         min_periods: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
@@ -254,7 +254,7 @@ fn rls_cfg() -> RlsCfg {
         add_intercept: true,
         decay: decay(),
         ridge: 1.0,
-        coef0: None,
+        coef_prior: None,
         min_periods: 3.0,
     }
 }
@@ -510,7 +510,7 @@ fn kmeans_cfg() -> KMeansCfg {
         seed: 0,
         update_every: 1,
         split_merge: 0.5,
-        sm_every: 50,
+        split_merge_every: 50,
         dead_frac: 0.05,
         standardize: true,
     }
@@ -744,9 +744,9 @@ fn rcov_cfg() -> RcovCfg {
         jitter: 2,
         theta: 1.0,
         psd: false,
-        n_max: Some(100),
-        h_max: None,
-        preavg_ticks: None,
+        block_rows: Some(100),
+        max_bandwidth: None,
+        preavg_rows: None,
         noise_stride: 1,
         iv_stride: 20,
     }

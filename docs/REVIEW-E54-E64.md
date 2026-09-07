@@ -386,9 +386,9 @@ are refused by `validate` and not covered.
 
 An explicit `window: Some(0 | 1)` bypasses the `.max(2)` of the derived
 window, so `kn < 2` and the pre-averaging branch (`push`, line 590) is
-skipped on every row: no block ever accumulates. `h_max: Some(0)` beside a
+skipped on every row: no block ever accumulates. `max_bandwidth: Some(0)` beside a
 `bandwidth` silently clips `H` to 0 in `estimate` (the kernel estimate is
-the plain one). `n_max: Some(0)` is accepted and means a ring of depth 1
+the plain one). `block_rows: Some(0)` is accepted and means a ring of depth 1
 and a window of 2, which nobody asked for. Refuse the three in `validate`;
 three cases in the bad-config test.
 

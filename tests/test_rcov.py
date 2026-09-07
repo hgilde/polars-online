@@ -36,7 +36,7 @@ def spec(**kw):
         "features": COLS,
         "group": "b",
         "group_close": "monotone",
-        "n_max": 600,
+        "block_rows": 600,
     }
     d.update(kw)
     return po.spec.rcov("r", **d)
@@ -131,7 +131,7 @@ def test_the_jitter_moves_the_estimate_barely(m):
     is an end effect, and at 300 returns per block it is worth 0.8 %. At
     1000 it is 0.11 %, and the paper's bound holds."""
     df = ticks(n=2000)
-    kw = {"kind": "kernel", "bandwidth": 6, "n_max": 1000}
+    kw = {"kind": "kernel", "bandwidth": 6, "block_rows": 1000}
     rows, _ = block(df, jitter=m, **kw)
     got = unvech(rows["rcov"][0].to_list(), 2)[0, 0]
     base, _ = block(df, jitter=1, **kw)
@@ -141,13 +141,13 @@ def test_the_jitter_moves_the_estimate_barely(m):
 
 def test_the_auto_bandwidth_is_reported_and_clipped_to_the_ring():
     df = ticks(n=400)
-    rows, _ = block(df, kind="kernel", n_max=400)
+    rows, _ = block(df, kind="kernel", block_rows=400)
     h = rows["bandwidth_used"][0]
     assert h is not None and h >= 1
     assert rows["omega2"][0].to_list()[0] > 0
     assert rows["iv_sparse"][0].to_list()[0] > 0
     # A tiny ring clips it.
-    tight, _ = block(df, kind="kernel", n_max=400, h_max=2)
+    tight, _ = block(df, kind="kernel", block_rows=400, max_bandwidth=2)
     assert tight["bandwidth_used"][0] == 2
 
 
@@ -157,7 +157,7 @@ def test_the_auto_bandwidth_is_reported_and_clipped_to_the_ring():
 def test_the_preaveraged_estimate_is_its_definition():
     df = ticks(n=400)
     kn = 12
-    rows, _ = block(df, kind="preavg", preavg_ticks=kn, psd=False)
+    rows, _ = block(df, kind="preavg", preavg_rows=kn, psd=False)
     ret = df.filter(pl.col("b") == 0).select(COLS).to_numpy()
     n = len(ret)
     g = np.array([min(j / kn, 1 - j / kn) for j in range(kn)])
@@ -179,8 +179,8 @@ def test_the_preaveraged_estimate_is_its_definition():
 
 def test_the_psd_form_is_a_longer_window_without_the_bias_term():
     df = ticks(n=400)
-    strict, _ = block(df, kind="preavg", psd=False, n_max=400)
-    repaired, _ = block(df, kind="preavg", psd=True, n_max=400)
+    strict, _ = block(df, kind="preavg", psd=False, block_rows=400)
+    repaired, _ = block(df, kind="preavg", psd=True, block_rows=400)
     # A longer window means fewer pre-averaged blocks.
     assert repaired["rcov_n"][0] < strict["rcov_n"][0]
 
@@ -232,7 +232,7 @@ def test_a_zero_weight_row_is_not_a_return():
 
 def test_a_short_block_gives_nulls():
     df = ticks(n=6, blocks=3)
-    rows, _ = block(df, kind="kernel", jitter=3, n_max=6)
+    rows, _ = block(df, kind="kernel", jitter=3, block_rows=6)
     assert rows["rcov"][0] is None and rows["rcorr"][0] is None
     assert rows["rcov_n"][0] == 0
 
@@ -272,7 +272,7 @@ def test_the_block_survives_a_refresh_time_grid():
     )
     # Two blocks so the first one closes.
     ret = pl.concat([ret, ret.with_columns(b=pl.lit(1))])
-    rows_out, _ = block(ret, kind="kernel", n_max=grid.height)
+    rows_out, _ = block(ret, kind="kernel", block_rows=grid.height)
     assert rows_out["rcov"][0] is not None
     assert rows_out["rcov_n"][0] > 0
 
@@ -292,17 +292,17 @@ def test_the_block_survives_a_refresh_time_grid():
         ({"kernel": "bartlett"}, "not consistent"),
         ({"kind": "nope"}, "unknown rcov kind"),
         ({"jitter": 0}, "jitter must be >= 1"),
-        ({"n_max": None}, "needs `n_max`"),
+        ({"block_rows": None}, "needs `block_rows`"),
         ({"kind": "plain", "bandwidth": 3}, "bandwidth applies to"),
-        ({"kind": "kernel", "preavg_ticks": 3}, "window applies to"),
+        ({"kind": "kernel", "preavg_rows": 3}, "window applies to"),
         ({"emit_sigma": True}, "does not apply to rcov"),
         # docs/REVIEW-E54-E64.md R9: settings that used to be accepted and
         # then quietly gave a block that never accumulates, or a kernel with
         # no lags in its ring.
-        ({"kind": "preavg", "preavg_ticks": 0}, "window must be >= 2"),
-        ({"kind": "preavg", "preavg_ticks": 1}, "window must be >= 2"),
-        ({"n_max": 0}, "n_max is the block's expected length"),
-        ({"h_max": 0, "bandwidth": 4}, "caps the ring below bandwidth"),
+        ({"kind": "preavg", "preavg_rows": 0}, "window must be >= 2"),
+        ({"kind": "preavg", "preavg_rows": 1}, "window must be >= 2"),
+        ({"block_rows": 0}, "block_rows is the block's expected length"),
+        ({"max_bandwidth": 0, "bandwidth": 4}, "caps the ring below bandwidth"),
     ],
 )
 def test_a_bad_spec_is_refused_by_name(kw, message):
@@ -325,7 +325,7 @@ def test_a_clock_break_splits_the_block_into_stretches():
     t = np.arange(float(n))
     t[50:] += 1000.0  # one gap, inside the first block
     df = df.with_columns(t=pl.Series(t))
-    kw = dict(kind="kernel", bandwidth=0, h_max=0, clock="t", max_dclock=5.0)
+    kw = dict(kind="kernel", bandwidth=0, max_bandwidth=0, clock="t", max_dclock=5.0)
 
     broken, _ = block(df, **kw)
     row = broken.filter(pl.col("group") == "0").row(0, named=True)
@@ -337,7 +337,7 @@ def test_a_clock_break_splits_the_block_into_stretches():
     for i, half in enumerate(halves):
         piece = half.with_columns(b=pl.lit(i, dtype=pl.Int64), t=pl.lit(None, dtype=pl.Float64))
         piece = pl.concat([piece, piece.tail(1).with_columns(b=pl.lit(9, dtype=pl.Int64))])
-        out, _ = block(piece, kind="kernel", bandwidth=0, h_max=0)
+        out, _ = block(piece, kind="kernel", bandwidth=0, max_bandwidth=0)
         r = out.filter(pl.col("group") == str(i)).row(0, named=True)
         got += np.asarray(r["rcov"])
         total += r["rcov_n"]

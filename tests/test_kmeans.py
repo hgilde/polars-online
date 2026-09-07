@@ -145,7 +145,7 @@ class TestOracle:
             warm_rows=100,
             update_every=update_every,
             split_merge=split_merge,
-            sm_every=50,
+            split_merge_every=50,
             dead_frac=0.1,
             seed=3,
         )
@@ -297,7 +297,9 @@ class TestLargeData:
         df = frame(X)
 
         def run(**kw):
-            s = spec(k=4, halflife=halflife, min_periods=1.0, warm_rows=200, sm_every=100, **kw)
+            s = spec(
+                k=4, halflife=halflife, min_periods=1.0, warm_rows=200, split_merge_every=100, **kw
+            )
             got = unnested(po.ModelBank([s]).fit_predict(df))["cluster"].fill_null(-1).to_numpy()
             tail = np.arange(n) >= n - n // 4
             recovered = next(
@@ -341,7 +343,7 @@ class TestLargeData:
                 min_periods=1.0,
                 warm_rows=500,
                 split_merge=split_merge,
-                sm_every=100,
+                split_merge_every=100,
             )
             got = unnested(po.ModelBank([s]).fit_predict(df))["cluster"].fill_null(-1).to_numpy()
             keep = (lab >= 0) & (got >= 0)
@@ -349,7 +351,9 @@ class TestLargeData:
                 m = keep & (np.arange(n) >= st) & (np.arange(n) < st + 5000)
                 assert ari(lab[m], got[m]) > 0.97, (split_merge, st, ari(lab[m], got[m]))
         # Through the oracle (bit-for-bit with the bank): no move at all.
-        m = ref.KMeansRef(p=2, k=k, halflife=2000.0, min_periods=1.0, warm_rows=500, sm_every=100)
+        m = ref.KMeansRef(
+            p=2, k=k, halflife=2000.0, min_periods=1.0, warm_rows=500, split_merge_every=100
+        )
         for x in X[:10_000]:
             m.step(list(x), 1.0, 1.0)
         assert (m.n_merges, m.n_dead) == (0, 0)
@@ -448,7 +452,7 @@ class TestEdgeCases:
     def test_chunk_invariance_across_seeding_and_checkpoints(self):
         X, _ = blobs(n=700, seed=26)
         df = frame(X)
-        s = spec(warm_rows=100, update_every=13, sm_every=40, min_periods=1.0)
+        s = spec(warm_rows=100, update_every=13, split_merge_every=40, min_periods=1.0)
         one = unnested(po.ModelBank([s]).fit_predict(df))
         for size in (1, 7, 97, 350):
             bank = po.ModelBank([s])
@@ -464,7 +468,7 @@ class TestEdgeCases:
     def test_save_load_mid_warmup_and_after(self, tmp_path):
         X, _ = blobs(n=600, seed=27)
         df = frame(X)
-        s = spec(warm_rows=200, update_every=5, sm_every=30, min_periods=1.0)
+        s = spec(warm_rows=200, update_every=5, split_merge_every=30, min_periods=1.0)
         for cut in (100, 250, 500):
             a = po.ModelBank([s])
             a.fit_predict(df.slice(0, cut))
@@ -587,7 +591,7 @@ class TestEdgeCases:
             halflife=float("inf"),
             min_periods=1.0,
             warm_rows=50,
-            sm_every=100,
+            split_merge_every=100,
             standardize=False,
         )
         plain = unnested(po.ModelBank([s]).fit_predict(frame(X)))
@@ -607,7 +611,7 @@ class TestEdgeCases:
             halflife=math.inf,
             min_periods=1.0,
             warm_rows=50,
-            sm_every=100,
+            split_merge_every=100,
             standardize=False,
         )
         for x in Y[:330]:
@@ -644,7 +648,7 @@ class TestEdgeCases:
             halflife=halflife,
             min_periods=1.0,
             warm_rows=100,
-            sm_every=100,
+            split_merge_every=100,
             dead_frac=0.25,
             standardize=False,
         )
@@ -712,7 +716,7 @@ class TestRefusals:
             ({"k": 0}, "k must be >= 1"),
             ({"seed_rule": "random"}, "unknown kmeans seed_rule"),
             ({"update_every": 0}, "update_every must be >= 1"),
-            ({"sm_every": 0}, "sm_every must be >= 1"),
+            ({"split_merge_every": 0}, "split_merge_every must be >= 1"),
             ({"split_merge": -1.0}, "split_merge must be finite and >= 0"),
             ({"dead_frac": -0.1}, "dead_frac must be finite and >= 0"),
             ({"features": ["x0", "x0"]}, "more than once"),

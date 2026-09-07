@@ -279,7 +279,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             feature_sets,
             standardize,
             ridge_decay,
-            coef0,
+            coef_prior,
             session_shrink,
             long_halflife,
             solve_every,
@@ -313,21 +313,21 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 ridge_decay: *ridge_decay,
                 session_shrink: *session_shrink,
                 long_halflife: *long_halflife,
-                coef0: coef0.clone(),
+                coef_prior: coef_prior.clone(),
                 min_periods: spec.min_periods_or_default(),
                 solve_every: solve_every.unwrap_or_else(|| spec.solve_every_default(decay)),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
             };
             Ok(AnyModel::EwRidge(Box::new(EwRidge::new(cfg)?)))
         }
-        ModelKind::Rls { ridge, coef0 } => {
+        ModelKind::Rls { ridge, coef_prior } => {
             let cfg = RlsCfg {
                 n_features: spec.k(),
                 n_targets: spec.m(),
                 add_intercept: spec.add_intercept,
                 decay,
                 ridge: ridge.unwrap_or(1.0),
-                coef0: coef0.clone(),
+                coef_prior: coef_prior.clone(),
                 min_periods: spec.min_periods_or_default(),
             };
             Ok(AnyModel::Rls(Box::new(Rls::new(cfg)?)))
@@ -612,7 +612,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             seed,
             update_every,
             split_merge,
-            sm_every,
+            split_merge_every,
             dead_frac,
             standardize,
         } => {
@@ -637,7 +637,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 seed: seed.unwrap_or(0),
                 update_every: update_every.unwrap_or(1),
                 split_merge: split_merge.unwrap_or(0.5),
-                sm_every: sm_every.unwrap_or(100),
+                split_merge_every: split_merge_every.unwrap_or(100),
                 dead_frac: dead_frac.unwrap_or(0.05),
                 standardize: standardize.unwrap_or(true),
             };
@@ -917,9 +917,9 @@ pub fn rcov_cfg(spec: &Spec) -> Result<RcovCfg, String> {
         jitter,
         theta,
         psd,
-        n_max,
-        h_max,
-        preavg_ticks,
+        block_rows,
+        max_bandwidth,
+        preavg_rows,
         noise_stride,
         iv_stride,
     } = &spec.model
@@ -944,9 +944,9 @@ pub fn rcov_cfg(spec: &Spec) -> Result<RcovCfg, String> {
         jitter: jitter.unwrap_or(2),
         theta: theta.unwrap_or(1.0),
         psd: psd.unwrap_or(true),
-        n_max: *n_max,
-        h_max: *h_max,
-        preavg_ticks: *preavg_ticks,
+        block_rows: *block_rows,
+        max_bandwidth: *max_bandwidth,
+        preavg_rows: *preavg_rows,
         noise_stride: noise_stride.unwrap_or(1),
         iv_stride: iv_stride.unwrap_or(20),
     })

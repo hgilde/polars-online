@@ -106,7 +106,7 @@ fn ewridge_cfg(standardize: bool, ridge: f64) -> EwRidgeCfg {
         ridge_decay: false,
         session_shrink: None,
         long_halflife: None,
-        coef0: None,
+        coef_prior: None,
         min_periods: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
@@ -149,7 +149,7 @@ fn rls_golden() {
         add_intercept: true,
         decay: Decay::Halflife(20.0),
         ridge: 0.5,
-        coef0: None,
+        coef_prior: None,
         min_periods: 3.0,
     })
     .unwrap();
@@ -504,9 +504,9 @@ fn rcov_golden() {
         jitter: 2,
         theta: 1.0,
         psd: false,
-        n_max: Some(60),
-        h_max: None,
-        preavg_ticks: None,
+        block_rows: Some(60),
+        max_bandwidth: None,
+        preavg_rows: None,
         noise_stride: 1,
         iv_stride: 20,
     })
@@ -529,9 +529,9 @@ fn rcov_preavg_golden() {
         jitter: 2,
         theta: 1.0,
         psd: false,
-        n_max: Some(60),
-        h_max: None,
-        preavg_ticks: Some(6),
+        block_rows: Some(60),
+        max_bandwidth: None,
+        preavg_rows: Some(6),
         noise_stride: 1,
         iv_stride: 20,
     })
@@ -639,7 +639,7 @@ fn kmeans_cfg(rule: SeedRule) -> KMeansCfg {
         seed: 0,
         update_every: 1,
         split_merge: 0.5,
-        sm_every: 10,
+        split_merge_every: 10,
         dead_frac: 0.05,
         standardize: true,
     }

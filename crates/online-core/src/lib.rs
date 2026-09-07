@@ -17,7 +17,7 @@
 //!     feature_sets: vec![],
 //!     standardize: false,
 //!     ridge_decay: false,
-//!     coef0: None,
+//!     coef_prior: None,
 //!     session_shrink: None,
 //!     long_halflife: None,
 //!     min_periods: 5.0,
@@ -171,4 +171,17 @@ pub use window::Snapshots;
 pub const SCHEMA_VERSION: u32 = 6;
 
 /// Oldest state layout this build still loads.
-pub const MIN_SCHEMA_VERSION: u32 = 1;
+///
+/// **6 since 2026-09-07**, where it had been 1 since the beginning. The
+/// naming pass that day renamed six spec keys with no aliases, and a spec
+/// denies unknown fields, so no file written before it can be read: a
+/// schema-1..5 state names fields no builder has. Rejecting it on the
+/// version, with the message [`check_schema`] gives, is kinder than failing
+/// later on a field name the user never chose.
+///
+/// This is a deliberate exception to hard rule 5 ("keep a loader for the
+/// previous version"), taken while the library is days old and pre-1.0
+/// because getting the names right was judged worth more than the
+/// compatibility. The rule stands for every later change, and the fixture in
+/// `state_schema6.rs` is what the *next* one will be held to.
+pub const MIN_SCHEMA_VERSION: u32 = 6;

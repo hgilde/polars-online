@@ -131,7 +131,7 @@ Decayed ridge least squares solved exactly every row, O(k²), zero staleness. Sq
 form: the state is the Cholesky factor of `A = S+λ₀I` and the rotated right-hand side, updated by
 Givens rotations, not the covariance `P = A⁻¹` (whose recursion drifts and can freeze —
 docs/IMPROVEMENTS.md C5). Cannot share ridge grids (λ₀ is baked into `A₀`). Params: `ridge`
-(scalar, as `A₀ = ridge·I`, i.e. `P₀ = I/ridge`), `coef0`. Included mainly as the reference for 4.1
+(scalar, as `A₀ = ridge·I`, i.e. `P₀ = I/ridge`), `coef_prior`. Included mainly as the reference for 4.1
 and for very small k.
 
 ### 4.3 Lasso path — on top of 4.1
@@ -412,7 +412,7 @@ Each task ends with green `cargo test` + `pytest`, a commit, and a tick here.
       large streams, and the edge cases §11a lists.
       Built 2026-09-05, on branch `clustering-build`: `ModelState::KMeans`, the spec
       variant with `k`, `warm_rows`, `seed_rule`, `seed`, `update_every`,
-      `split_merge`, `sm_every`, `dead_frac`, `standardize`; outputs `cluster` (`i32`),
+      `split_merge`, `split_merge_every`, `dead_frac`, `standardize`; outputs `cluster` (`i32`),
       `dist`, `dist2`, `n_eff`, centres as `coef` (`cluster{j}` slots, one per
       feature; `coef_index` and `unnest` follow); `ModelKind::is_unsupervised`
       refuses every residual diagnostic by name for it and for `ew_cov`. The far-row
@@ -789,13 +789,24 @@ note, not a task.
       the colliding names are renamed first (task 63a), the mechanism and
       `ew_cov` land next (63b), the Gram models after (63c).
   - [x] 63a. **Free the word.** `rcov`'s `window` is a pre-averaging length in
-        ticks and becomes `preavg_ticks`; `corrchange`'s `window` and
+        ticks and becomes `preavg_rows`; `corrchange`'s `window` and
         `horizon` are one concept — rows per comparison block — under two
         names, and become `span_rows`; `bocpd`'s `truncate` is a probability
         floor and becomes `prune_below`, since "truncate" now means the
         window. No compatibility shim and no dual spelling: the spec keys are
         renamed, the frozen state fixtures are regenerated, and a state saved
         by 0.2.0 does not load.
+  - [x] 63a′. **The naming pass, 2026-09-07.** `preavg_ticks` was market
+        jargon in a library whose clock is deliberately generic, and five more
+        names did not say what they were: `rcov.n_max` → `block_rows`,
+        `rcov.h_max` → `max_bandwidth`, `kmeans.sm_every` →
+        `split_merge_every`, the ridge family's `coef0` → `coef_prior` (it is
+        the prior mean, not the coefficient of feature 0), and
+        `refresh_time`'s `n_obs_<s>` column, which had been `n_ticks_<s>`.
+        Names that appear as symbols in a formula the docstring quotes —
+        `theta`, `jitter`, `q`, `p0`, `c`, `beta_mu`, `share_p` — were left,
+        because renaming them breaks the correspondence a reader checks
+        against the cited paper.
   - [x] 63b. **The mechanism, and `ew_cov`.** `Snapshots<S>` in
         `online-core`, the truncated view, `window` and `window_every` on the
         `ew_cov` spec, refused by name everywhere else. Acceptance: the
@@ -850,7 +861,7 @@ prototypes and the doc, recorded so the numbers can be re-derived:
   memberships and stand-alone reseed rule are not built (§7 measured none of
   them earning a place). Parameters: `k`, `warm_rows` (500), `seed_rule`
   (`lloyd`; `first | farthest | kmeanspp | lloyd`), `seed` (0), `update_every`
-  (1), `split_merge` (0.5), `sm_every` (100), `dead_frac` (0.05),
+  (1), `split_merge` (0.5), `split_merge_every` (100), `dead_frac` (0.05),
   `standardize` (true, a metric — never the coordinates, §10).
 - *One accumulator, always in mean form.* A cluster is `(n, c, R)`; rows since
   the last checkpoint accumulate into a per-cluster **batch** summary of the
@@ -879,7 +890,7 @@ prototypes and the doc, recorded so the numbers can be re-derived:
   keeps its centre. The same generator is written out in
   `tests/reference_cluster.py`, so the Python reference is bit-exact.
 - *The far row (final design below, 2026-09-05).* A check runs every
-  `sm_every` learned rows at a checkpoint: merge the closest pair when
+  `split_merge_every` learned rows at a checkpoint: merge the closest pair when
   `d_ij / (r_i + r_j) < split_merge` and re-place the freed centre on the
   heaviest far summary; **else** if the lightest cluster is dead
   (`n_j < dead_frac · n_eff / k`) re-place it the same way. The dead rule is
@@ -984,7 +995,7 @@ halflife 3000, 20 seeds, last-quarter ARI) and the stranded fixture in
   (> 0.5 by design: a legitimate wide cluster looks the same).
 - *Rejected on measurement, not to be retried:* D²-weighted reservoir of far
   rows (outlier-prone, random); the max-ratio far row (picks outliers by
-  construction); a recent-share dead test over `sm_every` windows (a second
+  construction); a recent-share dead test over `split_merge_every` windows (a second
   time scale; kills quiet clusters; outlier trickles defeat ratio tests);
   ISODATA per-feature variance split (k·p state, blind to bimodality in
   general position); in-place coincident split as a trigger (splits wide
@@ -1289,7 +1300,7 @@ a 3000-row sample as the ceiling. What the tests pin is what is written here.
   thing at every row — "no effect" for a slope, "the target averages zero"
   for the intercept — while a fixed caller-unit prior would be a moving
   target as the scaler moves, and `ewridge`'s E15 warm prior solves from
-  accumulated statistics the filter does not keep. No `coef0` on `kalman`.
+  accumulated statistics the filter does not keep. No `coef_prior` on `kalman`.
 - *A scalar broadcasts to every slot, intercept included*, as
   `coef_halflife` does; `[inf, r, r]` exempts it. Nothing is applied when
   no slot is finite, so the default is bit-identical to the previous
@@ -2451,17 +2462,17 @@ no-op for every model that has declared no ring (`KEEPS_LAGS`, empty today).
   is emitted at the tick that completes the set — every series updated
   since the previous point — with `time_refresh` = that tick's time (=
   max over series of their last update, Definition 1), `<s>_value` = each
-  series' last value, `n_ticks_<s>` = ticks of `s` since the previous point,
-  `retained_fraction` = `m / Σ_s n_ticks_s` for the interval, and `keep`
+  series' last value, `n_obs_<s>` = ticks of `s` since the previous point,
+  `retained_fraction` = `m / Σ_s n_obs_s` for the interval, and `keep`
   columns at their value on the completing tick. Then every flag clears
   and the counts restart. The docstring carries BNHLS §2.1's caveat
   (ANSWERS): the refresh vector is treated as observed at `time_refresh`,
   though each series' value is stale by up to one of its own inter-tick
-  intervals — the price of a common grid, and why `n_ticks_<s>` is emitted
+  intervals — the price of a common grid, and why `n_obs_<s>` is emitted
   (a large count on one series is that series' staleness made visible).
   `pairs=True` runs an independent two-series state
   per pair and emits the long frame `(by?, pair, time_refresh, a_value,
-  b_value, n_ticks_a, n_ticks_b)` with `pair = "a|b"` in `names` order.
+  b_value, n_obs_a, n_obs_b)` with `pair = "a|b"` in `names` order.
 - *Tests.* A longhand Python loop over the same rows on random Poisson
   streams (the oracle), with `by` and with `pairs`; §10's three-series
   example — `n = 8, 9, 10` ticks giving `N = 7` and `21/27` retained, which
@@ -2469,7 +2480,7 @@ no-op for every model that has declared no ring (`KEEPS_LAGS`, empty today).
   paper's figure — so the test is a constructed three-series stream with
   those tick counts that the loop reduces to exactly `N = 7`, asserting
   `N ≤ min nᵢ` and `retained = N·m/Σnᵢ = 21/27`; a synchronous
-  input (every series ticks at every time) returned with `n_ticks = 1` and
+  input (every series ticks at every time) returned with `n_obs = 1` and
   `retained_fraction = 1` everywhere; a volume clock as `time`; identical
   frames from 1 and 1000 batches; the unknown-series and backwards-time
   errors.
@@ -2486,7 +2497,7 @@ no-op for every model that has declared no ring (`KEEPS_LAGS`, empty today).
   *inside* an interval, before its completing tick. That is the property
   worth remembering: a repeat only drops a tick when it precedes the tick
   that closes the set.
-- *`retained_fraction` is per interval, not cumulative.* `m / Σ n_ticks` for
+- *`retained_fraction` is per interval, not cumulative.* `m / Σ n_obs` for
   that point. The paper's `21/27` is the aggregate, which the test computes
   as `3·N / total`.
 - *The slice pushdown counts output rows.* Unlike the bank's source, where
@@ -2524,11 +2535,11 @@ no-op for every model that has declared no ring (`KEEPS_LAGS`, empty today).
   scale; their worked `m = 2` is exactly `X̃₀ = ½(X_{τ₀} + X_{τ₁})`, `X̃ₙ =
   ½(X_{τ_{N−1}} + X_{τ_N})`, which the formula above reproduces. **Products
   enter `Γ̂_h` only once both legs are final**: at row `t`, add `x_{t−m}·x'_{t−m−h}` for `h ≤
-  h_max` (the return `m` rows back can no longer be replaced by the end
-  jitter); at close, add the products of `x̃_end` with the last `h_max` final
-  returns. That is what makes the state a ring of `h_max + m` vectors and
-  the close `O(h_max·k²)`, with no retraction. Bandwidth: `bandwidth` an
-  integer `H` (then `h_max = H`, `n_max` unneeded) or `"auto"`, BNHLS §4.1
+  max_bandwidth` (the return `m` rows back can no longer be replaced by the end
+  jitter); at close, add the products of `x̃_end` with the last `max_bandwidth` final
+  returns. That is what makes the state a ring of `max_bandwidth + m` vectors and
+  the close `O(max_bandwidth·k²)`, with no retraction. Bandwidth: `bandwidth` an
+  integer `H` (then `max_bandwidth = H`, `block_rows` unneeded) or `"auto"`, BNHLS §4.1
   as ANSWERS read it: `c* = ((12)²/0.269)^{1/5} = 3.5134` for Parzen (the
   kernel constant `k''(0)²/∫k² = 12²/0.269`); per feature `ξ̂ᵢ² =
   ω̂ᵢ²/IV̂ᵢ`, with `IV̂ᵢ` the realised variance on a sparse grid
@@ -2538,11 +2549,11 @@ no-op for every model that has declared no ring (`KEEPS_LAGS`, empty today).
   default `1`, i.e. the full dense grid; their `q ≈ 25` trades or `≈ 70`
   quotes for a ~2-minute grid — the estimate is deliberately upward biased,
   which their §4.1 accepts, and a stride above 1 is the caller's call); `Hᵢ
-  = c*·ξ̂ᵢ^{4/5}·n^{3/5}`, `H = ⌈mean Hᵢ⌉` clipped to `h_max`, reported as
-  `bandwidth_used`. `"auto"` requires `n_max`, from which `h_max` defaults
-  to `⌈c*·n_max^{3/5}⌉` (`ξ̂ = 1`, a noise variance equal to the block's
+  = c*·ξ̂ᵢ^{4/5}·n^{3/5}`, `H = ⌈mean Hᵢ⌉` clipped to `max_bandwidth`, reported as
+  `bandwidth_used`. `"auto"` requires `block_rows`, from which `max_bandwidth` defaults
+  to `⌈c*·block_rows^{3/5}⌉` (`ξ̂ = 1`, a noise variance equal to the block's
   integrated variance, beyond which the estimator is not worth having);
-  `h_max` may be given. `n_max` is a sizing hint, not a limit: a longer
+  `max_bandwidth` may be given. `block_rows` is a sizing hint, not a limit: a longer
   block runs, clipped, and says so. Parzen is a positive-definite function,
   so `K` is PSD up to rounding (BNHLS: the Bartlett kernel is *not*
   consistent for this estimator, and Parzen's efficiency 0.97 beats the
@@ -2571,8 +2582,8 @@ no-op for every model that has declared no ring (`KEEPS_LAGS`, empty today).
   implementation; the `kₙ = ⌈θ·n^{1/2+δ}⌉`, `δ = 0.1` of the first draft is
   Hautsch–Podolskij's reading and stands only if §3 agrees** (the one open
   read in this task; ANSWERS did not cover §3). `kₙ` must be fixed before
-  the block starts, so it is `⌊θ·√n_max⌋` (or the §3 form on `n_max`) from
-  a required `n_max`, or a given `window`. Streaming: a ring of `kₙ − 1`
+  the block starts, so it is `⌊θ·√block_rows⌋` (or the §3 form on `block_rows`) from
+  a required `block_rows`, or a given `window`. Streaming: a ring of `kₙ − 1`
   returns; each arriving return completes one `Ȳ`, whose outer product is
   added — `O(kₙ·k + k²)` a row.
 - *The row's `rcov` block.* `rcov` list[f64] (vech, as `comoments`), `rcorr`
@@ -3878,6 +3889,22 @@ a decision rather than a repair, this is what was decided.
   `state_schema5.rs` (H1), and the `rcov` rows of the pipeline golden (R2,
   27 → 21 effective returns over three capped gaps). Each carries a comment
   saying which fix moved it.
+
+**State compatibility was dropped once, deliberately, 2026-09-07.**
+Renaming spec keys with no aliases ends backward compatibility outright, not
+partially: a spec denies unknown fields, so a file naming `coef0` is refused
+rather than losing that one value. Rather than hide that behind six
+deserializer aliases, `MIN_SCHEMA_VERSION` moved 1 → 6, the four fixtures
+that proved older files load were deleted, and with them the schema-1 and
+schema-2 conversion paths in `rls`, `sgd` and `kalman` — three untagged wire
+enums, their old layouts, `factor_of_inverse`, and the three tests whose
+`const assert!(MIN_SCHEMA_VERSION <= 2)` was written to fail exactly when
+this happened. A state saved by 0.2.0 must be refit.
+
+This is an exception to hard rule 5, not a repeal of it: the library is days
+old, pre-1.0, and getting the names right was judged worth more than the
+compatibility. `state_schema6.rs` is the frozen file the *next* layout change
+will be held to, and the rule applies from here.
 
 **The documentation pass (task 58), 2026-09-06.** Three rules, so the next
 pass does not have to rediscover them:

@@ -1,5 +1,5 @@
 """`ewridge` against the numpy oracle (`reference.ewridge_ref`), and the
-features only it has: warm priors (`coef0`, E15) and `session_shrink` (E6).
+features only it has: warm priors (`coef_prior`, E15) and `session_shrink` (E6).
 
 The oracle covers multi-target, `standardize`, the row-count clock with `lam`,
 nulls, weights, groups and sessions; `test_semantics_all_models` and the other
@@ -131,7 +131,7 @@ class TestOracle:
 
 
 class TestWarmPriors:
-    """E15: `coef0` shrinks toward a stated belief instead of toward zero.
+    """E15: `coef_prior` shrinks toward a stated belief instead of toward zero.
 
     Whether the prior fades depends on `ridge_decay`, and the distinction is
     the point: `S` is a weighted *mean*, so a plain `ridge` is a fixed
@@ -165,12 +165,12 @@ class TestWarmPriors:
         assert late < 0.5, f"a heavy ridge with no prior should shrink to ~0, got {late}"
 
     def test_fixed_ridge_pull_is_permanent(self):
-        early, late = self._slopes(coef0=[[0.0, 5.0]])
+        early, late = self._slopes(coef_prior=[[0.0, 5.0]])
         assert early > 4.0, "should start near the prior"
         assert late > 3.0, f"a fixed ridge keeps pulling toward the prior forever, got {late}"
 
     def test_ridge_decay_makes_it_a_fading_warm_start(self):
-        early, late = self._slopes(coef0=[[0.0, 5.0]], ridge_decay=True)
+        early, late = self._slopes(coef_prior=[[0.0, 5.0]], ridge_decay=True)
         assert early > 2.5, f"should start warm near the prior, got {early}"
         assert abs(late - 1.5) < 0.1, f"the prior should fade to the truth, got {late}"
 
@@ -185,7 +185,7 @@ class TestWarmPriors:
             features=["x0"],
             ridge=1e6,
             standardize=True,
-            coef0=[[0.0, 0.02]],
+            coef_prior=[[0.0, 0.02]],
             halflife=1e9,
             min_periods=0.0,
             max_rows_between_solves=1,
@@ -198,13 +198,13 @@ class TestWarmPriors:
         assert abs(c[1] - 0.02) < 5e-3, f"expected the prior in original units, got {c[1]}"
 
     def test_shape_is_validated(self):
-        with pytest.raises(ValueError, match="coef0"):
+        with pytest.raises(ValueError, match="coef_prior"):
             po.spec.ewridge(
                 "m",
                 targets=["y0"],
                 features=["x0", "x1"],
                 halflife=100.0,
-                coef0=[[0.0, 1.0]],  # too short for 2 features + intercept
+                coef_prior=[[0.0, 1.0]],  # too short for 2 features + intercept
             )
 
 

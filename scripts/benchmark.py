@@ -281,7 +281,7 @@ def main() -> None:
                 kind="kernel",
                 group="block",
                 group_close="monotone",
-                n_max=2000,
+                block_rows=2000,
                 **no_decay(four, drop_weight=True),
             ),
         ),
