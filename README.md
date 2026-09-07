@@ -1,8 +1,8 @@
 # polars-online
 
-Online regression for [Polars](https://pola.rs): a bank of models that learns
-one chunk at a time and predicts every row *before* it learns from it. Rust
-core, Python API, and a standalone CLI.
+Online linear model fit for [Polars](https://pola.rs): a bank of models that
+learns one chunk at a time and predicts every row *before* it learns from it.
+Rust core, Python API, and a standalone CLI.
 
 It is built for data that does not fit in memory. Feed it a stream and memory
 stays at *state + one chunk* however long the stream runs, and the numbers are
@@ -219,9 +219,10 @@ A bank is a set of sufficient statistics, so row order reaches the fit only
 through decay. With decay off, an `ewridge` with `ridge=0` is ordinary least
 squares over every row it has seen, in whatever order they came: forwards,
 backwards or shuffled, its coefficients match `numpy.linalg.lstsq` to 2e-13.
-What it costs is state, not data — 6M rows × 20 features from a parquet
-stream peak at 1.4 GB, against 3.97 GB for `lstsq` on the same rows, and the
-frame never has to fit. Set `solve_every=1000` to solve less often than every
+Memory use is proportional to the model's state, not to the amount of data
+that has passed through it — 6M rows × 20 features from a parquet stream peak
+at 1.4 GB, against 3.97 GB for `lstsq` on the same rows, and the frame never
+has to fit. Set `solve_every=1000` to solve less often than every
 row (1.4 s instead of 11 s there, coefficients at most 1000 rows stale).
 
 A finite halflife with no clock discounts each row by how far back it sits,
@@ -363,10 +364,11 @@ po.run(input="today.parquet", output="scored.parquet", specs=[spec],
 
 `output` is a path in any of the four formats. `keep_columns=[...]` selects
 input columns before the bank sees them. `progress(rows, chunks)` is called
-after each chunk; raising in it stops the run. CSV cannot hold struct columns, so there each spec's struct is
-flattened to `<spec>.<field>` columns and the `coef` list becomes a JSON
-string that `pl.col("ridge.coef").str.json_decode(pl.List(pl.Float64))` reads
-back bit-exact.
+after each chunk; raising in it stops the run. CSV cannot hold struct columns,
+so there each spec's struct is flattened to `<spec>.<field>` columns and the
+`coef` list becomes a JSON string that
+`pl.col("ridge.coef").str.json_decode(pl.List(pl.Float64))` reads back
+bit-exact.
 
 **When the product of a run is its state, leave `output` out.** An
 accumulator-only spec emits `n_eff` a row and nothing else; over a billion
@@ -542,8 +544,8 @@ clock does not measure time in the next). Rows still waiting when the stream
 ends are simply never learned from — their labels never matured.
 
 The buffer lives in the state and is saved with it, so a run that stops
-mid-stream resumes with the same rows still waiting. It costs one row's
-values per row inside the delay, per group.
+mid-stream resumes with the same rows still waiting. The memory it needs is one
+row's values for every row inside the delay, per group.
 
 [`po.prep.embargo`](https://hgilde.github.io/polars-online/prep.html#polars_online.prep.embargo) writes the same thing out as data: every row twice, a
 zero-weight prediction at `t` and a lesson at `t + delay`, merged back into
@@ -617,11 +619,12 @@ path = (
 ```
 
 `bank.coef()` is the fit as of the last row each group learned from, with
-`n_eff` for how much weight is behind it. The output's `coef` is the same fit, snapshotted *after* each row's update —
-the row's own `pred` comes from the fit *before* it. It is written every
-`coef_every` rows, and on the last row of every chunk. The default,
-`coef_every=0`, is the chunk end only; the per-row path above asks for
-`coef_every=1`, and pays a list of `k` floats per row.
+`n_eff` for how much weight is behind it. The output's `coef` is the same fit,
+snapshotted *after* each row's update — the row's own `pred` comes from the fit
+*before* it. It is written every `coef_every` rows, and on the last row of
+every chunk. The default, `coef_every=0`, is the chunk end only; the per-row
+path above asks for `coef_every=1`, and writes a list of `k` floats on every
+row of the output.
 
 Under a grid — several `ridge` values, `feature_sets`, a `lasso_path`,
 several targets — the list holds one block per (target × grid point).
@@ -648,9 +651,11 @@ a saved state answers questions the run never asked:
 
 `n_eff` counts weight, not rows. `n_kish = n_eff² / Σw²` is the number of
 equally weighted rows the moments are worth, which is what a standard error
-divides by; an exponentially weighted window of unit rows settles at
-`(1 + λ)/(1 − λ)` whatever the halflife's units. It is scale-free, so it does
-not shrink when a stream goes quiet — `n_eff` is what says that.
+divides by; an exponentially weighted window of unit rows settles at `(1 +
+λ)/(1 − λ)` whatever the halflife's units. `n_kish` is scale-free: multiply
+every weight by the same factor and it does not move, so it does not fall when
+a stream goes quiet. `n_eff` is the number that falls, and the one to read for
+that.
 
 The target moments are the half that makes the rest usable. Without `Var[y]`
 there is no residual variance, no R², no information criterion and no
@@ -933,7 +938,8 @@ shrinks like `1/T`.
 agree; on fat-tailed or heteroskedastic ones the Gaussian interval
 over-covers by several points where this one lands on target. The conformal
 radius starts at `sigma · Φ⁻¹(1 − α/2)` and is null until then. It is read
-before the row, like everything else, and costs three numbers per slot.
+before the row, like everything else, and adds three numbers to the state per
+slot.
 
 ```python
 ci = po.spec.ewridge("ci", targets=["y"], features=["x0", "x1"], clock="t",
@@ -1453,8 +1459,9 @@ The struct holds:
 | `n_eff` | the weight behind the state before this row |
 | `coef` | the established summaries, one `[id, label, n, radius, c_1 … c_p]` row each |
 
-All are read before the row is learned. Ids are monotone and never reused; a label is the smallest
-id in its chain, so it outlives everything but that summary.
+All are read before the row is learned. Ids are monotone and never reused; a
+label is the smallest id in its chain, so it outlives everything but that
+summary.
 
 ```python
 mc = po.spec.micro("mc", features=["x0", "x1"], eps=0.1, clock="t",
@@ -1797,9 +1804,9 @@ h = po.spec.hmm("regime", features=["x0", "x1"], k=2, precision_prior=1e-2,
 out = df.online.fit_predict([h]).unnest("regime")   # p_0, p_1, p1_0, p1_1, state, loglik
 ```
 
-What the chain buys, measured: on two-dimensional blobs 1.5 apart, a
-memoryless nearest-centre rule *given the true centres* is 85% right and the
-filter is 99%.
+What the transition chain adds, measured: on two-dimensional blobs 1.5
+apart, a memoryless nearest-centre rule *given the true centres* is 85% right
+and the filter is 99%.
 
 `precision_prior` is required — a state's centred co-moments start at zero,
 and a zero matrix has no density. Give `means` and `covs` to filter with
@@ -2013,10 +2020,11 @@ stream per spec). On every chunk, each stream in the bank becomes one task on
 the bank's own thread pool (a [rayon](https://github.com/rayon-rs/rayon)
 pool, separate from polars') — one flat pool across all specs and all
 groups, longest stream first so a few big groups do not leave cores idle at
-the tail. Within a stream the rows go one at a time, because each row's update depends
-on the last. That is what makes the numbers independent of how the work is
-split. It also means a bank with one spec and one group is one thread's work
-per chunk — polars' own reading and writing still run in parallel around it.
+the tail. Within a stream the rows go one at a time, because each row's
+update depends on the last. That is what makes the numbers independent of how
+the work is split. It also means a bank with one spec and one group is one
+thread's work per chunk — polars' own reading and writing still run in
+parallel around it.
 
 So a bank fills the pool with groups, with specs, or with both.
 
@@ -2089,8 +2097,9 @@ Where the parallelism comes from, then:
 
 Thread count is `POLARS_ONLINE_MAX_THREADS` for the bank's pool and
 `POLARS_MAX_THREADS` for polars' readers and writers; unset, each is one
-thread per core. The bank builds its pool at the first bank call, and polars builds its own
-at import, so each must be set before that point — as above, or in the shell
+thread per core. The bank builds its pool at the first bank call, and polars
+builds its own at import, so each must be set before that point — as above,
+or in the shell
 (`POLARS_ONLINE_MAX_THREADS=8 python fit.py`), which is the form that always
 works. Set later, the variable is ignored, and
 [`po.thread_pool_size()`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.thread_pool_size) says what took (`pl.thread_pool_size()` for
@@ -2121,8 +2130,8 @@ import polars_online as po
 ```
 
 On 12M rows over 64 groups, one spec: 14 and 14 takes 2.6 s at a peak of
-1.1 GB. 4 and 14 takes the same 2.6 s at 0.8 GB — a third less memory for
-free. One shared count of 4 takes 3.9 s at 0.6 GB, and polars alone at one
+1.1 GB. 4 and 14 takes the same 2.6 s at 0.8 GB — a third less memory at the
+same speed. One shared count of 4 takes 3.9 s at 0.6 GB, and polars alone at one
 thread 7.4 s, because reading and writing are then one thread's work. Six
 specs split the same way: 10.3 s at 1.5 GB, 11.8 s at 1.2 GB, 16.6 s at
 1.0 GB. (Memory here and below is the peak footprint `/usr/bin/time -l`
