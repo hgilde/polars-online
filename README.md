@@ -1017,7 +1017,7 @@ every keyword with its default, and to its Rust source under
 
 ### `ewridge` — EW ridge on sufficient statistics
 
-*API:* [`po.spec.ewridge`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge) — *Rust:* [`ewridge.rs`](crates/online-core/src/ewridge.rs)
+*API:* [`po.spec.ewridge`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge) — *Rust:* [`ewridge.rs`](crates/online-core/src/ewridge.rs) — *Outputs:* [fields](docs/OUTPUTS.md#ewridge)
 
 ```
 W'   = λW + w                       S' = (λW·S + w·z zᵀ) / W'
@@ -1038,7 +1038,7 @@ blowing up.
 
 ### `rls` — recursive least squares
 
-*API:* [`po.spec.rls`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rls) — *Rust:* [`rls.rs`](crates/online-core/src/rls.rs)
+*API:* [`po.spec.rls`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rls) — *Rust:* [`rls.rs`](crates/online-core/src/rls.rs) — *Outputs:* [fields](docs/OUTPUTS.md#rls)
 
 ```
 A ← λA + w zzᵀ       b_j ← λb_j + w y_j z        β_j = A⁻¹ b_j
@@ -1057,7 +1057,7 @@ factor is shared.
 
 ### `lasso` — lasso path with free λ selection
 
-*API:* [`po.spec.lasso`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.lasso) — *Rust:* [`lasso.rs`](crates/online-core/src/lasso.rs)
+*API:* [`po.spec.lasso`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.lasso) — *Rust:* [`lasso.rs`](crates/online-core/src/lasso.rs) — *Outputs:* [fields](docs/OUTPUTS.md#lasso)
 
 Coordinate descent on the standardized statistics, warm-started along the
 path and across solves:
@@ -1074,7 +1074,7 @@ reported as it stood *before* the row, like every other output.
 
 ### `kalman` — random-walk-β dynamic linear model
 
-*API:* [`po.spec.kalman`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kalman) — *Rust:* [`kalman.rs`](crates/online-core/src/kalman.rs)
+*API:* [`po.spec.kalman`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kalman) — *Rust:* [`kalman.rs`](crates/online-core/src/kalman.rs) — *Outputs:* [fields](docs/OUTPUTS.md#kalman)
 
 ```
 β_j ← Φβ_j    P_j ← ΦP_jΦ + Q·Δclock    Φ = diag(2^(−Δclock/r_i))
@@ -1123,7 +1123,7 @@ out = po.ModelBank([revert]).fit_predict(df)
 
 ### `huber` / `quantile` — robust regression
 
-*API:* [`po.spec.huber`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.huber) and [`po.spec.quantile`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.quantile) — *Rust:* [`robust.rs`](crates/online-core/src/robust.rs)
+*API:* [`po.spec.huber`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.huber) and [`po.spec.quantile`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.quantile) — *Rust:* [`robust.rs`](crates/online-core/src/robust.rs) — *Outputs:* [huber](docs/OUTPUTS.md#huber), [quantile](docs/OUTPUTS.md#quantile)
 
 IRLS reweighting on the ridge update, using each row's *prior* residual so
 the reweighting stays out-of-sample. Huber: `w = min(1, δσ/|r|)`. Quantile at
@@ -1134,7 +1134,7 @@ target here.
 
 ### `sgd` — stochastic gradient descent
 
-*API:* [`po.spec.sgd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.sgd) — *Rust:* [`sgd.rs`](crates/online-core/src/sgd.rs)
+*API:* [`po.spec.sgd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.sgd) — *Rust:* [`sgd.rs`](crates/online-core/src/sgd.rs) — *Outputs:* [fields](docs/OUTPUTS.md#sgd)
 
 ```
 eta = zᵀβ        p = link(eta)        gᵢ = (dL/d eta)·zᵢ·w + l2·βᵢ        βᵢ -= lrᵢ·gᵢ
@@ -1186,7 +1186,7 @@ assert min(last[1:]) >= 0.0 and abs(sum(last[1:]) - 1.0) < 1e-12
 
 ### `pa` — passive-aggressive regression
 
-*API:* [`po.spec.pa`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.pa) — *Rust:* [`pa.rs`](crates/online-core/src/pa.rs)
+*API:* [`po.spec.pa`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.pa) — *Rust:* [`pa.rs`](crates/online-core/src/pa.rs) — *Outputs:* [fields](docs/OUTPUTS.md#pa)
 
 ```
 loss = max(0, |y − p| − eps)      s = ‖z‖²
@@ -1208,7 +1208,7 @@ projection takes the rest back.
 
 ### `ew_cov` — exponentially weighted moments
 
-*API:* [`po.spec.ew_cov`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_cov) — *Rust:* [`ewcov.rs`](crates/online-core/src/ewcov.rs)
+*API:* [`po.spec.ew_cov`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_cov) — *Rust:* [`ewcov.rs`](crates/online-core/src/ewcov.rs) — *Outputs:* [fields](docs/OUTPUTS.md#ew_cov)
 
 ```
 W'   = λW + w        m'ᵢ = (λW·mᵢ + w·xᵢ) / W'      S'ᵢⱼ = (λW·Sᵢⱼ + w·xᵢxⱼ) / W'
@@ -1323,7 +1323,7 @@ entering it. Nothing else moves: clearing the ring is not a reset.
 
 ### `ftrl` — online logistic regression
 
-*API:* [`po.spec.ftrl`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ftrl) — *Rust:* [`ftrl.rs`](crates/online-core/src/ftrl.rs)
+*API:* [`po.spec.ftrl`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ftrl) — *Rust:* [`ftrl.rs`](crates/online-core/src/ftrl.rs) — *Outputs:* [fields](docs/OUTPUTS.md#ftrl)
 
 FTRL-proximal (McMahan et al. 2013) for binary targets, with the accumulators
 decayed on the same clock as everything else:
@@ -1340,7 +1340,7 @@ with no solves, and L1 support, which `ewridge` does not have.
 
 ### `holt` — Holt's linear trend
 
-*API:* [`po.spec.holt`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.holt) — *Rust:* [`holt.rs`](crates/online-core/src/holt.rs)
+*API:* [`po.spec.holt`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.holt) — *Rust:* [`holt.rs`](crates/online-core/src/holt.rs) — *Outputs:* [fields](docs/OUTPUTS.md#holt)
 
 The one model that takes no features: it extrapolates the target's own level
 and trend.
@@ -1366,7 +1366,7 @@ po.spec.holt("baseline", targets=["y"], clock="t", max_dclock=600.0,
 
 ### `kmeans` — exponentially weighted k-means
 
-*API:* [`po.spec.kmeans`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kmeans) — *Rust:* [`cluster/kmeans.rs`](crates/online-core/src/cluster/kmeans.rs)
+*API:* [`po.spec.kmeans`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kmeans) — *Rust:* [`cluster/kmeans.rs`](crates/online-core/src/cluster/kmeans.rs) — *Outputs:* [fields](docs/OUTPUTS.md#kmeans)
 
 The one model with no target: it labels each row with the nearest of `k`
 centres, read before the row is learned, so the label is out-of-sample like
@@ -1412,7 +1412,7 @@ k-means.
 
 ### `micro` — density-based clustering, any shape
 
-*API:* [`po.spec.micro`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.micro) — *Rust:* [`cluster/micro.rs`](crates/online-core/src/cluster/micro.rs)
+*API:* [`po.spec.micro`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.micro) — *Rust:* [`cluster/micro.rs`](crates/online-core/src/cluster/micro.rs) — *Outputs:* [fields](docs/OUTPUTS.md#micro)
 
 `kmeans` needs `k` and finds round clusters. `micro` finds clusters of any
 shape, does not need their number, flags the rows that belong to none, and
@@ -1469,7 +1469,7 @@ beta_mu)`, with `n` the weight it had.
 
 ### `ew_class` — Gaussian classification on `ew_cov` moments
 
-*API:* [`po.spec.ew_class`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_class) — *Rust:* [`ewclass.rs`](crates/online-core/src/ewclass.rs)
+*API:* [`po.spec.ew_class`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_class) — *Rust:* [`ewclass.rs`](crates/online-core/src/ewclass.rs) — *Outputs:* [fields](docs/OUTPUTS.md#ew_class)
 
 A label column in place of a numeric target. The model keeps one `ew_cov`
 state per class — a weight `n_c`, a mean `μ_c` and a centered covariance
@@ -1523,7 +1523,7 @@ generating parameters allow, and the posteriors are calibrated to about 0.01.
 
 ### `seqtest` — a sequential test of a sign, by betting
 
-*API:* [`po.spec.seqtest`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.seqtest) — *Rust:* [`seqtest.rs`](crates/online-core/src/seqtest.rs)
+*API:* [`po.spec.seqtest`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.seqtest) — *Rust:* [`seqtest.rs`](crates/online-core/src/seqtest.rs) — *Outputs:* [fields](docs/OUTPUTS.md#seqtest)
 
 Not a regression. A `seqtest` asks whether a column tends to be positive —
 or, with `a` and `b`, whether one spec of the bank predicts closer than
@@ -1577,7 +1577,7 @@ verdict = out.group_by("bond_id").agg(pl.col("closer").struct.field("log_e_a_y")
 
 ### `marginal` — every pair's moments, kept in the state
 
-*API:* [`po.spec.marginal`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.marginal) — *Rust:* [`marginal.rs`](crates/online-core/src/marginal.rs)
+*API:* [`po.spec.marginal`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.marginal) — *Rust:* [`marginal.rs`](crates/online-core/src/marginal.rs) — *Outputs:* [fields](docs/OUTPUTS.md#marginal)
 
 A `marginal` is not a regression and not a joint fit. It keeps the
 exponentially weighted moments of each (feature, target) pair on its own,
@@ -1633,7 +1633,7 @@ one_bond = bank.marginal("pairs", group="b0")   # 10 rows: five features by two 
 
 ### `corrchange` — has the correlation structure changed?
 
-*API:* [`po.spec.corrchange`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.corrchange) — *Rust:* [`corrchange.rs`](crates/online-core/src/corrchange.rs)
+*API:* [`po.spec.corrchange`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.corrchange) — *Rust:* [`corrchange.rs`](crates/online-core/src/corrchange.rs) — *Outputs:* [fields](docs/OUTPUTS.md#corrchange)
 
 Two tests, because there are two questions.
 
@@ -1680,7 +1680,7 @@ quantile stays above it for a run of rows.
 
 ### `hmm` — which regime are we in
 
-*API:* [`po.spec.hmm`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.hmm) — *Rust:* [`hmm.rs`](crates/online-core/src/hmm.rs)
+*API:* [`po.spec.hmm`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.hmm) — *Rust:* [`hmm.rs`](crates/online-core/src/hmm.rs) — *Outputs:* [fields](docs/OUTPUTS.md#hmm)
 
 `ew_class` classifies a row against *labelled* Gaussians. An `hmm` does the
 same arithmetic with no labels: the state is hidden, and a transition matrix
@@ -1731,7 +1731,7 @@ are the mitigations.
 
 ### `rcov` — a block's realised covariance, robust to noise
 
-*API:* [`po.spec.rcov`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rcov) — *Rust:* [`rcov.rs`](crates/online-core/src/rcov.rs)
+*API:* [`po.spec.rcov`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rcov) — *Rust:* [`rcov.rs`](crates/online-core/src/rcov.rs) — *Outputs:* [fields](docs/OUTPUTS.md#rcov)
 
 A realised covariance over ticks is the sum of outer products of returns.
 Over real tick data it is wrong twice: each price is the efficient one plus
@@ -1780,7 +1780,7 @@ fractional row.
 
 ### `deco` — one correlation for the whole matrix
 
-*API:* [`po.spec.deco`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.deco) — *Rust:* [`deco.rs`](crates/online-core/src/deco.rs)
+*API:* [`po.spec.deco`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.deco) — *Rust:* [`deco.rs`](crates/online-core/src/deco.rs) — *Outputs:* [fields](docs/OUTPUTS.md#deco)
 
 A correlation matrix of `m` series has `m(m−1)/2` free entries. A stream
 cannot keep them all moving without O(m²) work a row, and most of them are
@@ -1838,7 +1838,7 @@ out = df.online.fit_predict([eq, blocked])
 
 ### `bocpd` — how long has this regime lasted?
 
-*API:* [`po.spec.bocpd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.bocpd) — *Rust:* [`bocpd.rs`](crates/online-core/src/bocpd.rs)
+*API:* [`po.spec.bocpd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.bocpd) — *Rust:* [`bocpd.rs`](crates/online-core/src/bocpd.rs) — *Outputs:* [fields](docs/OUTPUTS.md#bocpd)
 
 Every other detector here answers "has something changed?" with a statistic.
 `bocpd` (Adams & MacKay 2007) keeps a posterior over the **run length** — how

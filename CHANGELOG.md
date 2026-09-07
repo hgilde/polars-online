@@ -9,6 +9,15 @@ carries breaking changes.
 
 ### Added
 
+- **`docs/OUTPUTS.md`: what every model writes** (task 64,
+  `docs/ENHANCEMENTS.md` E65). Every spec adds one struct column and nothing
+  said what was in it per model — `hmm`'s `state` and `p1_<j>`, `bocpd`'s
+  `run_mode`, `micro`'s `outlier`, `seqtest`'s two e-processes. The field
+  lists are generated from `po.spec.output_fields` and the meanings written
+  once per field stem, so the document cannot drift from the code;
+  `tests/test_outputs_doc.py` regenerates and compares, and the generator
+  writes `**undocumented**` for a stem it has no meaning for so a new field
+  cannot ship silently. Each model's README section links to its section.
 - **`llms.txt`** (task 59), the [llmstxt.org](https://llmstxt.org) map for
   coding agents: the two streaming surfaces in full, the rules an assistant
   otherwise guesses wrong (predict-before-update, chunk invariance, decay on

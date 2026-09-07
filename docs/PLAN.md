@@ -855,13 +855,22 @@ note, not a task.
         model's `win` and the config's two keys moved to the end. And the
         first oracle disagreed because the *test* fed a clock that ran
         backwards: `lcg` there is `[-1, 1)`, not `[0, 1)`.
-- [ ] 64. **Document the output struct of every model** (`docs/ENHANCEMENTS.md`
+- [x] 64. **Document the output struct of every model** (`docs/ENHANCEMENTS.md`
       E65). Each model's README section and builder docstring gains a table of
       the fields it writes — name, dtype, when null, which switch adds it —
       and a test holds each documented set to `po.spec.output_fields(spec)` for
       a canonical spec, so an undocumented field cannot ship. Today only the
       *grammar* of the names is written down, and the per-model prose is
       inconsistent: `corrchange` lists its outputs, `kmeans` does not.
+      Done 2026-09-07 as `docs/OUTPUTS.md`, one section per model, rather
+      than a table in twenty-one docstrings: the *field lists* are generated
+      from `output_fields` on a canonical spec and the *meanings* are written
+      once per field stem in `scripts/outputs_doc.py`, so the two cannot
+      disagree. Each model's README section links to its section beside the
+      `*API:*` and `*Rust:*` links. `tests/test_outputs_doc.py` regenerates
+      and compares, so a new field cannot ship undocumented — the generator
+      writes `**undocumented**` for a stem it has no meaning for, and a test
+      fails on that string.
 
 - [x] 61. **The leak test's statistic, 2026-09-06.** `assert_plateaus` compared
       the first and last of its post-warm-up marks, which cannot distinguish a
