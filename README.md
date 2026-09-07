@@ -1600,7 +1600,7 @@ one_bond = bank.marginal("pairs", group="b0")   # 10 rows: five features by two 
 Two tests, because there are two questions.
 
 `kind="monitor"` is the **closed-sample** constancy test of Wied, Krämer and
-Dehling (2012), run over consecutive spans of `horizon` rows. At the last row
+Dehling (2012), run over consecutive spans of `span_rows` rows. At the last row
 of a span, per pair:
 
 ```
@@ -1617,11 +1617,11 @@ power are held to the paper's own tables (`.035` at ρ = 0 and `T = 500`,
 happened to produce.
 
 ```python
-c = po.spec.corrchange("break", features=["x0", "x1"], horizon=500)
+c = po.spec.corrchange("break", features=["x0", "x1"], span_rows=500)
 out = df.online.fit_predict([c]).unnest("break")   # stat, crit, flag, since_flag
 ```
 
-The price is a delay of at most `horizon` rows: nothing is reported until a
+The price is a delay of at most `span_rows` rows: nothing is reported until a
 span closes. The paper's own *sequential* form, with a boundary function, is
 Wied and Galeano (2013), which has not been read here.
 
@@ -1821,7 +1821,7 @@ exactly the `r` rows that hypothesis says came before this one in the run —
 and slot 0 holds none, so its predictive is the prior's. That is what makes
 "a new run starts here" a hypothesis the data can vote on.
 
-The vector would grow by a slot every row. `truncate` drops the runs holding
+The vector would grow by a slot every row. `prune_below` drops the runs holding
 less than that share of the mass, and `max_run` folds every longer run into
 the last kept one, which takes their mass and keeps its own statistics — so
 it caps how much history any run holds, and `run_mode` saturates one below
@@ -2122,7 +2122,7 @@ The correlation families, on the same machine and rows:
 | `hmm` | k=20, K=2 | 353,258 |
 | `bocpd` | 4 features, diagonal | 1,009,075 |
 | `bocpd` | 4 features, full covariance | 585,180 |
-| `corrchange` | 4 features, monitor, `horizon=500` | 388,557 |
+| `corrchange` | 4 features, monitor, `span_rows=500` | 388,557 |
 | `corrchange` | 4 features, window 100, permute every 500 | 187,407 |
 
 `deco` is one number for the whole matrix and costs `O(m)` a row, which is
@@ -2133,8 +2133,8 @@ accumulates per row and pays for its kernel only when the block closes.
 `O(runs · d²)`, and the length of the run vector is the whole story —
 see below.
 
-**`truncate` is not a tuning knob on `bocpd`, it is what makes it finite.**
-The run vector grows by one entry every row, so with `truncate = 0` the
+**`prune_below` is not a tuning knob on `bocpd`, it is what makes it finite.**
+The run vector grows by one entry every row, so with `prune_below = 0` the
 model is `O(rows²)`: measured at 1,897 / 947 / 472 rows/s on 5k / 10k / 20k
 rows, halving each time the stream doubles. At the default `1e-6` it is
 flat in the length of the stream, and the knob is a direct dial on

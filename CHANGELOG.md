@@ -26,6 +26,20 @@ carries breaking changes.
   Python objects the anchors are built from, so a rename breaks the suite
   rather than the page.
 
+### Changed
+
+- **Three spec keywords renamed** (task 63a), because a fourth meaning of
+  `window` is about to be added and the existing two did not describe what
+  they do. `rcov`'s `window` is the pre-averaging length in ticks and is now
+  `preavg_ticks`. `corrchange`'s `horizon` and `window` were one concept —
+  rows per comparison block — under two names, one required by each kind,
+  and are now a single `span_rows` required by both (at least 8 for
+  `"monitor"`, at least 3 for `"window"`). `bocpd`'s `truncate` is a
+  probability floor for pruning the run-length vector and is now
+  `prune_below`. No alias is accepted, and a bank file written by 0.2.0 does
+  not load: a saved state carries its specs verbatim, so the old bytes name
+  fields no builder has.
+
 ### Fixed
 
 - **The FFI leak test no longer mistakes an allocator step for a leak**

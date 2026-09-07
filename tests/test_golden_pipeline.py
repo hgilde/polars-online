@@ -176,7 +176,7 @@ def specs() -> list[dict]:
         po.spec.corrchange(
             "corrchange",
             features=["x0", "x1"],
-            horizon=20,
+            span_rows=20,
             alpha=0.05,
             clock="t",
             max_dclock=100.0,
@@ -238,7 +238,7 @@ def specs() -> list[dict]:
             hazard=40.0,
             emission="diag",
             prior_scale=[1.0],
-            truncate=1e-8,
+            prune_below=1e-8,
             max_run=50,
             clock="t",
             max_dclock=6.0,

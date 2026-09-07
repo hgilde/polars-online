@@ -356,7 +356,7 @@ class TestTheExpressionWarnsThatItRunsInMemory:
             ),
             "corrchange": (
                 "corrchange",
-                lambda: ns.corrchange(others=["x0"], horizon=20),
+                lambda: ns.corrchange(others=["x0"], span_rows=20),
             ),
             "deco": ("deco", lambda: ns.deco(others=["x0"], halflife=2.0)),
             "hmm": (

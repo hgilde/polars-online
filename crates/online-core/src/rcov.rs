@@ -310,7 +310,7 @@ pub struct RcovCfg {
     /// Ring depth; defaults to `⌈c*·n_max^{3/5}⌉` under `"auto"`.
     pub h_max: Option<usize>,
     /// A fixed `kₙ`, instead of `⌊θ√n_max⌋`.
-    pub window: Option<usize>,
+    pub preavg_ticks: Option<usize>,
     /// Subsampling stride for the noise estimate `ω̂²` (default 1, the dense
     /// grid).
     pub noise_stride: usize,
@@ -323,7 +323,7 @@ impl RcovCfg {
     /// The pre-averaging window this configuration fixes before the block
     /// starts.
     pub fn window_for(&self) -> Option<usize> {
-        if let Some(w) = self.window {
+        if let Some(w) = self.preavg_ticks {
             return Some(w);
         }
         let n = self.n_max? as f64;
@@ -388,7 +388,7 @@ impl RcovCfg {
                 self.kind.as_str()
             ));
         }
-        if self.window.is_some() && self.kind != RcovKind::Preavg {
+        if self.preavg_ticks.is_some() && self.kind != RcovKind::Preavg {
             return Err(format!(
                 "rcov: window applies to kind = \"preavg\", not {:?}",
                 self.kind.as_str()
@@ -408,7 +408,7 @@ impl RcovCfg {
                     .into(),
             );
         }
-        if let Some(w) = self.window {
+        if let Some(w) = self.preavg_ticks {
             if w < 2 {
                 return Err(format!(
                     "rcov: window must be >= 2 (got {w}); the pre-averaged return is a weighted \
@@ -980,7 +980,7 @@ mod tests {
             psd: false,
             n_max: Some(400),
             h_max: None,
-            window: None,
+            preavg_ticks: None,
             noise_stride: 1,
             iv_stride: 20,
         }
@@ -1122,7 +1122,7 @@ mod tests {
         let rows = returns(n, k, 13, 0.5);
         let mut model = Rcov::new(RcovCfg {
             bandwidth: None,
-            window: Some(10),
+            preavg_ticks: Some(10),
             ..cfg(k, RcovKind::Preavg)
         })
         .unwrap();
@@ -1225,7 +1225,7 @@ mod tests {
             let (k, n) = (2usize, 120usize);
             let rows = returns(n, k, 17, 0.3);
             let mut a = Rcov::new(RcovCfg {
-                window: (kind == RcovKind::Preavg).then_some(8),
+                preavg_ticks: (kind == RcovKind::Preavg).then_some(8),
                 bandwidth: (kind == RcovKind::Kernel).then_some(3),
                 ..cfg(k, kind)
             })
@@ -1272,7 +1272,7 @@ mod tests {
         assert!(m.estimate().rcov.is_none());
         // Pre-averaging with fewer rows than its window.
         let mut m = Rcov::new(RcovCfg {
-            window: Some(20),
+            preavg_ticks: Some(20),
             ..cfg(2, RcovKind::Preavg)
         })
         .unwrap();
@@ -1327,7 +1327,7 @@ mod tests {
             ] {
                 let mut m = Rcov::new(RcovCfg {
                     psd: true,
-                    window: (kind == RcovKind::Preavg).then_some(4),
+                    preavg_ticks: (kind == RcovKind::Preavg).then_some(4),
                     bandwidth: (kind == RcovKind::Kernel).then_some(2),
                     ..cfg(1, kind)
                 })
@@ -1493,7 +1493,7 @@ mod tests {
         for w in [0, 1] {
             bad(
                 RcovCfg {
-                    window: Some(w),
+                    preavg_ticks: Some(w),
                     ..cfg(2, RcovKind::Preavg)
                 },
                 "window must be >= 2",
@@ -1527,7 +1527,7 @@ mod tests {
             RcovCfg {
                 bandwidth: None,
                 n_max: None,
-                window: None,
+                preavg_ticks: None,
                 ..cfg(2, RcovKind::Preavg)
             },
             "needs `n_max` or an explicit `window`",
@@ -1541,7 +1541,7 @@ mod tests {
         );
         bad(
             RcovCfg {
-                window: Some(2),
+                preavg_ticks: Some(2),
                 ..cfg(2, RcovKind::Kernel)
             },
             "window applies to",

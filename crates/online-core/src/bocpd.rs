@@ -142,7 +142,7 @@ pub struct BocpdCfg {
     /// `robust`'s β; 0 makes it `diag`.
     pub robust_beta: f64,
     /// Drop runs below this normalised mass.
-    pub truncate: f64,
+    pub prune_below: f64,
     /// Cap the run vector here, folding every longer run into the last
     /// kept one. That entry then holds their summed mass and its own
     /// statistics -- the youngest of the folded group, since the vector
@@ -278,7 +278,7 @@ impl BocpdCfg {
                 "bocpd: emission = \"robust\" needs robust_beta > 0; at 0 it is \"diag\"".into(),
             );
         }
-        if !(0.0..1.0).contains(&self.truncate) || self.truncate.is_nan() {
+        if !(0.0..1.0).contains(&self.prune_below) || self.prune_below.is_nan() {
             return Err("bocpd: truncate must be in [0, 1)".into());
         }
         if self.max_run < 2 {
@@ -655,11 +655,11 @@ impl Bocpd {
         if !z.is_finite() {
             return;
         }
-        if self.cfg.truncate > 0.0 {
+        if self.cfg.prune_below > 0.0 {
             let keep: Vec<bool> = self
                 .logjoint
                 .iter()
-                .map(|l| (l - z).exp() >= self.cfg.truncate)
+                .map(|l| (l - z).exp() >= self.cfg.prune_below)
                 .collect();
             // Never drop everything, and never drop `r = 0`: it is the
             // branch a changepoint arrives on.
@@ -802,7 +802,7 @@ mod tests {
             prior_nu: Some(2.0),
             prior_scale: Some(vec![1.0]),
             robust_beta: 0.0,
-            truncate: 0.0,
+            prune_below: 0.0,
             max_run: 100_000,
             min_periods: 0.0,
         }
@@ -930,7 +930,7 @@ mod tests {
             hazard: 250.0,
             prior_nu: Some(2.0),
             prior_scale: Some(vec![2e-4]),
-            truncate: 1e-6,
+            prune_below: 1e-6,
             max_run: 600,
             ..cfg(1)
         })
@@ -979,7 +979,7 @@ mod tests {
                 },
                 robust_beta: beta,
                 hazard: 250.0,
-                truncate: 1e-6,
+                prune_below: 1e-6,
                 ..cfg(1)
             })
             .unwrap();
@@ -1024,7 +1024,7 @@ mod tests {
     fn truncation_changes_little() {
         let mut exact = Bocpd::new(cfg(1)).unwrap();
         let mut cut = Bocpd::new(BocpdCfg {
-            truncate: 1e-4,
+            prune_below: 1e-4,
             ..cfg(1)
         })
         .unwrap();
@@ -1082,7 +1082,7 @@ mod tests {
                     BocpdEmission::Diag
                 },
                 robust_beta: beta,
-                truncate: 1e-6,
+                prune_below: 1e-6,
                 ..cfg(1)
             })
             .unwrap()
@@ -1163,7 +1163,7 @@ mod tests {
     #[test]
     fn predict_is_the_step_without_the_step() {
         let mut m = Bocpd::new(BocpdCfg {
-            truncate: 1e-6,
+            prune_below: 1e-6,
             ..cfg(2)
         })
         .unwrap();
@@ -1182,7 +1182,7 @@ mod tests {
         let mut m = Bocpd::new(BocpdCfg {
             emission: BocpdEmission::Gaussian,
             prior_nu: Some(5.0),
-            truncate: 1e-6,
+            prune_below: 1e-6,
             ..cfg(3)
         })
         .unwrap();
@@ -1255,7 +1255,7 @@ mod tests {
         );
         bad(
             BocpdCfg {
-                truncate: 1.0,
+                prune_below: 1.0,
                 ..cfg(1)
             },
             "truncate must be in",

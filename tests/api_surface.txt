@@ -65,7 +65,7 @@
     prior_nu = None
     prior_scale = None
     robust_beta = None
-    truncate = None
+    prune_below = None
     max_run = None
     common
   coef_fields:
@@ -76,8 +76,7 @@
     name
     features
     kind = 'monitor'
-    horizon = None
-    window = None
+    span_rows = None
     alpha = 0.05
     alpha_adjust = 'bonferroni'
     bandwidth = None
@@ -264,7 +263,7 @@
     psd = True
     n_max = None
     h_max = None
-    window = None
+    preavg_ticks = None
     noise_stride = None
     iv_stride = None
     common

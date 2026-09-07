@@ -1689,7 +1689,7 @@ def bocpd(
     prior_nu: float | None = None,
     prior_scale: list[float] | None = None,
     robust_beta: float | None = None,
-    truncate: float | None = None,
+    prune_below: float | None = None,
     max_run: int | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
@@ -1712,7 +1712,7 @@ def bocpd(
     hypothesis says preceded this one in the run -- so slot 0 holds none and
     its predictive is the prior's, which is what makes "a new run starts
     here" something the data can vote on. A row costs ``O(runs * d^2)``, and
-    the run vector would grow by one every row, so runs below ``truncate``
+    the run vector would grow by one every row, so runs below ``prune_below``
     of the mass are dropped and ``max_run`` folds every longer run into the
     last kept one -- which takes their mass and keeps its own statistics, so
     it bounds how much history *any* run holds, not only the length of the
@@ -1787,7 +1787,7 @@ def bocpd(
         "prior_nu": prior_nu,
         "prior_scale": prior_scale,
         "robust_beta": robust_beta,
-        "truncate": truncate,
+        "prune_below": prune_below,
         "max_run": max_run,
     }
     targets = [hazard_col] if hazard_col is not None else [features[0]]
@@ -1800,8 +1800,7 @@ def corrchange(
     *,
     features: list[str],
     kind: str = "monitor",
-    horizon: int | None = None,
-    window: int | None = None,
+    span_rows: int | None = None,
     alpha: float = 0.05,
     alpha_adjust: str = "bonferroni",
     bandwidth: int | None = None,
@@ -1820,7 +1819,7 @@ def corrchange(
     Two tests, because there are two questions.
 
     ``kind="monitor"`` is the **closed-sample** constancy test of Wied,
-    Krämer & Dehling (2012), run over consecutive spans of ``horizon``
+    Krämer & Dehling (2012), run over consecutive spans of ``span_rows``
     rows. At the last row of a span, per pair::
 
         Q = max_{2<=j<=T} (j/sqrt(T)) * |rho_j - rho_T| / D
@@ -1837,7 +1836,7 @@ def corrchange(
 
     The paper's own sequential form, with a boundary function, is Wied &
     Galeano (2013), which nobody here has read; the closed test run span by
-    span is what ships. The cost is a delay of at most ``horizon`` rows and
+    span is what ships. The cost is a delay of at most ``span_rows`` rows and
     the benefit is a null with published tables — the size and power in
     their Tables 1 and 2 are what `tests/test_corrchange.py` holds it to.
 
@@ -1848,7 +1847,7 @@ def corrchange(
     decays anything else, so they are refused otherwise.
 
     ``kind="window"`` is ``norm(vech(R_pre - R_post))`` over two adjacent
-    windows of ``window`` rows -- how *big* the change is, rather than
+    blocks of ``span_rows`` rows -- how *big* the change is, rather than
     whether the span was constant. ``crit`` is a fixed threshold; without
     one the critical value is a **permutation** quantile: ``n_perm`` draws
     of the pooled rows shuffled between the two windows, in blocks of
@@ -1865,9 +1864,10 @@ def corrchange(
     is due. ``reset=True`` empties the windows at a flag (``"window"``
     only -- ``"monitor"``'s spans are disjoint already).
 
-    ``horizon`` (at least 8) is required by ``"monitor"`` and ``window`` (at
-    least 3) by ``"window"``. ``bandwidth`` overrides the Bartlett bandwidth
-    ``floor(ln T)``. ``norm`` is ``"l1"`` (the default) or ``"linf"``.
+    ``span_rows`` is the rows per comparison block and is required by both
+    kinds: at least 8 for ``"monitor"``, at least 3 for ``"window"``.
+    ``bandwidth`` overrides the Bartlett bandwidth ``floor(ln T)``. ``norm``
+    is ``"l1"`` (the default) or ``"linf"``.
     ``n_perm`` defaults to 200, ``permute_every`` to 50 and ``perm_block``
     to 1; ``seed`` (default 0) seeds the permutation draws, so two runs with
     the same seed report the same critical values.
@@ -1881,8 +1881,7 @@ def corrchange(
     model: dict[str, Any] = {
         "type": "corrchange",
         "kind": kind,
-        "horizon": horizon,
-        "window": window,
+        "span_rows": span_rows,
         "alpha": alpha,
         "alpha_adjust": alpha_adjust,
         "bandwidth": bandwidth,
@@ -2042,7 +2041,7 @@ def rcov(
     psd: bool = True,
     n_max: int | None = None,
     h_max: int | None = None,
-    window: int | None = None,
+    preavg_ticks: int | None = None,
     noise_stride: int | None = None,
     iv_stride: int | None = None,
     **common: Unpack[CommonKwargs],
@@ -2095,7 +2094,7 @@ def rcov(
     that balanced, bias-corrected form (optimal rate, not guaranteed PSD);
     ``psd=True`` (the default) is the longer window ``k_n =
     ceil(theta * n_max^0.6)`` without the bias term, and clips any negative
-    eigenvalue, reporting ``psd_repaired``. ``window`` fixes ``k_n`` outright
+    eigenvalue, reporting ``psd_repaired``. ``preavg_ticks`` fixes ``k_n``
     (at least 2) instead of deriving it from ``n_max``, for ``"preavg"``
     only.
 
@@ -2134,7 +2133,7 @@ def rcov(
         "psd": psd,
         "n_max": n_max,
         "h_max": h_max,
-        "window": window,
+        "preavg_ticks": preavg_ticks,
         "noise_stride": noise_stride,
         "iv_stride": iv_stride,
     }

@@ -1447,14 +1447,14 @@ them shows up where every other model's would. What follows is what the
 measurements say beyond the table — Apple M-series, single process, best of
 2 or 3, and ratios are the part to read.
 
-### `bocpd`: `truncate` is what makes it finite
+### `bocpd`: `prune_below` is what makes it finite
 
 The run vector grows by one entry every row, so the cost of a row is
 `O(runs · d²)` and the cost of a *stream* is quadratic unless something
 bounds the vector. That is not a subtlety, it is the whole performance
 profile:
 
-| `truncate` | `max_run` | rows | rows/s |
+| `prune_below` | `max_run` | rows | rows/s |
 |---|---|---|---|
 | 0 | ∞ | 5,000 | 1,897 |
 | 0 | ∞ | 10,000 | 947 |
@@ -1468,16 +1468,16 @@ profile:
 The first three rows halve as the stream doubles, which is the `O(rows²)`
 written out. Turning truncation on is a 400–1,400× change at 20k rows and
 unbounded beyond it, and the knob is then a direct dial on throughput: each
-factor of 100 in `truncate` is roughly a factor of 2 in rows/s, because it
+factor of 100 in `prune_below` is roughly a factor of 2 in rows/s, because it
 is choosing how many runs stay alive. `max_run` barely moves anything at the
-default `truncate` — by the time the vector is 200 long, truncation has
+default `prune_below` — by the time the vector is 200 long, truncation has
 already dropped everything below `1e-6` — so it is the belt to truncation's
 braces, there for the case where the data keeps a long tail of runs
 genuinely alive.
 
 `tests/test_bocpd.py` measures what the knob *costs* in answers rather than
-speed: `truncate = 1e-4` moves `p_change` by less than `1e-3` against
-`truncate = 0` over 400 rows, and leaves `run_mode` identical.
+speed: `prune_below = 1e-4` moves `p_change` by less than `1e-3` against
+`prune_below = 0` over 400 rows, and leaves `run_mode` identical.
 
 **And `bocpd` is faster on data that breaks.** A changepoint collapses the
 posterior onto a short run, so the vector shortens: 1.0M rows/s on the
@@ -1526,7 +1526,7 @@ design: the permutation null re-draws `n_perm` statistics every
 `permute_every` rows, an `O(n_perm · window · k²)` job amortized over that
 many rows. 187k rows/s at the default cadence, and a `crit` given as a
 number skips the whole thing. The monitor kind pays only at a span's close,
-where it walks the span once: 389k rows/s at `horizon = 500`.
+where it walks the span once: 389k rows/s at `span_rows = 500`.
 
 ### And they go wide
 

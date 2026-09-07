@@ -732,7 +732,7 @@ pub fn bocpd_cfg(spec: &Spec) -> Result<BocpdCfg, String> {
         prior_nu,
         prior_scale,
         robust_beta,
-        truncate,
+        prune_below,
         max_run,
     } = &spec.model
     else {
@@ -765,7 +765,7 @@ pub fn bocpd_cfg(spec: &Spec) -> Result<BocpdCfg, String> {
             Some("robust") => 0.1,
             _ => 0.0,
         }),
-        truncate: truncate.unwrap_or(1e-6),
+        prune_below: prune_below.unwrap_or(1e-6),
         max_run: max_run.unwrap_or(10_000),
         min_periods: spec.min_periods_or_default(),
     })
@@ -776,8 +776,7 @@ pub fn bocpd_cfg(spec: &Spec) -> Result<BocpdCfg, String> {
 pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
     let ModelKind::CorrChange {
         kind,
-        horizon,
-        window,
+        span_rows,
         alpha,
         alpha_adjust,
         bandwidth,
@@ -802,19 +801,19 @@ pub fn corrchange_cfg(spec: &Spec) -> Result<CorrChangeCfg, String> {
             ));
         }
     };
-    if kind == CorrChangeKind::Monitor && horizon.is_none() {
-        return Err(
-            "corrchange: kind = \"monitor\" needs `horizon`, the span the test runs over".into(),
-        );
-    }
-    if kind == CorrChangeKind::Window && window.is_none() {
-        return Err("corrchange: kind = \"window\" needs `window`".into());
+    if span_rows.is_none() {
+        return Err(format!(
+            "corrchange: kind = {:?} needs `span_rows`, the rows per comparison block",
+            match kind {
+                CorrChangeKind::Monitor => "monitor",
+                CorrChangeKind::Window => "window",
+            }
+        ));
     }
     Ok(CorrChangeCfg {
         n_features: spec.k(),
         kind,
-        horizon: horizon.unwrap_or(0),
-        window: window.unwrap_or(0),
+        span_rows: span_rows.unwrap_or(0),
         alpha: alpha.unwrap_or(0.05),
         alpha_adjust: alpha_adjust.clone().unwrap_or_else(|| "bonferroni".into()),
         bandwidth: *bandwidth,
@@ -916,7 +915,7 @@ pub fn rcov_cfg(spec: &Spec) -> Result<RcovCfg, String> {
         psd,
         n_max,
         h_max,
-        window,
+        preavg_ticks,
         noise_stride,
         iv_stride,
     } = &spec.model
@@ -943,7 +942,7 @@ pub fn rcov_cfg(spec: &Spec) -> Result<RcovCfg, String> {
         psd: psd.unwrap_or(true),
         n_max: *n_max,
         h_max: *h_max,
-        window: *window,
+        preavg_ticks: *preavg_ticks,
         noise_stride: noise_stride.unwrap_or(1),
         iv_stride: iv_stride.unwrap_or(20),
     })

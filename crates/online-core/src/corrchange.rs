@@ -108,10 +108,11 @@ fn bartlett(x: f64) -> f64 {
 pub struct CorrChangeCfg {
     pub n_features: usize,
     pub kind: CorrChangeKind,
-    /// `monitor`: the span length `T`.
-    pub horizon: usize,
-    /// `window`: the length of each of the two adjacent windows.
-    pub window: usize,
+    /// Rows per comparison block: the span `T` that `"monitor"` tests for
+    /// constancy, or the length of each of the two adjacent blocks
+    /// `"window"` compares. One number, because it is one concept -- the two
+    /// kinds only differ in what they do with the block.
+    pub span_rows: usize,
     /// Nominal level; the critical value is `1 − alpha/npairs` under
     /// Bonferroni.
     pub alpha: f64,
@@ -165,9 +166,9 @@ impl CorrChangeCfg {
         }
         match self.kind {
             CorrChangeKind::Monitor => {
-                if self.horizon < 8 {
+                if self.span_rows < 8 {
                     return Err(
-                        "corrchange: kind = \"monitor\" needs a horizon of at least 8 rows; the \
+                        "corrchange: kind = \"monitor\" needs span_rows of at least 8; the \
                          statistic is a maximum over the span"
                             .into(),
                     );
@@ -177,9 +178,9 @@ impl CorrChangeCfg {
                 }
             }
             CorrChangeKind::Window => {
-                if self.window < 3 {
+                if self.span_rows < 3 {
                     return Err(
-                        "corrchange: kind = \"window\" needs a window of at least 3 rows".into(),
+                        "corrchange: kind = \"window\" needs span_rows of at least 3".into(),
                     );
                 }
                 if self.crit.is_none() && self.n_perm < 20 {
@@ -187,10 +188,10 @@ impl CorrChangeCfg {
                         "corrchange: a permutation critical value needs n_perm >= 20 draws".into(),
                     );
                 }
-                if self.perm_block == 0 || self.perm_block > self.window {
+                if self.perm_block == 0 || self.perm_block > self.span_rows {
                     return Err(format!(
-                        "corrchange: perm_block must be 1..={} (the window)",
-                        self.window
+                        "corrchange: perm_block must be 1..={} (span_rows)",
+                        self.span_rows
                     ));
                 }
                 if self.permute_every == 0 {
@@ -505,7 +506,7 @@ impl CorrChange {
 
     /// `‖vech(R̂_pre − R̂_post)‖` over the two windows in `rows`.
     fn window_stat(&self, rows: &[Vec<f64>]) -> f64 {
-        let w = self.cfg.window;
+        let w = self.cfg.span_rows;
         if rows.len() < 2 * w {
             return f64::NAN;
         }
@@ -532,7 +533,7 @@ impl CorrChange {
     /// The `(1 − alpha)` quantile of the statistic under a permutation of
     /// the pooled rows between the two windows, in blocks.
     fn permutation_crit(&mut self) -> Option<f64> {
-        let w = self.cfg.window;
+        let w = self.cfg.span_rows;
         if self.ring.len() < 2 * w {
             return None;
         }
@@ -602,7 +603,7 @@ impl CorrChange {
         let since = self.since_flag.unwrap_or(0) + 1;
         match self.cfg.kind {
             CorrChangeKind::Monitor => {
-                if self.ring.len() + 1 < self.cfg.horizon {
+                if self.ring.len() + 1 < self.cfg.span_rows {
                     return pred;
                 }
                 let mut rows: Vec<Vec<f64>> = self.ring.iter().cloned().collect();
@@ -627,7 +628,7 @@ impl CorrChange {
                 pred[3] = since as f64;
             }
             CorrChangeKind::Window => {
-                let w = self.cfg.window;
+                let w = self.cfg.span_rows;
                 let mut rows: Vec<Vec<f64>> = self.ring.iter().cloned().collect();
                 rows.push(row);
                 while rows.len() > 2 * w {
@@ -679,14 +680,14 @@ impl crate::OnlineModel for CorrChange {
         }
         match self.cfg.kind {
             CorrChangeKind::Monitor => {
-                if self.ring.len() >= self.cfg.horizon {
+                if self.ring.len() >= self.cfg.span_rows {
                     // Spans are disjoint by construction: the next row
                     // starts a new one, so `reset` has nothing to add here.
                     self.ring.clear();
                 }
             }
             CorrChangeKind::Window => {
-                let w = self.cfg.window;
+                let w = self.cfg.span_rows;
                 while self.ring.len() > 2 * w {
                     self.ring.pop_front();
                 }
@@ -763,8 +764,7 @@ mod tests {
         CorrChangeCfg {
             n_features: d,
             kind,
-            horizon: 200,
-            window: 50,
+            span_rows: 200,
             alpha: 0.05,
             alpha_adjust: "bonferroni".into(),
             bandwidth: None,
@@ -907,7 +907,7 @@ mod tests {
             .map(|j| (j as f64 / (t as f64).sqrt()) * (corr(j) - rho_t).abs() / want_sd)
             .fold(0.0f64, f64::max);
         let m = CorrChange::new(CorrChangeCfg {
-            horizon: t,
+            span_rows: t,
             ..cfg(2, CorrChangeKind::Monitor)
         })
         .unwrap();
@@ -934,7 +934,7 @@ mod tests {
             for rep in 0..reps {
                 let mut n = Normals::new(1000 + rep as u64);
                 let mut m = CorrChange::new(CorrChangeCfg {
-                    horizon: t,
+                    span_rows: t,
                     alpha_adjust: "none".into(),
                     ..cfg(2, CorrChangeKind::Monitor)
                 })
@@ -968,7 +968,7 @@ mod tests {
             for rep in 0..reps {
                 let mut n = Normals::new(7000 + rep as u64);
                 let mut m = CorrChange::new(CorrChangeCfg {
-                    horizon: t,
+                    span_rows: t,
                     alpha_adjust: "none".into(),
                     ..cfg(2, CorrChangeKind::Monitor)
                 })
@@ -993,7 +993,7 @@ mod tests {
     fn nothing_is_reported_except_on_a_spans_last_row() {
         let mut n = Normals::new(5);
         let mut m = CorrChange::new(CorrChangeCfg {
-            horizon: 40,
+            span_rows: 40,
             ..cfg(2, CorrChangeKind::Monitor)
         })
         .unwrap();
@@ -1014,7 +1014,7 @@ mod tests {
         let w = 40usize;
         let mut m = CorrChange::new(CorrChangeCfg {
             kind: CorrChangeKind::Window,
-            window: w,
+            span_rows: w,
             crit: Some(0.5),
             ..cfg(3, CorrChangeKind::Window)
         })
@@ -1072,7 +1072,7 @@ mod tests {
         let build = || {
             CorrChange::new(CorrChangeCfg {
                 kind: CorrChangeKind::Window,
-                window: w,
+                span_rows: w,
                 crit: None,
                 n_perm: 100,
                 permute_every: 1000,
@@ -1109,7 +1109,7 @@ mod tests {
             let mut m = CorrChange::new(CorrChangeCfg {
                 // Fewer than the rows fed: the first rows have no
                 // standardiser yet and never enter the span.
-                horizon: 300,
+                span_rows: 300,
                 scalar: true,
                 alpha_adjust: "none".into(),
                 decay: Decay::Halflife(100.0),
@@ -1144,7 +1144,7 @@ mod tests {
     fn the_scalar_form_runs_on_the_equicorrelation() {
         let mut n = Normals::new(23);
         let mut m = CorrChange::new(CorrChangeCfg {
-            horizon: 100,
+            span_rows: 100,
             scalar: true,
             decay: Decay::Halflife(200.0),
             ..cfg(4, CorrChangeKind::Monitor)
@@ -1191,7 +1191,7 @@ mod tests {
     fn a_zero_weight_row_reports_the_span_it_would_have_closed() {
         let mut n = Normals::new(41);
         let mut m = CorrChange::new(CorrChangeCfg {
-            horizon: 20,
+            span_rows: 20,
             ..cfg(2, CorrChangeKind::Monitor)
         })
         .unwrap();
@@ -1270,10 +1270,10 @@ mod tests {
         bad(cfg(1, CorrChangeKind::Monitor), "at least two columns");
         bad(
             CorrChangeCfg {
-                horizon: 4,
+                span_rows: 4,
                 ..cfg(2, CorrChangeKind::Monitor)
             },
-            "horizon of at least 8",
+            "span_rows of at least 8",
         );
         bad(
             CorrChangeCfg {
@@ -1292,10 +1292,10 @@ mod tests {
         bad(
             CorrChangeCfg {
                 kind: CorrChangeKind::Window,
-                window: 2,
+                span_rows: 2,
                 ..cfg(2, CorrChangeKind::Window)
             },
-            "window of at least 3",
+            "span_rows of at least 3",
         );
         bad(
             CorrChangeCfg {
@@ -1328,6 +1328,7 @@ mod tests {
             bad(
                 CorrChangeCfg {
                     kind: CorrChangeKind::Window,
+                    span_rows: 50,
                     perm_block: b,
                     ..cfg(2, CorrChangeKind::Window)
                 },

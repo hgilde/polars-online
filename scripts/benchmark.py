@@ -236,7 +236,7 @@ def main() -> None:
         (
             "corrchange, monitor",
             "4 features, horizon 500",
-            po.spec.corrchange("m", horizon=500, **no_decay(four)),
+            po.spec.corrchange("m", span_rows=500, **no_decay(four)),
         ),
         (
             "corrchange, window",
@@ -244,7 +244,7 @@ def main() -> None:
             po.spec.corrchange(
                 "m",
                 kind="window",
-                window=100,
+                span_rows=100,
                 n_perm=100,
                 permute_every=500,
                 seed=0,
@@ -254,12 +254,12 @@ def main() -> None:
         (
             "bocpd",
             "4 features, diag, max_run 200",
-            po.spec.bocpd("m", truncate=1e-6, max_run=200, **no_decay(four)),
+            po.spec.bocpd("m", prune_below=1e-6, max_run=200, **no_decay(four)),
         ),
         (
             "bocpd",
             "4 features, diag, max_run 20",
-            po.spec.bocpd("m", truncate=1e-6, max_run=20, **no_decay(four)),
+            po.spec.bocpd("m", prune_below=1e-6, max_run=20, **no_decay(four)),
         ),
         (
             "bocpd, gaussian",
@@ -268,7 +268,7 @@ def main() -> None:
                 "m",
                 emission="gaussian",
                 prior_nu=6.0,
-                truncate=1e-6,
+                prune_below=1e-6,
                 max_run=200,
                 **no_decay(four),
             ),

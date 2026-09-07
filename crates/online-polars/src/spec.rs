@@ -792,9 +792,9 @@ pub enum ModelKind {
         /// Ring depth, if not the default from `n_max`.
         #[serde(default)]
         h_max: Option<usize>,
-        /// A fixed pre-averaging window instead of `⌊θ√n_max⌋`.
+        /// A fixed pre-averaging length in ticks instead of `⌊θ√n_max⌋`.
         #[serde(default)]
-        window: Option<usize>,
+        preavg_ticks: Option<usize>,
         /// Subsampling stride for the noise estimate; default 1.
         #[serde(default)]
         noise_stride: Option<usize>,
@@ -853,21 +853,19 @@ pub enum ModelKind {
     /// Has the correlation structure changed? (docs/ENHANCEMENTS.md E59)
     ///
     /// `"monitor"` is Wied, Krämer & Dehling's closed-sample constancy
-    /// test, run over consecutive spans of `horizon` rows; `"window"` is
-    /// the size of the change between two adjacent windows, against a fixed
-    /// threshold or a permutation critical value.
+    /// test, run over consecutive spans of `span_rows` rows; `"window"` is
+    /// the size of the change between two adjacent blocks of `span_rows`,
+    /// against a fixed threshold or a permutation critical value.
     #[serde(rename = "corrchange")]
     CorrChange {
         /// `"monitor"` (default) or `"window"`.
         #[serde(default)]
         kind: Option<String>,
-        /// `"monitor"`: the span length `T`. Required there.
+        /// Rows per comparison block, required by both kinds: the span
+        /// `"monitor"` tests for constancy (at least 8), or the length of
+        /// each of the two adjacent blocks `"window"` compares (at least 3).
         #[serde(default)]
-        horizon: Option<usize>,
-        /// `"window"`: the length of each of the two windows. Required
-        /// there.
-        #[serde(default)]
-        window: Option<usize>,
+        span_rows: Option<usize>,
         /// Nominal level; default 0.05.
         #[serde(default)]
         alpha: Option<f64>,
@@ -931,7 +929,7 @@ pub enum ModelKind {
         #[serde(default)]
         robust_beta: Option<f64>,
         #[serde(default)]
-        truncate: Option<f64>,
+        prune_below: Option<f64>,
         #[serde(default)]
         max_run: Option<usize>,
     },

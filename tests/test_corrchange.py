@@ -23,7 +23,7 @@ def pair(n, rho, seed=0, k=2):
 
 
 def spec(**kw):
-    d = {"features": ["x0", "x1"], "horizon": 200}
+    d = {"features": ["x0", "x1"], "span_rows": 200}
     d.update(kw)
     return po.spec.corrchange("c", **d)
 
@@ -39,20 +39,20 @@ def test_the_critical_value_is_the_kolmogorov_quantile():
     """Computed from the series, not pinned: 1.3581 at 5%, 1.6276 at 1%,
     1.2239 at 10% are the published values it must reproduce."""
     for alpha, want in ((0.05, 1.3581), (0.01, 1.6276), (0.10, 1.2239)):
-        out = run(pair(200, 0.4), horizon=200, alpha=alpha, alpha_adjust="none")
+        out = run(pair(200, 0.4), span_rows=200, alpha=alpha, alpha_adjust="none")
         assert out["crit"][199] == pytest.approx(want, abs=1e-3)
     # Bonferroni over the pairs takes a smaller level, so a larger value.
     three = run(
         pair(200, 0.4, k=3),
         features=["x0", "x1", "x2"],
-        horizon=200,
+        span_rows=200,
         alpha=0.05,
     )
     assert three["crit"][199] > 1.3581
 
 
 def test_nothing_is_reported_except_where_a_span_closes():
-    out = run(pair(250, 0.3), horizon=100)
+    out = run(pair(250, 0.3), span_rows=100)
     live = [i for i, v in enumerate(out["stat"].to_list()) if v is not None]
     assert live == [99, 199], live
     assert out["flag"][99] in (True, False)
@@ -62,11 +62,11 @@ def test_nothing_is_reported_except_where_a_span_closes():
 def test_a_constant_correlation_is_not_flagged_and_a_break_is():
     """The whole point, at a break the test is built to find."""
     n = 500
-    steady = run(pair(n, 0.5, seed=1), horizon=n, alpha_adjust="none")
+    steady = run(pair(n, 0.5, seed=1), span_rows=n, alpha_adjust="none")
     assert steady["flag"][n - 1] is False, steady["stat"][n - 1]
     a = pair(n // 2, 0.2, seed=2)
     b = pair(n // 2, 0.9, seed=3)
-    broken = run(pl.concat([a, b]), horizon=n, alpha_adjust="none")
+    broken = run(pl.concat([a, b]), span_rows=n, alpha_adjust="none")
     assert broken["flag"][n - 1] is True
     assert broken["stat"][n - 1] > broken["crit"][n - 1]
 
@@ -94,7 +94,7 @@ def test_the_size_is_near_nominal_on_gaussian_pairs():
     for rho in (0.0, 0.5):
         flags = 0
         for r in range(reps):
-            out = run(pair(n, rho, seed=1000 + r), horizon=n, alpha_adjust="none")
+            out = run(pair(n, rho, seed=1000 + r), span_rows=n, alpha_adjust="none")
             flags += int(out["flag"][n - 1])
         size = flags / reps
         se = (want * (1 - want) / reps) ** 0.5
@@ -115,7 +115,7 @@ def test_the_power_is_at_least_the_papers():
     for r in range(reps):
         a = pair(n // 2, 0.5, seed=7000 + r)
         b = pair(n // 2, 0.7, seed=9000 + r)
-        out = run(pl.concat([a, b]), horizon=n, alpha_adjust="none")
+        out = run(pl.concat([a, b]), span_rows=n, alpha_adjust="none")
         flags += int(out["flag"][n - 1])
     power = flags / reps
     se = (want * (1 - want) / reps) ** 0.5
@@ -129,7 +129,7 @@ def test_the_scalar_form_tests_the_equicorrelations_level():
     cols = [f"x{i}" for i in range(6)]
     kw = {
         "features": cols,
-        "horizon": 400,
+        "span_rows": 400,
         "scalar": True,
         "halflife": 200.0,
         "alpha_adjust": "none",
@@ -146,7 +146,7 @@ def test_since_flag_counts_the_rows():
     n = 400
     a = pair(n // 2, 0.1, seed=4)
     b = pair(n // 2, 0.95, seed=5)
-    out = run(pl.concat([a, b]), horizon=100, alpha_adjust="none")
+    out = run(pl.concat([a, b]), span_rows=100, alpha_adjust="none")
     rows = out.select("stat", "flag", "since_flag").drop_nulls()
     assert rows.height == 4
     # Before any flag, the count runs from the first row.
@@ -170,8 +170,7 @@ def test_the_window_statistic_is_the_norm_of_the_difference():
         df,
         features=["x0", "x1", "x2"],
         kind="window",
-        window=w,
-        horizon=None,
+        span_rows=w,
         crit=0.5,
     )
     pre = np.corrcoef(a.to_numpy().T)
@@ -186,8 +185,8 @@ def test_the_linf_norm_is_the_largest_pair():
     w = 50
     df = pl.concat([pair(w, 0.1, seed=8, k=3), pair(w, 0.9, seed=9, k=3)])
     cols = ["x0", "x1", "x2"]
-    l1 = run(df, features=cols, kind="window", window=w, horizon=None, crit=9.0)
-    li = run(df, features=cols, kind="window", window=w, horizon=None, crit=9.0, norm="linf")
+    l1 = run(df, features=cols, kind="window", span_rows=w, crit=9.0)
+    li = run(df, features=cols, kind="window", span_rows=w, crit=9.0, norm="linf")
     assert li["stat"][2 * w - 1] < l1["stat"][2 * w - 1]
 
 
@@ -200,8 +199,7 @@ def test_the_permutation_critical_value_separates_noise_from_a_break():
     w = 50
     common = {
         "kind": "window",
-        "window": w,
-        "horizon": None,
+        "span_rows": w,
         "n_perm": 100,
         "permute_every": 10,
         "features": ["x0", "x1"],
@@ -217,7 +215,7 @@ def test_the_permutation_critical_value_separates_noise_from_a_break():
 def test_reset_empties_the_windows_at_a_flag():
     w = 40
     df = pl.concat([pair(80, 0.0, seed=13), pair(200, 0.95, seed=14)])
-    common = {"kind": "window", "window": w, "horizon": None, "crit": 0.4, "features": ["x0", "x1"]}
+    common = {"kind": "window", "span_rows": w, "crit": 0.4, "features": ["x0", "x1"]}
     kept = run(df, **common)
     cleared = run(df, reset=True, **common)
     # After a flag the reset run has no statistic until both windows refill.
@@ -234,9 +232,9 @@ def test_reset_empties_the_windows_at_a_flag():
 def test_chunk_invariance(kind, size):
     df = pair(600, 0.4, seed=15)
     kw = (
-        {"horizon": 150}
+        {"span_rows": 150}
         if kind == "monitor"
-        else {"kind": "window", "window": 50, "horizon": None, "n_perm": 30}
+        else {"kind": "window", "span_rows": 50, "n_perm": 30}
     )
     want = run(df, **kw)
     bank = po.ModelBank([spec(**kw)])
@@ -246,8 +244,8 @@ def test_chunk_invariance(kind, size):
 
 def test_save_load_mid_stream():
     df = pair(600, 0.4, seed=16)
-    s = spec(horizon=150)
-    want = run(df, horizon=150)
+    s = spec(span_rows=150)
+    want = run(df, span_rows=150)
     bank = po.ModelBank([s])
     bank.fit_predict(df[:300])
     again = po.ModelBank.load_bytes(bank.save_bytes(), [s])
@@ -259,7 +257,7 @@ def test_a_capped_gap_abandons_the_span():
     """Task 47's signal: a span that straddles a break in the clock is not
     a span, so the ring is emptied and the statistic is deferred."""
     df = pair(300, 0.4, seed=17).with_columns(t=pl.int_range(pl.len()).cast(pl.Float64))
-    kw = {"horizon": 100, "clock": "t", "max_dclock": 5.0}
+    kw = {"span_rows": 100, "clock": "t", "max_dclock": 5.0}
     plain = run(df, **kw)
     gapped = run(
         df.with_columns(
@@ -274,9 +272,9 @@ def test_a_capped_gap_abandons_the_span():
 
 def test_a_zero_weight_row_is_not_a_row_of_the_span():
     df = pair(300, 0.4, seed=18).with_columns(w=pl.lit(1.0))
-    want = run(df, horizon=100, weight="w")
+    want = run(df, span_rows=100, weight="w")
     padded = pl.concat([df[:50], df[:1].with_columns(x0=pl.lit(1e6), w=pl.lit(0.0)), df[50:]])
-    got = run(padded, horizon=100, weight="w")
+    got = run(padded, span_rows=100, weight="w")
     assert got["stat"][100] == want["stat"][99]
 
 
@@ -284,15 +282,15 @@ def test_a_zero_weight_row_is_not_a_row_of_the_span():
     ("kw", "message"),
     [
         ({"features": ["x0"]}, "at least two columns"),
-        ({"horizon": 4}, "horizon of at least 8"),
-        ({"horizon": None}, "needs `horizon`"),
+        ({"span_rows": 4}, "span_rows of at least 8"),
+        ({"span_rows": None}, "needs `span_rows`"),
         ({"kind": "nope"}, "unknown corrchange kind"),
         ({"alpha": 1.5}, "alpha must be strictly between"),
         ({"alpha_adjust": "nope"}, "unknown alpha_adjust"),
-        ({"kind": "window", "horizon": None}, 'kind = "window" needs `window`'),
-        ({"kind": "window", "horizon": None, "window": 2}, "window of at least 3"),
-        ({"kind": "window", "horizon": None, "window": 20, "n_perm": 2}, "n_perm >= 20"),
-        ({"kind": "window", "horizon": None, "window": 20, "scalar": True}, "scalar applies to"),
+        ({"kind": "window", "span_rows": None}, "needs `span_rows`"),
+        ({"kind": "window", "span_rows": 2}, "span_rows of at least 3"),
+        ({"kind": "window", "span_rows": 20, "n_perm": 2}, "n_perm >= 20"),
+        ({"kind": "window", "span_rows": 20, "scalar": True}, "scalar applies to"),
         ({"halflife": 100.0}, "apply to corrchange only with scalar"),
         ({"emit_sigma": True}, "does not apply to corrchange"),
         # docs/REVIEW-E54-E64.md CC1 and CC3: a critical value that never
@@ -303,15 +301,15 @@ def test_a_zero_weight_row_is_not_a_row_of_the_span():
         ({"crit": float("inf")}, "crit must be finite"),
         ({"bandwidth": 0}, "bandwidth must be >= 1"),
         (
-            {"kind": "window", "horizon": None, "window": 20, "perm_block": 0},
+            {"kind": "window", "span_rows": 20, "perm_block": 0},
             "perm_block must be 1..=",
         ),
         (
-            {"kind": "window", "horizon": None, "window": 20, "perm_block": 21},
+            {"kind": "window", "span_rows": 20, "perm_block": 21},
             "perm_block must be 1..=",
         ),
         (
-            {"kind": "window", "horizon": None, "window": 20, "permute_every": 0},
+            {"kind": "window", "span_rows": 20, "permute_every": 0},
             "permute_every must be >= 1",
         ),
     ],
@@ -323,9 +321,9 @@ def test_a_bad_spec_is_refused_by_name(kw, message):
 
 def test_the_expression_equals_the_bank():
     df = pair(300, 0.4, seed=19)
-    want = run(df, horizon=100)
+    want = run(df, span_rows=100)
     with pytest.warns(po.InMemoryExpressionWarning):
-        got = df.select(pl.col("x0").online.corrchange(["x1"], horizon=100).alias("c"))[
+        got = df.select(pl.col("x0").online.corrchange(["x1"], span_rows=100).alias("c"))[
             "c"
         ].struct.unnest()
     assert want.equals(got)

@@ -252,7 +252,7 @@ class RcovKwargs(ExprKwargs, total=False):
     psd: bool
     n_max: int | None
     h_max: int | None
-    window: int | None
+    preavg_ticks: int | None
     noise_stride: int | None
     iv_stride: int | None
 
@@ -275,8 +275,7 @@ class HmmKwargs(ExprKwargs, total=False):
 
 class CorrChangeKwargs(ExprKwargs, total=False):
     kind: str
-    horizon: int | None
-    window: int | None
+    span_rows: int | None
     alpha: float
     alpha_adjust: str
     bandwidth: int | None
@@ -299,5 +298,5 @@ class BocpdKwargs(ExprKwargs, total=False):
     prior_nu: float | None
     prior_scale: list[float] | None
     robust_beta: float | None
-    truncate: float | None
+    prune_below: float | None
     max_run: int | None

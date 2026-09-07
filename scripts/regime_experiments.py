@@ -176,7 +176,7 @@ def _draw(t: int, rho: np.ndarray | float, rng: np.random.Generator, dist: str) 
 def _monitor_flags(x: np.ndarray, horizon: int, alpha: float) -> list[bool]:
     df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
     spec = po.spec.corrchange(
-        "c", features=["x0", "x1"], horizon=horizon, alpha=alpha, alpha_adjust="none"
+        "c", features=["x0", "x1"], span_rows=horizon, alpha=alpha, alpha_adjust="none"
     )
     out = po.ModelBank([spec]).fit_predict(df)["c"].struct.unnest()
     return [f for f in out["flag"].to_list() if f is not None]
@@ -241,7 +241,7 @@ def size(reps: int = 2000, alpha: float = 0.05) -> None:
 def _monitor_stat(x: np.ndarray, horizon: int) -> float:
     df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]})
     spec = po.spec.corrchange(
-        "c", features=["x0", "x1"], horizon=horizon, alpha=0.05, alpha_adjust="none"
+        "c", features=["x0", "x1"], span_rows=horizon, alpha=0.05, alpha_adjust="none"
     )
     out = po.ModelBank([spec]).fit_predict(df)["c"].struct.unnest()
     return float(out["stat"].drop_nulls().to_list()[0])
@@ -388,7 +388,7 @@ def delay(seeds: int = 20) -> None:
         "w",
         features=["x0", "x1", "x2"],
         kind="window",
-        window=100,
+        span_rows=100,
         n_perm=100,
         permute_every=100,
         alpha=0.05,
@@ -401,7 +401,7 @@ def delay(seeds: int = 20) -> None:
         emission="gaussian",
         prior_nu=5.0,
         prior_scale=[0.1],
-        truncate=1e-8,
+        prune_below=1e-8,
         max_run=1200,
     )
 

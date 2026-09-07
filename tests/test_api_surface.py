@@ -193,7 +193,7 @@ def describe_api() -> str:
             ),
         ),
         ("bocpd", dict(features=["x0", "x1"], prior_scale=[1.0])),
-        ("corrchange", dict(features=["x0", "x1"], horizon=100)),
+        ("corrchange", dict(features=["x0", "x1"], span_rows=100)),
         (
             "hmm",
             dict(features=["x0", "x1"], k=3, precision_prior=0.1, halflife=100.0),

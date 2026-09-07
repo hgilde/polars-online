@@ -53,7 +53,7 @@ MINIMAL: dict[str, dict[str, object]] = {
         "targets": None,
         "features": ["x0", "x1"],
         "halflife": None,
-        "horizon": 20,
+        "span_rows": 20,
     },
     "bocpd": {"targets": None, "features": ["x0", "x1"], "halflife": None},
     "hmm": {

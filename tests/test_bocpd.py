@@ -89,7 +89,7 @@ def test_the_posterior_is_the_longhand_algorithm_one():
     """Every reported number against the recursion written out, at every
     row, with the truncation off."""
     x = np.concatenate([normals(60, 1), normals(60, 2, loc=3.0)])
-    out = run(x, hazard=50.0, prior_nu=2.0, prior_scale=[1.0], truncate=0.0)
+    out = run(x, hazard=50.0, prior_nu=2.0, prior_scale=[1.0], prune_below=0.0)
     posts, scores = longhand(x, 50.0)
     # Row one is gated out: `P(r <= 1)` is 1 there whatever the data, so
     # every comparison starts at row two -- the row is still *learned*.
@@ -124,7 +124,7 @@ def test_two_features_are_a_product_of_student_ts():
     """The diagonal emission on `d > 1`, against the same longhand."""
     rng = np.random.default_rng(11)
     x = np.column_stack([rng.normal(0, 1, 80), rng.normal(0, 2, 80)])
-    out = run(x, hazard=40.0, prior_nu=2.0, prior_scale=[1.0], truncate=0.0)
+    out = run(x, hazard=40.0, prior_nu=2.0, prior_scale=[1.0], prune_below=0.0)
     _, scores = longhand(x, 40.0)
     assert out["logscore"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-12)
 
@@ -141,7 +141,7 @@ def test_a_variance_step_is_found():
     x = np.concatenate(
         [rng.normal(0, 0.005, 300), rng.normal(0, 0.05, 300), rng.normal(0, 0.005, 300)]
     )
-    out = run(x, hazard=250.0, prior_nu=2.0, prior_scale=[2e-4], truncate=1e-6, max_run=600)
+    out = run(x, hazard=250.0, prior_nu=2.0, prior_scale=[2e-4], prune_below=1e-6, max_run=600)
     p = np.asarray(out["p_change"].fill_null(0.0).to_list())
     mode = out["run_mode"].to_list()
     quiet = float(np.median(p[50:300]))
@@ -205,8 +205,8 @@ def test_the_log_score_prefers_the_model_that_saw_the_break():
 def test_truncation_changes_little_and_max_run_caps_the_state():
     x = np.concatenate([normals(200, 14), normals(200, 15, loc=3.0)])
     base = dict(hazard=100.0, prior_scale=[1.0], prior_nu=2.0)
-    exact = run(x, truncate=0.0, **base)
-    cut = run(x, truncate=1e-4, **base)
+    exact = run(x, prune_below=0.0, **base)
+    cut = run(x, prune_below=1e-4, **base)
     worst = max(
         abs(a - b)
         for a, b in zip(exact["p_change"].to_list()[1:], cut["p_change"].to_list()[1:], strict=True)
@@ -218,7 +218,7 @@ def test_truncation_changes_little_and_max_run_caps_the_state():
     # tail, and truncation punches holes in the middle of the vector, so
     # each run carries its own length rather than being found by position.
     assert exact["run_mode"].to_list() == cut["run_mode"].to_list()
-    capped = run(x, truncate=0.0, max_run=25, **base)
+    capped = run(x, prune_below=0.0, max_run=25, **base)
     assert max(v for v in capped["run_mode"].to_list() if v is not None) <= 25
 
 
@@ -380,7 +380,7 @@ def test_the_gaussian_emission_sees_the_correlation_the_diagonal_one_cannot():
     r = 0.95
     after = np.sqrt(r) * f + np.sqrt(1 - r) * rng.standard_normal((200, 2))
     x = np.vstack([before, after])
-    base = dict(hazard=250.0, prior_scale=[1.0], truncate=1e-8)
+    base = dict(hazard=250.0, prior_scale=[1.0], prune_below=1e-8)
     full = run(x, emission="gaussian", prior_nu=4.0, **base)
     diag = run(x, emission="diag", prior_nu=2.0, **base)
     assert full["run_mode"][260] < 100, "the full one abandoned the old run"
@@ -417,7 +417,7 @@ def test_chunks_and_a_reload_do_not_move_it():
         (dict(prior_mean=[0.0, 0.0]), "prior_mean must be 1 values"),
         (dict(hazard=0.5), "hazard"),
         (dict(prior_kappa=0.0), "prior_kappa"),
-        (dict(truncate=1.0), "truncate must be in"),
+        (dict(prune_below=1.0), "truncate must be in"),
         (dict(max_run=0), "max_run"),
         (dict(robust_beta=-1.0), "robust_beta"),
         # docs/REVIEW-E54-E64.md B2: priors that give a predictive with no

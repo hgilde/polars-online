@@ -744,7 +744,7 @@ fn rcov_cfg() -> RcovCfg {
         psd: false,
         n_max: Some(100),
         h_max: None,
-        window: None,
+        preavg_ticks: None,
         noise_stride: 1,
         iv_stride: 20,
     }
@@ -811,8 +811,7 @@ fn corrchange_cfg() -> CorrChangeCfg {
     CorrChangeCfg {
         n_features: K,
         kind: CorrChangeKind::Monitor,
-        horizon: 20,
-        window: 10,
+        span_rows: 20,
         alpha: 0.05,
         alpha_adjust: "bonferroni".into(),
         bandwidth: None,
@@ -858,7 +857,7 @@ fn bocpd_cfg() -> BocpdCfg {
         prior_nu: Some(2.0),
         prior_scale: Some(vec![1.0]),
         robust_beta: 0.0,
-        truncate: 1e-6,
+        prune_below: 1e-6,
         max_run: 200,
         min_periods: 0.0,
     }

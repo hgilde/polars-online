@@ -157,7 +157,7 @@ def test_the_auto_bandwidth_is_reported_and_clipped_to_the_ring():
 def test_the_preaveraged_estimate_is_its_definition():
     df = ticks(n=400)
     kn = 12
-    rows, _ = block(df, kind="preavg", window=kn, psd=False)
+    rows, _ = block(df, kind="preavg", preavg_ticks=kn, psd=False)
     ret = df.filter(pl.col("b") == 0).select(COLS).to_numpy()
     n = len(ret)
     g = np.array([min(j / kn, 1 - j / kn) for j in range(kn)])
@@ -294,13 +294,13 @@ def test_the_block_survives_a_refresh_time_grid():
         ({"jitter": 0}, "jitter must be >= 1"),
         ({"n_max": None}, "needs `n_max`"),
         ({"kind": "plain", "bandwidth": 3}, "bandwidth applies to"),
-        ({"kind": "kernel", "window": 3}, "window applies to"),
+        ({"kind": "kernel", "preavg_ticks": 3}, "window applies to"),
         ({"emit_sigma": True}, "does not apply to rcov"),
         # docs/REVIEW-E54-E64.md R9: settings that used to be accepted and
         # then quietly gave a block that never accumulates, or a kernel with
         # no lags in its ring.
-        ({"kind": "preavg", "window": 0}, "window must be >= 2"),
-        ({"kind": "preavg", "window": 1}, "window must be >= 2"),
+        ({"kind": "preavg", "preavg_ticks": 0}, "window must be >= 2"),
+        ({"kind": "preavg", "preavg_ticks": 1}, "window must be >= 2"),
         ({"n_max": 0}, "n_max is the block's expected length"),
         ({"h_max": 0, "bandwidth": 4}, "caps the ring below bandwidth"),
     ],

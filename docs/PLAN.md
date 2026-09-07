@@ -783,6 +783,33 @@ note, not a task.
       built and an object that exists, holds the table to the registry, and
       holds every model section to its `*API:*` and `*Rust:*` lines — all four
       checked against a deliberately broken README.
+- [ ] 63. **`window`: an EW accumulator with a hard cutoff.** A halflife `h`
+      with `window = 3h` must guarantee that nothing older than `3h` of clock
+      contributes at all — not "contributes 12.5%". Designed in §13 below;
+      the colliding names are renamed first (task 63a), the mechanism and
+      `ew_cov` land next (63b), the Gram models after (63c).
+  - [x] 63a. **Free the word.** `rcov`'s `window` is a pre-averaging length in
+        ticks and becomes `preavg_ticks`; `corrchange`'s `window` and
+        `horizon` are one concept — rows per comparison block — under two
+        names, and become `span_rows`; `bocpd`'s `truncate` is a probability
+        floor and becomes `prune_below`, since "truncate" now means the
+        window. No compatibility shim and no dual spelling: the spec keys are
+        renamed, the frozen state fixtures are regenerated, and a state saved
+        by 0.2.0 does not load.
+  - [ ] 63b. **The mechanism, and `ew_cov`.** `Snapshots<S>` in
+        `online-core`, the truncated view, `window` and `window_every` on the
+        `ew_cov` spec, refused by name everywhere else. Acceptance: the
+        oracle in §13.4.
+  - [ ] 63c. **The Gram models.** The same view for `ewridge` and `lasso`
+        (solve the truncated Gram), then `marginal` and `ew_class`.
+- [ ] 64. **Document the output struct of every model** (`docs/ENHANCEMENTS.md`
+      E65). Each model's README section and builder docstring gains a table of
+      the fields it writes — name, dtype, when null, which switch adds it —
+      and a test holds each documented set to `po.spec.output_fields(spec)` for
+      a canonical spec, so an undocumented field cannot ship. Today only the
+      *grammar* of the names is written down, and the per-model prose is
+      inconsistent: `corrchange` lists its outputs, `kmeans` does not.
+
 - [x] 61. **The leak test's statistic, 2026-09-06.** `assert_plateaus` compared
       the first and last of its post-warm-up marks, which cannot distinguish a
       late allocator step from a slope — the distinction its own docstring
@@ -4032,3 +4059,139 @@ online contract (E36–E42).
   `.cache/`, and skips when offline, so hard rule 1 holds. It backs both the
   reference comparisons and the defaults measured in `docs/VALIDATION.md`
   (14,336 rows).
+## 13. `window`: an EW accumulator with a hard cutoff (2026-09-06)
+
+An exponentially weighted mean never forgets. A halflife of `h` leaves
+`2^-3 = 12.5%` of the weight on data older than `3h`, `1.6%` older than `6h`,
+and nothing is ever exactly zero. Some questions need the other thing: *no
+information from before this point*, as a guarantee rather than an
+approximation — a compliance window, a regime you believe began at a known
+time, a backtest that must not see beyond its own horizon.
+
+### 13.1 The identity
+
+For any accumulator that is a sum of per-row contributions decayed
+multiplicatively — `A(t) = Σᵢ wᵢ λ^(t−tᵢ) aᵢ` — splitting the sum at an
+earlier time `u` gives
+
+```
+A(t) = λ^(t−u) · A(u)  +  (everything after u)
+```
+
+The first term is *exactly* the part to discard, and it is the accumulator's
+own past value decayed forward. So a truncated accumulator is a subtraction,
+not a recomputation:
+
+```
+A_window(t) = A(t) − λ^(t−u) · A(u),   u = the boundary
+```
+
+Verified in the small before any of this was designed: against a row-by-row
+weighted sum over 800 rows on an irregular clock, the identity agreed to
+**1.4e-14**, and with every row outside the window set to `1e6` the output
+moved by `1.2e-09` where the ordinary EW mean moved by `1.3e+05`.
+
+### 13.2 Which models can honour it, and which cannot
+
+| exact | `ew_cov`, `marginal`, `ew_class`, `ewridge`, `lasso` |
+|---|---|
+| exact in the accumulator, not in the fit | `huber`, `quantile` |
+| impossible | `rls`, `kalman`, `holt`, `sgd`, `pa`, `ftrl`, `kmeans`, `micro`, `hmm`, `bocpd`, `seqtest`, `corrchange`, `rcov` |
+
+The first row is every model whose state is a sum: moments, or a Gram that is
+solved *after* the subtraction. The second row is the honest awkward case —
+`huber` and `quantile` accumulate rows already multiplied by an IRLS weight
+that was computed from a state including rows the window now drops, so the
+subtraction gives the accumulator those weights imply, not the one refitting
+the window from scratch would produce. The third row is recursive filters,
+path-dependent updates, and assignment or test models, where no such
+decomposition exists.
+
+`window` is therefore **not** a common parameter. A common parameter in this
+library means the same thing in every model (the principle behind hard rule
+8), and this one is meaningless in sixteen of twenty-one. It is a per-model
+key, refused elsewhere by name, as `seqtest` already refuses `weight`.
+
+### 13.3 The design
+
+- **A view, never a destructive edit.** The model keeps its ordinary EW state
+  and a ring of past snapshots; the truncated accumulator is computed at
+  report time. Subtracting from the live state would break the recursion and
+  compound its own error.
+- **The ring holds the window.** Each entry is `(clock, snapshot)`. Before
+  reporting, entries older than `t − window` are dropped from the front; the
+  boundary is then the front entry. Memory is `O(rows in window × state)`,
+  which for `ew_cov` at `k` features is `k²+k+2` doubles per snapshot.
+- **The guarantee is one-sided, and the rounding follows it.** Subtracting the
+  state as of `u` removes every row at or before `u`, so honouring "nothing
+  older than `window`" requires `u ≥ t − window`: the *oldest* snapshot still
+  inside the window. Coarse snapshots therefore discard slightly more than
+  asked, never less. `window_every = m` snapshots every `m`th learned row and
+  divides the memory by `m`; the effective window is then in
+  `[window − m·spacing, window]`.
+- **Snapshots are keyed by clock and cadenced by the stream, not by the
+  chunk.** A cadence counted per chunk would make the boundary depend on how
+  the data arrived, and chunk invariance is not negotiable (hard rule 3).
+- **The ring is state.** It serialises with the model, so `SCHEMA_VERSION`
+  rises and a bank saved mid-stream resumes with its window intact.
+- **A zero-weight window is a null, not a zero.** When the window holds no
+  rows — a clock gap longer than `window` — the denominator is `0/0`, which
+  hard rule 9 says to guard rather than propagate.
+
+### 13.4 The oracle
+
+Every claim above is testable without reference to the implementation, and
+each test is written from the definition rather than the code:
+
+1. **Against brute force.** For a seeded irregular stream, compare each row's
+   truncated moments to a direct weighted sum over the rows inside the
+   window. Agreement to `1e-12`.
+2. **The guarantee itself.** Replace every row older than the window with
+   `1e6` and require the output to move by less than `1e-8`. This is the
+   test that would fail if the boundary rounded the wrong way.
+3. **Chunk invariance**, as for every model: one chunk against a thousand,
+   bit for bit.
+4. **Save and resume** mid-window: a bank saved and reloaded continues
+   identically, which is what pins the ring into the state.
+5. **`window = inf`** reproduces the untruncated model exactly, so the
+   feature cannot change what existing specs do.
+6. **Refusal**: every model in the third row of §13.2 rejects `window` with a
+   message naming the model.
+
+### 13.5 What this must not do to the reader
+
+The risk here is not the arithmetic, it is a user who believes the wrong
+thing about the number in front of them. Four ways that happens, and what
+the documentation owes each:
+
+- **"Windowed" reads as flat.** A reader who sees `window=3h` may assume a
+  boxcar: every row inside counted equally. It is an *exponential* weight
+  inside a hard cutoff — the newest row still dominates. Every place the
+  keyword is documented must say so in the same breath, and the README's
+  entry should show the weight function, not just name it.
+- **The guarantee is one-sided and approximate in the other direction.** With
+  `window_every > 1` the effective window is shorter than asked, by up to one
+  cadence. Documenting `window` as "exactly 3h" would be false; the promise
+  is *"nothing older than `window`"*, and the shortfall is stated with it.
+- **The boundary is a discontinuity.** A row aging out of a `3h` window at
+  `h` removes 12.5% of the weight in one step, so the series has small jumps
+  that an EWMA does not. Anyone plotting the two together will see it and
+  should have been told first. The continuous alternative — the kernel
+  `λ^u − λ^W`, which tapers to zero at the edge — is worth naming in the
+  docs even though it is not what ships.
+- **Subtraction is not the same arithmetic as accumulation.** The result is a
+  difference of two positives, so it loses precision in proportion to what is
+  discarded: negligible at `window = 3h` (a 12.5% correction), and worse the
+  shorter the window is relative to the halflife. Below `window = h` the
+  documentation should say plainly that the mean form is being reconstructed
+  from a cancellation, and `docs/PERFORMANCE.md` should carry the measured
+  error against brute force at a few ratios rather than a rule of thumb.
+
+Two more the reference has to carry because no test can: that `n_eff` under a
+window is the windowed weight, so `min_periods` now gates on a quantity that
+stops growing; and that a windowed `ew_cov` is *not* a rolling covariance in
+the polars sense — polars' `rolling_*` recomputes each window and costs
+`O(n·W)`, this is `O(n)` and matches it to `1e-14`, measured at 24× to 1100×
+faster as the window grows from 74 to 4,680 rows. Users who only need moments
+on data that fits in memory should be told polars already does this; the
+reason to reach for the spec is a stream, a saved state, or a regression.
