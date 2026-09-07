@@ -85,6 +85,9 @@ impl LassoCfg {
         if !(0.0..=1.0).contains(&self.l1_ratio) {
             return Err("l1_ratio must be in [0, 1]".into());
         }
+        if self.window.is_none() && self.window_every.is_some() {
+            return Err("lasso: window_every needs `window`".into());
+        }
         Ok(())
     }
 

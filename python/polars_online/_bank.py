@@ -612,6 +612,44 @@ class ModelBank:
             the target's ``min_periods``, and null where undefined (a
             constant column, ``n_kish <= 2``).
 
+        With ``lags`` (E66), four more list columns and four numbers:
+
+        ``lagcorr_xx``, ``lagcorr_yy``
+            Each series' own autocorrelation at the configured lags.
+        ``lagcorr_xy``, ``lagcorr_yx``
+            The feature now against the target ``l`` rows back, and the
+            reverse. A feature whose ``lagcorr_yx[0]`` exceeds its ``corr``
+            *leads* the target; one whose ``lagcorr_xy[0]`` does *follows* it.
+        ``n_serial``, ``t_serial``
+            ``n_kish`` divided by Bartlett's serial-dependence factor, and the
+            statistic against it. Null without ``serial_rule``.
+        ``phi_x``, ``phi_y``
+            The per-row decays fitted under ``serial_rule="geometric"``; null
+            otherwise, and null when fewer than two kept lags are positive.
+
+        With ``bins`` (E67), the nonlinear view. These columns are present
+        whenever the spec asked for bins, holding empty lists and nulls until
+        the edges are fixed:
+
+        ``bin_edges``
+            The feature's interior edges, fixed once and never moved. Ragged:
+            a feature keeps only the bins it can support, so a binary feature
+            has two bins and a constant one has a single bin.
+        ``bin_n``, ``bin_mean_y``, ``bin_var_y``
+            The target's weight, mean and variance inside each bin -- the
+            feature's response curve. One more entry than ``bin_edges``, since
+            the outer two bins are open.
+        ``split_gain``, ``split_at``
+            The fraction of the target's variance removed by the best single
+            cut of the feature, and where that cut falls. Directly comparable
+            with ``corr ** 2``, so ``split_gain - corr ** 2`` is the nonlinear
+            surplus.
+        ``split_gain_t``
+            The ``t`` a ``corr`` would need to match that gain, against
+            ``n_serial`` where there is one. Optimistic, because the cut was
+            chosen by maximising over the candidates -- a ranking, not a
+            p-value.
+
         The pairs are read from the state, so a bank loaded from a file
         reports them as the bank that saved it would, and feeding the rows
         in one chunk or a thousand gives the same numbers to the bit. A

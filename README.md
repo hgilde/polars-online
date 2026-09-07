@@ -53,7 +53,7 @@ grouping and warm-up mean the same thing whichever model it names.
 | [`micro`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.micro) · [math](#micro--density-based-clustering-any-shape) | density-based clustering — DenStream micro-clusters linked into clusters of any shape and number; flags the rows that belong to none |
 | [`ew_class`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_class) · [math](#ew_class--gaussian-classification-on-ew_cov-moments) | Gaussian classification — QDA, LDA or naive Bayes on one `ew_cov` state per class; a label column in, out-of-sample posteriors out |
 | [`seqtest`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.seqtest) · [math](#seqtest--a-sequential-test-of-a-sign-by-betting) | a sequential test of a sign by betting — an e-process you can read at any row; on its own a column's sign, with `a`/`b` whether one spec of the bank predicts closer than another |
-| [`marginal`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.marginal) · [math](#marginal--every-pairs-moments-kept-in-the-state) | every (feature, target) pair's running mean, variance, covariance, correlation, slope and t — O(p·T) per row for a wide set of columns, kept in the state and read back as a frame |
+| [`marginal`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.marginal) · [math](#marginal--every-pairs-moments-kept-in-the-state) | every (feature, target) pair's running mean, variance, covariance, correlation, slope and t — O(p·T) per row for a wide set of columns, kept in the state and read back as a frame. Optionally the pair at a set of lags, for a `t` that knows about serial dependence, and binned target moments, for the relations a correlation cannot see |
 | [`deco`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.deco) · [math](#deco--one-correlation-for-the-whole-matrix) | one correlation for the whole matrix — Engle & Kelly's equicorrelation, or one per block and per pair of blocks, in O(m) a row |
 | [`rcov`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rcov) · [math](#rcov--a-blocks-realised-covariance-robust-to-noise) | a block's realised covariance, robust to microstructure noise — the Barndorff-Nielsen–Hansen–Lunde–Shephard kernel or Christensen–Kinnebrock–Podolskij pre-averaging, emitted when a group closes |
 | [`hmm`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.hmm) · [math](#hmm--which-regime-are-we-in) | a Gaussian hidden Markov model, filtered online — `ew_class` without the labels, with a transition matrix that can be learned |
@@ -1621,6 +1621,59 @@ the data), and where they are undefined — a constant feature, or
 that saved it would. One chunk or a thousand gives the same frame to the
 bit.
 
+Two views sit on top of that, both off unless asked for.
+
+**`lags=[1, 2, 3, 5, 8]` — is `t` telling the truth?** `t` is built on
+`n_kish`, which is the right count for unequal weights and says nothing about
+serial dependence. On a smooth stream consecutive rows are nearly the same
+observation, so `t` claims evidence that is not there. Lags fix that. The pair's
+moments are accumulated at each lag too — the same statistic `ew_cov(lags=)`
+computes, to the bit — and `serial_rule` turns them into Bartlett's correction.
+
+| column | meaning |
+|---|---|
+| `lagcorr_xx`, `lagcorr_yy` | each series' own autocorrelation, one entry per lag |
+| `lagcorr_xy`, `lagcorr_yx` | the feature now against the target `ℓ` rows back, and the reverse |
+| `n_serial` | `n_kish` divided by `1 + 2·Σ ρ_x(ℓ)·ρ_y(ℓ)` (Bartlett 1935) |
+| `t_serial` | the same statistic as `t`, against that count |
+| `phi_x`, `phi_y` | the fitted per-row decays, under `serial_rule="geometric"` |
+
+Two *independent* AR(1) series with `φ = 0.9` and `0.8` come out at `t = 2.39`
+and `t_serial = 1.03`. The first is a finding; the second is the truth.
+
+`lagcorr_xy` against `lagcorr_yx` is worth having on its own. A feature whose
+`lagcorr_yx[0]` beats its `corr` *leads* its target. One whose `lagcorr_xy[0]`
+does *follows* it, which is usually a column sampled late.
+
+**`bins=16` — what a correlation cannot see.** Everything above is linear. A
+feature can be strongly related to a target with `corr` at zero: a threshold, a
+V, a saturation. Bin the feature and keep the target's moments inside each bin,
+and all three become visible.
+
+| column | meaning |
+|---|---|
+| `bin_edges` | the feature's edges, fixed once and never moved |
+| `bin_n`, `bin_mean_y`, `bin_var_y` | the target's weight, mean and variance in each bin — the response curve |
+| `split_gain` | the fraction of the target's variance removed by the best single cut |
+| `split_at` | where that cut falls, in the feature's units |
+| `split_gain_t` | the `t` a `corr` would need to match that gain |
+
+`split_gain` is a regression stump's `R²`, so it compares directly with
+`corr²` and the difference is the nonlinear surplus. It costs `O(bins)` of
+state per pair and one binary search per pair per row, which is why it can run
+across ten thousand columns in the pass that gives them `corr`.
+
+Read `split_gain_t` as a ranking, not a p-value. The cut was chosen by
+maximising over the candidates, and the statistic does not know that.
+
+Give the edges outright with `bin_edges` — a list per feature, or a dict keyed
+by name — and they are exact and comparable across runs. Otherwise they are
+learned from the first `bin_warm_rows` rows (default 1,000), by quantile or by
+equal width. Those rows are held and replayed, not spent: the histogram is what
+it would have been had the edges been known before the first row. A feature
+keeps only the bins it can support, so a binary feature has two and a constant
+one has a single bin and no split.
+
 ```python
 pairs = po.spec.marginal("pairs", targets=["y", "ret"],
                          features=["x0", "x1", "x2", "signal_a", "signal_b"],
@@ -1629,6 +1682,11 @@ bank = po.ModelBank([pairs])
 bank.fit_predict(df)                       # the struct holds n_eff alone
 table = bank.marginal("pairs")             # group, instance, feature, target, n_eff, n_kish, ..., corr, beta, t
 one_bond = bank.marginal("pairs", group="b0")   # 10 rows: five features by two targets
+
+honest = po.spec.marginal("pairs", targets=["y"], features=["x0", "x1"],
+                          halflife=500.0,
+                          lags=[1, 2, 3, 5, 8], serial_rule="geometric",
+                          bins=16)                 # + lagcorr_*, n_serial, split_gain, ...
 ```
 
 ### `corrchange` — has the correlation structure changed?

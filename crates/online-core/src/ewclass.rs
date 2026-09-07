@@ -130,6 +130,9 @@ impl EwClassCfg {
         if self.min_periods.is_nan() || self.min_periods < 0.0 {
             return Err("ew_class: min_periods must be >= 0".into());
         }
+        if self.window.is_none() && self.window_every.is_some() {
+            return Err("ew_class: window_every needs `window`".into());
+        }
         Ok(())
     }
 }

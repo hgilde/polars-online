@@ -250,6 +250,12 @@ class MarginalKwargs(ExprKwargs, total=False):
     """``marginal`` has no parameters of its own: the pairs are fixed by the
     calling column and the features, and everything else is shared."""
 
+    lags: list[int] | None
+    serial_rule: str | None
+    bins: int | None
+    bin_rule: str | None
+    bin_warm_rows: int | None
+    bin_edges: dict[str, list[float]] | list[list[float]] | None
     window: float | None
     window_every: int | None
 

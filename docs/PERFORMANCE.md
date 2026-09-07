@@ -1615,3 +1615,83 @@ Memory is the other axis, and it is the one the feature genuinely changes:
 `O(rows in the window x state)`, where every other model here is `O(state)`.
 `window_every = m` divides that by `m` and shortens the effective window by at
 most one snapshot's spacing — never lengthens it.
+
+## 17. What `marginal`'s two views cost, and two costs that were not theirs (2026-09-07)
+
+Tasks 65 and 66 gave `marginal` lagged pair moments and binned target
+moments (`docs/MARGINAL-LAGS-AND-BINS.md`). The rule from §16 applies again:
+a stream that asks for neither must not pay for the fact that they exist.
+
+### The plain path, and two regressions no test could see
+
+It did pay, twice, and both were found by measuring rather than reading.
+`cargo run --release -p online-core --example marg_bench` — one million
+rows, eight features, one target, no lags, no bins, no window — against a
+build from before either feature (`7c5327f`, separate worktree and target
+directory), interleaved, best of the runs each prints:
+
+| plain `marginal` | rows/s | vs before |
+|---|---:|---:|
+| before tasks 65 and 66 (`7c5327f`) | 69.2M | — |
+| with both regressions | 58.0M | 0.84 |
+| with the call hoisted out of `learn` | 64.1M | 0.93 |
+| with the scan moved inside its guard | 72.2M | **1.04** |
+
+Every row of that table is the same binary, the same harness and the same
+sitting, with only the two lines under test moved: the fixes were measured by
+putting each regression back, not by comparing against an older note.
+
+**A call inside the hot loop, even one never taken.** The lag update was a
+branch inside `learn`'s per-target loop. A call there makes the compiler
+assume the callee could reallocate `mx`, `sxx` and `sxy`, so it reloads
+their base pointers on every iteration and stops vectorizing — for a stream
+with no lags at all. Moving the whole thing to its own pass over the targets
+(`Marginal::learn_lags`, run before `learn`, recomputing `a` and `b` from
+the same values) gets the loop back. The moments stay bit-identical to
+`ew_cov(lags=)`, which is asserted by a test rather than assumed.
+
+**An `O(p)` scan outside its guard.** The lag ring only accepts rows whose
+features are all finite, and the check `x.iter().all(|v| v.is_finite())`
+sat *outside* `if let Some(lag)`. Every row of every `marginal` walked all
+`p` features to decide whether to push into a ring that did not exist.
+
+Neither is visible to a test — both compute exactly the right answer — and
+neither would have been found by reading the diff, since both look like
+ordinary guard clauses. Only a measurement against a build from before the
+feature finds this class of thing, which is the argument for keeping one
+cheap enough to run.
+
+The finished path lands slightly *above* where it started, which is this
+benchmark's noise on an unquiesced machine rather than an improvement (§16
+measured −3.5% to +4.1% run to run). The claim is parity, not a speed-up.
+The bank-level number below agrees with the one §16 recorded for the same
+shape, which is the independent check.
+
+### What the views themselves cost
+
+200,000 rows, eight features, one target, through `ModelBank.fit_predict`,
+best of three:
+
+| spec | wall | vs plain |
+|---|---:|---:|
+| `marginal` | 9.9 ms | — |
+| `bins=16`, edges given | 15.5 ms | 1.6x |
+| `bins=16`, edges learned | 16.0 ms | 1.6x |
+| `bins=64`, edges given | 19.5 ms | 2.0x |
+| `lags=[1,2,3,5,8]` | 27.2 ms | 2.7x |
+| `lags` + `serial_rule="geometric"` | 27.2 ms | 2.7x |
+
+The 9.9 ms plain agrees with the 9.5 ms §16 recorded for `marginal` without
+a window, which is the independent check that the path is where it was.
+
+Four times the bins costs 26% more, not four times more: the per-row work is
+a binary search over the edges and three adds, and the decay is `O(1)` for
+the whole histogram however many bins it has (`margbins.rs`). Had decay been
+the obvious loop over bins, 16 to 64 would have quadrupled the added cost —
+5.6 ms to 22 ms rather than to 9.6 ms.
+
+Lags cost more than bins because five lags are five more pair updates per
+row, each the same width as the contemporaneous one: 2.7x for 5 lags is the
+`1 + L` shape, slightly better than linear because the means and weights are
+computed once. `serial_rule` is free — it is read-time arithmetic over the
+lags already kept.

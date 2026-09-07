@@ -627,6 +627,9 @@ fn marginal_golden() {
         n_targets: 1,
         decay: Decay::Halflife(20.0),
         min_periods: vec![3.0],
+        lags: Vec::new(),
+        serial_rule: None,
+        bins: None,
         window: None,
         window_every: None,
     })

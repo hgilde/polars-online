@@ -872,6 +872,74 @@ note, not a task.
       writes `**undocumented**` for a stem it has no meaning for, and a test
       fails on that string.
 
+- [x] 65. **`marginal(lags=)` and `n_serial`, 2026-09-07**
+      (`docs/ENHANCEMENTS.md` E66, `docs/MARGINAL-LAGS-AND-BINS.md`).
+      `marginal`'s `t` is built on `n_kish`, which is right for unequal
+      weights and silent about serial dependence: on a smooth stream
+      consecutive rows are nearly the same observation, so `t` reports
+      evidence that is not there, and nothing in the contemporaneous moments
+      can see it. `lags=` accumulates the pair's moments at those lags with
+      `ew_cov`'s recursion — bit-identical to `ew_cov(lags=)`, which is the
+      strongest check available, since both centre at the pre-row mean and
+      mix with the same `a`/`b`. From them `serial_rule` forms Bartlett's
+      factor and reports `n_serial`, `t_serial`, `phi_x`, `phi_y`, plus the
+      four `lagcorr_*` list columns — of which `lagcorr_xy` against
+      `lagcorr_yx` says whether a feature leads or follows its target, which
+      is worth having on its own. Two independent AR(1) series at
+      `phi = 0.9` and `0.8` give `t = 2.39` and `t_serial = 1.03`. Three
+      names changed from the sketch; see the enhancement's row for which and
+      why. No schema bump: the bank file is a msgpack *map*, so a key with a
+      `default` is backward-compatible.
+
+- [x] 66. **`marginal(bins=)` and `split_gain`, 2026-09-07**
+      (`docs/ENHANCEMENTS.md` E67, `docs/MARGINAL-LAGS-AND-BINS.md`).
+      Everything else `marginal` reports is linear, and a feature can be
+      strongly related to a target with `corr` at zero. A histogram of the
+      target's moments inside the feature's bins gives the response curve
+      (`bin_edges`, `bin_n`, `bin_mean_y`, `bin_var_y`) and the best single
+      cut of it (`split_gain`, `split_at`, `split_gain_t`) — a regression
+      stump's gain, `O(bins)` of state per pair and a binary search per pair
+      per row. Decay stays `O(1)` per row by keeping the sums undecayed
+      against one scale factor per group, renormalized at `s < 1e-150` on a
+      row the clock alone decides. Learned edges hold their warm-up rows and
+      replay them, so the histogram is what it would have been had the edges
+      been known first — checked to the bit. Four parameter names and the
+      quantile mechanism changed from the sketch; the design doc's API
+      section says which and why. Ragged bins, since a binary feature has two
+      and a constant one has none. `bins` with `window` is refused.
+
+      Three bugs found by the tests written for it, all pre-existing or
+      newly introduced here and none visible in shipped behaviour:
+      (a) E66 had put a `skip_serializing_if` field in front of `win`, which
+      breaks the *compact* msgpack encoding, where a struct is a bare array
+      and a skipped field slides everything after it — `tests/state_encoding.rs`
+      now sweeps every combination in both encodings; (b) `window_every`
+      without `window` was validated by `ew_cov` and `ewridge` but not by
+      `marginal`, `lasso` or `ew_class`, and in the compact encoding it
+      decoded *silently* as `window = 1`; (c) `serde_json`'s default float
+      parser is fast rather than correctly rounded and moved a spec float by
+      one ulp — nothing for a halflife, everything for a bin edge, since
+      edges read back from an earlier run are data values and a row sitting
+      exactly on one is the common case. The crate's `float_roundtrip`
+      feature fixes it; `crates/online-polars/tests/spec_floats.rs` holds it.
+
+      And two costs that a test cannot see, found by measuring the plain
+      path against a build from before either task (`docs/PERFORMANCE.md`
+      §17). A stream with no lags and no bins had gone from 69.2M to 58.0M
+      rows/s: task 65 had put the lag update inside `learn`'s per-target
+      loop, and a call there -- even one never taken -- makes the compiler
+      assume the callee could reallocate `mx`, `sxx` and `sxy`, so it
+      reloads their base pointers every iteration and stops vectorizing;
+      and the `O(p)` finiteness scan that guards the lag ring sat outside
+      the `if let Some(lag)` that needed it, so every row of every
+      `marginal` walked all `p` features to decide whether to push into a
+      ring that did not exist. Hoisting the first into its own pass
+      (`learn_lags`, bit-identity intact) and moving the second inside its
+      guard puts the path back at 72.2M. Both look like ordinary guard
+      clauses in a diff, which is the argument for keeping a benchmark
+      cheap enough to run: `cargo run --release -p online-core --example
+      marg_bench`.
+
 - [x] 61. **The leak test's statistic, 2026-09-06.** `assert_plateaus` compared
       the first and last of its post-warm-up marks, which cannot distinguish a
       late allocator step from a slope — the distinction its own docstring

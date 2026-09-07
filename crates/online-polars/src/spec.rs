@@ -775,6 +775,43 @@ pub enum ModelKind {
     /// reported -- a correlation of two rows is ±1 whatever the data.
     #[serde(rename = "marginal")]
     Marginal {
+        /// Lags to accumulate pair moments at (docs/ENHANCEMENTS.md E66):
+        /// strictly increasing, `>= 1`, counted in **learned rows within the
+        /// group**. Gives the two autocorrelations and both
+        /// cross-correlations per pair, and the serial-dependence-corrected
+        /// `n_serial` when `serial_rule` asks for it.
+        ///
+        /// **Skipped when absent**, unlike the spec keys that predate
+        /// 2026-09-07: a key that writes `null` moves every spec's bytes and
+        /// costs a `SCHEMA_VERSION` bump for a model nobody using it has
+        /// heard of. New optional keys skip, so adding one to a model
+        /// changes only the states that use it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lags: Option<Vec<usize>>,
+        /// `"truncated"` or `"geometric"`: how `n_serial` is formed from the
+        /// lags. Needs `lags`. Skipped when absent, as `lags` is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        serial_rule: Option<String>,
+        /// Bins per feature for the binned target moments
+        /// (docs/ENHANCEMENTS.md E67): the feature's response curve, and the
+        /// best single split of it, which is what a threshold or a V shows
+        /// up in when `corr` cannot see it. Skipped when absent, as `lags`
+        /// is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bins: Option<usize>,
+        /// `"quantile"` (equal counts, the default) or `"fixed"` (equal
+        /// widths): how `bins` becomes edges. Ignored with `bin_edges`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bin_rule: Option<String>,
+        /// Learned rows to hold before fixing the edges, default 1,000. The
+        /// rows are held and replayed, not spent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bin_warm_rows: Option<usize>,
+        /// Explicit interior edges, one strictly increasing list per feature
+        /// in feature order. Exact and comparable across runs, and skips the
+        /// warm-up entirely.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bin_edges: Option<Vec<Vec<f64>>>,
         /// Clock units of history the pairs are computed from, with a
         /// **hard** cutoff: a row older than this contributes nothing
         /// (docs/PLAN.md §13). Inside the window the weights are still

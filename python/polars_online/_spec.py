@@ -1660,12 +1660,55 @@ def marginal(
     *,
     targets: list[str],
     features: list[str],
+    lags: list[int] | None = None,
+    serial_rule: str | None = None,
+    bins: int | None = None,
+    bin_rule: str | None = None,
+    bin_warm_rows: int | None = None,
+    bin_edges: dict[str, list[float]] | list[list[float]] | None = None,
     window: float | None = None,
     window_every: int | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Every (feature, target) pair's exponentially weighted moments, kept in
     the state and read back as a frame (ENHANCEMENTS E44, Task 37).
+
+    ``lags`` accumulates the pair's moments at those lags too, counted in
+    **learned rows within the group** — not in rows where that target was
+    present, since the ring is shared; for a sparsely present target the lag
+    is a row distance, not an observation distance. It adds four list columns
+    per pair: ``lagcorr_xx`` and ``lagcorr_yy``, the two series' own
+    autocorrelations, and ``lagcorr_xy`` and ``lagcorr_yx``, the feature now
+    against the target ``l`` rows back and the reverse. The pair is the same
+    statistic ``ew_cov(lags=)`` computes, to the bit.
+
+    That last pair is worth having on its own: a feature whose
+    ``lagcorr_yx[0]`` exceeds its ``corr`` *leads* the target, and one whose
+    ``lagcorr_xy[0]`` does *follows* it — a late-sampled column, visible
+    without a second pass.
+
+    ``serial_rule`` turns them into an honest count. ``t`` is built on
+    ``n_kish``, which is right for unequal weights and silent about serial
+    dependence: on a smooth stream consecutive rows are nearly the same
+    observation, and the variance of a sample correlation is not ``1/n`` but
+    ``[1 + 2·sum_l rho_x(l)·rho_y(l)]/n`` (Bartlett 1935). ``n_serial`` is
+    ``n_kish`` divided by that bracket and ``t_serial`` is the statistic
+    against it. ``"truncated"`` sums the kept lags as they are;
+    ``"geometric"`` fits ``rho(l) = phi^l`` per series by least squares on
+    ``log rho`` over the kept lags with ``rho > 0`` and sums the tail in
+    closed form, which is the right choice when both series are
+    exponentially weighted and the reason the lags need not be dense. It
+    reports the fitted ``phi_x`` and ``phi_y``, and gives up (null
+    ``n_serial``) when fewer than two kept lags are positive on either side.
+
+    Measured on two *independent* AR(1) series with ``phi_x = 0.9`` and
+    ``phi_y = 0.8``: ``t = 2.39`` — significance that is not there — against
+    ``t_serial = 1.03``, with ``n_kish = 3000`` becoming ``n_serial = 557``.
+
+    Cost: ``(3L + 1)·p·T + L·T`` doubles beside the pair moments, an
+    ``O(p·T·L)`` update, and a ring of ``max(lags)`` learned rows — the one
+    place `marginal` holds rows rather than state. Without ``lags`` it costs
+    an ``Option`` check.
 
     ``window`` puts a **hard cutoff** on the history the pairs are computed
     from, in clock units: a row older than it contributes nothing, where the
@@ -1714,12 +1757,84 @@ def marginal(
     the first one with content), and ``var_x = 0`` or ``n_kish <= 2`` leave
     the ones they undefine null.
 
+    ``bins`` adds the nonlinear view (ENHANCEMENTS E67). Every statistic
+    above is linear, and a feature can be strongly related to a target with
+    ``corr`` at zero: a threshold, a V, a saturation. With ``bins=16`` each
+    pair also reports the target's weight, mean and variance inside each of
+    the feature's bins — its response curve, in ``bin_edges``, ``bin_n``,
+    ``bin_mean_y`` and ``bin_var_y`` — and the best single cut of it:
+    ``split_gain``, the fraction of the target's variance that cut removes,
+    ``split_at``, where it falls, and ``split_gain_t``, the ``t`` a ``corr``
+    would need to match it. That is a regression stump's gain, the first
+    number a boosted tree looks at, and it costs ``O(bins)`` of state per
+    pair and one binary search per pair per row.
+
+    Read ``split_gain_t`` as a **ranking**, not a p-value: the cut was chosen
+    by maximising over ``bins - 1`` candidates and the statistic does not
+    know that, so it is optimistic. It does use ``n_serial`` in place of
+    ``n_kish`` when ``serial_rule`` gives one, since selection bias and
+    serial dependence are separate inflations and only one of them can be
+    corrected here.
+
+    The edges are fixed once and never move, so a bin means the same thing
+    for the life of the stream. ``bin_edges`` sets them outright — a list per
+    feature in ``features`` order, or a dict keyed by feature name — which is
+    exact, reproducible, and comparable across runs and groups. Otherwise
+    they are learned from the first ``bin_warm_rows`` learned rows (default
+    1,000) under ``bin_rule``: ``"quantile"`` (the default) for equal counts,
+    ``"fixed"`` for equal widths between the smallest and largest value seen.
+
+    Those warm-up rows are **held, not spent**. They wait in memory, and the
+    moment the edges exist every one of them is replayed with its own decay,
+    so the histogram is exactly what it would have been had the edges been
+    known before the first row — the same numbers, to the bit. The price is
+    memory: ``bin_warm_rows × (features + targets)`` floats, refused up front
+    when that would exceed 256 MiB rather than discovered as an OOM. Until
+    the edges are fixed the bin columns are empty and the split columns null.
+
+    A feature keeps only the bins it can support, so the lists are ragged: a
+    binary feature gets two bins whatever ``bins`` says, and a constant one
+    gets a single bin and no split. ``bins`` and ``window`` are refused
+    together — a window works by subtracting an old snapshot, and a snapshot
+    of the histogram is ``bins`` times the size of one.
+
     ``add_intercept`` and ``coef_every`` have nothing to act on here, and
     nothing residual-based applies (there is no prediction), so the residual
     switches are refused by name. A column may not be both a target and a
     feature.
     """
-    model: dict[str, Any] = {"type": "marginal", "window": window, "window_every": window_every}
+    edges: list[list[float]] | None
+    if isinstance(bin_edges, dict):
+        missing = [f for f in features if f not in bin_edges]
+        if missing:
+            raise ValueError(
+                f"marginal {name!r}: bin_edges is missing {missing}; give a list of "
+                "edges for every feature, or pass a list of lists in features order"
+            )
+        extra = [f for f in bin_edges if f not in features]
+        if extra:
+            raise ValueError(f"marginal {name!r}: bin_edges has {extra}, which are not features")
+        edges = [list(bin_edges[f]) for f in features]
+    elif bin_edges is not None:
+        edges = [list(e) for e in bin_edges]
+        if len(edges) != len(features):
+            raise ValueError(
+                f"marginal {name!r}: bin_edges has {len(edges)} lists for "
+                f"{len(features)} features; one list per feature, in features order"
+            )
+    else:
+        edges = None
+    model: dict[str, Any] = {
+        "type": "marginal",
+        "lags": lags,
+        "serial_rule": serial_rule,
+        "bins": bins,
+        "bin_rule": bin_rule,
+        "bin_warm_rows": bin_warm_rows,
+        "bin_edges": edges,
+        "window": window,
+        "window_every": window_every,
+    }
     return _common(name, model, targets=targets, features=features, **common)
 
 

@@ -73,7 +73,9 @@ mod hmm;
 mod holt;
 mod kalman;
 mod lasso;
+mod margbins;
 mod marginal;
+mod marglag;
 mod model;
 mod pa;
 mod rcov;
@@ -110,7 +112,9 @@ pub use hmm::{Hmm, HmmCfg};
 pub use holt::{Holt, HoltCfg};
 pub use kalman::{Kalman, KalmanCfg};
 pub use lasso::{Lasso, LassoCfg};
-pub use marginal::{Marginal, MarginalCfg, Pair as MarginalPair};
+pub use margbins::{Bin, BinCfg, BinRule, MarginalBins, Split, edges_from};
+pub use marginal::{Marginal, MarginalCfg, Pair as MarginalPair, SerialRule};
+pub use marglag::{MarginalLags, PairMix};
 pub use model::{
     Extra, INPUT_BOUND, ModelState, OnlineModel, State, StateError, Step, check_schema,
 };

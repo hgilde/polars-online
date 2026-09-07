@@ -154,34 +154,42 @@ frame.
 
 ```python
 po.spec.marginal("m", features=[...], targets=[...],
-                 bins=32,                                  # int, or {feature: [edge, ...]}
-                 bin_edges="quantile",                     # "quantile" | "fixed"   (how an int is turned into edges)
-                 bin_warmup=10_000,                        # learned rows over which quantile edges are set, then frozen
+                 bins=16,                  # int: how many bins, edges learned
+                 bin_rule="quantile",      # "quantile" (equal counts) | "fixed" (equal widths)
+                 bin_warm_rows=1_000,      # learned rows held before the edges are fixed
+                 bin_edges={"x1": [...]},  # or: the edges outright, exact and reproducible
                  **common)
 ```
 
-- `bins` as a dict gives explicit, fixed edges per feature (interior
-  edges; the two outer bins are open). This is the exact form, and the
-  one to use when a previous pass (`describe()`, or an earlier
-  `marginal(bins=...)` read back) has provided the quantiles.
-- `bins` as an int with `bin_edges="quantile"` sets each feature's edges
-  to its P² quantile estimates after `bin_warmup` learned rows in the
-  group, then **freezes** them. The rows of the warm-up are binned at that
-  moment from the ring of warm-up values (they are held, not dropped), so
-  no row is lost and the result is a function of row order alone, hence
-  chunk-invariant. Before the freeze the histogram columns are null.
-  `"fixed"` with an int uses equal-width bins between the P² 0.5% and
-  99.5% points at the freeze, same rule.
-- Decay: with `lam = 1` (the block use, one group per block) the bins are
-  plain sums. With decay, each bin's three sums must scale by `λ^Δ` on
-  every row, which is `O(bins)` per pair per row — too much at `p =
-  10,000`. The implementation keeps the sums *undecayed* and one scale
-  factor `s = λ^{t}` per group, adding `w/s`, `w·y/s`, `w·y²/s` to the
-  bin; a read multiplies by `s`. `s` underflows after `~1,000` halflives;
-  renormalise (multiply every sum by `s`, set `s = 1`) whenever `s <
-  1e-150`, which is a deterministic function of the clock and so keeps
-  chunk invariance. (The same trick would serve any per-row-decayed
-  histogram; it is not specific to this model.)
+**Four names changed from the sketch above, and one mechanism.** The sketch
+had `bins` doing double duty as both a count and a dict of edges, and
+`bin_edges` naming the *rule*; a parameter called `bin_edges` should hold
+edges. So: `bins` is the count, `bin_rule` is the rule, `bin_edges` is the
+edges (a list per feature in `features` order, or a dict keyed by name), and
+`bin_warmup` is `bin_warm_rows` — the repo says `rows` when it counts rows,
+as `max_rows_between_solves` does. `gain_split` and `gain_split_t` became
+`split_gain` and `split_gain_t`, since the thing is a split and the gain is
+its property.
+
+`bin_warm_rows` defaults to **1,000**, not 10,000. The sketch's own
+arithmetic is the reason: 10,000 rows at 10,000 features is 800 MB of held
+values, and a thousand rows already put sixty in each of sixteen quantile
+bins. A hold that would exceed **256 MiB** is refused when the model is
+built, with the number in the message, rather than discovered as an OOM
+halfway through a stream.
+
+**P² estimators are gone.** The warm-up rows have to be held anyway — that is
+what makes the replay exact — so their quantiles can be read off a sort of
+the held values directly. P² would add an approximation on top of data that
+is already in hand, for no saving. `"fixed"` likewise uses the smallest and
+largest value held, not P² tail estimates.
+
+`bins` and `window` are **refused together**. A window works by subtracting
+an old snapshot of the accumulators, and a snapshot of the histogram is
+`bins` times the size of one — too much to keep per snapshot. `label_delay`
+is *not* refused: the hold sits inside the model, downstream of the delay
+buffer, and sees exactly the rows `learn` sees, so the pairing it bins is the
+pairing `corr` uses.
 
 ### Outputs
 
@@ -189,52 +197,67 @@ Nothing per row. In `marginal()` and the closed-group row, per pair:
 
 | column | meaning |
 |---|---|
-| `gain_split` | best single-split variance reduction as a fraction of `var_y`: `max_c [ (Σ_L w)(Σ_R w)/(Σw) · (ȳ_L − ȳ_R)² ] / (Σw · var_y)` over the `bins − 1` cut points `c`, with `Σ_L`, `Σ_R` the sums to the left and right of `c`. It is the `R²` of the best stump — comparable to `corr²` for the same pair, so `gain_split − corr²` is the nonlinear surplus |
-| `split_at` | the edge that achieves it |
-| `gain_split_t` | `gain_split` scaled to a rough test statistic, `(n_kish − 2) · gain_split / (1 − gain_split)` (the F-statistic of the stump at the chosen split; optimistic, since the split was chosen — the honest use is against the same statistic on null targets fed as extra target columns, which the caller can do today) |
-| `bin_edges` | the frozen edges (list) |
-| `bin_n`, `bin_mean_y`, `bin_var_y` | the histogram itself (lists of length `bins`): the response curve `E[y | x ∈ bin]` and its dispersion |
+| `split_gain` | the fraction of the target's variance removed by the best single cut, `max_c (w_L·w_R/W²)·(ȳ_L − ȳ_R)²/var_y` over the `bins − 1` cuts. This is the best stump's `R²`, directly comparable with `corr²` for the same pair, so `split_gain − corr²` is the nonlinear surplus |
+| `split_at` | the edge that achieves it, in the feature's units |
+| `split_gain_t` | `√((n − 2)·g/(1 − g))`: the `t` a `corr` would need to match that gain, against `n_serial` where `serial_rule` gives one and `n_kish` otherwise. **Optimistic**, because the cut was chosen by maximising over `bins − 1` candidates and the statistic does not know that — a ranking, not a p-value |
+| `bin_edges` | the fixed edges (list) |
+| `bin_n`, `bin_mean_y`, `bin_var_y` | the histogram: the response curve `E[y | x ∈ bin]`, its weight and its dispersion |
+
+The columns appear whenever the spec asked for bins, holding empty lists and
+nulls until the edges are fixed. The lists are **ragged**: a feature keeps
+only the bins it can support, so a binary feature has two whatever `bins`
+says and a constant one has a single bin and no split. Refusing those would
+be refusing real data, and an edge at or below the smallest value seen is
+dropped because it can only ever open an empty bin.
 
 ### State and cost
 
-`3 · bins · p · T` doubles: at `p = 10,000`, `T = 3`, `bins = 32` that is
-2.9M doubles, 23 MB per group; with `group_close` only the open block is
-live. Per row: one binary search over the edges (`log bins`) and three
-adds per pair — a few nanoseconds, comparable to the pair update itself.
-The best split is computed on read (`O(bins)` per pair), never per row.
+`3·bins·p·T` doubles: at `p = 10,000`, `T = 3`, `bins = 16` that is 1.4M
+doubles, 11 MB per group. Per row: one binary search over the edges
+(`log bins`) and three adds per pair. The best split is computed on read
+(`O(bins)` per pair), never per row.
+
+Decay is `O(1)` per row rather than `O(bins)` per pair per row, which is what
+makes the whole thing affordable. With `s_t` the product of every decay
+factor so far, `λ^(t − t_i) = s_t/s_{t_i}`, so the sums are kept *undecayed*
+against one scale per group: a row adds `w/s`, and a read multiplies by `s`.
+Every ratio a caller wants — a bin mean, a variance, a gain — is scale-free
+and does not even need that. When `s` falls below `1e-150` the sums are
+multiplied through and `s` reset to 1, at a row that is a function of the
+clock alone, so chunk invariance holds across it. The trick would serve any
+per-row-decayed histogram; it is not specific to this model.
 
 ### Invariance
 
-Fixed edges: trivially. Quantile edges: the freeze happens at learned row
-`bin_warmup` in the group, the P² estimates are a deterministic function of
-the rows in order, and the warm-up rows are binned from the held values at
-the freeze — so the histogram after the freeze equals one built with the
-edges known in advance. The held warm-up values are `bin_warmup × (p + T)`
-doubles per group: at 10,000 rows and 10,003 columns, 800 MB — which is
-why `bin_warmup` should be small (a few thousand rows suffice for 32
-quantiles) and why the exact `bins={...}` form is preferred at width.
-Refused with `label_delay`.
+Explicit edges: trivially. Learned edges: the freeze happens at the
+`bin_warm_rows`-th *learned* row in the group, the edges are a function of
+the held values in order, and every held row is then replayed with its own
+decay — so the histogram equals one built with the edges known in advance,
+to the bit. A zero-weight row is held as decay only, folded into the next
+held row, which keeps a run of them from growing the hold at the price of
+floating-point association (not of chunk invariance, which is exact either
+way).
 
 ### Tests
 
-1. Fixed edges: `bin_n`, `bin_mean_y`, `bin_var_y` equal a numpy
-   `np.histogram`-style computation with the same edges and weights, to the
-   bit; `gain_split` equals a brute-force best-split search over the same
-   edges (`sklearn.tree.DecisionTreeRegressor(max_depth=1)` on the binned
-   values gives the same cut).
-2. Chunk invariance for both edge modes, with weights, nulls, zero-weight
-   rows, sessions and gaps.
-3. Decay: `lam < 1` with the scale-factor trick equals a from-scratch
-   per-row-decayed histogram to rounding, across a renormalisation
-   (`s < 1e-150` forced by a long stream).
-4. Signal: on `y = |x| + noise`, `corr ≈ 0` and `gain_split` well above
-   zero with `split_at ≈ 0`; on `y = x + noise`, `gain_split ≈ corr² ·
-   (a known stump-efficiency constant, ~0.6 for Gaussian x)`.
-5. Null: on `y` independent of `x`, `gain_split_t`'s distribution over
-   many pairs matches its distribution on a shifted-target column fed as an
-   extra target (the calibration the caller will use).
-6. Save/load round-trip with the histogram, the edges and the scale factor;
-   a legacy state loads with `bins=None`.
+`crates/online-core/src/margbins.rs` (6), `crates/online-core/src/marginal.rs`
+(5) and `tests/test_marginal_bins.py` (20):
+
+1. The scale-factor histogram equals a brute-force one that decays every bin
+   every row, bin for bin, mean for mean, variance for variance; and a run
+   long enough to force a renormalization changes nothing readable.
+2. `split_gain` equals a best-split search computed the long way over the
+   same edges, both in Rust and against a polars `cut` + `group_by` in
+   Python.
+3. Learned edges give exactly the histogram those edges given up front give —
+   the held rows are replayed, not spent.
+4. Chunk invariance over 97 chunks, including where the edges landed.
+5. Signal: a V has `corr ≈ 0` and a gain fifty times its `corr²`; a threshold
+   is located to within half a bin; a straight line is found by both, with a
+   monotone response curve.
+6. Ragged shapes: binary, constant, and the refusals (`bins` with `window`,
+   `bin_warm_rows` below `bins`, an unknown `bin_rule`, edges that are not
+   increasing, a dict missing a feature, a hold over budget).
 
 ---
 

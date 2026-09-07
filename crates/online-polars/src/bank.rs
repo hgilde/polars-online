@@ -1945,6 +1945,7 @@ impl Bank {
         let mut feature: Vec<&str> = Vec::new();
         let mut target: Vec<&str> = Vec::new();
         let mut pairs: Vec<online_core::MarginalPair> = Vec::new();
+        let mut asked_for_bins = false;
         for key in keys {
             for (label, model) in &states[key].models {
                 let AnyModel::Marginal(m) = model else {
@@ -1956,6 +1957,7 @@ impl Bank {
                         instance.push(label.as_str());
                         feature.push(f.as_str());
                         target.push(t.as_str());
+                        asked_for_bins |= m.cfg().bins.is_some();
                         pairs.push(m.pair(t_i, j));
                     }
                 }
@@ -1970,7 +1972,7 @@ impl Bank {
                 .map(|v| (!v.is_nan()).then_some(v))
                 .collect()
         };
-        let cols = vec![
+        let mut cols = vec![
             Column::new("group".into(), group_col),
             Column::new("instance".into(), instance),
             Column::new("feature".into(), feature),
@@ -1986,6 +1988,48 @@ impl Bank {
             Column::new("beta".into(), num(|p| p.beta)),
             Column::new("t".into(), num(|p| p.t)),
         ];
+        // E66: the lag family, one list column per orientation, plus the
+        // serial-dependence-corrected count and its statistic. Absent
+        // without `lags`, so a spec that does not ask for them gets the
+        // frame it always got.
+        // A list column of one field, whose inner lengths may differ from
+        // row to row: bins are ragged by design, since a feature keeps only
+        // the edges it can support.
+        let lists = |f: fn(&online_core::MarginalPair) -> &Vec<f64>| -> Column {
+            let mut b = ListPrimitiveChunkedBuilder::<Float64Type>::new(
+                "".into(),
+                pairs.len(),
+                pairs.first().map_or(0, |p| f(p).len()),
+                DataType::Float64,
+            );
+            for p in &pairs {
+                b.append_slice(f(p));
+            }
+            b.finish().into_column()
+        };
+        if pairs.first().is_some_and(|p| !p.lagcorr_xx.is_empty()) {
+            cols.push(lists(|p| &p.lagcorr_xx).with_name("lagcorr_xx".into()));
+            cols.push(lists(|p| &p.lagcorr_yy).with_name("lagcorr_yy".into()));
+            cols.push(lists(|p| &p.lagcorr_xy).with_name("lagcorr_xy".into()));
+            cols.push(lists(|p| &p.lagcorr_yx).with_name("lagcorr_yx".into()));
+            cols.push(Column::new("n_serial".into(), num(|p| p.n_serial)));
+            cols.push(Column::new("t_serial".into(), num(|p| p.t_serial)));
+            cols.push(Column::new("phi_x".into(), num(|p| p.phi_x)));
+            cols.push(Column::new("phi_y".into(), num(|p| p.phi_y)));
+        }
+        // E67: the binned view. Present whenever the spec asked for bins,
+        // even before any group has finished its warm-up -- a caller who
+        // asked for these columns should find them, holding empty lists and
+        // nulls, rather than have to discover that they appear later.
+        if asked_for_bins {
+            cols.push(lists(|p| &p.bin_edges).with_name("bin_edges".into()));
+            cols.push(lists(|p| &p.bin_n).with_name("bin_n".into()));
+            cols.push(lists(|p| &p.bin_mean_y).with_name("bin_mean_y".into()));
+            cols.push(lists(|p| &p.bin_var_y).with_name("bin_var_y".into()));
+            cols.push(Column::new("split_gain".into(), num(|p| p.split_gain)));
+            cols.push(Column::new("split_at".into(), num(|p| p.split_at)));
+            cols.push(Column::new("split_gain_t".into(), num(|p| p.split_gain_t)));
+        }
         DataFrame::new(pairs.len(), cols).map_err(|e| e.to_string())
     }
 

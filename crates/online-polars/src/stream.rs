@@ -234,6 +234,17 @@ impl AnyModel {
     }
 }
 
+/// Bins per feature when `bin_edges` gives the edges without a count, and
+/// the default `bins` the Python layer leaves to us: enough resolution to see
+/// a threshold or a V, and small enough that the histogram stays a rounding
+/// error next to the pair moments it rides along with.
+const DEFAULT_BINS: usize = 16;
+
+/// Learned rows held before the bin edges are fixed. A thousand rows put
+/// roughly sixty in each of sixteen quantile bins -- enough for edges that do
+/// not move much -- and hold 8 KB per feature while they wait.
+const DEFAULT_BIN_WARM_ROWS: usize = 1_000;
+
 /// Build the model instances for a spec: one per halflife grid entry.
 pub fn build_models(spec: &Spec) -> Result<Vec<(String, AnyModel)>, String> {
     let decays = spec.decays()?;
@@ -705,6 +716,12 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         ModelKind::Marginal {
             window,
             window_every,
+            lags,
+            serial_rule,
+            bins,
+            bin_rule,
+            bin_warm_rows,
+            bin_edges,
         } => {
             // The per-target thresholds go to the model whole: it is the
             // reader of its own state, so it gates each target's pairs
@@ -714,6 +731,35 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 n_targets: spec.m(),
                 decay,
                 min_periods: spec.min_periods_per_target(),
+                lags: lags.clone().unwrap_or_default(),
+                serial_rule: match serial_rule.as_deref() {
+                    None => None,
+                    Some("truncated") => Some(online_core::SerialRule::Truncated),
+                    Some("geometric") => Some(online_core::SerialRule::Geometric),
+                    Some(other) => {
+                        return Err(format!(
+                            "marginal: unknown serial_rule {other:?}; expected \"truncated\" or \"geometric\""
+                        ));
+                    }
+                },
+                bins: match (bins, bin_edges) {
+                    (None, None) => None,
+                    (_, edges) => Some(Box::new(online_core::BinCfg {
+                        n_bins: bins.unwrap_or(DEFAULT_BINS),
+                        edges: edges.clone(),
+                        rule: match bin_rule.as_deref() {
+                            None | Some("quantile") => online_core::BinRule::Quantile,
+                            Some("fixed") => online_core::BinRule::Fixed,
+                            Some(other) => {
+                                return Err(format!(
+                                    "marginal: unknown bin_rule {other:?}; expected \"quantile\" \
+                                     or \"fixed\""
+                                ));
+                            }
+                        },
+                        warm_rows: bin_warm_rows.unwrap_or(DEFAULT_BIN_WARM_ROWS),
+                    })),
+                },
                 window: *window,
                 window_every: *window_every,
             };

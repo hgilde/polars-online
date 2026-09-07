@@ -223,6 +223,12 @@
     name
     targets
     features
+    lags = None
+    serial_rule = None
+    bins = None
+    bin_rule = None
+    bin_warm_rows = None
+    bin_edges = None
     window = None
     window_every = None
     common

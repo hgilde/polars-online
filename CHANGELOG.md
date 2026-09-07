@@ -9,6 +9,26 @@ carries breaking changes.
 
 ### Added
 
+- **`marginal(bins=)`: the nonlinear view** (task 66,
+  `docs/ENHANCEMENTS.md` E67). Every statistic `marginal` reported was
+  linear, and a feature can be strongly related to a target with `corr` at
+  zero — a threshold, a V, a saturation. `bins=16` adds the target's weight,
+  mean and variance inside each of the feature's bins (its response curve)
+  and the best single cut of it: `split_gain`, the fraction of the target's
+  variance that cut removes, `split_at`, and `split_gain_t`. That is a
+  regression stump's gain for every pair in the pass that gives it `corr`,
+  at `O(bins)` of state per pair. Edges come from `bin_edges` outright or are
+  learned from the first `bin_warm_rows` rows under `bin_rule`; the warm-up
+  rows are held and replayed, not spent, so the histogram is what it would
+  have been had the edges been known first.
+- **`marginal(lags=)` and `n_serial`** (task 65, `docs/ENHANCEMENTS.md` E66).
+  `t` is built on `n_kish`, which says nothing about serial dependence: on a
+  smooth stream `t` reports evidence that is not there. `lags=` accumulates
+  the pair's moments at those lags — bit-identical to `ew_cov(lags=)` — and
+  `serial_rule` turns them into Bartlett's correction, reported as
+  `n_serial` and `t_serial` beside `t`, with `phi_x`, `phi_y` and the four
+  `lagcorr_*` columns. On two independent AR(1) series at `phi = 0.9` and
+  `0.8`: `t = 2.39`, `t_serial = 1.03`.
 - **`docs/OUTPUTS.md`: what every model writes** (task 64,
   `docs/ENHANCEMENTS.md` E65). Every spec adds one struct column and nothing
   said what was in it per model — `hmm`'s `state` and `p1_<j>`, `bocpd`'s
@@ -128,6 +148,26 @@ carries breaking changes.
   and failed a `main` run whose previous run on the same tree was green. The
   statistic is now the median block-to-block gap over five blocks, which
   reads that trace as 0.0 KB/iter and a sustained leak unchanged. Test-only.
+
+### Fixed
+
+- **A spec float lost its last bit crossing into Rust.** `serde_json`'s
+  default parser is fast rather than correctly rounded, so
+  `-0.41215148805088475` arrived as `-0.4121514880508847`. Nothing for a
+  halflife; everything for a `marginal` bin edge, since edges read back from
+  an earlier run are data values and a row sitting exactly on one is the
+  common case rather than a coincidence. The crate's `float_roundtrip`
+  feature is now enabled in all three crates.
+- **`window_every` without `window` was accepted by three models**
+  (`marginal`, `lasso`, `ew_class`), where `ew_cov` and `ewridge` had always
+  refused it. In the compact msgpack encoding it also decoded silently as
+  `window = 1`.
+- **Two optional fields in a row broke the compact msgpack encoding.** That
+  encoding writes a struct as a bare array, so a skipped field slides
+  everything after it; `marginal`'s lag moments had been added in front of
+  its window. State files use the named encoding and were unaffected, which
+  is exactly why `crates/online-core/tests/state_encoding.rs` now sweeps
+  every combination in both.
 
 ## [0.2.0] — 2026-09-06
 
