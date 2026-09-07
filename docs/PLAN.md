@@ -811,8 +811,23 @@ note, not a task.
         `online-core`, the truncated view, `window` and `window_every` on the
         `ew_cov` spec, refused by name everywhere else. Acceptance: the
         oracle in §13.4.
-  - [ ] 63c. **The Gram models.** The same view for `ewridge` and `lasso`
-        (solve the truncated Gram), then `marginal` and `ew_class`.
+  - [~] 63c. **The Gram models.** `ewridge` done 2026-09-07: the Gram, the
+        per-target cross-moments and the residual variance are truncated by
+        the same identity, and the solve runs on the result, so the fit
+        provably contains no row older than the window. `n_eff`, `sigma` and
+        `resid_z` follow it. Refused with `ridge_decay` (the decaying prior's
+        scale is a product over the whole stream) and with `session_shrink`
+        (a second accumulator under a longer halflife). Acceptance: a direct
+        weighted-least-squares solve over the rows inside the window, in Rust
+        and again in Python against numpy. `lasso`, `marginal` and `ew_class`
+        remain.
+        *Two things the tests caught*: the compact msgpack encoding writes a
+        struct as an **array**, so a `skip_serializing_if` field must be
+        **last** or it shifts every field after it — the state round-trip
+        failed with "invalid type: boolean, expected f64" until both the
+        model's `win` and the config's two keys moved to the end. And the
+        first oracle disagreed because the *test* fed a clock that ran
+        backwards: `lcg` there is `[-1, 1)`, not `[0, 1)`.
 - [ ] 64. **Document the output struct of every model** (`docs/ENHANCEMENTS.md`
       E65). Each model's README section and builder docstring gains a table of
       the fields it writes — name, dtype, when null, which switch adds it —

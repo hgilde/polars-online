@@ -433,6 +433,8 @@ mod tests {
             decay: Decay::Halflife(hl),
             ridge: vec![ridge],
             feature_sets: vec![],
+            window: None,
+            window_every: None,
             standardize: false,
             ridge_decay: true,
             session_shrink: None,

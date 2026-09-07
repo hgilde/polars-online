@@ -284,6 +284,8 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             long_halflife,
             solve_every,
             max_rows_between_solves,
+            window,
+            window_every,
         } => {
             let fs = feature_sets
                 .as_ref()
@@ -309,6 +311,8 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     .map(FloatOrList::to_vec)
                     .unwrap_or_else(|| vec![1e-6]),
                 feature_sets: fs,
+                window: *window,
+                window_every: *window_every,
                 standardize: *standardize,
                 ridge_decay: *ridge_decay,
                 session_shrink: *session_shrink,

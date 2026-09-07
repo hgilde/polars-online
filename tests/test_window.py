@@ -155,10 +155,107 @@ def test_a_bad_window_is_refused_by_name(kw, msg):
         po.ModelBank([spec(**kw)]).fit_predict(stream(20))
 
 
-@pytest.mark.parametrize("model", ["ewridge", "rls", "kalman", "sgd", "holt", "hmm", "bocpd"])
+@pytest.mark.parametrize("model", ["rls", "kalman", "sgd", "holt", "hmm", "bocpd"])
 def test_only_the_models_that_can_honour_it_accept_it(model):
     """The identity holds where the state is a sum of per-row contributions.
     Everywhere else the keyword is refused, naming the model, rather than
     accepted and quietly ignored."""
     with pytest.raises(TypeError, match=f"{model}.*unexpected keyword argument 'window'"):
         getattr(po.spec, model)("m", targets=["y"], features=["x"], window=10.0)
+
+
+# --- the same cutoff on a regression -----------------------------------------
+
+
+def ridge_spec(window=None, **kw):
+    d = dict(
+        targets=["y"],
+        features=["x"],
+        clock="t",
+        halflife=HALFLIFE,
+        max_dclock=1e12,
+        min_periods=2.0,
+        ridge=1e-8,
+        max_rows_between_solves=1,
+    )
+    d.update(kw)
+    return po.spec.ewridge("w", window=window, **d)
+
+
+def regime_stream(n=300, flip=200, seed=1):
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal(n)
+    y = np.where(np.arange(n) < flip, 3.0 * x + 1.0, -2.0 * x + 5.0)
+    return pl.DataFrame({"t": np.arange(n).astype(float), "x": x, "y": y})
+
+
+def fit(df, window=None, chunks=1, **kw):
+    bank = po.ModelBank([ridge_spec(window, **kw)])
+    parts = [df] if chunks == 1 else list(df.iter_slices(max(1, len(df) // chunks)))
+    for p in parts:
+        bank.fit_predict(p)
+    return bank.coef("w")["coef"].to_list()
+
+
+def test_a_windowed_fit_forgets_the_regime_the_window_excludes():
+    """The point of the feature, as an experiment: a relationship that ended
+    before the window cannot bend the coefficients inside it."""
+    df = regime_stream()
+    intercept, slope = fit(df, window=40.0)
+    assert slope == pytest.approx(-2.0, abs=1e-4)
+    assert intercept == pytest.approx(5.0, abs=1e-4)
+    # Without one, the decayed tail of the old regime is still in the fit.
+    _, plain_slope = fit(df)
+    assert abs(plain_slope + 2.0) > 0.5, "the plain fit should still be contaminated"
+
+
+def test_the_windowed_fit_is_the_weighted_least_squares_of_its_rows():
+    """Against the normal equations over exactly the rows inside the window."""
+    df = regime_stream(n=260, flip=170, seed=4)
+    window = 50.0
+    got = fit(df, window=window)
+    t, x, y = df["t"].to_numpy(), df["x"].to_numpy(), df["y"].to_numpy()
+    now, lam = t[-1], 0.5 ** (1 / HALFLIFE)
+    keep = (now - t) < window
+    w = lam ** (now - t[keep])
+    z = np.column_stack([np.ones(keep.sum()), x[keep]])
+    wz = z * w[:, None]
+    beta = np.linalg.solve(wz.T @ z + 1e-8 * w.sum() * np.eye(2), wz.T @ y[keep])
+    assert got == pytest.approx(list(beta), rel=1e-5)
+
+
+def test_a_windowed_fit_is_chunk_invariant():
+    df = regime_stream()
+    assert fit(df, 60.0, chunks=1) == fit(df, 60.0, chunks=30)
+
+
+def test_a_windowed_fit_resumes_from_a_saved_bank(tmp_path):
+    df = regime_stream()
+    half = len(df) // 2
+    whole = fit(df, 60.0)
+    bank = po.ModelBank([ridge_spec(60.0)])
+    bank.fit_predict(df[:half])
+    bank.save(tmp_path / "r.state")
+    resumed = po.ModelBank.load(tmp_path / "r.state")
+    resumed.fit_predict(df[half:])
+    assert resumed.coef("w")["coef"].to_list() == whole
+
+
+@pytest.mark.parametrize(
+    ("kw", "msg"),
+    [
+        ({"ridge_decay": True}, "window and ridge_decay do not combine"),
+        (
+            {
+                "session_shrink": 0.5,
+                "long_halflife": 500.0,
+                "session": "t",
+                "session_gap": 10.0,
+            },
+            "window and session_shrink",
+        ),
+    ],
+)
+def test_a_window_is_refused_where_the_identity_does_not_hold(kw, msg):
+    with pytest.raises(Exception, match=re.escape(msg)):
+        po.ModelBank([ridge_spec(30.0, **kw)]).fit_predict(regime_stream(40))

@@ -44,6 +44,17 @@ carries breaking changes.
   state is not a sum of per-row contributions refuse the keyword by name.
   Verified against a direct windowed sum in Rust and against polars'
   `rolling().agg()` in Python.
+- **`window` on `ewridge`: a regression with a hard cutoff** (task 63c). The
+  Gram, the per-target cross-moments and the residual variance are truncated
+  by the same identity and the fit is solved from the result, so no row older
+  than the window is in the coefficients at all — the thing an exponential
+  decay cannot promise and polars has no primitive for. `n_eff`, `sigma` and
+  `resid_z` come from the window too. On a stream whose slope flips from +3
+  to −2, a halflife of 60 still reports −0.53 a hundred rows later where
+  `window=40` reports −1.999996. Refused with `ridge_decay` and
+  `session_shrink`, where the identity does not hold. Verified against a
+  direct weighted-least-squares solve over the in-window rows, in Rust and
+  again in Python against numpy.
 
 ### Changed
 

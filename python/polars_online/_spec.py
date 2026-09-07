@@ -315,6 +315,8 @@ def ewridge(
     long_halflife: float | None = None,
     solve_every: float | None = None,
     max_rows_between_solves: int | None = None,
+    window: float | None = None,
+    window_every: int | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """EW-ridge spec (docs/PLAN.md §4.1).
@@ -328,40 +330,63 @@ def ewridge(
     schedule in rows, and is off by default). Predictions use the last solved
     coefficients and the state *before* the row's update.
 
+    ``window`` puts a **hard cutoff** on the history the fit is solved from,
+    in clock units: a row older than it is not in the Gram at all, where the
+    exponential weight alone would leave ``0.5 ** (age / halflife)`` of it.
+    Inside the window the weights are still exponential, so this is a
+    *windowed exponentially weighted* regression, not a rolling OLS. It is
+    exact rather than approximate: the Gram and the cross-moments are sums of
+    per-row contributions, so everything at or before a time ``u`` is
+    ``lam ** (t - u)`` times the accumulators as they stood then, and
+    subtracting that leaves the window. The model keeps a ring of snapshots to
+    do it -- the one place here where memory grows with a window rather than
+    with the state -- and a halflife grid is one instance per entry, each with
+    its own ring. ``window_every`` snapshots every ``n`` rows instead, which
+    divides the memory and can only *shorten* the effective window.
+
+    ``n_eff``, ``sigma`` and ``resid_z`` come from the window too, so the
+    reported spread describes the rows the fit describes. Mind the solve
+    schedule: the coefficients are the window's *as of the last solve*, so a
+    coarse ``solve_every`` reports a window that has since moved on.
+    ``window`` is refused with ``ridge_decay`` (the decaying prior's scale is
+    the product of every decay factor the stream has applied, which a window
+    truncates the data of but not the prior) and with ``session_shrink`` (the
+    slow twin is a second accumulator under a longer halflife).
+
     ``ridge`` defaults to ``1e-6``. With ``standardize`` (default ``False``)
-    the solve is done in correlation form and unscaled afterwards, and a
-    feature whose variance is zero is dropped from the solve rather than
-    blowing it up.
-    ``ridge`` may be a list (one fit per value, reported side by side) and
-    ``feature_sets`` names subsets of ``features``, each a fit of its own
-    reported as ``pred_<t>__<set>`` -- the full set is fitted only when it
-    is one of them; ``emit_selected`` then reports the fit doing best.
+        the solve is done in correlation form and unscaled afterwards, and a
+        feature whose variance is zero is dropped from the solve rather than
+        blowing it up.
+        ``ridge`` may be a list (one fit per value, reported side by side) and
+        ``feature_sets`` names subsets of ``features``, each a fit of its own
+        reported as ``pred_<t>__<set>`` -- the full set is fitted only when it
+        is one of them; ``emit_selected`` then reports the fit doing best.
 
-    ``coef_prior`` shrinks toward a stated belief instead of toward zero, one vector
-    per target in the features' original units. **Whether the prior fades
-    depends on ``ridge_decay``**: ``S`` is a weighted *mean*, so a plain
-    ``ridge`` is a fixed per-observation penalty whose pull is permanent
-    ("always stay near this belief"); with ``ridge_decay`` the prior sits on the
-    decaying sum scale and fades as data arrives (the usual warm start, "begin
-    at yesterday's fit and let evidence take over").
+        ``coef_prior`` shrinks toward a stated belief instead of toward zero, one vector
+        per target in the features' original units. **Whether the prior fades
+        depends on ``ridge_decay``**: ``S`` is a weighted *mean*, so a plain
+        ``ridge`` is a fixed per-observation penalty whose pull is permanent
+        ("always stay near this belief"); with ``ridge_decay`` the prior sits on the
+        decaying sum scale and fades as data arrives (the usual warm start, "begin
+        at yesterday's fit and let evidence take over").
 
-    ``session_shrink`` is a middle option between ``session_gap`` and a full
-    reset (PLAN section 12 open question 1). A second accumulator tracks the
-    long-run relationship at ``long_halflife``, and on a session boundary the
-    two are mixed weight-respectingly::
+        ``session_shrink`` is a middle option between ``session_gap`` and a full
+        reset (PLAN section 12 open question 1). A second accumulator tracks the
+        long-run relationship at ``long_halflife``, and on a session boundary the
+        two are mixed weight-respectingly::
 
-        W'  = (1-f) * W_fast + f * W_slow
-        S'  = ((1-f) * W_fast * S_fast + f * W_slow * S_slow) / W'
+            W'  = (1-f) * W_fast + f * W_slow
+            S'  = ((1-f) * W_fast * S_fast + f * W_slow * S_slow) / W'
 
-    so ``0`` keeps today's fit, ``1`` reverts fully to the long run, and
-    anything between says "overnight, drift partway back". Unlike
-    ``session_gap`` this changes what the model *believes*, not just how
-    confident it is.
+        so ``0`` keeps today's fit, ``1`` reverts fully to the long run, and
+        anything between says "overnight, drift partway back". Unlike
+        ``session_gap`` this changes what the model *believes*, not just how
+        confident it is.
 
-    Raises as every builder does (:mod:`polars_online.spec`); its own rules:
-    a ``feature_sets`` entry naming a column not in ``features``, a ``coef_prior``
-    vector of the wrong length, and ``session_shrink`` without
-    ``long_halflife`` are ``ValueError`` naming the problem.
+        Raises as every builder does (:mod:`polars_online.spec`); its own rules:
+        a ``feature_sets`` entry naming a column not in ``features``, a ``coef_prior``
+        vector of the wrong length, and ``session_shrink`` without
+        ``long_halflife`` are ``ValueError`` naming the problem.
     """
     model: dict[str, Any] = {
         "type": "ew_ridge",
@@ -374,6 +399,8 @@ def ewridge(
         "long_halflife": long_halflife,
         "solve_every": solve_every,
         "max_rows_between_solves": max_rows_between_solves,
+        "window": window,
+        "window_every": window_every,
     }
     return _common(name, model, targets=targets, features=features, **common)
 

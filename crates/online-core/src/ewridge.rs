@@ -86,6 +86,24 @@ pub struct EwRidgeCfg {
     pub solve_every: f64,
     /// Row cap between solves; 1 solves every row.
     pub max_rows_between_solves: u32,
+    /// Clock units of history the fit is computed from, with a *hard* cutoff:
+    /// a row older than this contributes nothing to the Gram, where the
+    /// exponential weight alone would leave `0.5^(age/halflife)` of it
+    /// (docs/PLAN.md §13). Inside the window the weights are still
+    /// exponential. A halflife grid is one model instance per entry, so each
+    /// carries its own ring.
+    ///
+    /// **Last, with `window_every`, and they must stay last.** The compact
+    /// msgpack encoding writes a struct as an *array*, so a
+    /// `skip_serializing_if` field anywhere but the end shifts every field
+    /// after it when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<f64>,
+    /// Learned rows between the snapshots the window is computed from; `1`
+    /// (the default) is the tightest boundary, larger divides the memory and
+    /// only ever shortens the effective window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_every: Option<usize>,
 }
 
 impl EwRidgeCfg {
@@ -126,6 +144,35 @@ impl EwRidgeCfg {
         }
         if self.ridge.is_empty() {
             return Err("ridge grid must have at least one value".into());
+        }
+        if let Some(w) = self.window {
+            if !w.is_finite() || w <= 0.0 {
+                return Err(format!(
+                    "ewridge: window must be finite and > 0 (got {w}); it is clock units of \
+                     history to keep"
+                ));
+            }
+            if self.window_every.is_some_and(|e| e == 0) {
+                return Err("ewridge: window_every must be >= 1".into());
+            }
+            if self.ridge_decay {
+                return Err(
+                    "ewridge: window and ridge_decay do not combine; the decaying prior's scale \
+                     is the product of every decay factor the stream has applied, which a \
+                     window truncates the data of but not the prior"
+                        .into(),
+                );
+            }
+            if self.session_shrink.is_some() {
+                return Err(
+                    "ewridge: window and session_shrink do not combine; the slow twin is a \
+                     second accumulator under a longer halflife, and truncating one and not \
+                     the other would blend two different histories"
+                        .into(),
+                );
+            }
+        } else if self.window_every.is_some() {
+            return Err("ewridge: window_every needs `window`".into());
         }
         if self.ridge_decay && (self.standardize || self.n_combos() > 1) {
             return Err("ridge_decay is incompatible with standardize and grids".into());
@@ -206,9 +253,49 @@ pub struct EwRidge {
     clock_since_solve: f64,
     rows_since_solve: u32,
     pub solve_failures: u64,
+    /// The hard-cutoff window, when the spec asks for one (docs/PLAN.md §13).
+    /// Absent otherwise, so an ordinary fit writes the bytes it always did.
+    ///
+    /// **Last, and it must stay last.** The compact msgpack encoding writes a
+    /// struct as an *array*, so a `skip_serializing_if` field anywhere but the
+    /// end shifts every field after it when it is absent, and the state loads
+    /// as garbage -- "invalid type: boolean, expected f64" is what that looks
+    /// like. `state_roundtrip_continues_identically` catches it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    win: Option<Windowed>,
     // scratch buffers (serialized for simplicity; tiny)
     #[serde(skip)]
     zbuf: Vec<f64>,
+}
+
+/// What a window needs beyond the accumulators: where the clock has got to,
+/// and the snapshots to subtract.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Windowed {
+    clock: f64,
+    snaps: crate::Snapshots<RidgeMoments>,
+}
+
+/// Every accumulator a fit is read from, as it stood before a row and decayed
+/// to that row's clock. The Gram and the per-target cross-moments are what
+/// the solve reads; the residual variance is what `sigma` and `resid_z` read,
+/// and truncating one without the other would report a windowed fit beside an
+/// unwindowed spread.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct RidgeMoments {
+    cov: crate::Moments,
+    wj: Vec<f64>,
+    r: Vec<Vec<f64>>,
+    wsig: Vec<f64>,
+    sig2: Vec<f64>,
+}
+
+/// The accumulators a windowed fit reads, with everything older than the
+/// window subtracted off.
+struct RidgeView {
+    cov: EwCov,
+    r: Vec<Vec<f64>>,
+    sig2: Vec<f64>,
 }
 
 impl EwRidge {
@@ -224,6 +311,13 @@ impl EwRidge {
                 tm: Some(TargetMoments::new(m)),
             })
         });
+        let win = match cfg.window {
+            Some(w) => Some(Windowed {
+                clock: 0.0,
+                snaps: crate::Snapshots::new(w, cfg.window_every.unwrap_or(1))?,
+            }),
+            None => None,
+        };
         Ok(Self {
             slow,
             cov: EwCov::new(k_total),
@@ -236,6 +330,7 @@ impl EwRidge {
             clock_since_solve: 0.0,
             rows_since_solve: 0,
             solve_failures: 0,
+            win,
             zbuf: vec![0.0; k_total],
             cfg,
         })
@@ -245,12 +340,24 @@ impl EwRidge {
         &self.cfg
     }
 
-    pub fn sigma2(&self) -> &[f64] {
-        &self.sig2
+    /// Per-target EW residual variance. Under a `window` this is the variance
+    /// *inside* it, so `sigma` and `resid_z` describe the same rows the fit
+    /// does rather than a spread from a history the fit has dropped.
+    pub fn sigma2(&self) -> std::borrow::Cow<'_, [f64]> {
+        match self.view() {
+            Some(v) => std::borrow::Cow::Owned(v.sig2),
+            None => std::borrow::Cow::Borrowed(&self.sig2),
+        }
     }
 
+    /// The accumulated weight the fit is read from: under a `window`, the
+    /// weight *inside* it, which stops growing once the window fills. That is
+    /// what `min_periods` then gates on.
     pub fn n_eff(&self) -> f64 {
-        self.cov.n_eff()
+        match self.view() {
+            Some(v) => v.cov.n_eff(),
+            None => self.cov.n_eff(),
+        }
     }
 
     /// Current coefficients per output slot, if solved.
@@ -394,11 +501,65 @@ impl EwRidge {
         idx
     }
 
+    /// The accumulators a fit is read from: the live ones, or -- with a
+    /// `window` -- the same ones with everything older than the window
+    /// subtracted off (docs/PLAN.md §13).
+    ///
+    /// The Gram, the per-target cross-moments and the residual variance are
+    /// all sums of per-row contributions, so each is truncated by the same
+    /// identity: `A(t) - lam^(t-u)·A(u)` for the boundary snapshot at `u`.
+    /// The solve then runs on a Gram that provably contains no row older than
+    /// the window, which is the whole point -- a rolling regression with a
+    /// guarantee rather than a decay.
+    fn view(&self) -> Option<RidgeView> {
+        let win = self.win.as_ref()?;
+        let (u, old) = win.snaps.boundary()?;
+        if old.cov.w == 0.0 {
+            return None; // nothing has aged out yet: read the live state
+        }
+        let f = self.cfg.decay.factor(win.clock - u);
+        let cov = crate::truncated(&self.cov, &old.cov, f)?;
+        let m = self.cfg.n_targets;
+        let mut r = vec![vec![0.0; self.cfg.k_total()]; m];
+        let mut sig2 = vec![0.0; m];
+        for j in 0..m {
+            // The truncated weight is what makes the cross-moments a mean
+            // again; only the mean itself is read downstream.
+            let (_wj, rj) = crate::truncated_mean(self.wj[j], &self.r[j], old.wj[j], &old.r[j], f)?;
+            r[j] = rj;
+            // The residual variance is one number per target, so the same
+            // subtraction on a one-element mean.
+            match crate::truncated_mean(
+                self.wsig[j],
+                &[self.sig2[j]],
+                old.wsig[j],
+                &[old.sig2[j]],
+                f,
+            ) {
+                Some((_w, s2)) => sig2[j] = s2[0].max(0.0),
+                // A target whose residual history is entirely outside the
+                // window reports no spread rather than a stale one.
+                None => sig2[j] = 0.0,
+            }
+        }
+        Some(RidgeView { cov, r, sig2 })
+    }
+
     fn solve(&mut self) {
         let k_total = self.cfg.k_total();
         let m = self.cfg.n_targets;
         let combos = self.cfg.combos();
         let mut beta = vec![vec![0.0; k_total]; m * combos.len()];
+        // With a `window`, the fit is solved from the truncated accumulators:
+        // no row older than the window is in the Gram at all. Without one,
+        // and before anything has aged out, these borrow the live state and
+        // the arithmetic is unchanged to the bit.
+        let view = self.view();
+        let mut failures = 0u64;
+        let (cov, r) = match view.as_ref() {
+            Some(v) => (&v.cov, &v.r),
+            None => (&self.cov, &self.r),
+        };
 
         for (ci, &(fs_idx, r_idx)) in combos.iter().enumerate() {
             let ridge = self.cfg.ridge[r_idx];
@@ -409,20 +570,20 @@ impl EwRidge {
             let mut a = vec![0.0; kc * kc];
             for (ai, &zi) in zidx.iter().enumerate() {
                 for (aj, &zj) in zidx.iter().enumerate() {
-                    a[ai * kc + aj] = self.cov.raw(zi, zj);
+                    a[ai * kc + aj] = cov.raw(zi, zj);
                 }
             }
             let mut b = vec![0.0; kc * m];
             for j in 0..m {
                 for (ai, &zi) in zidx.iter().enumerate() {
-                    b[j * kc + ai] = self.r[j][zi];
+                    b[j * kc + ai] = r[j][zi];
                 }
             }
 
             let solved: Option<Vec<f64>> = if self.cfg.ridge_decay {
                 // (W S + prior_scale * ridge I) beta = W r  — intercept penalized.
-                let w = self.cov.n_eff();
-                let ps = self.cov.prior_scale();
+                let w = cov.n_eff();
+                let ps = cov.prior_scale();
                 for i in 0..kc {
                     for j in 0..kc {
                         a[i * kc + j] *= w;
@@ -441,7 +602,7 @@ impl EwRidge {
                         }
                     }
                 }
-                self.run_solve(&a, &b, kc, m)
+                Self::run_solve(&mut failures, &a, &b, kc, m)
             } else if !self.cfg.standardize {
                 let off = usize::from(self.cfg.add_intercept);
                 for i in off..kc {
@@ -458,9 +619,9 @@ impl EwRidge {
                         }
                     }
                 }
-                self.run_solve(&a, &b, kc, m)
+                Self::run_solve(&mut failures, &a, &b, kc, m)
             } else {
-                self.solve_standardized(&zidx, &b, kc, m, ridge)
+                self.solve_standardized(cov, &mut failures, &zidx, &b, kc, m, ridge)
             };
 
             if let Some(sol) = solved {
@@ -476,19 +637,20 @@ impl EwRidge {
                 }
             }
         }
+        self.solve_failures += failures;
         self.beta = Some(beta);
         self.clock_since_solve = 0.0;
         self.rows_since_solve = 0;
     }
 
-    fn run_solve(&mut self, a: &[f64], b: &[f64], k: usize, m: usize) -> Option<Vec<f64>> {
+    fn run_solve(failures: &mut u64, a: &[f64], b: &[f64], k: usize, m: usize) -> Option<Vec<f64>> {
         match solve_spd(a, b, k, m) {
             Some((x, jit)) => {
-                self.solve_failures += u64::from(jit);
+                *failures += u64::from(jit);
                 Some(x)
             }
             None => {
-                self.solve_failures += 1;
+                *failures += 1;
                 None
             }
         }
@@ -500,8 +662,11 @@ impl EwRidge {
     /// statistics can be read from `EwCov` directly rather than re-derived from
     /// raw moments (which would reintroduce the cancellation the centered
     /// representation exists to avoid).
+    #[allow(clippy::too_many_arguments)]
     fn solve_standardized(
-        &mut self,
+        &self,
+        cov: &EwCov,
+        failures: &mut u64,
         zidx: &[usize],
         b: &[f64],
         kc: usize,
@@ -512,7 +677,7 @@ impl EwRidge {
             // No intercept: scale by the raw second-moment diagonals (there is
             // no centering here, so no cancellation either).
             let s: Vec<f64> = (0..kc)
-                .map(|i| self.cov.raw(zidx[i], zidx[i]).max(0.0).sqrt())
+                .map(|i| cov.raw(zidx[i], zidx[i]).max(0.0).sqrt())
                 .collect();
             // No centering here, so no cancellation: any strictly positive raw
             // moment is usable.
@@ -524,7 +689,7 @@ impl EwRidge {
             let mut asub = vec![0.0; kk * kk];
             for (i2, &i) in keep.iter().enumerate() {
                 for (j2, &j) in keep.iter().enumerate() {
-                    asub[i2 * kk + j2] = self.cov.raw(zidx[i], zidx[j]) / (s[i] * s[j]);
+                    asub[i2 * kk + j2] = cov.raw(zidx[i], zidx[j]) / (s[i] * s[j]);
                 }
                 asub[i2 * kk + i2] += ridge;
             }
@@ -534,7 +699,7 @@ impl EwRidge {
                     bsub[j * kk + i2] = b[j * kc + i] / s[i];
                 }
             }
-            let sol = self.run_solve(&asub, &bsub, kk, m)?;
+            let sol = Self::run_solve(failures, &asub, &bsub, kk, m)?;
             let mut out = vec![0.0; kc * m];
             for j in 0..m {
                 for (i2, &i) in keep.iter().enumerate() {
@@ -560,7 +725,7 @@ impl EwRidge {
         // blowing up; with centered accumulators its variance is exactly zero.
         let keep: Vec<usize> = (0..kf)
             .filter(|&i| {
-                crate::variance_is_usable(c[i * kf + i], self.cov.raw(zidx[i + 1], zidx[i + 1]))
+                crate::variance_is_usable(c[i * kf + i], cov.raw(zidx[i + 1], zidx[i + 1]))
             })
             .collect();
         let kk = keep.len();
@@ -585,7 +750,7 @@ impl EwRidge {
                     }
                 }
             }
-            let sol = self.run_solve(&asub, &bsub, kk, m)?;
+            let sol = Self::run_solve(failures, &asub, &bsub, kk, m)?;
             for j in 0..m {
                 for (i2, &i) in keep.iter().enumerate() {
                     out[j * kc + i + 1] = sol[j * kk + i2] / s[i];
@@ -655,6 +820,23 @@ impl OnlineModel for EwRidge {
                 }
             }
         }
+        // The snapshot is every accumulator as it stands *before* this row,
+        // decayed to this row's clock, so subtracting it later retains this
+        // row and everything after. Keyed by a clock the model accumulates
+        // itself, so the boundary cannot depend on the chunking.
+        if let Some(win) = self.win.as_mut() {
+            let t = win.clock + d_clock;
+            let snap = RidgeMoments {
+                cov: crate::Moments::of(&self.cov, lam),
+                wj: self.wj.iter().map(|w| w * lam).collect(),
+                r: self.r.clone(),
+                wsig: self.wsig.iter().map(|w| w * lam).collect(),
+                sig2: self.sig2.clone(),
+            };
+            win.snaps.offer(t, || snap);
+            win.clock = t;
+            win.snaps.trim(t);
+        }
         self.cov.update(&self.zbuf, lam, weight);
         for j in 0..m {
             match y[j] {
@@ -714,7 +896,7 @@ impl OnlineModel for EwRidge {
     fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
         debug_assert_eq!(x.len(), self.cfg.n_features);
         let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
-        let n_eff = self.cov.n_eff();
+        let n_eff = self.n_eff();
         let mut pred = vec![f64::NAN; m * nc];
         if let (true, Some(beta)) = (n_eff >= self.cfg.min_periods, &self.beta) {
             for j in 0..m {
@@ -776,6 +958,8 @@ mod tests {
             decay: Decay::Halflife(f64::INFINITY),
             ridge: vec![1e-8],
             feature_sets: vec![],
+            window: None,
+            window_every: None,
             standardize: false,
             ridge_decay: false,
             coef_prior: None,
@@ -1885,6 +2069,180 @@ mod tests {
         let b = &m.coefficients().unwrap()[0];
         assert_eq!(b[2], 0.0, "full coef {b:?}"); // dropped, not blown up
         assert!((b[1] - 2.0).abs() < 1e-6); // 1e-8 ridge itself shifts this by ~2e-8
+    }
+
+    /// A windowed ridge fit, solved directly from the normal equations over
+    /// exactly the rows inside the window. Written from the definition:
+    /// `(Z'WZ + ridge·I) beta = Z'Wy` with `W = diag(lam^age)` over the rows
+    /// whose age is under the window, and nothing else.
+    fn direct_window_fit(
+        xs: &[[f64; 1]],
+        ys: &[f64],
+        t: &[f64],
+        halflife: f64,
+        window: f64,
+        ridge: f64,
+        upto: usize,
+    ) -> [f64; 2] {
+        let now = t[upto - 1];
+        // z = [1, x]: a 2x2 normal system, solved in closed form.
+        let (mut s11, mut s1x, mut sxx, mut s1y, mut sxy, mut wsum) =
+            (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        for i in 0..upto {
+            if now - t[i] >= window {
+                continue;
+            }
+            let w = 0.5_f64.powf((now - t[i]) / halflife);
+            let x = xs[i][0];
+            wsum += w;
+            s11 += w;
+            s1x += w * x;
+            sxx += w * x * x;
+            s1y += w * ys[i];
+            sxy += w * x * ys[i];
+        }
+        // The model accumulates *means*, so the ridge sits on the mean scale.
+        let (a11, a12, a22) = (s11 / wsum + ridge, s1x / wsum, sxx / wsum + ridge);
+        let (b1, b2) = (s1y / wsum, sxy / wsum);
+        let det = a11 * a22 - a12 * a12;
+        [(b1 * a22 - b2 * a12) / det, (b2 * a11 - b1 * a12) / det]
+    }
+
+    /// PLAN §13.4 (1), for the Gram: a windowed fit is the fit of the rows in
+    /// the window, and nothing older reaches the coefficients.
+    #[test]
+    fn a_windowed_fit_is_the_fit_of_the_rows_inside_the_window() {
+        let (halflife, window, ridge) = (30.0, 80.0, 1e-8);
+        let mut c = cfg(1, 1);
+        c.decay = Decay::Halflife(halflife);
+        c.ridge = vec![ridge];
+        c.min_periods = 0.0;
+        c.solve_every = 0.0;
+        c.max_rows_between_solves = 1; // solve every row, so beta is never stale
+        c.window = Some(window);
+        let mut m = EwRidge::new(c).unwrap();
+
+        let mut s = 11u64;
+        let (mut xs, mut ys, mut t, mut clock) = (vec![], vec![], vec![], 0.0);
+        for i in 0..150 {
+            // `lcg` is in [-1, 1), so take its magnitude: a clock must not go
+            // backwards, and one that does makes the window meaningless.
+            let d = if i == 0 {
+                0.0
+            } else {
+                0.5 + 2.0 * lcg(&mut s).abs()
+            };
+            clock += d;
+            let x = [lcg(&mut s) * 4.0 - 2.0];
+            // A relationship that changes halfway, so a window that forgets
+            // the old one reports something the full history could not.
+            let y = if i < 75 {
+                3.0 * x[0] + 1.0
+            } else {
+                -2.0 * x[0] + 5.0
+            } + 0.05 * lcg(&mut s);
+            m.step(&x, &[Some(y)], d, 1.0);
+            xs.push(x);
+            ys.push(y);
+            t.push(clock);
+            if i >= 8 {
+                // Membership first: if the truncated weight matches the sum
+                // over the rows the definition keeps, the two agree on *which*
+                // rows are in, and any difference left is arithmetic.
+                let now = t[i];
+                let wsum: f64 = (0..=i)
+                    .filter(|&j| now - t[j] < window)
+                    .map(|j| 0.5_f64.powf((now - t[j]) / halflife))
+                    .sum();
+                assert!(
+                    (m.n_eff() - wsum).abs() < 1e-9 * wsum,
+                    "row {i}: n_eff {} vs {wsum} -- the window holds different rows",
+                    m.n_eff()
+                );
+                let want = direct_window_fit(&xs, &ys, &t, halflife, window, ridge, i + 1);
+                let got = m.coefficients().unwrap();
+                for (slot, wanted) in want.iter().enumerate() {
+                    // Not machine precision, and the docs say why: the window
+                    // is a *subtraction*, so it loses digits in proportion to
+                    // the mass discarded. At window = 2.7 halflives that is
+                    // about eight significant figures.
+                    assert!(
+                        (got[0][slot] - wanted).abs() < 1e-6 * wanted.abs().max(1.0),
+                        "row {i} slot {slot}: {} vs {wanted}",
+                        got[0][slot]
+                    );
+                }
+            }
+        }
+    }
+
+    /// PLAN §13.4 (2): the guarantee, on the fit rather than a moment. A
+    /// relationship that held before the window cannot bend the coefficients
+    /// inside it.
+    #[test]
+    fn a_fit_cannot_be_moved_by_rows_older_than_its_window() {
+        let run = |old_slope: f64| {
+            let mut c = cfg(1, 1);
+            c.decay = Decay::Halflife(25.0);
+            c.ridge = vec![1e-8];
+            c.min_periods = 0.0;
+            c.max_rows_between_solves = 1;
+            c.window = Some(60.0);
+            let mut m = EwRidge::new(c).unwrap();
+            let mut s = 3u64;
+            for i in 0..200 {
+                let x = [lcg(&mut s) * 2.0 - 1.0];
+                // Everything before row 130 follows `old_slope`; the last 70
+                // rows are the same in both runs and all lie inside a
+                // 60-unit window at the end.
+                let y = if i < 130 {
+                    old_slope * x[0]
+                } else {
+                    4.0 * x[0]
+                };
+                m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            m.coefficients().unwrap()[0].clone()
+        };
+        let a = run(1.0);
+        let b = run(-500.0);
+        for slot in 0..2 {
+            assert!(
+                (a[slot] - b[slot]).abs() < 1e-6,
+                "slot {slot}: a slope of -500 outside the window moved the fit: {} vs {}",
+                a[slot],
+                b[slot]
+            );
+        }
+        assert!(
+            (a[1] - 4.0).abs() < 0.01,
+            "the in-window slope is 4: {}",
+            a[1]
+        );
+    }
+
+    /// PLAN §13.4 (5): a window no stream reaches changes nothing.
+    #[test]
+    fn a_ridge_window_no_stream_reaches_is_the_untruncated_fit() {
+        let mk = |window: Option<f64>| {
+            let mut c = cfg(2, 1);
+            c.decay = Decay::Halflife(40.0);
+            c.min_periods = 0.0;
+            c.max_rows_between_solves = 1;
+            c.window = window;
+            EwRidge::new(c).unwrap()
+        };
+        let (mut plain, mut windowed) = (mk(None), mk(Some(1e9)));
+        let mut s = 7u64;
+        for i in 0..80 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = x[0] - 2.0 * x[1] + 0.1 * lcg(&mut s);
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            let a = plain.step(&x, &[Some(y)], d, 1.0);
+            let b = windowed.step(&x, &[Some(y)], d, 1.0);
+            assert_eq!(a.pred[0].to_bits(), b.pred[0].to_bits(), "row {i}");
+            assert_eq!(a.n_eff.to_bits(), b.n_eff.to_bits(), "row {i} n_eff");
+        }
     }
 
     #[test]

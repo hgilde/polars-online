@@ -384,6 +384,16 @@ pub enum ModelKind {
         solve_every: Option<f64>,
         #[serde(default)]
         max_rows_between_solves: Option<u32>,
+        /// Clock units of history the fit sees, with a **hard** cutoff: a row
+        /// older than this is not in the Gram at all, where the exponential
+        /// weight alone would leave `0.5^(age/halflife)` of it. Inside the
+        /// window the weights are still exponential (docs/PLAN.md §13). A
+        /// halflife grid is one instance per entry, each with its own ring.
+        #[serde(default)]
+        window: Option<f64>,
+        /// Learned rows between the snapshots the window is computed from.
+        #[serde(default)]
+        window_every: Option<usize>,
     },
     Lasso {
         /// Decreasing penalties on standardized stats; required.

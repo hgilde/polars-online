@@ -23,6 +23,8 @@
 //!     min_periods: 5.0,
 //!     solve_every: 0.0,
 //!     max_rows_between_solves: 1,
+//!     window: None,
+//!     window_every: None,
 //! })?;
 //!
 //! let mut pred = f64::NAN;
@@ -123,7 +125,7 @@ pub use seqtest::{SLOTS as SEQTEST_SLOTS, SeqTest, SeqTestCfg};
 pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::{SpdFactor, quad_forms_logdet, solve_spd};
 pub use stats::{EwAutoCorr, P2Quantile, SlotMetrics};
-pub use window::Snapshots;
+pub use window::{Moments, Snapshots, truncated, truncated_mean};
 
 /// Version of the serialized model-state layout.
 ///

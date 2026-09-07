@@ -102,6 +102,8 @@ fn ewridge_cfg(standardize: bool, ridge: f64) -> EwRidgeCfg {
         decay: Decay::Halflife(20.0),
         ridge: vec![ridge],
         feature_sets: vec![],
+        window: None,
+        window_every: None,
         standardize,
         ridge_decay: false,
         session_shrink: None,

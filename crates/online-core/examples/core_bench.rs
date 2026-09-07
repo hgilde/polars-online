@@ -23,6 +23,8 @@ fn cfg(k: usize, m: usize, solve_every_rows: u32) -> EwRidgeCfg {
         decay: Decay::Halflife(500.0),
         ridge: vec![1e-6],
         feature_sets: vec![],
+        window: None,
+        window_every: None,
         standardize: false,
         ridge_decay: false,
         coef_prior: None,

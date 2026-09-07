@@ -854,19 +854,7 @@ struct Windowed {
     /// Clock of the last learned row, which is the reference the statistics
     /// are read at (the state is pre-decay for the row being reported on).
     clock: f64,
-    snaps: crate::Snapshots<Moments>,
-}
-
-/// An `EwCov`'s data, decayed to the clock of the row it precedes. Means and
-/// centred co-moments do not move under decay; only the two weight sums do,
-/// which is why a snapshot is this and not a whole accumulator.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct Moments {
-    w: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    q: Option<f64>,
-    m: Vec<f64>,
-    c: Vec<f64>,
+    snaps: crate::Snapshots<crate::Moments>,
 }
 
 impl EwCovModel {
@@ -937,38 +925,18 @@ impl EwCovModel {
             // the untruncated numbers to the bit.
             return Cow::Borrowed(&self.cov);
         }
-        let k = self.cfg.n_features;
         let f = self.cfg.decay.factor(win.clock - u);
-        let w = self.cov.n_eff() - f * old.w;
-        let mut out = self.cov.clone();
-        if w <= 0.0 || !w.is_finite() {
-            // Nothing inside the window: a clock gap longer than it, or the
-            // boundary is the whole accumulator. Report an empty state rather
-            // than dividing by it (hard rule 9).
-            out.set_moments(&vec![0.0; k], &vec![0.0; k * k], 0.0, old.q.map(|_| 0.0));
-            return Cow::Owned(out);
-        }
-        let w_now = self.cov.n_eff();
-        let mean: Vec<f64> = (0..k)
-            .map(|i| (w_now * self.cov.mean(i) - f * old.w * old.m[i]) / w)
-            .collect();
-        let mut cen = vec![0.0; k * k];
-        for i in 0..k {
-            for j in 0..k {
-                // Back to raw second moments, subtract, and re-centre on the
-                // window's own mean.
-                let now =
-                    w_now * (self.cov.comoments()[i * k + j] + self.cov.mean(i) * self.cov.mean(j));
-                let then = old.w * (old.c[i * k + j] + old.m[i] * old.m[j]);
-                cen[i * k + j] = (now - f * then) / w - mean[i] * mean[j];
+        match crate::truncated(&self.cov, old, f) {
+            Some(cov) => Cow::Owned(cov),
+            None => {
+                // Nothing inside the window: a clock gap longer than it.
+                // Report an empty state rather than dividing by it.
+                let k = self.cfg.n_features;
+                let mut out = self.cov.clone();
+                out.set_moments(&vec![0.0; k], &vec![0.0; k * k], 0.0, old.q.map(|_| 0.0));
+                Cow::Owned(out)
             }
         }
-        let q = match (self.cov.q_sum(), old.q) {
-            (Some(q_now), Some(q_then)) => Some((q_now - f * f * q_then).max(0.0)),
-            _ => None,
-        };
-        out.set_moments(&mean, &cen, w, q);
-        Cow::Owned(out)
     }
 
     /// The components currently in force, if a refresh has happened.
@@ -1254,13 +1222,8 @@ impl crate::OnlineModel for EwCovModel {
         // boundary cannot depend on how the data was chunked (hard rule 3).
         if let Some(win) = self.win.as_mut() {
             let t = win.clock + d_clock;
-            let (w, q, m, c) = (
-                self.cov.n_eff() * lam,
-                self.cov.q_sum().map(|q| q * lam * lam),
-                self.cov.means().to_vec(),
-                self.cov.comoments().to_vec(),
-            );
-            win.snaps.offer(t, || Moments { w, q, m, c });
+            let snap = crate::Moments::of(&self.cov, lam);
+            win.snaps.offer(t, || snap);
             win.clock = t;
             win.snaps.trim(t);
         }
