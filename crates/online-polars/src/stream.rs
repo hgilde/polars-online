@@ -698,7 +698,10 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             };
             Ok(AnyModel::SeqTest(Box::new(SeqTest::new(cfg)?)))
         }
-        ModelKind::Marginal {} => {
+        ModelKind::Marginal {
+            window,
+            window_every,
+        } => {
             // The per-target thresholds go to the model whole: it is the
             // reader of its own state, so it gates each target's pairs
             // itself where a regression's stream layer would.
@@ -707,6 +710,8 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 n_targets: spec.m(),
                 decay,
                 min_periods: spec.min_periods_per_target(),
+                window: *window,
+                window_every: *window_every,
             };
             Ok(AnyModel::Marginal(Box::new(Marginal::new(cfg)?)))
         }
@@ -1120,7 +1125,7 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
         | ModelKind::Micro { .. }
         | ModelKind::EwClass { .. }
         | ModelKind::SeqTest { .. }
-        | ModelKind::Marginal {}
+        | ModelKind::Marginal { .. }
         | ModelKind::Deco { .. }
         | ModelKind::Rcov { .. }
         | ModelKind::Hmm { .. }

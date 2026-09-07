@@ -827,7 +827,19 @@ note, not a task.
         longer see — which `-D warnings` caught as an unused binding after the
         docstring already claimed the behaviour. A window can therefore change
         the *support*: a feature with no in-window evidence goes to exactly
-        zero. `marginal` and `ew_class` remain.
+        zero.
+        `marginal` done the same day: it emits nothing per row, so the window
+        applies at the readout -- every moment a pair is built from, the
+        weight and both means and the three centred second moments, truncated
+        one pair at a time so a readout stays O(1). The case for it is
+        sharpest here: two regimes of opposite sign average to nothing over a
+        long history, so an unwindowed screen reports corr 0.0006 where a
+        40-unit window reports -0.99. *Two more of mine the tests caught*:
+        `Marginal` was a unit-like spec variant (`Marginal {}`), so the fields
+        had to be added to the enum and four `matches!` patterns updated; and
+        every part of the window was written except the ring maintenance in
+        `step`, which left it inert until the oracle failed.
+        `ew_class` remains.
         *Two things the tests caught*: the compact msgpack encoding writes a
         struct as an **array**, so a `skip_serializing_if` field must be
         **last** or it shifts every field after it — the state round-trip

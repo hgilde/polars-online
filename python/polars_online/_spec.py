@@ -1640,10 +1640,23 @@ def marginal(
     *,
     targets: list[str],
     features: list[str],
+    window: float | None = None,
+    window_every: int | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Every (feature, target) pair's exponentially weighted moments, kept in
     the state and read back as a frame (ENHANCEMENTS E44, Task 37).
+
+    ``window`` puts a **hard cutoff** on the history the pairs are computed
+    from, in clock units: a row older than it contributes nothing, where the
+    exponential weight alone would leave ``0.5 ** (age / halflife)`` of it
+    (docs/PLAN.md §13). Inside the window the weights are still exponential.
+    Every moment a pair is built from is truncated -- the weight, both means
+    and the three centred second moments -- so ``corr``, ``beta`` and ``t``
+    describe the window and nothing else. That matters most for a screen: two
+    regimes of opposite sign average to nothing over a long history, so an
+    unwindowed pair can report no relationship where a windowed one reports a
+    strong one.
 
     Not a regression and not a joint fit: each pair ``(x_j, y_t)`` is its own
     two-column ``ew_cov``, so a wide feature set against a few targets costs
@@ -1686,7 +1699,7 @@ def marginal(
     switches are refused by name. A column may not be both a target and a
     feature.
     """
-    model: dict[str, Any] = {"type": "marginal"}
+    model: dict[str, Any] = {"type": "marginal", "window": window, "window_every": window_every}
     return _common(name, model, targets=targets, features=features, **common)
 
 

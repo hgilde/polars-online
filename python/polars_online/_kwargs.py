@@ -248,6 +248,9 @@ class MarginalKwargs(ExprKwargs, total=False):
     """``marginal`` has no parameters of its own: the pairs are fixed by the
     calling column and the features, and everything else is shared."""
 
+    window: float | None
+    window_every: int | None
+
 
 class RcovKwargs(ExprKwargs, total=False):
     kind: str

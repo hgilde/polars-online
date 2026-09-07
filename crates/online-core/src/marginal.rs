@@ -54,6 +54,18 @@ pub struct MarginalCfg {
     /// `beta` and `t` are reported, one entry per target; the moments never
     /// wait.
     pub min_periods: Vec<f64>,
+    /// Clock units of history the pairs are computed from, with a **hard**
+    /// cutoff: a row older than this contributes nothing (docs/PLAN.md §13).
+    /// Inside the window the weights are still exponential.
+    ///
+    /// **Last, with `window_every`, and they must stay last**: the compact
+    /// msgpack encoding writes a struct as an array, so a
+    /// `skip_serializing_if` field anywhere else shifts what follows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<f64>,
+    /// Learned rows between the window's snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_every: Option<usize>,
 }
 
 impl MarginalCfg {
@@ -128,12 +140,42 @@ pub struct Marginal {
     mx: Vec<f64>,
     sxx: Vec<f64>,
     sxy: Vec<f64>,
+    /// The hard-cutoff window, when the spec asks for one. Last, for the
+    /// reason `MarginalCfg::window` gives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    win: Option<Windowed>,
+}
+/// The window's clock and the snapshots it subtracts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Windowed {
+    clock: f64,
+    snaps: crate::Snapshots<MarginalMoments>,
+}
+
+/// Every accumulator a pair is read from, before a row and decayed to it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct MarginalMoments {
+    w_sum: f64,
+    wt: Vec<f64>,
+    qt: Vec<f64>,
+    my: Vec<f64>,
+    syy: Vec<f64>,
+    mx: Vec<f64>,
+    sxx: Vec<f64>,
+    sxy: Vec<f64>,
 }
 
 impl Marginal {
     pub fn new(cfg: MarginalCfg) -> Result<Self, String> {
         cfg.validate()?;
         let (p, t) = (cfg.n_features, cfg.n_targets);
+        let win = match cfg.window {
+            Some(w) => Some(Windowed {
+                clock: 0.0,
+                snaps: crate::Snapshots::new(w, cfg.window_every.unwrap_or(1))?,
+            }),
+            None => None,
+        };
         Ok(Self {
             cfg,
             w_sum: 0.0,
@@ -144,6 +186,7 @@ impl Marginal {
             mx: vec![0.0; p * t],
             sxx: vec![0.0; p * t],
             sxy: vec![0.0; p * t],
+            win,
         })
     }
 
@@ -154,13 +197,54 @@ impl Marginal {
     /// The accumulated weight of every learned row, as the next row's
     /// `n_eff` reports it (CLAUDE.md rule 8).
     #[inline]
+    /// The boundary snapshot and the factor that decays it forward, when a
+    /// `window` is set and something has aged out of it.
+    fn boundary(&self) -> Option<(&MarginalMoments, f64)> {
+        let win = self.win.as_ref()?;
+        let (u, old) = win.snaps.boundary()?;
+        if old.w_sum == 0.0 {
+            return None;
+        }
+        Some((old, self.cfg.decay.factor(win.clock - u)))
+    }
+
+    /// One truncated `(weight, mean, centred second moment)` triple:
+    /// `A(t) - f·A(u)` back through raw moments and re-centred, which is the
+    /// same identity `EwCov` uses, one pair at a time so a readout stays O(1).
+    fn cut(
+        w: f64,
+        w_old: f64,
+        f: f64,
+        (ma, mb): (f64, f64),
+        (ma_old, mb_old): (f64, f64),
+        s: f64,
+        s_old: f64,
+    ) -> Option<(f64, f64, f64, f64)> {
+        let wn = w - f * w_old;
+        if wn <= 0.0 || !wn.is_finite() {
+            return None;
+        }
+        let a = (w * ma - f * w_old * ma_old) / wn;
+        let b = (w * mb - f * w_old * mb_old) / wn;
+        let raw = w * (s + ma * mb) - f * w_old * (s_old + ma_old * mb_old);
+        Some((wn, a, b, raw / wn - a * b))
+    }
+
+    /// The accumulated weight the pairs are read from: under a `window`, the
+    /// weight inside it.
     pub fn n_eff(&self) -> f64 {
-        self.w_sum
+        match self.boundary() {
+            Some((old, f)) => (self.w_sum - f * old.w_sum).max(0.0),
+            None => self.w_sum,
+        }
     }
 
     /// `W_t`, the weight behind target `t`'s pairs.
     pub fn target_weight(&self, t: usize) -> f64 {
-        self.wt[t]
+        match self.boundary() {
+            Some((old, f)) => (self.wt[t] - f * old.wt[t]).max(0.0),
+            None => self.wt[t],
+        }
     }
 
     /// The statistics of feature `j` against target `t`. The moments are
@@ -168,12 +252,61 @@ impl Marginal {
     /// `min_periods`.
     pub fn pair(&self, t: usize, j: usize) -> Pair {
         let i = t * self.cfg.n_features + j;
-        let n_eff = self.wt[t];
-        // 0/0 before the first row, which is the NaN it should be.
-        let n_kish = n_eff * n_eff / self.qt[t];
-        let var_x = self.sxx[i].max(0.0);
-        let var_y = self.syy[t].max(0.0);
-        let cov = self.sxy[i];
+        // With a `window`, every moment this pair is built from is truncated
+        // to it first: the weight, the two means, and the three centred
+        // second moments. Each is the same subtraction `EwCov` makes.
+        let (n_eff, n_kish, mean_x, mean_y, var_x, var_y, cov) = match self.boundary() {
+            None => (
+                self.wt[t],
+                self.wt[t] * self.wt[t] / self.qt[t],
+                self.mx[i],
+                self.my[t],
+                self.sxx[i].max(0.0),
+                self.syy[t].max(0.0),
+                self.sxy[i],
+            ),
+            Some((old, f)) => {
+                let cut = |ms, ms_old, s, s_old| {
+                    Self::cut(self.wt[t], old.wt[t], f, ms, ms_old, s, s_old)
+                };
+                match (
+                    cut(
+                        (self.mx[i], self.mx[i]),
+                        (old.mx[i], old.mx[i]),
+                        self.sxx[i],
+                        old.sxx[i],
+                    ),
+                    cut(
+                        (self.my[t], self.my[t]),
+                        (old.my[t], old.my[t]),
+                        self.syy[t],
+                        old.syy[t],
+                    ),
+                    cut(
+                        (self.mx[i], self.my[t]),
+                        (old.mx[i], old.my[t]),
+                        self.sxy[i],
+                        old.sxy[i],
+                    ),
+                ) {
+                    (Some((w, mx, _, sxx)), Some((_, my, _, syy)), Some((_, _, _, sxy))) => {
+                        let q = (self.qt[t] - f * f * old.qt[t]).max(0.0);
+                        (w, w * w / q, mx, my, sxx.max(0.0), syy.max(0.0), sxy)
+                    }
+                    // Nothing inside the window: report nothing, not stale
+                    // moments (hard rule 9).
+                    _ => (
+                        0.0,
+                        f64::NAN,
+                        f64::NAN,
+                        f64::NAN,
+                        f64::NAN,
+                        f64::NAN,
+                        f64::NAN,
+                    ),
+                }
+            }
+        };
         let (corr, beta, t_stat) = if n_eff >= self.cfg.min_periods[t] {
             // The same product of the same two roots `ew_cov` takes, so the
             // correlations agree to the bit.
@@ -196,9 +329,9 @@ impl Marginal {
         Pair {
             n_eff,
             n_kish,
-            mean_x: self.mx[i],
+            mean_x,
             var_x,
-            mean_y: self.my[t],
+            mean_y,
             var_y,
             cov,
             corr,
@@ -259,7 +392,28 @@ impl Marginal {
 impl OnlineModel for Marginal {
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         let out = self.predict(x, d_clock);
-        self.learn(x, y, self.cfg.decay.factor(d_clock), weight);
+        let lam = self.cfg.decay.factor(d_clock);
+        // The snapshot is every accumulator as it stands *before* this row,
+        // decayed to this row's clock, so subtracting it later retains this
+        // row and everything after. Keyed by a clock the model accumulates
+        // itself, so the boundary cannot depend on the chunking.
+        if let Some(win) = self.win.as_mut() {
+            let t = win.clock + d_clock;
+            let snap = MarginalMoments {
+                w_sum: self.w_sum * lam,
+                wt: self.wt.iter().map(|w| w * lam).collect(),
+                qt: self.qt.iter().map(|q| q * lam * lam).collect(),
+                my: self.my.clone(),
+                syy: self.syy.clone(),
+                mx: self.mx.clone(),
+                sxx: self.sxx.clone(),
+                sxy: self.sxy.clone(),
+            };
+            win.snaps.offer(t, || snap);
+            win.clock = t;
+            win.snaps.trim(t);
+        }
+        self.learn(x, y, lam, weight);
         out
     }
 
@@ -320,6 +474,106 @@ mod tests {
             n_targets: t,
             decay: Decay::Halflife(20.0),
             min_periods: vec![0.0; t],
+            window: None,
+            window_every: None,
+        }
+    }
+
+    /// PLAN §13.4 for `marginal`: one pair, computed directly over the rows
+    /// inside the window and nothing else.
+    #[test]
+    fn a_windowed_pair_is_the_pair_of_the_rows_inside_the_window() {
+        let (halflife, window) = (25.0, 70.0);
+        let mut c = cfg(1, 1);
+        c.decay = Decay::Halflife(halflife);
+        c.window = Some(window);
+        let mut m = Marginal::new(c).unwrap();
+
+        let mut seed = 99u64;
+        let (mut xs, mut ys, mut t, mut clock) = (vec![], vec![], vec![], 0.0);
+        for i in 0..140 {
+            // `lcg` is [-1, 1): a clock increment must be its magnitude, or
+            // the clock runs backwards and the window means nothing.
+            let d = if i == 0 {
+                0.0
+            } else {
+                0.5 + 2.0 * lcg(&mut seed).abs()
+            };
+            clock += d;
+            let x = lcg(&mut seed) * 3.0;
+            let y = 2.0 * x + lcg(&mut seed) * 0.2;
+            crate::OnlineModel::step(&mut m, &[x], &[Some(y)], d, 1.0);
+            xs.push(x);
+            ys.push(y);
+            t.push(clock);
+
+            if i >= 5 {
+                let now = clock;
+                let keep: Vec<usize> = (0..=i).filter(|&j| now - t[j] < window).collect();
+                let w: Vec<f64> = keep
+                    .iter()
+                    .map(|&j| 0.5_f64.powf((now - t[j]) / halflife))
+                    .collect();
+                let wsum: f64 = w.iter().sum();
+                let mx: f64 = keep.iter().zip(&w).map(|(&j, wi)| wi * xs[j]).sum::<f64>() / wsum;
+                let my: f64 = keep.iter().zip(&w).map(|(&j, wi)| wi * ys[j]).sum::<f64>() / wsum;
+                let vx: f64 = keep
+                    .iter()
+                    .zip(&w)
+                    .map(|(&j, wi)| wi * (xs[j] - mx) * (xs[j] - mx))
+                    .sum::<f64>()
+                    / wsum;
+                let cov: f64 = keep
+                    .iter()
+                    .zip(&w)
+                    .map(|(&j, wi)| wi * (xs[j] - mx) * (ys[j] - my))
+                    .sum::<f64>()
+                    / wsum;
+                let got = m.pair(0, 0);
+                let tol = |a: f64, b: f64| (a - b).abs() < 1e-8 * b.abs().max(1.0);
+                assert!(
+                    tol(got.n_eff, wsum),
+                    "row {i} n_eff: {} vs {wsum}",
+                    got.n_eff
+                );
+                assert!(
+                    tol(got.mean_x, mx),
+                    "row {i} mean_x: {} vs {mx}",
+                    got.mean_x
+                );
+                assert!(
+                    tol(got.mean_y, my),
+                    "row {i} mean_y: {} vs {my}",
+                    got.mean_y
+                );
+                assert!(tol(got.var_x, vx), "row {i} var_x: {} vs {vx}", got.var_x);
+                assert!(tol(got.cov, cov), "row {i} cov: {} vs {cov}", got.cov);
+            }
+        }
+    }
+
+    /// A window no stream reaches leaves every pair exactly as it was.
+    #[test]
+    fn a_marginal_window_no_stream_reaches_changes_nothing() {
+        let mk = |window: Option<f64>| {
+            let mut c = cfg(2, 1);
+            c.window = window;
+            Marginal::new(c).unwrap()
+        };
+        let (mut plain, mut windowed) = (mk(None), mk(Some(1e9)));
+        let mut seed = 4u64;
+        for i in 0..60 {
+            let x = [lcg(&mut seed), lcg(&mut seed)];
+            let y = x[0] - x[1];
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            crate::OnlineModel::step(&mut plain, &x, &[Some(y)], d, 1.0);
+            crate::OnlineModel::step(&mut windowed, &x, &[Some(y)], d, 1.0);
+        }
+        for j in 0..2 {
+            let (a, b) = (plain.pair(0, j), windowed.pair(0, j));
+            assert_eq!(a.mean_x.to_bits(), b.mean_x.to_bits(), "feature {j} mean");
+            assert_eq!(a.cov.to_bits(), b.cov.to_bits(), "feature {j} cov");
+            assert_eq!(a.n_eff.to_bits(), b.n_eff.to_bits(), "feature {j} n_eff");
         }
     }
 

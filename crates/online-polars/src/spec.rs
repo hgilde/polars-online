@@ -764,7 +764,17 @@ pub enum ModelKind {
     /// weight a target needs before its pairs' `corr`, `beta` and `t` are
     /// reported -- a correlation of two rows is ±1 whatever the data.
     #[serde(rename = "marginal")]
-    Marginal {},
+    Marginal {
+        /// Clock units of history the pairs are computed from, with a
+        /// **hard** cutoff: a row older than this contributes nothing
+        /// (docs/PLAN.md §13). Inside the window the weights are still
+        /// exponential.
+        #[serde(default)]
+        window: Option<f64>,
+        /// Learned rows between the window's snapshots.
+        #[serde(default)]
+        window_every: Option<usize>,
+    },
     /// Dynamic equicorrelation (Engle & Kelly 2012; docs/ENHANCEMENTS.md
     /// E55): one number for the whole correlation matrix, `O(m)` a row where
     /// a full one is `O(m²)`.
@@ -1043,7 +1053,7 @@ impl ModelKind {
             ModelKind::Micro { .. } => "micro",
             ModelKind::EwClass { .. } => "ew_class",
             ModelKind::SeqTest { .. } => "seqtest",
-            ModelKind::Marginal {} => "marginal",
+            ModelKind::Marginal { .. } => "marginal",
             ModelKind::Deco { .. } => "deco",
             ModelKind::Rcov { .. } => "rcov",
             ModelKind::Hmm { .. } => "hmm",
@@ -1084,7 +1094,7 @@ impl ModelKind {
         self.is_unsupervised()
             || matches!(
                 self,
-                ModelKind::EwClass { .. } | ModelKind::SeqTest { .. } | ModelKind::Marginal {}
+                ModelKind::EwClass { .. } | ModelKind::SeqTest { .. } | ModelKind::Marginal { .. }
             )
     }
 
@@ -1482,7 +1492,7 @@ impl Spec {
             // A pair's statistics are over two columns whatever the feature
             // count: two rows give a correlation of ±1, three the first one
             // with any content.
-            ModelKind::Marginal {} => 3.0,
+            ModelKind::Marginal { .. } => 3.0,
             // The standardiser needs a variance per feature before the row
             // can be standardised at all; three rows is where it has one.
             ModelKind::Deco { .. } => 3.0,
@@ -2140,7 +2150,7 @@ impl Spec {
             // Nothing of its own: the shared checks (non-empty features and
             // targets, no column on both sides, a decay, `min_periods` per
             // target, no residual diagnostics) are all it needs.
-            ModelKind::Marginal {} => {}
+            ModelKind::Marginal { .. } => {}
             // Every parameter check is `DecoCfg::validate`'s, so that the
             // CLI, the bank and the plugin all get the same messages; only
             // the block *names* are resolved here, where the feature list is.

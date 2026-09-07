@@ -627,6 +627,8 @@ fn marginal_golden() {
         n_targets: 1,
         decay: Decay::Halflife(20.0),
         min_periods: vec![3.0],
+        window: None,
+        window_every: None,
     })
     .unwrap();
     check("marginal", &marginal_signature(&mut m), GOLDEN_MARGINAL);

@@ -1301,7 +1301,7 @@ fn closed_frame(specs: &[Spec], rows: &[ClosedRow]) -> PolarsResult<DataFrame> {
         )
     });
     let has_pca = any(|s| matches!(s.model, ModelKind::EwCov { pca: Some(_), .. }));
-    let has_pairs = any(|s| matches!(s.model, ModelKind::Marginal {}));
+    let has_pairs = any(|s| matches!(s.model, ModelKind::Marginal { .. }));
     let has_rcov = any(|s| matches!(s.model, ModelKind::Rcov { .. }));
     let opt = |v: f64| v.is_finite().then_some(v);
 
@@ -1932,7 +1932,7 @@ impl Bank {
     pub fn marginal(&self, spec: usize, group: Option<&str>) -> Result<DataFrame, String> {
         let keys = self.sorted_keys(spec, group)?;
         let (s, states) = (&self.specs[spec], &self.states[spec]);
-        if !matches!(s.model, ModelKind::Marginal {}) {
+        if !matches!(s.model, ModelKind::Marginal { .. }) {
             return Err(format!(
                 "spec {:?} has model type {:?}, not \"marginal\"; its pairs are not kept (an \
                  ew_cov's Gram is read with gram())",
@@ -2941,7 +2941,7 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
         crate::ModelKind::EwCov { .. }
             | crate::ModelKind::Micro { .. }
             | crate::ModelKind::SeqTest { .. }
-            | crate::ModelKind::Marginal {}
+            | crate::ModelKind::Marginal { .. }
             | crate::ModelKind::Rcov { .. }
             | crate::ModelKind::CorrChange { .. }
             | crate::ModelKind::Bocpd { .. }
@@ -3496,7 +3496,7 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
     // are the pairs `Bank::marginal` reads from the state.
     if matches!(
         spec.model,
-        crate::ModelKind::Marginal {} | crate::ModelKind::Rcov { .. }
+        crate::ModelKind::Marginal { .. } | crate::ModelKind::Rcov { .. }
     ) {
         return decays
             .iter()

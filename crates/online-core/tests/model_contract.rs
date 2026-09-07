@@ -691,6 +691,8 @@ fn marginal_cfg() -> MarginalCfg {
         n_targets: 2,
         decay: decay(),
         min_periods: vec![3.0; 2],
+        window: None,
+        window_every: None,
     }
 }
 

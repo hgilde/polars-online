@@ -61,6 +61,12 @@ carries breaking changes.
   the magnitudes: on a stream where `x0` drives the first regime and `x1` the
   second, a 40-unit window takes `x0` to exactly zero where the decayed path
   still carries 0.67 of it.
+- **`window` on `marginal`** (task 63c). The pairwise screen gains the same
+  cutoff, applied at the readout: every moment a pair is built from is
+  truncated, so `corr`, `beta` and `t` describe the window. Two regimes of
+  opposite sign cancel over a long history, so an unwindowed screen can
+  report no relationship where there is a strong one — 0.0006 against −0.99
+  on the same stream.
 
 ### Changed
 

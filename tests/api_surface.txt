@@ -221,6 +221,8 @@
     name
     targets
     features
+    window = None
+    window_every = None
     common
   micro:
     name

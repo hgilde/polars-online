@@ -314,3 +314,39 @@ def test_a_windowed_path_is_chunk_invariant():
 def test_a_lasso_window_no_stream_reaches_is_the_plain_path():
     df = two_regime_features()
     assert lasso_coef(df, 1e12) == lasso_coef(df)
+
+
+# --- and on the pairwise screen ----------------------------------------------
+
+
+def test_a_windowed_screen_sees_the_relationship_the_full_history_cancels():
+    """Two regimes of opposite sign average to nothing, so the unwindowed
+    screen reports no relationship where there is a strong one."""
+    n, flip = 300, 200
+    rng = np.random.default_rng(5)
+    x = rng.standard_normal(n)
+    y = np.where(np.arange(n) < flip, 2.0 * x, -1.0 * x) + rng.standard_normal(n) * 0.1
+    df = pl.DataFrame({"t": np.arange(n).astype(float), "x": x, "y": y})
+
+    def screen(window):
+        spec = po.spec.marginal(
+            "m",
+            targets=["y"],
+            features=["x"],
+            clock="t",
+            # Slow enough that the old regime is still half the weight: that
+            # is what makes the two signs cancel.
+            halflife=60.0,
+            max_dclock=1e12,
+            min_periods=2.0,
+            window=window,
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        return bank.marginal("m")
+
+    windowed = screen(40.0)
+    assert windowed["beta"][0] == pytest.approx(-1.0, abs=0.05)
+    assert windowed["corr"][0] < -0.9
+    # The full history cancels the two regimes to nothing at all.
+    assert abs(screen(None)["corr"][0]) < 0.1
