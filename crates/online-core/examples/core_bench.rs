@@ -23,8 +23,6 @@ fn cfg(k: usize, m: usize, solve_every_rows: u32) -> EwRidgeCfg {
         decay: Decay::Halflife(500.0),
         ridge: vec![1e-6],
         feature_sets: vec![],
-        window: None,
-        window_every: None,
         standardize: false,
         ridge_decay: false,
         coef_prior: None,
@@ -33,6 +31,8 @@ fn cfg(k: usize, m: usize, solve_every_rows: u32) -> EwRidgeCfg {
         min_periods: (k + 1) as f64,
         solve_every: f64::MAX,
         max_rows_between_solves: solve_every_rows,
+        window: None,
+        window_every: None,
     }
 }
 

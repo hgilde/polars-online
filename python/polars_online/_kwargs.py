@@ -120,6 +120,8 @@ class LassoKwargs(ExprKwargs, total=False):
     max_rows_between_solves: int | None
     max_cd_iters: int | None
     cd_tol: float | None
+    window: float | None
+    window_every: int | None
 
 
 class KalmanKwargs(ExprKwargs, total=False):

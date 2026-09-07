@@ -819,8 +819,15 @@ note, not a task.
         scale is a product over the whole stream) and with `session_shrink`
         (a second accumulator under a longer halflife). Acceptance: a direct
         weighted-least-squares solve over the rows inside the window, in Rust
-        and again in Python against numpy. `lasso`, `marginal` and `ew_class`
-        remain.
+        and again in Python against numpy.
+        `lasso` done the same day: it solves from the same Gram, so the view
+        threaded through `standardized()` alone. Its selection error is
+        truncated with it — choosing `lambda` on the whole history while
+        fitting on the window picks a path point for rows the coefficients no
+        longer see — which `-D warnings` caught as an unused binding after the
+        docstring already claimed the behaviour. A window can therefore change
+        the *support*: a feature with no in-window evidence goes to exactly
+        zero. `marginal` and `ew_class` remain.
         *Two things the tests caught*: the compact msgpack encoding writes a
         struct as an **array**, so a `skip_serializing_if` field must be
         **last** or it shifts every field after it — the state round-trip

@@ -102,8 +102,6 @@ fn ewridge_cfg(standardize: bool, ridge: f64) -> EwRidgeCfg {
         decay: Decay::Halflife(20.0),
         ridge: vec![ridge],
         feature_sets: vec![],
-        window: None,
-        window_every: None,
         standardize,
         ridge_decay: false,
         session_shrink: None,
@@ -112,6 +110,8 @@ fn ewridge_cfg(standardize: bool, ridge: f64) -> EwRidgeCfg {
         min_periods: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
+        window: None,
+        window_every: None,
     }
 }
 
@@ -213,6 +213,8 @@ fn lasso_golden() {
         min_periods: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
+        window: None,
+        window_every: None,
         max_cd_iters: 200,
         cd_tol: 1e-12,
     })

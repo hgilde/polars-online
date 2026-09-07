@@ -958,8 +958,6 @@ mod tests {
             decay: Decay::Halflife(f64::INFINITY),
             ridge: vec![1e-8],
             feature_sets: vec![],
-            window: None,
-            window_every: None,
             standardize: false,
             ridge_decay: false,
             coef_prior: None,
@@ -968,6 +966,8 @@ mod tests {
             min_periods: (k + 1) as f64,
             solve_every: 0.0,
             max_rows_between_solves: 1,
+            window: None,
+            window_every: None,
         }
     }
 

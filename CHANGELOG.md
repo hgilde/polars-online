@@ -55,6 +55,12 @@ carries breaking changes.
   `session_shrink`, where the identity does not hold. Verified against a
   direct weighted-least-squares solve over the in-window rows, in Rust and
   again in Python against numpy.
+- **`window` on `lasso`** (task 63c). The same cutoff on the path, and the
+  selection error is truncated with it, so the chosen `lambda` fits the rows
+  the coefficients see. A window can therefore change the *support*, not just
+  the magnitudes: on a stream where `x0` drives the first regime and `x1` the
+  second, a 40-unit window takes `x0` to exactly zero where the decayed path
+  still carries 0.67 of it.
 
 ### Changed
 

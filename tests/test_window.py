@@ -259,3 +259,58 @@ def test_a_windowed_fit_resumes_from_a_saved_bank(tmp_path):
 def test_a_window_is_refused_where_the_identity_does_not_hold(kw, msg):
     with pytest.raises(Exception, match=re.escape(msg)):
         po.ModelBank([ridge_spec(30.0, **kw)]).fit_predict(regime_stream(40))
+
+
+# --- and on a path that selects ----------------------------------------------
+
+
+def lasso_spec(window=None, **kw):
+    d = dict(
+        targets=["y"],
+        features=["x0", "x1"],
+        clock="t",
+        halflife=HALFLIFE,
+        max_dclock=1e12,
+        min_periods=2.0,
+        lasso_path=[0.05],
+        max_rows_between_solves=1,
+    )
+    d.update(kw)
+    return po.spec.lasso("w", window=window, **d)
+
+
+def two_regime_features(n=300, flip=200, seed=2):
+    """`x0` drives the stream until `flip`, `x1` after it."""
+    rng = np.random.default_rng(seed)
+    x0, x1 = rng.standard_normal(n), rng.standard_normal(n)
+    y = np.where(np.arange(n) < flip, 3.0 * x0, 2.5 * x1)
+    return pl.DataFrame({"t": np.arange(n).astype(float), "x0": x0, "x1": x1, "y": y})
+
+
+def lasso_coef(df, window=None, chunks=1):
+    bank = po.ModelBank([lasso_spec(window)])
+    for part in [df] if chunks == 1 else list(df.iter_slices(max(1, len(df) // chunks))):
+        bank.fit_predict(part)
+    return bank.coef("w")["coef"].to_list()
+
+
+def test_a_windowed_path_drops_the_support_the_window_excludes():
+    """The window changes which features are *selected*, not just their size:
+    with no evidence for `x0` inside it, the penalty takes it to exactly
+    zero, where the decayed fit still carries it."""
+    df = two_regime_features()
+    _, x0, x1 = lasso_coef(df, window=40.0)
+    assert x0 == 0.0, "a feature with no in-window evidence should be dropped"
+    assert x1 == pytest.approx(2.5, abs=0.1)
+    _, plain_x0, _ = lasso_coef(df)
+    assert abs(plain_x0) > 0.3, "the plain path should still carry the stale feature"
+
+
+def test_a_windowed_path_is_chunk_invariant():
+    df = two_regime_features()
+    assert lasso_coef(df, 60.0, chunks=1) == lasso_coef(df, 60.0, chunks=25)
+
+
+def test_a_lasso_window_no_stream_reaches_is_the_plain_path():
+    df = two_regime_features()
+    assert lasso_coef(df, 1e12) == lasso_coef(df)

@@ -311,8 +311,6 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     .map(FloatOrList::to_vec)
                     .unwrap_or_else(|| vec![1e-6]),
                 feature_sets: fs,
-                window: *window,
-                window_every: *window_every,
                 standardize: *standardize,
                 ridge_decay: *ridge_decay,
                 session_shrink: *session_shrink,
@@ -321,6 +319,8 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 min_periods: spec.min_periods_or_default(),
                 solve_every: solve_every.unwrap_or_else(|| spec.solve_every_default(decay)),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
+                window: *window,
+                window_every: *window_every,
             };
             Ok(AnyModel::EwRidge(Box::new(EwRidge::new(cfg)?)))
         }
@@ -344,6 +344,8 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             max_rows_between_solves,
             max_cd_iters,
             cd_tol,
+            window,
+            window_every,
         } => {
             let cfg = LassoCfg {
                 n_features: spec.k(),
@@ -356,6 +358,8 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 min_periods: spec.min_periods_or_default(),
                 solve_every: solve_every.unwrap_or_else(|| spec.solve_every_default(decay)),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
+                window: *window,
+                window_every: *window_every,
                 max_cd_iters: max_cd_iters.unwrap_or(100),
                 cd_tol: cd_tol.unwrap_or(1e-10),
             };

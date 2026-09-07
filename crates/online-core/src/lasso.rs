@@ -44,6 +44,20 @@ pub struct LassoCfg {
     pub max_rows_between_solves: u32,
     pub max_cd_iters: u32,
     pub cd_tol: f64,
+    /// Clock units of history the path is fitted from, with a **hard** cutoff:
+    /// a row older than this is not in the Gram at all (docs/PLAN.md §13).
+    /// Inside the window the weights are still exponential. The selection
+    /// error follows the same window, so the chosen `lambda` is chosen on the
+    /// rows the fit uses.
+    ///
+    /// **Last, with `window_every`, and they must stay last**: the compact
+    /// msgpack encoding writes a struct as an array, so a
+    /// `skip_serializing_if` field anywhere else shifts the fields after it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<f64>,
+    /// Learned rows between the window's snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_every: Option<usize>,
 }
 
 impl LassoCfg {
@@ -101,8 +115,37 @@ pub struct Lasso {
     clock_since_solve: f64,
     rows_since_solve: u32,
     pub solve_failures: u64,
+    /// The hard-cutoff window, when the spec asks for one. Last, for the
+    /// reason `LassoCfg::window` gives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    win: Option<Windowed>,
     #[serde(skip)]
     zbuf: Vec<f64>,
+}
+
+/// The accumulators a windowed path is fitted from, truncated to the window.
+struct LassoView {
+    cov: EwCov,
+    wj: Vec<f64>,
+    r: Vec<Vec<f64>>,
+    sel_err: Vec<Vec<f64>>,
+}
+
+/// The window's clock and the snapshots it subtracts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Windowed {
+    clock: f64,
+    snaps: crate::Snapshots<LassoMoments>,
+}
+
+/// Every accumulator the path is read from, before a row and decayed to it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct LassoMoments {
+    cov: crate::Moments,
+    wj: Vec<f64>,
+    r: Vec<Vec<f64>>,
+    sel_w: Vec<f64>,
+    sel_err: Vec<Vec<f64>>,
 }
 
 impl Lasso {
@@ -110,6 +153,13 @@ impl Lasso {
         cfg.validate()?;
         let k_total = cfg.k_total();
         let (m, np) = (cfg.n_targets, cfg.n_lambdas());
+        let win = match cfg.window {
+            Some(w) => Some(Windowed {
+                clock: 0.0,
+                snaps: crate::Snapshots::new(w, cfg.window_every.unwrap_or(1))?,
+            }),
+            None => None,
+        };
         Ok(Self {
             cov: EwCov::new(k_total),
             wj: vec![0.0; m],
@@ -122,6 +172,7 @@ impl Lasso {
             clock_since_solve: 0.0,
             rows_since_solve: 0,
             solve_failures: 0,
+            win,
             zbuf: vec![0.0; k_total],
             cfg,
         })
@@ -174,29 +225,77 @@ impl Lasso {
         self.tm.as_ref()
     }
 
+    /// The accumulated weight the path is fitted from: under a `window`, the
+    /// weight inside it.
     pub fn n_eff(&self) -> f64 {
-        self.cov.n_eff()
+        match self.view() {
+            Some(v) => v.cov.n_eff(),
+            None => self.cov.n_eff(),
+        }
     }
 
     /// Centered/standardized statistics: correlation matrix `c`, per-target
     /// standardized cross-correlation `d`, feature scales `s`, means `mean`.
-    fn standardized(&self) -> (Vec<f64>, Vec<Vec<f64>>, Vec<f64>, Vec<f64>) {
+    /// The accumulators the path is fitted from: the live ones, or -- with a
+    /// `window` -- the same ones with everything older than the window
+    /// subtracted off (docs/PLAN.md §13). The selection error is truncated
+    /// with them, so the `lambda` chosen is the one that fits the window
+    /// rather than the one that fitted a history the window has dropped.
+    fn view(&self) -> Option<LassoView> {
+        let win = self.win.as_ref()?;
+        let (u, old) = win.snaps.boundary()?;
+        if old.cov.w == 0.0 {
+            return None;
+        }
+        let f = self.cfg.decay.factor(win.clock - u);
+        let cov = crate::truncated(&self.cov, &old.cov, f)?;
+        let m = self.cfg.n_targets;
+        let mut r = vec![vec![0.0; self.cfg.k_total()]; m];
+        let mut wj = vec![0.0; m];
+        let mut sel_err = self.sel_err.clone();
+        for j in 0..m {
+            let (w, rj) = crate::truncated_mean(self.wj[j], &self.r[j], old.wj[j], &old.r[j], f)?;
+            wj[j] = w;
+            r[j] = rj;
+            if let Some((_w, e)) = crate::truncated_mean(
+                self.sel_w[j],
+                &self.sel_err[j],
+                old.sel_w[j],
+                &old.sel_err[j],
+                f,
+            ) {
+                sel_err[j] = e.into_iter().map(|v| v.max(0.0)).collect();
+            }
+        }
+        Some(LassoView {
+            cov,
+            wj,
+            r,
+            sel_err,
+        })
+    }
+
+    fn standardized(
+        &self,
+        acc: &EwCov,
+        r: &[Vec<f64>],
+    ) -> (Vec<f64>, Vec<Vec<f64>>, Vec<f64>, Vec<f64>) {
         let k = self.cfg.n_features;
         let off = usize::from(self.cfg.add_intercept);
-        let mean: Vec<f64> = (0..k).map(|i| self.cov.mean(i + off)).collect();
+        let mean: Vec<f64> = (0..k).map(|i| acc.mean(i + off)).collect();
         // Centered co-moments come straight from the accumulator; deriving them
         // as raw - mean*mean would reintroduce the cancellation the Welford
         // representation exists to avoid.
         let mut cov = vec![0.0; k * k];
         for i in 0..k {
             for j in 0..k {
-                cov[i * k + j] = self.cov.cov(i + off, j + off);
+                cov[i * k + j] = acc.cov(i + off, j + off);
             }
         }
         let s: Vec<f64> = (0..k)
             .map(|i| {
                 let v = cov[i * k + i];
-                if crate::variance_is_usable(v, self.cov.raw(i + off, i + off)) {
+                if crate::variance_is_usable(v, acc.raw(i + off, i + off)) {
                     v.sqrt()
                 } else {
                     0.0
@@ -214,17 +313,13 @@ impl Lasso {
             }
         }
         let mut d = Vec::with_capacity(self.cfg.n_targets);
-        for j in 0..self.cfg.n_targets {
-            let ybar = if self.cfg.add_intercept {
-                self.r[j][0]
-            } else {
-                0.0
-            };
+        for rj in r.iter().take(self.cfg.n_targets) {
+            let ybar = if self.cfg.add_intercept { rj[0] } else { 0.0 };
             d.push(
                 (0..k)
                     .map(|i| {
                         if s[i] > 0.0 {
-                            (self.r[j][i + off] - mean[i] * ybar) / s[i]
+                            (rj[i + off] - mean[i] * ybar) / s[i]
                         } else {
                             0.0
                         }
@@ -238,12 +333,27 @@ impl Lasso {
     fn solve(&mut self) {
         let k = self.cfg.n_features;
         let k_total = self.cfg.k_total();
-        let (c, d, s, mean) = self.standardized();
+        // With a `window`, the path is fitted from the truncated
+        // accumulators: no row older than the window is in the Gram, the
+        // right-hand side, or the selection error.
+        let view = self.view();
+        // The path is fitted from the Gram and the cross-moments; the
+        // selection error is truncated too, but it is read where the path
+        // point is chosen, in `step`.
+        let (cov, r) = match view.as_ref() {
+            Some(v) => (&v.cov, &v.r),
+            None => (&self.cov, &self.r),
+        };
+        let wj = match view.as_ref() {
+            Some(v) => &v.wj,
+            None => &self.wj,
+        };
+        let (c, d, s, mean) = self.standardized(cov, r);
         let np = self.cfg.n_lambdas();
         let mut out = vec![vec![vec![0.0; k_total]; np]; self.cfg.n_targets];
 
         for j in 0..self.cfg.n_targets {
-            if self.wj[j] <= 0.0 {
+            if wj[j] <= 0.0 {
                 continue;
             }
             // Warm start from the previous solve's largest-penalty solution.
@@ -294,7 +404,7 @@ impl Lasso {
                     coefs[i + off] = if s[i] > 0.0 { b[i] / s[i] } else { 0.0 };
                 }
                 if self.cfg.add_intercept {
-                    let mut b0 = self.r[j][0];
+                    let mut b0 = r[j][0];
                     for i in 0..k {
                         b0 -= mean[i] * coefs[i + off];
                     }
@@ -346,9 +456,17 @@ impl OnlineModel for Lasso {
                         self.sel_err[j][li] = a * self.sel_err[j][li] + b * e * e;
                     }
                     self.sel_w[j] = w_new;
+                    // Under a `window`, the path point is chosen on the error
+                    // *inside* it. Selecting on the whole history while
+                    // fitting on the window would pick a lambda for rows the
+                    // coefficients no longer see.
+                    let err = match self.view() {
+                        Some(v) => v.sel_err[j].clone(),
+                        None => self.sel_err[j].clone(),
+                    };
                     let mut best = 0usize;
                     for li in 1..np {
-                        if self.sel_err[j][li] < self.sel_err[j][best] {
+                        if err[li] < err[best] {
                             best = li;
                         }
                     }
@@ -362,6 +480,21 @@ impl OnlineModel for Lasso {
         }
 
         // ---- update accumulators ----
+        // The snapshot is every accumulator before this row, decayed to this
+        // row's clock, so subtracting it later retains this row and after.
+        if let Some(win) = self.win.as_mut() {
+            let t = win.clock + d_clock;
+            let snap = LassoMoments {
+                cov: crate::Moments::of(&self.cov, lam_decay),
+                wj: self.wj.iter().map(|w| w * lam_decay).collect(),
+                r: self.r.clone(),
+                sel_w: self.sel_w.iter().map(|w| w * lam_decay).collect(),
+                sel_err: self.sel_err.clone(),
+            };
+            win.snaps.offer(t, || snap);
+            win.clock = t;
+            win.snaps.trim(t);
+        }
         self.cov.update(&self.zbuf, lam_decay, weight);
         let Self {
             wj: wjs, r: rs, tm, ..
@@ -483,6 +616,8 @@ mod tests {
             min_periods: (k + 1) as f64,
             solve_every: 0.0,
             max_rows_between_solves: 1,
+            window: None,
+            window_every: None,
             max_cd_iters: 200,
             cd_tol: 1e-12,
         }

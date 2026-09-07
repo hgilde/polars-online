@@ -545,8 +545,6 @@ mod tests {
             decay: Decay::Halflife(f64::INFINITY),
             ridge: vec![1e-8],
             feature_sets: vec![],
-            window: None,
-            window_every: None,
             standardize: false,
             ridge_decay: false,
             session_shrink: None,
@@ -555,6 +553,8 @@ mod tests {
             min_periods: 2.0,
             solve_every: 0.0,
             max_rows_between_solves: 1,
+            window: None,
+            window_every: None,
         })
         .unwrap();
         let mut s = 77u64;

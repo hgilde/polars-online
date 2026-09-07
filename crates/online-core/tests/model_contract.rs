@@ -229,8 +229,6 @@ fn ew_ridge_cfg() -> EwRidgeCfg {
         decay: decay(),
         ridge: vec![1e-6, 0.1],
         feature_sets: vec![],
-        window: None,
-        window_every: None,
         standardize: false,
         ridge_decay: false,
         session_shrink: None,
@@ -239,6 +237,8 @@ fn ew_ridge_cfg() -> EwRidgeCfg {
         min_periods: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
+        window: None,
+        window_every: None,
     }
 }
 
@@ -280,6 +280,8 @@ fn lasso_cfg() -> LassoCfg {
         min_periods: 3.0,
         solve_every: 0.0,
         max_rows_between_solves: 1,
+        window: None,
+        window_every: None,
         max_cd_iters: 100,
         cd_tol: 1e-10,
     }

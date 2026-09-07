@@ -626,6 +626,8 @@ def lasso(
     select_halflife: float | None = None,
     solve_every: float | None = None,
     max_rows_between_solves: int | None = None,
+    window: float | None = None,
+    window_every: int | None = None,
     max_cd_iters: int | None = None,
     cd_tol: float | None = None,
     **common: Unpack[CommonKwargs],
@@ -634,6 +636,15 @@ def lasso(
 
     Math: coordinate descent on the standardized centered statistics held in the
     same accumulators as ew_ridge. For each penalty ``l`` in the (decreasing)
+    ``window`` puts a **hard cutoff** on the history the path is fitted from,
+    in clock units: a row older than it is not in the Gram (docs/PLAN.md §13).
+    The selection error is truncated with it, so the ``lambda`` chosen is the
+    one that fits the window rather than one chosen on rows the fit has
+    dropped -- which means a window can change the *support*, not just the
+    coefficients: a feature with no evidence inside it goes to exactly zero.
+    ``window_every`` trades boundary tightness for memory, and can only
+    shorten the effective window.
+
     ``lasso_path``, with ``C`` the feature correlation matrix and ``c`` the
     feature-target correlations::
 
@@ -665,6 +676,8 @@ def lasso(
         "max_rows_between_solves": max_rows_between_solves,
         "max_cd_iters": max_cd_iters,
         "cd_tol": cd_tol,
+        "window": window,
+        "window_every": window_every,
     }
     return _common(name, model, targets=targets, features=features, **common)
 

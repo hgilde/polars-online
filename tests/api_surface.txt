@@ -212,6 +212,8 @@
     select_halflife = None
     solve_every = None
     max_rows_between_solves = None
+    window = None
+    window_every = None
     max_cd_iters = None
     cd_tol = None
     common

@@ -412,6 +412,14 @@ pub enum ModelKind {
         max_cd_iters: Option<u32>,
         #[serde(default)]
         cd_tol: Option<f64>,
+        /// Clock units of history the path is fitted from, with a **hard**
+        /// cutoff (docs/PLAN.md §13). The selection error follows the same
+        /// window, so the chosen `lambda` fits the rows the model reports on.
+        #[serde(default)]
+        window: Option<f64>,
+        /// Learned rows between the window's snapshots.
+        #[serde(default)]
+        window_every: Option<usize>,
     },
     Kalman {
         /// Per-factor coefficient halflife (scalar or one per slot, intercept
