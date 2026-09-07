@@ -457,6 +457,16 @@ Polars or numpy.
 |---|---|---|---|
 | E65 | **P1** | **Document the struct each model writes.** Every spec adds one struct column, and *nothing* says what is in it per model. The README's "Output field names" gives the grammar (`pred_<target>`, `coef_<target>_<feature>`, the suffix rules) and `po.spec.output_fields(spec)` answers at runtime, but a reader choosing between `hmm` and `bocpd` cannot see, without running them, that one reports `state`, `p_state<j>`, `loglik` and the other `run_mode`, `p_change`, `run_mean`. The prose is inconsistent about it too: `corrchange`'s README section lists its outputs, `kmeans`'s does not. **What to add**: a field table in each model's README section and in each builder's docstring — name, dtype, when it is null, and which switch turns it on — plus one table in the reference collecting them. **What pins it**: a test that builds a canonical spec per model, calls `output_fields`, and requires the documented set to equal the realized set, so a new field cannot ship undocumented and a removed one cannot linger in the docs. That is the same shape as `test_the_readme_documents_every_model`, one level deeper. | A reader of the docs, 2026-09-06: the outputs are the whole product of a model and are the one thing the documentation never states. |
 
+## 12. `marginal` at width: serial dependence and a nonlinear relevance (2026-09-07)
+
+Both are specified in full in `docs/MARGINAL-LAGS-AND-BINS.md` (API,
+outputs, state, invariance, tests); the rows here are the index.
+
+| # | P | Enhancement | Where it comes from |
+|---|---|---|---|
+| E66 | **P1** | **`marginal(lags=[...])` and `n_serial`.** Lagged pair moments (feature and target autocorrelations, both lead/lag cross-correlations) using `ew_cov`'s lag ring, and from them the count that makes `Var(corr) = 1/n` true under serial dependence — Bartlett's `n_kish / [1 + 2 Σ_ℓ ρ_x(ℓ)ρ_y(ℓ)]`, with a geometric tail for exponentially weighted series — as `n_serial` and `t_serial` beside today's `t`. On smooth inputs sampled densely `t` on `n_kish` overstates evidence by an order of magnitude; nothing in the contemporaneous moments can see it. By-product: `lagcorr_xy` vs `lagcorr_yx` shows whether a feature leads or follows its target. `O(p·T·L)` per row, ring of `max(lags)` rows per group, schema bump. | Any wide screen against a smooth target; the same fact `ew_cov(lags=)` (E56) already exposes for narrow inputs. |
+| E67 | **P2** | **`marginal(bins=...)` and `gain_split`.** Per pair, the target's `(Σw, Σwy, Σwy²)` inside fixed bins of the feature — a histogram of target moments — from which the best single-split variance reduction (a regression stump's `R²`, comparable to `corr²`), the split point and the one-dimensional response curve are read on demand. Edges fixed in advance or frozen from P² quantiles after a warm-up (chunk-invariant either way); decay by an undecayed-sums-plus-scale-factor trick so the per-row cost stays `O(1)` per pair. `3·bins·p·T` state. The one nonlinear relevance number available for all `p` columns in one pass without rows. | Wide screens where a threshold or V-shaped relation has `corr ≈ 0`. |
+
 ## What was verified against river, and what was not
 
 Six correspondences are checked numerically in `tests/test_river.py` (T-R1–T-R6):
