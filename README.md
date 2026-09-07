@@ -1224,6 +1224,44 @@ two columns controlling for all the others, read off `(C + s·prior·I)⁻¹`
 row, so an `ew_cov` output can be a feature for that same row without leaking
 it.
 
+**`window` — a hard cutoff, not a softer decay.** A halflife of `h` never
+forgets: three halflives back still carries 12.5% of the weight. `window=w`
+makes that exactly zero — a row older than `w` clock units contributes
+nothing:
+
+```
+weight(age) = 0.5 ** (age / halflife)   if age <= window
+            = 0                          otherwise
+```
+
+Note the first line: *inside* the window the weights are still exponential,
+so this is not a rolling flat mean and the newest row still dominates. It is
+exact, not approximate, because an EW sum contains its own past — everything
+at or before a time `u` is `λ^(t−u)` times the accumulator as it stood then,
+so subtracting that leaves precisely the rest. The model keeps a ring of
+snapshots to do it, which is the one place here where memory grows with a
+*window* rather than with the state: about 3 MB per group for a 1,000-row
+window over 20 columns, divided by `window_every` if you snapshot less often.
+
+Four things worth knowing before you read the numbers. The guarantee is
+**one-sided**: the boundary is the oldest snapshot still inside the window,
+so a coarse `window_every` discards a little more than asked, never less.
+The clock is the **decayed** one, after `max_dclock` and any `session_gap`.
+The edge is a **discontinuity** — a row ageing out drops its whole weight at
+once, so the series has small steps an EWMA does not. And it is a
+**subtraction**, so precision falls with the fraction discarded: negligible
+at `window = 3h`, worse as the window shortens toward the halflife.
+`n_eff` becomes the weight inside the window, so `min_periods` now gates on
+something that stops growing, and a clock gap longer than `window` empties
+it and reports nulls rather than stale numbers.
+
+If your data fits in memory and you only want moments, polars already does
+this: `df.rolling("t", period="3h").agg(...)` with an exponential weight is
+the same number to 1e-14. The reason to reach for the spec is a stream, a
+saved state, or the cost — that recomputes each window at O(n·W) where this
+is O(n), which at 200k rows and a 4,680-row window measured 15.8 s against
+14 ms.
+
 Three more outputs come off the same state. `"mahal"` in `stats` adds
 `mahal`, the Mahalanobis distance of the row from the running mean,
 `√(δᵀ (C + s·prior·I)⁻¹ δ)` with `δ = x − m` — how far the row is from what

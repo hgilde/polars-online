@@ -796,7 +796,7 @@ note, not a task.
         window. No compatibility shim and no dual spelling: the spec keys are
         renamed, the frozen state fixtures are regenerated, and a state saved
         by 0.2.0 does not load.
-  - [ ] 63b. **The mechanism, and `ew_cov`.** `Snapshots<S>` in
+  - [x] 63b. **The mechanism, and `ew_cov`.** `Snapshots<S>` in
         `online-core`, the truncated view, `window` and `window_every` on the
         `ew_cov` spec, refused by name everywhere else. Acceptance: the
         oracle in §13.4.
@@ -4132,8 +4132,15 @@ key, refused elsewhere by name, as `seqtest` already refuses `weight`.
 - **Snapshots are keyed by clock and cadenced by the stream, not by the
   chunk.** A cadence counted per chunk would make the boundary depend on how
   the data arrived, and chunk invariance is not negotiable (hard rule 3).
-- **The ring is state.** It serialises with the model, so `SCHEMA_VERSION`
-  rises and a bank saved mid-stream resumes with its window intact.
+- **The ring is state**, so a bank saved mid-stream resumes with its window
+  intact, and `SCHEMA_VERSION` rises to 6. The model's own fields skip when
+  absent, so an unwindowed accumulator writes the bytes it always did — but
+  spec fields serialize their nulls like every other spec key, so every
+  spec's bytes move, which is the same reason 4 and 5 bumped. (Written first
+  as "no bump", on the model fields alone; the schema-5 fixture's
+  byte-identity test is what caught the spec half.) The bump is worth having
+  on its own terms: an older build loading a windowed file would ignore the
+  ring and report untruncated statistics.
 - **A zero-weight window is a null, not a zero.** When the window holds no
   rows — a clock gap longer than `window` — the denominator is `0/0`, which
   hard rule 9 says to guard rather than propagate.

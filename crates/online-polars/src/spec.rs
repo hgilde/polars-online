@@ -494,6 +494,19 @@ pub enum ModelKind {
         /// by adding `"lagcorr"` to `stats`.
         #[serde(default)]
         lags: Option<Vec<usize>>,
+        /// Clock units of history the statistics see, with a **hard** cutoff:
+        /// a row older than this contributes nothing, where the exponential
+        /// weight alone would leave `0.5^(age/halflife)` of it. Inside the
+        /// window the weights are still exponential -- it is not a flat
+        /// window (docs/PLAN.md §13).
+        #[serde(default)]
+        window: Option<f64>,
+        /// Learned rows between the snapshots the window is computed from;
+        /// `1` (the default) is the tightest boundary, larger divides the
+        /// memory by the same factor and shortens the effective window by at
+        /// most one snapshot's spacing -- never lengthens it.
+        #[serde(default)]
+        window_every: Option<usize>,
     },
     /// Stochastic gradient descent with pluggable losses (ENHANCEMENTS E16).
     /// O(k) per row, no solves, and the only model here that takes count
@@ -1852,7 +1865,23 @@ impl Spec {
                 pca,
                 pca_every,
                 lags,
+                window,
+                window_every,
             } => {
+                if let Some(w) = window {
+                    if !w.is_finite() || *w <= 0.0 {
+                        return Err(format!(
+                            "spec {:?}: window must be finite and > 0 (got {w}); it is clock \
+                             units of history to keep",
+                            self.name
+                        ));
+                    }
+                } else if window_every.is_some() {
+                    return Err(format!("spec {:?}: window_every needs `window`", self.name));
+                }
+                if window_every.is_some_and(|e| e == 0) {
+                    return Err(format!("spec {:?}: window_every must be >= 1", self.name));
+                }
                 const OK: [&str; 8] = [
                     "mean",
                     "var",

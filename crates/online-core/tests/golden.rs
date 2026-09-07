@@ -592,6 +592,8 @@ fn ew_cov_golden() {
         pca: 0,
         pca_every: 0,
         lags: Vec::new(),
+        window: None,
+        window_every: None,
     })
     .unwrap();
     check("ew_cov", &signature(&mut m, 4), GOLDEN_EW_COV);

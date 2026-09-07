@@ -856,6 +856,8 @@ def ew_cov(
     pca: int | None = None,
     pca_every: int | None = None,
     lags: list[int] | None = None,
+    window: float | None = None,
+    window_every: int | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Exponentially weighted moments of the feature columns (docs/PLAN.md 4.7).
@@ -880,6 +882,52 @@ def ew_cov(
     ``stats`` selects which to emit, from ``mean``, ``var``, ``std``, ``cov``,
     ``corr``, ``partial_corr``, ``mahal`` and ``lagcorr`` (default: mean, std,
     corr).
+    ``window`` puts a **hard cutoff** on the history, in clock units: a row
+    older than ``window`` contributes nothing at all, where the exponential
+    weight alone would still leave ``0.5 ** (age / halflife)`` of it -- 12.5%
+    at three halflives. Inside the window the weights are *still
+    exponential*, so this is not a rolling flat mean: the newest row
+    dominates exactly as it does without a window.
+
+    It is exact rather than approximate, because an exponentially weighted
+    sum contains its own past: everything at or before a time ``u`` is
+    ``lam ** (t - u)`` times the accumulator as it stood at ``u``, so
+    subtracting that leaves precisely the rest. What the model keeps is a
+    ring of snapshots, one per learned row -- the one place in this library
+    where memory grows with a *window* rather than with the state, at
+    ``k**2 + k + 2`` doubles each, so a 1,000-row window over 20 columns is
+    about 3 MB per group. ``window_every`` snapshots every ``n`` rows instead
+    and divides that by ``n``.
+
+    Four things to know before reading the numbers:
+
+    - **The guarantee is one-sided.** The boundary is the oldest snapshot
+      still inside the window, so what is dropped is always a superset of
+      what the window excludes. With ``window_every`` above 1 the effective
+      window is *shorter* than asked, by at most one snapshot's spacing --
+      never longer.
+    - **The clock is the decayed one.** ``window`` is measured on the clock
+      the decay uses, after ``max_dclock`` caps a gap and after a
+      ``session_gap`` is applied, not on the raw column.
+    - **The edge is a discontinuity.** A row ageing out drops its whole
+      weight at once, so a windowed series has small steps an EWMA does not.
+    - **It is a subtraction**, so precision falls with the fraction
+      discarded: negligible at ``window = 3 * halflife`` (an eighth of the
+      mass), worse as the window shortens toward the halflife.
+
+    ``n_eff`` becomes the weight *inside* the window, which stops growing
+    once the window fills, so ``min_periods`` gates on a quantity with a
+    ceiling. A clock gap longer than ``window`` empties it and the row
+    reports nulls rather than stale numbers. ``window`` does not combine with
+    ``lags`` or ``mahal_quantiles``, which accumulate over a history it does
+    not truncate; both are refused by name.
+
+    For moments on data that fits in memory, polars already does this --
+    ``df.rolling(clock, period=...).agg(...)`` with an exponential weight
+    agrees to 1e-14. The reason to reach for the spec is a stream, a saved
+    state, or the cost: polars recomputes each window at ``O(n*W)`` where
+    this is ``O(n)``.
+
     ``stats=[]`` emits nothing but ``n_eff`` and accumulates all the same
     (docs/ENHANCEMENTS.md E43): the spec's value is then its state -- the
     Gram read back with :meth:`ModelBank.gram`, the moments with
@@ -951,6 +999,8 @@ def ew_cov(
         "pca": pca,
         "pca_every": pca_every,
         "lags": lags,
+        "window": window,
+        "window_every": window_every,
     }
     if "targets" in common:
         msg = (

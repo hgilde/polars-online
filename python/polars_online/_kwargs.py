@@ -163,6 +163,8 @@ class EwCovKwargs(ExprKwargs, total=False):
     pca: int | None
     pca_every: int | None
     lags: list[int] | None
+    window: float | None
+    window_every: int | None
 
 
 class SgdKwargs(ExprKwargs, total=False):

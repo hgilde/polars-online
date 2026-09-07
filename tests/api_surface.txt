@@ -18,7 +18,7 @@
   spec
   thread_pool_size
   unnest
-  schema_version = 5
+  schema_version = 6
 
 [common parameters]  # every constructor accepts these via **common
   targets
@@ -114,6 +114,8 @@
     pca = None
     pca_every = None
     lags = None
+    window = None
+    window_every = None
     common
   ewridge:
     name

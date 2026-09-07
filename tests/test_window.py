@@ -1,0 +1,164 @@
+"""`window`: an exponentially weighted accumulator with a hard cutoff.
+
+The promise is narrow and testable: with `window = w`, a row older than `w`
+clock units contributes *nothing*, where the exponential weight alone would
+leave `0.5^(age/halflife)` of it. Inside the window the weights are still
+exponential — this is not a flat window, and the tests say so by comparing
+against a weighted sum rather than a plain mean.
+
+The oracle is polars, which computes the same thing a different way: one
+`rolling().agg()` per row, `O(n·W)` where the accumulator is `O(n)`.
+"""
+
+from __future__ import annotations
+
+import re
+
+import numpy as np
+import polars as pl
+import pytest
+
+import polars_online as po
+
+HALFLIFE = 40.0
+
+
+def stream(n=240, seed=0, step=None):
+    rng = np.random.default_rng(seed)
+    t = np.cumsum(rng.integers(1, 7, n)).astype(np.int64) if step is None else np.arange(n) * step
+    x = rng.standard_normal(n) * 2.0 + 5.0
+    return pl.DataFrame({"t": t.astype(float), "x": x})
+
+
+def spec(window=None, **kw):
+    d = dict(
+        features=["x"],
+        clock="t",
+        halflife=HALFLIFE,
+        max_dclock=1e12,
+        min_periods=0.0,
+        stats=["mean"],
+    )
+    d.update(kw)
+    return po.spec.ew_cov("w", window=window, **d)
+
+
+def run(df, window=None, chunks=1, **kw):
+    bank = po.ModelBank([spec(window, **kw)])
+    parts = [df] if chunks == 1 else [d for d in df.iter_slices(max(1, len(df) // chunks))]
+    return pl.concat([bank.fit_predict(p) for p in parts]).unnest("w")
+
+
+def oracle(df, window):
+    """The same statistic in polars: exponential weights over the rows inside
+    the window, read at the previous row's clock, which is where every
+    statistic in this library is referenced."""
+    lam = 0.5 ** (1 / HALFLIFE)
+    t, x = df["t"].to_numpy(), df["x"].to_numpy()
+    out = []
+    for i in range(len(t)):
+        if i == 0:
+            out.append(None)
+            continue
+        ref = t[i - 1]
+        keep = (t[:i] >= ref - window) if window is not None else np.ones(i, bool)
+        if not keep.any():
+            out.append(None)
+            continue
+        w = lam ** (ref - t[:i][keep])
+        out.append(float((w * x[:i][keep]).sum() / w.sum()))
+    return out
+
+
+def test_the_window_is_the_weighted_mean_of_what_it_covers():
+    df = stream()
+    for window in (20.0, 90.0, 400.0):
+        got = run(df, window)["mean_x"].to_list()
+        want = oracle(df, window)
+        # `ew_cov` withholds a mean until two effective rows, so the first
+        # rows are null by design; everything after must be the definition.
+        nulls = 0
+        for i, (a, b) in enumerate(zip(got, want, strict=True)):
+            if a is None or b is None:
+                nulls += 1
+                continue
+            assert a == pytest.approx(b, abs=1e-9), f"window {window} row {i}"
+        assert nulls <= 3, f"window {window}: {nulls} rows reported nothing"
+
+
+def test_a_row_older_than_the_window_cannot_move_the_answer():
+    """The guarantee, stated as an experiment: replace everything outside the
+    window with a number that would swamp any average it still touched."""
+    df = stream(step=1.0)
+    window = 60.0
+    clean = run(df, window)
+    poisoned = df.with_columns(
+        x=pl.when(pl.col("t") < df["t"][-1] - 2 * window).then(1e6).otherwise(pl.col("x"))
+    )
+    dirty = run(poisoned, window)
+    assert clean["mean_x"][-1] == pytest.approx(dirty["mean_x"][-1], abs=1e-8)
+    # ... and the plain accumulator is wrecked by the same data, which is what
+    # makes the guarantee worth having.
+    assert run(poisoned)["mean_x"][-1] > 1e4
+
+
+def test_one_chunk_and_many_agree():
+    df = stream()
+    one = run(df, 90.0, chunks=1)
+    many = run(df, 90.0, chunks=40)
+    assert one.equals(many)
+
+
+def test_a_window_no_stream_reaches_is_the_plain_accumulator():
+    df = stream()
+    assert run(df, 1e12).equals(run(df, None))
+
+
+def test_a_saved_bank_resumes_mid_window(tmp_path):
+    df = stream()
+    half = len(df) // 2
+    whole = run(df, 90.0)
+
+    bank = po.ModelBank([spec(90.0)])
+    bank.fit_predict(df[:half])
+    path = tmp_path / "w.state"
+    bank.save(path)
+    resumed = po.ModelBank.load(path)
+    second = resumed.fit_predict(df[half:]).unnest("w")
+    assert second.equals(whole[half:])
+
+
+def test_the_window_shrinks_n_eff_to_what_it_covers():
+    df = stream(step=1.0)
+    lam = 0.5 ** (1 / HALFLIFE)
+    windowed = run(df, 60.0)["n_eff"][-1]
+    plain = run(df)["n_eff"][-1]
+    # A geometric sum over the window, against one over the whole stream.
+    assert windowed == pytest.approx((1 - lam**60) / (1 - lam), rel=0.02)
+    assert plain > windowed * 1.4
+
+
+@pytest.mark.parametrize(
+    ("kw", "msg"),
+    [
+        ({"window": 0.0}, "window must be finite and > 0"),
+        ({"window": -1.0}, "window must be finite and > 0"),
+        ({"window": float("inf")}, "window must be finite"),
+        ({"window_every": 5}, "window_every needs"),
+        ({"window": 10.0, "window_every": 0}, "window_every must be >= 1"),
+        ({"window": 10.0, "lags": [1]}, "window and lags do not combine"),
+        ({"window": 10.0, "mahal_quantiles": [0.99]}, "mahal_quantiles"),
+    ],
+)
+def test_a_bad_window_is_refused_by_name(kw, msg):
+    with pytest.raises(Exception, match=re.escape(msg)):
+        po.ModelBank([spec(**kw)]).fit_predict(stream(20))
+
+
+@pytest.mark.parametrize("model", ["ewridge", "rls", "kalman", "sgd", "holt", "hmm", "bocpd"])
+def test_only_the_models_that_can_honour_it_accept_it(model):
+    """The identity holds where the state is a sum of per-row contributions.
+    Everywhere else the keyword is refused, naming the model, rather than
+    accepted and quietly ignored."""
+    with pytest.raises(TypeError, match=f"{model}.*unexpected keyword argument 'window'"):
+        getattr(po.spec, model)("m", targets=["y"], features=["x"], window=10.0)

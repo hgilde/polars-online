@@ -522,6 +522,8 @@ mod tests {
             pca: 0,
             pca_every: 1,
             lags: Vec::new(),
+            window: None,
+            window_every: None,
         })
         .unwrap();
         let mut s = 99u64;
@@ -695,6 +697,8 @@ mod tests {
                 pca: 0,
                 pca_every: 1,
                 lags: Vec::new(),
+                window: None,
+                window_every: None,
             })
             .unwrap()
             .state(),

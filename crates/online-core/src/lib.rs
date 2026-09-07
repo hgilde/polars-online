@@ -81,6 +81,7 @@ mod seqtest;
 mod sgd;
 mod solve;
 mod stats;
+mod window;
 
 pub use bocpd::{Bocpd, BocpdCfg, BocpdEmission};
 pub use clock::{ClockAdvance, ClockCfg, ClockState, Decay, OnClockReset, SessionGap};
@@ -122,6 +123,7 @@ pub use seqtest::{SLOTS as SEQTEST_SLOTS, SeqTest, SeqTestCfg};
 pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::{SpdFactor, quad_forms_logdet, solve_spd};
 pub use stats::{EwAutoCorr, P2Quantile, SlotMetrics};
+pub use window::Snapshots;
 
 /// Version of the serialized model-state layout.
 ///
@@ -157,7 +159,16 @@ pub use stats::{EwAutoCorr, P2Quantile, SlotMetrics};
 ///   The rest of the E54-E64 batch rides on 5 without a further bump:
 ///   appended `ModelState` variants, `Option` fields that skip when absent,
 ///   and new `BankFile` map keys with defaults are all additive.
-pub const SCHEMA_VERSION: u32 = 5;
+/// - 6: the `ew_cov` spec gained `window` and `window_every` (docs/PLAN.md
+///   §13), and a windowed accumulator carries the ring of snapshots the
+///   cutoff is computed from. The model's own fields skip when absent, so an
+///   unwindowed *model* is unchanged, but spec fields serialize their nulls
+///   like every other spec key, so every spec's bytes moved -- which is the
+///   same reason 4 and 5 bumped. A schema-5 file loads, continues to the bit
+///   and re-saves as 6. What an older build would do with a *windowed* file
+///   is why this is a bump rather than a silent addition: it would ignore the
+///   ring and report untruncated statistics.
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// Oldest state layout this build still loads.
 pub const MIN_SCHEMA_VERSION: u32 = 1;

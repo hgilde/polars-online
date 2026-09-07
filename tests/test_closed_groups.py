@@ -580,6 +580,9 @@ def test_from_row_refuses_a_row_with_no_accumulators():
         po.gram.from_row(row)
 
 
-def test_schema_version_is_five():
-    assert po.schema_version() == 5
+def test_schema_version_is_current():
+    # Pinned so a bump is a deliberate edit here, with the reason recorded in
+    # `SCHEMA_VERSION`'s own history: 6 is task 63's `window` keys on the
+    # `ew_cov` spec.
+    assert po.schema_version() == 6
     assert sys.version_info >= (3, 12)

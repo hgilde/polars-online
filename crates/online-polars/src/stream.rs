@@ -470,6 +470,8 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             pca,
             pca_every,
             lags,
+            window,
+            window_every,
         } => {
             let names = stats
                 .clone()
@@ -498,6 +500,8 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 pca: pca.unwrap_or(0),
                 pca_every: pca_every.map_or(1, |e| e as usize),
                 lags: lags.clone().unwrap_or_default(),
+                window: *window,
+                window_every: *window_every,
             };
             Ok(AnyModel::EwCov(Box::new(EwCovModel::new(cfg)?)))
         }

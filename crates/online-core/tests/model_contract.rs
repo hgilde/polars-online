@@ -474,6 +474,8 @@ fn ew_cov_model_cfg() -> EwCovCfg {
         // The probe carries lags so that the save/restore and `clear_lags`
         // arms above see a model with a ring in them (L1).
         lags: vec![1, 3],
+        window: None,
+        window_every: None,
     }
 }
 

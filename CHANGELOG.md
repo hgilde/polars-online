@@ -26,8 +26,31 @@ carries breaking changes.
   Python objects the anchors are built from, so a rename breaks the suite
   rather than the page.
 
+### Added
+
+- **`window` on `ew_cov`: an exponentially weighted accumulator with a hard
+  cutoff** (task 63b, `docs/PLAN.md` §13). `window=w`, in clock units, makes
+  a row older than `w` contribute *nothing*, where the exponential weight
+  alone leaves 12.5% of it at three halflives. Inside the window the weights
+  are still exponential — it is not a rolling flat mean. It is exact rather
+  than approximate: an EW sum contains its own past, so everything at or
+  before a time `u` is `lam^(t-u)` times the accumulator as it stood then,
+  and subtracting that leaves precisely the rest. The model keeps a ring of
+  snapshots to do it, which is the one place here where memory grows with a
+  window rather than with the state; `window_every` trades boundary
+  tightness for memory, and only ever shortens the effective window. `n_eff`
+  becomes the weight inside the window, a clock gap longer than `window`
+  reports nulls rather than stale numbers, and the sixteen models whose
+  state is not a sum of per-row contributions refuse the keyword by name.
+  Verified against a direct windowed sum in Rust and against polars'
+  `rolling().agg()` in Python.
+
 ### Changed
 
+- **`SCHEMA_VERSION` is 6.** The `ew_cov` spec gained two keys, and spec
+  fields serialize their nulls, so every spec's bytes moved — the same
+  reason 4 and 5 bumped. A schema-5 file loads, continues to the bit and
+  re-saves as 6.
 - **Three spec keywords renamed** (task 63a), because a fourth meaning of
   `window` is about to be added and the existing two did not describe what
   they do. `rcov`'s `window` is the pre-averaging length in ticks and is now
