@@ -1840,7 +1840,9 @@ bank gets `group="g"`:
 | noise ceiling | 0.9896 | 0.9903 | 0.9900 | |
 | `SGDRegressor` per group, `invscaling` (the default) | 0.2731 | 0.4389 | 0.6356 | 3,350 |
 | `SGDRegressor` per group, `constant, eta0=0.03` (its best) | 0.7277 | 0.9242 | 0.9789 | 3,342 |
-| `po.spec.sgd`, `learning_rate=0.01` | −6.9 | −2.4 | 0.1095 | 19,696,993 |
+| `po.spec.sgd`, `learning_rate=0.01` (before task 74) | −6.9 | −2.4 | 0.1095 | 19,696,993 |
+| `po.spec.sgd`, `learning_rate=0.01` | 0.4328 | 0.7006 | 0.9067 | 11,559,468 |
+| `po.spec.sgd`, `learning_rate=0.03` | 0.7182 | 0.9213 | 0.9788 | 18,519,660 |
 | `po.spec.ewridge`, refit every row | **0.9693** | **0.9860** | **0.9882** | 5,130,803 |
 
 By row 50 of a group `ewridge` is within 0.005 of the ceiling; the best
@@ -1848,23 +1850,40 @@ first-order contender is 0.26 below it, and at the default schedule 0.72
 below. The throughput column is the group feature: one bank call at 5.1
 million rows/second against a Python loop over 500 estimators at 3,350.
 
-**And where this library's `sgd` loses to sklearn's, found by the same
-table.** `po.spec.sgd` diverges at the start of every group. Its
-`scale_features` standardises a row against the running moments from
-*before* that row (ENHANCEMENTS E24), and while those moments are two or
-five rows old the variance estimate can be tiny by chance, the standardised
-value huge, and one LMS step with `eta · |z|² > 2` throws a coefficient far
-enough that the next hundred rows do not bring it back. sklearn's recipe is
+**And where this library's `sgd` lost to sklearn's, found by the same
+table and fixed the same day (task 74).** `po.spec.sgd` diverged at the
+start of every group — the struck row. Its `scale_features` standardised a
+row against the running moments from *before* that row (ENHANCEMENTS E24
+as first written), and while those moments are two or five rows old the
+variance estimate can be tiny by chance, the standardised value huge, and
+one LMS step with `eta · |z|² > 2` throws a coefficient far enough that the
+next hundred rows do not bring it back. sklearn's recipe is
 `scaler.partial_fit(x)` *then* `transform(x)`: the moments include the row
-they scale, which bounds a standardised value by about `√n` and is not a
+they scale, which bounds a standardised value by `√n_eff` and is not a
 leak — the features of the row being predicted are known at prediction
 time; the rule is about the target. A pure-numpy LMS switched between the
-two orders on this stream reproduces both columns: `−64,309` against `0.43`
-at rows 25–50 with `eta=0.01`. That the 100,000-row tables above did not
-show it is because they score from row 1,000, long after the moments have
-settled. `docs/PLAN.md` task 74 is the fix; until it lands, `sgd` with
-`scale_features=True` on short histories is the one row of these tables
-where a user is better served by sklearn.
+two orders on this stream reproduces both: `−64,309` against `0.4328` at
+rows 25–50 with `eta=0.01`, and the model now gives the replica's number
+to four places. That the 100,000-row tables above did not show it is
+because they score from row 1,000, long after the moments have settled.
+The two `sgd` rows that stand are sklearn's step at the same constant rate
+— 0.4328 against 0.4501 at 0.01, 0.7182 against 0.7277 at 0.03 — at
+3,500× to 5,500× the rows per second, which is again the group feature: one
+bank call against a Python loop over 500 estimators and 500 scalers. What
+is left between them is *where the prediction is standardised*, checked by
+switching the replica: sklearn's loop predicts the row against the moments
+from before it (`predict(scaler.transform(x))` comes before
+`scaler.partial_fit(x)`) and learns it against the moments including it —
+two standardisations of every row — and a replica doing that gives
+sklearn's 0.4501 / 0.7119 / 0.9111 to four places. Here it is one `z` for
+both, so a row is standardised the way every row the coefficients were
+learned from was, `predict` is bounded by `√n_eff` like the step, and the
+scaler is one pass over the row rather than two. The gap is an
+under-convergence artefact rather than a better estimate — the moments
+that include a row shrink its standardised value by about `1/n`, and a
+fit that has not yet grown into its coefficients scores a little higher
+when its predictions are inflated by that much — and it closes with the
+fit: 0.0044 by rows 100–200 at 0.01, 0.0001 at 0.03.
 
 **Throughput is the difference, and it is a difference in semantics.** Rows
 per second on the same stream:
@@ -1956,14 +1975,22 @@ gathered every row again from 10,000 separate columns at a stride, and
 that walk *was* most of the 142. §20 took the number apart the same day:
 2.2 ns per feature, and the table below is re-run from it.
 
-`scale_features=True` does *not* match sklearn at these widths: the
-correlation with `SGDRegressor`'s predictions falls to 0.978 at `k = 1,000`
-and **0.521 at `k = 10,000`**, and the R² with it (0.0209 against 0.0322).
-That is task 74 again, and it is wider than "a short history": the scaler
-standardises a row against moments from *before* it, and what makes those
-moments immature is **few rows per feature** — a wide fit is that on every
-row. Until it lands, `scale_features=False` is the setting that matches
-sklearn, and the one to compare against.
+`scale_features=True` did *not* match sklearn at these widths before task
+74: the correlation with `SGDRegressor`'s predictions fell to 0.978 at
+`k = 1,000` and **0.521 at `k = 10,000`**, and the R² with it (0.0209
+against 0.0322). That was the short-history defect from the other side —
+the scaler standardised a row against moments from *before* it, and what
+makes those moments immature is **few rows per feature**; a wide fit is
+that on every row. With the row inside the moments (re-run the day it
+landed, same stream, same rates) the scaled fit correlates **0.99999995**
+with `SGDRegressor`'s at `k = 1,000` and **0.999997** at `k = 10,000`,
+where the unscaled one reads 0.999922 and 0.9954 — the scaled fit *is*
+sklearn's recipe, a scaler in front of the step, and now matches it more
+closely than the unscaled one does. R²: 0.8512 against `scale_features=
+False`'s 0.8516 at `k = 1,000` (was 0.8221), 0.0321 against 0.0319 at
+`k = 10,000` (sklearn 0.0322). The rows/sec column below is the unscaled
+setting; scaled, 269,264 at `k = 1,000` and 22,989 at `k = 10,000`, the
+scaler's own two passes over the row (§20).
 
 Where `ewridge`'s time goes was measured rather than argued, at
 `k = 10,000` (2,000 rows), because the question "is it the coefficients it
@@ -2024,8 +2051,10 @@ nothing to borrow: sklearn's recipe is a scaler and a schedule, and
 schedule to tune, because nothing is being descended. Its limit is the one
 the wide table shows, and that limit is the Gram itself. For `sgd`, one
 thing, and it is the order of two lines: scale the row against moments that
-include it (task 74), and add a halflife-weighted Polyak average as an
-option if the stationary gap of 0.0005 ever matters to anyone. For the
+include it — done as task 74 the same day, with the row admitted at unit
+weight so `predict` still returns exactly the step's number — and add a
+halflife-weighted Polyak average as an option if the stationary gap of
+0.0005 ever matters to anyone. For the
 measurement, two lessons already recorded in `docs/PLAN.md` task 72: print
 the ceiling, and never report a sweep whose best point is at its edge.
 
@@ -2132,5 +2161,9 @@ column in pyo3-polars' `PyDataFrame` extraction (`get_columns`, then one
 **And the scaler.** `scale_features=True` is 20 µs per row in the core
 against 5 unscaled: the standardised row is `(x - mean) / sqrt(var)` per
 feature, one square root each, and the scaler's own moment update is a
-second pass over the row. That is the cost of the feature; task 74 will
-change which moments it uses, not how many.
+second pass over the row. That is the cost of the feature; task 74 changed
+which moments it uses, not how many — the row is standardised against the
+moments with itself admitted, read off the accumulator as one more Welford
+step per feature without writing it back — and `sgd_bench` measured
+20.7 µs a row before it and 21.3 after at `k = 10,000`, within the
+run-to-run spread (the table above is the earlier run).

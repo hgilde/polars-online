@@ -131,6 +131,25 @@ impl EwDiag {
         self.c[i].max(0.0)
     }
 
+    /// The moments as they will stand once one more row is admitted at unit
+    /// weight after a decay of `lam`, read slot by slot without touching
+    /// the accumulator. `sgd` standardises a row against these ([`crate::Sgd`],
+    /// and docs/PLAN.md task 74 for why the moments include the row). The
+    /// arithmetic is [`EwDiag::update`]'s, operation for operation, so what
+    /// this reads for `x` is to the bit what `update(x, lam, 1.0)` leaves
+    /// behind. Always well defined: the total weight is at least the row's
+    /// own 1, even on an empty accumulator, where the row is the whole
+    /// history and its variance is zero.
+    #[inline]
+    pub fn including(&self, lam: f64) -> Including<'_> {
+        let w_new = lam * self.w_sum + 1.0;
+        Including {
+            sc: self,
+            a: lam * self.w_sum / w_new,
+            b: 1.0 / w_new,
+        }
+    }
+
     /// One observation with decay factor `lam` (from [`crate::Decay::factor`])
     /// and row weight `w`. O(k), allocation-free, and the same guards as
     /// [`EwCov::update`]: a negative weight is a caller's bug (debug assert,
@@ -160,6 +179,28 @@ impl EwDiag {
             *mi += b * d;
         }
         self.w_sum = w_new;
+    }
+}
+
+/// [`EwDiag::including`]: the accumulator plus one row at unit weight, one
+/// slot at a time.
+#[derive(Debug, Clone, Copy)]
+pub struct Including<'a> {
+    sc: &'a EwDiag,
+    /// Weight of the old statistics, `lam * W / (lam * W + 1)`.
+    a: f64,
+    /// Weight of the new point, `1 / (lam * W + 1)`.
+    b: f64,
+}
+
+impl Including<'_> {
+    /// `(mean, var)` of slot `i` with `x` admitted: `update`'s recursion for
+    /// the slot, the variance floored at zero as [`EwDiag::var`] floors it.
+    #[inline]
+    pub fn moments(&self, i: usize, x: f64) -> (f64, f64) {
+        let d = x - self.sc.m[i];
+        let c = self.a * self.sc.c[i] + self.a * self.b * d * d;
+        (self.sc.m[i] + self.b * d, c.max(0.0))
     }
 }
 
@@ -218,6 +259,36 @@ mod tests {
                 assert_eq!(diag, EwDiag::diagonal_of(&full));
             }
         }
+    }
+
+    /// `including` reads, for every slot and every row of the stream, the
+    /// bits `update` writes for that row at unit weight -- under every decay
+    /// the stream uses, from an empty accumulator on -- and moves nothing.
+    #[test]
+    fn including_reads_what_a_unit_row_would_leave() {
+        for k in [1, 3] {
+            let mut d = EwDiag::new(k);
+            for (x, lam, w) in stream(k, 200, 11 + k as u64) {
+                let before = d.clone();
+                let inc = d.including(lam);
+                let read: Vec<(f64, f64)> = (0..k).map(|i| inc.moments(i, x[i])).collect();
+                let mut unit = d.clone();
+                unit.update(&x, lam, 1.0);
+                for (i, &(m, v)) in read.iter().enumerate() {
+                    assert_eq!(m.to_bits(), unit.mean(i).to_bits(), "mean {i}");
+                    assert_eq!(v.to_bits(), unit.var(i).to_bits(), "var {i}");
+                }
+                assert_eq!(d, before, "reading moved the accumulator");
+                // The stream's own weight, which may be 0 or 2.5, is what the
+                // accumulator actually takes.
+                d.update(&x, lam, w);
+            }
+        }
+        // Empty: the row is the whole history.
+        let inc = EwDiag::new(2);
+        let inc = inc.including(0.9);
+        assert_eq!(inc.moments(0, 1e6), (1e6, 0.0));
+        assert_eq!(inc.moments(1, -3.0), (-3.0, 0.0));
     }
 
     #[test]

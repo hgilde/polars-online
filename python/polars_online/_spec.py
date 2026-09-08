@@ -1132,7 +1132,16 @@ def sgd(
     the insensitive tube, in target units), ``power=0.5`` for
     ``inv_scaling``. ``scale_features`` (default ``False``) takes the step in
     standardized coordinates, which is the difference between one learning
-    rate for every column and one per scale.
+    rate for every column and one per scale. Each row is standardized against
+    the running moments *with the row admitted* -- sklearn's
+    ``StandardScaler.partial_fit`` then ``transform`` -- which bounds a
+    standardized value by ``sqrt(n_eff)`` and is not a leak (the rule is
+    about the target; the features of the row being predicted are known);
+    against the moments from before the row, a variance estimate a few rows
+    old can be tiny by chance and one step throws a coefficient the rest of
+    a short group never brings back. The same standardized row serves the
+    prediction and the step, and the coefficients come back in the caller's
+    units.
 
     **Constrained coefficients** (ENHANCEMENTS E40). ``coef_min`` and
     ``coef_max`` bound each slope (one number for every feature, or a list

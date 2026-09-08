@@ -812,7 +812,14 @@ const GOLDEN_FTRL_SQUARED: &[f64] = &[
     -0.053001920184771734,
 ];
 const GOLDEN_FTRL: &[f64] = &[0.4944157427243535, 0.5720078133207852, 0.4641448801691502];
-const GOLDEN_SGD: &[f64] = &[-0.11253411046976192, 1.168224926369749, -0.0631738574598267];
+// Regenerated for docs/PLAN.md task 74 (2026-09-08): `scale_features`
+// standardises against the moments with the row admitted, so every
+// prediction of this scaled fit moved.
+const GOLDEN_SGD: &[f64] = &[
+    -0.07297166262948546,
+    0.8917464075109357,
+    -0.06371638800622832,
+];
 const GOLDEN_SGD_SQUARED: &[f64] = &[
     0.31727038792368356,
     1.429415537069254,

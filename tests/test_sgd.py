@@ -279,3 +279,126 @@ class TestFeatureScaling:
         )
         keep = [c for c in one.columns if not c.startswith("coef")]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
+
+    # The moments a row is standardized against include the row (PLAN task 74,
+    # sklearn's `partial_fit` then `transform`). Against the moments from
+    # *before* it, a two-row variance can be tiny by chance, the standardized
+    # value huge, and one step throws a coefficient the rest of the group never
+    # brings back. The condition is few rows per feature: the start of every
+    # group, and every row of a wide fit.
+
+    @staticmethod
+    def _groups(n_groups, rows_per, k, seed=0):
+        rng = np.random.default_rng(seed)
+        x = rng.standard_normal((n_groups * rows_per, k))
+        beta = np.repeat(rng.standard_normal((n_groups, k)) / np.sqrt(k), rows_per, axis=0)
+        y = (x * beta).sum(axis=1) + 0.1 * rng.standard_normal(len(x))
+        df = pl.DataFrame({f"x{j}": x[:, j] for j in range(k)}).with_columns(
+            y0=pl.Series(y), g=pl.Series(np.repeat(np.arange(n_groups), rows_per))
+        )
+        return x, y, df
+
+    @staticmethod
+    def _r2(pred, y, ok):
+        err = y[ok] - pred[ok]
+        return 1.0 - float(err @ err) / float(((y[ok] - y[ok].mean()) ** 2).sum())
+
+    def test_learns_from_a_short_history(self):
+        """`scripts/sklearn_comparison.py short` as a test: 500 groups of 200
+        rows, `k = 20`, scored by position in the group. Before task 74 this
+        read R² −6.9 at rows 25–50 and 0.11 at rows 100–200; now 0.43 and
+        0.91, against sklearn's `SGDRegressor` at 0.45 and 0.91 with the
+        same constant rate."""
+        n_groups, rows_per, k = 500, 200, 20
+        x, y, df = self._groups(n_groups, rows_per, k)
+        pos = np.tile(np.arange(rows_per), n_groups)
+        spec = po.spec.sgd(
+            "m",
+            targets=["y0"],
+            features=[f"x{j}" for j in range(k)],
+            group="g",
+            learning_rate=0.01,
+            halflife=float("inf"),
+            min_periods=25.0,
+            scale_features=True,
+        )
+        out = po.ModelBank([spec]).fit_predict(df)
+        pred = out["m"].struct.field("pred_y0").to_numpy().astype(float)
+        early = self._r2(pred, y, (pos >= 25) & (pos < 50))
+        late = self._r2(pred, y, (pos >= 100) & (pos < 200))
+        assert early > 0.4, f"rows 25-50: R2 {early}"
+        assert late > 0.85, f"rows 100-200: R2 {late}"
+
+    def test_matches_a_numpy_replica(self):
+        """The model against a numpy LMS that standardizes each row against
+        Welford moments updated with the row first: one `z` for the prediction
+        and the gradient, `beta -= lr * (z . beta - y) * z`. Agreement to
+        1e-12 relative on every prediction of a few groups, the way sklearn's
+        recipe reads (`scaler.partial_fit(x)`, then `transform(x)`)."""
+        n_groups, rows_per, k = 3, 200, 5
+        lr, min_periods = 0.03, 10
+        x, y, df = self._groups(n_groups, rows_per, k, seed=1)
+        spec = po.spec.sgd(
+            "m",
+            targets=["y0"],
+            features=[f"x{j}" for j in range(k)],
+            group="g",
+            learning_rate=lr,
+            halflife=float("inf"),
+            min_periods=float(min_periods),
+            scale_features=True,
+        )
+        out = po.ModelBank([spec]).fit_predict(df)
+        pred = out["m"].struct.field("pred_y0").to_numpy().astype(float)
+
+        want = np.full(len(y), np.nan)
+        for gi in range(n_groups):
+            mean, m2, beta = np.zeros(k), np.zeros(k), np.zeros(k + 1)
+            for n, i in enumerate(range(gi * rows_per, (gi + 1) * rows_per), start=1):
+                xi = x[i]
+                delta = xi - mean
+                mean = mean + delta / n
+                m2 = m2 + delta * (xi - mean)
+                var = m2 / n
+                scale = np.where(var > 0.0, np.sqrt(var), 1.0)
+                z = np.concatenate(([1.0], (xi - mean) / scale))
+                p = z @ beta
+                if n - 1 >= min_periods:
+                    want[i] = p
+                beta = beta - lr * np.clip((p - y[i]) * z, -1e3, 1e3)
+        ok = np.isfinite(want)
+        assert np.array_equal(ok, np.isfinite(pred))
+        np.testing.assert_allclose(pred[ok], want[ok], rtol=1e-12, atol=1e-12)
+
+    def test_wide_row_is_the_same_fit_scaled_or_not(self):
+        """A wide fit has few rows per feature on *every* row, which is the
+        short-history condition again. At `k = 1,000` over 20,000 rows of
+        unit-variance features, `scale_features=True` and `False` are now
+        the same fit to within 0.001 R² (0.8512 against 0.8516 in
+        `scripts/sklearn_comparison.py wide`); before task 74 the scaled
+        fit's predictions correlated 0.978 with sklearn's at this width and
+        0.52 at `k = 10,000`. Smaller here so the suite stays quick."""
+        n, k = 4000, 200
+        rng = np.random.default_rng(2)
+        x = rng.standard_normal((n, k))
+        beta = rng.standard_normal(k) / np.sqrt(k)
+        y = x @ beta + 0.3 * rng.standard_normal(n)
+        df = pl.DataFrame({f"x{j}": x[:, j] for j in range(k)}).with_columns(y0=pl.Series(y))
+        preds = {}
+        for scale in (False, True):
+            spec = po.spec.sgd(
+                "m",
+                targets=["y0"],
+                features=[f"x{j}" for j in range(k)],
+                learning_rate=0.2 / k,
+                halflife=float("inf"),
+                min_periods=50.0,
+                scale_features=scale,
+            )
+            out = po.ModelBank([spec]).fit_predict(df)
+            preds[scale] = out["m"].struct.field("pred_y0").to_numpy().astype(float)
+        ok = np.arange(n) >= 50
+        unscaled, scaled = self._r2(preds[False], y, ok), self._r2(preds[True], y, ok)
+        assert scaled > 0.5, f"scaled fit did not learn: R2 {scaled}"
+        assert abs(scaled - unscaled) < 0.01, f"scaled {scaled} against unscaled {unscaled}"
+        assert np.corrcoef(preds[False][ok], preds[True][ok])[0, 1] > 0.999

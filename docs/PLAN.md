@@ -1143,11 +1143,12 @@ note, not a task.
       bandwidth trades that lag against noise. `polars_online.spec`'s
       docstring and `llms.txt` gain a line each.
 
-- [ ] 74. **`sgd`'s scaler standardises a row against moments that exclude
+- [x] 74. **`sgd`'s scaler standardises a row against moments that exclude
       it, and is wrong wherever there are few rows per feature: the start
       of every stream, and every row of a wide fit — found 2026-09-08 by
       task 72's short-history table, and again by its wide table the same
-      evening.** `scale_features` (ENHANCEMENTS E24)
+      evening. Fixed 2026-09-08; the decision and the numbers are at the
+      end of this entry.** `scale_features` (ENHANCEMENTS E24)
       standardises `x_t` against the running mean and variance from *before*
       row `t`, "so the scaling cannot see the row it is scaling". That is
       stricter than the leakage rule requires and it is unstable: the rule
@@ -1163,8 +1164,9 @@ note, not a task.
       sklearn's scaler order scores 0.45 and `ewridge` 0.97. A pure-numpy
       LMS switched between the two orders reproduces both: moments from
       before the row `−64,309`, moments including the row `0.4328` — and the
-      latter matches sklearn's 0.4501 at the same `eta` to within the
-      scaler's `ddof`. Over 100,000 rows scored from row 1,000 the two
+      latter is within 0.02 of sklearn's 0.4501 at the same `eta` (the
+      rest is where the *prediction* is standardised; see the closing
+      paragraph). Over 100,000 rows scored from row 1,000 the two
       orders give the same number (0.9899 both), which is why every earlier
       test and table missed it.
 
@@ -1201,9 +1203,78 @@ note, not a task.
       the numpy replica agreeing with the model to 1e-12 when the row is
       included); the E24 demonstration (`[0.002, 900]` recovered) kept.
 
-      Not started: the user asked a question, and the answer changes
-      `sgd`'s numbers for every `scale_features` user, which is theirs to
-      call.
+      **Done 2026-09-08, on the user's go — with one change to the recipe
+      above.** "Call `sc.update` before standardising" would have broken a
+      contract the model already has: `predict(x, d)` is `&self`, carries
+      no weight, and must return exactly the `pred` the following `step`
+      reports (E31, `model_contract.rs::sgd_predict_is_the_step`, run with
+      the scaler on and off over weights 0, 0.5, 1 and 2). Updating the
+      scaler with the row's weight before standardising makes the
+      standardised row — and so the prediction — depend on the weight,
+      which `predict` does not have. The order landed instead is: the row is
+      standardised against the moments **with the row admitted at unit
+      weight** after the decay — `EwDiag::including(lam)`, a view that reads
+      `update`'s recursion slot by slot without touching the accumulator —
+      the same `z` serves the prediction and the gradient, and the real
+      `update(raw, lam, weight)` stays *after* the gradient step, at the
+      row's actual weight. Properties, each with a test: at `w = 1` the
+      moments read are to the bit what `update` leaves behind (the
+      recursion is written operation for operation, `ewdiag.rs::
+      including_reads_what_a_unit_row_would_leave`), so on unit-weight
+      streams this *is* sklearn's `partial_fit` then `transform`;
+      `predict`/`step` parity is exact by construction (E31 passes
+      unchanged); a standardised value is bounded by `sqrt(lam · n_eff)`
+      (`z = a·d / sqrt(a·c + a·b·d²) ≤ sqrt(a/b)`, with equality when the
+      history has no spread), so the first row of a stream is `z = 0` on
+      every feature and only the intercept learns from it
+      (`sgd.rs::scaling_admits_the_row_it_scales`, which also checks that
+      a row a million deviations out predicts within
+      `|b0| + |b1|·sqrt(W)`, where the old order predicted about 1.7e6);
+      always well defined, since the total weight is at least the row's own
+      1 even on an empty accumulator; and the weight governs *what the row
+      teaches*, not where it sits among the rows seen. `kalman` also
+      standardises against the moments from before the row and is left
+      alone: its gain `P z / (z'P z + σ²)` self-normalises in `|z|` the way
+      `pa`'s step does, so a huge `z` moves the state by a bounded amount —
+      the defect is specific to a fixed learning rate.
+
+      What did not change: `n_eff`, chunk invariance, the state at the end
+      of a row (so no `SCHEMA_VERSION` bump), the cost (`sgd_bench` at
+      `k = 10,000`: 20.7 µs a row before, 21.3 after, within the run-to-run
+      spread), and a zero-weight row still learns nothing. What did: every
+      `scale_features=True` prediction, so `GOLDEN_SGD` regenerated
+      (`sgd_squared_golden` and the pipeline goldens run unscaled and stood).
+
+      Measured, `scripts/sklearn_comparison.py`, the day it landed. Short
+      history (500 groups × 200 rows, `k = 20`): `sgd` at
+      `learning_rate=0.01` reads **0.4328 / 0.7006 / 0.9067** over rows
+      25–50 / 50–100 / 100–200 (was −6.9 / −2.4 / 0.1095), against
+      `SGDRegressor` with the same constant rate at 0.4501 / 0.7119 /
+      0.9111 and `ewridge` at 0.9693 / 0.9860 / 0.9882; at 0.03, **0.7182 /
+      0.9213 / 0.9788** against sklearn's best 0.7277 / 0.9242 / 0.9789.
+      The numpy replica's 0.4328 is the model's number to four places, and
+      switching the replica to predict against the moments from *before*
+      the row while learning against the ones including it — sklearn's
+      loop, two standardisations a row — gives sklearn's 0.4501 / 0.7119 /
+      0.9111 to four places, so that is the whole of the remaining gap.
+      Kept as one `z`: a row is then standardised the way every row the
+      coefficients were learned from was, the prediction is bounded like
+      the step, the scaler is one pass, and the gap is an artefact of an
+      unconverged fit (included moments shrink a row's `z` by about `1/n`,
+      and a fit still growing into its coefficients scores higher inflated
+      by that much) that closes with the history: 0.0044 by rows 100–200
+      at 0.01, 0.0001 at 0.03. Wide:
+      `scale_features=True` at `k = 1,000` is R² 0.8512 against
+      `scale_features=False`'s 0.8516 (within the 0.001 asked for; was
+      0.8221), and its predictions correlate **0.99999995** with
+      `SGDRegressor`'s row by row (was 0.978); at `k = 10,000` R² 0.0321
+      against sklearn's 0.0322 and a correlation of **0.999997** (was
+      0.521). Tests added in `tests/test_sgd.py::TestFeatureScaling`: the
+      short table (R² > 0.4 over rows 25–50, > 0.85 over 100–200), the
+      numpy replica to 1e-12 on every prediction of three groups, and the
+      wide case at `k = 200` (scaled within 0.01 R² of unscaled, predictions
+      correlating > 0.999); the E24 demonstration (`[0.002, 900]`
+      recovered) kept.
 
 - [x] 72. **Against `sklearn.linear_model.SGDRegressor` — analysis done
       2026-09-08, measured and written up the same day.** Written because

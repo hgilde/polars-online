@@ -2464,19 +2464,24 @@ the bank as `group="g"`:
 |---|---:|---:|---:|---:|
 | noise ceiling | 0.9896 | 0.9903 | 0.9900 | |
 | `SGDRegressor` per group, at its best | 0.7277 | 0.9242 | 0.9789 | 3,342 |
+| `po.spec.sgd`, `scale_features=True`, the same step | 0.7182 | 0.9213 | 0.9788 | 18,519,660 |
 | `po.spec.ewridge` | **0.9693** | **0.9860** | **0.9882** | 5,130,803 |
 
-The same table found the one place `po.spec.sgd` loses to sklearn's: it
-diverges at the start of every group (R² of −6.9 at rows 25–50), because
-`scale_features` standardises a row against moments from *before* it, and a
-two-row variance estimate can be tiny by chance. The condition is few rows
-per feature, and a wide fit is that on every row: at `k = 10,000` the same
-setting's predictions correlate 0.52 with sklearn's, where
-`scale_features=False` correlates 0.9954. sklearn's scaler includes the row
-it scales, which is not a leak (the features are known at prediction time;
-the rule is about the target) and is the fix, `docs/PLAN.md` task 74. Until
-it lands, prefer `ewridge` on short histories and `scale_features=False` on
-wide rows.
+The `sgd` row is sklearn's step, and through 0.3.1 it was not this close:
+the table found `po.spec.sgd` diverging at the start of every group (R² of
+−6.9 at rows 25–50), because `scale_features` standardised a row against
+moments from *before* it, and a two-row variance estimate can be tiny by
+chance. It now standardises against moments that include the row —
+sklearn's scaler order, which is not a leak: the features are known at
+prediction time, and the rule is about the target (`docs/PLAN.md` task 74).
+The 0.01 of R² left between the two rows is where the *prediction* is
+standardised: sklearn's loop standardises the row it predicts against the
+moments before it and the row it learns from against the moments including
+it, while here one standardised row serves both, so a prediction is on the
+same footing as every row the coefficients were learned from; the gap
+closes as the fit converges. The condition was few rows per feature, and a
+wide fit is that on every row: at `k = 10,000` the scaled fit's predictions
+correlated 0.52 with sklearn's before the change and 0.999997 after.
 
 What else is different: a grid of six penalties is 3.8× the work for
 sklearn (six estimators) and 1.6× here (one accumulator, six solves);
@@ -2498,8 +2503,9 @@ answer here — 0.89 MB and 33,271 rows/second at the same width, 45,000 fed
 in chunks of 20,000 rows — and it is faster than sklearn's batch with
 every prediction made from the state as it stands; `SGDRegressor` asked
 for the same, row by row, runs at 2,206 rows/second at that width, and the
-two agree (correlation 0.9954 between their predictions, 0.9999 at
-`k = 1,000`). Both are run at `learning_rate = 0.2 / k`: an LMS step is
+two agree (correlation 0.9954 between their predictions unscaled, and
+0.999997 with `scale_features=True`, which is sklearn's own recipe of a
+scaler in front of the step). Both are run at `learning_rate = 0.2 / k`: an LMS step is
 stable only while `eta · |z|² < 2`, and a standardised row has `|z|² ≈ k`.
 And the ecosystem is sklearn's: pipelines, `GridSearchCV`, calibration,
 and far more use. What this has is the stream.

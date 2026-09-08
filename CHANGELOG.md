@@ -9,6 +9,39 @@ carries breaking changes.
 
 ### Changed
 
+- **`sgd` with `scale_features=True` standardises each row against moments
+  that include the row** (task 74) — sklearn's `partial_fit` then
+  `transform` — instead of the moments from before it. **Every
+  `scale_features=True` prediction changes**; nothing else does (`n_eff`,
+  chunk invariance, the state after a row, the cost, and every unscaled fit
+  are as they were; no `SCHEMA_VERSION` bump). Why: standardising against
+  moments from before the row is stricter than the leakage rule requires —
+  the rule is about the target, and the row's features are known at
+  prediction time — and it is unstable wherever there are few rows per
+  feature. A variance estimate a few rows old can be tiny by chance, the
+  standardised value huge, and one step with `lr · |z|² > 2` throws a
+  coefficient where the next hundred rows do not bring it back: R² −6.9
+  over rows 25–50 of 200-row groups (`k = 20`, `learning_rate=0.01`),
+  where `SGDRegressor` at the same rate scored 0.45. With the row inside
+  the moments a standardised value is bounded by `sqrt(n_eff)`, the first
+  row of a stream standardises to zero (only the intercept learns from
+  it), and the same table now reads 0.43 / 0.70 / 0.91 over rows 25–50 /
+  50–100 / 100–200 against sklearn's 0.45 / 0.71 / 0.91 — what is left is
+  that sklearn's loop standardises the row it *predicts* against the
+  moments before it, where here the one standardised row serves the
+  prediction and the step, and it closes as the fit converges. The wide fit was
+  the same defect on every row — 2,000 rows over 10,000 features is 0.2
+  rows per feature — and its predictions now correlate 0.999997 with
+  `SGDRegressor`'s at `k = 10,000` (was 0.52) and 0.99999995 at `k = 1,000`
+  (was 0.978), R² 0.8512 against `scale_features=False`'s 0.8516. The row
+  is admitted at *unit* weight for the standardisation (its actual weight
+  still governs what it teaches), which is what keeps `predict(x)` equal to
+  the `pred` the next `step` reports, weight or no weight, and makes the
+  moments read on a unit-weight stream bit-identical to the ones the update
+  leaves behind. `kalman`'s `standardize` still reads the moments from
+  before the row and is unchanged: its gain is normalised by `z'Pz + σ²`,
+  so a large standardised value moves the state by a bounded amount.
+
 - **`sgd` costs 2 ns per feature per row instead of 13–14** (task 75,
   `docs/PERFORMANCE.md` §20). At `k = 10,000` a bank runs it at 45,000
   rows/second against 13,000 before, and against 20,007 for `SGDRegressor`
@@ -64,19 +97,17 @@ carries breaking changes.
   stable only while `eta · |z|² < 2` and `|z|² ≈ k` — and it carries an R²
   column; its first version had timed two diverged fits at 0.01.
 
-### Known
+### Fixed
 
-- **`sgd` with `scale_features=True` is wrong wherever there are few rows
+- **`sgd` with `scale_features=True` was wrong wherever there are few rows
   per feature** — the start of every group, measured at R² −6.9 over rows
   25–50 of 200-row groups where `ewridge` scores 0.97, and every row of a
-  wide fit: at `k = 10,000` its predictions correlate 0.52 with
+  wide fit: at `k = 10,000` its predictions correlated 0.52 with
   `SGDRegressor`'s at the same step where `scale_features=False` correlates
-  0.9954 (task 72's comparison found both). The scaler standardises a row
-  against the running moments from *before* it, and a variance estimate a
-  few rows old can be tiny by chance. The fix is sklearn's order, moments
-  that include the row, which is not a leak; `docs/PLAN.md` task 74. Until
-  then, prefer `ewridge` on short histories and `scale_features=False` on
-  wide rows.
+  0.9954 (task 72's comparison found both, in 0.3.1). Fixed by the change
+  of scaler order above (task 74); the tests that would have caught it are
+  in `tests/test_sgd.py::TestFeatureScaling` — the short-history table,
+  a numpy replica agreeing to 1e-12, and the wide case.
 
 ## [0.3.1] — 2026-09-08
 

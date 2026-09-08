@@ -106,7 +106,7 @@ pub use ewclass::{Covariance, EwClass, EwClassCfg};
 pub use ewcov::{
     EwCov, EwCovCfg, EwCovModel, EwCovStat, Pca, TargetMoments, partial_corr, variance_is_usable,
 };
-pub use ewdiag::EwDiag;
+pub use ewdiag::{EwDiag, Including};
 pub use ewlagcov::EwLagCov;
 pub use ewridge::{EwRidge, EwRidgeCfg};
 pub use ftrl::{Ftrl, FtrlCfg, FtrlLoss};

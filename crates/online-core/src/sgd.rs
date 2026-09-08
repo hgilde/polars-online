@@ -83,6 +83,28 @@ pub struct SgdCfg {
     /// to suit every coordinate, so a feature measured in thousands and one
     /// measured in basis points cannot both converge. The exact solvers do not
     /// care (they standardize inside the solve, or not at all).
+    ///
+    /// The moments a row is standardized against **include the row**, as one
+    /// more row of the stream at unit weight ([`EwDiag::including`]): that
+    /// is sklearn's `partial_fit` then `transform`, and it bounds a
+    /// standardized value by `sqrt(n_eff)` whatever the running variance
+    /// happens to be (the bound is reached when the history has no spread
+    /// at all). Against the moments from *before* the row -- the
+    /// original E24 -- a variance estimate a few rows old can be tiny by
+    /// chance, the standardized value huge, and one step with
+    /// `lr · |z|² > 2` throws a coefficient where the next hundred rows do
+    /// not bring it back: R² of −6.9 over rows 25–50 of 200-row groups
+    /// where `ewridge` scored 0.97, and a wide fit is that on every row
+    /// (docs/PLAN.md task 74). Not a leak: the row's features are known at
+    /// prediction time, and the rule is about the target, which enters
+    /// nothing until after the prediction. The one standardized row serves
+    /// the prediction and the gradient, so a row is standardized the way
+    /// every row the coefficients were learned from was (sklearn's loop
+    /// predicts against the moments from before the row instead, which is
+    /// two standardizations a row and a prediction with no bound). The
+    /// row's own weight applies to what it teaches, not to where it sits
+    /// among the rows seen, so a prediction never depends on the weight and
+    /// `predict` gives the step's number exactly.
     #[serde(default)]
     pub scale_features: bool,
     /// Cap on `|gradient|` before the step. **Finite by default** (`1e3` via the
@@ -365,22 +387,29 @@ thread_local! {
     static PREDICT_Z: std::cell::RefCell<Vec<f64>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// `x` standardized against `sc` as it stands: feature `i` sits in slot
-/// `off + i` of the scaler, and is divided by its running sd, or by 1 while
+/// `x` standardized against the moments of `sc` with the row itself
+/// admitted at unit weight after a decay of `lam` ([`EwDiag::including`];
+/// `SgdCfg::scale_features` says why the row is in): feature `i` sits in
+/// slot `off + i` of the scaler, and is divided by that sd, or by 1 while
 /// it has no spread (the per-slot scale of [`Sgd::scales`]). Lazy: `step`
 /// writes it into the model's buffer and `predict` into the thread's, with
 /// no vector of scales in between.
 #[inline]
-fn standardized<'a>(sc: &'a EwDiag, off: usize, x: &'a [f64]) -> impl Iterator<Item = f64> + 'a {
+fn standardized<'a>(
+    sc: &'a EwDiag,
+    off: usize,
+    x: &'a [f64],
+    lam: f64,
+) -> impl Iterator<Item = f64> + 'a {
+    let inc = sc.including(lam);
     x.iter().enumerate().map(move |(i, &xi)| {
-        let s = off + i;
-        let v = sc.var(s);
-        let scale = if crate::variance_is_usable(v, sc.raw(s)) {
+        let (mean, v) = inc.moments(off + i, xi);
+        let scale = if crate::variance_is_usable(v, v + mean * mean) {
             v.sqrt()
         } else {
             1.0
         };
-        (xi - sc.mean(s)) / scale
+        (xi - mean) / scale
     })
 }
 
@@ -425,9 +454,10 @@ impl OnlineModel for Sgd {
         // intercept's constant 1 folded into `dot` and the update below:
         // copying `[1, x]` in front of every row was a tenth of a wide step
         // (docs/PERFORMANCE.md §20). With one, `[1, z]` is standardized
-        // against the moments from BEFORE this row, so the scaling cannot
-        // see the row it is scaling (ENHANCEMENTS E24); the raw `[1, x]` is
-        // kept to update the scaler afterwards.
+        // against the moments with this row admitted -- read off the scaler
+        // as it stands, the way `predict` reads them (E24, and
+        // `SgdCfg::scale_features` for the order); the raw `[1, x]` is kept
+        // to update the scaler afterwards, at the row's actual weight.
         if self.scaler.is_some() {
             self.ensure_buffers();
             let Self {
@@ -442,7 +472,7 @@ impl OnlineModel for Sgd {
                 rawbuf[0] = 1.0;
             }
             rawbuf[off..].copy_from_slice(x);
-            for (z, v) in zbuf[off..].iter_mut().zip(standardized(sc, off, x)) {
+            for (z, v) in zbuf[off..].iter_mut().zip(standardized(sc, off, x, lam)) {
                 *z = v;
             }
         }
@@ -564,11 +594,12 @@ impl OnlineModel for Sgd {
         }
     }
 
-    fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
+    fn predict(&self, x: &[f64], d_clock: f64) -> Step {
         let n_eff = self.w_sum;
         let mut pred = vec![f64::NAN; self.cfg.n_targets];
         if n_eff >= self.cfg.min_periods {
             let off = usize::from(self.cfg.add_intercept);
+            let lam = self.cfg.decay.factor(d_clock);
             let predict_with = |z: &[f64], pred: &mut [f64]| {
                 for (j, p) in pred.iter_mut().enumerate() {
                     *p = self.link(dot(&self.beta[j], off, z));
@@ -581,7 +612,7 @@ impl OnlineModel for Sgd {
                 // fresh vector per row.
                 Some(sc) => PREDICT_Z.with_borrow_mut(|z| {
                     z.clear();
-                    z.extend(standardized(sc, off, x));
+                    z.extend(standardized(sc, off, x, lam));
                     predict_with(z, &mut pred);
                 }),
             }
@@ -805,19 +836,48 @@ mod tests {
     }
 
     #[test]
-    fn scaling_is_out_of_sample() {
-        // The scaler must not see the row it is scaling: an enormous first row
-        // should not be normalized away by its own magnitude.
+    fn scaling_admits_the_row_it_scales() {
+        // The row is standardized against moments that include it (docs/PLAN.md
+        // task 74). The first row of a stream is then the whole history: its
+        // feature standardizes to 0, so only the intercept learns from it, and
+        // an enormous first row cannot throw the slope.
         let mut c = cfg(1, SgdLoss::Squared);
         c.scale_features = true;
         c.min_periods = 0.0;
+        let mut m = Sgd::new(c.clone()).unwrap();
+        let step = m.step(&[1e6], &[Some(1.0)], 0.0, 1.0);
+        assert_eq!(step.pred[0], 0.0, "an empty fit predicts 0");
+        let coef = &m.coefficients()[0];
+        assert_eq!(
+            coef[1], 0.0,
+            "the first row is z = 0: the slope cannot move"
+        );
+        assert_eq!(coef[0], 0.05, "the intercept learned from it: lr * (1 - 0)");
+
+        // With the row inside the moments a standardized value is bounded by
+        // sqrt(lam * W): z = a d / sqrt(a c + a b d^2) <= sqrt(a / b), with
+        // equality when the history has no spread (c = 0). So a row a million
+        // deviations out predicts within |b0| + |b1| sqrt(W) of zero, where
+        // against the moments from *before* the row -- the order this
+        // replaced -- the same row predicted about 1.7e6.
         let mut m = Sgd::new(c).unwrap();
-        let before = m.coefficients()[0].clone();
-        m.step(&[1e6], &[Some(1.0)], 0.0, 1.0);
-        assert_ne!(
-            m.coefficients()[0],
-            before,
-            "the row should still have moved the fit"
+        for i in 0..10 {
+            let x = if i % 2 == 0 { 1.0 } else { -1.0 };
+            m.step(&[x], &[Some(0.5 * x)], f64::from(u8::from(i > 0)), 1.0);
+        }
+        let b = m.beta[0].clone(); // in standardized coordinates
+        let w = m.scaler.as_ref().unwrap().n_eff();
+        assert_eq!(w, 10.0);
+        let step = m.step(&[1e6], &[Some(0.0)], 1.0, 1.0);
+        let bound = b[0].abs() + b[1].abs() * w.sqrt();
+        assert!(
+            step.pred[0].abs() <= bound,
+            "pred {} exceeds the bound {bound} of a standardized row",
+            step.pred[0]
+        );
+        assert!(
+            step.pred[0].abs() > 0.5 * bound,
+            "the row is at the bound's edge"
         );
     }
 
