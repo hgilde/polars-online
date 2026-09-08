@@ -1,6 +1,6 @@
 """`sklearn.linear_model.SGDRegressor` against `po.spec.sgd` and `po.spec.ewridge`.
 
-Usage: uv run python scripts/sklearn_comparison.py [accuracy|wide|grid|all]
+Usage: uv run python scripts/sklearn_comparison.py [accuracy|short|wide|grid|all]
 
 scikit-learn is **not** a dependency of this project; install it into the
 environment first (`uv pip install scikit-learn`). Everything here is
@@ -14,7 +14,13 @@ features standardised by a `StandardScaler` that is itself fitted online, and
 in mini-batches (what people write, and what costs its predictions their
 freshness inside a batch). Each contender is then swept over a small grid of
 its own settings and reported at its best, so the comparison is between
-designs rather than between defaults. The grids are printed with the results.
+designs rather than between defaults. The grids are printed with the results,
+and so is each stream's noise ceiling -- the R^2 of the generating signal
+itself -- because "0.99" means nothing until you know what the best possible
+number was. The first version of `accuracy` swept `ewridge` over halflives no
+shorter than 500 rows and reported it 0.003 behind `sgd` on the drifting
+stream; at `halflife=100` the two tie. A sweep whose best point is at its
+edge is not a result, it is a grid.
 
 docs/PERFORMANCE.md section 19 is this script's output, read.
 """
@@ -60,8 +66,9 @@ def stream(n: int, k: int, drift: float, seed: int = 0):
         beta = b + np.cumsum(drift * rng.standard_normal((n, k)) / np.sqrt(k), axis=0)
     else:
         beta = np.tile(b, (n, 1))
-    y = (x * beta).sum(axis=1) + 0.1 * rng.standard_normal(n)
-    return x, y
+    signal = (x * beta).sum(axis=1)
+    y = signal + 0.1 * rng.standard_normal(n)
+    return x, y, signal
 
 
 def frame(x, y):
@@ -105,37 +112,45 @@ def r2(pred, y, ok):
 def accuracy():
     """Out-of-sample R^2 and rows/sec, each contender at its best setting."""
     print(
-        "Sweeps: SGDRegressor over learning_rate x eta0; sgd over "
+        "Sweeps: SGDRegressor over learning_rate x eta0 x average; sgd over "
         "learning_rate x halflife; ewridge over halflife.\n"
     )
     for drift, label in ((0.0, "stationary"), (0.004, "drifting coefficients")):
-        x, y = stream(ROWS, K, drift)
+        x, y, signal = stream(ROWS, K, drift)
         df, feats = frame(x, y), [f"x{j}" for j in range(K)]
         common = dict(targets=["y"], features=feats, min_periods=50.0)
         ok = np.zeros(ROWS, dtype=bool)
         ok[BATCH:] = True  # every contender has an opinion from here on
 
         runs: dict[str, list] = {}
-        for lr, eta in [
-            ("invscaling", 0.01),
-            ("constant", 0.003),
-            ("constant", 0.01),
-            ("constant", 0.03),
-            ("adaptive", 0.01),
+        for lr, eta, avg in [
+            ("invscaling", 0.01, False),
+            ("constant", 0.001, False),
+            ("constant", 0.003, False),
+            ("constant", 0.01, False),
+            ("constant", 0.03, False),
+            ("adaptive", 0.01, False),
+            ("constant", 0.01, True),
+            ("constant", 0.03, True),
         ]:
-            pred, dt, _, _ = run_sklearn(x, y, BATCH, learning_rate=lr, eta0=eta)
+            pred, dt, _, _ = run_sklearn(x, y, BATCH, learning_rate=lr, eta0=eta, average=avg)
             runs.setdefault(f"SGDRegressor, batches of {BATCH}", []).append(
-                (r2(pred, y, ok), f"learning_rate={lr!r}, eta0={eta}", dt)
+                (r2(pred, y, ok), f"{lr}, eta0={eta}, average={avg}", dt)
             )
-        pred, dt, _, _ = run_sklearn(x, y, 1)
-        runs["SGDRegressor, row by row"] = [(r2(pred, y, ok), "defaults", dt)]
-        for rate, hl in itertools.product([0.003, 0.01, 0.03], [2e3, 2e4, float("inf")]):
+        for lr, eta in [("invscaling", 0.01), ("constant", 0.003)]:
+            pred, dt, _, _ = run_sklearn(x, y, 1, learning_rate=lr, eta0=eta)
+            runs.setdefault("SGDRegressor, row by row", []).append(
+                (r2(pred, y, ok), f"{lr}, eta0={eta}", dt)
+            )
+        for rate, hl in itertools.product(
+            [0.001, 0.003, 0.01, 0.03], [5e2, 2e3, 2e4, float("inf")]
+        ):
             spec = po.spec.sgd("m", halflife=hl, learning_rate=rate, scale_features=True, **common)
             pred, dt, _ = run_bank(spec, df)
             runs.setdefault("po.spec.sgd", []).append(
                 (r2(pred, y, ok), f"learning_rate={rate}, halflife={hl:g}", dt)
             )
-        for hl in [5e2, 2e3, 2e4, float("inf")]:
+        for hl in [50.0, 100.0, 200.0, 500.0, 2e3, 2e4, float("inf")]:
             spec = po.spec.ewridge(
                 "m", halflife=hl, ridge=1e-6, max_rows_between_solves=1, **common
             )
@@ -144,12 +159,74 @@ def accuracy():
                 (r2(pred, y, ok), f"halflife={hl:g}", dt)
             )
 
-        print(f"--- {label}: {ROWS:,} rows, k={K}")
+        print(f"--- {label}: {ROWS:,} rows, k={K}, noise ceiling R2 = {r2(signal, y, ok):.4f}")
         print(f"{'contender':<36} {'best R2':>8}  {'at':<40} {'rows/sec':>10}")
         for name, sweep in runs.items():
             best, setting, dt = max(sweep)
             print(f"{name:<36} {best:8.4f}  {setting:<40} {ROWS / dt:10,.0f}")
+        print("the sweeps, best to worst:")
+        for name, sweep in runs.items():
+            cells = ", ".join(f"{s}: {r:.4f}" for r, s, _ in sorted(sweep, reverse=True))
+            print(f"  {name}: {cells}")
         print()
+
+
+def short():
+    """Where the Gram wins: many groups, each with a short history.
+
+    500 groups of 200 rows, each group its own coefficients, `k = 20`, scored
+    by position in the group. sklearn is one estimator and one scaler per
+    group in a dict, row by row (there is no other way to give it a group);
+    the bank is `group="g"`."""
+    n_groups, rows_per = 500, 200
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((n_groups * rows_per, K))
+    beta = np.repeat(rng.standard_normal((n_groups, K)) / np.sqrt(K), rows_per, axis=0)
+    signal = (x * beta).sum(axis=1)
+    y = signal + 0.1 * rng.standard_normal(len(x))
+    pos = np.tile(np.arange(rows_per), n_groups)
+    df = frame(x, y).with_columns(g=pl.Series(np.repeat(np.arange(n_groups), rows_per)))
+    feats = [f"x{j}" for j in range(K)]
+    windows = {"rows 25-50": (25, 50), "rows 50-100": (50, 100), "rows 100-200": (100, 200)}
+    sgd_regressor, standard_scaler = _sklearn()
+
+    def sklearn_groups(**kw):
+        pred = np.full(len(x), np.nan)
+        t0 = time.perf_counter()
+        for gi in range(n_groups):
+            lo = gi * rows_per
+            model, scaler = sgd_regressor(random_state=0, **kw), standard_scaler()
+            for i in range(lo, lo + rows_per):
+                xi = x[i : i + 1]
+                if i > lo:
+                    pred[i] = model.predict(scaler.transform(xi))[0]
+                scaler.partial_fit(xi)
+                model.partial_fit(scaler.transform(xi), y[i : i + 1])
+        return pred, time.perf_counter() - t0
+
+    rows = []
+    for lr, eta in [("invscaling", 0.01), ("constant", 0.01), ("constant", 0.03)]:
+        pred, dt = sklearn_groups(learning_rate=lr, eta0=eta)
+        rows.append((f"SGDRegressor per group, {lr}, eta0={eta}", pred, dt))
+    common = dict(targets=["y"], features=feats, group="g", halflife=float("inf"), min_periods=25.0)
+    for rate in (0.01, 0.03):
+        spec = po.spec.sgd("m", learning_rate=rate, scale_features=True, **common)
+        pred, dt, _ = run_bank(spec, df)
+        rows.append((f"po.spec.sgd, learning_rate={rate}", pred, dt))
+    spec = po.spec.ewridge("m", ridge=1e-6, max_rows_between_solves=1, **common)
+    pred, dt, _ = run_bank(spec, df)
+    rows.append(("po.spec.ewridge, refit every row", pred, dt))
+
+    print(
+        f"--- {n_groups} groups x {rows_per} rows, k={K}: out-of-sample R2 by position in the group"
+    )
+    print(f"{'contender':<46} " + " ".join(f"{w:>13}" for w in windows) + f" {'rows/sec':>10}")
+    cells = [r2(signal, y, (pos >= lo) & (pos < hi)) for lo, hi in windows.values()]
+    print(f"{'noise ceiling':<46} " + " ".join(f"{c:13.4f}" for c in cells))
+    for name, pred, dt in rows:
+        cells = [r2(pred, y, (pos >= lo) & (pos < hi)) for lo, hi in windows.values()]
+        print(f"{name:<46} " + " ".join(f"{c:13.4f}" for c in cells) + f" {len(x) / dt:10,.0f}")
+    print()
 
 
 def wide():
@@ -157,7 +234,7 @@ def wide():
     print("--- a wide row: rows/sec, and the state you have to keep")
     print(f"{'contender':<38} {'k':>6} {'rows':>7} {'rows/sec':>10} {'state':>10}")
     for k, n in ((1_000, 20_000), (10_000, 2_000)):
-        x, y = stream(n, k, 0.0)
+        x, y, _ = stream(n, k, 0.0)
         df, feats = frame(x, y), [f"x{j}" for j in range(k)]
         common = dict(targets=["y"], features=feats, halflife=float("inf"), min_periods=50.0)
 
@@ -195,7 +272,7 @@ def wide():
 
 def grid():
     """Six penalties over one stream: N estimators against one accumulator."""
-    x, y = stream(ROWS, K, 0.0)
+    x, y, _ = stream(ROWS, K, 0.0)
     df, feats = frame(x, y), [f"x{j}" for j in range(K)]
     sgd_regressor, standard_scaler = _sklearn()
 
@@ -241,6 +318,8 @@ if __name__ == "__main__":
     which = sys.argv[1] if len(sys.argv) > 1 else "all"
     if which in ("accuracy", "all"):
         accuracy()
+    if which in ("short", "all"):
+        short()
     if which in ("wide", "all"):
         wide()
     if which in ("grid", "all"):

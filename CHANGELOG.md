@@ -12,16 +12,30 @@ carries breaking changes.
 - **"How does this compare to scikit-learn?" now has an answer** (task 72).
   A new README section, "Against scikit-learn", and `docs/PERFORMANCE.md` §19
   behind it, measured with `scripts/sklearn_comparison.py` — scikit-learn is
-  not a dependency; the script says so and exits if it is missing. On a
-  stationary stream at `k = 20` nothing separates the contenders (0.9826 to
-  0.9831 out-of-sample R²); under drifting coefficients a halflife on a clock
-  wins (`sgd` 0.9906, `ewridge` 0.9878, `SGDRegressor` 0.9820 batched, 0.9840
-  row by row). The throughput difference is a difference in semantics:
-  sklearn's mini-batch form predicts from a state up to 999 rows stale, and
-  asked for a prediction from the state as it stands it runs at 3,300
-  rows/second against `sgd`'s 5.8M. Where sklearn wins is stated with the
-  same numbers: at `k = 10,000`, `ewridge` carries 860 MB of state and 51
-  rows/second against 0.31 MB and 17,221, and `sgd` is the `O(k)` answer.
+  not a dependency; the script says so and exits if it is missing. Accuracy
+  is not the difference: at `k = 20` every contender reaches the stream's
+  noise ceiling, and under drifting coefficients the row-by-row contenders
+  are within 0.001 of each other (`ewridge` 0.9907, `sgd` 0.9906,
+  `SGDRegressor` 0.9899 row by row and 0.9820 in batches of 1,000 — the
+  batched gap is staleness, not algorithm). The throughput difference is a
+  difference in semantics: sklearn's mini-batch form predicts from a state
+  up to 999 rows stale, and asked for a prediction from the state as it
+  stands it runs at 3,400 rows/second against `sgd`'s 6M. Where the Gram
+  wins is short histories: 500 groups of 200 rows, `ewridge` is at 0.97 by
+  rows 25–50 of a group where the best `SGDRegressor` setting is at 0.73.
+  Where sklearn wins is stated with the same numbers: at `k = 10,000`,
+  `ewridge` carries 860 MB of state and 52 rows/second against 0.31 MB and
+  18,928, and `sgd` is the `O(k)` answer.
+
+### Known
+
+- **`sgd` with `scale_features=True` diverges on a short history** — the
+  start of every group, measured at R² −6.9 over rows 25–50 of 200-row
+  groups where `ewridge` scores 0.97 (task 72's comparison found it). The
+  scaler standardises a row against the running moments from *before* it,
+  and a variance estimate two rows old can be tiny by chance. The fix is
+  sklearn's order, moments that include the row, which is not a leak;
+  `docs/PLAN.md` task 74. Until then, prefer `ewridge` on short histories.
 
 ## [0.3.1] — 2026-09-08
 

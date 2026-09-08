@@ -1143,6 +1143,51 @@ note, not a task.
       bandwidth trades that lag against noise. `polars_online.spec`'s
       docstring and `llms.txt` gain a line each.
 
+- [ ] 74. **`sgd`'s scaler standardises a row against moments that exclude
+      it, and diverges at the start of every stream — found 2026-09-08 by
+      task 72's short-history table.** `scale_features` (ENHANCEMENTS E24)
+      standardises `x_t` against the running mean and variance from *before*
+      row `t`, "so the scaling cannot see the row it is scaling". That is
+      stricter than the leakage rule requires and it is unstable: the rule
+      forbids the *target*, and the features of the row being predicted are
+      known at prediction time; while the moments are two or five rows old,
+      a variance estimate can be tiny by chance, the standardised value
+      huge, and one LMS step with `eta · |z|² > 2` throws a coefficient far
+      enough that the next hundred rows do not bring it back.
+
+      Measured: 500 groups × 200 rows, `k = 20`, each group its own
+      coefficients, `learning_rate=0.01`, R² over rows 25–50 of a group is
+      **−6.9** (`−99` at 0.03), where `SGDRegressor` with the same step and
+      sklearn's scaler order scores 0.45 and `ewridge` 0.97. A pure-numpy
+      LMS switched between the two orders reproduces both: moments from
+      before the row `−64,309`, moments including the row `0.4328` — and the
+      latter matches sklearn's 0.4501 at the same `eta` to within the
+      scaler's `ddof`. Over 100,000 rows scored from row 1,000 the two
+      orders give the same number (0.9899 both), which is why every earlier
+      test and table missed it.
+
+      The fix is sklearn's order — `scaler.partial_fit(x)` then
+      `transform(x)` — which bounds a standardised value by about `√n`:
+      in `SgdModel::step`, call `sc.update(&raw_z, lam, weight)` *before*
+      standardising, not after. `n_eff` is untouched (the scaler does not
+      feed it), chunk invariance holds (the order is per row), and the state
+      at the end of any row is identical to today's (both orders leave the
+      scaler updated with the row), so no `SCHEMA_VERSION` bump — but every
+      `scale_features=True` prediction changes, so this is a **behaviour
+      change**: golden fixtures regenerate, E24's row and the `sgd`
+      docstring say the new order and why, the CHANGELOG entry names it,
+      and the README's "Against scikit-learn" and PERFORMANCE §19 drop
+      their "until it lands" sentences with the re-measured row. A
+      zero-weight row still learns nothing: `update(raw, lam, 0)` applies
+      the decay only. Tests: the short-history table as a test (`sgd` at
+      `learning_rate=0.01` above 0.4 over rows 25–50 of 200-row groups, and
+      the numpy replica agreeing with the model to 1e-12 when the row is
+      included); the E24 demonstration (`[0.002, 900]` recovered) kept.
+
+      Not started: the user asked a question, and the answer changes
+      `sgd`'s numbers for every `scale_features` user, which is theirs to
+      call.
+
 - [x] 72. **Against `sklearn.linear_model.SGDRegressor` — analysis done
       2026-09-08, measured and written up the same day.** Written because
       "how does this compare to sklearn" is the first question a reader has
@@ -1228,6 +1273,64 @@ note, not a task.
       solving every row at `k = 1,000` (`solve_every=0.0` with
       `halflife=inf`), which measured a `O(k³)` solve per row at 206 rows/s
       and would have been a strawman of this library, not of sklearn.
+
+      *Corrected the same afternoon, after the user asked whether the
+      comparison could improve `ewridge` or whether the feature set buys
+      anything.* Re-measured with wider grids, the noise ceiling printed, and
+      two new streams; three of the bullets above were wrong in their
+      reading and one number was a grid edge:
+
+      - `ewridge`'s halflife sweep stopped at 500 rows, and its best point
+        was that edge; at `halflife=100` it scores 0.9907 on the drifting
+        stream and ties `sgd` (0.9906), 0.002 from the ceiling of 0.9923.
+        **A sweep whose best point is at its edge is a grid, not a result**;
+        the script now prints every sweep, best to worst, and the ceiling.
+      - "A halflife on a clock beats a learning rate tuned in rows" was the
+        wrong reading of the drift table. A constant learning rate *is*
+        forgetting (an LMS step `eta` remembers about `1/eta` rows), and on
+        evenly spaced rows that is a halflife. `SGDRegressor` row by row at
+        `constant, eta0=0.003` scores 0.9899 and `sgd` at
+        `learning_rate=0.003` scores 0.9899 — the same recursion, the same
+        number. The 0.9840 quoted for sklearn row by row was its
+        `invscaling` default, whose decay is about convergence and not
+        recency. What separates the drift column is the batched 0.9820,
+        and that is staleness. The clock's advantage exists on unevenly
+        spaced rows, which this stream cannot show and the write-up
+        claimed anyway.
+      - Correlated features do not separate the contenders either: a
+        one-factor stream at pairwise correlation 0.5 and 0.9 (condition
+        number 22 and 187) leaves every row-by-row contender within 0.0007
+        of its ceiling over 100,000 rows. First-order convergence slows
+        with conditioning, but 100,000 rows is long enough not to notice.
+        Heavy-tailed features (`t(3)`, `max |x| = 176`) cost `sgd` its
+        best learning rate and nothing at all to `ewridge`; the best
+        settings still land within 0.0005 of each other.
+      - **Where the Gram measurably wins is a short history.** 500 groups
+        of 200 rows, each with its own coefficients: at rows 25–50 of a
+        group `ewridge` scores 0.9693 against a ceiling of 0.9896, the best
+        `SGDRegressor` setting 0.7277, its default 0.2731; by rows 50–100
+        it is 0.9860 against 0.9242. The exact solve is right about `k`
+        rows in; a first-order method needs `1/eta` rows per direction. The
+        rows/sec column is the group feature: 5.1M for one bank call
+        against 3,350 for a Python loop over 500 estimators.
+      - **And the same table found `sgd` losing to sklearn's, badly**: R²
+        of −6.9 at rows 25–50 at `learning_rate=0.01`, −99 at 0.03. That
+        is task 74, a real defect the 100,000-row tables hid by scoring
+        from row 1,000.
+
+      What the comparison gives back, then: for `ewridge`, nothing to
+      borrow — sklearn's recipe is a scaler and a schedule, `ewridge` has
+      the scaler folded into its solve (`standardize`) and no schedule
+      because nothing is descended, and its limit is the Gram itself (stored
+      full in `EwCov::c`; a triangle would halve 860 MB to 430 and not
+      change the wide-row verdict, so it is not done). For `sgd`, the order
+      of two lines (task 74), and `average=True` — sklearn's best stationary
+      setting, 0.9830 against `sgd`'s 0.9826, and its worst under drift at
+      0.817 because the average never forgets — would fit this library as a
+      halflife-weighted average of the iterates, if that 0.0005 ever
+      matters. `docs/PERFORMANCE.md` §19 is rewritten from the second run;
+      the README table carries the corrected numbers and the short-history
+      table; the CHANGELOG records the known defect.
 
 - [x] 71. **E51, the blocked rank-B Gram update — design settled 2026-09-08,
       `EwCov` half built and reviewed the same day, `ewridge` wiring built

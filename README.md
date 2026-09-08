@@ -2427,37 +2427,65 @@ to 2e-13 of `numpy.linalg.lstsq` in any row order. The counterpart to
 
 Measured on one generated stream, 100,000 rows, `k = 20`, each contender at
 its best over a sweep of its own settings (`scripts/sklearn_comparison.py`,
-scikit-learn 1.9.0, `docs/PERFORMANCE.md` §19 for the full tables):
+scikit-learn 1.9.0, `docs/PERFORMANCE.md` §19 for the full tables and the
+sweeps). The noise ceiling is the R² of the generating signal itself:
 
 | contender | R² stationary | R² drifting | rows/sec | what a prediction saw |
 |---|---:|---:|---:|---|
-| `SGDRegressor`, row by row | 0.9829 | 0.9840 | 3,300 | every row before it |
-| `SGDRegressor`, batches of 1,000 | 0.9829 | 0.9820 | 2,200,000 | every row before its *batch* |
-| `po.spec.sgd` | 0.9826 | **0.9906** | 5,800,000 | every row before it |
-| `po.spec.ewridge` | **0.9831** | 0.9878 | 570,000 | every row before it |
+| noise ceiling | 0.9831 | 0.9923 | | |
+| `SGDRegressor`, row by row | 0.9829 | 0.9899 | 3,400 | every row before it |
+| `SGDRegressor`, batches of 1,000 | 0.9830 | 0.9820 | 2,200,000 | every row before its *batch* |
+| `po.spec.sgd` | 0.9826 | 0.9906 | 6,000,000 | every row before it |
+| `po.spec.ewridge` | **0.9831** | **0.9907** | 575,000 | every row before it |
 
-Three things to take from it. **Accuracy is not the difference** on a
-stationary stream — everything reaches the same noise ceiling. **Forgetting
-is**: where the coefficients drift, a halflife on a real clock beats a
-learning rate tuned in rows. And **the speed difference is a difference in
-semantics**: sklearn's fast form updates once per 1,000-row batch, so its
-predictions inside a batch are up to 999 rows stale, while every prediction
-here is made from the state as it stands. Asked for that same guarantee —
-`partial_fit` per row — `SGDRegressor` runs at 3,300 rows/second, and the
-cost is Python's per-row overhead rather than the algorithm.
+Three things to take from it. **Accuracy is not the difference.** Everything
+reaches the ceiling on the stationary stream, and the row-by-row contenders
+are within 0.001 of each other on the drifting one — `SGDRegressor` and
+`po.spec.sgd` at the same constant step give the same number to four
+places, because they are the same recursion. The one gap in the table, the
+batched 0.9820, is staleness: a prediction made up to 999 rows before its
+update. **The speed difference is a difference in semantics**: sklearn's fast
+form updates once per 1,000-row batch, while every prediction here is made
+from the state as it stands. Asked for that same guarantee — `partial_fit`
+per row — `SGDRegressor` runs at 3,400 rows/second, and the cost is Python's
+per-row overhead rather than the algorithm. And **a halflife is not the
+advantage here**: a constant learning rate forgets too, at about `1/eta`
+rows, and on evenly spaced rows that is a halflife. The clock matters when
+the rows are not evenly spaced, which this stream is not.
 
-What else is different: a grid of six penalties is 3.66× the work for
-sklearn (six estimators) and 1.40× here (one accumulator, six solves);
+**Where the Gram wins: the first hundred rows of every group.** An exact
+solve is right as soon as its `X'X` is full rank, about `k` rows in; a
+first-order method needs about `1/eta` rows per direction. 500 groups of 200
+rows, each group its own coefficients, `k = 20`, R² by position in the group
+— sklearn as one estimator and one scaler per group in a dict, row by row,
+the bank as `group="g"`:
+
+| contender | rows 25–50 | rows 50–100 | rows 100–200 | rows/sec |
+|---|---:|---:|---:|---:|
+| noise ceiling | 0.9896 | 0.9903 | 0.9900 | |
+| `SGDRegressor` per group, at its best | 0.7277 | 0.9242 | 0.9789 | 3,342 |
+| `po.spec.ewridge` | **0.9693** | **0.9860** | **0.9882** | 5,130,803 |
+
+The same table found the one place `po.spec.sgd` loses to sklearn's: it
+diverges at the start of every group (R² of −6.9 at rows 25–50), because
+`scale_features` standardises a row against moments from *before* it, and a
+two-row variance estimate can be tiny by chance. sklearn's scaler includes
+the row it scales, which is not a leak (the features are known at prediction
+time; the rule is about the target) and is the fix, `docs/PLAN.md` task 74.
+Until it lands, prefer `ewridge` on short histories.
+
+What else is different: a grid of six penalties is 3.8× the work for
+sklearn (six estimators) and 1.6× here (one accumulator, six solves);
 multiple targets share one `X'X`; `group=` is one state per key rather than a
 dict of estimators; standardisation is streaming and cannot leak the way a
 `StandardScaler` fitted on the whole frame does; chunk invariance is a test;
 and the state is a versioned cross-OS file rather than a pickle.
 
 **Where sklearn wins: a wide row.** `ewridge` keeps a `(k+1)²` matrix, so at
-`k = 10,000` it carries 860 MB of state and runs at 51 rows/second, against
-0.31 MB and 17,221 for `SGDRegressor`; `gram_block_rows=256` buys 5.2× of the
+`k = 10,000` it carries 860 MB of state and runs at 52 rows/second, against
+0.31 MB and 18,928 for `SGDRegressor`; `gram_block_rows=256` buys 5.2× of the
 throughput and none of the memory. `sgd` is the `O(k)` answer here — 1.06 MB
-and 6,206 rows/second at the same width. And the ecosystem is sklearn's:
+and 6,216 rows/second at the same width. And the ecosystem is sklearn's:
 pipelines, `GridSearchCV`, calibration, and far more use. What this has is
 the stream.
 
