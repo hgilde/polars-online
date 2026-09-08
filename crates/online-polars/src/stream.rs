@@ -295,6 +295,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             long_halflife,
             solve_every,
             max_rows_between_solves,
+            gram_block_rows,
             window,
             window_every,
         } => {
@@ -330,6 +331,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 min_periods: spec.min_periods_or_default(),
                 solve_every: solve_every.unwrap_or_else(|| spec.solve_every_default(decay)),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
+                gram_block_rows: gram_block_rows.unwrap_or(0),
                 window: *window,
                 window_every: *window_every,
             };

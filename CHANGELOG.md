@@ -7,7 +7,32 @@ carries breaking changes.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`ewridge(gram_block_rows=)`** (task 71, `docs/ENHANCEMENTS.md` E51).
+  Hold that many rows back and bring the `k×k` co-moment matrix up to date
+  once per block with one matrix product, instead of one rank-one update
+  per row. Off by default. Measured single-threaded on the whole step with a
+  256-row block: 5.1× at 256 features, 6.6× at 1,000, 5.9× at 2,000; a
+  solve every 512 rows dilutes that to about 4×, since the solve costs the
+  same either way (`docs/PERFORMANCE.md` §18).
+
+  What does not change: `n_eff`, the timing of every prediction, chunk
+  invariance (the block is merged when it fills, before a solve and before a
+  session blend — never because a chunk ended) and `gram()`, which reports
+  the held rows without merging them. What does: the merged matrix is a
+  floating-point sum in a different order, so a blocked fit agrees with the
+  per-row fit to rounding rather than to the bit, and its last bits can
+  differ between CPUs. Refused with `window`, with a solve every row
+  (`solve_every <= 0` or `max_rows_between_solves <= 1` — the default
+  `solve_every` is `halflife / 50`, so `lam` and `halflife=inf` need it
+  set) and where the held rows would exceed 256 MiB.
+
+  The held rows travel in the state file, so a bank saved mid-block resumes
+  on the same block boundary. `SCHEMA_VERSION` stays 6: the field is
+  additive, so an `ewridge` state written before it loads with blocking
+  off, continues to the bit, and re-saves carrying the new key; a bank with
+  no `ewridge` re-saves byte for byte.
 
 ## [0.3.0] — 2026-09-08
 

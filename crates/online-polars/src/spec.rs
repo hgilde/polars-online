@@ -384,6 +384,15 @@ pub enum ModelKind {
         solve_every: Option<f64>,
         #[serde(default)]
         max_rows_between_solves: Option<u32>,
+        /// Rows of the Gram update held back and merged as one block
+        /// (docs/ENHANCEMENTS.md E51): `0` or absent updates the `k×k`
+        /// matrix on every row; `256` is the measured setting, `6.6×` faster
+        /// at a thousand features. Needs a solve cadence (`solve_every > 0`
+        /// and `max_rows_between_solves > 1`), does not combine with
+        /// `window`, and the merged sum is not bit-identical to the per-row
+        /// one. Chunk invariance holds either way.
+        #[serde(default)]
+        gram_block_rows: Option<usize>,
         /// Clock units of history the fit sees, with a **hard** cutoff: a row
         /// older than this is not in the Gram at all, where the exponential
         /// weight alone would leave `0.5^(age/halflife)` of it. Inside the

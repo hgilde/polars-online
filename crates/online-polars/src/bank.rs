@@ -1095,6 +1095,9 @@ pub(crate) fn gram_of(key: &GroupKey, label: &str, model: &AnyModel) -> Option<G
         AnyModel::EwCov(m) => (m.cov(), Vec::new(), Vec::new(), None, true),
         _ => return None,
     };
+    // A blocked `ewridge` may be holding rows the matrix has not seen; the
+    // Gram reports them without moving the model's block boundary.
+    let cov = cov.flushed();
     // Empty says "this model has no targets"; `None` says "this state was
     // written before task 38 and cannot say". They are different answers, so
     // `ew_cov` reports empty, not `None`.

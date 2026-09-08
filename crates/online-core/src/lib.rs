@@ -23,6 +23,7 @@
 //!     min_periods: 5.0,
 //!     solve_every: 0.0,
 //!     max_rows_between_solves: 1,
+//!     gram_block_rows: 0,
 //!     window: None,
 //!     window_every: None,
 //! })?;

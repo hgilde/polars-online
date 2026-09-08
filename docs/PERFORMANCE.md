@@ -20,15 +20,17 @@ Machine for every number in this file: Apple M-series, 10 performance + 4
 efficiency cores, release build (thin LTO, `codegen-units = 1`), single
 process, `ONLINE_TIMING=1` for the section rows. Regenerate the raw numbers
 with `cargo run --release -p online-core --example core_bench` (and
-`--example rls_bench` for the `rls` A/B in §8) and
+`--example rls_bench` for the `rls` A/B in §8, `--example gram_block_bench`
+for §18) and
 `ONLINE_TIMING=1 uv run python scripts/benchmark.py`.
 
 Where to look for what: **§11** if memory is the question (which surface is
 O(data) and which is O(state), with the numbers), **§8** for what a row
 costs per model today, **§12** for chunk size and thread count, **§13** and
 **§15** for the wide-row and correlation families, **§16** for what a
-`window` costs and what it does not, **§5** for what was tried
-and rejected. §1–§4 are the original 2026-08-30 baseline, plan and outcome,
+`window` costs and what it does not, **§18** for what `gram_block_rows`
+buys a wide `ewridge` and what a solve takes back, **§5** for what was
+tried and rejected. §1–§4 are the original 2026-08-30 baseline, plan and outcome,
 kept as the record. Section numbers are cited from the code and the README,
 so they stay where they are.
 
@@ -1695,3 +1697,70 @@ row, each the same width as the contemporaneous one: 2.7x for 5 lags is the
 `1 + L` shape, slightly better than linear because the means and weights are
 computed once. `serial_rule` is free — it is read-time arithmetic over the
 lags already kept.
+
+## 18. The blocked Gram update (E51, 2026-09-08)
+
+Task 71 gave `ewridge` a `gram_block_rows`: hold `B` rows back and bring
+the `k×k` co-moment matrix up to date once per block with one matrix
+product, instead of the rank-1 update §14 tuned. The rank-1 loop touches
+the whole matrix every row and is bound by memory; the product touches it
+once per block and is bound by arithmetic. `docs/PLAN.md` task 71 has the
+merge, the two findings its review made and why the product is
+single-threaded. This section is the measurement.
+
+`crates/online-core/examples/gram_block_bench.rs`, the whole
+`EwRidge::step` — prediction, cross-moments and the Gram — one core
+(`faer`'s product is called with `Par::Seq`; the bank parallelises across
+groups, never inside a step), one target, intercept, `halflife=5000`, this
+machine, rows per second:
+
+| k | solve | per row | block 64 | block 256 |
+|---|---|---:|---:|---:|
+| 256 | never | 91,214 | 372,772 (4.1×) | 464,135 (5.1×) |
+| 256 | every 512 rows | 85,578 | 288,352 (3.4×) | 347,461 (4.1×) |
+| 1,000 | never | 5,650 | 28,593 (5.1×) | 37,167 (6.6×) |
+| 1,000 | every 512 rows | 5,711 | 20,863 (3.7×) | 23,719 (4.2×) |
+| 2,000 | never | 1,415 | 6,544 (4.6×) | 8,380 (5.9×) |
+| 2,000 | every 512 rows | 1,309 | 4,435 (3.4×) | 5,644 (4.3×) |
+
+Three things to read off it.
+
+**The update itself is 5–6.6× faster with a 256-row block**, and the ledger
+row's 5–10× was right once the probe's multithreaded 9.5×/11.2× had been
+withdrawn (task 71). The block size matters at the low end: 64 rows leaves
+the product's inner dimension short and gives 4–5×. Larger than 256 buys
+little more and holds more rows in the state; 256 is what the docs
+recommend.
+
+**A solve dilutes it, and the dilution is the whole story at a real
+cadence.** The Gram is brought up to date before every solve, and a solve
+is `O(k³)` on both sides of the table: at `k = 2,000` it costs ~30 ms
+whichever way the matrix was built (`1/1309 − 1/1415` seconds per row,
+times 512), and once the update is six times cheaper that 30 ms is a third
+of the blocked path's time. So "every 512 rows" lands at 4.1–4.3× across
+the widths, and a cadence of every 64 rows would land near 2×. The number
+a bank sees is the update's ratio, times how rarely it solves — which, for
+anyone at `k ≥ 1,000`, is already rarely.
+
+**It is not free to switch on where it does not pay.** The parameter is
+refused with `window` (which snapshots the matrix every row) and with a
+solve every row (`solve_every <= 0` or `max_rows_between_solves <= 1` — the
+default `solve_every` is `halflife / 50`, which is `0` for `lam` and for an
+infinite halflife, so those need it set), because there a block could never
+hold more than one row and the product would be a slower rank-1 update.
+It is not refused narrow, because it still pays there, less: with a
+256-row block and no solve, 1.6× at `k = 16`, 2.4× at 64 and 4.0× at 128
+(`-- 16 262144 64 131072 128 65536` on the same example). The guess that
+the rank-1 loop is in cache at those widths and has nothing to gain was
+wrong by that much, which is why the example takes widths on the command
+line rather than leaving the guess in the docs.
+
+What blocking does not change: `n_eff`, the timing of every prediction,
+chunk invariance (the flush is a function of the learned-row count and the
+solve schedule, never of a chunk ending) and `gram()`, which reads through
+the held rows without moving the block. What it does change: the merged
+matrix is a floating-point sum in a different order, so a blocked fit's
+coefficients agree with the per-row fit's to rounding rather than to the
+bit, and the product's kernel follows the CPU's vector width, so a blocked
+Gram's last bits can differ between machines where the rank-1 path's do not
+(frozen fixtures stay unblocked).

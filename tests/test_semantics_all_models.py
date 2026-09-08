@@ -18,7 +18,8 @@ import pytest
 
 import polars_online as po
 
-#: (name, extra spec kwargs). One entry per model the bank can build.
+#: (name, extra spec kwargs). One entry per model the bank can build;
+#: `test_model_registry` holds this list to exactly that.
 MODELS = [
     ("ewridge", {"max_rows_between_solves": 1}),
     ("rls", {"ridge": 1.0}),
@@ -32,7 +33,17 @@ MODELS = [
     # Holt is the one model with no features, so it opts out of the shared set.
     ("holt", {"features": []}),
 ]
-IDS = [m[0] for m in MODELS]
+
+#: A second configuration of a model above, swept through the same
+#: invariants: `ewridge` with the Gram update blocked (E51). The block is an
+#: implementation of the same model, so everything here has to hold for it
+#: too. The block, 5, is chosen not to divide the solve cadence, 4 rows, so a
+#: solve merges a partial block on every cycle.
+VARIANTS = [
+    ("ewridge", {"solve_every": 4.0, "max_rows_between_solves": 8, "gram_block_rows": 5}),
+]
+SWEEP = MODELS + VARIANTS
+IDS = [m for m, _ in MODELS] + [f"{m}-blocked" for m, _ in VARIANTS]
 
 #: Models that treat a null in *any* target as predict-only for all targets.
 SHARED_STATE_MODELS = {"rls"}
@@ -63,7 +74,7 @@ def run(model, extra, df, **kw):
     return po.ModelBank([build(model, extra, **kw)]).fit_predict(df)
 
 
-@pytest.mark.parametrize(("model", "extra"), MODELS, ids=IDS)
+@pytest.mark.parametrize(("model", "extra"), SWEEP, ids=IDS)
 class TestNullPolicy:
     def test_feature_null_skips_the_row_entirely(self, model, extra):
         if model == "holt":
@@ -106,7 +117,7 @@ class TestNullPolicy:
             run(model, extra, df, weight="w")
 
 
-@pytest.mark.parametrize(("model", "extra"), MODELS, ids=IDS)
+@pytest.mark.parametrize(("model", "extra"), SWEEP, ids=IDS)
 class TestWarmup:
     def test_outputs_are_null_until_min_periods(self, model, extra):
         df = frame(binary=model == "ftrl")
@@ -152,7 +163,7 @@ class TestWarmup:
         assert slot(out, "n_eff", model)[0] == 0.0
 
 
-@pytest.mark.parametrize(("model", "extra"), MODELS, ids=IDS)
+@pytest.mark.parametrize(("model", "extra"), SWEEP, ids=IDS)
 class TestClockSemantics:
     def _clocked(self, model, extra, t, **kw):
         n = len(t)
@@ -204,7 +215,7 @@ class TestClockSemantics:
         assert slot(out, "n_eff", model)[2] == 0.0
 
 
-@pytest.mark.parametrize(("model", "extra"), MODELS, ids=IDS)
+@pytest.mark.parametrize(("model", "extra"), SWEEP, ids=IDS)
 class TestUniversalInvariants:
     def test_chunk_invariance(self, model, extra):
         df = frame(n=120, seed=3, binary=model == "ftrl")

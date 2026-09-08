@@ -23,7 +23,7 @@ import pytest
 
 import polars_online as po
 from data import synthetic
-from test_semantics_all_models import IDS, MODELS
+from test_semantics_all_models import IDS, SWEEP
 
 # --- the oracle ----------------------------------------------------------------
 
@@ -103,7 +103,7 @@ def _spec(model, extra, **kw):
     return getattr(po.spec, model)("m", **opts)
 
 
-@pytest.mark.parametrize(("model", "extra"), MODELS, ids=IDS)
+@pytest.mark.parametrize(("model", "extra"), SWEEP, ids=IDS)
 def test_predict_is_fit_predict_of_the_next_row(model, extra):
     """The contract, per model, with every diagnostic on and a clock, groups
     and weights in play."""

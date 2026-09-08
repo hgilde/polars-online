@@ -1093,6 +1093,21 @@ penalty, and the fading warm start ("start at yesterday's fit") is
 unscaled afterwards, dropping near-zero-variance features rather than
 blowing up.
 
+The O(k²) per row is the update of `S`, and at a thousand features it is
+most of the cost. `gram_block_rows=256` holds 256 rows back and folds them
+into `S` with one matrix product instead of 256 rank-one updates. Measured
+single-threaded, that is 5.1× the rows per second at 256 features, 6.6× at
+1,000 and 5.9× at 2,000; a solve every 512 rows brings each down to about
+4×, because the solve costs the same either way. `n_eff`, the timing of
+every prediction and chunk invariance do not change. The coefficients
+agree with the row-by-row fit to rounding, not to the bit: the merged sum
+is the same sum in a different order. The held rows travel in the state
+file, so a save mid-block resumes on the same block. It is refused with
+`window`, and where a solve happens every row (`solve_every=0` or
+`max_rows_between_solves=1`), because the block is merged before each
+solve and would never hold more than one row. `docs/PERFORMANCE.md` §18
+has the table.
+
 ### `rls` — recursive least squares
 
 *API:* [`po.spec.rls`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rls) — *Rust:* [`rls.rs`](crates/online-core/src/rls.rs) — *Outputs:* [fields](docs/OUTPUTS.md#rls)

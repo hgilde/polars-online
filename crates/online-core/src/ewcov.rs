@@ -445,6 +445,21 @@ impl EwCov {
         !self.pending.lam.is_empty()
     }
 
+    /// The accumulator with any held block merged in, for a reader that
+    /// must not move the model's block boundary: the bank's `gram()` and a
+    /// closed row read mid-block, and where they fall in the stream is the
+    /// user's business, not the update schedule's. Borrows when nothing is
+    /// pending, which is every model but a blocked `ewridge`.
+    pub fn flushed(&self) -> std::borrow::Cow<'_, Self> {
+        if self.has_pending() {
+            let mut merged = self.clone();
+            merged.flush();
+            std::borrow::Cow::Owned(merged)
+        } else {
+            std::borrow::Cow::Borrowed(self)
+        }
+    }
+
     /// Hold the row for a blocked merge, advancing the scalars now.
     ///
     /// A row the shipped update would ignore is not held: [`Self::step_factors`]
@@ -3810,5 +3825,45 @@ mod block_tests {
         assert_eq!(a.w_sum, b.w_sum);
         assert_eq!(a.m, b.m);
         assert_eq!(a.c, b.c, "turning blocking off must restore the exact path");
+    }
+
+    /// A reader that must not move the block boundary -- the bank's
+    /// `gram()` mid-stream -- gets the merged moments from a copy: what it
+    /// reads is what the shipped recursion says, and the original goes on
+    /// holding its rows, so the stream after the read is the stream there
+    /// would have been without it. With nothing pending it is a borrow.
+    #[test]
+    fn a_read_through_flushed_leaves_the_block_where_it_was() {
+        use std::borrow::Cow;
+        let k = 4;
+        let rows = stream(45, k, 91, 1e3, 0.99, 1);
+        let seq = run(&rows, k, 0);
+        let mut blk = EwCov::new(k);
+        blk.set_block_rows(16);
+        for (x, lam, w) in &rows {
+            blk.update(x, *lam, *w);
+        }
+        assert!(blk.has_pending(), "45 rows in blocks of 16 leave 13 held");
+        let read = blk.flushed();
+        assert!(matches!(read, Cow::Owned(_)));
+        assert_moments_close(&seq, &read, "flushed()");
+        assert_scalars_equal(&seq, &read, "flushed()");
+        assert!(blk.has_pending(), "the read merged the model's own block");
+        // The stream continues as if nothing had been read.
+        let more = stream(20, k, 92, 1e3, 0.99, 1);
+        let mut untouched = EwCov::new(k);
+        untouched.set_block_rows(16);
+        for (x, lam, w) in rows.iter().chain(&more) {
+            untouched.update(x, *lam, *w);
+        }
+        for (x, lam, w) in &more {
+            blk.update(x, *lam, *w);
+        }
+        untouched.flush();
+        blk.flush();
+        assert_eq!(untouched.c, blk.c, "the read changed the stream after it");
+        assert_eq!(untouched.m, blk.m);
+        assert!(matches!(blk.flushed(), Cow::Borrowed(_)));
+        assert!(matches!(seq.flushed(), Cow::Borrowed(_)));
     }
 }

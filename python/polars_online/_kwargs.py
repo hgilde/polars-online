@@ -103,6 +103,7 @@ class EwridgeKwargs(ExprKwargs, total=False):
     long_halflife: float | None
     solve_every: float | None
     max_rows_between_solves: int | None
+    gram_block_rows: int | None
     window: float | None
     window_every: int | None
 

@@ -86,6 +86,26 @@ pub struct EwRidgeCfg {
     pub solve_every: f64,
     /// Row cap between solves; 1 solves every row.
     pub max_rows_between_solves: u32,
+    /// Rows of the Gram update held back and merged as one block
+    /// (docs/ENHANCEMENTS.md E51, docs/PLAN.md task 71). `0`, the default,
+    /// updates the `k×k` matrix on every row. With `B` here, a row's `z` is
+    /// buffered and the matrix is brought up to date once per `B` rows by a
+    /// `k×B` times `B×k` product, `6.6×` faster than the rank-one updates at
+    /// `k = 1,000` with `B = 256`; the four scalars still run per row, so
+    /// `n_eff` and `min_periods` are unchanged to the bit.
+    ///
+    /// The matrix is also brought up to date before every solve, so the
+    /// effective block is `min(B, rows between solves)` and the option pays
+    /// only with a solve cadence: it is refused with `solve_every <= 0` or
+    /// `max_rows_between_solves <= 1`, and with `window`, which reads the
+    /// matrix on every row. Memory: `B × k_total` floats per instance, twice
+    /// with `session_shrink`'s twin, held in the state file mid-block, and
+    /// refused over 256 MiB. The block's product is a floating-point sum in a
+    /// different order from the per-row one, so a blocked fit is not
+    /// bit-identical to an unblocked one and its last bits may differ across
+    /// CPUs; it is identical whichever way the stream is chunked.
+    #[serde(default)]
+    pub gram_block_rows: usize,
     /// Clock units of history the fit is computed from, with a *hard* cutoff:
     /// a row older than this contributes nothing to the Gram, where the
     /// exponential weight alone would leave `0.5^(age/halflife)` of it
@@ -105,6 +125,12 @@ pub struct EwRidgeCfg {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_every: Option<usize>,
 }
+
+/// The most a held Gram block may take before the model refuses to build,
+/// on the pattern of `marginal`'s bins: `k` can be 10,000 here, and silently
+/// allocating gigabytes is a worse outcome than an error that names the
+/// number.
+const GRAM_BLOCK_BUDGET: usize = 256 << 20;
 
 impl EwRidgeCfg {
     pub fn k_total(&self) -> usize {
@@ -173,6 +199,48 @@ impl EwRidgeCfg {
             }
         } else if self.window_every.is_some() {
             return Err("ewridge: window_every needs `window`".into());
+        }
+        if self.gram_block_rows > 0 {
+            if self.window.is_some() {
+                return Err(
+                    "ewridge: gram_block_rows and window do not combine; the window snapshots \
+                     the Gram on every row, so there would be nothing to hold back"
+                        .into(),
+                );
+            }
+            if self.solve_every <= 0.0 || self.max_rows_between_solves <= 1 {
+                return Err(format!(
+                    "ewridge: gram_block_rows needs a solve cadence; the Gram is brought up to \
+                     date before every solve, and with solve_every = {} and \
+                     max_rows_between_solves = {} that is every row, so a block would never \
+                     hold more than one. Set solve_every > 0 (the default is halflife / 50, \
+                     or 0 for `lam` and an infinite halflife) and max_rows_between_solves > 1",
+                    self.solve_every, self.max_rows_between_solves
+                ));
+            }
+            // Held rows: `B × k_total` per accumulator, the slow twin included.
+            let twins = 1 + usize::from(self.session_shrink.is_some());
+            let cells = self
+                .gram_block_rows
+                .saturating_mul(self.k_total())
+                .saturating_mul(twins);
+            let bytes = cells.saturating_mul(std::mem::size_of::<f64>());
+            if bytes > GRAM_BLOCK_BUDGET {
+                return Err(format!(
+                    "ewridge: gram_block_rows = {} would hold {:.1} GiB of rows ({} × {} \
+                     features{}), over the {} MiB budget; reduce it, or narrow the features",
+                    self.gram_block_rows,
+                    bytes as f64 / (1u64 << 30) as f64,
+                    self.gram_block_rows,
+                    self.k_total(),
+                    if twins == 2 {
+                        ", twice for the slow twin"
+                    } else {
+                        ""
+                    },
+                    GRAM_BLOCK_BUDGET >> 20,
+                ));
+            }
         }
         if self.ridge_decay && (self.standardize || self.n_combos() > 1) {
             return Err("ridge_decay is incompatible with standardize and grids".into());
@@ -303,9 +371,16 @@ impl EwRidge {
         cfg.validate()?;
         let k_total = cfg.k_total();
         let m = cfg.n_targets;
+        // Blocked or not, the twin runs the same accumulator as the main one:
+        // its update is the same cost, and its matrix is read only at a blend.
+        let block = cfg.gram_block_rows;
+        let blocked = move |mut cov: EwCov| {
+            cov.set_block_rows(block);
+            cov
+        };
         let slow = cfg.session_shrink.map(|_| {
             Box::new(SlowState {
-                cov: EwCov::new(k_total),
+                cov: blocked(EwCov::new(k_total)),
                 wj: vec![0.0; m],
                 r: vec![vec![0.0; k_total]; m],
                 tm: Some(TargetMoments::new(m)),
@@ -320,7 +395,7 @@ impl EwRidge {
         };
         Ok(Self {
             slow,
-            cov: EwCov::new(k_total),
+            cov: blocked(EwCov::new(k_total)),
             wj: vec![0.0; m],
             r: vec![vec![0.0; k_total]; m],
             tm: Some(TargetMoments::new(m)),
@@ -365,6 +440,10 @@ impl EwRidge {
     /// over `k_total` columns (the intercept column included when
     /// `add_intercept`, where it is constant 1 and so has zero variance).
     /// See [`EwCov::comoments`] (docs/ENHANCEMENTS.md E30).
+    ///
+    /// With `gram_block_rows` the matrix may be behind by a block; read it
+    /// through [`EwCov::flushed`], which merges a copy and leaves the
+    /// model's own block boundary where it was.
     pub fn cov(&self) -> &EwCov {
         &self.cov
     }
@@ -416,10 +495,15 @@ impl EwRidge {
         let Some(f) = self.cfg.session_shrink else {
             return;
         };
-        let Some(slow) = &self.slow else { return };
-        if f <= 0.0 {
+        if f <= 0.0 || self.slow.is_none() {
             return;
         }
+        // Both matrices are read in full below; a held block goes in first.
+        self.cov.flush();
+        if let Some(slow) = self.slow.as_mut() {
+            slow.cov.flush();
+        }
+        let Some(slow) = &self.slow else { return };
         let k = self.cfg.k_total();
 
         // Weight-respecting mixture of two weighted means.
@@ -427,6 +511,7 @@ impl EwRidge {
         let w_new = (1.0 - f) * wf + f * ws;
         if w_new > 0.0 {
             let mut blended = EwCov::new(k);
+            blended.set_block_rows(self.cov.block_rows());
             let (af, as_) = ((1.0 - f) * wf / w_new, f * ws / w_new);
             // EwCov holds means, so mix means directly and restore the weight
             // by replaying a single synthetic observation is not possible;
@@ -546,6 +631,11 @@ impl EwRidge {
     }
 
     fn solve(&mut self) {
+        // A held Gram block goes in before the matrix is read. Solves are
+        // scheduled by the clock and the row count, never by a chunk end, so
+        // the block boundary this moves is the same whichever way the stream
+        // was chunked.
+        self.cov.flush();
         let k_total = self.cfg.k_total();
         let m = self.cfg.n_targets;
         let combos = self.cfg.combos();
@@ -966,6 +1056,7 @@ mod tests {
             min_periods: (k + 1) as f64,
             solve_every: 0.0,
             max_rows_between_solves: 1,
+            gram_block_rows: 0,
             window: None,
             window_every: None,
         }
@@ -2287,5 +2378,233 @@ mod tests {
         assert!(st.pred[1].is_finite()); // pred still emitted
         // r for target 1 unchanged in value terms (mean form: no data added)
         assert_eq!(m.r[1], before);
+    }
+
+    // ---- gram_block_rows (docs/ENHANCEMENTS.md E51, docs/PLAN.md task 71) ----
+
+    /// A halflife, a solve cadence in both clock and rows, and a small ridge:
+    /// the setting the option is for. `block` is the only difference between
+    /// the two sides of every comparison below.
+    fn blocked_cfg(k: usize, block: usize) -> EwRidgeCfg {
+        let mut c = cfg(k, 1);
+        c.decay = Decay::Halflife(200.0);
+        c.ridge = vec![1e-3];
+        c.solve_every = 10.0;
+        c.max_rows_between_solves = 50;
+        c.gram_block_rows = block;
+        c
+    }
+
+    /// `(x, y, d_clock, weight)`: a missing target every 17th row, a zero
+    /// weight every 23rd, a clock gap of 5 halflives every 41st and one
+    /// infinite gap (`lam == 0`, the history discarded) -- everything a held
+    /// row has to carry into the merge.
+    fn ridge_rows(n: usize, k: usize, seed: u64) -> Vec<(Vec<f64>, Option<f64>, f64, f64)> {
+        let mut s = seed;
+        (0..n)
+            .map(|i| {
+                let x: Vec<f64> = (0..k).map(|_| lcg(&mut s)).collect();
+                let y: f64 = x
+                    .iter()
+                    .enumerate()
+                    .map(|(j, v)| (j as f64 + 1.0) * v)
+                    .sum::<f64>()
+                    + 0.5
+                    + 0.1 * lcg(&mut s);
+                let y = if i % 17 == 5 { None } else { Some(y) };
+                let d = match i {
+                    0 => 0.0,
+                    301 => f64::INFINITY,
+                    _ if i % 41 == 0 => 1000.0,
+                    _ => 1.0,
+                };
+                let w = if i % 23 == 7 {
+                    0.0
+                } else {
+                    0.5 + lcg(&mut s).abs()
+                };
+                (x, y, d, w)
+            })
+            .collect()
+    }
+
+    fn assert_pred_close(a: &[f64], b: &[f64], what: &str) {
+        for (i, (p, q)) in a.iter().zip(b).enumerate() {
+            let same = (p.is_nan() && q.is_nan()) || (p - q).abs() <= 1e-9 * (1.0 + p.abs());
+            assert!(same, "{what}: pred[{i}] {p} vs {q}");
+        }
+    }
+
+    /// The merge is the per-row recursion to rounding: the same predictions
+    /// at every row, the same `n_eff` to the bit (the scalars never left the
+    /// per-row path), and the same coefficients at the end. Checked with
+    /// blocks smaller than, equal to and larger than the solve cadence, and
+    /// with the path actually taken: a block was pending at some point.
+    #[test]
+    fn a_blocked_fit_is_the_per_row_fit_to_rounding() {
+        for k in [1usize, 3, 12] {
+            for block in [1usize, 7, 50, 64] {
+                let mut plain = EwRidge::new(blocked_cfg(k, 0)).unwrap();
+                let mut blocked = EwRidge::new(blocked_cfg(k, block)).unwrap();
+                let mut held = false;
+                for (i, (x, y, d, w)) in ridge_rows(600, k, 9 + k as u64).iter().enumerate() {
+                    let a = plain.step(x, &[*y], *d, *w);
+                    let b = blocked.step(x, &[*y], *d, *w);
+                    assert_pred_close(&a.pred, &b.pred, &format!("k={k} block={block} row {i}"));
+                    assert_eq!(a.n_eff, b.n_eff, "k={k} block={block} row {i}: n_eff");
+                    held |= blocked.cov.has_pending();
+                }
+                // A block of one fills on the row that opens it, so nothing
+                // is ever seen pending; every larger block is.
+                assert_eq!(
+                    held,
+                    block > 1,
+                    "k={k} block={block}: rows held between steps"
+                );
+                let (ca, cb) = (
+                    plain.coefficients().unwrap(),
+                    blocked.coefficients().unwrap(),
+                );
+                for (i, (p, q)) in ca[0].iter().zip(&cb[0]).enumerate() {
+                    assert!(
+                        (p - q).abs() <= 1e-9 * (1.0 + p.abs()),
+                        "k={k} block={block}: coef[{i}] {p} vs {q}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A solve reads the matrix, so it merges the block first: after every
+    /// solve nothing is pending, whichever of the two schedules fired it.
+    #[test]
+    fn a_solve_merges_the_block_first() {
+        let mut m = EwRidge::new(blocked_cfg(3, 64)).unwrap();
+        let mut solves = 0;
+        for (x, y, d, w) in ridge_rows(400, 3, 4) {
+            m.step(&x, &[y], d, w);
+            if m.rows_since_solve == 0 {
+                solves += 1;
+                assert!(!m.cov.has_pending(), "a solve left rows pending");
+            }
+        }
+        assert!(solves > 10, "the schedule fired {solves} times");
+    }
+
+    /// A blend reads both matrices in full, so it merges both blocks first,
+    /// and the blended accumulator keeps the block size: the option is a
+    /// property of the model, not of one accumulator's lifetime.
+    #[test]
+    fn a_blend_merges_the_held_blocks_first_and_keeps_the_block_size() {
+        let shrink = |block: usize| {
+            let mut c = blocked_cfg(2, block);
+            c.session_shrink = Some(0.5);
+            c.long_halflife = Some(1e4);
+            EwRidge::new(c).unwrap()
+        };
+        let (mut plain, mut blocked) = (shrink(0), shrink(16));
+        for (x, y, d, w) in ridge_rows(37, 2, 5) {
+            plain.step(&x, &[y], d, w);
+            blocked.step(&x, &[y], d, w);
+        }
+        assert!(blocked.cov.has_pending(), "row 37 should sit mid-block");
+        assert!(blocked.slow.as_ref().unwrap().cov.has_pending());
+        plain.blend_toward_long_run();
+        blocked.blend_toward_long_run();
+        assert!(!blocked.cov.has_pending());
+        assert!(!blocked.slow.as_ref().unwrap().cov.has_pending());
+        assert_eq!(blocked.cov.block_rows(), 16);
+        assert_eq!(blocked.slow.as_ref().unwrap().cov.block_rows(), 16);
+        let (a, b) = (
+            plain.coefficients_after_blend(),
+            blocked.coefficients_after_blend(),
+        );
+        assert!((a - b).abs() <= 1e-9 * (1.0 + a.abs()), "{a} vs {b}");
+        // And the blended accumulator goes on holding rows.
+        for (x, y, d, w) in ridge_rows(5, 2, 6) {
+            blocked.step(&x, &[y], d, w);
+        }
+        assert!(blocked.cov.has_pending());
+    }
+
+    /// The held rows are in the state, so a save mid-block resumes the same
+    /// merge on the same rows: bit for bit, both encodings, and the restored
+    /// model keeps holding rows rather than flushing on load.
+    #[test]
+    fn a_state_saved_mid_block_resumes_the_blocked_fit_bit_for_bit() {
+        let rows = ridge_rows(120, 3, 8);
+        for named in [false, true] {
+            let mut one = EwRidge::new(blocked_cfg(3, 32)).unwrap();
+            for (x, y, d, w) in &rows[..23] {
+                one.step(x, &[*y], *d, *w);
+            }
+            assert!(one.cov.has_pending(), "row 23 should sit mid-block");
+            let st = one.state();
+            let bytes = if named {
+                rmp_serde::to_vec_named(&st).unwrap()
+            } else {
+                rmp_serde::to_vec(&st).unwrap()
+            };
+            let restored: State = rmp_serde::from_slice(&bytes).unwrap();
+            let mut two = EwRidge::restore(&restored).unwrap();
+            assert!(
+                two.cov.has_pending(),
+                "the held rows did not survive the save"
+            );
+            assert_eq!(two.cov.block_rows(), 32);
+            for (x, y, d, w) in &rows[23..] {
+                let a = one.step(x, &[*y], *d, *w);
+                let b = two.step(x, &[*y], *d, *w);
+                let bits = |p: &[f64]| p.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+                assert_eq!(bits(&a.pred), bits(&b.pred), "named={named}");
+                assert_eq!(a.n_eff.to_bits(), b.n_eff.to_bits(), "named={named}");
+            }
+            assert_eq!(one.coefficients(), two.coefficients());
+        }
+    }
+
+    /// The settings under which a block cannot pay, or cannot be read,
+    /// are refused with the reason; `0` is the untouched path whatever the
+    /// schedule.
+    #[test]
+    fn gram_block_rows_is_refused_where_it_cannot_pay() {
+        let err = |c: EwRidgeCfg| EwRidge::new(c).err().unwrap_or_default();
+
+        let mut c = blocked_cfg(3, 64);
+        c.window = Some(50.0);
+        assert!(err(c).contains("gram_block_rows and window do not combine"));
+
+        let mut c = blocked_cfg(3, 64);
+        c.solve_every = 0.0;
+        let e = err(c);
+        assert!(
+            e.contains("needs a solve cadence") && e.contains("solve_every = 0"),
+            "{e}"
+        );
+
+        let mut c = blocked_cfg(3, 64);
+        c.max_rows_between_solves = 1;
+        let e = err(c);
+        assert!(e.contains("max_rows_between_solves = 1"), "{e}");
+
+        // 2^30 rows of 4 floats is 32 GiB; the twin doubles it.
+        let mut c = blocked_cfg(3, 1 << 30);
+        c.session_shrink = Some(0.5);
+        c.long_halflife = Some(1e4);
+        let e = err(c);
+        assert!(
+            e.contains("over the 256 MiB budget") && e.contains("64.0 GiB") && e.contains("twin"),
+            "{e}"
+        );
+        // Just inside the budget builds.
+        let mut c = blocked_cfg(3, (256 << 20) / (4 * 8));
+        assert!(EwRidge::new(c.clone()).is_ok());
+        c.gram_block_rows += 1;
+        assert!(err(c).contains("over the 256 MiB budget"));
+
+        let mut c = blocked_cfg(3, 0);
+        c.solve_every = 0.0;
+        c.max_rows_between_solves = 1;
+        assert!(EwRidge::new(c).is_ok(), "0 is off, whatever the schedule");
     }
 }

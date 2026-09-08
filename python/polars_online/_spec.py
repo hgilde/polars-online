@@ -315,6 +315,7 @@ def ewridge(
     long_halflife: float | None = None,
     solve_every: float | None = None,
     max_rows_between_solves: int | None = None,
+    gram_block_rows: int | None = None,
     window: float | None = None,
     window_every: int | None = None,
     **common: Unpack[CommonKwargs],
@@ -352,6 +353,20 @@ def ewridge(
     the product of every decay factor the stream has applied, which a window
     truncates the data of but not the prior) and with ``session_shrink`` (the
     slow twin is a second accumulator under a longer halflife).
+
+    ``gram_block_rows`` holds that many rows back and brings the ``k x k``
+    matrix up to date once per block, by one matrix product instead of one
+    rank-one update per row (docs/ENHANCEMENTS.md E51): ``256`` measured
+    ``6.6x`` faster at a thousand features. The matrix is also brought up to
+    date before every solve, so the block never exceeds the solve cadence and
+    the option is refused where there is none (``solve_every <= 0`` or
+    ``max_rows_between_solves <= 1``), and with ``window``, which snapshots
+    the matrix on every row. ``n_eff`` and the predictions' timing are
+    unchanged to the bit, and so is chunk invariance; the merged matrix is a
+    floating-point sum in a different order, so a blocked fit's coefficients
+    agree with an unblocked fit's to rounding, not bit for bit. Mid-block the
+    held rows are in the state file, ``B * (n_features + intercept)`` floats
+    per instance (twice with ``session_shrink``), refused over 256 MiB.
 
     ``ridge`` defaults to ``1e-6``. With ``standardize`` (default ``False``)
         the solve is done in correlation form and unscaled afterwards, and a
@@ -399,6 +414,7 @@ def ewridge(
         "long_halflife": long_halflife,
         "solve_every": solve_every,
         "max_rows_between_solves": max_rows_between_solves,
+        "gram_block_rows": gram_block_rows,
         "window": window,
         "window_every": window_every,
     }

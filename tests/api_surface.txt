@@ -132,6 +132,7 @@
     long_halflife = None
     solve_every = None
     max_rows_between_solves = None
+    gram_block_rows = None
     window = None
     window_every = None
     common

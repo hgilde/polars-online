@@ -1152,8 +1152,9 @@ note, not a task.
       the case sklearn wins (large `k`). No throughput ratio goes in the
       README before that exists.
 
-- [ ] 71. **E51, the blocked rank-B Gram update — design settled 2026-09-08,
-      `EwCov` half built and reviewed the same day, `ewridge` wiring open.**
+- [x] 71. **E51, the blocked rank-B Gram update — design settled 2026-09-08,
+      `EwCov` half built and reviewed the same day, `ewridge` wiring built
+      the same day.**
       Three things were measured before any of it was built, because the
       ledger row's own numbers turned out to need qualifying — and then the
       review of the built half found two more, both of which had passed
@@ -1309,15 +1310,83 @@ note, not a task.
       without their flush. `cargo mutants` cannot see any of the Python
       suite, so this module is where the coverage has to be.
 
-      **Still to build (the wiring):** opt-in `gram_block_rows` on `ewridge`
-      only (`block_rows` is taken by `rcov`), flushed before every solve and
-      read, refused with `window`, a budget refusal (`B×k` floats per group,
-      on the pattern of the 256 MiB `bins` hold); Python tests by
-      parametrisation of the existing `ewridge` cases plus the bank-level
-      chunk-invariance, save/resume and JSON-mid-block cases; the benchmark
-      in `ewridge` at `k ∈ {256, 1000, 2000}` reporting single-threaded
-      numbers; `docs/PERFORMANCE.md`, the E51 ledger row, the CHANGELOG and
-      the README.
+      **The wiring, as built (2026-09-08).** `gram_block_rows` on `ewridge`
+      only, `0`/`None` off. In `EwRidgeCfg` the field is `#[serde(default)]`
+      and sits *before* `window`, not at the tail: the crate's compact
+      encoding is positional and `window` is the one skipping field that
+      may be last, so a trailing `usize` would let a saved `window` decode
+      into the new slot. The bank writes the named form, so a state saved
+      before the field loads with `0` and re-saves with the key.
+
+      *Flush discipline.* `EwRidge::new` blocks its `cov` and the slow
+      twin's; `solve()` flushes before it reads; `blend_toward_long_run`
+      flushes both twins before it mixes them and carries `block_rows` into
+      the accumulator it rebuilds; `restore` leaves the pending block where
+      the save left it (a `set_block_rows` there would flush and move the
+      boundary). The bank's `gram_of` reads through a new
+      `EwCov::flushed() -> Cow`, so `gram()` — the one read of the matrix
+      from outside the model — reports the held rows without merging them:
+      a read is not a function of the row sequence and must not move the
+      block. What may flush is
+      unchanged from the design: the block filling, a solve on its
+      clock/row schedule, a session blend. Never a chunk ending, and the
+      bank's chunk-invariance test with blocking on holds every column,
+      `coef_*` included, at 1, 7, 13, 100 and 333 rows a chunk.
+
+      *Three refusals, in `EwRidgeCfg::validate`, surfacing as
+      `ValueError` from the builder and the bank.* With `window` (it
+      snapshots the Gram on every row, so nothing would be held). With
+      `solve_every <= 0` or `max_rows_between_solves <= 1` — a solve every
+      row flushes every row, so a block could never hold more than one;
+      the message names the default (`halflife / 50`, which is `0` for
+      `lam` and an infinite halflife, so those need an explicit
+      `solve_every`). And a budget: `B × (k + intercept) × (1 + twin)`
+      floats over 256 MiB (`GRAM_BLOCK_BUDGET`, the `bins` pattern), the
+      message giving the GiB it would have held.
+
+      *Tests.* Rust, `ewridge::tests` (5): blocked against per-row at
+      blocks 1, 3, 16 and 256 (`pred` to `1e-9` of scale, `n_eff` to the
+      bit); a solve merges the block first; a blend merges both held blocks
+      and keeps the block size; a state saved mid-block resumes bit for bit;
+      each refusal. Python, `tests/test_gram_block.py` (21): the same fit
+      through the bank at blocks 3, 16 and 256; `0` bit-identical to the
+      untouched path; the chunk sweep above; save mid-block and resume bit
+      for bit; the held rows legible in the JSON export (`n_held ×
+      (k + 1)` values, intercept slot included); `gram()` mid-block
+      reporting the held rows and moving nothing; a session change blending
+      the held block first; every refusal, including the two default
+      cadences; the budget message; and a state file written before the
+      field existed — made by stripping the key from a current file with a
+      sixty-line msgpack codec in the test, since the loader cannot tell the
+      two apart — loading with blocking off, continuing to the bit and
+      re-saving with the key. `tests/test_semantics_all_models.py` gained a
+      `VARIANTS` list with a blocked `ewridge` (block 5 against a 4-row
+      cadence, so every solve merges a partial block), swept through null
+      policy, warm-up, weights, resets and the rest of the contract, and
+      through `test_predict`'s row oracle; it is a second list because
+      `test_model_registry` holds `MODELS` to one entry per model, and the
+      first gate run said so.
+
+      *Measured*, `crates/online-core/examples/gram_block_bench.rs`, the
+      `EwRidge::step` — prediction, cross-moments and Gram — single-threaded
+      (`Par::Seq`), one core, this machine; rows per second and the ratio
+      to the per-row update:
+
+      | k | solve | per row | block 64 | block 256 |
+      |---|---|---|---|---|
+      | 256 | never | 91,214 | 372,772 (4.1×) | 464,135 (5.1×) |
+      | 256 | every 512 rows | 85,578 | 288,352 (3.4×) | 347,461 (4.1×) |
+      | 1,000 | never | 5,650 | 28,593 (5.1×) | 37,167 (6.6×) |
+      | 1,000 | every 512 rows | 5,711 | 20,863 (3.7×) | 23,719 (4.2×) |
+      | 2,000 | never | 1,415 | 6,544 (4.6×) | 8,380 (5.9×) |
+      | 2,000 | every 512 rows | 1,309 | 4,435 (3.4×) | 5,644 (4.3×) |
+
+      The `never` rows are the update alone, which is what the block
+      changes; a real cadence puts the same `O(k³)` solve on both sides and
+      dilutes the ratio — at `k = 2,000` a solve costs ~30 ms whichever way
+      the Gram was built, and every 512 rows that is a third of the blocked
+      path's time. The ledger's 5–10× is honest for the update, single-
+      threaded; the number a bank sees is that, times how rarely it solves.
 
 - [ ] 68. **README clarity pass, begun 2026-09-07.** Going through the
       reader-facing prose and fixing phrasing that only parses if the reader
