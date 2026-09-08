@@ -2,6 +2,7 @@
 //! state, fan-out over (spec x group) on the bank's pool (pool.rs), versioned
 //! msgpack save/load.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -13,6 +14,7 @@ use polars_utils::aliases::PlHashMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::rows::FeatureRows;
 use crate::spec::{ModelKind, Spec};
 use crate::stream::{AnyModel, ChunkOut, Stream, StreamState, combo_labels};
 use crate::summary::{DataSummary, Role, SummaryRow, describe_frame, summary_frame};
@@ -102,7 +104,7 @@ fn session_hash(v: Option<&str>) -> u64 {
 /// only when finite, so null and NaN are both "no target". The clock is the
 /// one column where null is an *error*, and that is checked at extraction.
 struct SpecColumns {
-    features: Vec<Vec<f64>>,
+    features: FeatureRows,
     targets: Vec<Vec<f64>>,
     clock: Option<Vec<f64>>,
     session: Option<Vec<u64>>,
@@ -146,6 +148,17 @@ fn f64_column(
     name: &str,
     layout: Layout<'_>,
 ) -> PolarsResult<Vec<f64>> {
+    let s = f64_series(df, spec, role, name)?;
+    let ca = s.f64()?;
+    if let (Some(perm), Ok(slice)) = (layout, ca.cont_slice()) {
+        return Ok(perm.iter().map(|&i| slice[i]).collect());
+    }
+    Ok(gathered(materialized(ca), layout))
+}
+
+/// The column as a `Float64` series, in the frame's own order: the dtype
+/// check and the cast that every numeric read shares.
+fn f64_series(df: &DataFrame, spec: &Spec, role: &str, name: &str) -> PolarsResult<Series> {
     let col = column(df, spec, role, name)?;
     let dtype = col.dtype();
     if !(dtype.is_numeric() || matches!(dtype, DataType::Boolean | DataType::Null)) {
@@ -155,11 +168,13 @@ fn f64_column(
             spec.name, role, name, dtype, name
         );
     }
-    let s = col.as_materialized_series().cast(&DataType::Float64)?;
-    let ca = s.f64()?;
-    if let (Some(perm), Ok(slice)) = (layout, ca.cont_slice()) {
-        return Ok(perm.iter().map(|&i| slice[i]).collect());
-    }
+    col.as_materialized_series().cast(&DataType::Float64)
+}
+
+/// The values of a `Float64` column as one vector, nulls as NaN, in the
+/// frame's own order -- the read for a column that is chunked or has nulls,
+/// which `cont_slice` refuses.
+fn materialized(ca: &Float64Chunked) -> Vec<f64> {
     let mut v: Vec<f64> = Vec::with_capacity(ca.len());
     for arr in ca.downcast_iter() {
         match arr.validity() {
@@ -169,7 +184,38 @@ fn f64_column(
             _ => v.extend_from_slice(arr.values().as_slice()),
         }
     }
-    Ok(gathered(v, layout))
+    v
+}
+
+/// The spec's feature columns as one row-major block (docs/PERFORMANCE.md
+/// §20). Each column is cast in the frame's order and read in place where
+/// it is contiguous; the layout gather and the transpose are one tiled
+/// pass over all of them, so a wide chunk is never held as `k` separate
+/// vectors first.
+fn feature_rows(
+    df: &DataFrame,
+    spec: &Spec,
+    layout: Layout<'_>,
+    par: bool,
+) -> PolarsResult<FeatureRows> {
+    let series = map_maybe_par::<_, _, PolarsResult<Vec<Series>>>(&spec.features, par, |c| {
+        f64_series(df, spec, "feature", c)
+    })?;
+    // In place where the column is one null-free chunk, a copy otherwise.
+    fn source(s: &Series) -> PolarsResult<Cow<'_, [f64]>> {
+        let ca = s.f64()?;
+        Ok(match ca.cont_slice() {
+            Ok(slice) => Cow::Borrowed(slice),
+            Err(_) => Cow::Owned(materialized(ca)),
+        })
+    }
+    let sources: Vec<Cow<'_, [f64]>> = if par {
+        series.par_iter().map(source).collect::<PolarsResult<_>>()?
+    } else {
+        series.iter().map(source).collect::<PolarsResult<_>>()?
+    };
+    let cols: Vec<&[f64]> = sources.iter().map(|s| &s[..]).collect();
+    Ok(FeatureRows::from_columns(&cols, df.height(), layout, par))
 }
 
 /// The order a spec's columns are extracted in: `None` is the frame's own
@@ -286,6 +332,13 @@ fn label_column(
 /// `tests/chunk_plan.rs` can run the same frames on both sides of it.
 pub const PAR_MIN_ROWS: usize = 4096;
 
+/// The same threshold in feature values, for a chunk that is wide rather
+/// than tall: at `k = 10,000` a chunk of a few hundred rows is tens of
+/// megabytes to cast and transpose, well worth a dispatch, and half a
+/// megabyte of features is not the `.over()` case above. The block itself
+/// is allocated on the calling thread either way.
+const PAR_MIN_CELLS: usize = 1 << 16;
+
 /// `items.par_iter().map(f)` when `par`, the same on this thread otherwise.
 fn map_maybe_par<T, R, C>(items: &[T], par: bool, f: impl Fn(&T) -> R + Sync + Send) -> C
 where
@@ -329,12 +382,8 @@ fn extract(
     layout: Layout<'_>,
 ) -> PolarsResult<SpecColumns> {
     let optional = |name: &str| scoring && df.get_column_index(name).is_none();
-    let par = df.height() >= PAR_MIN_ROWS;
-    let features = || -> PolarsResult<Vec<Vec<f64>>> {
-        map_maybe_par(&spec.features, par, |c| {
-            f64_column(df, spec, "feature", c, layout)
-        })
-    };
+    let par = df.height() >= PAR_MIN_ROWS || df.height() * spec.features.len() >= PAR_MIN_CELLS;
+    let features = || feature_rows(df, spec, layout, par);
     let targets = || -> PolarsResult<Vec<Vec<f64>>> {
         // A comparison's targets are residual fields of two other specs'
         // output, which the bank fills in once those have run

@@ -164,8 +164,13 @@ pub struct Sgd {
     /// AdaGrad accumulators per target (empty for the other schedules).
     g2: Vec<Vec<f64>>,
     w_sum: f64,
+    /// The standardized row `[1, z]` under a scaler; unused without one,
+    /// where the model reads `x` in place.
     #[serde(skip)]
     zbuf: Vec<f64>,
+    /// The raw row `[1, x]` the scaler is updated with, under a scaler.
+    #[serde(skip)]
+    rawbuf: Vec<f64>,
     /// Scratch for the projection.
     #[serde(skip)]
     pbuf: crate::constraint::Scratch,
@@ -212,6 +217,7 @@ impl TryFrom<SgdV3> for Sgd {
             g2,
             w_sum,
             zbuf: vec![],
+            rawbuf: vec![],
             pbuf: crate::constraint::Scratch::default(),
             learned: Vec::new(),
         })
@@ -243,6 +249,7 @@ impl Sgd {
             g2,
             w_sum: 0.0,
             zbuf: vec![0.0; k],
+            rawbuf: vec![0.0; k],
             pbuf: crate::constraint::Scratch::default(),
             learned: Vec::new(),
             cfg,
@@ -342,57 +349,81 @@ impl Sgd {
         }
     }
 
-    /// `[1, x]` standardized against the scaler as it stands, as `step`
-    /// rewrites `zbuf` before its own update.
-    fn standardized(&self, x: &[f64]) -> Vec<f64> {
-        let off = usize::from(self.cfg.add_intercept);
-        let scales = self.scales();
-        (0..self.cfg.k_total())
-            .map(|i| {
-                let raw = if i < off { 1.0 } else { x[i - off] };
-                match &self.scaler {
-                    Some(sc) if i >= off => (raw - sc.mean(i)) / scales[i],
-                    _ => raw,
-                }
-            })
-            .collect()
-    }
-
     fn ensure_buffers(&mut self) {
-        if self.zbuf.len() != self.cfg.k_total() {
-            self.zbuf = vec![0.0; self.cfg.k_total()];
+        let k = self.cfg.k_total();
+        if self.zbuf.len() != k {
+            self.zbuf = vec![0.0; k];
+        }
+        if self.rawbuf.len() != k {
+            self.rawbuf = vec![0.0; k];
         }
     }
 }
 
+thread_local! {
+    /// `predict`'s standardized row (see there).
+    static PREDICT_Z: std::cell::RefCell<Vec<f64>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `x` standardized against `sc` as it stands: feature `i` sits in slot
+/// `off + i` of the scaler, and is divided by its running sd, or by 1 while
+/// it has no spread (the per-slot scale of [`Sgd::scales`]). Lazy: `step`
+/// writes it into the model's buffer and `predict` into the thread's, with
+/// no vector of scales in between.
+#[inline]
+fn standardized<'a>(sc: &'a EwDiag, off: usize, x: &'a [f64]) -> impl Iterator<Item = f64> + 'a {
+    x.iter().enumerate().map(move |(i, &xi)| {
+        let s = off + i;
+        let v = sc.var(s);
+        let scale = if crate::variance_is_usable(v, sc.raw(s)) {
+            v.sqrt()
+        } else {
+            1.0
+        };
+        (xi - sc.mean(s)) / scale
+    })
+}
+
+/// `beta · [1, z]`: the intercept's coefficient -- its `z` is the constant
+/// 1 -- then `z` against the feature coefficients, one running sum in
+/// index order, the order the model has always summed in.
+#[inline]
+fn dot(beta: &[f64], off: usize, z: &[f64]) -> f64 {
+    let b = &beta[off..];
+    debug_assert_eq!(b.len(), z.len());
+    let s = if off == 1 { beta[0] } else { 0.0 };
+    z.iter().zip(b).fold(s, |s, (zi, bi)| s + zi * bi)
+}
+
 impl OnlineModel for Sgd {
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
-        self.ensure_buffers();
-        let k = self.cfg.k_total();
         let m = self.cfg.n_targets;
         let off = usize::from(self.cfg.add_intercept);
         let lam = self.cfg.decay.factor(d_clock);
 
-        if self.cfg.add_intercept {
-            self.zbuf[0] = 1.0;
-            self.zbuf[1..].copy_from_slice(x);
-        } else {
-            self.zbuf.copy_from_slice(x);
-        }
-
-        // Standardize against the moments from BEFORE this row, so the scaling
-        // cannot see the row it is scaling (ENHANCEMENTS E24). The raw values
-        // are kept to update the scaler afterwards.
-        let raw_z: Vec<f64> = if self.scaler.is_some() {
-            self.zbuf.clone()
-        } else {
-            Vec::new()
-        };
-        if let Some(sc) = &self.scaler {
-            let means: Vec<f64> = (0..k).map(|i| sc.mean(i)).collect();
-            let scales = self.scales();
-            for (i, z) in self.zbuf.iter_mut().enumerate().skip(off) {
-                *z = (*z - means[i]) / scales[i];
+        // The row the model sees. Without a scaler it is `x` itself, the
+        // intercept's constant 1 folded into `dot` and the update below:
+        // copying `[1, x]` in front of every row was a tenth of a wide step
+        // (docs/PERFORMANCE.md §20). With one, `[1, z]` is standardized
+        // against the moments from BEFORE this row, so the scaling cannot
+        // see the row it is scaling (ENHANCEMENTS E24); the raw `[1, x]` is
+        // kept to update the scaler afterwards.
+        if self.scaler.is_some() {
+            self.ensure_buffers();
+            let Self {
+                scaler,
+                zbuf,
+                rawbuf,
+                ..
+            } = self;
+            let sc = scaler.as_ref().expect("checked above");
+            if off == 1 {
+                zbuf[0] = 1.0;
+                rawbuf[0] = 1.0;
+            }
+            rawbuf[off..].copy_from_slice(x);
+            for (z, v) in zbuf[off..].iter_mut().zip(standardized(sc, off, x)) {
+                *z = v;
             }
         }
 
@@ -419,13 +450,24 @@ impl OnlineModel for Sgd {
             self.learned.clear();
             self.learned.resize(m, false);
         }
+        // The rate every slot shares this row, or `None` under AdaGrad,
+        // whose rate is per slot. `inv_scaling`'s power is one `powf` a
+        // row, not one a slot.
+        let lr_row = match self.cfg.schedule {
+            LearningRate::Constant => Some(self.cfg.learning_rate),
+            LearningRate::InvScaling { power } => {
+                Some(self.cfg.learning_rate / (1.0 + n_eff).powf(power))
+            }
+            LearningRate::AdaGrad => None,
+        };
+        let (lr0, l2, clip) = (self.cfg.learning_rate, self.cfg.l2, self.cfg.clip_gradient);
+        let z: &[f64] = if self.scaler.is_some() {
+            &self.zbuf[off..]
+        } else {
+            x
+        };
         for j in 0..m {
-            let eta: f64 = self
-                .zbuf
-                .iter()
-                .zip(&self.beta[j])
-                .map(|(z, b)| z * b)
-                .sum();
+            let eta = dot(&self.beta[j], off, z);
             let p = self.link(eta);
             if ready {
                 pred[j] = p;
@@ -435,30 +477,42 @@ impl OnlineModel for Sgd {
                 continue;
             }
             let d = self.dloss(p, yj);
-            for i in 0..k {
-                let mut g = d * self.zbuf[i] * weight;
-                if i >= off {
-                    g += self.cfg.l2 * self.beta[j][i];
+            // Per slot: `g = d * z_i * w`, plus `l2 * beta_i` off the
+            // intercept, clipped; `beta_i -= lr * g`. The intercept's `z`
+            // is 1 (`d * 1 * w` is `d * w` exactly), and it is not
+            // penalised.
+            let beta = &mut self.beta[j];
+            match lr_row {
+                Some(lr) => {
+                    if off == 1 {
+                        let g = (d * 1.0 * weight).clamp(-clip, clip);
+                        beta[0] -= lr * g;
+                    }
+                    for (b, &zi) in beta[off..].iter_mut().zip(z) {
+                        let g = (d * zi * weight + l2 * *b).clamp(-clip, clip);
+                        *b -= lr * g;
+                    }
                 }
-                g = g.clamp(-self.cfg.clip_gradient, self.cfg.clip_gradient);
-                let lr = match self.cfg.schedule {
-                    LearningRate::Constant => self.cfg.learning_rate,
-                    LearningRate::InvScaling { power } => {
-                        self.cfg.learning_rate / (1.0 + n_eff).powf(power)
+                None => {
+                    let g2 = &mut self.g2[j];
+                    if off == 1 {
+                        let g = (d * 1.0 * weight).clamp(-clip, clip);
+                        g2[0] += g * g;
+                        beta[0] -= lr0 / (g2[0].sqrt() + 1e-8) * g;
                     }
-                    LearningRate::AdaGrad => {
-                        self.g2[j][i] += g * g;
-                        self.cfg.learning_rate / (self.g2[j][i].sqrt() + 1e-8)
+                    for ((b, g2), &zi) in beta[off..].iter_mut().zip(&mut g2[off..]).zip(z) {
+                        let g = (d * zi * weight + l2 * *b).clamp(-clip, clip);
+                        *g2 += g * g;
+                        *b -= lr0 / (g2.sqrt() + 1e-8) * g;
                     }
-                };
-                self.beta[j][i] -= lr * g;
+                }
             }
             if let Some(l) = self.learned.get_mut(j) {
                 *l = true;
             }
         }
         if let Some(sc) = &mut self.scaler {
-            sc.update(&raw_z, lam, weight);
+            sc.update(&self.rawbuf, lam, weight);
         }
         // Project after the scaler moved: the bounds live in the caller's
         // units, and in standardized coordinates they move with the scales,
@@ -494,10 +548,22 @@ impl OnlineModel for Sgd {
         let n_eff = self.w_sum;
         let mut pred = vec![f64::NAN; self.cfg.n_targets];
         if n_eff >= self.cfg.min_periods {
-            let z = self.standardized(x);
-            for (j, p) in pred.iter_mut().enumerate() {
-                let eta: f64 = z.iter().zip(&self.beta[j]).map(|(z, b)| z * b).sum();
-                *p = self.link(eta);
+            let off = usize::from(self.cfg.add_intercept);
+            let predict_with = |z: &[f64], pred: &mut [f64]| {
+                for (j, p) in pred.iter_mut().enumerate() {
+                    *p = self.link(dot(&self.beta[j], off, z));
+                }
+            };
+            match &self.scaler {
+                None => predict_with(x, &mut pred),
+                // `&self`, so the standardized row goes into a buffer of
+                // the thread's rather than one of the model's, and not a
+                // fresh vector per row.
+                Some(sc) => PREDICT_Z.with_borrow_mut(|z| {
+                    z.clear();
+                    z.extend(standardized(sc, off, x));
+                    predict_with(z, &mut pred);
+                }),
             }
         }
         Step {

@@ -197,14 +197,15 @@ impl DataSummary {
     }
 
     /// Row `i` of the stream's input columns: one more row fed, its values
-    /// into the column statistics, its clock into the range. `targets` has
-    /// one vector per spec target (empty until the bank fills a
-    /// comparison's), `weight` the weight column's value when the spec has
-    /// one; `clock` is `None` on a row-count clock.
+    /// into the column statistics, its clock into the range. `features` is
+    /// the row's feature values, `targets` has one vector per spec target
+    /// (empty until the bank fills a comparison's), `weight` the weight
+    /// column's value when the spec has one; `clock` is `None` on a
+    /// row-count clock.
     #[inline]
     pub fn feed_row(
         &mut self,
-        features: &[Vec<f64>],
+        features: &[f64],
         targets: &[Vec<f64>],
         weight: Option<f64>,
         clock: Option<f64>,
@@ -219,8 +220,8 @@ impl DataSummary {
         // add up to the rows fed.
         let n_cols = self.columns.len();
         let nt = n_cols.saturating_sub(nf + usize::from(weight.is_some()));
-        for (c, f) in self.columns.iter_mut().zip(features) {
-            c.push(f[i], n_row, inv_row);
+        for (c, &f) in self.columns.iter_mut().zip(features) {
+            c.push(f, n_row, inv_row);
         }
         for (k, c) in self.columns[nf.min(n_cols)..]
             .iter_mut()

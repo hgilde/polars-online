@@ -13,6 +13,7 @@ use online_core::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::rows::FeatureRows;
 use crate::spec::{FloatOrList, ModelKind, Spec};
 use crate::summary::DataSummary;
 
@@ -1368,6 +1369,15 @@ pub fn usable(v: f64) -> bool {
     v.is_finite() && v.abs() <= INPUT_BOUND
 }
 
+/// [`usable`] over every value of a row. Not `Iterator::all`: its early
+/// exit is worth nothing on rows that are nearly always usable, and a plain
+/// fold over the compare vectorises where the exit does not
+/// (docs/PERFORMANCE.md §20).
+#[inline]
+pub fn all_usable(row: &[f64]) -> bool {
+    row.iter().fold(true, |ok, &v| ok & usable(v))
+}
+
 /// True when this target has not reached its own warmup threshold yet.
 #[inline]
 fn step_n_eff_below(n_eff: f64, min_periods: &[f64], target: usize) -> bool {
@@ -1896,7 +1906,7 @@ impl Stream {
         &mut self,
         spec: &Spec,
         cfg: &online_core::ClockCfg,
-        features: &[Vec<f64>],
+        features: &FeatureRows,
         targets: &[Vec<f64>],
         clock: Option<&[f64]>,
         session: Option<&[u64]>,
@@ -1920,7 +1930,7 @@ impl Stream {
             // Null arrives as NaN from extraction, so one `usable` covers
             // null, NaN, infinity and the bound.
             let w = weight.map(|w| w[i]);
-            let accept = features.iter().all(|f| usable(f[i])) && w.map(usable).unwrap_or(true);
+            let accept = all_usable(features.row(i)) && w.map(usable).unwrap_or(true);
             let c = clock.map(|c| c[i]);
             // A clock below the previous row's, before the schedule decides
             // what to do about it; the summary counts them (task 35).
@@ -1974,7 +1984,7 @@ impl Stream {
             for plan in plans.iter().filter(|p| p.direct()) {
                 let i = plan.i;
                 summary.feed_row(
-                    features,
+                    features.row(i),
                     targets,
                     weight.map(|w| w[i]),
                     clock.map(|c| c[i]),
@@ -2082,7 +2092,7 @@ impl Stream {
     fn apply_label_delay(
         &mut self,
         plans: &mut Vec<RowPlan>,
-        features: &[Vec<f64>],
+        features: &FeatureRows,
         targets: &[Vec<f64>],
     ) -> Vec<PendingRow> {
         let Some(delay) = self.label_delay else {
@@ -2160,7 +2170,7 @@ impl Stream {
                 remaining: delay,
                 d_clock: plan.d_clock,
                 w: plan.w,
-                xs: features.iter().map(|f| f[i]).collect(),
+                xs: features.row(i).to_vec(),
                 ys: targets
                     .iter()
                     .map(|t| Some(t[i]).filter(|v| usable(*v)))
@@ -2211,7 +2221,7 @@ impl Stream {
         &self,
         spec: &Spec,
         cfg: &online_core::ClockCfg,
-        features: &[Vec<f64>],
+        features: &FeatureRows,
         targets: &[Vec<f64>],
         clock: Option<&[f64]>,
         session: Option<&[u64]>,
@@ -2230,7 +2240,7 @@ impl Stream {
         let mut last_accepted: Option<(usize, usize)> = None;
         for (ri, &row) in rows.iter().enumerate() {
             let i = base + ri;
-            let accept = features.iter().all(|f| usable(f[i]));
+            let accept = all_usable(features.row(i));
             // Every row is the first after the last learned one.
             let adv =
                 self.clock
@@ -2327,7 +2337,7 @@ impl Stream {
         spec: &Spec,
         plans: &[RowPlan],
         models: &[(String, AnyModel)],
-        features: &[Vec<f64>],
+        features: &FeatureRows,
         targets: &[Vec<f64>],
         out: &mut ChunkOut,
         n_rows: usize,
@@ -2552,7 +2562,6 @@ impl RowPlan {
 /// concurrently without sharing buffers.
 #[derive(Default)]
 pub struct Scratch {
-    xs: Vec<f64>,
     ys: Vec<Option<f64>>,
     r: Vec<f64>,
     sig: Vec<f64>,
@@ -2647,7 +2656,7 @@ impl Instance<'_> {
 fn run_instance(
     inst: &mut Instance<'_>,
     plans: &[RowPlan],
-    features: &[Vec<f64>],
+    features: &FeatureRows,
     targets: &[Vec<f64>],
     // Rows released from the `label_delay` buffer, indexed by
     // `RowPlan::pending`; empty for every spec without a delay (E47).
@@ -2685,25 +2694,26 @@ fn run_instance(
         let (i, ri, w) = (plan.i, plan.ri, plan.w);
         let (emit, learn) = (plan.emit, plan.learn);
         let sc = &mut *inst.scratch;
-        sc.xs.clear();
         sc.ys.clear();
-        if plan.direct() {
-            sc.xs.extend(features.iter().map(|f| f[i]));
+        // The features go to the model as the chunk holds them: one
+        // contiguous row, not a gather (docs/PERFORMANCE.md §20).
+        let xs: &[f64] = if plan.direct() {
             sc.ys
                 .extend(targets.iter().map(|t| Some(t[i]).filter(|f| usable(*f))));
+            features.row(i)
         } else {
             // A row released from the `label_delay` buffer: the same values,
             // stepped now instead of where they arrived (E47).
             let row = &released[plan.pending];
-            sc.xs.extend_from_slice(&row.xs);
             sc.ys.extend_from_slice(&row.ys);
-        }
+            &row.xs
+        };
         let m_targets = sc.ys.len();
 
         let mut step = if learn {
-            inst.model.get_mut().step(&sc.xs, &sc.ys, plan.d_clock, w)
+            inst.model.get_mut().step(xs, &sc.ys, plan.d_clock, w)
         } else {
-            inst.model.get().predict(&sc.xs, &sc.ys, plan.d_clock)
+            inst.model.get().predict(xs, &sc.ys, plan.d_clock)
         };
         let n_slots = step.pred.len();
         // `ew_cov` has no targets; its slots are statistics, so every one
