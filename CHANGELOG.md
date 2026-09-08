@@ -7,7 +7,21 @@ carries breaking changes.
 
 ## [Unreleased]
 
-Nothing yet.
+### Documentation
+
+- **"How does this compare to scikit-learn?" now has an answer** (task 72).
+  A new README section, "Against scikit-learn", and `docs/PERFORMANCE.md` §19
+  behind it, measured with `scripts/sklearn_comparison.py` — scikit-learn is
+  not a dependency; the script says so and exits if it is missing. On a
+  stationary stream at `k = 20` nothing separates the contenders (0.9826 to
+  0.9831 out-of-sample R²); under drifting coefficients a halflife on a clock
+  wins (`sgd` 0.9906, `ewridge` 0.9878, `SGDRegressor` 0.9820 batched, 0.9840
+  row by row). The throughput difference is a difference in semantics:
+  sklearn's mini-batch form predicts from a state up to 999 rows stale, and
+  asked for a prediction from the state as it stands it runs at 3,300
+  rows/second against `sgd`'s 5.8M. Where sklearn wins is stated with the
+  same numbers: at `k = 10,000`, `ewridge` carries 860 MB of state and 51
+  rows/second against 0.31 MB and 17,221, and `sgd` is the `O(k)` answer.
 
 ## [0.3.1] — 2026-09-08
 

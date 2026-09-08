@@ -1143,10 +1143,10 @@ note, not a task.
       bandwidth trades that lag against noise. `polars_online.spec`'s
       docstring and `llms.txt` gain a line each.
 
-- [ ] 72. **Against `sklearn.linear_model.SGDRegressor` — analysis done
-      2026-09-08, the measurement open.** Written because "how does this
-      compare to sklearn" is the first question a reader has and the README
-      answers it nowhere.
+- [x] 72. **Against `sklearn.linear_model.SGDRegressor` — analysis done
+      2026-09-08, measured and written up the same day.** Written because
+      "how does this compare to sklearn" is the first question a reader has
+      and the README answered it nowhere.
 
       **The comparison is not the one the name suggests.** `SGDRegressor`'s
       counterpart here is `po.spec.sgd`, which this repo calls the cheap
@@ -1181,11 +1181,53 @@ note, not a task.
       `squared_epsilon_insensitive`; `l1`/elastic net lives in `lasso`,
       solved exactly by coordinate descent rather than by a subgradient.
 
-      **Open, and deliberately not claimed until it is run**: a measured
-      comparison on one generated stream — out-of-sample error and rows/sec
-      for `SGDRegressor.partial_fit` against `sgd` and `ewridge`, including
-      the case sklearn wins (large `k`). No throughput ratio goes in the
-      README before that exists.
+      **Measured, on one generated stream** (`scripts/sklearn_comparison.py`,
+      scikit-learn 1.9.0, which is deliberately *not* a dependency of this
+      project — the script says so and exits if it is missing).
+      `docs/PERFORMANCE.md` §19 has the four tables; the README gains an
+      "Against scikit-learn" section with one of them. Every contender is
+      swept over a small grid of its own settings and reported at its best,
+      so the comparison is between designs and not between defaults, and
+      sklearn is given the setup its own documentation prescribes for
+      out-of-core work — an online `StandardScaler`, then `partial_fit`.
+
+      What the numbers said, including where they went against this library:
+
+      - *Accuracy is not the difference.* On a stationary stream at
+        `k = 20` everything lands on the same noise ceiling (0.9826 to
+        0.9831 out-of-sample R²). The gap opens only under drift, and it is
+        about forgetting: `sgd` 0.9906 and `ewridge` at `halflife=500`
+        0.9878, against `SGDRegressor`'s 0.9820 batched and 0.9840 row by
+        row. A halflife on a clock beats a learning rate tuned in rows —
+        which is the claim this repo has been making, now with a number.
+      - *The throughput gap is a difference in semantics, and saying so
+        matters more than the ratio.* sklearn's fast form is one update per
+        1,000-row batch, whose predictions are up to 999 rows stale;
+        2.2M rows/s. Ours is one update per row: 5.8M for `sgd`, 570k for
+        `ewridge` refitting every row, 5.0M at a 100-row solve cadence. Ask
+        sklearn for our guarantee — `partial_fit` per row — and it is 3,300
+        rows/s, and that gap is Python's per-row overhead, not the
+        algorithm. The README says that in those words rather than quoting
+        1,700×.
+      - *A grid is nearly free on one side only*: six penalties cost sklearn
+        3.66× the work and this 1.40×.
+      - *Where sklearn wins, measured rather than conceded in prose.* At
+        `k = 10,000`, `ewridge` carries 860 MB of state (`save_bytes`) and
+        runs at 51 rows/s against 0.31 MB (a pickle of the fitted estimator
+        and its scaler) and 17,221 rows/s. `gram_block_rows=256` buys 5.2×
+        of the throughput and none of the memory. `sgd` is the `O(k)`
+        answer here — 1.06 MB, 6,206 rows/s — and is *still* slower than
+        sklearn at that width, for the same per-row reason. The README says
+        that too.
+
+      Two measurement mistakes worth recording, both caught by the numbers
+      looking wrong rather than by review. Peak RSS is useless as a memory
+      proxy here — the frame and the numpy array dominate it — so the state
+      comparison is `save_bytes()` against `pickle.dumps`, which is what a
+      deployment actually keeps; and the first wide run had `ewridge`
+      solving every row at `k = 1,000` (`solve_every=0.0` with
+      `halflife=inf`), which measured a `O(k³)` solve per row at 206 rows/s
+      and would have been a strawman of this library, not of sklearn.
 
 - [x] 71. **E51, the blocked rank-B Gram update — design settled 2026-09-08,
       `EwCov` half built and reviewed the same day, `ewridge` wiring built

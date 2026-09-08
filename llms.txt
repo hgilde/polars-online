@@ -78,6 +78,9 @@ bank.save("bank.state")
   shares
 - [Models](https://github.com/hgilde/polars-online#models): all 21, each with its
   recursion, its builder and its Rust source
+- [Against scikit-learn](https://github.com/hgilde/polars-online#against-scikit-learn):
+  `SGDRegressor` measured beside `sgd` and `ewridge` -- accuracy, throughput, what a
+  prediction saw, and the wide-`k` case where sklearn wins
 
 ## API reference
 
