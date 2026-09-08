@@ -47,6 +47,9 @@ bank.save("bank.state")
 - **Decay runs on the clock, not on row count.** `halflife` is in the units of the
   `clock` column, and `max_dclock`, `session` / `session_gap` and `on_clock_reset` say
   what happens across a gap, a session boundary or a clock that goes backwards.
+- **The clock need not be a time.** Sort by a feature, clock on it, and the halflife is
+  a bandwidth in that feature's units: the fit is a local regression in it (LOESS with a
+  one-sided exponential kernel), and `ew_cov` clocked the same way gives local moments.
 - **`n_eff` is accumulated weight**, before this row's update and before its own decay —
   the same definition in every model. `min_periods` is in those units, so it is a
   weight, not a number of rows.

@@ -37,6 +37,22 @@ carries breaking changes.
   off, continues to the bit, and re-saves carrying the new key; a bank with
   no `ewridge` re-saves byte for byte.
 
+### Documentation
+
+- **The clock does not have to be a time, and now the headline says so.** It
+  is any monotone numeric column, so sorting a frame by one of its features
+  and clocking on that feature makes `halflife` a bandwidth in the feature's
+  units: each row is fit on the rows before it under weight
+  `0.5 ** (Δx / halflife)`, which is a local linear regression with a
+  one-sided exponential kernel. Named in the README's opening list, with an
+  example and the caveats under "A clock that is not time", and in
+  `polars_online.spec` and `llms.txt`. Measured, not asserted: the fit agrees
+  to 1e-12 with a kernel-weighted least squares recomputed from scratch at
+  every row (`tests/test_ewridge.py`), and on `sin(x)` at a bandwidth of 0.25
+  it sits 0.08 from the truth where the best straight line sits 0.39. The
+  kernel is one-sided because a row is scored before it is learned from, so a
+  curve is followed with the lag that implies.
+
 ## [0.3.0] — 2026-09-08
 
 ### Added

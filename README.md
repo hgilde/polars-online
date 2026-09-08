@@ -74,6 +74,15 @@ backwards. One state per group, row weights, warm-up thresholds. Or no clock
 at all: then row order is the clock — and with decay off, the bank is plain
 least squares over everything it has seen, in any row order.
 
+**The clock does not have to be a time.** It is any monotone numeric column,
+so sort a frame by one of its own features and name that feature as the
+clock. The halflife is then a bandwidth in that feature's units, and each row
+is fit on the rows before it under weight `0.5 ** (Δx / halflife)`. That is
+an exponential kernel, so the fit is a *local* regression in that column —
+LOESS in one streaming pass, out of a state that does not grow. Same for the
+moments: clock `ew_cov` on a column and its correlations are local in it.
+[A clock that is not time](#a-clock-that-is-not-time) has the example.
+
 **Two guarantees.** Predictions are out-of-sample by construction. Output is
 chunk-invariant. Both are tests, not intentions.
 
@@ -170,6 +179,48 @@ These parameters are shared by every model.
 | `session_shrink`, `long_halflife` | `ewridge` only: at a session change, mix partway back toward a slow-moving twin |
 
 Per-row decay is `λ = 0.5 ** (Δclock / halflife)`.
+
+### A clock that is not time
+
+The clock is any monotone numeric column, and nothing says the column has to
+be a time. Sort the frame by one of its features and name that feature as the
+clock. `halflife` is then a bandwidth in that feature's units, and every row
+is fit on the rows before it under weight `0.5 ** (Δx / halflife)` — an
+exponential kernel. The fit is a local linear regression, computed in one
+pass with `O(k²)` of state rather than a window of rows.
+
+```python
+curve = df.sort("x0")
+local = po.spec.ewridge(
+    "local",
+    targets=["y"],
+    features=["x0"],
+    clock="x0",                 # the clock is a feature: the decay is a kernel in it
+    halflife=0.5,               # the bandwidth, in x0's own units
+    max_dclock=1.0,             # a wider gap decays as if it were this wide
+    max_rows_between_solves=1,  # refit at every row
+    min_periods=10.0,
+)
+fitted = po.ModelBank([local]).fit_predict(curve).unnest("local")
+```
+
+`pred_y` is the fitted curve read at each row's own `x0`, and `coef` is the
+line through that row's neighbourhood. These are the batch numbers: against a
+kernel-weighted least squares recomputed from scratch at every row they agree
+to 1e-12 (`tests/test_ewridge.py`, `test_a_feature_as_the_clock_is_a_local_linear_regression`).
+
+The kernel is one-sided, because a row is scored before it is learned from.
+On `sin(x)` with a bandwidth of 0.25 the fit sits 0.08 from the truth where
+the best straight line sits 0.39, and it follows the curve with the lag that
+looking only backwards implies. The bandwidth trades that lag against noise:
+at 1.0 the same stream gives 0.29, most of the way back to the line.
+
+Three things carry over unchanged. `features` need not include the clock
+column — with other features the same fit is a varying-coefficient model,
+whose coefficients move along the clock. `group` gives one local fit per key
+from the same pass. And the clock belongs to every model, not to `ewridge`:
+clocked on a feature, `ew_cov` reports moments and correlations local in it,
+and `marginal` does the same pair by pair.
 
 ### Groups, weights and warm-up
 

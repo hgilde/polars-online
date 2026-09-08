@@ -1108,6 +1108,41 @@ note, not a task.
       file pass (6.7s to ~9s), and an injected 8 KB/iter leak is still caught
       (`8.6 KB/iter, gaps [8.7, 8.5, 8.7, 8.5]`).
 
+- [x] 73. **The clock does not have to be a time, and the headline docs did
+      not say so, 2026-09-08.** The user's point, and it was right: the clock
+      is documented as "a monotone numeric column — seconds, cumulative
+      volume, anything", which states the mechanism and leaves the reader to
+      derive the consequence. The consequence is worth a headline. Sort a
+      frame by one of its features, clock on that feature, and `halflife` is
+      a bandwidth in the feature's units — each row fit on the rows before it
+      under weight `0.5 ** (Δx / halflife)`, which is local linear regression
+      with a one-sided exponential kernel, in one pass, out of `O(k²)` of
+      state.
+
+      *Measured before it was written.* An independent oracle — the
+      kernel-weighted least squares that definition describes, recomputed
+      from scratch at every row, with the mean-form ridge and unpenalised
+      intercept the model solves with — agrees with the model to `1.6e-13`
+      at three (halflife, ridge) settings, and the null patterns match, so
+      `min_periods` gates the same rows. On `sin(x)` at a bandwidth of 0.25
+      the fit sits `0.077` from the truth against the best straight line's
+      `0.394`; at 1.0 it is `0.290`, most of the way back to the line. Both
+      are in `tests/test_ewridge.py`
+      (`test_a_feature_as_the_clock_is_a_local_linear_regression`,
+      `test_a_bandwidth_in_the_clock_column_follows_a_curve_a_line_cannot`).
+      `ew_cov` clocked the same way tracks a correlation that moves with the
+      clock column at `corr = 0.91` to the truth — reported here, not
+      claimed with a number in the README.
+
+      *What the docs say, and what they admit.* The README's opening list
+      gains a paragraph and "How a bank sees a stream" gains "A clock that is
+      not time" with a runnable block (so the block test runs it), the
+      varying-coefficient reading, one local fit per `group`, and the caveat
+      that matters: the kernel is one-sided *because* a row is scored before
+      it is learned from, so a curve is followed with a lag, and the
+      bandwidth trades that lag against noise. `polars_online.spec`'s
+      docstring and `llms.txt` gain a line each.
+
 - [ ] 72. **Against `sklearn.linear_model.SGDRegressor` — analysis done
       2026-09-08, the measurement open.** Written because "how does this
       compare to sklearn" is the first question a reader has and the README

@@ -338,3 +338,98 @@ class TestSessionShrink:
                 session_shrink=0.5,
                 long_halflife=1e5,
             )
+
+
+def _batch_local_linear(x, y, halflife, ridge, min_periods):
+    """A one-sided exponential-kernel local linear regression, computed from
+    scratch at every row: for row `i`, the weighted least squares of `y` on
+    `[1, x]` over the rows before it under weight `0.5 ** (dx / halflife)`,
+    read at that row's own `x`. The ridge is on the mean scale with the
+    intercept unpenalised, which is the solve `ewridge` does."""
+    n = len(x)
+    out = np.full(n, np.nan)
+    pen = np.eye(2)
+    pen[0, 0] = 0.0
+    for i in range(1, n):
+        w = 0.5 ** ((x[i - 1] - x[:i]) / halflife)
+        if w.sum() < min_periods:
+            continue
+        xi = np.column_stack([np.ones(i), x[:i]])
+        moments = (xi.T * w) @ xi / w.sum()
+        cross = (xi.T * w) @ y[:i] / w.sum()
+        beta = np.linalg.solve(moments + ridge * pen, cross)
+        out[i] = beta[0] + beta[1] * x[i]
+    return out
+
+
+@pytest.mark.parametrize(("halflife", "ridge"), [(0.25, 1e-9), (0.3, 1e-4), (1.0, 1e-2)])
+def test_a_feature_as_the_clock_is_a_local_linear_regression(halflife, ridge):
+    """The README's "A clock that is not time": sorted by a feature and
+    clocked on it, the decay is a kernel in that feature and the fit is a
+    local linear regression -- LOESS with a one-sided exponential kernel,
+    out of a state that does not grow. The oracle here is the batch fit that
+    definition describes, recomputed at every row; the model's recursion is
+    the only thing under test."""
+    rng = np.random.default_rng(1)
+    n = 1200
+    x = np.sort(rng.uniform(-3.0, 3.0, n))
+    y = np.sin(x) + 0.1 * rng.standard_normal(n)
+    spec = po.spec.ewridge(
+        "loc",
+        targets=["y"],
+        features=["x"],
+        clock="x",
+        halflife=halflife,
+        max_dclock=1.0,
+        ridge=ridge,
+        max_rows_between_solves=1,
+        min_periods=20.0,
+    )
+    got = (
+        po.ModelBank([spec])
+        .fit_predict(pl.DataFrame({"x": x, "y": y}))
+        .unnest("loc")["pred_y"]
+        .to_numpy()
+    )
+    want = _batch_local_linear(x, y, halflife, ridge, 20.0)
+
+    assert np.array_equal(np.isnan(got), np.isnan(want)), "a different set of rows warmed up"
+    fit = ~np.isnan(want)
+    assert fit.sum() > n - 50
+    assert np.abs(got[fit] - want[fit]).max() < 1e-12
+
+
+def test_a_bandwidth_in_the_clock_column_follows_a_curve_a_line_cannot():
+    """What the local fit buys, and what the one-sided kernel costs. On
+    `sin(x)` with a bandwidth of a quarter of a unit the fit sits 0.08 from
+    the truth against a straight line's 0.39 -- but the kernel looks only
+    backwards, because a row is scored before it is learned from, so a curve
+    is followed with the lag that implies. A wider bandwidth is a flatter
+    fit: at `halflife=1.0` the same stream gives 0.29, most of the way back
+    to the line."""
+    rng = np.random.default_rng(1)
+    n = 1200
+    x = np.sort(rng.uniform(-3.0, 3.0, n))
+    y = np.sin(x) + 0.1 * rng.standard_normal(n)
+    df = pl.DataFrame({"x": x, "y": y})
+
+    def local(halflife):
+        spec = po.spec.ewridge(
+            "loc",
+            targets=["y"],
+            features=["x"],
+            clock="x",
+            halflife=halflife,
+            max_dclock=1.0,
+            max_rows_between_solves=1,
+            min_periods=20.0,
+        )
+        return po.ModelBank([spec]).fit_predict(df).unnest("loc")["pred_y"].to_numpy()
+
+    narrow, wide = local(0.25), local(1.0)
+    fit = ~np.isnan(narrow)
+    line = np.polyval(np.polyfit(x, y, 1), x)
+    rms = lambda a: float(np.sqrt(np.mean((a[fit] - np.sin(x[fit])) ** 2)))  # noqa: E731
+
+    assert rms(narrow) < 0.12 < rms(wide) < rms(line)
+    assert rms(line) > 0.35

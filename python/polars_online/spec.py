@@ -16,7 +16,10 @@ sees a stream"; ``docs/PLAN.md`` section 3):
 - ``targets``, ``features``: column names. A target is what the model
   predicts; a feature is what it reads from the same row.
 - ``add_intercept``: prepend a constant 1 to the features (default ``True``).
-- ``clock``: a monotone numeric column; the row count when ``None``.
+- ``clock``: a monotone numeric column; the row count when ``None``. It need
+  not be a time: sort by a feature and clock on it, and ``halflife`` is a
+  bandwidth in that feature's units, which makes the fit a local regression
+  in it (the README's "A clock that is not time").
 - ``halflife`` or ``lam``: the decay, in clock units. A list of halflives
   means one fit per value.
 - ``max_dclock``: a ceiling on the clock delta. Required with ``clock``;
