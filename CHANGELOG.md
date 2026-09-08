@@ -7,6 +7,10 @@ carries breaking changes.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.1] — 2026-09-08
+
 ### Added
 
 - **`ewridge(gram_block_rows=)`** (task 71, `docs/ENHANCEMENTS.md` E51).
