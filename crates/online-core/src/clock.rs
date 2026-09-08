@@ -11,9 +11,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Decay {
     /// `factor = 0.5^(d_clock / halflife)`
-    Halflife(f64),
+    ///
+    /// `inf` is a documented setting -- it means no decay -- so this is one
+    /// of the floats a human-readable encoding has to be told about, or JSON
+    /// writes it as `null` (`crate::humanfloat`). The msgpack the state file
+    /// uses is untouched.
+    Halflife(#[serde(with = "crate::humanfloat::f64_or_tag")] f64),
     /// `factor = lam^d_clock` (with a row-count clock, `lam` per row).
-    Lam(f64),
+    Lam(#[serde(with = "crate::humanfloat::f64_or_tag")] f64),
 }
 
 impl Decay {

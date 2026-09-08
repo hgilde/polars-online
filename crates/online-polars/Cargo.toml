@@ -35,8 +35,8 @@ polars-utils = "=0.55.2"
 rayon.workspace = true
 rmp-serde.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-serde_json = { version = "1", features = ["float_roundtrip"] }
 toml.workspace = true

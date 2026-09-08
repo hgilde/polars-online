@@ -195,6 +195,16 @@ impl PyModelBank {
         this.inner.save_bytes().map_err(PyValueError::new_err)
     }
 
+    /// The state as JSON, for reading. `ValueError` when the state holds a
+    /// value JSON cannot carry, rather than a quietly lossy export.
+    #[pyo3(signature = (pretty = true))]
+    fn save_json_string(slf: &Bound<'_, Self>, pretty: bool) -> PyResult<String> {
+        let this = slf.try_borrow().map_err(|_| busy("save_json_string"))?;
+        this.inner
+            .save_json_string(pretty)
+            .map_err(PyValueError::new_err)
+    }
+
     /// `Bank::load_bytes`; a refusal is a `ValueError` with its reason. The
     /// file itself is read on the Python side (`ModelBank.load`), so that a
     /// missing one is the `FileNotFoundError` `open` raises.

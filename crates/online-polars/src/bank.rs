@@ -1735,6 +1735,61 @@ struct BankHeader {
     schema_version: u32,
 }
 
+/// The lines around a parse failure, so the error names the field rather than
+/// a line number nobody can look up: the export is thousands of lines and the
+/// enclosing keys are what identify the struct.
+fn near(text: &str, line: usize) -> String {
+    if line == 0 {
+        return String::new();
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let lo = line.saturating_sub(4);
+    let hi = line.min(lines.len());
+    let mut out = String::from(", at:");
+    for (i, l) in lines[lo..hi].iter().enumerate() {
+        let n = lo + i + 1;
+        let mark = if n == line { ">" } else { " " };
+        out.push_str(&format!("\n  {mark} {}", l.trim_end()));
+    }
+    out
+}
+
+/// Is `text` the whole of `file`? The JSON is read back into a `BankFile`
+/// and re-encoded, and the msgpack must match the real state byte for byte.
+///
+/// This is the enforcement behind [`online_core::humanfloat`], not a
+/// belt-and-braces check. JSON has no literal for `NaN` or `±inf` and
+/// `serde_json` writes all three as `null` without a word, so every config
+/// float a caller may set to infinity needs annotating -- and the only way
+/// to know one was missed is to read the export back. A `null` where an
+/// `f64` belongs fails to parse, and the byte comparison catches anything
+/// subtler. `O(state)` twice over, paid once at the end of a run.
+///
+/// Note that the interception is in `serde_json`'s *serializer*, not its
+/// formatter: `serialize_f64` sends a non-finite value to `write_null`
+/// before any `Formatter` sees it, so a custom formatter cannot fix this
+/// and the annotation has to be on the field.
+fn json_is_faithful(file: &BankFile, text: &str) -> Result<(), String> {
+    let want = rmp_serde::to_vec_named(file).map_err(|e| e.to_string())?;
+    let back: BankFile = serde_json::from_str(text).map_err(|e| {
+        format!(
+            "the JSON export dropped a value the state holds ({e}){}. A non-finite float needs \
+             `#[serde(with = \"crate::humanfloat::f64_or_tag\")]` on its field in online-core; \
+             without it serde_json writes NaN and +/-inf as null",
+            near(text, e.line())
+        )
+    })?;
+    let got = rmp_serde::to_vec_named(&back).map_err(|e| e.to_string())?;
+    if got != want {
+        return Err(
+            "the JSON export did not read back as the state it came from; a field's \
+             human-readable encoding does not round-trip"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize)]
 struct BankFile {
     magic: String,
@@ -2845,8 +2900,10 @@ impl Bank {
     /// (`BANK_FORMAT_VERSION` for this envelope, `online_core::SCHEMA_VERSION`
     /// for the states). Fails only if serialization does, which a bank
     /// built by this crate cannot make happen.
-    pub fn save_bytes(&self) -> Result<Vec<u8>, String> {
-        let file = BankFile {
+    /// The state as the struct every encoding writes. One builder, so the
+    /// msgpack and JSON forms cannot drift apart.
+    fn to_file(&self) -> BankFile {
+        BankFile {
             magic: BANK_MAGIC.to_string(),
             format_version: BANK_FORMAT_VERSION,
             rows_fed: self.rows_fed,
@@ -2885,8 +2942,32 @@ impl Bank {
                 .enumerate()
                 .filter_map(|(si, k)| k.map(|k| (si, k)))
                 .collect(),
-        };
-        rmp_serde::to_vec_named(&file).map_err(|e| e.to_string())
+        }
+    }
+
+    pub fn save_bytes(&self) -> Result<Vec<u8>, String> {
+        rmp_serde::to_vec_named(&self.to_file()).map_err(|e| e.to_string())
+    }
+
+    /// The same state as JSON, for reading rather than for loading: a state
+    /// file is msgpack and only msgpack ([`Bank::load_bytes`] takes nothing
+    /// else), so this is an export.
+    ///
+    /// Faithful, including the values JSON has no literal for. A non-finite
+    /// `f64` is written as `"inf"`, `"-inf"` or `"nan"` -- the spelling
+    /// [`crate::spec::Num`] already uses, so a spec's `halflife` and a
+    /// stream's `decay` read the same way -- rather than as the `null`
+    /// `serde_json` would write unasked. See [`FiniteOrTag`].
+    pub fn save_json_string(&self, pretty: bool) -> Result<String, String> {
+        let file = self.to_file();
+        let text = if pretty {
+            serde_json::to_string_pretty(&file)
+        } else {
+            serde_json::to_string(&file)
+        }
+        .map_err(|e| e.to_string())?;
+        json_is_faithful(&file, &text)?;
+        Ok(text)
     }
 
     /// A bank from what [`Bank::save_bytes`] wrote, on this or any other OS.

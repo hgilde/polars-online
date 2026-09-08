@@ -94,3 +94,96 @@ fn marginal_round_trips_with_every_optional_part_present_or_absent() {
         }
     }
 }
+
+/// A `humanfloat`-annotated field must be **byte-identical** to a bare `f64`
+/// in msgpack, and tagged in JSON.
+///
+/// This is the whole safety argument for `crate::humanfloat`. The helpers
+/// exist so a JSON export can carry `NaN` and `±inf`, which `serde_json`
+/// otherwise writes as `null`; they key on `is_human_readable()`, which
+/// msgpack reports as `false`. If that were ever untrue -- a serde change, a
+/// different msgpack crate -- every state file ever written would stop
+/// loading, silently, because the field would decode as a string. So the
+/// bytes are pinned here rather than assumed.
+#[test]
+fn a_human_readable_float_does_not_move_the_msgpack() {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct Bare {
+        a: f64,
+        b: Vec<f64>,
+        c: Option<f64>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct Tagged {
+        #[serde(with = "online_core::humanfloat::f64_or_tag")]
+        a: f64,
+        #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
+        b: Vec<f64>,
+        #[serde(with = "online_core::humanfloat::opt_f64_or_tag")]
+        c: Option<f64>,
+    }
+
+    for (a, b, c) in [
+        (1.5, vec![2.0, 3.0], Some(4.0)),
+        (
+            f64::INFINITY,
+            vec![f64::NEG_INFINITY, 1.0],
+            Some(f64::INFINITY),
+        ),
+        (f64::NAN, vec![f64::NAN], None),
+        (-0.0, vec![], Some(-0.0)),
+    ] {
+        let bare = Bare { a, b: b.clone(), c };
+        let tagged = Tagged { a, b: b.clone(), c };
+
+        for (what, bare_bytes, tag_bytes) in [
+            (
+                "named",
+                rmp_serde::to_vec_named(&bare).unwrap(),
+                rmp_serde::to_vec_named(&tagged).unwrap(),
+            ),
+            (
+                "compact",
+                rmp_serde::to_vec(&bare).unwrap(),
+                rmp_serde::to_vec(&tagged).unwrap(),
+            ),
+        ] {
+            assert_eq!(
+                bare_bytes, tag_bytes,
+                "{what} msgpack moved for a={a} b={b:?} c={c:?}"
+            );
+        }
+
+        // and it reads back, through msgpack and through JSON
+        let back: Tagged =
+            rmp_serde::from_slice(&rmp_serde::to_vec_named(&tagged).unwrap()).unwrap();
+        let json = serde_json::to_string(&tagged).unwrap();
+        let from_json: Tagged = serde_json::from_str(&json).unwrap();
+        for (label, got) in [("msgpack", &back), ("json", &from_json)] {
+            assert_eq!(got.a.is_nan(), a.is_nan(), "{label}: NaN-ness of a");
+            if !a.is_nan() {
+                assert_eq!(got.a, a, "{label}: a");
+            }
+            assert_eq!(got.b.len(), b.len(), "{label}: b length");
+            assert_eq!(got.c.is_some(), c.is_some(), "{label}: c presence");
+        }
+
+        // JSON says the non-finite ones out loud rather than writing null
+        let json = serde_json::to_string(&tagged).unwrap();
+        if !a.is_finite() {
+            assert!(
+                json.contains("\"inf\"") || json.contains("\"-inf\"") || json.contains("\"nan\""),
+                "json did not tag a non-finite: {json}"
+            );
+            // `"c":null` is legal -- that is `Option::None`. `a` is a plain
+            // `f64`, so a null there is the loss this module exists to stop.
+            assert!(
+                !json.contains("\"a\":null"),
+                "json wrote a plain f64 as null: {json}"
+            );
+        }
+    }
+}

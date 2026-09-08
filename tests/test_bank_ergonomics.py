@@ -197,3 +197,87 @@ def test_a_column_literally_named_inf_is_still_a_name():
     assert loaded.specs == [spec]
     assert loaded.specs[0]["features"] == ["inf"]
     plt.assert_frame_equal(loaded.fit_predict(df), bank.fit_predict(df))
+
+
+# --- the specs are a read-only view ------------------------------------------
+
+
+def test_specs_cannot_be_assigned():
+    """``bank.specs`` is a property with no setter.
+
+    The bank's behaviour comes from the Rust state built at construction, so
+    a Python-side list can only ever disagree with it. Assignment used to
+    succeed and desynchronise the two.
+    """
+    bank = po.ModelBank([po.spec.ewridge("m", **BASE)])
+    with pytest.raises(AttributeError):
+        bank.specs = []
+
+
+def test_mutating_what_specs_returns_changes_nothing():
+    """It hands back a copy, so an edit in place cannot reach the bank.
+
+    Before, ``bank.specs[0]["features"] = [...]`` left ``coef()`` reading a
+    layout the bank was not running -- an ``AssertionError`` about the number
+    of coefficients, blamed on the model rather than on the edit.
+    """
+    bank = po.ModelBank([po.spec.ewridge("m", **BASE)])
+    bank.fit_predict(_df(40))
+    before = bank.coef("m")["term"].to_list()
+
+    got = bank.specs
+    got[0]["features"] = ["x0", "ghost", "phantom"]
+    got.append({"nonsense": True})
+
+    assert bank.specs[0]["features"] == ["x0"], "the bank kept its own copy"
+    assert len(bank.specs) == 1
+    assert bank.coef("m")["term"].to_list() == before
+
+
+def test_no_public_attribute_escapes_the_api_snapshot():
+    """Every public name must be on the class, or ``tests/api_surface.txt``
+    never sees it.
+
+    The snapshot walks ``dir(po.ModelBank)``, so an attribute set in
+    ``__init__`` is invisible to it -- which is what happened to ``specs``:
+    public, documented nowhere, and free to change without the reviewable
+    diff the snapshot exists to produce.
+    """
+    bank = po.ModelBank([po.spec.ewridge("m", **BASE)])
+    bank.fit_predict(_df(20))
+    on_class = {n for n in dir(po.ModelBank) if not n.startswith("_")}
+    on_instance = {n for n in dir(bank) if not n.startswith("_")}
+    assert on_instance - on_class == set()
+
+
+# --- walking a state file that nothing has described -------------------------
+
+
+def test_a_state_file_describes_itself(tmp_path):
+    """Everything needed to navigate a bank, from the file and nothing else.
+
+    No ``specs=``, no knowledge of what was run: the specs come back as the
+    dicts the builders made, and every accessor agrees with them.
+    """
+    specs = [
+        po.spec.ewridge("ridge", targets=["y"], features=["x0"], halflife=50.0, group="g"),
+        po.spec.ew_cov("cov", features=["x0", "y"], stats=["corr"], halflife=INF, group="g"),
+    ]
+    bank = po.ModelBank(specs)
+    bank.fit_predict(_df(60).with_columns(g=pl.Series(["a"] * 30 + ["b"] * 30)))
+    bank.save(tmp_path / "bank.state")
+
+    loaded = po.ModelBank.load(tmp_path / "bank.state")
+    assert loaded.specs == specs, "the file carries the specs, defaults included"
+
+    names = [s["name"] for s in loaded.specs]
+    assert names == ["ridge", "cov"]
+    assert set(loaded.output_fields()) == set(names)
+    assert loaded.groups()["spec"].unique().sort().to_list() == sorted(names)
+    for frame in (loaded.last_row(), loaded.summary(), loaded.describe()):
+        assert frame.columns[0] == "spec", "every table leads with the spec"
+        assert set(frame["spec"].unique()) == set(names), "and defaults to all of them"
+    assert loaded.rows_seen() == 60
+    # the model kind is in there too, so a caller can branch on it
+    assert loaded.specs[0]["model"]["type"] == "ew_ridge"
+    assert loaded.specs[1]["model"]["type"] == "ew_cov"

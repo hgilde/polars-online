@@ -210,6 +210,7 @@ pub struct KMeans {
     /// The typical radius² `R̃` and the far cut `far_factor · R̃`, refreshed
     /// at every checkpoint (0 and infinite until seeded).
     r2_typical: f64,
+    #[serde(with = "crate::humanfloat::f64_or_tag")]
     far_cut: f64,
     /// Weight learned since the last split–merge check.
     window_w: f64,

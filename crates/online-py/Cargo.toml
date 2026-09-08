@@ -31,6 +31,6 @@ pyo3 = { workspace = true, features = ["abi3-py312"] }
 # polars-lazy/python propagates that to polars-mem-engine (otherwise it fails to compile).
 pyo3-polars = { workspace = true, features = ["derive", "lazy", "dtype-struct"] }
 serde.workspace = true
-serde_json = { version = "1", features = ["float_roundtrip"] }
+serde_json.workspace = true
 # Names the field a spec failed to parse at ("model.quantile"), not a JSON offset.
 serde_path_to_error = "0.1"

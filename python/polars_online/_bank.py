@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -42,11 +43,32 @@ class ModelBank:
     """
 
     def __init__(self, specs: Iterable[dict[str, Any]]) -> None:
-        self.specs = list(specs)
-        self._native = _native.ModelBank(_json(self.specs))
+        self._specs = list(specs)
+        self._native = _native.ModelBank(_json(self._specs))
+
+    @property
+    def specs(self) -> list[dict[str, Any]]:
+        """The specs this bank runs, as the dicts the builders made.
+
+        A state file carries them, so a bank loaded from one reports its
+        specs without being told what they are -- every field, including the
+        ones left at their default. That is what makes a state file
+        self-describing: with :meth:`groups`, :meth:`output_fields` and the
+        four diagnostic tables, a file can be walked by a caller who knows
+        nothing about it in advance.
+
+        **A copy, and read-only.** The bank's behaviour comes from the Rust
+        state built at construction, not from this list, so a mutation here
+        could only disagree with it -- and used to, silently: editing
+        ``bank.specs[0]["features"]`` in place left :meth:`coef` labelling
+        coefficients from a spec the bank was not running. Assigning to
+        ``bank.specs`` raises ``AttributeError``, and mutating what it
+        returns changes nothing.
+        """
+        return copy.deepcopy(self._specs)
 
     def __repr__(self) -> str:
-        names = ", ".join(repr(s["name"]) for s in self.specs)
+        names = ", ".join(repr(s["name"]) for s in self._specs)
         n_groups = max((len(g) for g in self._native.groups()), default=0)
         return f"ModelBank([{names}], groups={n_groups}, rows_seen={self.rows_seen()})"
 
@@ -254,7 +276,7 @@ class ModelBank:
         and for a ``seqtest`` spec, which emits evidence.
         """
         idx = self._spec_index(spec)
-        layout = coef_index(self.specs[idx])
+        layout = coef_index(self._specs[idx])
         n = layout.height
         groups: list[str | None] = []
         instances: list[str] = []
@@ -263,7 +285,7 @@ class ModelBank:
         for g, instance, n_eff, coef in self._native.coef(idx, group):
             if coef is not None and len(coef) != n:
                 msg = (
-                    f"spec {self.specs[idx]['name']!r}: {len(coef)} coefficients for {n} positions"
+                    f"spec {self._specs[idx]['name']!r}: {len(coef)} coefficients for {n} positions"
                 )
                 raise AssertionError(msg)
             groups += [g] * n
@@ -540,7 +562,7 @@ class ModelBank:
             raise ModuleNotFoundError(msg) from e
 
         idx = self._spec_index(spec)
-        spec_dict = self.specs[idx]
+        spec_dict = self._specs[idx]
         # `ew_cov` accumulates over the features alone -- no target, and so no
         # constant column to regress one on.
         unsupervised = spec_dict["model"]["type"] in _NO_TARGET_GRAM
@@ -785,6 +807,35 @@ class ModelBank:
         is in flight on another thread."""
         return bytes(self._native.save_bytes())
 
+    def to_json(self, *, pretty: bool = True) -> str:
+        """The state as JSON: everything :meth:`save` writes, in a form that
+        can be read without this library.
+
+        An **export**, not a second state format -- :meth:`load` reads
+        msgpack and only msgpack. Use it to look at a state, diff two of
+        them, or hand one to something that is not Python.
+
+        It refuses rather than lying. ``serde_json`` writes ``NaN`` and
+        ``±inf`` as ``null`` and says nothing about it, where msgpack
+        round-trips all three, so every export is read back and re-encoded
+        and the msgpack must match the real state byte for byte. A state
+        holding a value JSON cannot carry raises ``ValueError`` naming the
+        problem instead of returning a file that is quietly wrong.
+
+        ``RuntimeError`` while a ``fit_predict`` is in flight on another
+        thread, as :meth:`save` does.
+        """
+        return str(self._native.save_json_string(pretty))
+
+    def save_json(self, path: str | Path, *, pretty: bool = True) -> None:
+        """Write :meth:`to_json` to ``path``.
+
+        Plain ``write_text``, not :meth:`save`'s atomic rename: this is an
+        export of a state that lives elsewhere, so a half-written one costs
+        nothing but a re-run.
+        """
+        Path(path).write_text(self.to_json(pretty=pretty), encoding="utf-8")
+
     @classmethod
     def load(cls, path: str | Path, specs: Iterable[dict[str, Any]] | None = None) -> ModelBank:
         """A bank from a file :meth:`save` wrote, on this or any other OS.
@@ -816,5 +867,5 @@ class ModelBank:
         obj._native = native
         # The state file carries the specs; they come back as the same dicts
         # the builders made.
-        obj.specs = _from_json(native.specs_json())
+        obj._specs = _from_json(native.specs_json())
         return obj

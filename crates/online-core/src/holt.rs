@@ -28,9 +28,11 @@ use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schem
 pub struct HoltCfg {
     pub n_targets: usize,
     /// Halflife of the level, in clock units.
+    #[serde(with = "crate::humanfloat::f64_or_tag")]
     pub level_halflife: f64,
     /// Halflife of the trend. `inf` pins the trend at zero, giving a plain
     /// EW level.
+    #[serde(with = "crate::humanfloat::f64_or_tag")]
     pub trend_halflife: f64,
     pub min_periods: f64,
 }

@@ -57,6 +57,7 @@ pub struct KalmanCfg {
     pub decay: Decay,
     /// Per-factor coefficient halflife in clock units (length 1 or `k_total`).
     /// `f64::INFINITY` pins a coefficient. Ignored when `q` is given.
+    #[serde(with = "crate::humanfloat::vec_f64_or_tag")]
     pub halflife: Vec<f64>,
     /// Explicit process-noise variances (length `k_total`), overriding
     /// `halflife`.
@@ -72,6 +73,7 @@ pub struct KalmanCfg {
     /// `2^(-d/r_i)` per row before the process noise is added. `f64::INFINITY`
     /// (the default) is the random walk. See the module doc.
     #[serde(default = "default_revert")]
+    #[serde(with = "crate::humanfloat::vec_f64_or_tag")]
     pub revert_halflife: Vec<f64>,
     /// Standardize features internally before filtering (default).
     ///

@@ -337,8 +337,11 @@
   rows_seen
   save
   save_bytes
+  save_json
   solve_failures
+  specs
   summary
+  to_json
 
 [expression namespace]  # pl.col(...).online.<method>
   bocpd

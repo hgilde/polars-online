@@ -71,6 +71,7 @@ mod ewridge;
 mod ftrl;
 mod hmm;
 mod holt;
+pub mod humanfloat;
 mod kalman;
 mod lasso;
 mod margbins;

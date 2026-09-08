@@ -94,6 +94,7 @@ pub struct SgdCfg {
     /// the true `[0.4, 0.8]`. The cap does not bind for identity-link losses at
     /// ordinary scales — a squared-loss fit is bit-identical with and without
     /// it. `inf` disables it.
+    #[serde(with = "crate::humanfloat::f64_or_tag")]
     pub clip_gradient: f64,
     /// Box and/or sum constraint on the slopes, imposed by Euclidean
     /// projection after each update (ENHANCEMENTS E40); the intercept is

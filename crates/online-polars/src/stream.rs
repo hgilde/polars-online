@@ -1567,18 +1567,35 @@ impl ChunkOut {
 /// [`LastRow::take`] and back in through [`LastRow::to_chunk`] by the one
 /// layout `assemble` reads, and a value it holds is the value the output
 /// row had, to the bit.
+///
+/// Every float vector here is annotated for the JSON export
+/// ([`online_core::humanfloat`]): these are *diagnostics*, and `NaN` is an
+/// ordinary value among them -- an unsupervised model has no `pred` or
+/// `resid`, and `sigma` is `NaN` until the warm-up ends -- so this is the
+/// struct that loses the most to a naive encoding. The msgpack the state
+/// file uses is unchanged.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LastRow {
+    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub pred: Vec<f64>,
+    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub resid: Vec<f64>,
+    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub sigma: Vec<f64>,
+    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub resid_z: Vec<f64>,
+    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub autocorr: Vec<f64>,
+    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub metrics: Vec<f64>,
+    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub conformal: Vec<f64>,
+    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub resid_q: Vec<f64>,
     pub drift: Vec<bool>,
+    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub n_eff: Vec<f64>,
+    #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub lam_selected: Vec<f64>,
     pub coef: Vec<Option<Vec<f64>>>,
 }

@@ -507,6 +507,50 @@ stream's session and clock policies still hold.
 [docs/STATE-WORKFLOW.md](docs/STATE-WORKFLOW.md) walks the whole workflow:
 fit, save, serve, learn on, with what each step guarantees.
 
+### A state file describes itself
+
+A saved bank can be read by something that knows nothing about it. No specs,
+no config, no data — the file carries what it needs:
+
+```python
+bank = po.ModelBank.load("bank.state")   # no specs=: the file is enough
+
+bank.specs                # every spec back as the dict its builder made
+bank.groups()             # spec, group, rows_processed, last_clock
+bank.output_fields()      # {'ridge': ['pred_y', 'resid_y', 'n_eff', 'coef'], ...}
+bank.rows_seen()          # rows fed, over every chunk and group
+bank.solve_failures()     # per spec, per group
+```
+
+That is enough to walk one: list the specs, read each one's model type and
+parameters, ask what fields it emits, list its groups. Then the four
+diagnostic tables say how it is doing and what it was trained on —
+[`last_row()`](#the-last-row) and [`coef()`](#coefficients) for the fit,
+[`summary()` and `describe()`](#what-it-was-fed) for the stream behind it.
+Each returns every spec by default, with `spec` as the first column, and the
+schemas are fixed across specs, so banks from different runs stack with a
+plain `concat`.
+
+`bank.specs` is a **copy, and read-only**. The bank's behaviour comes from
+the state built at construction, so a list on the Python side could only ever
+disagree with it — and used to: editing `bank.specs[0]["features"]` in place
+left `coef()` labelling coefficients from a spec the bank was not running.
+
+### Reading a state without this library
+
+`bank.to_json()` is everything `save` writes, as JSON, and `save_json(path)`
+puts it in a file. Use it to look at a state, diff two of them, or hand one
+to something that is not Python.
+
+It is an export, not a second format — `load` reads msgpack and only
+msgpack — and it is faithful, including the values JSON has no literal for.
+`NaN` and `±inf` are written as `"nan"`, `"inf"` and `"-inf"`, the same
+spelling a spec's `halflife` already uses. That matters more than it sounds:
+`halflife=inf` means no decay, so an ordinary state carries an infinity, and
+a plain JSON encoder writes it as `null` without saying so. Every export is
+read back and checked against the state before you get it, so a state that
+could not be carried is an error rather than a file that is quietly wrong.
+
 ## Preparing a stream
 
 Two things a stream may need before a bank sees it: a target that is not
