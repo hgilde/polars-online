@@ -1898,40 +1898,120 @@ batch. Here they are six solves off one accumulator, and the accumulator is
 what the row cost is. (The first run of this table read 3.66× and 1.40×;
 the ratios move by a few tenths between runs and the shape does not.)
 
-**Where sklearn wins: a wide row.** `ewridge` keeps a `(k+1)²` co-moment
-matrix and updates it every row, so both its memory and its per-row cost are
-quadratic in the feature count:
+**Where sklearn wins: a wide row — and it wins by batching.** `ewridge`
+keeps a `(k+1)²` co-moment matrix and updates it every row, so both its
+memory and its per-row cost are quadratic in the feature count. The R²
+column is scored from row 50 (`min_periods`); with 0.2 rows per feature at
+`k = 10,000` nothing can learn much and it should read near zero, which is
+what a *sane* run looks like at that width — see the learning-rate note
+below for what an insane one looked like.
 
-| contender | k | rows/sec | state |
-|---|---:|---:|---:|
-| `SGDRegressor`, batches of 1,000 | 1,000 | 188,859 | 0.03 MB |
-| `po.spec.sgd` | 1,000 | 128,882 | 0.11 MB |
-| `po.spec.ewridge`, solve every 1,000 rows | 1,000 | 6,090 | 8.71 MB |
-| `po.spec.ewridge`, `gram_block_rows=256` | 1,000 | 31,566 | 10.27 MB |
-| `SGDRegressor`, batches of 1,000 | 10,000 | 18,928 | 0.31 MB |
-| `po.spec.sgd` | 10,000 | 6,216 | 1.06 MB |
-| `po.spec.ewridge`, solve every 1,000 rows | 10,000 | 52 | 859.54 MB |
-| `po.spec.ewridge`, `gram_block_rows=256` | 10,000 | 268 | 875.16 MB |
+| contender | k | rows/sec | R² | state |
+|---|---:|---:|---:|---:|
+| `SGDRegressor`, row by row | 1,000 | 3,043 | 0.8513 | 0.03 MB |
+| `SGDRegressor`, batches of 1,000 | 1,000 | 149,424 | 0.8687 | 0.03 MB |
+| `po.spec.sgd`, `scale_features=False` | 1,000 | 185,641 | 0.8516 | 0.09 MB |
+| `po.spec.sgd`, `scale_features=True` | 1,000 | 146,754 | 0.8221 | 0.11 MB |
+| `po.spec.ewridge`, solve every 1,000 rows | 1,000 | 6,369 | 0.9274 | 8.71 MB |
+| `po.spec.ewridge`, `gram_block_rows=256` | 1,000 | 32,708 | 0.9274 | 10.27 MB |
+| `po.spec.ewridge`, `gram_block_rows=1024` | 1,000 | 36,601 | 0.9274 | 16.89 MB |
+| `SGDRegressor`, row by row | 10,000 | 2,267 | 0.0322 | 0.31 MB |
+| `SGDRegressor`, batches of 1,000 | 10,000 | 18,980 | 0.0338 | 0.31 MB |
+| `po.spec.sgd`, `scale_features=False` | 10,000 | 6,944 | 0.0319 | 0.89 MB |
+| `po.spec.sgd`, `scale_features=True` | 10,000 | 6,713 | 0.0209 | 1.06 MB |
+| `po.spec.ewridge`, solve every 1,000 rows | 10,000 | 53 | 0.0412 | 859.54 MB |
+| `po.spec.ewridge`, `gram_block_rows=256` | 10,000 | 269 | 0.0412 | 875.16 MB |
+| `po.spec.ewridge`, `gram_block_rows=1024` | 10,000 | 379 | 0.0412 | 941.10 MB |
+
+Both libraries run at `learning_rate = 0.2 / k`. **An LMS step is stable
+only while `eta · |z|² < 2`, and a standardised row has `|z|² ≈ k`**, so the
+rate has to fall as `1/k`; the first version of this table ran both at 0.01
+and timed two fits that had diverged (R² −6.8e8 for `sgd`, −5.8e26 for
+`SGDRegressor`). The timings were the same to within noise — a diverged LMS
+costs exactly what a converged one does — but the configuration was not one
+to copy, and the table had no column that could have said so. Now it does.
+
+Read like for like, the wide row is not where sklearn is faster.
+`SGDRegressor` **at this library's semantics** — row by row,
+predict-then-fit — runs at 2,267 rows/second at `k = 10,000`, and
+`po.spec.sgd` at 6,944, three times faster; at `k = 1,000` it is 3,043
+against 185,641. The two produce the same predictions: unscaled, the
+correlation between their predictions from row 50 is 0.9954 at `k = 10,000`,
+0.999922 at `k = 1,000` (R² 0.8516 against 0.8513) and 0.999999 at `k = 20`
+(0.9809 both, a mean difference of 0.02% of a prediction). What sklearn's
+18,980 buys is its batch: `partial_fit` on 1,000 rows at a time, with every
+prediction inside the batch made from coefficients up to 999 rows stale.
+That is the same trade as the narrow table's, 2.7× at this width instead of
+1,700×, because the per-row overhead that the narrow table measures is
+spread here over 10,000 features. The remaining factor is the inner loop:
+`sgd` costs a flat 13–14 ns per feature per row from `k = 1,000` to
+`k = 10,000` (the gather out of a columnar frame is not it — `to_numpy` of
+the entire 10,000-column frame is 8.4 µs/row against `sgd`'s 142), where
+sklearn's batched Cython loop is about 5 ns. That is a real target, and an
+independent one.
+
+`scale_features=True` does *not* match sklearn at these widths: the
+correlation with `SGDRegressor`'s predictions falls to 0.978 at `k = 1,000`
+and **0.521 at `k = 10,000`**, and the R² with it (0.0209 against 0.0322).
+That is task 74 again, and it is wider than "a short history": the scaler
+standardises a row against moments from *before* it, and what makes those
+moments immature is **few rows per feature** — a wide fit is that on every
+row. Until it lands, `scale_features=False` is the setting that matches
+sklearn, and the one to compare against.
+
+Where `ewridge`'s time goes was measured rather than argued, at
+`k = 10,000` (2,000 rows), because the question "is it the coefficients it
+emits every row?" is the natural one:
+
+| `ewridge` variant, k = 10,000 | rows/sec | µs/row |
+|---|---:|---:|
+| the table's row (solve every 1,000 rows, `coef_every=0`) | 53 | 18,770 |
+| the same with `coef_every=1` (10,000 coefficients emitted per row) | 52 | 19,249 |
+| the same with one solve instead of two | 53 | 18,731 |
+| `gram_block_rows=256` | 269 | 3,718 |
+| `gram_block_rows=512` | 306 | 3,264 |
+| `gram_block_rows=1024` | 378 | 2,647 |
+| `gram_block_rows=2048` | 376 | 2,661 |
+| `po.spec.sgd`, same bank, same 10,005-column output | 6,217 | 161 |
+
+`coef_every` defaults to 0, so the table emits no coefficients at all, and
+turning it on — which doubles the output frame from 153 to 302 MB — costs
+2.5%. One solve instead of two costs 0.2%. The bank, the emission and the
+frame are all inside `sgd`'s 161 µs. What is left is the Gram: a rank-1
+update of an 800 MB matrix (`10,001² × 8` bytes) reads and writes all of it
+once per row, 1.6 GB of traffic per row, and 1.6 GB in 18.8 ms is
+**85 GB/s**. A plain in-place `a += 1` over the same 800 MB in numpy runs at
+123 GB/s on this machine (M4 Pro), so the update is within 1.5× of a pure
+memory stream: it is moving the matrix, not computing on it, and nothing
+about output shape changes that. The blocked Gram (§18)
+holds `B` rows back and applies them as one rank-`B` product, so the matrix
+is touched once per `B` rows and the cost becomes about `2k²` flops per row
+at ~54 GFLOPS: compute-bound instead of bandwidth-bound, 5.1× at `B = 256`
+and 7.2× at `B = 1024`, where it levels off (2048 adds nothing). The buffer
+is `B · k · 8` bytes — 82 MB at 1024 — which is what the state column's
+941 MB against 860 says.
 
 State is what has to be kept and moved: `bank.save_bytes()` for a bank, a
 pickle of the fitted estimator and its scaler for sklearn. At `k = 10,000`
-that is 860 MB against 0.31 MB, and 52 rows/second against 18,928. The
-blocked Gram (§18) buys 5.2× of the throughput and none of the memory, which
-is the point of E51 and not a fix for this. The matrix is stored full
-(`EwCov::c`, row-major `k×k`); a triangle would halve it and halve the
-block product's flops, and would still be 430 MB at this width, so it does
-not change the answer and is not done. **At a wide `k`, `sgd` is the answer
-here** — `O(k)` like sklearn's, 6,216 rows/second against 18,928, the
-remaining gap again being that sklearn is updating 1,000 rows at a time and
-we are updating one.
+that is 860 MB against 0.31 MB, and the block buys throughput and none of
+the memory, which is the point of E51 and not a fix for this. The matrix is
+stored full (`EwCov::c`, row-major `k×k`); a triangle would halve it and
+halve the block product's flops, and would still be 430 MB at this width,
+so it does not change the answer and is not done. **At a wide `k`, `sgd` is
+the answer here** — `O(k)` like sklearn's, and faster than sklearn's at the
+same semantics. And at `k = 1,000` the R² column repeats the short-history
+lesson at a different scale: with 20 rows per feature the exact solve is at
+0.9274 where every first-order contender is at 0.85, even predicting from
+coefficients up to 1,000 rows old.
 
-Two more things the table cannot show. `sgd` is slower than `SGDRegressor` on
-wide rows *because* of the per-row semantics, and it is the one model here
-where sklearn's mini-batch trade is available to a user who does not need the
-freshness — through nothing in this library. And the ecosystem is sklearn's:
-pipelines, `GridSearchCV`, calibration, and far more use than this has. What
-this has is the stream: a clock, a halflife, one state per group, chunk
-invariance, and a state file that is not a pickle.
+Two more things the table cannot show. `sgd` is slower than *batched*
+`SGDRegressor` on wide rows *because* of the per-row semantics, and it is
+the one model here where sklearn's mini-batch trade is available to a user
+who does not need the freshness — through nothing in this library. And the
+ecosystem is sklearn's: pipelines, `GridSearchCV`, calibration, and far
+more use than this has. What this has is the stream: a clock, a halflife,
+one state per group, chunk invariance, and a state file that is not a
+pickle.
 
 **What the comparison gave back, in one paragraph.** For `ewridge`,
 nothing to borrow: sklearn's recipe is a scaler and a schedule, and

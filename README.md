@@ -2469,10 +2469,14 @@ the bank as `group="g"`:
 The same table found the one place `po.spec.sgd` loses to sklearn's: it
 diverges at the start of every group (R² of −6.9 at rows 25–50), because
 `scale_features` standardises a row against moments from *before* it, and a
-two-row variance estimate can be tiny by chance. sklearn's scaler includes
-the row it scales, which is not a leak (the features are known at prediction
-time; the rule is about the target) and is the fix, `docs/PLAN.md` task 74.
-Until it lands, prefer `ewridge` on short histories.
+two-row variance estimate can be tiny by chance. The condition is few rows
+per feature, and a wide fit is that on every row: at `k = 10,000` the same
+setting's predictions correlate 0.52 with sklearn's, where
+`scale_features=False` correlates 0.9954. sklearn's scaler includes the row
+it scales, which is not a leak (the features are known at prediction time;
+the rule is about the target) and is the fix, `docs/PLAN.md` task 74. Until
+it lands, prefer `ewridge` on short histories and `scale_features=False` on
+wide rows.
 
 What else is different: a grid of six penalties is 3.8× the work for
 sklearn (six estimators) and 1.6× here (one accumulator, six solves);
@@ -2481,13 +2485,23 @@ dict of estimators; standardisation is streaming and cannot leak the way a
 `StandardScaler` fitted on the whole frame does; chunk invariance is a test;
 and the state is a versioned cross-OS file rather than a pickle.
 
-**Where sklearn wins: a wide row.** `ewridge` keeps a `(k+1)²` matrix, so at
-`k = 10,000` it carries 860 MB of state and runs at 52 rows/second, against
-0.31 MB and 18,928 for `SGDRegressor`; `gram_block_rows=256` buys 5.2× of the
-throughput and none of the memory. `sgd` is the `O(k)` answer here — 1.06 MB
-and 6,216 rows/second at the same width. And the ecosystem is sklearn's:
-pipelines, `GridSearchCV`, calibration, and far more use. What this has is
-the stream.
+**Where sklearn wins: a wide row, by batching.** `ewridge` keeps a `(k+1)²`
+matrix, so at `k = 10,000` it carries 860 MB of state and runs at 53
+rows/second, against 0.31 MB and 18,980 for `SGDRegressor` in batches of
+1,000. That cost is the matrix itself — a rank-1 update moves all 800 MB of
+it every row, at 85 GB/s, near this machine's memory bandwidth; emitting
+coefficients is not it (`coef_every=1` costs 2.5%), and neither is the
+solve (0.2%). `gram_block_rows=1024` touches the matrix once per 1,024
+rows instead and buys 7.2× of the throughput (379 rows/second) and none of
+the memory. `sgd` is the `O(k)` answer here — 0.89 MB and 6,944
+rows/second at the same width — and at the same semantics it is the faster
+one: `SGDRegressor` asked for a prediction from the state as it stands, row
+by row, runs at 2,267 rows/second at that width, and the two agree
+(correlation 0.9954 between their predictions, 0.9999 at `k = 1,000`).
+Both are run at `learning_rate = 0.2 / k`: an LMS step is stable only while
+`eta · |z|² < 2`, and a standardised row has `|z|² ≈ k`. And the ecosystem
+is sklearn's: pipelines, `GridSearchCV`, calibration, and far more use.
+What this has is the stream.
 
 ## What this is not
 

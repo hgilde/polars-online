@@ -24,18 +24,30 @@ carries breaking changes.
   wins is short histories: 500 groups of 200 rows, `ewridge` is at 0.97 by
   rows 25–50 of a group where the best `SGDRegressor` setting is at 0.73.
   Where sklearn wins is stated with the same numbers: at `k = 10,000`,
-  `ewridge` carries 860 MB of state and 52 rows/second against 0.31 MB and
-  18,928, and `sgd` is the `O(k)` answer.
+  `ewridge` carries 860 MB of state and 53 rows/second against 0.31 MB and
+  18,980 for `SGDRegressor` in batches of 1,000 — and that cost is the
+  matrix, not the output: `coef_every=1` costs 2.5%, the solve 0.2%, and
+  the rank-1 update moves 800 MB per row at 85 GB/s, near memory
+  bandwidth; `gram_block_rows=1024` buys 7.2×. `sgd` is the `O(k)` answer,
+  and at the same semantics (row by row) it is 3× faster than
+  `SGDRegressor` and agrees with it (correlation 0.9954). The wide table's
+  learning rate is now `0.2 / k` for both libraries — an LMS step is
+  stable only while `eta · |z|² < 2` and `|z|² ≈ k` — and it carries an R²
+  column; its first version had timed two diverged fits at 0.01.
 
 ### Known
 
-- **`sgd` with `scale_features=True` diverges on a short history** — the
-  start of every group, measured at R² −6.9 over rows 25–50 of 200-row
-  groups where `ewridge` scores 0.97 (task 72's comparison found it). The
-  scaler standardises a row against the running moments from *before* it,
-  and a variance estimate two rows old can be tiny by chance. The fix is
-  sklearn's order, moments that include the row, which is not a leak;
-  `docs/PLAN.md` task 74. Until then, prefer `ewridge` on short histories.
+- **`sgd` with `scale_features=True` is wrong wherever there are few rows
+  per feature** — the start of every group, measured at R² −6.9 over rows
+  25–50 of 200-row groups where `ewridge` scores 0.97, and every row of a
+  wide fit: at `k = 10,000` its predictions correlate 0.52 with
+  `SGDRegressor`'s at the same step where `scale_features=False` correlates
+  0.9954 (task 72's comparison found both). The scaler standardises a row
+  against the running moments from *before* it, and a variance estimate a
+  few rows old can be tiny by chance. The fix is sklearn's order, moments
+  that include the row, which is not a leak; `docs/PLAN.md` task 74. Until
+  then, prefer `ewridge` on short histories and `scale_features=False` on
+  wide rows.
 
 ## [0.3.1] — 2026-09-08
 

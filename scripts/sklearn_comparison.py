@@ -230,43 +230,66 @@ def short():
 
 
 def wide():
-    """Where sklearn wins: the Gram is quadratic in the feature count."""
-    print("--- a wide row: rows/sec, and the state you have to keep")
-    print(f"{'contender':<38} {'k':>6} {'rows':>7} {'rows/sec':>10} {'state':>10}")
+    """Where sklearn wins: the Gram is quadratic in the feature count.
+
+    An LMS step is stable only while ``eta * |z|^2 < 2``, and a standardised
+    row has ``|z|^2`` of about ``k``, so the learning rate here is ``0.2 / k``
+    for both libraries. The first version of this table ran both at 0.01 and
+    timed two fits that had diverged (R^2 of -7e8 and -6e26; the timings were
+    the same, the configuration was not one to copy). The R^2 column is here
+    so that cannot hide again: with 0.2 rows per feature nothing can learn
+    much, and the column should read near zero, not astronomically negative.
+    """
+    print("--- a wide row: rows/sec, R^2 from row 50, and the state you have to keep")
+    print(f"{'contender':<40} {'k':>6} {'rows':>7} {'rows/sec':>10} {'R^2':>8} {'state':>10}")
     for k, n in ((1_000, 20_000), (10_000, 2_000)):
         x, y, _ = stream(n, k, 0.0)
         df, feats = frame(x, y), [f"x{j}" for j in range(k)]
         common = dict(targets=["y"], features=feats, halflife=float("inf"), min_periods=50.0)
+        eta = 0.2 / k
+        scored = np.arange(n) >= 50
+        rows = []
 
-        _, dt, model, scaler = run_sklearn(x, y, BATCH)
-        size = len(pickle.dumps(model)) + len(pickle.dumps(scaler))
-        rows = [(f"SGDRegressor, batches of {BATCH}", n / dt, size)]
+        for batch, name in (
+            (1, "SGDRegressor, row by row"),
+            (BATCH, f"SGDRegressor, batches of {BATCH}"),
+        ):
+            pred, dt, model, scaler = run_sklearn(
+                x, y, batch, penalty=None, learning_rate="constant", eta0=eta
+            )
+            size = len(pickle.dumps(model)) + len(pickle.dumps(scaler))
+            rows.append((name, n / dt, r2(pred, y, scored & np.isfinite(pred)), size))
 
+        ew = dict(ridge=1e-6, solve_every=1e9, max_rows_between_solves=1000)
         for name, spec in (
-            ("po.spec.sgd", po.spec.sgd("m", learning_rate=0.01, scale_features=True, **common)),
             (
-                "po.spec.ewridge, solve every 1000 rows",
-                po.spec.ewridge(
-                    "m", ridge=1e-6, solve_every=1e9, max_rows_between_solves=1000, **common
-                ),
+                "po.spec.sgd, scale_features=False",
+                po.spec.sgd("m", learning_rate=eta, scale_features=False, **common),
             ),
+            (
+                "po.spec.sgd, scale_features=True",
+                po.spec.sgd("m", learning_rate=eta, scale_features=True, **common),
+            ),
+            ("po.spec.ewridge, solve every 1000 rows", po.spec.ewridge("m", **ew, **common)),
             (
                 "po.spec.ewridge, gram_block_rows=256",
-                po.spec.ewridge(
-                    "m",
-                    ridge=1e-6,
-                    solve_every=1e9,
-                    max_rows_between_solves=1000,
-                    gram_block_rows=256,
-                    **common,
-                ),
+                po.spec.ewridge("m", gram_block_rows=256, **ew, **common),
+            ),
+            (
+                "po.spec.ewridge, gram_block_rows=1024",
+                po.spec.ewridge("m", gram_block_rows=1024, **ew, **common),
             ),
         ):
-            _, dt, bank = run_bank(spec, df)
-            rows.append((name, n / dt, len(bank.save_bytes())))
+            pred, dt, bank = run_bank(spec, df)
+            rows.append(
+                (name, n / dt, r2(pred, y, scored & np.isfinite(pred)), len(bank.save_bytes()))
+            )
 
-        for name, rps, size in rows:
-            print(f"{name:<38} {k:>6,} {n:>7,} {rps:>10,.0f} {size / 1024 / 1024:>8.2f} MB")
+        for name, rps, score, size in rows:
+            print(
+                f"{name:<40} {k:>6,} {n:>7,} {rps:>10,.0f} {score:>8.4f} "
+                f"{size / 1024 / 1024:>8.2f} MB"
+            )
     print()
 
 

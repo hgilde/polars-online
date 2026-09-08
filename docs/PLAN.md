@@ -1144,8 +1144,10 @@ note, not a task.
       docstring and `llms.txt` gain a line each.
 
 - [ ] 74. **`sgd`'s scaler standardises a row against moments that exclude
-      it, and diverges at the start of every stream — found 2026-09-08 by
-      task 72's short-history table.** `scale_features` (ENHANCEMENTS E24)
+      it, and is wrong wherever there are few rows per feature: the start
+      of every stream, and every row of a wide fit — found 2026-09-08 by
+      task 72's short-history table, and again by its wide table the same
+      evening.** `scale_features` (ENHANCEMENTS E24)
       standardises `x_t` against the running mean and variance from *before*
       row `t`, "so the scaling cannot see the row it is scaling". That is
       stricter than the leakage rule requires and it is unstable: the rule
@@ -1165,6 +1167,21 @@ note, not a task.
       scaler's `ddof`. Over 100,000 rows scored from row 1,000 the two
       orders give the same number (0.9899 both), which is why every earlier
       test and table missed it.
+
+      *The wide table, re-run at a stable learning rate (`0.2 / k`), shows
+      the same defect from the other side.* Against `SGDRegressor` row by
+      row at the same step, `scale_features=False` predictions correlate
+      0.999999 at `k = 20`, 0.999922 at `k = 1,000` and 0.9954 at
+      `k = 10,000`; with `scale_features=True` the same three read 0.9999,
+      0.978 and **0.521**, and the R² at `k = 10,000` is 0.0209 against
+      sklearn's 0.0322. Nothing diverges there — the rate is small enough —
+      the standardisation is simply against moments that are never mature,
+      because 2,000 rows over 10,000 features is 0.2 rows per feature on
+      every row. "Short history" was the special case; **few rows per
+      feature** is the condition, and the fix is the same two lines. The
+      test list gains the wide case: `scale_features=True` at `k = 1,000`
+      within 0.001 R² of `scale_features=False` on the wide stream (today
+      0.8221 against 0.8516).
 
       The fix is sklearn's order — `scaler.partial_fit(x)` then
       `transform(x)` — which bounds a standardised value by about `√n`:
@@ -1263,7 +1280,9 @@ note, not a task.
         of the throughput and none of the memory. `sgd` is the `O(k)`
         answer here — 1.06 MB, 6,206 rows/s — and is *still* slower than
         sklearn at that width, for the same per-row reason. The README says
-        that too.
+        that too. (Slower than *batched* sklearn: row by row it is 3×
+        faster, and the 0.01 learning rate this row was timed at had both
+        libraries diverged — see the evening's addendum below.)
 
       Two measurement mistakes worth recording, both caught by the numbers
       looking wrong rather than by review. Peak RSS is useless as a memory
@@ -1331,6 +1350,39 @@ note, not a task.
       matters. `docs/PERFORMANCE.md` §19 is rewritten from the second run;
       the README table carries the corrected numbers and the short-history
       table; the CHANGELOG records the known defect.
+
+      *Two more questions the same evening, both measured at `k = 10,000`.*
+      "Is it so much slower because the test emits coefficients every
+      row?" No: `coef_every` defaults to 0, so the wide table emitted none,
+      and turning it on (10,000 coefficients per row, the output frame
+      153 → 302 MB) costs 2.5%; one solve instead of two costs 0.2%;
+      `po.spec.sgd` through the same bank with the same 10,005-column
+      output runs at 6,217 rows/s against `ewridge`'s 53. The cost is the
+      Gram: a rank-1 update moves all 800 MB of it per row, 1.6 GB in
+      18.8 ms = 85 GB/s, within 1.5× of a plain in-place numpy add over the
+      same 800 MB (123 GB/s on the M4 Pro). Bandwidth, not arithmetic and
+      not output. `gram_block_rows` is the lever that exists: 256 → 269
+      rows/s, 512 → 306, 1024 → **379** (7.2×, an 82 MB buffer), 2048 →
+      376. "Does our `sgd` produce the same thing as `SGDRegressor` at
+      6,000 rows/s?" Yes, and 6,000 is the faster side: `SGDRegressor` at
+      this library's semantics (row by row) runs at 2,267 rows/s at
+      `k = 10,000` and 3,043 at `k = 1,000`, against `sgd`'s 6,944 and
+      185,641, with the correlations above; sklearn's 18,980 is its batch of
+      1,000, predictions up to 999 rows stale, the narrow table's trade at
+      2.7× instead of 1,700×. Checking that exposed that the wide table's
+      `learning_rate=0.01` had both libraries diverged (R² −6.8e8 and
+      −5.8e26; the timings are unaffected, a diverged LMS costs what a
+      converged one does): an LMS step is stable only while
+      `eta · |z|² < 2` and a standardised row has `|z|² ≈ k`, so the script
+      now runs both at `0.2 / k` and prints R² in the wide table. It also
+      put a number on `sgd`'s inner loop — a flat 13–14 ns per feature per
+      row from `k = 1,000` to `k = 10,000`, against about 5 ns for sklearn's
+      batched Cython; the columnar gather is not it (`to_numpy` of the
+      whole 10,000-column frame is 8.4 µs/row against `sgd`'s 142). Not a
+      task; a measured target if the wide `sgd` ever matters. And at
+      `k = 1,000` the R² column repeats the short-history lesson: 20 rows
+      per feature, `ewridge` at 0.9274 where every first-order contender is
+      at 0.85, predicting from coefficients up to 1,000 rows old.
 
 - [x] 71. **E51, the blocked rank-B Gram update — design settled 2026-09-08,
       `EwCov` half built and reviewed the same day, `ewridge` wiring built

@@ -81,7 +81,7 @@ bank.save("bank.state")
 - [Against scikit-learn](https://github.com/hgilde/polars-online#against-scikit-learn):
   `SGDRegressor` measured beside `sgd` and `ewridge` -- accuracy (the same, to the
   noise ceiling), throughput, what a prediction saw, the short-history case where
-  the exact solve wins, and the wide-`k` case where sklearn wins
+  the exact solve wins, and the wide-`k` case where sklearn wins by batching (row by row, `sgd` is the faster one and agrees with it)
 
 ## API reference
 
