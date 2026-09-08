@@ -7,6 +7,10 @@ carries breaking changes.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.0] — 2026-09-08
+
 ### Added
 
 - **A state file describes itself, and can be read without this library**
