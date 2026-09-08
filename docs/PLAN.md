@@ -1074,6 +1074,40 @@ note, not a task.
       `crates/online-core/tests/state_encoding.rs`. README: "A state file
       describes itself" and "Reading a state without this library".
 
+- [x] 70. **The leak test measured the ramp, not the plateau, 2026-09-08.**
+      `ubuntu-latest` failed the 0.3.0 release candidate on
+      `test_output_outliving_its_input`: marks of
+      [291868, 291868, 291868, 295840, 301264] KB -- identical to the byte
+      three times, then 4.0 MB and 5.3 MB -- a median gap of 33.1 KB/iter
+      against a limit of 4.
+
+      Not a leak. Over twelve blocks locally the growth decays to exactly
+      zero and stays there (`[1.87, 0.27, 0.13, 0.4, 0.0, 0.27, 0.0 ...]`),
+      and `cargo test` passed on the same tree. What failed is the
+      measurement: `warmup` was 40 iterations, and the allocator's ramp is
+      not over until about 600 -- RSS is 7,344 KB up by iteration 40 and does
+      not hold flat to within 8 KB per 120 iterations until 600. Every block
+      the test measured was inside the ramp. macOS steps finely enough to
+      stay under the threshold; glibc steps in whole arenas, and two
+      consecutive steps outvote a median of three gaps, which is the one
+      thing task 61's fix was built to survive.
+
+      The repo already knew: `test_plugin_over_groups` passed `warmup=600`
+      with a docstring measuring the same ~600-iteration ramp. It was a
+      workaround that was right there and silently wrong for the other nine
+      callers.
+
+      `assert_plateaus` now **finds** the plateau instead of assuming one --
+      it runs blocks until two consecutive ones grow by less than the
+      threshold, then measures. That is self-calibrating, so it needs no
+      constant tuned per platform, and it cannot be fooled by a leak: a leak
+      never plateaus, exhausts `warm_blocks`, and is measured anyway. The
+      per-test override is gone.
+
+      Checked both ways rather than just green: three consecutive runs of the
+      file pass (6.7s to ~9s), and an injected 8 KB/iter leak is still caught
+      (`8.6 KB/iter, gaps [8.7, 8.5, 8.7, 8.5]`).
+
 - [ ] 68. **README clarity pass, begun 2026-09-07.** Going through the
       reader-facing prose and fixing phrasing that only parses if the reader
       already shares the frame the sentence was written in. Three rules, in

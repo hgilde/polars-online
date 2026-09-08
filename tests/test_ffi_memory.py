@@ -36,39 +36,64 @@ def rss_kb() -> float:
     return PROC.memory_info().rss / 1024
 
 
-def assert_plateaus(fn, *, blocks=5, per_block=120, warmup=40, kb_per_iter=4.0):
+def assert_plateaus(fn, *, blocks=5, per_block=120, kb_per_iter=4.0, warm_blocks=16):
     """Run `fn` in blocks and require RSS growth to flatten.
 
-    The first block absorbs one-off costs — thread stacks, arena growth, the
-    plugin's library cache. The rest are compared against each other *one gap
-    at a time*, and the statistic is the median gap: a leak grows in every
-    block, so its median gap is the leak rate, while a one-off step moves a
-    single gap and leaves the median where it was.
+    Measurement starts **after** the allocator has stopped ramping, and the
+    ramp is found rather than assumed: blocks are run until two consecutive
+    ones each grow by less than `kb_per_iter`, and only then are `blocks`
+    more measured. A leak never plateaus, so it exhausts `warm_blocks` and is
+    still measured -- and still fails, since the gaps it produces are the
+    leak rate.
 
-    Comparing the tail's first mark against its last — which this did until
-    2026-09-06 — cannot tell those two apart, and said so on `main`: marks of
-    [361112, 364160, 364160, 367644] KB, two of them identical to the page and
-    the last a single 3.4 MB step, read as 14.5 KB/iter and failed a commit
-    whose previous run on the same tree was green. Three gaps is the minimum
-    that lets a median outvote one step, hence five blocks.
+    The blocks after the ramp are compared *one gap at a time* and the
+    statistic is the median gap: a leak grows in every block, so its median
+    gap is the leak rate, while a one-off step moves a single gap and leaves
+    the median where it was.
+
+    Two earlier versions got this wrong, both by measuring the ramp:
+
+    - Until 2026-09-06 it compared the tail's first mark against its last,
+      which cannot tell a step from a slope. Marks of
+      [361112, 364160, 364160, 367644] KB -- two identical to the page, the
+      last a single 3.4 MB step -- read as 14.5 KB/iter and failed a commit
+      whose previous run on the same tree was green.
+    - Until 2026-09-08 it warmed up a fixed 40 iterations. That is inside the
+      ramp, not after it: from a standing start, RSS is 7,344 KB up by
+      iteration 40 and does not hold flat to within 8 KB per 120 iterations
+      until iteration 600. macOS steps finely enough to stay under the
+      threshold anyway; `ubuntu-latest` steps in whole arenas and read marks
+      of [291868, 291868, 291868, 295840, 301264] KB -- identical to the byte
+      three times, then 4.0 MB and 5.3 MB -- a median of 33.1 KB/iter against
+      a limit of 4. A fixed warm-up only moves the guess; finding the plateau
+      removes it.
     """
     assert blocks >= 4, "the median gap needs at least three gaps after the first block"
-    for _ in range(warmup):
-        fn()
-    gc.collect()
 
-    marks = []
-    for _ in range(blocks):
+    def block() -> float:
         for _ in range(per_block):
             fn()
         gc.collect()
-        marks.append(rss_kb())
+        return rss_kb()
 
-    # Growth per iteration, block against block, over everything after the first.
-    gaps = [(b - a) / per_block for a, b in zip(marks[1:], marks[2:], strict=False)]
+    # Walk until the ramp is over: two consecutive quiet blocks. A leak has
+    # none, runs out of `warm_blocks`, and is caught by the measurement below.
+    prev = block()
+    quiet = 0
+    for _ in range(warm_blocks):
+        now = block()
+        quiet = quiet + 1 if (now - prev) / per_block < kb_per_iter else 0
+        prev = now
+        if quiet >= 2:
+            break
+
+    marks = [block() for _ in range(blocks)]
+
+    # Growth per iteration, block against block.
+    gaps = [(b - a) / per_block for a, b in zip(marks, marks[1:], strict=False)]
     per_iter = statistics.median(gaps)
     assert per_iter < kb_per_iter, (
-        f"RSS still climbing after the first block: {per_iter:.2f} KB/iter, the "
+        f"RSS still climbing after the ramp: {per_iter:.2f} KB/iter, the "
         f"median of {[round(g, 2) for g in gaps]} (marks, KB: "
         f"{[round(m) for m in marks]}). A plateau is expected; a slope means "
         "something is not being released."
@@ -106,14 +131,18 @@ class TestNothingLeaksAcrossTheBoundary:
         )
 
     def test_plugin_over_groups(self):
-        """The one case with a real one-time step (~6 MB of thread stacks and
-        arena), which is exactly why the primitive tolerates a step.
+        """The longest ramp of any case here, and the reason the primitive
+        finds the plateau rather than assuming one.
 
         Since the groups run across polars' thread pool (docs/IMPROVEMENTS.md
         P1) every worker thread grows its own arena, and that takes ~600
-        iterations to level off rather than 40: measured 10 → 5 → 4 → 0 KB/iter
-        over successive blocks, then flat or falling. The longer warmup is
-        that ramp; the assertion is unchanged.
+        iterations to level off rather than 40: measured 10 → 5 → 4 → 0
+        KB/iter over successive blocks, then flat or falling. This test used
+        to say so by passing ``warmup=600`` while every other caller took the
+        default of 40 -- a workaround that was right here and silently wrong
+        everywhere else, which is what `ubuntu-latest` found on 2026-09-08.
+        `assert_plateaus` now walks to the plateau for all of them, so there
+        is nothing to pass.
         """
         df = frame().with_columns(g=pl.Series(np.arange(1500) % 50))
         assert_plateaus(
@@ -121,8 +150,7 @@ class TestNothingLeaksAcrossTheBoundary:
                 pl.col("y")
                 .online.ewridge(features=["x0"], halflife=50.0, min_periods=2.0)
                 .over("g")
-            ),
-            warmup=600,
+            )
         )
 
     def test_multi_chunk_input(self):
