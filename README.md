@@ -1,8 +1,9 @@
 # polars-online
 
-Online linear model fit for [Polars](https://pola.rs): a bank of models that
-learns one chunk at a time and predicts every row *before* it learns from it.
-Rust core, Python API, and a standalone CLI.
+Online model fitting for [Polars](https://pola.rs) — linear models, streaming
+moments, clustering and regime detection. A bank of models that learns one
+chunk at a time and predicts every row *before* it learns from it. Rust core,
+Python API, and a standalone CLI.
 
 It is built for data that does not fit in memory. Feed it a stream and memory
 stays at *state + one chunk* however long the stream runs, and the numbers are
@@ -650,7 +651,7 @@ ols = po.spec.ewridge("ols", targets=["y"], features=["x0", "x1"], clock="t",
 #    One row per coefficient, with the term it belongs to.
 bank = po.ModelBank([ols])
 bank.fit_predict(df)
-betas = bank.coef("ols")             # group, instance, n_eff, position, target, ..., term, coef
+betas = bank.coef()                  # every spec: spec, group, instance, n_eff, ..., term, coef
 wide = betas.pivot("term", index=["group", "instance"], values="coef")
 
 # 2. From the output, as columns: the fit as it moved, one row per row.

@@ -232,14 +232,24 @@ class ModelBank:
         for chunk in batches:
             yield self.fit_predict(chunk)
 
-    def coef(self, spec: str | int, group: str | None = None) -> pl.DataFrame:
-        """The coefficients behind a spec's fit: one row per (group, instance,
+    def coef(self, spec: str | int | None = None, group: str | None = None) -> pl.DataFrame:
+        """The coefficients behind a fit: one row per (spec, group, instance,
         position), so a bank loaded from a state file answers "what are the
         betas?" without a row of data::
 
             bank = po.ModelBank.load("state.bin")
-            betas = bank.coef("ols")
+            betas = bank.coef()             # every spec that has coefficients
+            just_one = bank.coef("ols")     # or name one
             wide = betas.pivot("term", index=["group", "instance"], values="coef")
+
+        Like :meth:`last_row`, :meth:`summary` and :meth:`describe`, it takes
+        every spec by default and leads with a ``spec`` column, so the frames
+        of several banks stack with a plain ``concat``. Sweeping this way
+        **skips** a spec that has no coefficients -- an ``ew_cov``, which
+        emits statistics, or a ``seqtest``, which emits evidence -- since the
+        question was "the coefficients in this bank" and those have none.
+        Naming one of them still raises, because then the question was about
+        that spec. A bank with no coefficients at all gives an empty frame.
 
         The values are what the output's ``coef`` field reported on the last
         row each stream learned from: the fit *after* that row, which the
@@ -272,10 +282,42 @@ class ModelBank:
         ``spec`` and ``group`` are as for :meth:`gram`: ``KeyError`` /
         ``IndexError`` for a spec the bank has not got, and a group it has
         never seen gives an empty frame with the same columns. ``ValueError``
-        for an ``ew_cov`` spec, which emits statistics, not coefficients,
-        and for a ``seqtest`` spec, which emits evidence.
+        for a **named** ``ew_cov`` spec, which emits statistics, not
+        coefficients, and for a named ``seqtest`` spec, which emits evidence.
         """
-        idx = self._spec_index(spec)
+        names = self._native.spec_names()
+        if spec is not None:
+            i = self._spec_index(spec)
+            return self._coef_one(i, group, names[i])
+        frames = [
+            f
+            for i in range(len(names))
+            # A spec that emits statistics or evidence rather than coefficients
+            # is skipped when sweeping, and still refused when named.
+            if (f := self._coef_try(i, group, names[i])) is not None
+        ]
+        if not frames:
+            return pl.DataFrame(
+                schema={
+                    "spec": pl.String,
+                    "group": pl.String,
+                    "instance": pl.String,
+                    "n_eff": pl.Float64,
+                    "position": pl.Int64,
+                    "term": pl.String,
+                    "coef": pl.Float64,
+                }
+            )
+        return pl.concat(frames, how="diagonal_relaxed")
+
+    def _coef_try(self, idx: int, group: str | None, name: str) -> pl.DataFrame | None:
+        """[`_coef_one`] or ``None`` for a spec that has no coefficients."""
+        try:
+            return self._coef_one(idx, group, name)
+        except ValueError:
+            return None
+
+    def _coef_one(self, idx: int, group: str | None, name: str) -> pl.DataFrame:
         layout = coef_index(self._specs[idx])
         n = layout.height
         groups: list[str | None] = []
@@ -301,7 +343,8 @@ class ModelBank:
             # Finite-or-null, as the output's `coef` field is: an `ew_class`
             # class no row has carried yet has NaN means.
             pl.Series("coef", values, pl.Float64).fill_nan(None),
-        ).select("group", "instance", "n_eff", *layout.columns, "coef")
+            pl.Series("spec", [name] * len(instances), pl.String),
+        ).select("spec", "group", "instance", "n_eff", *layout.columns, "coef")
 
     def last_row(self, spec: str | int | None = None, group: str | None = None) -> pl.DataFrame:
         """The output struct as it stood on the last row each stream learned

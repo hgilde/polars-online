@@ -31,6 +31,15 @@ carries breaking changes.
 
 ### Changed
 
+- **`ModelBank.coef()` takes every spec by default, and leads with a `spec`
+  column.** It was the only one of the four read accessors that required a
+  spec name, while `last_row()`, `summary()` and `describe()` all defaulted
+  to the whole bank — so a bank's coefficients could not be read in one call,
+  and frames from different banks did not stack. `bank.coef()` now sweeps,
+  skipping a spec that has no coefficients (an `ew_cov` emits statistics, a
+  `seqtest` emits evidence); naming one of those still raises, because then
+  the question was about that spec. **Breaking**: every `coef()` frame gains
+  `spec` as its first column, so code selecting by position needs a look.
 - **`ModelBank.specs` is read-only and returns a copy** (task 69). It was an
   attribute set in `__init__`, which kept it out of `tests/api_surface.txt`
   (the snapshot walks the class) and let an in-place edit desynchronise the

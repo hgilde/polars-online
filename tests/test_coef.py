@@ -36,6 +36,7 @@ def test_coef_is_the_output_s_last_coef_per_group_and_instance():
     out = bank.fit_predict(df)["ols"].struct.unnest()
     c = bank.coef("ols")
     assert c.columns == [
+        "spec",
         "group",
         "instance",
         "n_eff",
@@ -100,7 +101,7 @@ def test_mistakes_and_edges_are_named():
     bank = po.ModelBank([GRID])
     bank.fit_predict(_grouped())
     empty = bank.coef("ols", group="never")
-    assert empty.shape == (0, 10) and empty.schema == bank.coef("ols").schema
+    assert empty.shape == (0, 11) and empty.schema == bank.coef("ols").schema
     with pytest.raises(KeyError, match="no spec named 'nope'"):
         bank.coef("nope")
     with pytest.raises(IndexError, match="spec index 3 out of range"):
@@ -154,7 +155,7 @@ def test_every_model_lays_out_as_coef_index(spec):
     out = bank.fit_predict(df)["m"].struct.unnest()
     c = bank.coef("m")
     layout = po.spec.coef_index(spec)
-    assert c.drop("group", "instance", "n_eff", "coef").equals(layout)
+    assert c.drop("spec", "group", "instance", "n_eff", "coef").equals(layout)
     assert c["coef"].to_list() == out["coef"][-1].to_list()
 
 
@@ -193,3 +194,36 @@ def test_pred_is_the_weighted_least_squares_fit_of_the_rows_before():
     # The plan streams the same numbers in bounded memory.
     plan = df.lazy().online.fit_predict([spec], chunk_rows=32).collect()["ols"].struct.unnest()
     assert plan["pred_y"].equals(out["pred_y"])
+
+
+def test_coef_takes_every_spec_by_default_and_skips_the_ones_without_any():
+    """It matches `last_row`, `summary` and `describe`: no argument means
+    every spec, `spec` leads, and the frames stack with a plain concat.
+
+    A spec that emits statistics or evidence has no coefficients, so sweeping
+    steps over it -- the question was "the coefficients in this bank".
+    Naming one still raises, because then the question was about that spec.
+    """
+    specs = [
+        GRID,
+        po.spec.holt("h", targets=["y"], halflife=10.0),
+        po.spec.ew_cov("c", features=["x1", "x2"], halflife=20),
+        po.spec.seqtest("s", targets=["y"]),
+    ]
+    bank = po.ModelBank(specs)
+    bank.fit_predict(_grouped())
+
+    every = bank.coef()
+    assert every.columns[0] == "spec"
+    assert set(every["spec"].unique()) == {"ols", "h"}, "ew_cov and seqtest have none"
+    assert every.equals(pl.concat([bank.coef("ols"), bank.coef("h")], how="diagonal_relaxed"))
+    for name, msg in [("c", "statistics"), ("s", "evidence")]:
+        with pytest.raises(ValueError, match=msg):
+            bank.coef(name)
+
+
+def test_coef_of_a_bank_with_no_coefficients_is_an_empty_frame():
+    bank = po.ModelBank([po.spec.ew_cov("c", features=["x1", "x2"], halflife=20)])
+    bank.fit_predict(_grouped())
+    got = bank.coef()
+    assert got.height == 0 and got.columns[0] == "spec" and "coef" in got.columns
