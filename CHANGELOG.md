@@ -3,9 +3,36 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/) — while pre-1.0, the minor version
-carries breaking changes.
+carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
+
+Nothing yet.
+
+## [0.4.0] — 2026-09-08
+
+**`sgd` changes its numbers in this release, and nothing else does.** Both
+entries under Changed are `sgd`: a defect in `scale_features` that made it
+diverge wherever there are few rows per feature, and a rewrite of the inner
+loop that costs 2 ns per feature per row instead of 13–14 and sums the dot
+product in a different order. A fit that uses `scale_features=True` moves
+materially; every other `sgd` fit moves at rounding level; no other model's
+numbers, no output field and no state file changes. The chunk gather that
+carries half of that speed-up is in the bank's shared path, so every model
+now reads its rows from rewritten code — the values are identical, and
+`ewridge` at `k = 10,000` runs at the same 52 rows/second it did before,
+because its own Gram update dominates the gather.
+
+**A minor, not a patch, and nothing here breaks.** The API, the spec keys
+and `SCHEMA_VERSION` 6 are as they were, and a 0.3.x state file loads into
+this build and continues to the bit. The version moved anyway because the
+rule this project states — while pre-1.0, the minor carries the changes a
+user has to read about before upgrading — is about what a reader must know,
+and "the same `sgd` fit now returns different numbers" is that, whether or
+not a signature moved. So, upgrading from 0.3.x: an `sgd` prediction you
+stored will not reproduce, and a `scale_features=True` fit is a different
+fit, which is the point of the fix. Everything else, including every state
+file you hold, is untouched.
 
 ### Changed
 

@@ -2593,10 +2593,10 @@ pyo3-polars, polars-arrow, polars-parquet and polars-utils, through CI.
 ### This package's own versioning
 
 Semantic versioning. While pre-1.0 the **minor** version carries breaking
-changes, so pin `~=0.3.0` if you need stability. Widening the Polars range
-is a minor release; narrowing it is breaking. See
-[CHANGELOG.md](CHANGELOG.md). Output field names are part of the API
-([above](#output-field-names)).
+changes, and any change to the numbers a model returns, so pin `~=0.4.0` if
+you need stability. Widening the Polars range is a minor release; narrowing
+it is breaking. See [CHANGELOG.md](CHANGELOG.md). Output field names are
+part of the API ([above](#output-field-names)).
 
 ## Testing
 
