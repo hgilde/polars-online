@@ -1546,6 +1546,74 @@ note, not a task.
       ns and sklearn's batch faster on a wide row; §19's wide table is
       re-run and the three now say what is measured.
 
+- [ ] 76. **`hit_rate` reads 1.0 for every binary fit, and classification has
+      no metric of its own — found 2026-09-08, asking whether an SGD
+      classifier was worth adding.** A hit is scored as
+      `pred.signum() == y.signum()` with `y == 0` rows dropped
+      (`SlotMetrics::update` in `crates/online-core/src/stats.rs`, and the
+      same expression in `python/polars_online/eval.py`). A logistic fit
+      predicts a probability in (0, 1) against a 0/1 target, so every zero
+      row is dropped and every surviving row is a hit: the field is **1.0
+      whatever the fit does**. Measured, 20,000 rows, `k = 2`, `y` drawn from
+      `sigmoid(1.2·x0 − 0.8·x1)`:
+
+      | fit | `hit_rate` | `r2` | `ic` | accuracy at 0.5 |
+      |---|---:|---:|---:|---:|
+      | `sgd`, `loss="logistic"` | 1.0000 | 0.2719 | 0.5216 | 0.7268 |
+      | `ftrl`, `loss="logistic"` | 1.0000 | 0.2784 | 0.5278 | 0.7304 |
+      | `sgd` logistic on pure-noise features | **1.0000** | −0.0159 | 0.0189 | — |
+
+      A model that knows nothing reports a perfect hit rate, in the streaming
+      metric and in `po.eval.metrics` alike. The other two survive the
+      translation and nothing says so: on a 0/1 target `r2` is the Brier
+      skill score against the running base rate and `ic` is a point-biserial
+      correlation. There is no log loss anywhere, and `ew_class` refuses
+      `emit_metrics` outright ("it has no predictions, so no residuals"), so
+      the multiclass model has no metric at all.
+
+      The fix, in three parts:
+
+      1. *`hit_rate` on a binary fit is accuracy at a 0.5 threshold.* Gate it
+         on the **declared** loss — `sgd`'s and `ftrl`'s `logistic` — not on
+         sniffing the target's values, which would make a metric's meaning
+         depend on the data a chunk happened to carry. A regression fit keeps
+         the sign agreement it has now. Alternative if a threshold is judged
+         arbitrary: refuse the field for a logistic loss the way `ew_class`
+         refuses the lot, which is honest but leaves classification with two
+         metrics rather than three.
+      2. *Log loss, and the constraint that shapes it.* `−[y ln p + (1−y)
+         ln(1−p)]`, exponentially weighted like the rest. The streaming
+         version would put a `ln` result **into the state**, which §11a's B4
+         rule forbids: a libm result may be compared or reported, but
+         persisting one costs cross-platform reproducibility (that is what
+         broke a frozen fixture on `ubuntu-latest` alone). So either it lives
+         only in `po.eval`, over the collected frame, or the accumulator is
+         excluded from the frozen-state fixtures with the reason written
+         down. Decide before building.
+      3. *Document what the metrics mean on a 0/1 target* — `r2` as Brier
+         skill, `ic` as point-biserial — in `emit_metrics`' docstring, the
+         README's output table and `po.eval.metrics`.
+
+      **Not the classifier E28 declined.** No new loss, no new model, no
+      margin: this is the plumbing that makes the two logistic fits already
+      shipped (`sgd(loss="logistic")`, `ftrl`) reportable. E28 (perceptron
+      and PA-classifier hinges) and E39's discriminative multiclass stay
+      declined until a caller wants a margin instead of a probability.
+
+      Ships after 0.4.0, which is tagged with the defect in it. Whether
+      `hit_rate` changing counts as "a change to the numbers a model
+      returns" under 0.4.0's own widened rule is the user's call; the reading
+      here is that it is a diagnostic rather than a prediction, and one that
+      is currently a constant, so a patch — but it should be the first line
+      of the release note either way.
+
+      Tests: the pure-noise fit above as a regression test (a model that
+      knows nothing must not report a perfect hit rate); accuracy against a
+      numpy replica on a fit that does know something; the regression path's
+      `hit_rate` unchanged to the bit; and `po.eval.metrics` agreeing with
+      the streaming metric on the same stream, which is the invariant E22
+      already claims.
+
 - [x] 71. **E51, the blocked rank-B Gram update — design settled 2026-09-08,
       `EwCov` half built and reviewed the same day, `ewridge` wiring built
       the same day.**
