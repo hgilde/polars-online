@@ -384,15 +384,35 @@ fn standardized<'a>(sc: &'a EwDiag, off: usize, x: &'a [f64]) -> impl Iterator<I
     })
 }
 
-/// `beta · [1, z]`: the intercept's coefficient -- its `z` is the constant
-/// 1 -- then `z` against the feature coefficients, one running sum in
-/// index order, the order the model has always summed in.
+/// Partial sums the dot product is accumulated in. A single running sum is
+/// a chain of dependent additions, three or four cycles each whatever the
+/// core could do in parallel; eight independent ones run at the adder's
+/// throughput instead, and were most of a wide step (docs/PERFORMANCE.md
+/// §20). The order is fixed by this constant and the code below, not by
+/// the hardware, so every platform sums the same bits.
+const DOT_LANES: usize = 8;
+
+/// `beta · [1, z]`: `z` against the feature coefficients in [`DOT_LANES`]
+/// interleaved partial sums (slot `i` into sum `i % DOT_LANES`), the sums
+/// folded pairwise, and the intercept's coefficient -- its `z` is the
+/// constant 1 -- added last.
 #[inline]
 fn dot(beta: &[f64], off: usize, z: &[f64]) -> f64 {
     let b = &beta[off..];
     debug_assert_eq!(b.len(), z.len());
-    let s = if off == 1 { beta[0] } else { 0.0 };
-    z.iter().zip(b).fold(s, |s, (zi, bi)| s + zi * bi)
+    let mut acc = [0.0f64; DOT_LANES];
+    let mut zc = z.chunks_exact(DOT_LANES);
+    let mut bc = b.chunks_exact(DOT_LANES);
+    for (zs, bs) in (&mut zc).zip(&mut bc) {
+        for l in 0..DOT_LANES {
+            acc[l] += zs[l] * bs[l];
+        }
+    }
+    for (l, (zi, bi)) in zc.remainder().iter().zip(bc.remainder()).enumerate() {
+        acc[l] += zi * bi;
+    }
+    let s = ((acc[0] + acc[1]) + (acc[2] + acc[3])) + ((acc[4] + acc[5]) + (acc[6] + acc[7]));
+    if off == 1 { beta[0] + s } else { s }
 }
 
 impl OnlineModel for Sgd {
