@@ -9,6 +9,36 @@ carries breaking changes.
 
 ### Added
 
+- **A state file describes itself, and can be read without this library**
+  (task 69, `docs/ENHANCEMENTS.md` E68). `ModelBank.load("bank.state")`
+  needs no `specs=`: `bank.specs` returns every spec as the dict its builder
+  made, and with `groups()`, `output_fields()`, `rows_seen()` and the four
+  diagnostic tables that is enough to walk a bank nothing has described.
+  New `to_json()` and `save_json()` write the whole state as JSON — an
+  export, not a second state format, since `load` reads msgpack and only
+  msgpack.
+
+  The export is faithful including the values JSON has no literal for.
+  `serde_json` writes `NaN` and `±inf` as `null` and says nothing about it,
+  and `halflife=inf` (no decay) puts an infinity in every stream's `decay`,
+  so a naive export was silently wrong on ordinary banks. Non-finite floats
+  are written as `"nan"`, `"inf"` and `"-inf"` — the spelling a spec's
+  `halflife` already used — and every export is read back and checked against
+  the state before it is returned. **State files are unchanged**: the tagging
+  keys on `is_human_readable()`, which msgpack reports as `false`, and
+  `crates/online-core/tests/state_encoding.rs` pins an annotated field to the
+  same bytes as a bare `f64`.
+
+### Changed
+
+- **`ModelBank.specs` is read-only and returns a copy** (task 69). It was an
+  attribute set in `__init__`, which kept it out of `tests/api_surface.txt`
+  (the snapshot walks the class) and let an in-place edit desynchronise the
+  Python view from the Rust bank — `bank.specs[0]["features"] = [...]` left
+  `coef()` labelling coefficients from a spec the bank was not running.
+  Assigning to it now raises `AttributeError`, and mutating what it returns
+  changes nothing. Reading it is unaffected.
+
 - **`marginal(bins=)`: the nonlinear view** (task 66,
   `docs/ENHANCEMENTS.md` E67). Every statistic `marginal` reported was
   linear, and a feature can be strongly related to a target with `corr` at

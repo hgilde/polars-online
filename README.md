@@ -595,11 +595,11 @@ row's values for every row inside the delay, per group.
 zero-weight prediction at `t` and a lesson at `t + delay`, merged back into
 clock order. That is the recipe to reach for when the delay has to be
 visible in the frame, or for an engine that is not this one. The native path
-is tested against it field by field and agrees to the bit — except for
-`resid_quantiles`, `emit_autocorr` and `emit_drift`, which take no row
-weight, so in the doubled stream a zero-weight row feeds them as much as its
-learn copy does and every residual lands twice. `label_delay` feeds them
-once.
+is tested against it field by field and agrees to the bit, with three
+exceptions: `resid_quantiles`, `emit_autocorr` and `emit_drift`. Those three
+take no row weight, so a zero-weight row feeds them as much as its learn copy
+does — and in a doubled stream every residual therefore lands twice.
+`label_delay` feeds them once.
 
 ### Series that tick at their own times
 
@@ -1102,10 +1102,11 @@ A₀ = ridge·I         b₀ = ridge·coef_prior
 ```
 
 Coefficients move every row with no solve staleness. The state is the
-Cholesky factor of `A`, updated by Givens rotations — the square-root form,
-O(k²) per row like the textbook `P` recursion but without its two failure
-modes (rounding asymmetry growing by `1/λ` per row, and one extreme row
-cancelling `P` and freezing a coefficient for good). `ridge` sets
+Cholesky factor of `A`, updated by Givens rotations. That is the square-root
+form: `O(k²)` per row, the same as the textbook `P` recursion, without
+either of its two failure modes. `P` accumulates rounding asymmetry by a
+factor of `1/λ` per row, and one extreme row can cancel it and freeze a
+coefficient for good. `ridge` sets
 `A₀ = ridge·I` and, unlike `ewridge`, penalizes the intercept too.
 Algebraically identical to `ewridge(ridge_decay=True)` solved every row; a
 test holds them to <1e-9. A row with any null target is predict-only for all targets, since the
@@ -1125,7 +1126,7 @@ path and across solves:
 
 `l1_ratio < 1` gives elastic net. Predictions for every path point are
 computed anyway, so `lam_selected_<target>` — the argmin of an EW
-out-of-sample squared error over the path — costs nothing extra, and is
+out-of-sample squared error over the path — adds no work of its own. It is
 reported as it stood *before* the row, like every other output.
 
 ### `kalman` — random-walk-β dynamic linear model
@@ -1312,11 +1313,11 @@ something that stops growing, and a clock gap longer than `window` empties
 it and reports nulls rather than stale numbers.
 
 If your data fits in memory and you only want moments, polars already does
-this: `df.rolling("t", period="3h").agg(...)` with an exponential weight is
-the same number to 1e-14. The reason to reach for the spec is a stream, a
-saved state, or the cost — that recomputes each window at O(n·W) where this
-is O(n), which at 200k rows and a 4,680-row window measured 15.8 s against
-14 ms.
+this: `df.rolling("t", period="3h").agg(...)` with an exponential weight is the
+same number to 1e-14. The reason to reach for the spec is a stream, a saved
+state, or the time: the rolling window recomputes each window at `O(n·W)` where
+this is `O(n)`. At 200k rows and a 4,680-row window that is 15.8 s against 14
+ms.
 
 Three more outputs come off the same state. `"mahal"` in `stats` adds
 `mahal`, the Mahalanobis distance of the row from the running mean,
@@ -1589,14 +1590,15 @@ generating parameters allow, and the posteriors are calibrated to about 0.01.
 
 *API:* [`po.spec.seqtest`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.seqtest) — *Rust:* [`seqtest.rs`](crates/online-core/src/seqtest.rs) — *Outputs:* [fields](docs/OUTPUTS.md#seqtest)
 
-Not a regression. A `seqtest` asks whether a column tends to be positive —
-or, with `a` and `b`, whether one spec of the bank predicts closer than
-another — and answers with evidence you can read at any row, as often as you
-like, and act on the first time it is enough. A p-value cannot be used that
-way; an e-process can. Per target it keeps the wealth of two gamblers, one
-betting that the next sign is positive and one that it is negative. Each
-stakes the Krichevsky–Trofimov fraction set by the counts so far, and never
-bets against its own lead:
+Not a regression. A `seqtest` asks whether a column tends to be positive; with
+`a` and `b`, it asks instead whether one spec of the bank predicts closer than
+another. Either way the answer is evidence you can read at any row, as often as
+you like, and act on the first time it is enough. A p-value cannot be used that
+way, because peeking at one inflates its error rate. An e-process can, and that
+is the whole reason to reach for it. Per target it keeps the wealth of two
+gamblers, one betting that the next sign is positive and one that it is
+negative. Each stakes the Krichevsky–Trofimov fraction set by the counts so
+far, and never bets against its own lead:
 
 ```
 s = sign(y)                    n⁺, n⁻: the signs counted before this row,  n = n⁺ + n⁻
@@ -1836,9 +1838,10 @@ p_l   ← p1_l·f_l / Σ                       the filtered state
 ```
 
 Everything reported is read before the row is learned from. Each state's
-accumulator then takes the row at weight `w·p_l` — the responsibilities sum
-to `w`, so `n_eff` is the shared recursion untouched — and the transition
-matrix is learned from the **filtered joint of consecutive states**,
+accumulator then takes the row at weight `w·p_l`. The responsibilities sum
+to `w`, so `n_eff` is the shared recursion untouched — a row splits across
+the states rather than counting more than once. The transition matrix is
+learned from the **filtered joint of consecutive states**,
 `ξ_kl = p_k(t−1)·Π_kl·f_l / Σ`, with a Dirichlet pseudo-count keeping a
 never-visited row a distribution.
 
@@ -1854,10 +1857,10 @@ and the filter is 99%.
 
 `precision_prior` is required — a state's centred co-moments start at zero,
 and a zero matrix has no density. Give `means` and `covs` to filter with
-known states (`learn=False` to freeze them), or let it seed from the first
-`warm_rows` learned rows with `kmeans`' rule; every output is null until
-then, so **`warm_rows` should span more than one regime** or the seeds are
-two halves of one. `exog_tvtp` drives the matrix from a column instead,
+known states, and `learn=False` to freeze them. Otherwise it seeds from the
+first `warm_rows` learned rows with `kmeans`' rule, and every output is null
+until then. **`warm_rows` should span more than one regime**, or the seeds
+are two halves of one. `exog_tvtp` drives the matrix from a column instead,
 through fixed `tvtp_coef`.
 
 One limitation worth knowing: a single extreme row can be captured by one
@@ -1996,11 +1999,11 @@ exactly the `r` rows that hypothesis says came before this one in the run —
 and slot 0 holds none, so its predictive is the prior's. That is what makes
 "a new run starts here" a hypothesis the data can vote on.
 
-The vector would grow by a slot every row. `prune_below` drops the runs holding
-less than that share of the mass, and `max_run` folds every longer run into
-the last kept one, which takes their mass and keeps its own statistics — so
-it caps how much history any run holds, and `run_mode` saturates one below
-it.
+The vector would grow by a slot every row. Two knobs bound it.
+`prune_below` drops the runs holding less than that share of the mass.
+`max_run` folds every longer run into the last kept one, which takes their
+mass and keeps its own statistics — so it caps how much history any run
+holds, and `run_mode` saturates one below it.
 
 | output | meaning |
 |---|---|
@@ -2173,16 +2176,16 @@ import polars_online as po
    .sink_parquet("fit.parquet"))
 ```
 
-On 12M rows over 64 groups, one spec: 14 and 14 takes 2.6 s at a peak of
-1.1 GB. 4 and 14 takes the same 2.6 s at 0.8 GB — a third less memory at the
-same speed. One shared count of 4 takes 3.9 s at 0.6 GB, and polars alone at one
-thread 7.4 s, because reading and writing are then one thread's work. Six
-specs split the same way: 10.3 s at 1.5 GB, 11.8 s at 1.2 GB, 16.6 s at
-1.0 GB. (Memory here and below is the peak footprint `/usr/bin/time -l`
-reports. RSS reads about 0.7 GB higher, because the memory-mapped input
-file counts there.) The pools never wait on each other — a bank task never
-calls back into polars' pool — so both at the whole machine costs nothing
-either: 28 and 28 on 14 cores ran the grid above in 2.18 s against 2.21.
+On 12M rows over 64 groups, one spec: 14 and 14 takes 2.6 s at a peak of 1.1
+GB. 4 and 14 takes the same 2.6 s at 0.8 GB — a third less memory at the same
+speed. One shared count of 4 takes 3.9 s at 0.6 GB, and polars alone at one
+thread 7.4 s, because reading and writing are then one thread's work. Six specs
+split the same way: 10.3 s at 1.5 GB, 11.8 s at 1.2 GB, 16.6 s at 1.0 GB.
+(Memory here and below is the peak footprint `/usr/bin/time -l` reports. RSS
+reads about 0.7 GB higher, because the memory-mapped input file counts there.)
+The pools never wait on each other, because a bank task never calls back into
+polars' pool. So oversubscribing both costs no time either: 28 and 28 on 14
+cores ran the grid above in 2.18 s against 2.21.
 
 ### Chunk size
 
