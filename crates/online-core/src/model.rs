@@ -45,7 +45,7 @@ impl State {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ModelState {
-    EwCov(crate::EwCov),
+    EwCov(Box<crate::EwCov>),
     EwRidge(Box<crate::EwRidge>),
     Rls(Box<crate::Rls>),
     Lasso(Box<crate::Lasso>),
@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn schema_check() {
-        let s = State::new(ModelState::EwCov(crate::EwCov::new(1)));
+        let s = State::new(ModelState::EwCov(Box::new(crate::EwCov::new(1))));
         assert!(check_schema(&s).is_ok());
         let old = State {
             schema_version: MIN_SCHEMA_VERSION,

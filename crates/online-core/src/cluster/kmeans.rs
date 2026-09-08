@@ -1575,7 +1575,7 @@ mod tests {
         assert_eq!(r, m);
         let row = [3.0, 4.0];
         assert_eq!(r.step(&row, &[], 1.0, 1.0), m.step(&row, &[], 1.0, 1.0));
-        let other = State::new(ModelState::EwCov(crate::EwCov::new(2)));
+        let other = State::new(ModelState::EwCov(Box::new(crate::EwCov::new(2))));
         assert!(matches!(
             KMeans::restore(&other),
             Err(StateError::WrongModel {

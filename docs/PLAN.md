@@ -1108,6 +1108,217 @@ note, not a task.
       file pass (6.7s to ~9s), and an injected 8 KB/iter leak is still caught
       (`8.6 KB/iter, gaps [8.7, 8.5, 8.7, 8.5]`).
 
+- [ ] 72. **Against `sklearn.linear_model.SGDRegressor` — analysis done
+      2026-09-08, the measurement open.** Written because "how does this
+      compare to sklearn" is the first question a reader has and the README
+      answers it nowhere.
+
+      **The comparison is not the one the name suggests.** `SGDRegressor`'s
+      counterpart here is `po.spec.sgd`, which this repo calls the cheap
+      baseline. The primary regression is a different algorithm class:
+      `SGDRegressor` is a first-order stochastic optimiser whose answer
+      depends on the learning rate, the schedule, feature scaling and row
+      order, while `ewridge`/`rls`/`lasso`/`huber`/`quantile` accumulate
+      sufficient statistics and solve — with decay off and `ridge = 0`,
+      `ewridge` is OLS to `2e-13` of `numpy.linalg.lstsq` in any row order,
+      and there is no learning rate because nothing is being descended.
+
+      Where the designs diverge, in the order that matters to a reader:
+      forgetting (`partial_fit` weights all history equally and its
+      learning-rate decay is about convergence, not recency; every spec here
+      takes a `halflife` on a real clock); leakage (sklearn leaves the
+      predict-then-fit ordering to the caller, here it is a hard rule with
+      tests); grids (`ridge=[...]`, `halflife=[...]` share one accumulator,
+      so only the solve repeats, against N estimators over N passes);
+      multiple targets sharing one Gram; `group=` against a dict of
+      estimators; streaming standardisation against a `StandardScaler` that
+      leaks when fitted on a batch; chunk invariance; and a versioned
+      cross-OS state file against pickle.
+
+      Where sklearn wins, and the README should say so: `SGDRegressor` is
+      `O(k)` in memory where `ewridge` carries a `k×k` Gram — 800 MB at
+      k = 10,000, which is the whole reason `marginal` and E51 exist — plus
+      the ecosystem (pipelines, `GridSearchCV`, calibration) and far more
+      use. `sgd` here is the `O(k)` answer.
+
+      Loss coverage, for the record: `sgd` adds `quantile`, `poisson` and
+      `logistic` over `SGDRegressor`'s four, and lacks
+      `squared_epsilon_insensitive`; `l1`/elastic net lives in `lasso`,
+      solved exactly by coordinate descent rather than by a subgradient.
+
+      **Open, and deliberately not claimed until it is run**: a measured
+      comparison on one generated stream — out-of-sample error and rows/sec
+      for `SGDRegressor.partial_fit` against `sgd` and `ewridge`, including
+      the case sklearn wins (large `k`). No throughput ratio goes in the
+      README before that exists.
+
+- [ ] 71. **E51, the blocked rank-B Gram update — design settled 2026-09-08,
+      `EwCov` half built and reviewed the same day, `ewridge` wiring open.**
+      Three things were measured before any of it was built, because the
+      ledger row's own numbers turned out to need qualifying — and then the
+      review of the built half found two more, both of which had passed
+      every test.
+
+      *The speedup is real, and the row's 5–10× is honest — single-threaded.*
+      The design probe first reported **9.5× at k = 1,000 and 11.2× at
+      k = 2,000**, and those numbers were wrong in a way the review caught:
+      the probe multiplied with `faer`'s `*` operator, which parallelises
+      over the global rayon pool by default, against a rank-1 baseline that
+      runs on one core. The bank runs each group on its own pool
+      (`crates/online-polars/src/pool.rs`), so the honest comparison is one
+      core against one core: a full GEMM measures 3.6×, a triangular product
+      (`syrk`-style, lower half then mirrored) 5.4×, and the flush as built —
+      the triangular product with no `S` allocation and the corrections
+      applied on the triangle — **6.6× at k = 1,000 and 6.65× at k = 2,000**
+      with a 256-row block, 4.6× at k = 256; a 64-row block gives
+      4.9×/4.5×/2.9×. The rank-1 path is memory-bound (it re-touches the
+      whole `k×k` at ~110 GB/s every row); the product is compute-bound at
+      ~50 GFLOP/s on one core. So the product is `Par::Seq`, always.
+
+      *The review's first finding: the flush as first written measured
+      1.0×.* The merge was a hand-rolled triple loop, which is the rank-1
+      path's flop count in a different order. The tests could not see it,
+      because they check the answer, not the time. It is now
+      `faer::linalg::matmul::triangular::matmul` on rows pre-scaled to
+      `√uᵢ·(xᵢ − m_B)`, so that `DᵀD` *is* `S` and the product writes into
+      the lower triangle of `C` in place. Rule for the row: **a plan row's
+      speedup is measured on the implementation, single-threaded, not on
+      the probe** — the memory note from E48 ("measure before believing a
+      plan row") applied twice in one task.
+
+      *The review's second finding: 49% of the variance, lost to
+      cancellation, on a stream every test passed.* The merge was centred on
+      the running mean `m_A`, which the design chose over zero (E67's
+      cancellation at an offset of `1e7`). But when the history is *nearly*
+      gone — an uncapped gap leaving `W_A = 1e-30`, not zero — `m_A` is
+      still where the old data was, and the block's scatter is formed as a
+      difference of two numbers of order `U·(m_B − m_A)²`: 49% of the block's
+      variance at an offset of `1e7`, 24% centred on the block's first
+      weighted row instead (that row can be the one *before* the gap). The
+      rank-1 recursion is exact here, because its mean jumps to the row. So
+      the flush is **two passes: the block's own weighted mean `m_B` first,
+      then the product on rows centred on it**, at a cost of one extra `B·k`
+      pass. Measured `8.4e-10` of the variance on that stream (the data's own
+      resolution at `1e7`) and `3e-14` at `1e3`, and the test that pins it
+      (`a_history_all_but_gone_leaves_nothing_to_cancel`) fails at 17% with
+      the centring switched back.
+
+      *The merge, as built.* With `Λᵢ` the suffix decay to the block end,
+      `uᵢ = wᵢ·Λᵢ`, `U = Σuᵢ`, `W_A = (Πλᵢ)·W_open`, and `W'` the weight
+      after the block from the scalar recursion (below): `m_B = Σuᵢxᵢ/U`, `dᵢ = xᵢ − m_B`, `S = Σuᵢdᵢdᵢᵀ`
+      (the product), `Δ = m_B − m_A`,
+      `C' = (W_A·C_A + S)/W' + (W_A·U/W'²)·ΔΔᵀ`, `m' = m_A + (U/W')·Δ`.
+      (The code keeps a residue term `δ = Σuᵢdᵢ/U` that is zero in exact
+      arithmetic and `1e-16` in floats, so the general-origin form is what is
+      written: `C' = (W_A·C_A + S − U·δδᵀ)/W' + (W_A·U/W'²)·ΔΔᵀ` with
+      `Δ = (m_B − m_A) + δ`.)
+
+      *The scalars can stay bit-identical, which the row did not anticipate.*
+      `w_sum`, `q_sum`, `prior_scale` and `precision_scale` are an `O(B)`
+      recursion, not an `O(B·k²)` one, so the block runs the shipped scalar
+      path exactly, per row, as each row is held. Measured against the
+      sequential recursion over weights, zero-weight rows and decay: all four
+      match to `0.0e0`, and the mean to `1e-16`. Only the `k×k` matrix moves,
+      at `5e-13` of the largest variance (offset `1e3`) to `8e-10` (`1e7`).
+      **`n_eff` is emitted every row, so this is what keeps blocking from
+      changing any per-row output.**
+
+      A closed form for `precision_scale` is *wrong* and was caught here:
+      `Π aᵢ = Π λᵢ · W₀/W_B` looks like it telescopes, but the shipped update
+      **resets** the product to 1 whenever the history has no weight
+      (`a ≤ 0`), which the product cannot see. Measured 0.84–0.99 relative
+      error before the scalar pass replaced it.
+
+      *The constraint the row does not mention.* The Gram must be flushed
+      before it is read, so the effective block is
+      `min(gram_block_rows, solve_every)`. That is not fatal — at k ≥ 1,000 a
+      solve is ~3·10⁸ flops, so anyone in the regime E51 targets already
+      solves rarely — but it means the parameter cannot be documented without
+      it. **And it is incompatible with `window`**: `Moments::of` reads the
+      matrix on every row to build the truncated snapshot
+      (`crates/online-core/src/window.rs`), which would flush every row and
+      buy nothing. The wiring refuses `gram_block_rows` together with
+      `window` rather than silently degrading.
+
+      *The read surface narrows the blast radius, once looked at.* `n_eff`,
+      `n_kish` and `q_sum` read scalars only; `mean`, `cov`, `raw`, `var`,
+      `comoments`, `means` and `precision` read the matrix. The scalars are
+      advanced **eagerly, per row, by the shipped path** even while rows are
+      held, so nothing that is emitted per row can ever lag — the flush needs
+      only `W` at the moment the block opened, which is one snapshot. And
+      `comoments`/`means` hand out `&[f64]`, so a `&self` method cannot
+      flush; instead every matrix read carries
+      `debug_assert!(!self.has_pending())`, which turns a forgotten flush
+      into a failure on the first test that reads mid-block rather than a
+      wrong number in production. `set_moments` and `decay` flush first: the
+      held rows were measured against the state those two replace or age
+      (`blend_toward_long_run` is the caller that reaches `set_moments`).
+
+      *What the flush may be triggered by.* Only functions of the row
+      sequence: the block filling, a read on the learned-row schedule
+      (`solve_every`), `set_moments`, `decay`. **Never a chunk ending** — a
+      flush every row is the rank-1 association and a flush every sixteen a
+      merge, and the last digits differ, which is the chunk-dependence rule 3
+      forbids. The test with teeth is the bank's chunk-invariance test with
+      `gram_block_rows` on (wiring, below).
+
+      *The state.* The held block travels in `EwCov`'s state as a last field
+      `pending` (`block_rows`, `x` row-major `B×k`, `lam`, `w`, `w_open`),
+      skipped when blocking is off so every existing state file is
+      byte-identical; a bank saved mid-block resumes on the same block
+      boundary. `SCHEMA_VERSION` stays 6. Two consequences found on the way:
+      `q_sum` no longer has `skip_serializing_if` (the crate's compact
+      encoding is positional, so at most one field may skip and it must be
+      last — `tests/state_encoding.rs`; `None` now writes a `nil`, and named
+      bytes for `Some` are unchanged), and `ModelState::EwCov` is boxed like
+      every other variant, because the extra 88 bytes tripped
+      `clippy::large_enum_variant`. Noted, not changed: `EwCovModel`'s `lag` and `win` both
+      skip at its tail and `EwRidge`'s `tm` skips mid-struct, which the same
+      rule would reject; benign because the bank writes the named form.
+      The JSON export (task 69) shows a held block as named finite fields.
+
+      *Reproducibility.* The rank-1 path is bit-reproducible across CPUs;
+      the product is `faer`'s and its kernel dispatch follows the CPU's
+      vector width, so a blocked Gram's last bits can differ between
+      machines. **Frozen fixtures must not enable blocking**, and the
+      cross-platform state hand-off stays on the rank-1 path.
+
+      *Only `ewridge` turns it on.* Blocking pays exactly where the Gram is
+      consumed on a schedule rather than per row, which is `ewridge` (and
+      later `lasso`). `ew_cov` emitting per-row statistics would flush every
+      row and gain nothing. So `EwCov` gains the machinery but the five other
+      models on it — `ew_cov`, `ew_class`, `corrchange`, `hmm`, `deco` —
+      never set `block_rows` and run the untouched path, to the bit
+      (`block_rows_zero_is_the_untouched_path`).
+
+      *Tests, in `crates/online-core/src/ewcov.rs::block_tests` (19).* The
+      shipped recursion is the oracle throughout. Co-moments are compared
+      against the matrix's own scale at the data's own resolution
+      (`max(1e-9, 64·|m|·ε/σ)`), not entry by entry — a per-entry relative
+      tolerance fails on an off-diagonal that happens to be near zero while
+      saying nothing about the merge. Sweeps over `k ∈ {1, 3, 8, 37}`,
+      `λ ∈ {1, 0.995}`, three weight patterns, blocks `{2, 7, 64}`, offsets
+      `{0, 1e3, 1e7}`; a `k = 131` case for the product's tile edges; the
+      near-total-decay stream above; the capped gap (`λ = 0` exactly, rule 9)
+      at four positions in a block; a block of nothing but zero-weight rows;
+      a zero-weight first row (opens no block, exact); the block boundary
+      itself; a read mid-block (`should_panic`); the scalars readable
+      mid-block; save/resume at five cuts in both msgpack encodings; the
+      JSON shape; block sizes 1 and longer than the stream; resizing
+      mid-stream; `decay` and `set_moments` mid-block, both verified to fail
+      without their flush. `cargo mutants` cannot see any of the Python
+      suite, so this module is where the coverage has to be.
+
+      **Still to build (the wiring):** opt-in `gram_block_rows` on `ewridge`
+      only (`block_rows` is taken by `rcov`), flushed before every solve and
+      read, refused with `window`, a budget refusal (`B×k` floats per group,
+      on the pattern of the 256 MiB `bins` hold); Python tests by
+      parametrisation of the existing `ewridge` cases plus the bank-level
+      chunk-invariance, save/resume and JSON-mid-block cases; the benchmark
+      in `ewridge` at `k ∈ {256, 1000, 2000}` reporting single-threaded
+      numbers; `docs/PERFORMANCE.md`, the E51 ledger row, the CHANGELOG and
+      the README.
+
 - [ ] 68. **README clarity pass, begun 2026-09-07.** Going through the
       reader-facing prose and fixing phrasing that only parses if the reader
       already shares the frame the sentence was written in. Three rules, in
@@ -4399,6 +4610,17 @@ online contract (E36–E42).
   `.cache/`, and skips when offline, so hard rule 1 holds. It backs both the
   reference comparisons and the defaults measured in `docs/VALIDATION.md`
   (14,336 rows).
+- **A zero-weight row on a capped gap does not age the history** (found
+  2026-09-08 while reviewing task 71; pre-existing, both Gram paths agree).
+  The stream accepts a zero-weight row (`usable(0.0)` holds) and the clock
+  consumes the gap, but `EwCov::step_factors` refuses `lam = 0, w = 0`
+  because `lam·W + w = 0`, so the accumulator is left as it was: `n_eff`
+  reports the old count, and the next weighted row blends with a history the
+  clock says is `2^-10000` gone. A gap one unit *under* the cap, or the same
+  gap followed by a weighted row, wipes it. One row wide, and only at the cap
+  — a fix would set `w_sum = 0` and let the next row's `a = 0` start over,
+  which changes shipped output for that row and needs its own test and
+  decision. Not blocking task 71.
 ## 13. `window`: an EW accumulator with a hard cutoff (2026-09-06)
 
 An exponentially weighted mean never forgets. A halflife of `h` leaves

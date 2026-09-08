@@ -606,7 +606,9 @@ fn every_state_kind_is_distinct_and_named() {
         "holt"
     );
     assert_eq!(
-        State::new(ModelState::EwCov(EwCov::new(1))).model.kind(),
+        State::new(ModelState::EwCov(Box::new(EwCov::new(1))))
+            .model
+            .kind(),
         "ew_cov"
     );
     assert_eq!(
