@@ -7,6 +7,34 @@ carries breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **`sgd` costs 2 ns per feature per row instead of 13–14** (task 75,
+  `docs/PERFORMANCE.md` §20). At `k = 10,000` a bank runs it at 45,000
+  rows/second against 13,000 before, and against 20,007 for `SGDRegressor`
+  in batches of 1,000 — with every prediction made from the state as it
+  stands; at `k = 1,000`, 486,000 against 217,000, and at `k = 20`, 10.8M
+  against 8.9M. None of it was the arithmetic. The bank walked a row across
+  one `Vec` per feature at a stride of the chunk height — a page per feature
+  per row — and now gathers each chunk into a row-major buffer once (a
+  tiled transpose, 3 µs per row at that width); the step indexed three
+  nested `Vec`s per feature with a bounds check on each and chose its
+  schedule per feature, and now runs zipped slices with the rate raised
+  once per row; the accept check no longer short-circuits, so it
+  vectorises; and the dot product is summed in eight interleaved partial
+  sums instead of one chain of dependent additions. **That last one changes
+  bits**: the order is fixed by the code and the same on every platform,
+  but it is not 0.3.1's, so `sgd` predictions differ from the last
+  release's at rounding level — 1e-16 relative on squared loss, 1.5e-11 at
+  worst across 48 configurations of a 400-row stress stream (Huber at a
+  constant rate, whose clipped gradient lets a perturbation persist). The
+  pipeline goldens (1e-12) pass unchanged; everything else in the change
+  is bit-identical, checked by a signature of every `step` and `predict`
+  over those 48 configurations. What is left at `k = 10,000` is measured
+  in §20: the data summary is now the largest item (7 of 20 µs per row),
+  and the frame hand-off costs about 8 ms per call at 10,000 columns
+  (pyo3-polars' per-Series export), so feed wide frames in tall chunks.
+
 ### Documentation
 
 - **"How does this compare to scikit-learn?" now has an answer** (task 72).
@@ -29,8 +57,9 @@ carries breaking changes.
   matrix, not the output: `coef_every=1` costs 2.5%, the solve 0.2%, and
   the rank-1 update moves 800 MB per row at 85 GB/s, near memory
   bandwidth; `gram_block_rows=1024` buys 7.2×. `sgd` is the `O(k)` answer,
-  and at the same semantics (row by row) it is 3× faster than
-  `SGDRegressor` and agrees with it (correlation 0.9954). The wide table's
+  and at the same semantics (row by row) it is faster than `SGDRegressor`
+  (3× when the section was written, 15× after task 75 above) and agrees
+  with it (correlation 0.9954). The wide table's
   learning rate is now `0.2 / k` for both libraries — an LMS step is
   stable only while `eta · |z|² < 2` and `|z|² ≈ k` — and it carries an R²
   column; its first version had timed two diverged fits at 0.01.

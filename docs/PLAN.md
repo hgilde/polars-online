@@ -1365,9 +1365,10 @@ note, not a task.
       rows/s, 512 → 306, 1024 → **379** (7.2×, an 82 MB buffer), 2048 →
       376. "Does our `sgd` produce the same thing as `SGDRegressor` at
       6,000 rows/s?" Yes, and 6,000 is the faster side: `SGDRegressor` at
-      this library's semantics (row by row) runs at 2,267 rows/s at
+      this library's semantics (row by row) ran at 2,267 rows/s at
       `k = 10,000` and 3,043 at `k = 1,000`, against `sgd`'s 6,944 and
-      185,641, with the correlations above; sklearn's 18,980 is its batch of
+      185,641 (33,271 and 407,925 since task 75), with the correlations
+      above; sklearn's 18,980 is its batch of
       1,000, predictions up to 999 rows stale, the narrow table's trade at
       2.7× instead of 1,700×. Checking that exposed that the wide table's
       `learning_rate=0.01` had both libraries diverged (R² −6.8e8 and
@@ -1377,12 +1378,102 @@ note, not a task.
       now runs both at `0.2 / k` and prints R² in the wide table. It also
       put a number on `sgd`'s inner loop — a flat 13–14 ns per feature per
       row from `k = 1,000` to `k = 10,000`, against about 5 ns for sklearn's
-      batched Cython; the columnar gather is not it (`to_numpy` of the
-      whole 10,000-column frame is 8.4 µs/row against `sgd`'s 142). Not a
-      task; a measured target if the wide `sgd` ever matters. And at
+      batched Cython — and misread it: "the columnar gather is not it",
+      because `to_numpy` of the whole 10,000-column frame ran at 8.4 µs/row
+      against `sgd`'s 142. That compared one transpose of the frame with
+      a bank that gathered every row *again* from `k` separate columns,
+      at a stride; the walk was most of the 142, and one transpose per
+      chunk is what the bank does now. Task 75 took the number apart the
+      same day: 2.2 ns per feature, 45,000 rows/second at `k = 10,000`,
+      2.4× sklearn's batch at the row-by-row semantics. And at
       `k = 1,000` the R² column repeats the short-history lesson: 20 rows
       per feature, `ewridge` at 0.9274 where every first-order contender is
       at 0.85, predicting from coefficients up to 1,000 rows old.
+
+- [x] 75. **`sgd`'s per-feature cost, 2026-09-08: 13–14 ns per feature per
+      row to 2.2 at `k = 10,000`, 45,000 rows/second in a bank against
+      `SGDRegressor`'s batched 20,007, and every prediction from the state
+      as it stands.** Task 72 left the number as "a real target, and an
+      independent one"; this is it taken apart, and none of it was the
+      arithmetic (`docs/PERFORMANCE.md` §20 has every measurement).
+
+      *The columns.* The bank kept one `Vec<f64>` per feature and a row
+      was a walk across all of them at a stride of the chunk's height:
+      a cache line and a TLB entry per feature per row, 10,000 pages at
+      `k = 10,000`, 78–130 µs per row depending on the stride — the
+      "erratic with chunk size" the earlier tables showed. Each chunk is
+      now gathered once into a row-major buffer
+      (`crates/online-polars/src/rows.rs`, `FeatureRows`): a tiled
+      transpose, 128 rows by 64 columns so source and destination lines
+      both stay in L1, the layout permutation folded into the gather, in
+      parallel above 65,536 cells (`PAR_MIN_CELLS`, alongside the row
+      threshold). 3 µs per row at that width. The summary, the label-delay
+      buffer and the models all read `features.row(i)`; `Scratch` lost its
+      `xs` copy.
+
+      *The step.* Indexed `beta[j][i]`, `zbuf[i]`, `g2[j][i]` through two
+      levels of `Vec` per feature, a bounds check on each, the schedule
+      chosen by a `match` inside the loop, `(1 + n)^power` raised per
+      feature, and three vectors allocated per row on the scaler path.
+      Now zipped slices, the rate raised once per row, the intercept's
+      constant 1 folded into the dot product as its coefficient (so the
+      unscaled path copies nothing), persistent buffers. 2.25 → 0.93 ns per
+      feature; `scale_features=True` 14.8 → 2.6. Bit-identical, and proven
+      so rather than argued: `crates/online-core/examples/sgd_signature.rs`
+      hashes every `step` and `predict` over 48 configurations (intercept ×
+      scaler × three schedules × two losses × two penalties, 400 rows with
+      zero weights, clock gaps and a missing target) and read the same on
+      the old code and the new. `crates/online-core/examples/sgd_bench.rs`
+      is the core step's clock.
+
+      *The dot product — the one decision.* A single running sum is a
+      chain of dependent additions, three or four cycles each whatever the
+      core could do alongside, and 10,000 of them were 7 of the 9.3 µs the
+      step still took. It is now `DOT_LANES = 8` interleaved partial sums
+      folded pairwise, then the intercept: 0.93 → 0.49 ns per feature.
+      The order is fixed by the code, the same on every platform, and not
+      0.3.1's, so `sgd` predictions differ from the last release's at
+      rounding level: 1e-16 relative on squared loss, 1.5e-11 at worst in
+      the signature — Huber at a constant rate, whose clipped gradient
+      neither damps a perturbation nor amplifies it, over 400 rows of zero
+      weights and gaps. The pipeline goldens (1e-12) pass unchanged, and
+      their own docstring says what the tolerance is for: reordered
+      arithmetic. `predict` standardises into a thread-local buffer under a
+      scaler, since it has `&self` and a fresh vector per row was the cost
+      being removed. Taken because the gain is a third of the step and
+      neither order is more right than the other; it is its own commit, so
+      it can be reverted alone.
+
+      *The accept walk.* `Iterator::all` over the row short-circuits, which
+      keeps it scalar; `all_usable` folds over the compare and vectorises.
+      1–2 µs per row at `k = 10,000`.
+
+      *Measured, before → after*, one bank, one spec, `learning_rate =
+      0.2 / k`, `scale_features=False`: `k = 20` 0.11 → 0.09 µs per row,
+      `k = 100` 0.45 → 0.26, `k = 1,000` 4.60 → 2.06, `k = 10,000` 76.5 →
+      22.2 (20,000 rows) and 137.9 → 30.4 (2,000 rows); the same stream fed
+      as eight chunks at `k = 10,000`, 127.1 → 26.4. `predict` 49.5 → 9.4.
+
+      *What is left at `k = 10,000`, 20 µs per row.* The step 4.9, the
+      transpose 3, the accept walk 0.4, and the data summary (task 35)
+      about 7 — a Welford update of a 48-byte record per feature per row,
+      measured by switching it off. It is now the largest item; making it
+      cheaper means laying the records out column-wise so the update
+      vectorises, which is a state-layout change (a `SCHEMA_VERSION` bump,
+      or a serde mirror of the wire form) for perhaps 4 of the 20 µs. Not
+      done. The cheap version — comparing before storing `min` and `max` —
+      measured no change and was dropped. The frame hand-off's per-call
+      constant is about 8 ms at 10,000 columns, 0.8 µs per column in
+      pyo3-polars' `PyDataFrame` extraction (`get_columns`, then one
+      `_export` per Series), none of it this library's: it is what
+      separates 2,000 rows per call (4 µs per row of it) from 20,000
+      (0.4), and the "eight chunks" figure at 2,000 rows from the rest.
+      Feed wide frames in tall chunks.
+
+      *Corrected.* PERFORMANCE §19, the task-72 addendum below and the
+      README's "Against scikit-learn" all said `sgd`'s inner loop was 13–14
+      ns and sklearn's batch faster on a wide row; §19's wide table is
+      re-run and the three now say what is measured.
 
 - [x] 71. **E51, the blocked rank-B Gram update — design settled 2026-09-08,
       `EwCov` half built and reviewed the same day, `ewridge` wiring built
