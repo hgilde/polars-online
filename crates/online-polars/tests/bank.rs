@@ -854,3 +854,132 @@ fn run_rows_is_an_odd_number_of_lines_within_the_budget() {
     // values a row and gets the widest run there is.
     assert_eq!(ChunkOut::run_rows(&ew_cov_spec(2), 1, 1), 131_056);
 }
+
+/// A blocked `ewridge` spec (docs/PLAN.md task 71): a block of 16 under a
+/// solve every 30 rows, so that rows are held at most points of the
+/// stream, closing each group when a larger key arrives.
+fn blocked_ridge_spec(block: usize) -> Spec {
+    serde_json::from_str(&format!(
+        r#"{{
+            "name": "m",
+            "model": {{"type": "ew_ridge", "ridge": 1e-6, "solve_every": 1e9,
+                       "max_rows_between_solves": 30, "gram_block_rows": {block}}},
+            "targets": ["y"],
+            "features": ["x0", "x1"],
+            "clock": "t",
+            "halflife": 60.0,
+            "max_dclock": 30.0,
+            "weight": "w",
+            "group": "g",
+            "group_close": "monotone",
+            "min_periods": 5.0,
+            "coef_every": 1
+        }}"#
+    ))
+    .unwrap()
+}
+
+/// Rows held by each open group of spec 0, read from the JSON export
+/// (the one place a test outside the crate can see the block).
+fn held_rows(bank: &Bank) -> Vec<(String, usize)> {
+    let doc: serde_json::Value =
+        serde_json::from_str(&bank.save_json_string(false).unwrap()).unwrap();
+    doc["states"][0]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pair| {
+            let key = pair[0].to_string();
+            let held = pair[1]["models"][0]["model"]["EwRidge"]["cov"]["pending"]["lam"]
+                .as_array()
+                .map_or(0, Vec::len);
+            (key, held)
+        })
+        .collect()
+}
+
+/// Every matrix read in `EwCov` asserts, in a debug build, that no rows are
+/// held; the wiring's one possible mistake -- reading the Gram past a block
+/// it has not merged -- is otherwise silent, a stale number rather than a
+/// crash. The Python suite runs the release build, where the assertion is
+/// compiled out, so this is the debug-build pass over every reader the bank
+/// has with rows in flight at each call: `gram`, the closed row (the same
+/// builder, reached from inside `fit_predict`), `coef`, `last_row`,
+/// `summary`, `describe`, `predict`, the two exports and a load. The
+/// readers must also leave the block where it was: the stream after them is
+/// the stream without them, to the bit.
+#[test]
+fn every_bank_reader_survives_a_held_block() {
+    // g0's rows first, then g1's: the monotone close finishes g0 when g1's
+    // first row arrives.
+    let df = make_df(400)
+        .sort(
+            ["g"],
+            SortMultipleOptions::default().with_maintain_order(true),
+        )
+        .unwrap();
+    let cut = 200 + 21;
+    let (head, rest) = (df.slice(0, cut), df.slice(cut as i64, df.height() - cut));
+
+    // Both groups are mid-block at the points that matter: g0 at its close
+    // (checked on a bank that never closes it) and g1 at the cut.
+    let mut open = Bank::new(vec![{
+        let mut s = blocked_ridge_spec(16);
+        s.group_close = None;
+        s
+    }])
+    .unwrap();
+    open.fit_predict(&df.slice(0, 200)).unwrap();
+    assert!(
+        held_rows(&open).iter().all(|(_, held)| *held > 0),
+        "g0 holds nothing at its close: {:?}",
+        held_rows(&open)
+    );
+
+    let mut bank = Bank::new(vec![blocked_ridge_spec(16)]).unwrap();
+    bank.fit_predict(&head).unwrap();
+    let held = held_rows(&bank);
+    assert!(
+        held.iter().any(|(k, h)| k.contains("g1") && *h > 0),
+        "g1 holds nothing at the cut: {held:?}"
+    );
+    let mut untouched = Bank::new(vec![blocked_ridge_spec(16)]).unwrap();
+    untouched.fit_predict(&head).unwrap();
+
+    let closed = bank.closed_groups(None, false).unwrap();
+    assert_eq!(closed.height(), 1, "g0 closed while holding rows");
+    assert_eq!(
+        bank.gram(0, None).unwrap().len(),
+        1,
+        "g1 is the one open group"
+    );
+    bank.gram(0, Some("g1")).unwrap();
+    bank.coef(0, None).unwrap();
+    bank.last_row(0, None).unwrap();
+    bank.summary(0, None).unwrap();
+    bank.describe(0, None).unwrap();
+    bank.predict(&rest).unwrap();
+    let bytes = bank.save_bytes().unwrap();
+    let mut again = Bank::load_bytes(&bytes, Some(bank.specs())).unwrap();
+    assert_eq!(held_rows(&again), held, "the held rows travel in the state");
+
+    // None of that moved the block: the read bank, the loaded bank and the
+    // bank nobody read all continue identically.
+    let unnest = |cols: Vec<Column>| {
+        DataFrame::new(rest.height(), cols)
+            .unwrap()
+            .unnest(["m"], None)
+            .unwrap()
+    };
+    let after_reads = unnest(bank.fit_predict(&rest).unwrap());
+    let after_load = unnest(again.fit_predict(&rest).unwrap());
+    let after_none = unnest(untouched.fit_predict(&rest).unwrap());
+    assert!(
+        after_reads.equals_missing(&after_none),
+        "a read moved the block"
+    );
+    assert!(
+        after_load.equals_missing(&after_none),
+        "the load moved the block"
+    );
+}

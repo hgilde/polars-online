@@ -86,20 +86,27 @@ def ridge_state(bank: po.ModelBank) -> dict:
 
 
 def assert_same_fit(plain: pl.DataFrame, blocked: pl.DataFrame, rel: float = 1e-9) -> None:
-    """The scalars to the bit, the fit to rounding."""
-    assert plain["n_eff"].equals(blocked["n_eff"]), "n_eff is not on the blocked path"
-    for col in ("pred_y", "resid_y"):
-        a = plain[col].to_numpy().astype(float)
-        b = blocked[col].to_numpy().astype(float)
-        both_nan = np.isnan(a) & np.isnan(b)
-        ok = both_nan | (np.abs(a - b) <= rel * (1.0 + np.abs(a)))
-        assert ok.all(), f"{col}: {np.sum(~ok)} rows differ, worst {np.nanmax(np.abs(a - b))}"
-    ca = plain["coef"].to_list()
-    cb = blocked["coef"].to_list()
-    for i, (p, q) in enumerate(zip(ca, cb, strict=True)):
-        assert (p is None) == (q is None), f"coef at row {i}: one side unsolved"
-        if p is not None:
-            assert np.allclose(p, q, rtol=rel, atol=rel), f"coef at row {i}: {p} vs {q}"
+    """The scalars to the bit, the fit to rounding: every `n_eff` column
+    bit-equal, every other float (and list of floats) within `rel`, and
+    everything else -- flags, counts -- identical."""
+    assert plain.columns == blocked.columns
+    for col in plain.columns:
+        a, b = plain[col], blocked[col]
+        if col.startswith("n_eff"):
+            assert a.equals(b), f"{col} is not on the blocked path"
+        elif a.dtype.is_float():
+            x = a.to_numpy().astype(float)
+            y = b.to_numpy().astype(float)
+            both_nan = np.isnan(x) & np.isnan(y)
+            ok = both_nan | (np.abs(x - y) <= rel * (1.0 + np.abs(x)))
+            assert ok.all(), f"{col}: {np.sum(~ok)} rows differ, worst {np.nanmax(np.abs(x - y))}"
+        elif a.dtype == pl.List(pl.Float64):
+            for i, (p, q) in enumerate(zip(a.to_list(), b.to_list(), strict=True)):
+                assert (p is None) == (q is None), f"{col} at row {i}: one side unsolved"
+                if p is not None:
+                    assert np.allclose(p, q, rtol=rel, atol=rel), f"{col} at row {i}: {p} vs {q}"
+        else:
+            assert a.equals(b, null_equal=True), f"{col} differs"
 
 
 @pytest.mark.parametrize("block", [3, 16, 256])
@@ -108,6 +115,40 @@ def test_a_blocked_fit_is_the_per_row_fit(block):
     plain, _ = run(df, 0)
     blocked, _ = run(df, block)
     assert_same_fit(plain, blocked)
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        pytest.param(dict(standardize=True), id="standardize"),
+        pytest.param(dict(standardize=True, add_intercept=False), id="standardize-no-intercept"),
+        pytest.param(
+            dict(ridge=[1e-3, 1e-1], feature_sets={"a": ["x0", "x1"], "b": ["x2", "x3", "x4"]}),
+            id="grid",
+        ),
+        pytest.param(dict(ridge=0.1, ridge_decay=True, coef_prior=[[0.5] + [0.0] * K]), id="prior"),
+        pytest.param(dict(halflife=[HL, 3 * HL]), id="two-halflives"),
+        pytest.param(dict(label_delay=3.0), id="label-delay"),
+        pytest.param(
+            dict(emit_drift=True, drift_delta=0.005, drift_threshold=5.0, drift_action="reset"),
+            id="drift-reset",
+        ),
+        pytest.param(dict(group="s"), id="groups"),
+    ],
+)
+def test_the_blocked_fit_holds_on_every_path_the_solve_and_the_plumbing_take(kw):
+    """The solve is the one reader of the merged matrix, and it has four
+    forms (plain, standardized with and without the intercept, the decaying
+    prior) and reads a sub-block per grid entry; the plumbing rebuilds the
+    model on a drift reset, steps delayed rows late, runs one instance per
+    halflife and one stream per group. Each is the per-row fit to rounding,
+    with `n_eff` to the bit, or a block is being read past its merge."""
+    df = stream()
+    plain, _ = run(df, 0, **kw)
+    blocked, _ = run(df, 16, **kw)
+    assert_same_fit(plain, blocked)
+    if "drift_y" in plain.columns:
+        assert plain["drift_y"].sum() > 0, "the reset path was not reached"
 
 
 def test_zero_is_the_untouched_path():
@@ -335,6 +376,40 @@ def test_gram_mid_block_reads_the_held_rows_and_moves_nothing():
     after_read = fields(read.fit_predict(rest))
     after_none = fields(unread.fit_predict(rest))
     assert after_read.equals(after_none, null_equal=True)
+
+
+def test_scoring_mid_block_is_the_plain_model_s_and_moves_nothing():
+    """`predict()` reads the last solve and `n_eff`, neither of which waits
+    for the block, so it scores as the per-row model does -- and, learning
+    nothing, it leaves the held rows exactly where they were."""
+    df = stream()
+    head, rest = df.slice(0, 101), df.slice(101)
+    _, plain = run(head, 0)
+    _, blocked = run(head, 16)
+    assert ridge_state(blocked)["cov"]["pending"]["lam"], "row 101 should sit mid-block"
+    before = blocked.save_bytes()
+    assert_same_fit(fields(plain.predict(rest)), fields(blocked.predict(rest)))
+    assert blocked.save_bytes() == before
+
+
+def test_a_group_closed_mid_block_carries_the_merged_rows():
+    """A closed row is `gram()` read at the close (E54), built from inside
+    `fit_predict` by the same builder: the rows a closing group still holds
+    are in its row, so it is the row the per-row model would have written."""
+    df = stream().with_columns(g=pl.Series(["a"] * 341 + ["b"] * 359))
+    _, alone = run(df.slice(0, 341), 16)
+    assert ridge_state(alone)["cov"]["pending"]["lam"], "'a' should close mid-block"
+    bank = po.ModelBank([spec(16, group="g", group_close="monotone")])
+    bank.fit_predict(df)
+    row = po.gram.from_row(bank.closed_groups())
+    plain = po.ModelBank([spec(0, group="g")])
+    plain.fit_predict(df.slice(0, 341))
+    g = plain.gram("m", "a")[0]
+    assert row["n_eff"] == g["n_eff"]
+    assert np.allclose(row["means"], g["means"], rtol=1e-9, atol=1e-12)
+    scale = np.abs(g["comoments"]).max()
+    assert np.allclose(row["comoments"], g["comoments"], rtol=0, atol=1e-9 * scale)
+    assert np.allclose(row["cross_moments"], g["cross_moments"], rtol=1e-9, atol=1e-12)
 
 
 def test_a_session_change_blends_the_held_block_first():

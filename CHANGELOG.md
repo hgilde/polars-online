@@ -26,7 +26,10 @@ carries breaking changes.
   differ between CPUs. Refused with `window`, with a solve every row
   (`solve_every <= 0` or `max_rows_between_solves <= 1` — the default
   `solve_every` is `halflife / 50`, so `lam` and `halflife=inf` need it
-  set) and where the held rows would exceed 256 MiB.
+  set) and where the held rows would exceed 256 MiB. A state file written by
+  0.3.0 loads with the block off; one written by this build with an `ewridge`
+  spec, blocked or not, does not load on 0.3.0, since a saved spec carries
+  the new key and a spec denies unknown fields.
 
   The held rows travel in the state file, so a bank saved mid-block resumes
   on the same block boundary. `SCHEMA_VERSION` stays 6: the field is

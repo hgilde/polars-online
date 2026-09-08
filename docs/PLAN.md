@@ -1367,6 +1367,41 @@ note, not a task.
       `test_model_registry` holds `MODELS` to one entry per model, and the
       first gate run said so.
 
+      *Reviewed (2026-09-08)*, both commits, for bugs and for tests missing:
+      no bug. Every matrix read was traced — inside the model only `solve`,
+      `solve_standardized` (called from within `solve`) and the blend read
+      the moments, and each merges first; outside it only `gram_of`, which
+      reads `flushed()`, and both `gram()` and the closed row go through it.
+      The gap was in the tests, not the code: the `debug_assert!` on every
+      matrix read is compiled out of the release build the Python suite
+      runs, so a bank reader that forgot `flushed()` would have passed the
+      whole suite and returned stale moments. Added: Rust,
+      `crates/online-polars/tests/bank.rs::every_bank_reader_survives_a_held_block`,
+      a debug-build pass over every reader — closed groups, `gram` (both
+      forms), `coef`, `last_row`, `summary`, `describe`, `predict`, a
+      save/load round trip that carries the held rows — with rows held in
+      every open group, then the stream continued against an untouched bank
+      to the bit; replacing `flushed()` with a borrow makes it panic from
+      inside `fit_predict`, which is the check that it has teeth. Python,
+      `tests/test_gram_block.py` is now 31: the blocked fit against the
+      plain one on every path the solve and the plumbing take —
+      standardize (with and without intercept), a ridge × feature-set grid,
+      a coefficient prior with `ridge_decay`, two halflives (the slow
+      twin), `label_delay`, a drift reset and groups; scoring with
+      `predict()` mid-block, which gives the plain model's numbers and
+      moves nothing in the state; and a group closed mid-block, whose
+      closed row carries the merged moments (checked against an unblocked
+      bank's `gram()` at the same row).
+
+      Two things worth knowing that are not bugs. A state saved by this
+      build with an `ewridge` spec, blocked or not, is refused by a 0.3.0
+      build: `ModelKind` is `deny_unknown_fields` and always writes
+      `gram_block_rows` (nil for none). Loud, and the precedent — `window`
+      did the same to 0.2.0 — forward compatibility is not promised. And
+      "the block never exceeds the solve cadence" is a statement about the
+      main accumulator: the slow twin's block is merged when it fills or at
+      a blend, never at a solve, because a solve does not read the twin.
+
       *Measured*, `crates/online-core/examples/gram_block_bench.rs`, the
       `EwRidge::step` — prediction, cross-moments and Gram — single-threaded
       (`Par::Seq`), one core, this machine; rows per second and the ratio
