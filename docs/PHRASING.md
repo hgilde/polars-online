@@ -537,3 +537,31 @@ running prose as the vehicle, not to explanation existing at all. So the
 "unbounded key space" reason belongs as a comment in the code (as sketched
 above: "Groups live until dropped -- a long-running bank forgets the quiet
 ones"), not dropped and not kept as a separate paragraph of text.
+
+### README.md:336-391 ("As a query: `lf.online.fit_predict`")
+
+> "The loop above as a `LazyFrame`. Executing it — `collect()`,
+> `collect_batches()`, any `sink_*()` — streams the plan's rows through a
+> fresh bank in `chunk_rows` chunks, so the query stays at *state + one
+> chunk* however long the stream, and everything after the bank is
+> ordinary polars:"
+
+**Reported:** The text "The loop above as a LazyFrame" makes little sense,
+no one is thinking of the query as a loop. This section should also be
+code with comments. Maybe even code with output.
+
+**Status:** open — not applied, batched for the rewrite pass.
+
+**Note:** two asks — (1) the specific opening sentence, which also has a
+standing problem independent of this report: an earlier entry in this log
+(README.md:308, "As a query" reordered ahead of "In a loop") already
+means "the loop above" would not even be *above* any more once that
+reorder lands, so the sentence needs to change regardless of this report.
+(2) the same section-wide ask as the previous two entries — the "Things
+worth knowing about the plan" bullets (purity, `save_state` timing, filter
+placement, filter-before-vs-after) are prose explaining what code does;
+this is the third section in a row asked to become code-with-comments
+rather than prose (after "A bank says what it holds" and "the loop above"
+line here). Worth treating as one style decision for the whole "Running a
+bank" section at the rewrite — code, comments, and where useful actual
+printed output — rather than deciding each subsection separately.
