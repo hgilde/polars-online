@@ -1236,6 +1236,19 @@ pub struct Spec {
     /// output, which needs the whole frame; this is the O(state) version, so a
     /// long-running stream or the CLI can report how the fit is doing without
     /// keeping the rows.
+    ///
+    /// On a `sgd` or `ftrl` fit with `loss = "logistic"`, `pred` is a
+    /// probability and `y` a 0/1 label rather than a signed regression
+    /// target, and two of the three read differently (docs/PLAN.md task
+    /// 76): `hit_rate` is accuracy at a 0.5 threshold instead of sign
+    /// agreement (the sign test always agrees on two positive numbers, and
+    /// read 1.0 for every such fit before this), `r2` is the Brier skill
+    /// score against the running base rate, and `ic` is the point-biserial
+    /// correlation between the probability and the label -- both under
+    /// their usual names, since the formula does not change. There is no
+    /// log loss here; `polars_online.eval.metrics(..., binary=True)` adds
+    /// it over the collected frame (a streaming version would put a `ln`
+    /// result into the state, which `docs/PLAN.md` §11a's B4 rule forbids).
     #[serde(default)]
     pub emit_metrics: bool,
     /// Emit `pred_lo_<slot>`, `pred_hi_<slot>` and `coverage_<slot>`: an

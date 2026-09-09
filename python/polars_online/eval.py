@@ -149,23 +149,54 @@ def _target_of(slot: str, df: pl.DataFrame, targets: Sequence[str] | None) -> st
     return max(matches, key=len)
 
 
-def _metric_exprs(min_obs: int) -> list[pl.Expr]:
+def _metric_exprs(min_obs: int, *, binary: bool = False) -> list[pl.Expr]:
     resid = pl.col("y") - pl.col("pred")
     ybar = pl.col("y").mean()
-    return [
+    exprs = [
         pl.len().alias("n"),
-        # Out-of-sample R^2 against the realized mean of y in the window.
+        # Out-of-sample R^2 against the realized mean of y in the window --
+        # the Brier skill score when `binary` (`pred` a probability, `y` a
+        # 0/1 label): same formula, different name (docs/PLAN.md task 76).
         (1.0 - (resid.pow(2).sum() / (pl.col("y") - ybar).pow(2).sum())).alias("r2"),
+        # Correlation of prediction with target -- the point-biserial
+        # correlation when `binary`, again the same formula.
         pl.corr("pred", "y").alias("ic"),
-        # Hit rate: fraction of rows where the sign of pred matches the sign of
-        # y (rows with y == 0 excluded).
-        (
-            ((pl.col("pred").sign() == pl.col("y").sign()) & (pl.col("y") != 0))
-            .sum()
-            .truediv((pl.col("y") != 0).sum())
-        ).alias("hit_rate"),
-        resid.pow(2).mean().alias("mse"),
-    ] + [pl.when(pl.len() >= min_obs).then(True).otherwise(False).alias("enough")]
+    ]
+    if binary:
+        # Accuracy at a 0.5 threshold. Every row scores: 0 is one of the two
+        # classes here, not the sign test's excluded case, and `pred` and `y`
+        # are both positive by construction, so the sign test below always
+        # agrees and is not a hit rate at all on this kind of fit (task 76
+        # found it reading exactly 1.0 on a fit that had learned nothing).
+        exprs.append(
+            (((pl.col("pred") > 0.5) == (pl.col("y") > 0.5)).sum() / pl.len()).alias("hit_rate")
+        )
+        # Log loss: -(y*ln(p) + (1-y)*ln(1-p)), mean over the window. Lives
+        # here, over a collected frame, rather than in the streaming
+        # `emit_metrics` -- an EW accumulator would put a `ln` result into
+        # model state, which `docs/PLAN.md` §11a's B4 rule forbids (glibc's
+        # last bit is not Apple's, and that difference broke a frozen state
+        # fixture on Linux alone). Clipped so a confident, correct prediction
+        # is a strong negative number rather than -inf.
+        p = pl.col("pred").clip(1e-15, 1.0 - 1e-15)
+        exprs.append(
+            (-(pl.col("y") * p.log() + (1.0 - pl.col("y")) * (1.0 - p).log()))
+            .mean()
+            .alias("log_loss")
+        )
+    else:
+        # Fraction of rows where the sign of pred matches the sign of y
+        # (rows with y == 0 excluded: neither up nor down, not a class).
+        exprs.append(
+            (
+                ((pl.col("pred").sign() == pl.col("y").sign()) & (pl.col("y") != 0))
+                .sum()
+                .truediv((pl.col("y") != 0).sum())
+            ).alias("hit_rate")
+        )
+    exprs.append(resid.pow(2).mean().alias("mse"))
+    exprs.append(pl.when(pl.len() >= min_obs).then(True).otherwise(False).alias("enough"))
+    return exprs
 
 
 def metrics(
@@ -175,6 +206,7 @@ def metrics(
     by: Iterable[str] = (),
     targets: Sequence[str] | None = None,
     min_obs: int = 30,
+    binary: bool = False,
 ) -> pl.DataFrame:
     """Overall out-of-sample metrics per ``(slot, *by)``.
 
@@ -184,12 +216,25 @@ def metrics(
     ``n`` is the rows counted, ``r2`` out-of-sample R^2 against the realized
     mean, ``ic`` the correlation of prediction with target, ``hit_rate`` the
     fraction of sign agreements (rows with ``y == 0`` excluded), ``mse`` the
-    mean squared residual. Raises as :func:`unpack` does; a ``by`` column the
-    frame has not got is polars' ``ColumnNotFoundError``.
+    mean squared residual.
+
+    ``binary=True`` reads ``pred`` as a probability and ``y`` as a 0/1
+    label -- the output of a ``sgd`` or ``ftrl`` fit with
+    ``loss="logistic"`` -- rather than a signed regression target
+    (docs/PLAN.md task 76): ``hit_rate`` becomes accuracy at a 0.5
+    threshold and every row scores, an extra ``log_loss`` column is added
+    (``-(y*ln(p) + (1-y)*ln(1-p))``, averaged), and ``r2``/``ic`` keep their
+    formulas under names that mean something different on a 0/1 target --
+    Brier skill score and point-biserial correlation. Nothing here reads the
+    target's values to decide which reading applies; name it explicitly, the
+    way you chose the loss.
+
+    Raises as :func:`unpack` does; a ``by`` column the frame has not got is
+    polars' ``ColumnNotFoundError``.
     """
     long = unpack(df, spec_name, targets=targets).drop_nulls(["pred", "y"])
     keys = ["slot", "target", *by]
-    out = long.group_by(keys).agg(_metric_exprs(min_obs)).sort(keys)
+    out = long.group_by(keys).agg(_metric_exprs(min_obs, binary=binary)).sort(keys)
     return out.filter(pl.col("enough")).drop("enough")
 
 
@@ -202,15 +247,16 @@ def rolling_metrics(
     by: Iterable[str] = (),
     targets: Sequence[str] | None = None,
     min_obs: int = 30,
+    binary: bool = False,
 ) -> pl.DataFrame:
     """Metrics in non-overlapping windows of ``window`` clock units.
 
     ``window_start`` is the left edge of each bucket (``floor(clock/window)*window``);
-    the columns are :func:`metrics`'s, per window. Raises as :func:`unpack`
-    does, ``ValueError`` for a ``window`` that is not above 0, ``TypeError``
-    for a ``clock`` column that is not numeric, and polars'
-    ``ColumnNotFoundError`` for a ``clock`` or ``by`` column the frame has
-    not got.
+    the columns are :func:`metrics`'s, per window, and ``binary`` is
+    :func:`metrics`'s. Raises as :func:`unpack` does, ``ValueError`` for a
+    ``window`` that is not above 0, ``TypeError`` for a ``clock`` column
+    that is not numeric, and polars' ``ColumnNotFoundError`` for a ``clock``
+    or ``by`` column the frame has not got.
     """
     if not window > 0:
         msg = f"window must be > 0, got {window}"
@@ -221,7 +267,7 @@ def rolling_metrics(
     long = unpack(df, spec_name, targets=targets).drop_nulls(["pred", "y"])
     long = long.with_columns(((pl.col(clock) / window).floor() * window).alias("window_start"))
     keys = ["slot", "target", *by, "window_start"]
-    out = long.group_by(keys).agg(_metric_exprs(min_obs)).sort(keys)
+    out = long.group_by(keys).agg(_metric_exprs(min_obs, binary=binary)).sort(keys)
     return out.filter(pl.col("enough")).drop("enough")
 
 
@@ -232,12 +278,15 @@ def compare_specs(
     by: Iterable[str] = (),
     targets: Sequence[str] | None = None,
     min_obs: int = 30,
+    binary: bool = False,
 ) -> pl.DataFrame:
     """Stack :func:`metrics` for several specs, adding a ``spec`` column.
 
+    ``binary`` is :func:`metrics`'s, applied to every spec alike -- compare
+    specs that share a loss, not a logistic fit against a regression one.
     Raises as :func:`metrics` does for each; no specs give an empty frame."""
     frames = [
-        metrics(df, name, by=by, targets=targets, min_obs=min_obs).with_columns(
+        metrics(df, name, by=by, targets=targets, min_obs=min_obs, binary=binary).with_columns(
             pl.lit(name).alias("spec")
         )
         for name in spec_names
@@ -383,6 +432,7 @@ def sums(
     targets: Sequence[str] | None = None,
     spec: dict | None = None,
     weight: str | None = None,
+    binary: bool = False,
 ) -> pl.DataFrame:
     """Reduce a chunk of output to the sufficient statistics of its metrics
     (docs/ENHANCEMENTS.md E49).
@@ -396,7 +446,13 @@ def sums(
     The columns beside the keys are :data:`SUM_FIELDS`: ``n`` rows and ``w``
     weight behind them, the weighted means ``mean_y`` and ``mean_pred``, the
     **centred** sums ``m2_y``, ``m2_pred`` and ``cov``, the residual sum of
-    squares ``sse``, and ``hits`` / ``signed`` for the hit rate.
+    squares ``sse``, and ``hits`` / ``signed`` for the hit rate -- ``hits``
+    counting sign agreements and ``signed`` the rows with ``y != 0``, or
+    (``binary=True``, :func:`metrics`'s reading) ``hits`` counting agreement
+    at a 0.5 threshold and ``signed`` every row, since every row scores.
+    Chunks reduced with different ``binary`` settings must not be merged --
+    :func:`merge_sums` sums whatever is in ``hits``/``signed`` without
+    knowing which reading produced it.
 
     Centred, not raw. The obvious form -- keep ``sum(y)`` and ``sum(y**2)``
     and subtract -- is one addition simpler and loses the variance entirely
@@ -418,6 +474,10 @@ def sums(
     w, y, p = pl.col("__w"), pl.col("y"), pl.col("pred")
     tw = w.sum()
     my, mp = (w * y).sum() / tw, (w * p).sum() / tw
+    if binary:
+        hits, signed = w * ((p > 0.5) == (y > 0.5)), w
+    else:
+        hits, signed = w * ((y.sign() == p.sign()) & (y != 0)), w * (y != 0)
     keys = ["slot", "target", *by]
     return (
         long.group_by(keys)
@@ -430,8 +490,8 @@ def sums(
             (w * (p - mp) ** 2).sum().alias("m2_pred"),
             (w * (y - my) * (p - mp)).sum().alias("cov"),
             (w * (y - p) ** 2).sum().alias("sse"),
-            (w * ((y.sign() == p.sign()) & (y != 0))).sum().alias("hits"),
-            (w * (y != 0)).sum().alias("signed"),
+            hits.sum().alias("hits"),
+            signed.sum().alias("signed"),
         )
         .sort(keys)
     )
@@ -498,8 +558,14 @@ def from_sums(s: pl.DataFrame, *, min_obs: int = 30) -> pl.DataFrame:
 
     Same columns and same numbers: ``n``, ``r2`` (out-of-sample against the
     realized mean), ``ic`` (correlation of prediction with target),
-    ``hit_rate``, ``mse``, and ``rmse`` beside it. A key with fewer than
-    ``min_obs`` rows is dropped, as :func:`metrics` drops it.
+    ``hit_rate``, ``mse``, and ``rmse`` beside it. Which reading ``hit_rate``
+    is -- sign agreement or accuracy at 0.5 -- was fixed when the sums were
+    built (:func:`sums`'s ``binary``); this just divides ``hits`` by
+    ``signed``, so there is nothing to choose here. There is no ``log_loss``
+    column here (:func:`metrics`'s ``binary=True`` has it); :data:`SUM_FIELDS`
+    would need a mean and a weight for it, not added since nothing has
+    asked for the chunked form yet. A key with fewer than ``min_obs`` rows
+    is dropped, as :func:`metrics` drops it.
 
     ``r2`` and ``ic`` are ``null`` where they are undefined -- a key whose
     target or prediction never varied has no correlation to report, and

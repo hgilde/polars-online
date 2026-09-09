@@ -2670,6 +2670,17 @@ fn run_instance(
     let mut drift_seen = false;
     let n_rows = inst.n_rows;
     let block = inst.n_slots * n_rows;
+    // Whether `pred` is a probability against a 0/1 label rather than a
+    // signed regression target -- the model's *declared* loss, not
+    // something read off a row's value, so a slot's metrics mean the same
+    // thing whatever data a chunk happens to carry (docs/PLAN.md task 76).
+    // One flag per instance: `loss` is one setting for the whole model, not
+    // per target.
+    let binary_loss = match &inst.spec.model {
+        ModelKind::Sgd { loss, .. } => loss.as_deref() == Some("logistic"),
+        ModelKind::Ftrl { loss, .. } => loss.as_deref().unwrap_or("logistic") == "logistic",
+        _ => false,
+    };
     for plan in plans {
         if plan.reset {
             inst.reset();
@@ -2856,7 +2867,7 @@ fn run_instance(
                 }
                 if learn {
                     let yj = sc.ys.get(slot / nc).copied().flatten().unwrap_or(f64::NAN);
-                    met.update(step.pred[slot], yj, lam, w);
+                    met.update(step.pred[slot], yj, lam, w, binary_loss);
                 }
             }
         }

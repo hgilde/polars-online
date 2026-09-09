@@ -1020,6 +1020,17 @@ describe:
 | `emit_autocorr` | `autocorr_<slot>` | EW residual autocorrelation; non-zero means the model is mis-specified |
 | `conformal=0.9` | `lo_<slot>`, `hi_<slot>`, `coverage_<slot>` | an adaptive conformal interval at that coverage, distribution-free, and the coverage it has actually delivered |
 
+`emit_metrics` on a `sgd` or `ftrl` fit with `loss="logistic"` reads
+differently, because `pred` is a probability and `y` a 0/1 label rather than
+a signed target: `hit_rate` is accuracy at a 0.5 threshold, not sign
+agreement (the sign test always agrees on two positive numbers — it read
+1.0 for every such fit before this was fixed), `r2` is the Brier skill score
+against the running base rate, and `ic` the point-biserial correlation
+between the probability and the label, both under their usual names. There
+is no streaming log loss (a `ln` result cannot go into the state without
+losing cross-platform reproducibility — see `docs/PLAN.md` §11a);
+`po.eval.metrics(..., binary=True)` adds it over a collected frame instead.
+
 Drift detection complements the halflife rather than replacing it: decay
 forgets smoothly and always; a detector notices a break and says so, within
 a couple of rows of a sign flip.

@@ -1546,9 +1546,10 @@ note, not a task.
       ns and sklearn's batch faster on a wide row; §19's wide table is
       re-run and the three now say what is measured.
 
-- [ ] 76. **`hit_rate` reads 1.0 for every binary fit, and classification has
+- [x] 76. **`hit_rate` reads 1.0 for every binary fit, and classification has
       no metric of its own — found 2026-09-08, asking whether an SGD
-      classifier was worth adding.** A hit is scored as
+      classifier was worth adding. Fixed the same day; the decision and the
+      numbers are at the end of this entry.** A hit is scored as
       `pred.signum() == y.signum()` with `y == 0` rows dropped
       (`SlotMetrics::update` in `crates/online-core/src/stats.rs`, and the
       same expression in `python/polars_online/eval.py`). A logistic fit
@@ -1613,6 +1614,58 @@ note, not a task.
       `hit_rate` unchanged to the bit; and `po.eval.metrics` agreeing with
       the streaming metric on the same stream, which is the invariant E22
       already claims.
+
+      **Done 2026-09-08, on the user's go.** Built as planned, with the two
+      questions the entry above left open resolved:
+
+      - *A threshold, not a refusal.* `SlotMetrics::update` (and
+        `_metric_exprs` in `eval.py`) take a `binary` flag: sign agreement
+        with `y == 0` excluded when `false`, accuracy at 0.5 with every row
+        scoring when `true`. It is set from the model's **declared** loss —
+        `sgd`'s or `ftrl`'s `logistic` — computed once per instance in
+        `run_instance` (`crates/online-polars/src/stream.rs`), not sniffed
+        from a row's value; `po.eval`'s functions take `binary` as an
+        explicit keyword, the same fact the caller already knows from
+        choosing the loss. No new spec field: a `logistic` fit's `hit_rate`
+        simply means something different now, the way task 74 changed what
+        `scale_features` computes without adding a knob for it.
+      - *Log loss lives only in `po.eval`.* `metrics(..., binary=True)` and
+        `rolling_metrics` add a `log_loss` column
+        (`-(y·ln p + (1−y)·ln(1−p))`, clipped, mean over the window);
+        `sums`/`from_sums` (E49) do not carry it — a straightforward
+        addition if a chunked reduction ever needs it, not built because
+        nothing has asked. Confirms the B4 call in the entry above: nothing
+        here puts a `ln` result into a model's persisted state, so no
+        cross-platform risk is taken on.
+
+      `merge_sums` needed no change — it sums whatever `hits`/`signed` hold
+      without caring how they were computed, so mixing `binary` settings
+      across chunks is a caller error the docstring now names, not a new
+      failure mode to guard against. No `SCHEMA_VERSION` bump: `SlotMetrics`'s
+      fields are unchanged in shape, only in what a caller's own choice of
+      loss makes them count — the same kind of change task 74 made to `sgd`.
+
+      Measured, the pure-noise fixture from the top of this entry (20,000
+      rows, `k = 2`, `sgd(loss="logistic")`): `hit_rate` (binary) 0.5042,
+      where it read 1.0 before. On the informative fixture: `hit_rate`
+      (binary) 0.72677, matching a numpy replica of the same threshold test
+      to 1e-12, and `po.eval.metrics(binary=True)` agreeing with the
+      streaming `hit_rate_y0` field to 0.72675 (one row's difference in
+      20,000 — `emit_metrics` reads before the last row, `po.eval` scores it
+      too). `sums`/`from_sums` with `binary=True` reproduce `metrics`'s
+      `hit_rate`, `r2` and `ic` (0.72677, 0.27193, 0.52167) exactly.
+
+      Tests: `crates/online-core/src/stats.rs` —
+      `a_probability_that_knows_nothing_does_not_score_a_perfect_hit_rate`,
+      `binary_hit_rate_is_accuracy_at_one_half` (against a hand-rolled
+      replica), `a_zero_label_scores_under_binary_where_it_is_excluded_under_sign`;
+      every existing `SlotMetrics` test kept its `binary = false` call
+      unchanged, so the regression path is untouched to the bit.
+      `tests/test_eval.py::TestBinary` covers the same four cases in Python,
+      plus `log_loss` against a numpy replica and the `sums`/`from_sums`
+      round trip. Every test file that already used `emit_metrics` or
+      `hit_rate` (`test_diagnostics.py`'s E22 test among them) is regression
+      and passes unchanged, since none of them named `binary=True`.
 
 - [x] 71. **E51, the blocked rank-B Gram update — design settled 2026-09-08,
       `EwCov` half built and reviewed the same day, `ewridge` wiring built

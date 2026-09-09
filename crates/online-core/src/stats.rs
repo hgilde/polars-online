@@ -190,20 +190,41 @@ impl EwAutoCorr {
 /// version: it lives beside the model, so a long-running stream and the CLI can
 /// report how the fit is doing without keeping the rows.
 ///
-/// All three are exponentially weighted on the model's own clock:
+/// All three are exponentially weighted on the model's own clock. `hit_rate`
+/// has two readings, chosen by the caller's `binary` flag at
+/// [`SlotMetrics::update`] (docs/PLAN.md task 76):
 ///
 /// ```text
 /// ic       = corr(pred, y)
 /// r2       = 1 − EW[(y − pred)²] / EW[(y − ȳ)²]
-/// hit_rate = EW mean of 1{sign(pred) = sign(y)}, over rows where y ≠ 0
+/// hit_rate = EW mean of 1{sign(pred) = sign(y)}, over rows where y ≠ 0     (binary = false)
+///          = EW mean of 1{(pred > 0.5) = (y > 0.5)}, every row            (binary = true)
 /// ```
+///
+/// A regression fit's `pred` and `y` share a sign convention, so agreement
+/// on the sign is informative and a `y = 0` row (neither up nor down) is
+/// excluded rather than scored either way. A classifier's `pred` is a
+/// probability in `(0, 1)` and its `y` a 0/1 label: both are positive by
+/// construction, so the sign test always agrees and reports 1.0 whatever the
+/// fit does (docs/PLAN.md task 76 measured it at exactly that on a fit
+/// trained on pure noise). Accuracy at the natural threshold is the binary
+/// reading, and every row scores -- `y = 0` is one of the two classes, not
+/// an excluded case, the way it is for a signed target.
+///
+/// `r2` and `ic` keep their definitions on a 0/1 target and are still worth
+/// reading, under different names: `r2` is the Brier skill score against the
+/// EW base rate, and `ic` is the point-biserial correlation between the
+/// probability and the label. Neither is renamed -- the formula does not
+/// change, only what it is usually called.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SlotMetrics {
     /// Joint moments of (pred, y).
     joint: crate::EwCov,
     /// EW mean squared error and its weight.
     mse: f64,
-    /// EW hit rate and its weight (rows with `y == 0` are excluded).
+    /// EW hit rate and its weight. Rows with `y == 0` are excluded from the
+    /// sign-agreement reading; every scored row counts toward the
+    /// accuracy-at-threshold one (see the struct docs).
     hits: f64,
     hit_w: f64,
 }
@@ -244,13 +265,22 @@ impl SlotMetrics {
         (var_y > 0.0).then(|| 1.0 - self.mse / var_y)
     }
 
-    /// Fraction of rows where the prediction had the target's sign.
+    /// Sign agreement (`binary = false`) or accuracy at a 0.5 threshold
+    /// (`binary = true`) -- see the struct docs for which to read on which
+    /// kind of fit. `binary` is a caller-declared fact about the model, not
+    /// something read off the data, so the field's meaning does not depend
+    /// on which rows a chunk happened to carry (docs/PLAN.md task 76).
     pub fn hit_rate(&self) -> Option<f64> {
         (self.hit_w > 0.0).then_some(self.hits)
     }
 
     /// Score one row. `lam` is the model's decay factor for this row.
-    pub fn update(&mut self, pred: f64, y: f64, lam: f64, w: f64) {
+    /// `binary` says `pred` is a probability and `y` a 0/1 label (the
+    /// model's declared loss is `logistic`, not something sniffed from this
+    /// row's value): the hit test in that case is accuracy at a 0.5
+    /// threshold and every row scores, where the regression reading tests
+    /// sign agreement and excludes `y == 0`.
+    pub fn update(&mut self, pred: f64, y: f64, lam: f64, w: f64, binary: bool) {
         if !pred.is_finite() || !y.is_finite() || w <= 0.0 {
             // Age the estimates but do not score: a row with no prediction is
             // not evidence of a bad one. The means themselves are unchanged;
@@ -270,9 +300,13 @@ impl SlotMetrics {
             let e = y - pred;
             self.mse = ((denom - w) * self.mse + w * e * e) / denom;
         }
-        if y != 0.0 {
+        if binary || y != 0.0 {
             let hw = lam * self.hit_w + w;
-            let hit = f64::from(pred.signum() == y.signum());
+            let hit = if binary {
+                f64::from((pred > 0.5) == (y > 0.5))
+            } else {
+                f64::from(pred.signum() == y.signum())
+            };
             self.hits = (lam * self.hit_w * self.hits + w * hit) / hw;
             self.hit_w = hw;
         }
@@ -505,7 +539,7 @@ mod metric_tests {
         let mut s = 3u64;
         for _ in 0..5000 {
             let y = lcg(&mut s);
-            m.update(y, y, 1.0, 1.0);
+            m.update(y, y, 1.0, 1.0, false);
         }
         assert!((m.ic().unwrap() - 1.0).abs() < 1e-9);
         assert!((m.r2().unwrap() - 1.0).abs() < 1e-9);
@@ -517,7 +551,7 @@ mod metric_tests {
         let mut m = SlotMetrics::new();
         let mut s = 5u64;
         for _ in 0..40000 {
-            m.update(lcg(&mut s), lcg(&mut s), 1.0, 1.0);
+            m.update(lcg(&mut s), lcg(&mut s), 1.0, 1.0, false);
         }
         assert!(m.ic().unwrap().abs() < 0.05, "ic {:?}", m.ic());
         assert!(m.r2().unwrap() < 0.05, "r2 {:?}", m.r2());
@@ -533,7 +567,7 @@ mod metric_tests {
         let mut m = SlotMetrics::new();
         let mut s = 7u64;
         for _ in 0..40000 {
-            m.update(0.0, lcg(&mut s), 1.0, 1.0);
+            m.update(0.0, lcg(&mut s), 1.0, 1.0, false);
         }
         assert!(m.r2().unwrap().abs() < 0.05, "r2 {:?}", m.r2());
     }
@@ -544,7 +578,7 @@ mod metric_tests {
         let mut s = 11u64;
         for _ in 0..20000 {
             let y = lcg(&mut s);
-            m.update(-2.0 * y, y, 1.0, 1.0);
+            m.update(-2.0 * y, y, 1.0, 1.0, false);
         }
         assert!(m.r2().unwrap() < -1.0, "r2 {:?}", m.r2());
     }
@@ -555,7 +589,7 @@ mod metric_tests {
         let mut s = 13u64;
         for _ in 0..20000 {
             let y = lcg(&mut s);
-            m.update(-y, y, 1.0, 1.0);
+            m.update(-y, y, 1.0, 1.0, false);
         }
         assert!((m.ic().unwrap() + 1.0).abs() < 1e-9);
         assert!(m.hit_rate().unwrap() < 1e-9);
@@ -568,12 +602,12 @@ mod metric_tests {
         let lam = 0.99;
         for _ in 0..3000 {
             let y = lcg(&mut s);
-            m.update(-y, y, lam, 1.0); // wrong sign
+            m.update(-y, y, lam, 1.0, false); // wrong sign
         }
         assert!(m.hit_rate().unwrap() < 0.1);
         for _ in 0..3000 {
             let y = lcg(&mut s);
-            m.update(y, y, lam, 1.0); // now right
+            m.update(y, y, lam, 1.0, false); // now right
         }
         assert!(
             m.hit_rate().unwrap() > 0.9,
@@ -588,8 +622,8 @@ mod metric_tests {
         let mut s = 19u64;
         for _ in 0..2000 {
             let y = lcg(&mut s);
-            m.update(y, y, 1.0, 1.0);
-            m.update(f64::NAN, y, 1.0, 1.0); // no prediction yet
+            m.update(y, y, 1.0, 1.0, false);
+            m.update(f64::NAN, y, 1.0, 1.0, false); // no prediction yet
         }
         assert!((m.ic().unwrap() - 1.0).abs() < 1e-6, "ic {:?}", m.ic());
     }
@@ -609,10 +643,10 @@ mod metric_tests {
             let mut s = 31u64;
             for _ in 0..500 {
                 let v = lcg(&mut s);
-                m.update(v, v, 1.0, 1.0);
+                m.update(v, v, 1.0, 1.0, false);
             }
             let (ic, r2, hr) = (m.ic(), m.r2(), m.hit_rate());
-            m.update(pred, y, 1.0, w);
+            m.update(pred, y, 1.0, w, false);
             assert_eq!(m.ic(), ic, "({pred}, {y}, {w}) must not score");
             assert_eq!(m.r2(), r2);
             assert_eq!(m.hit_rate(), hr);
@@ -624,10 +658,10 @@ mod metric_tests {
         let mut s = 37u64;
         for _ in 0..500 {
             let v = lcg(&mut s);
-            m.update(v, v, 1.0, 1.0);
+            m.update(v, v, 1.0, 1.0, false);
         }
         let before = m.hit_w;
-        m.update(f64::NAN, 1.0, 0.5, 1.0);
+        m.update(f64::NAN, 1.0, 0.5, 1.0, false);
         assert!(
             (m.hit_w - before * 0.5).abs() < 1e-12,
             "the weight must decay"
@@ -638,5 +672,79 @@ mod metric_tests {
     fn nothing_is_reported_before_any_row() {
         let m = SlotMetrics::new();
         assert!(m.ic().is_none() && m.r2().is_none() && m.hit_rate().is_none());
+    }
+
+    // `binary = true`: the classifier reading (docs/PLAN.md task 76). Every
+    // regression test above keeps its `binary = false` call unchanged, so the
+    // sign-agreement path is unaffected to the bit.
+
+    #[test]
+    fn a_probability_that_knows_nothing_does_not_score_a_perfect_hit_rate() {
+        // The defect task 76 found: `pred.signum() == y.signum()` on a
+        // probability against a 0/1 label always agreed, because both are
+        // positive by construction. `y == 0.0` rows are no longer excluded
+        // either -- 0 is one of the two classes, not the sign this fit has no
+        // opinion on.
+        let mut m = SlotMetrics::new();
+        let mut s = 41u64;
+        for _ in 0..40000 {
+            // A coin flip label and a constant, uninformative "probability".
+            let y = f64::from(lcg(&mut s) > 0.0);
+            m.update(0.5, y, 1.0, 1.0, true);
+        }
+        // Accuracy at threshold 0.5 with pred == 0.5 exactly: `(0.5 > 0.5)`
+        // is false, so every row calls it class 0, right half the time.
+        assert!(
+            (m.hit_rate().unwrap() - 0.5).abs() < 0.05,
+            "hit {:?}",
+            m.hit_rate()
+        );
+    }
+
+    #[test]
+    fn binary_hit_rate_is_accuracy_at_one_half() {
+        let mut m = SlotMetrics::new();
+        let mut s = 43u64;
+        let mut correct = 0.0;
+        let n = 20000;
+        for _ in 0..n {
+            let y = f64::from(lcg(&mut s) > 0.0);
+            // A probability correlated with the label but not equal to it,
+            // so both classes see some wrong calls -- a replica of the
+            // rounded accuracy is checked against `hit_rate` directly.
+            let p = if y > 0.5 {
+                0.5 + 0.3 * lcg(&mut s).abs()
+            } else {
+                0.5 - 0.3 * lcg(&mut s).abs()
+            };
+            correct += f64::from((p > 0.5) == (y > 0.5));
+            m.update(p, y, 1.0, 1.0, true);
+        }
+        assert!(
+            (m.hit_rate().unwrap() - correct / f64::from(n)).abs() < 1e-9,
+            "hit_rate {:?} vs replica {}",
+            m.hit_rate(),
+            correct / f64::from(n)
+        );
+        assert!(m.hit_rate().unwrap() > 0.9, "hit {:?}", m.hit_rate());
+    }
+
+    #[test]
+    fn a_zero_label_scores_under_binary_where_it_is_excluded_under_sign() {
+        let mut sign_reading = SlotMetrics::new();
+        let mut binary_reading = SlotMetrics::new();
+        for _ in 0..100 {
+            sign_reading.update(0.9, 0.0, 1.0, 1.0, false);
+            binary_reading.update(0.9, 0.0, 1.0, 1.0, true);
+        }
+        assert!(
+            sign_reading.hit_rate().is_none(),
+            "y = 0 excludes every row"
+        );
+        assert_eq!(
+            binary_reading.hit_rate(),
+            Some(0.0),
+            "class 0, called class 1"
+        );
     }
 }

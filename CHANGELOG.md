@@ -7,7 +7,28 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **`hit_rate` read 1.0 for every `sgd(loss="logistic")` or `ftrl` fit**
+  (task 76). It was scored as `pred.signum() == y.signum()` with `y == 0`
+  rows dropped; a logistic fit's `pred` is a probability and its `y` a 0/1
+  label, both positive by construction, so the sign test always agreed and
+  `hit_rate` reported a perfect score whatever the fit did — 1.0 on a fit
+  trained on pure-noise features, measured. It is now accuracy at a 0.5
+  threshold on a fit whose declared loss is `logistic`, gated on that
+  declared loss rather than on a row's values, with every row scoring
+  (`y == 0` is one of the two classes, not the excluded case it is for a
+  signed target). A regression fit's `hit_rate` is unchanged to the bit.
+  `r2` and `ic` were already correct there under different names — the
+  Brier skill score and the point-biserial correlation — and are now
+  documented as such (`emit_metrics`'s docstring, the README's output
+  table). `po.eval.metrics`/`rolling_metrics`/`sums` take the same reading
+  behind a new `binary` keyword, and `metrics`/`rolling_metrics` add a
+  `log_loss` column when it is set; there is no streaming log loss, since
+  an EW accumulator would put a `ln` result into a model's persisted state
+  (`docs/PLAN.md` §11a's B4 rule). No `SCHEMA_VERSION` bump: `SlotMetrics`'s
+  fields are unchanged in shape, only in what the caller's own choice of
+  loss makes them count.
 
 ## [0.4.0] — 2026-09-08
 

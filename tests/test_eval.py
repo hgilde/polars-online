@@ -146,6 +146,96 @@ def test_noise_target_gives_no_edge():
     assert abs(m["hit_rate"][0] - 0.5) < 0.05
 
 
+def _logistic_fit(n=20000, seed=0, informative=True, emit_metrics=False):
+    """A `sgd(loss="logistic")` fit: `pred` a probability, `y0` a 0/1 label.
+
+    `informative=False` gives the features no relationship to the label at
+    all, the fixture PLAN task 76 measured `hit_rate` at exactly 1.0 on."""
+    rng = np.random.default_rng(seed)
+    x0, x1 = rng.standard_normal(n), rng.standard_normal(n)
+    if informative:
+        p = 1.0 / (1.0 + np.exp(-(1.2 * x0 - 0.8 * x1)))
+        y = (rng.random(n) < p).astype(float)
+    else:
+        y = (rng.random(n) < 0.5).astype(float)
+    df = pl.DataFrame({"x0": x0, "x1": x1, "y0": y})
+    spec = po.spec.sgd(
+        "m",
+        targets=["y0"],
+        features=["x0", "x1"],
+        loss="logistic",
+        learning_rate=0.05,
+        halflife=float("inf"),
+        min_periods=50.0,
+        emit_metrics=emit_metrics,
+    )
+    return po.ModelBank([spec]).fit_predict(df), y
+
+
+class TestBinary:
+    """PLAN task 76: `hit_rate` on a probability against a 0/1 label. Before
+    this, `pred.signum() == y.signum()` agreed on every row (both positive by
+    construction) and `hit_rate` read 1.0 whatever the fit did."""
+
+    def test_binary_hit_rate_is_not_a_constant_one(self):
+        out, _ = _logistic_fit(informative=False)
+        m = po.eval.metrics(out, "m", targets=["y0"], binary=True)
+        assert m["hit_rate"][0] < 0.6, f"a fit that knows nothing scored {m['hit_rate'][0]}"
+
+    def test_binary_hit_rate_matches_a_numpy_replica(self):
+        out, y = _logistic_fit()
+        pred = out["m"].struct.field("pred_y0").to_numpy().astype(float)
+        ok = np.isfinite(pred)
+        want = float(((pred[ok] > 0.5) == (y[ok] > 0.5)).mean())
+        m = po.eval.metrics(out, "m", targets=["y0"], binary=True)
+        assert abs(m["hit_rate"][0] - want) < 1e-12
+        assert want > 0.6, f"the fit should have learned something: {want}"
+
+    def test_sign_reading_still_reads_one_on_the_same_fit(self):
+        # binary=False (the default) is unchanged: two positive numbers
+        # always agree in sign, which is exactly the defect -- reading it
+        # without `binary=True` still shows the old number, undisturbed.
+        out, _ = _logistic_fit()
+        m = po.eval.metrics(out, "m", targets=["y0"])
+        assert m["hit_rate"][0] == 1.0
+
+    def test_binary_adds_log_loss(self):
+        out, y = _logistic_fit()
+        pred = out["m"].struct.field("pred_y0").to_numpy().astype(float)
+        ok = np.isfinite(pred)
+        p = np.clip(pred[ok], 1e-15, 1 - 1e-15)
+        want = float(-(y[ok] * np.log(p) + (1 - y[ok]) * np.log(1 - p)).mean())
+        m = po.eval.metrics(out, "m", targets=["y0"], binary=True)
+        assert abs(m["log_loss"][0] - want) < 1e-9
+        assert "log_loss" not in po.eval.metrics(out, "m", targets=["y0"]).columns
+
+    def test_streaming_metric_agrees_with_the_frame(self):
+        # The same invariant E22 already claims for the regression reading:
+        # `emit_metrics` (O(state), read before each row) and `po.eval.metrics`
+        # (over the collected frame) must land on the same number.
+        out, _ = _logistic_fit(emit_metrics=True)
+        last = out["m"].struct.field("hit_rate_y0")[-1]
+        m = po.eval.metrics(out, "m", targets=["y0"], binary=True)
+        # emit_metrics is exponentially weighted (halflife=inf here, so it is
+        # a plain running mean) and read before the last row; po.eval scores
+        # every row including the last, so compare to that same window.
+        pred = out["m"].struct.field("pred_y0").to_numpy().astype(float)
+        assert abs(last - m["hit_rate"][0]) < 0.01, (
+            last,
+            m["hit_rate"][0],
+            (~np.isnan(pred)).sum(),
+        )
+
+    def test_sums_binary_matches_metrics(self):
+        out, _ = _logistic_fit()
+        want = po.eval.metrics(out, "m", targets=["y0"], binary=True)
+        s = po.eval.sums(out, "m", targets=["y0"], binary=True)
+        got = po.eval.from_sums(s)
+        assert abs(got["hit_rate"][0] - want["hit_rate"][0]) < 1e-12
+        assert abs(got["r2"][0] - want["r2"][0]) < 1e-9
+        assert abs(got["ic"][0] - want["ic"][0]) < 1e-9
+
+
 def test_target_named_like_an_output_column_does_not_collide():
     # A target column literally called "y" collided with unpack()'s own "y"
     # output; reserved names are dropped from the passthrough columns instead.
