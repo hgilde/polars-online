@@ -45,10 +45,10 @@ are uncommon enough that we need at least to state that "Three ways to run
 a signal bank" and the words signal bank should link to the signalbank api
 to make it totally clear.
 
-**Status:** open — blocked on a discrepancy, see note.
+**Status:** fixed (`README.md:65`, "Three ways to run a [model bank](...)").
 
 **Note:** the library has no API named `SignalBank` / `signalbank` — the
-class this sentence refers to is [`ModelBank`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank),
-linked two sentences later in the same paragraph. I have not renamed
-anything or added a link to a page that does not exist; flagged back to the
-user rather than guessed at silently.
+class this sentence refers to is [`ModelBank`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank).
+Flagged back to the user rather than added a link to a page that does not
+exist; asked, and the user chose "model bank", linked to `ModelBank`'s docs
+the same way the report asked for "signal bank" to link to its API.

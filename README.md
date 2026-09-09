@@ -62,7 +62,7 @@ grouping and warm-up mean the same thing whichever model it names.
 | [`corrchange`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.corrchange) · [math](#corrchange--has-the-correlation-structure-changed) | has the correlation structure changed — the Wied–Krämer–Dehling constancy test span by span, or the size of a change between two windows against a permutation null |
 | [`bocpd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.bocpd) · [math](#bocpd--how-long-has-this-regime-lasted) | how long has this regime lasted — Adams & MacKay's run-length posterior, so the answer is the age of the regime and not a flag |
 
-**Three ways to run a bank, same numbers from each.** A Python loop over
+**Three ways to run a [model bank](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank), same numbers from each.** A Python loop over
 chunks ([`ModelBank`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank)); a Polars query ([`lf.online.fit_predict(specs)`](https://hgilde.github.io/polars-online/namespaces.html#polars_online._frame.LazyFrameOnlineNamespace.fit_predict) is a
 `LazyFrame` you `collect`, `sink` or batch like any other); or a file-to-file
 job (`po.run(...)` from Python, or the `online` CLI from a TOML with no Python
