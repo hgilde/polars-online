@@ -565,3 +565,16 @@ rather than prose (after "A bank says what it holds" and "the loop above"
 line here). Worth treating as one style decision for the whole "Running a
 bank" section at the rewrite — code, comments, and where useful actual
 printed output — rather than deciding each subsection separately.
+
+**Clarification, the style decision:** not all-code — converting most of
+the bullets to code-with-comments frees room to keep the couple that
+matter most as text (the filter-before-vs-after advice is named
+specifically as important enough to keep). Text that stays must (a) follow
+good writing practice on its own terms — the standard already on file in
+[[readme-voice-plain]] and applied throughout this log — and (b) not
+substitute for the code-with-comments, i.e. not re-explain in prose what a
+comment already shows; text is for advice code-with-comments cannot carry
+by itself (a *reason* or a *warning*, not a restatement of *what*). Which
+specific bullets stay as text is not decided here — "the filter advice"
+is named as an example of the kind that qualifies, not necessarily the
+final list.
