@@ -474,3 +474,28 @@ specifics per model can go in a table of models.
   clock that is not time", this paragraph needs its own place; it does not
   fit either half of the proposed with-decay/without-decay split as
   named.
+
+### README.md:297-303 ("Mistakes are named")
+
+> "A builder checks each keyword against its type hints —
+> `halflife="10"` says `spec "m": halflife must be a number or a list of
+> numbers, got str '10'`. A missing column says which spec wanted it, in
+> what role, and what the frame has. A spec named like an input column is
+> refused rather than silently replacing it."
+
+**Reported:** The section Mistakes are named should be reduced to two
+sentences at most and added to the quick start. Users will see this level
+of checking anyway.
+
+**Status:** open — not applied, batched for the rewrite pass.
+
+**Note:** "## Quick start" (line 137) is a single code block plus one
+short paragraph today, no error-handling content at all — this would be
+the first mention of validation there. A two-sentence compression, offered
+as one option and not a decision: "A builder checks every keyword against
+its type hints and names a missing column by which spec wanted it, in
+what role. Errors name the mistake and the frame, not a stack trace." Three
+concrete cases collapse to two general claims (type-checked keywords,
+named missing columns) and drop the third (a spec named like an input
+column) entirely — worth confirming that is an acceptable loss, or picking
+a different pair to keep, at the rewrite.
