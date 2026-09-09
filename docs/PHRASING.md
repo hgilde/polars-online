@@ -578,3 +578,22 @@ by itself (a *reason* or a *warning*, not a restatement of *what*). Which
 specific bullets stay as text is not decided here — "the filter advice"
 is named as an example of the kind that qualifies, not necessarily the
 final list.
+
+### README.md:486
+
+> "The numbers are the bank's — the expression *is* the bank, run over the
+> column polars hands it."
+
+**Reported:** This phrase is not normal English.
+
+**Status:** open — not applied, batched for the rewrite pass.
+
+**Note:** the awkwardness is likely the opening clause — "The numbers are
+the bank's" is a possessive standing in for "the numbers come from the
+bank" or "these are the bank's numbers," compressed to the point of
+reading unnatural, then stacked with a second em-dash clause and an
+italicized *is* in the same sentence. One candidate, not a decision:
+"These are the bank's numbers: the expression *is* the bank, run over the
+column polars hands it." The point worth keeping either way — the
+expression *is* the model, not a wrapper around one — is not in question,
+only the sentence carrying it.
