@@ -7,6 +7,17 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.4.1] — 2026-09-09
+
+A patch: `hit_rate` on a `sgd(loss="logistic")` or `ftrl` fit reads a
+different number now, because the old one was wrong (1.0 on every such fit,
+whatever it had learned), not because a definition changed underneath a
+working number. `pred`, `coef` and every other output are untouched; nothing
+here needed a `SCHEMA_VERSION` bump or a spec change. A regression fit's
+`hit_rate` is unaffected to the bit.
+
 ### Fixed
 
 - **`hit_rate` read 1.0 for every `sgd(loss="logistic")` or `ftrl` fit**
