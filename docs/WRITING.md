@@ -14,6 +14,45 @@ term used before it is named, a cost asserted without naming what is spent,
 a mechanism alluded to rather than stated, or a section that assumes the
 reader shares the author's map of the library.
 
+## 0. Write for one stated reader
+
+The reader of the README **knows statistics, a little Polars, and what it
+means for rows to be in time order — and nothing about the internals of
+Polars or of this project** (PHRASING: "README draft, round 1"). Every
+sentence is written to that reader, and checked by reading it as them.
+
+What that reader does not have, and so what must be defined before it is
+used or replaced with what it does:
+
+| this library's own words | Polars-internal words | assumed statistics, safe to use |
+|---|---|---|
+| bank, model bank, spec, state, stream, chunk, clock, decay, halflife, session, group, warm-up, `n_eff`, accumulator, sufficient statistics, out-of-sample, fresh (bank) | plan, sink, collect, `collect_batches`, streaming engine, struct column, expression, scan, row group | regression, coefficient, residual, variance, correlation, kernel, weighted least squares, effective sample size |
+
+Three rules follow.
+
+**A term of art is defined at first use, and again where its concept
+lives.** *The bank* is an English word with several meanings until the
+reader has been told it is a *model bank* — a set of models fitted together
+over the same rows — and that `ModelBank` is the object that holds one. The
+introduction defines the library's words once, together; the section that
+owns each concept restates it, since readers arrive there from a search as
+often as from the top.
+
+**A Polars-internal word is replaced by what it does.** *Streams the plan's
+rows through a fresh bank* asks the reader to know what a plan is, what
+makes a bank fresh, and what streaming means here. *When the query runs,
+its rows go through a bank that starts with nothing learned, one chunk at a
+time* asks nothing. `sink_parquet` is *runs the query and writes the result
+to a file without holding it all in memory*; `collect_batches` is *gives
+the result one chunk at a time*; a struct column is *one column whose value
+in each row is a record with named fields*.
+
+**Audit the draft as the reader, not as the author.** Read each section
+cold and list every word the reader above would stop at; each is either
+defined where it stands, defined earlier and linked, or replaced. The list
+for the round-1 draft is in PHRASING.md — nineteen words, most of them the
+library's own.
+
 ## 1. Every document has an altitude, and stays at it
 
 Three altitudes, each with its own job:

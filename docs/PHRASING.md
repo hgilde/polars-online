@@ -643,3 +643,37 @@ somewhere else.
   pattern in the "Any row order" entry above (measurement specifics move
   to a table, the assurance stays in prose), this may be a candidate for
   the same treatment rather than automatic removal.
+
+### README draft, round 1 (the whole draft; reported on the review page, not a committed line)
+
+**Reported:** This shows some improvement, the sections are more organized
+and focused on their topic. It is getting better but you still rely on a
+some specific knowledge to make sense of it. You still refer to a bank,
+not as a model bank and without highlighting the model bank concept or
+defining what is a bank. How much knowledge is required to know you mean
+model bank there? More knowledge than the casual browsing reader has. Also
+you say things like "streams the plan's rows through a fresh bank " when
+the casual reader does not know what is a plan, what makes a bank fresh or
+not or even what is a model bank really. Are you able to take this
+feedback and try again, using special care to try not to use words that
+make sense to you but are unknown to the reader with less context.
+Imagine that the readers context is knowledge of statistics, a little
+polars, time ordering  but no deep understanding of polars or the
+intervals of our project.
+
+**Status:** open — round 2 of the draft applies it; nothing committed to
+README.md.
+
+**Note:** this is a rule the first round of `docs/WRITING.md` did not
+have and the strongest one so far: a *stated reader*, and a term-of-art
+audit against that reader. The words the round-1 draft used without
+defining, found by reading it as that reader: *bank* (never "model bank"
+after the first mention, never defined), *spec*, *state*, *stream*,
+*chunk*, *plan*, *fresh* (bank), *sink*, *collect*, *struct column*,
+*out-of-sample*, *n_eff*, *accumulator*, *sufficient statistics*,
+*halflife* (assumed to mean exponential weighting), *clock*, *session*,
+*warm-up*. Each is either the library's own word or deep-Polars
+vocabulary; a reader with statistics, a little Polars and time-ordered
+data has none of them. Round 2 defines the library's words once, up front,
+and again where each concept lives, and replaces the Polars-internal
+words with what they do.
