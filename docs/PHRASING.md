@@ -499,3 +499,35 @@ concrete cases collapse to two general claims (type-checked keywords,
 named missing columns) and drop the third (a spec named like an input
 column) entirely — worth confirming that is an acceptable loss, or picking
 a different pair to keep, at the rewrite.
+
+### README.md:325-330 ("In a loop: `ModelBank`")
+
+> "A bank says what it holds: `repr(bank)` is
+> `ModelBank(['ridge'], groups=412, rows_seen=3000000)`, `bank.specs` gives
+> back the spec dicts, and `bank.groups()` is a frame of every `(spec,
+> group)` with its row count and last clock value. Groups live until
+> dropped, so a long-running bank forgets the quiet ones with:"
+
+**Reported:** The section starting with A bank says what it holds should
+just be sample code.
+
+**Status:** open — not applied, batched for the rewrite pass.
+
+**Note:** candidate, one option and not a decision — fold the prose into
+the existing code block (or a small one right after it) as comments
+instead of running text:
+
+```python
+repr(bank)      # ModelBank(['ridge'], groups=412, rows_seen=3000000)
+bank.specs      # the spec dicts back
+bank.groups()   # one row per (spec, group): row count, last clock value
+
+# Groups live until dropped -- a long-running bank forgets the quiet ones:
+stale = bank.groups().filter(pl.col("last_clock") < now - 30 * 86400)
+bank.drop_groups(stale["group"])           # they start cold if they reappear
+```
+
+The one thing this drops that prose currently states outright: *why* a
+long-running bank would want to drop groups at all (unbounded key space,
+memory). Worth a one-line comment or keeping one clause of prose above the
+block, rather than losing the reason along with the explanation.
