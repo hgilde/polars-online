@@ -597,3 +597,49 @@ italicized *is* in the same sentence. One candidate, not a decision:
 column polars hands it." The point worth keeping either way — the
 expression *is* the model, not a wrapper around one — is not in question,
 only the sentence carrying it.
+
+**Broadened:** the next report widens this from the one sentence to the
+whole section — see below, which supersedes the "candidate" above (the
+"expression *is* the bank" point itself is judged not to belong in an
+intro at all, so there is no longer a sentence to repair, only one to
+cut).
+
+### README.md:471-503 ("The expression form (in memory only)"), whole section
+
+**Reported:** The fact that the expression is the bank is a detail that
+doesn't matter for introduction to the library.  This whole section is
+better communicated as simple code examples with a couple sentences
+mentioning that this syntax triggers polars to read all the data upfront.
+No need to go into the details of why in this doc, deep details can go
+somewhere else.
+
+**Status:** open — not applied, batched for the rewrite pass.
+
+**Note:**
+- Cut entirely from the intro-level treatment, per the report: "the
+  expression *is* the bank" (the entry above), and the mechanism —
+  "polars gives a stateful user expression its whole column at once, in
+  either engine, so wrapping the expression in a lazy query does not make
+  it stream." What stays: the code example, and "this syntax reads all
+  the data upfront" as a consequence stated plainly, no *why*.
+- This changes an earlier resolution already on file: the "Three ways"
+  fix recorded near the top of this log (README.md:65-68/71) drafted
+  replacement wording that *keeps* this same mechanism sentence almost
+  verbatim ("polars hands a stateful expression its whole column at once,
+  in either engine, so it reads the entire input into memory regardless
+  of how the query around it is written"). That draft needs revisiting
+  against this report at the rewrite — likely trimmed to the same
+  consequence-only statement this entry asks for.
+- "Somewhere else" for the deep details substantially exists already:
+  `docs/PLAN.md` §6 is already linked at the end of this section ("has the
+  design and the condition under which the warning would go away"), and
+  `docs/PERFORMANCE.md` covers the same mechanism from the measurement
+  side. So this is mainly a cut from the README, not a new document to
+  write — worth confirming those two are judged sufficient rather than
+  needing a more approachable, user-facing write-up of the mechanism
+  somewhere.
+- The 7.3 GB vs 1.35 GB peak-memory contrast is a specific number, not the
+  mechanism explanation — not named in the report either way; per the
+  pattern in the "Any row order" entry above (measurement specifics move
+  to a table, the assurance stays in prose), this may be a candidate for
+  the same treatment rather than automatic removal.
