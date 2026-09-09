@@ -52,3 +52,25 @@ class this sentence refers to is [`ModelBank`](https://hgilde.github.io/polars-o
 Flagged back to the user rather than added a link to a page that does not
 exist; asked, and the user chose "model bank", linked to `ModelBank`'s docs
 the same way the report asked for "signal bank" to link to its API.
+
+### README.md:65-68
+
+> A Python loop over chunks (`ModelBank`); a Polars query
+> (`lf.online.fit_predict(specs)` is a `LazyFrame` you `collect`, `sink` or
+> batch like any other); or a file-to-file job (`po.run(...)` from Python,
+> or the `online` CLI from a TOML with no Python at all).
+
+**Reported:** The sentence beginning with A Python loop over chunks.  This
+is a polars library by name, the more polars centric phrasing should come
+first followed by the loop phrasing. Leave out po.run and the rust
+instructions from this document.
+
+**Status:** open — checking a consequence before editing, see note.
+
+**Note:** the heading directly above this sentence reads "Three ways to run
+a model bank" and counts the Python loop, the Polars query and the
+file-to-file job as the three; the fourth thing mentioned (the expression
+form) is explicitly carved out with "there is also", not counted among the
+three. Removing the file-to-file clause (`po.run`/the CLI) leaves two
+ways enumerated under a heading that still says three — asked the user how
+to reconcile that before touching the text.
