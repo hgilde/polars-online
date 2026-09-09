@@ -154,3 +154,38 @@ not unclear wording), which supports the structural fix proposed above:
 group/weight/warm-up material wants its own place (or the section this
 sentence already sits beside further down, "Groups, weights and warm-up"),
 separate from what is actually about the clock.
+
+### README.md:74-76
+
+> "Or no clock at all: then row order is the clock — and with decay off,
+> the bank is plain least squares over everything it has seen, in any row
+> order."
+
+**Reported:** This phrase is under a section on time and at the end, a
+brief mention that you do not need time. Also the bank is not least
+squares. We need to be clear per model what happens if no time is given
+and if no decay is given. This section is really about incremental
+updating (although this phrase may itself need work). We may use decay
+with time and ordering, some models may converge to least squares given no
+decay and then ordering is not important. We need to rewrite the section
+on incremental updating to state the various ways it can work up front.
+
+**Status:** open — not applied, batched for the rewrite pass; this one is
+a correctness finding as well as phrasing, see note.
+
+**Note:** the "not least squares" objection checks out against the
+README's own more careful statement of the same fact, in "Against
+scikit-learn": *"the primary regression here is a different algorithm
+class — `ewridge`, `rls`, `lasso`, `huber` and `quantile` accumulate
+sufficient statistics and solve ... with decay off `ewridge` is ordinary
+least squares ... in any row order."* That is five model families out of
+twenty, and only because they solve a normal equation; `sgd`, `pa`, `ftrl`,
+`kalman`, `holt`, the clustering and regime models are sequential
+(gradient steps, a filter's update, a distance to the nearest centre) and
+stay row-order-dependent whether or not decay is on. "The bank is plain
+least squares" at README.md:76 states as a property of every model what is
+true of five of them. This is the same root problem as the two entries
+above it: the "Time, built in" paragraph is trying to cover ground —
+per-model convergence and order-dependence — that the reported structural
+fix (a section on incremental updating, stated per model, up front) is
+the right place for, not a closing clause of a paragraph about the clock.
