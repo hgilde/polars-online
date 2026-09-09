@@ -189,3 +189,18 @@ above it: the "Time, built in" paragraph is trying to cover ground —
 per-model convergence and order-dependence — that the reported structural
 fix (a section on incremental updating, stated per model, up front) is
 the right place for, not a closing clause of a paragraph about the clock.
+
+**Design note, refining the structural fix above:** the incremental-updating
+section should not carry a per-model table — that moves into each model's
+own description instead ("we will incorporate the use of decay into the
+model description itself later"). What belongs here is the general idea and
+API: what a clock and decay are, the vocabulary (`halflife`, `max_dclock`,
+`session`, `group`, row weight, `min_periods`), and which behaviors are
+universal versus per-model (the least-squares convergence above is one
+example of a per-model fact that does not belong here). One idea to add
+that is not in the current paragraph at all: decay lets some models produce
+a *local* result over a long ordered stream — a halflife as a bandwidth —
+without refitting many windowed models, which is the same idea the README
+already has under "A clock that is not time" (the LOESS-in-one-pass point)
+and belongs stated as a general capability of this section, not left to
+that one example.
