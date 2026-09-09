@@ -65,7 +65,9 @@ is a polars library by name, the more polars centric phrasing should come
 first followed by the loop phrasing. Leave out po.run and the rust
 instructions from this document.
 
-**Status:** open — checking a consequence before editing, see note.
+**Status:** open — analyzed and a resolution agreed below, but **not
+applied**: the user chose to batch phrasing issues here for one rewrite
+pass rather than fix them one at a time, so this waits with the rest.
 
 **Note:** the heading directly above this sentence reads "Three ways to run
 a model bank" and counts the Python loop, the Polars query and the
@@ -75,7 +77,7 @@ three. Removing the file-to-file clause (`po.run`/the CLI) leaves two
 ways enumerated under a heading that still says three — asked the user how
 to reconcile that before touching the text.
 
-**Resolution, asked and answered:**
+**Resolution, asked and answered, to apply at the rewrite:**
 1. There are still three: the Polars query, the Python loop, and the
    expression form (which the user confirmed is one of the three, not the
    carved-out fourth thing — "one of the ways is polars syntax that does
@@ -84,7 +86,15 @@ to reconcile that before touching the text.
    `docs/RUNNER.md`, along with "The runner." (Parallelism's architecture
    write-up on the shared three-stage pipeline) — one document for
    everything about running a job outside a live Python loop, per the
-   user's choice between one document and two.
+   user's choice between one document and two. Every other README mention
+   of `po.run`/the CLI (the save-state bullet under "As a query", the
+   memory table's file-in/file-out row, the closed-groups example, the
+   Parallelism section's "The runner." and "Python." bullets, the Chunk
+   size and Versioning sections) gets a short cross-reference to
+   `docs/RUNNER.md` in place of the detail, not a bare deletion — checked
+   against `tests/test_production_hardening.py`'s README-block-execution
+   test and `tests/test_llms_txt.py`'s anchor checks, neither of which this
+   entry's fix breaks as scoped.
 
 ### README.md:71
 
@@ -98,6 +108,33 @@ stream. Add a few words to explain the implication of not streaming - for
 example "this syntax cannot stream in chunks and will read all the input
 data to memory"
 
-**Status:** open — folding into the same paragraph's rewrite above (this
-sentence is being restructured into the three-way list, not left standing
-on its own; see the entry above and its resolution).
+**Status:** open — not applied yet, batched for the same rewrite pass as
+the entry above (this sentence folds into that paragraph's restructuring,
+not a fix standing on its own).
+
+**Note:** drafted and reverted on request, to be re-applied at the rewrite:
+"That third form cannot stream in chunks: polars hands a stateful
+expression its whole column at once, in either engine, so it reads the
+entire input into memory regardless of how the query around it is
+written — every call warns (`InMemoryExpressionWarning`) to say so."
+
+### README.md:72
+
+> "a ceiling on gaps, session boundaries, a policy for a clock that runs
+> backwards"
+
+**Reported:** relies on the user to understand what these things mean.
+Even the word session is not a common concept outside of capital markets.
+We should have a clear section in the readme on time. This phrase should
+become something like  "handling for market-data-like sessions including
+session boundaries, clock gaps and clock resets between sessions. "
+
+**Status:** open — not applied, batched for the rewrite pass.
+
+**Note:** two distinct asks here — (1) this specific phrase, drive-by list
+of terms with no gloss, and (2) a structural one, a dedicated "Time" section
+in the README (the concepts are currently spread across this "Time, built
+in" paragraph, "A clock that is not time", "Groups, weights and warm-up",
+and "How a bank sees a stream" generally). Both belong to the same rewrite
+pass; the structural one is worth flagging back to the user for scope
+before it is folded in, since it is more than a sentence-level fix.
