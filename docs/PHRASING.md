@@ -218,3 +218,80 @@ misplaced "One state per group, row weights, warm-up thresholds" clause,
 into the existing section rather than standing up a separate one. What (if
 anything) stays behind as a one-line teaser in "## What you get" is an open
 question for the rewrite, not decided here.
+
+### README.md:37-112 (the whole "## What you get" section)
+
+**Reported, verbatim, the whole instruction:** All the text in what you get
+should be shortened and moved above the table of models. This will become
+the introduction to the library. Any content that we remove from here
+should have a place somewhere else. In this section we have the basic api
+example, concepts of streaming, ordering, clocks, decay and convergence,
+prediction and chunking guarantees. Testing should be very short in this
+section, simply to convey the large scale of the testing. We should
+mention that state can be saved to a file but the rest of the state
+paragraph is too much for an intro. The section on Introspection and
+diagnostics has the right amount of information for an intro but should
+state that they are all O(state) in memory, with documented complexity in
+time. The section on Parallel by group, deterministic by construction is
+too complex, if correct we should
+Simply mention that we are parallel within each chunk and a teaser on
+parallel performance impact - performance improves by x on average using 5
+threads or whatever we know.
+
+**Status:** open — not applied, batched for the rewrite pass.
+
+**Note, piece by piece, checking each removed piece has a place to land:**
+
+- **The whole section moves above the model table**, becomes the library's
+  introduction. The model table itself (`## What you get`'s current first
+  half) stays below it, presumably still titled something, but that title
+  and its exact boundary are not specified here — worth pinning down at
+  the rewrite.
+- **The basic API example** — not currently in this section at all; the
+  README's example is "## Quick start" (line 137), right after this
+  section today. Reads as: fold Quick Start's code into the new
+  introduction, or keep it as its own following section — not specified,
+  worth confirming before writing.
+- **Streaming, ordering, clocks, decay, convergence** — matches the four
+  entries directly above this one: this content (currently "Three ways...",
+  "Time, built in", "The clock does not have to be a time") folds into
+  "## How a bank sees a stream" (line 167), not into the new intro,
+  *unless* this instruction means a short mention stays in the intro too
+  with the detail there — the four entries above assumed the detail moves
+  out entirely; this instruction says the intro should still *cover the
+  concepts*, just shortened. These two directions want reconciling at the
+  rewrite: how much of "clocks, decay, convergence" stays as a sentence in
+  the intro versus moves wholesale.
+- **Prediction and chunking guarantees** — "## Two guarantees" (line 287)
+  is already exactly this, already short (two sentences); likely stays
+  close to as-is, folded into the intro rather than left as a numbered
+  guarantee list further down, or kept in both places at different
+  lengths — again a call for the rewrite.
+- **Testing** — full detail already lives in "## Testing" (line 2612): about
+  650 Rust tests, ~2,200 pytest cases, oracles, `river` cross-checks,
+  hypothesis, golden numbers, invariants, hardening. The intro's version
+  (currently a full paragraph) shrinks to a scale statement only, per the
+  report.
+- **State can be saved to a file** — full detail already lives in
+  "## Saving, loading and serving" (line 526): atomicity, cross-entry-point
+  byte identity, host-independence. The intro keeps one clause, drops the
+  rest.
+- **Introspection and diagnostics** — user says the current intro paragraph
+  is already the right length; add one thing: "O(state) in memory, with
+  documented complexity in time." Checked whether that second half is true
+  today — **it is not, cleanly**: no single table states each diagnostic's
+  time cost the way `docs/OUTPUTS.md` does for output fields; time
+  complexity is scattered through `docs/PERFORMANCE.md`'s prose (`O(1)` for
+  decay, `O(k)` for a few named things, no per-diagnostic accounting).
+  Either this becomes true before the rewrite ships the claim, or the
+  claim is softened — flagging rather than deciding.
+- **Parallel by group, deterministic by construction** — judged too complex
+  for an intro; shrinks to "parallel within each chunk" plus one throughput
+  number. Full detail already lives in "## Parallelism" (line 2142), which
+  has real numbers to pull the teaser from rather than invent one: **8.0×**
+  on a 14-core machine (k=20, 64 groups, 1→14 threads), eight single-group
+  specs in **130 ms against 515 ms** one at a time. "5 threads" in the
+  report is a placeholder ("or whatever we know") — the measured points are
+  at 1, 2, 4, 8 and 14 threads (1.02M/1.91M/3.52M/6.44M/8.20M rows/s), not
+  5, so the teaser number should be picked from what is actually measured,
+  not interpolated.
