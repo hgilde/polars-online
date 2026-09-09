@@ -353,3 +353,16 @@ discussion of state that is not focussed on the section.
   exception — a concrete point about the clock (one-sidedness, the
   lag/noise trade-off) that is hard to make without a number — so likely
   intended to stay, but not confirmed; flagging rather than assuming.
+
+**Clarification, narrowing the complaint:** an illustrative example that
+uses real models is fine — "that's what the library does" — so the code
+block and its `ewridge`-specific kwargs above are not the concern; that
+uncertainty is resolved. The concern is specifically prose like "`group`
+gives one local fit per key from the same pass. And the clock belongs to
+every model, not to `ewridge`: clocked on a feature, `ew_cov` reports
+moments and correlations local in it, and `marginal` does the same pair by
+pair" — three model names carrying only a little actual information about
+the clock. So the working distinction for the rewrite is: a **runnable
+example** naming a model is welcome; a **sentence surveying several models
+by name** to make one clock-point is the thing to cut or compress down to
+the point itself.
