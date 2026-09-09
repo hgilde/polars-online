@@ -138,3 +138,19 @@ in" paragraph, "A clock that is not time", "Groups, weights and warm-up",
 and "How a bank sees a stream" generally). Both belong to the same rewrite
 pass; the structural one is worth flagging back to the user for scope
 before it is folded in, since it is more than a sentence-level fix.
+
+### README.md:73
+
+> "One state per group, row weights, warm-up thresholds."
+
+**Reported:** This is in the section on time but is not related to time
+except for warmup thresholds.
+
+**Status:** open — not applied, batched for the rewrite pass.
+
+**Note:** the same "Time, built in" paragraph this entry and the one above
+both point at — a second, independent problem with it (misplaced content,
+not unclear wording), which supports the structural fix proposed above:
+group/weight/warm-up material wants its own place (or the section this
+sentence already sits beside further down, "Groups, weights and warm-up"),
+separate from what is actually about the clock.
