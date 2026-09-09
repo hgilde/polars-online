@@ -74,3 +74,30 @@ form) is explicitly carved out with "there is also", not counted among the
 three. Removing the file-to-file clause (`po.run`/the CLI) leaves two
 ways enumerated under a heading that still says three — asked the user how
 to reconcile that before touching the text.
+
+**Resolution, asked and answered:**
+1. There are still three: the Polars query, the Python loop, and the
+   expression form (which the user confirmed is one of the three, not the
+   carved-out fourth thing — "one of the ways is polars syntax that does
+   not stream").
+2. `po.run` and the `online` CLI move out of README.md entirely, into a new
+   `docs/RUNNER.md`, along with "The runner." (Parallelism's architecture
+   write-up on the shared three-stage pipeline) — one document for
+   everything about running a job outside a live Python loop, per the
+   user's choice between one document and two.
+
+### README.md:71
+
+> "There is also an expression form for a frame in memory — it cannot
+> stream, and it says so."
+
+**Reported:** This sentence is too ambiguous and should either be fully
+explained with an example. The statement "it cannot stream" relies on the
+user to know that polars collects aloads non streaming plugins that do not
+stream. Add a few words to explain the implication of not streaming - for
+example "this syntax cannot stream in chunks and will read all the input
+data to memory"
+
+**Status:** open — folding into the same paragraph's rewrite above (this
+sentence is being restructured into the three-way list, not left standing
+on its own; see the entry above and its resolution).
