@@ -728,3 +728,32 @@ something") is what does not belong in front of a new reader. Worth
 checking the rest of the README for the same shape — a fix framed as a
 memory of development rather than as a stated rule — since this is
 probably not the only instance.
+
+### Whole document — prose that should be code with comments
+
+**Reported:** Overall a lot of prose would be simpler as code examples
+with comments. If a section of prose is just describing what parameters
+do or what comes out of a structure, or how to use an api, turn that into
+a code example and keep only the concepts that would produce comments
+that are too long for the remaining prose.
+
+**Status:** open — not applied, saved for the next iteration; commits
+stay local for now.
+
+**Note:** generalizes `docs/WRITING.md` rule 3 ("Code with comments, not
+prose that narrates code"), which the log so far applied only to the
+"Running a bank" section, into a whole-document rule with a sharper test:
+convert prose to a code example whenever it is *describing* — a
+parameter's meaning, a structure's fields, how to call something — and
+keep prose only for what a comment cannot hold at comment length (a
+reason, a warning, a trade-off). By that test, candidates well beyond
+"Running a bank": the model sections' parameter write-ups ("Constrained
+coefficients" under `sgd`, "Reverting coefficients" under `kalman`,
+`ew_class`'s "Choosing the shape", `micro`'s "Choosing `eps`"), the
+output-record field tables already in table form but introduced with a
+paragraph of description first, and "A state file describes itself" /
+"Reading a state without this library", which already lean
+code-with-comments but still carry descriptive prose alongside it. Not
+resolved here which of these the rule actually reaches — that is for the
+next synthesis pass, and some (the field tables) may already satisfy the
+spirit of the rule in table form rather than needing conversion to code.
