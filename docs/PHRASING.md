@@ -531,3 +531,9 @@ The one thing this drops that prose currently states outright: *why* a
 long-running bank would want to drop groups at all (unbounded key space,
 memory). Worth a one-line comment or keeping one clause of prose above the
 block, rather than losing the reason along with the explanation.
+
+**Clarification:** the code may carry comments — the objection is to dense
+running prose as the vehicle, not to explanation existing at all. So the
+"unbounded key space" reason belongs as a comment in the code (as sketched
+above: "Groups live until dropped -- a long-running bank forgets the quiet
+ones"), not dropped and not kept as a separate paragraph of text.
