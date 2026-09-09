@@ -366,3 +366,57 @@ the clock. So the working distinction for the rewrite is: a **runnable
 example** naming a model is welcome; a **sentence surveying several models
 by name** to make one clock-point is the thing to cut or compress down to
 the point itself.
+
+### README.md:226-243 ("Groups, weights and warm-up")
+
+> "| `targets`, `features` | column names, ≥1 target; ... |
+> | `add_intercept` | default `True` |
+> | `group` | one state per key |
+> | `group_close` | ... |
+> | `weight` | row weight column |
+> | `min_periods` | in `n_eff` units; outputs are null until it is reached.
+> A list gives one threshold per target. Warm-up gates output, not
+> learning |
+> | `coef_every` | snapshot the coefficients every N rows ... |
+> | `label_delay` | hold each row back from *learning* ... |
+>
+> `n_eff` is the exponentially weighted observation count: the weight
+> behind the state that produced *this row's* prediction, measured before
+> the row's own update and decay. So it is `0` on a stream's first row,
+> lags the row count by one, saturates at `1 / (1 − λ)`, and means the
+> same thing in every model — which is what makes `min_periods` portable
+> across a bank."
+
+**Reported:** Under "Groups, weights and warm-up" there is a section about
+model parameters that, while useful, is not part of a focussed
+explanation. Also groups has nothing to do with the paragraph of text in
+this section. The section is about warmup and contains good information
+except that it should start with something like: min_periods allows a
+model to output only when it has seen enough data to converge, avoiding
+uninformed decisions. min_periods is in neff units and …
+
+**Status:** open — not applied, batched for the rewrite pass.
+
+**Note:** two findings, matching the report's two sentences —
+1. The table's eight rows are not "groups, weights and warm-up": `targets`/
+   `features` and `add_intercept` are neither; `coef_every` and
+   `label_delay` are neither (label_delay is its own README subsection
+   already, "Labels that arrive late" — this table is a second, thinner
+   description of the same parameter). Only `group`, `group_close`,
+   `weight` and `min_periods` actually match the heading.
+2. The prose paragraph after the table is entirely about `n_eff` (warm-up);
+   it says nothing about groups or weights, confirming the heading
+   promises three things and delivers prose for one. The user's suggested
+   opening — "`min_periods` allows a model to output only when it has seen
+   enough data to converge, avoiding uninformed decisions. `min_periods`
+   is in `n_eff` units and …" — leads with *why* before the units, where
+   today's paragraph leads with `n_eff`'s definition and never states the
+   plain-language reason for warm-up at all.
+
+This implies the fix is a real split, not a rename: a focused warm-up
+subsection (`min_periods`, opening with the reported sentence, then the
+existing `n_eff` paragraph), with `group`/`group_close`/`weight` given
+their own focused treatment (possibly folded into the surrounding stream
+section per the earlier entries in this log), and `targets`/`features`/
+`add_intercept`/`coef_every` relocated to wherever they actually belong —
+not decided here, left for the rewrite.
