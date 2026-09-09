@@ -420,3 +420,57 @@ their own focused treatment (possibly folded into the surrounding stream
 section per the earlier entries in this log), and `targets`/`features`/
 `add_intercept`/`coef_every` relocated to wherever they actually belong —
 not decided here, left for the rewrite.
+
+### README.md:269-285 ("Any row order")
+
+> "A bank is a set of sufficient statistics, so row order reaches the fit
+> only through decay. With decay off, an `ewridge` with `ridge=0` is
+> ordinary least squares over every row it has seen, in whatever order
+> they came: forwards, backwards or shuffled, its coefficients match
+> `numpy.linalg.lstsq` to 2e-13. Memory use is proportional to the model's
+> state, not to the amount of data that has passed through it — 6M rows ×
+> 20 features from a parquet stream peak at 1.4 GB, against 3.97 GB for
+> `lstsq` on the same rows, and the frame never has to fit. Set
+> `solve_every=1000` to solve less often than every row (1.4 s instead of
+> 11 s there, coefficients at most 1000 rows stale).
+>
+> A finite halflife with no clock discounts each row by how far back it
+> sits, so the fit is a weighted least squares of *that* order. One trap:
+> a huge finite halflife is not `inf`. Its solve cadence defaults to
+> `halflife/50`, so `halflife=1e12` solves once, at `min_periods`, and
+> never again. Say `inf`, or set `solve_every`."
+
+**Reported:** Section "Any row order" should be renamed something like
+"without a decay" explaining convergence to regression functions in
+bounded memory while the clock section can explain "with a decay" for
+local regression with a clock. Three sections should be together and the
+without decay section should be half the number of words by cutting out
+unneeded measurement specifics replaced by assurance of bounded memory.
+specifics per model can go in a table of models.
+
+**Status:** open — not applied, batched for the rewrite pass.
+
+**Note:**
+- The "three sections together" reading: "### Time and decay" (171,
+  general concept), "### A clock that is not time" (184, the "with a
+  decay" / local-regression case), and this section renamed to the
+  "without a decay" case — currently these three do not sit together at
+  all; "Groups, weights and warm-up", "Nulls" and "Three ways to hold a
+  row back" (226–268) sit between the second and third. Grouping them
+  means moving this section up, not just renaming it in place.
+- Halving the length by cutting measurement specifics to a table: the two
+  numeric contrasts (`1.4 GB` vs `3.97 GB` at 6M×20; `1.4 s` vs `11 s` at
+  `solve_every=1000`) and the `2e-13` precision figure are the "measurement
+  specifics" — these read as `ewridge`-specific (they name it directly),
+  so they are exactly what the report says belongs in a model table
+  instead of prose here. What should stay in prose, per the report: the
+  *assurance* — memory is proportional to state, not data, whatever the
+  amount of data — without ewridge's own numbers backing it.
+- **Not addressed by the report, flagged rather than assumed:** the
+  section's second paragraph (finite halflife, no clock — order *does*
+  matter there, and the `halflife=1e12` solve-cadence trap) is a third
+  case, not "without a decay" at all — it is decay *on*, clock *off*. If
+  this section becomes strictly the "without decay" counterpart to "A
+  clock that is not time", this paragraph needs its own place; it does not
+  fit either half of the proposed with-decay/without-decay split as
+  named.
