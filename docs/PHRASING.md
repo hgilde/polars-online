@@ -677,3 +677,54 @@ vocabulary; a reader with statistics, a little Polars and time-ordered
 data has none of them. Round 2 defines the library's words once, up front,
 and again where each concept lives, and replaces the Polars-internal
 words with what they do.
+
+### README.md:97 ("State is a file")
+
+> "**State is a file.** Save a bank; load it to keep learning, or to serve
+> predictions without learning."
+
+**Reported:** You say State is a file but state is not a file, it can be
+saved and loaded from a file. The average reader will think that state is
+literally a file until they figure out otherwise.
+
+**Status:** open — not applied, saved for the next iteration; commits stay
+local for now.
+
+**Note:** present in the actual README.md, not only the review drafts —
+this is a real fix, not something introduced while redrafting. The
+introduction's own glossary (added in round 2) already gets this right
+one entry down — *state: everything a bank has learned* — so "State is a
+file" as a heading contradicts the definition the reader was just given
+two lines above it. A fix in the shape the report asks for: state is what
+a bank has learned, and it can be saved to a file and loaded back — the
+heading names the capability, not an identity.
+
+### README.md:588-590 ("`bank.specs` is a copy, and read-only")
+
+> "`bank.specs` is a **copy, and read-only**. The bank's behaviour comes
+> from the state built at construction, so a list on the Python side could
+> only ever disagree with it — and used to: editing
+> `bank.specs[0]["features"]` in place left `coef()` labelling
+> coefficients from a spec the bank was not running."
+
+**Reported:** Alamo [sic] you sometimes write sentences like the following
+which tell a story you remember and have documented from development but
+is not interesting to a new user only you when developing the code : a
+list on the Python side could only ever disagree with it — and once did:
+editing bank.specs[0]["features"] in place left coef() labelling
+coefficients from a spec the bank was not running.
+
+**Status:** open — not applied, saved for the next iteration; commits stay
+local for now.
+
+**Note:** a pattern to watch for beyond this one sentence: a past-tense
+bug narrative ("and once did", "and used to") told from the author's
+memory of a fix, where the reader only needs the current rule and the
+reason for it — *why* `bank.specs` is read-only and a copy, not the
+history of a bug that motivated making it so. The reason itself
+(coefficients would be labelled from a spec no longer running) is worth
+keeping; the anecdote framing ("this used to be possible and broke
+something") is what does not belong in front of a new reader. Worth
+checking the rest of the README for the same shape — a fix framed as a
+memory of development rather than as a stated rule — since this is
+probably not the only instance.
