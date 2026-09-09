@@ -35,4 +35,20 @@ original report is never edited to match it.
 
 ## Log
 
-*(nothing logged yet — entries are appended here as they are reported)*
+### README.md:65
+
+> **Three ways to run a bank, same numbers from each.**
+
+**Reported:** this phrase has multiple meanings to the casual reader. there
+has been no discussion of signals banks before in this doc and signal banks
+are uncommon enough that we need at least to state that "Three ways to run
+a signal bank" and the words signal bank should link to the signalbank api
+to make it totally clear.
+
+**Status:** open — blocked on a discrepancy, see note.
+
+**Note:** the library has no API named `SignalBank` / `signalbank` — the
+class this sentence refers to is [`ModelBank`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank),
+linked two sentences later in the same paragraph. I have not renamed
+anything or added a link to a page that does not exist; flagged back to the
+user rather than guessed at silently.
