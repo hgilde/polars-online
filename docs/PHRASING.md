@@ -204,3 +204,17 @@ without refitting many windowed models, which is the same idea the README
 already has under "A clock that is not time" (the LOESS-in-one-pass point)
 and belongs stated as a general capability of this section, not left to
 that one example.
+
+**Design note, second refinement — where this content actually lives:**
+not a new section. `## How a bank sees a stream` already exists further
+down the README (currently: "Time and decay" with the parameter table,
+"A clock that is not time", "Groups, weights and warm-up", "Nulls", "Three
+ways to hold a row back", "Any row order", "Two guarantees", "Mistakes are
+named" — "these parameters are shared by every model" is already its own
+opening line). The "Time, built in" paragraph these entries are about
+(README.md:71-76, in "## What you get") is a short teaser in the opening
+overview, ahead of that fuller section; the fix folds its content, and the
+misplaced "One state per group, row weights, warm-up thresholds" clause,
+into the existing section rather than standing up a separate one. What (if
+anything) stays behind as a one-line teaser in "## What you get" is an open
+question for the rewrite, not decided here.
