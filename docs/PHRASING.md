@@ -295,3 +295,61 @@ threads or whatever we know.
   at 1, 2, 4, 8 and 14 threads (1.02M/1.91M/3.52M/6.44M/8.20M rows/s), not
   5, so the teaser number should be picked from what is actually measured,
   not interpolated.
+
+### README.md:184-220 ("A clock that is not time")
+
+> "`pred_y` is the fitted curve read at each row's own `x0`, and `coef` is
+> the line through that row's neighbourhood. These are the batch numbers:
+> against a kernel-weighted least squares recomputed from scratch at every
+> row they agree to 1e-12 (`tests/test_ewridge.py`,
+> `test_a_feature_as_the_clock_is_a_local_linear_regression`)."
+>
+> "Three things carry over unchanged. `features` need not include the
+> clock column — with other features the same fit is a varying-coefficient
+> model, whose coefficients move along the clock. `group` gives one local
+> fit per key from the same pass. And the clock belongs to every model,
+> not to `ewridge`: clocked on a feature, `ew_cov` reports moments and
+> correlations local in it, and `marginal` does the same pair by pair."
+
+**Reported:** Section "A clock that is not time" the section starts
+talking about a clock and then drifts into the specifics of a model
+implementation and testing.  We should keep sections focussed on their
+headline goals. Since this section is about the clock and within a
+heading about the stream, model specific discussion should be avoided
+unless they illustrate points about the clock and the stream that are
+very hard to make otherwise. The paragraph starting "Three things carry
+over unchanged." Focuses on grouping and while it contains good
+information about local results using decay that is sitting among a
+discussion of state that is not focussed on the section.
+
+**Status:** open — not applied, batched for the rewrite pass.
+
+**Note, what drifts and where the drifted material might go:**
+- The test citation (`tests/test_ewridge.py`,
+  `test_a_feature_as_the_clock_is_a_local_linear_regression`) is the
+  clearest case of the complaint — a specific pytest test named inside a
+  conceptual section. It backs the accuracy claim ("agree to 1e-12"),
+  which is a claim worth keeping; the test name itself is not needed for
+  the reader here and reads as implementation detail bleeding through.
+- "Three things carry over unchanged" mixes three different claims under
+  one heading that don't share the section's focus: (1) `features` need
+  not include the clock column — this one is about the clock, arguably
+  belongs; (2) `group` gives one local fit per key — this is about
+  grouping, and "### Groups, weights and warm-up" is the *very next
+  section*, so it is not just off-topic but pre-empts content that already
+  has a home one heading down; (3) the clock applies to `ew_cov` and
+  `marginal` too, named specifically — a model-specific illustration of a
+  clock-general point, which is closer to the carve-out the report allows
+  ("unless they illustrate points ... very hard to make otherwise") than
+  the grouping sentence is.
+- Not flagged by the report but adjacent: the code block's
+  `max_rows_between_solves=1` and `min_periods=10.0` are `ewridge`-specific
+  knobs inside an example that is otherwise about the clock generally: an
+  example needs a real spec to run, so some model-specific surface is
+  probably unavoidable here — left for the rewrite to judge against the
+  report's own carve-out, not decided as a violation here.
+- The `sin(x)` bandwidth/lag numbers (0.08 against 0.39, 0.29 at bandwidth
+  1.0) were not named in the report. They read as exactly the carve-out's
+  exception — a concrete point about the clock (one-sidedness, the
+  lag/noise trade-off) that is hard to make without a number — so likely
+  intended to stay, but not confirmed; flagging rather than assuming.
