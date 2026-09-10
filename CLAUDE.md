@@ -128,7 +128,7 @@ dependencies; `crate-type` is the publisher's choice).
       projection, predicate or slice it pushes into a Python source, so the
       source honours all three (`python/polars_online/_frame.py`).
 
-    `polars>=1.34.0,<2` in `pyproject.toml` is therefore *measured* for all
+    `polars>=1.34.0,<3` in `pyproject.toml` is therefore *measured* for all
     three paths but *guaranteed* for none below the latest — and the two that
     stream are the unguaranteed ones — see `docs/RELEASE-READINESS.md`.
     Treat a `ModelBank` or IO-plugin break on a new Polars as expected

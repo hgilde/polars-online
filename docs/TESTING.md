@@ -383,7 +383,7 @@ pushed, and CI has run on all three platforms.
 
 - **PyPI** — `polars-online` is published there (0.1.0 on 2026-09-03, 0.1.1
   on 2026-09-04) through the trusted-publisher `release.yml`. The Polars pin
-  question is settled as `polars>=1.34.0,<2` — `docs/RELEASE-READINESS.md`,
+  question is settled as `polars>=1.34.0,<3` — `docs/RELEASE-READINESS.md`,
   "The Polars pin".
 
 Two things are worth doing periodically rather than once:

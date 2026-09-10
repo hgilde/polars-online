@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "polars-online"
-version = "0.4.1"
+version = "0.5.0"
 description = "Streaming / online regression models for Polars"
 readme = "README.md"
 license = "Apache-2.0"
@@ -45,11 +45,16 @@ dependencies = [
     # identical numbers. `docs/RELEASE-READINESS.md` has the matrix and the
     # command to reproduce it.
     #
-    # The ceiling is a bet that 1.x keeps the interface, hedged two ways: the
-    # plugin ABI is version-negotiated and refuses to load rather than
-    # misbehave, and `polars-canary.yml` runs the suite against the latest
-    # polars weekly.
-    "polars>=1.34.0,<2",
+    # The ceiling was `<2` and was raised to `<3` for 0.5.0, deliberately and
+    # on measurement rather than on 2.x keeping the interface: the whole
+    # suite passes on 2.0.0rc1 with the same numbers as on 1.44, all three
+    # interfaces work, and `LazyFrame.collect_batches` -- the floor -- is
+    # unchanged (`docs/RELEASE-READINESS.md`). It is still a bet on the rest
+    # of 2.x, hedged three ways: the plugin ABI is version-negotiated and
+    # refuses to load rather than misbehave, `polars-canary.yml` runs the
+    # suite against the latest polars weekly, and `release.yml` runs it again
+    # at the tag on the newest version this range admits, blocking.
+    "polars>=1.34.0,<3",
 ]
 
 # Only `ModelBank.gram()` and the `po.gram`, `po.corr` and `po.sim` toolkits

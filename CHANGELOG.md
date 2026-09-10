@@ -7,6 +7,43 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-09-10
+
+A minor because the supported range of Polars is wider, which is a minor
+release by this package's own rule. No model returns a different number
+than it did in 0.4.1.
+
+### Changed
+
+- **The Polars ceiling is raised: `polars>=1.34.0,<3`.** py-polars 2.0 is
+  now inside the declared range. The whole suite passes on `2.0.0rc1` with
+  the same numbers as on 1.44, all three interfaces work, and
+  `LazyFrame.collect_batches` — the floor — is unchanged; the measurements
+  are in `docs/RELEASE-READINESS.md`. Nothing about an install changes
+  today, since no installer resolves to a release candidate: a user gets
+  the newest 1.x until 2.0.0 ships, and then gets it without waiting on a
+  release of ours. One Polars 2.0 behaviour moves in our favour — a query
+  that fails *after* the bank stops the source instead of draining it, so
+  `save_state` is not written on a long stream, narrowing the gap
+  `docs/STATE-WORKFLOW.md` calls R6. The Rust side is unchanged: py-polars'
+  major and the `polars` crate's version are independent, and the wheel
+  carries its own statically linked copy.
+- **A release is now blocked on the newest Polars its own range admits.**
+  `release.yml`'s check runs in two legs: *the newest in-range* (stable
+  only, honouring the ceiling) gates the publish, and *the next major*
+  (unpinned, prereleases allowed) is advisory. So a wheel is never
+  published green only on the version it was built against, and a beta of
+  a major we have not adopted cannot withhold a release.
+
+### Added
+
+- **A plan with nothing to write runs once where a query uses it twice**
+  (task 77). The IO source declares `is_pure` to `register_io_source`
+  exactly when a run has no `save_state` and no `closed_groups` sidecar, so
+  Polars shares one execution for a self-join or `pl.concat([plan, plan])`
+  instead of running the source twice, concurrently. A run that writes
+  keeps both, because dropping a duplicate node drops its effects too.
+
 ### Documentation
 
 - **The README is rewritten for one stated reader** (task 68): someone who

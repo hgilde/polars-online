@@ -6,7 +6,7 @@ in time order and never all fit in memory at once. Rust core, Python API,
 and a standalone command line ([docs/RUNNER.md](docs/RUNNER.md)).
 
 > **A note on Polars versions.** Two of the three ways this library plugs
-> into Polars carry no stability promise from Polars, so `polars>=1.34.0,<2`
+> into Polars carry no stability promise from Polars, so `polars>=1.34.0,<3`
 > is measured rather than guaranteed. A weekly job runs the whole test suite
 > on the newest Polars, every release runs it again before publishing, and
 > the response to a failure is decided in advance.
@@ -2574,10 +2574,10 @@ Every release runs the same check at the moment it matters, in two legs
 
 | leg | resolves to | blocks the publish |
 |---|---|---|
-| the newest in-range | newest stable inside `<2` | **yes** |
+| the newest in-range | newest stable inside `<3` | **yes** |
 | the next major | unpinned, prereleases allowed | no |
 
-The first is a promise: `<2` admits every 1.x, so a resolver can hand
+The first is a promise: `<3` admits every 1.x and 2.x, so a resolver can hand
 someone a Polars newer than the one the wheel was built against the day
 after it ships. Green on the pinned version is not what the range says. A
 red run there means cap the range or fix the code — the decision above —
@@ -2585,12 +2585,13 @@ before the wheel goes out, not after.
 
 The second is early warning, the canary's job taken again at the tag. A
 3.0 beta that breaks us is worth knowing about and is not a reason to
-withhold a patch release for a range that ends at 2.
+withhold a patch release for a range that ends at 3.
 
 ### Raising the ceiling to a new major
 
-The ceiling is `<2`, so a py-polars 2.0 is excluded until this is done
-deliberately. The steps, in order:
+The ceiling is `<3`, raised from `<2` in 0.5.0, so a py-polars 3.0 is
+excluded until this is done again. The steps, in order — written while
+raising it to `<3`, and followed to do it:
 
 1. **The canary and the release job's advisory leg are already testing
    it** — both unpin and both allow prereleases, so a 2.0 release candidate
@@ -2612,13 +2613,20 @@ deliberately. The steps, in order:
 5. **Ship it as a minor**, not a patch: widening the Polars range is a minor
    release by this package's own rule, below.
 
-What the 2.0 candidate measured, so the work is known rather than guessed:
-the whole suite passes, all three interfaces work, and
+What the 2.0 candidate measured, which is what `<3` was raised on rather
+than a guess that 2.x keeps the interface: the whole suite passes with the
+same numbers as on 1.44, all three interfaces work, and
 `LazyFrame.collect_batches` — the floor — is unchanged. One behaviour moved
 in our favour: a query that fails *after* the bank now stops the source
 instead of draining it, so `save_state` is not written on a long stream,
 narrowing the gap `docs/STATE-WORKFLOW.md` calls R6.
 [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md) has the measurements.
+
+Raised on `2.0.0rc1`, before 2.0.0 final was on PyPI. That is deliberate
+and it costs nothing today: installers do not resolve to a release
+candidate, so every user still gets the newest 1.x until 2.0.0 ships, at
+which point they get it without waiting on a release of ours. The blocking
+leg above is what covers the difference between the candidate and the final.
 
 ### This package's own versioning
 
