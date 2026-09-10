@@ -748,3 +748,30 @@ code-with-comments but still carry descriptive prose alongside it. Not
 resolved here which of these the rule actually reaches — that is for the
 next synthesis pass, and some (the field tables) may already satisfy the
 spirit of the rule in table form rather than needing conversion to code.
+
+### README.md:35-41 ("The idea")
+
+> "That order is what makes every prediction honest — no row's own outcome
+> is in the number predicted for it — and it is what lets the whole thing
+> run on far more rows than fit in memory:"
+
+**Reported:** This phrase is not true. It implies that the ordering is
+what makes the algorithm bounded in memory while in fact the ordering is
+only needed if there is a decay specified: That order is what makes every
+prediction honest — no row's own outcome is in the number predicted for
+it — and it is what lets the whole thing run on far more rows than fit in
+memory:
+
+**Status:** fixed (commit following this entry).
+
+**Note:** a correctness finding, and the same shape as "the bank is plain
+least squares" earlier in this log — an effect attributed to the wrong
+cause. Two things were fused by one "and": the predict-then-learn order
+(which is what makes a prediction honest) and bounded memory (which comes
+from the models keeping only their state, never the rows — true in any
+order). The paragraph also said "in a single pass over your rows, in time
+order" as if time order were always required; it is required only when a
+decay is on, and the README's own "Without a decay" section says so. The
+fix separates the three claims and states each with its own cause, and
+adds to `docs/WRITING.md` rule 4: an effect is attributed to its own cause,
+not to whatever the sentence happened to be about.

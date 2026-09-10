@@ -34,12 +34,15 @@ and a standalone command line ([docs/RUNNER.md](docs/RUNNER.md)).
 
 **The idea.** You describe one or more models — a ridge regression of a
 stock's return on two signals, say, with a separate regression for every
-stock. polars-online fits all of them in a single pass over your rows, in
-time order. Each row is *predicted* first, from what the models have learned
-so far, and *learned from* second. That order is what makes every
-prediction honest — no row's own outcome is in the number predicted for
-it — and it is what lets the whole thing run on far more rows than fit in
-memory: the models keep only what they have learned, never the rows.
+stock. polars-online fits all of them in a single pass over your rows. Each
+row is *predicted* first, from what the models have learned so far, and
+*learned from* second; that order is what makes every prediction honest —
+no row's own outcome is in the number predicted for it. The models keep
+only what they have learned, never the rows, which is what lets the whole
+thing run on far more rows than fit in memory. The order of the rows
+matters only when a model forgets: with a decay, older rows count less, so
+the rows must come in time order; without one, a model that solves or
+accumulates gives the same answer in any order.
 
 **Four words this README uses throughout.**
 

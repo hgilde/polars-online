@@ -184,6 +184,15 @@ reason (a stale copy would mislabel coefficients), in the present tense
 or `docs/PLAN.md`. Grep for `used to`, `once did`, `the first version`,
 `before this was fixed` outside those two files.
 
+**An effect is attributed to its own cause.** *That order is what makes
+every prediction honest … and it is what lets the whole thing run on far
+more rows than fit in memory* fused two claims with one "and": the
+predict-then-learn order does make a prediction honest, but bounded memory
+comes from the models keeping only their state, in any order (PHRASING:
+"The idea"). When a sentence carries two effects, check that each is
+credited to the mechanism that actually produces it, not to whatever the
+sentence was already about.
+
 **A thing is not its file.** *State is a file* names a serialization as if
 it were the concept, two lines below a glossary that defines state as what
 the bank has learned (PHRASING: "State is a file"). Say what the thing is,
