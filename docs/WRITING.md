@@ -108,19 +108,37 @@ rest (PHRASING: "What you get", "Mistakes are named").
 
 ## 3. Code with comments, not prose that narrates code
 
-**When the content is *what this call does*, show the call.** A paragraph
-explaining that `repr(bank)` shows its specs and groups, that
-`bank.groups()` is a frame of every group with its row count, that
-`bank.drop_groups(...)` forgets the quiet ones — that is a code block with
-comments, and it was written as prose (PHRASING: "A bank says what it
-holds", "As a query"). Where the output is what the reader needs to see,
-show the output too.
+**When the content is *describing*, show it as code.** This is the test,
+for the whole document (PHRASING: "Whole document — prose that should be
+code with comments"): if a passage describes *what a parameter does*, *what
+comes out of a structure*, or *how to call something*, it is a code example
+with comments, not prose. A paragraph explaining that `repr(bank)` shows its
+specs and groups, that `bank.groups()` is a frame of every group with its
+row count, that `bank.drop_groups(...)` forgets the quiet ones — that is a
+code block with comments, and it was written as prose (PHRASING: "A bank
+says what it holds", "As a query"). Where the output is what the reader
+needs to see, show the output too.
 
-**Prose that stays must carry what a comment cannot.** A reason ("filter
-after the bank, not before, because a filter before it holds several row
-groups per thread in the reader") or a warning ("a huge finite halflife is
-not `inf`") earns its sentence. A restatement of what the code already
-shows does not (PHRASING: "As a query", clarification).
+The three shapes:
+
+| the prose was | it becomes |
+|---|---|
+| what each parameter does | one spec built with every parameter in play, each on its own line with its comment |
+| what comes out of a structure | code that reads each field, with a comment saying what it holds |
+| how to use an API | the call sequence, with a comment per step |
+
+**Prose that stays must carry what a comment cannot hold at comment
+length.** A reason ("filter after the bank, not before, because a filter
+before it holds several row groups per thread in the reader"), a warning
+("a huge finite halflife is not `inf`"), or a trade-off earns its
+sentence. A restatement of what the code already shows does not (PHRASING:
+"As a query", clarification). The test for what remains as prose: would
+its comment be longer than the code it sits beside? Then it is a concept,
+and it stays as text — above the code, not repeated inside it.
+
+**Every code block runs.** A code example is a claim the reader trusts;
+the README's python blocks are executed by the test suite, so a converted
+passage is also a test of what it describes.
 
 **An example may name a model. A survey may not.** A runnable example needs
 a real spec, so it names one — that is what the library does. A sentence
@@ -156,6 +174,22 @@ tidy one (PHRASING: "What you get", note on "5 threads").
 complexity in time* is a claim the reader will follow; if no document
 states each diagnostic's cost, either write it or say what is actually
 documented (PHRASING: "What you get", note on the diagnostics paragraph).
+
+**State the rule and its reason, not the story of the bug.** *`bank.specs`
+is a copy, and read-only … and used to: editing it in place left `coef()`
+labelling coefficients from a spec the bank was not running* tells a
+development memory; the reader needs the rule (a copy, read-only) and the
+reason (a stale copy would mislabel coefficients), in the present tense
+(PHRASING: "`bank.specs` is a copy"). The history belongs in `CHANGELOG.md`
+or `docs/PLAN.md`. Grep for `used to`, `once did`, `the first version`,
+`before this was fixed` outside those two files.
+
+**A thing is not its file.** *State is a file* names a serialization as if
+it were the concept, two lines below a glossary that defines state as what
+the bank has learned (PHRASING: "State is a file"). Say what the thing is,
+then what can be done with it — *state can be saved to a file and loaded
+back* — and never let a heading contradict a definition the reader was
+just given.
 
 ## 5. Sentences
 
