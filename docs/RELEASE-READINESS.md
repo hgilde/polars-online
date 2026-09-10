@@ -854,6 +854,95 @@ Short, in the README and CONTRIBUTING:
 - **Do not add `cargo semver-checks`** unless R3 says the crates are published.
   It is the right tool for a published Rust API and pure overhead otherwise.
 
+## Polars 2.0.0rc1, measured (2026-09-10)
+
+`polars 2.0.0rc1` is on PyPI (stable is 1.44.2; it is the only 2.x release).
+The suite was built and run against it in a throwaway worktree with its own
+`CARGO_TARGET_DIR`, the way `polars-canary.yml` does it: pin the Python
+dependency, `uv sync`, `maturin develop --release`, then
+`pytest -m "not soak and not pins"`.
+
+**Result: 2,438 passed, 2 failed, 3 skipped.** Neither failure is a break in
+the library.
+
+**There is no Rust-side 2.0.** crates.io's newest `polars` is still 0.55.2,
+the version `Cargo.toml` pins. py-polars 2.0 is a Python-side major only, so
+moving the ceiling is a `pyproject.toml` change and not a Rust upgrade —
+which is the split the canary's own comment predicts, and the reason the
+wheel's statically linked copy never meets the user's.
+
+All three interfaces work: the expression plugin loads (its ABI handshake
+passes) and still warns; `PySeries._export`/`_import` are both present, so
+`ModelBank` works; and the IO plugin runs under `collect()` and
+`sink_parquet()`. `LazyFrame.collect_batches` — the floor — has an identical
+signature in 1.44.1 and 2.0.0rc1, `chunk_size` and `maintain_order`
+included.
+
+### R6 narrows, exactly as §4 said it might
+
+`docs/STATE-WORKFLOW.md` R6 records the one gap in the plan's state
+workflow: polars drains a Python source before surfacing a later node's
+error, so a query that fails *after* the bank still writes `save_state`
+with the whole stream's state while its own output is missing. The
+stability note there says "R6 narrows if polars ever stops it".
+
+On 2.0.0rc1 it does, and the narrowing is **length-dependent** — measured
+with `chunk_rows=500` and a failing downstream cast:
+
+| rows | chunks | 1.44.1 writes the state? | 2.0.0rc1 |
+|---:|---:|---|---|
+| 4,000 | 8 | yes | yes |
+| 40,000 | 80 | yes | **no** |
+
+So 2.0 propagates the cancellation to the source once the stream is long
+enough that the failure lands before the source is exhausted; a short stream
+is still drained. `tests/test_frame.py::test_a_run_that_does_not_reach_the_end_writes_nothing`
+asserts the 1.x behaviour at 40,000 rows and is the first of the two
+failures — the test is right about 1.x and would need a version-aware
+assertion to hold on both.
+
+That is a narrowing of a documented hazard, not a regression: the dangerous
+case is the state being written when the output was not, and 2.0 does that
+less often. `po.run` remains the transactional call either way.
+
+### The other failure is the canary's own hygiene
+
+`tests/test_validation_doc.py` regenerates `docs/VALIDATION.md` and compares
+it, and the document's header line records the Polars version it was
+generated with — `1.44.1` committed against `2.0.0-rc.1` produced. It is
+version-sensitive by construction and carries no `pins` marker, so the
+canary's `-m "not soak and not pins"` does not deselect it. Marking it
+`pins` would make the canary's signal mean only "Polars broke us", which is
+what that job exists for.
+
+### What 2.0 adds that this library could use
+
+`polars.io.plugins.register_io_source` gained two keywords:
+
+```
+1.44.1: (io_source, *, schema, validate_schema=False, is_pure=False)
+2.0rc1: (io_source, *, schema, validate_schema=False, is_pure=False,
+                       explain_name=None, explain_detail=None)
+```
+
+`explain_name` / `explain_detail` would put the bank's own name and its
+specs into `lf.explain()`, where a plan with a bank in it currently shows a
+generic Python source. `_frame.py` passes neither today. It is additive and
+2.0-only, so it needs a capability check rather than a version bump.
+
+`is_pure` is **not** new — it is in 1.44.1 too, and this library does not
+set it although `_frame.py`'s module docstring documents exactly that
+property. Worth deciding on its own merits: purity is polars' licence to
+cache or skip a re-execution, and `docs/STATE-WORKFLOW.md` R2 measured how
+often the source runs today.
+
+### What this does not settle
+
+The run was one platform (macOS arm64), one Python (3.14), and a release
+candidate. Nothing here is a reason to move `<2` yet; it is the evidence
+that the move is small when 2.0 is final, and the two failures above are
+what a canary run would report.
+
 ## Suggested order
 
 All four steps happened in this order on 2026-08-31, bar the R4 settings
