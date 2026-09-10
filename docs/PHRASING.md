@@ -65,9 +65,7 @@ is a polars library by name, the more polars centric phrasing should come
 first followed by the loop phrasing. Leave out po.run and the rust
 instructions from this document.
 
-**Status:** open — analyzed and a resolution agreed below, but **not
-applied**: the user chose to batch phrasing issues here for one rewrite
-pass rather than fix them one at a time, so this waits with the rest.
+**Status:** fixed (the README rewrite of 2026-09-09; the rule it produced is in `docs/WRITING.md`).
 
 **Note:** the heading directly above this sentence reads "Three ways to run
 a model bank" and counts the Python loop, the Polars query and the
@@ -108,9 +106,7 @@ stream. Add a few words to explain the implication of not streaming - for
 example "this syntax cannot stream in chunks and will read all the input
 data to memory"
 
-**Status:** open — not applied yet, batched for the same rewrite pass as
-the entry above (this sentence folds into that paragraph's restructuring,
-not a fix standing on its own).
+**Status:** fixed (the README rewrite of 2026-09-09; the rule it produced is in `docs/WRITING.md`).
 
 **Note:** drafted and reverted on request, to be re-applied at the rewrite:
 "That third form cannot stream in chunks: polars hands a stateful
@@ -129,7 +125,7 @@ We should have a clear section in the readme on time. This phrase should
 become something like  "handling for market-data-like sessions including
 session boundaries, clock gaps and clock resets between sessions. "
 
-**Status:** open — not applied, batched for the rewrite pass.
+**Status:** fixed (the README rewrite of 2026-09-09; the rule it produced is in `docs/WRITING.md`).
 
 **Note:** two distinct asks here — (1) this specific phrase, drive-by list
 of terms with no gloss, and (2) a structural one, a dedicated "Time" section
@@ -146,7 +142,7 @@ before it is folded in, since it is more than a sentence-level fix.
 **Reported:** This is in the section on time but is not related to time
 except for warmup thresholds.
 
-**Status:** open — not applied, batched for the rewrite pass.
+**Status:** fixed (the README rewrite of 2026-09-09; the rule it produced is in `docs/WRITING.md`).
 
 **Note:** the same "Time, built in" paragraph this entry and the one above
 both point at — a second, independent problem with it (misplaced content,
@@ -170,8 +166,7 @@ with time and ordering, some models may converge to least squares given no
 decay and then ordering is not important. We need to rewrite the section
 on incremental updating to state the various ways it can work up front.
 
-**Status:** open — not applied, batched for the rewrite pass; this one is
-a correctness finding as well as phrasing, see note.
+**Status:** fixed (the README rewrite of 2026-09-09; the rule it produced is in `docs/WRITING.md`).
 
 **Note:** the "not least squares" objection checks out against the
 README's own more careful statement of the same fact, in "Against
@@ -238,7 +233,7 @@ Simply mention that we are parallel within each chunk and a teaser on
 parallel performance impact - performance improves by x on average using 5
 threads or whatever we know.
 
-**Status:** open — not applied, batched for the rewrite pass.
+**Status:** fixed (the README rewrite of 2026-09-09; the rule it produced is in `docs/WRITING.md`).
 
 **Note, piece by piece, checking each removed piece has a place to land:**
 
@@ -322,7 +317,7 @@ over unchanged." Focuses on grouping and while it contains good
 information about local results using decay that is sitting among a
 discussion of state that is not focussed on the section.
 
-**Status:** open — not applied, batched for the rewrite pass.
+**Status:** fixed (the README rewrite of 2026-09-09; the rule it produced is in `docs/WRITING.md`).
 
 **Note, what drifts and where the drifted material might go:**
 - The test citation (`tests/test_ewridge.py`,
@@ -395,7 +390,7 @@ except that it should start with something like: min_periods allows a
 model to output only when it has seen enough data to converge, avoiding
 uninformed decisions. min_periods is in neff units and …
 
-**Status:** open — not applied, batched for the rewrite pass.
+**Status:** fixed (the README rewrite of 2026-09-09; the rule it produced is in `docs/WRITING.md`).
 
 **Note:** two findings, matching the report's two sentences —
 1. The table's eight rows are not "groups, weights and warm-up": `targets`/
@@ -448,7 +443,7 @@ without decay section should be half the number of words by cutting out
 unneeded measurement specifics replaced by assurance of bounded memory.
 specifics per model can go in a table of models.
 
-**Status:** open — not applied, batched for the rewrite pass.
+**Status:** fixed (the README rewrite of 2026-09-09; the rule it produced is in `docs/WRITING.md`).
 
 **Note:**
 - The "three sections together" reading: "### Time and decay" (171,
@@ -487,7 +482,7 @@ specifics per model can go in a table of models.
 sentences at most and added to the quick start. Users will see this level
 of checking anyway.
 
-**Status:** open — not applied, batched for the rewrite pass.
+**Status:** fixed (the README rewrite of 2026-09-09; the rule it produced is in `docs/WRITING.md`).
 
 **Note:** "## Quick start" (line 137) is a single code block plus one
 short paragraph today, no error-handling content at all — this would be
@@ -511,7 +506,7 @@ a different pair to keep, at the rewrite.
 **Reported:** The section starting with A bank says what it holds should
 just be sample code.
 
-**Status:** open — not applied, batched for the rewrite pass.
+**Status:** fixed (the README rewrite of 2026-09-09; the rule it produced is in `docs/WRITING.md`).
 
 **Note:** candidate, one option and not a decision — fold the prose into
 the existing code block (or a small one right after it) as comments
@@ -550,7 +545,7 @@ ones"), not dropped and not kept as a separate paragraph of text.
 no one is thinking of the query as a loop. This section should also be
 code with comments. Maybe even code with output.
 
-**Status:** open — not applied, batched for the rewrite pass.
+**Status:** fixed (the README rewrite of 2026-09-09; the rule it produced is in `docs/WRITING.md`).
 
 **Note:** two asks — (1) the specific opening sentence, which also has a
 standing problem independent of this report: an earlier entry in this log
@@ -586,7 +581,7 @@ final list.
 
 **Reported:** This phrase is not normal English.
 
-**Status:** open — not applied, batched for the rewrite pass.
+**Status:** fixed (the README rewrite of 2026-09-09; the rule it produced is in `docs/WRITING.md`).
 
 **Note:** the awkwardness is likely the opening clause — "The numbers are
 the bank's" is a possessive standing in for "the numbers come from the
@@ -613,7 +608,7 @@ mentioning that this syntax triggers polars to read all the data upfront.
 No need to go into the details of why in this doc, deep details can go
 somewhere else.
 
-**Status:** open — not applied, batched for the rewrite pass.
+**Status:** fixed (the README rewrite of 2026-09-09; the rule it produced is in `docs/WRITING.md`).
 
 **Note:**
 - Cut entirely from the intro-level treatment, per the report: "the
@@ -661,8 +656,7 @@ Imagine that the readers context is knowledge of statistics, a little
 polars, time ordering  but no deep understanding of polars or the
 intervals of our project.
 
-**Status:** open — round 2 of the draft applies it; nothing committed to
-README.md.
+**Status:** fixed (the README rewrite of 2026-09-09; the rule it produced is in `docs/WRITING.md`).
 
 **Note:** this is a rule the first round of `docs/WRITING.md` did not
 have and the strongest one so far: a *stated reader*, and a term-of-art
@@ -687,8 +681,7 @@ words with what they do.
 saved and loaded from a file. The average reader will think that state is
 literally a file until they figure out otherwise.
 
-**Status:** open — not applied, saved for the next iteration; commits stay
-local for now.
+**Status:** fixed (the README rewrite of 2026-09-09; the rule it produced is in `docs/WRITING.md`).
 
 **Note:** present in the actual README.md, not only the review drafts —
 this is a real fix, not something introduced while redrafting. The
@@ -714,8 +707,7 @@ list on the Python side could only ever disagree with it — and once did:
 editing bank.specs[0]["features"] in place left coef() labelling
 coefficients from a spec the bank was not running.
 
-**Status:** open — not applied, saved for the next iteration; commits stay
-local for now.
+**Status:** fixed (the README rewrite of 2026-09-09; the rule it produced is in `docs/WRITING.md`).
 
 **Note:** a pattern to watch for beyond this one sentence: a past-tense
 bug narrative ("and once did", "and used to") told from the author's
@@ -737,8 +729,7 @@ do or what comes out of a structure, or how to use an api, turn that into
 a code example and keep only the concepts that would produce comments
 that are too long for the remaining prose.
 
-**Status:** open — not applied, saved for the next iteration; commits
-stay local for now.
+**Status:** fixed (the README rewrite of 2026-09-09; the rule it produced is in `docs/WRITING.md`).
 
 **Note:** generalizes `docs/WRITING.md` rule 3 ("Code with comments, not
 prose that narrates code"), which the log so far applied only to the

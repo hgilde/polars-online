@@ -7,7 +7,21 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
-Nothing yet.
+### Documentation
+
+- **The README is rewritten for one stated reader** (task 68): someone who
+  knows statistics, a little Polars and time-ordered data, and nothing about
+  the internals of Polars or this project. The introduction now defines the
+  four words the rest of the document uses (spec, model bank, stream and
+  chunk, state) before using them; the stream section is split into one
+  subsection per concept, with the clock, decay, groups, weights and warm-up
+  each defined where it lives; and prose that described what a parameter
+  does, what comes out of a structure or how to call something is a code
+  example with comments, all of which run in the test suite. `po.run` and
+  the `online` command line moved to their own guide, `docs/RUNNER.md`. The
+  rules the rewrite followed are `docs/WRITING.md`, each drawn from a
+  reported problem in `docs/PHRASING.md`, the log the rewrite was worked
+  from.
 
 ## [0.4.1] — 2026-09-09
 

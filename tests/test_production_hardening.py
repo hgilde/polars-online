@@ -531,23 +531,25 @@ class TestOddNames:
             po.ModelBank([_spec(features=["x0", "x9"])]).fit_predict(_df())
 
 
-def _readme_blocks() -> list[tuple[int, str]]:
-    """Every ```python block in the README, with the line it starts on."""
-    out: list[tuple[int, str]] = []
+def _doc_blocks(rel: str) -> list[tuple[str, int, str]]:
+    """Every ```python block in one document, with the line it starts on."""
+    out: list[tuple[str, int, str]] = []
     in_block, buf, start = False, [], 0
-    text = (REPO / "README.md").read_text(encoding="utf-8")
+    text = (REPO / rel).read_text(encoding="utf-8")
     for i, line in enumerate(text.splitlines(), 1):
         if line.strip().startswith("```python"):
             in_block, buf, start = True, [], i
         elif line.strip() == "```" and in_block:
             in_block = False
-            out.append((start, "\n".join(buf)))
+            out.append((rel, start, "\n".join(buf)))
         elif in_block:
             buf.append(line)
     return out
 
 
-README_BLOCKS = _readme_blocks()
+# The README, and the runner guide its `po.run` examples moved to (docs/PLAN.md
+# task 68): the fixture below already writes the files those examples read.
+README_BLOCKS = _doc_blocks("README.md") + _doc_blocks("docs/RUNNER.md")
 
 
 def _closed_rows(df: pl.DataFrame) -> pl.DataFrame:
@@ -682,9 +684,11 @@ class TestReadmeExamples:
         assert len(README_BLOCKS) >= 8, README_BLOCKS
 
     @pytest.mark.parametrize(
-        ("line", "code"), README_BLOCKS, ids=[f"L{ln}" for ln, _ in README_BLOCKS]
+        ("path", "line", "code"),
+        README_BLOCKS,
+        ids=[f"{p}:L{ln}" for p, ln, _ in README_BLOCKS],
     )
-    def test_a_readme_block_runs(self, line, code, tmp_path, monkeypatch):
+    def test_a_readme_block_runs(self, path, line, code, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)  # the runner examples write next to the inputs
         # The parallelism blocks set thread-count variables; both pools are
         # long built in this process, so they change nothing here, but the
@@ -692,7 +696,7 @@ class TestReadmeExamples:
         env = dict(os.environ)
         ns = _readme_namespace(tmp_path)
         try:
-            exec(compile(code, f"README.md:{line}", "exec"), ns)
+            exec(compile(code, f"{path}:{line}", "exec"), ns)
         finally:
             os.environ.clear()
             os.environ.update(env)

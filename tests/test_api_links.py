@@ -64,7 +64,7 @@ def test_the_model_table_links_every_builder_to_its_page():
     is the index a reader picks a model from; a name with no link there is a
     model whose keywords cannot be found."""
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    table = readme.split("| model | what it is |", 1)[1].split("\n\n", 1)[0]
+    table = readme.split("| model | learns by | what it is |", 1)[1].split("\n\n", 1)[0]
     linked = set(
         re.findall(
             r"\[`([a-z_]+)`\]\(https://hgilde\.github\.io/[^)]*#polars_online\.spec\.([a-z_]+)\)",

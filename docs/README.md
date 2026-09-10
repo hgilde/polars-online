@@ -19,6 +19,7 @@ what happened next.
 | [TESTING.md](TESTING.md) | you want to know what the suite proves, what it has found, and where it is thin |
 | [EXTENDING.md](EXTENDING.md) | you are adding a model — every layer it touches, with the test that catches skipping each one |
 | [RELEASE-READINESS.md](RELEASE-READINESS.md) | you are cutting a release, or asking which Polars versions are promised and which are merely measured |
+| [RUNNER.md](RUNNER.md) | you run a bank as a job — `po.run` from a script, or the `online` command line from a configuration file — with no live Python process driving it |
 | [WRITING.md](WRITING.md) | you are writing or rewriting any reader-facing doc — the rules the docs are held to, each drawn from a reported problem in PHRASING.md |
 | [PHRASING.md](PHRASING.md) | you are about to rewrite documentation prose — a running list of specific phrasing problems, logged as they are found, feeding task 68's clarity pass |
 

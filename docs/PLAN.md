@@ -1938,7 +1938,7 @@ note, not a task.
       path's time. The ledger's 5–10× is honest for the update, single-
       threaded; the number a bank sees is that, times how rarely it solves.
 
-- [ ] 68. **README clarity pass, begun 2026-09-07.** Going through the
+- [x] 68. **README clarity pass, begun 2026-09-07, done 2026-09-09.** Going through the
       reader-facing prose and fixing phrasing that only parses if the reader
       already shares the frame the sentence was written in. Three rules, in
       the order they bind:
@@ -1964,7 +1964,27 @@ note, not a task.
       through GitHub's own `POST /markdown` so the judgment is made on what
       the repo page will show, not on an approximation.
 
-- [x] 61. **The leak test's statistic, 2026-09-06.** `assert_plateaus` compared
+      **Done 2026-09-09, as a whole-README rewrite rather than a sentence
+      pass.** The user reported phrasing problems one at a time into
+      `docs/PHRASING.md` (each kept verbatim, with the reading and the
+      resolution separate), the rules those reports implied were written
+      into `docs/WRITING.md`, and the README was redrafted to them over four
+      review rounds on a rendered page before anything was committed. The
+      three rules above survived and gained a stronger one ahead of them: a
+      stated reader — statistics, a little Polars, time-ordered data, and
+      nothing of the internals of Polars or of this project — against whom
+      every sentence is read. What that changed: the introduction defines
+      *spec*, *model bank*, *stream*/*chunk* and *state* before using them;
+      "the bank" is announced as always meaning a model bank; Polars-internal
+      words (plan, sink, collect, struct column) are replaced by what they
+      do; the stream section is one subsection per concept; and prose that
+      described a parameter, a structure's fields or an API call is a code
+      block with comments — 59 of them in the README, every one run by
+      `tests/test_production_hardening.py`, which is how three keyword names
+      the old prose had wrong were found. `po.run` and the CLI moved to
+      `docs/RUNNER.md`, whose blocks the same test now runs. Four things a
+      reader would have needed to know in advance were found by that test
+      and not by reading — the point of the rule that every block runs. **The leak test's statistic, 2026-09-06.** `assert_plateaus` compared
       the first and last of its post-warm-up marks, which cannot distinguish a
       late allocator step from a slope — the distinction its own docstring
       claims. It failed `main` on a tree whose previous run was green. It now
