@@ -198,14 +198,24 @@ The rules — each one checked in §5:
   on an error the bank raised (the run ends without reaching the write: the
   file, if any, is untouched), never on an abandoned run. Atomic, through
   `ModelBank.save`, so a reader sees the old file or the new one.
-- **R2 — idempotent under re-execution.** Every run of a pure plan ends in
-  the same state, so the two concurrent runs of a self-join or a
-  `collect_all` write the same bytes twice (C3); `collect()` twice writes
-  twice. Two in-process writers need distinct temporaries — `atomic.rs`
-  named its temporary by pid only, so either the Python side serialises the
-  writes with a lock (the prototype) or the temporary name gains a thread id
-  / counter. One of the two is required, not optional (F2). *Taken: the
-  counter, in `atomic.rs` (§7, decision 4).*
+- **R2 — idempotent under re-execution.** Every run of a plan ends in the
+  same state, because every run builds its own bank from the same starting
+  bytes and feeds it the same rows in the same order. So two runs write the
+  same bytes (C3): `collect()` twice writes twice, and two concurrent runs
+  write the same file at the same time. Two in-process writers need distinct
+  temporaries — `atomic.rs` named its temporary by pid only, so either the
+  Python side serialises the writes with a lock (the prototype) or the
+  temporary name gains a thread id / counter. One of the two is required,
+  not optional (F2). *Taken: the counter, in `atomic.rs` (§7, decision 4).*
+
+  Idempotence is not purity, and the difference is what decides `is_pure`
+  (`register_io_source`, py-polars 1.34+). Since 2026-09-10 the source
+  declares it **when the run has no writes** — no `save_state`, no
+  `closed_groups` sidecar — and not otherwise. Polars then runs one plan
+  once where a single query uses it twice (a self-join,
+  `pl.concat([plan, plan])`) instead of twice, concurrently, and the
+  duplicate work goes away. A run that writes keeps the pair, and the
+  counter with it. Task 77 has the reasoning and the measurements.
 - **R3 — `load_state` is read when the plan is built.** The plan carries
   the state it was built from (the bytes; each run deserialises them), the
   way `df.lazy()` carries the frame — not re-read at run time, the way

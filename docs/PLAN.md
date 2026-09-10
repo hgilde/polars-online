@@ -1667,6 +1667,63 @@ note, not a task.
       `hit_rate` (`test_diagnostics.py`'s E22 test among them) is regression
       and passes unchanged, since none of them named `binary=True`.
 
+- [x] 77. **A plan with nothing to write runs once where a query uses it
+      twice, 2026-09-10.** The IO source declares `is_pure=True` to
+      `register_io_source` exactly when the run has no writes — no
+      `save_state`, no `closed_groups` sidecar. Polars then shares one
+      execution where a single query uses the same plan twice (a self-join,
+      `pl.concat([plan, plan])`) instead of running the source twice,
+      concurrently, as R2 of `docs/STATE-WORKFLOW.md` measured before this.
+      That covers every `predict` and every fit that keeps its state in
+      memory.
+
+      **The condition is the point of the entry.** The first attempt
+      declared purity unconditionally, on the strength of a measurement:
+      with `save_state` set and `pl.concat([plan, plan])`, the query yields
+      8,000 rows and the state file it leaves is **byte-identical to the
+      file a single ordinary run leaves**. The whole suite passed on
+      py-polars 1.44.1 and 2.0.0rc1 alike, 2,443 tests. So it worked — and
+      it was still the wrong declaration, because it answered "does dedup
+      break anything today" when the question was "is this source pure".
+
+      *What the flag means, read rather than inferred.* In polars' source,
+      `is_pure` is the only thing that can make two `PythonOptions` compare
+      **equal** (`crates/polars-plan/src/plans/ir/equality.rs`: the
+      comparison opens `(*l_is_pure && *r_is_pure) && ...`), and IR node
+      equality is what CSE and plan dedup are keyed on. So the flag is not a
+      request to share a run; it is an assertion that two occurrences are
+      the same node, and dropping one of them drops its **effects** as well
+      as its work. A source that writes a file has effects. The rows here
+      are pure by construction — `make_bank()` is called inside `source`, so
+      every execution starts from the same bytes (R3) and feeds them the
+      same rows in the same order, which is exactly R2 — but identical bytes
+      are not no bytes, and R2's idempotence is a weaker property than
+      purity, not the same one.
+
+      *We cannot dedupe the impure case ourselves, and it does not need it.*
+      Polars hands the source callable
+      `(with_columns, predicate, n_rows, batch_size)` and nothing that
+      identifies an execution, so a second concurrent run within one query
+      is indistinguishable from a later `collect()`, which must re-run (R2).
+      Overlap in time is the only signal left, and sharing rows between two
+      consumers pulling at their own rates means buffering the whole stream
+      — the memory bound this library exists to hold. Nor is there anything
+      to fix: the two runs write identical bytes, atomically, and
+      `atomic.rs`' counter already makes the pair safe. The cost is
+      duplicated work in one rare plan shape, which is a price, not a bug.
+
+      *An objection that turned out to be about something else.* The first
+      reservation raised against the flag was that purity licenses polars to
+      skip the source entirely, so a query asking for no rows would silently
+      not write. Measured: `head(0)`, `limit(0)` and `clear()` run the
+      source **0 times with `is_pure=False` and 0 times with
+      `is_pure=True`**. That is polars pruning a source it has no use for.
+      It predates this line and is unrelated to purity.
+
+      No new test: the property is R2's, already covered by C1 and C3, and
+      what a test could pin here is polars' scheduling choice rather than
+      our behaviour.
+
 - [x] 71. **E51, the blocked rank-B Gram update — design settled 2026-09-08,
       `EwCov` half built and reviewed the same day, `ewridge` wiring built
       the same day.**

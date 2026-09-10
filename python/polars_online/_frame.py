@@ -258,8 +258,42 @@ def _source(
         if save_path is not None:
             bank.save(save_path)
 
+    # `is_pure` tells polars two occurrences of this scan in one plan are the
+    # same node, which lets it drop one of them: in the source it is the only
+    # thing that can make two `PythonOptions` compare equal
+    # (`polars-plan/src/plans/ir/equality.rs`), and node equality is what CSE
+    # and plan dedup are keyed on. Dropping an occurrence drops its *effects*
+    # too, so the claim is only ours to make when a run has none.
+    #
+    # The rows are pure either way: `make_bank()` is called inside `source`,
+    # so every execution starts from the same bytes `load_state` fixed when
+    # the plan was built (R3) and feeds them the same rows in the same order.
+    # That is R2's idempotence, and it is why the two runs of an impure plan
+    # write identical bytes rather than racing to a different answer
+    # (measured: byte-identical to a single ordinary run).
+    #
+    # But identical bytes are not no bytes. `save_state` and the
+    # `closed_groups` sidecar are writes, and a source that writes is not
+    # pure whatever its rows do. So it is declared exactly when there is
+    # nothing to write -- which is every `predict` and every fit that keeps
+    # its state in memory. When there is, polars runs the source twice,
+    # concurrently, and `atomic.rs`' counter makes the two writers safe
+    # (docs/STATE-WORKFLOW.md R2).
+    #
+    # We cannot dedupe those two runs ourselves. Polars hands the source
+    # callable `(with_columns, predicate, n_rows, batch_size)` and nothing
+    # that identifies an execution, so a second concurrent run of one query
+    # is indistinguishable from a later `collect()` -- which must re-run.
+    # Overlap in time is the only signal left, and sharing rows between two
+    # consumers pulling at their own rates means buffering the whole stream,
+    # which is the memory bound this library exists to hold.
+    pure = save_path is None and closed_path is None
     return register_io_source(
-        source, schema=schema, validate_schema=True, **_explain_kwargs(bank.specs)
+        source,
+        schema=schema,
+        validate_schema=True,
+        is_pure=pure,
+        **_explain_kwargs(bank.specs),
     )
 
 
