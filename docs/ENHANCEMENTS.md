@@ -125,7 +125,10 @@ top-level modules, of which this project overlaps `linear_model`, `time_series`,
 `drift`, `anomaly`, `covariance`, `stats`, `metrics`, `optim` and
 `preprocessing`. The audit found seven exclusions that were being made in
 practice without being written down; they are now in the list below, and the
-two items it found that are arguably *in* scope are in §5.
+two items it found that are arguably *in* scope are in §5. **Three more —
+`reco`, `facto` and `rules` — were added on 2026-09-10**: they are in that
+module list and were excluded in practice, but the first pass never wrote
+them down, which is the failure this section exists to prevent.
 
 - **Trees and forests** (`tree.HoeffdingTreeRegressor`, `forest.ARFRegressor`,
   SGT): unbounded/adaptive state, nondeterministic under resampling, no clean
@@ -189,8 +192,28 @@ two items it found that are arguably *in* scope are in §5.
 - **Pipelines / feature extraction** (`compose.*`, `feature_extraction.*`,
   hashing, n-grams): Polars expressions upstream of the model are our
   composition layer; duplicating it inside specs would fork the API.
-- **Imbalanced-learning wrappers, text models, generic sketches**: no use case
-  in the stated goals.
+- **Imbalanced-learning wrappers, text models, generic sketches**
+  (`imblearn.*`, `feature_extraction.*`'s text models, `sketch.Counter`,
+  `HeavyHitters`, `NUnique`, `Set`): no use case in the stated goals. The
+  sketches this library does need it already has — P² quantiles behind
+  `resid_quantiles` and `mahal_quantiles` — and
+  [`BEYOND-O-STATE.md`](BEYOND-O-STATE.md) is where a sketch bound would be
+  argued for if one were wanted.
+- **Recommenders** (`reco.Baseline`, `BiasedMF`, `FunkMF`, `RandomNormal`)
+  and **factorization machines** (`facto.FMRegressor`, `FFMRegressor`,
+  `FwFMRegressor`, `HOFMRegressor`, and their classifier twins):
+  *added to this list 2026-09-10, when a comparison with river found they
+  had been excluded in practice without being written down.* Both model a
+  sparse (user, item) interaction rather than a numeric feature vector on an
+  ordered stream, so neither fits PLAN §1's scope; and a factorization
+  machine's latent factors are per-feature-value state that grows with the
+  number of distinct values, which is `O(data)`, not `O(state)`. Nothing
+  here would serve them, and no use case has asked.
+- **Rule induction** (`rules.AMRules`): *added 2026-09-10 for the same
+  reason.* Adaptive Model Rules grows a rule set from the data, so the
+  state is unbounded and its shape is not a static schema — the same two
+  objections as the trees above, and it shares their reassessment in
+  [`BOOSTED-TREES.md`](BOOSTED-TREES.md) if that decision ever reopens.
 - **Momentum-family optimizers** (`optim.Adam`, `RMSProp`, `Momentum`, `Nadam`,
   `AdaDelta`, `AdaMax`, `AMSGrad`, `AdaBound`, `NesterovMomentum`, `Averager`,
   `Newton`): each carries extra per-coefficient state with no clean
