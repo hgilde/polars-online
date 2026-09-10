@@ -41,7 +41,7 @@ no row's own outcome is in the number predicted for it. The models keep
 only what they have learned, never the rows, which is what lets the whole
 thing run on far more rows than fit in memory. The order of the rows
 matters only when a model forgets: with a decay, older rows count less, so
-the rows must come in time order; without one, a model that solves or
+the rows must come in time order; without a decay, a model that solves or
 accumulates gives the same answer in any order.
 
 **Four words this README uses throughout.**

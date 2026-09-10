@@ -775,3 +775,20 @@ decay is on, and the README's own "Without a decay" section says so. The
 fix separates the three claims and states each with its own cause, and
 adds to `docs/WRITING.md` rule 4: an effect is attributed to its own cause,
 not to whatever the sentence happened to be about.
+
+### README.md:43-45 ("The idea", last sentence)
+
+> "without one, a model that solves or accumulates gives the same answer
+> in any order"
+
+**Reported:** This phrase lacks context, without one of what? "without
+one, a model that solves or accumulates gives the same answer in any
+order"
+
+**Status:** fixed (commit following this entry): "without a decay".
+
+**Note:** an instance of a rule already on file — `docs/WRITING.md` rule
+5, a back-reference must point at something the reader has actually just
+seen. "One" stood for "a decay" across a semicolon and a full clause, far
+enough that it read as pointing at nothing. The noun is repeated; no new
+rule.
