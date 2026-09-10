@@ -216,25 +216,55 @@ jobs:
         run: cargo test -p online-polars --test state_portability
 
   next-polars:
-    name: the suite on the newest polars
+    name: the suite on ${{ matrix.leg }} polars
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Blocking. The top of the range the wheel actually declares --
+          # newest stable, `<2` still honoured.
+          - leg: the newest in-range
+            unpin: false
+            prerelease: disallow
+            blocking: true
+          # Advisory. Everything above the ceiling: the next major, and its
+          # release candidates and betas.
+          - leg: the next major
+            unpin: true
+            prerelease: allow
+            blocking: false
+    # A red advisory leg must not withhold a wheel, and `needs` counts a
+    # `continue-on-error` leg as passing, so this is the whole mechanism.
+    continue-on-error: ${{ !matrix.blocking }}
     # The wheel declares a *range* of py-polars and is built against one of
     # them, so the release that ships is only known to work on the pinned
     # version until `polars-canary.yml` runs on the following Monday. That is
     # up to six days of a published wheel nobody has run on the newest
     # Polars. This job closes the window by running the same check at the one
-    # moment it matters -- the tag -- so a release is never published on a
-    # Polars nobody tested it against.
+    # moment it matters -- the tag.
     #
-    # It does not gate `publish to PyPI`: `release` needs sdist, build and
-    # read-state, not this. A red run here means "the newest Polars needs a
-    # cap or a fix" (README, *Versioning and the Polars pin*), which is the
-    # canary's decision procedure and not a reason to withhold a wheel that
-    # is green on its declared range. Making it blocking is a one-line change
-    # to `release.needs` if that judgment ever changes.
+    # Two legs, because "newest" means two different things and only one of
+    # them is a promise we made:
+    #
+    # - *The newest in-range* blocks the publish (`release` needs this job).
+    #   `<2` admits every 1.x, so a resolver can hand a user a Polars newer
+    #   than the one this wheel was built against, the day after it ships.
+    #   That is inside what we declared, so it has to be green before the
+    #   wheel goes out -- red means cap the range or fix the code (README,
+    #   *Versioning and the Polars pin*), decided before publishing.
+    # - *The next major* is advisory. It unpins entirely and allows
+    #   prereleases, so it is the early warning the canary gives weekly,
+    #   taken again at the tag. A 3.0 beta that breaks us is worth knowing
+    #   about and is not a reason to withhold a patch release for a range
+    #   that ends at 2.
+    #
+    # The split also keeps the blocking leg honest across a major bump: an
+    # unpinned blocking job would resolve to 2.0 the day it ships and block
+    # every release on a major nobody had adopted yet.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@stable
@@ -253,12 +283,12 @@ jobs:
           printf '[target.x86_64-unknown-linux-gnu]\nrustflags = ["-C", "link-arg=-fuse-ld=lld"]\n' \
             >> .cargo/config.toml
 
-      # The Python side only, and the same unpin the canary does: the range is
-      # dropped rather than widened, so a new major is tested the week it
-      # appears rather than silently excluded by the `<2` in pyproject.toml.
-      # `--prerelease=allow` is what makes a 2.0rc visible; drop it and this
-      # job would keep testing 1.x while a 2.0 release candidate shipped.
+      # Advisory leg only: the same unpin the canary does, dropping the range
+      # rather than widening it so a new major is tested the week it appears
+      # rather than silently excluded by the `<2` in pyproject.toml. The
+      # blocking leg skips this on purpose -- it tests the range as declared.
       - name: unpin py-polars
+        if: matrix.unpin
         shell: bash
         run: |
           python3 - <<'PY'
@@ -269,7 +299,10 @@ jobs:
           p.write_text(s)
           PY
 
-      - run: uv sync --prerelease=allow --upgrade-package polars
+      # `--prerelease=allow` is what makes a 2.0rc visible; the blocking leg
+      # disallows it, because a release candidate is not what a resolver
+      # hands an ordinary install.
+      - run: uv sync --prerelease=${{ matrix.prerelease }} --upgrade-package polars
       - name: versions in play
         run: uv run python -c "import polars; print('py-polars', polars.__version__)"
 
@@ -280,7 +313,7 @@ jobs:
 
   release:
     name: publish the release
-    needs: [sdist, build, read-state]
+    needs: [sdist, build, read-state, next-polars]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -328,7 +361,7 @@ jobs:
   # release.yml, environment pypi); the first publish claims the name.
   publish:
     name: publish to PyPI
-    needs: [sdist, build, read-state]
+    needs: [sdist, build, read-state, next-polars]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     timeout-minutes: 15

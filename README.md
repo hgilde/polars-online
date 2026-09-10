@@ -8,7 +8,8 @@ and a standalone command line ([docs/RUNNER.md](docs/RUNNER.md)).
 > **A note on Polars versions.** Two of the three ways this library plugs
 > into Polars carry no stability promise from Polars, so `polars>=1.34.0,<2`
 > is measured rather than guaranteed. A weekly job runs the whole test suite
-> on the newest Polars, and the response to a failure is decided in advance.
+> on the newest Polars, every release runs it again before publishing, and
+> the response to a failure is decided in advance.
 > Details in [Versioning and the Polars pin](#versioning-and-the-polars-pin).
 
 **Contents.** [Introduction](#introduction) ·
@@ -2568,20 +2569,34 @@ first: `ModelBank`, then the IO-plugin tests in `tests/test_frame.py`, then
 the plugin. The Rust copy of polars moves by hand, together with
 pyo3-polars, polars-arrow, polars-parquet and polars-utils, through CI.
 
-Every release runs the same check at the moment it matters: `release.yml`'s
-**the suite on the newest polars** job unpins and runs the whole suite on
-the newest release, prereleases included. It does not gate the publish — a
-release green on its declared range still ships — but nothing is published
-without someone having run it against what comes next.
+Every release runs the same check at the moment it matters, in two legs
+(`release.yml`, **the suite on ... polars**):
+
+| leg | resolves to | blocks the publish |
+|---|---|---|
+| the newest in-range | newest stable inside `<2` | **yes** |
+| the next major | unpinned, prereleases allowed | no |
+
+The first is a promise: `<2` admits every 1.x, so a resolver can hand
+someone a Polars newer than the one the wheel was built against the day
+after it ships. Green on the pinned version is not what the range says. A
+red run there means cap the range or fix the code — the decision above —
+before the wheel goes out, not after.
+
+The second is early warning, the canary's job taken again at the tag. A
+3.0 beta that breaks us is worth knowing about and is not a reason to
+withhold a patch release for a range that ends at 2.
 
 ### Raising the ceiling to a new major
 
 The ceiling is `<2`, so a py-polars 2.0 is excluded until this is done
 deliberately. The steps, in order:
 
-1. **The canary and the release job are already testing it** — both unpin
-   and both allow prereleases, so a 2.0 release candidate is exercised the
-   week it appears. Read the last run before starting.
+1. **The canary and the release job's advisory leg are already testing
+   it** — both unpin and both allow prereleases, so a 2.0 release candidate
+   is exercised the week it appears. Read the last run before starting.
+   Raising the ceiling is also what moves that major under the *blocking*
+   leg, since that leg tests the range as declared.
 2. **Check the Rust side separately.** py-polars' major and the `polars`
    crate's version are independent: as of 2026-09-10 py-polars is at
    2.0.0rc1 while the newest crate is 0.55.2, the one `Cargo.toml` pins. A
