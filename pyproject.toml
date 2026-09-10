@@ -115,7 +115,7 @@ testpaths = ["tests"]
 addopts = "-ra -m 'not soak'"
 markers = [
     "soak: long-running stability tests (millions of rows)",
-    "pins: assertions about this repo's own polars pins; the canary unpins on purpose and runs `-m 'not soak and not pins'`",
+    "pins: tests that can only pass on the polars this repo pins -- assertions about the pins themselves, and docs that record the version they were generated with; the canary unpins on purpose and runs `-m 'not soak and not pins'`",
 ]
 # The expression form warns on every call by design (it is O(data); README,
 # "The expression form"). The suite uses it on small frames in dozens of

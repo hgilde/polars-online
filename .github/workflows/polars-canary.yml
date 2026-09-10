@@ -89,7 +89,14 @@ jobs:
 
       # Only polars moves; the rest of the lock stays as CI tests it, so the
       # one variable in this run is the Polars release.
-      - run: uv sync --upgrade-package polars
+      #
+      # `--prerelease=allow` is load-bearing: without it uv resolves to the
+      # newest *stable* polars, so a release candidate is invisible here. That
+      # is not hypothetical -- 2.0.0rc1 shipped on 2026-09-09 and this job
+      # would have gone on testing 1.44.x until 2.0 went final, which is the
+      # opposite of "a 2.0 is tested the week it appears"
+      # (docs/RELEASE-READINESS.md, "Polars 2.0.0rc1, measured").
+      - run: uv sync --prerelease=allow --upgrade-package polars
       - name: versions in play
         run: |
           uv run python -c "import polars; print('py-polars', polars.__version__)"

@@ -215,6 +215,69 @@ jobs:
           ONLINE_FOREIGN_STATE: ${{ github.workspace }}/handoff.state
         run: cargo test -p online-polars --test state_portability
 
+  next-polars:
+    name: the suite on the newest polars
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    # The wheel declares a *range* of py-polars and is built against one of
+    # them, so the release that ships is only known to work on the pinned
+    # version until `polars-canary.yml` runs on the following Monday. That is
+    # up to six days of a published wheel nobody has run on the newest
+    # Polars. This job closes the window by running the same check at the one
+    # moment it matters -- the tag -- so a release is never published on a
+    # Polars nobody tested it against.
+    #
+    # It does not gate `publish to PyPI`: `release` needs sdist, build and
+    # read-state, not this. A red run here means "the newest Polars needs a
+    # cap or a fix" (README, *Versioning and the Polars pin*), which is the
+    # canary's decision procedure and not a reason to withhold a wheel that
+    # is green on its declared range. Making it blocking is a one-line change
+    # to `release.needs` if that judgment ever changes.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      # Same treatment as ci.yml's test job and the canary's: linking this
+      # workspace's polars-laden test binaries exhausts the runner without it.
+      - name: free disk and use a leaner linker
+        run: |
+          echo "--- disk before ---"; df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost /usr/local/.ghcup || true
+          echo "--- disk after ---"; df -h /
+          sudo apt-get install -y --no-install-recommends lld
+          mkdir -p .cargo
+          printf '[target.x86_64-unknown-linux-gnu]\nrustflags = ["-C", "link-arg=-fuse-ld=lld"]\n' \
+            >> .cargo/config.toml
+
+      # The Python side only, and the same unpin the canary does: the range is
+      # dropped rather than widened, so a new major is tested the week it
+      # appears rather than silently excluded by the `<2` in pyproject.toml.
+      # `--prerelease=allow` is what makes a 2.0rc visible; drop it and this
+      # job would keep testing 1.x while a 2.0 release candidate shipped.
+      - name: unpin py-polars
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import re, pathlib
+          p = pathlib.Path("pyproject.toml")
+          s, n = re.subn(r'"polars[<>=~!][^"]*"', '"polars"', p.read_text(), count=1)
+          assert n == 1, "the polars dependency line moved; fix this unpin"
+          p.write_text(s)
+          PY
+
+      - run: uv sync --prerelease=allow --upgrade-package polars
+      - name: versions in play
+        run: uv run python -c "import polars; print('py-polars', polars.__version__)"
+
+      - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+      # `pins` marks the tests that can only pass on the pinned polars; see
+      # the marker's description in pyproject.toml.
+      - run: uv run pytest -q -m "not soak and not pins"
+
   release:
     name: publish the release
     needs: [sdist, build, read-state]

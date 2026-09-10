@@ -136,6 +136,32 @@ def _write_closed(path: str, frames: list[pl.DataFrame], schema: pl.DataFrame) -
     getattr(df, _WRITE[_native.format_of_path(path)])(path)
 
 
+def _explain_kwargs(specs: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """`explain_name` / `explain_detail` for `register_io_source`, when the
+    installed polars takes them (py-polars 2.0 added them; 1.x has neither).
+
+    Without them a plan holding a bank shows as `PYTHON SCAN []` in
+    `LazyFrame.explain()`, which says nothing about which models are in it.
+    Passed by name and only when supported, so this is additive: on a polars
+    without them the plan is exactly what it was.
+    """
+    import inspect
+
+    try:
+        takes = inspect.signature(register_io_source).parameters
+    except (TypeError, ValueError):  # pragma: no cover - a C or wrapped callable
+        return {}
+    if "explain_name" not in takes:
+        return {}
+    names = [str(spec.get("name", "?")) for spec in specs]
+    detail = ", ".join(names)
+    out: dict[str, Any] = {
+        "explain_name": "polars-online",
+        "explain_detail": f"{len(names)} spec(s): {detail}" if names else "no specs",
+    }
+    return out
+
+
 def _spec_columns(specs: Iterable[dict[str, Any]]) -> set[str]:
     cols: set[str] = set()
     for spec in specs:
@@ -232,7 +258,9 @@ def _source(
         if save_path is not None:
             bank.save(save_path)
 
-    return register_io_source(source, schema=schema, validate_schema=True)
+    return register_io_source(
+        source, schema=schema, validate_schema=True, **_explain_kwargs(bank.specs)
+    )
 
 
 def _fit_predict_lazy(

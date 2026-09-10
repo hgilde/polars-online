@@ -49,7 +49,12 @@ def regenerated():
     return res.stdout
 
 
+@pytest.mark.pins
 def test_the_committed_document_is_what_the_code_produces(regenerated):
+    """Marked `pins` because the document's header records the polars version
+    it was generated with, so it can only match under the pinned one. The
+    canary deselects it: an unpinned polars would fail it on that line alone,
+    and a canary that cries wolf is worse than none (`polars-canary.yml`)."""
     want = _normalize(DOC.read_text(encoding="utf-8"))
     got = _normalize(regenerated)
     if want == got:

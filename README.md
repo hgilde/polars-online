@@ -2568,6 +2568,43 @@ first: `ModelBank`, then the IO-plugin tests in `tests/test_frame.py`, then
 the plugin. The Rust copy of polars moves by hand, together with
 pyo3-polars, polars-arrow, polars-parquet and polars-utils, through CI.
 
+Every release runs the same check at the moment it matters: `release.yml`'s
+**the suite on the newest polars** job unpins and runs the whole suite on
+the newest release, prereleases included. It does not gate the publish — a
+release green on its declared range still ships — but nothing is published
+without someone having run it against what comes next.
+
+### Raising the ceiling to a new major
+
+The ceiling is `<2`, so a py-polars 2.0 is excluded until this is done
+deliberately. The steps, in order:
+
+1. **The canary and the release job are already testing it** — both unpin
+   and both allow prereleases, so a 2.0 release candidate is exercised the
+   week it appears. Read the last run before starting.
+2. **Check the Rust side separately.** py-polars' major and the `polars`
+   crate's version are independent: as of 2026-09-10 py-polars is at
+   2.0.0rc1 while the newest crate is 0.55.2, the one `Cargo.toml` pins. A
+   Python major on its own needs no Rust change, because the wheel carries
+   its own statically linked copy and the two never meet — data crosses on
+   the Arrow C Data Interface.
+3. **Widen the range in `pyproject.toml`** — `polars>=1.34.0,<3` — and let
+   the lock resolve. That is the only required source change if steps 1–2
+   are clean.
+4. **Re-run `docs/VALIDATION.md`** (`uv run python scripts/validate.py >
+   docs/VALIDATION.md`): its header records the Polars version it was
+   generated with, which is why its test is marked `pins`.
+5. **Ship it as a minor**, not a patch: widening the Polars range is a minor
+   release by this package's own rule, below.
+
+What the 2.0 candidate measured, so the work is known rather than guessed:
+the whole suite passes, all three interfaces work, and
+`LazyFrame.collect_batches` — the floor — is unchanged. One behaviour moved
+in our favour: a query that fails *after* the bank now stops the source
+instead of draining it, so `save_state` is not written on a long stream,
+narrowing the gap `docs/STATE-WORKFLOW.md` calls R6.
+[docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md) has the measurements.
+
 ### This package's own versioning
 
 Semantic versioning. While pre-1.0 the **minor** version carries breaking
