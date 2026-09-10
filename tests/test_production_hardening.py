@@ -582,7 +582,7 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
             "signal_b": rng.standard_normal(n),
             "y": rng.standard_normal(n),
             "ret": rng.standard_normal(n),
-            "bond_id": [f"b{i % 4}" for i in range(n)],
+            "stock_id": [f"b{i % 4}" for i in range(n)],
             "group": [f"g{i % 3}" for i in range(n)],
             "session": ["m"] * (n // 2) + ["a"] * (n - n // 2),
             "venue": ["X", "Y"] * (n // 2),
@@ -598,7 +598,7 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
         clock="t",
         halflife=600.0,
         max_dclock=300.0,
-        group="bond_id",
+        group="stock_id",
         ridge=[1e-6, 0.1],
         standardize=True,
     )
@@ -607,9 +607,9 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     )
     scored = po.ModelBank(
         [
-            po.spec.ewridge("ridge", halflife=500.0, group="bond_id", **common),
+            po.spec.ewridge("ridge", halflife=500.0, group="stock_id", **common),
             po.spec.kalman(
-                "kalman", halflife=500.0, coef_halflife=100.0, group="bond_id", **common
+                "kalman", halflife=500.0, coef_halflife=100.0, group="stock_id", **common
             ),
         ]
     ).fit_predict(df)

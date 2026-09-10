@@ -33,8 +33,8 @@ and a standalone command line ([docs/RUNNER.md](docs/RUNNER.md)).
 ## Introduction
 
 **The idea.** You describe one or more models — a ridge regression of a
-bond's return on two signals, say, with a separate regression for every
-bond. polars-online fits all of them in a single pass over your rows, in
+stock's return on two signals, say, with a separate regression for every
+stock. polars-online fits all of them in a single pass over your rows, in
 time order. Each row is *predicted* first, from what the models have learned
 so far, and *learned from* second. That order is what makes every
 prediction honest — no row's own outcome is in the number predicted for
@@ -50,7 +50,7 @@ memory: the models keep only what they have learned, never the rows.
 | **stream**, **chunk** | the rows, in time order, and the pieces they arrive in. The bank takes one chunk at a time and its results never depend on where one chunk ended and the next began |
 | **state** | everything a bank has learned. Its size depends on the models, not on how many rows have gone past — which is why the stream can be any length |
 
-**The basic example.** A ridge regression per bond, fitted over a folder of
+**The basic example.** A ridge regression per stock, fitted over a folder of
 parquet files, with the fitted state saved when the last row is reached;
 then new rows scored against that state without learning from them:
 
@@ -62,7 +62,7 @@ spec = po.spec.ewridge(
     "ridge",                                         # the spec's name; its output column is named after it
     targets=["ret"], features=["signal_a", "signal_b"],
     clock="ts", halflife=600.0, max_dclock=300.0,   # older rows count less: their weight halves every 600 s
-    group="bond_id",                                 # one separate regression per bond
+    group="stock_id",                                 # one separate regression per stock
 )
 
 (
@@ -323,14 +323,14 @@ at most that many rows out of date.
 ### Groups
 
 `group` names a column, and the bank keeps one separate model per distinct
-value of it — one per bond, per symbol, per anything — all fitted in the
+value of it — one per stock, per symbol, per anything — all fitted in the
 same pass over the stream. Every other parameter, the clock included,
 applies within the group.
 
 ```python
-per_bond = po.spec.ewridge(
-    "per_bond", targets=["y"], features=["x0", "x1"], clock="t", halflife=600.0, max_dclock=300.0,
-    group="bond_id",           # one model per distinct value of this column
+per_stock = po.spec.ewridge(
+    "per_stock", targets=["y"], features=["x0", "x1"], clock="t", halflife=600.0, max_dclock=300.0,
+    group="stock_id",           # one model per distinct value of this column
     group_close="monotone",    # or "session": when a group is finished, write its running sums out as
 )                              # one row and free its memory -- read them with bank.closed_groups()
 ```
@@ -427,7 +427,7 @@ the query is ordinary Polars:
     pl.scan_parquet("ticks/*.parquet")
     .online.fit_predict([spec], chunk_rows=100_000)       # a bank with nothing learned yet; every run starts from the same place
     .filter(pl.col("ridge").struct.field("n_eff") > 100)  # after the bank: filters what comes out, never what the bank learns from
-    .select("ts", "bond_id", "ridge")                     # Polars reads only these columns (and the specs') from the files
+    .select("ts", "stock_id", "ridge")                     # Polars reads only these columns (and the specs') from the files
     .sink_parquet("fitted.parquet")                       # runs the query; memory is state + one chunk, however long the files
 )
 # "ridge" is one column whose value per row is a record of named fields:
@@ -477,7 +477,7 @@ spec = po.spec.ewridge(
     "ridge",
     targets=["y"], features=["x0", "x1", "x2"],
     clock="t", halflife=600.0, max_dclock=300.0,
-    group="bond_id", ridge=[1e-6, 0.1], standardize=True,
+    group="stock_id", ridge=[1e-6, 0.1], standardize=True,
 )
 bank = po.ModelBank([spec])                # nothing learned yet
 
@@ -740,7 +740,7 @@ Two ways, and they agree row for row:
 
 ```python
 ols = po.spec.ewridge("ols", targets=["y"], features=["x0", "x1"], clock="t",
-                      halflife=600.0, max_dclock=300.0, group="bond_id",
+                      halflife=600.0, max_dclock=300.0, group="stock_id",
                       coef_every=1)         # write coef on every row (default 0: on each chunk's last row only)
 
 # 1. From a bank -- live, or loaded from a state file with no data at hand.
@@ -754,7 +754,7 @@ wide = betas.pivot("term", index=["group", "instance"], values="coef")
 path = (
     lf.online.fit_predict([ols])
     .online.unnest([ols])            # pred_y, resid_y, n_eff, coef_y_intercept, coef_y_x0, coef_y_x1
-    .select("t", "bond_id", "^coef_.*$")
+    .select("t", "stock_id", "^coef_.*$")
     .collect()
 )
 ```
@@ -1072,10 +1072,10 @@ held = band.select(((pl.col("lo_y") <= df["y"]) & (df["y"] <= pl.col("hi_y"))).m
 After the fact, `po.eval` reads the output frame:
 
 ```python
-po.eval.metrics(out, "ridge", by=["bond_id"])                       # R², IC, hit rate, MSE
+po.eval.metrics(out, "ridge", by=["stock_id"])                       # R², IC, hit rate, MSE
 po.eval.rolling_metrics(out, "ridge", clock="t", window=3600.0)     # the same, per clock window
 po.eval.compare_specs(out, ["ridge", "kalman"])                     # one table, many specs: which had the lower error
-po.eval.seqtest(out, a="kalman", b="ridge", by=["bond_id"])        # is kalman closer? evidence per row -- the same test
+po.eval.seqtest(out, a="kalman", b="ridge", by=["stock_id"])        # is kalman closer? evidence per row -- the same test
                                                                     # the seqtest model runs inside a bank
 ```
 
@@ -1085,12 +1085,12 @@ ten numbers per key:
 
 ```python
 ridge = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"],
-                        clock="t", max_dclock=300.0, halflife=500.0, group="bond_id")
+                        clock="t", max_dclock=300.0, halflife=500.0, group="stock_id")
 scoring = po.ModelBank([ridge])
 
 running = None
 for chunk in df.iter_slices(100):
-    part = po.eval.sums(scoring.fit_predict(chunk), "ridge", by=["bond_id"])   # ten numbers per key
+    part = po.eval.sums(scoring.fit_predict(chunk), "ridge", by=["stock_id"])   # ten numbers per key
     running = part if running is None else po.eval.merge_sums(running, part)  # exact, whatever the split
 
 po.eval.from_sums(running, min_obs=10)   # R², IC, hit rate, MSE and RMSE -- the same numbers metrics() gives
@@ -1735,21 +1735,21 @@ the Beta(½, ½) mixture, and the bank is held to it; the two sides' average
 is an e-value for the two-sided question.
 
 ```python
-common = dict(targets=["y"], features=["x0", "x1"], clock="t", max_dclock=300.0, group="bond_id")
+common = dict(targets=["y"], features=["x0", "x1"], clock="t", max_dclock=300.0, group="stock_id")
 ridge = po.spec.ewridge("ridge", halflife=500.0, **common)
 kalman = po.spec.kalman("kalman", halflife=500.0, coef_halflife=100.0, **common)
 
-sign = po.spec.seqtest("sign", targets=["y"], group="bond_id")     # does y tend to be positive?
+sign = po.spec.seqtest("sign", targets=["y"], group="stock_id")     # does y tend to be positive?
 # log_e_pos_y, log_e_neg_y     the two gamblers' log wealth, as they stood before the row
 # n_pos_y, n_neg_y             the signs counted so far; a zero, null or NaN is a tie: bets nothing, counts nothing
 
-closer = po.spec.seqtest("closer", targets=["y"], a="kalman", b="ridge", group="bond_id")   # does kalman predict closer?
+closer = po.spec.seqtest("closer", targets=["y"], a="kalman", b="ridge", group="stock_id")   # does kalman predict closer?
 # log_e_a_y, log_e_b_y, wins_a_y, wins_b_y   the sign tested is |resid_b| - |resid_a|, positive when a came closer,
 #                                             on the out-of-sample residuals the two specs' output records report;
 #                                             a row where either side is null (warm-up, a skipped row) is no trial
 out = po.ModelBank([ridge, kalman, closer]).fit_predict(df)
-verdict = out.group_by("bond_id").agg(pl.col("closer").struct.field("log_e_a_y").max())
-# log_e_a_y >= ln(20): on that bond, kalman beat ridge at the 5% level, read at any row
+verdict = out.group_by("stock_id").agg(pl.col("closer").struct.field("log_e_a_y").max())
+# log_e_a_y >= ln(20): on that stock, kalman beat ridge at the 5% level, read at any row
 ```
 
 A trial is a row, so there is no `weight` and no `halflife` — a spec that
@@ -1788,11 +1788,11 @@ the state, read back as a table.
 ```python
 pairs = po.spec.marginal("pairs", targets=["y", "ret"],
                          features=["x0", "x1", "x2", "signal_a", "signal_b"],
-                         clock="t", max_dclock=300.0, halflife=500.0, group="bond_id")
+                         clock="t", max_dclock=300.0, halflife=500.0, group="stock_id")
 bank = po.ModelBank([pairs])
 bank.fit_predict(df)                            # the output record holds n_eff alone
 table = bank.marginal("pairs")                  # one row per (group, instance, feature, target):
-one_bond = bank.marginal("pairs", group="b0")   #   10 rows here: five features by two targets
+one_stock = bank.marginal("pairs", group="b0")   #   10 rows here: five features by two targets
 # n_eff                        the target's W_t, the weight behind its pairs
 # n_kish                       W_t² / Q_t: the count of equally weighted rows that carry the same information
 #                              ((1 + λ)/(1 − λ) in the limit for unit weights)
@@ -2096,7 +2096,7 @@ and slot 0 holds none, so its predictive is the prior's. That is what makes
 
 ```python
 b = po.spec.bocpd(
-    "regime", features=["ret"], group="bond_id",
+    "regime", features=["ret"], group="stock_id",
     hazard=250.0,                # the expected run length: H = 1/hazard is the per-row chance of a break
     prior_nu=2.0,                # the prior on the variance, as 2a and 2b in the gamma parametrisation -- how Adams and
     prior_scale=[2e-4],          # MacKay give their own finance example (a = 1, b = 1e-4, hazard = 250). prior_scale is the
@@ -2172,7 +2172,7 @@ factors = {"mkt": ["x0"], "mkt-sz": ["x0", "x1"], "mkt-sz-val": ["x0", "x1", "x2
 def spec(name, features, standardize):
     return po.spec.ewridge(f"{name}-std{standardize:d}",
                            targets=["y"], features=features, clock="t", max_dclock=300.0,
-                           group="bond_id", session="session", session_gap=60.0,
+                           group="stock_id", session="session", session_gap=60.0,
                            halflife=[100.0, 1000.0], ridge=[1e-3, 0.1],   # gridded inside the spec
                            standardize=standardize)
 

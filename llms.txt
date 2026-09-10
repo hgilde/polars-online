@@ -19,7 +19,7 @@ spec = po.spec.ewridge(
     "ridge",
     targets=["ret"], features=["signal_a", "signal_b"],
     clock="ts", halflife=600.0,   # decay in the clock column's own units
-    group="bond_id",              # one independent state per bond
+    group="stock_id",              # one independent state per stock
 )
 
 # As a loop: feed chunks of any size; the state is yours to save

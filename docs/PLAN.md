@@ -14,7 +14,7 @@ what became of them. `docs/README.md` maps every document.
 ## 1. Goal
 
 Online regression models over data that does not fit in memory -- ordered event streams
-(one per group, e.g. per bond) with a clock, and equally a plain table in any row order,
+(one per group, e.g. per stock) with a clock, and equally a plain table in any row order,
 where decay off (`halflife=inf`) is exact least squares at O(state) (the "Any row order"
 decision below, 2026-09-03) -- usable two ways with identical numerics:
 
