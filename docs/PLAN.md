@@ -1667,6 +1667,44 @@ note, not a task.
       `hit_rate` (`test_diagnostics.py`'s E22 test among them) is regression
       and passes unchanged, since none of them named `binary=True`.
 
+- [ ] 79. **`label_delay` ignores a clock event on a skipped row — found
+      2026-09-11, checking task 78's parity; in released 0.5.1.** A reset
+      that lands on a row the spec skips (a null feature, an unusable
+      weight) restarts the model but leaves the `label_delay` buffer full,
+      so rows from before the reset are later learned into the model that
+      was meant to start clean. Measured: `ewridge`, no decay,
+      `label_delay=3`, `session_gap="reset"`, the first row of the new
+      session carrying a null feature. `n_eff` per row:
+
+      | row | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
+      |---|---|---|---|---|---|---|---|---|---|---|---|---|
+      | reset row skipped | 0 | 0 | 0 | 1 | 2 | — | **1** | **2** | **3** | 4 | 5 | **6** |
+      | reset row accepted (null target) | 0 | 0 | 0 | 1 | 2 | 0 | 0 | 0 | 1 | 2 | 3 | 4 |
+
+      The fresh model has learned a row by row 6 and ends two rows ahead:
+      two rows of the old session leaked across the reset.
+
+      *Cause.* `run_instance` acts on a row's `reset`, `session_changed`
+      and `capped` before its `accept` test — deliberately, the comment
+      says, "because a skipped row's gap breaks adjacency just as much".
+      `apply_label_delay` does the opposite: its `!plan.accept` branch
+      comes first and skips the event handling, so the buffer never sees a
+      skipped row's reset (should drop), session change or capped gap
+      (should release). The reset is measured; the other two go through the
+      same branch and are expected to fail the same way — releasing late,
+      across the break, into lag rings that were just cleared for it, the
+      exact case `docs/REVIEW-E54-E64.md` L2 fixed for accepted rows.
+
+      *Fix.* In `apply_label_delay`, handle the event for every row — a
+      reset clears the buffer, a session change or capped gap releases it —
+      and push only accepted rows. Tests: the table above as a regression
+      test (`n_eff` equal in both rows from row 5 on, bar row 5's own), and
+      the same shape for a session change and a capped gap on a skipped row,
+      with a lag feature to show the ring is not refilled across the break.
+      Changes numbers only for a stream with `label_delay` and an event on a
+      skipped row; a patch, with a CHANGELOG line. Before 78b, which extends
+      the same release rule to a backward clock.
+
 - [ ] 78. **E69, windowed EWMAs in both directions, and `po.prep` renamed
       `po.stream` — recorded 2026-09-11, designed the same day, not built.**
       The user's ask: "Is it possible to have a look ahead that generates a
@@ -1878,8 +1916,12 @@ note, not a task.
       - **`partial`** is one concept in both directions: a window cut short
         before its horizon passes. Backward, that is the start of a stream,
         session or group — `"keep"` is an ordinary warm-up, hence its
-        default there; forward, it is the end, or a session or group closing
-        — hence `"null"`. `"drop"` removes the row; with several windows in
+        default there; forward, it is a window a clock event cut short — a
+        session change, a capped gap, a backward step — hence `"null"`. The
+        end of the input is **not** a partial window: a row whose horizon
+        has not passed when the input ends is unresolved, null whatever
+        `partial` says, because the model has not learned from it either
+        (*Parity*). `"drop"` removes the row; with several windows in
         one call, a row is dropped if any window that says `"drop"` is
         partial on it. `complete` names a bool column saying which rows had
         a full window. An empty window is not partial.
@@ -1890,8 +1932,8 @@ note, not a task.
         needs, where a trade often prints in the same millisecond as the
         quote row before it.
       - **`save_state`** changes what the end of a stream means: rows still
-        inside a horizon are not partial but waiting, saved, and emitted by
-        the next run. The saved state is one window's worth of rows per
+        inside a horizon are waiting, saved, and emitted by the next run;
+        without it they are emitted unresolved, null. The saved state is one window's worth of rows per
         group — the longest window of the call — plus each window's running
         sums.
       - **As a spec target**, a description is accepted as written, so the
@@ -1983,18 +2025,67 @@ note, not a task.
       - **A reset discards**: `on_clock_reset="reset_state"` or
         `session_gap="reset"` empties the model's buffer, and the rows
         waiting in it are never learned from, whatever `partial` says. The
-        column form still emits those rows — it emits every row — with the
-        partial treatment and `complete` false, so filtering on `complete`
-        is exactly the set the model learned from.
+        column form still emits those rows — it emits every row — with a
+        null target and `complete` false (*Parity*, below).
       - **`same_clock` is about steps, not stamps**: a later row reached
         from *t* by a zero policy-clock step is "at *t*'s clock". That is
         the only definition both forms can share, since the model never
         sees the raw column.
       - **Groups have their own clocks**, as they do in a bank.
-      - **No retyping.** A spec exposes its clock policy as
-        `spec.clock_policy`, a dict of exactly these keywords, so
-        `po.stream.windows(lf, [...], **spec.clock_policy)` cannot drift
-        from the model it is meant to match.
+      - **No retyping.** `po.stream.windows(lf, [...], like=spec)` takes
+        the clock policy from the spec — and the spec's rule for which rows
+        it learns from (*Parity*) — so the column cannot drift from the
+        model it is meant to match. The clock keywords stay for a column
+        with no model behind it; `like=` with any of them is refused.
+
+      #### Parity: the column shows the target the model used
+
+      The user's requirement, 2026-09-11: "the same window spec passed to
+      windows shows the target that the model used". Stated precisely, for
+      `po.stream.windows(lf, [w], like=spec)` against `spec` with `w` as a
+      target: **on every row the model learns from, the column equals the
+      target it learned, to the bit; on every other row the column is
+      null.** Checked against the code (`apply_label_delay`,
+      `run_instance`, `ClockState::advance`), four things in the first
+      design did not give that, and each is now part of the design:
+
+      1. **The window sees every contributing row, not only the rows the
+         spec accepts.** The `label_delay` buffer holds accepted rows only
+         — a row with a null feature or an unusable weight never enters it
+         (`apply_label_delay`, the `!plan.accept` branch) — so a window
+         built from that buffer would silently omit trades on rows whose
+         features happen to be null, which interleaved data makes common.
+         The target depends on the price and quantity ahead, not on whether
+         the model could use a row's features. So a look-ahead target keeps
+         its own window queue beside the learning FIFO: every row with a
+         present value and a non-zero weight enters the window; only
+         accepted rows enter the FIFO to be learned. The column form, which
+         never knew the features, already works this way.
+      2. **Clock events on skipped rows count.** A reset, a session change
+         or a capped gap that lands on a skipped row is acted on by the
+         model but ignored by the `label_delay` buffer — an existing bug,
+         task 79, which this depends on. The windows take every row's event.
+      3. **Rows the model never learns from are null in the column**:
+         rows discarded by a reset, rows unresolved at the end of the input,
+         and rows the spec skips (their own target is never learned, though
+         they sit inside other rows' windows). The first two the column form
+         knows from the clock. The third it knows only from the spec, which
+         is what `like=spec` is for: it carries the spec's acceptance rule
+         — features and weight usable — along with its clock policy. A
+         first draft said "filtering on `complete` is exactly the set the
+         model learned from"; wrong under `partial="keep"`, where a window
+         cut by a session change is incomplete *and* learned from.
+         `complete` marks a cut window; null marks a row the model did not
+         use.
+      4. **`group_close` is refused with a look-ahead target**, as it
+         already is with `label_delay` (`spec.rs`: a closed group cannot
+         release the rows it still holds), so there is no group-close case
+         to match.
+
+      Test: the parity test below, with `like=spec`, asserting the
+      statement above row by row on streams containing skipped trade rows,
+      each clock event on a skipped row and on an accepted one, a reset, and
+      an end of input inside a horizon.
 
       **A backwards clock is a session break.** The user's rules,
       2026-09-11: "When a forward window encounters a backward clock, we
@@ -2101,7 +2192,7 @@ note, not a task.
             source the way `refresh_time` is: waiting rows held as the input's
             chunks and sliced out when their windows close, each window's
             queues its own; `split`, `unlisted`, `total` and the `{split}`
-            name field; the clock-policy keywords and `spec.clock_policy`.
+            name field; the clock-policy keywords and `like=spec`.
       - [ ] 78e. **Descriptions as spec targets**, in the stream layer, on the
             `label_delay` buffer. `SCHEMA_VERSION` bump with a loader for 6,
             shared with 78b's if they ship together.
@@ -2134,7 +2225,7 @@ note, not a task.
         oracle for the column form.
       - **Parity with the model, per clock event**: a spec with a
         look-ahead target against the same spec given the column form's
-        output — computed with `**spec.clock_policy` — as an ordinary target
+        output — computed with `like=spec` — as an ordinary target
         with `label_delay = horizon`, identical `pred` on every row, on
         streams built to contain each event: a gap over `max_dclock`, a
         session change with a finite `session_gap`, `session_gap="reset"`,
