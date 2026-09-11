@@ -1960,9 +1960,8 @@ note, not a task.
         clock, so output stays in input order with a bounded delay even when
         one group falls silent. A row whose clock goes back closes every
         open window too, as a large gap would (*One clock, both forms*), so
-        a clock that restarts is accepted; two feeds interleaved out of
-        order are stopped at the first row that would break parity with the
-        model. A `head(n)` stops reading one horizon
+        a clock that restarts is accepted. Feeds interleaved out of clock
+        order are not handled. A `head(n)` stops reading one horizon
         past its nth row.
 
       #### One clock, both forms
@@ -2032,14 +2031,13 @@ note, not a task.
         whenever each group's own clock also goes back there — a clock that
         restarts, time-of-day across sessions, which is the case the rule is
         for.
-      - **Where it could not match, it stops rather than differ.** If the
-        stream's clock went back but a group's next row shows its *own*
-        clock did not, and that row would have fallen inside a window the
-        stream already closed, the run ends with an error naming the row and
-        the group — the shape of two feeds interleaved out of order, where
-        the model's per-group window would have stayed open. The already
-        emitted rows cannot be recalled, so an error is the only honest
-        outcome; the fix is a clock that does not go back, or sorting.
+      - **Not handled: feeds interleaved out of clock order**, where the
+        stream's clock goes back but a group's own does not. No streaming
+        logic can handle that (the user, 2026-09-11), so the design neither
+        detects nor refuses it; it is outside the input this accepts, and
+        the docs say so. A first draft stopped the run at the row that
+        would break parity; dropped as machinery for a case with no right
+        answer.
 
       #### Sub-tasks
 
@@ -2099,10 +2097,7 @@ note, not a task.
         a backward step under each `on_clock_reset` policy (the window
         frozen at the jump under all of them, `"zero"` included), several
         groups whose clocks restart together, and rows at one clock value.
-        Plain `label_delay` under `"zero"` unchanged to the bit. And the
-        refusal: two groups interleaved out of order, the stream's clock
-        going back where one group's does not, stopped at the row that
-        would have entered a closed window, with nothing emitted after it. For `"reset_state"` and
+        Plain `label_delay` under `"zero"` unchanged to the bit. For `"reset_state"` and
         `session_gap="reset"`, the rows with `complete` false are exactly
         the rows the model never learned from.
       - Chunk invariance at 1, 7, 64 and 1000 rows a chunk; groups and
