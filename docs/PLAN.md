@@ -1678,7 +1678,11 @@ note, not a task.
       open choices are to be options, not decisions; the utility is to be
       kept alongside the spec form, with several columns at once; and
       `po.prep` is to be renamed and its API defined "the way it should be
-      done" — pre-1.0, so no aliases and no compatibility.
+      done" — pre-1.0, so no aliases and no compatibility. Then, for trades
+      interleaved with market data: a per-window weight, and three things
+      the implementation does that `rolling` cannot — rows that contribute
+      nothing never enter a window, `split=` for one output per category,
+      and waiting rows held as the input's own chunks.
 
       *The quantity.* For row *t* at clock τₜ, over the rows *j* in the
       window, taken in stream order:
@@ -1781,7 +1785,9 @@ note, not a task.
          and `horizon` may each be a sequence, and the window means every
          combination.
       4. **Output names by template**: `name=` is a format string over
-         `{column}`, `{halflife}` and `{horizon}`; the default contains only
+         `{column}`, `{halflife}`, `{horizon}` and `{split}` (`""` for the
+         total, `"_buy"` for a category, so one template names both); the
+         default contains only
          the fields that vary within the window (`"{column}_ewm"`,
          `"{column}_ewm_{halflife}"`, ...; `rewm` for the forward form). Two
          outputs with one name, across all the windows of a call, are refused
@@ -1797,18 +1803,21 @@ note, not a task.
               po.window.ewm(["x0", "x1"], halflife=[5, 30], horizon=60),    # 4 outputs
               po.window.ewm("volume", halflife=300),                        # no horizon: no cutoff
               po.window.lookahead_rewm(
-                  "price", weight="buy_qty",                                # a forward buy-side VWAP
+                  "price", weight="quantity",                               # forward VWAP: all trades,
+                  split=("side", ["buy", "sell"]),                          # buys only, sells only
                   halflife=10, horizon=60,
                   same_clock="include", partial="null",
-                  complete="fwd_complete", name="fwd_vwap_buy"),
+                  complete="fwd_complete", name="fwd_vwap{split}"),
           ],
           clock="ts", group="symbol", session="date",
           load_state=None, save_state="windows.bin", chunk_rows=None,
       )
 
       po.window.ewm(columns, *, halflife, horizon=None, weight=None,
+                    split=None, unlisted="error", total=True,
                     partial="keep", complete=None, name=None)
       po.window.lookahead_rewm(columns, *, halflife, horizon, weight=None,
+                               split=None, unlisted="error", total=True,
                                same_clock="include", partial="null",
                                complete=None, name=None)
 
@@ -1831,7 +1840,21 @@ note, not a task.
         A window whose weights sum to zero is *empty* — null, `complete`
         true — never 0/0 (the guard hard rule 9 asks for). A null *value*
         on a row counts nothing either, so a column's window is over the
-        rows where that column and its weight are both present.
+        rows where that column and its weight are both present — and only
+        those rows ever enter it (*How rows move*).
+      - **`split=(column, [values...])`** gives one output per listed value
+        of a categorical column, plus the total over every contributing row
+        unless `total=False` — a buy-side, sell-side and all-trades VWAP
+        from one window, with no helper columns. The values are listed
+        because a lazy plan declares its schema before a row is read, as
+        `refresh_time`'s `names=` are. **`unlisted`** says what a
+        contributing row with a value not in the list does, null included:
+        `"error"` refuses it naming the row; `"total"` counts it in the
+        total only; `"ignore"` counts it nowhere. The rule applies only to
+        rows that would contribute, so a market-data row with a null side
+        and a null quantity is never unlisted — it was never going to count.
+        It works identically backward: a buy-side trailing VWAP is the same
+        window.
       - **The anchor matters only to a sum.** A weighted mean is
         `Σ w·v / Σ w`, and moving the anchor multiplies every weight by one
         constant, which cancels: measured, a buy-side VWAP anchored at the
@@ -1870,7 +1893,9 @@ note, not a task.
         row *t* is released, the rows still waiting behind it are exactly its
         window — those after it, less than `horizon` later on the model's
         clock — so the target is computed at release from rows the bank
-        already holds; `PendingRow` gains the target's value and weight.
+        already holds; `PendingRow` gains the target's value, weight and
+        split category, and a row that contributes nothing to the target
+        costs the queue nothing, as in the column form.
         Each row is still scored and emitted as it arrives (`learn: false`
         on the arriving row, `emit: false` on the replay): the rest of the
         plan never sees the buffer. One state file. The window is open at
@@ -1881,6 +1906,24 @@ note, not a task.
         `SCHEMA_VERSION` bumps (rule 5). One delay per spec, so several
         look-ahead targets of different horizons in one spec are learned at
         the longest — honest, late.
+      - **Only contributing rows enter a window.** Each window — each
+        category of a split, and its total — keeps a queue of the rows whose
+        value is present and whose weight is non-zero, and nothing else. A
+        market-data row interleaved with trades enters no VWAP queue; it is
+        read against the queues as they stand when its own window closes,
+        and passes through. So a window's memory and work follow the rows
+        that *count* in it, where `rolling` gathers every row inside the
+        window for every window: at ten quotes per trade, its windows are
+        ten times the size and ten times the memory for the same answer.
+        Each row still emits exactly once, in order.
+      - **Waiting rows are held as the input's own chunks.** A forward
+        window has to hold its output rows until their horizons pass, and
+        market-data rows are wide. The source keeps the input chunks as they
+        came (Arrow, no copy) with the computed columns alongside, and emits
+        each chunk's slice once every row in it has had every window close.
+        Memory is one horizon of input chunks, whatever the row width, and no
+        row is copied into a buffer. The saved state is the same: the
+        waiting input rows, then each queue.
       - **`po.stream.windows` with only backward windows** emits every row
         as it arrives.
       - **With any forward window**, it yields per input chunk whatever rows
@@ -1907,10 +1950,14 @@ note, not a task.
             with only its spelling changed.
       - [ ] 78b. **The window core** in `online-polars`: the anchored
             segment monoid and the two-stack queue, both directions, per
-            group, with a per-row weight, serialisable. Unit-tested alone.
+            group, with a per-row weight; queues that admit only
+            contributing rows, one per split category plus the total;
+            serialisable. Unit-tested alone.
       - [ ] 78c. **`po.window.*` and `po.stream.windows`** on it, as an IO
-            source the way `refresh_time` is: one row buffer per group shared
-            by every window, each window's sums its own.
+            source the way `refresh_time` is: waiting rows held as the input's
+            chunks and sliced out when their windows close, each window's
+            queues its own; `split`, `unlisted`, `total` and the `{split}`
+            name field.
       - [ ] 78d. **Descriptions as spec targets**, in the stream layer, on the
             `label_delay` buffer. `SCHEMA_VERSION` bump with a loader for 6.
 
@@ -1931,7 +1978,12 @@ note, not a task.
         with no trade of that side (null, `complete` true) and trades at
         the quote's own clock under both `same_clock` settings. And the
         same three as spec targets, equal to the column form fed back
-        through `label_delay`. The `rolling` recipe for this case,
+        through `label_delay`. Then the same three as **one** window with
+        `split=("side", ["buy", "sell"])`, equal to the three-window form to
+        the bit; `unlisted` under all three settings, with a trade whose
+        side is `"cross"` and one whose side is null, and a market-data row
+        with a null side never raising under `"error"`; `total=False`. The
+        `rolling` recipe for this case,
         2026-09-11, 3,000 rows, 30% trades: buy side 1.1e-13 and sell side
         8.5e-14 against brute force, empty windows matching exactly — the
         oracle for the column form.
@@ -1946,6 +1998,13 @@ note, not a task.
         present; a backward `ewm` refused as a spec target.
       - Memory flat as rows per window grow — the reason for all of it —
         and flat as windows are added, beyond their own sums.
+      - **Memory and time flat as quote density rises at a fixed trade
+        rate**: the interleaved stream at 1, 10 and 100 market-data rows per
+        trade, where the queues must not grow and the `rolling` recipe's
+        memory, measured alongside, does.
+      - Memory independent of row width: the same stream with 2 and with 200
+        pass-through columns, where the waiting rows must cost their chunks
+        and not a copy.
 
 - [x] 77. **A plan with nothing to write runs once where a query uses it
       twice, 2026-09-10.** The IO source declares `is_pure=True` to
