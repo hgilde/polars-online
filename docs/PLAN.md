@@ -1958,9 +1958,11 @@ note, not a task.
         for the longest forward horizon. A window closes when **any** row
         arrives more than `horizon` past its row, on the stream's shared
         clock, so output stays in input order with a bounded delay even when
-        one group falls silent. That needs the clock non-decreasing across
-        the whole stream, as a merged tick stream is, and input that is not
-        is refused naming the row. A `head(n)` stops reading one horizon
+        one group falls silent. A row whose clock goes back closes every
+        open window too, as a large gap would (*One clock, both forms*), so
+        a clock that restarts is accepted; two feeds interleaved out of
+        order are stopped at the first row that would break parity with the
+        model. A `head(n)` stops reading one horizon
         past its nth row.
 
       #### One clock, both forms
@@ -1995,20 +1997,49 @@ note, not a task.
         `po.stream.windows(lf, [...], **spec.clock_policy)` cannot drift
         from the model it is meant to match.
 
-      **A decision to take before 78c: a backwards clock with a forward
-      window.** The column form closes a forward window when any row
-      arrives more than a horizon past it on the stream's shared clock,
-      which keeps the output in input order with a bounded delay even when
-      a group falls silent — and so it refuses input whose clock is not
-      non-decreasing. The model accepts one: `on_clock_reset` exists for a
-      clock that restarts, a time-of-day column across sessions. Under the
-      refusal, parity holds only for a clock that never goes back, which a
-      full timestamp is. The alternative closes each window on its own
-      group's clock and events, accepts any clock the spec accepts, and
-      emits rows in the order their windows close rather than input order.
-      Candidate: both, as `order="input"` (refuses a backwards clock) and
-      `order="closed"` (accepts it), the user's rule for choices whose
-      answer depends on the data.
+      **A backwards clock ends a forward window, like a large gap** — the
+      user's rule, 2026-09-11: "When a forward window encounters a backward
+      clock, we want the same effect as if there were a large clock gap
+      where the window just runs out." Read against `ClockState::advance`
+      (`crates/online-core/src/clock.rs`), per `on_clock_reset`:
+
+      | policy | a waiting row today | under the rule |
+      |---|---|---|
+      | `"max"` | `capped = true` — the buffer releases, the window ends | unchanged |
+      | `"reset_state"` | the buffer is discarded; the model starts over | unchanged |
+      | `"zero"` | a zero step, not capped: the window runs on across the jump, and the rows after it count as *t*'s own clock | **the window ends at the jump** |
+      | `"error"` | the run stops | unchanged |
+
+      - **In both forms, a backward step on a group's clock freezes every
+        open forward window of that group**: no row at or after it enters.
+        The window's value is over the rows before the jump, under
+        `partial`. That is independent of what `on_clock_reset` does to the
+        *decay*, which is a separate question about the model.
+      - **Freeze, not release.** When the frozen row is *learned* stays what
+        the policy already says — at once under `"max"` (capped), at its
+        ordinary release under `"zero"`, never under `"reset_state"`. So the
+        change is confined to look-ahead windows: plain `label_delay` is
+        untouched, rightly, because a label computed outside the bank may
+        reach past the jump and must keep waiting; and the column form fed
+        back through `label_delay` still matches the target form, row for
+        row, under every policy.
+      - **The column form closes windows on the stream's clock the same
+        way**: a row whose clock is below the previous row's — any group —
+        closes every open window in every group, exactly as passing the
+        horizon does. That is what keeps the output in input order with a
+        bounded delay without refusing a backwards clock, so the `order=`
+        option considered earlier is not needed. It matches the model
+        whenever each group's own clock also goes back there — a clock that
+        restarts, time-of-day across sessions, which is the case the rule is
+        for.
+      - **Where it could not match, it stops rather than differ.** If the
+        stream's clock went back but a group's next row shows its *own*
+        clock did not, and that row would have fallen inside a window the
+        stream already closed, the run ends with an error naming the row and
+        the group — the shape of two feeds interleaved out of order, where
+        the model's per-group window would have stayed open. The already
+        emitted rows cannot be recalled, so an error is the only honest
+        outcome; the fix is a clock that does not go back, or sorting.
 
       #### Sub-tasks
 
@@ -2065,8 +2096,13 @@ note, not a task.
         with `label_delay = horizon`, identical `pred` on every row, on
         streams built to contain each event: a gap over `max_dclock`, a
         session change with a finite `session_gap`, `session_gap="reset"`,
-        each `on_clock_reset` policy the chosen `order` accepts, several
-        groups, and rows at one clock value. For `"reset_state"` and
+        a backward step under each `on_clock_reset` policy (the window
+        frozen at the jump under all of them, `"zero"` included), several
+        groups whose clocks restart together, and rows at one clock value.
+        Plain `label_delay` under `"zero"` unchanged to the bit. And the
+        refusal: two groups interleaved out of order, the stream's clock
+        going back where one group's does not, stopped at the row that
+        would have entered a closed window, with nothing emitted after it. For `"reset_state"` and
         `session_gap="reset"`, the rows with `complete` false are exactly
         the rows the model never learned from.
       - Chunk invariance at 1, 7, 64 and 1000 rows a chunk; groups and
@@ -2076,8 +2112,7 @@ note, not a task.
         windows; a save/load split at every row of a short stream equal to
         one run.
       - Output names by the template; a collision across two windows of one
-        call refused; unsorted input refused when a forward window is
-        present; a backward `ewm` refused as a spec target.
+        call refused; a backward `ewm` refused as a spec target.
       - Memory flat as rows per window grow — the reason for all of it —
         and flat as windows are added, beyond their own sums.
       - **Memory and time flat as quote density rises at a fixed trade
