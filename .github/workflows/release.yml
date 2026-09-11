@@ -229,13 +229,13 @@ jobs:
           # newest stable, `<2` still honoured.
           - leg: the newest in-range
             unpin: false
-            prerelease: disallow
+            prerelease: ""
             blocking: true
           # Advisory. Everything above the ceiling: the next major, and its
           # release candidates and betas.
           - leg: the next major
             unpin: true
-            prerelease: allow
+            prerelease: --prerelease=allow
             blocking: false
     # A red advisory leg must not withhold a wheel, and `needs` counts a
     # `continue-on-error` leg as passing, so this is the whole mechanism.
@@ -299,10 +299,14 @@ jobs:
           p.write_text(s)
           PY
 
-      # `--prerelease=allow` is what makes a 2.0rc visible; the blocking leg
-      # disallows it, because a release candidate is not what a resolver
-      # hands an ordinary install.
-      - run: uv sync --prerelease=${{ matrix.prerelease }} --upgrade-package polars
+      # `--prerelease=allow` is what makes a 2.0rc visible. The blocking leg
+      # passes no flag, and must not pass `--prerelease=disallow`: that mode
+      # applies to every package, and the docs group's `furo` needs
+      # `sphinx-basic-ng>=1.0.0b2`, so the whole resolution fails (the 0.5.0
+      # tag's first run). uv's default already declines a prerelease wherever
+      # a stable version satisfies the range -- polars resolves to the newest
+      # stable under the ceiling -- which is what an ordinary install gets.
+      - run: uv sync ${{ matrix.prerelease }} --upgrade-package polars
       - name: versions in play
         run: uv run python -c "import polars; print('py-polars', polars.__version__)"
 
