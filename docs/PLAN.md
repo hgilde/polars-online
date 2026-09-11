@@ -1996,32 +1996,44 @@ note, not a task.
         `po.stream.windows(lf, [...], **spec.clock_policy)` cannot drift
         from the model it is meant to match.
 
-      **A backwards clock ends a forward window, like a large gap** — the
-      user's rule, 2026-09-11: "When a forward window encounters a backward
-      clock, we want the same effect as if there were a large clock gap
-      where the window just runs out." Read against `ClockState::advance`
-      (`crates/online-core/src/clock.rs`), per `on_clock_reset`:
+      **A backwards clock is a session break.** The user's rules,
+      2026-09-11: "When a forward window encounters a backward clock, we
+      want the same effect as if there were a large clock gap where the
+      window just runs out", and then "If a clock moves backward it must be
+      a session break or a problem in the input data and we can't tell
+      which so we assume session break." Read against
+      `ClockState::advance` (`crates/online-core/src/clock.rs`) and
+      `apply_label_delay`, per `on_clock_reset`:
 
-      | policy | a waiting row today | under the rule |
+      | policy | a waiting row today | as a session break |
       |---|---|---|
       | `"max"` | `capped = true` — the buffer releases, the window ends | unchanged |
-      | `"reset_state"` | the buffer is discarded; the model starts over | unchanged |
-      | `"zero"` | a zero step, not capped: the window runs on across the jump, and the rows after it count as *t*'s own clock | **the window ends at the jump** |
+      | `"reset_state"` | the buffer is discarded; the model starts over | unchanged — a reset, as `session_gap="reset"` is at a session change |
+      | `"zero"` | a zero step, not capped: the buffer keeps waiting, and a window would run on across the jump, counting the rows after it as the row's own clock | **the buffer releases and every window ends** |
       | `"error"` | the run stops | unchanged |
 
-      - **In both forms, a backward step on a group's clock freezes every
-        open forward window of that group**: no row at or after it enters.
-        The window's value is over the rows before the jump, under
-        `partial`. That is independent of what `on_clock_reset` does to the
-        *decay*, which is a separate question about the model.
-      - **Freeze, not release.** When the frozen row is *learned* stays what
-        the policy already says — at once under `"max"` (capped), at its
-        ordinary release under `"zero"`, never under `"reset_state"`. So the
-        change is confined to look-ahead windows: plain `label_delay` is
-        untouched, rightly, because a label computed outside the bank may
-        reach past the jump and must keep waiting; and the column form fed
-        back through `label_delay` still matches the target form, row for
-        row, under every policy.
+      - **In both forms, a backward step on a group's clock does to the
+        waiting rows what a session change does**: every open forward
+        window of the group ends — no row at or after the jump enters,
+        the value is over the rows before it, under `partial` — and the
+        `label_delay` buffer releases in order. One line in
+        `apply_label_delay`: `plan.backwards` joins `session_changed` and
+        `capped` in the release condition.
+      - **Plain `label_delay` changes with it**, under `"zero"` only: a row
+        waiting at a backward step is learned there instead of waiting on.
+        That is the rule the library already applies at a session change —
+        "a row still waiting at the boundary would otherwise wait for a
+        deadline that never comes" — extended to the break it cannot tell
+        from one. It moves numbers for a stream with a backward clock under
+        `"zero"` and a `label_delay`, so it is a minor-version change with a
+        CHANGELOG line. A first draft froze windows without releasing, to
+        leave plain `label_delay` alone; dropped, since a session break
+        releases.
+      - **Scope: the waiting rows, not the decay.** `on_clock_reset` still
+        decides the clock step the *decay* sees at a backward jump, as it
+        does today. Whether a backward step should also take `session_gap`,
+        which would leave `on_clock_reset` little to do but `"error"`, is a
+        separate question and not part of this task.
       - **The column form closes windows on the stream's clock the same
         way**: a row whose clock is below the previous row's — any group —
         closes every open window in every group, exactly as passing the
@@ -2060,7 +2072,8 @@ note, not a task.
             queues its own; `split`, `unlisted`, `total` and the `{split}`
             name field; the clock-policy keywords and `spec.clock_policy`.
       - [ ] 78d. **Descriptions as spec targets**, in the stream layer, on the
-            `label_delay` buffer. `SCHEMA_VERSION` bump with a loader for 6.
+            `label_delay` buffer, with a backward step releasing it as a
+            session change does. `SCHEMA_VERSION` bump with a loader for 6.
 
       #### Tests
 
@@ -2095,9 +2108,13 @@ note, not a task.
         streams built to contain each event: a gap over `max_dclock`, a
         session change with a finite `session_gap`, `session_gap="reset"`,
         a backward step under each `on_clock_reset` policy (the window
-        frozen at the jump under all of them, `"zero"` included), several
+        ended and the buffer released at the jump under all of them,
+        `"zero"` included), several
         groups whose clocks restart together, and rows at one clock value.
-        Plain `label_delay` under `"zero"` unchanged to the bit. For `"reset_state"` and
+        Plain `label_delay` under `"zero"`: a row waiting at a backward
+        step is released there, identically to a session change at the same
+        row — tested against a stream with a `session` column that changes
+        exactly where the clock goes back. For `"reset_state"` and
         `session_gap="reset"`, the rows with `complete` false are exactly
         the rows the model never learned from.
       - Chunk invariance at 1, 7, 64 and 1000 rows a chunk; groups and
