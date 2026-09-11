@@ -2001,11 +2001,13 @@ note, not a task.
       want the same effect as if there were a large clock gap where the
       window just runs out", and then "If a clock moves backward it must be
       a session break or a problem in the input data and we can't tell
-      which so we assume session break." Read against
+      which so we assume session break." And then, for the decay too: "the
+      decay should take the session gap as well since that would be needed
+      anyway to completely recreate the target used by the model." Read against
       `ClockState::advance` (`crates/online-core/src/clock.rs`) and
       `apply_label_delay`, per `on_clock_reset`:
 
-      | policy | a waiting row today | as a session break |
+      | policy (today) | a waiting row today | as a session break |
       |---|---|---|
       | `"max"` | `capped = true` — the buffer releases, the window ends | unchanged |
       | `"reset_state"` | the buffer is discarded; the model starts over | unchanged — a reset, as `session_gap="reset"` is at a session change |
@@ -2019,21 +2021,41 @@ note, not a task.
         `label_delay` buffer releases in order. One line in
         `apply_label_delay`: `plan.backwards` joins `session_changed` and
         `capped` in the release condition.
-      - **Plain `label_delay` changes with it**, under `"zero"` only: a row
-        waiting at a backward step is learned there instead of waiting on.
-        That is the rule the library already applies at a session change —
-        "a row still waiting at the boundary would otherwise wait for a
-        deadline that never comes" — extended to the break it cannot tell
-        from one. It moves numbers for a stream with a backward clock under
-        `"zero"` and a `label_delay`, so it is a minor-version change with a
-        CHANGELOG line. A first draft froze windows without releasing, to
-        leave plain `label_delay` alone; dropped, since a session break
-        releases.
-      - **Scope: the waiting rows, not the decay.** `on_clock_reset` still
-        decides the clock step the *decay* sees at a backward jump, as it
-        does today. Whether a backward step should also take `session_gap`,
-        which would leave `on_clock_reset` little to do but `"error"`, is a
-        separate question and not part of this task.
+      - **The decay takes it too: a backward step is a session change,
+        everywhere.** `ClockState::advance` treats a raw step below zero as
+        it treats a change of session value: `session_changed` is set, the
+        step is `session_gap` (limited to `max_dclock`), and
+        `session_gap="reset"` starts the model over. So everything that
+        follows a session change follows a backward step — the decay, the
+        `label_delay` release, the lag rings cleared, `session_shrink`'s
+        blend, `group_close="session"` closing the group, and the windows
+        ending. One code path, which is what lets the column form recreate
+        the target the model learns from exactly.
+      - **`on_clock_reset` shrinks to `"session"` (the default) and
+        `"error"`.** The three policies it loses are each a `session_gap`:
+        `"max"` is `session_gap = max_dclock`, `"zero"` is `session_gap = 0`,
+        `"reset_state"` is `session_gap = "reset"`. Nothing is lost except
+        choosing a different step for a backward clock than for a session
+        change — which the rule says cannot be told apart anyway. `"error"`
+        stays, for input where a backward clock can only be a bug.
+      - **`session_gap` without a `session` column**, now meaningful: it is
+        the step at a backward clock. With no `session` column it defaults
+        to `max_dclock` — today's default decay step at a backward clock
+        (`"max"`), so a stream with no session column and no `session_gap`
+        decays exactly as before. With a `session` column it stays required,
+        as now.
+      - **What moves.** Pre-1.0, so no compatibility spelling: the three
+        policy words are refused with a message naming the `session_gap`
+        that replaces each. Numbers move for a stream with a backward clock
+        under `"zero"` or `"reset_state"` (now session changes: a released
+        buffer, cleared lag rings), under `"max"` where a `session` column
+        gave a different `session_gap`, and for any spec with
+        `session_shrink` or `group_close="session"`, which now also fire at
+        a backward step. `SCHEMA_VERSION` bumps (the clock config's layout
+        changes), shared with 78e's bump if they ship together, with a
+        loader that maps a saved `"max"` / `"zero"` / `"reset_state"` to the
+        equivalent `session_gap` when the file has none. A minor release,
+        with the list above as its first CHANGELOG lines.
       - **The column form closes windows on the stream's clock the same
         way**: a row whose clock is below the previous row's — any group —
         closes every open window in every group, exactly as passing the
@@ -2058,7 +2080,16 @@ note, not a task.
             tests, the reference page, the README, `llms.txt`, and the API
             surface file. No behaviour change, so every existing test passes
             with only its spelling changed.
-      - [ ] 78b. **The window core** in `online-polars`: the anchored
+      - [ ] 78b. **A backward clock is a session change**, in
+            `ClockState::advance`, before any window is built: every model's
+            decay, `label_delay`, lag rings, `session_shrink` and
+            `group_close` follow from it; `on_clock_reset` becomes
+            `"session"` / `"error"`; `session_gap` allowed without `session`,
+            defaulting to `max_dclock`; the README's clock section, the
+            reference docstrings and every test that names a removed policy.
+            Its own commit, its own CHANGELOG lines, since it changes numbers
+            the windows do not depend on.
+      - [ ] 78c. **The window core** in `online-polars`: the anchored
             segment monoid and the two-stack queue, both directions, per
             group, with a per-row weight; queues that admit only
             contributing rows, one per split category plus the total; its
@@ -2066,14 +2097,14 @@ note, not a task.
             capped-gap, session and reset events ending or discarding
             windows as `apply_label_delay` does; serialisable. Unit-tested
             alone.
-      - [ ] 78c. **`po.window.*` and `po.stream.windows`** on it, as an IO
+      - [ ] 78d. **`po.window.*` and `po.stream.windows`** on it, as an IO
             source the way `refresh_time` is: waiting rows held as the input's
             chunks and sliced out when their windows close, each window's
             queues its own; `split`, `unlisted`, `total` and the `{split}`
             name field; the clock-policy keywords and `spec.clock_policy`.
-      - [ ] 78d. **Descriptions as spec targets**, in the stream layer, on the
-            `label_delay` buffer, with a backward step releasing it as a
-            session change does. `SCHEMA_VERSION` bump with a loader for 6.
+      - [ ] 78e. **Descriptions as spec targets**, in the stream layer, on the
+            `label_delay` buffer. `SCHEMA_VERSION` bump with a loader for 6,
+            shared with 78b's if they ship together.
 
       #### Tests
 
@@ -2107,14 +2138,16 @@ note, not a task.
         with `label_delay = horizon`, identical `pred` on every row, on
         streams built to contain each event: a gap over `max_dclock`, a
         session change with a finite `session_gap`, `session_gap="reset"`,
-        a backward step under each `on_clock_reset` policy (the window
-        ended and the buffer released at the jump under all of them,
-        `"zero"` included), several
+        a backward step with a finite `session_gap` and with `"reset"`, several
         groups whose clocks restart together, and rows at one clock value.
-        Plain `label_delay` under `"zero"`: a row waiting at a backward
-        step is released there, identically to a session change at the same
-        row — tested against a stream with a `session` column that changes
-        exactly where the clock goes back. For `"reset_state"` and
+        **A backward step equals a session change at the same row, for
+        every model**: one stream with a backward clock and no `session`
+        column against the same stream with a `session` column that changes
+        exactly there and the clock made monotone, identical output field by
+        field — decay, `label_delay`, lag features, `session_shrink`,
+        `group_close="session"`. Each removed policy word refused with the
+        `session_gap` that replaces it; a v6 state saved under each loading
+        with the equivalent gap. For `"reset_state"` and
         `session_gap="reset"`, the rows with `complete` false are exactly
         the rows the model never learned from.
       - Chunk invariance at 1, 7, 64 and 1000 rows a chunk; groups and
