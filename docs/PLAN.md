@@ -1667,108 +1667,237 @@ note, not a task.
       `hit_rate` (`test_diagnostics.py`'s E22 test among them) is regression
       and passes unchanged, since none of them named `binary=True`.
 
-- [ ] 78. **E69, a look-ahead EWMA target built on a forward pass —
-      recorded 2026-09-11, not built.** The user's ask: "Is it possible to
-      have a look ahead that generates a reverse ewma on the forward pass?
-      For example a target of a regression may be not the forward price but
-      the reverse ewma of rows starting with the next, going forward for one
-      minute. This reverse ewma puts the most weight on the first row it
-      sees, with the weight decreasing forward."
+- [ ] 78. **E69, windowed EWMAs in both directions, and `po.prep` renamed
+      `po.stream` — recorded 2026-09-11, designed the same day, not built.**
+      The user's ask: "Is it possible to have a look ahead that generates a
+      reverse ewma on the forward pass? For example a target of a regression
+      may be not the forward price but the reverse ewma of rows starting with
+      the next, going forward for one minute. This reverse ewma puts the most
+      weight on the first row it sees, with the weight decreasing forward."
+      Then, over the same day: it should be called `lookahead_rewm`; the
+      open choices are to be options, not decisions; the utility is to be
+      kept alongside the spec form, with several columns at once; and
+      `po.prep` is to be renamed and its API defined "the way it should be
+      done" — pre-1.0, so no aliases and no compatibility.
 
-      *The quantity.* For row *t* at clock τₜ, over the rows *j* with
-      τₜ < τⱼ ≤ τₜ + `horizon`, taken in stream order:
+      *The quantity.* For row *t* at clock τₜ, over the rows *j* in the
+      window, taken in stream order:
 
-      `y_t = Σ λ^(τⱼ − τ_first) · pⱼ / Σ λ^(τⱼ − τ_first)`,
-      `λ = 2^(−1/halflife)`, τ_first the first such row's clock
+      `y_t = Σ λ^|τⱼ − τ_anchor| · vⱼ / Σ λ^|τⱼ − τ_anchor|`,
+      `λ = 2^(−1/halflife)`
 
-      so the first row after *t* has weight 1 and the weights fall forward.
-      It is a forward quantity, so the half of the problem that is about
-      honesty is already solved: learn it with `label_delay = horizon` (E47,
-      README *Labels that arrive late*) — the horizon, not the halflife,
-      since the weights never reach zero inside the window.
+      *Backward* (`ewm`): the window is the rows at or before *t* no more
+      than `horizon` older, anchored at *t* itself — an ordinary EWMA with a
+      hard cutoff. *Forward* (`lookahead_rewm`): the rows after *t* less than
+      `horizon` later, anchored at the first of them, so the weight is 1 on
+      the next row and falls forward. The forward form is a label, and
+      learning from it honestly needs `label_delay = horizon` (E47) — which
+      the spec-target form below sets itself.
 
-      *Why not the Polars recipe.* It exists and is exact:
-      `lf.rolling(index_column="t", period=horizon, offset="0s",
-      closed="right").agg(((w * p).sum() / w.sum()))` with
-      `w = exp(-ln2 · (t − t.min()) / halflife)` matched a brute-force loop
-      to 8.5e-14 on irregular ticks, and the streaming engine runs it as a
-      native `rolling-group-by` node whose output equals the in-memory
-      engine's exactly (1M rows, max |diff| 0.0). Its memory is bounded —
-      but by the window, not the stream. Measured on 14 cores, ~2 ticks a
-      second, `sink_parquet` from parquet (a scan-and-sink alone peaks at
-      0.1–0.4 GB):
+      #### Why: Polars has no cheap form of either
 
-      | rows | window | threads | peak RSS | time |
-      |---:|---:|---:|---:|---:|
-      | 1M | 60 s | 14 | 2.9 GB | 1.4 s |
-      | 4M | 60 s | 14 | 3.9 GB | 3.7 s |
-      | 16M | 60 s | 14 | 4.0 GB | 15.8 s |
-      | 4M | 120 s | 14 | 7.9 GB | 9.2 s |
-      | 4M | 240 s | 14 | 14.6 GB | 18.5 s |
-      | 4M | 60 s | 4 | 1.3 GB | 5.0 s |
-      | 4M | 60 s | 1 | 0.44 GB | 12.7 s |
+      Measured on 14 cores, ~2 ticks a second, `sink_parquet` from parquet
+      (a scan-and-sink alone peaks at 0.1–0.4 GB). The recipe is
+      `rolling(...).agg((w · v).sum() / w.sum())` with `w` relative to each
+      window's anchor; it is exact (8.5e-14 against a brute-force loop) and
+      streams as a native `rolling-group-by` node, output identical to the
+      in-memory engine. Its memory is bounded by the window, not the stream:
 
-      Identical on py-polars 2.0.0rc1 (3.6 GB at 4M, 4.1 GB at 16M, 0.44 GB
-      on one thread). The cause is the weighting: every window's weights are
-      relative to its own first row, so nothing is shared between windows,
-      each window's rows are gathered separately, and each thread holds a
-      morsel's worth of windows — O(rows × rows per window) work, memory
-      ~250 MB per thread per 120 rows of window. Extrapolated, 2,000 ticks a
-      minute would want ~60 GB on all cores. Not measured: `group_by=`.
+      | rows | window | direction | threads | peak RSS | time |
+      |---:|---:|---|---:|---:|---:|
+      | 1M | 60 s | forward | 14 | 2.9 GB | 1.4 s |
+      | 4M | 60 s | forward | 14 | 3.9 GB | 3.7 s |
+      | 16M | 60 s | forward | 14 | 4.0 GB | 15.8 s |
+      | 4M | 120 s | forward | 14 | 7.9 GB | 9.2 s |
+      | 4M | 240 s | forward | 14 | 14.6 GB | 18.5 s |
+      | 4M | 60 s | forward | 4 | 1.3 GB | 5.0 s |
+      | 4M | 60 s | forward | 1 | 0.44 GB | 12.7 s |
+      | 4M | 60 s | backward | 14 | 3.5 GB | 3.05 s |
 
-      *The algorithm, and the trap.*
-      - **Not prefix sums.** `A(τ) = Σ λ^τᵢ pᵢ` gives each window in O(1) as
-        a difference, but the weights fall forward, so the earlier prefix
-        dwarfs the window's own sum and the subtraction cancels it away;
-        written with `λ^(−τ)` instead, it overflows. The same failure as
-        E49's raw sums.
-      - **Segment sums anchored at their first row**, combined associatively:
-        `(S_a, W_a, τ₀a) ⊕ (S_b, W_b, τ₀b) = (S_a + λ^(τ₀b−τ₀a) S_b,
-        W_a + λ^(τ₀b−τ₀a) W_b, τ₀a)`. Every factor is ≤ 1 on a
+      And what Polars *can* do cheaply, for scale — neither is this
+      quantity: `ewm_mean_by` (exponential, no cutoff) 262 MB / 0.05 s;
+      `rolling_mean_by` (a cutoff, equal weights) 261 MB / 0.10 s. Forward
+      numbers identical on py-polars 2.0.0rc1. The cause is the weighting:
+      every window is weighted from its own anchor, so nothing is shared
+      between windows, each window's rows are gathered separately, and each
+      thread holds a morsel's worth of them — O(rows × rows per window) work,
+      ~250 MB per thread per 120 rows of window. The gap is exactly
+      *exponential and truncated*, in either direction, and *forward* at all.
+      Not measured: `group_by=`.
+
+      #### The algorithm, one for both directions
+
+      - **Segment sums anchored at their near end, combined associatively.**
+        Forward, anchored at the first row: `(S_a, W_a, τ₀a) ⊕ (S_b, W_b,
+        τ₀b) = (S_a + λ^(τ₀b−τ₀a) S_b, W_a + λ^(τ₀b−τ₀a) W_b, τ₀a)`;
+        backward, the mirror, anchored at the last. Every factor is ≤ 1 on a
         non-decreasing clock: no subtraction, no overflow, and a factor that
-        underflows to 0 is a weight that was negligible anyway. The queue's
-        whole aggregate *is* the answer (its anchor is the first row after
-        *t*).
+        underflows to 0 is a weight that was negligible anyway.
       - **A FIFO sliding window over that monoid** — the two-stack queue
-        (Tangwongsan et al.'s SWAG family): push each arriving row at the
-        back; when a row arrives with τ > τₜ + `horizon` for the oldest
-        pending *t*, the queue holds exactly *t*'s window, so read the
-        aggregate, emit *t*, pop the front, repeat. O(1) amortised per row,
-        exact, memory one horizon of rows per group.
+        (Tangwongsan et al.'s SWAG family). O(1) amortised per row, exact,
+        memory one window of rows per group, per column.
+      - **Not prefix sums.** Forward, the earlier prefix dwarfs the window's
+        sum and the difference cancels it away; flipped, it overflows (the
+        same failure as E49's raw sums).
+      - **Not task 63's identity** `A(t) − λ^(t−u)·A(u)` either, though it
+        is sound backward (what it subtracts is the small old tail — it is
+        how the models' `window` works and stays): forward, what it would
+        subtract is the large part. One subtraction-free mechanism for both
+        directions keeps the utility one thing.
 
-      *Shape.* `po.prep.<name>(lf, *, value, clock, horizon, halflife,
-      by=None, ...) -> pl.LazyFrame`, a lazy IO source over the input plan
-      the way `refresh_time` is (`crates/online-polars/src/refresh.rs` is the
-      model: Rust core, a pyclass, the Python source), appending the target
-      column to each row. Output rows leave up to one horizon after they
-      arrive, in input order.
+      #### The API
 
-      *Decisions to take before building.*
-      1. **The name.** "Reverse EWMA" says how it is computed; the column is
-         a look-ahead mean. Candidates: `forward_ewm`, `lookahead_ewm`.
-      2. **A partial window** — the last `horizon` of the stream, and before
-         a gap or session end — is a different target. Null, dropped, or
-         kept with a `complete` flag? (The recipe's last rows had windows of
-         2, 1 and 0 rows.) Default proposed: null plus the flag, so a caller
-         can see what was cut without the frame changing length.
-      3. **Same-clock rows.** "Starting with the next row": does a later row
-         with τ equal to τₜ count? The recipe says no (the window opens
-         after τₜ); stream order says yes. Tick data with duplicate stamps
-         makes this a real choice.
-      4. **Sessions and groups**: a window must not cross a group, and
-         should not cross a session boundary (the same rule as the models).
-      5. **Row weights**: if a weight column is taken, `W` can be 0 over a
-         window of zero-weight rows — a 0/0 to guard, as hard rule 9 does.
-      6. **Resumability**: whether the pending rows are saved with a state
-         file (they are the same kind of FIFO `label_delay` saves), or the
-         builder is run on whole streams only.
+      **`po.prep` becomes `po.stream`**: the namespace for streaming
+      transforms of a plan — `LazyFrame` in, `LazyFrame` out, O(state)
+      memory, before or beside a bank. "Stream" is already a defined word in
+      the README's glossary. `embargo` and `refresh_time` move; nothing
+      stays behind under `po.prep`.
 
-      Tests: against a brute-force loop on irregular ticks (the recipe's
-      check); against the Polars recipe on data it can hold; chunk
-      invariance at 1, 7, 64 and 1000 rows a chunk; groups kept apart; a
-      halflife short enough that the late factors underflow; a window
-      where the exact answer is known (constant price → that price); and
-      memory flat as rows per window grow, which is the point of it.
+      Every function in it follows the same five rules, which is what "the
+      way it should be done" means here:
+
+      1. **Frame first, the same kind back** — `LazyFrame` in gives a
+         `LazyFrame`, `DataFrame` in gives a `DataFrame`, as
+         `po.fit_predict` already does. Chaining is Polars' own
+         `lf.pipe(po.stream.ewm, "price", ...)`; no methods are added to
+         the `lf.online` namespace for these.
+      2. **One vocabulary, the specs'**: `clock`, `group`, `session`,
+         `weight`, `halflife`. `refresh_time`'s `time=` becomes `clock=`
+         and `by=` becomes `group=`. With no `clock`, one unit is one row,
+         as in a spec.
+      3. **Columns first and plural**: `columns` is a name or a sequence of
+         names; `halflife` and `horizon` are a number or a sequence of
+         numbers; the outputs are every combination, one pass, one buffer
+         per group.
+      4. **Output names by template**: `name=` is a format string over
+         `{column}`, `{halflife}` and `{horizon}`. The default contains only
+         the fields that vary — `"{column}_ewm"` for one halflife and one
+         horizon, `"{column}_ewm_{halflife}"` for several halflives, and so
+         on — and a template that would give two outputs the same name is
+         refused while the plan is built.
+      5. **Stateful transforms resume** with `load_state` / `save_state`,
+         the pair plans already take; `chunk_rows` as everywhere.
+         `embargo` is a pure Polars plan (`merge_sorted`) with nothing to
+         save and takes neither.
+
+      ```python
+      po.stream.ewm(
+          frame, columns, *,
+          clock=None, halflife, horizon=None,          # horizon None: no cutoff
+          group=None, session=None, weight=None,
+          partial="keep",                              # "keep" | "null" | "drop"
+          complete=None,                               # e.g. "{column}_complete"
+          name=None,                                   # default by rule 4
+          load_state=None, save_state=None, chunk_rows=None,
+      )
+
+      po.stream.lookahead_rewm(
+          frame, columns, *,
+          clock=None, halflife, horizon,               # horizon required
+          group=None, session=None, weight=None,
+          same_clock="include",                        # "include" | "exclude"
+          partial="null",                              # "null" | "drop" | "keep"
+          complete=None,
+          name=None,
+          load_state=None, save_state=None, chunk_rows=None,
+      )
+
+      po.stream.embargo(frame, *, clock, delay, weight=None, role=...)
+      po.stream.refresh_time(frame, *, series, names, clock, value,
+                             group=None, pairs=False, keep=(),
+                             load_state=None, save_state=None, chunk_rows=None)
+
+      po.target.lookahead_rewm(column, *, horizon, halflife,
+                               same_clock="include", partial="drop",
+                               name=None)
+      # used as a spec target:  po.spec.ewridge(..., targets=[po.target.lookahead_rewm("price", ...)])
+      ```
+
+      The options are all the user's to choose per use; the defaults are
+      only where a call with none lands.
+      - **`partial`** is the same concept in both directions: a window cut
+        short before its horizon passes. Backward, that is the start of a
+        stream, session or group, before one horizon of history exists —
+        `"keep"` is an ordinary warm-up, hence its default there. Forward,
+        it is the end, or a session or group closing — hence `"null"`.
+        `"drop"` removes the row. `complete` names a bool column (per
+        `{column}` if nulls differ between columns) saying which rows had a
+        full window, under any `partial`. An *empty* window — a gap longer
+        than the horizon — is not partial: null, with `complete` true.
+      - **`same_clock`** (forward only): whether later rows stamped with
+        *t*'s own clock are "the next rows". `"exclude"` is what a
+        time-indexed `rolling` does; `"include"` is stream order, which no
+        time-indexed window can express.
+      - **`save_state`** changes what the end of a stream means: with it,
+        rows still inside their horizon are not partial but waiting, saved,
+        and emitted by the next run. Backward, the saved state is the last
+        window of rows per group.
+      - **The spec target** has `partial` of `"drop"` / `"keep"` only: a
+        null target is never learned from, so `"null"` and `"drop"` are one
+        thing there, and there is no `complete` because the bank does not
+        emit its target.
+
+      #### How rows move
+
+      - **`po.target.lookahead_rewm`** rides on the `label_delay` FIFO
+        (`apply_label_delay`, `crates/online-polars/src/stream.rs`). When
+        row *t* is released, the rows still waiting behind it are exactly its
+        window — those after it, less than `horizon` later on the model's
+        clock — so the target is computed at release from rows the bank
+        already holds. Each row is still scored and emitted as it arrives
+        (`learn: false` on the arriving row, `emit: false` on the replay);
+        the rest of the plan never sees the buffer. One state file. The
+        window is open at `t + horizon` because the buffer releases *t*
+        before pushing the row that reaches it. A session change or a capped
+        gap already releases the buffer early — those are its partial
+        windows. `label_delay` is implied by the horizon; an explicit one is
+        refused. `SCHEMA_VERSION` bumps (rule 5): the spec gains a field.
+        One delay per spec, so several look-ahead targets of different
+        horizons in one spec are learned at the longest — honest, late.
+      - **`po.stream.ewm`** emits every row as it arrives: its window closes
+        at the row.
+      - **`po.stream.lookahead_rewm`** yields per input chunk whatever rows
+        have had their windows close — none at first, then about a chunk per
+        chunk — as `refresh_time`'s source does. A window closes when **any**
+        row arrives more than `horizon` past its row, on the stream's shared
+        clock, so output stays in input order with a bounded delay even when
+        one group falls silent. That needs the clock non-decreasing across
+        the whole stream, as a merged tick stream is, and input that is not
+        is refused naming the row. A `head(n)` stops reading one horizon
+        past its nth row.
+      - **The two clocks.** The spec target measures the horizon on the
+        model's clock, after `max_dclock` caps a gap; `po.stream` on the raw
+        clock column. They agree where no gap exceeds `max_dclock`, and the
+        parity test says so rather than hiding it.
+
+      #### Sub-tasks
+
+      - [ ] 78a. **The rename**, alone, first: `po.prep` → `po.stream`,
+            `time=` → `clock=` and `by=` → `group=` in `refresh_time`, its
+            tests, the reference page, the README, `llms.txt`, and the API
+            surface file. No behaviour change, so every existing test passes
+            with only its spelling changed.
+      - [ ] 78b. **The window core** in `online-polars`: the anchored
+            segment monoid and the two-stack queue, both directions, per
+            group, serialisable. Unit-tested alone.
+      - [ ] 78c. **`po.stream.ewm` and `po.stream.lookahead_rewm`** on it, as
+            IO sources the way `refresh_time` is.
+      - [ ] 78d. **`po.target.lookahead_rewm`** in the stream layer, on the
+            `label_delay` buffer. `SCHEMA_VERSION` bump with a loader for 6.
+
+      Tests: each direction against a brute-force loop on irregular ticks;
+      against the `rolling` recipe on data it can hold — forward with
+      `closed="none"` to match the open end, backward with the default;
+      `same_clock="include"` against brute force alone, since `rolling`
+      cannot express it; chunk invariance at 1, 7, 64 and 1000 rows a chunk;
+      groups and sessions kept apart; a halflife short enough that the late
+      factors underflow; a constant column giving that constant; every
+      `partial` × `complete` combination at both ends; a save/load split at
+      every row of a short stream equal to one run; the spec target equal to
+      the column form fed back through `label_delay` where no gap is capped;
+      output names by the template, and a collision refused; unsorted input
+      refused by the forward utility; and memory flat as rows per window
+      grow — the reason for all of it.
 
 - [x] 77. **A plan with nothing to write runs once where a query uses it
       twice, 2026-09-10.** The IO source declares `is_pure=True` to
