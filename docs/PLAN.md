@@ -1807,7 +1807,10 @@ note, not a task.
       call could only take the *product* of its columns × halflives ×
       horizons, could not mix directions, and every extra call was another
       buffer, another state file and another Python source layer. The same
-      description is also a spec target, so there is no `po.target`.
+      description is also a spec target, so windows need no second
+      spelling. `po.target(column, ...)` exists for the other kind of
+      target — a plain column — only so that it can take the options every
+      target has (*Relative targets*).
 
       Every function in `po.stream` follows five rules — what "the way it
       should be done" means here:
@@ -1867,11 +1870,21 @@ note, not a task.
 
       po.window.ewm(columns, *, halflife, horizon=None, weight=None,
                     split=None, unlisted="error", total=True,
+                    relative_to=None, relative="difference",
                     partial="keep", complete=None, name=None)
       po.window.lookahead_rewm(columns, *, halflife, horizon, weight=None,
                                split=None, unlisted="error", total=True,
+                               relative_to=None, relative="difference",
                                same_clock="include", partial="null",
                                complete=None, name=None)
+      po.target(column, *, relative_to=None, relative="difference", name=None)
+
+      # a spec's targets: a column name, a po.target, or a window description
+      po.spec.ewridge("fwd", targets=["ret_5m",
+                                      po.target("price_5m", relative_to="mid"),
+                                      po.window.lookahead_rewm("price", weight="quantity",
+                                                               halflife=10, horizon=60,
+                                                               relative_to="mid")], ...)
 
       po.stream.embargo(frame, *, clock, delay, weight=None, role=...)
       po.stream.refresh_time(frame, *, series, names, clock, value,
@@ -1953,6 +1966,62 @@ note, not a task.
         spec — so they share one `X'X` (E9) and a buy-side, sell-side and
         all-trades VWAP are fitted for the cost of one. They share a
         horizon, so they share one delay.
+
+      #### Relative targets
+
+      The user, 2026-09-11: "every target should have the option to be
+      relative". A level — a price, a VWAP — is rarely what a regression
+      should predict; where it goes from *now* is. So every target, a plain
+      column as much as a window, takes:
+
+      - **`relative_to=`**, a column read **at the target's own row** *t*
+        — the mid, the last trade — and
+      - **`relative=`**, how the target is taken against it:
+        `"difference"` (default, `y − r`), `"ratio"` (`y / r`) or
+        `"log_ratio"` (`ln(y / r)`).
+
+      `r` at row *t* is known when row *t* arrives, so a relative target is
+      exactly as honest as the target it is built from; it adds no look-
+      ahead. A null `r`, or for the two ratios a non-positive `y` or `r`,
+      makes the target null on that row: not learned from, never a NaN in
+      the state (the guard hard rule 9 asks for).
+
+      - **Where `r` lives.** For a plain column the relative value is
+        computed as the row arrives and buffered already relative. For a
+        window target, `r` is stored on the waiting row (`PendingRow` gains
+        it, beside the target's value and weight) and applied when the
+        window closes. The column form computes the same thing the same way,
+        so parity holds for relative targets exactly as for levels.
+      - **Everything downstream is on the relative scale**: `pred`,
+        `resid`, `sigma`, the metrics and the conformal interval. That makes
+        `hit_rate`'s sign agreement mean "the direction of the move", which
+        is usually the question. A level prediction is `pred + r` (or
+        `pred · r`), and `r` is on the row; the output does not add it
+        back, since what `sigma` and the interval describe is the relative
+        quantity.
+      - **`split=`** takes one `relative_to` for all its outputs: the
+        buy-side, sell-side and all-trades VWAPs are each relative to the
+        same mid.
+      - **In TOML** (the CLI), a target is a string or a table:
+        `targets = ["ret_5m", { column = "price_5m", relative_to = "mid" }]`,
+        and a window target a table with the window's keys — the same
+        vocabulary on every surface (`docs/STATE-WORKFLOW.md`).
+      - **The backward `ewm` takes it too**, as a feature: the price
+        against its own trailing VWAP is one window.
+
+      **A decision to take before building `"log_ratio"`.** `ln` is a libm
+      call, and a relative target is learned — it goes into the model's
+      state, which §11a's B4 rule says costs cross-platform
+      reproducibility (glibc and Apple differ in last bits; it is what broke
+      a frozen fixture on Linux alone). `"difference"` and `"ratio"` are
+      single IEEE operations, correctly rounded everywhere, and carry no
+      such cost. Options: offer `"log_ratio"` with that cost written into
+      its docstring and every `log_ratio` spec kept out of the frozen
+      cross-platform fixtures; or leave it out, since a caller can pass a
+      log price column and take a `"difference"`, which is the same number
+      computed by Polars rather than by us. A correctly rounded `ln` from
+      a new crate would remove the cost but is a new static dependency,
+      which hard rule 12 says to raise first.
 
       #### How rows move
 
@@ -2196,6 +2265,11 @@ note, not a task.
       - [ ] 78e. **Descriptions as spec targets**, in the stream layer, on the
             `label_delay` buffer. `SCHEMA_VERSION` bump with a loader for 6,
             shared with 78b's if they ship together.
+      - [ ] 78f. **Relative targets**: `relative_to` / `relative` on
+            `po.target` and on both window descriptions, in the stream layer
+            (plain columns) and the window core (windows); the TOML table
+            form. The plain-column half depends on nothing else here and can
+            ship with 78a; the window half lands with 78d and 78e.
 
       #### Tests
 
@@ -2241,6 +2315,13 @@ note, not a task.
         with the equivalent gap. For `"reset_state"` and
         `session_gap="reset"`, the rows with `complete` false are exactly
         the rows the model never learned from.
+      - **Relative targets**: `po.target("p", relative_to="r")` against the
+        same spec given `p − r` as a plain column, identical output field by
+        field, for each of `"difference"`, `"ratio"` and (if built)
+        `"log_ratio"`; a null `r` and a non-positive value giving a null
+        target that is not learned; a relative window target in both forms,
+        to the bit; `split=` with one `relative_to`; the TOML table form
+        loading to the same spec as the Python one.
       - Chunk invariance at 1, 7, 64 and 1000 rows a chunk; groups and
         sessions kept apart; a halflife short enough that the late factors
         underflow; a constant column giving that constant; every `partial`
