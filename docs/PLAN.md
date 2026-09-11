@@ -1753,119 +1753,147 @@ note, not a task.
       the README's glossary. `embargo` and `refresh_time` move; nothing
       stays behind under `po.prep`.
 
-      Every function in it follows the same five rules, which is what "the
-      way it should be done" means here:
+      **Windows are described, then run together** — the shape a bank and
+      its specs already have. `po.window.ewm(...)` and
+      `po.window.lookahead_rewm(...)` build descriptions and compute nothing;
+      `po.stream.windows(frame, [...])` runs any number of them in one pass,
+      over one buffer of rows per group, with one state file. Separate calls
+      per window were the first draft and were dropped the same day: one
+      call could only take the *product* of its columns × halflives ×
+      horizons, could not mix directions, and every extra call was another
+      buffer, another state file and another Python source layer. The same
+      description is also a spec target, so there is no `po.target`.
+
+      Every function in `po.stream` follows five rules — what "the way it
+      should be done" means here:
 
       1. **Frame first, the same kind back** — `LazyFrame` in gives a
-         `LazyFrame`, `DataFrame` in gives a `DataFrame`, as
-         `po.fit_predict` already does. Chaining is Polars' own
-         `lf.pipe(po.stream.ewm, "price", ...)`; no methods are added to
-         the `lf.online` namespace for these.
+         `LazyFrame`, `DataFrame` gives a `DataFrame`, as `po.fit_predict`
+         does. Chaining is Polars' own `lf.pipe(po.stream.windows, [...])`;
+         nothing is added to `lf.online` for these.
       2. **One vocabulary, the specs'**: `clock`, `group`, `session`,
-         `weight`, `halflife`. `refresh_time`'s `time=` becomes `clock=`
-         and `by=` becomes `group=`. With no `clock`, one unit is one row,
-         as in a spec.
-      3. **Columns first and plural**: `columns` is a name or a sequence of
-         names; `halflife` and `horizon` are a number or a sequence of
-         numbers; the outputs are every combination, one pass, one buffer
-         per group.
+         `halflife`, `weight`. `refresh_time`'s `time=` becomes `clock=` and
+         `by=` becomes `group=`. With no `clock`, one unit is one row.
+      3. **What the rows share goes on the call; what a window decides goes
+         on the window.** The call takes the clock, group, session and state;
+         a window takes its columns, weight, halflife, horizon, `partial`,
+         `same_clock` and names. Within one window, `columns`, `halflife`
+         and `horizon` may each be a sequence, and the window means every
+         combination.
       4. **Output names by template**: `name=` is a format string over
-         `{column}`, `{halflife}` and `{horizon}`. The default contains only
-         the fields that vary — `"{column}_ewm"` for one halflife and one
-         horizon, `"{column}_ewm_{halflife}"` for several halflives, and so
-         on — and a template that would give two outputs the same name is
-         refused while the plan is built.
-      5. **Stateful transforms resume** with `load_state` / `save_state`,
-         the pair plans already take; `chunk_rows` as everywhere.
-         `embargo` is a pure Polars plan (`merge_sorted`) with nothing to
-         save and takes neither.
+         `{column}`, `{halflife}` and `{horizon}`; the default contains only
+         the fields that vary within the window (`"{column}_ewm"`,
+         `"{column}_ewm_{halflife}"`, ...; `rewm` for the forward form). Two
+         outputs with one name, across all the windows of a call, are refused
+         while the plan is built.
+      5. **Stateful transforms resume** with `load_state` / `save_state`;
+         `chunk_rows` as everywhere. `embargo` is a pure Polars plan
+         (`merge_sorted`) with nothing to save and takes neither.
 
       ```python
-      po.stream.ewm(
-          frame, columns, *,
-          clock=None, halflife, horizon=None,          # horizon None: no cutoff
-          group=None, session=None, weight=None,
-          partial="keep",                              # "keep" | "null" | "drop"
-          complete=None,                               # e.g. "{column}_complete"
-          name=None,                                   # default by rule 4
-          load_state=None, save_state=None, chunk_rows=None,
+      lf = po.stream.windows(
+          lf,
+          [
+              po.window.ewm(["x0", "x1"], halflife=[5, 30], horizon=60),    # 4 outputs
+              po.window.ewm("volume", halflife=300),                        # no horizon: no cutoff
+              po.window.lookahead_rewm(
+                  "price", weight="buy_qty",                                # a forward buy-side VWAP
+                  halflife=10, horizon=60,
+                  same_clock="include", partial="null",
+                  complete="fwd_complete", name="fwd_vwap_buy"),
+          ],
+          clock="ts", group="symbol", session="date",
+          load_state=None, save_state="windows.bin", chunk_rows=None,
       )
 
-      po.stream.lookahead_rewm(
-          frame, columns, *,
-          clock=None, halflife, horizon,               # horizon required
-          group=None, session=None, weight=None,
-          same_clock="include",                        # "include" | "exclude"
-          partial="null",                              # "null" | "drop" | "keep"
-          complete=None,
-          name=None,
-          load_state=None, save_state=None, chunk_rows=None,
-      )
+      po.window.ewm(columns, *, halflife, horizon=None, weight=None,
+                    partial="keep", complete=None, name=None)
+      po.window.lookahead_rewm(columns, *, halflife, horizon, weight=None,
+                               same_clock="include", partial="null",
+                               complete=None, name=None)
 
       po.stream.embargo(frame, *, clock, delay, weight=None, role=...)
       po.stream.refresh_time(frame, *, series, names, clock, value,
                              group=None, pairs=False, keep=(),
                              load_state=None, save_state=None, chunk_rows=None)
 
-      po.target.lookahead_rewm(column, *, horizon, halflife,
-                               same_clock="include", partial="drop",
-                               name=None)
-      # used as a spec target:  po.spec.ewridge(..., targets=[po.target.lookahead_rewm("price", ...)])
+      # a description as a spec target:
+      po.spec.ewridge("fwd", targets=[po.window.lookahead_rewm("price", weight="buy_qty",
+                                                               halflife=10, horizon=60)], ...)
       ```
 
-      The options are all the user's to choose per use; the defaults are
-      only where a call with none lands.
-      - **`partial`** is the same concept in both directions: a window cut
-        short before its horizon passes. Backward, that is the start of a
-        stream, session or group, before one horizon of history exists —
-        `"keep"` is an ordinary warm-up, hence its default there. Forward,
-        it is the end, or a session or group closing — hence `"null"`.
-        `"drop"` removes the row. `complete` names a bool column (per
-        `{column}` if nulls differ between columns) saying which rows had a
-        full window, under any `partial`. An *empty* window — a gap longer
-        than the horizon — is not partial: null, with `complete` true.
+      The options are all the caller's to choose per window; the defaults
+      are only where a call with none lands.
+      - **`weight`** is per window, because the buy-side and sell-side
+        windows of one call weigh the same rows differently. Each row counts
+        `weight × λ^distance`; a null or zero weight counts nothing, which
+        is how market-data rows interleaved with trades drop out of a VWAP.
+        A window whose weights sum to zero is *empty* — null, `complete`
+        true — never 0/0 (the guard hard rule 9 asks for). A null *value*
+        on a row counts nothing either, so a column's window is over the
+        rows where that column and its weight are both present.
+      - **The anchor matters only to a sum.** A weighted mean is
+        `Σ w·v / Σ w`, and moving the anchor multiplies every weight by one
+        constant, which cancels: measured, a buy-side VWAP anchored at the
+        next row of any kind (the `rolling` recipe) and at the next buy (the
+        brute force) agree to 1.1e-13. The anchor stays at the near end for
+        the numerics — it keeps every factor ≤ 1 — not for the answer.
+      - **`partial`** is one concept in both directions: a window cut short
+        before its horizon passes. Backward, that is the start of a stream,
+        session or group — `"keep"` is an ordinary warm-up, hence its
+        default there; forward, it is the end, or a session or group closing
+        — hence `"null"`. `"drop"` removes the row; with several windows in
+        one call, a row is dropped if any window that says `"drop"` is
+        partial on it. `complete` names a bool column saying which rows had
+        a full window. An empty window is not partial.
       - **`same_clock`** (forward only): whether later rows stamped with
         *t*'s own clock are "the next rows". `"exclude"` is what a
         time-indexed `rolling` does; `"include"` is stream order, which no
-        time-indexed window can express.
-      - **`save_state`** changes what the end of a stream means: with it,
-        rows still inside their horizon are not partial but waiting, saved,
-        and emitted by the next run. Backward, the saved state is the last
-        window of rows per group.
-      - **The spec target** has `partial` of `"drop"` / `"keep"` only: a
-        null target is never learned from, so `"null"` and `"drop"` are one
-        thing there, and there is no `complete` because the bank does not
-        emit its target.
+        time-indexed window can express — and it is what interleaved data
+        needs, where a trade often prints in the same millisecond as the
+        quote row before it.
+      - **`save_state`** changes what the end of a stream means: rows still
+        inside a horizon are not partial but waiting, saved, and emitted by
+        the next run. The saved state is one window's worth of rows per
+        group — the longest window of the call — plus each window's running
+        sums.
+      - **As a spec target**, a description's `partial` is `"drop"` or
+        `"keep"` only (a null target is never learned from, so `"null"` and
+        `"drop"` are one thing there), `complete` is refused (the bank does
+        not emit its target), and the backward `ewm` is refused (it is not a
+        label; it is a feature, and belongs upstream in `po.stream`).
 
       #### How rows move
 
-      - **`po.target.lookahead_rewm`** rides on the `label_delay` FIFO
+      - **A description as a spec target** rides on the `label_delay` FIFO
         (`apply_label_delay`, `crates/online-polars/src/stream.rs`). When
         row *t* is released, the rows still waiting behind it are exactly its
         window — those after it, less than `horizon` later on the model's
         clock — so the target is computed at release from rows the bank
-        already holds. Each row is still scored and emitted as it arrives
-        (`learn: false` on the arriving row, `emit: false` on the replay);
-        the rest of the plan never sees the buffer. One state file. The
-        window is open at `t + horizon` because the buffer releases *t*
-        before pushing the row that reaches it. A session change or a capped
-        gap already releases the buffer early — those are its partial
-        windows. `label_delay` is implied by the horizon; an explicit one is
-        refused. `SCHEMA_VERSION` bumps (rule 5): the spec gains a field.
-        One delay per spec, so several look-ahead targets of different
-        horizons in one spec are learned at the longest — honest, late.
-      - **`po.stream.ewm`** emits every row as it arrives: its window closes
-        at the row.
-      - **`po.stream.lookahead_rewm`** yields per input chunk whatever rows
-        have had their windows close — none at first, then about a chunk per
-        chunk — as `refresh_time`'s source does. A window closes when **any**
-        row arrives more than `horizon` past its row, on the stream's shared
+        already holds; `PendingRow` gains the target's value and weight.
+        Each row is still scored and emitted as it arrives (`learn: false`
+        on the arriving row, `emit: false` on the replay): the rest of the
+        plan never sees the buffer. One state file. The window is open at
+        `t + horizon`, because the buffer releases *t* before pushing the
+        row that reaches it. A session change or a capped gap already
+        releases the buffer early — those are its partial windows.
+        `label_delay` is implied by the horizon; an explicit one is refused.
+        `SCHEMA_VERSION` bumps (rule 5). One delay per spec, so several
+        look-ahead targets of different horizons in one spec are learned at
+        the longest — honest, late.
+      - **`po.stream.windows` with only backward windows** emits every row
+        as it arrives.
+      - **With any forward window**, it yields per input chunk whatever rows
+        have had *every* window close — none at first, then about a chunk
+        per chunk — as `refresh_time`'s source does, so every output waits
+        for the longest forward horizon. A window closes when **any** row
+        arrives more than `horizon` past its row, on the stream's shared
         clock, so output stays in input order with a bounded delay even when
         one group falls silent. That needs the clock non-decreasing across
         the whole stream, as a merged tick stream is, and input that is not
         is refused naming the row. A `head(n)` stops reading one horizon
         past its nth row.
-      - **The two clocks.** The spec target measures the horizon on the
+      - **The two clocks.** A spec target measures the horizon on the
         model's clock, after `max_dclock` caps a gap; `po.stream` on the raw
         clock column. They agree where no gap exceeds `max_dclock`, and the
         parity test says so rather than hiding it.
@@ -1879,25 +1907,45 @@ note, not a task.
             with only its spelling changed.
       - [ ] 78b. **The window core** in `online-polars`: the anchored
             segment monoid and the two-stack queue, both directions, per
-            group, serialisable. Unit-tested alone.
-      - [ ] 78c. **`po.stream.ewm` and `po.stream.lookahead_rewm`** on it, as
-            IO sources the way `refresh_time` is.
-      - [ ] 78d. **`po.target.lookahead_rewm`** in the stream layer, on the
+            group, with a per-row weight, serialisable. Unit-tested alone.
+      - [ ] 78c. **`po.window.*` and `po.stream.windows`** on it, as an IO
+            source the way `refresh_time` is: one row buffer per group shared
+            by every window, each window's sums its own.
+      - [ ] 78d. **Descriptions as spec targets**, in the stream layer, on the
             `label_delay` buffer. `SCHEMA_VERSION` bump with a loader for 6.
 
-      Tests: each direction against a brute-force loop on irregular ticks;
-      against the `rolling` recipe on data it can hold — forward with
-      `closed="none"` to match the open end, backward with the default;
-      `same_clock="include"` against brute force alone, since `rolling`
-      cannot express it; chunk invariance at 1, 7, 64 and 1000 rows a chunk;
-      groups and sessions kept apart; a halflife short enough that the late
-      factors underflow; a constant column giving that constant; every
-      `partial` × `complete` combination at both ends; a save/load split at
-      every row of a short stream equal to one run; the spec target equal to
-      the column form fed back through `label_delay` where no gap is capped;
-      output names by the template, and a collision refused; unsorted input
-      refused by the forward utility; and memory flat as rows per window
-      grow — the reason for all of it.
+      #### Tests
+
+      - Each direction against a brute-force loop on irregular ticks, and
+        against the `rolling` recipe on data it can hold — forward with
+        `closed="none"` to match the open end, backward with the default.
+      - `same_clock="include"` against brute force alone, since `rolling`
+        cannot express it.
+      - **Interleaved trades and market data** (the user's case,
+        2026-09-11): columns `side`, `quantity`, `price`, null on the
+        market-data rows, trades often sharing a clock value with the row
+        before them. The forward rewm of the VWAP over all trades, over buys
+        only and over sells only — three windows in one call, weights
+        `quantity`, `quantity` where `side == "buy"`, and where
+        `side == "sell"` — each against brute force, including the windows
+        with no trade of that side (null, `complete` true) and trades at
+        the quote's own clock under both `same_clock` settings. And the
+        same three as spec targets, equal to the column form fed back
+        through `label_delay`. The `rolling` recipe for this case,
+        2026-09-11, 3,000 rows, 30% trades: buy side 1.1e-13 and sell side
+        8.5e-14 against brute force, empty windows matching exactly — the
+        oracle for the column form.
+      - Chunk invariance at 1, 7, 64 and 1000 rows a chunk; groups and
+        sessions kept apart; a halflife short enough that the late factors
+        underflow; a constant column giving that constant; every `partial`
+        × `complete` combination at both ends, and `"drop"` with several
+        windows; a save/load split at every row of a short stream equal to
+        one run.
+      - Output names by the template; a collision across two windows of one
+        call refused; unsorted input refused when a forward window is
+        present; a backward `ewm` refused as a spec target.
+      - Memory flat as rows per window grow — the reason for all of it —
+        and flat as windows are added, beyond their own sums.
 
 - [x] 77. **A plan with nothing to write runs once where a query uses it
       twice, 2026-09-10.** The IO source declares `is_pure=True` to
