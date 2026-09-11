@@ -2009,19 +2009,24 @@ note, not a task.
       - **The backward `ewm` takes it too**, as a feature: the price
         against its own trailing VWAP is one window.
 
-      **A decision to take before building `"log_ratio"`.** `ln` is a libm
-      call, and a relative target is learned — it goes into the model's
-      state, which §11a's B4 rule says costs cross-platform
-      reproducibility (glibc and Apple differ in last bits; it is what broke
-      a frozen fixture on Linux alone). `"difference"` and `"ratio"` are
-      single IEEE operations, correctly rounded everywhere, and carry no
-      such cost. Options: offer `"log_ratio"` with that cost written into
-      its docstring and every `log_ratio` spec kept out of the frozen
-      cross-platform fixtures; or leave it out, since a caller can pass a
-      log price column and take a `"difference"`, which is the same number
-      computed by Polars rather than by us. A correctly rounded `ln` from
-      a new crate would remove the cost but is a new static dependency,
-      which hard rule 12 says to raise first.
+      **`"log_ratio"` is offered; its only cost is to our own fixtures.**
+      A first draft made this a decision, on §11a's B4 rule — "putting a
+      libm result into the state costs cross-platform reproducibility" —
+      and suggested a caller could avoid it by passing a log-price column
+      computed in Polars. The user asked what exact object was the worry,
+      and the answer undoes both: nothing special is stored, just an `f64`
+      in `ewridge`'s `r`, `tm`, `sig2` and `beta` like any target's. The
+      only fact is that `ln` can differ in its last bit between glibc and
+      Apple's libm, so the same rows can leave last-bit-different numbers in
+      the saved file on the two. And a Polars log column comes from the same
+      libm, so it moves the `ln` without removing it. The consequence is
+      test hygiene, not a user-facing choice: the docstring says a
+      log-ratio target is reproducible across OSes to the last few bits, as
+      any log is, and no `"log_ratio"` spec goes into a byte-identical
+      cross-platform fixture (`state_schema*.rs`, the release workflow's
+      write-on-macOS / read-elsewhere job). B4 itself stands as it was
+      written for `bocpd`: our own fixtures must not depend on a libm last
+      bit.
 
       #### How rows move
 
