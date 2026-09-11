@@ -818,3 +818,23 @@ Searched for it when this was fixed and found it three more times: the
 README glossary's definition of *stream* ("the rows, in time order"), the
 first sentence of "How a bank sees a stream", and the opening of
 `docs/RUNNER.md`. All three now leave order to the one place it applies.
+
+### README.md:257 (the `session_gap` comment in "Sessions, gaps and a clock that runs backwards")
+
+> "inf never applies it"
+
+**Reported:** not by the user — found by Claude on 2026-09-11 while
+explaining the clock parameters, by measuring rather than reading. The user
+asked for it to be fixed.
+
+**Status:** fixed (commit following this entry): "the clock step to apply
+there, at most max_dclock".
+
+**Note:** a factual error, not a phrasing one. `session_gap` is limited to
+`max_dclock` (`crates/online-core/src/clock.rs`, `g.clamp(0.0,
+cfg.max_dclock)`), so `inf` is the same as a capped gap: measured, a jump
+of 1000 clock units at a session change with `max_dclock=100` applies a
+step of 100 under `session_gap=inf`, exactly as with no session column at
+all. "Never applies it" had nothing behind it. The sentence also hid the
+limit itself, which matters to anyone choosing a gap larger than
+`max_dclock`.
