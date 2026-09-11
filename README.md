@@ -1,9 +1,11 @@
 # polars-online
 
 Online model fitting for [Polars](https://pola.rs) — linear models,
-streaming moments, clustering and regime detection — for rows that arrive
-in time order and never all fit in memory at once. Rust core, Python API,
-and a standalone command line ([docs/RUNNER.md](docs/RUNNER.md)).
+streaming moments, clustering and regime detection — for data that can
+never fit in memory all at once. When the data has a time order, a fit can
+also be local: a rolling fit that follows the recent rows, without
+refitting a window at every step. Rust core, Python API, and a standalone
+command line ([docs/RUNNER.md](docs/RUNNER.md)).
 
 > **A note on Polars versions.** Two of the three ways this library plugs
 > into Polars carry no stability promise from Polars, so `polars>=1.34.0,<3`
@@ -51,7 +53,7 @@ accumulates gives the same answer in any order.
 |---|---|
 | **spec** | the description of one model: which model, which columns it reads, how it should treat time. `po.spec.ewridge(...)` builds one |
 | **model bank** — "the bank" | a set of specs fitted together over the same rows, and the Python object that holds them, [`ModelBank`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank). Wherever this README says *the bank*, it means a model bank |
-| **stream**, **chunk** | the rows, in time order, and the pieces they arrive in. The bank takes one chunk at a time and its results never depend on where one chunk ended and the next began |
+| **stream**, **chunk** | the rows, in the order the bank reads them — time order, when a model forgets — and the pieces they arrive in. The bank takes one chunk at a time and its results never depend on where one chunk ended and the next began |
 | **state** | everything a bank has learned. Its size depends on the models, not on how many rows have gone past — which is why the stream can be any length |
 
 **The basic example.** A ridge regression per stock, fitted over a folder of
@@ -200,7 +202,7 @@ uv run maturin develop --release -m crates/online-py/Cargo.toml
 
 ## How a bank sees a stream
 
-A model bank reads a stream of rows in time order, one chunk at a time. The
+A model bank reads a stream of rows one chunk at a time. The
 parameters in this section are shared by every model and say how the rows
 are to be read: which columns, how time and forgetting work, which rows
 belong to which model, how much each row counts, and when a model has seen
@@ -2589,7 +2591,7 @@ withhold a patch release for a range that ends at 3.
 
 ### Raising the ceiling to a new major
 
-The ceiling is `<3`, raised from `<2` in 0.5.0, so a py-polars 3.0 is
+The ceiling is `<3`, raised from `<2` in 0.5.1, so a py-polars 3.0 is
 excluded until this is done again. The steps, in order — written while
 raising it to `<3`, and followed to do it:
 

@@ -1,7 +1,7 @@
 # Running a bank as a job: `po.run` and the `online` command line
 
-A *model bank* is a set of models fitted together over the same rows, in
-time order ([the README's introduction](../README.md#introduction) defines
+A *model bank* is a set of models fitted together over the same rows
+([the README's introduction](../README.md#introduction) defines
 the words this document uses). The README's [Running a
 bank](../README.md#running-a-bank) assumes a live Python process driving
 the rows through it — a Polars query, or a loop over chunks. A scheduled

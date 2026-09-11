@@ -6,7 +6,7 @@
 > in memory. Memory is O(state), not O(data), so a model fits a stream that does not
 > fit in RAM.
 
-Python 3.12+, `polars>=1.34,<2`. `pip install polars-online`. `numpy` is an optional
+Python 3.12+, `polars>=1.34,<3`. `pip install polars-online`. `numpy` is an optional
 extra, needed only by `po.gram`, `po.corr` and `po.sim`. No pandas.
 
 The two surfaces that stream, in full:

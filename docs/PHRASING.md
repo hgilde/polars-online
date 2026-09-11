@@ -792,3 +792,29 @@ order"
 seen. "One" stood for "a decay" across a semicolon and a full clause, far
 enough that it read as pointing at nothing. The noun is repeated; no new
 rule.
+
+### README.md:3-5 (the opening sentence)
+
+> "for rows that arrive in time order and never all fit in memory at once"
+
+**Reported:** This is wrong in the readme:  for rows that arrive in time
+order and never all fit in memory at once. It should say something like
+for data that can never fit in memory all at once, with local, rolling
+fitting available for data with a time ordering.
+
+**Status:** fixed (commit following this entry).
+
+**Note:** the same correctness finding as "That order is what makes every
+prediction honest" above, one sentence earlier in the same document —
+and the most-read sentence in it. Time order was stated as a condition
+of using the library at all, when it is a condition only of one thing the
+library offers: a local, rolling fit through a decay. Bounded memory needs
+no order. No new rule — `docs/WRITING.md` rule 4, an effect attributed to
+its own cause — but a sign that the earlier fix was applied to the
+paragraph that was reported rather than to every sentence making the same
+claim. A reported error is a pattern to search for, not one line to edit.
+
+Searched for it when this was fixed and found it three more times: the
+README glossary's definition of *stream* ("the rows, in time order"), the
+first sentence of "How a bank sees a stream", and the opening of
+`docs/RUNNER.md`. All three now leave order to the one place it applies.
