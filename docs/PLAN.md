@@ -1682,7 +1682,10 @@ note, not a task.
       interleaved with market data: a per-window weight, and three things
       the implementation does that `rolling` cannot — rows that contribute
       nothing never enter a window, `split=` for one output per category,
-      and waiting rows held as the input's own chunks.
+      and waiting rows held as the input's own chunks. Then: the column
+      form must be able to reproduce exactly what the model computes for a
+      target, so both take the spec's session and gap parameters (*One
+      clock, both forms*, below).
 
       *The quantity.* For row *t* at clock τₜ, over the rows *j* in the
       window, taken in stream order:
@@ -1775,11 +1778,16 @@ note, not a task.
          `LazyFrame`, `DataFrame` gives a `DataFrame`, as `po.fit_predict`
          does. Chaining is Polars' own `lf.pipe(po.stream.windows, [...])`;
          nothing is added to `lf.online` for these.
-      2. **One vocabulary, the specs'**: `clock`, `group`, `session`,
-         `halflife`, `weight`. `refresh_time`'s `time=` becomes `clock=` and
-         `by=` becomes `group=`. With no `clock`, one unit is one row.
+      2. **One vocabulary, the specs'**: `clock`, `max_dclock`,
+         `on_clock_reset`, `session`, `session_gap`, `group`, `halflife`,
+         `weight` — the same names, defaults and meanings as on a spec, run
+         by the same Rust clock code. `refresh_time`'s `time=` becomes
+         `clock=` and `by=` becomes `group=`. With no `clock`, one unit is
+         one row.
       3. **What the rows share goes on the call; what a window decides goes
-         on the window.** The call takes the clock, group, session and state;
+         on the window.** The call takes the clock and its policy — `clock`,
+         `max_dclock`, `on_clock_reset`, `session`, `session_gap`, `group` —
+         and the state;
          a window takes its columns, weight, halflife, horizon, `partial`,
          `same_clock` and names. Within one window, `columns`, `halflife`
          and `horizon` may each be a sequence, and the window means every
@@ -1809,9 +1817,15 @@ note, not a task.
                   same_clock="include", partial="null",
                   complete="fwd_complete", name="fwd_vwap{split}"),
           ],
-          clock="ts", group="symbol", session="date",
+          clock="ts", max_dclock=300.0, on_clock_reset="max",       # the spec's clock policy,
+          session="date", session_gap=60.0, group="symbol",         # word for word
           load_state=None, save_state="windows.bin", chunk_rows=None,
       )
+
+      po.stream.windows(frame, windows, *,
+                        clock=None, max_dclock=None, on_clock_reset="max",
+                        session=None, session_gap=None, group=None,
+                        load_state=None, save_state=None, chunk_rows=None)
 
       po.window.ewm(columns, *, halflife, horizon=None, weight=None,
                     split=None, unlisted="error", total=True,
@@ -1880,11 +1894,23 @@ note, not a task.
         the next run. The saved state is one window's worth of rows per
         group — the longest window of the call — plus each window's running
         sums.
-      - **As a spec target**, a description's `partial` is `"drop"` or
-        `"keep"` only (a null target is never learned from, so `"null"` and
-        `"drop"` are one thing there), `complete` is refused (the bank does
-        not emit its target), and the backward `ewm` is refused (it is not a
-        label; it is a feature, and belongs upstream in `po.stream`).
+      - **As a spec target**, a description is accepted as written, so the
+        one built for the column form works unchanged. `partial="null"` and
+        `"drop"` both mean the row is not learned from — a null target never
+        is — and `"keep"` learns from the partial window; the default,
+        `"null"`, is therefore valid (a first draft allowed only `"drop"` /
+        `"keep"`, which would have refused the default a caller never set).
+        `complete` is refused: the bank does not emit its target, and it
+        names a column that would not exist. The backward `ewm` is refused:
+        it is not a label but a feature, and belongs upstream in
+        `po.stream`. The clock and its policy are the spec's — a description
+        never carries one, in either place, because every window over a
+        buffer shares its clock.
+      - **A split description as a spec target is several targets**, one per
+        listed category plus the total unless `total=False`, in the one
+        spec — so they share one `X'X` (E9) and a buy-side, sell-side and
+        all-trades VWAP are fitted for the cost of one. They share a
+        horizon, so they share one delay.
 
       #### How rows move
 
@@ -1936,10 +1962,53 @@ note, not a task.
         the whole stream, as a merged tick stream is, and input that is not
         is refused naming the row. A `head(n)` stops reading one horizon
         past its nth row.
-      - **The two clocks.** A spec target measures the horizon on the
-        model's clock, after `max_dclock` caps a gap; `po.stream` on the raw
-        clock column. They agree where no gap exceeds `max_dclock`, and the
-        parity test says so rather than hiding it.
+
+      #### One clock, both forms
+
+      The column form must reproduce the model's target to the bit when it
+      is given the spec's clock policy, so the rules below are one set,
+      stated once, implemented once — the window core steps the same clock
+      state the stream layer does (`ClockState`,
+      `crates/online-polars/src/stream.rs`), never a second copy of it.
+      Read from `apply_label_delay` (2026-09-11), not assumed:
+
+      - **The horizon is measured on the policy clock** — each row's step
+        after `max_dclock` caps it and after `session_gap` or
+        `on_clock_reset` replaces it — never on the raw column.
+      - **A capped gap and a session change end every open window**: the
+        model releases its whole buffer on either. Those are partial
+        windows, under `partial`. So a window never spans a gap longer than
+        `max_dclock` or a session boundary, in either form.
+      - **A reset discards**: `on_clock_reset="reset_state"` or
+        `session_gap="reset"` empties the model's buffer, and the rows
+        waiting in it are never learned from, whatever `partial` says. The
+        column form still emits those rows — it emits every row — with the
+        partial treatment and `complete` false, so filtering on `complete`
+        is exactly the set the model learned from.
+      - **`same_clock` is about steps, not stamps**: a later row reached
+        from *t* by a zero policy-clock step is "at *t*'s clock". That is
+        the only definition both forms can share, since the model never
+        sees the raw column.
+      - **Groups have their own clocks**, as they do in a bank.
+      - **No retyping.** A spec exposes its clock policy as
+        `spec.clock_policy`, a dict of exactly these keywords, so
+        `po.stream.windows(lf, [...], **spec.clock_policy)` cannot drift
+        from the model it is meant to match.
+
+      **A decision to take before 78c: a backwards clock with a forward
+      window.** The column form closes a forward window when any row
+      arrives more than a horizon past it on the stream's shared clock,
+      which keeps the output in input order with a bounded delay even when
+      a group falls silent — and so it refuses input whose clock is not
+      non-decreasing. The model accepts one: `on_clock_reset` exists for a
+      clock that restarts, a time-of-day column across sessions. Under the
+      refusal, parity holds only for a clock that never goes back, which a
+      full timestamp is. The alternative closes each window on its own
+      group's clock and events, accepts any clock the spec accepts, and
+      emits rows in the order their windows close rather than input order.
+      Candidate: both, as `order="input"` (refuses a backwards clock) and
+      `order="closed"` (accepts it), the user's rule for choices whose
+      answer depends on the data.
 
       #### Sub-tasks
 
@@ -1951,13 +2020,16 @@ note, not a task.
       - [ ] 78b. **The window core** in `online-polars`: the anchored
             segment monoid and the two-stack queue, both directions, per
             group, with a per-row weight; queues that admit only
-            contributing rows, one per split category plus the total;
-            serialisable. Unit-tested alone.
+            contributing rows, one per split category plus the total; its
+            clock stepped by the stream layer's own `ClockState`, with the
+            capped-gap, session and reset events ending or discarding
+            windows as `apply_label_delay` does; serialisable. Unit-tested
+            alone.
       - [ ] 78c. **`po.window.*` and `po.stream.windows`** on it, as an IO
             source the way `refresh_time` is: waiting rows held as the input's
             chunks and sliced out when their windows close, each window's
             queues its own; `split`, `unlisted`, `total` and the `{split}`
-            name field.
+            name field; the clock-policy keywords and `spec.clock_policy`.
       - [ ] 78d. **Descriptions as spec targets**, in the stream layer, on the
             `label_delay` buffer. `SCHEMA_VERSION` bump with a loader for 6.
 
@@ -1987,6 +2059,16 @@ note, not a task.
         2026-09-11, 3,000 rows, 30% trades: buy side 1.1e-13 and sell side
         8.5e-14 against brute force, empty windows matching exactly — the
         oracle for the column form.
+      - **Parity with the model, per clock event**: a spec with a
+        look-ahead target against the same spec given the column form's
+        output — computed with `**spec.clock_policy` — as an ordinary target
+        with `label_delay = horizon`, identical `pred` on every row, on
+        streams built to contain each event: a gap over `max_dclock`, a
+        session change with a finite `session_gap`, `session_gap="reset"`,
+        each `on_clock_reset` policy the chosen `order` accepts, several
+        groups, and rows at one clock value. For `"reset_state"` and
+        `session_gap="reset"`, the rows with `complete` false are exactly
+        the rows the model never learned from.
       - Chunk invariance at 1, 7, 64 and 1000 rows a chunk; groups and
         sessions kept apart; a halflife short enough that the late factors
         underflow; a constant column giving that constant; every `partial`
