@@ -941,10 +941,10 @@ often the source runs today.
 The run was one platform (macOS arm64), one Python (3.14), and a release
 candidate.
 
-**Superseded on 2026-09-10: `<2` became `<3` in 0.5.0.** What changed the
+**Superseded on 2026-09-10: `<2` became `<3` in 0.5.1.** What changed the
 judgment was not new evidence about the candidate but where the risk of
 being wrong now lands. `release.yml`'s blocking leg runs the whole suite,
-at the tag, on the newest version the declared range admits — so from 0.5.0
+at the tag, on the newest version the declared range admits — so from 0.5.1
 on, 2.0.0 final is tested before any wheel is published under a range that
 includes it. The paragraph above was written when nothing checked the top
 of the range at release time; widening then would have meant declaring

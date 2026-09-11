@@ -7,11 +7,12 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
-## [0.5.0] — 2026-09-10
+## [0.5.1] — 2026-09-11
 
-A minor because the supported range of Polars is wider, which is a minor
-release by this package's own rule. No model returns a different number
-than it did in 0.4.1.
+The first release of the 0.5 series: 0.5.0 was tagged but never published
+(below). A minor because the supported range of Polars is wider, which is
+a minor release by this package's own rule. No model returns a different
+number than it did in 0.4.1.
 
 ### Changed
 
@@ -46,6 +47,12 @@ than it did in 0.4.1.
 
 ### Documentation
 
+- **Time order is no longer stated as a requirement of the library.** The
+  README's opening sentence said the library was for "rows that arrive in
+  time order"; it is for data that never fits in memory at once, and time
+  order matters only for a local, rolling fit through a decay. The same
+  claim is corrected in three other places, and `llms.txt` now gives the
+  current Polars range.
 - **The README is rewritten for one stated reader** (task 68): someone who
   knows statistics, a little Polars and time-ordered data, and nothing about
   the internals of Polars or this project. The introduction now defines the
@@ -59,6 +66,17 @@ than it did in 0.4.1.
   rules the rewrite followed are `docs/WRITING.md`, each drawn from a
   reported problem in `docs/PHRASING.md`, the log the rewrite was worked
   from.
+
+## [0.5.0] — tagged 2026-09-10, never published
+
+The `v0.5.0` tag exists and points at the same package as 0.5.1, but its
+release run withheld the publish, and nothing reached PyPI or GitHub
+Releases. The cause was in the new release-time Polars check, not the
+package: the blocking leg passed `--prerelease=disallow`, which applies to
+every dependency, and the docs group's `furo` needs a beta of
+`sphinx-basic-ng`, so the environment could not be resolved and the check
+failed before running a test. The check failing closed is what it was
+built to do. 0.5.1 is the same change with that flag removed.
 
 ## [0.4.1] — 2026-09-09
 

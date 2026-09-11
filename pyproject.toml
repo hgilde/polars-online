@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "polars-online"
-version = "0.5.0"
+version = "0.5.1"
 description = "Streaming / online regression models for Polars"
 readme = "README.md"
 license = "Apache-2.0"
@@ -45,7 +45,7 @@ dependencies = [
     # identical numbers. `docs/RELEASE-READINESS.md` has the matrix and the
     # command to reproduce it.
     #
-    # The ceiling was `<2` and was raised to `<3` for 0.5.0, deliberately and
+    # The ceiling was `<2` and was raised to `<3` for 0.5.1, deliberately and
     # on measurement rather than on 2.x keeping the interface: the whole
     # suite passes on 2.0.0rc1 with the same numbers as on 1.44, all three
     # interfaces work, and `LazyFrame.collect_batches` -- the floor -- is
