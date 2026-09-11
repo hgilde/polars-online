@@ -1667,6 +1667,109 @@ note, not a task.
       `hit_rate` (`test_diagnostics.py`'s E22 test among them) is regression
       and passes unchanged, since none of them named `binary=True`.
 
+- [ ] 78. **E69, a look-ahead EWMA target built on a forward pass —
+      recorded 2026-09-11, not built.** The user's ask: "Is it possible to
+      have a look ahead that generates a reverse ewma on the forward pass?
+      For example a target of a regression may be not the forward price but
+      the reverse ewma of rows starting with the next, going forward for one
+      minute. This reverse ewma puts the most weight on the first row it
+      sees, with the weight decreasing forward."
+
+      *The quantity.* For row *t* at clock τₜ, over the rows *j* with
+      τₜ < τⱼ ≤ τₜ + `horizon`, taken in stream order:
+
+      `y_t = Σ λ^(τⱼ − τ_first) · pⱼ / Σ λ^(τⱼ − τ_first)`,
+      `λ = 2^(−1/halflife)`, τ_first the first such row's clock
+
+      so the first row after *t* has weight 1 and the weights fall forward.
+      It is a forward quantity, so the half of the problem that is about
+      honesty is already solved: learn it with `label_delay = horizon` (E47,
+      README *Labels that arrive late*) — the horizon, not the halflife,
+      since the weights never reach zero inside the window.
+
+      *Why not the Polars recipe.* It exists and is exact:
+      `lf.rolling(index_column="t", period=horizon, offset="0s",
+      closed="right").agg(((w * p).sum() / w.sum()))` with
+      `w = exp(-ln2 · (t − t.min()) / halflife)` matched a brute-force loop
+      to 8.5e-14 on irregular ticks, and the streaming engine runs it as a
+      native `rolling-group-by` node whose output equals the in-memory
+      engine's exactly (1M rows, max |diff| 0.0). Its memory is bounded —
+      but by the window, not the stream. Measured on 14 cores, ~2 ticks a
+      second, `sink_parquet` from parquet (a scan-and-sink alone peaks at
+      0.1–0.4 GB):
+
+      | rows | window | threads | peak RSS | time |
+      |---:|---:|---:|---:|---:|
+      | 1M | 60 s | 14 | 2.9 GB | 1.4 s |
+      | 4M | 60 s | 14 | 3.9 GB | 3.7 s |
+      | 16M | 60 s | 14 | 4.0 GB | 15.8 s |
+      | 4M | 120 s | 14 | 7.9 GB | 9.2 s |
+      | 4M | 240 s | 14 | 14.6 GB | 18.5 s |
+      | 4M | 60 s | 4 | 1.3 GB | 5.0 s |
+      | 4M | 60 s | 1 | 0.44 GB | 12.7 s |
+
+      Identical on py-polars 2.0.0rc1 (3.6 GB at 4M, 4.1 GB at 16M, 0.44 GB
+      on one thread). The cause is the weighting: every window's weights are
+      relative to its own first row, so nothing is shared between windows,
+      each window's rows are gathered separately, and each thread holds a
+      morsel's worth of windows — O(rows × rows per window) work, memory
+      ~250 MB per thread per 120 rows of window. Extrapolated, 2,000 ticks a
+      minute would want ~60 GB on all cores. Not measured: `group_by=`.
+
+      *The algorithm, and the trap.*
+      - **Not prefix sums.** `A(τ) = Σ λ^τᵢ pᵢ` gives each window in O(1) as
+        a difference, but the weights fall forward, so the earlier prefix
+        dwarfs the window's own sum and the subtraction cancels it away;
+        written with `λ^(−τ)` instead, it overflows. The same failure as
+        E49's raw sums.
+      - **Segment sums anchored at their first row**, combined associatively:
+        `(S_a, W_a, τ₀a) ⊕ (S_b, W_b, τ₀b) = (S_a + λ^(τ₀b−τ₀a) S_b,
+        W_a + λ^(τ₀b−τ₀a) W_b, τ₀a)`. Every factor is ≤ 1 on a
+        non-decreasing clock: no subtraction, no overflow, and a factor that
+        underflows to 0 is a weight that was negligible anyway. The queue's
+        whole aggregate *is* the answer (its anchor is the first row after
+        *t*).
+      - **A FIFO sliding window over that monoid** — the two-stack queue
+        (Tangwongsan et al.'s SWAG family): push each arriving row at the
+        back; when a row arrives with τ > τₜ + `horizon` for the oldest
+        pending *t*, the queue holds exactly *t*'s window, so read the
+        aggregate, emit *t*, pop the front, repeat. O(1) amortised per row,
+        exact, memory one horizon of rows per group.
+
+      *Shape.* `po.prep.<name>(lf, *, value, clock, horizon, halflife,
+      by=None, ...) -> pl.LazyFrame`, a lazy IO source over the input plan
+      the way `refresh_time` is (`crates/online-polars/src/refresh.rs` is the
+      model: Rust core, a pyclass, the Python source), appending the target
+      column to each row. Output rows leave up to one horizon after they
+      arrive, in input order.
+
+      *Decisions to take before building.*
+      1. **The name.** "Reverse EWMA" says how it is computed; the column is
+         a look-ahead mean. Candidates: `forward_ewm`, `lookahead_ewm`.
+      2. **A partial window** — the last `horizon` of the stream, and before
+         a gap or session end — is a different target. Null, dropped, or
+         kept with a `complete` flag? (The recipe's last rows had windows of
+         2, 1 and 0 rows.) Default proposed: null plus the flag, so a caller
+         can see what was cut without the frame changing length.
+      3. **Same-clock rows.** "Starting with the next row": does a later row
+         with τ equal to τₜ count? The recipe says no (the window opens
+         after τₜ); stream order says yes. Tick data with duplicate stamps
+         makes this a real choice.
+      4. **Sessions and groups**: a window must not cross a group, and
+         should not cross a session boundary (the same rule as the models).
+      5. **Row weights**: if a weight column is taken, `W` can be 0 over a
+         window of zero-weight rows — a 0/0 to guard, as hard rule 9 does.
+      6. **Resumability**: whether the pending rows are saved with a state
+         file (they are the same kind of FIFO `label_delay` saves), or the
+         builder is run on whole streams only.
+
+      Tests: against a brute-force loop on irregular ticks (the recipe's
+      check); against the Polars recipe on data it can hold; chunk
+      invariance at 1, 7, 64 and 1000 rows a chunk; groups kept apart; a
+      halflife short enough that the late factors underflow; a window
+      where the exact answer is known (constant price → that price); and
+      memory flat as rows per window grow, which is the point of it.
+
 - [x] 77. **A plan with nothing to write runs once where a query uses it
       twice, 2026-09-10.** The IO source declares `is_pure=True` to
       `register_io_source` exactly when the run has no writes — no
