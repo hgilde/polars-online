@@ -1,0 +1,513 @@
+--- a/docs/REVIEW-2026-09-12.md
++++ b/docs/REVIEW-2026-09-12.md
+@@ -8,7 +8,7 @@
+ opinion. Items are ordered by how much they can change a number the user
+ reads.
+ 
+-Nine passes so far. The first read the contract-critical path; the second
++Ten passes so far. The first read the contract-critical path; the second
+ the other coefficient models that share its machinery and the atomic
+ writer; the third `robust` and `ew_class`, which turned three findings
+ into patterns; the fourth added the tests -- a **Test** paragraph on every
+@@ -65,7 +65,30 @@
+ closes V10), and `holt` turned out to read the row weight as a gate (S29)
+ and to freeze its level at an infinite halflife where every other model
+ keeps learning (S30). T-S14 is exact tier after all -- `holt` is the
+-textbook recursion from its first row, not a mean-form one.
++textbook recursion from its first row, not a mean-form one. The tenth
++read `ftrl.rs` and `pa.rs` in full (6e) with the `Spec::validate` and
++`build_one` arms that build them, `hmm.rs` in full for V20, and the E47
++row for V21. It broke the rule in this file's first sentence once, on
++purpose: `Ftrl::step` was transcribed into forty lines of Python and
++run, because the finding is an equilibrium and not a line, and the
++sizes quoted in C24 are the transcription's, not the crate's. C24 is
++the finding of the pass: decaying `z` and `n` by the same `lam` is not
++forgetting -- `√(lam·n) ≠ lam·√n`, so the proximal weight shrinks
++toward zero by `√lam` on every row the model does not learn from, and
++under learning the fit settles below the truth (`1.33` for `1.5`
++noise-free at halflife 200, `0.97` with unit noise, `0.63` with unit
++noise at halflife 50) where an EW-OLS at the same halflife sits on it.
++T-R1 pins the recursion at `halflife = inf` and `add_intercept = False`,
++which are exactly the two settings under which C24 and S31 cannot
++happen. `pa` is right as far as it goes -- the augmented-norm PA of
++Crammer et al., exact against river's `PARegressor` and sklearn's
++`PassiveAggressiveRegressor` once the intercept convention is matched
++(T-S19) -- with `n_eff` counting a weight its step capped (S32) and a
++`halflife` grid building N copies of one fit (S33). V20 closed clean:
++`hmm`'s per-state moments are `EwCov`s, Welford throughout, so pattern
++E has five sites and no sixth. V21 closed: E47's replay-time residual
++was inherited from the doubled-stream oracle the native path was held
++bit-for-bit to, not argued for, so C21's fix contradicts no decision.
+ 
+ ## Method
+ 
+@@ -88,14 +111,15 @@
+ | 6b | | `robust.rs` | read in full (pass 3) |
+ | 6c | | `sgd.rs` | read in full (pass 5) |
+ | 6d | | `holt.rs` | read in full (pass 9) |
+-| 6e | | `ftrl.rs`, `pa.rs` | **open**; S22 and S27 both have questions for them |
++| 6e | | `ftrl.rs`, `pa.rs` | read in full (pass 10; C24, S31, S32, S33; S22's and S27's questions answered) |
+ | 7 | Accumulators and statistics | `ewcov.rs` (160 KB) | read in full (pass 5) |
+ | 7b | | `ewlagcov.rs`, `marglag.rs` | read in full (pass 7; V12 closed) |
+ | 7c | | `ewdiag.rs`, `stats.rs` | **open**; `EwDiag::including` is what `sgd` standardizes against (C13) |
+ | 8 | Unsupervised and regime models | `ewclass.rs` | read in full (pass 3) |
+ | 8b | | `marginal.rs` | read in full (pass 6) |
+ | 8c | | `bocpd.rs` | read in full (pass 9; C23) |
+-| 8d | | `cluster/`, `hmm.rs`, `corrchange.rs`, `deco.rs`, `margbins.rs`, `rcov.rs`, `seqtest.rs`, `drift.rs`, `conformal.rs`, `constraint.rs` | **open**; `cluster/summary.rs` and `margbins.rs` say Welford in their docs (V20) |
++| 8d | | `hmm.rs` | read in full (pass 10; V20 closed, S34, V24) |
++| 8e | | `cluster/`, `corrchange.rs`, `deco.rs`, `margbins.rs`, `rcov.rs`, `seqtest.rs`, `drift.rs`, `conformal.rs`, `constraint.rs` | **open**; cleared for pattern E by their docs or by search (V13); `cluster/kmeans.rs`'s `seed_centres` is what V24 needs |
+ | 9 | Stream: clock schedule, label delay, diagnostics, scoring | `online-polars/src/stream.rs`, `rows.rs` | `stream.rs` read in full (pass 1, and again in full pass 9: V14, V15, V17, V18, V19 closed; C21, S28); `rows.rs` read in full (pass 1) |
+ | 10 | Spec | `online-polars/src/spec.rs` | read in full (pass 7; `validate` re-read pass 8 beside `_spec.py`) |
+ | 10a | Bank | `online-polars/src/bank.rs` (195 KB) | the chunk path read in full (pass 7): `extract`, `process`, `close_rows`, `check_monotone`, `session_bounds`, `fit_predict_on_pool`, `predict_on_pool`, `queue_closed`, `closed_groups`, `load_bytes`, `gram_of`, `closed_frame`'s common columns, `output_index`'s predicting-model walk, `slot_labels`, `F64Column`, `scatter`, `assemble`; `Bank::{marginal,coef,last_row,summary,describe}`, `closed_frame`'s pair block and the unsupervised arms of `output_index` skimmed only |
+@@ -109,13 +133,11 @@
+ | 15 | Python analysis helpers | `corr.py`, `eval.py`, `gram.py`, `prep.py`, `sim.py` | **open** |
+ | 16 | Tests and docs consistency | `tests/`, `crates/*/tests/`, `docs/` | `test_river.py` read in full (pass 4); the rest only where a finding names a test |
+ 
+-Next pass, in order: `ftrl.rs` and `pa.rs` (6e), which S22 and S27 both
+-have questions for and which `test_river.py`'s exact tier may already pin;
+-then `hmm.rs` for the last unread site of pattern E (V20 -- per-state
+-covariances updated under responsibilities, the one place a raw-sum form
+-would still hide); then `docs/ENHANCEMENTS.md` E47, to say whether C21's
+-behaviour was ever intended (V21); then 10b's `refresh.rs`, `summary.rs`
+-and `pool.rs`; then 7c.
++Next pass, in order: 10b's `refresh.rs`, `summary.rs` and `pool.rs`
++(`summary.rs` is what `Stream::restore` refuses a file on through
++`DataSummary::validate`, and neither of the other two has been opened);
++then 7c, `ewdiag.rs` and `stats.rs`, with `EwDiag::including` for C13;
++then `cluster/kmeans.rs`'s `seed_centres` for V24; then 11 and 15.
+ 
+ ## Patterns
+ 
+@@ -148,6 +170,9 @@
+   residual in as if the weight were 1 -- and `drift_action = "reset"`
+   can then restart the model on a row the user weighted out. `holt`
+   (S29) is the model-level cousin: a weight that is not 0 or 1 is 1.
++  Pass 10: `ftrl` and `pa` take the null target and the zero weight to
++  one `continue` (holds), and `pa` is S29's other cousin -- a weight
++  above 1 is 1 in the step and itself in `n_eff` (S32).
+ - **D. Which `n_eff` a windowed model reports.** `ewridge` reports the
+   in-window weight; `lasso` (C9) and `ew_class` (S14) report the whole
+   history while fitting on the window; `ew_cov` (S15) emits the in-window
+@@ -176,7 +201,9 @@
+   update them Welford-style. Grep for `raw(` and for a subtraction of a
+   product of two means; `cluster/summary.rs` and `margbins.rs` say
+   Welford in their module docs and `rcov` works on returns, so `hmm.rs`
+-  is the one file left to read (V20).
++  was the one file left, and pass 10 read it: its per-state moments
++  are `EwCov`s, so it is clean (V20 closed). Five sites, and the list is
++  complete.
+ - **F. Refused rather than ignored, applied to half the list.**
+   `Spec::validate` states the rule in its own comments and applies it to
+   `conformal_rate` without `conformal`, `window_every` without `window`,
+@@ -201,7 +228,11 @@
+   list of its own -- which parameters may be infinite -- that disagrees
+   with `validate`'s in both directions (S27). Pass 9 added a seventh door
+   (`RunConfig::validate`, S25) and a repeated column inside one feature
+-  set, which no layer refuses (S7).
++  set, which no layer refuses (S7). Pass 10 added a `halflife` *list*
++  on `pa` -- N instances of a model whose coefficients no decay touches
++  (S33) -- and took one item off: `strict_binary` beside `loss =
++  "squared"` *is* refused, by `FtrlCfg::validate`, which is the layer
++  that owns the fact.
+ 
+ ## Second opinions
+ 
+@@ -413,6 +444,69 @@
+   part by design (its gain is fixed; ours grows with the clock since the
+   last observation, which is what "halflife in clock units" means), so
+   the rest is the in-crate transparency test in C22.
++- **T-S18, `ftrl` -- `river.optim.FTRLProximal` (T-R1), and
++  `sklearn.linear_model.Ridge` as the EW-OLS oracle.** T-R1 already pins
++  the `z`/`n` recursion row for row at `halflife = inf`, `add_intercept
++  = False`, `rtol 1e-12`, with river's one-step prediction lag pinned as
++  its own test -- the exact tier exists and is right. What it cannot see
++  is the decay (river has none) and the intercept (T-R1 turns it off),
++  which are C24 and S31. No library implements a clock-decayed
++  FTRL-Proximal, so for the decay the exact check is the invariance
++  every other model here has -- `coef` unchanged across a null-target
++  row -- and the statistical check is the oracle every windowed check
++  uses: `Ridge(alpha = 1e-12, fit_intercept = add_intercept).fit(X, y,
++  sample_weight = lam**age)` (T-S1 with `ridge → 0`) against
++  `ftrl(loss = "squared")` at the same `halflife`, on 60 000 rows of
++  unit-scale features and unit noise; `halflife = inf` is the negative
++  control (agrees to `0.01` today). For the intercept, river's
++  `LogisticRegression(optimizer = FTRLProximal(alpha, beta, l1, l2),
++  intercept_lr = 0.01)` steps the intercept outside the optimizer, so at
++  any `l1` on pure-noise features it learns the base rate; ours at a
++  large `l1` predicts `0.5`.
++- **T-S19, `pa` -- `sklearn.linear_model.PassiveAggressiveRegressor`,
++  `river.linear_model.PARegressor`.** Mapping: `C = c`, `epsilon = eps`
++  (sklearn's default `0.1` is `build_one`'s), `loss =
++  "epsilon_insensitive"` is `mode = "pa1"` and `"squared_epsilon_
++  insensitive"` is `"pa2"`; river's `mode = 0 / 1 / 2` is `"pa"` /
++  `"pa1"` / `"pa2"`, `C` and `eps` by name. Row by row through
++  `partial_fit` / `learn_one`. One convention differs: both libraries
++  form `τ = loss / ‖x‖²` over the features alone and then step
++  `intercept += τ·sign` beside the weights, so with an intercept their
++  plain-PA step lands `loss/‖x‖²` *past* the tube edge; ours augments
++  `z = [1, x]` (Crammer et al.'s bias feature), `s = ‖x‖² + 1`, and
++  lands on it (`plain_pa_satisfies_the_constraint_exactly`). Exact tier,
++  `rtol 1e-12` on `coef` at every row at unit weight: `add_intercept =
++  False` against `fit_intercept = False` / `learn_intercept = False`;
++  or, with an intercept, a ones column appended to sklearn's `X` under
++  `fit_intercept = False`, which is our form to the bit. `sample_weight
++  ≤ 1` scales `τ` as ours does (exact); `sample_weight = 2` is where
++  sklearn overshoots and ours caps (S32), the documented divergence. The
++  constraint projection has no library twin; its tests recompute the
++  KKT conditions. `halflife` may be anything on our side -- it never
++  reaches `beta` -- which is S33's point.
++- **T-S20, `hmm` -- `statsmodels.tsa.regime_switching.MarkovRegression`,
++  `hmmlearn.hmm.GaussianHMM`.** Hamilton's filter is what statsmodels
++  implements, so at `d = 1` this is exact: `MarkovRegression(x,
++  k_regimes = K, trend = "c", switching_variance = True)`,
++  `mod.initialize_known(np.full(K, 1/K))` (ours starts uniform; its
++  default is the ergodic distribution), `res = mod.filter(params)` at
++  fixed parameters (transition probabilities, then the `K` intercepts,
++  then the `K` variances -- `mod.param_names` gives the order), against
++  ours with `learn = false`, `means`/`covs` given and `precision_prior =
++  1e-300` (required, so make it invisible): `res.predicted_marginal_
++  probabilities[t]` is our `p1_<k>` on row `t`, `res.filtered_marginal_
++  probabilities[t]` our `p_<k>` on row `t + 1` (we report the posterior
++  *before* the row), `res.llf_obs[t]` our `loglik`, `rtol 1e-9`. At `d >
++  1`: `hmmlearn.GaussianHMM(n_components = K, covariance_type = "full",
++  init_params = "", params = "")` with `startprob_ = 1/K`, `transmat_`,
++  `means_`, `covars_` set; the forward pass (`_do_forward_log_pass`, or
++  `_do_forward_pass` by version -- `predict_proba` is the *smoothed*
++  posterior and is not ours) gives `fwdlattice`, whose row-normalised
++  `exp` is our filtered `p` after each row, and `score(X)` is `Σ
++  loglik`, `rtol 1e-9`. Learning is batch EM in both, so `learn = true`
++  is statistical only: `the_transition_matrix_is_learned_from_the_
++  filtered_joint` is the right shape, and `hmmlearn.fit` on the same
++  stream is the ceiling its diagonal should approach.
+ 
+ ## Findings
+ 
+@@ -1260,6 +1354,88 @@
+ with `solve_failures == 0`; today the factorization of Ψₙ fails and it
+ reports nulls.
+ 
++### C24. `ftrl`'s decay shrinks the coefficients toward zero instead of forgetting rows
++
++`crates/online-core/src/ftrl.rs`, `step` (the `lam != 1.0` block and
++`weight_of`) and `predict`. The module doc: "the accumulators decayed
++by the same clock as every other model here so it forgets on the same
++schedule." What the decay does is something else, and it is the one
++thing T-R1 cannot see, because T-R1 runs at `halflife = inf`.
++
++FTRL-Proximal's closed form `b = −(z − sgn(z)·l1) / ((β + √n)/α + l2)`
++minimises `Σ_s g_s·b + ½ Σ_s σ_s‖b − b_s‖² + l1‖b‖₁ + ½ l2‖b‖²`, and it
++is closed-form only because the anchor weights telescope: `Σ_s σ_s = (β
+++ √n_t)/α`. `z` carries `Σ g_s − Σ σ_s b_s`, whose second term is `≈
++−b*·√n/α` once the fit is near `b*`. Multiplying `z` by `lam` scales
++that anchor term by `lam`; multiplying `n` by `lam` scales the
++denominator's `√n` by `√lam`. Their ratio is the coefficient, and
++`lam/√lam = √lam`. So:
++
++- On a row the model does not learn from -- a null target, a zero
++  weight, a `strict_binary` refusal, a C2 overflow skip, and every row
++  `predict` scores at clock distance `d` from the last learned one --
++  the coefficients shrink by `√lam^d` (by `lam^d` early on, while `β/α
++  + l2` dominates `√n/α`). A hundred null-target rows at halflife 200
++  take a slope of `1.47` to `1.08`; at halflife 50, `1.37` to `0.42`
++  (at `squared_loss_fits_a_continuous_target`'s settings, `α = 0.5`,
++  `l2 = 0.01`). Every other coefficient model here leaves its
++  coefficients where they were on such a row: `ewridge` and `lasso`
++  are mean-form, so numerator and denominator decay together; `rls`,
++  `kalman` and `sgd` do not touch `beta`; and `pa`'s own
++  `null_target_is_predict_only` asserts exactly this. Under `predict`
++  the same state scores the same features differently according to how
++  far the row is from the last learned row.
++- Under learning the gradient has to keep replacing what the decay
++  removes, and the fixed point is `b = b*·E[z²] / (E[z²] + (1 − lam)·D
++  − s̄)`, with `D = (β + √n_∞)/α + l2` and `s̄` the mean per-row `σ`. At
++  the defaults (`α = 0.1`, `β = 1`, `l2 = 1`) on a unit-variance feature
++  with `y = 1.5·x`: halflife 200 gives `1.33` noise-free and `0.97` at
++  unit noise; halflife 50 gives `0.83` and `0.63`; `inf` gives `1.50`
++  and `1.49`. An EW-OLS at the same halflife -- what `ewridge`
++  converges to -- gives `1.50`, `1.41`, `1.50`, `1.33`, `1.50`, `1.49`
++  respectively, and its distance from `1.5` is sampling error at that
++  halflife, not bias. So `ftrl` at any finite `halflife`, which is the
++  library's ordinary use, is a biased estimator of the relationship
++  every other model in the bank estimates without bias, by an amount
++  that grows with `1 − lam`, with the noise, and with `1/α`. Logistic is
++  the same on the logit scale: a base rate of `0.9` on noise features
++  comes out at `p = 0.76` at halflife 200 (intercept `1.16` for `logit
++  0.9 = 2.20`) and `0.90` at `inf`. The in-crate tests all run at
++  `halflife = inf` except `forgets_on_the_clock`, which asks only that
++  a flipped rule is followed -- and a shrinking estimator follows it.
++
++The sizes above are from a forty-line Python transcription of `step`
++run in pass 10, not from the crate; the mechanism and the direction are
++from the code.
++
++The fix is the sum the closed form stands in for. Keep the decayed
++anchor weight explicitly -- `sig_i ← lam·sig_i + σ_i` per coordinate,
++beside `zz` and `n` -- and read the coefficient as `b = −(z −
++sgn(z)·l1) / (sig + l2)`. On a row that learns nothing `z` and `sig`
++decay together and `b` is invariant, as it is everywhere else here;
++under learning it is the FTRL-Proximal solution to the exponentially
++forgotten objective `Σ_s lam^{age_s}·[g_s·b + ½σ_s‖b − b_s‖²] + l1‖b‖₁ +
++½l2‖b‖²`, which is what "forgets on the same schedule" ought to mean;
++and at `halflife = inf`, `sig = (β + √n)/α` exactly, so T-R1 is
++untouched. `n` goes on decaying for the learning rate, which is right
++-- an EW-RMS of the gradient is the point of `n`. One more
++`Vec<Vec<f64>>` in the state, so a schema bump; `predict` applies `lam`
++to all three. (Decaying `n` alone is not an alternative: `z` then grows
++without bound against a bounded denominator.)
++
++**Test.** T-S18 first: `sklearn.linear_model.Ridge(alpha = 1e-12,
++fit_intercept = False).fit(X, y, sample_weight = lam**age)` is the
++EW-OLS oracle, and on 60 000 rows of `y = 1.5·x + N(0, 1)` at `halflife
++= 200`, `ftrl(loss = "squared")`'s last `coef` is `0.4` below it today
++where the oracle's own spread is `≈ 0.1`; at `halflife = inf` the two
++agree to `0.01`, the negative control, and T-R1's exact tier must be
++unchanged by the fix. Then the library-free invariance every other
++model has: `ftrl(loss = "squared", halflife = 100, min_periods = 0)` on
++5 000 rows of `y = 1.5·x`, then 100 rows with the target null at
++`d_clock = 1`; `coef` after equals `coef` before to `rtol 1e-12` --
++today it is `≈ lam^50` of it. The same rows through `ewridge` pass
++today, and `pa`'s `null_target_is_predict_only` is the template.
++
+ ### S1. `sigma` and `resid_z` are not windowed at the bank level
+ 
+ `ewridge.rs` `sigma2` doc: "Under a `window` this is the variance *inside*
+@@ -1292,7 +1468,13 @@
+ own evidence (`EwRidge::target_weights` has the per-target number). This
+ is consistent with rule 8 and not with what "per-target warm-up" (E7)
+ suggests. Decide which is meant and document it; if the latter, the trait
+-needs a per-target weight.
++needs a per-target weight. Pass 10: for `ftrl` and `pa` there is no
++feature-side accumulator at all -- `w_sum` is rows-accepted-by-weight
++-- so the rule 8 number can pass `min_periods` on a stream whose target
++has never been present, or (`ftrl`) whose rows were all refused by
++`strict_binary` or the C2 overflow guard, and the first `pred` is then
++`sigmoid(0)` or `0` from a model that has learned nothing. Same test,
++one target, null on the first ten rows.
+ 
+ **Test.** Whichever rule is chosen, pin it: two targets, `y1` null on
+ nine rows in ten, `min_periods = [5, 5]`; the first finite `pred_y1` is
+@@ -1722,6 +1904,8 @@
+   under the builders' `add_intercept = True` they warm up one row longer
+   than under `False`. A knob the docstrings say "has nothing to act on"
+   moves the first reported row (pass 8).
++- `halflife` as a list on `pa` (pass 10): N instances whose
++  coefficients are identical by construction -- S33.
+ - `ftrl.loss` is not the only string enum the function leaves to another
+   layer: `marginal.serial_rule` and `marginal.bin_rule` are
+   `MarginalCfg::validate`'s, which a builder reaches through
+@@ -1729,9 +1913,10 @@
+   same function `window_every = 0` is refused in the `ew_cov` arm and not
+   in the `ew_class` arm, and `ew_ridge`, `lasso` and `marginal` have no
+   `window` check here at all -- theirs is the core's. `strict_binary`
+-  beside `loss = "squared"` is documented as logistic-only and not
+-  refused; `sgd.quantile` has no range check here (whether `SgdCfg` has
+-  one is for 6c's re-read). Pass 9 read `build_one`: `ftrl.loss`,
++  beside `loss = "squared"` *is* refused -- by `FtrlCfg::validate`,
++  which the dry build reaches (pass 10), so it sits in the layer that
++  owns the fact and is off this list; `sgd.quantile` has no range check
++  here (whether `SgdCfg` has one is for 6c's re-read). Pass 9 read `build_one`: `ftrl.loss`,
+   `sgd.loss`, `sgd.schedule`, `pa.mode`, `kmeans.seed_rule`, `hmm.seed_
+   rule`, `bocpd.emission`, `corrchange.kind`/`norm`, `rcov.kind`, `deco.
+   dynamics` and `marginal.serial_rule`/`bin_rule` are all parsed there
+@@ -1930,6 +2115,14 @@
+   `level_halflife = inf` is accepted by `HoltCfg::validate` and means
+   something the user does not want (S30), so it belongs on the `finite`
+   side, or with a documented meaning that is not "no forgetting".
++  Pass 10, `ftrl.rs` and `pa.rs`: `FtrlCfg::validate` accepts `inf` on
++  all four and NaN on all four (`alpha <= 0.0` is false for NaN;
++  `Spec::validate`'s arm catches NaN, the direct Rust API does not).
++  `alpha = inf` with `l2 = 0` is `−z/0`; `beta`, `l1` or `l2` at `inf` is
++  a model that never moves; so all four are `finite`. `PaCfg::validate`
++  refuses NaN and accepts `inf` on both: `c = inf` is mode `"pa"` exactly
++  in PA-I (`min(loss/s, inf)`) and PA-II (`0.5/inf = 0`), so it is the
++  `Num` side; `eps = inf` never learns, so it is `finite`.
+ - `tests/test_error_messages.py` "checks this table against the Rust
+   side"; what it can be checking is the field type, since `validate` is
+   the thing that disagrees.
+@@ -2069,6 +2262,101 @@
+ `holt(lam = 1.0)` must build, or be refused naming `lam`; today the
+ message names `level_halflife`.
+ 
++### S31. `ftrl` penalises and adapts the intercept like a feature
++
++`ftrl.rs`, `step` and `weight_of`: `zbuf[0] = 1.0`, and slot `0` goes
++through the same `l1`, `l2` and `α/(β + √n)` as every feature.
++`ewridge`'s `D` excludes the intercept slot, `lasso` follows sklearn's
++`fit_intercept` (T-S3, exact), `sgd`'s and `pa`'s constraints leave the
++intercept free by design, and both libraries that implement this
++recursion keep the intercept out of the optimizer: river's
++`LogisticRegression` steps it by plain SGD at `intercept_lr` beside the
++`FTRLProximal` step on the weights, and sklearn's `SGDClassifier` /
++`SGDRegressor` never penalise `intercept_`. Here `l1 = 1e9` zeroes the
++intercept with everything else -- `l1_shrinks_noise_features_and_can_
++zero_everything` asserts `vec![0.0; 4]`, four being three features and
++the intercept -- so the model predicts `0.5` for a base rate of `0.9`
++where river predicts `0.9`; and at a finite halflife, where `|z|` is
++bounded, a moderate `l1` bites too: `l1 = 50` at halflife 200 takes the
++intercept from `1.16` to `0.62` (`p` `0.76` → `0.65`; the `1.16` itself
++is C24). With `l1 = 0` and `halflife = inf` the `l2` pull vanishes as
++`√n` grows, which is why `base_rate_is_learned_by_the_intercept`
++passes.
++
++Fix: exempt slot `0` from `l1` and `l2` in `weight_of` when
++`add_intercept` (the adaptive rate can stay -- river's `intercept_lr`
++and sklearn's schedule are choices, not claims), and say in the doc
++which it is.
++
++**Test.** T-S18's intercept case: logistic, one noise feature, base
++rate `0.9`, `halflife = inf`, `l1 = 1e9`, 20 000 rows; `pred` on the
++last row against river's `LogisticRegression(optimizer = FTRLProximal(
++l1 = 1e9), intercept_lr = 0.01).predict_proba_one`, `atol 0.02` --
++river's approaches `0.9`, ours is `0.5`. In-crate: `base_rate_is_
++learned_by_the_intercept` with `c.l1 = 1e9`.
++
++### S32. `pa`'s `n_eff` counts a weight its step capped
++
++`pa.rs`, `step`: `tau *= weight.min(1.0)`, and the module doc says why
++-- a projection repeated is the same projection, so a row at `w = 5`
++moves the fit as far as a row at `1` -- and then `w_sum = lam·w_sum +
++weight` adds `5`. S29's cousin: `holt` reads a weight that is not 0 or
++1 as 1 and counts it; `pa` reads a weight above 1 as 1 and counts it.
++`min_periods` is met by rows the model discounted, and `n_eff`
++over-reports the evidence by `Σ (w − 1)⁺`. sklearn's
++`PassiveAggressiveRegressor.partial_fit(.., sample_weight = w)` scales
++`τ` by `w` with no cap (the oscillation the doc describes is real
++there), so the two agree for `w ≤ 1` and part above it, which belongs
++in the doc beside the cap. Either count `weight.min(1.0)`, the weight
++the model used, or say that `n_eff` is rows-by-weight while the fit is
++rows-by-projection; hard rule 8's "the accumulator's weight" does not
++decide it, since `pa` has no accumulator.
++
++**Test.** T-S19: `sample_weight ≤ 1` exact against sklearn on `coef`,
++and `sample_weight = 2` against `weight = 2` the pinned divergence.
++Rust: 40 rows at `w = 5` against the same rows at `w = 1`; `coef`
++identical today, `n_eff` `200` against `40`.
++
++### S33. A `halflife` grid on `pa` is N copies of one fit
++
++`spec.rs`, `decays` and `validate`'s `Pa` arm; `stream.rs`,
++`build_models`. `pa` keeps no accumulator and its coefficients have no
++halflife (the module's **Decay note** says so); `halflife` reaches
++`w_sum` alone, and the stream's `sigma` and diagnostics. `decays()`
++requires a `halflife` or `lam` for `pa` (the `(None, None)` arm refuses
++it), and a list builds one `Instance` per entry -- each an identical PA
++run in parallel, emitting identical `pred`, `resid` and `coef` columns
++under `@h…` suffixes that differ only in when `min_periods` releases
++them and in their `sigma`. Pattern F: `seqtest`, `rcov`, `bocpd` and
++`corrchange` refuse `halflife` on the argument that nothing decays;
++`pa` is the case where one thing decays and it is not the fit. Refuse a
++*list* on `pa` (one value is legitimate -- it sets `n_eff`'s clock), or
++document that the grid is a grid of `sigma`s.
++
++**Test.** `test_spec_validation.py`: `pa(halflife = [10, 100])` raises
++naming `pa` and `halflife`; or, if the grid is kept, a test that the
++two `pred` columns are equal to the bit on every row -- today they are,
++and nothing says so.
++
++### S34. `hmm`: a row whose densities fail ages `n_eff` and nothing else
++
++`hmm.rs`, `step`. `n_eff = lam·n_eff + weight` is applied before `extra`
++is matched; a row on which `log_densities` returned `None` (a
++factorization failed, or every density underflowed) then takes the
++`solve_failures += 1; return` arm with the states' `lam` and the counts'
++`lam` never applied. The zero-weight arm ages all three. So after such
++a row the states are one row younger than `n_eff` says, for the rest of
++the stream. Rare -- the ridge exists to make the factorization succeed
++-- and otherwise handled well (the row is counted and `p` is left
++alone). Apply the decay before the match, as the zero-weight arm does,
++or age nothing and count nothing.
++
++**Test.** Rust: force a failure (`covariance = "full"`, `precision_prior
++= 1e-300`, seeded on collinear rows so a state's covariance is
++singular); after the row `n_eff` equals `lam·n_eff + 1` and
++`state_cov(s).n_eff()` equals `lam·` its previous value -- today the
++second does not move.
++
+ ### P1. A windowed `ewridge` allocates an O(k²) view on every row
+ 
+ `ewridge.rs`: `predict` calls `n_eff()`, which calls `view()`, which
+@@ -2437,16 +2725,24 @@
+ - ~~**V19**~~: closed -- filed under S30. `holt(lam = 0.9)` is `holt(
+   halflife = ln 0.5 / ln 0.9)` to rounding; `lam = 1.0` is refused in
+   `level_halflife`'s name; `halflife = inf` freezes the level.
+-- **V20** (pattern E, the last file): `hmm.rs`. Its per-state
+-  covariances are updated under responsibilities (`learn`), which is
+-  the one place a raw-sum form would still hide, and it is the one
+-  model in 8d whose docs the search did not clear. Read `Hmm::learn` and
+-  the `Covariance::Full` path; the test is `bocpd`'s at offset `1e8`
+-  with `means` set.
+-- **V21** (C21): `docs/ENHANCEMENTS.md` E47 -- whether the replay-time
+-  residual was a decision or an accident. If the former, the doc has to
+-  say that `resid_z` and the conformal interval mix two definitions;
+-  the fix stands either way.
++- ~~**V20**~~ (pattern E, the last file): closed -- `hmm.rs` read in
++  full (pass 10). The per-state moments are `EwCov`s (`states[s].
++  update(x, lam, weight·post[s])`), so Welford; the `shared` matrix is a
++  weight-averaged sum of centred per-state comoments plus each state's
++  ridge; the `full` path reads `comoments()` and adds the ridge to the
++  diagonal; nothing forms a raw second moment or subtracts a product of
++  means. Pattern E has five sites and the list is complete.
++- ~~**V21**~~ (C21): closed -- inherited, not decided. The E47 row's
++  intent is about *when* the diagnostics see a label ("see only matured
++  labels"), never about which residual they fold; and the native path
++  was accepted by being held bit-for-bit to `po.prep.embargo`'s doubled
++  stream, whose learn row at `t + h` necessarily scores row `t` with the
++  model as of `t + h` -- a model that has learned rows `t−h+1 .. t−1`,
++  whose forward labels overlap `y_t`. The replay-time residual is the
++  oracle's artefact. C21's fix stands, and both E47's row and `embargo`'s
++  docstring need the sentence: `resid` and `pred` are score-time;
++  `sigma`, `resid_z`, the quantiles, autocorrelation, metrics, conformal
++  and drift are fed the replay-time residual today.
+ - **V22** (`bocpd`): `Run::len` is `#[serde(default)]`. A state written
+   before the field existed loads every run at `len = 0`, and `run_mode`
+   and `run_mean` then undercount by each run's pre-load length for as
+@@ -2467,6 +2763,17 @@
+   disagree on the slot count. Test: `{"type": "ew_ridge", "ridge": [1e-6,
+   1e-3], "feature_sets": []}` through `output_index`, which today either
+   refuses or renders no slots for a model that emits two.
++- **V24** (`hmm`, P-class): `seed()` returns without clearing the buffer
++  or setting `seeded` when `seed_centres` returns `None`, and `step`
++  then calls it again on every accepted row (`buffer.len() >= warm_rows`
++  stays true) with the buffer one row longer each time. If `seed_
++  centres` can return `None` for a buffer that will never satisfy it --
++  fewer than `k` distinct rows on a constant feature, say -- the buffer
++  grows by one row per accepted row for the life of the stream, P4's
++  shape, and `n_eff` climbs while nothing is ever reported.
++  `cluster/kmeans.rs`'s `seed_centres` says whether it can; if it can,
++  refuse after a bounded number of attempts or keep only the last
++  `warm_rows` rows.
+ 
+ ## What looked right
+ 
+@@ -2621,3 +2928,31 @@
+ name` covering thirteen refusals including a non-symmetric and a
+ non-PD `prior_scale` -- everything about it is careful except the
+ representation (C23).
++
++From pass 10: `ftrl`'s `predict` decaying the accumulators virtually
++(`weight_of(zz·lam, n·lam)`) so it is the step without the step to the
++bit -- right, and the reason C24 reaches `predict` too; its C2 overflow
++guard computing the largest `g²` before any accumulator is touched, so
++a row that would poison `n` is refused whole; the stable `sigmoid` with
++both extremes pinned; `strict_binary` refusing to learn rather than
++clamping, tested against the clamp; T-R1's pinning of river's one-step
++lag as a test of its own. `pa`'s augmented `z` (Crammer's bias
++feature) so plain PA lands on the tube edge, with the test that says
++so; the weight cap argued from idempotence with the oscillation it
++prevents named; the `!p.is_finite()` guard so an infinite loss is never
++a permanent step; the projection after every update, the initial zero
++included, with `the_projection_follows_every_update` checking
++feasibility on every row rather than at the end; `PaCfg::validate`
++refusing NaN by name where `FtrlCfg::validate` forgets to (S27). `hmm`:
++the per-state `EwCov`s, which is why V20 closed in a paragraph; the
++module doc's own corrections of the plan -- the ratio that cannot
++identify `Π`, and `τ·K·Π₀` in the prior rather than the counts, with the
++arithmetic shown; the joint formed about the largest density so a tiny
++state does not overflow the others; `read` returning the update even
++when `min_periods` withholds the row (H1), so a gated filter still
++learns; `a_uniform_chain_is_the_classifier`, the reduction test the E60
++row asked for, with its `1e-12` explained rather than chosen;
++`HmmCfg::validate` factorizing every given covariance so a state with
++no density is refused before it takes no responsibility for anything.
++And `spec.rs`'s `Pa` arm parsing `mode` and checking `c`/`eps` with the
++same NaN refusals as the core.
