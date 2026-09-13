@@ -394,7 +394,17 @@ def kalman_ref(
         # centering, with `standardize` off: the state is the coefficient)
         scales = np.ones(kt)
         zs = z.copy()
-        if standardize:
+        if standardize and off == 0:
+            # No intercept: nothing to centre on, so each feature is scaled by
+            # its raw second moment and not shifted. Centring here put a hidden
+            # intercept into every prediction that `coef` had no slot for; the
+            # core stopped doing it (review 2026-09-12, C10) and this oracle,
+            # which had copied it, follows.
+            for j in range(kt):
+                raw = st["raw"][j, j]
+                scales[j] = np.sqrt(raw) if raw > 0.0 else 1.0
+                zs[j] = z[j] / scales[j]
+        elif standardize:
             for j in range(off, kt):
                 var = st["raw"][j, j] - st["mean"][j] ** 2
                 raw = max(abs(st["raw"][j, j]), 1e-300)

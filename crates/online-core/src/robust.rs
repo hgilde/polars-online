@@ -220,6 +220,35 @@ impl Robust {
     /// rather than re-derived from raw moments (see `EwCov`'s module docs).
     fn solve_standardized(&mut self, b: &[f64], k: usize, j: usize) -> Option<Vec<f64>> {
         let off = usize::from(self.cfg.add_intercept);
+        if off == 0 {
+            // No intercept: scale by the raw second moment and solve the raw
+            // normal equations, as `EwRidge`'s no-intercept branch does. This
+            // centred the Gram and kept the raw right-hand side -- the hybrid
+            // system C8 found in `lasso`, least squares only when every
+            // feature has mean zero (review 2026-09-12, C11).
+            let s: Vec<f64> = (0..k)
+                .map(|i| self.cov[j].raw(i, i).max(0.0).sqrt())
+                .collect();
+            let keep: Vec<usize> = (0..k).filter(|&i| s[i] > 0.0).collect();
+            let kk = keep.len();
+            let mut out = vec![0.0; k];
+            if kk > 0 {
+                let mut asub = vec![0.0; kk * kk];
+                for (i2, &i) in keep.iter().enumerate() {
+                    for (j2, &jj) in keep.iter().enumerate() {
+                        asub[i2 * kk + j2] = self.cov[j].raw(i, jj) / (s[i] * s[jj]);
+                    }
+                    asub[i2 * kk + i2] += self.cfg.ridge;
+                }
+                let bsub: Vec<f64> = keep.iter().map(|&i| b[i] / s[i]).collect();
+                let (sol, jit) = solve_spd(&asub, &bsub, kk, 1)?;
+                self.solve_failures += u64::from(jit);
+                for (i2, &i) in keep.iter().enumerate() {
+                    out[i] = sol[i2] / s[i];
+                }
+            }
+            return Some(out);
+        }
         let kf = k - off;
         // Materialized up front: the solve below borrows `self` mutably.
         let means: Vec<f64> = (0..k).map(|i| self.cov[j].mean(i)).collect();

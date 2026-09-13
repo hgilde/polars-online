@@ -44,12 +44,12 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | C5 | `label_delay` ignores a reset or session change on a skipped row | `numpy`: lag-1 pairs within sessions; fresh-bank equality | next |
 | C6 | `ridge_decay` + `session_shrink` restores `prior_scale` at every blend | our own `rls` only | later: no library oracle |
 | C7 | a zero-weight row poisons the lasso's lambda selection (0/0) | a hand-rolled selection sum | later: no library oracle |
-| C8 | lasso without an intercept solves a centred/uncentred hybrid | `numpy.linalg.lstsq` with no intercept, at zero penalty | next |
+| C8 | lasso without an intercept solves a centred/uncentred hybrid | `numpy.linalg.lstsq` with no intercept, at zero penalty | **fixed** — without an intercept `standardized()` scales by the raw second moment and keeps the raw cross-moments; at zero penalty the fit is held to `numpy`'s no-intercept least squares at `1e-6` (coordinate descent's tolerance), with the intercept case as the control |
 | C9 | `Lasso::predict` reports the unwindowed `n_eff` | `numpy`: `Σ lam^age` over the in-window rows | **fixed** — reports and gates the window's weight; failed `numpy` on the old build |
-| C10 | `kalman` centres without an intercept | `numpy.linalg.lstsq` with no intercept (statistical) + `coef·x == pred` | next |
-| C11 | `robust` centres without an intercept | `numpy.linalg.lstsq` with no intercept, `huber_delta` large | next |
+| C10 | `kalman` centres without an intercept | `numpy.linalg.lstsq` with no intercept (statistical) + `coef·x == pred` | **fixed** — `scales_into`, `standardized` and the step's own standardization scale by `sqrt(E[x²])` and do not centre; the exact contract `dot(coef_(i−1), x_i) == pred_i` holds to `1e-9` (it missed by 16 on the old build: the hidden intercept), and with no process noise the coefficients sit at `numpy`'s no-intercept fit to `1e-2` after 5000 rows (statistical). The full gate then failed `tests/test_oracles.py::TestKalmanOracle::test_no_intercept`: the from-scratch oracle `tests/reference.py::kalman_ref` had copied the centring, so it pinned the defect -- the situation the review warns of for C16. The oracle now standardizes as the fixed core does |
+| C11 | `robust` centres without an intercept | `numpy.linalg.lstsq` with no intercept, `huber_delta` large | **fixed** — the standardized solve without an intercept is the raw system scaled by `sqrt(E[x²])`; `huber` at a delta no residual reaches is held to `numpy`'s no-intercept least squares at `1e-8` with `standardize` on (failed on the old build) and off (the control) |
 | C12 | `ew_class` `full` factorizes the live covariance under a `window` | `scipy.stats.multivariate_normal` on in-window class moments | **fixed** — `class_matrix` takes the accumulator the row is scored on; `full`, `diagonal` and `shared` are all held to `scipy` at `1e-9` (only `full` with a window failed on the old build) |
-| C13 | `sgd` centres without an intercept | `numpy.linalg.lstsq` with no intercept (statistical) + `coef·x == pred` | next |
+| C13 | `sgd` centres without an intercept | `numpy.linalg.lstsq` with no intercept (statistical) + `coef·x == pred` | **fixed** — `standardized` and `scales` use the raw second moment and do not centre without an intercept. The review's exact `coef·x == pred` does not hold for `sgd` even with an intercept -- measured 8.7e-3 relative, since the step standardizes with the row admitted and `coef` is reported through the scaler after the row before (the review's own D5) -- so the test asserts that few-percent tier (6.7e3 on the old build), and the library check is statistical: the slopes settle at `numpy`'s no-intercept fit within `5e-2` after 20 000 rows |
 | C14 | `ew_cov` `mahal` and PCA read the live accumulator under a `window` | `scipy.spatial.distance.mahalanobis`, `numpy.linalg.eigh` | **fixed** — `mahal` and the PCA refresh read the view, and the refresh gate the window's weight; `mahal` and `pc0_var` held to `scipy`/`numpy` at `1e-9` (failed on the old build with a window, passed without) |
 | C15 | `ew_cov` `mahal_quantiles` slot arithmetic ignores `LagCorr` | `numpy.quantile` of the emitted `mahal` (statistical) | **fixed** — one `EwCovCfg::width`, read by `n_outputs` and by the slot search; the P² quantiles held to `numpy.quantile` of the emitted `mahal` column within 10% (failed beside `lagcorr` on the old build, passed with `mahal` alone) |
 | C16 | the `session_shrink` blends re-centre through the raw second moment | `numpy.cov` / `numpy.average` with the blended row weights, offset `1e8` | **fixed** — both blends (`EwRidge::blend_toward_long_run`, `TargetMoments::blend`) use the centred mixture `a·C_f + b·C_s + a·b·ΔΔᵀ`; `bank.gram()` after a blend is held to `numpy` with the blended weights `(1−f)·λ_h^age + f·λ_H^age` — means, co-moments, target mean and variance — at `1e8` (failed on the old build) and `0` (the control) |
@@ -138,6 +138,10 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 
 - C16, C3 fixed. The new tests failed 2 of 3 on the previous build (C16 at
   `1e8`, C3), the offset-0 control passed; 39 library tests pass now.
+
+- C8, C10, C11, C13 (pattern B) fixed. The new tests failed 4 of 5 on the
+  previous build -- every no-intercept case -- and the `huber` control
+  without standardization passed; 44 library tests pass now.
 
 ## New observations (found while fixing; not in the review)
 

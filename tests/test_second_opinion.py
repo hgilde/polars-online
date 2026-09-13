@@ -484,3 +484,127 @@ class TestSessionShrinkBlend:
         bank.fit_predict(df[:n1])
         scored = bank.predict(df[n1 : n1 + 1])["m"].struct.field("pred_y")[0]
         assert scored == pytest.approx(pred[n1], abs=1e-12)
+
+
+def _no_intercept_rows(n: int, seed: int):
+    """Features at a level of 5 and a target with a true intercept of 2: a
+    no-intercept fit is then a different regression from the centred one, so
+    a model that centres anyway lands on the wrong coefficients and its hidden
+    intercept, ``-Σ b_i m_i / s_i``, is of order 10."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(0.0, 1.0, (n, 2)) + 5.0
+    y = 2.0 + 1.5 * x[:, 0] - 0.5 * x[:, 1] + rng.normal(0.0, 0.1, n)
+    return x, y
+
+
+class TestNoInterceptIsNotCentred:
+    """Pattern B: C8 (``lasso``), C10 (``kalman``), C11 (``robust``), C13
+    (``sgd``). With ``add_intercept=False`` and standardization on, these
+    models centred the features anyway -- ``ewridge`` alone scaled by the raw
+    second moment -- so each solved a system that is neither the centred
+    problem (which needs an intercept) nor the raw one, and ``coef`` could not
+    reproduce ``pred``. Without an intercept there is nothing to centre on:
+    the reference is ``numpy.linalg.lstsq`` on the raw features, no constant
+    column. ``add_intercept=True`` (and, where the model has it,
+    ``standardize=False``) is the control."""
+
+    def test_lasso_at_zero_penalty_is_numpy_least_squares(self):
+        # C8, exact: at a zero penalty the elastic net is least squares.
+        x, y = _no_intercept_rows(400, seed=41)
+        for intercept in (False, True):
+            spec = po.spec.lasso(
+                "m",
+                targets=["y"],
+                features=["x0", "x1"],
+                lasso_path=[0.0],
+                halflife=float("inf"),
+                solve_every=1e-9,
+                max_cd_iters=100_000,
+                cd_tol=1e-14,
+                add_intercept=intercept,
+            )
+            df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+            pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y__l0")
+            for i in range(100, 400, 23):
+                b = _wls(x[:i], y[:i], np.ones(i), intercept=intercept)
+                want = b[0] + x[i] @ b[1:] if intercept else x[i] @ b
+                assert pred[i] == pytest.approx(want, abs=1e-6), (intercept, i)
+
+    @pytest.mark.parametrize("standardize", [False, True])
+    def test_huber_with_no_outliers_is_numpy_least_squares(self, standardize):
+        # C11, exact: with a delta no residual reaches, every IRLS weight is 1
+        # and the Huber fit is least squares.
+        x, y = _no_intercept_rows(400, seed=42)
+        spec = po.spec.huber(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            huber_delta=1e9,
+            ridge=1e-12,
+            standardize=standardize,
+            halflife=float("inf"),
+            solve_every=1e-9,
+            add_intercept=False,
+        )
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+        pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y")
+        for i in range(100, 400, 23):
+            b = _wls(x[:i], y[:i], np.ones(i), intercept=False)
+            assert pred[i] == pytest.approx(x[i] @ b, abs=1e-8), (standardize, i)
+
+    def test_kalman_coefficients_reproduce_its_predictions(self):
+        # C10. The exact contract every coefficient model meets: the `coef`
+        # reported after row i-1 is the fit row i is predicted with.
+        # Centring without an intercept broke it by the hidden intercept,
+        # about 16 here. Then the library check, statistical: with no process
+        # noise the filter is recursive least squares, and after 5000 rows it
+        # sits at numpy's no-intercept fit.
+        x, y = _no_intercept_rows(5000, seed=43)
+        spec = po.spec.kalman(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            coef_halflife=50.0,
+            q=[0.0, 0.0],
+            p0=1e6,
+            obs_var=0.01,
+            halflife=float("inf"),
+            coef_every=1,
+            add_intercept=False,
+        )
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        coef = np.array(out["coef"].to_list(), dtype=float)
+        pred = out["pred_y"].to_numpy()
+        np.testing.assert_allclose(np.sum(coef[99:-1] * x[100:], axis=1), pred[100:], rtol=1e-9)
+        b = _wls(x, y, np.ones(len(y)), intercept=False)
+        np.testing.assert_allclose(coef[-1], b, atol=1e-2)
+
+    def test_sgd_converges_to_numpy_least_squares_and_its_coefficients_follow_it(self):
+        # C13. sgd standardizes a row against moments that include it, and
+        # reports `coef` through the scaler as it stood after the row before,
+        # so its coefficients reproduce a prediction to within a scaler step,
+        # not to rounding -- about 1% here, with or without an intercept once
+        # nothing is centred (the review's D5). Centring without an intercept
+        # put the two thousands of times apart. The library check is the
+        # statistical one: the fit settles at numpy's no-intercept least
+        # squares.
+        x, y = _no_intercept_rows(20_000, seed=44)
+        spec = po.spec.sgd(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            scale_features=True,
+            learning_rate=0.01,
+            halflife=1e6,
+            coef_every=1,
+            add_intercept=False,
+        )
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        coef = np.array(out["coef"].to_list(), dtype=float)
+        pred = out["pred_y"].to_numpy()
+        via_coef = np.sum(coef[999:-1] * x[1000:], axis=1)
+        assert np.max(np.abs(via_coef - pred[1000:]) / np.abs(pred[1000:])) < 0.05
+        b = _wls(x, y, np.ones(len(y)), intercept=False)
+        np.testing.assert_allclose(coef[-1], b, atol=5e-2)

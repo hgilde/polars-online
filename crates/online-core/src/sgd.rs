@@ -323,6 +323,12 @@ impl Sgd {
                     if i < off {
                         return 1.0;
                     }
+                    if off == 0 {
+                        // No intercept: the raw second moment's scale, the
+                        // one the step standardizes with (C13).
+                        let raw = sc.raw(i);
+                        return if raw > 0.0 { raw.sqrt() } else { 1.0 };
+                    }
                     let v = sc.var(i);
                     if crate::variance_is_usable(v, sc.raw(i)) {
                         v.sqrt()
@@ -404,6 +410,15 @@ fn standardized<'a>(
     let inc = sc.including(lam);
     x.iter().enumerate().map(move |(i, &xi)| {
         let (mean, v) = inc.moments(off + i, xi);
+        if off == 0 {
+            // No intercept to absorb a shift: scale by the raw second moment
+            // and do not centre. Centring gave every prediction a hidden
+            // intercept `-Σ b_i m_i / s_i` that `coefficients()` has no slot
+            // for, and took a constraint's projection in coordinates shifted in
+            // a way the bounds do not know about (review 2026-09-12, C13).
+            let raw = v + mean * mean;
+            return if raw > 0.0 { xi / raw.sqrt() } else { xi };
+        }
         let scale = if crate::variance_is_usable(v, v + mean * mean) {
             v.sqrt()
         } else {

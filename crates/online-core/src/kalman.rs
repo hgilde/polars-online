@@ -339,6 +339,12 @@ impl Kalman {
         for (i, s) in out.iter_mut().enumerate() {
             *s = if !self.cfg.standardize || i < off {
                 1.0
+            } else if off == 0 {
+                // No intercept: nothing to centre on, so the scale is the raw
+                // second moment's -- any positive one is usable, there being
+                // no cancellation (review 2026-09-12, C10).
+                let raw = self.stats.raw(i);
+                if raw > 0.0 { raw.sqrt() } else { 1.0 }
             } else {
                 let v = self.stats.var(i);
                 let raw = self.stats.raw(i);
@@ -415,6 +421,9 @@ impl Kalman {
                 let raw = if i < off { 1.0 } else { x[i - off] };
                 if !self.cfg.standardize || i < off {
                     raw
+                } else if off == 0 {
+                    // No intercept to absorb a shift: scale only (C10).
+                    raw / s[i]
                 } else {
                     (raw - self.stats.mean(i)) / s[i]
                 }
@@ -494,6 +503,12 @@ impl OnlineModel for Kalman {
                 self.zbuf[i]
             } else if i < off {
                 1.0
+            } else if off == 0 {
+                // No intercept to absorb a shift: scale only. Centring here
+                // gave every prediction a hidden intercept `-Σ b_i m_i / s_i`
+                // that `coefficients()` has no slot for, so `coef · x` missed
+                // `pred` by it (review 2026-09-12, C10).
+                self.zbuf[i] / s[i]
             } else {
                 (self.zbuf[i] - self.stats.mean(i)) / s[i]
             };

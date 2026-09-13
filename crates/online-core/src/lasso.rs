@@ -302,6 +302,36 @@ impl Lasso {
     ) -> (Vec<f64>, Vec<Vec<f64>>, Vec<f64>, Vec<f64>) {
         let k = self.cfg.n_features;
         let off = usize::from(self.cfg.add_intercept);
+        if off == 0 {
+            // No intercept: nothing to centre on. Scale by the raw second
+            // moment and keep the raw cross-moments -- `E[x x']` and `E[x y]`,
+            // whose zero-penalty solution is least squares through the origin
+            // -- as `EwRidge`'s no-intercept branch does. This centred the Gram
+            // whatever `add_intercept` said, so without one it solved a hybrid
+            // of the centred and the raw problem, least squares only when
+            // every feature has mean zero (review 2026-09-12, C8).
+            let s: Vec<f64> = (0..k).map(|i| acc.raw(i, i).max(0.0).sqrt()).collect();
+            let mut c = vec![0.0; k * k];
+            for i in 0..k {
+                for j in 0..k {
+                    c[i * k + j] = if s[i] > 0.0 && s[j] > 0.0 {
+                        acc.raw(i, j) / (s[i] * s[j])
+                    } else {
+                        f64::from(i == j)
+                    };
+                }
+            }
+            let d = r
+                .iter()
+                .take(self.cfg.n_targets)
+                .map(|rj| {
+                    (0..k)
+                        .map(|i| if s[i] > 0.0 { rj[i] / s[i] } else { 0.0 })
+                        .collect::<Vec<f64>>()
+                })
+                .collect();
+            return (c, d, s, vec![0.0; k]);
+        }
         let mean: Vec<f64> = (0..k).map(|i| acc.mean(i + off)).collect();
         // Centered co-moments come straight from the accumulator; deriving them
         // as raw - mean*mean would reintroduce the cancellation the Welford
