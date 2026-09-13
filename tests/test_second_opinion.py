@@ -391,3 +391,96 @@ class TestMahalQuantiles:
         mahal = out["mahal"].drop_nulls().drop_nans().to_numpy()
         assert out["mahal_q0.5"][-1] == pytest.approx(np.quantile(mahal[:-1], 0.5), rel=0.1)
         assert out["mahal_q0.9"][-1] == pytest.approx(np.quantile(mahal[:-1], 0.9), rel=0.1)
+
+
+class TestSessionShrinkBlend:
+    """C16 and C3, the review's T-S10 (ii). A ``session_shrink`` blend at ``f``
+    mixes the fast accumulators (``halflife``) with their slow twin
+    (``long_halflife``), which saw the *same* rows -- so the blend is itself
+    one weighted accumulator, each row at ``(1 - f)·λ_h^age + f·λ_H^age`` (the
+    mean-form definitions cancel the weights). ``numpy.average`` and
+    ``numpy.cov(aweights=..., ddof=0)`` with that weight vector are the
+    blended moments exactly, two-pass and so right at any offset.
+
+    C16: both blends went back through raw second moments, which at a level of
+    ``1e8`` leave nothing of a unit variance; ``offset = 0`` is the control.
+    C3: the blend never re-solved, so the first rows of a new session were
+    predicted with the coefficients from before it -- the rows the feature is
+    for. At ``f = 1`` the blended state *is* the slow twin, whose fit is the
+    weighted least squares of every row at ``λ_H^age``."""
+
+    H_FAST, H_SLOW = 40.0, 400.0
+
+    @pytest.mark.parametrize("offset", [0.0, 1e8])
+    def test_the_blended_moments_are_the_rows_at_the_blended_weights(self, offset):
+        rng = np.random.default_rng(31)
+        n, f = 600, 0.5
+        u = rng.normal(0.0, 1.0, (n, 2))
+        x = offset + u
+        y = offset + 2.0 * u[:, 0] - u[:, 1] + rng.normal(0.0, 0.1, n)
+        # One session, then a second that starts on the last row: the blend
+        # runs as that row arrives, and the row is learned after it.
+        session = np.where(np.arange(n) < n - 1, 1, 2)
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            halflife=self.H_FAST,
+            session="s",
+            session_gap=1.0,
+            session_shrink=f,
+            long_halflife=self.H_SLOW,
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y, "s": session}))
+        g = bank.gram("m")[0]
+        # Rows before the last: blended at their ages, then aged one step at
+        # the fast rate by the last row's `session_gap`. The last row: weight 1.
+        age = (n - 2) - np.arange(n - 1)
+        lam_f, lam_s = 0.5 ** (1.0 / self.H_FAST), 0.5 ** (1.0 / self.H_SLOW)
+        w = np.append(lam_f * ((1.0 - f) * lam_f**age + f * lam_s**age), 1.0)
+        cols = [g["columns"].index("x0"), g["columns"].index("x1")]
+        cov = np.cov(x.T, aweights=w, ddof=0)
+        got = np.asarray(g["comoments"])[np.ix_(cols, cols)]
+        tol = (1e-12 if offset == 0.0 else 1e-6) * np.abs(cov).max()
+        assert g["n_eff"] == pytest.approx(w.sum(), rel=1e-12)
+        np.testing.assert_allclose(
+            np.asarray(g["means"])[cols], np.average(x, axis=0, weights=w), rtol=1e-12, atol=1e-12
+        )
+        np.testing.assert_allclose(got, cov, rtol=0.0, atol=tol)
+        ybar = np.average(y, weights=w)
+        yvar = np.average((y - ybar) ** 2, weights=w)
+        assert g["target_means"][0] == pytest.approx(ybar, rel=1e-12, abs=1e-12)
+        assert abs(g["target_vars"][0] - yvar) <= (1e-12 if offset == 0.0 else 1e-6) * yvar
+
+    def test_the_first_row_of_a_session_is_predicted_from_the_blend(self):
+        rng = np.random.default_rng(32)
+        n1, n2 = 4300, 10
+        n = n1 + n2
+        x = rng.normal(0.0, 1.0, n)
+        slope = np.where(np.arange(n) < 4000, 1.0, -1.0)
+        y = 0.5 + slope * x + rng.normal(0.0, 0.05, n)
+        session = np.where(np.arange(n) < n1, 1, 2)
+        df = pl.DataFrame({"x": x, "y": y, "s": session})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x"],
+            ridge=1e-10,
+            halflife=100.0,
+            session="s",
+            session_gap=1.0,
+            session_shrink=1.0,  # the blend is the slow twin itself
+            long_halflife=2000.0,
+        )
+        pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y")
+        # The slow twin's fit: every row of session 1 at 0.5 ** (age / 2000).
+        age = (n1 - 1) - np.arange(n1)
+        b = _wls(x[:n1, None], y[:n1], 0.5 ** (age / 2000.0))
+        assert pred[n1] == pytest.approx(b[0] + b[1] * x[n1], abs=1e-8)
+        # E31: scoring that row against the bank fitted to the end of session 1
+        # gives the same number, from a blended copy.
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df[:n1])
+        scored = bank.predict(df[n1 : n1 + 1])["m"].struct.field("pred_y")[0]
+        assert scored == pytest.approx(pred[n1], abs=1e-12)

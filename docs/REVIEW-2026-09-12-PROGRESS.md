@@ -39,7 +39,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 |---|---|---|---|
 | C1 | `ewridge` standardized solve reads live accumulators under a `window` | `numpy.linalg.lstsq`, in-window rows at `sqrt(lam^age)` weights | **fixed** — reproduced first: only `standardize=True` with a `window` was wrong (0.55 against `numpy`; the other three combinations within 2.6e-10); the branch now reads the `cov` it is handed; `TestWindowedFit` holds all four combinations to `numpy` at `1e-8` |
 | C2 | `view()` falls back to the live state when the window is empty (`ewridge`, `lasso`) | `numpy.linalg.lstsq` on one target's in-window rows | **fixed** — both views are three-way (live / truncated / empty) and per target: a target with no row in the window reports NaN while the others stay windowed. One more cause the review named and the test found: the empty window's weight `W − f·W_u` comes out at `±1e-16·W`, not 0, so a positive crumb passed as "rows in it"; `window::EMPTY_FRACTION` (1e-12 of the weight subtracted from) now calls that empty, in `truncated`, `truncated_mean` and `marginal::cut`. Reproduced: on the old build a target that left the window sent the other target to the whole history (both models failed `numpy`) |
-| C3 | a `session_shrink` blend never re-solves | `numpy` weighted least squares at `long_halflife` weights (the slow twin at `f = 1`) | next |
+| C3 | a `session_shrink` blend never re-solves | `numpy` weighted least squares at `long_halflife` weights (the slow twin at `f = 1`) | **fixed** — the blend re-solves when it mixed anything and a fit exists, which also fixes `predict`'s blended copy. Reproduced: on the old build the first row of session 2 was predicted at 1.20 with the pre-blend fit, against `numpy`'s slow-twin fit of −0.12; now equal at `1e-8`, and `bank.predict` on that row equals `fit_predict` (E31). A blend with nothing to mix stays a no-op, re-solve included (`blend_before_any_data_is_a_no_op` caught a first version that re-solved anyway) |
 | C4 | building a `predict` plan drains the closed-group queue | none — a side effect, not a number | later: no library oracle |
 | C5 | `label_delay` ignores a reset or session change on a skipped row | `numpy`: lag-1 pairs within sessions; fresh-bank equality | next |
 | C6 | `ridge_decay` + `session_shrink` restores `prior_scale` at every blend | our own `rls` only | later: no library oracle |
@@ -52,7 +52,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | C13 | `sgd` centres without an intercept | `numpy.linalg.lstsq` with no intercept (statistical) + `coef·x == pred` | next |
 | C14 | `ew_cov` `mahal` and PCA read the live accumulator under a `window` | `scipy.spatial.distance.mahalanobis`, `numpy.linalg.eigh` | **fixed** — `mahal` and the PCA refresh read the view, and the refresh gate the window's weight; `mahal` and `pc0_var` held to `scipy`/`numpy` at `1e-9` (failed on the old build with a window, passed without) |
 | C15 | `ew_cov` `mahal_quantiles` slot arithmetic ignores `LagCorr` | `numpy.quantile` of the emitted `mahal` (statistical) | **fixed** — one `EwCovCfg::width`, read by `n_outputs` and by the slot search; the P² quantiles held to `numpy.quantile` of the emitted `mahal` column within 10% (failed beside `lagcorr` on the old build, passed with `mahal` alone) |
-| C16 | the `session_shrink` blends re-centre through the raw second moment | `numpy.cov` / `numpy.average` with the blended row weights, offset `1e8` | next |
+| C16 | the `session_shrink` blends re-centre through the raw second moment | `numpy.cov` / `numpy.average` with the blended row weights, offset `1e8` | **fixed** — both blends (`EwRidge::blend_toward_long_run`, `TargetMoments::blend`) use the centred mixture `a·C_f + b·C_s + a·b·ΔΔᵀ`; `bank.gram()` after a blend is held to `numpy` with the blended weights `(1−f)·λ_h^age + f·λ_H^age` — means, co-moments, target mean and variance — at `1e8` (failed on the old build) and `0` (the control) |
 | C17 | `window::truncated` and `marginal::cut` re-centre through the raw second moment | `numpy.cov` / `numpy.average` on in-window rows, offset `1e8` | **fixed** — reproduced first (windowed `var`/`cov` off by 390% at `1e8`, the unwindowed accumulator within 2.6e-9); centred pooling identity in both, diagonal floored (closes V3); `TestWindowAtALargeOffset` failed 3 of 10 on the old build, the three at `1e8` with a window, and passes 10 of 10 now; two Rust offset tests with two-pass oracles |
 | C18 | `marginal` allows `window` with `lags`; the lag ring is never truncated | `statsmodels` `acf` | later: library not installed (the recommended fix, a refusal, has no library test) |
 | C19 | `predict` scores across a session close `fit_predict` restarts at | `fit_predict` itself | later: no library oracle |
@@ -135,6 +135,9 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   build -- `full` with a window, `ew_cov`'s `mahal`/PCA with a window, the
   quantiles beside `lagcorr` -- and their controls passed; 36 library tests
   pass now.
+
+- C16, C3 fixed. The new tests failed 2 of 3 on the previous build (C16 at
+  `1e8`, C3), the offset-0 control passed; 39 library tests pass now.
 
 ## New observations (found while fixing; not in the review)
 

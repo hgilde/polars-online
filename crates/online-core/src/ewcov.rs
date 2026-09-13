@@ -886,15 +886,17 @@ impl TargetMoments {
 
     /// Mix toward another set of moments with the same coefficients the
     /// caller mixes weights and co-moments by (`a + b == 1`); see
-    /// `EwRidge::blend_toward_long_run`. Centered second moments are not
-    /// additive across differing means, so the variance is mixed raw and
-    /// re-centered on the mixed mean, exactly as the co-moments are.
+    /// `EwRidge::blend_toward_long_run`. Centred second moments are not
+    /// additive across differing means; the mixture is the centred identity
+    /// `var = a·var + b·var' + a·b·(m - m')²`, as the co-moments' is, and needs
+    /// nothing the size of `m²`. It went through the raw moment `var + m²` and
+    /// re-centred, which at a level of `1e8` leaves a unit variance at 0, 2 or
+    /// 4 -- whatever the two rounded terms happened to differ by (review
+    /// 2026-09-12, C16).
     pub fn blend(&mut self, other: &Self, t: usize, a: f64, b: f64) {
-        let mean = a * self.mean[t] + b * other.mean[t];
-        let raw = a * (self.var[t] + self.mean[t] * self.mean[t])
-            + b * (other.var[t] + other.mean[t] * other.mean[t]);
-        self.var[t] = raw - mean * mean;
-        self.mean[t] = mean;
+        let d = self.mean[t] - other.mean[t];
+        self.var[t] = a * self.var[t] + b * other.var[t] + a * b * d * d;
+        self.mean[t] = a * self.mean[t] + b * other.mean[t];
         // `Q` is mixed by the same coefficients as the moments, not summed as
         // a union of two row sets would be: the twins see the *same* rows
         // under two halflives, so a union would count every row twice and

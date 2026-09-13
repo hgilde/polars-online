@@ -483,8 +483,9 @@ impl EwRidge {
         self.beta.as_deref()
     }
 
-    /// Re-solve and return the first target's first slope. Test helper: after
-    /// a blend the coefficients are stale until the next solve.
+    /// Re-solve and return the first target's first slope. Test helper. A
+    /// blend now re-solves on its own (review 2026-09-12, C3), so the solve
+    /// here repeats one on the same accumulators and changes nothing.
     #[cfg(test)]
     pub(crate) fn coefficients_after_blend(&mut self) -> f64 {
         self.solve();
@@ -512,7 +513,11 @@ impl EwRidge {
         // Weight-respecting mixture of two weighted means.
         let (wf, ws) = (self.cov.n_eff(), slow.cov.n_eff());
         let w_new = (1.0 - f) * wf + f * ws;
+        // Whether anything was mixed: a blend with no weight on either side
+        // must stay the no-op its doc promises, re-solve included.
+        let mut moved = false;
         if w_new > 0.0 {
+            moved = true;
             let mut blended = EwCov::new(k);
             blended.set_block_rows(self.cov.block_rows());
             let (af, as_) = ((1.0 - f) * wf / w_new, f * ws / w_new);
@@ -522,13 +527,21 @@ impl EwRidge {
             let mixed_mean: Vec<f64> = (0..k)
                 .map(|i| af * self.cov.mean(i) + as_ * slow.cov.mean(i))
                 .collect();
+            // Centred moments are not additive across differing means; the
+            // centred mixture is `C = af·C_f + as·C_s + af·as·Δ Δᵀ` with
+            // `Δ = m_f - m_s`, and nothing in it is the size of `m²`. This
+            // mixed raw second moments and re-centred on the mixed mean, which
+            // at a level of `1e8` leaves nothing of a unit variance (review
+            // 2026-09-12, C16).
+            let delta: Vec<f64> = (0..k)
+                .map(|i| self.cov.mean(i) - slow.cov.mean(i))
+                .collect();
+            let (cf, cs) = (self.cov.comoments(), slow.cov.comoments());
             let mut mixed_c = vec![0.0; k * k];
             for i in 0..k {
                 for j in 0..k {
-                    // Mix raw second moments, then re-center on the mixed mean:
-                    // centered moments are not additive across differing means.
-                    let raw = af * self.cov.raw(i, j) + as_ * slow.cov.raw(i, j);
-                    mixed_c[i * k + j] = raw - mixed_mean[i] * mixed_mean[j];
+                    let ij = i * k + j;
+                    mixed_c[ij] = af * cf[ij] + as_ * cs[ij] + af * as_ * delta[i] * delta[j];
                 }
             }
             // `Q` mixes by the same coefficients as the moments; see
@@ -550,6 +563,7 @@ impl EwRidge {
             let (wf, ws) = (self.wj[j], slow.wj[j]);
             let w_new = (1.0 - f) * wf + f * ws;
             if w_new > 0.0 {
+                moved = true;
                 let (af, as_) = ((1.0 - f) * wf / w_new, f * ws / w_new);
                 for i in 0..k {
                     self.r[j][i] = af * self.r[j][i] + as_ * slow.r[j][i];
@@ -559,6 +573,16 @@ impl EwRidge {
                     tm.blend(stm, j, af, as_);
                 }
             }
+        }
+        // The blend moved the accumulators the fit is read from, so the fit
+        // moves with it: re-solve now, when anything was mixed and there is a
+        // fit to replace. Left to
+        // the schedule, the first rows of the new session -- the rows the
+        // blend exists for -- were predicted with the coefficients from before
+        // it, and so was every row `predict` scored on a blended copy (review
+        // 2026-09-12, C3).
+        if moved && self.beta.is_some() {
+            self.solve();
         }
     }
 
