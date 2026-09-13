@@ -28,6 +28,70 @@ The library tests live in `tests/test_second_opinion.py`, following
 `tests/test_river.py`'s two tiers: **exact** where the two implement the
 same computation, **statistical** where they differ by design.
 
+## Summary (2026-09-13, end of the library round)
+
+**Every finding whose fix has an independent library test is fixed and
+tested: 21 of them.** C1, C2, C3, C5, C8, C9, C10, C11, C12, C13, C14,
+C15, C16, C17, C21; S14, S15, S17, S19, S20, S28. (C5 has no library
+oracle of its own; it went in with C21, whose fix depends on it.) The
+library tests are `tests/test_second_opinion.py`, against `numpy`,
+`scipy` and `river`.
+
+| commit | findings |
+|---|---|
+| `860e905` | C17, C1 |
+| `12416b3` | C2, C9, S14, S15, S17 |
+| `eced1fd` | C12, C14, C15 |
+| `23a5ba2` | C16, C3 |
+| `d3312bc` | C8, C10, C11, C13 |
+| `97237c2` | S28 |
+| `cb6c57c` | C21, C5 |
+| `fd2f8d6` | S20 |
+| (this commit) | S19 |
+
+**How each was held.** Every finding was reproduced before it was fixed
+(the review was written without running anything), and every new test
+was run against the build before its fix and failed there -- except S20's
+first two versions, which passed on the old code and so tested nothing;
+they were replaced. The full gate ran on every batch.
+
+**Tests that pinned a defect, and were changed with it.**
+`tests/reference.py`'s `kalman_ref` had copied C10's centring;
+`test_label_delay.py` asserted S28's disagreement with the doubled stream
+as the oracle's quirk, and later asserted an agreement on the diagnostics
+that existed only because both sides folded C21's peeking residual; one
+Rust test (`blend_before_any_data_is_a_no_op`) caught a first version of
+C3's re-solve.
+
+**Decisions I took, for the user to review.**
+
+1. **Pattern D:** under a `window`, `n_eff` is the window's weight --
+   emitted, gated on and returned by the accessor, in every model.
+   `CLAUDE.md` hard rule 8 now says so.
+2. **C21's record rides on schema 6 without a bump**, as task 38's fields
+   rode on 3: skipped when empty, so no file without a `label_delay`
+   moves. `lib.rs` records it.
+3. **S19:** under a window, the Gram's target moments are `None` rather
+   than the whole history's.
+4. **C13:** `sgd`'s `coef·x == pred` holds to a scaler step (about 1%),
+   not to rounding, with or without an intercept; its tests assert that.
+5. **C2:** a window's remainder below `1e-12` of the weight it was
+   subtracted from is empty (`window::EMPTY_FRACTION`).
+
+**Where the review's own text was wrong** (found by testing it): a window
+keeps rows whose age is *at most* `window` (T-S10 said "less than"); S20's
+example, two reflected clouds, never flips -- a component has to cross the
+other group's; C5's `numpy` count is unreachable, since `group_close`
+refuses `label_delay`; and C13's exact contract does not exist for `sgd`.
+
+**Kept for later: 57 items**, each with its reason in the tables below --
+no independent library oracle (C4, C6, C7, C19, C20, C24; S4-S8, S10-S13,
+S16, S21, S22, S24-S26, S32), a library that is not installed (C18, C22,
+C23, S9, S18, S29, S30), a decision needed first (S1, S2, S3, S23, S27,
+S31), performance (P1-P5), documentation (D1-D10), and the V list. One new
+observation, N1. Nothing is pushed; the user's own design work is parked
+on `design/task-78`.
+
 ## Status
 
 Legend: **fixed** (commit) · **next** (library test available, queued) ·
@@ -84,7 +148,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | S16 | an `sgd` state without its `scaler` loads unscaled | — | later: no library oracle |
 | S17 | `marginal` emits the live `n_eff`, accessor windowed | `numpy`: `Σ lam^age` in window | **fixed** — emits `n_eff()`; failed `numpy` on the old build |
 | S18 | `marginal` `"truncated"` serial rule floors at `MIN_POSITIVE` | `statsmodels` `cov_hac` | later: library not installed |
-| S19 | the Gram and the closed row carry live accumulators under a `window` | `numpy.linalg.lstsq` on in-window vs all rows | next (after the `n_eff` rule) |
+| S19 | the Gram and the closed row carry live accumulators under a `window` | `numpy.linalg.lstsq` on in-window vs all rows | **fixed** — `gram_of` reads the window's accumulators (`windowed_gram` on `ewridge` and `lasso`, `windowed_cov` on `ew_cov`), so `bank.gram()` and a closed row's Gram are the window's, and `po.gram.solve` on them is the fit `coef` reports. Library, exact: `numpy.linalg.lstsq` on the rows the last fit was read from equals both `bank.coef()` and `po.gram.solve(bank.gram())` at `1e-6`, and the Gram's `n_eff` is their weight; on the old build the solve gave the whole history's fit, and `window=None` was the control. **A decision for the user:** the window's snapshots do not carry the target moments, so under a window `target_means`, `target_vars` and `target_n_kish` are `None` -- the Gram's existing way of saying "this state cannot say" -- rather than the whole history's; snapshotting them would restore them, kept for later |
 | S20 | PCA sign continuity keyed across groups under a session close | `numpy.linalg.eigh` per closed row | **fixed** — the continuity map is keyed by (spec, group, instance) for a spec that closes on session, (spec, instance) as before under `"monotone"`; the bank file keeps the old list for the latter and a new one, skipped when empty, for the former; `_bank.py`'s docstring now states both rules. Library, exact: each closed row's `eig_vecs` and `eig_vals` equal `numpy.linalg.eigh` on that row's own co-moments, sign-aligned with the same group's previous close. **The review's example does not show the defect**, which the first two versions of the test found by passing on the old code: two clouds that are reflections of each other, or any fixed pair of directions, stay consistent, because keyed by (spec, instance) every close is chained to the previous one whatever its group, and a fixed geometry chains consistently. The flip needs a group whose component moves across the other's between closes; the test's B alternates either side of `x1` beside an A along `x0`, and on the old code B's second close came out flipped. Shown by stashing the fix and rebuilding |
 | S21 | `ModelBank.specs` before vs after a round trip | — | later: no library oracle |
 | S22 | `Spec::validate` lets pairs through (pattern F) | `statsmodels` `Holt` for one sub-case | later: no library oracle for the refusals |

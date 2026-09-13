@@ -228,6 +228,13 @@ impl Lasso {
         self.tm.as_ref()
     }
 
+    /// The window's Gram, cross-moments and target weights, or `None` when
+    /// the live accumulators are the answer; see `EwRidge::windowed_gram`
+    /// (review 2026-09-12, S19).
+    pub fn windowed_gram(&self) -> Option<(EwCov, Vec<Vec<f64>>, Vec<f64>)> {
+        self.view().map(|v| (v.cov, v.r, v.wj))
+    }
+
     /// The accumulated weight the path is fitted from: under a `window`, the
     /// weight inside it.
     pub fn n_eff(&self) -> f64 {

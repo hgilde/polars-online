@@ -428,6 +428,18 @@ impl EwRidge {
         }
     }
 
+    /// The accumulators the fit is read from when a `window` has truncated
+    /// them -- the Gram, each target's cross-moments and each target's weight
+    /// -- or `None` when there is no window or nothing has aged out of it, and
+    /// the live ones are the answer. What `Bank::gram` and a closed row
+    /// report, so that the Gram solves to the fit `coef` reports (review
+    /// 2026-09-12, S19). The target moments are not truncated -- the window's
+    /// snapshots do not carry them -- so a caller reporting them under a
+    /// window says it cannot.
+    pub fn windowed_gram(&self) -> Option<(EwCov, Vec<Vec<f64>>, Vec<f64>)> {
+        self.view().map(|v| (v.cov, v.r, v.wj))
+    }
+
     /// The accumulated weight the fit is read from: under a `window`, the
     /// weight *inside* it, which stops growing once the window fills. That is
     /// what `min_periods` then gates on.

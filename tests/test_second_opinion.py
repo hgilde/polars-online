@@ -866,3 +866,49 @@ class TestPcaSignsRunAlongOneGroup:
                 np.testing.assert_allclose(got, v, atol=1e-9, err_msg=f"{group} {row['session']}")
                 assert row["eig_vals"][0] == pytest.approx(vals[-1], rel=1e-9)
                 prev = v
+
+
+class TestTheGramIsTheWindowsToo:
+    """S19, the review's T-S1 both ways. Under a ``window`` the fit is solved
+    from the truncated accumulators, and ``bank.coef()`` reports it -- but
+    ``bank.gram()`` and a closed row's Gram read the *live* ones, so
+    ``po.gram.solve`` on them gave the whole history's fit beside a ``coef``
+    solved on the window: two histories behind one spec. The reference is
+    ``numpy.linalg.lstsq`` on the rows the last fit was read from, at
+    ``0.5 ** (age / halflife)``: both ``coef()`` and the solve of the Gram must
+    land on it. ``window=None`` is the control, where the two histories are
+    the same one. Under a window the Gram carries no target moments -- the
+    window's snapshots do not keep them -- and says so with ``None``, as it
+    does for a state written before they existed."""
+
+    @pytest.mark.parametrize("window", [None, 60.0])
+    def test_the_gram_solves_to_the_fit_the_bank_reports(self, window):
+        rng = np.random.default_rng(81)
+        n, halflife = 400, 25.0
+        x = rng.normal(0.0, 1.0, (n, 2)) + 3.0
+        y = np.where(
+            np.arange(n) < 250,
+            1.0 + 2.0 * x[:, 0] - x[:, 1],
+            -1.0 + 0.5 * x[:, 0] + 1.5 * x[:, 1],
+        ) + rng.normal(0.0, 0.1, n)
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            halflife=halflife,
+            ridge=1e-10,
+            window=window,
+            solve_every=1e-9,
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y}))
+        # The last fit was solved after the last row: ages count from it.
+        keep, w = _window((n - 1) - np.arange(n), halflife, window)
+        want = _wls(x[keep], y[keep], w)
+        coef = bank.coef("m")["coef"].to_numpy()
+        np.testing.assert_allclose(coef, want, atol=1e-6)
+        g = bank.gram("m")[0]
+        assert g["n_eff"] == pytest.approx(w.sum(), rel=1e-10)
+        np.testing.assert_allclose(po.gram.solve(g, ridge=1e-10), want, atol=1e-6)
+        if window is not None:
+            assert g["target_means"] is None and g["target_vars"] is None

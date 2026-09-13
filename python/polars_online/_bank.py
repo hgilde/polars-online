@@ -546,6 +546,13 @@ class ModelBank:
             resid_var = target_vars[t] - beta[1:] @ comoments[1:, 1:] @ beta[1:]
             r2 = 1 - resid_var / target_vars[t]
 
+        Under a ``window`` everything here is the window's -- the accumulators
+        the fit ``coef`` reports was solved from, so ``po.gram.solve`` on it is
+        that fit -- except the target moments, which the window's snapshots do
+        not carry: ``target_means``, ``target_vars`` and ``target_n_kish`` are
+        ``None`` there rather than the whole history's (review 2026-09-12,
+        S19).
+
         A state saved before task 38 has none of them: ``n_kish``,
         ``target_means``, ``target_vars`` and ``target_n_kish`` are ``None``
         there, for that state's whole remaining life. The weight sums behind

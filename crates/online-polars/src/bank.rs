@@ -1125,23 +1125,36 @@ pub(crate) fn gram_of(key: &GroupKey, label: &str, model: &AnyModel) -> Option<G
         AnyModel::EwCov(m) => m.lag(),
         _ => None,
     };
+    // Under a `window` every number here is the window's -- the accumulators
+    // the fit `coef` reports was solved from -- so the Gram solves to that fit;
+    // it read the live ones, so a windowed spec's Gram and closed row carried
+    // the whole history beside a `coef` solved on the window (review
+    // 2026-09-12, S19). The target moments are not truncated -- the window's
+    // snapshots do not carry them -- so under a window they are `None`: "this
+    // state cannot say", as for a state written before they existed.
     let (cov, cross, weights, tm, targetless) = match model {
-        AnyModel::EwRidge(m) => (
-            m.cov(),
-            m.cross_moments().to_vec(),
-            m.target_weights().to_vec(),
-            m.target_moments(),
-            false,
-        ),
-        AnyModel::Lasso(m) => (
-            m.cov(),
-            m.cross_moments().to_vec(),
-            m.target_weights().to_vec(),
-            m.target_moments(),
-            false,
-        ),
+        AnyModel::EwRidge(m) => match m.windowed_gram() {
+            Some((cov, r, wj)) => (Cow::Owned(cov), r, wj, None, false),
+            None => (
+                Cow::Borrowed(m.cov()),
+                m.cross_moments().to_vec(),
+                m.target_weights().to_vec(),
+                m.target_moments(),
+                false,
+            ),
+        },
+        AnyModel::Lasso(m) => match m.windowed_gram() {
+            Some((cov, r, wj)) => (Cow::Owned(cov), r, wj, None, false),
+            None => (
+                Cow::Borrowed(m.cov()),
+                m.cross_moments().to_vec(),
+                m.target_weights().to_vec(),
+                m.target_moments(),
+                false,
+            ),
+        },
         // No targets, so no cross-moments: the matrix is the whole output.
-        AnyModel::EwCov(m) => (m.cov(), Vec::new(), Vec::new(), None, true),
+        AnyModel::EwCov(m) => (m.windowed_cov(), Vec::new(), Vec::new(), None, true),
         _ => return None,
     };
     // A blocked `ewridge` may be holding rows the matrix has not seen; the

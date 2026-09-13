@@ -1418,6 +1418,13 @@ impl EwCovModel {
         self.view().n_eff()
     }
 
+    /// The accumulator the statistics are read from: under a `window`, the
+    /// truncated one (empty when nothing is inside it), otherwise the live one.
+    /// What `Bank::gram` and a closed row report (review 2026-09-12, S19).
+    pub fn windowed_cov(&self) -> std::borrow::Cow<'_, EwCov> {
+        self.view()
+    }
+
     /// Output slot labels, in emission order (used for field names): the
     /// statistics, then `mahal_q<p>` per quantile level, then per component
     /// `j`: `pc<j>_var`, `pc<j>_share`, `pc<j>_<column>` for each column and
