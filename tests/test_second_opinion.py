@@ -256,3 +256,138 @@ class TestTheWindowIsAllTheModelSees:
             # y1 has no row inside the window: it reports nothing, rather than
             # a fit from rows the window excludes.
             assert out[f1][i] is None or np.isnan(out[f1][i]), (kind, i)
+
+
+def _regime_rows(n: int, seed: int) -> np.ndarray:
+    """Two features whose covariance changes at row ``n // 2`` -- a wide,
+    tilted cloud, then a narrow one -- so the whole history's covariance and
+    a window's disagree, which is what a live read under a window shows up
+    as."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(0.0, 1.0, (n, 2))
+    early = np.arange(n) < n // 2
+    x[early] = x[early] @ np.array([[3.0, 1.2], [0.0, 1.5]])
+    return x
+
+
+class TestWindowedGaussian:
+    """C12 and C14, the review's T-S6 and T-S8. At ``halflife = inf`` every row
+    inside the window weighs 1 and the precision prior does not fade, so a
+    windowed ``ew_class`` and ``ew_cov`` are plain Gaussian computations on the
+    rows the window keeps: ``scipy.stats.multivariate_normal`` for the class
+    densities, ``scipy.spatial.distance.mahalanobis`` for the distance, and
+    ``numpy.linalg.eigh`` for the components -- each fed the in-window mean
+    and population covariance from ``numpy``.
+
+    C12: the ``full`` shape factorized the *live* class covariance while
+    scoring against the windowed mean. C14: ``mahal`` and the PCA refresh read
+    the live accumulator. ``diagonal`` and ``shared`` (which read the view)
+    and ``window=None`` are the controls. The covariance changes halfway, so
+    the whole history and the window disagree by construction."""
+
+    WINDOW, PRIOR = 80.0, 1e-9
+
+    @pytest.mark.parametrize("window", [None, 80.0])
+    @pytest.mark.parametrize("shape", ["full", "diagonal", "shared"])
+    def test_ew_class_is_the_scipy_gaussian_of_the_rows_inside_the_window(self, shape, window):
+        from scipy.stats import multivariate_normal
+
+        n = 400
+        x = _regime_rows(n, seed=21)
+        labels = np.where(x[:, 0] + 0.5 * x[:, 1] > 0.0, "a", "b")
+        spec = po.spec.ew_class(
+            "m",
+            features=["x0", "x1"],
+            label="c",
+            classes=["a", "b"],
+            covariance=shape,
+            precision_prior=self.PRIOR,
+            halflife=float("inf"),
+            window=window,
+            min_periods=0,
+        )
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "c": labels})
+        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        for i in range(250, n, 17):
+            keep, _ = _window((i - 1) - np.arange(i), float("inf"), window)
+            rows, lab = x[:i][keep], labels[:i][keep]
+            means, covs, priors = [], [], []
+            for c in ("a", "b"):
+                rc = rows[lab == c]
+                means.append(rc.mean(axis=0))
+                covs.append(np.cov(rc.T, ddof=0) + self.PRIOR * np.eye(2))
+                priors.append(len(rc) / len(rows))
+            if shape == "diagonal":
+                covs = [np.diag(np.diag(cv)) for cv in covs]
+            elif shape == "shared":
+                pooled = priors[0] * covs[0] + priors[1] * covs[1]
+                covs = [pooled, pooled]
+            logp = np.array(
+                [
+                    np.log(priors[c]) + multivariate_normal(means[c], covs[c]).logpdf(x[i])
+                    for c in range(2)
+                ]
+            )
+            p = np.exp(logp - logp.max())
+            p /= p.sum()
+            assert out["p_a"][i] == pytest.approx(p[0], abs=1e-9), (shape, i)
+
+    @pytest.mark.parametrize("window", [None, 80.0])
+    def test_ew_cov_mahal_and_components_are_scipy_and_numpy_of_the_window(self, window):
+        from scipy.spatial.distance import mahalanobis
+
+        n = 400
+        x = _regime_rows(n, seed=22)
+        spec = po.spec.ew_cov(
+            "m",
+            features=["x0", "x1"],
+            stats=["mean", "mahal"],
+            precision_prior=self.PRIOR,
+            pca=1,
+            pca_every=1,
+            halflife=float("inf"),
+            window=window,
+            min_periods=0,
+        )
+        out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]}))
+        out = out["m"].struct.unnest()
+        for i in range(250, n, 17):
+            keep, _ = _window((i - 1) - np.arange(i), float("inf"), window)
+            rows = x[:i][keep]
+            mean, cov = rows.mean(axis=0), np.cov(rows.T, ddof=0)
+            want = mahalanobis(x[i], mean, np.linalg.inv(cov + self.PRIOR * np.eye(2)))
+            assert out["mahal"][i] == pytest.approx(want, rel=1e-9), i
+            # The components a row is read with were refreshed after the row
+            # before it, from the same window.
+            assert out["pc0_var"][i] == pytest.approx(np.linalg.eigh(cov)[0][-1], rel=1e-9), i
+
+
+class TestMahalQuantiles:
+    """C15: ``mahal_quantiles`` found the ``mahal`` slot with arithmetic of its
+    own, which counted ``lagcorr`` as ``k(k-1)/2`` slots instead of
+    ``len(lags)·k²`` -- so beside a ``lagcorr`` the quantile estimators were
+    fed a lagged correlation. The reference is ``numpy.quantile`` of the
+    ``mahal`` column the bank itself emitted. Statistical tier: the P²
+    estimator is approximate, so 10% -- the defect puts it at a quantile of a
+    correlation, in ``[-1, 1]``, against a distance near 1.2."""
+
+    @pytest.mark.parametrize("stats", [["mahal"], ["lagcorr", "mahal"]])
+    def test_the_quantile_tracks_the_mahal_column(self, stats):
+        rng = np.random.default_rng(23)
+        n = 3000
+        x = rng.normal(0.0, 1.0, (n, 2))
+        spec = po.spec.ew_cov(
+            "m",
+            features=["x0", "x1"],
+            stats=stats,
+            lags=[1] if "lagcorr" in stats else None,
+            precision_prior=1e-6,
+            mahal_quantiles=[0.5, 0.9],
+            halflife=float("inf"),
+            min_periods=5,
+        )
+        out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1]}))
+        out = out["m"].struct.unnest()
+        mahal = out["mahal"].drop_nulls().drop_nans().to_numpy()
+        assert out["mahal_q0.5"][-1] == pytest.approx(np.quantile(mahal[:-1], 0.5), rel=0.1)
+        assert out["mahal_q0.9"][-1] == pytest.approx(np.quantile(mahal[:-1], 0.9), rel=0.1)

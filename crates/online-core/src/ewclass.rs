@@ -373,11 +373,16 @@ impl EwClass {
         self.cfg.precision_prior * self.classes[c].precision_scale()
     }
 
-    /// `C_c + r_c I`, the matrix the `full` shape factorizes for class `c`.
-    fn class_matrix(&self, c: usize) -> Vec<f64> {
+    /// `C_c + r_c I`, the matrix the `full` shape factorizes for one class,
+    /// from the accumulator the row is scored on: under a `window`, the
+    /// truncated one. This read `self.classes[c]`, the whole history, while
+    /// the mean the row was measured from came from the window -- and paid a
+    /// factorization per class per row, under a window, to factorize the wrong
+    /// matrix (review 2026-09-12, C12). `shared` and `diagonal` read the view.
+    fn class_matrix(&self, cov: &EwCov) -> Vec<f64> {
         let k = self.cfg.n_features;
-        let mut m = self.classes[c].comoments().to_vec();
-        let ridge = self.ridge(c);
+        let mut m = cov.comoments().to_vec();
+        let ridge = self.cfg.precision_prior * cov.precision_scale();
         for i in 0..k {
             m[i * k + i] += ridge;
         }
@@ -430,11 +435,11 @@ impl EwClass {
                     }
                     let fresh;
                     let factor = match factors.as_deref_mut() {
-                        Some(cache) => cache.get(c, nc, || self.class_matrix(c), k),
+                        Some(cache) => cache.get(c, nc, || self.class_matrix(cov), k),
                         None => match self.factors.peek(c) {
                             Some(f) => Some(f),
                             None => {
-                                fresh = SpdFactor::of(&self.class_matrix(c), k);
+                                fresh = SpdFactor::of(&self.class_matrix(cov), k);
                                 fresh.as_ref()
                             }
                         },

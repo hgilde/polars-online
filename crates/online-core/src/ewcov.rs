@@ -1095,20 +1095,26 @@ impl EwCovCfg {
     /// Mahalanobis quantiles, then `k + 3` per principal component.
     pub fn n_outputs(&self) -> usize {
         let k = self.n_features;
-        let pairs = k * (k - 1) / 2;
-        let stats: usize = self
-            .stats
-            .iter()
-            .map(|s| match s {
-                EwCovStat::Mean | EwCovStat::Var | EwCovStat::Std => k,
-                EwCovStat::Cov | EwCovStat::Corr | EwCovStat::PartialCorr => pairs,
-                EwCovStat::Mahal => 1,
-                // Both orientations and the auto terms: the lagged matrix is
-                // not symmetric.
-                EwCovStat::LagCorr => self.lags.len() * k * k,
-            })
-            .sum();
+        let stats: usize = self.stats.iter().map(|s| self.width(s)).sum();
         stats + self.mahal_quantiles.len() + self.pca * (k + 3)
+    }
+
+    /// The slots one statistic occupies. One home for the arithmetic, read by
+    /// `n_outputs` and by the step that finds the `mahal` slot for the
+    /// quantile estimators; that step once had a copy of its own which counted
+    /// `lagcorr` as `k(k-1)/2` slots, so beside a `lagcorr` the quantiles were
+    /// fed a lagged correlation instead of the distance (review 2026-09-12,
+    /// C15).
+    pub fn width(&self, stat: &EwCovStat) -> usize {
+        let k = self.n_features;
+        match stat {
+            EwCovStat::Mean | EwCovStat::Var | EwCovStat::Std => k,
+            EwCovStat::Cov | EwCovStat::Corr | EwCovStat::PartialCorr => k * (k - 1) / 2,
+            EwCovStat::Mahal => 1,
+            // Both orientations and the auto terms: the lagged matrix is
+            // not symmetric.
+            EwCovStat::LagCorr => self.lags.len() * k * k,
+        }
     }
 }
 
@@ -1329,18 +1335,23 @@ impl EwCovModel {
     /// The Mahalanobis distance of `x` from the current moments, or NaN when
     /// no prior is configured or the solve fails. One Cholesky factorization
     /// and one triangular solve, O(k³).
+    ///
+    /// Under a `window`, from the window's moments, as every other statistic
+    /// is: this read the live accumulator, so `mahal` was the distance from
+    /// the whole history's mean in the whole history's metric, emitted beside
+    /// a windowed mean and variance (review 2026-09-12, C14).
     pub fn mahal(&self, x: &[f64]) -> f64 {
-        if !self.cov.has_precision_prior() {
+        Self::mahal_of(&self.view(), x)
+    }
+
+    fn mahal_of(cov: &EwCov, x: &[f64]) -> f64 {
+        if !cov.has_precision_prior() {
             return f64::NAN;
         }
-        let k = self.cov.k();
-        let delta: Vec<f64> = x
-            .iter()
-            .zip(self.cov.means())
-            .map(|(xi, mi)| xi - mi)
-            .collect();
-        let mut m = self.cov.comoments().to_vec();
-        let ridge = self.cov.precision_prior * self.cov.precision_scale;
+        let k = cov.k();
+        let delta: Vec<f64> = x.iter().zip(cov.means()).map(|(xi, mi)| xi - mi).collect();
+        let mut m = cov.comoments().to_vec();
+        let ridge = cov.precision_prior * cov.precision_scale;
         for i in 0..k {
             m[i * k + i] += ridge;
         }
@@ -1360,12 +1371,21 @@ impl EwCovModel {
     /// Recompute the components from the current co-moments. A failed
     /// decomposition keeps the previous ones.
     fn refresh_pca(&mut self) {
-        if let Some(p) = Pca::of(
-            self.cov.comoments(),
-            self.cfg.n_features,
-            self.cfg.pca,
-            self.pca.as_ref(),
-        ) {
+        // From the moments the scores are read against: under a `window`, the
+        // window's. This read the live co-moments, so `pc<j>_var`, the share
+        // and the loadings were the whole history's while `pc<j>_score` was
+        // centred on the window's mean -- a loading from one history applied
+        // about the centre of another (review 2026-09-12, C14).
+        let fresh = {
+            let view = self.view();
+            Pca::of(
+                view.comoments(),
+                self.cfg.n_features,
+                self.cfg.pca,
+                self.pca.as_ref(),
+            )
+        };
+        if let Some(p) = fresh {
             self.pca = Some(p);
         }
         self.since_pca = 0;
@@ -1507,7 +1527,7 @@ impl EwCovModel {
                         }
                     }
                 }
-                EwCovStat::Mahal => out.push(self.mahal(x)),
+                EwCovStat::Mahal => out.push(Self::mahal_of(cov, x)),
                 EwCovStat::LagCorr => {
                     // `C_l[a,b] / sqrt(C_0[a,a] * C_0[b,b])`: the lagged
                     // covariance over the contemporaneous standard
@@ -1583,10 +1603,7 @@ impl crate::OnlineModel for EwCovModel {
                 .stats
                 .iter()
                 .take_while(|s| **s != EwCovStat::Mahal)
-                .map(|s| match s {
-                    EwCovStat::Mean | EwCovStat::Var | EwCovStat::Std => self.cfg.n_features,
-                    _ => self.cfg.n_features * (self.cfg.n_features - 1) / 2,
-                })
+                .map(|s| self.cfg.width(s))
                 .sum::<usize>();
             let score = out.pred[slot];
             if score.is_finite() {
@@ -1620,7 +1637,7 @@ impl crate::OnlineModel for EwCovModel {
             // components a row is scored on never depend on the chunking and
             // `predict` sees the same frozen ones `step` does.
             self.since_pca += 1;
-            if self.cov.n_eff() >= self.cfg.min_periods
+            if self.n_eff() >= self.cfg.min_periods
                 && (self.pca.is_none() || self.since_pca >= self.cfg.pca_every)
             {
                 self.refresh_pca();

@@ -48,10 +48,10 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | C9 | `Lasso::predict` reports the unwindowed `n_eff` | `numpy`: `Σ lam^age` over the in-window rows | **fixed** — reports and gates the window's weight; failed `numpy` on the old build |
 | C10 | `kalman` centres without an intercept | `numpy.linalg.lstsq` with no intercept (statistical) + `coef·x == pred` | next |
 | C11 | `robust` centres without an intercept | `numpy.linalg.lstsq` with no intercept, `huber_delta` large | next |
-| C12 | `ew_class` `full` factorizes the live covariance under a `window` | `scipy.stats.multivariate_normal` on in-window class moments | next |
+| C12 | `ew_class` `full` factorizes the live covariance under a `window` | `scipy.stats.multivariate_normal` on in-window class moments | **fixed** — `class_matrix` takes the accumulator the row is scored on; `full`, `diagonal` and `shared` are all held to `scipy` at `1e-9` (only `full` with a window failed on the old build) |
 | C13 | `sgd` centres without an intercept | `numpy.linalg.lstsq` with no intercept (statistical) + `coef·x == pred` | next |
-| C14 | `ew_cov` `mahal` and PCA read the live accumulator under a `window` | `scipy.spatial.distance.mahalanobis`, `numpy.linalg.eigh` | next |
-| C15 | `ew_cov` `mahal_quantiles` slot arithmetic ignores `LagCorr` | `numpy.quantile` of the emitted `mahal` (statistical) | next |
+| C14 | `ew_cov` `mahal` and PCA read the live accumulator under a `window` | `scipy.spatial.distance.mahalanobis`, `numpy.linalg.eigh` | **fixed** — `mahal` and the PCA refresh read the view, and the refresh gate the window's weight; `mahal` and `pc0_var` held to `scipy`/`numpy` at `1e-9` (failed on the old build with a window, passed without) |
+| C15 | `ew_cov` `mahal_quantiles` slot arithmetic ignores `LagCorr` | `numpy.quantile` of the emitted `mahal` (statistical) | **fixed** — one `EwCovCfg::width`, read by `n_outputs` and by the slot search; the P² quantiles held to `numpy.quantile` of the emitted `mahal` column within 10% (failed beside `lagcorr` on the old build, passed with `mahal` alone) |
 | C16 | the `session_shrink` blends re-centre through the raw second moment | `numpy.cov` / `numpy.average` with the blended row weights, offset `1e8` | next |
 | C17 | `window::truncated` and `marginal::cut` re-centre through the raw second moment | `numpy.cov` / `numpy.average` on in-window rows, offset `1e8` | **fixed** — reproduced first (windowed `var`/`cov` off by 390% at `1e8`, the unwindowed accumulator within 2.6e-9); centred pooling identity in both, diagonal floored (closes V3); `TestWindowAtALargeOffset` failed 3 of 10 on the old build, the three at `1e8` with a window, and passes 10 of 10 now; two Rust offset tests with two-pass oracles |
 | C18 | `marginal` allows `window` with `lags`; the lag ring is never truncated | `statsmodels` `acf` | later: library not installed (the recommended fix, a refusal, has no library test) |
@@ -130,6 +130,11 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   `TestTheWindowIsAllTheModelSees` failed 5 of 12 on the old build (the three
   models that reported the whole history, and C2 in both), all 26 library
   tests pass now.
+
+- C12, C14, C15 fixed. The new tests failed exactly 3 of 10 on the previous
+  build -- `full` with a window, `ew_cov`'s `mahal`/PCA with a window, the
+  quantiles beside `lagcorr` -- and their controls passed; 36 library tests
+  pass now.
 
 ## New observations (found while fixing; not in the review)
 
