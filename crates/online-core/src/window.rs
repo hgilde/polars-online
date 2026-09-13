@@ -142,29 +142,49 @@ impl Moments {
 /// boundary that is the whole accumulator. The caller reports nothing rather
 /// than dividing by zero (hard rule 9).
 ///
-/// The subtraction is exact in exact arithmetic. In `f64` it is a difference
-/// of positives, so it loses precision in proportion to the fraction
-/// discarded: negligible at `window = 3·halflife`, where the correction is an
-/// eighth, and worse as the window shortens toward the halflife.
+/// **Centred, never through raw moments.** With `W` the live weight, `W_u` the
+/// snapshot's weight decayed forward and `W_R = W - W_u` what the window
+/// keeps, the pooling identity for two sets of weighted moments,
+///
+/// ```text
+/// W·C = W_R·C_R + W_u·C_u + (W_u·W / W_R)·(m_u - m)(m_u - m)ᵀ
+/// ```
+///
+/// solved for the remainder gives `C_R`, and `m_R = m - (W_u/W_R)·(m_u - m)`.
+/// Every term is a centred moment or a difference of two means, so nothing is
+/// ever the size of `m²`: the window keeps its precision at any offset. The
+/// earlier form went back through `E[x x'] = C + m m'`, subtracted, and
+/// re-centred, which at a level of `1e8` and unit variance left the windowed
+/// variance with a resolution of about 2 -- nothing (review 2026-09-12, C17;
+/// `tests/test_second_opinion.py` holds it to `numpy.cov` at that offset).
+///
+/// What precision remains to lose is the fraction discarded: the result is a
+/// difference of positives of size `C`, so it is negligible at `window =
+/// 3·halflife`, where the correction is an eighth, and worse as the window
+/// shortens toward the halflife.
 pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
     let k = cov.k();
     let w_now = cov.n_eff();
-    let w = w_now - f * old.w;
+    let w_old = f * old.w;
+    let w = w_now - w_old;
     if w <= 0.0 || !w.is_finite() {
         return None;
     }
-    let mean: Vec<f64> = (0..k)
-        .map(|i| (w_now * cov.mean(i) - f * old.w * old.m[i]) / w)
-        .collect();
+    // `ratio = W_u / W_R` and `g = W / W_R`, so `C_R = g·C - ratio·C_u -
+    // ratio·g·d dᵀ` with `d = m_u - m`.
+    let (ratio, g) = (w_old / w, w_now / w);
+    let d: Vec<f64> = (0..k).map(|i| old.m[i] - cov.mean(i)).collect();
+    let mean: Vec<f64> = (0..k).map(|i| cov.mean(i) - ratio * d[i]).collect();
+    let c_now = cov.comoments();
     let mut cen = vec![0.0; k * k];
     for i in 0..k {
         for j in 0..k {
-            // Back to raw second moments, subtract, and re-centre on the
-            // window's own mean.
-            let now = w_now * (cov.comoments()[i * k + j] + cov.mean(i) * cov.mean(j));
-            let then = old.w * (old.c[i * k + j] + old.m[i] * old.m[j]);
-            cen[i * k + j] = (now - f * then) / w - mean[i] * mean[j];
+            let ij = i * k + j;
+            cen[ij] = g * c_now[ij] - ratio * old.c[ij] - ratio * g * d[i] * d[j];
         }
+        // What is left to lose is a difference of positives; a variance it
+        // takes a hair below zero is zero (review V3).
+        cen[i * k + i] = cen[i * k + i].max(0.0);
     }
     let q = match (cov.q_sum(), old.q) {
         (Some(q_now), Some(q_then)) => Some((q_now - f * f * q_then).max(0.0)),

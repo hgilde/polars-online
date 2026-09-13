@@ -801,13 +801,18 @@ impl EwRidge {
         // With intercept: center, scale to correlation form, solve, unscale,
         // recover the intercept. Feature slots are 1..kc.
         let kf = kc - 1;
-        // Materialized up front: the solve below borrows `self` mutably.
-        let means: Vec<f64> = zidx.iter().map(|&z| self.cov.mean(z)).collect();
+        // Every statistic comes from `cov`, the accumulator `solve` handed in:
+        // the truncated view under a `window`, the live state otherwise. This
+        // branch once read the means and the centred Gram from `self.cov` while
+        // the right-hand side (`b`, `ybar`) came from the view, so a windowed
+        // standardized fit mixed two histories and the window's guarantee failed
+        // silently (review 2026-09-12, C1).
+        let means: Vec<f64> = zidx.iter().map(|&z| cov.mean(z)).collect();
         let mean = |i: usize| means[i];
         let mut c = vec![0.0; kf * kf];
         for i in 0..kf {
             for j in 0..kf {
-                c[i * kf + j] = self.cov.cov(zidx[i + 1], zidx[j + 1]);
+                c[i * kf + j] = cov.cov(zidx[i + 1], zidx[j + 1]);
             }
         }
         let s: Vec<f64> = (0..kf).map(|i| c[i * kf + i].max(0.0).sqrt()).collect();

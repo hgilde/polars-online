@@ -1845,6 +1845,98 @@ mod tests {
         }
     }
 
+    /// Review 2026-09-12, C17: the same window at a level of `1e8`. The old
+    /// truncation went back through `E[x x'] = C + m m'`, subtracted, and
+    /// re-centred, which at this level left the windowed variance with a
+    /// resolution of about 2 -- nothing, for unit-scale data. The oracle here
+    /// is two-pass (centre on the window's own mean, then square), so it is
+    /// right at any offset; `direct_window` above is not, which is why it runs
+    /// at `100` and this one needs its own. The boundary is inclusive, as the
+    /// module doc states it: a row exactly `window` old is not older than the
+    /// window.
+    #[test]
+    fn a_window_keeps_its_precision_at_a_large_offset() {
+        let halflife = 40.0;
+        for &window in &[15.0, 60.0, 150.0] {
+            let mut cfg = model_cfg(2, vec![EwCovStat::Mean, EwCovStat::Var, EwCovStat::Cov]);
+            cfg.decay = crate::Decay::Halflife(halflife);
+            cfg.min_periods = 0.0;
+            cfg.window = Some(window);
+            let mut m = EwCovModel::new(cfg).unwrap();
+
+            let (mut xs, mut t, mut clock) = (Vec::<Vec<f64>>::new(), Vec::new(), 0.0);
+            let mut seed = 777u64;
+            let mut rnd = || {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                ((seed >> 33) as f64) / (u32::MAX as f64)
+            };
+            for i in 0..160 {
+                let d = if i == 0 { 0.0 } else { 1.0 + 6.0 * rnd() };
+                clock += d;
+                let u = rnd() * 4.0 - 2.0;
+                let x = vec![1e8 + u, 1e8 + 0.5 * u + rnd()];
+                if i > 0 {
+                    let got = crate::OnlineModel::predict(&m, &x, d);
+                    let now = t[i - 1];
+                    let keep: Vec<usize> = (0..i).filter(|&j| now - t[j] <= window).collect();
+                    let w: Vec<f64> = keep
+                        .iter()
+                        .map(|&j| 0.5_f64.powf((now - t[j]) / halflife))
+                        .collect();
+                    let wsum: f64 = w.iter().sum();
+                    let mean: Vec<f64> = (0..2)
+                        .map(|a| {
+                            keep.iter()
+                                .zip(&w)
+                                .map(|(&j, wj)| wj * xs[j][a])
+                                .sum::<f64>()
+                                / wsum
+                        })
+                        .collect();
+                    let cen = |a: usize, b: usize| {
+                        keep.iter()
+                            .zip(&w)
+                            .map(|(&j, wj)| wj * (xs[j][a] - mean[a]) * (xs[j][b] - mean[b]))
+                            .sum::<f64>()
+                            / wsum
+                    };
+                    // Unit-scale spreads, so an absolute 1e-6 separates the
+                    // fix (errors near 1e-9, the live accumulator's own at this
+                    // level) from the defect (errors of order 1).
+                    let close =
+                        |got: f64, want: f64| (got - want).abs() < 1e-6 * want.abs().max(1.0);
+                    assert!(
+                        (got.n_eff - wsum).abs() < 1e-9 * wsum,
+                        "window {window} row {i}: n_eff {} vs {wsum}",
+                        got.n_eff
+                    );
+                    for (a, &want) in mean.iter().enumerate() {
+                        assert!(
+                            (got.pred[a] - want).abs() < 1e-12 * want.abs(),
+                            "window {window} row {i} mean[{a}]: {} vs {want}",
+                            got.pred[a]
+                        );
+                        assert!(
+                            close(got.pred[2 + a], cen(a, a)),
+                            "window {window} row {i} var[{a}]: {} vs {}",
+                            got.pred[2 + a],
+                            cen(a, a)
+                        );
+                    }
+                    assert!(
+                        close(got.pred[4], cen(0, 1)),
+                        "window {window} row {i} cov: {} vs {}",
+                        got.pred[4],
+                        cen(0, 1)
+                    );
+                }
+                crate::OnlineModel::step(&mut m, &x, &[], d, 1.0);
+                xs.push(x);
+                t.push(clock);
+            }
+        }
+    }
+
     /// PLAN §13.4 (2): the guarantee itself. Rows older than the window are
     /// replaced with a number that would dominate any average they still
     /// touched.

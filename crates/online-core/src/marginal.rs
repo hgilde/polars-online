@@ -520,8 +520,11 @@ impl Marginal {
     }
 
     /// One truncated `(weight, mean, centred second moment)` triple:
-    /// `A(t) - f·A(u)` back through raw moments and re-centred, which is the
-    /// same identity `EwCov` uses, one pair at a time so a readout stays O(1).
+    /// `A(t) - f·A(u)` by the centred pooling identity `window::truncated`
+    /// uses, one pair at a time so a readout stays O(1). Every term is a
+    /// centred moment or a difference of two means, so a pair against a
+    /// price-level column keeps its precision; going back through the raw
+    /// moment `s + ma·mb` did not (review 2026-09-12, C17).
     fn cut(
         w: f64,
         w_old: f64,
@@ -531,14 +534,16 @@ impl Marginal {
         s: f64,
         s_old: f64,
     ) -> Option<(f64, f64, f64, f64)> {
-        let wn = w - f * w_old;
+        let wo = f * w_old;
+        let wn = w - wo;
         if wn <= 0.0 || !wn.is_finite() {
             return None;
         }
-        let a = (w * ma - f * w_old * ma_old) / wn;
-        let b = (w * mb - f * w_old * mb_old) / wn;
-        let raw = w * (s + ma * mb) - f * w_old * (s_old + ma_old * mb_old);
-        Some((wn, a, b, raw / wn - a * b))
+        let (ratio, g) = (wo / wn, w / wn);
+        let (da, db) = (ma_old - ma, mb_old - mb);
+        let a = ma - ratio * da;
+        let b = mb - ratio * db;
+        Some((wn, a, b, g * s - ratio * s_old - ratio * g * da * db))
     }
 
     /// The accumulated weight the pairs are read from: under a `window`, the
@@ -1167,6 +1172,83 @@ mod tests {
                 );
                 assert!(tol(got.var_x, vx), "row {i} var_x: {} vs {vx}", got.var_x);
                 assert!(tol(got.cov, cov), "row {i} cov: {} vs {cov}", got.cov);
+            }
+        }
+    }
+
+    /// Review 2026-09-12, C17: the same pair against a feature and a target
+    /// that sit at `1e8`. `cut` used to go back through the raw moment `s +
+    /// ma·mb`, which at this level loses the variance and the covariance
+    /// entirely; the oracle is two-pass, so it is right at any offset. The
+    /// boundary is inclusive, as `window.rs` states it.
+    #[test]
+    fn a_windowed_pair_keeps_its_precision_at_a_large_offset() {
+        let (halflife, window) = (25.0, 70.0);
+        let mut c = cfg(1, 1);
+        c.decay = Decay::Halflife(halflife);
+        c.window = Some(window);
+        let mut m = Marginal::new(c).unwrap();
+
+        let mut seed = 4242u64;
+        let (mut xs, mut ys, mut t, mut clock) = (vec![], vec![], vec![], 0.0);
+        for i in 0..160 {
+            let d = if i == 0 {
+                0.0
+            } else {
+                0.5 + 2.0 * lcg(&mut seed).abs()
+            };
+            clock += d;
+            let u = lcg(&mut seed) * 3.0;
+            let x = 1e8 + u;
+            let y = 1e8 + 2.0 * u + lcg(&mut seed) * 0.2;
+            crate::OnlineModel::step(&mut m, &[x], &[Some(y)], d, 1.0);
+            xs.push(x);
+            ys.push(y);
+            t.push(clock);
+
+            if i >= 5 {
+                let now = clock;
+                let keep: Vec<usize> = (0..=i).filter(|&j| now - t[j] <= window).collect();
+                let w: Vec<f64> = keep
+                    .iter()
+                    .map(|&j| 0.5_f64.powf((now - t[j]) / halflife))
+                    .collect();
+                let wsum: f64 = w.iter().sum();
+                let mean =
+                    |v: &[f64]| keep.iter().zip(&w).map(|(&j, wj)| wj * v[j]).sum::<f64>() / wsum;
+                let (mx, my) = (mean(&xs), mean(&ys));
+                let co = |a: &[f64], ma: f64, b: &[f64], mb: f64| {
+                    keep.iter()
+                        .zip(&w)
+                        .map(|(&j, wj)| wj * (a[j] - ma) * (b[j] - mb))
+                        .sum::<f64>()
+                        / wsum
+                };
+                let (vx, vy, cov) = (
+                    co(&xs, mx, &xs, mx),
+                    co(&ys, my, &ys, my),
+                    co(&xs, mx, &ys, my),
+                );
+                let got = m.pair(0, 0);
+                let close = |got: f64, want: f64| (got - want).abs() < 1e-6 * want.abs().max(1.0);
+                assert!(
+                    (got.n_eff - wsum).abs() < 1e-9 * wsum,
+                    "row {i} n_eff: {} vs {wsum}",
+                    got.n_eff
+                );
+                assert!(
+                    (got.mean_x - mx).abs() < 1e-12 * mx,
+                    "row {i} mean_x: {} vs {mx}",
+                    got.mean_x
+                );
+                assert!(
+                    (got.mean_y - my).abs() < 1e-12 * my,
+                    "row {i} mean_y: {} vs {my}",
+                    got.mean_y
+                );
+                assert!(close(got.var_x, vx), "row {i} var_x: {} vs {vx}", got.var_x);
+                assert!(close(got.var_y, vy), "row {i} var_y: {} vs {vy}", got.var_y);
+                assert!(close(got.cov, cov), "row {i} cov: {} vs {cov}", got.cov);
             }
         }
     }

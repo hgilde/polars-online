@@ -1667,6 +1667,15 @@ note, not a task.
       `hit_rate` (`test_diagnostics.py`'s E22 test among them) is regression
       and passes unchanged, since none of them named `binary=True`.
 
+- [ ] 80. **The code review of 2026-09-12, worked through, begun
+      2026-09-13.** `docs/REVIEW-2026-09-12.md` (and its pass-10 supplement)
+      is the reviewer's; `docs/REVIEW-2026-09-12-PROGRESS.md` is the status of
+      every finding in it, and the place to look. The rule for the round, the
+      user's: fixes whose test is an independent library (`numpy`, `scipy`,
+      `river`; `tests/test_second_opinion.py`) first, everything else kept for
+      later with its reason. Commits carry the finding IDs. (Tasks 78 and 79
+      are on the parked branch `design/task-78`.)
+
 - [x] 77. **A plan with nothing to write runs once where a query uses it
       twice, 2026-09-10.** The IO source declares `is_pure=True` to
       `register_io_source` exactly when the run has no writes — no
