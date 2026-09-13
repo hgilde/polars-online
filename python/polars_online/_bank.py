@@ -778,8 +778,9 @@ class ModelBank:
             po.gram.solve(po.gram.from_row(row))
 
         ``eig_vecs`` are signed for continuity with the **previous closed
-        row of the same (spec, instance)** -- the previous group, not the
-        previous chunk of the same one -- so a component's sign is stable
+        row of the same (spec, instance)** -- under ``"monotone"`` the previous
+        group, and under ``"session"`` the same group's previous close, never
+        the previous chunk -- so a component's sign is stable
         along the sequence of closes and a sign flip between two rows is a
         real rotation rather than an eigensolver's arbitrary choice.
 

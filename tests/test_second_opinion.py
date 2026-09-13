@@ -797,3 +797,72 @@ class TestLabelDelayFoldsWhatWasScored:
         for col in ("pred_y", "n_eff"):
             assert tail[col].equals(fresh[col], null_equal=True), col
         assert whole["coef"][-1].to_list() == fresh["coef"][-1].to_list()
+
+
+class TestPcaSignsRunAlongOneGroup:
+    """S20. A closed ``ew_cov(pca = r)`` row's loadings are signed against the
+    previous close's, so a component does not flip sign from one close to
+    the next for no reason. Under ``group_close = "session"`` every group
+    closes every session, and the previous close was looked up by (spec,
+    instance) alone -- whichever group closed last. That chains every close
+    to the one before it, and the chain only misleads when a group's
+    component moves *across* the other group's between closes: then its sign
+    is set by an overlap that changes sign, and flips while the group itself
+    moved smoothly. (Not for any fixed pair of directions, which the review's
+    example -- two clouds that are reflections of each other -- is: the chain
+    keeps those consistent. Measured, before this test was written.) Here A
+    lies along ``x0`` and B alternates between two directions either side of
+    ``x1``, which overlap each other by 0.81 but A by +0.3 and -0.3. The
+    reference is ``numpy.linalg.eigh`` on each closed row's own co-moments,
+    sign-aligned with the previous close *of the same group*, the rule the
+    docstring states."""
+
+    def test_the_loadings_keep_their_sign_along_each_groups_closes(self):
+        rng = np.random.default_rng(71)
+        parts = []
+        # Six sessions, the last short: a group's span closes when its
+        # session changes, so sessions 1-5 close and 6 stays open.
+        for session, n in ((1, 150), (2, 150), (3, 150), (4, 150), (5, 150), (6, 10)):
+            b_dir = (0.3, 0.9539392) if session % 2 else (-0.3, 0.9539392)
+            for group, (d0, d1) in (("A", (1.0, 0.0)), ("B", b_dir)):
+                z = 3.0 * rng.normal(0.0, 1.0, n)
+                parts.append(
+                    pl.DataFrame(
+                        {
+                            "g": [group] * n,
+                            "s": [session] * n,
+                            "x0": d0 * z + 0.2 * rng.normal(0.0, 1.0, n),
+                            "x1": d1 * z + 0.2 * rng.normal(0.0, 1.0, n),
+                        }
+                    )
+                )
+        df = pl.concat(parts)
+        spec = po.spec.ew_cov(
+            "m",
+            features=["x0", "x1"],
+            stats=["mean"],
+            pca=1,
+            halflife=float("inf"),
+            group="g",
+            session="s",
+            group_close="session",
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        closed = bank.closed_groups()
+        assert closed.height == 10
+        for group in ("A", "B"):
+            rows = closed.filter(pl.col("group") == group).sort("session")
+            prev = None
+            for row in rows.iter_rows(named=True):
+                c00, c01, c11 = row["comoments"]  # the upper triangle, row by row
+                vals, vecs = np.linalg.eigh(np.array([[c00, c01], [c01, c11]]))
+                v = vecs[:, -1]
+                got = np.asarray(row["eig_vecs"])
+                # The first close's sign is the model's own; after that, the
+                # same group's previous close decides it.
+                ref = got if prev is None else prev
+                v = v * np.sign(v @ ref)
+                np.testing.assert_allclose(got, v, atol=1e-9, err_msg=f"{group} {row['session']}")
+                assert row["eig_vals"][0] == pytest.approx(vals[-1], rel=1e-9)
+                prev = v

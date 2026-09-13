@@ -85,7 +85,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | S17 | `marginal` emits the live `n_eff`, accessor windowed | `numpy`: `Σ lam^age` in window | **fixed** — emits `n_eff()`; failed `numpy` on the old build |
 | S18 | `marginal` `"truncated"` serial rule floors at `MIN_POSITIVE` | `statsmodels` `cov_hac` | later: library not installed |
 | S19 | the Gram and the closed row carry live accumulators under a `window` | `numpy.linalg.lstsq` on in-window vs all rows | next (after the `n_eff` rule) |
-| S20 | PCA sign continuity keyed across groups under a session close | `numpy.linalg.eigh` per closed row | next |
+| S20 | PCA sign continuity keyed across groups under a session close | `numpy.linalg.eigh` per closed row | **fixed** — the continuity map is keyed by (spec, group, instance) for a spec that closes on session, (spec, instance) as before under `"monotone"`; the bank file keeps the old list for the latter and a new one, skipped when empty, for the former; `_bank.py`'s docstring now states both rules. Library, exact: each closed row's `eig_vecs` and `eig_vals` equal `numpy.linalg.eigh` on that row's own co-moments, sign-aligned with the same group's previous close. **The review's example does not show the defect**, which the first two versions of the test found by passing on the old code: two clouds that are reflections of each other, or any fixed pair of directions, stay consistent, because keyed by (spec, instance) every close is chained to the previous one whatever its group, and a fixed geometry chains consistently. The flip needs a group whose component moves across the other's between closes; the test's B alternates either side of `x1` beside an A along `x0`, and on the old code B's second close came out flipped. Shown by stashing the fix and rebuilding |
 | S21 | `ModelBank.specs` before vs after a round trip | — | later: no library oracle |
 | S22 | `Spec::validate` lets pairs through (pattern F) | `statsmodels` `Holt` for one sub-case | later: no library oracle for the refusals |
 | S23 | `emit_averaged` weights in target units² | `river` `EWARegressor` (shape only) | later: needs a decision (scale-free `eta`, or document the units) |
@@ -153,6 +153,14 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   expected casualty was `test_label_delay.py`'s two `embargo` comparisons,
   which asserted agreement on the diagnostics -- agreement that existed
   only because both sides folded the peeking residual.
+
+- S20 fixed. Its first two tests passed on the old code -- the review's
+  reflection example and a fixed 120-degree rotation both chain
+  consistently -- so they tested nothing; the third, with a component that
+  crosses the other group's between closes, fails on the old code (shown
+  by stashing the fix and rebuilding) and passes on the new. A reminder
+  for every finding: a test that passes before the fix proves nothing
+  about it.
 
 ## New observations (found while fixing; not in the review)
 

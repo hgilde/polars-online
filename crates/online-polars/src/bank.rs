@@ -1869,6 +1869,11 @@ struct BankFile {
     /// `(spec index, instance, components)` for the PCA sign continuity.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pca_prev: Vec<(usize, String, online_core::Pca)>,
+    /// The same, per group, for the specs that close on session, whose
+    /// continuity runs along one group's closes (review 2026-09-12, S20).
+    /// Skipped when empty, so no other file's bytes move.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pca_prev_by_group: Vec<(usize, GroupKey, String, online_core::Pca)>,
     /// `(spec index, integer keys)` for the `"monotone"` specs that have
     /// seen a chunk, so a resume can tell a mark written under an integer
     /// column from one written under a text column (E54,
@@ -1893,10 +1898,16 @@ pub struct Bank {
     /// Per spec under `group_close = "monotone"`: the largest key seen, past
     /// which no group may reopen.
     high_water: Vec<Option<GroupKey>>,
-    /// The last closed row's components per (spec, decay instance), so an
-    /// `ew_cov(pca = r)` row's loadings keep their sign across a group and
-    /// across a save/load.
-    pca_prev: HashMap<(usize, String), online_core::Pca>,
+    /// The last closed row's components per (spec, group, decay instance), so
+    /// an `ew_cov(pca = r)` row's loadings keep their sign across closes and
+    /// across a save/load. The group is `None` under `"monotone"`, where a
+    /// group closes once and continuity runs from one group to the next, and
+    /// the row's own group under `"session"`, where every group closes every
+    /// session. Keyed by (spec, instance) alone, one group's day-2 loadings
+    /// were signed against whichever group sorted last on day 1, so a
+    /// reflection between two groups read as a sign flip in one (review
+    /// 2026-09-12, S20).
+    pca_prev: HashMap<(usize, Option<GroupKey>, String), online_core::Pca>,
     /// Whether each spec's group column is an integer one, so that
     /// [`key_cmp`] orders its keys as numbers. Learned from the first chunk
     /// a `"monotone"` spec sees, `None` until then; the queue's key order
@@ -2902,7 +2913,10 @@ impl Bank {
                 continue;
             };
             let Some(g) = &row.gram else { continue };
-            let key = (row.spec, row.instance.clone());
+            let group = self.specs[row.spec]
+                .closes_on_session()
+                .then(|| row.group.clone());
+            let key = (row.spec, group, row.instance.clone());
             let prev = self.pca_prev.get(&key);
             if let Some(p) = online_core::Pca::of(&g.comoments, g.k, r, prev) {
                 row.eig_vals = Some(p.eig.clone());
@@ -2983,9 +2997,22 @@ impl Bank {
                 let mut v: Vec<(usize, String, online_core::Pca)> = self
                     .pca_prev
                     .iter()
-                    .map(|((si, inst), p)| (*si, inst.clone(), p.clone()))
+                    .filter(|((_, g, _), _)| g.is_none())
+                    .map(|((si, _, inst), p)| (*si, inst.clone(), p.clone()))
                     .collect();
                 v.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+                v
+            },
+            pca_prev_by_group: {
+                let mut v: Vec<(usize, GroupKey, String, online_core::Pca)> = self
+                    .pca_prev
+                    .iter()
+                    .filter_map(|((si, g, inst), p)| {
+                        g.as_ref()
+                            .map(|g| (*si, g.clone(), inst.clone(), p.clone()))
+                    })
+                    .collect();
+                v.sort_by(|a, b| (a.0, &a.1, &a.2).cmp(&(b.0, &b.1, &b.2)));
                 v
             },
             key_integer: self
@@ -3092,7 +3119,11 @@ impl Bank {
             }
         }
         for (si, inst, pca) in &file.pca_prev {
-            bank.pca_prev.insert((*si, inst.clone()), pca.clone());
+            bank.pca_prev.insert((*si, None, inst.clone()), pca.clone());
+        }
+        for (si, group, inst, pca) in &file.pca_prev_by_group {
+            bank.pca_prev
+                .insert((*si, Some(group.clone()), inst.clone()), pca.clone());
         }
         for (si, integer) in &file.key_integer {
             if let Some(slot) = bank.key_integer.get_mut(*si) {
