@@ -2814,8 +2814,11 @@ fn run_instance(
         // Drift is monitored on |resid| scaled by the slot's own EW residual
         // std, so `drift_delta` means the same thing whatever the target's
         // units. Rows with no residual are skipped, not treated as zero error.
+        // So is a zero-weight row: the user weighted it out, `sigma` already
+        // treats it as unseen, and a row that fired the detector could restart
+        // the model under `drift_action = "reset"` (review 2026-09-12, S28).
         let mut row_drift = false;
-        if let (true, Some(dets)) = (learn, inst.drift.as_deref_mut()) {
+        if let (true, Some(dets)) = (learn && w > 0.0, inst.drift.as_deref_mut()) {
             for (slot, &rv) in sc.r.iter().enumerate() {
                 let scale = sc.sig[slot];
                 if rv.is_finite() && scale.is_finite() && scale > 0.0 {
@@ -2838,7 +2841,9 @@ fn run_instance(
                         inst.o_resid_q[li * block + slot * n_rows + ri] =
                             est.get().unwrap_or(f64::NAN);
                     }
-                    if learn && sc.r[slot].is_finite() {
+                    // A zero-weight row's residual stays out, as it does of
+                    // `sigma` (S28).
+                    if learn && w > 0.0 && sc.r[slot].is_finite() {
                         est.update(sc.r[slot].abs());
                     }
                 }
@@ -2849,7 +2854,8 @@ fn run_instance(
                 if emit {
                     inst.o_autocorr[slot * n_rows + ri] = est.get().unwrap_or(f64::NAN);
                 }
-                if learn && sc.r[slot].is_finite() {
+                // Likewise the autocorrelation (S28).
+                if learn && w > 0.0 && sc.r[slot].is_finite() {
                     est.update(sc.r[slot], lam);
                 }
             }

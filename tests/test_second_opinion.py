@@ -608,3 +608,77 @@ class TestNoInterceptIsNotCentred:
         assert np.max(np.abs(via_coef - pred[1000:]) / np.abs(pred[1000:])) < 0.05
         b = _wls(x, y, np.ones(len(y)), intercept=False)
         np.testing.assert_allclose(coef[-1], b, atol=5e-2)
+
+
+class TestAZeroWeightRowIsNotSeen:
+    """S28. ``weight = 0`` means the row is scored, the clock advances, and
+    nothing is learned -- everywhere, the residual diagnostics included.
+    ``sigma`` got that right, while the residual quantiles, the
+    autocorrelation and the drift detector folded a zero-weight row's
+    residual in at full weight, so the row the user had weighted out could
+    move a quantile, fire the detector, and under ``drift_action = "reset"``
+    restart the model.
+
+    The exact check needs no library: a zero-weight row's *target* cannot
+    change anything on the rows after it, so a run where that row's target
+    jumps a hundredfold must equal a run where it does not, field by field,
+    from the next row on. The library check is the detector itself: river's
+    ``PageHinkley`` with ``alpha = 1`` and ``mode = "up"`` is ours flag for
+    flag (verified on its own before this test was written), so fed the
+    bank's own ``|resid| / sigma`` series with the zero-weight row left out,
+    it must reproduce the bank's ``drift`` column."""
+
+    def _run(self, jump: float, drift_action: str = "flag"):
+        rng = np.random.default_rng(51)
+        n, k0 = 1200, 700
+        x = rng.normal(0.0, 1.0, n)
+        y = 1.0 + 2.0 * x + rng.normal(0.0, 0.5, n)
+        w = np.ones(n)
+        w[k0] = 0.0
+        y[k0] += jump
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x"],
+            halflife=200.0,
+            weight="w",
+            emit_sigma=True,
+            resid_quantiles=[0.5, 0.9],
+            emit_autocorr=True,
+            emit_drift=True,
+            drift_delta=0.05,
+            drift_threshold=20.0,
+            drift_action=drift_action,
+            emit_metrics=True,
+        )
+        df = pl.DataFrame({"x": x, "y": y, "w": w})
+        return po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest(), k0, w
+
+    @pytest.mark.parametrize("drift_action", ["flag", "reset"])
+    def test_its_target_changes_nothing_after_it(self, drift_action):
+        clean, k0, _ = self._run(0.0, drift_action)
+        jumped, _, _ = self._run(100.0, drift_action)
+        after = slice(k0 + 1, None)
+        for col in clean.columns:
+            a, b = clean[col][after], jumped[col][after]
+            assert a.equals(b, null_equal=True), col
+
+    def test_the_drift_column_is_rivers_page_hinkley_without_it(self):
+        river_drift = pytest.importorskip("river.drift")
+        out, _, w = self._run(100.0)
+        resid = out["resid_y"].to_numpy()
+        sigma = out["sigma_y"].to_numpy()
+        flags = out["drift_y"].to_numpy()
+        ph = river_drift.PageHinkley(
+            min_instances=0, delta=0.05, threshold=20.0, alpha=1.0, mode="up"
+        )
+        fed = 0
+        for t in range(len(resid)):
+            e = abs(resid[t]) / sigma[t] if sigma[t] > 0 else float("nan")
+            if w[t] > 0 and np.isfinite(e):
+                ph.update(float(e))
+                fed += 1
+                assert bool(flags[t]) == bool(ph.drift_detected), t
+            else:
+                assert not flags[t], t
+        assert fed > 1000

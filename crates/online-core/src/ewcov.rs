@@ -1608,7 +1608,11 @@ impl crate::OnlineModel for EwCovModel {
                 .map(|s| self.cfg.width(s))
                 .sum::<usize>();
             let score = out.pred[slot];
-            if score.is_finite() {
+            // A zero-weight row is scored but not seen: its distance stays out
+            // of the history the quantiles threshold against, as the stream
+            // keeps a zero-weight residual out of `resid_quantiles` (review
+            // 2026-09-12, S28).
+            if score.is_finite() && weight > 0.0 {
                 for q in &mut self.mahal_q {
                     q.update(score);
                 }

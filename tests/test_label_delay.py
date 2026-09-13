@@ -111,23 +111,32 @@ class TestItIsTheDoubledStream:
             checked += 1
         assert checked >= 9, f"only {checked} fields compared"
 
-    def test_the_weight_free_diagnostics_are_where_the_two_differ(self):
-        """`resid_quantiles`, `emit_autocorr` and `emit_drift` do not take a
-        row weight -- a P2 estimator counts samples, not weight -- so in the
-        doubled stream a zero-weight predict row feeds them as much as its
-        learn copy does, and every residual lands twice. `label_delay` feeds
-        them once, when the label matures. The native path is the right one,
-        and this pins the difference so it cannot be discovered by surprise."""
+    def test_the_weight_free_diagnostics_match_too(self):
+        """`resid_quantiles`, `emit_autocorr` and `emit_drift` take no row
+        weight, and they used to feed on the doubled stream's zero-weight
+        predict rows as much as on its learn copies -- every residual landed
+        twice, and this test pinned that difference as the oracle's quirk. It
+        was the diagnostics' defect: a zero-weight row is scored and not seen,
+        everywhere (review 2026-09-12, S28). Since that fix the doubled stream
+        feeds them once, as `label_delay` does, and the two agree field by
+        field -- the drift flags, the autocorrelation and the quantiles
+        included."""
         df = frame(n=600, seed=1)
         kw = dict(emit_drift=True, emit_autocorr=True, resid_quantiles=[0.5])
         native = po.ModelBank([spec(label_delay=7.0, **kw)]).fit_predict(df)
         oracle, _ = doubled(df, 7.0, **kw)
-        a = native["m"].struct.field("absresid_q0.5_y").to_numpy()
-        b = oracle["m"].struct.field("absresid_q0.5_y").to_numpy()
-        assert not np.array_equal(a[np.isfinite(a)], b[np.isfinite(b)])
-        # And the oracle warms up sooner, because a P2 estimator needs five
-        # samples and the doubled stream hands it two per row.
-        assert np.isfinite(a).sum() < np.isfinite(b).sum()
+        a, b = native["m"].struct, oracle["m"].struct
+        checked = 0
+        for field in po.spec.output_fields(spec(label_delay=7.0, **kw)):
+            if field == "coef":
+                continue
+            x = a.field(field).cast(pl.Float64).to_numpy()
+            y = b.field(field).cast(pl.Float64).to_numpy()
+            assert (np.isnan(x) == np.isnan(y)).all(), field
+            fin = np.isfinite(x)
+            assert np.array_equal(x[fin], y[fin]), field
+            checked += 1
+        assert checked >= 5, f"only {checked} fields compared"
 
     def test_the_state_is_the_state_of_the_matured_rows(self):
         """A delayed bank at the end of a stream is bit-for-bit the bank a

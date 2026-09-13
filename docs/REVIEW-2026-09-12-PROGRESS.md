@@ -93,7 +93,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | S25 | six doors, three depths for spec checking | — | later: no library oracle |
 | S26 | `coef_index` refusals by name vs `IndexError` | — | later: no library oracle |
 | S27 | the layers' lists of what may be infinite disagree | — | later: needs a per-parameter decision |
-| S28 | residual diagnostics disagree on a zero-weight row | `river.drift.PageHinkley`, `numpy.quantile` | next |
+| S28 | residual diagnostics disagree on a zero-weight row | `river.drift.PageHinkley`, `numpy.quantile` | **fixed** — a zero-weight row's residual stays out of `resid_quantiles`, the autocorrelation, the drift detector and `ew_cov`'s `mahal_q`, as it always did of `sigma`. Library, exact: river's `PageHinkley(alpha=1, mode="up")` reproduces ours flag for flag (checked on its own first, at three settings), and fed the bank's own `\|resid\|/sigma` series without the zero-weight row it reproduces the bank's drift column. No library needed for the rest: a zero-weight row's target, jumped a hundredfold, now changes no field on any later row, under `drift_action` `"flag"` and `"reset"`. On the old build all three failed (a quantile moved; under `"reset"` the row restarted the model; the drift column parted from river's at the row). The full gate then failed `tests/test_label_delay.py`'s `test_the_weight_free_diagnostics_are_where_the_two_differ`, which pinned S28 itself -- it asserted the native path and `embargo`'s doubled stream disagree on these three, attributing the gap to the oracle's zero-weight rows (the review's V21 notes exactly this). It now asserts they agree |
 | S29 | `holt` reads the row weight as a gate | `pandas` `ewm` | later: library not installed |
 | S30 | `holt` at an infinite level halflife | `statsmodels` `Holt` | later: library not installed |
 | S31 | `ftrl` `strict_binary`: documented error, silent skip | — | later: needs a decision |
@@ -142,6 +142,10 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 - C8, C10, C11, C13 (pattern B) fixed. The new tests failed 4 of 5 on the
   previous build -- every no-intercept case -- and the `huber` control
   without standardization passed; 44 library tests pass now.
+
+- S28 fixed. `numpy.quantile` turned out to be unnecessary: the exact
+  "changes nothing after it" test covers the quantiles, and river is exact
+  for the detector. 47 library tests pass.
 
 ## New observations (found while fixing; not in the review)
 
