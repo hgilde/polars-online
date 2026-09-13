@@ -273,9 +273,23 @@ impl EwClass {
         &self.cfg
     }
 
-    /// EW weight of every accepted row so far: the `n_eff` the next row reports.
+    /// EW weight of every accepted row so far: the `n_eff` the next row
+    /// reports. Under a `window`, the weight *inside* it, as every windowed
+    /// model reports it: the class weights, means and covariances a row is
+    /// scored on are windowed, and the `min_periods` gate and the reported
+    /// count now are too (review 2026-09-12, S14). The snapshot carries the
+    /// weight before its row, so the window's is one subtraction away.
     pub fn n_eff(&self) -> f64 {
-        self.n_eff
+        let Some(win) = self.win.as_ref() else {
+            return self.n_eff;
+        };
+        match win.snaps.boundary() {
+            Some((u, old)) if old.n_eff > 0.0 => {
+                let f = self.cfg.decay.factor(win.clock - u);
+                (self.n_eff - f * old.n_eff).max(0.0)
+            }
+            _ => self.n_eff,
+        }
     }
 
     /// EW weight of the rows labelled with each class, in label order.
@@ -387,7 +401,7 @@ impl EwClass {
         let nc = self.cfg.n_classes;
         let k = self.cfg.n_features;
         let nan = || vec![f64::NAN; 1 + nc];
-        if !valid || self.n_eff < self.cfg.min_periods {
+        if !valid || self.n_eff() < self.cfg.min_periods {
             return nan();
         }
         // Under a `window`, every class is scored on its truncated moments.
@@ -514,7 +528,7 @@ impl EwClass {
 impl OnlineModel for EwClass {
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         let lam = self.cfg.decay.factor(d_clock);
-        let n_before = self.n_eff;
+        let n_before = self.n_eff();
         let valid = x.iter().all(|v| v.is_finite());
         let mut failed = false;
         let mut factors = std::mem::take(&mut self.factors);
@@ -568,7 +582,7 @@ impl OnlineModel for EwClass {
         let mut failed = false;
         Step {
             pred: self.score(x, valid, &mut failed, None),
-            n_eff: self.n_eff,
+            n_eff: self.n_eff(),
             extra: None,
         }
     }

@@ -109,6 +109,17 @@ impl<S> Snapshots<S> {
     }
 }
 
+/// The smallest remainder, relative to the weight it was subtracted from, that
+/// is still something. The window's weight is `W - f·W_u`, a difference of two
+/// positives that are equal in exact arithmetic when every row of the history
+/// has aged out -- and in `f64` then comes out at about `±W·1e-16`, not 0. A
+/// positive crumb that size would pass as "a window with rows in it" and turn
+/// every mean divided by it into noise, so anything below this fraction is an
+/// empty window (review 2026-09-12, C2: "clamp the truncated weight at 0
+/// before the test"). A genuine window never gets near it: its newest row
+/// alone carries weight 1 against a history of at most `1/(1 - lam)`.
+pub const EMPTY_FRACTION: f64 = 1e-12;
+
 /// An [`EwCov`]'s data, decayed to the clock of the row it precedes. Means and
 /// centred co-moments do not move under decay; only the two weight sums do,
 /// which is why a snapshot is this and not a whole accumulator.
@@ -167,7 +178,7 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
     let w_now = cov.n_eff();
     let w_old = f * old.w;
     let w = w_now - w_old;
-    if w <= 0.0 || !w.is_finite() {
+    if w <= EMPTY_FRACTION * w_now || !w.is_finite() {
         return None;
     }
     // `ratio = W_u / W_R` and `g = W / W_R`, so `C_R = g·C - ratio·C_u -
@@ -206,7 +217,7 @@ pub fn truncated_mean(
     f: f64,
 ) -> Option<(f64, Vec<f64>)> {
     let w = w_now - f * w_old;
-    if w <= 0.0 || !w.is_finite() {
+    if w <= EMPTY_FRACTION * w_now || !w.is_finite() {
         return None;
     }
     let out = mean

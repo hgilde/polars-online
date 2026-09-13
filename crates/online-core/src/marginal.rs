@@ -536,7 +536,9 @@ impl Marginal {
     ) -> Option<(f64, f64, f64, f64)> {
         let wo = f * w_old;
         let wn = w - wo;
-        if wn <= 0.0 || !wn.is_finite() {
+        // A remainder at rounding size is an empty window, not a tiny one
+        // (`window::EMPTY_FRACTION`, review C2).
+        if wn <= crate::window::EMPTY_FRACTION * w || !wn.is_finite() {
             return None;
         }
         let (ratio, g) = (wo / wn, w / wn);
@@ -886,11 +888,15 @@ impl OnlineModel for Marginal {
         out
     }
 
-    /// No prediction slots: the step reports `n_eff` and nothing else.
+    /// No prediction slots: the step reports `n_eff` and nothing else --
+    /// under a `window`, the weight inside it, which is what the pairs are
+    /// gated on. This reported `w_sum`, the whole history, so a windowed
+    /// `marginal` emitted a count that rose for the life of the stream beside
+    /// pairs read from the window (review 2026-09-12, S17).
     fn predict(&self, _x: &[f64], _d_clock: f64) -> Step {
         Step {
             pred: Vec::new(),
-            n_eff: self.w_sum,
+            n_eff: self.n_eff(),
             extra: None,
         }
     }

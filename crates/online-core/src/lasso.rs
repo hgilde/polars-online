@@ -251,15 +251,32 @@ impl Lasso {
             return None;
         }
         let f = self.cfg.decay.factor(win.clock - u);
-        let cov = crate::truncated(&self.cov, &old.cov, f)?;
         let m = self.cfg.n_targets;
-        let mut r = vec![vec![0.0; self.cfg.k_total()]; m];
+        let k_total = self.cfg.k_total();
+        let mut r = vec![vec![0.0; k_total]; m];
         let mut wj = vec![0.0; m];
         let mut sel_err = self.sel_err.clone();
+        // An empty window is an empty view, never the live state; a target
+        // with no row inside it keeps weight 0 while the others stay windowed.
+        // Both were `?`, which `EwRidge::view` had too (review 2026-09-12, C2).
+        let Some(cov) = crate::truncated(&self.cov, &old.cov, f) else {
+            let mut empty = self.cov.clone();
+            let zeros = vec![0.0; k_total * k_total];
+            empty.set_moments(&vec![0.0; k_total], &zeros, 0.0, old.cov.q.map(|_| 0.0));
+            return Some(LassoView {
+                cov: empty,
+                wj,
+                r,
+                sel_err,
+            });
+        };
         for j in 0..m {
-            let (w, rj) = crate::truncated_mean(self.wj[j], &self.r[j], old.wj[j], &old.r[j], f)?;
-            wj[j] = w;
-            r[j] = rj;
+            if let Some((w, rj)) =
+                crate::truncated_mean(self.wj[j], &self.r[j], old.wj[j], &old.r[j], f)
+            {
+                wj[j] = w;
+                r[j] = rj;
+            }
             if let Some((_w, e)) = crate::truncated_mean(
                 self.sel_w[j],
                 &self.sel_err[j],
@@ -357,14 +374,23 @@ impl Lasso {
 
         for j in 0..self.cfg.n_targets {
             if wj[j] <= 0.0 {
+                // Under a window, no row of this target is inside it: no fit
+                // to report (C2). Without one, a target never seen keeps the
+                // zeros it always had.
+                if view.is_some() {
+                    out[j] = vec![vec![f64::NAN; k_total]; np];
+                }
                 continue;
             }
-            // Warm start from the previous solve's largest-penalty solution.
+            // Warm start from the previous solve's largest-penalty solution --
+            // unless that was an empty window's NaN, which would poison the
+            // descent rather than start it.
             let mut b = vec![0.0; k];
             if let Some(prev) = &self.beta {
                 for i in 0..k {
-                    if s[i] > 0.0 {
-                        b[i] = prev[j][0][i + usize::from(self.cfg.add_intercept)] * s[i];
+                    let p = prev[j][0][i + usize::from(self.cfg.add_intercept)];
+                    if s[i] > 0.0 && p.is_finite() {
+                        b[i] = p * s[i];
                     }
                 }
             }
@@ -535,7 +561,7 @@ impl OnlineModel for Lasso {
         let due = self.cfg.solve_every <= 0.0
             || self.clock_since_solve >= self.cfg.solve_every
             || self.rows_since_solve >= self.cfg.max_rows_between_solves
-            || (self.beta.is_none() && self.cov.n_eff() >= self.cfg.min_periods);
+            || (self.beta.is_none() && self.n_eff() >= self.cfg.min_periods);
         if due {
             self.solve();
         }
@@ -544,11 +570,20 @@ impl OnlineModel for Lasso {
 
     fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
         let (m, np) = (self.cfg.n_targets, self.cfg.n_lambdas());
-        let n_eff = self.cov.n_eff();
+        // Under a `window`, the `n_eff` reported and gated on is the weight
+        // inside it, as `EwRidge::predict` reports it; this read the whole
+        // history's `self.cov.n_eff()` while the path was fitted on the
+        // window (review 2026-09-12, C9). One view for that and for the
+        // per-target test (C2).
+        let view = self.view();
+        let (n_eff, wj) = match view.as_ref() {
+            Some(v) => (v.cov.n_eff(), &v.wj),
+            None => (self.cov.n_eff(), &self.wj),
+        };
         let mut pred = vec![f64::NAN; m * np];
         if let (true, Some(beta)) = (n_eff >= self.cfg.min_periods, &self.beta) {
             for j in 0..m {
-                if self.wj[j] > 0.0 {
+                if wj[j] > 0.0 {
                     for li in 0..np {
                         pred[j * np + li] = dot_aug(&beta[j][li], x, self.cfg.add_intercept);
                     }

@@ -1387,8 +1387,13 @@ impl EwCovModel {
         &self.cfg
     }
 
+    /// The accumulated weight the statistics are read from: under a `window`,
+    /// the weight inside it -- the number `predict` emits and gates
+    /// `min_periods` on. This returned the live weight while the emitted field
+    /// was windowed, so the bank's readers of the accessor (`Bank::coef`, a
+    /// closed row) disagreed with the struct (review 2026-09-12, S15).
     pub fn n_eff(&self) -> f64 {
-        self.cov.n_eff()
+        self.view().n_eff()
     }
 
     /// Output slot labels, in emission order (used for field names): the
@@ -1877,6 +1882,14 @@ mod tests {
                 let x = vec![1e8 + u, 1e8 + 0.5 * u + rnd()];
                 if i > 0 {
                     let got = crate::OnlineModel::predict(&m, &x, d);
+                    // S15: the accessor is the windowed weight the report
+                    // carries, not the live one.
+                    assert!(
+                        (m.n_eff() - got.n_eff).abs() < 1e-12 * got.n_eff.max(1.0),
+                        "window {window} row {i}: accessor {} vs emitted {}",
+                        m.n_eff(),
+                        got.n_eff
+                    );
                     let now = t[i - 1];
                     let keep: Vec<usize> = (0..i).filter(|&j| now - t[j] <= window).collect();
                     let w: Vec<f64> = keep

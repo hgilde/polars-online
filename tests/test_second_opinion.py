@@ -166,3 +166,93 @@ class TestWindowedFit:
             keep, w = _window((i - 1) - np.arange(i), halflife, window)
             b = _wls(x[:i][keep], y[:i][keep], w)
             assert pred[i] == pytest.approx(b[0] + x[i] @ b[1:], abs=1e-8)
+
+
+class TestTheWindowIsAllTheModelSees:
+    """Pattern D and C2. Under a ``window`` every model reports, gates and fits
+    on the weight *inside* it -- ``Σ 0.5 ** (age / halflife)`` over the rows
+    the window keeps, which ``numpy`` sums from the rows. Before the fixes,
+    ``lasso`` (C9), ``ew_class`` (S14) and ``marginal`` (S17) reported the
+    whole history's weight while fitting on the window; ``ewridge`` and
+    ``ew_cov`` already reported the window's, and are the controls.
+
+    C2: ``ewridge`` and ``lasso`` built their windowed view all-or-nothing,
+    so a target with no rows left inside the window -- a sparse label beside a
+    dense one -- made the whole view fall back to the live accumulators, and
+    every *other* target was then solved on the whole history. Now the empty
+    target reports nothing and the rest stay windowed."""
+
+    HALFLIFE, WINDOW = 25.0, 60.0
+
+    def _rows(self, n: int = 320):
+        rng = np.random.default_rng(5)
+        x = rng.normal(0.0, 1.0, (n, 2)) + 3.0
+        y0 = np.where(
+            np.arange(n) < 200,
+            1.0 + 2.0 * x[:, 0] - x[:, 1],
+            -1.0 + 0.5 * x[:, 0] + 1.5 * x[:, 1],
+        ) + rng.normal(0.0, 0.1, n)
+        y1 = 0.3 * x[:, 0] + rng.normal(0.0, 0.1, n)
+        labels = np.where(x[:, 0] + rng.normal(0.0, 0.5, n) > 3.0, "a", "b")
+        return x, y0, y1, labels
+
+    def _spec(self, kind: str, window: float | None):
+        common = {"halflife": self.HALFLIFE, "window": window}
+        feats = ["x0", "x1"]
+        if kind == "ewridge":
+            return po.spec.ewridge("m", targets=["y0"], features=feats, ridge=1e-10, **common)
+        if kind == "lasso":
+            return po.spec.lasso("m", targets=["y0"], features=feats, lasso_path=[0.0], **common)
+        if kind == "marginal":
+            return po.spec.marginal("m", targets=["y0"], features=feats, **common)
+        if kind == "ew_class":
+            return po.spec.ew_class(
+                "m", features=feats, label="c", classes=["a", "b"], precision_prior=1e-6, **common
+            )
+        return po.spec.ew_cov("m", features=feats, stats=["mean"], **common)
+
+    @pytest.mark.parametrize("window", [None, 60.0])
+    @pytest.mark.parametrize("kind", ["ewridge", "lasso", "marginal", "ew_class", "ew_cov"])
+    def test_n_eff_is_the_weight_inside_the_window(self, kind, window):
+        x, y0, _, labels = self._rows()
+        n = len(y0)
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y0": y0, "c": labels})
+        n_eff = po.ModelBank([self._spec(kind, window)]).fit_predict(df)["m"].struct.field("n_eff")
+        for i in range(100, n, 13):
+            # The n_eff a row reports is the weight before it, with ages
+            # counted from the row before.
+            _, w = _window((i - 1) - np.arange(i), self.HALFLIFE, window)
+            assert n_eff[i] == pytest.approx(w.sum(), rel=1e-10), (kind, i)
+
+    @pytest.mark.parametrize("kind", ["ewridge", "lasso"])
+    def test_a_target_that_leaves_the_window_does_not_unwindow_the_others(self, kind):
+        x, y0, y1, _ = self._rows()
+        n = len(y0)
+        # y1 is observed on the first 100 rows only; its last row is out of the
+        # window from row 161 on, and from then on it has nothing to fit.
+        y1_sparse = [float(v) if i < 100 else None for i, v in enumerate(y1)]
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y0": y0, "y1": y1_sparse})
+        feats, common = ["x0", "x1"], {"halflife": self.HALFLIFE, "window": self.WINDOW}
+        if kind == "ewridge":
+            spec = po.spec.ewridge(
+                "m", targets=["y0", "y1"], features=feats, ridge=1e-10, solve_every=1e-9, **common
+            )
+            f0, f1, tol = "pred_y0", "pred_y1", 1e-8
+        else:
+            spec = po.spec.lasso(
+                "m",
+                targets=["y0", "y1"],
+                features=feats,
+                lasso_path=[0.0],
+                solve_every=1e-9,
+                **common,
+            )
+            f0, f1, tol = "pred_y0__l0", "pred_y1__l0", 1e-6
+        out = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        for i in range(170, n, 7):
+            keep, w = _window((i - 1) - np.arange(i), self.HALFLIFE, self.WINDOW)
+            b = _wls(x[:i][keep], y0[:i][keep], w)
+            assert out[f0][i] == pytest.approx(b[0] + x[i] @ b[1:], abs=tol), (kind, i)
+            # y1 has no row inside the window: it reports nothing, rather than
+            # a fit from rows the window excludes.
+            assert out[f1][i] is None or np.isnan(out[f1][i]), (kind, i)

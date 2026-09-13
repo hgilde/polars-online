@@ -364,6 +364,9 @@ struct RidgeView {
     cov: EwCov,
     r: Vec<Vec<f64>>,
     sig2: Vec<f64>,
+    /// Each target's weight inside the window; 0 for a target with no row
+    /// left in it, which then reports nothing (review 2026-09-12, C2).
+    wj: Vec<f64>,
 }
 
 impl EwRidge {
@@ -603,15 +606,40 @@ impl EwRidge {
             return None; // nothing has aged out yet: read the live state
         }
         let f = self.cfg.decay.factor(win.clock - u);
-        let cov = crate::truncated(&self.cov, &old.cov, f)?;
         let m = self.cfg.n_targets;
-        let mut r = vec![vec![0.0; self.cfg.k_total()]; m];
+        let k_total = self.cfg.k_total();
+        let mut r = vec![vec![0.0; k_total]; m];
+        let mut wj = vec![0.0; m];
         let mut sig2 = vec![0.0; m];
+        // Nothing inside the window at all -- a clock gap longer than it, or a
+        // weight that rounds below zero -- is an *empty* view, never the live
+        // state. This used `?`, and `None` means "nothing has aged out, read
+        // the live accumulators": the opposite situation, answered the same
+        // way, so an empty window reported the whole history as though it
+        // were the window (review 2026-09-12, C2).
+        let Some(cov) = crate::truncated(&self.cov, &old.cov, f) else {
+            let mut empty = self.cov.clone();
+            let zeros = vec![0.0; k_total * k_total];
+            empty.set_moments(&vec![0.0; k_total], &zeros, 0.0, old.cov.q.map(|_| 0.0));
+            return Some(RidgeView {
+                cov: empty,
+                r,
+                sig2,
+                wj,
+            });
+        };
         for j in 0..m {
             // The truncated weight is what makes the cross-moments a mean
-            // again; only the mean itself is read downstream.
-            let (_wj, rj) = crate::truncated_mean(self.wj[j], &self.r[j], old.wj[j], &old.r[j], f)?;
-            r[j] = rj;
+            // again. A target with no row left inside the window keeps weight
+            // 0 and reports nothing while the others stay windowed; this too
+            // was a `?`, so one sparse label beside a dense one sent *every*
+            // target back to the whole history (C2).
+            if let Some((w, rj)) =
+                crate::truncated_mean(self.wj[j], &self.r[j], old.wj[j], &old.r[j], f)
+            {
+                wj[j] = w;
+                r[j] = rj;
+            }
             // The residual variance is one number per target, so the same
             // subtraction on a one-element mean.
             match crate::truncated_mean(
@@ -627,7 +655,7 @@ impl EwRidge {
                 None => sig2[j] = 0.0,
             }
         }
-        Some(RidgeView { cov, r, sig2 })
+        Some(RidgeView { cov, r, sig2, wj })
     }
 
     fn solve(&mut self) {
@@ -645,6 +673,13 @@ impl EwRidge {
         // and before anything has aged out, these borrow the live state and
         // the arithmetic is unchanged to the bit.
         let view = self.view();
+        if view.as_ref().is_some_and(|v| v.cov.n_eff() <= 0.0) {
+            // An empty window has nothing to solve and no fit to report (C2).
+            self.beta = Some(vec![vec![f64::NAN; k_total]; m * combos.len()]);
+            self.clock_since_solve = 0.0;
+            self.rows_since_solve = 0;
+            return;
+        }
         let mut failures = 0u64;
         let (cov, r) = match view.as_ref() {
             Some(v) => (&v.cov, &v.r),
@@ -724,6 +759,16 @@ impl EwRidge {
                 // Total failure even with jitter: keep the previous coefficients.
                 for j in 0..m {
                     beta[j * combos.len() + ci] = prev[j * combos.len() + ci].clone();
+                }
+            }
+        }
+        // A target the window holds no row of has no fit to report (C2).
+        if let Some(v) = view.as_ref() {
+            for (j, &w) in v.wj.iter().enumerate() {
+                if w <= 0.0 {
+                    for ci in 0..combos.len() {
+                        beta[j * combos.len() + ci].fill(f64::NAN);
+                    }
                 }
             }
         }
@@ -981,7 +1026,7 @@ impl OnlineModel for EwRidge {
         let due = self.cfg.solve_every <= 0.0
             || self.clock_since_solve >= self.cfg.solve_every
             || self.rows_since_solve >= self.cfg.max_rows_between_solves
-            || (self.beta.is_none() && self.cov.n_eff() >= self.cfg.min_periods);
+            || (self.beta.is_none() && self.n_eff() >= self.cfg.min_periods);
         if due {
             self.solve();
         }
@@ -991,11 +1036,18 @@ impl OnlineModel for EwRidge {
     fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
         debug_assert_eq!(x.len(), self.cfg.n_features);
         let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
-        let n_eff = self.n_eff();
+        // One view for the gate and the per-target test: under a `window`
+        // both read the weight inside it, so a target with nothing in the
+        // window reports nothing (C2).
+        let view = self.view();
+        let (n_eff, wj) = match view.as_ref() {
+            Some(v) => (v.cov.n_eff(), &v.wj),
+            None => (self.cov.n_eff(), &self.wj),
+        };
         let mut pred = vec![f64::NAN; m * nc];
         if let (true, Some(beta)) = (n_eff >= self.cfg.min_periods, &self.beta) {
             for j in 0..m {
-                if self.wj[j] > 0.0 {
+                if wj[j] > 0.0 {
                     for c in 0..nc {
                         pred[j * nc + c] = dot_aug(&beta[j * nc + c], x, self.cfg.add_intercept);
                     }

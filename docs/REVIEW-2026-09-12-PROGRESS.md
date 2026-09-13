@@ -38,14 +38,14 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | ID | Finding | Independent test | Status |
 |---|---|---|---|
 | C1 | `ewridge` standardized solve reads live accumulators under a `window` | `numpy.linalg.lstsq`, in-window rows at `sqrt(lam^age)` weights | **fixed** — reproduced first: only `standardize=True` with a `window` was wrong (0.55 against `numpy`; the other three combinations within 2.6e-10); the branch now reads the `cov` it is handed; `TestWindowedFit` holds all four combinations to `numpy` at `1e-8` |
-| C2 | `view()` falls back to the live state when the window is empty (`ewridge`, `lasso`) | `numpy.linalg.lstsq` on one target's in-window rows | next |
+| C2 | `view()` falls back to the live state when the window is empty (`ewridge`, `lasso`) | `numpy.linalg.lstsq` on one target's in-window rows | **fixed** — both views are three-way (live / truncated / empty) and per target: a target with no row in the window reports NaN while the others stay windowed. One more cause the review named and the test found: the empty window's weight `W − f·W_u` comes out at `±1e-16·W`, not 0, so a positive crumb passed as "rows in it"; `window::EMPTY_FRACTION` (1e-12 of the weight subtracted from) now calls that empty, in `truncated`, `truncated_mean` and `marginal::cut`. Reproduced: on the old build a target that left the window sent the other target to the whole history (both models failed `numpy`) |
 | C3 | a `session_shrink` blend never re-solves | `numpy` weighted least squares at `long_halflife` weights (the slow twin at `f = 1`) | next |
 | C4 | building a `predict` plan drains the closed-group queue | none — a side effect, not a number | later: no library oracle |
 | C5 | `label_delay` ignores a reset or session change on a skipped row | `numpy`: lag-1 pairs within sessions; fresh-bank equality | next |
 | C6 | `ridge_decay` + `session_shrink` restores `prior_scale` at every blend | our own `rls` only | later: no library oracle |
 | C7 | a zero-weight row poisons the lasso's lambda selection (0/0) | a hand-rolled selection sum | later: no library oracle |
 | C8 | lasso without an intercept solves a centred/uncentred hybrid | `numpy.linalg.lstsq` with no intercept, at zero penalty | next |
-| C9 | `Lasso::predict` reports the unwindowed `n_eff` | `numpy`: `Σ lam^age` over the in-window rows | next |
+| C9 | `Lasso::predict` reports the unwindowed `n_eff` | `numpy`: `Σ lam^age` over the in-window rows | **fixed** — reports and gates the window's weight; failed `numpy` on the old build |
 | C10 | `kalman` centres without an intercept | `numpy.linalg.lstsq` with no intercept (statistical) + `coef·x == pred` | next |
 | C11 | `robust` centres without an intercept | `numpy.linalg.lstsq` with no intercept, `huber_delta` large | next |
 | C12 | `ew_class` `full` factorizes the live covariance under a `window` | `scipy.stats.multivariate_normal` on in-window class moments | next |
@@ -79,10 +79,10 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | S11 | `Lasso::solve_failures` never written | — | later: no library oracle |
 | S12 | `atomic.rs` Windows and durability caveats | — | later: no library oracle |
 | S13 | `robust` asymmetries in `step` and `solve` | — | later: no library oracle |
-| S14 | `ew_class` reports the whole-history `n_eff` under a `window` | `numpy`: `Σ lam^age` in window | next (with C9) |
-| S15 | `EwCovModel::n_eff()` is the live weight under a `window` | `numpy`: `Σ lam^age` in window | next (with C9) |
+| S14 | `ew_class` reports the whole-history `n_eff` under a `window` | `numpy`: `Σ lam^age` in window | **fixed** — `n_eff()` is the window's weight (one subtraction from the snapshot), read by the gate, the report and `step`; failed `numpy` on the old build |
+| S15 | `EwCovModel::n_eff()` is the live weight under a `window` | `numpy`: `Σ lam^age` in window | **fixed** — the accessor reads the view; the emitted field was already windowed and is held to `numpy`, and a Rust assertion holds the accessor to it |
 | S16 | an `sgd` state without its `scaler` loads unscaled | — | later: no library oracle |
-| S17 | `marginal` emits the live `n_eff`, accessor windowed | `numpy`: `Σ lam^age` in window | next (with C9) |
+| S17 | `marginal` emits the live `n_eff`, accessor windowed | `numpy`: `Σ lam^age` in window | **fixed** — emits `n_eff()`; failed `numpy` on the old build |
 | S18 | `marginal` `"truncated"` serial rule floors at `MIN_POSITIVE` | `statsmodels` `cov_hac` | later: library not installed |
 | S19 | the Gram and the closed row carry live accumulators under a `window` | `numpy.linalg.lstsq` on in-window vs all rows | next (after the `n_eff` rule) |
 | S20 | PCA sign continuity keyed across groups under a session close | `numpy.linalg.eigh` per closed row | next |
@@ -120,6 +120,16 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   passes only because its clock is irregular); and the report on row *i* is
   referenced at row *i*−1 on every path — `bank.predict` and `fit_predict`
   agree on it, so there is no new finding there.
+
+- C2, C9, S14, S15, S17 fixed together. **A decision taken, for the user to
+  see:** pattern D asked "hard rule 8 should say which" `n_eff` a windowed
+  model reports. The answer taken is the window's weight, everywhere --
+  emitted, gated on, and returned by the accessor -- because the fit is on
+  the window, `ewridge` (the workhorse) already did so, and `ew_cov`'s
+  `predict` doc had already chosen it. `CLAUDE.md` hard rule 8 now says so.
+  `TestTheWindowIsAllTheModelSees` failed 5 of 12 on the old build (the three
+  models that reported the whole history, and C2 in both), all 26 library
+  tests pass now.
 
 ## New observations (found while fixing; not in the review)
 
