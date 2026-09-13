@@ -177,6 +177,13 @@ pub use window::{Moments, Snapshots, truncated, truncated_mean};
 ///   and re-saves as 6. What an older build would do with a *windowed* file
 ///   is why this is a bump rather than a silent addition: it would ignore the
 ///   ring and report untruncated statistics.
+///
+///   The code review of 2026-09-12 added one field and rides on 6 without a
+///   bump, as task 38's rode on 3: a stream's record of the prediction each
+///   row waiting under `label_delay` was scored with (C21), skipped when
+///   empty, so no file without a delay moves. An older build reading a file
+///   that has it ignores the record and folds the replay's prediction,
+///   which is what it always did.
 pub const SCHEMA_VERSION: u32 = 6;
 
 /// Oldest state layout this build still loads.

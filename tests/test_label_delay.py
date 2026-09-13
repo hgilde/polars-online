@@ -6,7 +6,12 @@ once its label would really have been known. Two things have to be earned:
 1. It is the doubled stream, not something like it. `po.prep.embargo` builds
    the recipe E47 names -- every row twice, a zero-weight prediction at `t`
    and a lesson at `t + delay` -- and the native path is held against it
-   **bit for bit**, not approximately.
+   **bit for bit** on everything it predicts, not approximately. Not on what
+   it *folds*: since the code review of 2026-09-12 (C21) the residual
+   diagnostics fold the prediction a row was scored with, where the doubled
+   stream's lesson forms its residual from a model that has learned every
+   row before it. That difference is pinned below, and which side is right
+   is held against river in `tests/test_second_opinion.py`.
 2. It removes a leak that is otherwise there. With an autocorrelated feature
    and a forward-looking target, learning the label where it sits makes a
    pure noise column look predictive. The test measures that, and measures it
@@ -86,57 +91,50 @@ class TestItIsTheDoubledStream:
             fin = np.isfinite(x)
             assert np.array_equal(x[fin], y[fin]), (field, np.max(np.abs(x[fin] - y[fin])))
 
-    def test_the_weighted_diagnostics_match_too(self):
-        """sigma, resid_z, the metrics and the conformal interval are all fed
-        from the residual and all respect the row weight, so a delay that fed
-        them early would show here."""
-        df = frame(n=600, seed=1)
-        kw = dict(
-            emit_sigma=True,
-            emit_resid_z=True,
-            emit_metrics=True,
-            conformal=0.9,
-        )
-        native = po.ModelBank([spec(label_delay=7.0, **kw)]).fit_predict(df)
-        oracle, _ = doubled(df, 7.0, **kw)
-        a, b = native["m"].struct, oracle["m"].struct
-        checked = 0
-        for field in po.spec.output_fields(spec(label_delay=7.0, **kw)):
-            if field == "coef":
-                continue
-            x, y = a.field(field).to_numpy(), b.field(field).to_numpy()
-            assert (np.isnan(x) == np.isnan(y)).all(), field
-            fin = np.isfinite(x)
-            assert np.array_equal(x[fin], y[fin]), field
-            checked += 1
-        assert checked >= 9, f"only {checked} fields compared"
+    @pytest.mark.parametrize(
+        "kw",
+        [
+            dict(emit_sigma=True, emit_resid_z=True, emit_metrics=True, conformal=0.9),
+            dict(emit_drift=True, emit_autocorr=True, resid_quantiles=[0.5]),
+        ],
+        ids=["weighted", "weight-free"],
+    )
+    def test_the_predictions_match_and_the_diagnostics_do_not(self, kw):
+        """The doubled stream is the oracle for what a delayed bank *predicts*
+        -- `pred`, `resid` and `n_eff` match it to the bit -- and not for what
+        the bank *folds*. Its lesson at `t + delay` forms its residual from the
+        model as it then stands, which has learned every row before it: the
+        prediction that peeks, and the one the diagnostics folded until the
+        code review of 2026-09-12 (C21). They now fold the prediction the row
+        was scored with, so every residual diagnostic -- sigma, resid_z, the
+        metrics, the conformal interval, the quantiles, the autocorrelation,
+        drift -- parts from the oracle's, and must. Which is right is held
+        against river's delayed progressive validation in
+        `tests/test_second_opinion.py::TestLabelDelayFoldsWhatWasScored`; this
+        pins that the difference is there and only there.
 
-    def test_the_weight_free_diagnostics_match_too(self):
-        """`resid_quantiles`, `emit_autocorr` and `emit_drift` take no row
-        weight, and they used to feed on the doubled stream's zero-weight
-        predict rows as much as on its learn copies -- every residual landed
-        twice, and this test pinned that difference as the oracle's quirk. It
-        was the diagnostics' defect: a zero-weight row is scored and not seen,
-        everywhere (review 2026-09-12, S28). Since that fix the doubled stream
-        feeds them once, as `label_delay` does, and the two agree field by
-        field -- the drift flags, the autocorrelation and the quantiles
-        included."""
+        This test was two until then, both asserting agreement, and the
+        weight-free half once asserted *disagreement*, for a reason that was
+        the diagnostics' defect rather than the oracle's (S28)."""
         df = frame(n=600, seed=1)
-        kw = dict(emit_drift=True, emit_autocorr=True, resid_quantiles=[0.5])
         native = po.ModelBank([spec(label_delay=7.0, **kw)]).fit_predict(df)
         oracle, _ = doubled(df, 7.0, **kw)
         a, b = native["m"].struct, oracle["m"].struct
-        checked = 0
+        predicted = {"pred_y", "resid_y", "n_eff"}
+        parted = []
         for field in po.spec.output_fields(spec(label_delay=7.0, **kw)):
             if field == "coef":
                 continue
             x = a.field(field).cast(pl.Float64).to_numpy()
             y = b.field(field).cast(pl.Float64).to_numpy()
-            assert (np.isnan(x) == np.isnan(y)).all(), field
-            fin = np.isfinite(x)
-            assert np.array_equal(x[fin], y[fin]), field
-            checked += 1
-        assert checked >= 5, f"only {checked} fields compared"
+            same = (np.isnan(x) == np.isnan(y)).all() and np.array_equal(
+                x[np.isfinite(x)], y[np.isfinite(y)]
+            )
+            if field in predicted:
+                assert same, field
+            elif not same:
+                parted.append(field)
+        assert parted, "no residual diagnostic parted from the doubled stream"
 
     def test_the_state_is_the_state_of_the_matured_rows(self):
         """A delayed bank at the end of a stream is bit-for-bit the bank a

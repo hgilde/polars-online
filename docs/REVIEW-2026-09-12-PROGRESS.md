@@ -41,7 +41,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | C2 | `view()` falls back to the live state when the window is empty (`ewridge`, `lasso`) | `numpy.linalg.lstsq` on one target's in-window rows | **fixed** — both views are three-way (live / truncated / empty) and per target: a target with no row in the window reports NaN while the others stay windowed. One more cause the review named and the test found: the empty window's weight `W − f·W_u` comes out at `±1e-16·W`, not 0, so a positive crumb passed as "rows in it"; `window::EMPTY_FRACTION` (1e-12 of the weight subtracted from) now calls that empty, in `truncated`, `truncated_mean` and `marginal::cut`. Reproduced: on the old build a target that left the window sent the other target to the whole history (both models failed `numpy`) |
 | C3 | a `session_shrink` blend never re-solves | `numpy` weighted least squares at `long_halflife` weights (the slow twin at `f = 1`) | **fixed** — the blend re-solves when it mixed anything and a fit exists, which also fixes `predict`'s blended copy. Reproduced: on the old build the first row of session 2 was predicted at 1.20 with the pre-blend fit, against `numpy`'s slow-twin fit of −0.12; now equal at `1e-8`, and `bank.predict` on that row equals `fit_predict` (E31). A blend with nothing to mix stays a no-op, re-solve included (`blend_before_any_data_is_a_no_op` caught a first version that re-solved anyway) |
 | C4 | building a `predict` plan drains the closed-group queue | none — a side effect, not a number | later: no library oracle |
-| C5 | `label_delay` ignores a reset or session change on a skipped row | `numpy`: lag-1 pairs within sessions; fresh-bank equality | next |
+| C5 | `label_delay` ignores a reset or session change on a skipped row | `numpy`: lag-1 pairs within sessions; fresh-bank equality | **fixed**, with C21, which needs it (the queue C21 keeps stays aligned with the waiting rows only if a reset on a skipped row clears them) — a skipped row's reset now clears the buffer, and its session change or capped gap releases it, as an accepted row's always did. No library oracle: the review's `numpy` count needs a closed group, and `group_close` refuses `label_delay`. The test is the definition: after a reset on a skipped row, `pred` and `n_eff` equal a fresh bank fed the new session alone (failed on the old build) |
 | C6 | `ridge_decay` + `session_shrink` restores `prior_scale` at every blend | our own `rls` only | later: no library oracle |
 | C7 | a zero-weight row poisons the lasso's lambda selection (0/0) | a hand-rolled selection sum | later: no library oracle |
 | C8 | lasso without an intercept solves a centred/uncentred hybrid | `numpy.linalg.lstsq` with no intercept, at zero penalty | **fixed** — without an intercept `standardized()` scales by the raw second moment and keeps the raw cross-moments; at zero penalty the fit is held to `numpy`'s no-intercept least squares at `1e-6` (coordinate descent's tolerance), with the intercept case as the control |
@@ -57,7 +57,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | C18 | `marginal` allows `window` with `lags`; the lag ring is never truncated | `statsmodels` `acf` | later: library not installed (the recommended fix, a refusal, has no library test) |
 | C19 | `predict` scores across a session close `fit_predict` restarts at | `fit_predict` itself | later: no library oracle |
 | C20 | TOML `bocpd`/`hmm` read the hazard/exogenous column from `targets` | the builder | later: no library oracle |
-| C21 | under `label_delay`, residual diagnostics fold the replay-time residual | `river.evaluate.progressive_val_score(delay=...)` | next |
+| C21 | under `label_delay`, residual diagnostics fold the replay-time residual | `river.evaluate.progressive_val_score(delay=...)` | **fixed** — the replay folds the prediction the row was *scored* with: each instance keeps a queue of score-time predictions in step with the waiting rows (pushed as a buffered row is scored, taken back at its replay, dropped with them on a reset), saved with the stream and skipped when empty. **A decision for the user:** that field rides on schema 6 without a bump, as task 38's rode on 3 -- no file without a delay moves, the frozen schema-6 fixture re-saves unchanged, and an older build reading a new file just folds as it always did; `lib.rs` records it. Library, exact: river's `iter_progressive_val_score(delay=10)` on a running-mean regressor gives every prediction the frame carries (`1e-12`), and `sigma[t]²` is the mean of the emitted residuals over the rows matured by row `t` (`1e-9`; 0.305 against 0.389 on the old build). A save and reload mid-delay continues identically. The two `embargo` comparisons in `test_label_delay.py` became one: the doubled stream matches on `pred`, `resid` and `n_eff` to the bit and parts, by design, on every residual diagnostic (V21); E47's row says which residual is folded |
 | C22 | `holt` does not advance the level across a null or zero-weight row | `statsmodels` `ExponentialSmoothing` | later: library not installed |
 | C23 | `bocpd`'s `Run` forms every scatter by subtraction | `bayesian_changepoint_detection` | later: library not installed (an exact shift-invariance test needs none — a strong candidate for the non-library round) |
 | C24 | `ftrl`'s halflife shrinks the coefficients | none exists (river only at `inf`, the control) | later: no library oracle, and a design question |
@@ -146,6 +146,13 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 - S28 fixed. `numpy.quantile` turned out to be unnecessary: the exact
   "changes nothing after it" test covers the quantiles, and river is exact
   for the detector. 47 library tests pass.
+
+- C21 and C5 fixed together. The new tests failed 2 of 3 on the previous
+  build (C21's `sigma`, C5's fresh-bank equality; the save/reload test has
+  nothing to find on code without the new state). On the new build the
+  expected casualty was `test_label_delay.py`'s two `embargo` comparisons,
+  which asserted agreement on the diagnostics -- agreement that existed
+  only because both sides folded the peeking residual.
 
 ## New observations (found while fixing; not in the review)
 

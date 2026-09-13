@@ -682,3 +682,118 @@ class TestAZeroWeightRowIsNotSeen:
             else:
                 assert not flags[t], t
         assert fed > 1000
+
+
+class TestLabelDelayFoldsWhatWasScored:
+    """C21 and C5, the review's T-S16. Under ``label_delay`` a row is scored
+    when it arrives and learned from ``delay`` rows later -- exactly what
+    river's progressive validation does with ``delay``: it predicts each row
+    with a model that has learned only the rows at least ``delay`` behind it.
+    With no features and no forgetting, the bank's model is river's
+    ``StatisticRegressor(stats.Mean())``, so river gives every prediction the
+    frame should carry, independently.
+
+    C21: the residual diagnostics folded the residual of the *replay* -- the
+    model's prediction at release, after it had learned every row before
+    this one -- so ``sigma`` described a prediction nobody was shown, one
+    that had seen the labels the delay says were not yet available. Now the
+    replay folds the prediction the row was scored with, so ``sigma[t]^2`` is
+    the mean of the residuals the frame carries, over the rows whose labels
+    have matured by row ``t``. The level flips every ``2·delay`` rows, which
+    is where the two definitions part most.
+
+    C5 has no library oracle -- the review's numpy count needs a closed
+    group, which ``label_delay`` refuses -- but the queue C21 keeps must stay
+    aligned with the rows waiting, and a reset on a skipped row used to leave
+    them waiting. Its test is the definition: after such a reset the model
+    is the model a fresh bank fed the new session builds."""
+
+    DELAY = 10
+
+    def _rows(self, n: int = 600):
+        rng = np.random.default_rng(61)
+        level = np.where((np.arange(n) // (2 * self.DELAY)) % 2 == 0, 1.0, -1.0)
+        return level + rng.normal(0.0, 0.3, n)
+
+    def _spec(self, **kw):
+        return po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["zero"],  # no information: the fit is the running mean
+            ridge=1e-10,
+            halflife=float("inf"),
+            solve_every=1e-9,
+            min_periods=1,
+            emit_sigma=True,
+            label_delay=float(self.DELAY),
+            **kw,
+        )
+
+    def test_the_predictions_are_rivers_delayed_mean_and_sigma_is_their_residuals(self):
+        river = pytest.importorskip("river")
+        from river import dummy, evaluate, metrics, stats
+
+        y = self._rows()
+        n = len(y)
+        df = pl.DataFrame({"zero": np.zeros(n), "y": y})
+        out = po.ModelBank([self._spec()]).fit_predict(df)["m"].struct.unnest()
+        pred = out["pred_y"].to_numpy()
+        resid = out["resid_y"].to_numpy()
+        sigma = out["sigma_y"].to_numpy()
+        ds = [({"zero": 0.0}, float(v)) for v in y]
+        steps = evaluate.iter_progressive_val_score(
+            ds,
+            dummy.StatisticRegressor(stats.Mean()),
+            metrics.MSE(),
+            delay=self.DELAY,
+            step=1,
+            yield_predictions=True,
+        )
+        want = np.array([s["Prediction"] for s in steps])
+        scored = np.isfinite(pred)
+        assert scored.sum() > n - 2 * self.DELAY
+        # Every prediction the frame carries is river's delayed prediction.
+        np.testing.assert_allclose(pred[scored], want[scored], rtol=1e-12, atol=1e-12)
+        # sigma at row t is read before row t, after the rows released as it
+        # arrived: every row at least `delay` behind it.
+        for t in range(3 * self.DELAY, n, 7):
+            matured = resid[: t - self.DELAY + 1]
+            matured = matured[np.isfinite(matured)]
+            assert sigma[t] ** 2 == pytest.approx(np.mean(matured**2), rel=1e-9), t
+        assert river is not None
+
+    def test_the_record_survives_a_save_in_the_middle(self):
+        y = self._rows()
+        n = len(y)
+        df = pl.DataFrame({"zero": np.zeros(n), "y": y})
+        whole = po.ModelBank([self._spec()]).fit_predict(df)["m"].struct.field("sigma_y")
+        bank = po.ModelBank([self._spec()])
+        first = bank.fit_predict(df[: n // 2 + 3])["m"].struct.field("sigma_y")
+        bank = po.ModelBank.load_bytes(bank.save_bytes())
+        second = bank.fit_predict(df[n // 2 + 3 :])["m"].struct.field("sigma_y")
+        assert pl.concat([first, second]).equals(whole, null_equal=True)
+
+    def test_a_reset_on_a_skipped_row_drops_the_rows_still_waiting(self):
+        rng = np.random.default_rng(62)
+        n1, n2 = 60, 60
+        x = rng.normal(0.0, 1.0, n1 + n2)
+        y = np.where(np.arange(n1 + n2) < n1, 5.0, -5.0) + 2.0 * x + rng.normal(0.0, 0.1, n1 + n2)
+        x_col = [float(v) for v in x]
+        x_col[n1] = None  # the first row of session 2 is skipped
+        df = pl.DataFrame({"x": x_col, "y": y, "s": [1] * n1 + [2] * n2})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x"],
+            halflife=float("inf"),
+            session="s",
+            session_gap="reset",
+            label_delay=5.0,
+            min_periods=2,
+        )
+        whole = po.ModelBank([spec]).fit_predict(df)["m"].struct.unnest()
+        fresh = po.ModelBank([spec]).fit_predict(df[n1:])["m"].struct.unnest()
+        tail = whole[n1:]
+        for col in ("pred_y", "n_eff"):
+            assert tail[col].equals(fresh[col], null_equal=True), col
+        assert whole["coef"][-1].to_list() == fresh["coef"][-1].to_list()

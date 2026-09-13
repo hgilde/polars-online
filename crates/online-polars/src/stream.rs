@@ -1253,12 +1253,24 @@ pub struct StreamState {
     /// did.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending: Vec<PendingRow>,
+    /// Per model instance, the prediction each row in `pending` was *scored*
+    /// with, in the same order (review 2026-09-12, C21): the one thing a
+    /// replay cannot recompute, and what the residual diagnostics fold when
+    /// the row's label matures. Skipped when there is none, so a spec
+    /// without a delay writes the same bytes it always did.
+    #[serde(default, skip_serializing_if = "no_score_preds")]
+    pub score_pred: Vec<Vec<Vec<f64>>>,
     /// The session value of the span this stream is in, under `group_close =
     /// "session"` (docs/ENHANCEMENTS.md E54): the closed row reports it, and
     /// the clock keeps only a hash. Written only by a spec that closes on
     /// session, so no other spec's bytes move.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_session: Option<String>,
+}
+
+/// `StreamState::score_pred` holds nothing worth writing.
+fn no_score_preds(v: &[Vec<Vec<f64>>]) -> bool {
+    v.iter().all(Vec::is_empty)
 }
 
 /// Live per-stream state.
@@ -1298,6 +1310,9 @@ pub struct Stream {
     label_delay: Option<f64>,
     /// Rows accepted but not yet released into the models, oldest first.
     pending: Vec<PendingRow>,
+    /// Per model instance, the score-time prediction of each row in
+    /// `pending`, in the same order (C21); see [`StreamState::score_pred`].
+    score_pred: Vec<std::collections::VecDeque<Vec<f64>>>,
     /// What the output struct said on the last row this stream learned
     /// from, kept for [`Stream::save`] (docs/PLAN.md task 34).
     last_row: Option<LastRow>,
@@ -1749,6 +1764,10 @@ impl Stream {
             summary: Some(DataSummary::new(spec)),
             label_delay: spec.label_delay,
             pending: Vec::new(),
+            score_pred: slots
+                .iter()
+                .map(|_| std::collections::VecDeque::new())
+                .collect(),
             last_session: None,
         })
     }
@@ -1768,6 +1787,11 @@ impl Stream {
             last_row: self.last_row.clone(),
             summary: self.summary.clone(),
             pending: self.pending.clone(),
+            score_pred: self
+                .score_pred
+                .iter()
+                .map(|q| q.iter().cloned().collect())
+                .collect(),
             last_session: self.last_session.clone(),
         }
     }
@@ -1814,6 +1838,18 @@ impl Stream {
         // gets whatever the file holds, which is what "resume this stream"
         // means (E47).
         stream.pending = saved.pending.clone();
+        // The score-time predictions ride with the waiting rows (C21). A file
+        // written before they were kept has none: each of its waiting rows
+        // gets an empty record, at the front where those rows sit, so every
+        // queue stays in step with `pending` and those rows fold nothing when
+        // they mature -- there being no honest prediction to fold.
+        for (mi, q) in stream.score_pred.iter_mut().enumerate() {
+            let saved_q: &[Vec<f64>] = saved.score_pred.get(mi).map_or(&[], Vec::as_slice);
+            let kept = &saved_q[saved_q.len().saturating_sub(stream.pending.len())..];
+            let missing = stream.pending.len() - kept.len();
+            q.extend(std::iter::repeat_n(Vec::new(), missing));
+            q.extend(kept.iter().cloned());
+        }
         stream.last_session = saved.last_session.clone();
         // Checked here, where a file that is not its spec's is refused with
         // the models, rather than at the first read.
@@ -1964,6 +2000,7 @@ impl Stream {
                 want_coef,
                 emit: true,
                 learn: true,
+                buffered: false,
                 w: w.unwrap_or(1.0),
             });
         }
@@ -2014,6 +2051,7 @@ impl Stream {
             metrics: &mut self.metrics,
             conformal: &mut self.conformal,
             scratch: &mut self.scratch,
+            score_pred: &mut self.score_pred,
         };
         let mut insts = build_instances(spec, models, &self.decays, diag, out, n_rows);
         if coupled && insts.len() > 1 {
@@ -2120,13 +2158,28 @@ impl Stream {
             want_coef: false,
             emit: false,
             learn: true,
+            buffered: false,
             w: row.w,
         };
         for plan in plans.drain(..) {
             if !plan.accept {
                 // A skipped row teaches nothing and waits for nothing; its
                 // clock time is already folded into the next accepted row's
-                // delta, which is what counts the buffer down.
+                // delta, which is what counts the buffer down. Its *events*
+                // still reach the buffer: `run_instance` applies a skipped
+                // row's reset, blend and lag clear before its accept test, so
+                // a reset here left the old session's rows waiting to be
+                // replayed into the fresh model, and a session change or a
+                // capped gap released them across the break (review
+                // 2026-09-12, C5). The same two rules as an accepted row's.
+                if plan.reset {
+                    self.pending.clear();
+                } else if plan.session_changed || plan.capped {
+                    for row in self.pending.drain(..) {
+                        released.push(row);
+                        out.push(replay(released.len() - 1, released.last().unwrap()));
+                    }
+                }
                 out.push(plan);
                 continue;
             }
@@ -2183,6 +2236,7 @@ impl Stream {
             // order with.
             out.push(RowPlan {
                 learn: false,
+                buffered: true,
                 ..plan
             });
         }
@@ -2271,6 +2325,7 @@ impl Stream {
                 want_coef: false,
                 emit: true,
                 learn: false,
+                buffered: false,
                 w: 1.0,
             };
             let class = if adv.reset {
@@ -2355,6 +2410,9 @@ impl Stream {
         let (mut autocorr, mut metrics) = (self.autocorr.clone(), self.metrics.clone());
         let mut conformal = self.conformal.clone();
         let mut scratch: Vec<Scratch> = (0..n).map(|_| Scratch::default()).collect();
+        // Scoring buffers nothing and replays nothing, so its queues stay empty.
+        let mut score_pred: Vec<std::collections::VecDeque<Vec<f64>>> =
+            (0..n).map(|_| std::collections::VecDeque::new()).collect();
         let diag = Diagnostics {
             resid_var: &mut resid_var,
             resid_w: &mut resid_w,
@@ -2364,6 +2422,7 @@ impl Stream {
             metrics: &mut metrics,
             conformal: &mut conformal,
             scratch: &mut scratch,
+            score_pred: &mut score_pred,
         };
         let models = models.iter().map(|(_, m)| ModelRef::Score(m));
         let mut insts = build_instances(spec, models, &self.decays, diag, out, n_rows);
@@ -2433,6 +2492,7 @@ struct Diagnostics<'a> {
     metrics: &'a mut [Vec<SlotMetrics>],
     conformal: &'a mut [Vec<Conformal>],
     scratch: &'a mut [Scratch],
+    score_pred: &'a mut [std::collections::VecDeque<Vec<f64>>],
 }
 
 /// Split per-instance state and output into disjoint pieces, so instances
@@ -2478,6 +2538,7 @@ fn build_instances<'a>(
     let mut resid_var = diag.resid_var.iter_mut();
     let mut resid_w = diag.resid_w.iter_mut();
     let mut scratch = diag.scratch.iter_mut();
+    let mut score_pred = diag.score_pred.iter_mut();
 
     // Pulled in lockstep: each iterator yields disjoint `&mut`s, so every
     // Instance owns its own piece of everything.
@@ -2497,6 +2558,7 @@ fn build_instances<'a>(
             metrics: metrics.next(),
             conformal: conformal.next(),
             scratch: scratch.next().expect("one per instance"),
+            score_pred: score_pred.next().expect("one per instance"),
             n_slots,
             n_rows,
             o_pred: o_pred.next().unwrap_or_default(),
@@ -2547,6 +2609,9 @@ struct RowPlan {
     /// Step the models and fold the diagnostics. False for a row whose label
     /// has not matured: it is scored here and learned from later.
     learn: bool,
+    /// Pushed into the `label_delay` buffer as it was scored: its prediction
+    /// is kept for the diagnostics to fold when it matures (C21).
+    buffered: bool,
     w: f64,
 }
 
@@ -2588,6 +2653,9 @@ struct Instance<'a> {
     metrics: Option<&'a mut Vec<SlotMetrics>>,
     conformal: Option<&'a mut Vec<Conformal>>,
     scratch: &'a mut Scratch,
+    /// This instance's score-time predictions for the rows still waiting
+    /// under `label_delay`, oldest first (C21).
+    score_pred: &'a mut std::collections::VecDeque<Vec<f64>>,
     n_slots: usize,
     n_rows: usize,
     o_pred: &'a mut [f64],
@@ -2684,6 +2752,9 @@ fn run_instance(
     for plan in plans {
         if plan.reset {
             inst.reset();
+            // The stream dropped its waiting rows at this row, skipped or
+            // not (C5); the record of what they were scored with goes too.
+            inst.score_pred.clear();
         } else {
             if plan.blend {
                 // A gentler alternative to resetting: revert partway toward
@@ -2742,6 +2813,26 @@ fn run_instance(
         for (tj, group) in step.pred.chunks_mut(nc).enumerate() {
             if step_n_eff_below(step.n_eff, min_periods, tj) {
                 group.fill(f64::NAN);
+            }
+        }
+
+        // Under `label_delay` the residual diagnostics fold the prediction a
+        // row was *scored* with, not the one the model gives it at the
+        // replay: by then the model has learned every row released before
+        // this one, so its prediction has seen the labels the delay says were
+        // not yet available, and `sigma`, `resid_z`, the quantiles, the
+        // metrics, the conformal interval and the drift detector all
+        // described a prediction nobody was shown (review 2026-09-12, C21).
+        // The score keeps its prediction; the replay takes it back. The
+        // model's own update above stands.
+        if plan.buffered {
+            inst.score_pred.push_back(step.pred.clone());
+        } else if !plan.direct() {
+            match inst.score_pred.pop_front() {
+                Some(p) if p.len() == step.pred.len() => step.pred = p,
+                // No record of the score -- a state saved before it was kept:
+                // fold nothing rather than the prediction that peeks.
+                _ => step.pred.fill(f64::NAN),
             }
         }
 
