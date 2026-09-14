@@ -70,6 +70,44 @@ gc.collect()
 PY
 )
 
+# Where a leak comes from, on Linux: valgrind's loss records -- each a count of
+# definitely-lost blocks with the stack that allocated them -- compared
+# between the short run and the long one, largest growth first. Two runs of
+# the same stack are one record apiece, so the difference is the leak.
+GROWTH=$(cat <<'PY'
+import re, sys
+from collections import defaultdict
+head = re.compile(r"==\d+== ([\d,]+)(?: \([\d,]+ direct, [\d,]+ indirect\))? "
+                  r"bytes in ([\d,]+) blocks are definitely lost")
+frame = re.compile(r"==\d+==\s+(?:at|by) 0x[0-9A-Fa-f]+: (.*)")
+
+def records(path):
+    out = defaultdict(lambda: [0, 0])
+    cur, stack = None, []
+    for line in list(open(path, errors="replace")) + [""]:
+        m = head.search(line)
+        if m:
+            cur = (int(m.group(2).replace(",", "")), int(m.group(1).replace(",", "")))
+            stack = []
+        elif cur is not None and (f := frame.search(line)):
+            stack.append(f.group(1))
+        elif cur is not None:
+            key = "\n".join(stack)
+            out[key][0] += cur[0]
+            out[key][1] += cur[1]
+            cur = None
+    return out
+
+small, large = records(sys.argv[1]), records(sys.argv[2])
+rows = sorted(((b - small.get(k, [0, 0])[0], y - small.get(k, [0, 0])[1], k)
+               for k, (b, y) in large.items()), reverse=True)
+for blocks, nbytes, stack in [r for r in rows if r[0] > 0][:5]:
+    print(f"+{blocks} blocks, +{nbytes} bytes, allocated at:")
+    for f in stack.split("\n")[:14]:
+        print("    " + f)
+PY
+)
+
 # Each measurement's whole report, kept for when it cannot be parsed.
 RAW=$(mktemp -d)
 trap 'rm -rf "$RAW"' EXIT
@@ -126,6 +164,13 @@ printf '%-14s %10d %12d\n' 1000 "$b2" "$y2"
 printf '%-14s %10d %12d\n' "growth" "$db" "$dy"
 if (( db > 500 || dy > 65536 )); then
   echo "LEAK: unreachable blocks grow with the workload${LEAKCHECK_CONTROL:+ (control: expected)}"
+  # Where it was allocated, when there is a stack to say so: valgrind keeps
+  # one per record, `leaks` without stack logging does not. Not for the
+  # control, whose leak is its own.
+  if [[ "${LEAKCHECK_CONTROL:-}" != "1" && "$(uname -s)" == Linux ]]; then
+    echo "--- where the growth was allocated (1000 iterations against 1):"
+    "$PYBIN" -c "$GROWTH" "$RAW/1.txt" "$RAW/1000.txt"
+  fi
   exit 1
 fi
 echo "clean: growth within noise${LEAKCHECK_CONTROL:+ -- CONTROL LEAK NOT SEEN, the check is blind}"
