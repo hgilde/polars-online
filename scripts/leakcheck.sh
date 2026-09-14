@@ -143,6 +143,15 @@ case "$(uname -s)" in
   *) echo "no native leak checker wired up for $(uname -s)"; exit 2 ;;
 esac
 
+# One unmeasured run first, so that both measured ones import every module the
+# same way. The first process to import a module compiles it from source and
+# writes its .pyc; every later one loads the .pyc, and a module loaded that way
+# leaves more blocks unreachable at exit than one compiled. On a fresh checkout
+# the short run was that first process, and the difference came out as growth:
+# +611 blocks on the CI runners, +3,143 on a Mac here with every cache cold, +1
+# with them warm (2026-09-14). valgrind put all of it in marshal_loads, under
+# the import machinery, and none in this package.
+"$PYBIN" -c "$WORK" 1 >/dev/null 2>&1
 small=$(measure 1)
 large=$(measure 1000)
 if [[ -z "$small" || -z "$large" ]]; then
