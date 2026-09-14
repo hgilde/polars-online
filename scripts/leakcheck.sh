@@ -118,8 +118,8 @@ trap 'rm -rf "$RAW"' EXIT
 # No MallocStackLogging: it records where each block was allocated, which the
 # count does not read, and without it the check and the control give the same
 # verdicts on macOS 15.7.3, in seconds. Set it by hand to see where a leaked
-# block came from. On GitHub's macOS runners `leaks` gives no report at all,
-# on 15.7.9 and 26.6.2 alike: see the matrix in .github/workflows/leakcheck.yml.
+# block came from. `leaks` reports only on a standalone interpreter, not on
+# Homebrew's framework build: see the job's env in .github/workflows/leakcheck.yml.
 measure() {
   local raw="$RAW/$1.txt"
   case "$(uname -s)" in
