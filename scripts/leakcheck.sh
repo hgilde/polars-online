@@ -76,11 +76,20 @@ trap 'rm -rf "$RAW"' EXIT
 
 # measure N -> "blocks bytes" left unreachable at exit after N iterations. The
 # checker's report goes to $RAW/N.txt, its exit status on the last line.
+#
+# No MallocStackLogging on macOS. It records where each block was allocated,
+# which the count does not read, and on macOS 26 its bookkeeping asserts on
+# this workload -- "possible double free or buffer overrun", in
+# uniquing_table_node_release_internal -- so `leaks` never reported
+# (2026-09-14; the workflow's informational step says which part of the
+# workload sets it off). Without it the check and the control give the same
+# verdicts on macOS 15.7.3. Set it by hand to see where a leaked block came
+# from.
 measure() {
   local raw="$RAW/$1.txt"
   case "$(uname -s)" in
     Darwin)
-      PYTHONMALLOC=malloc MallocStackLogging=1 leaks --atExit --quiet -- "$PYBIN" -c "$WORK" "$1" >"$raw" 2>&1
+      PYTHONMALLOC=malloc leaks --atExit --quiet -- "$PYBIN" -c "$WORK" "$1" >"$raw" 2>&1
       echo "(exit status $?)" >>"$raw"
       sed -n 's/.*: \([0-9]*\) leaks for \([0-9]*\) total leaked bytes.*/\1 \2/p' "$raw" | head -1
       ;;

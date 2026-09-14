@@ -91,3 +91,32 @@ jobs:
             echo "::error::the control leak was not detected (exit $status): the leak check is blind"
             exit 1
           fi
+
+      # Informational, macOS only, and never fails the run. On macOS 26
+      # `leaks` with MallocStackLogging=1 died in the stack logger's
+      # uniquing_table_node_release_internal -- "possible double free or
+      # buffer overrun of heap allocation" -- on a single iteration of the
+      # workload, so the check above runs without stack logging. These
+      # probes say which part of the workload sets the assertion off: a bare
+      # interpreter, numpy, polars, and polars_online, each on its own.
+      - name: which workload trips the stack logger (macOS, informational)
+        if: always() && runner.os == 'macOS'
+        continue-on-error: true
+        run: |
+          PY=$(uv run python -c 'import sys; print(sys.executable)')
+          report="$(sw_vers -productVersion) $(sw_vers -buildVersion)"$'\n'
+          probe() {
+            out=$(PYTHONMALLOC=malloc MallocStackLogging=1 leaks --atExit --quiet -- "$PY" -c "$2" 2>&1 || true)
+            if grep -q "Assertion failed" <<<"$out"; then verdict="ASSERTS"
+            elif grep -q "leaks for" <<<"$out"; then verdict="reports"
+            else verdict="no report: $(tail -n 1 <<<"$out")"; fi
+            report+=$(printf '%-24s %s' "$1" "$verdict")$'\n'
+          }
+          probe "bare interpreter" "pass"
+          probe "import numpy" "import numpy"
+          probe "import polars" "import polars"
+          probe "polars, one frame" "import polars as pl; pl.DataFrame({'a': [1.0, 2.0]}).sum()"
+          probe "import polars_online" "import polars_online"
+          probe "polars_online, one fit" "import polars as pl, polars_online as po; po.ModelBank([po.spec.ewridge('m', targets=['y'], features=['x'], halflife=5.0)]).fit_predict(pl.DataFrame({'x': [1.0, 2.0, 3.0], 'y': [2.0, 4.0, 6.0]}))"
+          printf '%s' "$report"
+          { echo "### stack logger probes (${RUNNER_OS}, informational)"; echo '```'; printf '%s' "$report"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
