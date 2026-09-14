@@ -29,12 +29,27 @@ jobs:
     name: leak check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    # macOS 26 is watched, not relied on (see the matrix): its leg may fail
+    # without failing the run.
+    continue-on-error: ${{ matrix.experimental }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # `leaks` works on macOS 15 and not on macOS 26, which macos-latest
+        # became. There it reports nothing even on a bare interpreter, and the
+        # stack logging it turns on in its target asserts once polars is
+        # imported -- "possible double free or buffer overrun", in
+        # uniquing_table_node_release_internal -- with or without
+        # MallocStackLogging set (2026-09-14, and the probe step below):
+        # polars alone sets it off, not this package. So macos-15 carries the
+        # check, and macos-latest runs it and the probes for the record until
+        # a later image fixes it.
+        include:
+          - { os: ubuntu-latest, experimental: false }
+          - { os: macos-15, experimental: false }
+          - { os: macos-latest, experimental: true }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@stable
@@ -92,13 +107,10 @@ jobs:
             exit 1
           fi
 
-      # Informational, macOS only, and never fails the run. On macOS 26
-      # `leaks` with MallocStackLogging=1 died in the stack logger's
-      # uniquing_table_node_release_internal -- "possible double free or
-      # buffer overrun of heap allocation" -- on a single iteration of the
-      # workload, so the check above runs without stack logging. These
-      # probes say which part of the workload sets the assertion off: a bare
-      # interpreter, numpy, polars, and polars_online, each on its own.
+      # Informational, macOS only, and never fails the run: `leaks` with stack
+      # logging on a bare interpreter, numpy, polars and polars_online, each
+      # on its own, to say which of them sets off macOS 26's assertion (see
+      # the matrix). On macOS 15 each of them reports.
       - name: which workload trips the stack logger (macOS, informational)
         if: always() && runner.os == 'macOS'
         continue-on-error: true
@@ -109,7 +121,7 @@ jobs:
             out=$(PYTHONMALLOC=malloc MallocStackLogging=1 leaks --atExit --quiet -- "$PY" -c "$2" 2>&1 || true)
             if grep -q "Assertion failed" <<<"$out"; then verdict="ASSERTS"
             elif grep -q "leaks for" <<<"$out"; then verdict="reports"
-            else verdict="no report: $(tail -n 1 <<<"$out")"; fi
+            else verdict="no report ($(grep -c . <<<"$out" || true) lines): $(grep -m1 . <<<"$out" || true)"; fi
             report+=$(printf '%-24s %s' "$1" "$verdict")$'\n'
           }
           probe "bare interpreter" "pass"
