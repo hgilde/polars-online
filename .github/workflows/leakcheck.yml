@@ -32,21 +32,30 @@ jobs:
     # The macOS leg is recorded, not relied on (see the matrix): it may fail
     # without failing the run.
     continue-on-error: ${{ matrix.experimental }}
+    # uv's own standalone Python, never the runner's. With nothing pinned, uv
+    # built the macOS venv on Homebrew's Python 3.14, a framework build whose
+    # bin/python3.14 is a launcher for the interpreter inside Python.app, and
+    # there `leaks --atExit` printed nothing at all (2026-09-14). The
+    # standalone build is the one the check reports on at a developer Mac.
+    env:
+      UV_PYTHON: "3.12"
+      UV_PYTHON_PREFERENCE: only-managed
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        # `leaks --atExit` gives no report on GitHub's macOS runners -- nothing
-        # at all even on a bare interpreter, on macOS 15.7.9 and 26.6.2 alike
+        # `leaks --atExit` gave no report on GitHub's macOS runners -- nothing
+        # at all even on a bare interpreter, on macOS 15.7.9 and 26.6.2 alike,
+        # as it is, under sudo, and with developer mode on and SIP off
         # (2026-09-14) -- where on a developer Mac (15.7.3) it reports every
-        # time. Its target sometimes dies first in the stack logger that
+        # time. Its target sometimes died first in the stack logger that
         # `leaks --atExit` turns on ("possible double free or buffer overrun",
         # in uniquing_table_node_release_internal), but not repeatably and not
-        # on any one import: two runs put it on different ones. Until the
-        # diagnostic step below shows what the runner needs, the native check
-        # on macOS is run by hand (scripts/leakcheck.sh), and Linux carries it
-        # here.
+        # on any one import. The difference left is the interpreter, which
+        # the job's env now pins; until the macOS leg reports with it, Linux
+        # carries the check here and on macOS it is run by hand
+        # (scripts/leakcheck.sh).
         include:
           - { os: ubuntu-latest, experimental: false }
           - { os: macos-latest, experimental: true }
