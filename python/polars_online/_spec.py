@@ -1262,16 +1262,21 @@ def holt(
     "the series is going up at about this rate", the features are not earning
     their place.
 
-    Per row, with clock delta ``d`` and halflife-derived rates
-    ``alpha = 1 - 0.5**(d/level_halflife)`` and likewise ``beta``::
+    Per row and target, with ``s`` the clock since the target was last
+    observed (this row's delta included, so ``s`` is the row's own delta on a
+    stream with no gaps) and halflife-derived rates
+    ``alpha = 1 - 0.5**(s/level_halflife)`` and likewise ``beta``::
 
-        pred = l + b * d                      (extrapolate d clock units ahead)
+        pred = l + b * s                      (extrapolate s clock units ahead)
         l'   = alpha * y + (1 - alpha) * pred
-        b'   = beta * (l' - l) / d + (1 - beta) * b
+        b'   = beta * (l' - l) / s + (1 - beta) * b
 
-    Deriving the rates from halflives keeps the parameter meaning identical to
-    every other model here, so an irregular clock forecasts the right distance
-    ahead instead of treating every row as one step. ``level_halflife``
+    A row with a null target or a zero weight leaves ``l`` and ``b`` where the
+    last observation put them and carries its clock to the next one, so it
+    gives the same numbers as if it were absent. Deriving the rates from
+    halflives keeps the parameter meaning identical to every other model
+    here, so an irregular clock forecasts the right distance ahead instead of
+    treating every row as one step. ``level_halflife``
     defaults to the spec's ``halflife`` and ``trend_halflife`` to four times
     that; ``trend_halflife=inf`` pins the trend, giving a plain EW level.
 
@@ -1718,7 +1723,9 @@ def marginal(
     observation, and the variance of a sample correlation is not ``1/n`` but
     ``[1 + 2·sum_l rho_x(l)·rho_y(l)]/n`` (Bartlett 1935). ``n_serial`` is
     ``n_kish`` divided by that bracket and ``t_serial`` is the statistic
-    against it. ``"truncated"`` sums the kept lags as they are;
+    against it. ``"truncated"`` sums the kept lags as they are, and reports
+    null ``n_serial`` and ``t_serial`` when that takes the bracket to zero or
+    below (two series whose autocorrelations have opposite signs);
     ``"geometric"`` fits ``rho(l) = phi^l`` per series by least squares on
     ``log rho`` over the kept lags with ``rho > 0`` and sums the tail in
     closed form, which is the right choice when both series are

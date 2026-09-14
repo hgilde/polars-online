@@ -20,6 +20,9 @@ boundary -- each at weight ``0.5 ** (age / halflife)``.
 
 from __future__ import annotations
 
+import functools
+from typing import Any
+
 import numpy as np
 import polars as pl
 import pytest
@@ -912,3 +915,370 @@ class TestTheGramIsTheWindowsToo:
         np.testing.assert_allclose(po.gram.solve(g, ridge=1e-10), want, atol=1e-6)
         if window is not None:
             assert g["target_means"] is None and g["target_vars"] is None
+
+
+class TestTheCrossMomentsAreCentred:
+    """N1, found while fixing C1 and not in the review. ``ewridge`` kept each
+    target's cross-moments raw, ``E_w[z·y]``, and formed the standardized
+    solve's right-hand side as ``E[z·y] − m·ȳ``: two numbers the size of
+    ``level²`` subtracted to leave one the size of a covariance -- pattern
+    E, at the one site the review's grep did not reach. The unstandardized
+    solve read the raw normal equations, whose conditioning falls the same
+    way. A feature and a target at a common level ``L`` (a price regressed on
+    prices) lost the fit as ``L`` grew: at ``1e8`` the prediction was off by
+    about ten. Each target now keeps the means of the feature row and of the
+    target over the rows it was present on, and a centred cross-moment, and
+    both solves read the centred system.
+
+    The reference is ``numpy.linalg.lstsq`` on the rows centred at their own
+    weighted means, which is exact at any level. The tolerance is ``1e-14·L``
+    on top of ``1e-10``: the data is resolved to ``L·ε`` before either side
+    touches it. Offset 0 is the control."""
+
+    @pytest.mark.parametrize("offset", [0.0, 1e4, 1e6, 1e8])
+    @pytest.mark.parametrize("standardize", [False, True])
+    def test_a_level_regressed_on_levels_is_the_numpy_fit(self, standardize, offset):
+        rng = np.random.default_rng(97)
+        n, halflife = 600, 200.0
+        u = rng.normal(0.0, 1.0, (n, 2))
+        x = offset + u
+        # y = 2·x0 − x1 + noise: the target sits at the level too.
+        y = offset + 2.0 * u[:, 0] - u[:, 1] + rng.normal(0.0, 0.1, n)
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            halflife=halflife,
+            ridge=0.0,
+            standardize=standardize,
+            solve_every=1e-9,
+        )
+        frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+        pred = po.ModelBank([spec]).fit_predict(frame)["m"].struct.field("pred_y").to_numpy()
+        worst = 0.0
+        for t in range(100, n, 50):
+            # Row t is predicted by the fit of the rows before it.
+            w = 0.5 ** (((t - 1) - np.arange(t)) / halflife)
+            xm = w @ x[:t] / w.sum()
+            ym = w @ y[:t] / w.sum()
+            slopes = _wls(x[:t] - xm, y[:t] - ym, w, intercept=False)
+            worst = max(worst, abs(pred[t] - (ym + (x[t] - xm) @ slopes)))
+        assert worst <= 1e-10 + 1e-14 * offset, f"worst |pred - numpy| = {worst:.3e}"
+
+
+def _holt(y: np.ndarray, halflife: float, trend_halflife: float) -> tuple[np.ndarray, float, float]:
+    """``holt``'s ``pred`` on a row-count clock, and its final level and
+    trend. ``NaN`` in ``y`` is a null target."""
+    spec = po.spec.holt(
+        "h", targets=["y"], halflife=halflife, trend_halflife=trend_halflife, min_periods=0.0
+    )
+    bank = po.ModelBank([spec])
+    frame = pl.DataFrame(
+        {"y": [None if np.isnan(v) else float(v) for v in y]}, schema={"y": pl.Float64}
+    )
+    pred = bank.fit_predict(frame)["h"].struct.field("pred_y").to_numpy()
+    coef = dict(bank.coef("h").select("term", "coef").iter_rows())
+    return pred, coef["level"], coef["trend"]
+
+
+class TestHoltAcrossAMissingObservation:
+    """C22. ``holt`` did not move its level across a row whose target was
+    null or whose weight was zero, so the row after it forecast one trend
+    step short, and its level update read a two-step move as a one-step
+    slope. Each target now keeps its clock since its last observation, and
+    extrapolates over it and forms its rates from it, so a row the model
+    cannot learn from is *transparent*: the same numbers as if it were absent
+    and its clock folded into the next row's.
+
+    ``statsmodels`` is the second opinion twice. Its ``Holt`` is the textbook
+    recursion ``holt`` runs, exactly, on a row-count clock -- the control that
+    pins the mapping from halflives to smoothing weights (the review's
+    T-S14). Its state-space ``ExponentialSmoothing`` takes ``NaN`` in the
+    series and answers it with the prediction step alone, so the row after a
+    missing one forecasts ``l + 2b`` from the ``l`` and ``b`` that stood
+    before it, a number the gain does not enter (T-S17). Past that row the two
+    part by design: its gain is fixed, and ours grows with the clock since the
+    last observation, which is what a halflife in clock units means."""
+
+    H_LEVEL, H_TREND = 6.0, 25.0
+
+    @staticmethod
+    def series(n: int) -> np.ndarray:
+        rng = np.random.default_rng(5)
+        return 3.0 + 0.4 * np.arange(n) + np.cumsum(rng.normal(0.0, 0.5, n))
+
+    def test_the_recursion_is_statsmodels_holt(self):
+        holtwinters = pytest.importorskip("statsmodels.tsa.holtwinters")
+        y = self.series(200)
+        pred, level, trend = _holt(y, self.H_LEVEL, self.H_TREND)
+        res = holtwinters.Holt(
+            y, initialization_method="known", initial_level=y[0], initial_trend=0.0
+        ).fit(
+            smoothing_level=1.0 - 0.5 ** (1.0 / self.H_LEVEL),
+            smoothing_trend=1.0 - 0.5 ** (1.0 / self.H_TREND),
+            optimized=False,
+        )
+        np.testing.assert_allclose(pred[1:], res.fittedvalues[1:], rtol=1e-12)
+        assert level == pytest.approx(res.level[-1], rel=1e-12)
+        assert trend == pytest.approx(res.trend[-1], rel=1e-12)
+
+    def test_the_row_after_a_missing_one_forecasts_two_trend_steps(self):
+        es = pytest.importorskip("statsmodels.tsa.statespace.exponential_smoothing")
+        y = self.series(120)
+        alpha = 1.0 - 0.5 ** (1.0 / self.H_LEVEL)
+        beta = 1.0 - 0.5 ** (1.0 / self.H_TREND)
+
+        def smooth(series: np.ndarray) -> np.ndarray:
+            model = es.ExponentialSmoothing(
+                series,
+                trend=True,
+                initialization_method="known",
+                initial_level=series[0],
+                initial_trend=0.0,
+            )
+            # The innovations form: the trend's gain is alpha·beta.
+            return np.asarray(model.smooth([alpha, alpha * beta]).fittedvalues)
+
+        # With nothing missing, every row: the control that pins the mapping.
+        pred, _, _ = _holt(y, self.H_LEVEL, self.H_TREND)
+        np.testing.assert_allclose(pred[1:], smooth(y)[1:], rtol=1e-9)
+        missing = 60
+        gappy = y.copy()
+        gappy[missing] = np.nan
+        pred, _, _ = _holt(gappy, self.H_LEVEL, self.H_TREND)
+        # Every row up to the one after the gap, which is `l + 2b`.
+        np.testing.assert_allclose(pred[1 : missing + 2], smooth(gappy)[1 : missing + 2], rtol=1e-9)
+
+    @pytest.mark.parametrize("how", ["null", "zero weight"])
+    def test_a_row_it_cannot_learn_from_is_as_if_absent(self, how):
+        n = 150
+        y = self.series(n)
+        skip = np.arange(n) % 3 == 2
+        full = pl.DataFrame(
+            {
+                "t": np.arange(n, dtype=float),
+                "y": [
+                    None if s and how == "null" else float(v) for v, s in zip(y, skip, strict=True)
+                ],
+                "w": np.where(skip & (how == "zero weight"), 0.0, 1.0),
+            },
+            schema={"t": pl.Float64, "y": pl.Float64, "w": pl.Float64},
+        )
+        spec = po.spec.holt(
+            "h",
+            targets=["y"],
+            halflife=self.H_LEVEL,
+            trend_halflife=self.H_TREND,
+            clock="t",
+            max_dclock=10.0,
+            weight="w",
+            min_periods=0.0,
+        )
+        got = po.ModelBank([spec]).fit_predict(full)["h"].struct.field("pred_y").to_numpy()
+        # The same stream with those rows removed: the clock folds their
+        # deltas into the next row's.
+        kept = full.filter(pl.Series(~skip))
+        want = po.ModelBank([spec]).fit_predict(kept)["h"].struct.field("pred_y").to_numpy()
+        np.testing.assert_allclose(got[~skip], want, rtol=1e-12)
+
+
+class TestBocpdAtALevel:
+    """C23. ``bocpd`` kept each run's sums raw, ``Σw·x`` and ``Σw·x²``, and
+    formed the scatter as ``Σw·x² − n·x̄²`` on every row, for every run --
+    pattern E in the representation itself, not at a blend or a truncation.
+    At a level ``L`` the scatter's error is ``n·L²·ε``, and at ``1e8``
+    unit-variance noise read as a changepoint on every row. The runs now keep
+    Welford means and centred scatters.
+
+    The second opinion is ``bayesian_changepoint_detection``, whose
+    ``StudentT`` runs the conjugate update centred, ``β += κ(x − μ)²/(2(κ +
+    1))``: the normal-inverse-gamma model ``emission = "diag"`` is at one
+    feature, with ``alpha = prior_nu/2``, ``beta = prior_scale/2``, ``kappa =
+    prior_kappa`` and ``mu = prior_mean``, through Adams and MacKay's
+    recursion at a constant hazard with nothing pruned. ``R[0, t+1] + R[1,
+    t+1]`` is our ``p_change`` on row ``t``, ``argmax R[:, t]`` our
+    ``run_mode`` and ``Σ r·R[r, t]`` our ``run_mean``. At ``1e6`` and ``1e8``
+    both sides are shifted, the package through ``mu``; the tolerance grows
+    as ``1e-14·L`` because the data is resolved to ``L·ε`` before either
+    side reads it. Offset 0 is the control."""
+
+    @pytest.mark.parametrize("offset", [0.0, 1e6, 1e8])
+    def test_the_run_length_posterior_is_the_packages(self, offset):
+        bcd = pytest.importorskip("bayesian_changepoint_detection.online_changepoint_detection")
+        rng = np.random.default_rng(23)
+        n, hazard = 120, 40.0
+        nu0, psi0, kappa0 = 2.0, 1.0, 1.0
+        x = offset + np.where(np.arange(n) < 60, 0.0, 3.0) + rng.normal(0.0, 1.0, n)
+        spec = po.spec.bocpd(
+            "b",
+            features=["x"],
+            hazard=hazard,
+            emission="diag",
+            prior_mean=[offset],
+            prior_kappa=kappa0,
+            prior_nu=nu0,
+            prior_scale=[psi0],
+            prune_below=0.0,
+            max_run=n + 2,
+            min_periods=0.0,
+        )
+        out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"x": x}))["b"]
+        r, maxes = bcd.online_changepoint_detection(
+            x,
+            functools.partial(bcd.constant_hazard, hazard),
+            bcd.StudentT(nu0 / 2.0, psi0 / 2.0, kappa0, offset),
+        )
+        tol = 1e-9 + 1e-14 * offset
+        np.testing.assert_allclose(
+            out.struct.field("p_change").to_numpy(), r[0, 1:] + r[1, 1:], rtol=0.0, atol=tol
+        )
+        np.testing.assert_allclose(
+            out.struct.field("run_mean").to_numpy(), np.arange(n + 1) @ r[:, :n], rtol=tol
+        )
+        np.testing.assert_array_equal(out.struct.field("run_mode").to_numpy(), maxes[:n])
+
+
+class TestKalmanZeroWeightRow:
+    """S9. ``kalman``'s per-target weights -- ``wj``, which gates the
+    prediction, and ``wsig``, the memory of the residual variance ``σ²`` that
+    sets both the observation noise ``σ²/w`` and the process noise ``σ²·(ln 2
+    / coef_halflife)²`` -- decayed on a row whose target was null and not on
+    one whose target was present at weight zero. The filter treats the two
+    alike, a prediction step and no update, so ``σ²`` remembered more across
+    one than the other.
+
+    The second opinion is ``filterpy``'s ``KalmanFilter`` beside a ``numpy``
+    recursion for ``σ²``: ``predict(Q)`` on every row, ``update(y, R = σ²/w,
+    H = z)`` only where there is a target and a positive weight, and ``σ²``
+    the EW mean of the squared out-of-sample residuals with its weight
+    decayed on every row. Unstandardized, so ``kf.x`` is our coefficient
+    vector; ``filterpy`` updates ``P`` in Joseph form and ``kalman`` in the
+    simple form, so the two agree to rounding. The same rows with the target
+    null instead of the weight zero are the control."""
+
+    @staticmethod
+    def filterpy_pred(
+        kalman: Any, x: np.ndarray, y: np.ndarray, w: np.ndarray, halflife: float, coef_hl: float
+    ) -> np.ndarray:
+        n, k = x.shape
+        kf = kalman.KalmanFilter(dim_x=k + 1, dim_z=1)
+        kf.x = np.zeros((k + 1, 1))
+        kf.P = np.eye(k + 1)
+        kf.F = np.eye(k + 1)
+        sig2 = wsig = wj = 0.0
+        pred = np.full(n, np.nan)
+        for i in range(n):
+            d = 0.0 if i == 0 else 1.0
+            lam = 0.5 ** (d / halflife)
+            s2 = sig2 if sig2 > 0.0 else 1.0
+            kf.predict(Q=np.eye(k + 1) * s2 * (np.log(2.0) / coef_hl) ** 2 * d)
+            z = np.concatenate(([1.0], x[i]))
+            if wj > 0.0:
+                pred[i] = z @ kf.x[:, 0]
+            if np.isnan(y[i]) or w[i] <= 0.0:
+                # A prediction step and no update, and time passes for both
+                # weights.
+                wj *= lam
+                wsig *= lam
+                continue
+            kf.update(y[i], R=s2 / w[i], H=z[None, :])
+            if not np.isnan(pred[i]):
+                r = y[i] - pred[i]
+                ws_new = lam * wsig + w[i]
+                sig2 = (lam * wsig * sig2 + w[i] * r * r) / ws_new
+                wsig = ws_new
+            wj = lam * wj + w[i]
+        return pred
+
+    @pytest.mark.parametrize("how", ["null", "zero weight"])
+    def test_the_filter_is_filterpy_with_sigma_decayed_on_every_row(self, how):
+        kalman = pytest.importorskip("filterpy.kalman")
+        rng = np.random.default_rng(41)
+        n, halflife, coef_hl = 300, 30.0, 50.0
+        x = rng.normal(0.0, 1.0, (n, 2))
+        drift = np.arange(n) / n
+        y = 0.5 + (1.5 - drift) * x[:, 0] + (-0.8 + 2.0 * drift) * x[:, 1]
+        y = y + rng.normal(0.0, 0.3, n)
+        skip = (np.arange(n) % 9 == 4) & (np.arange(n) > 20)
+        w = np.where(skip & (how == "zero weight"), 0.0, 1.0)
+        y_seen = np.where(skip & (how == "null"), np.nan, y)
+        frame = pl.DataFrame(
+            {
+                "x0": x[:, 0],
+                "x1": x[:, 1],
+                "y": [None if np.isnan(v) else float(v) for v in y_seen],
+                "w": w,
+            },
+            schema={"x0": pl.Float64, "x1": pl.Float64, "y": pl.Float64, "w": pl.Float64},
+        )
+        spec = po.spec.kalman(
+            "k",
+            targets=["y"],
+            features=["x0", "x1"],
+            coef_halflife=coef_hl,
+            standardize=False,
+            p0=1.0,
+            weight="w",
+            halflife=halflife,
+            min_periods=0.0,
+        )
+        got = po.ModelBank([spec]).fit_predict(frame)["k"].struct.field("pred_y").to_numpy()
+        want = self.filterpy_pred(kalman, x, y_seen, w, halflife, coef_hl)
+        np.testing.assert_allclose(got, want, rtol=1e-9, atol=1e-12)
+
+
+class TestAHopelessSerialFactorSaysSo:
+    """S18. ``marginal``'s ``serial_rule = "truncated"`` corrects the count
+    behind ``t`` by ``1 + 2·Σ ρ_x(l)·ρ_y(l)``, and two series whose
+    autocorrelations have opposite signs take that below zero: an estimate
+    outside the parameter space. The rule floored it at ``f64::MIN_POSITIVE``,
+    so ``n_serial`` came out ``+inf`` and ``t_serial`` ``±inf`` -- infinite
+    evidence from a correction that had failed. It is NaN now, the answer
+    ``"geometric"`` already gives a factor it cannot form.
+
+    ``statsmodels``' ``acf`` is the second opinion on the precondition: its
+    own lag-1 autocorrelations of this pair, about ``+0.8`` and ``-0.8``, put
+    the factor below zero, so the case is the pair's and not an artefact of
+    our estimator (which centres each leg at the pre-row mean, and agrees with
+    ``acf`` to the statistical tier the review's T-S11 gives, ``0.02`` at this
+    length). Two series that are both positively autocorrelated are the
+    control, where the count is ``n_kish`` over the factor."""
+
+    @pytest.mark.parametrize("phi_y", [0.8, -0.8])
+    def test_the_count_is_nan_where_the_factor_is_not_positive(self, phi_y):
+        stattools = pytest.importorskip("statsmodels.tsa.stattools")
+        rng = np.random.default_rng(13)
+        n = 5000
+
+        def ar1(phi: float) -> np.ndarray:
+            e = rng.normal(0.0, 1.0, n)
+            out = np.empty(n)
+            out[0] = e[0]
+            for t in range(1, n):
+                out[t] = phi * out[t - 1] + e[t]
+            return out
+
+        x, y = ar1(0.8), ar1(phi_y)
+        spec = po.spec.marginal(
+            "m",
+            targets=["y"],
+            features=["x"],
+            lags=[1],
+            serial_rule="truncated",
+            halflife=float("inf"),
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(pl.DataFrame({"x": x, "y": y}))
+        row = bank.marginal("m").row(0, named=True)
+        rho_x = stattools.acf(x, nlags=1)[1]
+        rho_y = stattools.acf(y, nlags=1)[1]
+        assert row["lagcorr_xx"][0] == pytest.approx(rho_x, abs=0.02)
+        assert row["lagcorr_yy"][0] == pytest.approx(rho_y, abs=0.02)
+        if 1.0 + 2.0 * rho_x * rho_y > 0.0:
+            factor = 1.0 + 2.0 * row["lagcorr_xx"][0] * row["lagcorr_yy"][0]
+            assert row["n_serial"] == pytest.approx(row["n_kish"] / factor, rel=1e-12)
+            assert np.isfinite(row["t_serial"])
+        else:
+            # NaN in the model, null in the frame, as `phi_x` is.
+            assert row["n_serial"] is None, row["n_serial"]
+            assert row["t_serial"] is None, row["t_serial"]

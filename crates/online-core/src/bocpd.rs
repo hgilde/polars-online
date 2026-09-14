@@ -291,20 +291,84 @@ impl BocpdCfg {
     }
 }
 
-/// One run's conjugate sufficient statistics.
+/// One run's conjugate sufficient statistics, centred: the weighted mean of
+/// its rows and their scatter about it, kept by the weighted Welford step
+/// `EwCov` takes. They were the raw sums `Σw·x` and `Σw·x x'`, and the
+/// scatter `Σw·x x' − n·x̄x̄'` formed from them on every row lost `n·L²·ε` of
+/// itself at a level `L` -- all of a unit variance at `1e8`, where every row
+/// then read as a changepoint (review 2026-09-12, C23).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RunWire")]
 struct Run {
     /// Rows this run has absorbed, i.e. Adams & MacKay's `r`. Not `n`:
     /// under a fractional row weight, or the `robust` emission's, the two
     /// differ, and the reported run *length* is a count of rows.
-    #[serde(default)]
     len: f64,
     /// Accumulated weight (rows, or β-weights under `robust`).
     n: f64,
-    /// `Σ w·x`, length `d`.
-    sx: Vec<f64>,
-    /// `Σ w·x x'`: `d*d` for `gaussian`, the diagonal (`d`) otherwise.
-    sxx: Vec<f64>,
+    /// The weighted mean `x̄`, length `d`.
+    mean: Vec<f64>,
+    /// The weighted scatter `Σ w·(x − x̄)(x − x̄)'`: `d*d` for `gaussian`, the
+    /// diagonal (`d`) otherwise.
+    m2: Vec<f64>,
+}
+
+/// The layouts a [`Run`] loads. Schema 6 kept the raw sums `sx` and `sxx`,
+/// schema 7 the mean and the scatter; a bank file names its fields, so the
+/// two are told apart by name, and the compact encoding only ever holds the
+/// current layout, whose fields come first here in the same order. The
+/// conversion is the subtraction the old code made on every row, made once,
+/// with the precision the file already had.
+#[derive(Deserialize)]
+struct RunWire {
+    #[serde(default)]
+    len: f64,
+    n: f64,
+    #[serde(default)]
+    mean: Option<Vec<f64>>,
+    #[serde(default)]
+    m2: Option<Vec<f64>>,
+    #[serde(default)]
+    sx: Option<Vec<f64>>,
+    #[serde(default)]
+    sxx: Option<Vec<f64>>,
+}
+
+impl TryFrom<RunWire> for Run {
+    type Error = String;
+
+    fn try_from(w: RunWire) -> Result<Self, String> {
+        let RunWire {
+            len,
+            n,
+            mean,
+            m2,
+            sx,
+            sxx,
+        } = w;
+        match (mean, m2, sx, sxx) {
+            (Some(mean), Some(m2), None, None) => Ok(Self { len, n, mean, m2 }),
+            (None, None, Some(sx), Some(sxx)) => {
+                let d = sx.len();
+                let mean: Vec<f64> = if n > 0.0 {
+                    sx.iter().map(|s| s / n).collect()
+                } else {
+                    vec![0.0; d]
+                };
+                let m2 = if sxx.len() == d {
+                    (0..d).map(|i| sxx[i] - n * mean[i] * mean[i]).collect()
+                } else if sxx.len() == d * d {
+                    (0..d * d)
+                        .map(|ij| sxx[ij] - n * mean[ij / d] * mean[ij % d])
+                        .collect()
+                } else {
+                    return Err("bocpd: a run's sums have the wrong shape".into());
+                };
+                Ok(Self { len, n, mean, m2 })
+            }
+            _ => Err("bocpd: a run carries neither its moments nor its sums".into()),
+        }
+    }
 }
 
 impl Run {
@@ -312,29 +376,48 @@ impl Run {
         Self {
             len: 0.0,
             n: 0.0,
-            sx: vec![0.0; d],
-            sxx: vec![0.0; if full { d * d } else { d }],
+            mean: vec![0.0; d],
+            m2: vec![0.0; if full { d * d } else { d }],
         }
     }
 
+    /// The weighted Welford step: the deviation from the old mean enters the
+    /// scatter at weight `w·n/n'` -- `w·(x − x̄)(x − x̄')'`, since `x − x̄' =
+    /// (n/n')·(x − x̄)` -- and the mean then moves by `w/n'` of it. A row at
+    /// weight 0 (the `robust` emission forgiving it entirely) lengthens the
+    /// run and moves nothing else.
     fn add(&mut self, x: &[f64], w: f64, full: bool) {
         let d = x.len();
         self.len += 1.0;
-        self.n += w;
-        for (s, xi) in self.sx.iter_mut().zip(x) {
-            *s += w * xi;
+        let n_new = self.n + w;
+        if !(w > 0.0 && n_new > 0.0) {
+            return;
         }
+        let (b, c) = (w / n_new, w * self.n / n_new);
         if full {
-            for i in 0..d {
-                for j in 0..d {
-                    self.sxx[i * d + j] += w * x[i] * x[j];
+            // The upper triangle, mirrored, so the scatter stays symmetric
+            // to the bit.
+            let (mean, m2) = (&self.mean, &mut self.m2);
+            for (i, (xi, mi)) in x.iter().zip(mean).enumerate() {
+                let ci = c * (xi - mi);
+                for (j, (xj, mj)) in x.iter().zip(mean).enumerate().skip(i) {
+                    let v = ci * (xj - mj);
+                    m2[i * d + j] += v;
+                    if j != i {
+                        m2[j * d + i] += v;
+                    }
                 }
             }
         } else {
-            for (s, xi) in self.sxx.iter_mut().zip(x) {
-                *s += w * xi * xi;
+            for ((s, m), xi) in self.m2.iter_mut().zip(&self.mean).zip(x) {
+                let di = xi - m;
+                *s += c * di * di;
             }
         }
+        for (m, xi) in self.mean.iter_mut().zip(x) {
+            *m += b * (xi - *m);
+        }
+        self.n = n_new;
     }
 }
 
@@ -454,14 +537,16 @@ impl Bocpd {
         self.cfg.emission == BocpdEmission::Gaussian
     }
 
-    /// One run's posterior mean: `(κ₀μ₀ + Σx)/(κ₀ + n)`.
+    /// One run's posterior mean, `(κ₀μ₀ + n·x̄)/κₙ`, written from the prior's
+    /// side, `μ₀ + (n/κₙ)(x̄ − μ₀)`, so a run with no rows is the prior's mean
+    /// to the bit.
     fn run_mean_of(&self, run: &Run) -> Vec<f64> {
         let k0 = self.cfg.prior_kappa;
         let mu0 = self.cfg.mu0();
         let kn = k0 + run.n;
         mu0.iter()
-            .zip(&run.sx)
-            .map(|(m, s)| (k0 * m + s) / kn)
+            .zip(&run.mean)
+            .map(|(m0, m)| m0 + run.n / kn * (m - m0))
             .collect()
     }
 
@@ -476,18 +561,12 @@ impl Bocpd {
         let nun = nu0 + run.n;
         let mun = self.run_mean_of(run);
         if self.full() {
-            // `Ψₙ = Ψ₀ + S + (κ₀n/κₙ)(x̄ − μ₀)(x̄ − μ₀)'`.
+            // `Ψₙ = Ψ₀ + S + (κ₀n/κₙ)(x̄ − μ₀)(x̄ − μ₀)'`, every term centred.
             let mut psi = self.cfg.psi0();
-            let xbar: Vec<f64> = if run.n > 0.0 {
-                run.sx.iter().map(|s| s / run.n).collect()
-            } else {
-                vec![0.0; d]
-            };
             for i in 0..d {
                 for j in 0..d {
-                    let s = run.sxx[i * d + j] - run.n * xbar[i] * xbar[j];
-                    let g = k0 * run.n / kn * (xbar[i] - mu0[i]) * (xbar[j] - mu0[j]);
-                    psi[i * d + j] += s + g;
+                    let g = k0 * run.n / kn * (run.mean[i] - mu0[i]) * (run.mean[j] - mu0[j]);
+                    psi[i * d + j] += run.m2[i * d + j] + g;
                 }
             }
             let dof = nun - d as f64 + 1.0;
@@ -513,10 +592,8 @@ impl Bocpd {
             let mut lp = 0.0;
             let mut mode = 0.0;
             for i in 0..d {
-                let xbar = if run.n > 0.0 { run.sx[i] / run.n } else { 0.0 };
-                let s = run.sxx[i] - run.n * xbar * xbar;
-                let g = k0 * run.n / kn * (xbar - mu0[i]) * (xbar - mu0[i]);
-                let psin = psi0[i * d + i] + s + g;
+                let dm = run.mean[i] - mu0[i];
+                let psin = psi0[i * d + i] + run.m2[i] + k0 * run.n / kn * dm * dm;
                 let var = psin * (kn + 1.0) / (nun * kn);
                 if var.is_nan() || var <= 0.0 || nun <= 0.0 {
                     return None;
@@ -1198,6 +1275,128 @@ mod tests {
         assert!(last.iter().all(|v| v.is_finite()), "{last:?}");
         // The predictive mean followed the shift.
         assert!((last[3] - 4.0).abs() < 1.0, "{}", last[3]);
+    }
+
+    /// `the_posterior_is_the_longhand_algorithm_one` with the rows at `1e8`
+    /// and the prior centred there, and the longhand's scatter formed
+    /// two-pass -- `Σ(x − x̄)²` over the run's own rows, each taken from the
+    /// level first, which is exact for rows within a factor of two of it --
+    /// so the oracle loses nothing (review 2026-09-12, C23). The runs' raw
+    /// sums lost the scatter to `n·L²·ε`: at `1e8` a unit variance came back
+    /// as 0 or 2, and every row read as a changepoint. The tolerance is the
+    /// data's own resolution, `ulp(1e8) ≈ 1.5e-8` a row, accumulated along
+    /// a run's log joint.
+    #[test]
+    fn the_posterior_is_the_longhand_at_a_level() {
+        let (hazard, level) = (50.0, 1e8);
+        let h = 1.0 / hazard;
+        let (k0, nu0, psi0) = (1.0, 2.0, 1.0);
+        let mut m = Bocpd::new(BocpdCfg {
+            hazard,
+            prior_mean: Some(vec![level]),
+            ..cfg(1)
+        })
+        .unwrap();
+        let mut n = Normals::new(3);
+        // Each run as the deviations from the level of the rows it holds.
+        let mut runs: Vec<Vec<f64>> = vec![vec![]];
+        let mut joint: Vec<f64> = vec![1.0];
+        let mut worst = 0.0f64;
+        for t in 0..150 {
+            let x = level + if t < 75 { n.normal() } else { 4.0 + n.normal() };
+            let dx = x - level;
+            let step = m.step(&[x], &[], 1.0, 1.0);
+            let pi: Vec<f64> = runs
+                .iter()
+                .map(|rows| {
+                    let cnt = rows.len() as f64;
+                    let (kn, nun) = (k0 + cnt, nu0 + cnt);
+                    let bar = if cnt > 0.0 {
+                        rows.iter().sum::<f64>() / cnt
+                    } else {
+                        0.0
+                    };
+                    let sq: f64 = rows.iter().map(|r| (r - bar) * (r - bar)).sum();
+                    let psin = psi0 + sq + k0 * cnt / kn * bar * bar;
+                    let var = psin * (kn + 1.0) / (nun * kn);
+                    let z = (dx - cnt * bar / kn) / var.sqrt();
+                    (ln_gamma((nun + 1.0) / 2.0)
+                        - ln_gamma(nun / 2.0)
+                        - 0.5 * (nun * std::f64::consts::PI * var).ln()
+                        - 0.5 * (nun + 1.0) * (1.0 + z * z / nun).ln())
+                    .exp()
+                })
+                .collect();
+            let mut new = vec![0.0; runs.len() + 1];
+            for i in 0..runs.len() {
+                new[i + 1] = joint[i] * pi[i] * (1.0 - h);
+                new[0] += joint[i] * pi[i] * h;
+            }
+            let z: f64 = new.iter().sum();
+            let want = (new[0] + new.get(1).copied().unwrap_or(0.0)) / z;
+            worst = worst.max((step.pred[0] - want).abs());
+            // Line 6: the new slot is the prior's, and every old one takes
+            // the row.
+            let mut next = vec![vec![]];
+            next.extend(runs.iter().map(|r| {
+                let mut r = r.clone();
+                r.push(dx);
+                r
+            }));
+            runs = next;
+            joint = new.iter().map(|v| v / z).collect();
+        }
+        assert!(worst < 1e-6, "p_change missed the longhand by {worst}");
+    }
+
+    /// `the_gaussian_emission_runs_on_several_columns` shifted to `1e8`, the
+    /// prior with it. The raw scatter lost the factorization there: `Ψₙ`
+    /// stopped being positive definite, the row reported nulls and counted a
+    /// solve failure that was not one (C23). The model is shift-invariant, so
+    /// it must see what it sees at the origin, to the data's resolution.
+    #[test]
+    fn the_gaussian_emission_is_the_same_at_a_level() {
+        let run = |level: f64| {
+            let mut m = Bocpd::new(BocpdCfg {
+                emission: BocpdEmission::Gaussian,
+                prior_nu: Some(5.0),
+                prior_mean: Some(vec![level; 3]),
+                prune_below: 1e-6,
+                ..cfg(3)
+            })
+            .unwrap();
+            let mut n = Normals::new(29);
+            let mut out = Vec::new();
+            for t in 0..400 {
+                let shift = if t < 200 { 0.0 } else { 4.0 };
+                let f = n.normal();
+                let x: Vec<f64> = (0..3)
+                    .map(|_| level + shift + 0.7 * f + 0.7 * n.normal())
+                    .collect();
+                out.push(m.step(&x, &[], 1.0, 1.0).pred);
+            }
+            (out, m.solve_failures)
+        };
+        let (origin, _) = run(0.0);
+        let (high, failures) = run(1e8);
+        assert_eq!(failures, 0, "a solve failed at the level");
+        for (t, (a, b)) in origin.iter().zip(&high).enumerate() {
+            assert!(b.iter().all(|v| v.is_finite()), "row {t}: {b:?}");
+            // `p_change` and `run_mean`; the predictive mean and the log
+            // score carry the level and the data's rounding at it.
+            assert!(
+                (a[0] - b[0]).abs() < 1e-6,
+                "row {t}: p_change {} vs {}",
+                a[0],
+                b[0]
+            );
+            assert!(
+                (a[2] - b[2]).abs() < 1e-6 * (1.0 + a[2]),
+                "row {t}: run_mean {} vs {}",
+                a[2],
+                b[2]
+            );
+        }
     }
 
     #[test]

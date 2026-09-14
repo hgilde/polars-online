@@ -184,7 +184,21 @@ pub use window::{Moments, Snapshots, truncated, truncated_mean};
 ///   empty, so no file without a delay moves. An older build reading a file
 ///   that has it ignores the record and folds the replay's prediction,
 ///   which is what it always did.
-pub const SCHEMA_VERSION: u32 = 6;
+/// - 7: three models moved to centred or clock-aware state (the code review
+///   of 2026-09-12). `ew_ridge` keeps each target's cross-moments centred --
+///   the target's mean, `E[(z − m_z)(y − ȳ)]` and the offset of `z`'s mean
+///   over the target's rows from its mean over all of them -- where it kept
+///   `E[z·y]` raw: in the live accumulators, the `session_shrink` twin and a
+///   window's snapshots (N1). `bocpd`'s runs keep a Welford mean and scatter
+///   where they kept `Σw·x` and `Σw·x x'` (C23). `holt` keeps each target's
+///   clock since its last observation (C22). A schema-6 file loads: the raw
+///   moments are split into centred ones as it is read (`EwRidgeWire`,
+///   `RunWire`), which keeps the numbers the file carried and not the bits,
+///   and `holt`'s clock starts at zero, the one thing a schema-6 file cannot
+///   say. `state_schema6.rs` and `state_schema6_ridge.rs` hold both to it.
+///   An older build refuses a schema-7 file by its version, where it would
+///   otherwise fail on field names it has never seen.
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// Oldest state layout this build still loads.
 ///
@@ -198,6 +212,7 @@ pub const SCHEMA_VERSION: u32 = 6;
 /// This is a deliberate exception to hard rule 5 ("keep a loader for the
 /// previous version"), taken while the library is days old and pre-1.0
 /// because getting the names right was judged worth more than the
-/// compatibility. The rule stands for every later change, and the fixture in
-/// `state_schema6.rs` is what the *next* one will be held to.
+/// compatibility. The rule stands for every later change: schema 7's
+/// conversions are held to the schema-6 fixtures in `state_schema6.rs` and
+/// `state_schema6_ridge.rs`.
 pub const MIN_SCHEMA_VERSION: u32 = 6;

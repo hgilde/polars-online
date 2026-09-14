@@ -549,14 +549,16 @@ impl OnlineModel for Kalman {
                 }
                 self.qbuf = q;
             }
-            let Some(yj) = y[j] else {
+            // A null target, or a present one at weight zero -- an observation
+            // of infinite variance, `σ²/0` -- is a prediction step and no
+            // update, and time passes for both weights alike. The zero weight
+            // skipped the decay, so `σ²`, which sets `R` and `Q`, forgot less
+            // across it than across a null (review 2026-09-12, S9).
+            let Some(yj) = y[j].filter(|_| weight > 0.0) else {
                 self.wj[j] *= lam;
                 self.wsig[j] *= lam;
                 continue;
             };
-            if weight <= 0.0 {
-                continue;
-            }
             // pz = P z
             {
                 let p = &self.p[pi];
@@ -933,6 +935,49 @@ mod tests {
         let beta = m.beta[0].clone();
         m.step(&[0.3, -0.2], &[Some(-500.0)], 1.0, 0.0);
         assert_eq!(m.beta[0], beta, "weight 0 must not move the coefficients");
+    }
+
+    /// `a_null_target_decays_its_weights_and_leaves_the_filter_alone` with
+    /// the target present at weight zero. To the filter the two rows are the
+    /// same -- a prediction step, no update -- and so they are to the
+    /// weights: `wj` and `wsig` decay by the row's `lam` in both. The zero
+    /// weight skipped the decay, so `σ²`, which sets `R` and `Q`, forgot less
+    /// across such a row than across a null (review 2026-09-12, S9).
+    #[test]
+    fn a_zero_weight_row_decays_its_weights_as_a_null_does() {
+        let mut c = cfg(2, 1, vec![100.0]);
+        c.decay = Decay::Halflife(10.0);
+        c.min_periods = 3.0;
+        let mut m = Kalman::new(c).unwrap();
+        let mut s = 73u64;
+        for i in 0..60 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(
+                &x,
+                &[Some(x[0] - x[1])],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let beta = m.beta[0].clone();
+        let (wj, wsig, sig2) = (m.wj[0], m.wsig[0], m.sig2[0]);
+
+        let lam = 0.5f64.powf(4.0 / 10.0);
+        m.step(&[0.3, -0.2], &[Some(-500.0)], 4.0, 0.0);
+        assert_eq!(m.beta[0], beta, "weight 0, no correction");
+        assert_eq!(m.sig2[0], sig2);
+        assert!(
+            (m.wj[0] - wj * lam).abs() < 1e-12,
+            "{} vs {}",
+            m.wj[0],
+            wj * lam
+        );
+        assert!(
+            (m.wsig[0] - wsig * lam).abs() < 1e-12,
+            "{} vs {}",
+            m.wsig[0],
+            wsig * lam
+        );
     }
 
     #[test]

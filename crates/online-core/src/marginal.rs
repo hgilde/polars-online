@@ -95,7 +95,10 @@ pub enum SerialRule {
     /// Sum the kept lags as they are. Truncating the sum can only make the
     /// correction smaller, so this is an upper bound on `n_serial` — safe in
     /// the direction that does not overstate significance only when the
-    /// omitted lags are negative, which is why it is not the default.
+    /// omitted lags are negative, which is why it is not the default. A sum
+    /// that takes the factor `1 + 2·Σ ρ_x(l)·ρ_y(l)` to zero or below -- two
+    /// series whose autocorrelations have opposite signs -- is outside the
+    /// parameter space, and `n_serial` and `t_serial` are NaN.
     Truncated,
     /// Fit `rho(l) = phi^l` per series by least squares on `log rho` over the
     /// kept lags where `rho > 0`, then sum the tail in closed form:
@@ -316,7 +319,15 @@ fn serial_factor(
                     sum += rx * ry;
                 }
             }
-            ((1.0 + 2.0 * sum).max(f64::MIN_POSITIVE), f64::NAN, f64::NAN)
+            // A factor at or below zero is an estimate outside the parameter
+            // space -- two series whose autocorrelations have opposite signs
+            // -- and says nothing, as `Geometric` does, where a floor at
+            // `f64::MIN_POSITIVE` reported an infinite count (review
+            // 2026-09-12, S18). Uniform weights on the lags do not keep the
+            // sum positive; Bartlett's `1 − l/(L + 1)` would.
+            let factor = 1.0 + 2.0 * sum;
+            let factor = if factor > 0.0 { factor } else { f64::NAN };
+            (factor, f64::NAN, f64::NAN)
         }
         SerialRule::Geometric => {
             let fit = |rho: &[f64]| -> f64 {
@@ -1044,6 +1055,24 @@ mod tests {
         let u2 = (lcg(state) + 1.0) / 2.0;
         let u1 = u1.max(1e-12);
         (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
+    }
+
+    /// A truncated factor at or below zero -- two series whose
+    /// autocorrelations have opposite signs, `1 + 2·0.8·(−0.8) = −0.28` -- is
+    /// an estimate outside the parameter space, and says so with NaN, the
+    /// answer `Geometric` gives a factor it cannot form. It was floored at
+    /// `f64::MIN_POSITIVE`, so `n_serial` came out `+inf` and `t_serial`
+    /// `±inf`: infinite evidence from a correction that had failed (review
+    /// 2026-09-12, S18).
+    #[test]
+    fn a_truncated_factor_that_is_not_positive_is_nan() {
+        for (rx, ry) in [(0.8, -0.8), (0.5, -1.0)] {
+            let (f, px, py) = serial_factor(SerialRule::Truncated, &[1], &[rx], &[ry]);
+            assert!(f.is_nan(), "({rx}, {ry}): {f}");
+            assert!(px.is_nan() && py.is_nan());
+        }
+        let (f, _, _) = serial_factor(SerialRule::Truncated, &[1], &[0.8], &[0.8]);
+        assert!((f - 2.28).abs() < 1e-12, "{f}");
     }
 
     /// E66 tests 3 and 4, the ones the feature exists for. Two *independent*

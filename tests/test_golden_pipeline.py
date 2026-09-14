@@ -459,12 +459,16 @@ GOLDEN: dict[str, float | str | None] = {
     "ftrl.n_eff@25": 7.999488060097996,
     "ftrl.n_eff@60": 12.473100285951407,
     "ftrl.n_eff@119": 14.963784088176922,
-    "holt.pred_y0@25": -0.09807283291315116,
-    "holt.pred_y0@60": 0.09878089276993715,
-    "holt.pred_y0@119": -1.4381932751550712,
-    "holt.resid_y0@25": -4.753532991321565,
-    "holt.resid_y0@60": -0.5708220215870151,
-    "holt.resid_y0@119": 1.3874945041968423,
+    # Re-frozen 2026-09-13: a null target is transparent to `holt` now -- the
+    # next observed row forecasts over the clock since the last one -- where
+    # the level stood still across it (review 2026-09-12, C22). The target is
+    # null every 29th row from row 11, so all three rows moved; `n_eff` did not.
+    "holt.pred_y0@25": -0.11333589277905295,
+    "holt.pred_y0@60": 0.1824849926451675,
+    "holt.pred_y0@119": -1.2457153166294734,
+    "holt.resid_y0@25": -4.7382699314556636,
+    "holt.resid_y0@60": -0.6545261214622454,
+    "holt.resid_y0@119": 1.1950165456712445,
     "holt.n_eff@25": 8.573837237596514,
     "holt.n_eff@60": 13.244185655943454,
     "holt.n_eff@119": 15.09397614533663,

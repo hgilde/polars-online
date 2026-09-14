@@ -1137,7 +1137,7 @@ pub(crate) fn gram_of(key: &GroupKey, label: &str, model: &AnyModel) -> Option<G
             Some((cov, r, wj)) => (Cow::Owned(cov), r, wj, None, false),
             None => (
                 Cow::Borrowed(m.cov()),
-                m.cross_moments().to_vec(),
+                m.cross_moments(),
                 m.target_weights().to_vec(),
                 m.target_moments(),
                 false,
@@ -1194,7 +1194,7 @@ pub(crate) fn gram_of(key: &GroupKey, label: &str, model: &AnyModel) -> Option<G
 ///
 /// Values are in the features' original units. `comoments` is **centered**
 /// (E11b, which is what makes it accurate at large offsets); `cross_moments`
-/// is **uncentered**, because that is the form the solve consumes. The two
+/// is **uncentered**, because that is the form `po.gram.solve` consumes. The two
 /// are bridged by one identity, and getting it wrong is a silent wrong
 /// answer rather than an error:
 ///
@@ -1205,6 +1205,10 @@ pub(crate) fn gram_of(key: &GroupKey, label: &str, model: &AnyModel) -> Option<G
 ///
 /// The intercept, when the spec has one, is column 0: a constant 1, so it has
 /// zero variance in `comoments` and `raw[0][j] == means[j]`.
+///
+/// The model itself keeps its cross-moments centred and solves the centred
+/// system (review 2026-09-12, N1), so at a level `L` the raw ones here carry
+/// `L²·ε` of rounding that its own fit does not.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Gram {
     pub group: GroupKey,

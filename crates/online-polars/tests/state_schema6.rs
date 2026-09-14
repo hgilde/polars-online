@@ -56,6 +56,13 @@
 //! the tests already ask only for what a converter must preserve, and
 //! `a_schema_6_state_re_saves_byte_identically` is written to hold while the
 //! writer is unchanged and to become the upgrade test when it is not.
+//!
+//! It moved to 7 on 2026-09-13, and one thing changed here: `bocpd`'s raw run
+//! sums are converted to a Welford mean and scatter as the file is read
+//! (review 2026-09-12, C23). A conversion keeps the numbers and not the bits,
+//! so `bo` continues the stream to `1e-12` (`CONVERTED`), and every other
+//! spec still to the bit. `state_schema6_ridge.rs` holds schema 7's other two
+//! conversions, `ew_ridge`'s cross-moments and `holt`'s clock.
 
 use online_polars::{Bank, Spec};
 use polars::prelude::*;
@@ -979,9 +986,82 @@ fn unnested(n: usize, cols: Vec<Column>) -> Vec<DataFrame> {
         .collect()
 }
 
+/// Specs whose model layout moved in a later schema, and was converted as the
+/// file was read. A conversion keeps the numbers the file carried and not the
+/// bits, so these continue the stream to `1e-12` and every other spec to the
+/// bit. Schema 7 turned `bocpd`'s raw run sums into a Welford mean and scatter
+/// (review 2026-09-12, C23).
+const CONVERTED: [&str; 1] = ["bo"];
+
 fn assert_same(want: &[DataFrame], got: &[DataFrame], what: &str) {
-    for (w, g) in want.iter().zip(got) {
-        assert!(w.equals_missing(g), "{what}:\n{w}\n{g}");
+    for ((w, g), name) in want.iter().zip(got).zip(NAMES) {
+        if CONVERTED.contains(&name) {
+            assert_close(w, g, 1e-12, &format!("{what}: {name}"));
+        } else {
+            assert!(w.equals_missing(g), "{what}: {name}:\n{w}\n{g}");
+        }
+    }
+}
+
+/// A column's values as floats, a list column's flattened in order.
+fn floats(c: &Column) -> Vec<Option<f64>> {
+    let s = c.as_materialized_series();
+    if let DataType::List(_) = s.dtype() {
+        s.list()
+            .unwrap()
+            .amortized_iter()
+            .flat_map(|v| match v {
+                Some(v) => v
+                    .as_ref()
+                    .cast(&DataType::Float64)
+                    .unwrap()
+                    .f64()
+                    .unwrap()
+                    .iter()
+                    .collect::<Vec<_>>(),
+                None => vec![None],
+            })
+            .collect()
+    } else {
+        s.cast(&DataType::Float64)
+            .unwrap()
+            .f64()
+            .unwrap()
+            .iter()
+            .collect()
+    }
+}
+
+/// Every value within `rtol` of the other's, relative to `1 + |value|`,
+/// with nulls and NaNs in the same places.
+fn assert_values(want: &[Option<f64>], got: &[Option<f64>], rtol: f64, what: &str) {
+    assert_eq!(want.len(), got.len(), "{what}: length");
+    for (i, (a, b)) in want.iter().zip(got).enumerate() {
+        match (a, b) {
+            (None, None) => {}
+            (Some(a), Some(b)) if a.is_nan() && b.is_nan() => {}
+            (Some(a), Some(b)) => assert!(
+                (a - b).abs() <= rtol * (1.0 + a.abs()),
+                "{what}: value {i}: {a} vs {b}"
+            ),
+            _ => panic!("{what}: value {i}: {a:?} vs {b:?}"),
+        }
+    }
+}
+
+fn assert_close(want: &DataFrame, got: &DataFrame, rtol: f64, what: &str) {
+    assert_eq!(
+        want.get_column_names(),
+        got.get_column_names(),
+        "{what}: columns"
+    );
+    for (w, g) in want.columns().iter().zip(got.columns()) {
+        assert_values(
+            &floats(w),
+            &floats(g),
+            rtol,
+            &format!("{what}: {}", w.name()),
+        );
     }
 }
 
@@ -989,7 +1069,8 @@ fn assert_same(want: &[DataFrame], got: &[DataFrame], what: &str) {
 /// coefficients, the last learned rows, the data summary, the column
 /// statistics and -- new in schema 5 -- the queue of closed groups.
 fn assert_same_state(want: &mut Bank, got: &mut Bank, what: &str) {
-    for si in 0..want.specs().len() {
+    assert_eq!(want.specs().len(), NAMES.len(), "{what}: the specs");
+    for (si, name) in NAMES.iter().enumerate() {
         // Compared as text, because a gated instance's coefficient is a
         // NaN and `NaN != NaN`: what must match here is the bytes' meaning,
         // and a NaN in the same slot is a match.
@@ -1001,10 +1082,21 @@ fn assert_same_state(want: &mut Bank, got: &mut Bank, what: &str) {
         let (wk, wc) = want.last_row(si, None).unwrap();
         let (gk, gc) = got.last_row(si, None).unwrap();
         assert_eq!(wk, gk, "{what}: spec {si}: last_row groups");
-        assert!(
-            wc.equals_missing(&gc),
-            "{what}: spec {si}: last_row\n{wc:?}\n{gc:?}"
-        );
+        if CONVERTED.contains(name) {
+            // The file's last row is the old arithmetic's output, a fresh
+            // bank's the new one's (see `CONVERTED`).
+            let (ws, gs) = (wc.struct_().unwrap(), gc.struct_().unwrap());
+            for (w, g) in ws.fields_as_series().into_iter().zip(gs.fields_as_series()) {
+                let what = format!("{what}: spec {si}: last_row {}", w.name());
+                let (w, g) = (Column::from(w), Column::from(g));
+                assert_values(&floats(&w), &floats(&g), 1e-12, &what);
+            }
+        } else {
+            assert!(
+                wc.equals_missing(&gc),
+                "{what}: spec {si}: last_row\n{wc:?}\n{gc:?}"
+            );
+        }
         let (ws, gs) = (
             want.summary(si, None).unwrap(),
             got.summary(si, None).unwrap(),

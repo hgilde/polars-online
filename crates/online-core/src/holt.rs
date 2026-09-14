@@ -5,20 +5,34 @@
 //! regression cannot outperform "the series is going up at about this rate",
 //! the features are not earning their place.
 //!
-//! Per row, with clock delta `d` and halflife-derived rates
-//! `alpha = 1 − 0.5^(d/level_halflife)`, `beta = 1 − 0.5^(d/trend_halflife)`:
+//! Per row and target, with `s` the clock since the target was last observed
+//! -- this row's delta included -- and halflife-derived rates
+//! `alpha = 1 − 0.5^(s/level_halflife)`, `beta = 1 − 0.5^(s/trend_halflife)`:
 //!
 //! ```text
-//! pred  = l + b·d                       (extrapolate d clock units ahead)
+//! pred  = l + b·s                       (extrapolate s clock units ahead)
 //! l'    = alpha·y + (1 − alpha)·pred
-//! b'    = beta·(l' − l)/d + (1 − beta)·b
+//! b'    = beta·(l' − l)/s + (1 − beta)·b
 //! ```
+//!
+//! On a row that observes every target, `s` is the row's own delta `d`.
 //!
 //! Deriving the rates from halflives, rather than taking them directly, keeps
 //! the parameter meaning the same as everywhere else in this library: a
 //! halflife is in clock units, so an irregular clock is handled correctly
 //! instead of every row counting the same. `trend_halflife = inf` pins the
 //! trend at zero, which reduces this to a plain exponentially weighted level.
+//!
+//! **A row the model cannot learn from is transparent.** A null target, or a
+//! zero weight, leaves the level and slope where the last observation put
+//! them and adds the row's delta to that target's `s`, so the next observed
+//! row forecasts, and forms its rates, over the whole gap: the same numbers
+//! as if the row were absent and its clock folded into the next one, which is
+//! what `clock.rs` does with a row it skips. Advancing the level with the
+//! skipped row's own rate would not do, because the rate is not additive in
+//! the clock: `alpha(d₁ + d₂) ≠ alpha(d₂)`. The level used to stand still
+//! across such a row, so the row after it forecast one trend step short
+//! (review 2026-09-12, C22).
 
 use serde::{Deserialize, Serialize};
 
@@ -59,6 +73,12 @@ pub struct Holt {
     trend: Vec<f64>,
     seen: Vec<bool>,
     w_sum: f64,
+    /// Per target, the clock since its last observation, which a row it could
+    /// not learn from adds to and the next observed row extrapolates over
+    /// (see the module docs). A schema-6 state has none and loads with every
+    /// target at zero: what the old recursion kept.
+    #[serde(default)]
+    since: Vec<f64>,
 }
 
 impl Holt {
@@ -70,8 +90,20 @@ impl Holt {
             trend: vec![0.0; m],
             seen: vec![false; m],
             w_sum: 0.0,
+            since: vec![0.0; m],
             cfg,
         })
+    }
+
+    /// `(alpha, beta)` for `s` clock units since the last observation.
+    fn rates(&self, s: f64) -> (f64, f64) {
+        let alpha = 1.0 - 0.5f64.powf(s / self.cfg.level_halflife);
+        let beta = if self.cfg.trend_halflife.is_infinite() {
+            0.0
+        } else {
+            1.0 - 0.5f64.powf(s / self.cfg.trend_halflife)
+        };
+        (alpha, beta)
     }
 
     pub fn cfg(&self) -> &HoltCfg {
@@ -102,46 +134,52 @@ impl Holt {
 impl OnlineModel for Holt {
     fn step(&mut self, _x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         let m = self.cfg.n_targets;
-        let alpha = 1.0 - 0.5f64.powf(d_clock / self.cfg.level_halflife);
-        let beta = if self.cfg.trend_halflife.is_infinite() {
-            0.0
-        } else {
-            1.0 - 0.5f64.powf(d_clock / self.cfg.trend_halflife)
-        };
+        // The rates for a target observed on the previous row, where `s` is
+        // this row's delta: every target of a stream with no gaps.
+        let (alpha_d, beta_d) = self.rates(d_clock);
 
         let n_eff = self.w_sum;
         let ready = n_eff >= self.cfg.min_periods;
         let mut pred = vec![f64::NAN; m];
         for j in 0..m {
+            let yj = y[j].filter(|v| v.is_finite() && weight > 0.0);
             if !self.seen[j] {
                 // Nothing to extrapolate from yet.
-                if let Some(yj) = y[j] {
-                    if yj.is_finite() && weight > 0.0 {
-                        self.level[j] = yj;
-                        self.seen[j] = true;
-                    }
+                if let Some(yj) = yj {
+                    self.level[j] = yj;
+                    self.seen[j] = true;
                 }
                 continue;
             }
-            // Extrapolate over this row's own elapsed clock, so an irregular
-            // clock forecasts the right distance ahead.
-            let p = self.level[j] + self.trend[j] * d_clock;
+            // Extrapolate over the clock since the target was last observed,
+            // so an irregular clock, or a gap in the target, forecasts the
+            // right distance ahead.
+            let s = self.since[j] + d_clock;
+            let p = self.level[j] + self.trend[j] * s;
             if ready {
                 pred[j] = p;
             }
-            let Some(yj) = y[j] else { continue };
-            if !yj.is_finite() || weight <= 0.0 {
+            let Some(yj) = yj else {
+                // Nothing to learn from: carry the clock to the next
+                // observation (C22).
+                self.since[j] = s;
                 continue;
-            }
+            };
+            let (alpha, beta) = if self.since[j] == 0.0 {
+                (alpha_d, beta_d)
+            } else {
+                self.rates(s)
+            };
             let prev_level = self.level[j];
             self.level[j] = alpha * yj + (1.0 - alpha) * p;
-            // `d_clock > 0.0` cannot be the deciding condition -- beta is
-            // `1 - 0.5^(d/halflife)`, which is 0 whenever d is -- but it is the
+            // `s > 0.0` cannot be the deciding condition -- beta is
+            // `1 - 0.5^(s/halflife)`, which is 0 whenever s is -- but it is the
             // guard that names why the division below is safe, so both stay.
-            if beta > 0.0 && d_clock > 0.0 {
-                let observed_slope = (self.level[j] - prev_level) / d_clock;
+            if beta > 0.0 && s > 0.0 {
+                let observed_slope = (self.level[j] - prev_level) / s;
                 self.trend[j] = beta * observed_slope + (1.0 - beta) * self.trend[j];
             }
+            self.since[j] = 0.0;
         }
         self.w_sum = self.w_sum * 0.5f64.powf(d_clock / self.cfg.level_halflife) + weight;
 
@@ -158,7 +196,7 @@ impl OnlineModel for Holt {
         if n_eff >= self.cfg.min_periods {
             for (j, p) in pred.iter_mut().enumerate() {
                 if self.seen[j] {
-                    *p = self.level[j] + self.trend[j] * d_clock;
+                    *p = self.level[j] + self.trend[j] * (self.since[j] + d_clock);
                 }
             }
         }
@@ -176,7 +214,13 @@ impl OnlineModel for Holt {
     fn restore(s: &State) -> Result<Self, StateError> {
         check_schema(s)?;
         match &s.model {
-            ModelState::Holt(m) => Ok((**m).clone()),
+            ModelState::Holt(m) => {
+                let mut m = (**m).clone();
+                if m.since.len() != m.cfg.n_targets {
+                    m.since = vec![0.0; m.cfg.n_targets];
+                }
+                Ok(m)
+            }
             other => Err(StateError::WrongModel {
                 expected: "holt",
                 found: other.kind(),
@@ -419,9 +463,9 @@ mod tests {
 
     #[test]
     fn a_null_target_predicts_without_learning() {
-        // The `let Some(yj) = y[j] else { continue }` arm: prediction still
-        // happens, state does not move -- which is what makes the output
-        // out-of-sample.
+        // Prediction still happens; the level and slope stay where the last
+        // observation put them, and the row's clock is carried to the next
+        // one (`a_row_it_cannot_learn_from_is_as_if_absent`).
         let mut m = Holt::new(cfg(6.0, 25.0)).unwrap();
         for i in 0..40 {
             m.step(
@@ -436,8 +480,11 @@ mod tests {
         assert!((step.pred[0] - (l + t)).abs() < 1e-12, "still extrapolates");
         assert_eq!(m.level()[0], l);
         assert_eq!(m.trend()[0], t);
+        assert_eq!(m.since[0], 1.0, "the clock is carried");
     }
 
+    /// Weight 0 folds nothing in: the level and slope stay, the clock is
+    /// carried as across a null, and `n_eff` decays.
     #[test]
     fn a_zero_weight_row_is_pure_decay() {
         let mut m = Holt::new(cfg(6.0, 25.0)).unwrap();
@@ -453,6 +500,7 @@ mod tests {
         m.step(&[], &[Some(-500.0)], 1.0, 0.0);
         assert_eq!(m.level()[0], l, "weight 0 must not fold the row in");
         assert_eq!(m.trend()[0], t);
+        assert_eq!(m.since[0], 1.0, "the clock is carried");
         assert!((m.n_eff() - w * 0.5f64.powf(1.0 / 6.0)).abs() < 1e-12);
     }
 
@@ -559,5 +607,87 @@ mod tests {
     fn rejects_bad_config() {
         assert!(Holt::new(cfg(0.0, 10.0)).is_err());
         assert!(Holt::new(cfg(10.0, 0.0)).is_err());
+    }
+
+    /// A row the model cannot learn from -- a null target, or a present one
+    /// at weight zero -- is transparent: the same numbers as if it were
+    /// absent and its clock folded into the next row's, which is what
+    /// `clock.rs` does with a row it skips (review 2026-09-12, C22). The
+    /// textbook form's rate is not additive in the clock, `α(d₁ + d₂) ≠
+    /// α(d₂)`, so advancing the level with the row's own rate would not do:
+    /// each target keeps its clock since its last observation and the next
+    /// observed row extrapolates, and forms its rates, over all of it.
+    #[test]
+    fn a_row_it_cannot_learn_from_is_as_if_absent() {
+        let c = cfg(6.0, 25.0);
+        let mut s = 11u64;
+        let ys: Vec<f64> = (0..91)
+            .map(|i| 3.0 + 2.0 * i as f64 + lcg(&mut s))
+            .collect();
+        for zero_weight in [false, true] {
+            let mut full = Holt::new(c.clone()).unwrap();
+            let mut kept = Holt::new(c.clone()).unwrap();
+            let mut folded = 0.0;
+            for (i, &y) in ys.iter().enumerate() {
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                if i % 2 == 1 {
+                    // The value is one no fit could absorb, so a row that
+                    // leaked into the state would show.
+                    let (yv, w) = if zero_weight {
+                        (Some(-500.0), 0.0)
+                    } else {
+                        (None, 1.0)
+                    };
+                    full.step(&[], &[yv], d, w);
+                    folded += d;
+                    continue;
+                }
+                let a = full.step(&[], &[Some(y)], d, 1.0).pred[0];
+                let b = kept.step(&[], &[Some(y)], d + folded, 1.0).pred[0];
+                folded = 0.0;
+                assert!(
+                    (a.is_nan() && b.is_nan()) || (a - b).abs() <= 1e-12 * (1.0 + b.abs()),
+                    "zero weight {zero_weight}, row {i}: {a} vs {b}"
+                );
+            }
+            assert_eq!(full.coefficients(), kept.coefficients());
+        }
+    }
+
+    /// `y = 3 + 2t` with every other target null. Before C22 the observed
+    /// rows were forecast from a level that had stood still across the null,
+    /// one trend step short -- about 2 -- on every one of them.
+    #[test]
+    fn a_trend_is_extrapolated_across_a_missing_row() {
+        let mut m = Holt::new(cfg(5.0, 5.0)).unwrap();
+        let mut miss = f64::NAN;
+        for i in 0..500 {
+            let y = 3.0 + 2.0 * i as f64;
+            let yv = (i % 2 == 0).then_some(y);
+            let step = m.step(&[], &[yv], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            // The null row is forecast one step out, the next two.
+            miss = step.pred[0] - y;
+        }
+        assert!(miss.abs() < 0.5, "the last forecast missed by {miss}");
+    }
+
+    /// `predict` extrapolates over the clock since the target was last
+    /// observed plus its own delta, as the next `step` would.
+    #[test]
+    fn predict_extrapolates_over_the_clock_since_the_last_observation() {
+        let mut m = Holt::new(cfg(6.0, 25.0)).unwrap();
+        for i in 0..40 {
+            m.step(
+                &[],
+                &[Some(1.0 + 2.0 * i as f64)],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let (l, t) = (m.level()[0], m.trend()[0]);
+        let on_the_null = m.step(&[], &[None], 3.0, 1.0).pred[0];
+        assert!((on_the_null - (l + 3.0 * t)).abs() < 1e-12);
+        let p = m.predict(&[], 2.0).pred[0];
+        assert!((p - (l + 5.0 * t)).abs() < 1e-12, "{p} vs {}", l + 5.0 * t);
     }
 }

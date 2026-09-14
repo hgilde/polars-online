@@ -90,6 +90,17 @@ dev = [
     # on, so the policy that bounds the CI bill is enforced, not just commented.
     "pyyaml>=6.0",
     "river>=0.26.1",
+    # Second opinions for the code review of 2026-09-12
+    # (tests/test_second_opinion.py, docs/REVIEW-2026-09-12-PROGRESS.md):
+    # statsmodels for Holt / exponential smoothing, the autocorrelation and
+    # the HAC variance; filterpy for the Kalman filter; and
+    # bayesian-changepoint-detection for Adams & MacKay's run-length
+    # recursion. Every test that uses one imports it with
+    # `pytest.importorskip`, so none is needed to run the rest. statsmodels
+    # brings pandas with it; the tests do not use pandas themselves.
+    "statsmodels>=0.15",
+    "filterpy>=1.4.5",
+    "bayesian-changepoint-detection>=0.2.dev1",
     "ruff>=0.14",
     # The package is typed (py.typed, the pyo3 stub, PEP 692 kwargs); mypy in
     # the gate is what keeps that true. Pure Python, seconds to run.

@@ -178,10 +178,12 @@ pub const INPUT_BOUND: f64 = 1e100;
 /// assert_eq!(model.coefficients(), before);
 ///
 /// // `predict` is the step's answer without the step: the forecast three
-/// // clock units past the last learned row (level 59, trend 1), and nothing
-/// // -- not even the clock -- has moved.
+/// // clock units past the last row. Neither row above was learned from, so
+/// // `holt` extrapolates from its last observation (level 59, trend 1) over
+/// // their two clock units as well, `59 + 5·1`. Nothing -- not even the
+/// // clock -- has moved.
 /// let ahead = model.predict(&[], 3.0);
-/// assert!((ahead.pred[0] - 62.0).abs() < 1e-3);
+/// assert!((ahead.pred[0] - 64.0).abs() < 1e-3);
 /// assert_eq!(model.predict(&[], 3.0), ahead);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -190,8 +192,9 @@ pub trait OnlineModel: Sized {
     /// The [`Step`] that [`Self::step`] would return for this row, without
     /// the update: the same `pred`, the same `n_eff`, the same `extra`, and
     /// the state untouched. `d_clock` is the clock elapsed since the last
-    /// learned row -- a trend model (`holt`) extrapolates over it and a
-    /// proximal model (`ftrl`) sees its accumulators decayed by it; the
+    /// learned row -- a trend model (`holt`) extrapolates over it, on top of
+    /// the clock since its target was last observed, and a proximal model
+    /// (`ftrl`) sees its accumulators decayed by it; the
     /// coefficient models ignore it, since decay alone never moves a mean.
     ///
     /// `tests/model_contract.rs` holds every model to the equality

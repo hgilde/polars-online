@@ -66,6 +66,12 @@ impl<S> Snapshots<S> {
         self.window
     }
 
+    /// Every snapshot held, oldest first, for a caller that must rewrite them
+    /// in place: a state converted as it is read.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut S> {
+        self.ring.iter_mut().map(|(_, s)| s)
+    }
+
     /// Offer a snapshot of the state *as it stands before* the row at
     /// `clock`, already decayed to that row. Taken only when the cadence is
     /// due, so `make` is not called otherwise.

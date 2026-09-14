@@ -832,7 +832,11 @@ const GOLDEN_PA: &[f64] = &[
 ];
 const GOLDEN_SGD_SIMPLEX: &[f64] = &[0.5169094734826561, 1.109247996359838, -0.020146022626397198];
 const GOLDEN_PA_BOX: &[f64] = &[0.5287388518302499, 1.679384820401434, 0.15906888911203854];
-const GOLDEN_HOLT: &[f64] = &[0.6940554404209057, 0.5781242794831807, 0.2548083372371531];
+// Re-frozen 2026-09-13: a null target is transparent to `holt` now -- the
+// next observed row forecasts over the clock since the last one -- where the
+// level stood still across it (review 2026-09-12, C22). Row 20 comes before
+// the stream's null at row 31 and did not move.
+const GOLDEN_HOLT: &[f64] = &[0.6940554404209057, 0.5867765476609583, 0.2586162074232276];
 const GOLDEN_SEQTEST: &[f64] = &[-0.6443570163905132, -1.086393303225433, -0.9577414997686987];
 const GOLDEN_SEQTEST_NEG: &[f64] = &[
     -0.9917118216489557,

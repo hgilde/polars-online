@@ -435,11 +435,11 @@ def kalman_ref(
                     else np.where(np.isinf(hl), 0.0, sigma2 * (np.log(2.0) / hl) ** 2)
                 )
                 st["P"][pi] = st["P"][pi] + np.diag(qv * d)
-            if np.isnan(Y[i, j]):
+            if np.isnan(Y[i, j]) or w[i] <= 0.0:
+                # A null target and a zero weight alike: no update, and time
+                # passes for both weights (review 2026-09-12, S9).
                 st["wj"][j] *= lam
                 st["wsig"][j] *= lam
-                continue
-            if w[i] <= 0.0:
                 continue
             pz = st["P"][pi] @ zs
             s_inn = zs @ pz + sigma2 / w[i]
