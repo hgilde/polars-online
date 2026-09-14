@@ -254,7 +254,7 @@ timed = po.spec.ewridge(
     max_dclock=300.0,          # the most the clock may step between two rows; required with a clock
     on_clock_reset="max",      # a backwards clock: "max" (the step is max_dclock), "zero", "reset_state", or "error"
     session="session",         # a column whose value changes at a session boundary ...
-    session_gap=60.0,          # ... and the clock step to apply there; "reset" starts the model over, inf never applies it
+    session_gap=60.0,          # ... and the clock step to apply there, at most max_dclock; "reset" starts the model over
 )
 # halflife=inf (or lam=1.0) turns forgetting off. A list of halflives fits one model per value.
 # max_dclock=0 turns forgetting off; max_dclock=inf removes the cap.

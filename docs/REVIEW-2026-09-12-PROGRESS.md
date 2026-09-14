@@ -107,8 +107,8 @@ first (S1, S2, S3, S23, S27, S29, S30, S31), performance (P1-P5),
 documentation (D1-D10), and the V list -- and three new observations,
 N2-N4. **S29 and S30 are the user's call**: both would trade `holt`'s
 textbook recursion, which `statsmodels`' `Holt` now pins exactly, for a
-mean-form level. Nothing is pushed; the user's own design work is parked
-on `design/task-78`.
+mean-form level. The user's own design work (tasks 78 and 79), parked on
+`design/task-78` while the round ran, is merged into `main`.
 
 ## Status
 
@@ -262,6 +262,12 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   split the window's snapshots about a target mean of 0; the unit tests
   could not have, since they only ever load what the current build
   writes. The user said on the way that `pandas` is fine in tests.
+
+- `design/task-78` merged into `main`, at the user's request. It is
+  documentation only (task 78's design, task 79, a README correction), and
+  `docs/PLAN.md` conflicted where both sides added tasks at the head of the
+  list; all three are kept. Task 79 is ticked there: it is this review's
+  C5, fixed with C21 in `cb6c57c`.
 
 ## New observations (found while fixing; not in the review)
 

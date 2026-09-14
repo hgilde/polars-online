@@ -1672,9 +1672,692 @@ note, not a task.
       is the reviewer's; `docs/REVIEW-2026-09-12-PROGRESS.md` is the status of
       every finding in it, and the place to look. The rule for the round, the
       user's: fixes whose test is an independent library (`numpy`, `scipy`,
-      `river`; `tests/test_second_opinion.py`) first, everything else kept for
-      later with its reason. Commits carry the finding IDs. (Tasks 78 and 79
-      are on the parked branch `design/task-78`.)
+      `river`, and from 2026-09-13 `statsmodels`, `filterpy` and
+      `bayesian-changepoint-detection`; `tests/test_second_opinion.py`)
+      first, everything else kept for later with its reason. Commits carry
+      the finding IDs. Tasks 78 and 79, parked on `design/task-78` while it
+      ran, were merged back on 2026-09-13; 79 was this round's C5.
+
+- [x] 79. **`label_delay` ignores a clock event on a skipped row — found
+      2026-09-11, checking task 78's parity; in released 0.5.1.** A reset
+      that lands on a row the spec skips (a null feature, an unusable
+      weight) restarts the model but leaves the `label_delay` buffer full,
+      so rows from before the reset are later learned into the model that
+      was meant to start clean. Measured: `ewridge`, no decay,
+      `label_delay=3`, `session_gap="reset"`, the first row of the new
+      session carrying a null feature. `n_eff` per row:
+
+      | row | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
+      |---|---|---|---|---|---|---|---|---|---|---|---|---|
+      | reset row skipped | 0 | 0 | 0 | 1 | 2 | — | **1** | **2** | **3** | 4 | 5 | **6** |
+      | reset row accepted (null target) | 0 | 0 | 0 | 1 | 2 | 0 | 0 | 0 | 1 | 2 | 3 | 4 |
+
+      The fresh model has learned a row by row 6 and ends two rows ahead:
+      two rows of the old session leaked across the reset.
+
+      *Cause.* `run_instance` acts on a row's `reset`, `session_changed`
+      and `capped` before its `accept` test — deliberately, the comment
+      says, "because a skipped row's gap breaks adjacency just as much".
+      `apply_label_delay` does the opposite: its `!plan.accept` branch
+      comes first and skips the event handling, so the buffer never sees a
+      skipped row's reset (should drop), session change or capped gap
+      (should release). The reset is measured; the other two go through the
+      same branch and are expected to fail the same way — releasing late,
+      across the break, into lag rings that were just cleared for it, the
+      exact case `docs/REVIEW-E54-E64.md` L2 fixed for accepted rows.
+
+      *Fix.* In `apply_label_delay`, handle the event for every row — a
+      reset clears the buffer, a session change or capped gap releases it —
+      and push only accepted rows. Tests: the table above as a regression
+      test (`n_eff` equal in both rows from row 5 on, bar row 5's own), and
+      the same shape for a session change and a capped gap on a skipped row,
+      with a lag feature to show the ring is not refilled across the break.
+      Changes numbers only for a stream with `label_delay` and an event on a
+      skipped row; a patch, with a CHANGELOG line. Before 78b, which extends
+      the same release rule to a backward clock.
+      **Done 2026-09-13** as the code review's C5, fixed with C21 in
+      `cb6c57c` (task 80): a reset on a skipped row now clears the buffer,
+      and a session change or capped gap on one releases it.
+
+- [ ] 78. **E69, windowed EWMAs in both directions, and `po.prep` renamed
+      `po.stream` — recorded 2026-09-11, designed the same day, not built.**
+      The user's ask: "Is it possible to have a look ahead that generates a
+      reverse ewma on the forward pass? For example a target of a regression
+      may be not the forward price but the reverse ewma of rows starting with
+      the next, going forward for one minute. This reverse ewma puts the most
+      weight on the first row it sees, with the weight decreasing forward."
+      Then, over the same day: it should be called `lookahead_rewm`; the
+      open choices are to be options, not decisions; the utility is to be
+      kept alongside the spec form, with several columns at once; and
+      `po.prep` is to be renamed and its API defined "the way it should be
+      done" — pre-1.0, so no aliases and no compatibility. Then, for trades
+      interleaved with market data: a per-window weight, and three things
+      the implementation does that `rolling` cannot — rows that contribute
+      nothing never enter a window, `split=` for one output per category,
+      and waiting rows held as the input's own chunks. Then: the column
+      form must be able to reproduce exactly what the model computes for a
+      target, so both take the spec's session and gap parameters (*One
+      clock, both forms*, below).
+
+      *The quantity.* For row *t* at clock τₜ, over the rows *j* in the
+      window, taken in stream order:
+
+      `y_t = Σ λ^|τⱼ − τ_anchor| · vⱼ / Σ λ^|τⱼ − τ_anchor|`,
+      `λ = 2^(−1/halflife)`
+
+      *Backward* (`ewm`): the window is the rows at or before *t* no more
+      than `horizon` older, anchored at *t* itself — an ordinary EWMA with a
+      hard cutoff. *Forward* (`lookahead_rewm`): the rows after *t* less than
+      `horizon` later, anchored at the first of them, so the weight is 1 on
+      the next row and falls forward. The forward form is a label, and
+      learning from it honestly needs `label_delay = horizon` (E47) — which
+      the spec-target form below sets itself.
+
+      #### Why: Polars has no cheap form of either
+
+      Measured on 14 cores, ~2 ticks a second, `sink_parquet` from parquet
+      (a scan-and-sink alone peaks at 0.1–0.4 GB). The recipe is
+      `rolling(...).agg((w · v).sum() / w.sum())` with `w` relative to each
+      window's anchor; it is exact (8.5e-14 against a brute-force loop) and
+      streams as a native `rolling-group-by` node, output identical to the
+      in-memory engine. Its memory is bounded by the window, not the stream:
+
+      | rows | window | direction | threads | peak RSS | time |
+      |---:|---:|---|---:|---:|---:|
+      | 1M | 60 s | forward | 14 | 2.9 GB | 1.4 s |
+      | 4M | 60 s | forward | 14 | 3.9 GB | 3.7 s |
+      | 16M | 60 s | forward | 14 | 4.0 GB | 15.8 s |
+      | 4M | 120 s | forward | 14 | 7.9 GB | 9.2 s |
+      | 4M | 240 s | forward | 14 | 14.6 GB | 18.5 s |
+      | 4M | 60 s | forward | 4 | 1.3 GB | 5.0 s |
+      | 4M | 60 s | forward | 1 | 0.44 GB | 12.7 s |
+      | 4M | 60 s | backward | 14 | 3.5 GB | 3.05 s |
+
+      And what Polars *can* do cheaply, for scale — neither is this
+      quantity: `ewm_mean_by` (exponential, no cutoff) 262 MB / 0.05 s;
+      `rolling_mean_by` (a cutoff, equal weights) 261 MB / 0.10 s. Forward
+      numbers identical on py-polars 2.0.0rc1. The cause is the weighting:
+      every window is weighted from its own anchor, so nothing is shared
+      between windows, each window's rows are gathered separately, and each
+      thread holds a morsel's worth of them — O(rows × rows per window) work,
+      ~250 MB per thread per 120 rows of window. The gap is exactly
+      *exponential and truncated*, in either direction, and *forward* at all.
+      Not measured: `group_by=`.
+
+      #### The algorithm, one for both directions
+
+      - **Segment sums anchored at their near end, combined associatively.**
+        Forward, anchored at the first row: `(S_a, W_a, τ₀a) ⊕ (S_b, W_b,
+        τ₀b) = (S_a + λ^(τ₀b−τ₀a) S_b, W_a + λ^(τ₀b−τ₀a) W_b, τ₀a)`;
+        backward, the mirror, anchored at the last. Every factor is ≤ 1 on a
+        non-decreasing clock: no subtraction, no overflow, and a factor that
+        underflows to 0 is a weight that was negligible anyway.
+      - **A FIFO sliding window over that monoid** — the two-stack queue
+        (Tangwongsan et al.'s SWAG family). O(1) amortised per row, exact,
+        memory one window of rows per group, per column.
+      - **Not prefix sums.** Forward, the earlier prefix dwarfs the window's
+        sum and the difference cancels it away; flipped, it overflows (the
+        same failure as E49's raw sums).
+      - **Not task 63's identity** `A(t) − λ^(t−u)·A(u)` either, though it
+        is sound backward (what it subtracts is the small old tail — it is
+        how the models' `window` works and stays): forward, what it would
+        subtract is the large part. One subtraction-free mechanism for both
+        directions keeps the utility one thing.
+
+      #### The API
+
+      **`po.prep` becomes `po.stream`**: the namespace for streaming
+      transforms of a plan — `LazyFrame` in, `LazyFrame` out, O(state)
+      memory, before or beside a bank. "Stream" is already a defined word in
+      the README's glossary. `embargo` and `refresh_time` move; nothing
+      stays behind under `po.prep`.
+
+      **Windows are described, then run together** — the shape a bank and
+      its specs already have. `po.window.ewm(...)` and
+      `po.window.lookahead_rewm(...)` build descriptions and compute nothing;
+      `po.stream.windows(frame, [...])` runs any number of them in one pass,
+      over one buffer of rows per group, with one state file. Separate calls
+      per window were the first draft and were dropped the same day: one
+      call could only take the *product* of its columns × halflives ×
+      horizons, could not mix directions, and every extra call was another
+      buffer, another state file and another Python source layer. The same
+      description is also a spec target, so windows need no second
+      spelling. `po.target(column, ...)` exists for the other kind of
+      target — a plain column — only so that it can take the options every
+      target has (*Relative targets*).
+
+      Every function in `po.stream` follows five rules — what "the way it
+      should be done" means here:
+
+      1. **Frame first, the same kind back** — `LazyFrame` in gives a
+         `LazyFrame`, `DataFrame` gives a `DataFrame`, as `po.fit_predict`
+         does. Chaining is Polars' own `lf.pipe(po.stream.windows, [...])`;
+         nothing is added to `lf.online` for these.
+      2. **One vocabulary, the specs'**: `clock`, `max_dclock`,
+         `on_clock_reset`, `session`, `session_gap`, `group`, `halflife`,
+         `weight` — the same names, defaults and meanings as on a spec, run
+         by the same Rust clock code. `refresh_time`'s `time=` becomes
+         `clock=` and `by=` becomes `group=`. With no `clock`, one unit is
+         one row.
+      3. **What the rows share goes on the call; what a window decides goes
+         on the window.** The call takes the clock and its policy — `clock`,
+         `max_dclock`, `on_clock_reset`, `session`, `session_gap`, `group` —
+         and the state;
+         a window takes its columns, weight, halflife, horizon, `partial`,
+         `same_clock` and names. Within one window, `columns`, `halflife`
+         and `horizon` may each be a sequence, and the window means every
+         combination.
+      4. **Output names by template**: `name=` is a format string over
+         `{column}`, `{halflife}`, `{horizon}` and `{split}` (`""` for the
+         total, `"_buy"` for a category, so one template names both); the
+         default contains only
+         the fields that vary within the window (`"{column}_ewm"`,
+         `"{column}_ewm_{halflife}"`, ...; `rewm` for the forward form). Two
+         outputs with one name, across all the windows of a call, are refused
+         while the plan is built.
+      5. **Stateful transforms resume** with `load_state` / `save_state`;
+         `chunk_rows` as everywhere. `embargo` is a pure Polars plan
+         (`merge_sorted`) with nothing to save and takes neither.
+
+      ```python
+      lf = po.stream.windows(
+          lf,
+          [
+              po.window.ewm(["x0", "x1"], halflife=[5, 30], horizon=60),    # 4 outputs
+              po.window.ewm("volume", halflife=300),                        # no horizon: no cutoff
+              po.window.lookahead_rewm(
+                  "price", weight="quantity",                               # forward VWAP: all trades,
+                  split=("side", ["buy", "sell"]),                          # buys only, sells only
+                  halflife=10, horizon=60,
+                  same_clock="include", partial="null",
+                  complete="fwd_complete", name="fwd_vwap{split}"),
+          ],
+          clock="ts", max_dclock=300.0, on_clock_reset="max",       # the spec's clock policy,
+          session="date", session_gap=60.0, group="symbol",         # word for word
+          load_state=None, save_state="windows.bin", chunk_rows=None,
+      )
+
+      po.stream.windows(frame, windows, *,
+                        clock=None, max_dclock=None, on_clock_reset="max",
+                        session=None, session_gap=None, group=None,
+                        load_state=None, save_state=None, chunk_rows=None)
+
+      po.window.ewm(columns, *, halflife, horizon=None, weight=None,
+                    split=None, unlisted="error", total=True,
+                    relative_to=None, relative="difference",
+                    partial="keep", complete=None, name=None)
+      po.window.lookahead_rewm(columns, *, halflife, horizon, weight=None,
+                               split=None, unlisted="error", total=True,
+                               relative_to=None, relative="difference",
+                               same_clock="include", partial="null",
+                               complete=None, name=None)
+      po.target(column, *, relative_to=None, relative="difference", name=None)
+
+      # a spec's targets: a column name, a po.target, or a window description
+      po.spec.ewridge("fwd", targets=["ret_5m",
+                                      po.target("price_5m", relative_to="mid"),
+                                      po.window.lookahead_rewm("price", weight="quantity",
+                                                               halflife=10, horizon=60,
+                                                               relative_to="mid")], ...)
+
+      po.stream.embargo(frame, *, clock, delay, weight=None, role=...)
+      po.stream.refresh_time(frame, *, series, names, clock, value,
+                             group=None, pairs=False, keep=(),
+                             load_state=None, save_state=None, chunk_rows=None)
+
+      # a description as a spec target:
+      po.spec.ewridge("fwd", targets=[po.window.lookahead_rewm("price", weight="buy_qty",
+                                                               halflife=10, horizon=60)], ...)
+      ```
+
+      The options are all the caller's to choose per window; the defaults
+      are only where a call with none lands.
+      - **`weight`** is per window, because the buy-side and sell-side
+        windows of one call weigh the same rows differently. Each row counts
+        `weight × λ^distance`; a null or zero weight counts nothing, which
+        is how market-data rows interleaved with trades drop out of a VWAP.
+        A window whose weights sum to zero is *empty* — null, `complete`
+        true — never 0/0 (the guard hard rule 9 asks for). A null *value*
+        on a row counts nothing either, so a column's window is over the
+        rows where that column and its weight are both present — and only
+        those rows ever enter it (*How rows move*).
+      - **`split=(column, [values...])`** gives one output per listed value
+        of a categorical column, plus the total over every contributing row
+        unless `total=False` — a buy-side, sell-side and all-trades VWAP
+        from one window, with no helper columns. The values are listed
+        because a lazy plan declares its schema before a row is read, as
+        `refresh_time`'s `names=` are. **`unlisted`** says what a
+        contributing row with a value not in the list does, null included:
+        `"error"` refuses it naming the row; `"total"` counts it in the
+        total only; `"ignore"` counts it nowhere. The rule applies only to
+        rows that would contribute, so a market-data row with a null side
+        and a null quantity is never unlisted — it was never going to count.
+        It works identically backward: a buy-side trailing VWAP is the same
+        window.
+      - **The anchor matters only to a sum.** A weighted mean is
+        `Σ w·v / Σ w`, and moving the anchor multiplies every weight by one
+        constant, which cancels: measured, a buy-side VWAP anchored at the
+        next row of any kind (the `rolling` recipe) and at the next buy (the
+        brute force) agree to 1.1e-13. The anchor stays at the near end for
+        the numerics — it keeps every factor ≤ 1 — not for the answer.
+      - **`partial`** is one concept in both directions: a window cut short
+        before its horizon passes. Backward, that is the start of a stream,
+        session or group — `"keep"` is an ordinary warm-up, hence its
+        default there; forward, it is a window a clock event cut short — a
+        session change, a capped gap, a backward step — hence `"null"`. The
+        end of the input is **not** a partial window: a row whose horizon
+        has not passed when the input ends is unresolved, null whatever
+        `partial` says, because the model has not learned from it either
+        (*Parity*). `"drop"` removes the row; with several windows in
+        one call, a row is dropped if any window that says `"drop"` is
+        partial on it. `complete` names a bool column saying which rows had
+        a full window. An empty window is not partial.
+      - **`same_clock`** (forward only): whether later rows stamped with
+        *t*'s own clock are "the next rows". `"exclude"` is what a
+        time-indexed `rolling` does; `"include"` is stream order, which no
+        time-indexed window can express — and it is what interleaved data
+        needs, where a trade often prints in the same millisecond as the
+        quote row before it.
+      - **`save_state`** changes what the end of a stream means: rows still
+        inside a horizon are waiting, saved, and emitted by the next run;
+        without it they are emitted unresolved, null. The saved state is one window's worth of rows per
+        group — the longest window of the call — plus each window's running
+        sums.
+      - **As a spec target**, a description is accepted as written, so the
+        one built for the column form works unchanged. `partial="null"` and
+        `"drop"` both mean the row is not learned from — a null target never
+        is — and `"keep"` learns from the partial window; the default,
+        `"null"`, is therefore valid (a first draft allowed only `"drop"` /
+        `"keep"`, which would have refused the default a caller never set).
+        `complete` is refused: the bank does not emit its target, and it
+        names a column that would not exist. The backward `ewm` is refused:
+        it is not a label but a feature, and belongs upstream in
+        `po.stream`. The clock and its policy are the spec's — a description
+        never carries one, in either place, because every window over a
+        buffer shares its clock.
+      - **A split description as a spec target is several targets**, one per
+        listed category plus the total unless `total=False`, in the one
+        spec — so they share one `X'X` (E9) and a buy-side, sell-side and
+        all-trades VWAP are fitted for the cost of one. They share a
+        horizon, so they share one delay.
+
+      #### Relative targets
+
+      The user, 2026-09-11: "every target should have the option to be
+      relative". A level — a price, a VWAP — is rarely what a regression
+      should predict; where it goes from *now* is. So every target, a plain
+      column as much as a window, takes:
+
+      - **`relative_to=`**, a column read **at the target's own row** *t*
+        — the mid, the last trade — and
+      - **`relative=`**, how the target is taken against it:
+        `"difference"` (default, `y − r`), `"ratio"` (`y / r`) or
+        `"log_ratio"` (`ln(y / r)`).
+
+      `r` at row *t* is known when row *t* arrives, so a relative target is
+      exactly as honest as the target it is built from; it adds no look-
+      ahead. A null `r`, or for the two ratios a non-positive `y` or `r`,
+      makes the target null on that row: not learned from, never a NaN in
+      the state (the guard hard rule 9 asks for).
+
+      - **Where `r` lives.** For a plain column the relative value is
+        computed as the row arrives and buffered already relative. For a
+        window target, `r` is stored on the waiting row (`PendingRow` gains
+        it, beside the target's value and weight) and applied when the
+        window closes. The column form computes the same thing the same way,
+        so parity holds for relative targets exactly as for levels.
+      - **Everything downstream is on the relative scale**: `pred`,
+        `resid`, `sigma`, the metrics and the conformal interval. That makes
+        `hit_rate`'s sign agreement mean "the direction of the move", which
+        is usually the question. A level prediction is `pred + r` (or
+        `pred · r`), and `r` is on the row; the output does not add it
+        back, since what `sigma` and the interval describe is the relative
+        quantity.
+      - **`split=`** takes one `relative_to` for all its outputs: the
+        buy-side, sell-side and all-trades VWAPs are each relative to the
+        same mid.
+      - **In TOML** (the CLI), a target is a string or a table:
+        `targets = ["ret_5m", { column = "price_5m", relative_to = "mid" }]`,
+        and a window target a table with the window's keys — the same
+        vocabulary on every surface (`docs/STATE-WORKFLOW.md`).
+      - **The backward `ewm` takes it too**, as a feature: the price
+        against its own trailing VWAP is one window.
+
+      **`"log_ratio"` is offered; its only cost is to our own fixtures.**
+      A first draft made this a decision, on §11a's B4 rule — "putting a
+      libm result into the state costs cross-platform reproducibility" —
+      and suggested a caller could avoid it by passing a log-price column
+      computed in Polars. The user asked what exact object was the worry,
+      and the answer undoes both: nothing special is stored, just an `f64`
+      in `ewridge`'s `r`, `tm`, `sig2` and `beta` like any target's. The
+      only fact is that `ln` can differ in its last bit between glibc and
+      Apple's libm, so the same rows can leave last-bit-different numbers in
+      the saved file on the two. And a Polars log column comes from the same
+      libm, so it moves the `ln` without removing it. The consequence is
+      test hygiene, not a user-facing choice: the docstring says a
+      log-ratio target is reproducible across OSes to the last few bits, as
+      any log is, and no `"log_ratio"` spec goes into a byte-identical
+      cross-platform fixture (`state_schema*.rs`, the release workflow's
+      write-on-macOS / read-elsewhere job). B4 itself stands as it was
+      written for `bocpd`: our own fixtures must not depend on a libm last
+      bit.
+
+      #### How rows move
+
+      - **A description as a spec target** rides on the `label_delay` FIFO
+        (`apply_label_delay`, `crates/online-polars/src/stream.rs`). When
+        row *t* is released, the rows still waiting behind it are exactly its
+        window — those after it, less than `horizon` later on the model's
+        clock — so the target is computed at release from rows the bank
+        already holds; `PendingRow` gains the target's value, weight and
+        split category, and a row that contributes nothing to the target
+        costs the queue nothing, as in the column form.
+        Each row is still scored and emitted as it arrives (`learn: false`
+        on the arriving row, `emit: false` on the replay): the rest of the
+        plan never sees the buffer. One state file. The window is open at
+        `t + horizon`, because the buffer releases *t* before pushing the
+        row that reaches it. A session change or a capped gap already
+        releases the buffer early — those are its partial windows.
+        `label_delay` is implied by the horizon; an explicit one is refused.
+        `SCHEMA_VERSION` bumps (rule 5). One delay per spec, so several
+        look-ahead targets of different horizons in one spec are learned at
+        the longest — honest, late.
+      - **Only contributing rows enter a window.** Each window — each
+        category of a split, and its total — keeps a queue of the rows whose
+        value is present and whose weight is non-zero, and nothing else. A
+        market-data row interleaved with trades enters no VWAP queue; it is
+        read against the queues as they stand when its own window closes,
+        and passes through. So a window's memory and work follow the rows
+        that *count* in it, where `rolling` gathers every row inside the
+        window for every window: at ten quotes per trade, its windows are
+        ten times the size and ten times the memory for the same answer.
+        Each row still emits exactly once, in order.
+      - **Waiting rows are held as the input's own chunks.** A forward
+        window has to hold its output rows until their horizons pass, and
+        market-data rows are wide. The source keeps the input chunks as they
+        came (Arrow, no copy) with the computed columns alongside, and emits
+        each chunk's slice once every row in it has had every window close.
+        Memory is one horizon of input chunks, whatever the row width, and no
+        row is copied into a buffer. The saved state is the same: the
+        waiting input rows, then each queue.
+      - **`po.stream.windows` with only backward windows** emits every row
+        as it arrives.
+      - **With any forward window**, it yields per input chunk whatever rows
+        have had *every* window close — none at first, then about a chunk
+        per chunk — as `refresh_time`'s source does, so every output waits
+        for the longest forward horizon. A window closes when **any** row
+        arrives more than `horizon` past its row, on the stream's shared
+        clock, so output stays in input order with a bounded delay even when
+        one group falls silent. A row whose clock goes back closes every
+        open window too, as a large gap would (*One clock, both forms*), so
+        a clock that restarts is accepted. Feeds interleaved out of clock
+        order are not handled. A `head(n)` stops reading one horizon
+        past its nth row.
+
+      #### One clock, both forms
+
+      The column form must reproduce the model's target to the bit when it
+      is given the spec's clock policy, so the rules below are one set,
+      stated once, implemented once — the window core steps the same clock
+      state the stream layer does (`ClockState`,
+      `crates/online-polars/src/stream.rs`), never a second copy of it.
+      Read from `apply_label_delay` (2026-09-11), not assumed:
+
+      - **The horizon is measured on the policy clock** — each row's step
+        after `max_dclock` caps it and after `session_gap` or
+        `on_clock_reset` replaces it — never on the raw column.
+      - **A capped gap and a session change end every open window**: the
+        model releases its whole buffer on either. Those are partial
+        windows, under `partial`. So a window never spans a gap longer than
+        `max_dclock` or a session boundary, in either form.
+      - **A reset discards**: `on_clock_reset="reset_state"` or
+        `session_gap="reset"` empties the model's buffer, and the rows
+        waiting in it are never learned from, whatever `partial` says. The
+        column form still emits those rows — it emits every row — with a
+        null target and `complete` false (*Parity*, below).
+      - **`same_clock` is about steps, not stamps**: a later row reached
+        from *t* by a zero policy-clock step is "at *t*'s clock". That is
+        the only definition both forms can share, since the model never
+        sees the raw column.
+      - **Groups have their own clocks**, as they do in a bank.
+      - **No retyping.** `po.stream.windows(lf, [...], like=spec)` takes
+        the clock policy from the spec — and the spec's rule for which rows
+        it learns from (*Parity*) — so the column cannot drift from the
+        model it is meant to match. The clock keywords stay for a column
+        with no model behind it; `like=` with any of them is refused.
+
+      #### Parity: the column shows the target the model used
+
+      The user's requirement, 2026-09-11: "the same window spec passed to
+      windows shows the target that the model used". Stated precisely, for
+      `po.stream.windows(lf, [w], like=spec)` against `spec` with `w` as a
+      target: **on every row the model learns from, the column equals the
+      target it learned, to the bit; on every other row the column is
+      null.** Checked against the code (`apply_label_delay`,
+      `run_instance`, `ClockState::advance`), four things in the first
+      design did not give that, and each is now part of the design:
+
+      1. **The window sees every contributing row, not only the rows the
+         spec accepts.** The `label_delay` buffer holds accepted rows only
+         — a row with a null feature or an unusable weight never enters it
+         (`apply_label_delay`, the `!plan.accept` branch) — so a window
+         built from that buffer would silently omit trades on rows whose
+         features happen to be null, which interleaved data makes common.
+         The target depends on the price and quantity ahead, not on whether
+         the model could use a row's features. So a look-ahead target keeps
+         its own window queue beside the learning FIFO: every row with a
+         present value and a non-zero weight enters the window; only
+         accepted rows enter the FIFO to be learned. The column form, which
+         never knew the features, already works this way.
+      2. **Clock events on skipped rows count.** A reset, a session change
+         or a capped gap that lands on a skipped row is acted on by the
+         model but ignored by the `label_delay` buffer — an existing bug,
+         task 79, which this depends on. The windows take every row's event.
+      3. **Rows the model never learns from are null in the column**:
+         rows discarded by a reset, rows unresolved at the end of the input,
+         and rows the spec skips (their own target is never learned, though
+         they sit inside other rows' windows). The first two the column form
+         knows from the clock. The third it knows only from the spec, which
+         is what `like=spec` is for: it carries the spec's acceptance rule
+         — features and weight usable — along with its clock policy. A
+         first draft said "filtering on `complete` is exactly the set the
+         model learned from"; wrong under `partial="keep"`, where a window
+         cut by a session change is incomplete *and* learned from.
+         `complete` marks a cut window; null marks a row the model did not
+         use.
+      4. **`group_close` is refused with a look-ahead target**, as it
+         already is with `label_delay` (`spec.rs`: a closed group cannot
+         release the rows it still holds), so there is no group-close case
+         to match.
+
+      Test: the parity test below, with `like=spec`, asserting the
+      statement above row by row on streams containing skipped trade rows,
+      each clock event on a skipped row and on an accepted one, a reset, and
+      an end of input inside a horizon.
+
+      **A backwards clock is a session break.** The user's rules,
+      2026-09-11: "When a forward window encounters a backward clock, we
+      want the same effect as if there were a large clock gap where the
+      window just runs out", and then "If a clock moves backward it must be
+      a session break or a problem in the input data and we can't tell
+      which so we assume session break." And then, for the decay too: "the
+      decay should take the session gap as well since that would be needed
+      anyway to completely recreate the target used by the model." Read against
+      `ClockState::advance` (`crates/online-core/src/clock.rs`) and
+      `apply_label_delay`, per `on_clock_reset`:
+
+      | policy (today) | a waiting row today | as a session break |
+      |---|---|---|
+      | `"max"` | `capped = true` — the buffer releases, the window ends | unchanged |
+      | `"reset_state"` | the buffer is discarded; the model starts over | unchanged — a reset, as `session_gap="reset"` is at a session change |
+      | `"zero"` | a zero step, not capped: the buffer keeps waiting, and a window would run on across the jump, counting the rows after it as the row's own clock | **the buffer releases and every window ends** |
+      | `"error"` | the run stops | unchanged |
+
+      - **In both forms, a backward step on a group's clock does to the
+        waiting rows what a session change does**: every open forward
+        window of the group ends — no row at or after the jump enters,
+        the value is over the rows before it, under `partial` — and the
+        `label_delay` buffer releases in order. One line in
+        `apply_label_delay`: `plan.backwards` joins `session_changed` and
+        `capped` in the release condition.
+      - **The decay takes it too: a backward step is a session change,
+        everywhere.** `ClockState::advance` treats a raw step below zero as
+        it treats a change of session value: `session_changed` is set, the
+        step is `session_gap` (limited to `max_dclock`), and
+        `session_gap="reset"` starts the model over. So everything that
+        follows a session change follows a backward step — the decay, the
+        `label_delay` release, the lag rings cleared, `session_shrink`'s
+        blend, `group_close="session"` closing the group, and the windows
+        ending. One code path, which is what lets the column form recreate
+        the target the model learns from exactly.
+      - **`on_clock_reset` shrinks to `"session"` (the default) and
+        `"error"`.** The three policies it loses are each a `session_gap`:
+        `"max"` is `session_gap = max_dclock`, `"zero"` is `session_gap = 0`,
+        `"reset_state"` is `session_gap = "reset"`. Nothing is lost except
+        choosing a different step for a backward clock than for a session
+        change — which the rule says cannot be told apart anyway. `"error"`
+        stays, for input where a backward clock can only be a bug.
+      - **`session_gap` without a `session` column**, now meaningful: it is
+        the step at a backward clock. With no `session` column it defaults
+        to `max_dclock` — today's default decay step at a backward clock
+        (`"max"`), so a stream with no session column and no `session_gap`
+        decays exactly as before. With a `session` column it stays required,
+        as now.
+      - **What moves.** Pre-1.0, so no compatibility spelling: the three
+        policy words are refused with a message naming the `session_gap`
+        that replaces each. Numbers move for a stream with a backward clock
+        under `"zero"` or `"reset_state"` (now session changes: a released
+        buffer, cleared lag rings), under `"max"` where a `session` column
+        gave a different `session_gap`, and for any spec with
+        `session_shrink` or `group_close="session"`, which now also fire at
+        a backward step. `SCHEMA_VERSION` bumps (the clock config's layout
+        changes), shared with 78e's bump if they ship together, with a
+        loader that maps a saved `"max"` / `"zero"` / `"reset_state"` to the
+        equivalent `session_gap` when the file has none. A minor release,
+        with the list above as its first CHANGELOG lines.
+      - **The column form closes windows on the stream's clock the same
+        way**: a row whose clock is below the previous row's — any group —
+        closes every open window in every group, exactly as passing the
+        horizon does. That is what keeps the output in input order with a
+        bounded delay without refusing a backwards clock, so the `order=`
+        option considered earlier is not needed. It matches the model
+        whenever each group's own clock also goes back there — a clock that
+        restarts, time-of-day across sessions, which is the case the rule is
+        for.
+      - **Not handled: feeds interleaved out of clock order**, where the
+        stream's clock goes back but a group's own does not. No streaming
+        logic can handle that (the user, 2026-09-11), so the design neither
+        detects nor refuses it; it is outside the input this accepts, and
+        the docs say so. A first draft stopped the run at the row that
+        would break parity; dropped as machinery for a case with no right
+        answer.
+
+      #### Sub-tasks
+
+      - [ ] 78a. **The rename**, alone, first: `po.prep` → `po.stream`,
+            `time=` → `clock=` and `by=` → `group=` in `refresh_time`, its
+            tests, the reference page, the README, `llms.txt`, and the API
+            surface file. No behaviour change, so every existing test passes
+            with only its spelling changed.
+      - [ ] 78b. **A backward clock is a session change**, in
+            `ClockState::advance`, before any window is built: every model's
+            decay, `label_delay`, lag rings, `session_shrink` and
+            `group_close` follow from it; `on_clock_reset` becomes
+            `"session"` / `"error"`; `session_gap` allowed without `session`,
+            defaulting to `max_dclock`; the README's clock section, the
+            reference docstrings and every test that names a removed policy.
+            Its own commit, its own CHANGELOG lines, since it changes numbers
+            the windows do not depend on.
+      - [ ] 78c. **The window core** in `online-polars`: the anchored
+            segment monoid and the two-stack queue, both directions, per
+            group, with a per-row weight; queues that admit only
+            contributing rows, one per split category plus the total; its
+            clock stepped by the stream layer's own `ClockState`, with the
+            capped-gap, session and reset events ending or discarding
+            windows as `apply_label_delay` does; serialisable. Unit-tested
+            alone.
+      - [ ] 78d. **`po.window.*` and `po.stream.windows`** on it, as an IO
+            source the way `refresh_time` is: waiting rows held as the input's
+            chunks and sliced out when their windows close, each window's
+            queues its own; `split`, `unlisted`, `total` and the `{split}`
+            name field; the clock-policy keywords and `like=spec`.
+      - [ ] 78e. **Descriptions as spec targets**, in the stream layer, on the
+            `label_delay` buffer. `SCHEMA_VERSION` bump with a loader for 6,
+            shared with 78b's if they ship together.
+      - [ ] 78f. **Relative targets**: `relative_to` / `relative` on
+            `po.target` and on both window descriptions, in the stream layer
+            (plain columns) and the window core (windows); the TOML table
+            form. The plain-column half depends on nothing else here and can
+            ship with 78a; the window half lands with 78d and 78e.
+
+      #### Tests
+
+      - Each direction against a brute-force loop on irregular ticks, and
+        against the `rolling` recipe on data it can hold — forward with
+        `closed="none"` to match the open end, backward with the default.
+      - `same_clock="include"` against brute force alone, since `rolling`
+        cannot express it.
+      - **Interleaved trades and market data** (the user's case,
+        2026-09-11): columns `side`, `quantity`, `price`, null on the
+        market-data rows, trades often sharing a clock value with the row
+        before them. The forward rewm of the VWAP over all trades, over buys
+        only and over sells only — three windows in one call, weights
+        `quantity`, `quantity` where `side == "buy"`, and where
+        `side == "sell"` — each against brute force, including the windows
+        with no trade of that side (null, `complete` true) and trades at
+        the quote's own clock under both `same_clock` settings. And the
+        same three as spec targets, equal to the column form fed back
+        through `label_delay`. Then the same three as **one** window with
+        `split=("side", ["buy", "sell"])`, equal to the three-window form to
+        the bit; `unlisted` under all three settings, with a trade whose
+        side is `"cross"` and one whose side is null, and a market-data row
+        with a null side never raising under `"error"`; `total=False`. The
+        `rolling` recipe for this case,
+        2026-09-11, 3,000 rows, 30% trades: buy side 1.1e-13 and sell side
+        8.5e-14 against brute force, empty windows matching exactly — the
+        oracle for the column form.
+      - **Parity with the model, per clock event**: a spec with a
+        look-ahead target against the same spec given the column form's
+        output — computed with `like=spec` — as an ordinary target
+        with `label_delay = horizon`, identical `pred` on every row, on
+        streams built to contain each event: a gap over `max_dclock`, a
+        session change with a finite `session_gap`, `session_gap="reset"`,
+        a backward step with a finite `session_gap` and with `"reset"`, several
+        groups whose clocks restart together, and rows at one clock value.
+        **A backward step equals a session change at the same row, for
+        every model**: one stream with a backward clock and no `session`
+        column against the same stream with a `session` column that changes
+        exactly there and the clock made monotone, identical output field by
+        field — decay, `label_delay`, lag features, `session_shrink`,
+        `group_close="session"`. Each removed policy word refused with the
+        `session_gap` that replaces it; a v6 state saved under each loading
+        with the equivalent gap. For `"reset_state"` and
+        `session_gap="reset"`, the rows with `complete` false are exactly
+        the rows the model never learned from.
+      - **Relative targets**: `po.target("p", relative_to="r")` against the
+        same spec given `p − r` as a plain column, identical output field by
+        field, for each of `"difference"`, `"ratio"` and (if built)
+        `"log_ratio"`; a null `r` and a non-positive value giving a null
+        target that is not learned; a relative window target in both forms,
+        to the bit; `split=` with one `relative_to`; the TOML table form
+        loading to the same spec as the Python one.
+      - Chunk invariance at 1, 7, 64 and 1000 rows a chunk; groups and
+        sessions kept apart; a halflife short enough that the late factors
+        underflow; a constant column giving that constant; every `partial`
+        × `complete` combination at both ends, and `"drop"` with several
+        windows; a save/load split at every row of a short stream equal to
+        one run.
+      - Output names by the template; a collision across two windows of one
+        call refused; a backward `ewm` refused as a spec target.
+      - Memory flat as rows per window grow — the reason for all of it —
+        and flat as windows are added, beyond their own sums.
+      - **Memory and time flat as quote density rises at a fixed trade
+        rate**: the interleaved stream at 1, 10 and 100 market-data rows per
+        trade, where the queues must not grow and the `rolling` recipe's
+        memory, measured alongside, does.
+      - Memory independent of row width: the same stream with 2 and with 200
+        pass-through columns, where the waiting rows must cost their chunks
+        and not a copy.
 
 - [x] 77. **A plan with nothing to write runs once where a query uses it
       twice, 2026-09-10.** The IO source declares `is_pure=True` to
