@@ -29,7 +29,7 @@ jobs:
     name: leak check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
-    # macOS 26 is watched, not relied on (see the matrix): its leg may fail
+    # The macOS leg is recorded, not relied on (see the matrix): it may fail
     # without failing the run.
     continue-on-error: ${{ matrix.experimental }}
     permissions:
@@ -37,18 +37,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `leaks` works on macOS 15 and not on macOS 26, which macos-latest
-        # became. There it reports nothing even on a bare interpreter, and the
-        # stack logging it turns on in its target asserts once polars is
-        # imported -- "possible double free or buffer overrun", in
-        # uniquing_table_node_release_internal -- with or without
-        # MallocStackLogging set (2026-09-14, and the probe step below):
-        # polars alone sets it off, not this package. So macos-15 carries the
-        # check, and macos-latest runs it and the probes for the record until
-        # a later image fixes it.
+        # `leaks --atExit` gives no report on GitHub's macOS runners -- nothing
+        # at all even on a bare interpreter, on macOS 15.7.9 and 26.6.2 alike
+        # (2026-09-14) -- where on a developer Mac (15.7.3) it reports every
+        # time. Its target sometimes dies first in the stack logger that
+        # `leaks --atExit` turns on ("possible double free or buffer overrun",
+        # in uniquing_table_node_release_internal), but not repeatably and not
+        # on any one import: two runs put it on different ones. Until the
+        # diagnostic step below shows what the runner needs, the native check
+        # on macOS is run by hand (scripts/leakcheck.sh), and Linux carries it
+        # here.
         include:
           - { os: ubuntu-latest, experimental: false }
-          - { os: macos-15, experimental: false }
           - { os: macos-latest, experimental: true }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -107,28 +107,38 @@ jobs:
             exit 1
           fi
 
-      # Informational, macOS only, and never fails the run: `leaks` with stack
-      # logging on a bare interpreter, numpy, polars and polars_online, each
-      # on its own, to say which of them sets off macOS 26's assertion (see
-      # the matrix). On macOS 15 each of them reports.
-      - name: which workload trips the stack logger (macOS, informational)
+      # Informational, macOS only, and never fails the run: what this runner
+      # needs for `leaks` to report. A bare interpreter under `leaks --atExit`
+      # as it is, under sudo, and after DevToolsSecurity authorizes the tools;
+      # and what might forbid it -- the developer-tools authorization, System
+      # Integrity Protection, and a hardened-runtime signature on the
+      # interpreter, which refuses a debugger without get-task-allow.
+      - name: what leaks needs on this runner (macOS, informational)
         if: always() && runner.os == 'macOS'
         continue-on-error: true
         run: |
           PY=$(uv run python -c 'import sys; print(sys.executable)')
-          report="$(sw_vers -productVersion) $(sw_vers -buildVersion)"$'\n'
-          probe() {
-            out=$(PYTHONMALLOC=malloc MallocStackLogging=1 leaks --atExit --quiet -- "$PY" -c "$2" 2>&1 || true)
-            if grep -q "Assertion failed" <<<"$out"; then verdict="ASSERTS"
-            elif grep -q "leaks for" <<<"$out"; then verdict="reports"
-            else verdict="no report ($(grep -c . <<<"$out" || true) lines): $(grep -m1 . <<<"$out" || true)"; fi
-            report+=$(printf '%-24s %s' "$1" "$verdict")$'\n'
+          REAL=$("$PY" -c 'import os, sys; print(os.path.realpath(sys.executable))')
+          try() {
+            echo "--- $1"
+            out=$("${@:2}" leaks --atExit -- "$PY" -c pass 2>&1) && status=0 || status=$?
+            grep -E "leaks for|Assertion|rror|annot|denied|not permitted" <<<"$out" | head -5 || true
+            echo "($(grep -c . <<<"$out" || true) lines of output, exit status $status)"
           }
-          probe "bare interpreter" "pass"
-          probe "import numpy" "import numpy"
-          probe "import polars" "import polars"
-          probe "polars, one frame" "import polars as pl; pl.DataFrame({'a': [1.0, 2.0]}).sum()"
-          probe "import polars_online" "import polars_online"
-          probe "polars_online, one fit" "import polars as pl, polars_online as po; po.ModelBank([po.spec.ewridge('m', targets=['y'], features=['x'], halflife=5.0)]).fit_predict(pl.DataFrame({'x': [1.0, 2.0, 3.0], 'y': [2.0, 4.0, 6.0]}))"
-          printf '%s' "$report"
-          { echo "### stack logger probes (${RUNNER_OS}, informational)"; echo '```'; printf '%s' "$report"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "macOS $(sw_vers -productVersion) $(sw_vers -buildVersion)"
+            echo "DevToolsSecurity: $(DevToolsSecurity -status 2>&1)"
+            echo "SIP: $(csrutil status 2>&1)"
+            echo "interpreter: $REAL"
+            codesign -dv --verbose=4 "$REAL" 2>&1 | grep -E "^(Identifier|Format|CodeDirectory|Signature|Authority|Runtime)" || true
+            try "as it is"
+            if sudo -n true 2>/dev/null; then
+              try "under sudo" sudo -E
+              sudo DevToolsSecurity -enable >/dev/null 2>&1 || true
+              echo "DevToolsSecurity after enabling: $(DevToolsSecurity -status 2>&1)"
+              try "after DevToolsSecurity -enable"
+            else
+              echo "--- under sudo, and after DevToolsSecurity -enable: skipped (sudo needs a password here)"
+            fi
+          } | tee leaks-runner.txt
+          { echo "### what leaks needs (${RUNNER_OS}, informational)"; echo '```'; cat leaks-runner.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
