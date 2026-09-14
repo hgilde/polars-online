@@ -70,17 +70,25 @@ gc.collect()
 PY
 )
 
-# measure N -> "blocks bytes" left unreachable at exit after N iterations.
+# Each measurement's whole report, kept for when it cannot be parsed.
+RAW=$(mktemp -d)
+trap 'rm -rf "$RAW"' EXIT
+
+# measure N -> "blocks bytes" left unreachable at exit after N iterations. The
+# checker's report goes to $RAW/N.txt, its exit status on the last line.
 measure() {
+  local raw="$RAW/$1.txt"
   case "$(uname -s)" in
     Darwin)
-      PYTHONMALLOC=malloc MallocStackLogging=1 leaks --atExit --quiet -- "$PYBIN" -c "$WORK" "$1" 2>&1 \
-        | sed -n 's/.*: \([0-9]*\) leaks for \([0-9]*\) total leaked bytes.*/\1 \2/p' | head -1
+      PYTHONMALLOC=malloc MallocStackLogging=1 leaks --atExit --quiet -- "$PYBIN" -c "$WORK" "$1" >"$raw" 2>&1
+      echo "(exit status $?)" >>"$raw"
+      sed -n 's/.*: \([0-9]*\) leaks for \([0-9]*\) total leaked bytes.*/\1 \2/p' "$raw" | head -1
       ;;
     Linux)
       PYTHONMALLOC=malloc valgrind --leak-check=full --show-leak-kinds=definite --errors-for-leak-kinds=definite \
-        "$PYBIN" -c "$WORK" "$1" 2>&1 \
-        | sed -n 's/.*definitely lost: \([0-9,]*\) bytes in \([0-9,]*\) blocks.*/\2 \1/p' | tr -d , | head -1
+        "$PYBIN" -c "$WORK" "$1" >"$raw" 2>&1
+      echo "(exit status $?)" >>"$raw"
+      sed -n 's/.*definitely lost: \([0-9,]*\) bytes in \([0-9,]*\) blocks.*/\2 \1/p' "$raw" | tr -d , | head -1
       ;;
   esac
 }
@@ -94,7 +102,14 @@ esac
 small=$(measure 1)
 large=$(measure 1000)
 if [[ -z "$small" || -z "$large" ]]; then
-  echo "could not parse the leak report (small='$small' large='$large')"; exit 2
+  echo "could not parse the leak report (small='$small' large='$large')"
+  # What the checker printed instead. Without it the line above was the whole
+  # story: the weekly runs of 2026-09-07 and -14 on macOS said nothing more.
+  for n in 1 1000; do
+    echo "--- the report for $n iteration(s), last 40 lines:"
+    tail -n 40 "$RAW/$n.txt"
+  done
+  exit 2
 fi
 read -r b1 y1 <<<"$small"
 read -r b2 y2 <<<"$large"

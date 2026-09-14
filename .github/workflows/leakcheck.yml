@@ -48,6 +48,10 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
                       /usr/local/share/boost /usr/local/.ghcup || true
           df -h /
+          # The image's package lists go stale between image builds: valgrind
+          # pulls libc6-dbg from noble-updates, whose listed version 404'd on
+          # 2026-09-14 until the lists were refreshed.
+          sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends lld valgrind
           mkdir -p .cargo
           printf '[target.x86_64-unknown-linux-gnu]\nrustflags = ["-C", "link-arg=-fuse-ld=lld"]\n' \
