@@ -152,6 +152,14 @@ carries breaking changes, and any change to the numbers a model returns.
   for every windowed spec that emits or reads `sigma`. The ring is a pair
   of floats a slot a snapshot, kept only when something reads the spread,
   and `window_budget` bounds it as it bounds the fit's.
+- **`bank.gram()` and a closed row carry `cross_centred`**, each target's
+  cross-moments centred at its column means and its own mean -- what the
+  model solves from (the code review's N4). `po.gram.solve`, `lasso_path`
+  and `coef_stats` read them, and `merge` pools them, where each formed
+  `cross_moments − m·ȳ`: two numbers the size of `L²` at a level `L`,
+  which kept `L²·ε` of the answer. At a level of `1e6` the offline solve's
+  predictions were off by `2.5e-4`, and at `1e8` by 3. A closed-groups
+  sidecar gains the column.
 
 ### Fixed
 

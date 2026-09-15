@@ -576,6 +576,14 @@ class ModelBank:
             ``"pairwise"`` a target's own means where it has gaps.
             :func:`polars_online.gram.solve` reads them. Empty for
             ``ew_cov``.
+        ``cross_centred``
+            Per target, the cross-moments centred at its column means and its
+            own mean, ``E[(z - m_t) * (y - ybar_t)]``, shape ``(n_targets,
+            k)``: what the model solves from, and what
+            :func:`polars_online.gram.solve` reads. ``cross_moments[t] -
+            means_by_target[t] * ybar_t`` in exact arithmetic; formed in
+            floating point, that difference keeps ``L**2 * eps`` of it at a
+            level ``L`` (review 2026-09-12, N4). Empty for ``ew_cov``.
         ``target_weights``
             Per-target accumulated weight, shape ``(n_targets,)``. Differs from
             ``n_eff`` when targets have different null patterns.
@@ -633,10 +641,12 @@ class ModelBank:
         and for every target, the centred form the model solves, with ``m =
         means_by_target[t]`` and ``ybar = cross_moments[t][0]``::
 
-            comoments[1:, 1:] @ beta[t][1:] == cross_moments[t][1:] - m[1:] * ybar
+            comoments[1:, 1:] @ beta[t][1:] == cross_centred[t][1:]
             beta[t][0] == ybar - m[1:] @ beta[t][1:]
 
-        Values are in the features' original units. The intercept, when the
+        ``cross_centred[t]`` is ``cross_moments[t] - m * ybar``, kept where it
+        loses nothing (review 2026-09-12, N4). Values are in the features'
+        original units. The intercept, when the
         spec has one, is column 0: a constant 1, so it has zero variance in
         ``comoments`` and ``raw[0] == means``.
 
@@ -689,7 +699,7 @@ class ModelBank:
             columns = [_INTERCEPT, *columns]
         names = [] if unsupervised else list(spec_dict["targets"])
         out = []
-        for row, lag, (tidx, by_target) in self._native.gram(idx, group):
+        for row, lag, (tidx, by_target, centred) in self._native.gram(idx, group):
             g, instance, k, n_eff, n_kish, means, como, cross, tw = row[:9]
             tmeans, tvars, tkish = row[9:]
             lags = None if lag is None else lag[0]
@@ -707,6 +717,9 @@ class ModelBank:
                     if cross
                     else np.zeros((0, k)),
                     "means_by_target": np.asarray(by_target, dtype=float).reshape(len(tidx), k)
+                    if tidx
+                    else np.zeros((0, k)),
+                    "cross_centred": np.asarray(centred, dtype=float).reshape(len(tidx), k)
                     if tidx
                     else np.zeros((0, k)),
                     "target_weights": np.asarray(tw),
@@ -837,8 +850,8 @@ class ModelBank:
         groups and is of that kind, null on the rows of other kinds:
         ``columns``, ``means``, ``comoments``, ``targets``, ``target_means``,
         ``target_vars``, ``target_weights``, ``target_n_kish``,
-        ``cross_moments`` and ``means_by_target`` for a kind that keeps
-        accumulators; ``coef`` for every kind that reports one -- on a Gram's
+        ``cross_moments``, ``means_by_target`` and ``cross_centred`` for a kind
+        that keeps accumulators; ``coef`` for every kind that reports one -- on a Gram's
         row, the coefficients of that Gram's ``targets``; ``eig_vals`` and
         ``eig_vecs`` for an ``ew_cov`` with ``pca``; ``pair_*`` for a
         ``marginal``.

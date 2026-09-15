@@ -109,11 +109,10 @@ two agree to `3e-9`); and C22's two `holt` tests do not turn over -- with
 a clock since the last observation the level does stand still across a
 null, and what moves is the next row's forecast.
 
-**Kept for later: 1 item** (V22 closed with task 81; batch 1 below
+**Nothing is kept for later** (V22 closed with task 81; batch 1 below
 closed fourteen, batch 2 thirteen, batch 3a eleven, batch 3b two, batch 4a
-four, batch 4b four, batch 4c two, batch 4d one), with its reason in the
-tables below -- one new observation, N4, which task 81 did half of, for
-batch 4e. D1 is excluded by the user.
+four, batch 4b four, batch 4c two, batch 4d one, batch 4e one). D1 is
+excluded by the user.
 The user's own
 design work (tasks 78 and 79), parked on `design/task-78` while the round
 ran, is merged into `main`.
@@ -465,6 +464,27 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   in the spread's window one window more. It rides on schema 9, skipped
   when absent: a file saved by an earlier build of 9 restarts it on load,
   so for one window its spread counts only the rows after the load.
+- 2026-09-15 — **batch 4e**: N4 fixed. Test first, run on the old build:
+  every level above 0 failed, both ways of solving, and the merge and
+  closed row at `1e8`; the controls at 0 passed. The first version of the
+  check compared the whole coefficient vector, and failed on the new build
+  in the intercept alone -- 0.19 at `1e8` -- which a level resolves only to
+  `L²·ε` in any method, numpy's included: it is `ȳ − m·b`, so a slope
+  known to `δ` moves it by `L·δ`. The check is on what a level resolves,
+  the slopes and the predictions they give, as N1's is; on the raw form
+  -- the old path, which a mapping without the new field still takes --
+  it fails at every level (slopes off by `5e-9`, `6e-5` and 0.93 at `1e4`,
+  `1e6` and `1e8`), and with the centred one it passes at every level. The
+  export gains the centred cross-moments the
+  model holds; `merge` pools them as it pools the co-moments, with the gaps
+  between the parts' column means and target means, taking each target's
+  mean from the raw cross-moment at the intercept, which is exact; a
+  mapping without them -- hand-built -- still solves, from the raw form.
+  With it `build_instances` pulls the spread's rings in lockstep with the
+  other per-instance pieces, where 4d zipped them: every caller passes all
+  of a stream's instances, so nothing changes but the failure a mismatch
+  would give. Every finding of the review is fixed but D1, which the user
+  excluded.
 
 ## New observations (found while fixing; not in the review)
 
@@ -504,13 +524,17 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   statsmodels' `WLS`, ridge and elastic net for `own_rows`; `pandas`'
   `DataFrame.cov` and `numpy.cov` for `pairwise`. Before the fix the
   default's fit was off by 1.17 at level 0 and by 49.2 at level 50.
-- **N4** (while fixing N1) -- **half done** with task 81. `po.gram.solve`
-  solved the raw normal equations; it solves the centred system now, with
-  each target's own column means (`means_by_target`), as the model does.
-  What is left: its right-hand side is formed from the raw cross-moments
-  the export carries, `E[z·y] − m·ȳ`, which loses `L²·ε` at a level `L`.
-  Exporting the centred cross-moments would close it; kept for later, as a
-  change to the export.
+- **N4** (while fixing N1) -- **fixed**, half with task 81 and the rest in
+  batch 4e. `po.gram.solve` solved the raw normal equations; with task 81
+  it solved the centred system with each target's own column means, but
+  formed its right-hand side from the raw cross-moments the export
+  carried, `E[z·y] − m·ȳ`, which keeps `L²·ε` of it at a level `L`: at
+  `1e4`, `1e6` and `1e8` its slopes were off by `5e-9`, `6e-5` and 0.93,
+  and its predictions by `2e-8`, `2.5e-4` and 3. The export carries the centred
+  cross-moments the model holds, `cross_centred`, through `bank.gram()`, a
+  closed row and `merge`, and `solve`, `lasso_path` and `coef_stats` read
+  them. `numpy`'s `lstsq` on centred rows agrees at N1's tolerance at every
+  level, and through a merge and a closed row.
 - **N6** (while testing S13) -- **fixed** in batch 1. `ewridge`, `robust`
   and `kalman` each keep `σ²`, the EW mean of the squared out-of-sample
   errors, with its weight `wsig`. A row with a target and no prediction --

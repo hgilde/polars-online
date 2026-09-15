@@ -1770,7 +1770,7 @@ note, not a task.
       row per Gram, each solving to its own `coef`, and merged shards'
       Grams against the fit of their union by `numpy` and pandas.
 
-- [ ] 80. **The code review of 2026-09-12, worked through, begun
+- [x] 80. **The code review of 2026-09-12, worked through, begun
       2026-09-13.** `docs/REVIEW-2026-09-12.md` (and its pass-10 supplement)
       is the reviewer's; `docs/REVIEW-2026-09-12-PROGRESS.md` is the status of
       every finding in it, and the place to look. The rule for the round, the
@@ -1879,6 +1879,12 @@ note, not a task.
       `resid_z`, drift's scale, the conformal band and the slot ranking
       describe the rows the fit does. The ring rides on schema 9 and counts
       in `window_budget`. N4 is batch 4e.
+
+      **Batch 4e, 2026-09-15**: N4 fixed: `bank.gram()`, a closed row and
+      `merge` carry the centred cross-moments the model holds, and
+      `po.gram.solve`, `lasso_path` and `coef_stats` read them. With it
+      every finding of the review is fixed but D1, which the user excluded;
+      what was raised is in the progress file.
 
 - [x] 79. **`label_delay` ignores a clock event on a skipped row — found
       2026-09-11, checking task 78's parity; in released 0.5.1.** A reset

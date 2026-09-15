@@ -2664,7 +2664,7 @@ struct Diagnostics<'a> {
 fn build_instances<'a>(
     spec: &'a Spec,
     models: impl Iterator<Item = ModelRef<'a>>,
-    rings: impl Iterator<Item = Option<SpreadRef<'a>>>,
+    mut rings: impl Iterator<Item = Option<SpreadRef<'a>>>,
     decays: &[Decay],
     diag: Diagnostics<'a>,
     out: &'a mut ChunkOut,
@@ -2706,11 +2706,10 @@ fn build_instances<'a>(
     // Pulled in lockstep: each iterator yields disjoint `&mut`s, so every
     // Instance owns its own piece of everything.
     models
-        .zip(rings)
-        .map(|(model, resid_win)| Instance {
+        .map(|model| Instance {
             spec,
             model,
-            resid_win,
+            resid_win: rings.next().expect("one per instance"),
             decay: *decays.next().expect("one per instance"),
             residuals: !spec.model.predicts_no_target(),
             resid_var: resid_var.next().expect("one per instance"),

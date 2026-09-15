@@ -799,15 +799,15 @@ fitted.fit_predict(df)
 g = fitted.gram("ols")[0]      # one dict per (group, halflife, Gram); needs numpy, an optional extra
 g["targets"]                              # the targets fitted from this Gram
 g["means"], g["comoments"]                # the feature means, and the centred k x k co-moment matrix
-g["cross_moments"], g["target_weights"]   # per target: the uncentred E[z*y] the solve consumes, and the weight behind it
+g["cross_moments"], g["target_weights"]   # per target: the uncentred E[z*y], and the weight behind it
 g["means_by_target"]                      # per target: the column means over the rows it was present on
+g["cross_centred"]                        # per target: E[(z - m)(y - ybar)] at those means, what the fit is solved from
 g["target_means"], g["target_vars"]       # per target: the target's own mean and centred variance
 g["n_eff"], g["n_kish"], g["target_n_kish"]   # the accumulated weight, and Kish's effective sample size (features, and per target)
 
-# The algebra the model runs, done by hand:
-raw = g["comoments"] + np.outer(g["means"], g["means"])   # the solve's pairing
-beta = np.linalg.solve(raw, g["cross_moments"][0])
-slopes = beta[1:]                                          # column 0 is the intercept
+# The algebra the model runs, done by hand: the centred system, which a level costs nothing.
+slopes = np.linalg.solve(g["comoments"][1:, 1:], g["cross_centred"][0][1:])   # column 0 is the intercept
+intercept = g["cross_moments"][0][0] - g["means_by_target"][0][1:] @ slopes
 resid_var = g["target_vars"][0] - slopes @ g["comoments"][1:, 1:] @ slopes
 r2 = 1 - resid_var / g["target_vars"][0]
 

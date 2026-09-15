@@ -734,6 +734,10 @@ pub struct GramPart {
     pub cov: EwCov,
     pub targets: Vec<usize>,
     pub cross_moments: Vec<Vec<f64>>,
+    /// Per target, `E[(z − m_j)(y − ȳ_j)]` over its rows: what the fit is
+    /// solved from, where `cross_moments` is it plus `m_j·ȳ_j` (review
+    /// 2026-09-12, N4).
+    pub cross_centred: Vec<Vec<f64>>,
     pub target_weights: Vec<f64>,
     pub means_by_target: Vec<Vec<f64>>,
 }
@@ -770,6 +774,7 @@ pub(crate) fn gram_parts(
                 .collect();
             GramPart {
                 cross_moments: targets.iter().map(|&j| cross.raw(j)).collect(),
+                cross_centred: targets.iter().map(|&j| cross.c[j].clone()).collect(),
                 target_weights: targets.iter().map(|&j| wj[j]).collect(),
                 means_by_target,
                 targets,

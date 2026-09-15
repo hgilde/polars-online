@@ -8,8 +8,8 @@ coefficients, and diagnose collinearity.
 
 Every function takes the mapping ``gram()`` produces -- ``columns``,
 ``targets``, ``means``, ``comoments``, ``cross_moments``,
-``means_by_target``, ``target_weights``, ``target_means``, ``target_vars``,
-``n_eff``, ``n_kish``, ``target_n_kish`` -- and :func:`merge` and
+``means_by_target``, ``cross_centred``, ``target_weights``, ``target_means``,
+``target_vars``, ``n_eff``, ``n_kish``, ``target_n_kish`` -- and :func:`merge` and
 :func:`subset` return one of the same shape.
 
 The arithmetic is the models' own, so :func:`solve` on a spec's Gram
@@ -112,6 +112,29 @@ def _means_of(np: Any, g: dict[str, Any], t: int) -> Any:
     return np.asarray(by_target, dtype=float)[t]
 
 
+def _cross_centred(np: Any, g: dict[str, Any], t: int, m: Any, ybar: float) -> Any:
+    """Target ``t``'s cross-moments centred at its column means ``m`` and its
+    mean ``ybar``, as the model holds them: ``cross_centred`` (review
+    2026-09-12, N4), or -- in a mapping without it -- ``cross_moments[t] - m *
+    ybar``, a difference of two numbers the size of ``L**2`` at a level ``L``,
+    which keeps ``L**2 * eps`` of the answer."""
+    cc = g.get("cross_centred")
+    if cc is not None and len(cc):
+        return np.asarray(cc, dtype=float)[t]
+    return np.asarray(g["cross_moments"], dtype=float)[t] - m * ybar
+
+
+def _ybar_of(np: Any, g: dict[str, Any], icept: int) -> Any:
+    """Each target's mean, which its centred cross-moments are centred at:
+    the raw cross-moment at the intercept, exactly (``0 + 1 * ybar``), or
+    ``target_means``; ``None`` when the mapping has neither."""
+    cross = np.asarray(g["cross_moments"], dtype=float)
+    if icept >= 0 and cross.size:
+        return cross[:, icept].copy()
+    tm = g.get("target_means")
+    return None if tm is None else np.asarray(tm, dtype=float).copy()
+
+
 def _feature_slots(
     g: dict[str, Any], features: Sequence[str | int] | None
 ) -> tuple[list[int], int]:
@@ -164,7 +187,11 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
     across a part boundary are what no part holds.
 
     Each target's ``means_by_target`` pools over its own rows, by its
-    ``target_weights``. Under ``target_gaps="own_rows"`` a spec may have a
+    ``target_weights``, and its ``cross_centred`` as the co-moments do, with
+    the gaps between the parts' column means and target means; a part
+    without them makes the merge report ``None`` there, and :func:`solve`
+    then forms them from ``cross_moments``. Under ``target_gaps="own_rows"``
+    a spec may have a
     Gram per set of targets (docs/PLAN.md task 81): merge the entries of one
     Gram across the shards, the ones with the same ``targets``.
 
@@ -201,6 +228,9 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
     tmean = _opt(np, parts[0]["target_means"])
     tvar = _opt(np, parts[0]["target_vars"])
     tq = _target_q(np, parts[0])
+    _, icept = _feature_slots(parts[0], None)
+    cc = _opt(np, parts[0].get("cross_centred"))
+    ybar = _ybar_of(np, parts[0], icept)
 
     for p in parts[1:]:
         wb = float(p["n_eff"])
@@ -231,8 +261,21 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
         if cross.size or crossb.size:
             scale = np.divide(1.0, ttotal, out=np.zeros_like(ttotal), where=live)
             cross = (tw[:, None] * cross + twb[:, None] * crossb) * scale[:, None]
-        # Each target's column means pool over its own rows, by its weights.
+        # Each target's column means pool over its own rows, by its weights,
+        # and its centred cross-moments as the co-moments do: each part's,
+        # weighted, plus the product of the gaps between the parts' column
+        # means and target means (review 2026-09-12, N4).
         by_target_b = _opt(np, p.get("means_by_target"))
+        cc_b, ybar_b = _opt(np, p.get("cross_centred")), _ybar_of(np, p, icept)
+        if any(v is None for v in (cc, cc_b, ybar, ybar_b, by_target, by_target_b)):
+            cc = ybar = None
+        elif cc.size or cc_b.size:
+            a = np.divide(tw, ttotal, out=np.zeros_like(ttotal), where=live)
+            b = np.divide(twb, ttotal, out=np.zeros_like(ttotal), where=live)
+            dy = np.where(live, ybar_b - ybar, 0.0)
+            dm = np.where(live[:, None], by_target_b - by_target, 0.0)
+            cc = a[:, None] * cc + b[:, None] * cc_b + (a * b * dy)[:, None] * dm
+            ybar = ybar + b * dy
         if by_target is None or by_target_b is None:
             by_target = None
         elif by_target.size or by_target_b.size:
@@ -252,6 +295,7 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "comoments": como,
         "cross_moments": cross,
         "means_by_target": by_target,
+        "cross_centred": cc,
         "target_weights": tw,
         "target_means": tmean,
         "target_vars": tvar,
@@ -319,8 +363,8 @@ def from_row(row: Any) -> dict[str, Any]:
 
     Takes a one-row frame, a row of ``iter_rows(named=True)``, or a mapping.
     The row's ``comoments`` is the upper triangle with the diagonal, row by
-    row, and its ``cross_moments`` and ``means_by_target`` are row-major
-    ``(n_targets, k)``; this expands all three. A closed group writes one row
+    row, and its ``cross_moments``, ``means_by_target`` and ``cross_centred``
+    are row-major ``(n_targets, k)``; this expands all four. A closed group writes one row
     per Gram, so a row's ``targets`` are that Gram's.
 
     The result is what ``gram()`` would have returned for that group **bit
@@ -364,6 +408,9 @@ def from_row(row: Any) -> dict[str, Any]:
         "means_by_target": _floats(np, d["means_by_target"]).reshape(len(targets), k)
         if targets and d.get("means_by_target")
         else np.zeros((0, k)),
+        "cross_centred": _floats(np, d["cross_centred"]).reshape(len(targets), k)
+        if targets and d.get("cross_centred")
+        else (None if targets else np.zeros((0, k))),
         "target_weights": _floats(np, d.get("target_weights") or []),
         "target_means": None if d.get("target_means") is None else _floats(np, d["target_means"]),
         "target_vars": None if d.get("target_vars") is None else _floats(np, d["target_vars"]),
@@ -421,6 +468,8 @@ def subset(g: dict[str, Any], cols: Sequence[str | int]) -> dict[str, Any]:
     cross = np.asarray(g["cross_moments"], dtype=float)
     by_target = g.get("means_by_target")
     by_target = None if by_target is None else np.asarray(by_target, dtype=float)
+    cc = g.get("cross_centred")
+    cc = None if cc is None else np.asarray(cc, dtype=float)
     lag = g.get("lag_comoments")
     return {
         **g,
@@ -431,6 +480,7 @@ def subset(g: dict[str, Any], cols: Sequence[str | int]) -> dict[str, Any]:
         "means_by_target": by_target[:, idx]
         if by_target is not None and by_target.ndim == 2
         else by_target,
+        "cross_centred": cc[:, idx] if cc is not None and cc.ndim == 2 else cc,
         # The lagged matrices are over the same axes, so they slice the same
         # way -- in both, since a lagged matrix is not symmetric.
         "lag_comoments": None if lag is None else np.asarray(lag, dtype=float)[:, idx][:, :, idx],
@@ -471,9 +521,12 @@ def solve(
 
     - with an intercept in ``columns`` it is eliminated, and the slopes solve
       the centred system ``(C + ridge*I) b = c``: ``C`` the features'
-      centred ``comoments``, and ``c = cross_moments[t] - m * ybar`` with
-      ``m`` the target's own column means (``means_by_target``) and ``ybar``
-      its mean; then ``b_0 = ybar - m . b``. That is the raw normal equations
+      centred ``comoments``, and ``c = cross_centred[t]``, the target's
+      cross-moments centred at its own column means ``m``
+      (``means_by_target``) and its mean ``ybar``, as the model holds them
+      (``cross_moments[t] - m * ybar`` for a mapping without them, which at
+      a level ``L`` keeps ``L**2 * eps`` of it: review 2026-09-12, N4); then
+      ``b_0 = ybar - m . b``. That is the raw normal equations
       with the intercept unpenalized, exactly, where the target's rows are
       the Gram's, and it is what ``target_gaps="pairwise"`` solves where
       they are not (docs/PLAN.md task 81);
@@ -516,7 +569,7 @@ def solve(
         m = _means_of(np, g, t)
         ybar = cross[icept]
         a = como[np.ix_(slots, slots)]
-        b = cross[slots] - m[slots] * ybar
+        b = _cross_centred(np, g, t, m, ybar)[slots]
     else:
         a = como[np.ix_(slots, slots)] + np.outer(means[slots], means[slots])
         b = cross[slots]
@@ -588,7 +641,7 @@ def lasso_path(
         m = _means_of(np, g, t)
         ybar = cross[icept]
         c = como[np.ix_(slots, slots)]
-        rhs = cross[slots] - m[slots] * ybar
+        rhs = _cross_centred(np, g, t, m, ybar)[slots]
     else:
         # Through the origin nothing is centred: raw moments, as the model
         # has them since the code review's C8.
@@ -691,9 +744,9 @@ def coef_stats(
     var_y = float(np.asarray(g["target_vars"], dtype=float)[t])
     n = float(np.asarray(g["target_n_kish"], dtype=float)[t])
     ybar = cross[icept] if icept >= 0 else float(np.asarray(g["target_means"], dtype=float)[t])
-    # Centred cross-covariance: E[z y] - E[z] E[y] over the target's rows,
-    # the pair `comoments` is in.
-    cov_xy = cross[slots] - _means_of(np, g, t)[slots] * ybar
+    # Centred cross-covariance over the target's rows, the pair `comoments`
+    # is in, as the model holds it (N4).
+    cov_xy = _cross_centred(np, g, t, _means_of(np, g, t), ybar)[slots]
 
     resid_var = var_y - 2.0 * b @ cov_xy + b @ c @ b
     resid_var = max(resid_var, 0.0)

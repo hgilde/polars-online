@@ -1091,6 +1091,114 @@ class TestTheCrossMomentsAreCentred:
         assert worst <= 1e-10 + 1e-14 * offset, f"worst |pred - numpy| = {worst:.3e}"
 
 
+def _level_rows(n: int, offset: float, seed: int):
+    """Two features and a target at a common level ``offset``, the target
+    ``2·x0 − x1`` plus noise: a price regressed on prices."""
+    rng = np.random.default_rng(seed)
+    u = rng.normal(0.0, 1.0, (n, 2))
+    x = offset + u
+    y = offset + 2.0 * u[:, 0] - u[:, 1] + rng.normal(0.0, 0.1, n)
+    return x, y
+
+
+def _centred_fit(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """``numpy.linalg.lstsq`` on the rows centred at their means, the
+    intercept recovered from them: exact at any level."""
+    xm, ym = x.mean(axis=0), y.mean()
+    slopes = np.linalg.lstsq(x - xm, y - ym, rcond=None)[0]
+    return np.concatenate([[ym - xm @ slopes], slopes])
+
+
+class TestTheGramIsCentredToo:
+    """N4, found while fixing N1 and half done with task 81. The models solve
+    from centred cross-moments, but ``bank.gram()`` exported them raw,
+    ``E[z·y]``, so ``po.gram.solve`` -- and ``lasso_path`` and
+    ``coef_stats`` -- formed the right-hand side as ``E[z·y] − m·ȳ``: the
+    subtraction N1 took out of the model, which at a level ``L`` keeps
+    ``L²·ε`` of a covariance. The export carries the centred cross-moments
+    the model holds, a closed row and a merge carry them on, and the offline
+    solves read them. ``numpy.linalg.lstsq`` on centred rows is the
+    reference, exact at any level; the tolerance is N1's, ``1e-10`` plus
+    ``1e-14·L`` for the data's own resolution, on what a level resolves:
+    the slopes and the predictions they give. Offset 0 is the control."""
+
+    @staticmethod
+    def _spec(standardize=False, **kw):
+        return po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            halflife=float("inf"),
+            ridge=0.0,
+            standardize=standardize,
+            solve_every=1e-9,
+            **kw,
+        )
+
+    @staticmethod
+    def _tol(offset: float) -> float:
+        return 1e-10 + 1e-14 * offset
+
+    @staticmethod
+    def _same_fit(got, want, x, tol, what):
+        """Two fits agree where a fit at a level is resolved: the slopes, and
+        the predictions they give at the rows. An intercept at a level is
+        not: it is ``ybar - m @ b``, so a slope known to ``δ`` moves it by
+        ``L·δ``, ``L²·ε`` in all -- in numpy's fit as in any other."""
+        assert np.max(np.abs(got[1:] - want[1:])) <= tol, (what, "slopes", got, want)
+        gap = np.max(np.abs((got[0] + x @ got[1:]) - (want[0] + x @ want[1:])))
+        assert gap <= tol, (what, "predictions", gap)
+
+    @pytest.mark.parametrize("offset", [0.0, 1e4, 1e6, 1e8])
+    @pytest.mark.parametrize("standardize", [False, True])
+    def test_solve_on_the_gram_is_the_numpy_fit_at_any_level(self, standardize, offset):
+        x, y = _level_rows(600, offset, seed=98)
+        spec = self._spec(standardize)
+        bank = po.ModelBank([spec])
+        bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y}))
+        got = po.gram.solve(bank.gram("m")[0], standardize=standardize)
+        self._same_fit(got, _centred_fit(x, y), x, self._tol(offset), "numpy")
+        # And the model's own fit, which read the centred system all along.
+        coef = bank.coef("m")["coef"].to_numpy()
+        self._same_fit(got, coef, x, self._tol(offset), "coef")
+
+    @pytest.mark.parametrize("offset", [0.0, 1e8])
+    def test_a_merge_a_closed_row_and_the_other_solves_keep_it(self, offset):
+        x, y = _level_rows(1200, offset, seed=99)
+        frame = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+        tol = self._tol(offset)
+        # A merge of two shards is the Gram of the union: their centred
+        # cross-moments pool with the gap between their means, as the
+        # co-moments do.
+        halves = []
+        for part in (frame.head(700), frame.tail(500)):
+            bank = po.ModelBank([self._spec()])
+            bank.fit_predict(part)
+            halves.append(bank.gram("m")[0])
+        merged = po.gram.merge(halves)
+        want = _centred_fit(x, y)
+        self._same_fit(po.gram.solve(merged), want, x, tol, "merge")
+        # A closed row is the Gram it was written from.
+        spec = self._spec(group="g", group_close="monotone")
+        bank = po.ModelBank([spec])
+        bank.fit_predict(frame.with_columns(g=pl.Series(["a"] * 700 + ["b"] * 500)))
+        (row,) = bank.closed_groups().iter_rows(named=True)
+        got = po.gram.solve(po.gram.from_row(row))
+        self._same_fit(got, _centred_fit(x[:700], y[:700]), x[:700], tol, "closed row")
+        # The lasso path at no penalty is the same fit, and the residual
+        # variance coef_stats reads is numpy's.
+        g = halves[0]
+        want_h = _centred_fit(x[:700], y[:700])
+        path = po.gram.lasso_path(g, [0.0], max_iter=100_000, tol=1e-15)[0]
+        self._same_fit(path, want_h, x[:700], 1e3 * tol, "lasso_path")
+        stats = po.gram.coef_stats(g, want_h)
+        z = np.column_stack([np.ones(700), x[:700]])
+        resid = y[:700] - z @ want_h
+        # The data resolves a variance of 0.01 to about 1e-6 of itself at 1e8.
+        rel = 1e-9 + 1e-12 * offset
+        assert stats["resid_var"] == pytest.approx(np.mean(resid**2), rel=rel, abs=1e-12)
+
+
 def _holt(y: np.ndarray, halflife: float, trend_halflife: float) -> tuple[np.ndarray, float, float]:
     """``holt``'s ``pred`` on a row-count clock, and its final level and
     trend. ``NaN`` in ``y`` is a null target."""

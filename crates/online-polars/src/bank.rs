@@ -1212,6 +1212,7 @@ pub(crate) fn gram_of(key: &GroupKey, label: &str, model: &AnyModel) -> Vec<Gram
                 targets: Vec::new(),
                 cross_moments: Vec::new(),
                 means_by_target: Vec::new(),
+                cross_centred: Vec::new(),
                 target_means: Some(Vec::new()),
                 target_vars: Some(Vec::new()),
                 target_n_kish: Some(Vec::new()),
@@ -1242,6 +1243,7 @@ pub(crate) fn gram_of(key: &GroupKey, label: &str, model: &AnyModel) -> Vec<Gram
                     .map(|k| p.targets.iter().map(|&j| k[j]).collect()),
                 cross_moments: p.cross_moments,
                 means_by_target: p.means_by_target,
+                cross_centred: p.cross_centred,
                 target_weights: p.target_weights,
                 targets: p.targets,
                 lags: None,
@@ -1254,10 +1256,12 @@ pub(crate) fn gram_of(key: &GroupKey, label: &str, model: &AnyModel) -> Vec<Gram
 /// One instance's EW accumulators, as returned by [`Bank::gram`].
 ///
 /// Values are in the features' original units. `comoments` is **centered**
-/// (E11b, which is what makes it accurate at large offsets); `cross_moments`
-/// is **uncentered**, because that is the form `po.gram.solve` consumes. The two
-/// are bridged by one identity, and getting it wrong is a silent wrong
-/// answer rather than an error:
+/// (E11b, which is what makes it accurate at large offsets). `cross_moments`
+/// is **uncentered**, and `cross_centred` is the same centred at each
+/// target's means, which is what `po.gram.solve` reads: re-centring the raw
+/// form kept `L²·ε` of it at a level `L` (review 2026-09-12, N4). The raw
+/// form is bridged to the fit by one identity, and getting it wrong is a
+/// silent wrong answer rather than an error:
 ///
 /// ```text
 /// raw[i][j] = comoments[i*k+j] + means[i]*means[j]
@@ -1298,6 +1302,12 @@ pub struct Gram {
     /// Per target, the column means over its rows, which its fit is centred
     /// at: `means` under `"own_rows"`, its own under `"pairwise"`.
     pub means_by_target: Vec<Vec<f64>>,
+    /// Per target, its cross-moments centred at [`Self::means_by_target`] and
+    /// its own mean: what the fit is solved from, and what `po.gram.solve`
+    /// reads. `cross_moments` less `m_t·ȳ_t` in exact arithmetic; formed in
+    /// floating point, that difference keeps `L²·ε` of it at a level `L`
+    /// (review 2026-09-12, N4). Empty for `ew_cov`.
+    pub cross_centred: Vec<Vec<f64>>,
     /// Per-target accumulated weight. Empty for `ew_cov`.
     pub target_weights: Vec<f64>,
     /// Per-target EW mean of the target. Empty for `ew_cov` (no targets);
@@ -1664,6 +1674,11 @@ fn closed_frame(specs: &[Spec], rows: &[ClosedRow]) -> PolarsResult<DataFrame> {
             r.gram
                 .as_ref()
                 .map(|g| g.means_by_target.iter().flatten().copied().collect())
+        }));
+        cols.push(list_f64("cross_centred", rows, |r| {
+            r.gram
+                .as_ref()
+                .map(|g| g.cross_centred.iter().flatten().copied().collect())
         }));
     }
     if any(|s| matches!(s.model, ModelKind::EwCov { lags: Some(_), .. })) {
