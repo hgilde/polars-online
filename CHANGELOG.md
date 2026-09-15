@@ -7,6 +7,38 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+### Changed
+
+- **A target null on some rows is fitted on its own rows** (`ewridge`,
+  `lasso`; docs/PLAN.md task 81). They read the Gram over every row against
+  the target's cross-moments over its own, so each slope moved with the
+  target's level: `(m_j − m)·ȳ_j / Var(x)` on top of the fit, `m_j` a
+  feature's mean over the target's rows. A new parameter, `target_gaps`,
+  picks between two readings. `"own_rows"`, the default, is exactly the fit
+  of the rows with the target's nulls dropped. `"pairwise"` keeps one Gram
+  over every row and centres each target's cross-moments at its own means,
+  as pandas' pairwise-complete covariance does. **Numbers change** for every
+  `ewridge` and `lasso` stream with a null target. Under `"own_rows"` a null
+  target no longer moves its own fit at all, and `n_eff` keeps counting the
+  row.
+- **`lasso` keeps its cross-moments centred**, as `ewridge` has since the
+  code review's N1, so a level on the features and the target costs its path
+  nothing. Without gaps its fit is the same to rounding; the arithmetic is
+  different, so the last bits are not guaranteed. `ewridge` without gaps is
+  unchanged to the bit.
+- **`bank.gram()` returns one entry per Gram**, each naming its `targets`,
+  and every entry carries `means_by_target`, each target's column means over
+  its own rows. Under `"own_rows"` targets missing on different rows have
+  Grams of their own, and a closed group writes one row per Gram, with that
+  Gram's targets' coefficients and weight. `po.gram.solve`, `lasso_path` and
+  `coef_stats` read `means_by_target`, so they reproduce either reading.
+- **`po.gram.solve(standardize=True)` and `po.gram.lasso_path` without an
+  intercept read raw moments**, as the models have since the code review's
+  C8. They scaled centred co-moments against raw cross-moments there, which
+  is least squares only when every feature has mean zero.
+- **State schema 8; files of schema 6 and 7 no longer load.** While the
+  project is pre-1.0, a state saved before this release has to be refit.
+
 ## [0.5.1] — 2026-09-11
 
 The first release of the 0.5 series: 0.5.0 was tagged but never published

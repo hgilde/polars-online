@@ -2,7 +2,7 @@
 //! (Python) and TOML (CLI), with common-parameter validation and the output
 //! struct layout.
 
-use online_core::{ClockCfg, Decay, OnClockReset, SessionGap};
+use online_core::{ClockCfg, Decay, OnClockReset, SessionGap, TargetGaps};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -355,9 +355,10 @@ impl<'de> Deserialize<'de> for SessionGapSpec {
 ///
 /// That is a deliberate exception to hard rule 5, taken while the library is
 /// days old and pre-1.0, on the grounds that the names are worth more than
-/// the compatibility: `MIN_SCHEMA_VERSION` is 6, the fixtures that proved
-/// older files load are gone, and a state saved by 0.2.0 has to be refit.
-/// The rule itself stands for every later change.
+/// the compatibility: `MIN_SCHEMA_VERSION` became 6, the fixtures that
+/// proved older files load went, and a state saved by 0.2.0 has to be refit.
+/// It was taken again on 2026-09-14 (`MIN_SCHEMA_VERSION` 8, docs/PLAN.md
+/// task 81): a state saved before `target_gaps` has to be refit too.
 pub enum ModelKind {
     EwRidge {
         #[serde(default)]
@@ -393,6 +394,12 @@ pub enum ModelKind {
         /// one. Chunk invariance holds either way.
         #[serde(default)]
         gram_block_rows: Option<usize>,
+        /// Which rows a target's fit is read from where the target is null
+        /// on some (docs/PLAN.md task 81): `"own_rows"`, the default, fits it
+        /// on exactly its rows; `"pairwise"` reads the Gram over every row
+        /// and its cross-moments over its own.
+        #[serde(default)]
+        target_gaps: TargetGaps,
         /// Clock units of history the fit sees, with a **hard** cutoff: a row
         /// older than this is not in the Gram at all, where the exponential
         /// weight alone would leave `0.5^(age/halflife)` of it. Inside the
@@ -421,6 +428,10 @@ pub enum ModelKind {
         max_cd_iters: Option<u32>,
         #[serde(default)]
         cd_tol: Option<f64>,
+        /// Which rows a target's path is fitted from where the target is
+        /// null on some, as for `EwRidge` (docs/PLAN.md task 81).
+        #[serde(default)]
+        target_gaps: TargetGaps,
         /// Clock units of history the path is fitted from, with a **hard**
         /// cutoff (docs/PLAN.md §13). The selection error follows the same
         /// window, so the chosen `lambda` fits the rows the model reports on.

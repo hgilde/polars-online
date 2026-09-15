@@ -297,6 +297,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             solve_every,
             max_rows_between_solves,
             gram_block_rows,
+            target_gaps,
             window,
             window_every,
         } => {
@@ -333,6 +334,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 solve_every: solve_every.unwrap_or_else(|| spec.solve_every_default(decay)),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
                 gram_block_rows: gram_block_rows.unwrap_or(0),
+                target_gaps: *target_gaps,
                 window: *window,
                 window_every: *window_every,
             };
@@ -358,6 +360,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             max_rows_between_solves,
             max_cd_iters,
             cd_tol,
+            target_gaps,
             window,
             window_every,
         } => {
@@ -376,6 +379,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 window_every: *window_every,
                 max_cd_iters: max_cd_iters.unwrap_or(100),
                 cd_tol: cd_tol.unwrap_or(1e-10),
+                target_gaps: *target_gaps,
             };
             Ok(AnyModel::Lasso(Box::new(Lasso::new(cfg)?)))
         }

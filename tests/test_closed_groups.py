@@ -690,7 +690,7 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 def test_schema_version_is_current():
     # Pinned so a bump is a deliberate edit here, with the reason recorded in
-    # `SCHEMA_VERSION`'s own history: 6 is task 63's `window` keys on the
-    # `ew_cov` spec.
-    assert po.schema_version() == 7
+    # `SCHEMA_VERSION`'s own history: 8 is task 81's `target_gaps`, and the
+    # accumulators it splits by target.
+    assert po.schema_version() == 8
     assert sys.version_info >= (3, 12)

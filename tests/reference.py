@@ -131,7 +131,11 @@ def ewridge_ref(
     standardize: bool = False,
     ridge_decay: bool = False,
 ) -> dict[str, np.ndarray]:
-    """EW-ridge oracle, solving every row. X: (n,k), Y: (n,m); NaN = null."""
+    """EW-ridge oracle, solving every row. X: (n,k), Y: (n,m); NaN = null.
+
+    ``target_gaps="own_rows"`` (docs/PLAN.md task 81): each target's Gram is
+    over the rows it is present on, and ages with its weight over the rest;
+    ``n_eff`` is the weight over every row."""
     n, k = X.shape
     m = Y.shape[1]
     k_total = k + 1 if add_intercept else k
@@ -151,7 +155,7 @@ def ewridge_ref(
             "W": 0.0,
             "Wj": np.zeros(m),
             "Wsig": np.zeros(m),
-            "S": np.zeros((k_total, k_total)),
+            "S": np.zeros((m, k_total, k_total)),
             "r": np.zeros((k_total, m)),
             "sig2": np.zeros(m),
             "beta": None,
@@ -184,12 +188,14 @@ def ewridge_ref(
 
         # ---- update ----
         W_new = lam * st["W"] + w[i]
-        st["S"] = (lam * st["W"] * st["S"] + w[i] * np.outer(xi, xi)) / W_new
         for j in range(m):
             yij = Y[i, j]
             if not np.isnan(yij):
                 Wj_new = lam * st["Wj"][j] + w[i]
-                st["r"][:, j] = (lam * st["Wj"][j] * st["r"][:, j] + w[i] * xi * yij) / Wj_new
+                if Wj_new > 0.0:
+                    keep = lam * st["Wj"][j]
+                    st["S"][j] = (keep * st["S"][j] + w[i] * np.outer(xi, xi)) / Wj_new
+                    st["r"][:, j] = (keep * st["r"][:, j] + w[i] * xi * yij) / Wj_new
                 st["Wj"][j] = Wj_new
                 if not np.isnan(resid[i, j]):
                     Ws_new = lam * st["Wsig"][j] + w[i]
@@ -209,9 +215,9 @@ def ewridge_ref(
         for j in range(m):
             if st["Wj"][j] > 0.0:
                 beta[:, j] = _solve_ridge(
-                    st["S"],
+                    st["S"][j],
                     st["r"][:, j],
-                    st["W"],
+                    st["Wj"][j],
                     ridge,
                     add_intercept,
                     standardize,

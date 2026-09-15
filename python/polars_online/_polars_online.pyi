@@ -53,6 +53,9 @@ class ModelBank:
             ],
             # (lags, L*k*k cross-moments), or None without lags (E56)
             tuple[list[int], list[float]] | None,
+            # this Gram's targets, as indices into the spec's, and each one's
+            # column means over its own rows (docs/PLAN.md task 81)
+            tuple[list[int], list[list[float]]],
         ]
     ]: ...
     def coef(

@@ -1282,3 +1282,347 @@ class TestAHopelessSerialFactorSaysSo:
             # NaN in the model, null in the frame, as `phi_x` is.
             assert row["n_serial"] is None, row["n_serial"]
             assert row["t_serial"] is None, row["t_serial"]
+
+
+def _gappy(n: int, seed: int, level: float) -> tuple[np.ndarray, np.ndarray]:
+    """Two features, and a target at ``level`` present only where ``x0 >
+    -0.5``: gaps tied to a feature, so the features' means and spreads over
+    the target's rows are not their means and spreads over every row."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(0.0, 1.0, (n, 2))
+    y = level + 1.0 + 2.0 * x[:, 0] - x[:, 1] + rng.normal(0.0, 0.1, n)
+    return x, np.where(x[:, 0] > -0.5, y, np.nan)
+
+
+def _gappy_frame(x: np.ndarray, **targets: np.ndarray) -> pl.DataFrame:
+    """The features and targets as a frame, ``NaN`` in a target as null."""
+    cols: dict[str, Any] = {"x0": x[:, 0], "x1": x[:, 1]}
+    for name, v in targets.items():
+        cols[name] = [None if np.isnan(t) else float(t) for t in v]
+    return pl.DataFrame(cols, schema={c: pl.Float64 for c in cols})
+
+
+def _own_rows_pred(x: np.ndarray, y: np.ndarray, t: int, halflife: float) -> float:
+    """Row ``t`` predicted by the weighted least-squares fit of the rows
+    before it on which the target is present, each at ``0.5 ** (age /
+    halflife)`` -- the age counted in rows, the target's missing ones
+    included, since the clock runs on every row."""
+    keep = ~np.isnan(y[:t])
+    w = 0.5 ** (((t - 1) - np.arange(t)) / halflife)
+    b = _wls(x[:t][keep], y[:t][keep], w[keep])
+    return float(b[0] + x[t] @ b[1:])
+
+
+def _pairwise_pred(x: np.ndarray, y: np.ndarray, t: int, halflife: float) -> float:
+    """Row ``t`` predicted from pairwise-complete weighted moments of the rows
+    before it: the features' covariance over every row, their covariance
+    with the target and every mean over the rows the target is present on,
+    each by ``numpy.cov`` with the rows' weights as ``aweights``."""
+    keep = ~np.isnan(y[:t])
+    w = 0.5 ** (((t - 1) - np.arange(t)) / halflife)
+    cxx = np.cov(x[:t].T, aweights=w, ddof=0)
+    joint = np.cov(np.column_stack([x[:t][keep], y[:t][keep]]).T, aweights=w[keep], ddof=0)
+    slopes = np.linalg.solve(cxx, joint[:2, 2])
+    mx = np.average(x[:t][keep], axis=0, weights=w[keep])
+    my = np.average(y[:t][keep], weights=w[keep])
+    return float(my + (x[t] - mx) @ slopes)
+
+
+class TestATargetWithGaps:
+    """N3, found while fixing N1, and ``target_gaps`` (docs/PLAN.md task 81).
+    With a target null on some rows, ``ewridge`` and ``lasso`` read the Gram
+    over every row and the target's cross-moments over its own rows, so a
+    slope moved with the target's level, by ``(m_j - m)·ȳ_j / Var(x)`` --
+    ``m_j`` a feature's mean over the target's rows, ``m`` its mean over all
+    of them. Here the target is present only where ``x0 > -0.5``, which puts
+    ``m_j - m`` near 0.5, and the target sits at a level.
+
+    ``target_gaps="own_rows"``, the default, fits each target on exactly the
+    rows it is present on: ``numpy.linalg.lstsq`` on those rows is the second
+    opinion. ``"pairwise"`` reads pairwise-complete moments: pandas'
+    ``DataFrame.cov`` without decay, ``numpy.cov`` with the rows' weights
+    under it. The two answers differ here because the gaps are tied to
+    ``x0``, and each test checks that too, so neither passes by accident.
+    The tolerances are an order above what the solves round to at these
+    levels."""
+
+    @staticmethod
+    def _pred(spec: dict[str, Any], frame: pl.DataFrame, field: str) -> np.ndarray:
+        out = po.ModelBank([spec]).fit_predict(frame)
+        return out[spec["name"]].struct.field(field).to_numpy()
+
+    @pytest.mark.parametrize("level", [0.0, 50.0])
+    @pytest.mark.parametrize("standardize", [False, True])
+    def test_own_rows_is_the_numpy_fit_of_the_targets_rows(self, standardize, level):
+        n, h = 600, 40.0
+        x, y = _gappy(n, 7, level)
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            halflife=h,
+            ridge=0.0,
+            standardize=standardize,
+            solve_every=1e-9,
+        )
+        pred = self._pred(spec, _gappy_frame(x, y=y), "pred_y")
+        worst, apart = 0.0, 0.0
+        for t in range(100, n, 23):
+            want = _own_rows_pred(x, y, t, h)
+            worst = max(worst, abs(pred[t] - want))
+            apart = max(apart, abs(want - _pairwise_pred(x, y, t, h)))
+        assert worst <= 1e-9 * (1.0 + level), f"worst |pred - numpy| = {worst:.3e}"
+        assert apart > 1e-2, f"the two answers should differ here: {apart:.3e}"
+
+    @pytest.mark.parametrize("standardize", [False, True])
+    def test_each_target_is_fitted_on_its_own_rows(self, standardize):
+        """Three targets with three patterns of missing rows: present on
+        every row, where ``x0 > -0.5``, and where ``x1 < 0.3``. Each takes its
+        own Gram at its first gap, and each fit is ``lstsq`` on its rows."""
+        rng = np.random.default_rng(17)
+        n, h = 600, 60.0
+        x = rng.normal(0.0, 1.0, (n, 2))
+        base = 2.0 * x[:, 0] - x[:, 1] + rng.normal(0.0, 0.1, n)
+        ys = {
+            "ya": 3.0 + base,
+            "yb": np.where(x[:, 0] > -0.5, 5.0 + base, np.nan),
+            "yc": np.where(x[:, 1] < 0.3, -4.0 + 0.5 * base, np.nan),
+        }
+        spec = po.spec.ewridge(
+            "m",
+            targets=list(ys),
+            features=["x0", "x1"],
+            halflife=h,
+            ridge=0.0,
+            standardize=standardize,
+            solve_every=1e-9,
+        )
+        out = po.ModelBank([spec]).fit_predict(_gappy_frame(x, **ys))["m"]
+        for name, y in ys.items():
+            pred = out.struct.field(f"pred_{name}").to_numpy()
+            worst = max(abs(pred[t] - _own_rows_pred(x, y, t, h)) for t in range(100, n, 29))
+            assert worst <= 1e-9, f"{name}: worst |pred - numpy| = {worst:.3e}"
+
+    def test_pairwise_is_pandas_pairwise_covariance(self):
+        """Without decay the pairwise moments are pandas' pairwise-complete
+        covariance, which divides each pair by its own count less one; the
+        model's moments are means, so each pair is rescaled by its count."""
+        pd = pytest.importorskip("pandas")
+        n = 500
+        x, y = _gappy(n, 11, 0.0)
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            halflife=float("inf"),
+            ridge=0.0,
+            target_gaps="pairwise",
+            max_rows_between_solves=1,
+        )
+        pred = self._pred(spec, _gappy_frame(x, y=y), "pred_y")
+        worst, apart = 0.0, 0.0
+        for t in range(60, n, 37):
+            keep = ~np.isnan(y[:t])
+            cov = pd.DataFrame({"x0": x[:t, 0], "x1": x[:t, 1], "y": y[:t]}).cov()
+            n_y = int(keep.sum())
+            cxx = cov.loc[["x0", "x1"], ["x0", "x1"]].to_numpy() * (t - 1) / t
+            cxy = cov.loc[["x0", "x1"], "y"].to_numpy() * (n_y - 1) / n_y
+            slopes = np.linalg.solve(cxx, cxy)
+            want = y[:t][keep].mean() + (x[t] - x[:t][keep].mean(axis=0)) @ slopes
+            worst = max(worst, abs(pred[t] - want))
+            apart = max(apart, abs(want - _own_rows_pred(x, y, t, float("inf"))))
+        assert worst <= 1e-10, f"worst |pred - pandas| = {worst:.3e}"
+        assert apart > 1e-2, f"the two answers should differ here: {apart:.3e}"
+
+    @pytest.mark.parametrize("level", [0.0, 50.0])
+    def test_pairwise_under_decay_is_numpy_weighted_covariance(self, level):
+        n, h = 600, 40.0
+        x, y = _gappy(n, 13, level)
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            halflife=h,
+            ridge=0.0,
+            target_gaps="pairwise",
+            solve_every=1e-9,
+        )
+        pred = self._pred(spec, _gappy_frame(x, y=y), "pred_y")
+        worst = max(abs(pred[t] - _pairwise_pred(x, y, t, h)) for t in range(100, n, 41))
+        assert worst <= 1e-9 * (1.0 + level), f"worst |pred - numpy| = {worst:.3e}"
+
+    @pytest.mark.parametrize("target_gaps", ["own_rows", "pairwise"])
+    def test_lasso_at_zero_penalty_is_the_same_fit(self, target_gaps):
+        """``lasso`` reads the same accumulators, so at a zero penalty its
+        path point is the same least-squares fit; its coordinate descent is
+        run to convergence here. At a level it also keeps its cross-moments
+        centred now, as ``ewridge`` does since N1 (N2)."""
+        n, h = 500, 50.0
+        x, y = _gappy(n, 19, 20.0)
+        spec = po.spec.lasso(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            lasso_path=[0.5, 0.0],
+            halflife=h,
+            target_gaps=target_gaps,
+            max_rows_between_solves=1,
+            max_cd_iters=10_000,
+            cd_tol=1e-15,
+        )
+        pred = self._pred(spec, _gappy_frame(x, y=y), "pred_y__l0")
+        ref = _own_rows_pred if target_gaps == "own_rows" else _pairwise_pred
+        worst = max(abs(pred[t] - ref(x, y, t, h)) for t in range(100, n, 31))
+        assert worst <= 1e-8, f"worst |pred - numpy| = {worst:.3e}"
+
+    @pytest.mark.parametrize("target_gaps", ["own_rows", "pairwise"])
+    def test_a_window_with_gaps_is_the_fit_of_the_rows_inside_it(self, target_gaps):
+        """A ``window`` over a target with gaps, beside one without, so that
+        under ``"own_rows"`` the two part inside the window's history and
+        each Gram is truncated against the one its target read at the
+        boundary. The fit is of the rows inside the window, each at ``0.5 **
+        (age / halflife)``: the target's own by ``numpy.linalg.lstsq`` under
+        ``"own_rows"``, and under ``"pairwise"`` every row's feature
+        covariance against the target's own cross-covariance, both by
+        ``numpy.cov``."""
+        n, h, window = 500, 40.0, 60.0
+        x, y = _gappy(n, 41, 3.0)
+        rng = np.random.default_rng(43)
+        ya = 2.0 + x @ np.array([1.0, 0.5]) + rng.normal(0.0, 0.1, n)
+        spec = po.spec.ewridge(
+            "m",
+            targets=["ya", "y"],
+            features=["x0", "x1"],
+            halflife=h,
+            ridge=0.0,
+            window=window,
+            target_gaps=target_gaps,
+            solve_every=1e-9,
+        )
+        pred = self._pred(spec, _gappy_frame(x, ya=ya, y=y), "pred_y")
+        worst = 0.0
+        for t in range(150, n, 29):
+            keep, w = _window((t - 1) - np.arange(t), h, window)
+            xs, ys = x[:t][keep], y[:t][keep]
+            own = ~np.isnan(ys)
+            if target_gaps == "own_rows":
+                b = _wls(xs[own], ys[own], w[own])
+                want = b[0] + x[t] @ b[1:]
+            else:
+                cxx = np.cov(xs.T, aweights=w, ddof=0)
+                joint = np.cov(np.column_stack([xs[own], ys[own]]).T, aweights=w[own], ddof=0)
+                slopes = np.linalg.solve(cxx, joint[:2, 2])
+                mx = np.average(xs[own], axis=0, weights=w[own])
+                want = np.average(ys[own], weights=w[own]) + (x[t] - mx) @ slopes
+            worst = max(worst, abs(pred[t] - want))
+        assert worst <= 1e-8, f"worst |pred - numpy| = {worst:.3e}"
+
+    @pytest.mark.parametrize("standardize", [False, True])
+    def test_own_rows_is_statsmodels_wls_on_the_targets_rows(self, standardize):
+        """The same fit from a second library: ``statsmodels``' ``WLS`` on the
+        rows the target is present on, each at the weight the decay gives
+        it, with the target at a level."""
+        sm = pytest.importorskip("statsmodels.api")
+        n, h, level = 500, 30.0, 40.0
+        x, y = _gappy(n, 23, level)
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            halflife=h,
+            ridge=0.0,
+            standardize=standardize,
+            solve_every=1e-9,
+        )
+        pred = self._pred(spec, _gappy_frame(x, y=y), "pred_y")
+        worst = 0.0
+        for t in range(100, n, 37):
+            keep = ~np.isnan(y[:t])
+            w = 0.5 ** (((t - 1) - np.arange(t)) / h)
+            fit = sm.WLS(y[:t][keep], sm.add_constant(x[:t][keep]), weights=w[keep]).fit()
+            worst = max(worst, abs(pred[t] - fit.params @ np.r_[1.0, x[t]]))
+        assert worst <= 1e-9 * (1.0 + level), f"worst |pred - statsmodels| = {worst:.3e}"
+
+    @pytest.mark.parametrize("standardize", [False, True])
+    def test_a_ridge_on_its_own_rows_is_statsmodels_ridge(self, standardize):
+        """With a penalty. ``statsmodels``' ridge -- ``fit_regularized`` with
+        ``L1_wt=0`` -- minimizes ``RSS / (2n) + alpha / 2 * |b|^2``, which on
+        rows centred at their means is the model's ``(C + ridge * I) b = c``
+        with ``alpha = ridge``: on the features' own scale, or on their
+        standard deviations with ``standardize``. No decay, so the target's
+        rows weigh the same, and ``n`` is their count."""
+        sm = pytest.importorskip("statsmodels.api")
+        n, ridge = 400, 0.3
+        x, y = _gappy(n, 29, 10.0)
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            halflife=float("inf"),
+            ridge=ridge,
+            standardize=standardize,
+            max_rows_between_solves=1,
+        )
+        pred = self._pred(spec, _gappy_frame(x, y=y), "pred_y")
+        worst, shrunk = 0.0, 0.0
+        for t in range(60, n, 31):
+            keep = ~np.isnan(y[:t])
+            xs, ys = x[:t][keep], y[:t][keep]
+            mx, my = xs.mean(axis=0), ys.mean()
+            scale = xs.std(axis=0) if standardize else np.ones(2)
+            fit = sm.OLS(ys - my, (xs - mx) / scale).fit_regularized(alpha=ridge, L1_wt=0.0)
+            want = my + (x[t] - mx) @ (np.asarray(fit.params) / scale)
+            worst = max(worst, abs(pred[t] - want))
+            shrunk = max(shrunk, abs(want - _own_rows_pred(x, y, t, float("inf"))))
+        assert worst <= 1e-9 * 11.0, f"worst |pred - statsmodels| = {worst:.3e}"
+        assert shrunk > 1e-3, f"the penalty should move the fit: {shrunk:.3e}"
+
+    @pytest.mark.parametrize("l1_ratio", [1.0, 0.5])
+    def test_lasso_on_its_own_rows_is_statsmodels_elastic_net(self, l1_ratio):
+        """A penalized path point from a second library. ``statsmodels``'
+        elastic net minimizes ``RSS / (2n) + alpha * ((1 - L1_wt) / 2 * |b|^2
+        + L1_wt * |b|_1)``, which is the ``lasso`` model's objective on the
+        target's rows standardized by their own spread, with ``alpha`` the
+        path's penalty and ``L1_wt`` its ``l1_ratio``. A third feature is
+        noise, so the penalty zeroes a coefficient as well as shrinking the
+        others. No decay, and both coordinate descents run to convergence."""
+        sm = pytest.importorskip("statsmodels.api")
+        rng = np.random.default_rng(31)
+        n, lam = 500, 0.1
+        x = rng.normal(0.0, 1.0, (n, 3))
+        y = 5.0 + 2.0 * x[:, 0] - x[:, 1] + rng.normal(0.0, 0.3, n)
+        y = np.where(x[:, 0] > -0.5, y, np.nan)
+        spec = po.spec.lasso(
+            "m",
+            targets=["y"],
+            features=["x0", "x1", "x2"],
+            lasso_path=[lam],
+            l1_ratio=l1_ratio,
+            halflife=float("inf"),
+            max_rows_between_solves=1,
+            max_cd_iters=100_000,
+            cd_tol=1e-15,
+        )
+        frame = pl.DataFrame(
+            {
+                "x0": x[:, 0],
+                "x1": x[:, 1],
+                "x2": x[:, 2],
+                "y": [None if np.isnan(v) else float(v) for v in y],
+            },
+            schema={c: pl.Float64 for c in ("x0", "x1", "x2", "y")},
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(frame)
+        got = bank.coef("m")["coef"].to_numpy()
+        keep = ~np.isnan(y)
+        xs, ys = x[keep], y[keep]
+        mx, my, sd = xs.mean(axis=0), ys.mean(), xs.std(axis=0)
+        fit = sm.OLS(ys - my, (xs - mx) / sd).fit_regularized(
+            method="elastic_net", alpha=lam, L1_wt=l1_ratio, maxiter=10_000, cnvrg_tol=1e-14
+        )
+        b = np.asarray(fit.params) / sd
+        want = np.r_[my - mx @ b, b]
+        assert got == pytest.approx(want, abs=1e-7), np.max(np.abs(got - want))
+        if l1_ratio == 1.0:
+            assert got[3] == 0.0 and want[3] == 0.0, "the noise feature is out of the fit"

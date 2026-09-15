@@ -312,10 +312,11 @@ print("ok")
 
 class TestScoringWithoutLearning:
     """The deployment path: load a fit and score new rows. The README says to
-    do it with weight 0, and says why a null target is not the same; both
-    halves are pinned here (IMPROVEMENTS U8, docs/ENHANCEMENTS.md E31)."""
+    do it with weight 0, and says what a null target does instead; both are
+    pinned here (IMPROVEMENTS U8, docs/ENHANCEMENTS.md E31, docs/PLAN.md task
+    81)."""
 
-    def _fitted(self, df):
+    def _fitted(self, df, **kw):
         spec = po.spec.ewridge(
             "m",
             targets=["y"],
@@ -327,6 +328,7 @@ class TestScoringWithoutLearning:
             weight="w",
             max_rows_between_solves=1,
             coef_every=1,
+            **kw,
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df)
@@ -357,23 +359,39 @@ class TestScoringWithoutLearning:
         assert after == before, "scoring moved the coefficients"
         assert out.field("pred_y")[0] is not None, "scoring emitted nothing"
 
-    def test_a_null_target_is_not_a_scoring_mode(self):
-        """The feature moments still update while the cross-moment does not, so
-        the two halves of the fit end up over different windows. That is the
-        reason the README tells people to use weight 0 instead."""
+    def _score_null_targets(self, **kw):
+        """The coefficients before and after 60 rows whose target is null,
+        and the `n_eff` those rows report."""
         fit = self._frame(100)
-        bank = self._fitted(fit)
+        bank = self._fitted(fit, **kw)
         before = bank.fit_predict(fit.tail(1))["m"].struct.field("coef").to_list()[-1]
-
         scored = self._frame(60, seed=1).with_columns(
             pl.col("t") + 100.0, pl.lit(None, dtype=pl.Float64).alias("y")
         )
-        after = (
-            po.ModelBank.load_bytes(bank.save_bytes())
-            .fit_predict(scored)["m"]
-            .struct.field("coef")
-            .to_list()[-1]
-        )
+        out = po.ModelBank.load_bytes(bank.save_bytes()).fit_predict(scored)["m"].struct
+        return before, out.field("coef").to_list()[-1], out.field("n_eff").to_list()
+
+    def test_a_null_target_leaves_its_fit_where_it_was(self):
+        """Under `target_gaps="own_rows"`, the default, a target's Gram is over
+        the rows it is present on, so a row without it ages the Gram and the
+        cross-moments alike, and mean-form accumulators aged with nothing
+        added are themselves: the coefficients do not move by one bit, as
+        with weight 0. What differs from weight 0 is `n_eff`, which counts
+        every row and so keeps counting (docs/PLAN.md task 81)."""
+        before, after, n_eff = self._score_null_targets()
+        assert after == before, "a row without the target moved its fit"
+        # Weight 0 decays `n_eff` toward nothing; here it holds at the steady
+        # state of a halflife of 20 rows, `1 / (1 - lam)`.
+        steady = 1.0 / (1.0 - 0.5 ** (1.0 / 20.0))
+        assert n_eff[-1] == pytest.approx(steady, rel=1e-2), "every row counts toward n_eff"
+
+    def test_under_pairwise_a_null_target_still_moves_the_fit(self):
+        """Under `"pairwise"` the one Gram is over every row, so a row without
+        the target still moves the feature moments while the target's
+        cross-moments stand still: the two halves of the fit end up over
+        different rows, and it wanders with the features. That is why the
+        README says to score with weight 0 there."""
+        before, after, _ = self._score_null_targets(target_gaps="pairwise")
         assert after != before, "if this ever stops drifting, the README can say so"
 
     def test_a_long_scoring_tail_decays_n_eff_under_min_periods(self):

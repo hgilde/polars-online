@@ -397,9 +397,14 @@ They differ, and it matters which you use.
   the coefficients do not move at all. Use it to keep a row's place in the
   stream. Since the clock advances, `n_eff` keeps decaying and can fall
   below `min_periods` if you score for a long stretch this way.
-- **A null target** — the feature moments still update while the target's
-  cross-moment does not, so the coefficients wander with feature noise. Use
-  it only for a label that has not arrived yet.
+- **A null target** — the row is scored, and each model decides what the
+  missing label means for its fit; its section says. In `ewridge` and
+  `lasso` under the default `target_gaps="own_rows"`, the target's fit does
+  not move: its sums cover only the rows it is present on, and a row without
+  it only ages them. `n_eff` still counts the row, so unlike weight `0` it
+  does not decay toward `min_periods`. Under `target_gaps="pairwise"` the
+  feature sums take the row and the target's sums do not, so the
+  coefficients wander with feature noise.
 - **`predict`** — scores every row against the bank exactly as it stands and
   touches nothing: no clock advance, no decay, `n_eff` frozen. Use it to
   serve. It is also the fast path: `ewridge` scores at 1.8–2.9× its learning
@@ -791,9 +796,11 @@ ols = po.spec.ewridge("ols", targets=["y"], features=["x0", "x1", "x2"],
 fitted = po.ModelBank([ols])
 fitted.fit_predict(df)
 
-g = fitted.gram("ols")[0]      # one dict per (group, halflife); needs numpy, an optional extra
+g = fitted.gram("ols")[0]      # one dict per (group, halflife, Gram); needs numpy, an optional extra
+g["targets"]                              # the targets fitted from this Gram
 g["means"], g["comoments"]                # the feature means, and the centred k x k co-moment matrix
 g["cross_moments"], g["target_weights"]   # per target: the uncentred E[z*y] the solve consumes, and the weight behind it
+g["means_by_target"]                      # per target: the column means over the rows it was present on
 g["target_means"], g["target_vars"]       # per target: the target's own mean and centred variance
 g["n_eff"], g["n_kish"], g["target_n_kish"]   # the accumulated weight, and Kish's effective sample size (features, and per target)
 
@@ -814,6 +821,16 @@ po.gram.subset(g, ["x0", "x1"])                                           # the 
 po.gram.merge([g, g])                                                     # pools the Grams of disjoint row sets into the Gram of their union, exactly
 po.gram.lasso_path(g, [0.1, 0.01])                                        # the lasso model's coordinate descent, offline
 ```
+
+A spec has more than one Gram when targets go missing on different rows.
+Under `target_gaps="own_rows"`, the default, such a target is fitted from a
+Gram of its own ([`ewridge`](#ewridge--ew-ridge-on-sufficient-statistics)
+says when), and `gram()` returns one dict per Gram, each naming its
+`targets`. Under `target_gaps="pairwise"` there is one Gram over every row,
+and each target's cross-moments are centred at its own column means,
+`means_by_target`. `po.gram.solve` reads those, so it reproduces either
+reading's coefficients. The hand-written pairing above holds where a
+target's rows are its Gram's, which is every target under `"own_rows"`.
 
 `n_eff` counts weight, not rows. `n_kish = n_eff² / Σw²` is the number of
 equally weighted rows the moments are worth, which is what a standard error
@@ -1156,13 +1173,14 @@ every keyword with its default, and to its Rust source under
 
 *API:* [`po.spec.ewridge`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge) — *Rust:* [`ewridge.rs`](crates/online-core/src/ewridge.rs) — *Outputs:* [fields](docs/OUTPUTS.md#ewridge)
 
-Ridge regression on running sums. The sums are updated on every row; the
-coefficients are solved from them on a schedule.
+Ridge regression on running sums. Each target's sums are updated on the rows
+it is present on; the coefficients are solved from them on a schedule.
 
 ```
-W'   = λW + w                       S' = (λW·S + w·z zᵀ) / W'
-W_j' = λW_j + w                     r_j' = (λW_j·r_j + w·z·y_j) / W_j'
-solve:  (S + ridge·D) β_j = r_j     D = I minus the intercept slot
+W'   = λW + w                       n_eff, over every row
+W_j' = λW_j + w                     on the rows where y_j is present, λW_j on the others
+S_j' = (λW_j·S_j + w·z zᵀ) / W_j'   r_j' = (λW_j·r_j + w·z·y_j) / W_j'
+solve:  (S_j + ridge·D) β_j = r_j   D = I minus the intercept slot
 ```
 
 ```python
@@ -1177,11 +1195,35 @@ rr = po.spec.ewridge(
     ridge_decay=False,             # True: the ridge is a fading warm start ("start at yesterday's fit"), not a
                                    # permanent per-observation penalty -- because S is a mean, a plain ridge is permanent
     coef_prior=None,               # shrink toward a stated belief instead of toward zero
+    target_gaps="own_rows",        # a target null on some rows is fitted on its own rows; "pairwise": one S over every row
 )
 ```
 
 Each row costs O(k²) for `k` features, to update `S`; the solve is a
 Cholesky factorization.
+
+`target_gaps` says which rows a target's `S_j` covers when the target is
+null on some of them. `"own_rows"`, the default, uses exactly the rows the
+target is present on, so its fit is the fit of the frame with its nulls
+dropped. Targets present on the same rows share one `S`. A target that goes
+missing on a row where the others are present takes a copy of `S` and keeps
+its own from then on. So a single target costs nothing extra, and a bank of
+targets costs one `k × k` matrix per pattern of missing rows. The copy is
+for good: a target that missed one row keeps its own `S` even if it is
+present on every row after. A target with fewer rows than features has a
+singular `S` of its own, so with `ridge=0` its solves are jittered, and
+counted in `solve_failures`, until it has enough rows, as least squares on
+those rows would be.
+`"pairwise"` keeps one `S` over every row, the way pandas' `DataFrame.cov`
+takes a pairwise-complete covariance, and centres each target's `r_j` at its
+own rows' means. That is one matrix whatever the gaps. It is the same fit
+when the gaps have nothing to do with the features. Where they do — a target
+present only on trade rows between market-data rows — each slope is scaled
+by the feature's variance on the target's rows over its variance on every
+row. `tests/test_second_opinion.py` holds both to independent libraries:
+numpy's `lstsq` and statsmodels' `WLS`, ridge and elastic net for
+`"own_rows"`, and pandas' pairwise covariance and `numpy.cov` for
+`"pairwise"`.
 
 With decay off and `ridge=0` this is ordinary least squares over every row
 seen, in any row order: the coefficients match `numpy.linalg.lstsq` to 2e-13
@@ -1258,8 +1300,14 @@ las = po.spec.lasso(
                                      # lam_selected_<target> -- the one with the lowest EW out-of-sample squared
                                      # error so far, as it stood before the row -- adds no work of its own
     l1_ratio=1.0,                    # below 1: an elastic net
+    target_gaps="own_rows",          # which rows a target null on some is fitted from, as for ewridge
 )
 ```
+
+It reads the running sums `ewridge` keeps, centred the same way, so a
+feature and a target far from zero cost the path nothing, and `target_gaps`
+means what it means there. `tests/test_second_opinion.py` holds a penalized
+path point to statsmodels' elastic net on the target's own rows.
 
 ### `kalman` — random-walk-β dynamic linear model
 

@@ -316,6 +316,7 @@ def ewridge(
     solve_every: float | None = None,
     max_rows_between_solves: int | None = None,
     gram_block_rows: int | None = None,
+    target_gaps: str = "own_rows",
     window: float | None = None,
     window_every: int | None = None,
     **common: Unpack[CommonKwargs],
@@ -330,6 +331,30 @@ def ewridge(
     or the default never comes due; ``max_rows_between_solves`` caps the
     schedule in rows, and is off by default). Predictions use the last solved
     coefficients and the state *before* the row's update.
+
+    ``target_gaps`` says which rows a target's fit is read from where the
+    target is null on some (docs/PLAN.md task 81). Target ``j`` keeps its
+    mean ``ybar_j``, the column means ``m_j`` and the centred cross-moments
+    ``c_j = EW[(x - m_j)(y_j - ybar_j)]`` over the rows it is present on,
+    and its slopes solve ``(C + ridge * I) b = c_j`` with ``b_0 = ybar_j -
+    m_j . b``. The option is which rows the feature covariance ``C`` is
+    taken over:
+
+    - ``"own_rows"``, the default: the target's own, so its fit is the fit
+      of the frame with its null rows dropped. Targets present on the same
+      rows share one ``C``; one that goes missing where the others are
+      present takes a copy and keeps its own from then on, so a bank of
+      targets costs a ``k x k`` matrix per pattern of missing rows, and a
+      single target nothing.
+    - ``"pairwise"``: every row, the way pandas' ``DataFrame.cov`` takes a
+      pairwise-complete covariance. One matrix whatever the gaps. Exact when
+      the gaps have nothing to do with the features; where they do -- a
+      target present only on some kinds of row -- each slope is scaled by
+      the ratio of the feature's variance on the target's rows to its
+      variance on all of them.
+
+    ``n_eff`` counts every row either way, and a null target is still
+    predicted.
 
     ``window`` puts a **hard cutoff** on the history the fit is solved from,
     in clock units: a row older than it is not in the Gram at all, where the
@@ -415,6 +440,7 @@ def ewridge(
         "solve_every": solve_every,
         "max_rows_between_solves": max_rows_between_solves,
         "gram_block_rows": gram_block_rows,
+        "target_gaps": target_gaps,
         "window": window,
         "window_every": window_every,
     }
@@ -646,6 +672,7 @@ def lasso(
     window_every: int | None = None,
     max_cd_iters: int | None = None,
     cd_tol: float | None = None,
+    target_gaps: str = "own_rows",
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Lasso path with online lambda selection (docs/PLAN.md section 4.3).
@@ -677,6 +704,11 @@ def lasso(
     scored with, not the one its own error then elected. Outputs carry one
     pred/resid pair per path point.
 
+    ``target_gaps`` is :func:`ewridge`'s: which rows a target's feature
+    correlations are taken over where the target is null on some --
+    ``"own_rows"``, the default, or ``"pairwise"`` (docs/PLAN.md task 81).
+    The cross-correlations are centred at the target's own means either way.
+
     ``l1_ratio`` defaults to 1 (the lasso). ``solve_every`` and
     ``max_rows_between_solves`` schedule the solves as for :func:`ewridge`;
     within a solve, coordinate descent stops after ``max_cd_iters`` sweeps
@@ -692,6 +724,7 @@ def lasso(
         "max_rows_between_solves": max_rows_between_solves,
         "max_cd_iters": max_cd_iters,
         "cd_tol": cd_tol,
+        "target_gaps": target_gaps,
         "window": window,
         "window_every": window_every,
     }

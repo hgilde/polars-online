@@ -24,6 +24,7 @@
 //!     solve_every: 0.0,
 //!     max_rows_between_solves: 1,
 //!     gram_block_rows: 0,
+//!     target_gaps: online_core::TargetGaps::OwnRows,
 //!     window: None,
 //!     window_every: None,
 //! })?;
@@ -70,6 +71,7 @@ mod ewdiag;
 mod ewlagcov;
 mod ewridge;
 mod ftrl;
+mod gaps;
 mod hmm;
 mod holt;
 pub mod humanfloat;
@@ -110,6 +112,7 @@ pub use ewdiag::{EwDiag, Including};
 pub use ewlagcov::EwLagCov;
 pub use ewridge::{EwRidge, EwRidgeCfg};
 pub use ftrl::{Ftrl, FtrlCfg, FtrlLoss};
+pub use gaps::{GramPart, TargetGaps};
 pub use hmm::{Hmm, HmmCfg};
 pub use holt::{Holt, HoltCfg};
 pub use kalman::{Kalman, KalmanCfg};
@@ -193,16 +196,31 @@ pub use window::{Moments, Snapshots, truncated, truncated_mean};
 ///   where they kept `Σw·x` and `Σw·x x'` (C23). `holt` keeps each target's
 ///   clock since its last observation (C22). A schema-6 file loads: the raw
 ///   moments are split into centred ones as it is read (`EwRidgeWire`,
-///   `RunWire`), which keeps the numbers the file carried and not the bits,
-///   and `holt`'s clock starts at zero, the one thing a schema-6 file cannot
-///   say. `state_schema6.rs` and `state_schema6_ridge.rs` hold both to it.
-///   An older build refuses a schema-7 file by its version, where it would
-///   otherwise fail on field names it has never seen.
-pub const SCHEMA_VERSION: u32 = 7;
+///   `RunWire`), which kept the numbers the file carried and not the bits,
+///   and `holt`'s clock started at zero, the one thing a schema-6 file could
+///   not say -- until 8 raised the minimum and the conversions went.
+/// - 8: `ew_ridge` and `lasso` gained `target_gaps` (docs/PLAN.md task 81).
+///   Their accumulators hold one Gram per set of targets present on the
+///   same rows and the Gram each target reads, the weight over every row
+///   moved into the cross-moments, and `lasso` keeps its cross-moments
+///   centred, as `ew_ridge` does since 7 (the review's N2). A closed row's
+///   Gram names its targets and carries their column means. No loader for
+///   7: see [`MIN_SCHEMA_VERSION`].
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// Oldest state layout this build still loads.
 ///
-/// **6 since 2026-09-07**, where it had been 1 since the beginning. The
+/// **8 since 2026-09-14**, where it had been 6. The user, on `target_gaps`
+/// (docs/PLAN.md task 81): "Do not worry about state saved before the next
+/// version release, we are pre 1.0 and we can change things now". A
+/// schema-6 or 7 file is refused by its version with the message
+/// [`check_schema`] gives; the conversions 7 made for 6 -- `ew_ridge`'s raw
+/// cross-moments, `bocpd`'s run sums -- went with their frozen fixtures
+/// (`state_schema6.rs`, `state_schema6_ridge.rs`). The same exception to hard
+/// rule 5 as the one below, for the same reason: pre-1.0, the layout is
+/// worth more than the compatibility.
+///
+/// **6 from 2026-09-07**, where it had been 1 since the beginning. The
 /// naming pass that day renamed six spec keys with no aliases, and a spec
 /// denies unknown fields, so no file written before it can be read: a
 /// schema-1..5 state names fields no builder has. Rejecting it on the
@@ -212,7 +230,6 @@ pub const SCHEMA_VERSION: u32 = 7;
 /// This is a deliberate exception to hard rule 5 ("keep a loader for the
 /// previous version"), taken while the library is days old and pre-1.0
 /// because getting the names right was judged worth more than the
-/// compatibility. The rule stands for every later change: schema 7's
-/// conversions are held to the schema-6 fixtures in `state_schema6.rs` and
-/// `state_schema6_ridge.rs`.
-pub const MIN_SCHEMA_VERSION: u32 = 6;
+/// compatibility. Schema 7's conversions were held to schema-6 fixtures
+/// until 8 raised the minimum again.
+pub const MIN_SCHEMA_VERSION: u32 = 8;

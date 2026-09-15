@@ -111,6 +111,7 @@ fn ewridge_cfg(standardize: bool, ridge: f64) -> EwRidgeCfg {
         solve_every: 0.0,
         max_rows_between_solves: 1,
         gram_block_rows: 0,
+        target_gaps: online_core::TargetGaps::OwnRows,
         window: None,
         window_every: None,
     }
@@ -218,6 +219,7 @@ fn lasso_golden() {
         window_every: None,
         max_cd_iters: 200,
         cd_tol: 1e-12,
+        target_gaps: online_core::TargetGaps::OwnRows,
     })
     .unwrap();
     check("lasso", &signature(&mut m, 1), GOLDEN_LASSO);
@@ -785,12 +787,17 @@ const GOLDEN_DECO: &[f64] = &[
     -0.036211528292942816,
 ];
 const GOLDEN_DECO_LOGLIK: &[f64] = &[-2.2831901919538913, -3.7586606055778677, -1.896095909765855];
-const GOLDEN_EW_RIDGE: &[f64] = &[
-    0.23958810892448523,
-    2.1453177394610767,
-    -0.07945442055200784,
+// `ew_ridge`, `ew_ridge_std` and `lasso` re-frozen 2026-09-14 (docs/PLAN.md
+// task 81): the target is null on row 31, and under `target_gaps =
+// "own_rows"` its Gram no longer learns that row's features, so rows 45 and
+// 59 moved; row 20, before it, moved in the last bits only (`lasso` keeps
+// its cross-moments centred now, N2).
+const GOLDEN_EW_RIDGE: &[f64] = &[0.23958810892448573, 2.20363868480897, -0.06755913936964057];
+const GOLDEN_EW_RIDGE_STD: &[f64] = &[
+    0.24074332641726603,
+    2.1866449169182474,
+    -0.06533729995816817,
 ];
-const GOLDEN_EW_RIDGE_STD: &[f64] = &[0.24074332641726595, 2.129047638104942, -0.07712184691335192];
 const GOLDEN_RLS: &[f64] = &[
     0.24355619170018697,
     2.1844587322364037,
@@ -799,7 +806,11 @@ const GOLDEN_RLS: &[f64] = &[
 const GOLDEN_KALMAN: &[f64] = &[-0.07791204926408574, 2.037785637299904, 0.01654269850933259];
 const GOLDEN_KALMAN_REVERT: &[f64] =
     &[0.19803392372898182, 0.8472979762044034, 0.08824481622816764];
-const GOLDEN_LASSO: &[f64] = &[0.25359037757905634, 2.094156488785958, -0.07537065924040198];
+const GOLDEN_LASSO: &[f64] = &[
+    0.25359037757905656,
+    2.1511829817060866,
+    -0.06380197762074491,
+];
 const GOLDEN_HUBER: &[f64] = &[
     0.24786900553362573,
     2.2047028651324143,

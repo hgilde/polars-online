@@ -32,6 +32,7 @@ fn cfg(k: usize, m: usize, solve_every_rows: u32) -> EwRidgeCfg {
         solve_every: f64::MAX,
         max_rows_between_solves: solve_every_rows,
         gram_block_rows: 0,
+        target_gaps: online_core::TargetGaps::OwnRows,
         window: None,
         window_every: None,
     }

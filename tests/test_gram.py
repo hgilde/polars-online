@@ -279,23 +279,32 @@ class TestTheCompleteSufficientStatistic:
         )
         bank = po.ModelBank([spec])
         bank.fit_predict(df.head(n // 2))
-        at_the_break = bank.gram("m")[0]
+        (at_the_break,) = bank.gram("m")
         bank.fit_predict(df.tail(n - n // 2))
-        g = bank.gram("m")[0]
+        # Under `target_gaps="own_rows"` the target that stopped arriving
+        # took a Gram of its own at its first missing row, and the Gram
+        # stopped with it (docs/PLAN.md task 81).
+        live, stale = bank.gram("m")
+        assert (live["targets"], stale["targets"]) == (["y"], ["y2"])
         # Frozen where it stood. `W` and `Q` keep decaying, so their ratio
         # moves by rounding alone; the moments themselves are untouched and
-        # so are bit-equal.
-        assert g["target_n_kish"][1] == pytest.approx(at_the_break["target_n_kish"][1], rel=1e-12)
-        assert g["target_means"][1] == at_the_break["target_means"][1]
-        assert g["target_vars"][1] == at_the_break["target_vars"][1]
+        # so are bit-equal -- its Gram's included, which is the break's.
+        assert stale["target_n_kish"][0] == pytest.approx(
+            at_the_break["target_n_kish"][1], rel=1e-12
+        )
+        assert stale["target_means"][0] == at_the_break["target_means"][1]
+        assert stale["target_vars"][0] == at_the_break["target_vars"][1]
+        assert np.array_equal(stale["means"], at_the_break["means"])
+        assert np.array_equal(stale["comoments"], at_the_break["comoments"])
         # The weight behind it is what decayed away: 450 more rows at a
         # halflife of 50 is nine halvings, and nothing else touched it.
-        assert g["target_weights"][1] == pytest.approx(
+        assert stale["target_weights"][0] == pytest.approx(
             at_the_break["target_weights"][1] / 2**9, rel=1e-9
         )
-        assert g["target_weights"][1] < 0.01 * g["target_weights"][0]
+        assert stale["n_eff"] == stale["target_weights"][0], "a Gram's weight is its target's"
+        assert stale["target_weights"][0] < 0.01 * live["target_weights"][0]
         # The live target keeps counting, alongside the features.
-        assert g["n_kish"] == pytest.approx(g["target_n_kish"][0], rel=1e-9)
+        assert live["n_kish"] == pytest.approx(live["target_n_kish"][0], rel=1e-9)
 
     def test_the_residual_variance_the_docstring_promises(self):
         """The reason the target moments exist: R^2 from a saved Gram."""
@@ -353,14 +362,21 @@ class TestTheCompleteSufficientStatistic:
         assert len(g["target_means"]) == len(g["target_vars"]) == 0
         assert len(g["target_n_kish"]) == 0
 
-    def test_nothing_learned_yet_has_no_sample_size(self):
-        spec = po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=100.0)
+    @pytest.mark.parametrize(("target_gaps", "n_kish"), [("own_rows", None), ("pairwise", 1.0)])
+    def test_nothing_learned_yet_has_no_sample_size(self, target_gaps, n_kish):
+        """One row, its target null: the target saw no weighted row either
+        way. The feature moments are over the target's rows under
+        `"own_rows"`, so there are none, and over every row under
+        `"pairwise"`, so there is one (docs/PLAN.md task 81)."""
+        spec = po.spec.ewridge(
+            "m", targets=["y"], features=["x0"], halflife=100.0, target_gaps=target_gaps
+        )
         bank = po.ModelBank([spec])
         bank.fit_predict(
             pl.DataFrame({"x0": [1.0], "y": [None]}, schema_overrides={"y": pl.Float64})
         )
         g = bank.gram("m")[0]
-        assert g["n_kish"] == pytest.approx(1.0)
+        assert g["n_kish"] == (None if n_kish is None else pytest.approx(n_kish))
         assert np.isnan(g["target_n_kish"][0]), "the target saw no weighted row"
 
     def test_they_survive_a_save_and_load(self, tmp_path):

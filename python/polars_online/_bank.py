@@ -476,7 +476,12 @@ class ModelBank:
     def gram(self, spec: str | int, group: str | None = None) -> list[dict[str, Any]]:
         """The EW accumulators behind a spec's fit, per group and instance.
 
-        Returns one dict per (group, decay instance) with:
+        Returns one dict per (group, decay instance) -- and per Gram, where a
+        spec reads more than one: under ``target_gaps="own_rows"``, the
+        default, targets that have been missing on different rows are
+        fitted from Grams of their own, one per set of targets present on
+        the same rows, and each dict names its ``targets`` (docs/PLAN.md
+        task 81). Each dict has:
 
         ``group``, ``instance``
             The group key as :meth:`groups` reports it (``""`` for a spec
@@ -487,10 +492,11 @@ class ModelBank:
             What the axes mean: the spec's features, with ``"intercept"``
             first when the spec has one (the ``term`` names of
             :func:`polars_online.spec.coef_index`), and the target names the
-            per-target arrays are indexed by. ``targets`` is empty for
-            ``ew_cov``, which learns from none. They are what makes the
-            mapping self-describing, so :mod:`polars_online.gram` can take a
-            column by name.
+            per-target arrays are indexed by: the spec's, or the ones this
+            Gram's rows belong to. ``targets`` is empty for ``ew_cov``, which
+            learns from none. They are what makes the mapping
+            self-describing, so :mod:`polars_online.gram` can take a column
+            or a target by name.
         ``n_eff``
             Accumulated weight behind these moments.
         ``n_kish``
@@ -513,8 +519,18 @@ class ModelBank:
             centered ``X'X / n``. Centered is what makes it accurate at large
             offsets (E11b).
         ``cross_moments``
-            Per-target **uncentered** cross-moments ``E[z*y]``, shape
-            ``(n_targets, k)``. Empty for ``ew_cov``.
+            Per-target **uncentered** cross-moments ``E[z*y]`` over the rows
+            each target was present on, shape ``(n_targets, k)``. Empty for
+            ``ew_cov``.
+        ``means_by_target``
+            Per target, the column means over the rows it was present on,
+            shape ``(n_targets, k)``: what its cross-moments are centred at
+            and its intercept is recovered from. ``means`` again, to
+            rounding, for a target present on every row the Gram learned --
+            every target under ``target_gaps="own_rows"`` -- and under
+            ``"pairwise"`` a target's own means where it has gaps.
+            :func:`polars_online.gram.solve` reads them. Empty for
+            ``ew_cov``.
         ``target_weights``
             Per-target accumulated weight, shape ``(n_targets,)``. Differs from
             ``n_eff`` when targets have different null patterns.
@@ -542,7 +558,7 @@ class ModelBank:
         standard error to be had from a saved Gram, because every one of them
         needs ``Var[y]``::
 
-            beta = solve(raw, cross_moments[t])           # the model's own fit
+            beta = po.gram.solve(g, target=t)              # the model's own fit
             resid_var = target_vars[t] - beta[1:] @ comoments[1:, 1:] @ beta[1:]
             r2 = 1 - resid_var / target_vars[t]
 
@@ -563,10 +579,17 @@ class ModelBank:
 
         The two moment forms differ, and mixing them gives a silently wrong
         answer rather than an error, so the bridging identity is worth stating
-        plainly::
+        plainly -- for a target whose rows are the Gram's, which is every
+        target under ``target_gaps="own_rows"``::
 
             raw = comoments + np.outer(means, means)
             raw @ beta[t] == cross_moments[t]     # up to the ridge term
+
+        and for every target, the centred form the model solves, with ``m =
+        means_by_target[t]`` and ``ybar = cross_moments[t][0]``::
+
+            comoments[1:, 1:] @ beta[t][1:] == cross_moments[t][1:] - m[1:] * ybar
+            beta[t][0] == ybar - m[1:] @ beta[t][1:]
 
         Values are in the features' original units. The intercept, when the
         spec has one, is column 0: a constant 1, so it has zero variance in
@@ -619,9 +642,9 @@ class ModelBank:
         columns = list(spec_dict["features"])
         if spec_dict.get("add_intercept", True) and not unsupervised:
             columns = [_INTERCEPT, *columns]
-        targets = [] if unsupervised else list(spec_dict["targets"])
+        names = [] if unsupervised else list(spec_dict["targets"])
         out = []
-        for row, lag in self._native.gram(idx, group):
+        for row, lag, (tidx, by_target) in self._native.gram(idx, group):
             g, instance, k, n_eff, n_kish, means, como, cross, tw = row[:9]
             tmeans, tvars, tkish = row[9:]
             lags = None if lag is None else lag[0]
@@ -630,13 +653,16 @@ class ModelBank:
                     "group": g,
                     "instance": instance,
                     "columns": columns,
-                    "targets": targets,
+                    "targets": [names[j] for j in tidx],
                     "n_eff": n_eff,
                     "n_kish": n_kish,
                     "means": np.asarray(means),
                     "comoments": np.asarray(como).reshape(k, k),
                     "cross_moments": np.asarray(cross).reshape(len(cross), k)
                     if cross
+                    else np.zeros((0, k)),
+                    "means_by_target": np.asarray(by_target, dtype=float).reshape(len(tidx), k)
+                    if tidx
                     else np.zeros((0, k)),
                     "target_weights": np.asarray(tw),
                     "target_means": None if tmeans is None else np.asarray(tmeans),
@@ -744,7 +770,10 @@ class ModelBank:
         stream. That is what keeps a bank over an unbounded key space
         bounded: without it, every key ever seen stays in memory.
 
-        One row per (group, decay instance), with the common columns
+        One row per (group, decay instance) -- and per Gram, where a spec
+        reads several: under ``target_gaps="own_rows"`` targets that have
+        been missing on different rows are fitted from Grams of their own
+        (docs/PLAN.md task 81) -- with the common columns
 
         ``spec``, ``group``, ``instance``, ``session``
             Which stream closed. ``session`` is the value of the span that
@@ -758,9 +787,10 @@ class ModelBank:
         and then a block per kind, present when any spec of the bank closes
         groups and is of that kind, null on the rows of other kinds:
         ``columns``, ``means``, ``comoments``, ``targets``, ``target_means``,
-        ``target_vars``, ``target_weights``, ``target_n_kish`` and
-        ``cross_moments`` for a kind that keeps accumulators;
-        ``coef`` for every kind that reports one; ``eig_vals`` and
+        ``target_vars``, ``target_weights``, ``target_n_kish``,
+        ``cross_moments`` and ``means_by_target`` for a kind that keeps
+        accumulators; ``coef`` for every kind that reports one -- on a Gram's
+        row, the coefficients of that Gram's ``targets``; ``eig_vals`` and
         ``eig_vecs`` for an ``ew_cov`` with ``pca``; ``pair_*`` for a
         ``marginal``.
 

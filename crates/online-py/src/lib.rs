@@ -82,10 +82,16 @@ type GramRow = (
 );
 
 /// One [`GramRow`] with its lag block beside it (docs/ENHANCEMENTS.md E56):
-/// `(lags, L*k*k cross-moments)`, or `None` for a spec without lags. A pair
-/// rather than two more slots because pyo3 converts tuples up to twelve
-/// elements and the row is already twelve.
-type GramRowWithLags = (GramRow, Option<(Vec<usize>, Vec<f64>)>);
+/// `(lags, L*k*k cross-moments)`, or `None` for a spec without lags; and the
+/// Gram's targets with their column means (docs/PLAN.md task 81): indices
+/// into the spec's targets, and one `k`-long list of means per target.
+/// Beside the row rather than in it because pyo3 converts tuples up to
+/// twelve elements and the row is already twelve.
+type GramRowWithLags = (
+    GramRow,
+    Option<(Vec<usize>, Vec<f64>)>,
+    (Vec<usize>, Vec<Vec<f64>>),
+);
 
 /// `(group, instance, n_eff, coef)` — one decay instance's flat `coef` list,
 /// `None` before its first solve; `ModelBank.coef` lays it out with
@@ -284,6 +290,7 @@ impl PyModelBank {
                         g.target_n_kish,
                     ),
                     g.lags.zip(g.lag_comoments),
+                    (g.targets, g.means_by_target),
                 )
             })
             .collect())

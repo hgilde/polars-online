@@ -174,7 +174,9 @@ def test_a_save_mid_block_resumes_bit_for_bit(tmp_path):
     whole, _ = run(df, 16)
     a = po.ModelBank([spec(16)])
     a.fit_predict(df.slice(0, 101))
-    assert ridge_state(a)["cov"]["pending"]["lam"], "row 101 should sit mid-block"
+    assert ridge_state(a)["acc"]["grams"]["grams"][0]["pending"]["lam"], (
+        "row 101 should sit mid-block"
+    )
     a.save(tmp_path / "blocked.state")
     b = po.ModelBank.load(tmp_path / "blocked.state")
     rest = fields(b.fit_predict(df.slice(101)))
@@ -347,7 +349,7 @@ def test_the_held_rows_are_in_the_json_and_legible():
     `pending` block a reader can recognise; an unblocked fit carries nothing."""
     df = stream()
     _, blocked = run(df.slice(0, 101), 16)
-    held = ridge_state(blocked)["cov"]["pending"]
+    held = ridge_state(blocked)["acc"]["grams"]["grams"][0]["pending"]
     assert held["block_rows"] == 16
     n = len(held["lam"])
     assert 0 < n < 16
@@ -355,7 +357,7 @@ def test_the_held_rows_are_in_the_json_and_legible():
     assert len(held["x"]) == n * (K + 1), "one z row per held row, the intercept slot included"
     assert held["w_open"] > 0
     _, plain = run(df.slice(0, 101), 0)
-    assert "pending" not in ridge_state(plain)["cov"]
+    assert "pending" not in ridge_state(plain)["acc"]["grams"]["grams"][0]
 
 
 def test_gram_mid_block_reads_the_held_rows_and_moves_nothing():
@@ -386,7 +388,9 @@ def test_scoring_mid_block_is_the_plain_model_s_and_moves_nothing():
     head, rest = df.slice(0, 101), df.slice(101)
     _, plain = run(head, 0)
     _, blocked = run(head, 16)
-    assert ridge_state(blocked)["cov"]["pending"]["lam"], "row 101 should sit mid-block"
+    assert ridge_state(blocked)["acc"]["grams"]["grams"][0]["pending"]["lam"], (
+        "row 101 should sit mid-block"
+    )
     before = blocked.save_bytes()
     assert_same_fit(fields(plain.predict(rest)), fields(blocked.predict(rest)))
     assert blocked.save_bytes() == before
@@ -398,7 +402,9 @@ def test_a_group_closed_mid_block_carries_the_merged_rows():
     are in its row, so it is the row the per-row model would have written."""
     df = stream().with_columns(g=pl.Series(["a"] * 341 + ["b"] * 359))
     _, alone = run(df.slice(0, 341), 16)
-    assert ridge_state(alone)["cov"]["pending"]["lam"], "'a' should close mid-block"
+    assert ridge_state(alone)["acc"]["grams"]["grams"][0]["pending"]["lam"], (
+        "'a' should close mid-block"
+    )
     bank = po.ModelBank([spec(16, group="g", group_close="monotone")])
     bank.fit_predict(df)
     row = po.gram.from_row(bank.closed_groups())
@@ -421,8 +427,8 @@ def test_a_session_change_blends_the_held_block_first():
     blocked, bank = run(df, 16, **kw)
     assert_same_fit(plain, blocked)
     state = ridge_state(bank)
-    assert state["cov"]["pending"]["block_rows"] == 16
-    assert state["slow"]["cov"]["pending"]["block_rows"] == 16
+    assert state["acc"]["grams"]["grams"][0]["pending"]["block_rows"] == 16
+    assert state["slow"]["grams"]["grams"][0]["pending"]["block_rows"] == 16
 
 
 @pytest.mark.parametrize(

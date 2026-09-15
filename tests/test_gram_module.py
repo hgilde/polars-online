@@ -66,6 +66,20 @@ class TestSolveIsTheModelsSolve:
         assert pg.INTERCEPT not in g["columns"]
         assert pg.solve(g, ridge=0.2) == pytest.approx(bank.coef("m")["coef"].to_numpy(), rel=1e-12)
 
+    def test_standardized_without_an_intercept_reads_the_raw_moments(self):
+        """Through the origin nothing is centred, standardized or not: the
+        model scales by the raw second moment (the code review's C8). `solve`
+        scaled the centred co-moments against the raw cross-moments there, a
+        hybrid that is least squares only when every feature has mean zero,
+        so a feature is moved off zero here."""
+        df, _ = stream()
+        df = df.with_columns(pl.col("x0") + 2.0)
+        bank = fit(df, ridge=0.2, standardize=True, add_intercept=False, max_rows_between_solves=1)
+        g = bank.gram("m")[0]
+        want = bank.coef("m")["coef"].to_numpy()
+        got = pg.solve(g, ridge=0.2, standardize=True)
+        assert got == pytest.approx(want, rel=1e-10), np.max(np.abs(got - want))
+
     def test_the_gram_is_ahead_of_a_stale_solve(self):
         """`gram()` is as of the last row; `coef()` is as of the last *solve*,
         which the spec's schedule decides. On a spec that solves rarely the
@@ -154,6 +168,148 @@ class TestSolveIsTheModelsSolve:
             pg.solve(g, target=5)
 
 
+def gappy_stream(n=3000, seed=0):
+    """Three features and two targets: `ya` on every row, `yb` only where
+    `x0 > -0.5`, so the two are missing on different rows and `yb`'s rows
+    have their own feature means."""
+    rng = np.random.default_rng(seed)
+    X = rng.standard_normal((n, 3))
+    base = X @ np.array([2.0, -1.0, 0.5]) + 0.1 * rng.standard_normal(n)
+    yb = np.where(X[:, 0] > -0.5, -1.0 + 0.5 * base, np.nan)
+    return pl.DataFrame(
+        {
+            **{f"x{i}": X[:, i] for i in range(3)},
+            "ya": 3.0 + base,
+            "yb": [None if np.isnan(v) else float(v) for v in yb],
+        },
+        schema={**{f"x{i}": pl.Float64 for i in range(3)}, "ya": pl.Float64, "yb": pl.Float64},
+    )
+
+
+class TestAGramWithGaps:
+    """docs/PLAN.md task 81: under `target_gaps="own_rows"` a target missing
+    from rows another target has is fitted from a Gram of its own, and
+    `gram()` returns one entry per Gram, each naming its targets; under
+    `"pairwise"` there is one Gram, and each target's fit reads its column
+    means over its own rows, `means_by_target`. Either way `solve` on an
+    entry is the fit `coef()` reports for each of its targets."""
+
+    @pytest.mark.parametrize("target_gaps", ["own_rows", "pairwise"])
+    @pytest.mark.parametrize("standardize", [False, True])
+    def test_solve_reproduces_each_targets_coefficients(self, target_gaps, standardize):
+        bank = fit(
+            gappy_stream(),
+            targets=["ya", "yb"],
+            ridge=0.3,
+            standardize=standardize,
+            target_gaps=target_gaps,
+            max_rows_between_solves=1,
+        )
+        grams = bank.gram("m")
+        split = [["ya", "yb"]] if target_gaps == "pairwise" else [["ya"], ["yb"]]
+        assert [g["targets"] for g in grams] == split
+        coef = bank.coef("m")
+        for g in grams:
+            for t in g["targets"]:
+                want = coef.filter(pl.col("target") == t)["coef"].to_numpy()
+                got = pg.solve(g, ridge=0.3, standardize=standardize, target=t)
+                assert got == pytest.approx(want, rel=1e-10), (t, np.max(np.abs(got - want)))
+
+    def test_means_by_target_are_each_targets_own(self):
+        df = gappy_stream()
+        g = fit(df, targets=["ya", "yb"], target_gaps="pairwise").gram("m")[0]
+        x = df.select("x0", "x1", "x2").to_numpy()
+        on_yb = df["yb"].is_not_null().to_numpy()
+        # `lam=1.0`: no decay, so each mean is the plain mean of its rows.
+        assert g["means_by_target"][0][1:] == pytest.approx(x.mean(axis=0), abs=1e-12)
+        assert g["means_by_target"][1][1:] == pytest.approx(x[on_yb].mean(axis=0), abs=1e-12)
+        assert g["means"][1:] == pytest.approx(x.mean(axis=0), abs=1e-12)
+
+    def test_a_closed_group_writes_a_row_per_gram(self):
+        """A closed group writes one row per Gram, each naming its targets
+        and carrying their coefficients and its weight, so `from_row` on each
+        row solves to that row's `coef`."""
+        df = gappy_stream(n=1200, seed=9).with_columns(g=pl.Series(["a"] * 600 + ["b"] * 600))
+        spec = po.spec.ewridge(
+            "m",
+            targets=["ya", "yb"],
+            features=["x0", "x1", "x2"],
+            lam=1.0,
+            ridge=0.3,
+            min_periods=5.0,
+            max_rows_between_solves=1,
+            group="g",
+            group_close="monotone",
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        closed = bank.closed_groups()
+        assert closed["group"].to_list() == ["a", "a"]
+        assert closed["targets"].to_list() == [["ya"], ["yb"]]
+        for row in closed.iter_rows(named=True):
+            g = pg.from_row(row)
+            (t,) = row["targets"]
+            want = np.asarray(row["coef"], dtype=float)
+            got = pg.solve(g, ridge=0.3, target=t)
+            assert got == pytest.approx(want, rel=1e-10), (t, np.max(np.abs(got - want)))
+            assert row["n_eff"] == g["target_weights"][0], "a Gram's weight is its target's"
+
+    @pytest.mark.parametrize("target_gaps", ["own_rows", "pairwise"])
+    def test_merged_shards_are_the_fit_of_the_union(self, target_gaps):
+        """Two shards' Grams, merged, are the Gram of their rows together --
+        each target's column means pooled over its own rows -- so `solve` on
+        the merge is the fit of the union: `numpy.linalg.lstsq` on the
+        target's rows under `"own_rows"`, pandas' pairwise-complete
+        covariance under `"pairwise"`. No decay, so the shards share a
+        weighting."""
+        pd = pytest.importorskip("pandas")
+        df = gappy_stream(n=3000, seed=11)
+        grams = []
+        for part in (df.head(1700), df.tail(1300)):
+            bank = fit(part, targets=["ya", "yb"], ridge=0.0, target_gaps=target_gaps)
+            grams.append(next(g for g in bank.gram("m") if "yb" in g["targets"]))
+        got = pg.solve(pg.merge(grams), target="yb")
+        x = df.select("x0", "x1", "x2").to_numpy()
+        yb = df["yb"].to_numpy()
+        own = ~np.isnan(yb)
+        if target_gaps == "own_rows":
+            design = np.column_stack([np.ones(own.sum()), x[own]])
+            want = np.linalg.lstsq(design, yb[own], rcond=None)[0]
+        else:
+            cov = pd.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "yb": yb}).cov()
+            n, n_yb = len(yb), int(own.sum())
+            xs = ["x0", "x1", "x2"]
+            cxx = cov.loc[xs, xs].to_numpy() * (n - 1) / n
+            cxy = cov.loc[xs, "yb"].to_numpy() * (n_yb - 1) / n_yb
+            slopes = np.linalg.solve(cxx, cxy)
+            want = np.r_[yb[own].mean() - x[own].mean(axis=0) @ slopes, slopes]
+        assert got == pytest.approx(want, rel=1e-9, abs=1e-12), np.max(np.abs(got - want))
+
+    @pytest.mark.parametrize("target_gaps", ["own_rows", "pairwise"])
+    def test_lasso_path_reproduces_the_lasso_models_coefficients(self, target_gaps):
+        lambdas = [0.5, 0.1, 0.0]
+        spec = po.spec.lasso(
+            "m",
+            targets=["yb"],
+            features=["x0", "x1", "x2"],
+            lasso_path=lambdas,
+            halflife=1e12,
+            min_periods=5.0,
+            target_gaps=target_gaps,
+            max_rows_between_solves=1,
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(gappy_stream(n=2000, seed=6))
+        want = (
+            bank.coef("m")
+            .sort("lambda", descending=True, nulls_last=True)["coef"]
+            .to_numpy()
+            .reshape(len(lambdas), -1)
+        )
+        got = pg.lasso_path(bank.gram("m")[0], lambdas)
+        assert got == pytest.approx(want, abs=1e-9), np.max(np.abs(got - want))
+
+
 class TestLassoPathIsTheModelsPath:
     def test_it_reproduces_the_lasso_models_coefficients(self):
         df, _ = stream(n=3000, k=5, seed=2)
@@ -177,6 +333,34 @@ class TestLassoPathIsTheModelsPath:
             .reshape(len(lambdas), -1)
         )
         got = pg.lasso_path(g, lambdas)
+        assert got == pytest.approx(want, abs=1e-9), np.max(np.abs(got - want))
+
+    def test_without_an_intercept_too(self):
+        """The lasso's own descent reads raw moments through the origin (the
+        code review's C8); the path read the centred co-moments, which is
+        the same fit only when every feature has mean zero."""
+        df, _ = stream(n=2000, k=3, seed=7)
+        df = df.with_columns(pl.col("x1") - 1.5)
+        lambdas = [0.3, 0.05, 0.0]
+        spec = po.spec.lasso(
+            "m",
+            targets=["y"],
+            features=["x0", "x1", "x2"],
+            lasso_path=lambdas,
+            halflife=1e12,
+            min_periods=5.0,
+            add_intercept=False,
+            max_rows_between_solves=1,
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        want = (
+            bank.coef("m")
+            .sort("lambda", descending=True, nulls_last=True)["coef"]
+            .to_numpy()
+            .reshape(len(lambdas), -1)
+        )
+        got = pg.lasso_path(bank.gram("m")[0], lambdas)
         assert got == pytest.approx(want, abs=1e-9), np.max(np.abs(got - want))
 
     def test_a_bigger_lambda_is_a_sparser_fit(self):
@@ -449,6 +633,27 @@ class TestCoefStats:
         sb = pg.coef_stats(b, pg.solve(b, ridge=1e-12))
         assert sb["n"] == pytest.approx(sa["n"], rel=1e-9)
         assert sb["se"][1:] == pytest.approx(sa["se"][1:], rel=1e-9)
+
+    def test_a_target_with_gaps_is_statsmodels_ols_on_its_rows(self):
+        """Under `target_gaps="own_rows"` a target's Gram, cross-moments and
+        moments are all over the rows it is present on, so `solve` and
+        `coef_stats` on its Gram are statsmodels' OLS on those rows: the
+        coefficients, their standard errors and R^2 (docs/PLAN.md task 81).
+        No decay and unit weights, so Kish's `n` is the row count."""
+        sm = pytest.importorskip("statsmodels.api")
+        df = gappy_stream(n=2000, seed=8)
+        bank = fit(df, targets=["ya", "yb"], ridge=1e-12, max_rows_between_solves=1)
+        g = next(g for g in bank.gram("m") if g["targets"] == ["yb"])
+        b = pg.solve(g, ridge=1e-12, target="yb")
+        st = pg.coef_stats(g, b, target="yb")
+        rows = df.filter(pl.col("yb").is_not_null())
+        ols = sm.OLS(
+            rows["yb"].to_numpy(), sm.add_constant(rows.select("x0", "x1", "x2").to_numpy())
+        ).fit()
+        assert b == pytest.approx(ols.params, rel=1e-8)
+        assert st["se"][1:] == pytest.approx(ols.bse[1:], rel=1e-6)
+        assert st["r2"] == pytest.approx(ols.rsquared, rel=1e-8)
+        assert st["n"] == pytest.approx(rows.height, rel=1e-12)
 
     def test_it_refuses_a_gram_that_cannot_answer(self):
         df, _ = stream(n=300, k=2)

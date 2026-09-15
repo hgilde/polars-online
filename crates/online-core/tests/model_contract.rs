@@ -238,6 +238,7 @@ fn ew_ridge_cfg() -> EwRidgeCfg {
         solve_every: 0.0,
         max_rows_between_solves: 1,
         gram_block_rows: 0,
+        target_gaps: online_core::TargetGaps::OwnRows,
         window: None,
         window_every: None,
     }
@@ -285,6 +286,7 @@ fn lasso_cfg() -> LassoCfg {
         window_every: None,
         max_cd_iters: 100,
         cd_tol: 1e-10,
+        target_gaps: online_core::TargetGaps::OwnRows,
     }
 }
 

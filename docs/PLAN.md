@@ -1667,6 +1667,109 @@ note, not a task.
       `hit_rate` (`test_diagnostics.py`'s E22 test among them) is regression
       and passes unchanged, since none of them named `binary=True`.
 
+- [x] 81. **`target_gaps`: which rows a target's fit is read from -- the code
+      review's N3, decided 2026-09-14.** With a target null on some rows,
+      `ewridge` and `lasso` read the Gram over every row and the target's
+      cross-moments over its own rows, so a slope moved with the target's
+      level: `(m_j − m)·ȳ_j / Var(x)` on top of the fit, with `m_j` a
+      feature's mean over the target's rows and `m` its mean over all of
+      them. The user asked for every option behind one parameter, then, of
+      that behaviour: "what value does it add if we implement the other
+      options?" None: it costs what `"pairwise"` costs and adds the level
+      term, so it goes. Two values, on `ewridge` and `lasso` -- `robust` and
+      `kalman` already fit each target on its own rows, and `rls` learns a
+      row only when every target has one:
+
+      - `"own_rows"`, the default: each target is fitted on exactly the rows
+        it is present on, the fit of the frame with its nulls dropped.
+        Targets present on the same rows share one Gram. A target missing
+        from a row that another target of its Gram is present on takes a
+        copy of that Gram as it stood before the row, and keeps its own from
+        then on. A single target never copies (its Gram skips its null
+        rows), and a bank of targets costs one `k×k` Gram per pattern of
+        missing rows.
+      - `"pairwise"`: the Gram over every row, each target's cross-moments
+        centred at its own rows' means -- pandas' pairwise-complete
+        covariance. One Gram whatever the gaps. Exact when the gaps have
+        nothing to do with the features; where they do (a target present
+        only on trade rows between market-data rows), each slope is scaled
+        by the ratio of the feature's variance over the target's rows to its
+        variance over all rows.
+
+      Both solve `(C + ridge·I)·β = c_j` with `β_0 = ȳ_j − m_j·β`: one
+      formula, read from a different Gram. `n_eff` counts every row in both,
+      as rule 8 has it, and `min_periods` gates on it as before (S2 stays
+      open). `lasso` takes `ewridge`'s centred cross-moments, which it needs
+      for `m_j`: that is N2. `bank.gram()` returns one entry per Gram, each
+      naming its targets, and adds `means_by_target` -- the column means
+      over each target's rows -- which `po.gram.solve` needs to reproduce
+      `"pairwise"`.
+
+      State: `SCHEMA_VERSION` and `MIN_SCHEMA_VERSION` are both 8. The user,
+      2026-09-14: "Do not worry about state saved before the next version
+      release, we are pre 1.0 and we can change things now". So the
+      schema-6 loaders the review round wrote go, with their frozen
+      fixtures. Changes the numbers of every `ewridge` and `lasso` stream
+      with a null target: a minor, with a CHANGELOG line.
+
+      **Done 2026-09-14.** `crates/online-core/src/gaps.rs` holds what both
+      models share: `TargetGaps`, the centred cross-moments (`Cross`, with
+      the weight over every row that is `n_eff`), and `Grams`, the Grams
+      and which one each target reads. Under `own_rows` a Gram learns the
+      rows one of its targets has, ages over the rest (`EwCov::skip`, which
+      holds a blocked Gram's skipped row as a zero-weight one rather than
+      flushing), and splits where its targets part; a window truncates a
+      Gram against the one its targets read at the boundary, and a blend
+      mixes a Gram with the twin's of the same targets. The intercept reads
+      the Gram's own mean under `own_rows` -- so a row the target misses
+      leaves its fit where it was to the bit -- and the Gram's mean plus the
+      target's offset under `pairwise`. Without gaps `ewridge` is the same
+      to the bit as before, checked against the previous build's goldens.
+
+      Before the fix, the new library tests failed as N3 predicts: the fit
+      of a target present where `x0 > -0.5` was off by 1.17 at level 0 and
+      by 49.2 at level 50, and a second gappy target of three by 6.18.
+      Library tests, `tests/test_second_opinion.py::TestATargetWithGaps`:
+      `own_rows` against `numpy.linalg.lstsq` and statsmodels' `WLS` on the
+      target's rows (with decay, at a level, plain and standardized, three
+      targets with three patterns of gaps), statsmodels' ridge
+      (`fit_regularized`, `L1_wt=0`) with a penalty, and statsmodels'
+      elastic net against `lasso` at a non-zero penalty, a noise feature
+      zeroed by both; `pairwise` against pandas' `DataFrame.cov` and
+      `numpy.cov` with weights; a `window` with gaps against both. In
+      `test_gram_module.py`, `coef_stats` on a gappy target's Gram is
+      statsmodels' OLS on its rows (coefficients, standard errors, R²).
+      Rust: each target of a three-target bank is, to the bit, the Gram of
+      a model of that target alone, blocked or not, and through a save; a
+      blend is each target's own blend; RLS agrees with `ridge_decay` on a
+      stream with gaps under `own_rows` and not under `pairwise`; a level
+      moves no slope under either reading; `lasso` at `1e8` (N2).
+
+      On the way, N5: `po.gram.solve(standardize=True)` and
+      `po.gram.lasso_path` without an intercept scaled the centred
+      co-moments against the raw cross-moments, the hybrid the models lost
+      in the review's C8; both read raw moments now, with a test each.
+      Re-frozen: the core goldens for `ew_ridge`, `ew_ridge_std` and
+      `lasso` (a null target at row 31), and in the golden pipeline the
+      `ridge`, `lasso` and `seqtest_compare` keys (a null every 29th row);
+      no `n_eff` moved. A closed row carries one Gram, and its `n_eff` is
+      that Gram's weight, as its `n_kish` was.
+
+      A second read, at the user's request, found two things the tests had
+      not. A zero-weight row with its targets parted split their Gram,
+      although the row learns nothing and the copy was the Gram itself, kept
+      twice from then on; it splits nothing now while there is weight to
+      age, since taking the row at weight 0 and skipping it age the Gram by
+      the same steps (`a_zero_weight_row_splits_no_gram`). And a target not
+      seen yet, alone in a Gram with no weight, cost one jittered solve --
+      counted in `solve_failures` -- on every solve under `ridge = 0`; that
+      solve is skipped, the coefficients the zeros it gave
+      (`a_target_not_seen_yet_costs_no_solve_failure`), and with a penalty
+      the solve runs, so a target not seen yet still sits at its
+      `coef_prior`. Tests added for paths nothing covered: a closed group's
+      row per Gram, each solving to its own `coef`, and merged shards'
+      Grams against the fit of their union by `numpy` and pandas.
+
 - [ ] 80. **The code review of 2026-09-12, worked through, begun
       2026-09-13.** `docs/REVIEW-2026-09-12.md` (and its pass-10 supplement)
       is the reviewer's; `docs/REVIEW-2026-09-12-PROGRESS.md` is the status of

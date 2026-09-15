@@ -4,45 +4,59 @@
 //! `z = [1, x]` when the intercept is configured):
 //!
 //! ```text
-//! W'   = lam W + w                          (n_eff)
-//! S'   = (lam W S + w z z^T) / W'           (EW mean of z z^T; shared)
+//! W'   = lam W + w                          (n_eff, over every row)
+//! S'   = (lam W_S S + w z z^T) / W_S'       (EW mean of z z^T over its Gram's rows)
 //! W_j' = lam W_j + w                        (only when y_j present)
 //! r_j' = (lam W_j r_j + w z y_j) / W_j'     (per target: EW mean of z y_j)
 //! ```
+//!
+//! Which rows a Gram `S` learns is `target_gaps` (docs/PLAN.md task 81,
+//! [`TargetGaps`]). Under `own_rows`, the default, a target's Gram learns
+//! exactly the rows the target is present on and ages over the rest, so its
+//! fit is the fit of its rows; targets present on the same rows share one.
+//! Under `pairwise` one Gram learns every row. A target present on every row
+//! reads the same Gram either way (`crate::gaps` has the bookkeeping).
 //!
 //! `S` is kept centred, as [`EwCov`] keeps it, and so is each `r_j` (review
 //! 2026-09-12, N1): over the rows target `j` was present on, the EW mean
 //! `ȳ_j`, the mean `m_j` of `z` there, and `c_j = E[(z − m_j)(y_j − ȳ_j)]`,
 //! each by the weighted Welford step with `a = lam W_j / W_j'` and
-//! `b = w / W_j'`, so that `r_j = c_j + m_j ȳ_j`. See `Cross`.
+//! `b = w / W_j'`, so that `r_j = c_j + m_j ȳ_j` (`crate::gaps::Cross`).
 //!
 //! Solve (per grid combo = feature set x ridge value), scheduled by
-//! `solve_every` clock units / `max_rows_between_solves`:
+//! `solve_every` clock units / `max_rows_between_solves`, one system per
+//! Gram for the targets that read it:
 //! - plain:        `(S + ridge D) beta = r_j`, D = I minus the intercept slot;
 //! - standardized: the same system scaled to correlation form, solved,
 //!   unscaled; ~zero-variance features dropped;
-//! - ridge_decay:  `(W S + prior_scale * ridge I) beta = W r_j` — a decaying
-//!   prior on the sum scale, penalizing the intercept: exactly classic RLS
-//!   regularization (used by the RLS agreement test, task 9).
+//! - ridge_decay:  `(W_S S + prior_scale * ridge I) beta = W_S r_j` — a
+//!   decaying prior on the sum scale, penalizing the intercept: exactly
+//!   classic RLS regularization (used by the RLS agreement test, task 9).
 //!
 //! With an intercept, and without `ridge_decay`, the unpenalized intercept is
 //! eliminated and the slopes are solved on the centred system
-//! `(C + ridge I) beta = c_j + (m_j − m) ȳ_j`, `C` and `m` the Gram's centred
-//! co-moments and mean, then `beta_0 = ȳ_j − m · beta`. That is the plain
-//! system exactly, with nothing in it the size of `level²`: the raw normal
-//! equations, or a right-hand side formed as `E[z y] − m ȳ`, lose `level²·ε`,
-//! which at `1e8` is the whole fit. Through the origin, and under
+//!
+//! ```text
+//! (C + ridge I) beta = c_j        beta_0 = ȳ_j − m_j · beta
+//! ```
+//!
+//! `C` the centred co-moments of the target's Gram. Under `own_rows` that is
+//! the plain system exactly, with nothing in it the size of `level²`: the raw
+//! normal equations, or a right-hand side formed as `E[z y] − m ȳ`, lose
+//! `level²·ε`, which at `1e8` is the whole fit. Under `pairwise` it is the
+//! same formula on the Gram of every row. Through the origin, and under
 //! `ridge_decay`, there is no intercept to eliminate and the raw system is
-//! solved.
+//! solved: the Gram's `E[z zᵀ]` against the target's `E[z·y_j]`.
 //!
 //! Predictions use the last solved coefficients (out-of-sample by construction:
 //! the solve happens after the row's update, the pred before it).
 
 use serde::{Deserialize, Serialize};
 
+use crate::gaps::{Acc, AccSnap, AccView, Cross, gram_parts};
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::solve::{dot_aug, solve_spd};
-use crate::{Decay, EwCov, TargetMoments};
+use crate::{Decay, EwCov, GramPart, TargetGaps, TargetMoments};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EwRidgeCfg {
@@ -114,14 +128,22 @@ pub struct EwRidgeCfg {
     /// effective block is `min(B, rows between solves)` and the option pays
     /// only with a solve cadence: it is refused with `solve_every <= 0` or
     /// `max_rows_between_solves <= 1`, and with `window`, which reads the
-    /// matrix on every row. Memory: `B × k_total` floats per instance, twice
-    /// with `session_shrink`'s twin, held in the state file mid-block, and
-    /// refused over 256 MiB. The block's product is a floating-point sum in a
+    /// matrix on every row. A row a Gram skips under `target_gaps =
+    /// "own_rows"` is held as a zero-weight row rather than flushing the
+    /// block. Memory: `B × k_total` floats per Gram -- one, or under
+    /// `own_rows` one per pattern of missing targets -- twice with
+    /// `session_shrink`'s twin, held in the state file mid-block, and refused
+    /// over 256 MiB a Gram. The block's product is a floating-point sum in a
     /// different order from the per-row one, so a blocked fit is not
     /// bit-identical to an unblocked one and its last bits may differ across
     /// CPUs; it is identical whichever way the stream is chunked.
     #[serde(default)]
     pub gram_block_rows: usize,
+    /// Which rows a target's Gram is taken over where the target is null on
+    /// some (docs/PLAN.md task 81; [`TargetGaps`]): its own, the default, or
+    /// every row.
+    #[serde(default)]
+    pub target_gaps: TargetGaps,
     /// Clock units of history the fit is computed from, with a *hard* cutoff:
     /// a row older than this contributes nothing to the Gram, where the
     /// exponential weight alone would leave `0.5^(age/halflife)` of it
@@ -298,311 +320,27 @@ impl EwRidgeCfg {
     }
 }
 
-/// Each target's cross-moments with the feature row `z`, centred (review
-/// 2026-09-12, N1). Over the rows target `j` was present on: its EW mean
-/// `ȳ_j` (`my`), the centred cross-moment `c_j = E[(z − m_j)(y_j − ȳ_j)]`
-/// (`c`), and the mean `m_j` of `z` there, kept as its offset `δ_j = m_j − m`
-/// (`d`) from the mean `m` of `z` over every row (`m`).
-///
-/// They were kept raw, `r_j = E[z·y_j]`, and the solves with an intercept
-/// formed `E[z·y] − m·ȳ` from them, or read the raw normal equations: two
-/// numbers the size of `level²` subtracted to leave one the size of a
-/// covariance, which at `1e8` left nothing of the fit. The centred
-/// right-hand side is `c_j + δ_j·ȳ_j` (`Cross::centred`); the raw moment,
-/// `r_j = c_j + (m + δ_j)·ȳ_j`, is one step away for what still reads it.
-///
-/// `δ_j` is a number of its own, updated from deviations, rather than a
-/// difference formed from two means: it is exactly 0 while the target has
-/// been present on every row, where two level-sized means would differ by
-/// `level·ε` -- times `ȳ_j`, the cancellation again. `m` repeats the Gram's
-/// mean because a blocked Gram (`gram_block_rows`) brings its own up to date
-/// only at a flush, and the offsets need it on every row; unblocked, the two
-/// take the same steps and agree to the bit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct Cross {
-    m: Vec<f64>,
-    d: Vec<Vec<f64>>,
-    my: Vec<f64>,
-    c: Vec<Vec<f64>>,
-}
-
-/// A row's share `w / W'` of an accumulated weight `W' = lam·W + w`, as
-/// [`EwCov::update`] forms it -- `decayed` is `lam·W` -- and 0 where `W'` is:
-/// nothing has been carried, and nothing moves (hard rule 9).
-fn row_share(decayed: f64, w: f64) -> f64 {
-    let w_new = decayed + w;
-    if w_new > 0.0 { w / w_new } else { 0.0 }
-}
-
-impl Cross {
-    fn new(n_targets: usize, k: usize) -> Self {
-        Self {
-            m: vec![0.0; k],
-            d: vec![vec![0.0; k]; n_targets],
-            my: vec![0.0; n_targets],
-            c: vec![vec![0.0; k]; n_targets],
-        }
-    }
-
-    /// Target `j` present on a row, with the `a_j`/`b_j` of its own weight's
-    /// update and the row's share `b` of the all-row weight. With `u = z − m`
-    /// against the old all-row mean, `m_j` takes `b_j` of `z − m_j = u − δ_j`
-    /// and `m` takes `b` of `u`, so
-    ///
-    /// ```text
-    /// δ_j' = (1 − b_j)·δ_j + (b_j − b)·u
-    /// ```
-    ///
-    /// written so that a target's first row (`b_j = 1`) drops the old offset
-    /// outright and a target present on every row (`b_j = b`) leaves 0 at 0,
-    /// both exactly. The deviations are from the means before the row, so
-    /// this comes before [`Cross::advance`].
-    fn learn(&mut self, j: usize, z: &[f64], y: f64, aj: f64, bj: f64, b: f64) {
-        let dy = y - self.my[j];
-        let ab_dy = aj * bj * dy;
-        let (d, c) = (&mut self.d[j], &mut self.c[j]);
-        for (((dji, cji), &zi), &mi) in d.iter_mut().zip(c.iter_mut()).zip(z).zip(&self.m) {
-            let u = zi - mi;
-            *cji = aj * *cji + ab_dy * (u - *dji);
-            *dji = (1.0 - bj) * *dji + (bj - b) * u;
-        }
-        self.my[j] += bj * dy;
-    }
-
-    /// Target `j` absent from a row -- null, or nothing to learn from -- that
-    /// moves the all-row mean by `b·u`: its own mean stays, so its offset
-    /// takes the step back.
-    fn miss(&mut self, j: usize, z: &[f64], b: f64) {
-        if b > 0.0 {
-            for ((dji, &zi), &mi) in self.d[j].iter_mut().zip(z).zip(&self.m) {
-                *dji -= b * (zi - mi);
-            }
-        }
-    }
-
-    /// The all-row mean takes the row, after every target has read it.
-    fn advance(&mut self, z: &[f64], b: f64) {
-        if b > 0.0 {
-            for (mi, &zi) in self.m.iter_mut().zip(z) {
-                *mi += b * (zi - *mi);
-            }
-        }
-    }
-
-    /// Target `j`'s uncentred `E[z·y_j] = c_j + (m + δ_j)·ȳ_j`.
-    fn raw(&self, j: usize) -> Vec<f64> {
-        let my = self.my[j];
-        self.c[j]
-            .iter()
-            .zip(&self.d[j])
-            .zip(&self.m)
-            .map(|((c, d), m)| c + (m + d) * my)
-            .collect()
-    }
-
-    /// Target `j`'s `E[(z_i − m_i)·y_j] = c_j,i + δ_j,i·ȳ_j` at slot `i`: the
-    /// right-hand side of the centred solves.
-    fn centred(&self, j: usize, i: usize) -> f64 {
-        self.c[j][i] + self.d[j][i] * self.my[j]
-    }
-
-    /// Mix toward the twin's as `EwRidge::blend_toward_long_run` mixes the
-    /// Gram: `(a, b)` over every row, `per[j] = (a_j, b_j)` over target `j`'s
-    /// own (`None` where neither side has any). The centred mixture,
-    /// `c = a_j·c + b_j·c' + a_j·b_j·(m_j − m_j')(ȳ − ȳ')`, as the co-moments'
-    /// (C16); and since `m_j = m + δ_j` on both sides, the offsets mix as
-    /// `δ = a_j·δ + b_j·δ' + (b_j − b)·(m' − m)`.
-    fn blend(&mut self, other: &Self, a: f64, b: f64, per: &[Option<(f64, f64)>]) {
-        // `m' − m`, the twin's all-row mean from this one's.
-        let dm: Vec<f64> = other.m.iter().zip(&self.m).map(|(o, s)| o - s).collect();
-        for (j, p) in per.iter().enumerate() {
-            let Some((aj, bj)) = *p else { continue };
-            let dy = self.my[j] - other.my[j];
-            let mine = self.c[j].iter_mut().zip(self.d[j].iter_mut());
-            let theirs = other.c[j].iter().zip(&other.d[j]);
-            for (((c, d), (oc, od)), &dmi) in mine.zip(theirs).zip(&dm) {
-                // `m_j − m_j' = (δ_j − δ_j') − (m' − m)`.
-                let dz = (*d - od) - dmi;
-                *c = aj * *c + bj * oc + aj * bj * dz * dy;
-                *d = aj * *d + bj * od + (bj - b) * dmi;
-            }
-            self.my[j] = aj * self.my[j] + bj * other.my[j];
-        }
-        for (m, om) in self.m.iter_mut().zip(&other.m) {
-            *m = a * *m + b * om;
-        }
-    }
-
-    /// The rows after a snapshot `old`, as `crate::truncated` takes them from
-    /// the Gram: `ratio = W_u/W_R` over every row, and `per[j] = (ratio_j,
-    /// g_j)` -- `W_u,j/W_R,j` and `W_j/W_R,j` -- over target `j`'s own, `None`
-    /// where nothing of it is left. The pooling identity again,
-    /// `c_R = g_j·c − ratio_j·c_u − ratio_j·g_j·(m_j,u − m_j)(ȳ_u − ȳ)`; the
-    /// means by `x_R = x − ratio·(x_u − x)`; and the offset from offsets,
-    /// `δ_R = δ − ratio_j·(δ_u − δ) + (ratio − ratio_j)·(m_u − m)`.
-    fn truncated(&self, old: &Self, ratio: f64, per: &[Option<(f64, f64)>]) -> Self {
-        let mut out = Self::new(self.my.len(), self.m.len());
-        // `m_u − m`.
-        let du: Vec<f64> = old.m.iter().zip(&self.m).map(|(u, m)| u - m).collect();
-        for ((o, m), dui) in out.m.iter_mut().zip(&self.m).zip(&du) {
-            *o = m - ratio * dui;
-        }
-        for (j, p) in per.iter().enumerate() {
-            let Some((rj, gj)) = *p else { continue };
-            let dy = old.my[j] - self.my[j];
-            let into = out.c[j].iter_mut().zip(out.d[j].iter_mut());
-            let now = self.c[j].iter().zip(&self.d[j]);
-            let then = old.c[j].iter().zip(&old.d[j]);
-            for ((((oc, od), (c, d)), (cu, du_j)), &dui) in into.zip(now).zip(then).zip(&du) {
-                // `δ_u − δ`, and `m_j,u − m_j` from it.
-                let dd = du_j - d;
-                let dz = dui + dd;
-                *oc = gj * c - rj * cu - rj * gj * dz * dy;
-                *od = d - rj * dd + (ratio - rj) * dui;
-            }
-            out.my[j] = self.my[j] - rj * dy;
-        }
-        out
-    }
-
-    /// A schema-6 state's raw cross-moments, split with `δ = 0` -- as if the
-    /// target had been present wherever the features were -- about the
-    /// all-row mean `m` and the target means `ybar`. Every split with
-    /// `c + (m + δ)·ȳ = r` holds the same raw moments and carries them
-    /// forward exactly, whatever `δ` is. `ȳ` is different: the centred solve
-    /// reads it on its own, as the target's mean, so a model with an
-    /// intercept needs the true one (`Cross::split_at_intercept`); a model
-    /// without one reads only the raw moments. The split keeps the precision
-    /// the file had, and a level in it washes out as the rows it came from
-    /// decay.
-    fn from_raw(r: Vec<Vec<f64>>, m: Vec<f64>, ybar: Vec<f64>) -> Self {
-        let c = r
-            .iter()
-            .zip(&ybar)
-            .map(|(rj, &y)| rj.iter().zip(&m).map(|(r, m)| r - m * y).collect())
-            .collect();
-        Self {
-            d: vec![vec![0.0; m.len()]; r.len()],
-            my: ybar,
-            c,
-            m,
-        }
-    }
-
-    /// Re-split every target's moments about the target mean its intercept
-    /// slot holds, `E[1·y] = ȳ`, keeping every raw moment. A schema-6 twin or
-    /// window snapshot is split as it is read, knowing nothing of the
-    /// intercept; `EwRidgeWire` calls this on each where there is one.
-    fn split_at_intercept(&mut self) {
-        for j in 0..self.my.len() {
-            let raw = self.raw(j);
-            let ybar = raw[0];
-            let parts = raw.iter().zip(&self.m);
-            for ((c, d), (r, m)) in self.c[j].iter_mut().zip(&self.d[j]).zip(parts) {
-                *c = r - (m + d) * ybar;
-            }
-            self.my[j] = ybar;
-        }
-    }
-
-    /// Whether the moments are those of `n_targets` targets over `k` slots.
-    fn has_shape(&self, n_targets: usize, k: usize) -> bool {
-        self.m.len() == k
-            && self.my.len() == n_targets
-            && self.d.len() == n_targets
-            && self.c.len() == n_targets
-            && self.d.iter().chain(&self.c).all(|v| v.len() == k)
-    }
-}
-
-/// The target means a schema-6 state's raw cross-moments are split about
-/// where no intercept slot holds them: the target moments', or 0 for a state
-/// without them. Any split is exact (`Cross::from_raw`).
-fn target_means(tm: Option<&TargetMoments>, n_targets: usize) -> Vec<f64> {
-    tm.map_or_else(|| vec![0.0; n_targets], |t| t.means().to_vec())
-}
-
-/// The long-run twin's accumulators (see [`EwRidgeCfg::session_shrink`]).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "SlowStateWire")]
-struct SlowState {
-    cov: EwCov,
-    wj: Vec<f64>,
-    cross: Cross,
-    /// The twin's own target moments, so a blend mixes two complete sets
-    /// (docs/ENHANCEMENTS.md E45). `None` in a state written before task 38.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    tm: Option<TargetMoments>,
-}
-
-/// The layouts `SlowState` loads; see `EwRidgeWire`. The twin's own target
-/// moments hold its target means.
-#[derive(Deserialize)]
-struct SlowStateWire {
-    cov: EwCov,
-    wj: Vec<f64>,
-    #[serde(default)]
-    cross: Option<Cross>,
-    #[serde(default)]
-    tm: Option<TargetMoments>,
-    #[serde(default)]
-    r: Option<Vec<Vec<f64>>>,
-}
-
-impl TryFrom<SlowStateWire> for SlowState {
-    type Error = String;
-
-    fn try_from(w: SlowStateWire) -> Result<Self, String> {
-        let SlowStateWire {
-            cov,
-            wj,
-            cross,
-            tm,
-            r,
-        } = w;
-        let cross = match (cross, r) {
-            (Some(cross), None) => cross,
-            (None, Some(r)) => {
-                let ybar = target_means(tm.as_ref(), r.len());
-                Cross::from_raw(r, cov.flushed().means().to_vec(), ybar)
-            }
-            _ => return Err("ew_ridge: the twin carries neither its cross-moments nor r".into()),
-        };
-        Ok(Self { cov, wj, cross, tm })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "EwRidgeWire")]
 pub struct EwRidge {
     cfg: EwRidgeCfg,
-    cov: EwCov,
-    /// Per-target EW weight sums (see module docs).
-    wj: Vec<f64>,
-    /// Per-target cross-moments with the feature row, centred (see `Cross`).
-    cross: Cross,
+    /// The Grams, and per target its weight, centred cross-moments and
+    /// moments (see `crate::gaps::Acc`).
+    acc: Acc,
     /// Per-target EW residual variance and its weight sum.
     wsig: Vec<f64>,
     sig2: Vec<f64>,
-    /// Per-target mean, variance and `Sum w^2`, the other half of the
-    /// sufficient statistic the Gram export hands back
-    /// (docs/ENHANCEMENTS.md E45). `None` in a state written before task 38:
-    /// the moments cannot be reconstructed from the cross-moments, so such a
-    /// state reports `None` rather than a partial answer.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    tm: Option<TargetMoments>,
     /// Last solved coefficients per output slot (target-major, then combo),
     /// each of length `k_total` (zeros outside a combo's feature set).
     beta: Option<Vec<Vec<f64>>>,
-    /// Slow-moving twin for `session_shrink`: the same statistics under
+    /// Slow-moving twin for `session_shrink`: the same accumulators under
     /// `long_halflife`, representing the long-run relationship.
     #[serde(default)]
-    slow: Option<Box<SlowState>>,
+    slow: Option<Box<Acc>>,
     clock_since_solve: f64,
     rows_since_solve: u32,
     pub solve_failures: u64,
     /// The hard-cutoff window, when the spec asks for one (docs/PLAN.md §13).
-    /// Absent otherwise, so an ordinary fit writes the bytes it always did.
+    /// Absent otherwise, so an ordinary fit writes no ring.
     ///
     /// **Last, and it must stay last.** The compact msgpack encoding writes a
     /// struct as an *array*, so a `skip_serializing_if` field anywhere but the
@@ -625,181 +363,24 @@ struct Windowed {
 }
 
 /// Every accumulator a fit is read from, as it stood before a row and decayed
-/// to that row's clock. The Gram and the per-target cross-moments are what
+/// to that row's clock. The Grams and the per-target cross-moments are what
 /// the solve reads; the residual variance is what `sigma` and `resid_z` read,
 /// and truncating one without the other would report a windowed fit beside an
 /// unwindowed spread.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "RidgeMomentsWire")]
 struct RidgeMoments {
-    cov: crate::Moments,
-    wj: Vec<f64>,
-    cross: Cross,
+    acc: AccSnap,
     wsig: Vec<f64>,
     sig2: Vec<f64>,
-}
-
-/// The layouts `RidgeMoments` loads; see `EwRidgeWire`. A snapshot knows
-/// neither the intercept nor the target means, so a schema-6 one is split at
-/// `ȳ = 0`, which keeps every raw moment; `EwRidgeWire` re-splits it about
-/// the true target mean where the model has an intercept, the one case that
-/// reads `ȳ` on its own.
-#[derive(Deserialize)]
-struct RidgeMomentsWire {
-    cov: crate::Moments,
-    wj: Vec<f64>,
-    #[serde(default)]
-    cross: Option<Cross>,
-    wsig: Vec<f64>,
-    sig2: Vec<f64>,
-    #[serde(default)]
-    r: Option<Vec<Vec<f64>>>,
-}
-
-impl TryFrom<RidgeMomentsWire> for RidgeMoments {
-    type Error = String;
-
-    fn try_from(w: RidgeMomentsWire) -> Result<Self, String> {
-        let RidgeMomentsWire {
-            cov,
-            wj,
-            cross,
-            wsig,
-            sig2,
-            r,
-        } = w;
-        let cross = match (cross, r) {
-            (Some(cross), None) => cross,
-            (None, Some(r)) => {
-                let n = r.len();
-                Cross::from_raw(r, cov.m.clone(), vec![0.0; n])
-            }
-            _ => {
-                return Err(
-                    "ew_ridge: a window snapshot carries neither its cross-moments nor r".into(),
-                );
-            }
-        };
-        Ok(Self {
-            cov,
-            wj,
-            cross,
-            wsig,
-            sig2,
-        })
-    }
 }
 
 /// The accumulators a windowed fit reads, with everything older than the
 /// window subtracted off.
 struct RidgeView {
-    cov: EwCov,
-    cross: Cross,
+    /// A target with no row left in the window has weight 0 here, and then
+    /// reports nothing (review 2026-09-12, C2).
+    acc: AccView,
     sig2: Vec<f64>,
-    /// Each target's weight inside the window; 0 for a target with no row
-    /// left in it, which then reports nothing (review 2026-09-12, C2).
-    wj: Vec<f64>,
-}
-
-/// The layouts `EwRidge` loads. Schema 6 kept each target's cross-moments
-/// raw, under `r`; schema 7 keeps them centred, under `cross` (review
-/// 2026-09-12, N1), and so do the twin and the window's snapshots, each with
-/// a wire of its own. A bank file names its fields, so the layouts are told
-/// apart by name; the compact encoding only ever holds the current layout,
-/// whose fields come first here, in the same order, with `r` after them all.
-#[derive(Deserialize)]
-struct EwRidgeWire {
-    cfg: EwRidgeCfg,
-    cov: EwCov,
-    wj: Vec<f64>,
-    #[serde(default)]
-    cross: Option<Cross>,
-    wsig: Vec<f64>,
-    sig2: Vec<f64>,
-    #[serde(default)]
-    tm: Option<TargetMoments>,
-    beta: Option<Vec<Vec<f64>>>,
-    #[serde(default)]
-    slow: Option<Box<SlowState>>,
-    clock_since_solve: f64,
-    rows_since_solve: u32,
-    solve_failures: u64,
-    #[serde(default)]
-    win: Option<Windowed>,
-    #[serde(default)]
-    r: Option<Vec<Vec<f64>>>,
-}
-
-impl TryFrom<EwRidgeWire> for EwRidge {
-    type Error = String;
-
-    fn try_from(w: EwRidgeWire) -> Result<Self, String> {
-        let EwRidgeWire {
-            cfg,
-            cov,
-            wj,
-            cross,
-            wsig,
-            sig2,
-            tm,
-            beta,
-            mut slow,
-            clock_since_solve,
-            rows_since_solve,
-            solve_failures,
-            mut win,
-            r,
-        } = w;
-        let (k, m) = (cfg.k_total(), cfg.n_targets);
-        let cross = match (cross, r) {
-            (Some(cross), None) => cross,
-            (None, Some(r)) => {
-                // `ȳ` is the intercept slot's raw moment, `E[1·y]`, or the
-                // target moments' mean where there is no intercept.
-                let ybar = if cfg.add_intercept && r.iter().all(|rj| !rj.is_empty()) {
-                    r.iter().map(|rj| rj[0]).collect()
-                } else {
-                    target_means(tm.as_ref(), r.len())
-                };
-                // The twin and the window's snapshots were split as they were
-                // read, knowing nothing of the intercept. The centred solve
-                // reads each `ȳ` as a target mean, so with an intercept each
-                // is re-split about the mean its intercept slot holds; without
-                // one only the raw moments are read, and any split will do.
-                if cfg.add_intercept {
-                    if let Some(s) = slow.as_mut() {
-                        s.cross.split_at_intercept();
-                    }
-                    if let Some(w) = win.as_mut() {
-                        w.snaps
-                            .iter_mut()
-                            .for_each(|s| s.cross.split_at_intercept());
-                    }
-                }
-                Cross::from_raw(r, cov.flushed().means().to_vec(), ybar)
-            }
-            _ => return Err("ew_ridge: state carries neither its cross-moments nor r".into()),
-        };
-        if !cross.has_shape(m, k) || wj.len() != m || wsig.len() != m || sig2.len() != m {
-            return Err("ew_ridge: state has the wrong shape".into());
-        }
-        Ok(Self {
-            cfg,
-            cov,
-            wj,
-            cross,
-            wsig,
-            sig2,
-            tm,
-            beta,
-            slow,
-            clock_since_solve,
-            rows_since_solve,
-            solve_failures,
-            win,
-            zbuf: vec![0.0; k],
-        })
-    }
 }
 
 impl EwRidge {
@@ -807,21 +388,12 @@ impl EwRidge {
         cfg.validate()?;
         let k_total = cfg.k_total();
         let m = cfg.n_targets;
-        // Blocked or not, the twin runs the same accumulator as the main one:
-        // its update is the same cost, and its matrix is read only at a blend.
+        // Blocked or not, the twin runs the same accumulators as the main
+        // ones: its update is the same cost, and its matrices are read only at
+        // a blend.
         let block = cfg.gram_block_rows;
-        let blocked = move |mut cov: EwCov| {
-            cov.set_block_rows(block);
-            cov
-        };
-        let slow = cfg.session_shrink.map(|_| {
-            Box::new(SlowState {
-                cov: blocked(EwCov::new(k_total)),
-                wj: vec![0.0; m],
-                cross: Cross::new(m, k_total),
-                tm: Some(TargetMoments::new(m)),
-            })
-        });
+        let acc = move || Acc::new(m, k_total, block);
+        let slow = cfg.session_shrink.map(|_| Box::new(acc()));
         let win = match cfg.window {
             Some(w) => Some(Windowed {
                 clock: 0.0,
@@ -830,11 +402,8 @@ impl EwRidge {
             None => None,
         };
         Ok(Self {
+            acc: acc(),
             slow,
-            cov: blocked(EwCov::new(k_total)),
-            wj: vec![0.0; m],
-            cross: Cross::new(m, k_total),
-            tm: Some(TargetMoments::new(m)),
             wsig: vec![0.0; m],
             sig2: vec![0.0; m],
             beta: None,
@@ -861,60 +430,52 @@ impl EwRidge {
         }
     }
 
-    /// The accumulators the fit is read from when a `window` has truncated
-    /// them -- the Gram, each target's cross-moments and each target's weight
-    /// -- or `None` when there is no window or nothing has aged out of it, and
-    /// the live ones are the answer. What `Bank::gram` and a closed row
-    /// report, so that the Gram solves to the fit `coef` reports (review
-    /// 2026-09-12, S19). The target moments are not truncated -- the window's
-    /// snapshots do not carry them -- so a caller reporting them under a
-    /// window says it cannot.
-    pub fn windowed_gram(&self) -> Option<(EwCov, Vec<Vec<f64>>, Vec<f64>)> {
-        self.view().map(|v| {
-            let r = (0..self.cfg.n_targets).map(|j| v.cross.raw(j)).collect();
-            (v.cov, r, v.wj)
-        })
-    }
-
-    /// The accumulated weight the fit is read from: under a `window`, the
-    /// weight *inside* it, which stops growing once the window fills. That is
-    /// what `min_periods` then gates on.
-    pub fn n_eff(&self) -> f64 {
+    /// The Grams the fit is read from, one entry per Gram with the targets
+    /// that read it ([`GramPart`]), and the target moments: what `Bank::gram`
+    /// and a closed row report. Under a `window` that has truncated the
+    /// accumulators, every number is the window's, so each Gram solves to the
+    /// fit `coef` reports (review 2026-09-12, S19), and the target moments
+    /// are `None`: the window's snapshots do not carry them, and the export
+    /// says it cannot give them rather than giving the whole history's.
+    pub fn gram_parts(&self) -> (Vec<GramPart>, Option<&TargetMoments>) {
+        let (of, gaps) = (&self.acc.grams.of, self.cfg.target_gaps);
         match self.view() {
-            Some(v) => v.cov.n_eff(),
-            None => self.cov.n_eff(),
+            Some(v) => (
+                gram_parts(&v.acc.grams, of, &v.acc.cross, &v.acc.wj, gaps),
+                None,
+            ),
+            None => (
+                gram_parts(
+                    &self.acc.grams.grams,
+                    of,
+                    &self.acc.cross,
+                    &self.acc.wj,
+                    gaps,
+                ),
+                Some(&self.acc.tm),
+            ),
         }
     }
 
-    /// Current coefficients per output slot, if solved.
-    /// The feature accumulator: EW means and the centered co-moment matrix
-    /// over `k_total` columns (the intercept column included when
-    /// `add_intercept`, where it is constant 1 and so has zero variance).
-    /// See [`EwCov::comoments`] (docs/ENHANCEMENTS.md E30).
-    ///
-    /// With `gram_block_rows` the matrix may be behind by a block; read it
-    /// through [`EwCov::flushed`], which merges a copy and leaves the
-    /// model's own block boundary where it was.
-    pub fn cov(&self) -> &EwCov {
-        &self.cov
+    /// The accumulated weight over every row, whatever the targets (hard rule
+    /// 8): under a `window`, the weight *inside* it, which stops growing once
+    /// the window fills. That is what `min_periods` then gates on.
+    pub fn n_eff(&self) -> f64 {
+        self.view().map_or(self.acc.cross.w, |v| v.acc.cross.w)
     }
 
     /// Per-target **uncentered** cross-moments `r[t]`, each `k_total` long:
-    /// the EW mean of `z·y_t`, where `z` is the feature row with the intercept
-    /// slot as a constant 1.
-    ///
-    /// Uncentered deliberately — it is what `po.gram.solve` consumes, paired
-    /// with the *raw* second moment. Mixing it with the centered
-    /// [`EwCov::comoments`] silently gives the wrong coefficients; the
-    /// identity that holds is
-    /// `(comoments + means⊗means) · beta == cross_moments`.
-    ///
-    /// Formed from the centred moments the model keeps, `r = c + m_z·ȳ` (see
-    /// `Cross`), so at a level `L` it carries the `L²·ε` of rounding that the
-    /// model's own solves with an intercept no longer see: they read the
-    /// centred system (review 2026-09-12, N1).
+    /// the EW mean of `z·y_t` over the rows target `t` was present on, where
+    /// `z` is the feature row with the intercept slot as a constant 1. Formed
+    /// from the centred moments the model keeps, `r = c + m_t·ȳ` (see
+    /// `crate::gaps::Cross`), so at a level `L` it carries the `L²·ε` of
+    /// rounding that the model's own solves with an intercept do not see
+    /// (review 2026-09-12, N1). [`Self::gram_parts`] pairs each with the Gram
+    /// it is solved against.
     pub fn cross_moments(&self) -> Vec<Vec<f64>> {
-        (0..self.cfg.n_targets).map(|j| self.cross.raw(j)).collect()
+        (0..self.cfg.n_targets)
+            .map(|j| self.acc.cross.raw(j))
+            .collect()
     }
 
     /// Per-target accumulated weight, the denominator behind
@@ -922,18 +483,24 @@ impl EwRidge {
     /// from the shared [`Self::n_eff`] when targets have different null
     /// patterns.
     pub fn target_weights(&self) -> &[f64] {
-        &self.wj
+        &self.acc.wj
     }
 
     /// Per-target mean, variance and `Sum w^2` -- the other half of what a
-    /// saved Gram needs (docs/ENHANCEMENTS.md E45). `None` for a state
-    /// written before task 38; see the field.
+    /// saved Gram needs (docs/ENHANCEMENTS.md E45).
     pub fn target_moments(&self) -> Option<&TargetMoments> {
-        self.tm.as_ref()
+        Some(&self.acc.tm)
     }
 
+    /// Current coefficients per output slot, if solved.
     pub fn coefficients(&self) -> Option<&[Vec<f64>]> {
         self.beta.as_deref()
+    }
+
+    /// Gram `g` of the live accumulators. Test helper.
+    #[cfg(test)]
+    pub(crate) fn gram(&self, g: usize) -> &EwCov {
+        &self.acc.grams.grams[g]
     }
 
     /// Re-solve and return the first target's first slope. Test helper. A
@@ -952,96 +519,26 @@ impl EwRidge {
         let Some(f) = self.cfg.session_shrink else {
             return;
         };
-        if f <= 0.0 || self.slow.is_none() {
+        if f <= 0.0 {
             return;
         }
-        // Both matrices are read in full below; a held block goes in first.
-        self.cov.flush();
-        if let Some(slow) = self.slow.as_mut() {
-            slow.cov.flush();
-        }
-        let Some(slow) = &self.slow else { return };
-        let k = self.cfg.k_total();
-
-        // Weight-respecting mixture of two weighted means.
-        let (wf, ws) = (self.cov.n_eff(), slow.cov.n_eff());
-        let w_new = (1.0 - f) * wf + f * ws;
-        // Whether anything was mixed: a blend with no weight on either side
-        // must stay the no-op its doc promises, re-solve included.
-        let mut moved = false;
-        // The all-row mixture's coefficients, which the cross-moments' copy of
-        // the Gram's mean takes too.
-        let mut all = None;
-        if w_new > 0.0 {
-            moved = true;
-            let mut blended = EwCov::new(k);
-            blended.set_block_rows(self.cov.block_rows());
-            let (af, as_) = ((1.0 - f) * wf / w_new, f * ws / w_new);
-            all = Some((af, as_));
-            // EwCov holds means, so mix means directly and restore the weight
-            // by replaying a single synthetic observation is not possible;
-            // instead rebuild from the mixed moments.
-            let mixed_mean: Vec<f64> = (0..k)
-                .map(|i| af * self.cov.mean(i) + as_ * slow.cov.mean(i))
-                .collect();
-            // Centred moments are not additive across differing means; the
-            // centred mixture is `C = af·C_f + as·C_s + af·as·Δ Δᵀ` with
-            // `Δ = m_f - m_s`, and nothing in it is the size of `m²`. This
-            // mixed raw second moments and re-centred on the mixed mean, which
-            // at a level of `1e8` leaves nothing of a unit variance (review
-            // 2026-09-12, C16).
-            let delta: Vec<f64> = (0..k)
-                .map(|i| self.cov.mean(i) - slow.cov.mean(i))
-                .collect();
-            let (cf, cs) = (self.cov.comoments(), slow.cov.comoments());
-            let mut mixed_c = vec![0.0; k * k];
-            for i in 0..k {
-                for j in 0..k {
-                    let ij = i * k + j;
-                    mixed_c[ij] = af * cf[ij] + as_ * cs[ij] + af * as_ * delta[i] * delta[j];
-                }
-            }
-            // `Q` mixes by the same coefficients as the moments; see
-            // `TargetMoments::blend` for why a union would be wrong here.
-            let q = match (self.cov.q_sum(), slow.cov.q_sum()) {
-                (Some(qf), Some(qs)) => Some(af * qf + as_ * qs),
-                _ => None,
-            };
-            blended.set_moments(&mixed_mean, &mixed_c, w_new, q);
-            self.cov = blended;
-        }
-
-        // A twin restored from a pre-task-38 state has no target moments, and
-        // the mixture of a set with nothing is nothing (E45).
-        if slow.tm.is_none() {
-            self.tm = None;
-        }
-        let mut per = vec![None; self.cfg.n_targets];
-        for (j, p) in per.iter_mut().enumerate() {
-            let (wf, ws) = (self.wj[j], slow.wj[j]);
-            let w_new = (1.0 - f) * wf + f * ws;
-            if w_new > 0.0 {
-                moved = true;
-                let (af, as_) = ((1.0 - f) * wf / w_new, f * ws / w_new);
-                *p = Some((af, as_));
-                self.wj[j] = w_new;
-                if let (Some(tm), Some(stm)) = (self.tm.as_mut(), slow.tm.as_ref()) {
-                    tm.blend(stm, j, af, as_);
-                }
-            }
-        }
-        // The cross-moments by the centred mixture, as the Gram (N1).
-        if let Some((af, as_)) = all {
-            self.cross.blend(&slow.cross, af, as_, &per);
-        }
+        let Some(slow) = self.slow.as_mut() else {
+            return;
+        };
+        // Every matrix is read in full; a held block goes in first.
+        slow.grams.flush();
+        self.acc.grams.flush();
+        let Some(slow) = self.slow.as_deref() else {
+            return;
+        };
         // The blend moved the accumulators the fit is read from, so the fit
         // moves with it: re-solve now, when anything was mixed and there is a
-        // fit to replace. Left to
-        // the schedule, the first rows of the new session -- the rows the
-        // blend exists for -- were predicted with the coefficients from before
-        // it, and so was every row `predict` scored on a blended copy (review
-        // 2026-09-12, C3).
-        if moved && self.beta.is_some() {
+        // fit to replace. Left to the schedule, the first rows of the new
+        // session -- the rows the blend exists for -- were predicted with the
+        // coefficients from before it, and so was every row `predict` scored
+        // on a blended copy (review 2026-09-12, C3). A blend with no weight on
+        // either side stays the no-op the doc promises, re-solve included.
+        if self.acc.blend(slow, f) && self.beta.is_some() {
             self.solve();
         }
     }
@@ -1077,81 +574,43 @@ impl EwRidge {
     /// `window` -- the same ones with everything older than the window
     /// subtracted off (docs/PLAN.md §13).
     ///
-    /// The Gram, the per-target cross-moments and the residual variance are
+    /// The Grams, the per-target cross-moments and the residual variance are
     /// all sums of per-row contributions, so each is truncated by the same
     /// identity, `A(t) - lam^(t-u)·A(u)` for the boundary snapshot at `u` --
     /// the first two in the centred form they are kept in, by the pooling
-    /// identity (`crate::truncated`, `Cross::truncated`).
-    /// The solve then runs on a Gram that provably contains no row older than
-    /// the window, which is the whole point -- a rolling regression with a
-    /// guarantee rather than a decay.
+    /// identity (`crate::truncated`, `Acc::window`). The solve then runs on
+    /// Grams that provably contain no row older than the window, which is the
+    /// whole point -- a rolling regression with a guarantee rather than a
+    /// decay. `None` when there is no window or nothing has aged out of it;
+    /// nothing inside the window at all -- a clock gap longer than it -- is an
+    /// *empty* view, never the live state (review 2026-09-12, C2).
     fn view(&self) -> Option<RidgeView> {
         let win = self.win.as_ref()?;
         let (u, old) = win.snaps.boundary()?;
-        if old.cov.w == 0.0 {
-            return None; // nothing has aged out yet: read the live state
-        }
         let f = self.cfg.decay.factor(win.clock - u);
+        let acc = self.acc.window(&old.acc, f)?;
         let m = self.cfg.n_targets;
-        let k_total = self.cfg.k_total();
-        let mut wj = vec![0.0; m];
-        let mut sig2 = vec![0.0; m];
-        // Nothing inside the window at all -- a clock gap longer than it, or a
-        // weight that rounds below zero -- is an *empty* view, never the live
-        // state. This used `?`, and `None` means "nothing has aged out, read
-        // the live accumulators": the opposite situation, answered the same
-        // way, so an empty window reported the whole history as though it
-        // were the window (review 2026-09-12, C2).
-        let Some(cov) = crate::truncated(&self.cov, &old.cov, f) else {
-            let mut empty = self.cov.clone();
-            let zeros = vec![0.0; k_total * k_total];
-            empty.set_moments(&vec![0.0; k_total], &zeros, 0.0, old.cov.q.map(|_| 0.0));
-            return Some(RidgeView {
-                cov: empty,
-                cross: Cross::new(m, k_total),
-                sig2,
-                wj,
-            });
-        };
-        // `W_u/W_R` over every row, as `truncated` formed it.
-        let w_old = f * old.cov.w;
-        let ratio = w_old / (self.cov.n_eff() - w_old);
-        let mut per = vec![None; m];
-        for j in 0..m {
-            // The truncated weight is what makes the cross-moments a mean
-            // again. A target with no row left inside the window keeps weight
-            // 0 and reports nothing while the others stay windowed; this too
-            // was a `?`, so one sparse label beside a dense one sent *every*
-            // target back to the whole history (C2). The test is
-            // `truncated_mean`'s.
-            let wj_old = f * old.wj[j];
-            let w = self.wj[j] - wj_old;
-            if w > crate::window::EMPTY_FRACTION * self.wj[j] && w.is_finite() {
-                wj[j] = w;
-                per[j] = Some((wj_old / w, self.wj[j] / w));
-            }
+        let sig2 = if acc.cross.w > 0.0 {
             // The residual variance is one number per target, so the same
-            // subtraction on a one-element mean.
-            match crate::truncated_mean(
-                self.wsig[j],
-                &[self.sig2[j]],
-                old.wsig[j],
-                &[old.sig2[j]],
-                f,
-            ) {
-                Some((_w, s2)) => sig2[j] = s2[0].max(0.0),
-                // A target whose residual history is entirely outside the
-                // window reports no spread rather than a stale one.
-                None => sig2[j] = 0.0,
-            }
-        }
-        let cross = self.cross.truncated(&old.cross, ratio, &per);
-        Some(RidgeView {
-            cov,
-            cross,
-            sig2,
-            wj,
-        })
+            // subtraction on a one-element mean. A target whose residual
+            // history is entirely outside the window reports no spread rather
+            // than a stale one.
+            (0..m)
+                .map(|j| {
+                    crate::truncated_mean(
+                        self.wsig[j],
+                        &[self.sig2[j]],
+                        old.wsig[j],
+                        &[old.sig2[j]],
+                        f,
+                    )
+                    .map_or(0.0, |(_w, s2)| s2[0].max(0.0))
+                })
+                .collect()
+        } else {
+            vec![0.0; m]
+        };
+        Some(RidgeView { acc, sig2 })
     }
 
     fn solve(&mut self) {
@@ -1159,27 +618,27 @@ impl EwRidge {
         // scheduled by the clock and the row count, never by a chunk end, so
         // the block boundary this moves is the same whichever way the stream
         // was chunked.
-        self.cov.flush();
+        self.acc.grams.flush();
         let k_total = self.cfg.k_total();
         let m = self.cfg.n_targets;
         let combos = self.cfg.combos();
-        let mut beta = vec![vec![0.0; k_total]; m * combos.len()];
+        let nc = combos.len();
+        let mut beta = vec![vec![0.0; k_total]; m * nc];
         // With a `window`, the fit is solved from the truncated accumulators:
-        // no row older than the window is in the Gram at all. Without one,
-        // and before anything has aged out, these borrow the live state and
-        // the arithmetic is unchanged to the bit.
+        // no row older than the window is in a Gram at all. Without one, and
+        // before anything has aged out, these borrow the live state.
         let view = self.view();
-        if view.as_ref().is_some_and(|v| v.cov.n_eff() <= 0.0) {
+        if view.as_ref().is_some_and(|v| v.acc.cross.w <= 0.0) {
             // An empty window has nothing to solve and no fit to report (C2).
-            self.beta = Some(vec![vec![f64::NAN; k_total]; m * combos.len()]);
+            self.beta = Some(vec![vec![f64::NAN; k_total]; m * nc]);
             self.clock_since_solve = 0.0;
             self.rows_since_solve = 0;
             return;
         }
         let mut failures = 0u64;
-        let (cov, cross) = match view.as_ref() {
-            Some(v) => (&v.cov, &v.cross),
-            None => (&self.cov, &self.cross),
+        let (grams, cross) = match view.as_ref() {
+            Some(v) => (v.acc.grams.as_slice(), &v.acc.cross),
+            None => (self.acc.grams.grams.as_slice(), &self.acc.cross),
         };
         // With an intercept the slopes are solved on the centred system (see
         // the module docs). The rest read the raw normal equations and need
@@ -1187,97 +646,123 @@ impl EwRidge {
         // penalized and so part of the system rather than eliminated from it,
         // and the two solves through the origin, which centre nothing.
         let centred = self.cfg.add_intercept && !self.cfg.ridge_decay;
-        let r: Vec<Vec<f64>> = if centred {
-            Vec::new()
-        } else {
-            (0..m).map(|j| cross.raw(j)).collect()
-        };
 
-        for (ci, &(fs_idx, r_idx)) in combos.iter().enumerate() {
-            let ridge = self.cfg.ridge[r_idx];
-            let zidx = self.combo_z_indices(fs_idx);
-            let kc = zidx.len();
-
-            let solved: Option<Vec<f64>> = if centred {
-                self.solve_centred(cov, cross, &mut failures, &zidx, m, ridge)
+        // One system per Gram, for the targets that read it.
+        for (g, cov) in grams.iter().enumerate() {
+            let readers = self.acc.grams.readers(g);
+            let mr = readers.len();
+            let r: Vec<Vec<f64>> = if centred {
+                Vec::new()
             } else {
-                // Gather the sub-block of S and the per-target rhs.
-                let mut a = vec![0.0; kc * kc];
-                for (ai, &zi) in zidx.iter().enumerate() {
-                    for (aj, &zj) in zidx.iter().enumerate() {
-                        a[ai * kc + aj] = cov.raw(zi, zj);
-                    }
-                }
-                let mut b = vec![0.0; kc * m];
-                for j in 0..m {
-                    for (ai, &zi) in zidx.iter().enumerate() {
-                        b[j * kc + ai] = r[j][zi];
-                    }
-                }
-                if self.cfg.ridge_decay {
-                    // (W S + prior_scale * ridge I) beta = W r  — intercept penalized.
-                    let w = cov.n_eff();
-                    let ps = cov.prior_scale();
-                    for i in 0..kc {
-                        for j in 0..kc {
-                            a[i * kc + j] *= w;
-                        }
-                        a[i * kc + i] += ps * ridge;
-                    }
-                    for v in b.iter_mut() {
-                        *v *= w;
-                    }
-                    // Warm start: the prior enters on the same decaying sum
-                    // scale, so its weight falls away as data accumulates.
-                    if let Some(c0) = &self.cfg.coef_prior {
-                        for j in 0..m {
-                            for (ai, &zi) in zidx.iter().enumerate() {
-                                b[j * kc + ai] += ps * ridge * c0[j][zi];
-                            }
-                        }
-                    }
-                    Self::run_solve(&mut failures, &a, &b, kc, m)
-                } else if !self.cfg.standardize {
-                    // Through the origin every slot is a slope, and every
-                    // slot is penalized.
-                    for i in 0..kc {
-                        a[i * kc + i] += ridge;
-                    }
-                    // Warm prior: shrink toward coef_prior rather than toward
-                    // zero, by moving the penalty's target into the
-                    // right-hand side.
-                    if let Some(c0) = &self.cfg.coef_prior {
-                        for j in 0..m {
-                            for (ai, &zi) in zidx.iter().enumerate() {
-                                b[j * kc + ai] += ridge * c0[j][zi];
-                            }
-                        }
-                    }
-                    Self::run_solve(&mut failures, &a, &b, kc, m)
-                } else {
-                    Self::solve_scaled_through_origin(cov, &mut failures, &zidx, &b, kc, m, ridge)
-                }
+                readers.iter().map(|&j| cross.raw(j)).collect()
             };
-
-            if let Some(sol) = solved {
-                for j in 0..m {
-                    for (ai, &zi) in zidx.iter().enumerate() {
-                        beta[j * combos.len() + ci][zi] = sol[j * kc + ai];
-                    }
+            for (ci, &(fs_idx, r_idx)) in combos.iter().enumerate() {
+                let ridge = self.cfg.ridge[r_idx];
+                // A Gram with no weight and no penalty has no system to
+                // solve: under `own_rows` a target not seen yet is alone in
+                // one, and its coefficients stay zero -- what the jittered
+                // solve of an empty matrix gave, at one counted failure a
+                // solve. With a penalty the fit is the prior, `coef_prior` or
+                // zero, and is solved.
+                if ridge == 0.0 && cov.n_eff() <= 0.0 {
+                    continue;
                 }
-            } else if let Some(prev) = &self.beta {
-                // Total failure even with jitter: keep the previous coefficients.
-                for j in 0..m {
-                    beta[j * combos.len() + ci] = prev[j * combos.len() + ci].clone();
+                let zidx = self.combo_z_indices(fs_idx);
+                let kc = zidx.len();
+
+                let solved: Option<Vec<f64>> = if centred {
+                    self.solve_centred(cov, cross, &readers, &mut failures, &zidx, ridge)
+                } else {
+                    // Gather the sub-block of S and the per-target rhs.
+                    let mut a = vec![0.0; kc * kc];
+                    for (ai, &zi) in zidx.iter().enumerate() {
+                        for (aj, &zj) in zidx.iter().enumerate() {
+                            a[ai * kc + aj] = cov.raw(zi, zj);
+                        }
+                    }
+                    let mut b = vec![0.0; kc * mr];
+                    for (jj, rj) in r.iter().enumerate() {
+                        for (ai, &zi) in zidx.iter().enumerate() {
+                            b[jj * kc + ai] = rj[zi];
+                        }
+                    }
+                    if self.cfg.ridge_decay {
+                        // (W S + prior_scale * ridge I) beta = W r  — intercept
+                        // penalized, `W` the Gram's weight: under `own_rows`
+                        // the target's own, so both sides are sums over its
+                        // rows.
+                        let w = cov.n_eff();
+                        let ps = cov.prior_scale();
+                        for i in 0..kc {
+                            for j in 0..kc {
+                                a[i * kc + j] *= w;
+                            }
+                            a[i * kc + i] += ps * ridge;
+                        }
+                        for v in b.iter_mut() {
+                            *v *= w;
+                        }
+                        // Warm start: the prior enters on the same decaying sum
+                        // scale, so its weight falls away as data accumulates.
+                        if let Some(c0) = &self.cfg.coef_prior {
+                            for (jj, &j) in readers.iter().enumerate() {
+                                for (ai, &zi) in zidx.iter().enumerate() {
+                                    b[jj * kc + ai] += ps * ridge * c0[j][zi];
+                                }
+                            }
+                        }
+                        Self::run_solve(&mut failures, &a, &b, kc, mr)
+                    } else if !self.cfg.standardize {
+                        // Through the origin every slot is a slope, and every
+                        // slot is penalized.
+                        for i in 0..kc {
+                            a[i * kc + i] += ridge;
+                        }
+                        // Warm prior: shrink toward coef_prior rather than
+                        // toward zero, by moving the penalty's target into the
+                        // right-hand side.
+                        if let Some(c0) = &self.cfg.coef_prior {
+                            for (jj, &j) in readers.iter().enumerate() {
+                                for (ai, &zi) in zidx.iter().enumerate() {
+                                    b[jj * kc + ai] += ridge * c0[j][zi];
+                                }
+                            }
+                        }
+                        Self::run_solve(&mut failures, &a, &b, kc, mr)
+                    } else {
+                        Self::solve_scaled_through_origin(
+                            cov,
+                            &mut failures,
+                            &zidx,
+                            &b,
+                            kc,
+                            mr,
+                            ridge,
+                        )
+                    }
+                };
+
+                if let Some(sol) = solved {
+                    for (jj, &j) in readers.iter().enumerate() {
+                        for (ai, &zi) in zidx.iter().enumerate() {
+                            beta[j * nc + ci][zi] = sol[jj * kc + ai];
+                        }
+                    }
+                } else if let Some(prev) = &self.beta {
+                    // Total failure even with jitter: keep the previous
+                    // coefficients.
+                    for &j in &readers {
+                        beta[j * nc + ci] = prev[j * nc + ci].clone();
+                    }
                 }
             }
         }
         // A target the window holds no row of has no fit to report (C2).
         if let Some(v) = view.as_ref() {
-            for (j, &w) in v.wj.iter().enumerate() {
+            for (j, &w) in v.acc.wj.iter().enumerate() {
                 if w <= 0.0 {
-                    for ci in 0..combos.len() {
-                        beta[j * combos.len() + ci].fill(f64::NAN);
+                    for ci in 0..nc {
+                        beta[j * nc + ci].fill(f64::NAN);
                     }
                 }
             }
@@ -1349,32 +834,34 @@ impl EwRidge {
     }
 
     /// The two solves with an intercept, plain and standardized, on the
-    /// centred system (see the module docs): the slopes from `C`, the Gram's
-    /// centred co-moments over the combo's features, and the right-hand side
-    /// `c_j + (m_j − m)·ȳ_j` that `Cross::centred` keeps exact; then
-    /// `beta_0 = ȳ_j − m·beta`. Standardized, `C` is scaled to correlation
-    /// form and ~zero-variance features are dropped (coefficient 0); plain,
-    /// the scale is 1 and nothing is dropped, as the raw system had it.
+    /// centred system (see the module docs) for the targets `readers` of one
+    /// Gram: the slopes from `C`, the Gram's centred co-moments over the
+    /// combo's features, and each target's centred cross-moment `c_j`; then
+    /// `beta_0 = ȳ_j − m_j·beta`, `m_j` the target's own column means.
+    /// Standardized, `C` is scaled to correlation form and ~zero-variance
+    /// features are dropped (coefficient 0); plain, the scale is 1 and
+    /// nothing is dropped, as the raw system had it. The result is
+    /// reader-major, `k_c` slots each.
     ///
     /// Every statistic comes from `cov` and `cross`, the accumulators `solve`
     /// handed in: the truncated view under a `window`, the live state
     /// otherwise. The standardized solve once read the means and the centred
-    /// Gram from `self.cov` while its right-hand side came from the view, so
-    /// a windowed fit mixed two histories and the window's guarantee failed
-    /// silently (review 2026-09-12, C1).
+    /// Gram from the live accumulator while its right-hand side came from the
+    /// view, so a windowed fit mixed two histories and the window's guarantee
+    /// failed silently (review 2026-09-12, C1).
     fn solve_centred(
         &self,
         cov: &EwCov,
         cross: &Cross,
+        readers: &[usize],
         failures: &mut u64,
         zidx: &[usize],
-        m: usize,
         ridge: f64,
     ) -> Option<Vec<f64>> {
         // Feature slots are 1..kc; slot 0 is the intercept.
         let kc = zidx.len();
         let kf = kc - 1;
-        let means: Vec<f64> = zidx.iter().map(|&z| cov.mean(z)).collect();
+        let mr = readers.len();
         let mut c = vec![0.0; kf * kf];
         for i in 0..kf {
             for j in 0..kf {
@@ -1396,7 +883,7 @@ impl EwRidge {
             (vec![1.0; kf], (0..kf).collect())
         };
         let kk = keep.len();
-        let mut out = vec![0.0; kc * m];
+        let mut out = vec![0.0; kc * mr];
         if kk > 0 {
             let mut asub = vec![0.0; kk * kk];
             for (i2, &i) in keep.iter().enumerate() {
@@ -1405,31 +892,40 @@ impl EwRidge {
                 }
                 asub[i2 * kk + i2] += ridge;
             }
-            let mut bsub = vec![0.0; kk * m];
-            for j in 0..m {
+            let mut bsub = vec![0.0; kk * mr];
+            for (jj, &j) in readers.iter().enumerate() {
                 for (i2, &i) in keep.iter().enumerate() {
-                    bsub[j * kk + i2] = cross.centred(j, zidx[i + 1]) / s[i];
+                    bsub[jj * kk + i2] = cross.c[j][zidx[i + 1]] / s[i];
                     // Warm prior: shrink toward coef_prior rather than toward
                     // zero. It lives in original units, and on the
                     // standardized scale a coefficient is beta * sd.
                     if let Some(c0) = &self.cfg.coef_prior {
-                        bsub[j * kk + i2] += ridge * c0[j][zidx[i + 1]] * s[i];
+                        bsub[jj * kk + i2] += ridge * c0[j][zidx[i + 1]] * s[i];
                     }
                 }
             }
-            let sol = Self::run_solve(failures, &asub, &bsub, kk, m)?;
-            for j in 0..m {
+            let sol = Self::run_solve(failures, &asub, &bsub, kk, mr)?;
+            for jj in 0..mr {
                 for (i2, &i) in keep.iter().enumerate() {
-                    out[j * kc + i + 1] = sol[j * kk + i2] / s[i];
+                    out[jj * kc + i + 1] = sol[jj * kk + i2] / s[i];
                 }
             }
         }
-        for j in 0..m {
+        // `m_j` is the Gram's mean, which under `own_rows` is over exactly the
+        // target's rows, plus the target's offset under `pairwise`, where the
+        // Gram is over every row (`crate::gaps::Cross`). Not the offset form
+        // under `own_rows` too, so that a row the target misses leaves its
+        // fit where it was to the bit: there the offset takes back the step
+        // the all-row mean took, which is exact only in exact arithmetic.
+        let pairwise = self.cfg.target_gaps == TargetGaps::Pairwise;
+        for (jj, &j) in readers.iter().enumerate() {
             let mut b0 = cross.my[j];
             for i in 0..kf {
-                b0 -= means[i + 1] * out[j * kc + i + 1];
+                let z = zidx[i + 1];
+                let offset = if pairwise { cross.d[j][z] } else { 0.0 };
+                b0 -= (cov.mean(z) + offset) * out[jj * kc + i + 1];
             }
-            out[j * kc] = b0;
+            out[jj * kc] = b0;
         }
         Some(out)
     }
@@ -1442,6 +938,7 @@ impl OnlineModel for EwRidge {
         let m = self.cfg.n_targets;
         let nc = self.cfg.n_combos();
         let lam = self.cfg.decay.factor(d_clock);
+        let gaps = self.cfg.target_gaps;
         self.z(x);
 
         // ---- predict (state before this row's update) ----
@@ -1452,41 +949,7 @@ impl OnlineModel for EwRidge {
         // The slow twin sees the same rows under its own, longer halflife.
         if let (Some(slow), Some(h)) = (self.slow.as_mut(), self.cfg.long_halflife) {
             let slow_lam = Decay::Halflife(h).factor(d_clock);
-            let b_all = row_share(slow_lam * slow.cov.n_eff(), weight);
-            slow.cov.update(&self.zbuf, slow_lam, weight);
-            let SlowState {
-                wj: swj,
-                cross: scr,
-                tm: stm,
-                ..
-            } = &mut **slow;
-            for (j, yj) in y.iter().enumerate() {
-                let wj = &mut swj[j];
-                match yj {
-                    // `wj_new == 0` means this row carries no weight and none
-                    // has ever been carried, so there is nothing to blend and
-                    // `a`/`b` would both be 0/0. Same guard as `EwCov::update`.
-                    Some(yj) if slow_lam * *wj + weight > 0.0 => {
-                        let wj_new = slow_lam * *wj + weight;
-                        let a = slow_lam * *wj / wj_new;
-                        let b = weight / wj_new;
-                        scr.learn(j, &self.zbuf, *yj, a, b, b_all);
-                        *wj = wj_new;
-                        if let Some(tm) = stm.as_mut() {
-                            tm.learn(j, *yj, a, b, slow_lam, weight);
-                        }
-                    }
-                    Some(_) => {}
-                    None => {
-                        scr.miss(j, &self.zbuf, b_all);
-                        *wj *= slow_lam;
-                        if let Some(tm) = stm.as_mut() {
-                            tm.age(j, slow_lam);
-                        }
-                    }
-                }
-            }
-            scr.advance(&self.zbuf, b_all);
+            slow.learn(&self.zbuf, y, slow_lam, weight, gaps);
         }
         // The snapshot is every accumulator as it stands *before* this row,
         // decayed to this row's clock, so subtracting it later retains this
@@ -1495,9 +958,7 @@ impl OnlineModel for EwRidge {
         if let Some(win) = self.win.as_mut() {
             let t = win.clock + d_clock;
             let snap = RidgeMoments {
-                cov: crate::Moments::of(&self.cov, lam),
-                wj: self.wj.iter().map(|w| w * lam).collect(),
-                cross: self.cross.clone(),
+                acc: self.acc.snapshot(lam),
                 wsig: self.wsig.iter().map(|w| w * lam).collect(),
                 sig2: self.sig2.clone(),
             };
@@ -1505,30 +966,12 @@ impl OnlineModel for EwRidge {
             win.clock = t;
             win.snaps.trim(t);
         }
-        // The row's share of the all-row weight, for the cross-moments' own
-        // copy of the Gram's mean (see `Cross`).
-        let b_all = row_share(lam * self.cov.n_eff(), weight);
-        self.cov.update(&self.zbuf, lam, weight);
+        // EW residual variance from the primary (first-combo) pred, on the
+        // rows each target is learned from; its weight ages with the target's
+        // on the rows it is not.
         for j in 0..m {
             match y[j] {
-                // `wj_new == 0` means this row carries no weight and none has
-                // ever been carried -- a zero-weight row at the head of a
-                // stream. `a` and `b` would both be 0/0, and the NaN would
-                // never wash out: `wj` stays NaN, `NaN > 0.0` is false, and the
-                // model silently stops predicting forever. Same guard as
-                // `EwCov::update` already has.
-                Some(yj) if lam * self.wj[j] + weight > 0.0 => {
-                    let wj_new = lam * self.wj[j] + weight;
-                    let a = lam * self.wj[j] / wj_new;
-                    let b = weight / wj_new;
-                    self.cross.learn(j, &self.zbuf, yj, a, b, b_all);
-                    self.wj[j] = wj_new;
-                    // The other half of the sufficient statistic, on the same
-                    // `a`/`b` as the cross-moments (E45).
-                    if let Some(tm) = self.tm.as_mut() {
-                        tm.learn(j, yj, a, b, lam, weight);
-                    }
-                    // EW residual variance from the primary (first-combo) pred.
+                Some(yj) if lam * self.acc.wj[j] + weight > 0.0 => {
                     let p = pred[j * nc];
                     let ws_new = lam * self.wsig[j] + weight;
                     if p.is_finite() && ws_new > 0.0 {
@@ -1539,18 +982,10 @@ impl OnlineModel for EwRidge {
                     }
                 }
                 Some(_) => {}
-                None => {
-                    self.cross.miss(j, &self.zbuf, b_all);
-                    self.wj[j] *= lam;
-                    self.wsig[j] *= lam;
-                    if let Some(tm) = self.tm.as_mut() {
-                        tm.age(j, lam);
-                    }
-                }
+                None => self.wsig[j] *= lam,
             }
         }
-
-        self.cross.advance(&self.zbuf, b_all);
+        self.acc.learn(&self.zbuf, y, lam, weight, gaps);
 
         // ---- solve schedule ----
         self.clock_since_solve += d_clock;
@@ -1573,8 +1008,8 @@ impl OnlineModel for EwRidge {
         // window reports nothing (C2).
         let view = self.view();
         let (n_eff, wj) = match view.as_ref() {
-            Some(v) => (v.cov.n_eff(), &v.wj),
-            None => (self.cov.n_eff(), &self.wj),
+            Some(v) => (v.acc.cross.w, &v.acc.wj),
+            None => (self.acc.cross.w, &self.acc.wj),
         };
         let mut pred = vec![f64::NAN; m * nc];
         if let (true, Some(beta)) = (n_eff >= self.cfg.min_periods, &self.beta) {
@@ -1602,7 +1037,14 @@ impl OnlineModel for EwRidge {
         match &s.model {
             ModelState::EwRidge(m) => {
                 let mut m = (**m).clone();
-                m.zbuf = vec![0.0; m.cfg.k_total()];
+                let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
+                let twin = m.slow.as_ref().is_none_or(|s| s.has_shape(n, k));
+                if !m.acc.has_shape(n, k) || !twin || m.wsig.len() != n || m.sig2.len() != n {
+                    return Err(StateError::Invalid(
+                        "ew_ridge: the accumulators have the wrong shape".into(),
+                    ));
+                }
+                m.zbuf = vec![0.0; k];
                 Ok(m)
             }
             other => Err(StateError::WrongModel {
@@ -1646,6 +1088,7 @@ mod tests {
             solve_every: 0.0,
             max_rows_between_solves: 1,
             gram_block_rows: 0,
+            target_gaps: TargetGaps::OwnRows,
             window: None,
             window_every: None,
         }
@@ -2132,11 +1575,15 @@ mod tests {
         }
 
         // The 2x2 penalized normal equations on the centered moments.
-        let (c00, c01, c11) = (m.cov.cov(1, 1), m.cov.cov(1, 2), m.cov.cov(2, 2));
+        let (c00, c01, c11) = (
+            m.gram(0).cov(1, 1),
+            m.gram(0).cov(1, 2),
+            m.gram(0).cov(2, 2),
+        );
         // d_i = E[x_i y] - E[x_i] E[y], from the tracked cross-moment means.
         let raw = m.cross_moments();
-        let d0 = raw[0][1] - m.cov.mean(1) * raw[0][0];
-        let d1 = raw[0][2] - m.cov.mean(2) * raw[0][0];
+        let d0 = raw[0][1] - m.gram(0).mean(1) * raw[0][0];
+        let d1 = raw[0][2] - m.gram(0).mean(2) * raw[0][0];
         let (a00, a11) = (c00 + r, c11 + r);
         let (rhs0, rhs1) = (d0 + r * c0[0][1], d1 + r * c0[0][2]);
         let det = a00 * a11 - c01 * c01;
@@ -2155,7 +1602,7 @@ mod tests {
             );
         }
         // The intercept is reconstructed, not fitted: mean(y) - b'mean(x).
-        let want0 = raw[0][0] - got[1] * m.cov.mean(1) - got[2] * m.cov.mean(2);
+        let want0 = raw[0][0] - got[1] * m.gram(0).mean(1) - got[2] * m.gram(0).mean(2);
         assert!((got[0] - want0).abs() < 1e-9, "{} vs {want0}", got[0]);
 
         // An overwhelming penalty must land on coef_prior exactly.
@@ -2258,28 +1705,28 @@ mod tests {
 
         let slow = m.slow.as_ref().unwrap();
         let k = m.cfg.k_total();
-        assert!((slow.cov.n_eff() - reference.cov.n_eff()).abs() < 1e-9);
+        assert!((slow.grams.grams[0].n_eff() - reference.gram(0).n_eff()).abs() < 1e-9);
         for i in 0..k {
             assert!(
-                (slow.cov.mean(i) - reference.cov.mean(i)).abs() < 1e-9,
+                (slow.grams.grams[0].mean(i) - reference.gram(0).mean(i)).abs() < 1e-9,
                 "mean {i}"
             );
             for j in 0..k {
-                assert!((slow.cov.cov(i, j) - reference.cov.cov(i, j)).abs() < 1e-9);
+                assert!((slow.grams.grams[0].cov(i, j) - reference.gram(0).cov(i, j)).abs() < 1e-9);
             }
         }
-        assert!((slow.wj[0] - reference.wj[0]).abs() < 1e-9);
-        let (got, want) = (slow.cross.raw(0), reference.cross.raw(0));
+        assert!((slow.wj[0] - reference.acc.wj[0]).abs() < 1e-9);
+        let (got, want) = (slow.cross.raw(0), reference.acc.cross.raw(0));
         for i in 0..k {
             assert!((got[i] - want[i]).abs() < 1e-9, "r[{i}]");
         }
         // And it is genuinely slower than the fast side, or the test would
         // pass with the twin wired to the wrong decay.
         assert!(
-            slow.cov.n_eff() > 3.0 * m.cov.n_eff(),
+            slow.grams.grams[0].n_eff() > 3.0 * m.gram(0).n_eff(),
             "{} vs {}",
-            slow.cov.n_eff(),
-            m.cov.n_eff()
+            slow.grams.grams[0].n_eff(),
+            m.gram(0).n_eff()
         );
     }
 
@@ -2343,14 +1790,14 @@ mod tests {
                 1.0,
             );
         }
-        let (sig, w, wj) = (m.sigma2()[0], m.wsig[0], m.wj[0]);
+        let (sig, w, wj) = (m.sigma2()[0], m.wsig[0], m.acc.wj[0]);
         assert!(sig > 0.0 && w > 0.0);
 
         let lam = 0.5f64.powf(3.0 / 10.0);
         m.step(&[0.5], &[None], 3.0, 1.0);
         assert_eq!(m.sigma2()[0], sig, "a null target must not move sigma2");
         assert!((m.wsig[0] - w * lam).abs() < 1e-12, "but its weight decays");
-        assert!((m.wj[0] - wj * lam).abs() < 1e-12);
+        assert!((m.acc.wj[0] - wj * lam).abs() < 1e-12);
     }
 
     #[test]
@@ -2530,43 +1977,43 @@ mod tests {
         let slow = before.slow.as_ref().unwrap();
         let k = m.cfg.k_total();
 
-        let (wf, ws) = (before.cov.n_eff(), slow.cov.n_eff());
+        let (wf, ws) = (before.gram(0).n_eff(), slow.grams.grams[0].n_eff());
         assert!(wf > 0.0 && ws > wf, "the slow twin should hold more weight");
         let w_new = (1.0 - f) * wf + f * ws;
         let (af, as_) = ((1.0 - f) * wf / w_new, f * ws / w_new);
 
         m.blend_toward_long_run();
 
-        assert!((m.cov.n_eff() - w_new).abs() < 1e-12);
+        assert!((m.gram(0).n_eff() - w_new).abs() < 1e-12);
         for i in 0..k {
-            let want = af * before.cov.mean(i) + as_ * slow.cov.mean(i);
+            let want = af * before.gram(0).mean(i) + as_ * slow.grams.grams[0].mean(i);
             assert!(
-                (m.cov.mean(i) - want).abs() < 1e-12,
+                (m.gram(0).mean(i) - want).abs() < 1e-12,
                 "mean {i}: {} vs {want}",
-                m.cov.mean(i)
+                m.gram(0).mean(i)
             );
         }
         for i in 0..k {
             for j in 0..k {
                 // Raw moments mix linearly; the centered moment must then be
                 // re-derived against the *mixed* mean, not either input's.
-                let raw = af * before.cov.raw(i, j) + as_ * slow.cov.raw(i, j);
-                let want = raw - m.cov.mean(i) * m.cov.mean(j);
+                let raw = af * before.gram(0).raw(i, j) + as_ * slow.grams.grams[0].raw(i, j);
+                let want = raw - m.gram(0).mean(i) * m.gram(0).mean(j);
                 assert!(
-                    (m.cov.cov(i, j) - want).abs() < 1e-10,
+                    (m.gram(0).cov(i, j) - want).abs() < 1e-10,
                     "cov {i},{j}: {} vs {want}",
-                    m.cov.cov(i, j)
+                    m.gram(0).cov(i, j)
                 );
             }
         }
         // The raw cross-moments mix linearly, whatever split the centred ones
         // were mixed in.
         for (j, got) in m.cross_moments().iter().enumerate() {
-            let (wf, ws) = (before.wj[j], slow.wj[j]);
+            let (wf, ws) = (before.acc.wj[j], slow.wj[j]);
             let w_new = (1.0 - f) * wf + f * ws;
             let (af, as_) = ((1.0 - f) * wf / w_new, f * ws / w_new);
-            assert!((m.wj[j] - w_new).abs() < 1e-12);
-            let (fast_r, slow_r) = (before.cross.raw(j), slow.cross.raw(j));
+            assert!((m.acc.wj[j] - w_new).abs() < 1e-12);
+            let (fast_r, slow_r) = (before.acc.cross.raw(j), slow.cross.raw(j));
             for i in 0..k {
                 let want = af * fast_r[i] + as_ * slow_r[i];
                 assert!((got[i] - want).abs() < 1e-12, "r[{j}][{i}]");
@@ -2586,15 +2033,15 @@ mod tests {
         let slow = one.slow.clone().unwrap();
         one.blend_toward_long_run();
         let k = one.cfg.k_total();
-        assert!((one.cov.n_eff() - slow.cov.n_eff()).abs() < 1e-12);
+        assert!((one.gram(0).n_eff() - slow.grams.grams[0].n_eff()).abs() < 1e-12);
         for i in 0..k {
             assert!(
-                (one.cov.mean(i) - slow.cov.mean(i)).abs() < 1e-12,
+                (one.gram(0).mean(i) - slow.grams.grams[0].mean(i)).abs() < 1e-12,
                 "mean {i}"
             );
         }
         for (j, got) in one.cross_moments().iter().enumerate() {
-            assert!((one.wj[j] - slow.wj[j]).abs() < 1e-12);
+            assert!((one.acc.wj[j] - slow.wj[j]).abs() < 1e-12);
             let want = slow.cross.raw(j);
             for i in 0..k {
                 assert!((got[i] - want[i]).abs() < 1e-12, "r[{j}][{i}]");
@@ -2617,7 +2064,7 @@ mod tests {
         m.blend_toward_long_run();
         assert_eq!(m, before, "nothing seen yet: nothing to blend");
         for i in 0..m.cfg.k_total() {
-            assert!(m.cov.mean(i).is_finite(), "and no NaN got in");
+            assert!(m.gram(0).mean(i).is_finite(), "and no NaN got in");
         }
 
         // Still safe on a session boundary that arrives with a session's worth
@@ -2968,17 +2415,19 @@ mod tests {
                 1.0,
             );
         }
-        let (c1, my1) = (m.cross.c[1].clone(), m.cross.my[1]);
-        let mean_z1: Vec<f64> = (0..2).map(|i| m.cross.m[i] + m.cross.d[1][i]).collect();
+        let (c1, my1) = (m.acc.cross.c[1].clone(), m.acc.cross.my[1]);
+        let mean_z1: Vec<f64> = (0..2)
+            .map(|i| m.acc.cross.m[i] + m.acc.cross.d[1][i])
+            .collect();
         let st = m.step(&[0.5], &[Some(1.0), None], 1.0, 1.0);
         assert!(st.pred[1].is_finite()); // pred still emitted
         // Target 1's own moments do not move: no data added (mean form). The
         // mean of `z` over its rows is the all-row mean plus its offset, and
         // the all-row mean did move, so the offset took the step back.
-        assert_eq!(m.cross.c[1], c1);
-        assert_eq!(m.cross.my[1], my1);
+        assert_eq!(m.acc.cross.c[1], c1);
+        assert_eq!(m.acc.cross.my[1], my1);
         for (i, want) in mean_z1.iter().enumerate() {
-            let got = m.cross.m[i] + m.cross.d[1][i];
+            let got = m.acc.cross.m[i] + m.acc.cross.d[1][i];
             assert!(
                 (got - want).abs() < 1e-15,
                 "the mean of z[{i}] moved: {got} vs {want}"
@@ -3066,15 +2515,18 @@ mod tests {
                 m.step(&x, &[Some(x[0] + x[1]), y1], d, 1.0);
             }
             assert!(
-                m.cross.d[0].iter().all(|&v| v == 0.0),
+                m.acc.cross.d[0].iter().all(|&v| v == 0.0),
                 "block {block}: {:?}",
-                m.cross.d[0]
+                m.acc.cross.d[0]
             );
-            assert!(m.cross.d[1][2] != 0.0, "block {block}: a target with gaps");
+            assert!(
+                m.acc.cross.d[1][2] != 0.0,
+                "block {block}: a target with gaps"
+            );
             // Unblocked, the cross-moments' copy of the Gram's mean is the
             // Gram's own, to the bit.
             if block == 0 {
-                assert_eq!(m.cross.m.as_slice(), m.cov.means());
+                assert_eq!(m.acc.cross.m.as_slice(), m.gram(0).means());
             }
         }
     }
@@ -3151,7 +2603,7 @@ mod tests {
                     let b = blocked.step(x, &[*y], *d, *w);
                     assert_pred_close(&a.pred, &b.pred, &format!("k={k} block={block} row {i}"));
                     assert_eq!(a.n_eff, b.n_eff, "k={k} block={block} row {i}: n_eff");
-                    held |= blocked.cov.has_pending();
+                    held |= blocked.gram(0).has_pending();
                 }
                 // A block of one fills on the row that opens it, so nothing
                 // is ever seen pending; every larger block is.
@@ -3184,7 +2636,7 @@ mod tests {
             m.step(&x, &[y], d, w);
             if m.rows_since_solve == 0 {
                 solves += 1;
-                assert!(!m.cov.has_pending(), "a solve left rows pending");
+                assert!(!m.gram(0).has_pending(), "a solve left rows pending");
             }
         }
         assert!(solves > 10, "the schedule fired {solves} times");
@@ -3206,14 +2658,17 @@ mod tests {
             plain.step(&x, &[y], d, w);
             blocked.step(&x, &[y], d, w);
         }
-        assert!(blocked.cov.has_pending(), "row 37 should sit mid-block");
-        assert!(blocked.slow.as_ref().unwrap().cov.has_pending());
+        assert!(blocked.gram(0).has_pending(), "row 37 should sit mid-block");
+        assert!(blocked.slow.as_ref().unwrap().grams.grams[0].has_pending());
         plain.blend_toward_long_run();
         blocked.blend_toward_long_run();
-        assert!(!blocked.cov.has_pending());
-        assert!(!blocked.slow.as_ref().unwrap().cov.has_pending());
-        assert_eq!(blocked.cov.block_rows(), 16);
-        assert_eq!(blocked.slow.as_ref().unwrap().cov.block_rows(), 16);
+        assert!(!blocked.gram(0).has_pending());
+        assert!(!blocked.slow.as_ref().unwrap().grams.grams[0].has_pending());
+        assert_eq!(blocked.gram(0).block_rows(), 16);
+        assert_eq!(
+            blocked.slow.as_ref().unwrap().grams.grams[0].block_rows(),
+            16
+        );
         let (a, b) = (
             plain.coefficients_after_blend(),
             blocked.coefficients_after_blend(),
@@ -3223,7 +2678,7 @@ mod tests {
         for (x, y, d, w) in ridge_rows(5, 2, 6) {
             blocked.step(&x, &[y], d, w);
         }
-        assert!(blocked.cov.has_pending());
+        assert!(blocked.gram(0).has_pending());
     }
 
     /// The held rows are in the state, so a save mid-block resumes the same
@@ -3237,7 +2692,7 @@ mod tests {
             for (x, y, d, w) in &rows[..23] {
                 one.step(x, &[*y], *d, *w);
             }
-            assert!(one.cov.has_pending(), "row 23 should sit mid-block");
+            assert!(one.gram(0).has_pending(), "row 23 should sit mid-block");
             let st = one.state();
             let bytes = if named {
                 rmp_serde::to_vec_named(&st).unwrap()
@@ -3247,10 +2702,10 @@ mod tests {
             let restored: State = rmp_serde::from_slice(&bytes).unwrap();
             let mut two = EwRidge::restore(&restored).unwrap();
             assert!(
-                two.cov.has_pending(),
+                two.gram(0).has_pending(),
                 "the held rows did not survive the save"
             );
-            assert_eq!(two.cov.block_rows(), 32);
+            assert_eq!(two.gram(0).block_rows(), 32);
             for (x, y, d, w) in &rows[23..] {
                 let a = one.step(x, &[*y], *d, *w);
                 let b = two.step(x, &[*y], *d, *w);
@@ -3305,5 +2760,310 @@ mod tests {
         c.solve_every = 0.0;
         c.max_rows_between_solves = 1;
         assert!(EwRidge::new(c).is_ok(), "0 is off, whatever the schedule");
+    }
+
+    // ---- target_gaps (docs/PLAN.md task 81) ----
+
+    /// Features, three targets, clock delta, weight.
+    type GappyRow = ([f64; 2], [Option<f64>; 3], f64, f64);
+
+    /// Three targets with three patterns of missing rows -- present on every
+    /// row, on a schedule, and where a feature is low -- beside a model of
+    /// each target alone, fed the same rows. Zero-weight rows are in the
+    /// stream too, some with targets missing.
+    fn gappy_rows(n: usize) -> Vec<GappyRow> {
+        let mut s = 61u64;
+        (0..n)
+            .map(|i| {
+                let x = [lcg(&mut s), 2.0 + lcg(&mut s)];
+                let base = 1.5 * x[0] - 0.5 * x[1] + 0.05 * lcg(&mut s);
+                let y = [
+                    Some(3.0 + base),
+                    (i % 3 != 1).then_some(-1.0 + base),
+                    (x[0] < 0.3).then_some(7.0 + 0.5 * base),
+                ];
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                let w = if i % 11 == 5 {
+                    0.0
+                } else {
+                    0.5 + (i % 3) as f64
+                };
+                (x, y, d, w)
+            })
+            .collect()
+    }
+
+    /// Under `own_rows` each target of a bank is fitted on exactly its rows:
+    /// its Gram is, to the bit, the Gram a model of that target alone keeps
+    /// -- whichever targets it shared one with and wherever it split from
+    /// them, blocked or not -- and so are its cross-moments, its weight and
+    /// its fit. Every row counts toward `n_eff` whatever the targets, and the
+    /// split Grams survive a save in both encodings.
+    #[test]
+    fn under_own_rows_each_target_is_the_model_of_that_target_alone() {
+        for block in [0usize, 8] {
+            let mut c = cfg(2, 3);
+            c.decay = Decay::Halflife(30.0);
+            if block > 0 {
+                c.gram_block_rows = block;
+                c.solve_every = 3.0;
+                c.max_rows_between_solves = 5;
+            }
+            let mut bank = EwRidge::new(c.clone()).unwrap();
+            let one = EwRidgeCfg {
+                n_targets: 1,
+                ..c.clone()
+            };
+            let mut alone: Vec<EwRidge> =
+                (0..3).map(|_| EwRidge::new(one.clone()).unwrap()).collect();
+            let rows = gappy_rows(300);
+            for (x, y, d, w) in &rows[..200] {
+                bank.step(x, y, *d, *w);
+                for (j, a) in alone.iter_mut().enumerate() {
+                    a.step(x, &[y[j]], *d, *w);
+                }
+            }
+            // Three patterns of missing rows, three Grams.
+            assert_eq!(bank.acc.grams.grams.len(), 3, "block {block}");
+            for (j, a) in alone.iter().enumerate() {
+                let g = &bank.acc.grams.grams[bank.acc.grams.of[j]];
+                assert_eq!(g, a.gram(0), "block {block}: target {j}'s Gram");
+                assert_eq!(
+                    g.n_eff(),
+                    bank.acc.wj[j],
+                    "block {block}: target {j}'s weight"
+                );
+                assert_eq!(
+                    bank.acc.cross.c[j], a.acc.cross.c[0],
+                    "block {block}: c[{j}]"
+                );
+                assert_eq!(bank.acc.cross.my[j], a.acc.cross.my[0], "block {block}");
+                assert_eq!(bank.n_eff(), a.n_eff(), "block {block}: every row counts");
+                let (b, want) = (
+                    &bank.coefficients().unwrap()[j],
+                    &a.coefficients().unwrap()[0],
+                );
+                for (p, q) in b.iter().zip(want) {
+                    assert!(
+                        (p - q).abs() <= 1e-12 * (1.0 + q.abs()),
+                        "block {block}: target {j}: {b:?} vs {want:?}"
+                    );
+                }
+            }
+            for named in [false, true] {
+                let st = bank.state();
+                let bytes = if named {
+                    rmp_serde::to_vec_named(&st).unwrap()
+                } else {
+                    rmp_serde::to_vec(&st).unwrap()
+                };
+                let mut back = EwRidge::restore(&rmp_serde::from_slice(&bytes).unwrap()).unwrap();
+                let mut live = bank.clone();
+                for (x, y, d, w) in &rows[200..] {
+                    let (p, q) = (live.step(x, y, *d, *w), back.step(x, y, *d, *w));
+                    let bits = |v: &[f64]| v.iter().map(|f| f.to_bits()).collect::<Vec<_>>();
+                    assert_eq!(bits(&p.pred), bits(&q.pred), "block {block} named={named}");
+                }
+                assert_eq!(live, back, "block {block} named={named}");
+            }
+        }
+    }
+
+    /// N3 (docs/PLAN.md task 81): a slope no longer moves with the target's
+    /// level. The target is present only where `x0 < 0.2`, so its rows' mean
+    /// of `x0` is not the all-row mean, and the old right-hand side added
+    /// `(m_j − m)·ȳ_j / Var(x)` to the slope. Under either reading the
+    /// slopes at a level of `1e3` are the slopes at 0, and the intercept
+    /// takes the level.
+    #[test]
+    fn a_target_level_moves_no_slope_under_either_reading() {
+        for gaps in [TargetGaps::OwnRows, TargetGaps::Pairwise] {
+            for standardize in [false, true] {
+                let run = |level: f64| {
+                    let mut c = cfg(2, 1);
+                    c.decay = Decay::Halflife(60.0);
+                    c.standardize = standardize;
+                    c.target_gaps = gaps;
+                    c.ridge = vec![1e-6];
+                    let mut m = EwRidge::new(c).unwrap();
+                    let mut s = 67u64;
+                    for i in 0..400 {
+                        let x = [lcg(&mut s), lcg(&mut s)];
+                        let y = level + 2.0 * x[0] - x[1] + 0.1 * lcg(&mut s);
+                        let d = if i == 0 { 0.0 } else { 1.0 };
+                        m.step(&x, &[(x[0] < 0.2).then_some(y)], d, 1.0);
+                    }
+                    m.coefficients().unwrap()[0].clone()
+                };
+                let (b0, b1) = (run(0.0), run(1e3));
+                let what = format!("{gaps:?}, standardize {standardize}");
+                for i in 1..3 {
+                    assert!(
+                        (b0[i] - b1[i]).abs() < 1e-9,
+                        "{what}: slope {i}: {} vs {}",
+                        b0[i],
+                        b1[i]
+                    );
+                }
+                assert!(
+                    (b1[0] - b0[0] - 1e3).abs() < 1e-8,
+                    "{what}: the intercept takes the level"
+                );
+            }
+        }
+    }
+
+    /// A blend under `own_rows` mixes each Gram with the twin's Gram of the
+    /// same targets. The twin sees the same rows and targets, so it splits
+    /// where the fast side does, and each target's blended accumulators are,
+    /// to the bit, those of a model of that target alone blended at the same
+    /// boundary.
+    #[test]
+    fn a_blend_under_own_rows_is_each_targets_own_blend() {
+        let mut c = cfg(2, 3);
+        c.decay = Decay::Halflife(15.0);
+        c.session_shrink = Some(0.4);
+        c.long_halflife = Some(200.0);
+        c.min_periods = 3.0;
+        let mut bank = EwRidge::new(c.clone()).unwrap();
+        let one = EwRidgeCfg {
+            n_targets: 1,
+            ..c.clone()
+        };
+        let mut alone: Vec<EwRidge> = (0..3).map(|_| EwRidge::new(one.clone()).unwrap()).collect();
+        for (x, y, d, w) in gappy_rows(200) {
+            bank.step(&x, &y, d, w);
+            for (j, a) in alone.iter_mut().enumerate() {
+                a.step(&x, &[y[j]], d, w);
+            }
+        }
+        let twin = bank.slow.as_ref().unwrap();
+        assert_eq!(
+            twin.grams.of, bank.acc.grams.of,
+            "the twin splits where the fast side does"
+        );
+        bank.blend_toward_long_run();
+        for a in &mut alone {
+            a.blend_toward_long_run();
+        }
+        for (j, a) in alone.iter().enumerate() {
+            assert_eq!(
+                bank.acc.grams.grams[bank.acc.grams.of[j]],
+                *a.gram(0),
+                "target {j}"
+            );
+            assert_eq!(bank.acc.wj[j], a.acc.wj[0], "target {j}");
+            assert_eq!(bank.acc.cross.c[j], a.acc.cross.c[0], "target {j}");
+            let (b, want) = (
+                &bank.coefficients().unwrap()[j],
+                &a.coefficients().unwrap()[0],
+            );
+            for (p, q) in b.iter().zip(want) {
+                assert!(
+                    (p - q).abs() <= 1e-12 * (1.0 + q.abs()),
+                    "target {j}: {b:?} vs {want:?}"
+                );
+            }
+        }
+    }
+
+    /// `pairwise` keeps one Gram over every row whatever the gaps, and its
+    /// slopes are pairwise-complete moments: the Gram's centred co-moments
+    /// against each target's own centred cross-moments.
+    #[test]
+    fn pairwise_keeps_one_gram_over_every_row() {
+        let mut c = cfg(2, 3);
+        c.decay = Decay::Halflife(30.0);
+        c.target_gaps = TargetGaps::Pairwise;
+        let mut m = EwRidge::new(c).unwrap();
+        for (x, y, d, w) in gappy_rows(200) {
+            m.step(&x, &y, d, w);
+        }
+        assert_eq!(m.acc.grams.grams.len(), 1);
+        assert_eq!(m.gram(0).n_eff(), m.n_eff(), "the Gram is over every row");
+        assert!(
+            m.acc.wj[2] < m.acc.wj[0],
+            "a target with gaps has less weight"
+        );
+    }
+
+    /// A row with no weight learns nothing, so it parts no targets: one
+    /// that is null on a zero-weight row keeps its Gram, which is still, to
+    /// the bit, the Gram of a model of that target alone. Only a zero-weight
+    /// row that also takes all of the weight -- `lam = 0`, an infinite clock
+    /// gap -- splits them, since there taking the row and skipping it age
+    /// the Gram differently.
+    #[test]
+    fn a_zero_weight_row_splits_no_gram() {
+        let mut c = cfg(2, 2);
+        c.decay = Decay::Halflife(20.0);
+        let mut bank = EwRidge::new(c.clone()).unwrap();
+        let one = EwRidgeCfg { n_targets: 1, ..c };
+        let mut alone = [
+            EwRidge::new(one.clone()).unwrap(),
+            EwRidge::new(one).unwrap(),
+        ];
+        let mut s = 71u64;
+        for i in 0..120 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = 1.0 + x[0] - 2.0 * x[1];
+            // Target 1 is null on exactly the zero-weight rows.
+            let w = if i % 10 == 9 { 0.0 } else { 1.0 };
+            let ys = [Some(y), (w > 0.0).then_some(2.0 * y)];
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            bank.step(&x, &ys, d, w);
+            for (j, a) in alone.iter_mut().enumerate() {
+                a.step(&x, &[ys[j]], d, w);
+            }
+        }
+        assert_eq!(
+            bank.acc.grams.grams.len(),
+            1,
+            "a zero-weight row split them"
+        );
+        for (j, a) in alone.iter().enumerate() {
+            assert_eq!(bank.gram(0), a.gram(0), "target {j}");
+            assert_eq!(bank.acc.wj[j], a.acc.wj[0], "target {j}");
+        }
+        bank.step(&[0.1, 0.2], &[Some(1.0), None], f64::INFINITY, 0.0);
+        assert_eq!(
+            bank.acc.grams.grams.len(),
+            2,
+            "an infinite gap does split them"
+        );
+        let of = &bank.acc.grams.of;
+        assert_eq!(bank.acc.grams.grams[of[1]].n_eff(), 0.0);
+        assert_eq!(bank.acc.grams.grams[of[0]].n_eff(), bank.acc.wj[0]);
+    }
+
+    /// Under `own_rows` a target not seen yet is alone in a Gram with no
+    /// weight. With `ridge = 0` there is no system there, so its
+    /// coefficients stay zero and no failure is counted; a solve of the empty
+    /// Gram was a jittered one, counted, on every row until the target came.
+    #[test]
+    fn a_target_not_seen_yet_costs_no_solve_failure() {
+        let mut c = cfg(2, 2);
+        c.ridge = vec![0.0];
+        c.min_periods = 3.0;
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 73u64;
+        let mut row = |m: &mut EwRidge, i: usize| {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = 1.0 + x[0] - 2.0 * x[1] + 0.01 * lcg(&mut s);
+            m.step(&x, &[Some(y), None], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        };
+        // The first rows are fewer than the terms: target 0's own solves are
+        // singular there, and counted, as least squares on them would be.
+        for i in 0..10 {
+            row(&mut m, i);
+        }
+        let warm = m.solve_failures;
+        for i in 10..60 {
+            row(&mut m, i);
+        }
+        assert_eq!(m.acc.grams.grams.len(), 2);
+        assert_eq!(m.solve_failures, warm, "the empty Gram was solved");
+        assert!(m.coefficients().unwrap()[1].iter().all(|&b| b == 0.0));
+        assert!(m.predict(&[0.1, 0.2], 1.0).pred[1].is_nan());
     }
 }

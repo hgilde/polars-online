@@ -104,6 +104,7 @@ class EwridgeKwargs(ExprKwargs, total=False):
     solve_every: float | None
     max_rows_between_solves: int | None
     gram_block_rows: int | None
+    target_gaps: str
     window: float | None
     window_every: int | None
 
@@ -121,6 +122,7 @@ class LassoKwargs(ExprKwargs, total=False):
     max_rows_between_solves: int | None
     max_cd_iters: int | None
     cd_tol: float | None
+    target_gaps: str
     window: float | None
     window_every: int | None
 

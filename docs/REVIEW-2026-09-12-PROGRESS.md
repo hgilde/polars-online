@@ -20,7 +20,8 @@ in the `dev` group; a test imports each of the three with
 project rule), so where the review names it the test uses the `numpy` or
 `scipy` computation that gives the same number exactly. `pandas` may be
 used in tests (the user, 2026-09-13: "no pandas" is a style rule for the
-package); `statsmodels` brings it, and no test here has needed it yet.
+package); `statsmodels` brings it, and the N3 tests use its
+`DataFrame.cov`.
 
 The library tests live in `tests/test_second_opinion.py`, following
 `tests/test_river.py`'s two tiers: **exact** where the two implement the
@@ -29,12 +30,13 @@ same computation, **statistical** where they differ by design.
 ## Summary (2026-09-13, end of the library round)
 
 **Every finding whose fix has an independent library test is fixed and
-tested: 25 of the review's, and one found on the way (N1).** C1, C2, C3,
-C5, C8–C17, C21, C22, C23; S9, S14, S15, S17, S18, S19, S20, S28; N1. (C5
-has no library oracle of its own; it went in with C21, whose fix depends
-on it.) The library tests are `tests/test_second_opinion.py`, against
-`numpy`, `scipy`, `river`, `statsmodels`, `filterpy` and
-`bayesian-changepoint-detection`.
+tested: 25 of the review's, and four found on the way (N1, N2, N3, N5).**
+C1, C2, C3, C5, C8–C17, C21, C22, C23; S9, S14, S15, S17, S18, S19, S20,
+S28; N1, N2, N3, N5. (C5 has no library oracle of its own; it went in with
+C21, whose fix depends on it. N3 was the user's decision: `target_gaps`,
+docs/PLAN.md task 81.) The library tests are
+`tests/test_second_opinion.py`, against `numpy`, `scipy`, `river`,
+`statsmodels`, `filterpy`, `bayesian-changepoint-detection` and `pandas`.
 
 | commit | findings |
 |---|---|
@@ -47,7 +49,8 @@ on it.) The library tests are `tests/test_second_opinion.py`, against
 | `cb6c57c` | C21, C5 |
 | `fd2f8d6` | S20 |
 | `b56f561` | S19 |
-| (this commit) | N1, C22, C23, S9, S18; `SCHEMA_VERSION` 7 |
+| `ea99161` | N1, C22, C23, S9, S18; `SCHEMA_VERSION` 7 |
+| (this commit) | N3 as task 81 (`target_gaps`), N2, N5; `SCHEMA_VERSION` 8 |
 
 **How each was held.** Every finding was reproduced before it was fixed
 (the review was written without running anything), and every new test
@@ -85,6 +88,13 @@ C22's forgotten clock -- `holt`'s forecast across two unlearned rows as
    which keeps the numbers the file carried and not the bits, and a
    schema-6 `holt` starts every target's clock since its last observation
    at 0 -- a file saved just after a null forgets that one gap.
+7. **Task 81 (`target_gaps`, N3):** `n_eff` counts every row under both
+   readings, so `min_periods` gates as before and S2 stays open; a closed
+   group writes one row per Gram, whose `n_eff` is that Gram's weight, as
+   its `n_kish` was. Schema 8 has no loader for 7, on the user's word
+   (2026-09-14: "Do not worry about state saved before the next version
+   release, we are pre 1.0 and we can change things now"), so the loaders
+   of item 6 are gone with their fixtures.
 
 **Where the review's own text was wrong** (found by testing it): a window
 keeps rows whose age is *at most* `window` (T-S10 said "less than"); S20's
@@ -99,13 +109,14 @@ two agree to `3e-9`); and C22's two `holt` tests do not turn over -- with
 a clock since the last observation the level does stand still across a
 null, and what moves is the next row's forecast.
 
-**Kept for later: 53 items**, each with its reason in the tables below --
+**Kept for later: 52 items** (V22 closed with task 81), each with its
+reason in the tables below --
 no independent library oracle (C4, C6, C7, C19, C20, C24; S4-S8, S10-S13,
 S16, S21, S22, S24-S26, S32), a fix with no library test whose
 library-tested alternative is an enhancement (C18), a decision needed
 first (S1, S2, S3, S23, S27, S29, S30, S31), performance (P1-P5),
-documentation (D1-D10), and the V list -- and three new observations,
-N2-N4. **S29 and S30 are the user's call**: both would trade `holt`'s
+documentation (D1-D10), and the V list -- and one new observation, N4,
+which task 81 did half of. **S29 and S30 are the user's call**: both would trade `holt`'s
 textbook recursion, which `statsmodels`' `Holt` now pins exactly, for a
 mean-form level. The user's own design work (tasks 78 and 79), parked on
 `design/task-78` while the round ran, is merged into `main`.
@@ -187,7 +198,8 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 |---|---|
 | P1–P5 | later: performance; benchmarks, not library tests |
 | D1–D10 | later: documentation |
-| V5, V7, V11, V22, V23, V24, V25 | later: to confirm; none is a fix yet |
+| V5, V7, V11, V23, V24, V25 | later: to confirm; none is a fix yet |
+| V22 | **closed** with task 81: `MIN_SCHEMA_VERSION` 8 refuses every layout older than `Run::len`, and with `RunWire` gone the field no longer defaults when absent, so a file without it is refused rather than loaded at `len = 0` |
 
 ## Log
 
@@ -290,23 +302,37 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   moments are still what `bank.gram()` exports (formed from the centred
   ones), and `ridge_decay` and the solves through the origin still read
   the raw system, which has no intercept to eliminate.
-- **N2** (while fixing N1): `lasso` keeps its per-target cross-moments raw
-  in the same way and recovers its intercept from them; the N1 test at a
-  level would show it. Kept for later.
-- **N3** (while fixing N1): with a target that is null on some rows, the
-  Gram is over every row and the target's cross-moments over its own, so
-  the slopes depend on the target's level: in exact arithmetic the solve
-  adds `(m_j − m)·ȳ_j / Var(x)` to a slope, `m_j` the feature's mean over
-  the target's rows. A property of the model's definition, plain and
-  standardized alike, not of its numerics, and unchanged here; whether a
-  target's fit should read a Gram over its own rows is a question for the
-  user.
-- **N4** (while fixing N1): `po.gram.solve` follows the old `EwRidge::solve`
-  on the raw cross-moments the Gram exports -- the raw normal equations,
-  or a centring by subtraction -- so a Gram saved at a level loses the fit
-  the way the model did before N1. The export is raw by contract; the
-  solve could centre from `means`, `comoments` and the target moments.
-  Kept for later.
+- **N2** (while fixing N1) -- **fixed** with task 81. `lasso` kept its
+  per-target cross-moments raw in the same way and recovered its intercept
+  from them. It keeps `ewridge`'s centred ones now, which `target_gaps`
+  needed anyway. Rust: `a_level_costs_the_path_nothing`, the N1 test at
+  every path point; library: statsmodels' elastic net at a penalty.
+- **N3** (while fixing N1) -- **fixed** as docs/PLAN.md task 81, on the
+  user's decision. With a target null on some rows, the Gram was over
+  every row and the target's cross-moments over its own, so the slopes
+  depended on the target's level: the solve added `(m_j − m)·ȳ_j / Var(x)`
+  to a slope, `m_j` the feature's mean over the target's rows. The user
+  asked for every option behind one parameter, then dropped that reading
+  as adding nothing. `target_gaps="own_rows"`, the default, fits each
+  target on exactly its rows; `"pairwise"` keeps one Gram and centres each
+  target's cross-moments at its own means. Library: `numpy`'s `lstsq` and
+  statsmodels' `WLS`, ridge and elastic net for `own_rows`; `pandas`'
+  `DataFrame.cov` and `numpy.cov` for `pairwise`. Before the fix the
+  default's fit was off by 1.17 at level 0 and by 49.2 at level 50.
+- **N4** (while fixing N1) -- **half done** with task 81. `po.gram.solve`
+  solved the raw normal equations; it solves the centred system now, with
+  each target's own column means (`means_by_target`), as the model does.
+  What is left: its right-hand side is formed from the raw cross-moments
+  the export carries, `E[z·y] − m·ȳ`, which loses `L²·ε` at a level `L`.
+  Exporting the centred cross-moments would close it; kept for later, as a
+  change to the export.
+- **N5** (while building task 81) -- **fixed**.
+  `po.gram.solve(standardize=True)` and `po.gram.lasso_path` without an
+  intercept scaled the centred co-moments against the raw cross-moments:
+  the hybrid the models lost in C8, least squares only when every feature
+  has mean zero. Both read raw moments there now. The tests compare with
+  the models, a feature moved off zero (`test_gram_module.py`); the models'
+  fit through the origin is held to `numpy` already (C8).
 
 ## Libraries
 

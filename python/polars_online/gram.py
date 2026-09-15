@@ -7,9 +7,10 @@ correlation, solve a ridge, walk a lasso path, put standard errors on
 coefficients, and diagnose collinearity.
 
 Every function takes the mapping ``gram()`` produces -- ``columns``,
-``means``, ``comoments``, ``cross_moments``, ``target_weights``,
-``target_means``, ``target_vars``, ``n_eff``, ``n_kish``, ``target_n_kish``
--- and :func:`merge` and :func:`subset` return one of the same shape.
+``targets``, ``means``, ``comoments``, ``cross_moments``,
+``means_by_target``, ``target_weights``, ``target_means``, ``target_vars``,
+``n_eff``, ``n_kish``, ``target_n_kish`` -- and :func:`merge` and
+:func:`subset` return one of the same shape.
 
 The arithmetic is the models' own, so :func:`solve` on a spec's Gram
 reproduces that spec's coefficients and :func:`lasso_path` reproduces the
@@ -100,6 +101,17 @@ def _target_index(g: dict[str, Any], target: str | int) -> int:
     return names.index(target)
 
 
+def _means_of(np: Any, g: dict[str, Any], t: int) -> Any:
+    """The column means target ``t``'s cross-moments are centred at and its
+    intercept is recovered from: its own, over the rows it was present on
+    (``means_by_target``, docs/PLAN.md task 81), or the Gram's ``means`` in a
+    mapping without them."""
+    by_target = g.get("means_by_target")
+    if by_target is None or len(by_target) == 0:
+        return np.asarray(g["means"], dtype=float)
+    return np.asarray(by_target, dtype=float)[t]
+
+
 def _feature_slots(
     g: dict[str, Any], features: Sequence[str | int] | None
 ) -> tuple[list[int], int]:
@@ -151,6 +163,11 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
     pairs a row with the row `l` back *within its own part*, and the pairings
     across a part boundary are what no part holds.
 
+    Each target's ``means_by_target`` pools over its own rows, by its
+    ``target_weights``. Under ``target_gaps="own_rows"`` a spec may have a
+    Gram per set of targets (docs/PLAN.md task 81): merge the entries of one
+    Gram across the shards, the ones with the same ``targets``.
+
     Every part must have the same ``columns`` and ``targets``; a part with no
     ``n_kish`` or no target moments (a state saved by 0.2.0 or earlier) makes
     the merge report ``None`` for those, since the sums behind them are not
@@ -180,6 +197,7 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
     q = _q_of(parts[0])
     tw = np.asarray(parts[0]["target_weights"], dtype=float).copy()
     cross = np.asarray(parts[0]["cross_moments"], dtype=float).copy()
+    by_target = _opt(np, parts[0].get("means_by_target"))
     tmean = _opt(np, parts[0]["target_means"])
     tvar = _opt(np, parts[0]["target_vars"])
     tq = _target_q(np, parts[0])
@@ -213,6 +231,14 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
         if cross.size or crossb.size:
             scale = np.divide(1.0, ttotal, out=np.zeros_like(ttotal), where=live)
             cross = (tw[:, None] * cross + twb[:, None] * crossb) * scale[:, None]
+        # Each target's column means pool over its own rows, by its weights.
+        by_target_b = _opt(np, p.get("means_by_target"))
+        if by_target is None or by_target_b is None:
+            by_target = None
+        elif by_target.size or by_target_b.size:
+            a = np.divide(tw, ttotal, out=np.zeros_like(ttotal), where=live)
+            b = np.divide(twb, ttotal, out=np.zeros_like(ttotal), where=live)
+            by_target = a[:, None] * by_target + b[:, None] * by_target_b
         tw = ttotal
 
     return {
@@ -225,6 +251,7 @@ def merge(grams: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "means": mean,
         "comoments": como,
         "cross_moments": cross,
+        "means_by_target": by_target,
         "target_weights": tw,
         "target_means": tmean,
         "target_vars": tvar,
@@ -292,8 +319,9 @@ def from_row(row: Any) -> dict[str, Any]:
 
     Takes a one-row frame, a row of ``iter_rows(named=True)``, or a mapping.
     The row's ``comoments`` is the upper triangle with the diagonal, row by
-    row, and its ``cross_moments`` is row-major ``(n_targets, k)``; this
-    expands both.
+    row, and its ``cross_moments`` and ``means_by_target`` are row-major
+    ``(n_targets, k)``; this expands all three. A closed group writes one row
+    per Gram, so a row's ``targets`` are that Gram's.
 
     The result is what ``gram()`` would have returned for that group **bit
     for bit, except the co-moment matrix's lower triangle**, which is the
@@ -333,6 +361,9 @@ def from_row(row: Any) -> dict[str, Any]:
         "means": _floats(np, d["means"]),
         "comoments": _unvech(np, d["comoments"], k),
         "cross_moments": cross.reshape(len(targets), k) if targets else np.zeros((0, k)),
+        "means_by_target": _floats(np, d["means_by_target"]).reshape(len(targets), k)
+        if targets and d.get("means_by_target")
+        else np.zeros((0, k)),
         "target_weights": _floats(np, d.get("target_weights") or []),
         "target_means": None if d.get("target_means") is None else _floats(np, d["target_means"]),
         "target_vars": None if d.get("target_vars") is None else _floats(np, d["target_vars"]),
@@ -388,6 +419,8 @@ def subset(g: dict[str, Any], cols: Sequence[str | int]) -> dict[str, Any]:
     names = _columns(g)
     como = np.asarray(g["comoments"], dtype=float)
     cross = np.asarray(g["cross_moments"], dtype=float)
+    by_target = g.get("means_by_target")
+    by_target = None if by_target is None else np.asarray(by_target, dtype=float)
     lag = g.get("lag_comoments")
     return {
         **g,
@@ -395,6 +428,9 @@ def subset(g: dict[str, Any], cols: Sequence[str | int]) -> dict[str, Any]:
         "means": np.asarray(g["means"], dtype=float)[idx],
         "comoments": como[np.ix_(idx, idx)],
         "cross_moments": cross[:, idx] if cross.size else cross,
+        "means_by_target": by_target[:, idx]
+        if by_target is not None and by_target.ndim == 2
+        else by_target,
         # The lagged matrices are over the same axes, so they slice the same
         # way -- in both, since a lagged matrix is not symmetric.
         "lag_comoments": None if lag is None else np.asarray(lag, dtype=float)[:, idx][:, :, idx],
@@ -433,31 +469,35 @@ def solve(
     The model's own algebra (``EwRidge::solve``), so the result is the fit
     that spec would report on the same accumulator:
 
-    - ``standardize=False`` adds ``ridge`` to the diagonal of the *raw*
-      second-moment matrix, leaving the intercept unpenalized;
-    - ``standardize=True`` centres, scales to correlation form, adds ``ridge``
-      there, then unscales and recovers the intercept from the means -- so
-      ``ridge`` means the same thing whatever the features' units. A column
-      with zero variance is dropped with a coefficient of 0 rather than
-      making the system singular.
+    - with an intercept in ``columns`` it is eliminated, and the slopes solve
+      the centred system ``(C + ridge*I) b = c``: ``C`` the features'
+      centred ``comoments``, and ``c = cross_moments[t] - m * ybar`` with
+      ``m`` the target's own column means (``means_by_target``) and ``ybar``
+      its mean; then ``b_0 = ybar - m . b``. That is the raw normal equations
+      with the intercept unpenalized, exactly, where the target's rows are
+      the Gram's, and it is what ``target_gaps="pairwise"`` solves where
+      they are not (docs/PLAN.md task 81);
+    - without one nothing is centred: ``(E[z z'] + ridge*I) b = E[z y]``,
+      every slot penalized;
+    - ``standardize=True`` scales either system to correlation form, adds
+      ``ridge`` there and unscales, so ``ridge`` means the same thing
+      whatever the features' units. A column with zero variance -- zero raw
+      second moment, without an intercept -- is dropped with a coefficient
+      of 0 rather than making the system singular.
 
     Pass the ``standardize`` the spec used, or the numbers will not match its
     ``coef()``. With an intercept in ``columns`` the returned vector starts
     with it, in :func:`polars_online.spec.coef_index` order.
 
     ``ridge`` may be a sequence, and then the return is one row per value.
-    A grid rides a single eigendecomposition wherever the penalty is uniform
-    in the basis being solved -- always with ``standardize=True``, and
-    without an intercept otherwise: with ``V d V'`` in hand every ridge is
+    The penalty is uniform in the basis being solved, so a grid rides a
+    single eigendecomposition: with ``V d V'`` in hand every ridge is
     ``V diag(1/(d + r)) V' b``, which is what makes a grid of fifty cheap.
-    An unstandardized fit *with* an intercept leaves that one column
-    unpenalized, so its penalty is not a multiple of the identity and each
-    value costs a factorization. That is the model's arithmetic, and
-    reproducing it is worth more here than the shortcut.
 
-    ``target`` picks the target by name or position; ``features`` narrows the
-    regressors (equivalent to :func:`subset` first, and refusing the
-    intercept, which the solve handles itself).
+    ``target`` picks the target by name or position among this Gram's
+    ``targets``; ``features`` narrows the regressors (equivalent to
+    :func:`subset` first, and refusing the intercept, which the solve handles
+    itself).
     """
     np = _np()
     t = _target_index(g, target)
@@ -471,44 +511,30 @@ def solve(
     como = np.asarray(g["comoments"], dtype=float)
     out = np.zeros((len(ridges), k))
 
-    if not standardize:
-        # Raw second moments, as the model pairs them with the uncentred
-        # cross-moments: raw = comoments + outer(means, means).
-        zidx = ([icept] if icept >= 0 else []) + slots
-        raw = como[np.ix_(zidx, zidx)] + np.outer(means[zidx], means[zidx])
-        b = cross[zidx]
-        pen = np.ones(len(zidx))
-        if icept >= 0:
-            pen[0] = 0.0  # the intercept is not shrunk
-        d, v = np.linalg.eigh(raw)
-        vb = v.T @ b
-        for i, r in enumerate(ridges):
-            # The penalty is diagonal in the original basis, not the
-            # eigenbasis, so only a uniform one can ride the decomposition.
-            if icept >= 0 and r != 0.0:
-                sol = np.linalg.solve(raw + r * np.diag(pen), b)
-            else:
-                sol = v @ (vb / (d + r))
-            out[i, zidx] = sol
-        return out[0] if scalar else out
-
-    # Standardized: centre, scale to correlation form, solve, unscale, then
-    # recover the intercept from the means. A constant column is dropped.
-    c = como[np.ix_(slots, slots)]
-    s = np.sqrt(np.clip(np.diag(c), 0.0, None))
-    keep = [i for i in range(len(slots)) if s[i] > 0.0]
-    ybar = cross[icept] if icept >= 0 else 0.0
+    m, ybar = means, 0.0
+    if icept >= 0:
+        m = _means_of(np, g, t)
+        ybar = cross[icept]
+        a = como[np.ix_(slots, slots)]
+        b = cross[slots] - m[slots] * ybar
+    else:
+        a = como[np.ix_(slots, slots)] + np.outer(means[slots], means[slots])
+        b = cross[slots]
+    if standardize:
+        s = np.sqrt(np.clip(np.diag(a), 0.0, None))
+        keep = [i for i in range(len(slots)) if s[i] > 0.0]
+    else:
+        s = np.ones(len(slots))
+        keep = list(range(len(slots)))
     if keep:
         kk = np.ix_(keep, keep)
-        a = c[kk] / np.outer(s[keep], s[keep])
-        b = (cross[[slots[i] for i in keep]] - means[[slots[i] for i in keep]] * ybar) / s[keep]
-        d, v = np.linalg.eigh(a)
-        vb = v.T @ b
+        d, v = np.linalg.eigh(a[kk] / np.outer(s[keep], s[keep]))
+        vb = v.T @ (b[keep] / s[keep])
+        cols = [slots[i] for i in keep]
         for i, r in enumerate(ridges):
-            sol = v @ (vb / (d + r))
-            out[i, [slots[j] for j in keep]] = sol / s[keep]
+            out[i, cols] = (v @ (vb / (d + r))) / s[keep]
     if icept >= 0:
-        out[:, icept] = ybar - out[:, slots] @ means[slots]
+        out[:, icept] = ybar - out[:, slots] @ m[slots]
     return out[0] if scalar else out
 
 
@@ -555,7 +581,19 @@ def lasso_path(
     cross = np.asarray(g["cross_moments"], dtype=float)[t]
     como = np.asarray(g["comoments"], dtype=float)
 
-    c = como[np.ix_(slots, slots)]
+    m, ybar = means, 0.0
+    if icept >= 0:
+        # Centred at the target's own means, as the model's descent reads it
+        # (docs/PLAN.md task 81).
+        m = _means_of(np, g, t)
+        ybar = cross[icept]
+        c = como[np.ix_(slots, slots)]
+        rhs = cross[slots] - m[slots] * ybar
+    else:
+        # Through the origin nothing is centred: raw moments, as the model
+        # has them since the code review's C8.
+        c = como[np.ix_(slots, slots)] + np.outer(means[slots], means[slots])
+        rhs = cross[slots]
     s = np.sqrt(np.clip(np.diag(c), 0.0, None))
     live = s > 0.0
     scale = np.where(live, s, 1.0)
@@ -565,8 +603,7 @@ def lasso_path(
     corr[~live, :] = 0.0
     corr[:, ~live] = 0.0
     corr[~live, ~live] = 1.0
-    ybar = cross[icept] if icept >= 0 else 0.0
-    d = np.where(live, (cross[slots] - means[slots] * ybar) / scale, 0.0)
+    d = np.where(live, rhs / scale, 0.0)
 
     pw = (
         np.ones(len(slots)) if penalty_weights is None else np.asarray(penalty_weights, dtype=float)
@@ -593,7 +630,7 @@ def lasso_path(
                 break
         out[li, slots] = np.where(live, b / scale, 0.0)
         if icept >= 0:
-            out[li, icept] = ybar - out[li, slots] @ means[slots]
+            out[li, icept] = ybar - out[li, slots] @ m[slots]
     return out
 
 
@@ -648,15 +685,15 @@ def coef_stats(
         msg = f"coef must have one entry per Gram column ({k}), got {beta.shape}"
         raise ValueError(msg)
     b = beta[slots]
-    means = np.asarray(g["means"], dtype=float)
     cross = np.asarray(g["cross_moments"], dtype=float)[t]
     como = np.asarray(g["comoments"], dtype=float)
     c = como[np.ix_(slots, slots)]
     var_y = float(np.asarray(g["target_vars"], dtype=float)[t])
     n = float(np.asarray(g["target_n_kish"], dtype=float)[t])
     ybar = cross[icept] if icept >= 0 else float(np.asarray(g["target_means"], dtype=float)[t])
-    # Centred cross-covariance: E[z y] - E[z] E[y], the pair `comoments` is in.
-    cov_xy = cross[slots] - means[slots] * ybar
+    # Centred cross-covariance: E[z y] - E[z] E[y] over the target's rows,
+    # the pair `comoments` is in.
+    cov_xy = cross[slots] - _means_of(np, g, t)[slots] * ybar
 
     resid_var = var_y - 2.0 * b @ cov_xy + b @ c @ b
     resid_var = max(resid_var, 0.0)

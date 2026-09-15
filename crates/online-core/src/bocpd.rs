@@ -298,7 +298,6 @@ impl BocpdCfg {
 /// itself at a level `L` -- all of a unit variance at `1e8`, where every row
 /// then read as a changepoint (review 2026-09-12, C23).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "RunWire")]
 struct Run {
     /// Rows this run has absorbed, i.e. Adams & MacKay's `r`. Not `n`:
     /// under a fractional row weight, or the `robust` emission's, the two
@@ -311,64 +310,6 @@ struct Run {
     /// The weighted scatter `Σ w·(x − x̄)(x − x̄)'`: `d*d` for `gaussian`, the
     /// diagonal (`d`) otherwise.
     m2: Vec<f64>,
-}
-
-/// The layouts a [`Run`] loads. Schema 6 kept the raw sums `sx` and `sxx`,
-/// schema 7 the mean and the scatter; a bank file names its fields, so the
-/// two are told apart by name, and the compact encoding only ever holds the
-/// current layout, whose fields come first here in the same order. The
-/// conversion is the subtraction the old code made on every row, made once,
-/// with the precision the file already had.
-#[derive(Deserialize)]
-struct RunWire {
-    #[serde(default)]
-    len: f64,
-    n: f64,
-    #[serde(default)]
-    mean: Option<Vec<f64>>,
-    #[serde(default)]
-    m2: Option<Vec<f64>>,
-    #[serde(default)]
-    sx: Option<Vec<f64>>,
-    #[serde(default)]
-    sxx: Option<Vec<f64>>,
-}
-
-impl TryFrom<RunWire> for Run {
-    type Error = String;
-
-    fn try_from(w: RunWire) -> Result<Self, String> {
-        let RunWire {
-            len,
-            n,
-            mean,
-            m2,
-            sx,
-            sxx,
-        } = w;
-        match (mean, m2, sx, sxx) {
-            (Some(mean), Some(m2), None, None) => Ok(Self { len, n, mean, m2 }),
-            (None, None, Some(sx), Some(sxx)) => {
-                let d = sx.len();
-                let mean: Vec<f64> = if n > 0.0 {
-                    sx.iter().map(|s| s / n).collect()
-                } else {
-                    vec![0.0; d]
-                };
-                let m2 = if sxx.len() == d {
-                    (0..d).map(|i| sxx[i] - n * mean[i] * mean[i]).collect()
-                } else if sxx.len() == d * d {
-                    (0..d * d)
-                        .map(|ij| sxx[ij] - n * mean[ij / d] * mean[ij % d])
-                        .collect()
-                } else {
-                    return Err("bocpd: a run's sums have the wrong shape".into());
-                };
-                Ok(Self { len, n, mean, m2 })
-            }
-            _ => Err("bocpd: a run carries neither its moments nor its sums".into()),
-        }
-    }
 }
 
 impl Run {

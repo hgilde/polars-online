@@ -764,6 +764,23 @@ impl EwCov {
         self.prior_scale *= lam;
     }
 
+    /// Age the accumulator over a row it does not learn: [`Self::decay`],
+    /// except that a blocked accumulator holds the row as a zero-weight one
+    /// instead of flushing its block, so a Gram that skips rows often -- a
+    /// target's, under `target_gaps = "own_rows"` (docs/PLAN.md task 81) --
+    /// keeps the block's saving. The two are the same numbers: a zero-weight
+    /// row moves neither the means nor the co-moments, and ages the weights
+    /// by `lam` as `decay` does, by the same products. With no weight to age,
+    /// or a `lam` that takes all of it, there is nothing to hold and `decay`
+    /// is the answer.
+    pub fn skip(&mut self, x: &[f64], lam: f64) {
+        if self.pending.block_rows > 0 && lam * self.w_sum > 0.0 {
+            self.buffer(x, lam, 0.0);
+        } else {
+            self.decay(lam);
+        }
+    }
+
     /// Reference inverse of `C + prior·prior_scale·I` by Gauss-Jordan with
     /// partial pivoting, so the tests can check [`Self::precision`] against
     /// something that shares none of its code.

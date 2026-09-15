@@ -583,6 +583,7 @@ mod tests {
             solve_every: 0.0,
             max_rows_between_solves: 1,
             gram_block_rows: 0,
+            target_gaps: crate::TargetGaps::OwnRows,
             window: None,
             window_every: None,
         })

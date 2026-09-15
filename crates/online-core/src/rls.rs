@@ -442,6 +442,7 @@ mod tests {
             solve_every: 0.0,
             max_rows_between_solves: 1,
             gram_block_rows: 0,
+            target_gaps: crate::TargetGaps::OwnRows,
             window: None,
             window_every: None,
         })
@@ -465,6 +466,70 @@ mod tests {
             }
         }
         assert!(max_diff < 1e-9, "max pred difference {max_diff}");
+    }
+
+    /// The same agreement where the target is null on some rows
+    /// (docs/PLAN.md task 81). RLS learns a row only when its target is
+    /// there and decays on every row, which is EW-ridge under `target_gaps =
+    /// "own_rows"`: its Gram skips the target's null rows and ages over them.
+    /// Under `"pairwise"` the Gram is over every row, and the two part.
+    #[test]
+    fn agrees_with_ewridge_on_a_stream_with_gaps() {
+        let (k, hl, ridge) = (3usize, 40.0, 0.7);
+        let mut rls = Rls::new(rls_cfg(k, 1, hl, ridge)).unwrap();
+        let cfg = EwRidgeCfg {
+            n_features: k,
+            n_targets: 1,
+            add_intercept: true,
+            decay: Decay::Halflife(hl),
+            ridge: vec![ridge],
+            feature_sets: vec![],
+            standardize: false,
+            ridge_decay: true,
+            session_shrink: None,
+            long_halflife: None,
+            coef_prior: None,
+            min_periods: 0.0,
+            solve_every: 0.0,
+            max_rows_between_solves: 1,
+            gram_block_rows: 0,
+            target_gaps: crate::TargetGaps::OwnRows,
+            window: None,
+            window_every: None,
+        };
+        let mut own = EwRidge::new(cfg.clone()).unwrap();
+        let mut pairwise = EwRidge::new(EwRidgeCfg {
+            target_gaps: crate::TargetGaps::Pairwise,
+            ..cfg
+        })
+        .unwrap();
+
+        let mut s = 101u64;
+        let (mut max_diff, mut apart, mut rows) = (0.0f64, 0.0f64, 0);
+        for i in 0..400 {
+            let x: Vec<f64> = (0..k).map(|_| lcg(&mut s)).collect();
+            let y = 1.5 * x[0] - x[1] + 0.3 + 0.05 * lcg(&mut s);
+            // Missing on a schedule and where a feature is high.
+            let y = (i % 4 != 2 && x[2] < 0.5).then_some(y);
+            let d = if i == 0 { 0.0 } else { 0.5 + lcg(&mut s).abs() };
+            let w = 0.5 + lcg(&mut s).abs();
+            let a = rls.step(&x, &[y], d, w);
+            let b = own.step(&x, &[y], d, w);
+            let p = pairwise.step(&x, &[y], d, w);
+            assert_eq!(a.pred[0].is_finite(), b.pred[0].is_finite(), "row {i}");
+            assert_eq!(a.n_eff, b.n_eff, "row {i}: both count every row");
+            if a.pred[0].is_finite() {
+                rows += 1;
+                max_diff = max_diff.max((a.pred[0] - b.pred[0]).abs());
+                apart = apart.max((a.pred[0] - p.pred[0]).abs());
+            }
+        }
+        assert!(rows > 350, "{rows} rows compared");
+        assert!(max_diff < 1e-9, "max pred difference {max_diff}");
+        assert!(
+            apart > 1e-3,
+            "a Gram over every row should not agree: {apart}"
+        );
     }
 
     #[test]

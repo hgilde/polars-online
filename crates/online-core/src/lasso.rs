@@ -1,8 +1,10 @@
 //! Lasso path on top of the EW-ridge accumulators (docs/PLAN.md §4.3).
 //!
-//! Coordinate descent on the standardized centered statistics contained in
-//! `EwCov` / the per-target cross moments, over a decreasing `lasso_path`,
-//! warm-started along the path and across solves.
+//! Coordinate descent on the standardized centered statistics -- each
+//! target's Gram and centred cross-moments, the accumulators `ewridge` keeps
+//! (`crate::gaps`) -- over a decreasing `lasso_path`, warm-started along the
+//! path and across solves. `target_gaps` says which rows a target's Gram is
+//! over, as for `ewridge` (docs/PLAN.md task 81).
 //!
 //! For standardized features (unit variance, zero mean) and a centered target,
 //! the coordinate update for feature `i` at penalty `l` is
@@ -13,8 +15,13 @@
 //! ```
 //!
 //! with `soft(v, t) = sign(v) * max(|v| - t, 0)`; `l1_ratio = 1` is pure lasso,
-//! `< 1` is elastic net. Coefficients are unscaled afterwards and the intercept
-//! recovered as `ybar - m . beta`.
+//! `< 1` is elastic net. `C` is the correlation matrix of the target's Gram
+//! and `c` its cross-correlations centred at the means over the target's own
+//! rows, from the centred cross-moments `ewridge` keeps since the code
+//! review's N1. This kept them raw and centred them by subtraction, which lost
+//! the fit at a level (N2). Coefficients are unscaled afterwards and the
+//! intercept recovered as `ȳ − m_j · beta`, `m_j` the column means over the
+//! target's rows.
 //!
 //! Lambda selection is free: predictions for every path point are computed
 //! anyway, so `lam_selected_j` is the argmin over the path of an EW mean of
@@ -22,9 +29,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::gaps::{Acc, AccSnap, AccView, Cross, gram_parts};
 use crate::model::{Extra, ModelState, OnlineModel, State, StateError, Step, check_schema};
 use crate::solve::dot_aug;
-use crate::{Decay, EwCov, TargetMoments};
+use crate::{Decay, EwCov, GramPart, TargetGaps, TargetMoments};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LassoCfg {
@@ -44,6 +52,11 @@ pub struct LassoCfg {
     pub max_rows_between_solves: u32,
     pub max_cd_iters: u32,
     pub cd_tol: f64,
+    /// Which rows a target's Gram is taken over where the target is null on
+    /// some (docs/PLAN.md task 81; [`TargetGaps`]): its own, the default, or
+    /// every row.
+    #[serde(default)]
+    pub target_gaps: TargetGaps,
     /// Clock units of history the path is fitted from, with a **hard** cutoff:
     /// a row older than this is not in the Gram at all (docs/PLAN.md §13).
     /// Inside the window the weights are still exponential. The selection
@@ -99,15 +112,9 @@ impl LassoCfg {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Lasso {
     cfg: LassoCfg,
-    cov: EwCov,
-    wj: Vec<f64>,
-    /// Per target: EW mean of `z y_j` (`z` includes the intercept slot).
-    r: Vec<Vec<f64>>,
-    /// Per target: mean, variance and `Sum w^2` -- the other half of the
-    /// sufficient statistic the Gram export hands back
-    /// (docs/ENHANCEMENTS.md E45). `None` in a state written before task 38.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    tm: Option<TargetMoments>,
+    /// The Grams, and per target its weight, centred cross-moments and
+    /// moments (see `crate::gaps::Acc`), as `ewridge` keeps them.
+    acc: Acc,
     /// Per target, per path point: coefficients in original units (`k_total`).
     beta: Option<Vec<Vec<Vec<f64>>>>,
     /// Per target, per path point: EW mean squared out-of-sample error.
@@ -126,11 +133,14 @@ pub struct Lasso {
     zbuf: Vec<f64>,
 }
 
+/// One Gram's statistics in correlation form (`Lasso::standardized`): the
+/// correlation matrix, then per target the standardized cross-correlations,
+/// the feature scales, and per target the column means.
+type Standardized = (Vec<f64>, Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f64>>);
+
 /// The accumulators a windowed path is fitted from, truncated to the window.
 struct LassoView {
-    cov: EwCov,
-    wj: Vec<f64>,
-    r: Vec<Vec<f64>>,
+    acc: AccView,
     sel_err: Vec<Vec<f64>>,
 }
 
@@ -144,9 +154,7 @@ struct Windowed {
 /// Every accumulator the path is read from, before a row and decayed to it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct LassoMoments {
-    cov: crate::Moments,
-    wj: Vec<f64>,
-    r: Vec<Vec<f64>>,
+    acc: AccSnap,
     sel_w: Vec<f64>,
     sel_err: Vec<Vec<f64>>,
 }
@@ -164,10 +172,7 @@ impl Lasso {
             None => None,
         };
         Ok(Self {
-            cov: EwCov::new(k_total),
-            wj: vec![0.0; m],
-            r: vec![vec![0.0; k_total]; m],
-            tm: Some(TargetMoments::new(m)),
+            acc: Acc::new(m, k_total, 0),
             beta: None,
             sel_err: vec![vec![0.0; np]; m],
             sel_w: vec![0.0; m],
@@ -198,115 +203,88 @@ impl Lasso {
             .collect()
     }
 
-    /// The feature accumulator (docs/ENHANCEMENTS.md E30). See
-    /// [`EwCov::comoments`].
-    pub fn cov(&self) -> &EwCov {
-        &self.cov
+    /// The Grams the path is read from, one entry per Gram with the targets
+    /// that read it, and the target moments: see `EwRidge::gram_parts`.
+    pub fn gram_parts(&self) -> (Vec<GramPart>, Option<&TargetMoments>) {
+        let (of, gaps) = (&self.acc.grams.of, self.cfg.target_gaps);
+        match self.view() {
+            Some(v) => (
+                gram_parts(&v.acc.grams, of, &v.acc.cross, &v.acc.wj, gaps),
+                None,
+            ),
+            None => (
+                gram_parts(
+                    &self.acc.grams.grams,
+                    of,
+                    &self.acc.cross,
+                    &self.acc.wj,
+                    gaps,
+                ),
+                Some(&self.acc.tm),
+            ),
+        }
     }
 
-    /// Per-target **uncentered** cross-moments `r[t]`, each `k_total` long:
-    /// the EW mean of `z·y_t`, where `z` is the feature row with the intercept
-    /// slot as a constant 1.
-    ///
-    /// Uncentered deliberately — it is what the solve consumes, paired with
-    /// the *raw* second moment. Mixing it with the centered
-    /// [`EwCov::comoments`] silently gives the wrong coefficients; the
-    /// identity that holds is
-    /// `(comoments + means⊗means) · beta == cross_moments`.
-    pub fn cross_moments(&self) -> &[Vec<f64>] {
-        &self.r
+    /// Per-target **uncentered** cross-moments `E[z·y_t]` over each target's
+    /// rows, `k_total` long; see `EwRidge::cross_moments`.
+    pub fn cross_moments(&self) -> Vec<Vec<f64>> {
+        (0..self.cfg.n_targets)
+            .map(|j| self.acc.cross.raw(j))
+            .collect()
     }
 
     /// Per-target accumulated weight behind [`Self::cross_moments`].
     pub fn target_weights(&self) -> &[f64] {
-        &self.wj
+        &self.acc.wj
     }
 
-    /// Per-target mean, variance and `Sum w^2` (docs/ENHANCEMENTS.md E45);
-    /// `None` for a state written before task 38. See the field.
+    /// Per-target mean, variance and `Sum w^2` (docs/ENHANCEMENTS.md E45).
     pub fn target_moments(&self) -> Option<&TargetMoments> {
-        self.tm.as_ref()
+        Some(&self.acc.tm)
     }
 
-    /// The window's Gram, cross-moments and target weights, or `None` when
-    /// the live accumulators are the answer; see `EwRidge::windowed_gram`
-    /// (review 2026-09-12, S19).
-    pub fn windowed_gram(&self) -> Option<(EwCov, Vec<Vec<f64>>, Vec<f64>)> {
-        self.view().map(|v| (v.cov, v.r, v.wj))
-    }
-
-    /// The accumulated weight the path is fitted from: under a `window`, the
-    /// weight inside it.
+    /// The accumulated weight over every row: under a `window`, the weight
+    /// inside it.
     pub fn n_eff(&self) -> f64 {
-        match self.view() {
-            Some(v) => v.cov.n_eff(),
-            None => self.cov.n_eff(),
-        }
+        self.view().map_or(self.acc.cross.w, |v| v.acc.cross.w)
     }
 
-    /// Centered/standardized statistics: correlation matrix `c`, per-target
-    /// standardized cross-correlation `d`, feature scales `s`, means `mean`.
     /// The accumulators the path is fitted from: the live ones, or -- with a
     /// `window` -- the same ones with everything older than the window
-    /// subtracted off (docs/PLAN.md §13). The selection error is truncated
-    /// with them, so the `lambda` chosen is the one that fits the window
-    /// rather than the one that fitted a history the window has dropped.
+    /// subtracted off (docs/PLAN.md §13), as `EwRidge::view` takes them. The
+    /// selection error is truncated with them, so the `lambda` chosen is the
+    /// one that fits the window rather than one that fitted a history the
+    /// window has dropped. An empty window is an empty view, never the live
+    /// state, and a target with no row inside it keeps weight 0 while the
+    /// others stay windowed (review 2026-09-12, C2).
     fn view(&self) -> Option<LassoView> {
         let win = self.win.as_ref()?;
         let (u, old) = win.snaps.boundary()?;
-        if old.cov.w == 0.0 {
-            return None;
-        }
         let f = self.cfg.decay.factor(win.clock - u);
-        let m = self.cfg.n_targets;
-        let k_total = self.cfg.k_total();
-        let mut r = vec![vec![0.0; k_total]; m];
-        let mut wj = vec![0.0; m];
+        let acc = self.acc.window(&old.acc, f)?;
         let mut sel_err = self.sel_err.clone();
-        // An empty window is an empty view, never the live state; a target
-        // with no row inside it keeps weight 0 while the others stay windowed.
-        // Both were `?`, which `EwRidge::view` had too (review 2026-09-12, C2).
-        let Some(cov) = crate::truncated(&self.cov, &old.cov, f) else {
-            let mut empty = self.cov.clone();
-            let zeros = vec![0.0; k_total * k_total];
-            empty.set_moments(&vec![0.0; k_total], &zeros, 0.0, old.cov.q.map(|_| 0.0));
-            return Some(LassoView {
-                cov: empty,
-                wj,
-                r,
-                sel_err,
-            });
-        };
-        for j in 0..m {
-            if let Some((w, rj)) =
-                crate::truncated_mean(self.wj[j], &self.r[j], old.wj[j], &old.r[j], f)
-            {
-                wj[j] = w;
-                r[j] = rj;
-            }
-            if let Some((_w, e)) = crate::truncated_mean(
-                self.sel_w[j],
-                &self.sel_err[j],
-                old.sel_w[j],
-                &old.sel_err[j],
-                f,
-            ) {
-                sel_err[j] = e.into_iter().map(|v| v.max(0.0)).collect();
+        if acc.cross.w > 0.0 {
+            for (j, err) in sel_err.iter_mut().enumerate() {
+                if let Some((_w, e)) = crate::truncated_mean(
+                    self.sel_w[j],
+                    &self.sel_err[j],
+                    old.sel_w[j],
+                    &old.sel_err[j],
+                    f,
+                ) {
+                    *err = e.into_iter().map(|v| v.max(0.0)).collect();
+                }
             }
         }
-        Some(LassoView {
-            cov,
-            wj,
-            r,
-            sel_err,
-        })
+        Some(LassoView { acc, sel_err })
     }
 
-    fn standardized(
-        &self,
-        acc: &EwCov,
-        r: &[Vec<f64>],
-    ) -> (Vec<f64>, Vec<Vec<f64>>, Vec<f64>, Vec<f64>) {
+    /// One Gram's statistics in correlation form, for the targets `readers`
+    /// that read it: the correlation matrix `c`, each target's standardized
+    /// cross-correlation `d` -- centred at its own means -- the feature scales
+    /// `s`, and each target's column means over its rows, which the intercept
+    /// is recovered from.
+    fn standardized(&self, acc: &EwCov, cross: &Cross, readers: &[usize]) -> Standardized {
         let k = self.cfg.n_features;
         let off = usize::from(self.cfg.add_intercept);
         if off == 0 {
@@ -328,18 +306,17 @@ impl Lasso {
                     };
                 }
             }
-            let d = r
+            let d = readers
                 .iter()
-                .take(self.cfg.n_targets)
-                .map(|rj| {
+                .map(|&j| {
+                    let rj = cross.raw(j);
                     (0..k)
                         .map(|i| if s[i] > 0.0 { rj[i] / s[i] } else { 0.0 })
                         .collect::<Vec<f64>>()
                 })
                 .collect();
-            return (c, d, s, vec![0.0; k]);
+            return (c, d, s, vec![vec![0.0; k]; readers.len()]);
         }
-        let mean: Vec<f64> = (0..k).map(|i| acc.mean(i + off)).collect();
         // Centered co-moments come straight from the accumulator; deriving them
         // as raw - mean*mean would reintroduce the cancellation the Welford
         // representation exists to avoid.
@@ -369,112 +346,130 @@ impl Lasso {
                 };
             }
         }
-        let mut d = Vec::with_capacity(self.cfg.n_targets);
-        for rj in r.iter().take(self.cfg.n_targets) {
-            let ybar = if self.cfg.add_intercept { rj[0] } else { 0.0 };
-            d.push(
+        // Each target's cross-covariance is the centred one it keeps, so
+        // nothing level-sized is subtracted here (N2).
+        let d = readers
+            .iter()
+            .map(|&j| {
                 (0..k)
                     .map(|i| {
                         if s[i] > 0.0 {
-                            (rj[i + off] - mean[i] * ybar) / s[i]
+                            cross.c[j][i + off] / s[i]
                         } else {
                             0.0
                         }
                     })
-                    .collect::<Vec<f64>>(),
-            );
-        }
-        (c, d, s, mean)
+                    .collect::<Vec<f64>>()
+            })
+            .collect();
+        // `m_j` as `EwRidge::solve_centred` takes it: the Gram's mean, plus
+        // the target's offset under `pairwise`.
+        let pairwise = self.cfg.target_gaps == TargetGaps::Pairwise;
+        let means = readers
+            .iter()
+            .map(|&j| {
+                (0..k)
+                    .map(|i| {
+                        let offset = if pairwise { cross.d[j][i + off] } else { 0.0 };
+                        acc.mean(i + off) + offset
+                    })
+                    .collect()
+            })
+            .collect();
+        (c, d, s, means)
     }
 
     fn solve(&mut self) {
         let k = self.cfg.n_features;
         let k_total = self.cfg.k_total();
+        let off = usize::from(self.cfg.add_intercept);
         // With a `window`, the path is fitted from the truncated
-        // accumulators: no row older than the window is in the Gram, the
-        // right-hand side, or the selection error.
+        // accumulators: no row older than the window is in a Gram, the
+        // right-hand side, or the selection error. The selection error is
+        // read where the path point is chosen, in `step`.
         let view = self.view();
-        // The path is fitted from the Gram and the cross-moments; the
-        // selection error is truncated too, but it is read where the path
-        // point is chosen, in `step`.
-        let (cov, r) = match view.as_ref() {
-            Some(v) => (&v.cov, &v.r),
-            None => (&self.cov, &self.r),
+        let (grams, cross, wj) = match view.as_ref() {
+            Some(v) => (v.acc.grams.as_slice(), &v.acc.cross, &v.acc.wj),
+            None => (
+                self.acc.grams.grams.as_slice(),
+                &self.acc.cross,
+                &self.acc.wj,
+            ),
         };
-        let wj = match view.as_ref() {
-            Some(v) => &v.wj,
-            None => &self.wj,
-        };
-        let (c, d, s, mean) = self.standardized(cov, r);
         let np = self.cfg.n_lambdas();
         let mut out = vec![vec![vec![0.0; k_total]; np]; self.cfg.n_targets];
 
-        for j in 0..self.cfg.n_targets {
-            if wj[j] <= 0.0 {
-                // Under a window, no row of this target is inside it: no fit
-                // to report (C2). Without one, a target never seen keeps the
-                // zeros it always had.
-                if view.is_some() {
-                    out[j] = vec![vec![f64::NAN; k_total]; np];
+        // One set of statistics per Gram, for the targets that read it.
+        for (g, gram) in grams.iter().enumerate() {
+            let readers = self.acc.grams.readers(g);
+            let (c, d, s, means) = self.standardized(gram, cross, &readers);
+            for (jj, &j) in readers.iter().enumerate() {
+                if wj[j] <= 0.0 {
+                    // Under a window, no row of this target is inside it: no
+                    // fit to report (C2). Without one, a target never seen
+                    // keeps the zeros it always had.
+                    if view.is_some() {
+                        out[j] = vec![vec![f64::NAN; k_total]; np];
+                    }
+                    continue;
                 }
-                continue;
-            }
-            // Warm start from the previous solve's largest-penalty solution --
-            // unless that was an empty window's NaN, which would poison the
-            // descent rather than start it.
-            let mut b = vec![0.0; k];
-            if let Some(prev) = &self.beta {
-                for i in 0..k {
-                    let p = prev[j][0][i + usize::from(self.cfg.add_intercept)];
-                    if s[i] > 0.0 && p.is_finite() {
-                        b[i] = p * s[i];
+                // Warm start from the previous solve's largest-penalty
+                // solution -- unless that was an empty window's NaN, which
+                // would poison the descent rather than start it.
+                let mut b = vec![0.0; k];
+                if let Some(prev) = &self.beta {
+                    for i in 0..k {
+                        let p = prev[j][0][i + off];
+                        if s[i] > 0.0 && p.is_finite() {
+                            b[i] = p * s[i];
+                        }
                     }
                 }
-            }
-            for (li, &lam) in self.cfg.lasso_path.iter().enumerate() {
-                // Coordinate descent, warm-started along the path.
-                let l1 = lam * self.cfg.l1_ratio;
-                let l2 = lam * (1.0 - self.cfg.l1_ratio);
-                for _ in 0..self.cfg.max_cd_iters {
-                    let mut max_delta: f64 = 0.0;
-                    for i in 0..k {
-                        if s[i] <= 0.0 {
-                            b[i] = 0.0;
-                            continue;
-                        }
-                        let mut rho = d[j][i];
-                        for (jj, bj) in b.iter().enumerate() {
-                            if jj != i {
-                                rho -= c[i * k + jj] * bj;
+                for (li, &lam) in self.cfg.lasso_path.iter().enumerate() {
+                    // Coordinate descent, warm-started along the path.
+                    let l1 = lam * self.cfg.l1_ratio;
+                    let l2 = lam * (1.0 - self.cfg.l1_ratio);
+                    for _ in 0..self.cfg.max_cd_iters {
+                        let mut max_delta: f64 = 0.0;
+                        for i in 0..k {
+                            if s[i] <= 0.0 {
+                                b[i] = 0.0;
+                                continue;
                             }
+                            let mut rho = d[jj][i];
+                            for (jn, bj) in b.iter().enumerate() {
+                                if jn != i {
+                                    rho -= c[i * k + jn] * bj;
+                                }
+                            }
+                            let denom = c[i * k + i] + l2;
+                            let newb = if rho > l1 {
+                                (rho - l1) / denom
+                            } else if rho < -l1 {
+                                (rho + l1) / denom
+                            } else {
+                                0.0
+                            };
+                            max_delta = max_delta.max((newb - b[i]).abs());
+                            b[i] = newb;
                         }
-                        let denom = c[i * k + i] + l2;
-                        let newb = if rho > l1 {
-                            (rho - l1) / denom
-                        } else if rho < -l1 {
-                            (rho + l1) / denom
-                        } else {
-                            0.0
-                        };
-                        max_delta = max_delta.max((newb - b[i]).abs());
-                        b[i] = newb;
+                        if max_delta < self.cfg.cd_tol {
+                            break;
+                        }
                     }
-                    if max_delta < self.cfg.cd_tol {
-                        break;
-                    }
-                }
-                // Unscale and recover the intercept.
-                let off = usize::from(self.cfg.add_intercept);
-                let coefs = &mut out[j][li];
-                for i in 0..k {
-                    coefs[i + off] = if s[i] > 0.0 { b[i] / s[i] } else { 0.0 };
-                }
-                if self.cfg.add_intercept {
-                    let mut b0 = r[j][0];
+                    // Unscale and recover the intercept, from the target's
+                    // own means.
+                    let coefs = &mut out[j][li];
                     for i in 0..k {
-                        b0 -= mean[i] * coefs[i + off];
+                        coefs[i + off] = if s[i] > 0.0 { b[i] / s[i] } else { 0.0 };
                     }
-                    coefs[0] = b0;
+                    if self.cfg.add_intercept {
+                        let mut b0 = cross.my[j];
+                        for i in 0..k {
+                            b0 -= means[jj][i] * coefs[i + off];
+                        }
+                        coefs[0] = b0;
+                    }
                 }
             }
         }
@@ -551,9 +546,7 @@ impl OnlineModel for Lasso {
         if let Some(win) = self.win.as_mut() {
             let t = win.clock + d_clock;
             let snap = LassoMoments {
-                cov: crate::Moments::of(&self.cov, lam_decay),
-                wj: self.wj.iter().map(|w| w * lam_decay).collect(),
-                r: self.r.clone(),
+                acc: self.acc.snapshot(lam_decay),
                 sel_w: self.sel_w.iter().map(|w| w * lam_decay).collect(),
                 sel_err: self.sel_err.clone(),
             };
@@ -561,37 +554,8 @@ impl OnlineModel for Lasso {
             win.clock = t;
             win.snaps.trim(t);
         }
-        self.cov.update(&self.zbuf, lam_decay, weight);
-        let Self {
-            wj: wjs, r: rs, tm, ..
-        } = self;
-        for (j, yj) in y.iter().enumerate() {
-            let (wj, r) = (&mut wjs[j], &mut rs[j]);
-            match yj {
-                // See `EwRidge`'s copy of this update: `wj_new == 0` is a
-                // zero-weight row before any weighted one, where `a` and `b`
-                // are both 0/0 and the NaN would never wash out.
-                Some(yj) if lam_decay * *wj + weight > 0.0 => {
-                    let wj_new = lam_decay * *wj + weight;
-                    let a = lam_decay * *wj / wj_new;
-                    let b = weight / wj_new;
-                    for (ri, zi) in r.iter_mut().zip(&self.zbuf) {
-                        *ri = a * *ri + b * zi * yj;
-                    }
-                    *wj = wj_new;
-                    if let Some(tm) = tm.as_mut() {
-                        tm.learn(j, *yj, a, b, lam_decay, weight);
-                    }
-                }
-                Some(_) => {}
-                None => {
-                    *wj *= lam_decay;
-                    if let Some(tm) = tm.as_mut() {
-                        tm.age(j, lam_decay);
-                    }
-                }
-            }
-        }
+        self.acc
+            .learn(&self.zbuf, y, lam_decay, weight, self.cfg.target_gaps);
 
         self.clock_since_solve += d_clock;
         self.rows_since_solve += 1;
@@ -608,14 +572,12 @@ impl OnlineModel for Lasso {
     fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
         let (m, np) = (self.cfg.n_targets, self.cfg.n_lambdas());
         // Under a `window`, the `n_eff` reported and gated on is the weight
-        // inside it, as `EwRidge::predict` reports it; this read the whole
-        // history's `self.cov.n_eff()` while the path was fitted on the
-        // window (review 2026-09-12, C9). One view for that and for the
-        // per-target test (C2).
+        // inside it, as `EwRidge::predict` reports it (review 2026-09-12, C9).
+        // One view for that and for the per-target test (C2).
         let view = self.view();
         let (n_eff, wj) = match view.as_ref() {
-            Some(v) => (v.cov.n_eff(), &v.wj),
-            None => (self.cov.n_eff(), &self.wj),
+            Some(v) => (v.acc.cross.w, &v.acc.wj),
+            None => (self.acc.cross.w, &self.acc.wj),
         };
         let mut pred = vec![f64::NAN; m * np];
         if let (true, Some(beta)) = (n_eff >= self.cfg.min_periods, &self.beta) {
@@ -645,7 +607,13 @@ impl OnlineModel for Lasso {
         match &s.model {
             ModelState::Lasso(m) => {
                 let mut m = (**m).clone();
-                m.zbuf = vec![0.0; m.cfg.k_total()];
+                let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
+                if !m.acc.has_shape(n, k) {
+                    return Err(StateError::Invalid(
+                        "lasso: the accumulators have the wrong shape".into(),
+                    ));
+                }
+                m.zbuf = vec![0.0; k];
                 Ok(m)
             }
             other => Err(StateError::WrongModel {
@@ -693,6 +661,7 @@ mod tests {
             max_rows_between_solves: 1,
             window: None,
             window_every: None,
+            target_gaps: TargetGaps::OwnRows,
             max_cd_iters: 200,
             cd_tol: 1e-12,
         }
@@ -732,7 +701,9 @@ mod tests {
             // Rebuild the standardized normal equations the solver works in.
             let k = c.n_features;
             let off = usize::from(c.add_intercept);
-            let s: Vec<f64> = (0..k).map(|i| m.cov.cov(i + off, i + off).sqrt()).collect();
+            let s: Vec<f64> = (0..k)
+                .map(|i| m.acc.grams.grams[0].cov(i + off, i + off).sqrt())
+                .collect();
             let beta = m.coefficients().unwrap();
             for (li, &lam) in c.lasso_path.iter().enumerate() {
                 let (l1, l2) = (lam * c.l1_ratio, lam * (1.0 - c.l1_ratio));
@@ -741,9 +712,9 @@ mod tests {
                 for i in 0..k {
                     let mut g = 0.0;
                     for jj in 0..k {
-                        g += m.cov.cov(i + off, jj + off) / (s[i] * s[jj]) * b[jj];
+                        g += m.acc.grams.grams[0].cov(i + off, jj + off) / (s[i] * s[jj]) * b[jj];
                     }
-                    let d_i = (m.r[0][i + off] - m.cov.mean(i + off) * m.r[0][0]) / s[i];
+                    let d_i = m.acc.cross.c[0][i + off] / s[i];
                     g -= d_i;
                     g += l2 * b[i];
                     if b[i].abs() > 1e-9 {
@@ -864,12 +835,18 @@ mod tests {
         c.decay = Decay::Halflife(10.0);
         c.min_periods = 3.0;
         let (mut m, _) = fit(c, 60, 23);
-        let (wj, r, sel_w) = (m.wj[0], m.r[0].clone(), m.sel_w[0]);
+        let (wj, c, my, sel_w) = (
+            m.acc.wj[0],
+            m.acc.cross.c[0].clone(),
+            m.acc.cross.my[0],
+            m.sel_w[0],
+        );
 
         let lam = 0.5f64.powf(2.0 / 10.0);
         m.step(&[0.5, -0.5], &[None], 2.0, 1.0);
-        assert!((m.wj[0] - wj * lam).abs() < 1e-12, "null decays wj");
-        assert_eq!(m.r[0], r, "and leaves the cross-moments alone");
+        assert!((m.acc.wj[0] - wj * lam).abs() < 1e-12, "null decays wj");
+        assert_eq!(m.acc.cross.c[0], c, "and leaves the cross-moments alone");
+        assert_eq!(m.acc.cross.my[0], my);
         assert!((m.sel_w[0] - sel_w * lam).abs() < 1e-12);
     }
 
@@ -965,6 +942,92 @@ mod tests {
             let b = m2.step(x, &[Some(*y)], 1.0, 1.0);
             assert_eq!(a.pred, b.pred);
             assert_eq!(a.extra, b.extra);
+        }
+    }
+
+    /// N2, found while fixing N1: the lasso kept its cross-moments raw and
+    /// centred them by subtraction, `E[z·y] − m·ȳ`, which loses `L²·ε` at a
+    /// level `L`. It reads `ewridge`'s centred ones now (docs/PLAN.md task
+    /// 81), so a level costs the path nothing: the same stream at the origin
+    /// and shifted by `1e8`, features and target alike, gives the same slopes
+    /// at every path point and predictions that differ by the shift. The
+    /// tolerances are the data's resolution at `1e8`, `ulp ≈ 1.5e-8`.
+    #[test]
+    fn a_level_costs_the_path_nothing() {
+        let run = |level: f64| {
+            let mut c = cfg(2, 1, vec![0.05, 0.0]);
+            c.decay = Decay::Halflife(200.0);
+            c.min_periods = 10.0;
+            let mut m = Lasso::new(c).unwrap();
+            let mut s = 29u64;
+            let mut preds = Vec::new();
+            for i in 0..600 {
+                let u = [lcg(&mut s), lcg(&mut s)];
+                let x = [level + u[0], level + u[1]];
+                let y = level + 2.0 * u[0] - u[1] + 0.1 * lcg(&mut s);
+                let st = m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+                preds.extend(st.pred.iter().map(|p| p - level));
+            }
+            (preds, m.coefficients().unwrap()[0].clone())
+        };
+        let ((p0, b0), (p8, b8)) = (run(0.0), run(1e8));
+        for (li, (a, b)) in b0.iter().zip(&b8).enumerate() {
+            for i in 1..3 {
+                assert!(
+                    (a[i] - b[i]).abs() < 1e-6,
+                    "path point {li}, slope {i}: {} vs {}",
+                    a[i],
+                    b[i]
+                );
+            }
+        }
+        let mut worst = 0.0f64;
+        for (a, b) in p0.iter().zip(&p8) {
+            assert_eq!(a.is_finite(), b.is_finite());
+            if a.is_finite() {
+                worst = worst.max((a - b).abs());
+            }
+        }
+        assert!(worst < 1e-5, "the predictions part by {worst}");
+    }
+
+    /// `own_rows` (docs/PLAN.md task 81): a target of a lasso bank is fitted
+    /// on exactly its rows, as a lasso of that target alone is -- the Gram
+    /// to the bit, and the path.
+    #[test]
+    fn under_own_rows_each_target_is_the_path_of_that_target_alone() {
+        let c = cfg(2, 2, vec![0.1, 0.0]);
+        let mut bank = Lasso::new(c.clone()).unwrap();
+        let one = LassoCfg {
+            n_targets: 1,
+            ..c.clone()
+        };
+        let mut alone = [Lasso::new(one.clone()).unwrap(), Lasso::new(one).unwrap()];
+        let mut s = 37u64;
+        for i in 0..300 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = 1.0 + 2.0 * x[0] - x[1] + 0.05 * lcg(&mut s);
+            let ys = [Some(y), (x[0] < 0.4).then_some(3.0 - y)];
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            bank.step(&x, &ys, d, 1.0);
+            for (j, a) in alone.iter_mut().enumerate() {
+                a.step(&x, &[ys[j]], d, 1.0);
+            }
+        }
+        assert_eq!(bank.acc.grams.grams.len(), 2);
+        for (j, a) in alone.iter().enumerate() {
+            let g = &bank.acc.grams.grams[bank.acc.grams.of[j]];
+            assert_eq!(g, &a.acc.grams.grams[0], "target {j}'s Gram");
+            let (b, want) = (
+                &bank.coefficients().unwrap()[j],
+                &a.coefficients().unwrap()[0],
+            );
+            for (p, q) in b.iter().flatten().zip(want.iter().flatten()) {
+                assert!(
+                    (p - q).abs() <= 1e-12 * (1.0 + q.abs()),
+                    "target {j}: {b:?} vs {want:?}"
+                );
+            }
         }
     }
 }

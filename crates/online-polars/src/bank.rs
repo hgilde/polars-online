@@ -558,8 +558,8 @@ fn close_rows(
     stream
         .models
         .iter()
-        .map(|(label, model)| {
-            let gram = gram_of(key, label, model);
+        .flat_map(|(label, model)| {
+            let grams = gram_of(key, label, model);
             let pairs = match model {
                 AnyModel::Marginal(m) => spec
                     .targets
@@ -620,26 +620,45 @@ fn close_rows(
                 }
                 _ => None,
             };
-            ClosedRow {
-                spec: si,
-                group: key.clone(),
-                instance: label.clone(),
-                session: session.clone(),
-                n_eff: model.n_eff(),
-                n_kish: gram.as_ref().and_then(|g| g.n_kish),
-                rows_fed: summary.map(|s| s.rows_fed),
-                rows_learned: summary.map(|s| s.rows_learned),
-                clock_min: summary.and_then(|s| s.clock_min),
-                clock_max: summary.and_then(|s| s.clock_max),
-                gram,
-                coef: model
-                    .coefficients()
-                    .map(|c| c.into_iter().flatten().collect()),
-                eig_vals: None,
-                eig_vecs: None,
-                pairs,
-                rcov,
-                at,
+            let coefs = model.coefficients();
+            // One row per Gram, with its targets' coefficients (task 81).
+            let row = |gram: Option<Gram>| {
+                let coef = coefs.as_ref().map(|c| {
+                    let per = c.len() / spec.m().max(1);
+                    match gram.as_ref().map(|g| &g.targets) {
+                        Some(t) if !t.is_empty() && per > 0 => t
+                            .iter()
+                            .flat_map(|&j| c[j * per..(j + 1) * per].iter().flatten().copied())
+                            .collect(),
+                        _ => c.iter().flatten().copied().collect(),
+                    }
+                });
+                ClosedRow {
+                    spec: si,
+                    group: key.clone(),
+                    instance: label.clone(),
+                    session: session.clone(),
+                    // The Gram's weight, as its `n_kish` is: `from_row`
+                    // reads it as the Gram's (the model's under `pairwise`).
+                    n_eff: gram.as_ref().map_or(model.n_eff(), |g| g.n_eff),
+                    n_kish: gram.as_ref().and_then(|g| g.n_kish),
+                    rows_fed: summary.map(|s| s.rows_fed),
+                    rows_learned: summary.map(|s| s.rows_learned),
+                    clock_min: summary.and_then(|s| s.clock_min),
+                    clock_max: summary.and_then(|s| s.clock_max),
+                    gram,
+                    coef,
+                    eig_vals: None,
+                    eig_vecs: None,
+                    pairs: pairs.clone(),
+                    rcov: rcov.clone(),
+                    at,
+                }
+            };
+            if grams.is_empty() {
+                vec![row(None)]
+            } else {
+                grams.into_iter().map(|g| row(Some(g))).collect()
             }
         })
         .collect()
@@ -1113,81 +1132,78 @@ pub(crate) fn vech(m: &[f64], k: usize) -> Vec<f64> {
     out
 }
 
-/// One model instance's [`Gram`], or `None` for a kind that keeps no
-/// co-moment matrix (`rls` and `kalman` track an inverse; the gradient
-/// models keep no second moment at all).
+/// One model instance's [`Gram`]s: one per Gram its fit reads (several only
+/// under `target_gaps = "own_rows"`, task 81), none for a kind that keeps no
+/// co-moment matrix (`rls` and `kalman` track an inverse).
 ///
 /// The one builder behind both [`Bank::gram`] and a [`ClosedRow`]'s Gram
 /// block, so "a closed row equals `gram()` read at the same point" holds by
 /// construction and the test is the tripwire that keeps it so.
-pub(crate) fn gram_of(key: &GroupKey, label: &str, model: &AnyModel) -> Option<Gram> {
-    let lag = match model {
-        AnyModel::EwCov(m) => m.lag(),
-        _ => None,
-    };
+pub(crate) fn gram_of(key: &GroupKey, label: &str, model: &AnyModel) -> Vec<Gram> {
     // Under a `window` every number here is the window's -- the accumulators
     // the fit `coef` reports was solved from -- so the Gram solves to that fit;
     // it read the live ones, so a windowed spec's Gram and closed row carried
     // the whole history beside a `coef` solved on the window (review
     // 2026-09-12, S19). The target moments are not truncated -- the window's
     // snapshots do not carry them -- so under a window they are `None`: "this
-    // state cannot say", as for a state written before they existed.
-    let (cov, cross, weights, tm, targetless) = match model {
-        AnyModel::EwRidge(m) => match m.windowed_gram() {
-            Some((cov, r, wj)) => (Cow::Owned(cov), r, wj, None, false),
-            None => (
-                Cow::Borrowed(m.cov()),
-                m.cross_moments(),
-                m.target_weights().to_vec(),
-                m.target_moments(),
-                false,
-            ),
-        },
-        AnyModel::Lasso(m) => match m.windowed_gram() {
-            Some((cov, r, wj)) => (Cow::Owned(cov), r, wj, None, false),
-            None => (
-                Cow::Borrowed(m.cov()),
-                m.cross_moments().to_vec(),
-                m.target_weights().to_vec(),
-                m.target_moments(),
-                false,
-            ),
-        },
-        // No targets, so no cross-moments: the matrix is the whole output.
-        AnyModel::EwCov(m) => (m.windowed_cov(), Vec::new(), Vec::new(), None, true),
-        _ => return None,
+    // state cannot say".
+    let ((parts, tm), weights) = match model {
+        AnyModel::EwRidge(m) => (m.gram_parts(), m.target_weights()),
+        AnyModel::Lasso(m) => (m.gram_parts(), m.target_weights()),
+        AnyModel::EwCov(m) => {
+            // No targets: the matrix is the whole output, and empty target
+            // moments say so, where `None` would say "cannot tell".
+            let cov = m.windowed_cov();
+            let cov = cov.flushed();
+            let lag = m.lag();
+            return vec![Gram {
+                group: key.clone(),
+                instance: label.to_string(),
+                k: cov.k(),
+                n_eff: cov.n_eff(),
+                n_kish: cov.n_kish(),
+                means: cov.means().to_vec(),
+                comoments: cov.comoments().to_vec(),
+                targets: Vec::new(),
+                cross_moments: Vec::new(),
+                means_by_target: Vec::new(),
+                target_means: Some(Vec::new()),
+                target_vars: Some(Vec::new()),
+                target_n_kish: Some(Vec::new()),
+                target_weights: Vec::new(),
+                lags: lag.map(|l| l.lags().to_vec()),
+                lag_comoments: lag.map(|l| l.comoments().to_vec()),
+            }];
+        }
+        _ => return Vec::new(),
     };
-    // A blocked `ewridge` may be holding rows the matrix has not seen; the
-    // Gram reports them without moving the model's block boundary.
-    let cov = cov.flushed();
-    // Empty says "this model has no targets"; `None` says "this state was
-    // written before task 38 and cannot say". They are different answers, so
-    // `ew_cov` reports empty, not `None`.
-    let (target_means, target_vars, target_n_kish) = if targetless {
-        (Some(Vec::new()), Some(Vec::new()), Some(Vec::new()))
-    } else {
-        (
-            tm.map(|t| t.means().to_vec()),
-            tm.map(|t| t.vars().to_vec()),
-            tm.map(|t| t.n_kish(&weights)),
-        )
-    };
-    Some(Gram {
-        group: key.clone(),
-        instance: label.to_string(),
-        k: cov.k(),
-        n_eff: cov.n_eff(),
-        n_kish: cov.n_kish(),
-        means: cov.means().to_vec(),
-        comoments: cov.comoments().to_vec(),
-        cross_moments: cross,
-        target_means,
-        target_vars,
-        target_n_kish,
-        target_weights: weights,
-        lags: lag.map(|l| l.lags().to_vec()),
-        lag_comoments: lag.map(|l| l.comoments().to_vec()),
-    })
+    let kish = tm.map(|t| t.n_kish(weights));
+    parts
+        .into_iter()
+        .map(|p| {
+            let pick = |v: &[f64]| p.targets.iter().map(|&j| v[j]).collect::<Vec<f64>>();
+            Gram {
+                group: key.clone(),
+                instance: label.to_string(),
+                k: p.cov.k(),
+                n_eff: p.cov.n_eff(),
+                n_kish: p.cov.n_kish(),
+                means: p.cov.means().to_vec(),
+                comoments: p.cov.comoments().to_vec(),
+                target_means: tm.map(|t| pick(t.means())),
+                target_vars: tm.map(|t| pick(t.vars())),
+                target_n_kish: kish
+                    .as_ref()
+                    .map(|k| p.targets.iter().map(|&j| k[j]).collect()),
+                cross_moments: p.cross_moments,
+                means_by_target: p.means_by_target,
+                target_weights: p.target_weights,
+                targets: p.targets,
+                lags: None,
+                lag_comoments: None,
+            }
+        })
+        .collect()
 }
 
 /// One instance's EW accumulators, as returned by [`Bank::gram`].
@@ -1227,9 +1243,16 @@ pub struct Gram {
     pub means: Vec<f64>,
     /// Centered co-moments, row-major `k*k`.
     pub comoments: Vec<f64>,
+    /// The targets fitted from these moments (indices into the spec's), in
+    /// the order of the per-target fields: all, or under `target_gaps =
+    /// "own_rows"` the ones present on this Gram's rows (PLAN task 81).
+    pub targets: Vec<usize>,
     /// Per-target uncentered cross-moments, each `k` long. Empty for
     /// `ew_cov`.
     pub cross_moments: Vec<Vec<f64>>,
+    /// Per target, the column means over its rows, which its fit is centred
+    /// at: `means` under `"own_rows"`, its own under `"pairwise"`.
+    pub means_by_target: Vec<Vec<f64>>,
     /// Per-target accumulated weight. Empty for `ew_cov`.
     pub target_weights: Vec<f64>,
     /// Per-target EW mean of the target. Empty for `ew_cov` (no targets);
@@ -1566,7 +1589,10 @@ fn closed_frame(specs: &[Spec], rows: &[ClosedRow]) -> PolarsResult<DataFrame> {
             r.gram.as_ref().map(|g| vech(&g.comoments, g.k))
         }));
         cols.push(list_str("targets", rows, |r| {
-            r.gram.as_ref().map(|_| axes(r).1)
+            r.gram.as_ref().map(|g| {
+                let names = axes(r).1;
+                g.targets.iter().map(|&j| names[j].clone()).collect()
+            })
         }));
         cols.push(list_f64("target_means", rows, |r| {
             r.gram.as_ref().and_then(|g| g.target_means.clone())
@@ -1588,6 +1614,11 @@ fn closed_frame(specs: &[Spec], rows: &[ClosedRow]) -> PolarsResult<DataFrame> {
             r.gram
                 .as_ref()
                 .map(|g| g.cross_moments.iter().flatten().copied().collect())
+        }));
+        cols.push(list_f64("means_by_target", rows, |r| {
+            r.gram
+                .as_ref()
+                .map(|g| g.means_by_target.iter().flatten().copied().collect())
         }));
     }
     if any(|s| matches!(s.model, ModelKind::EwCov { lags: Some(_), .. })) {

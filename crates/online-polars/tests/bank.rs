@@ -890,7 +890,8 @@ fn held_rows(bank: &Bank) -> Vec<(String, usize)> {
         .iter()
         .map(|pair| {
             let key = pair[0].to_string();
-            let held = pair[1]["models"][0]["model"]["EwRidge"]["cov"]["pending"]["lam"]
+            let held = pair[1]["models"][0]["model"]["EwRidge"]["acc"]["grams"]["grams"][0]
+                ["pending"]["lam"]
                 .as_array()
                 .map_or(0, Vec::len);
             (key, held)
