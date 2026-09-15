@@ -1874,6 +1874,12 @@ note, not a task.
       `huber_delta` reached `f64::clamp`) and N8 (`marginal` refused
       `min_periods = inf`). S1 is batch 4d and N4 batch 4e.
 
+      **Batch 4d, 2026-09-15**: S1 fixed, as decided: under a window the
+      stream cuts its per-slot spread with a ring of its own, so `sigma`,
+      `resid_z`, drift's scale, the conformal band and the slot ranking
+      describe the rows the fit does. The ring rides on schema 9 and counts
+      in `window_budget`. N4 is batch 4e.
+
 - [x] 79. **`label_delay` ignores a clock event on a skipped row — found
       2026-09-11, checking task 78's parity; in released 0.5.1.** A reset
       that lands on a row the spec skips (a null feature, an unusable

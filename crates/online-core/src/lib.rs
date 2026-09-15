@@ -135,7 +135,9 @@ pub use seqtest::{SLOTS as SEQTEST_SLOTS, SeqTest, SeqTestCfg};
 pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::{SpdFactor, quad_forms_logdet, solve_spd};
 pub use stats::{EwAutoCorr, P2Quantile, SlotMetrics};
-pub use window::{Footprint, Moments, Snapshots, WindowBudget, truncated, truncated_mean};
+pub use window::{
+    Footprint, Moments, Snapshots, WindowBudget, truncated, truncated_mean, truncated_scalar,
+};
 
 /// Version of the serialized model-state layout.
 ///
@@ -210,6 +212,13 @@ pub use window::{Footprint, Moments, Snapshots, WindowBudget, truncated, truncat
 ///   target, which its weighted means need (the code review of 2026-09-12,
 ///   S29/S30), and `ftrl` the discounted sum of its proximal steps (C24). No
 ///   loader for 8: see [`MIN_SCHEMA_VERSION`].
+///
+///   The ring a stream cuts a windowed spread with (the code review's S1)
+///   rides on 9 without a bump, as C21's record rode on 6: skipped when
+///   absent, so no file without one moves, and an older build reading one
+///   ignores it and reports the whole history's spread, as it always did. A
+///   file saved by an earlier build of 9 restarts the ring on load, so for
+///   one window its spread counts only the rows after the load.
 pub const SCHEMA_VERSION: u32 = 9;
 
 /// Oldest state layout this build still loads.

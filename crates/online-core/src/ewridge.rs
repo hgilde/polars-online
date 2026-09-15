@@ -417,9 +417,11 @@ impl EwRidge {
         &self.cfg
     }
 
-    /// Per-target EW residual variance. Under a `window` this is the variance
-    /// *inside* it, so `sigma` and `resid_z` describe the same rows the fit
-    /// does rather than a spread from a history the fit has dropped.
+    /// Per-target EW residual variance of the first slot's prediction; under
+    /// a `window`, the variance *inside* it. The bank's `sigma` and `resid_z`
+    /// are not this: they are the stream's spread per slot, cut at the same
+    /// boundary by a ring of its own (`online-polars`' `resid_window`; review
+    /// 2026-09-12, S1).
     pub fn sigma2(&self) -> std::borrow::Cow<'_, [f64]> {
         match self.view() {
             Some(v) => std::borrow::Cow::Owned(v.sig2),

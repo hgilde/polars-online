@@ -273,6 +273,126 @@ def _regime_rows(n: int, seed: int) -> np.ndarray:
     return x
 
 
+class TestWindowedSpread:
+    """S1: under a ``window`` the bank's ``sigma`` and ``resid_z`` are the
+    window's -- the EW root mean square of the out-of-sample residuals
+    inside it, ``sqrt(Σ λ^age r² / Σ λ^age)``, over the rows the fit is read
+    from. They were the stream's own EW mean over the whole history, so a
+    burst of errors the window had dropped still widened ``sigma`` for as
+    long as the halflife remembered it -- the spread of a history the fit no
+    longer sees. ``numpy`` over the residuals the bank itself emitted is the
+    second opinion (review 2026-09-12, S1; the user's decision of
+    2026-09-15)."""
+
+    H, W = 40.0, 60.0
+
+    def _frame(self, n=500, seed=21):
+        rng = np.random.default_rng(seed)
+        x = rng.normal(0.0, 1.0, (n, 2))
+        y = 1.0 + 2.0 * x[:, 0] - x[:, 1] + rng.normal(0.0, 0.1, n)
+        # A burst of large errors: the window drops it at row 320 + W, long
+        # before a halflife of 40 forgets it.
+        y[300:320] += rng.normal(0.0, 5.0, 20)
+        return pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+
+    def _spec(self, kind, **kw):
+        common = dict(
+            targets=["y"],
+            features=["x0", "x1"],
+            halflife=self.H,
+            window=self.W,
+            solve_every=1e-9,
+            emit_sigma=True,
+            emit_resid_z=True,
+            **kw,
+        )
+        if kind == "lasso":
+            return po.spec.lasso("m", lasso_path=[0.01], **common)
+        return po.spec.ewridge("m", **common)
+
+    @staticmethod
+    def _field(out, spec, prefix):
+        name = next(n for n in po.spec.output_fields(spec) if n.startswith(prefix))
+        return out["m"].struct.field(name).to_numpy().astype(float)
+
+    @pytest.mark.parametrize("kind", ["ewridge", "lasso"])
+    def test_sigma_is_the_spread_of_the_residuals_inside_the_window(self, kind):
+        df = self._frame()
+        spec = self._spec(kind)
+        out = po.ModelBank([spec]).fit_predict(df)
+        resid = self._field(out, spec, "resid_y")
+        sigma = self._field(out, spec, "sigma_y")
+        z = self._field(out, spec, "resid_z_y")
+        ok = np.isfinite(resid)
+        checked = 0
+        for i in range(1, len(resid)):
+            # Row i is scored against the rows learned before it, inside the
+            # window as it stood at row i - 1: the fit's own boundary.
+            ages = (i - 1) - np.arange(i)
+            keep = (ages <= self.W) & ok[:i]
+            if not keep.any():
+                assert not np.isfinite(sigma[i]), i
+                continue
+            w = 0.5 ** (ages[keep] / self.H)
+            want = np.sqrt(np.sum(w * resid[:i][keep] ** 2) / np.sum(w))
+            assert sigma[i] == pytest.approx(want, rel=1e-9), (kind, i)
+            if ok[i]:
+                assert z[i] == pytest.approx(resid[i] / want, rel=1e-9), (kind, i)
+            checked += 1
+        assert checked > 400
+        # The review's reading: once the burst is older than the window, the
+        # spread is back where it was before it -- from row 320 + 2W, since
+        # the fit keeps the burst until its own window drops it at 380, and
+        # the residuals of the fit it bent stay in the spread's window one
+        # window more.
+        assert np.mean(sigma[460:]) < 1.5 * np.mean(sigma[200:300])
+
+    def test_the_window_survives_chunks_a_save_and_scoring(self, tmp_path):
+        # The spread's ring is state like the fit's: chunked, saved and
+        # scored, it gives the numbers one pass gives -- every field but
+        # `coef`, which each chunk's last row reports. E31: scoring a row
+        # against the bank fitted to the row before is that row's
+        # fit_predict value.
+        df = self._frame()
+        spec = self._spec("ewridge")
+        cols = ["pred_y", "resid_y", "sigma_y", "resid_z_y", "n_eff"]
+        whole = po.ModelBank([spec]).fit_predict(df)
+        bank = po.ModelBank([spec])
+        parts = [bank.fit_predict(df[:97]), bank.fit_predict(df[97:180])]
+        path = tmp_path / "bank.bin"
+        bank.save(path)
+        parts.append(po.ModelBank.load(path, specs=[spec]).fit_predict(df[180:]))
+        got = pl.concat(parts)["m"].struct.unnest().select(cols)
+        assert got.equals(whole["m"].struct.unnest().select(cols), null_equal=True)
+        scorer = po.ModelBank([spec])
+        scorer.fit_predict(df[:250])
+        scored = scorer.predict(df[250:251])["m"].struct.field("sigma_y")[0]
+        assert scored == whole["m"].struct.field("sigma_y")[250]
+
+    def test_the_spread_s_ring_is_held_to_the_window_budget(self):
+        """The spread's snapshots are a ring like the fit's, a pair of floats
+        a slot, so a grid of many slots over one feature outgrows the fit's
+        own ring: the window's budget bounds it too (review 2026-09-12, P4).
+        Two hundred ridges over a window of 2000 rows is about 6 MB of
+        spread, where the fit's ring holds a few hundred KB."""
+        rng = np.random.default_rng(4)
+        n = 3000
+        x = rng.normal(0.0, 1.0, n)
+        df = pl.DataFrame({"x0": x, "y": x + rng.normal(0.0, 0.1, n)})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0"],
+            halflife=500.0,
+            window=2000.0,
+            ridge=[10.0 ** (-k / 20) for k in range(200)],
+            emit_sigma=True,
+            window_budget={"refuse": 1.0},
+        )
+        with pytest.raises(ValueError, match="window_budget"):
+            po.ModelBank([spec]).fit_predict(df)
+
+
 class TestWindowedGaussian:
     """C12 and C14, the review's T-S6 and T-S8. At ``halflife = inf`` every row
     inside the window weighs 1 and the precision prior does not fade, so a

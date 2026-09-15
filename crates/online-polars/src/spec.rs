@@ -1311,6 +1311,26 @@ impl ModelKind {
         })
     }
 
+    /// The `window` and `window_every` (1 unless given, as the models take
+    /// it) of a windowed model that predicts a target: what the stream cuts
+    /// its residual spread with (review 2026-09-12, S1). The other windowed
+    /// models predict none, so the stream keeps no spread for them.
+    pub fn window_and_every(&self) -> Option<(f64, usize)> {
+        match self {
+            ModelKind::EwRidge {
+                window: Some(w),
+                window_every,
+                ..
+            }
+            | ModelKind::Lasso {
+                window: Some(w),
+                window_every,
+                ..
+            } => Some((*w, window_every.unwrap_or(1))),
+            _ => None,
+        }
+    }
+
     /// True for the models that learn from no target column: `ew_cov`,
     /// `kmeans`, `micro`, `deco`, `rcov`, `hmm`, `corrchange` and `bocpd`,
     /// the list `_spec.py`'s `UNSUPERVISED` keeps too. Their `targets` mirror

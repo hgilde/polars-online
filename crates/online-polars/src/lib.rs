@@ -43,6 +43,7 @@ mod bank;
 mod column;
 mod pool;
 mod refresh;
+mod resid_window;
 mod rows;
 mod runner;
 mod spec;

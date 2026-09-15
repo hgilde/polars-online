@@ -140,6 +140,18 @@ carries breaking changes, and any change to the numbers a model returns.
   builders' table of what may be infinite; Rust refused both already.
 - **`marginal` takes `min_periods = inf`**, a gate that never opens, as
   every other model does and the builders document. It alone refused it.
+- **Under a `window`, `sigma` and `resid_z` are the window's** (`ewridge`,
+  `lasso`; the code review's S1). The fit is read from the rows inside the
+  window, and the spread beside it was the stream's EW mean over the whole
+  history, so a burst of errors the window had dropped still widened
+  `sigma` for as long as the halflife remembered it. The stream now cuts
+  its spread with a ring of snapshots of its own, on the model's rows and
+  its `window` and `window_every`, so the two describe the same rows. What
+  reads the spread moves with it: drift's scale, the conformal band, and
+  the ranking `emit_selected` and `emit_averaged` take. **Numbers change**
+  for every windowed spec that emits or reads `sigma`. The ring is a pair
+  of floats a slot a snapshot, kept only when something reads the spread,
+  and `window_budget` bounds it as it bounds the fit's.
 
 ### Fixed
 

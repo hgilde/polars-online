@@ -414,7 +414,11 @@ def ewridge(
     refuses past 256 MiB; ``float("inf")`` is no bound.
 
     ``n_eff``, ``sigma`` and ``resid_z`` come from the window too, so the
-    reported spread describes the rows the fit describes. Mind the solve
+    reported spread describes the rows the fit describes: the spread keeps a
+    ring of its own for it, a pair of floats a slot, which ``window_budget``
+    bounds with the fit's, and drift's scale, the conformal band and the
+    ranking of ``emit_selected`` and ``emit_averaged`` read it too (review
+    2026-09-12, S1). Mind the solve
     schedule: the coefficients are the window's *as of the last solve*, so a
     coarse ``solve_every`` reports a window that has since moved on.
     ``window`` is refused with ``ridge_decay`` (the decaying prior's scale is
@@ -745,6 +749,8 @@ def lasso(
     drops every other snapshot and doubles the spacing, as often as it
     takes, which like ``window_every`` can only shorten the window. Unset, a
     window refuses past 256 MiB; ``float("inf")`` is no bound.
+    ``n_eff``, ``sigma`` and ``resid_z`` come from the window too, as for
+    :func:`ewridge` (review 2026-09-12, S1).
 
     Selection is free: predictions for every path point are computed anyway, so
     ``lam_selected_<target>`` is the argmin over the path of an EW mean squared

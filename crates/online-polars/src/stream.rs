@@ -13,6 +13,7 @@ use online_core::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::resid_window::ResidWindow;
 use crate::rows::FeatureRows;
 use crate::spec::{FloatOrList, ModelKind, Spec};
 use crate::summary::DataSummary;
@@ -313,6 +314,22 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
     let mut m = build_bare(spec, decay)?;
     m.set_window_budget(spec.model.window_budget());
     Ok(m)
+}
+
+/// The ring a windowed spread is cut from (review 2026-09-12, S1), for a
+/// windowed model that predicts a target, when anything reads the spread:
+/// the output fields, the ranking of `emit_selected` and `emit_averaged`,
+/// the drift detector or the conformal band. Without a reader it would be
+/// memory, and a budget to fail, for nothing.
+fn resid_window(spec: &Spec) -> Result<Option<ResidWindow>, String> {
+    let Some((window, every)) = spec.model.window_and_every() else {
+        return Ok(None);
+    };
+    let read = Buffers::of(spec).extras || spec.emit_drift || spec.conformal.is_some();
+    if spec.model.predicts_no_target() || !read {
+        return Ok(None);
+    }
+    ResidWindow::new(window, every, spec.model.window_budget()).map(Some)
 }
 
 fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
@@ -1310,6 +1327,12 @@ pub struct StreamState {
     /// without a delay writes the same bytes it always did.
     #[serde(default, skip_serializing_if = "no_score_preds")]
     pub score_pred: Vec<Vec<Vec<f64>>>,
+    /// Per model instance, the ring a windowed spread is cut from (review
+    /// 2026-09-12, S1): `None` for an instance with no window, or whose spec
+    /// reads no spread. Skipped when every entry is `None`, so no file
+    /// without one moves.
+    #[serde(default, skip_serializing_if = "no_resid_windows")]
+    pub resid_win: Vec<Option<ResidWindow>>,
     /// The session value of the span this stream is in, under `group_close =
     /// "session"` (docs/ENHANCEMENTS.md E54): the closed row reports it, and
     /// the clock keeps only a hash. Written only by a spec that closes on
@@ -1321,6 +1344,11 @@ pub struct StreamState {
 /// `StreamState::score_pred` holds nothing worth writing.
 fn no_score_preds(v: &[Vec<Vec<f64>>]) -> bool {
     v.iter().all(Vec::is_empty)
+}
+
+/// `StreamState::resid_win` holds no ring.
+fn no_resid_windows(v: &[Option<ResidWindow>]) -> bool {
+    v.iter().all(Option::is_none)
 }
 
 /// Live per-stream state.
@@ -1338,6 +1366,9 @@ pub struct Stream {
     /// all present or comparable.
     resid_var: Vec<Vec<f64>>,
     resid_w: Vec<Vec<f64>>,
+    /// Under a window, the ring that cuts the spread at the fit's boundary,
+    /// per instance ([`StreamState::resid_win`]).
+    resid_win: Vec<Option<ResidWindow>>,
     /// Page-Hinkley detectors per instance and slot, when `emit_drift` is on.
     drift: Vec<Vec<PageHinkley>>,
     /// Warmup threshold per target (ENHANCEMENTS E7).
@@ -1376,11 +1407,19 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// The first of this stream's model instances whose window has passed a
-    /// refusing budget: its ring's bytes and `window_every` (review
-    /// 2026-09-12, P4).
+    /// The first of this stream's windows to pass a refusing budget -- a
+    /// model instance's, or a spread's ring (S1): its ring's bytes and
+    /// `window_every` (review 2026-09-12, P4).
     pub fn window_over_budget(&self) -> Option<(usize, usize)> {
-        self.models.iter().find_map(|(_, m)| m.window_over_budget())
+        self.models
+            .iter()
+            .find_map(|(_, m)| m.window_over_budget())
+            .or_else(|| {
+                self.resid_win
+                    .iter()
+                    .flatten()
+                    .find_map(ResidWindow::over_budget)
+            })
     }
 
     /// Summed over this stream's model instances (one per halflife).
@@ -1779,10 +1818,15 @@ impl Stream {
         } else {
             Vec::new()
         };
+        let resid_win = models
+            .iter()
+            .map(|_| resid_window(spec))
+            .collect::<Result<Vec<_>, String>>()?;
         Ok(Self {
             clock: ClockState::new(),
             resid_var: slots.iter().map(|&n| vec![0.0; n]).collect(),
             resid_w: slots.iter().map(|&n| vec![0.0; n]).collect(),
+            resid_win,
             drift,
             resid_q: match &spec.resid_quantiles {
                 Some(levels) => {
@@ -1836,6 +1880,7 @@ impl Stream {
             rows_seen: self.rows_seen,
             resid_var: self.resid_var.clone(),
             resid_w: self.resid_w.clone(),
+            resid_win: self.resid_win.clone(),
             drift: self.drift.clone(),
             resid_q: self.resid_q.clone(),
             autocorr: self.autocorr.clone(),
@@ -1879,6 +1924,24 @@ impl Stream {
         if saved.resid_var.len() == stream.resid_var.len() {
             stream.resid_var = saved.resid_var.clone();
             stream.resid_w = saved.resid_w.clone();
+        }
+        // A spread's ring, where the spec still keeps one. A file written
+        // before it existed (S1) leaves the fresh one, so for one window the
+        // spread counts only the rows after the load.
+        let budget = spec.model.window_budget();
+        for ((live, saved), slots) in stream
+            .resid_win
+            .iter_mut()
+            .zip(&saved.resid_win)
+            .zip(stream.resid_var.iter().map(Vec::len))
+        {
+            if let (Some(live), Some(saved)) = (live.as_mut(), saved) {
+                if !saved.fits(slots) {
+                    return Err("saved state's residual window does not fit this spec".into());
+                }
+                *live = saved.clone();
+                live.set_budget(budget);
+            }
         }
         if saved.drift.len() == stream.drift.len() {
             stream.drift = saved.drift.clone();
@@ -2105,6 +2168,10 @@ impl Stream {
         // below can borrow the rest of `self` mutably.
         let min_periods = std::mem::take(&mut self.min_periods);
         let models = self.models.iter_mut().map(|(_, m)| ModelRef::Learn(m));
+        let rings = self
+            .resid_win
+            .iter_mut()
+            .map(|r| r.as_mut().map(SpreadRef::Learn));
         let diag = Diagnostics {
             resid_var: &mut self.resid_var,
             resid_w: &mut self.resid_w,
@@ -2116,7 +2183,7 @@ impl Stream {
             scratch: &mut self.scratch,
             score_pred: &mut self.score_pred,
         };
-        let mut insts = build_instances(spec, models, &self.decays, diag, out, n_rows);
+        let mut insts = build_instances(spec, models, rings, &self.decays, diag, out, n_rows);
         if coupled && insts.len() > 1 {
             for pi in 0..plans.len() {
                 let mut seen = false;
@@ -2493,7 +2560,11 @@ impl Stream {
             score_pred: &mut score_pred,
         };
         let models = models.iter().map(|(_, m)| ModelRef::Score(m));
-        let mut insts = build_instances(spec, models, &self.decays, diag, out, n_rows);
+        let rings = self
+            .resid_win
+            .iter()
+            .map(|r| r.as_ref().map(SpreadRef::Score));
+        let mut insts = build_instances(spec, models, rings, &self.decays, diag, out, n_rows);
         if insts.len() > 1 {
             use rayon::prelude::*;
             insts.par_iter_mut().for_each(|inst| {
@@ -2548,6 +2619,29 @@ impl ModelRef<'_> {
     }
 }
 
+/// How an instance reaches its spread's ring (S1): exclusively, to learn,
+/// or shared, to score, as [`ModelRef`] reaches the model.
+enum SpreadRef<'a> {
+    Learn(&'a mut ResidWindow),
+    Score(&'a ResidWindow),
+}
+
+impl SpreadRef<'_> {
+    fn get(&self) -> &ResidWindow {
+        match self {
+            SpreadRef::Learn(r) => r,
+            SpreadRef::Score(r) => r,
+        }
+    }
+
+    fn get_mut(&mut self) -> &mut ResidWindow {
+        match self {
+            SpreadRef::Learn(r) => r,
+            SpreadRef::Score(_) => unreachable!("a scoring instance never updates its spread"),
+        }
+    }
+}
+
 /// Everything an instance touches besides its model and its output slice,
 /// split per instance below. `process_chunk` lends the stream's own;
 /// `predict_chunk` lends a copy it drops afterwards.
@@ -2570,6 +2664,7 @@ struct Diagnostics<'a> {
 fn build_instances<'a>(
     spec: &'a Spec,
     models: impl Iterator<Item = ModelRef<'a>>,
+    rings: impl Iterator<Item = Option<SpreadRef<'a>>>,
     decays: &[Decay],
     diag: Diagnostics<'a>,
     out: &'a mut ChunkOut,
@@ -2611,9 +2706,11 @@ fn build_instances<'a>(
     // Pulled in lockstep: each iterator yields disjoint `&mut`s, so every
     // Instance owns its own piece of everything.
     models
-        .map(|model| Instance {
+        .zip(rings)
+        .map(|(model, resid_win)| Instance {
             spec,
             model,
+            resid_win,
             decay: *decays.next().expect("one per instance"),
             residuals: !spec.model.predicts_no_target(),
             resid_var: resid_var.next().expect("one per instance"),
@@ -2709,6 +2806,9 @@ struct Instance<'a> {
     /// instances this is.
     spec: &'a Spec,
     model: ModelRef<'a>,
+    /// The ring that cuts this instance's spread at the fit's window
+    /// boundary (S1); `None` without a window, or when nothing reads it.
+    resid_win: Option<SpreadRef<'a>>,
     decay: Decay,
     /// False for a model that predicts no target (`ModelKind::
     /// predicts_no_target`): no residual is formed, tracked or written for
@@ -2751,6 +2851,11 @@ impl Instance<'_> {
         *self.model.get_mut() = build_one(spec, self.decay).expect("spec was already validated");
         self.resid_var.iter_mut().for_each(|v| *v = 0.0);
         self.resid_w.iter_mut().for_each(|v| *v = 0.0);
+        if let Some(ring) = self.resid_win.as_mut() {
+            *ring.get_mut() = resid_window(spec)
+                .expect("spec was already validated")
+                .expect("the spec that built the ring keeps one");
+        }
         if let Some(d) = self.drift.as_deref_mut() {
             d.iter_mut().for_each(PageHinkley::reset);
         }
@@ -2937,27 +3042,49 @@ fn run_instance(
 
             // sigma is read from the state BEFORE this row's residual is
             // folded in, so `resid_z` is out-of-sample like the prediction it
-            // scales.
+            // scales -- under a window, inside it, where the model reads its
+            // fit (review 2026-09-12, S1).
+            let ring = inst.resid_win.as_ref().map(SpreadRef::get);
             for (slot, &rv) in sc.r.iter().enumerate() {
-                if inst.resid_w[slot] > 0.0 {
-                    let sd = inst.resid_var[slot].max(0.0).sqrt();
+                if inst.resid_w[slot] <= 0.0 {
+                    continue;
+                }
+                let var = match ring {
+                    Some(ring) => {
+                        ring.inside(inst.decay, slot, inst.resid_w[slot], inst.resid_var[slot])
+                    }
+                    None => Some(inst.resid_var[slot]),
+                };
+                if let Some(var) = var {
+                    let sd = var.max(0.0).sqrt();
                     sc.sig[slot] = sd;
                     if rv.is_finite() && sd > 0.0 {
                         sc.zs[slot] = rv / sd;
                     }
                 }
-                if !learn {
-                    continue;
+            }
+            if learn {
+                // The spread as the row finds it, before its own residual.
+                if let Some(ring) = inst.resid_win.as_mut() {
+                    ring.get_mut().learn(
+                        plan.d_clock,
+                        lam,
+                        inst.resid_w.as_slice(),
+                        inst.resid_var.as_slice(),
+                    );
                 }
-                if rv.is_finite() {
-                    let w_new = lam * inst.resid_w[slot] + w;
-                    if w_new > 0.0 {
-                        inst.resid_var[slot] =
-                            (lam * inst.resid_w[slot] * inst.resid_var[slot] + w * rv * rv) / w_new;
-                        inst.resid_w[slot] = w_new;
+                for (slot, &rv) in sc.r.iter().enumerate() {
+                    if rv.is_finite() {
+                        let w_new = lam * inst.resid_w[slot] + w;
+                        if w_new > 0.0 {
+                            inst.resid_var[slot] =
+                                (lam * inst.resid_w[slot] * inst.resid_var[slot] + w * rv * rv)
+                                    / w_new;
+                            inst.resid_w[slot] = w_new;
+                        }
+                    } else {
+                        inst.resid_w[slot] *= lam;
                     }
-                } else {
-                    inst.resid_w[slot] *= lam;
                 }
             }
         }

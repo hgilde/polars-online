@@ -392,6 +392,22 @@ pub fn truncated_mean(
     Some((w, out))
 }
 
+/// [`truncated_mean`] for one scalar accumulator, with nothing allocated:
+/// what a per-slot spread reads on every row (review 2026-09-12, S1).
+pub fn truncated_scalar(
+    w_now: f64,
+    mean: f64,
+    w_old: f64,
+    mean_old: f64,
+    f: f64,
+) -> Option<(f64, f64)> {
+    let w = w_now - f * w_old;
+    if w <= EMPTY_FRACTION * w_now || !w.is_finite() {
+        return None;
+    }
+    Some((w, (w_now * mean - f * w_old * mean_old) / w))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,6 +416,21 @@ mod tests {
     impl Footprint for usize {
         fn footprint(&self) -> usize {
             8
+        }
+    }
+
+    /// The scalar truncation is the slice one's arithmetic, to the bit, and
+    /// empties where it does.
+    #[test]
+    fn the_scalar_truncation_is_the_slice_one() {
+        for (w_now, m, w_old, m_old, f) in [
+            (10.0, 2.5, 4.0, 1.5, 0.9),
+            (1.0, 0.1, 0.999_999_999_999_9, 0.1, 1.0),
+            (5.0, 3.0, 0.0, 0.0, 0.5),
+            (3.0, 1e8 + 0.25, 2.0, 1e8, 0.75),
+        ] {
+            let slice = truncated_mean(w_now, &[m], w_old, &[m_old], f).map(|(w, v)| (w, v[0]));
+            assert_eq!(truncated_scalar(w_now, m, w_old, m_old, f), slice);
         }
     }
 

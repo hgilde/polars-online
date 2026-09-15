@@ -69,6 +69,11 @@ typing test, which did not exist when `holt` was added). `git show --stat
    a tiny refusing budget and fails for one that runs on, and
    `test_the_budget_table_names_every_windowed_builder` fails until a new
    builder that takes `window_budget` is in that test's table.
+   A windowed model that predicts a target also belongs in
+   `ModelKind::window_and_every`, so the stream cuts its `sigma` and
+   `resid_z` at the fit's window (review 2026-09-12, S1).
+   *Check*: `test_second_opinion::TestWindowedSpread` holds `ewridge` and
+   `lasso` to `numpy`; a new kind belongs in its parametrization.
    *A weight per target*: a model that keeps one -- the rows each target was
    present on, as `ewridge`, `lasso`, `kalman`, `robust` and `holt` do --
    overrides **`target_n_eff_into`**, so each target's `min_periods` is

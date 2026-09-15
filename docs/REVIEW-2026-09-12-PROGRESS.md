@@ -109,12 +109,11 @@ two agree to `3e-9`); and C22's two `holt` tests do not turn over -- with
 a clock since the last observation the level does stand still across a
 null, and what moves is the next row's forecast.
 
-**Kept for later: 2 items** (V22 closed with task 81; batch 1 below
+**Kept for later: 1 item** (V22 closed with task 81; batch 1 below
 closed fourteen, batch 2 thirteen, batch 3a eleven, batch 3b two, batch 4a
-four, batch 4b four, batch 4c two), each with its reason in the tables
-below -- S1, on a decision the user took on 2026-09-15 and recorded in
-`docs/PLAN.md` task 80, for batch 4d, and one new observation, N4, which
-task 81 did half of, for batch 4e. D1 is excluded by the user.
+four, batch 4b four, batch 4c two, batch 4d one), with its reason in the
+tables below -- one new observation, N4, which task 81 did half of, for
+batch 4e. D1 is excluded by the user.
 The user's own
 design work (tasks 78 and 79), parked on `design/task-78` while the round
 ran, is merged into `main`.
@@ -170,7 +169,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 
 | ID | Finding | Independent test | Status |
 |---|---|---|---|
-| S1 | bank `sigma`/`resid_z` not windowed | `numpy` over in-window residuals | later: needs a decision (route the model's `sigma2`, or correct two docstrings) |
+| S1 | bank `sigma`/`resid_z` not windowed | `numpy` over the in-window residuals the bank emitted | **fixed** (batch 4d), on the user's decision (window them): the stream cuts its per-slot spread with a ring of its own, on the model's rows, `window` and `window_every` and under the spec's `window_budget`, so `sigma`, `resid_z` and what reads them -- drift's scale, the conformal band, the ranking of `emit_selected` and `emit_averaged` -- describe the rows the fit does |
 | S2 | per-target `min_periods` gates on the shared `n_eff` | — | **fixed** (batch 4b), on the user's decision: each target's threshold is checked against its own weight -- the rows it was present on, inside the window under one -- through a new trait hook, `target_n_eff_into`, which `ewridge`, `lasso`, `kalman`, `robust` and `holt` override; the emitted `n_eff` stays the shared weight. The review's test, a target present on every tenth row under `min_periods = [5, 5]`, gave its first prediction at row 5 on the old build for all five models, and gives it at row 41, the row after its fifth observation |
 | S3 | skipped-row time folded without the cap | `numpy` `lam^d` once decided | **fixed** (batch 4b), on the user's decision: the folded total is capped at `max_dclock` and marked a capped gap. The review's test, ten skipped rows 100 apart under a cap of 60, handed the next row 660 on the old build and hands it 60. Through the bank, the `n_eff` two rows on is `0.5^(50/10) + 1` as `numpy` has it, where the old build's 550 gave 1.0 |
 | S4 | two model states share the kind `"ew_cov"` | — | **fixed** (batch 1) — the bare accumulator is `"ew_cov_accumulator"`, so `EwCovModel::restore` of one names what it found (failed on the old build); the kind is only ever an error message, never written to a file. Two tests pinned the old name (`kmeans.rs`, the contract's kind list) |
@@ -443,6 +442,29 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   the squared loss; `huber_delta = inf` and `long_halflife = inf` match
   `numpy`'s least squares, and `average_eta = inf` the selection wherever
   the best slot is unique, a tie shared.
+- 2026-09-15 — **batch 4d**: S1 fixed, on the user's decision (window
+  them). Test first, run on the old build: the `numpy` check failed at
+  row 66 for `ewridge` and `lasso`, the first row with a residual older
+  than the window (0.100580 against the window's 0.100619), and the old
+  spread stayed 10.6 times its pre-burst level after the burst had left
+  the window; the budget test did not raise; the chunks, save and scoring
+  guard passed on both builds, as a guard should. The model's own windowed
+  `sigma2` could not be routed through, as the review's first option had
+  it: it is per target from the first slot, where the bank's spread is per
+  slot, and only `ewridge` keeps one. So the stream keeps a ring of its
+  own, taken where the model takes its snapshots -- before each learned
+  row, decayed to it, keyed by the clock the model was stepped with -- and
+  read where the model reads its window, before the row's own residual;
+  `numpy` agrees at `1e-9` on every row. The ring is built only when
+  something reads the spread, so a spec that reads none carries nothing
+  and cannot be refused for it; a grid of many slots over few features can
+  outgrow the fit's ring, which is why `window_budget` counts it. One
+  assertion of mine was wrong by a window: the spread is back at its
+  pre-burst level from row 440, not 380, since the fit keeps the burst
+  until its own window drops it and the residuals of the fit it bent stay
+  in the spread's window one window more. It rides on schema 9, skipped
+  when absent: a file saved by an earlier build of 9 restarts it on load,
+  so for one window its spread counts only the rows after the load.
 
 ## New observations (found while fixing; not in the review)
 
