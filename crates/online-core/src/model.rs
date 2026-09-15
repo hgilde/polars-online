@@ -84,7 +84,10 @@ pub enum StateError {
 impl ModelState {
     pub fn kind(&self) -> &'static str {
         match self {
-            ModelState::EwCov(_) => "ew_cov",
+            // The bare accumulator, which the bank does not run; "ew_cov" is
+            // the model, and a `WrongModel` must say which it found (review
+            // 2026-09-12, S4).
+            ModelState::EwCov(_) => "ew_cov_accumulator",
             ModelState::EwRidge(_) => "ew_ridge",
             ModelState::Rls(_) => "rls",
             ModelState::Lasso(_) => "lasso",
@@ -245,6 +248,22 @@ pub trait OnlineModel: Sized {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each state names its own kind, so a `WrongModel` says which one it
+    /// found: the bare accumulator answered "ew_cov", the name of the bank
+    /// model it is not (review 2026-09-12, S4).
+    #[test]
+    fn the_bare_accumulator_is_not_named_as_the_ew_cov_model() {
+        let bare = State::new(ModelState::EwCov(Box::new(crate::EwCov::new(1))));
+        assert_ne!(bare.model.kind(), "ew_cov");
+        match crate::EwCovModel::restore(&bare) {
+            Err(StateError::WrongModel { expected, found }) => {
+                assert_eq!(expected, "ew_cov");
+                assert_ne!(found, expected, "the error must say what it found");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
 
     #[test]
     fn schema_check() {

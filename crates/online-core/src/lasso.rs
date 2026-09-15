@@ -124,6 +124,9 @@ pub struct Lasso {
     sel_idx: Vec<usize>,
     clock_since_solve: f64,
     rows_since_solve: u32,
+    /// Coordinate descents that ran out of sweeps (`max_cd_iters`) before
+    /// meeting `cd_tol`, one per target and path point; such a fit is where
+    /// the descent stopped (review 2026-09-12, S11: nothing wrote this).
     pub solve_failures: u64,
     /// The hard-cutoff window, when the spec asks for one. Last, for the
     /// reason `LassoCfg::window` gives.
@@ -398,6 +401,7 @@ impl Lasso {
         };
         let np = self.cfg.n_lambdas();
         let mut out = vec![vec![vec![0.0; k_total]; np]; self.cfg.n_targets];
+        let mut unconverged = 0u64;
 
         // One set of statistics per Gram, for the targets that read it.
         for (g, gram) in grams.iter().enumerate() {
@@ -429,6 +433,7 @@ impl Lasso {
                     // Coordinate descent, warm-started along the path.
                     let l1 = lam * self.cfg.l1_ratio;
                     let l2 = lam * (1.0 - self.cfg.l1_ratio);
+                    let mut converged = false;
                     for _ in 0..self.cfg.max_cd_iters {
                         let mut max_delta: f64 = 0.0;
                         for i in 0..k {
@@ -454,9 +459,14 @@ impl Lasso {
                             b[i] = newb;
                         }
                         if max_delta < self.cfg.cd_tol {
+                            converged = true;
                             break;
                         }
                     }
+                    // Out of sweeps before `cd_tol`: the fit is where the
+                    // descent stopped, and it is counted (review 2026-09-12,
+                    // S11: nothing wrote `solve_failures`).
+                    unconverged += u64::from(!converged);
                     // Unscale and recover the intercept, from the target's
                     // own means.
                     let coefs = &mut out[j][li];
@@ -473,6 +483,7 @@ impl Lasso {
                 }
             }
         }
+        self.solve_failures += unconverged;
         self.beta = Some(out);
         self.clock_since_solve = 0.0;
         self.rows_since_solve = 0;
@@ -507,37 +518,45 @@ impl OnlineModel for Lasso {
             None => lam_decay,
         };
         for j in 0..m {
-            if let Some(yj) = y[j] {
-                if pred[j * np].is_finite() {
-                    let w_new = sel_lam * self.sel_w[j] + weight;
-                    let a = sel_lam * self.sel_w[j] / w_new;
-                    let b = weight / w_new;
-                    for li in 0..np {
-                        let e = yj - pred[j * np + li];
-                        self.sel_err[j][li] = a * self.sel_err[j][li] + b * e * e;
-                    }
-                    self.sel_w[j] = w_new;
-                    // Under a `window`, the path point is chosen on the error
-                    // *inside* it. Selecting on the whole history while
-                    // fitting on the window would pick a lambda for rows the
-                    // coefficients no longer see.
-                    let err = match self.view() {
-                        Some(v) => v.sel_err[j].clone(),
-                        None => self.sel_err[j].clone(),
-                    };
-                    let mut best = 0usize;
-                    for li in 1..np {
-                        if err[li] < err[best] {
-                            best = li;
-                        }
-                    }
-                    self.sel_idx[j] = best;
-                } else {
-                    self.sel_w[j] *= sel_lam;
-                }
-            } else {
+            let Some(yj) = y[j].filter(|_| pred[j * np].is_finite()) else {
                 self.sel_w[j] *= sel_lam;
+                continue;
+            };
+            let aged = sel_lam * self.sel_w[j];
+            if weight > 0.0 {
+                let w_new = aged + weight;
+                let (a, b) = (aged / w_new, weight / w_new);
+                for li in 0..np {
+                    let e = yj - pred[j * np + li];
+                    self.sel_err[j][li] = a * self.sel_err[j][li] + b * e * e;
+                }
+                self.sel_w[j] = w_new;
+            } else {
+                // A zero-weight row adds no error and ages the rest. In the
+                // mean form it is `0/0` before the first error, and the NaN it
+                // left in every `sel_err` never washed out: every comparison
+                // below false, the choice stuck at the heaviest penalty (hard
+                // rule 9; review 2026-09-12, C7).
+                self.sel_w[j] = aged;
+                if aged <= 0.0 {
+                    continue;
+                }
             }
+            // Under a `window`, the path point is chosen on the error
+            // *inside* it. Selecting on the whole history while fitting on
+            // the window would pick a lambda for rows the coefficients no
+            // longer see.
+            let err = match self.view() {
+                Some(v) => v.sel_err[j].clone(),
+                None => self.sel_err[j].clone(),
+            };
+            let mut best = 0usize;
+            for li in 1..np {
+                if err[li] < err[best] {
+                    best = li;
+                }
+            }
+            self.sel_idx[j] = best;
         }
 
         // ---- update accumulators ----
@@ -848,6 +867,87 @@ mod tests {
         assert_eq!(m.acc.cross.c[0], c, "and leaves the cross-moments alone");
         assert_eq!(m.acc.cross.my[0], my);
         assert!((m.sel_w[0] - sel_w * lam).abs() < 1e-12);
+    }
+
+    /// Hard rule 9 in the selection: a zero-weight row on the first row
+    /// with a prediction met a selection weight of 0 and formed `0/0`, and
+    /// the NaN it left in every `sel_err` never washed out -- each
+    /// comparison false, the choice held at the heaviest penalty for the
+    /// life of the state (review 2026-09-12, C7). The errors are those of
+    /// `lambda_selection_tracks_the_out_of_sample_error`, which leave the
+    /// zero-weight row out as its weight does.
+    #[test]
+    fn a_zero_weight_row_on_the_first_prediction_leaves_the_selection_alone() {
+        let mut c = cfg(3, 1, vec![1.0, 0.05, 0.0]);
+        c.min_periods = 1.0;
+        c.select_halflife = Some(f64::INFINITY);
+        let np = c.n_lambdas();
+        let mut m = Lasso::new(c).unwrap();
+        let (mut sums, mut count, mut met) = (vec![0.0; np], 0.0, false);
+        let mut s = 19u64;
+        for i in 0..402 {
+            let x = [lcg(&mut s), lcg(&mut s), lcg(&mut s)];
+            let y = 2.0 * x[0] + 0.02 * lcg(&mut s);
+            let w = if i == 1 { 0.0 } else { 1.0 };
+            let step = m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, w);
+            if step.pred[0].is_finite() {
+                if w == 0.0 {
+                    met = true;
+                } else {
+                    count += 1.0;
+                    for (li, sum) in sums.iter_mut().enumerate() {
+                        *sum += (y - step.pred[li]).powi(2);
+                    }
+                }
+            }
+            assert!(
+                m.sel_err[0].iter().all(|e| e.is_finite()),
+                "row {i}: {:?}",
+                m.sel_err[0]
+            );
+        }
+        assert!(
+            met,
+            "the zero-weight row must be the first with a prediction"
+        );
+        for (li, sum) in sums.iter().enumerate() {
+            assert!(
+                (m.sel_err[0][li] - sum / count).abs() < 1e-9,
+                "path point {li}: {} vs {}",
+                m.sel_err[0][li],
+                sum / count
+            );
+        }
+        let best = (0..np)
+            .min_by(|&a, &b| sums[a].partial_cmp(&sums[b]).unwrap())
+            .unwrap();
+        assert!(
+            best > 0,
+            "one feature matters, so the heaviest penalty loses: {sums:?}"
+        );
+        assert_eq!(m.lam_selected(), vec![m.cfg.lasso_path[best]]);
+    }
+
+    /// Coordinate descent that runs out of sweeps before it meets `cd_tol`
+    /// is the failure this model has, and `solve_failures` counts it: one
+    /// per target and path point left unconverged (review 2026-09-12, S11:
+    /// the field was reported and never written).
+    #[test]
+    fn a_descent_that_runs_out_of_sweeps_is_a_solve_failure() {
+        let mut c = cfg(4, 1, vec![0.5, 0.1, 0.01]);
+        c.cd_tol = 1e-14;
+        c.max_cd_iters = 1;
+        let (short, _) = fit(c.clone(), 200, 11);
+        assert!(
+            short.solve_failures > 0,
+            "one sweep cannot converge every point"
+        );
+        c.max_cd_iters = 2000;
+        let (long, _) = fit(c, 200, 11);
+        assert_eq!(
+            long.solve_failures, 0,
+            "and enough sweeps converge them all"
+        );
     }
 
     #[test]

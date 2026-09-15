@@ -39,6 +39,45 @@ carries breaking changes, and any change to the numbers a model returns.
 - **State schema 8; files of schema 6 and 7 no longer load.** While the
   project is pre-1.0, a state saved before this release has to be refit.
 
+### Fixed
+
+- **A window with `window_every` above 1 kept rows older than itself**
+  (`ewridge`, `lasso`, `ew_cov`, `ew_class`, `marginal`). After a clock gap
+  longer than the window, or wherever `window_every` rows span more clock
+  than it, the newest snapshot was older than the window and stayed the
+  boundary, so rows the window excludes stayed in the fit. At a cadence of
+  5, the row after a long gap reported a window weight of 2 where it alone
+  was inside. Such a row is now snapshotted whatever the cadence. **Numbers
+  change** for those streams; `window_every = 1` is unchanged.
+- **`σ²` ages on every row** (`ewridge`, `robust`, `kalman`). A row with a
+  target and no prediction, such as one where `min_periods` is unmet after a
+  clock gap, rightly added nothing to the residual variance. It did not age
+  its weight either, and neither did a zero-weight row in `robust`. So `σ²`
+  forgot less across such rows than the clock says. In `kalman` it sets the
+  observation and process noise, and in `robust` the width of every cut, so
+  their predictions after such rows change.
+- **A `session_shrink` blend under `ridge_decay` keeps the decaying
+  prior** (`ewridge`). The blend put the ridge prior back at full strength
+  at every session boundary. The prior now mixes as the moments do, `1 − f`
+  of the model's and `f` of the long-run twin's, so `session_shrink = 1`
+  lands exactly on the twin's fit.
+- **`lasso`'s selection survives a zero-weight row on the first
+  prediction.** It formed `0/0` there, and the NaN held the selection at the
+  heaviest penalty for the life of the state.
+- **`solve_failures` counts what it says.** `lasso` counts a coordinate
+  descent that runs out of `max_cd_iters` before `cd_tol`, one per target
+  and path point; it was always 0. `robust` counts a standardized solve that
+  fails at every jitter, as it counted a plain one.
+- **A state that contradicts its own config is refused.** That is an `sgd`
+  state whose `scaler` disagrees with `scale_features`, or whose AdaGrad
+  sums disagree with its schedule. The first loaded and read raw inputs with
+  coefficients learned on standardized ones; the second panicked on its
+  first step.
+- **`ftrl` refuses NaN** in `alpha`, `beta`, `l1` and `l2`. The core took it
+  and returned NaN from the first row; the spec layer refused only `alpha`.
+- **The bare `EwCov` state calls itself `ew_cov_accumulator`** in errors. It
+  said `ew_cov`, which is the bank model's name.
+
 ## [0.5.1] — 2026-09-11
 
 The first release of the 0.5 series: 0.5.0 was tagged but never published

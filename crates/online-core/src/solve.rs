@@ -5,33 +5,47 @@ use faer::Side;
 use faer::linalg::solvers::Llt;
 use faer::prelude::*;
 
+/// The diagonal jitters tried in turn, as multiples of `trace/k`: `A` as
+/// given first, then escalating.
+const JITTER: [f64; 5] = [0.0, 1e-12, 1e-9, 1e-6, 1e-3];
+
+/// The jitter ladder, once for every solve here: factorize `A` (row-major
+/// `k*k`) as given, then with `eps · trace/k` added to the diagonal for each
+/// `eps` in [`JITTER`], returning the factor and the attempts it took, or
+/// `None` if every rung fails. It was written out twice, in [`solve_spd`] and
+/// [`SpdFactor::of`], identical and free to drift apart (review 2026-09-12,
+/// D2).
+fn factorize(a: &[f64], k: usize) -> Option<(Llt<f64>, u32)> {
+    debug_assert_eq!(a.len(), k * k);
+    let trace: f64 = (0..k).map(|i| a[i * k + i]).sum();
+    let base = if trace > 0.0 { trace / k as f64 } else { 1.0 };
+    for (attempts, &eps) in JITTER.iter().enumerate() {
+        let jitter = base * eps;
+        let mat = Mat::from_fn(k, k, |i, j| {
+            a[i * k + j] + if i == j { jitter } else { 0.0 }
+        });
+        if let Ok(llt) = mat.llt(Side::Lower) {
+            return Some((llt, attempts as u32));
+        }
+    }
+    None
+}
+
 /// Solve `A x = B` for symmetric positive definite `A` (row-major `k*k`),
 /// `B` column-major `k x m`. On factorization failure retries with jitter
 /// `eps * trace/k` added to the diagonal (eps escalating), returning
 /// `(solution, jitter_attempts)`. Returns `None` if even the largest jitter fails.
 pub fn solve_spd(a: &[f64], b: &[f64], k: usize, m: usize) -> Option<(Vec<f64>, u32)> {
-    debug_assert_eq!(a.len(), k * k);
     debug_assert_eq!(b.len(), k * m);
-    let trace: f64 = (0..k).map(|i| a[i * k + i]).sum();
-    let base = if trace > 0.0 { trace / k as f64 } else { 1.0 };
-    let rhs = Mat::from_fn(k, m, |i, j| b[j * k + i]);
-    for (attempts, &eps) in [0.0, 1e-12, 1e-9, 1e-6, 1e-3].iter().enumerate() {
-        let jitter = base * eps;
-        let mat = Mat::from_fn(k, k, |i, j| {
-            a[i * k + j] + if i == j { jitter } else { 0.0 }
-        });
-        if let Ok(f) = mat.llt(Side::Lower) {
-            let x = f.solve(&rhs);
-            let mut out = vec![0.0; k * m];
-            for j in 0..m {
-                for i in 0..k {
-                    out[j * k + i] = x[(i, j)];
-                }
-            }
-            return Some((out, attempts as u32));
+    let (llt, attempts) = factorize(a, k)?;
+    let x = llt.solve(Mat::from_fn(k, m, |i, j| b[j * k + i]));
+    let mut out = vec![0.0; k * m];
+    for j in 0..m {
+        for i in 0..k {
+            out[j * k + i] = x[(i, j)];
         }
     }
-    None
+    Some((out, attempts))
 }
 
 /// A Cholesky factorization of a symmetric positive definite `A` kept for
@@ -52,25 +66,14 @@ pub struct SpdFactor {
 impl SpdFactor {
     /// Factorize `A` (row-major `k*k`), or `None` if every jitter fails.
     pub fn of(a: &[f64], k: usize) -> Option<Self> {
-        debug_assert_eq!(a.len(), k * k);
-        let trace: f64 = (0..k).map(|i| a[i * k + i]).sum();
-        let base = if trace > 0.0 { trace / k as f64 } else { 1.0 };
-        for (attempts, &eps) in [0.0, 1e-12, 1e-9, 1e-6, 1e-3].iter().enumerate() {
-            let jitter = base * eps;
-            let mat = Mat::from_fn(k, k, |i, j| {
-                a[i * k + j] + if i == j { jitter } else { 0.0 }
-            });
-            if let Ok(llt) = mat.llt(Side::Lower) {
-                let l = llt.L();
-                let log_det = 2.0 * (0..k).map(|i| l[(i, i)].ln()).sum::<f64>();
-                return Some(Self {
-                    llt,
-                    log_det,
-                    attempts: attempts as u32,
-                });
-            }
-        }
-        None
+        let (llt, attempts) = factorize(a, k)?;
+        let l = llt.L();
+        let log_det = 2.0 * (0..k).map(|i| l[(i, i)].ln()).sum::<f64>();
+        Some(Self {
+            llt,
+            log_det,
+            attempts,
+        })
     }
 
     /// `ln det` of the matrix factorized (jitter included).
@@ -144,6 +147,36 @@ mod tests {
         let by_hand: f64 = z.iter().zip(&beta).map(|(z, b)| z * b).sum();
         assert_eq!(dot_aug(&beta, &x, true), by_hand);
         assert_eq!(dot_aug(&beta[1..], &x, false), 2.0 * 3.0 - 4.0);
+    }
+
+    /// `solve_spd` and `SpdFactor::of` climb one ladder (review 2026-09-12,
+    /// D2): on a matrix that needs no jitter, a singular one and an
+    /// indefinite one that every rung fails, both take the same number of
+    /// attempts, and the solve is the kept factor's to the bit.
+    #[test]
+    fn solve_spd_and_the_kept_factor_climb_one_ladder() {
+        let (k, b) = (2, [1.0, 2.0]);
+        for (a, rungs) in [
+            ([4.0, 1.0, 1.0, 3.0], Some(Some(0))),
+            // Singular: which rung rescues it is faer's business; that the
+            // two take the same one is the test.
+            ([1.0, 1.0, 1.0, 1.0], None),
+            // Indefinite: every rung fails.
+            ([1.0, 2.0, 2.0, 1.0], Some(None)),
+        ] {
+            let solved = solve_spd(&a, &b, k, 1);
+            let kept = SpdFactor::of(&a, k);
+            let attempts = solved.as_ref().map(|s| s.1);
+            assert_eq!(attempts, kept.as_ref().map(SpdFactor::attempts), "{a:?}");
+            if let Some(want) = rungs {
+                assert_eq!(attempts, want, "{a:?}");
+            }
+            if let (Some((x, _)), Some(f)) = (solved, kept) {
+                // `bᵀA⁻¹b`, from the kept factor and from the solve.
+                let q = f.quad_forms(&b, k, 1)[0];
+                assert_eq!(q, (b[0] * x[0] + b[1] * x[1]).max(0.0), "{a:?}");
+            }
+        }
     }
 
     #[test]

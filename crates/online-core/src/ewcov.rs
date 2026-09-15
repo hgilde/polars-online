@@ -315,6 +315,13 @@ impl EwCov {
         self.prior_scale
     }
 
+    /// Overwrite the decaying prior's scale, for a caller that mixes two
+    /// accumulators' priors as it mixes their moments (`Grams::blend`,
+    /// review 2026-09-12 C6).
+    pub(crate) fn set_prior_scale(&mut self, s: f64) {
+        self.prior_scale = s;
+    }
+
     #[inline]
     pub fn mean(&self, i: usize) -> f64 {
         debug_assert!(
@@ -1305,8 +1312,8 @@ impl EwCovModel {
     /// window subtracted off.
     ///
     /// The subtraction is exact rather than approximate, because an EW sum
-    /// contains its own past: everything at or before the boundary's clock
-    /// `u` is `lam^(t-u)` times the accumulator as it stood then, so
+    /// contains its own past: everything before the row at the boundary's
+    /// clock `u` is `lam^(t-u)` times the accumulator as it stood then, so
     /// `A(t) - lam^(t-u)·A(u)` is precisely the rest. The boundary is the
     /// oldest snapshot still inside the window, so the rows dropped are a
     /// superset of the rows the window excludes -- the guarantee is honoured

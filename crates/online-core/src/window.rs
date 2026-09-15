@@ -12,7 +12,7 @@
 //! so the part to discard is the accumulator's own earlier value, decayed
 //! forward, and truncation is a subtraction rather than a recomputation.
 //! What a model has to keep is therefore not the rows but a ring of past
-//! *snapshots*, one per learned row (or one per `every` rows), which is what
+//! *snapshots*, one per row (or one per `every` rows), which is what
 //! this module holds.
 //!
 //! **The boundary is chosen conservatively, and the direction matters.** A
@@ -23,6 +23,13 @@
 //! `every` discards slightly more than asked, never less. Rounding the other
 //! way would keep rows the window promised to exclude, which is the one
 //! failure this design refuses to have.
+//!
+//! That needs a snapshot inside the window. With a coarse `every` there was
+//! none after a clock gap longer than the window, or wherever `every` rows
+//! span more clock than it: the newest snapshot was older than the window,
+//! it stayed the boundary, and rows the window excludes stayed in the fit.
+//! So a row that finds the newest snapshot outside the window is
+//! snapshotted whatever the cadence (review 2026-09-12, S6).
 
 use std::collections::VecDeque;
 
@@ -35,10 +42,11 @@ use crate::EwCov;
 pub struct Snapshots<S> {
     /// Clock units of history the window keeps.
     window: f64,
-    /// Snapshot every `every` learned rows; `1` snapshots them all and makes
-    /// the boundary as tight as the data allows.
+    /// Snapshot every `every` rows; `1` snapshots them all and makes the
+    /// boundary as tight as the data allows. A row whose newest snapshot has
+    /// left the window is snapshotted whatever the count.
     every: usize,
-    /// Learned rows since the last snapshot, so the cadence is counted in the
+    /// Rows since the last snapshot, so the cadence is counted in the
     /// *stream* and never in the chunk (hard rule 3).
     since: usize,
     /// `(clock of the row the snapshot precedes, snapshot)`.
@@ -46,7 +54,7 @@ pub struct Snapshots<S> {
 }
 
 impl<S> Snapshots<S> {
-    /// `window` in clock units, `every` learned rows between snapshots.
+    /// `window` in clock units, `every` rows between snapshots.
     pub fn new(window: f64, every: usize) -> Result<Self, String> {
         if !window.is_finite() || window <= 0.0 {
             return Err(format!("window must be > 0 (got {window})"));
@@ -56,7 +64,7 @@ impl<S> Snapshots<S> {
         }
         Ok(Self {
             window,
-            every: every.max(1),
+            every,
             since: usize::MAX, // the first row always snapshots
             ring: VecDeque::new(),
         })
@@ -73,11 +81,17 @@ impl<S> Snapshots<S> {
     }
 
     /// Offer a snapshot of the state *as it stands before* the row at
-    /// `clock`, already decayed to that row. Taken only when the cadence is
-    /// due, so `make` is not called otherwise.
+    /// `clock`, already decayed to that row. Taken when the cadence is due,
+    /// and whatever the cadence when the newest snapshot is older than the
+    /// window, so the boundary is always inside it (the module docs); `make`
+    /// is not called otherwise.
     pub fn offer(&mut self, clock: f64, make: impl FnOnce() -> S) {
         self.since = self.since.saturating_add(1);
-        if self.since >= self.every {
+        let stale = self
+            .ring
+            .back()
+            .is_none_or(|&(t, _)| t < clock - self.window);
+        if self.since >= self.every || stale {
             self.since = 0;
             self.ring.push_back((clock, make()));
         }
@@ -85,19 +99,15 @@ impl<S> Snapshots<S> {
 
     /// Drop what can never be the boundary again: everything strictly older
     /// than `now - window`. What is left at the front is the oldest snapshot
-    /// inside the window, which is the boundary.
+    /// inside the window, which is the boundary; [`Self::offer`] at `now`
+    /// has seen to it that there is one. (A stale front did not "subtract
+    /// the whole accumulator", as the comment here said: it subtracts the
+    /// state before the row it precedes, which keeps that row -- review
+    /// 2026-09-12, S6.)
     pub fn trim(&mut self, now: f64) {
         let oldest = now - self.window;
         while self.ring.len() > 1 && self.ring[0].0 < oldest {
             self.ring.pop_front();
-        }
-        // A single entry older than the window still bounds the answer: it
-        // says the whole accumulator is out of date, and the model reports
-        // an empty window rather than stale numbers.
-        if self.ring.len() == 1 && self.ring[0].0 < oldest {
-            // Keep it. `boundary` is what decides, and it will subtract the
-            // whole accumulator, which is the truthful "nothing in the
-            // window" answer.
         }
     }
 
@@ -152,8 +162,10 @@ impl Moments {
     }
 }
 
-/// `cov` with everything at or before the snapshot's clock removed:
-/// `A(t) - f·A(u)`, in the mean form the accumulator stores.
+/// `cov` with everything before the row the snapshot precedes removed:
+/// `A(t) - f·A(u)`, in the mean form the accumulator stores. That row, at
+/// the snapshot's clock `u`, and every row after it are kept (the module
+/// docs say why the boundary is drawn there).
 ///
 /// `None` when the window holds no weight -- a clock gap longer than it, or a
 /// boundary that is the whole accumulator. The caller reports nothing rather
@@ -232,4 +244,83 @@ pub fn truncated_mean(
         .map(|(m, m0)| (w_now * m - f * w_old * m0) / w)
         .collect();
     Some((w, out))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The module doc's boundary, which `trim`'s comment had the other way
+    /// round (review 2026-09-12, S6): a snapshot is the state before the
+    /// row it precedes, so subtracting it keeps that row. Across a gap of
+    /// twice the window the one snapshot left is the one taken before the
+    /// row after the gap, and what the subtraction leaves is that row.
+    #[test]
+    fn the_boundary_keeps_the_row_it_precedes() {
+        let (window, lam) = (5.0, 0.9f64);
+        let mut cov = EwCov::new(1);
+        let mut snaps = Snapshots::new(window, 1).unwrap();
+        let mut t = 0.0;
+        for (i, d) in [0.0, 1.0, 1.0, 1.0, 2.0 * window].into_iter().enumerate() {
+            t += d;
+            let l = lam.powf(d);
+            snaps.offer(t, || Moments::of(&cov, l));
+            snaps.trim(t);
+            cov.update(&[i as f64], l, 1.0);
+        }
+        assert_eq!(
+            snaps.len(),
+            1,
+            "one snapshot is left after a gap of twice the window"
+        );
+        let (clock, old) = snaps.boundary().unwrap();
+        assert_eq!(*clock, t);
+        let kept = truncated(&cov, old, 1.0).expect("the row after the gap is in the window");
+        assert!(
+            (kept.n_eff() - 1.0).abs() < 1e-12,
+            "exactly that row's weight: {}",
+            kept.n_eff()
+        );
+        assert!(
+            (kept.mean(0) - 4.0).abs() < 1e-12,
+            "and its value: {}",
+            kept.mean(0)
+        );
+    }
+
+    /// The module doc's promise -- a coarse `every` discards more than
+    /// asked, never less -- held only while a snapshot stayed inside the
+    /// window. After a clock gap longer than the window, or where `every`
+    /// rows span more than the window, the newest snapshot was older than
+    /// the window, `trim` kept it as the boundary, and rows the window
+    /// excludes stayed in the fit (found testing review 2026-09-12, S6).
+    #[test]
+    fn the_boundary_is_never_older_than_the_window() {
+        let ramp = |n: u32| (0..n).map(f64::from).collect::<Vec<_>>();
+        let gap = |mut v: Vec<f64>| {
+            let end = v[v.len() - 1];
+            v.extend([end + 100.0, end + 101.0, end + 102.0]);
+            v
+        };
+        for (every, window, clocks) in [
+            // A gap longer than the window.
+            (5, 20.0, gap(ramp(101))),
+            // No gap: five rows between snapshots span more than the window.
+            (5, 2.5, ramp(30)),
+            // The control: every row is snapshotted.
+            (1, 20.0, gap(ramp(101))),
+        ] {
+            let mut snaps = Snapshots::new(window, every).unwrap();
+            for (i, &t) in clocks.iter().enumerate() {
+                snaps.offer(t, || i);
+                snaps.trim(t);
+                let &(b, _) = snaps.boundary().unwrap();
+                assert!(
+                    b >= t - window,
+                    "every {every}, window {window}: the row at {t} is bounded at {b}, \
+                     outside the window"
+                );
+            }
+        }
+    }
 }

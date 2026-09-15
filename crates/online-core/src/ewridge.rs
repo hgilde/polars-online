@@ -966,23 +966,22 @@ impl OnlineModel for EwRidge {
             win.clock = t;
             win.snaps.trim(t);
         }
-        // EW residual variance from the primary (first-combo) pred, on the
-        // rows each target is learned from; its weight ages with the target's
-        // on the rows it is not.
+        // EW residual variance from the primary (first-combo) pred. Its
+        // weight ages on every row, and a row with a target, a weight and a
+        // prediction adds its squared residual. A row with a target and no
+        // prediction -- `min_periods` unmet after a clock gap, say -- ages it
+        // as a null row does; it aged nothing, so `σ²` forgot less across
+        // such rows than the clock says (N6).
         for j in 0..m {
+            let aged = lam * self.wsig[j];
             match y[j] {
-                Some(yj) if lam * self.acc.wj[j] + weight > 0.0 => {
-                    let p = pred[j * nc];
-                    let ws_new = lam * self.wsig[j] + weight;
-                    if p.is_finite() && ws_new > 0.0 {
-                        let resid = yj - p;
-                        self.sig2[j] =
-                            (lam * self.wsig[j] * self.sig2[j] + weight * resid * resid) / ws_new;
-                        self.wsig[j] = ws_new;
-                    }
+                Some(yj) if weight > 0.0 && pred[j * nc].is_finite() => {
+                    let resid = yj - pred[j * nc];
+                    let ws_new = aged + weight;
+                    self.sig2[j] = (aged * self.sig2[j] + weight * resid * resid) / ws_new;
+                    self.wsig[j] = ws_new;
                 }
-                Some(_) => {}
-                None => self.wsig[j] *= lam,
+                _ => self.wsig[j] = aged,
             }
         }
         self.acc.learn(&self.zbuf, y, lam, weight, gaps);
@@ -1800,6 +1799,154 @@ mod tests {
         assert!((m.acc.wj[0] - wj * lam).abs() < 1e-12);
     }
 
+    /// `σ²` is the EW mean of the squared out-of-sample errors: every row
+    /// ages its weight by the row's `lam`, and a row with a target, a
+    /// weight and a prediction adds `w·r²`. A row with a target and no
+    /// prediction -- here the rows after a clock gap has taken `n_eff` under
+    /// `min_periods` -- rightly added nothing, and aged nothing either, so
+    /// `σ²` forgot less across them than the clock says (N6, found beside
+    /// review 2026-09-12 S13).
+    #[test]
+    fn the_residual_variance_ages_on_every_row() {
+        let hl = 10.0;
+        let mut c = cfg(1, 1);
+        c.decay = Decay::Halflife(hl);
+        c.min_periods = 3.0;
+        let mut m = EwRidge::new(c).unwrap();
+        let (mut want, mut wsig, mut unpredicted) = (0.0f64, 0.0f64, 0);
+        let mut s = 61u64;
+        for i in 0..160 {
+            let x = [lcg(&mut s)];
+            let y = 2.0 * x[0] + 0.1 + 0.2 * lcg(&mut s);
+            let d = match i {
+                0 => 0.0,
+                80 => 200.0,
+                _ => 1.0,
+            };
+            let (y, w) = match i % 9 {
+                4 => (None, 1.0),
+                7 => (Some(y), 0.0),
+                _ => (Some(y), 1.0),
+            };
+            let p = m.step(&x, &[y], d, w).pred[0];
+            wsig *= 0.5f64.powf(d / hl);
+            match y {
+                Some(y) if w > 0.0 && p.is_finite() => {
+                    let r = y - p;
+                    let ws_new = wsig + w;
+                    want = (wsig * want + w * r * r) / ws_new;
+                    wsig = ws_new;
+                }
+                Some(_) if w > 0.0 && wsig > 0.0 => unpredicted += 1,
+                _ => {}
+            }
+            let got = m.sigma2()[0];
+            assert!(
+                (got - want).abs() <= 1e-12 * want,
+                "row {i}: sigma2 {got}, the EW mean of the squared errors {want}"
+            );
+        }
+        assert!(
+            unpredicted >= 2,
+            "the gap must leave rows with no prediction"
+        );
+    }
+
+    /// Under `ridge_decay` the penalty is a pseudo-observation of the
+    /// history, `prior_scale · ridge · I` on the sum scale, and it decays
+    /// with the history; a blend mixes the history, so it mixes the prior
+    /// by the same coefficients as the moments -- `(1 − f)` of the fast
+    /// side's and `f` of the twin's. The blend rebuilt the Gram from
+    /// `EwCov::new`, which put the prior back at full strength on every
+    /// session boundary (review 2026-09-12, C6). At `f = 1` the blend is the
+    /// twin, fit included: the fit RLS gives at the twin's halflife.
+    #[test]
+    fn a_blend_mixes_the_decaying_prior_as_it_mixes_the_moments() {
+        let (hl, long, ridge) = (20.0, 400.0, 5.0);
+        let build = |f: f64| {
+            let mut c = cfg(2, 1);
+            c.ridge = vec![ridge];
+            c.ridge_decay = true;
+            c.decay = Decay::Halflife(hl);
+            c.long_halflife = Some(long);
+            c.session_shrink = Some(f);
+            c.min_periods = 0.0;
+            EwRidge::new(c).unwrap()
+        };
+        let mut rls = crate::Rls::new(crate::RlsCfg {
+            n_features: 2,
+            n_targets: 1,
+            add_intercept: true,
+            decay: Decay::Halflife(long),
+            ridge,
+            coef_prior: None,
+            min_periods: 0.0,
+        })
+        .unwrap();
+        let (mut part, mut full) = (build(0.3), build(1.0));
+        let mut s = 31u64;
+        for i in 0..250 {
+            let x = [lcg(&mut s), 0.5 + lcg(&mut s)];
+            let y = 1.0 + 2.0 * x[0] - x[1] + 0.1 * lcg(&mut s);
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            part.step(&x, &[Some(y)], d, 1.0);
+            full.step(&x, &[Some(y)], d, 1.0);
+            rls.step(&x, &[Some(y)], d, 1.0);
+        }
+        let fast = part.gram(0).prior_scale();
+        let slow = part.slow.as_ref().unwrap().grams.grams[0].prior_scale();
+        assert!(fast < 1e-3 && slow > 0.5, "fast {fast}, slow {slow}");
+        part.blend_toward_long_run();
+        let want = (1.0 - 0.3) * fast + 0.3 * slow;
+        assert!(
+            (part.gram(0).prior_scale() - want).abs() <= 1e-15 * want,
+            "prior_scale {} after the blend, the mixture {want}",
+            part.gram(0).prior_scale()
+        );
+
+        full.blend_toward_long_run();
+        let got = full.coefficients().unwrap()[0].clone();
+        let wanted = rls.coefficients()[0].clone();
+        for i in 0..3 {
+            assert!(
+                (got[i] - wanted[i]).abs() < 1e-9,
+                "coef {i}: {} after a full blend, {} from RLS at the twin's halflife",
+                got[i],
+                wanted[i]
+            );
+        }
+    }
+
+    /// The window's boundary across a clock gap longer than the window,
+    /// through the model: the row after the gap is the only one inside, so
+    /// the window's weight is that row's, at every `window_every`. With a
+    /// cadence of 5 the boundary stayed at the last snapshot before the gap,
+    /// and the rows since it stayed in (found testing review 2026-09-12, S6).
+    #[test]
+    fn a_window_holds_nothing_from_before_a_gap_longer_than_it() {
+        for every in [1, 5] {
+            let mut c = cfg(1, 1);
+            c.window = Some(20.0);
+            c.window_every = Some(every);
+            c.min_periods = 0.0;
+            let mut m = EwRidge::new(c).unwrap();
+            let mut s = 67u64;
+            for i in 0..101 {
+                let x = [lcg(&mut s)];
+                m.step(&x, &[Some(x[0])], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            for (rows, d) in [(1.0, 100.0), (2.0, 1.0)] {
+                let x = [lcg(&mut s)];
+                m.step(&x, &[Some(x[0])], d, 1.0);
+                assert!(
+                    (m.n_eff() - rows).abs() < 1e-9,
+                    "window_every {every}: a weight of {} in the window, {rows} rows inside it",
+                    m.n_eff()
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_solve_schedule_controls_when_coefficients_move() {
         // Almost every test here solves on every row, which masks the three
@@ -2234,8 +2381,9 @@ mod tests {
             s1y += w * ys[i];
             sxy += w * x * ys[i];
         }
-        // The model accumulates *means*, so the ridge sits on the mean scale.
-        let (a11, a12, a22) = (s11 / wsum + ridge, s1x / wsum, sxx / wsum + ridge);
+        // The model accumulates *means*, so the ridge sits on the mean scale,
+        // and on the slope alone: the intercept is not penalized.
+        let (a11, a12, a22) = (s11 / wsum, s1x / wsum, sxx / wsum + ridge);
         let (b1, b2) = (s1y / wsum, sxy / wsum);
         let det = a11 * a22 - a12 * a12;
         [(b1 * a22 - b2 * a12) / det, (b2 * a11 - b1 * a12) / det]
@@ -2295,12 +2443,14 @@ mod tests {
                 let want = direct_window_fit(&xs, &ys, &t, halflife, window, ridge, i + 1);
                 let got = m.coefficients().unwrap();
                 for (slot, wanted) in want.iter().enumerate() {
-                    // Not machine precision, and the docs say why: the window
-                    // is a *subtraction*, so it loses digits in proportion to
-                    // the mass discarded. At window = 2.7 halflives that is
-                    // about eight significant figures.
+                    // To rounding: the window is a subtraction, but at 2.7
+                    // halflives it discards a sixth of the weight and loses
+                    // next to nothing (1.2e-14 measured). The "eight
+                    // significant figures" this once allowed was the oracle's
+                    // own ridge on the intercept, which the model leaves free
+                    // (review 2026-09-12, D6).
                     assert!(
-                        (got[0][slot] - wanted).abs() < 1e-6 * wanted.abs().max(1.0),
+                        (got[0][slot] - wanted).abs() < 1e-12 * wanted.abs().max(1.0),
                         "row {i} slot {slot}: {} vs {wanted}",
                         got[0][slot]
                     );

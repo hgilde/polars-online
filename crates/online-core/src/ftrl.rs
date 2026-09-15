@@ -77,10 +77,16 @@ impl FtrlCfg {
         if self.n_features == 0 || self.n_targets == 0 {
             return Err("n_features and n_targets must be >= 1".into());
         }
-        if self.alpha <= 0.0 {
+        // NaN compares false both ways, so each check says what it accepts;
+        // all four took NaN, and every coefficient was NaN from the first
+        // row (review 2026-09-12, S32).
+        if self.alpha <= 0.0 || self.alpha.is_nan() {
             return Err("ftrl: alpha must be > 0".into());
         }
-        if self.beta < 0.0 || self.l1 < 0.0 || self.l2 < 0.0 {
+        if [self.beta, self.l1, self.l2]
+            .iter()
+            .any(|&v| v < 0.0 || v.is_nan())
+        {
             return Err("ftrl: beta, l1 and l2 must be >= 0".into());
         }
         if self.strict_binary && self.loss == FtrlLoss::Squared {
@@ -450,6 +456,14 @@ mod tests {
             c.l1 = 0.0;
             c.l2 = 0.0;
         });
+
+        // NaN compares false both ways, so each check must say what it
+        // accepts (review 2026-09-12, S32: all four took NaN, and every
+        // coefficient was NaN from the first row).
+        bad(&|c| c.alpha = f64::NAN, "alpha must be > 0");
+        bad(&|c| c.beta = f64::NAN, "must be >= 0");
+        bad(&|c| c.l1 = f64::NAN, "must be >= 0");
+        bad(&|c| c.l2 = f64::NAN, "must be >= 0");
 
         // strict_binary checks that y is 0/1, which the squared loss does not require.
         bad(

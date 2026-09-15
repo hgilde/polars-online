@@ -1781,6 +1781,45 @@ note, not a task.
       the finding IDs. Tasks 78 and 79, parked on `design/task-78` while it
       ran, were merged back on 2026-09-13; 79 was this round's C5.
 
+      **Continued 2026-09-14, after task 81: the findings no library can
+      check.** The user: "We want to be careful fixing the items that
+      cannot be verified by a third party library. As always a test first
+      methodology is standard but we want to be sure that we double check
+      each finding with a fresh eye since there is no other check, if we
+      write the test and it passes where the reviewer assumes it would not,
+      document the issue in the progress doc and raise it to me." Then: fix
+      everything except D1 (hard rule 5, on not breaking file
+      compatibility). So each remaining finding is re-derived from the code
+      before its test is written; the test runs on the build before the
+      fix and must fail where the finding says; one that passes is
+      recorded and raised, not fixed. The findings that need a decision go
+      to the user first.
+
+      **The user's decisions, 2026-09-15**, each premise first confirmed on
+      the build: S29/S30 -- `holt` becomes a weighted mean, level and trend
+      `(λW·p + w·y)/(λW + w)`, so a weight means what it does elsewhere and
+      `halflife = inf` is the cumulative fit (today the level at weight 0.5
+      equals weight 1 to the last digit, and `inf` freezes the level at the
+      first row). S2 -- each target's `min_periods` is checked against its
+      own weight; the emitted `n_eff` stays the shared weight. S1 -- a
+      windowed spec's `sigma` and `resid_z` are windowed. S3 --
+      `max_dclock` caps the total delta a row sees after skipped rows (ten
+      rows 100 apart handed the next one about 660). S23 -- `emit_averaged`
+      compares the slots' errors as ratios, `exp(−eta·(σ²/σ²_best − 1))`.
+      S27 -- `inf` is accepted where it means something and refused in both
+      layers elsewhere. S31 -- a `strict_binary` target other than 0 or 1
+      refuses the chunk, naming the row. C24 -- river's `FTRLProximal` has no
+      forgetting (its sums only grow), so the halflife is ours: it stays,
+      repaired with a decayed proximal sum, and at `halflife = inf` the
+      model is river's to the bit, as T-R1 holds it.
+
+      **Batch 1, 2026-09-15**, the core findings: C6, C7, S4, S6, S11, S13,
+      S16, S32 and D2-D6 fixed, with N6, found on the way (`σ²`'s weight
+      did not age on a row with a target and no prediction); S10 is not a
+      defect. The progress doc has each, and what was raised: S10's
+      premise, S13's test passing on the old build, S6 and D6 worse than
+      written, C6's test unable to show it.
+
 - [x] 79. **`label_delay` ignores a clock event on a skipped row — found
       2026-09-11, checking task 78's parity; in released 0.5.1.** A reset
       that lands on a row the spec skips (a null feature, an unusable

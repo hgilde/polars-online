@@ -83,7 +83,6 @@ impl RlsCfg {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "RlsV2")]
 pub struct Rls {
     cfg: RlsCfg,
     /// Cholesky factor of the decayed information matrix, `A = R^T R`: upper
@@ -99,44 +98,6 @@ pub struct Rls {
     zbuf: Vec<f64>,
     #[serde(skip)]
     ybuf: Vec<f64>,
-}
-
-/// The layout `Rls` loads. Schema-1 files held the covariance `P` instead
-/// (see the module docs for why it is gone); they no longer load at all,
-/// with the rest of the pre-schema-6 states.
-#[derive(Deserialize)]
-struct RlsV2 {
-    cfg: RlsCfg,
-    r: Vec<f64>,
-    u: Vec<Vec<f64>>,
-    beta: Vec<Vec<f64>>,
-    w_sum: f64,
-    seen: bool,
-}
-
-impl TryFrom<RlsV2> for Rls {
-    type Error = String;
-
-    fn try_from(w: RlsV2) -> Result<Self, String> {
-        let RlsV2 {
-            cfg,
-            r,
-            u,
-            beta,
-            w_sum,
-            seen,
-        } = w;
-        Ok(Self {
-            cfg,
-            r,
-            u,
-            beta,
-            w_sum,
-            seen,
-            zbuf: vec![],
-            ybuf: vec![],
-        })
-    }
 }
 
 impl Rls {
@@ -530,6 +491,73 @@ mod tests {
             apart > 1e-3,
             "a Gram over every row should not agree: {apart}"
         );
+    }
+
+    /// `agrees_with_ewridge_solved_every_row` with a `coef_prior` and
+    /// `min_periods = 0` on both sides, compared from the first row. The
+    /// review (2026-09-12, S10) read EW-ridge as predicting `x · prior` on
+    /// row 0 while RLS waits for its first learned row; EW-ridge waits too
+    /// -- it has no fit before its first solve, and gates each target on
+    /// the target's own weight -- so the two agree on every row, and on
+    /// which rows have a prediction.
+    #[test]
+    fn agrees_with_ewridge_from_the_first_row_with_a_prior() {
+        let (k, hl, ridge) = (3usize, 40.0, 0.7);
+        let prior = vec![vec![0.3, 1.0, -0.5, 0.2]];
+        let mut rc = rls_cfg(k, 1, hl, ridge);
+        rc.coef_prior = Some(prior.clone());
+        let mut rls = Rls::new(rc).unwrap();
+        let mut ew = EwRidge::new(EwRidgeCfg {
+            n_features: k,
+            n_targets: 1,
+            add_intercept: true,
+            decay: Decay::Halflife(hl),
+            ridge: vec![ridge],
+            feature_sets: vec![],
+            standardize: false,
+            ridge_decay: true,
+            session_shrink: None,
+            long_halflife: None,
+            coef_prior: Some(prior),
+            min_periods: 0.0,
+            solve_every: 0.0,
+            max_rows_between_solves: 1,
+            gram_block_rows: 0,
+            target_gaps: crate::TargetGaps::OwnRows,
+            window: None,
+            window_every: None,
+        })
+        .unwrap();
+
+        let mut s = 99u64;
+        let (mut max_diff, mut first) = (0.0f64, None);
+        for i in 0..200 {
+            let x: Vec<f64> = (0..k).map(|_| lcg(&mut s)).collect();
+            let y = 1.5 * x[0] - x[1] + 0.3 + 0.05 * lcg(&mut s);
+            let d = if i == 0 { 0.0 } else { 0.5 + lcg(&mut s).abs() };
+            let w = 0.5 + lcg(&mut s).abs();
+            let a = rls.step(&x, &[Some(y)], d, w);
+            let b = ew.step(&x, &[Some(y)], d, w);
+            assert_eq!(
+                a.pred[0].is_finite(),
+                b.pred[0].is_finite(),
+                "row {i}: rls {}, ewridge {}",
+                a.pred[0],
+                b.pred[0]
+            );
+            if a.pred[0].is_finite() {
+                if first.is_none() {
+                    first = Some(i);
+                }
+                max_diff = max_diff.max((a.pred[0] - b.pred[0]).abs());
+            }
+        }
+        assert_eq!(
+            first,
+            Some(1),
+            "both predict from the row after the first learned one"
+        );
+        assert!(max_diff < 1e-9, "max pred difference {max_diff}");
     }
 
     #[test]

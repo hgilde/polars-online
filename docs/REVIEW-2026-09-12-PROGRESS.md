@@ -109,17 +109,30 @@ two agree to `3e-9`); and C22's two `holt` tests do not turn over -- with
 a clock since the last observation the level does stand still across a
 null, and what moves is the next row's forecast.
 
-**Kept for later: 52 items** (V22 closed with task 81), each with its
-reason in the tables below --
-no independent library oracle (C4, C6, C7, C19, C20, C24; S4-S8, S10-S13,
-S16, S21, S22, S24-S26, S32), a fix with no library test whose
-library-tested alternative is an enhancement (C18), a decision needed
-first (S1, S2, S3, S23, S27, S29, S30, S31), performance (P1-P5),
-documentation (D1-D10), and the V list -- and one new observation, N4,
-which task 81 did half of. **S29 and S30 are the user's call**: both would trade `holt`'s
-textbook recursion, which `statsmodels`' `Holt` now pins exactly, for a
-mean-form level. The user's own design work (tasks 78 and 79), parked on
-`design/task-78` while the round ran, is merged into `main`.
+**Kept for later: 38 items** (V22 closed with task 81; batch 1 below
+closed fourteen), each with its reason in the tables below --
+no independent library oracle (C4, C19, C20, C24; S5, S7, S8, S12, S21,
+S22, S24-S26), a fix with no library test whose library-tested
+alternative is an enhancement (C18), a decision needed first -- taken by
+the user on 2026-09-15 and recorded in `docs/PLAN.md` task 80 (S1, S2,
+S3, S23, S27, S29, S30, S31, and C24's shape) -- performance (P1-P5),
+documentation (D7-D10), and the V list; and one new observation, N4,
+which task 81 did half of. D1 is excluded by the user. The user's own
+design work (tasks 78 and 79), parked on `design/task-78` while the round
+ran, is merged into `main`.
+
+**Batch 1 (2026-09-15): the core findings no library can check**, on the
+user's rule of 2026-09-14 -- test first; re-derive each finding from the
+code before writing its test; a test that passes where the review said it
+would fail is recorded here and raised, not "fixed". Fixed: C6, C7, S4,
+S6, S11, S13, S16, S32, D2-D6, and N6, found on the way; S10 is not a
+defect. **Raised to the user:** S10's premise is false (EW-ridge does not
+predict from the prior on row 0 either); the review's own test for S13's
+second bullet passes on the old build (the jitter ladder rescues its
+example), though the defect is real and another test shows it; S6 was
+a behavioural bug, not only three wrong comments; D6's lost digits were
+the test oracle's ridge on the intercept, not the window; and C6's
+proposed test could not show the defect.
 
 ## Status
 
@@ -135,8 +148,8 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | C3 | a `session_shrink` blend never re-solves | `numpy` weighted least squares at `long_halflife` weights (the slow twin at `f = 1`) | **fixed** — the blend re-solves when it mixed anything and a fit exists, which also fixes `predict`'s blended copy. Reproduced: on the old build the first row of session 2 was predicted at 1.20 with the pre-blend fit, against `numpy`'s slow-twin fit of −0.12; now equal at `1e-8`, and `bank.predict` on that row equals `fit_predict` (E31). A blend with nothing to mix stays a no-op, re-solve included (`blend_before_any_data_is_a_no_op` caught a first version that re-solved anyway) |
 | C4 | building a `predict` plan drains the closed-group queue | none — a side effect, not a number | later: no library oracle |
 | C5 | `label_delay` ignores a reset or session change on a skipped row | `numpy`: lag-1 pairs within sessions; fresh-bank equality | **fixed**, with C21, which needs it (the queue C21 keeps stays aligned with the waiting rows only if a reset on a skipped row clears them) — a skipped row's reset now clears the buffer, and its session change or capped gap releases it, as an accepted row's always did. No library oracle: the review's `numpy` count needs a closed group, and `group_close` refuses `label_delay`. The test is the definition: after a reset on a skipped row, `pred` and `n_eff` equal a fresh bank fed the new session alone (failed on the old build) |
-| C6 | `ridge_decay` + `session_shrink` restores `prior_scale` at every blend | our own `rls` only | later: no library oracle |
-| C7 | a zero-weight row poisons the lasso's lambda selection (0/0) | a hand-rolled selection sum | later: no library oracle |
+| C6 | `ridge_decay` + `session_shrink` restores `prior_scale` at every blend | our own `rls` only | **fixed** (batch 1) — the blend rebuilt the Gram from `EwCov::new`, so after a blend at `f = 0.3` `prior_scale` came back 1 against the mixture's 0.195 (failed on the old build). **A decision taken:** the prior mixes as the sum-scale weights do, `(1 − f)·ps_fast + f·ps_twin` -- the review's second option, since keeping the fast side's leaves `f = 1` short of the twin. At `f = 1` the blended fit is RLS's at the twin's halflife to `1e-9` (our own `rls` as the second opinion, as the review proposed). **The review's test could not show it** (raised): at `f = 0` the blend returns before it mixes anything |
+| C7 | a zero-weight row poisons the lasso's lambda selection (0/0) | a hand-rolled selection sum | **fixed** (batch 1) — a zero-weight row adds no error and ages the rest; bit-identical to before wherever the old form was not `0/0`. On the old build `sel_err` was NaN from row 1 and the selection stuck at the heaviest penalty. The contract (`model_contract.rs`) now puts a zero-weight row on every model's first prediction and checks that no prediction goes NaN; that passed on the old build for every model, `lasso` included, since the selection's symptom is a stuck argmin, not a NaN -- so the `lasso` test is where C7 is held |
 | C8 | lasso without an intercept solves a centred/uncentred hybrid | `numpy.linalg.lstsq` with no intercept, at zero penalty | **fixed** — without an intercept `standardized()` scales by the raw second moment and keeps the raw cross-moments; at zero penalty the fit is held to `numpy`'s no-intercept least squares at `1e-6` (coordinate descent's tolerance), with the intercept case as the control |
 | C9 | `Lasso::predict` reports the unwindowed `n_eff` | `numpy`: `Σ lam^age` over the in-window rows | **fixed** — reports and gates the window's weight; failed `numpy` on the old build |
 | C10 | `kalman` centres without an intercept | `numpy.linalg.lstsq` with no intercept (statistical) + `coef·x == pred` | **fixed** — `scales_into`, `standardized` and the step's own standardization scale by `sqrt(E[x²])` and do not centre; the exact contract `dot(coef_(i−1), x_i) == pred_i` holds to `1e-9` (it missed by 16 on the old build: the hidden intercept), and with no process noise the coefficients sit at `numpy`'s no-intercept fit to `1e-2` after 5000 rows (statistical). The full gate then failed `tests/test_oracles.py::TestKalmanOracle::test_no_intercept`: the from-scratch oracle `tests/reference.py::kalman_ref` had copied the centring, so it pinned the defect -- the situation the review warns of for C16. The oracle now standardizes as the fixed core does |
@@ -162,19 +175,19 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | S1 | bank `sigma`/`resid_z` not windowed | `numpy` over in-window residuals | later: needs a decision (route the model's `sigma2`, or correct two docstrings) |
 | S2 | per-target `min_periods` gates on the shared `n_eff` | — | later: needs a decision |
 | S3 | skipped-row time folded without the cap | `numpy` `lam^d` once decided | later: needs a decision (60 or 600) |
-| S4 | two model states share the kind `"ew_cov"` | — | later: no library oracle |
+| S4 | two model states share the kind `"ew_cov"` | — | **fixed** (batch 1) — the bare accumulator is `"ew_cov_accumulator"`, so `EwCovModel::restore` of one names what it found (failed on the old build); the kind is only ever an error message, never written to a file. Two tests pinned the old name (`kmeans.rs`, the contract's kind list) |
 | S5 | a single-combo `ew_ridge` loses its combo metadata | — | later: no library oracle |
-| S6 | `window.rs` disagrees with itself on the boundary row | — | later: no library oracle |
+| S6 | `window.rs` disagrees with itself on the boundary row | — | **fixed** (batch 1), and **worse than the review says** (raised). The comments were wrong as it says -- the module doc is the true one, which the review's own test (a gap of twice the window at `every = 1`) pins, passing on the old build as it should -- and `trim`'s empty `if` and `new`'s `every.max(1)` are gone. What the review did not see: with `window_every` above 1, after a clock gap longer than the window, or wherever `every` rows span more clock than it, the newest snapshot was older than the window, `trim` kept it as the boundary, and rows the window excludes stayed in the fit -- at a cadence of 5 the row after a long gap reported a window weight of 2 where one row was inside, then 3 for 2. A row that finds the newest snapshot outside the window is now snapshotted whatever the cadence. Both new tests failed on the old build (`window.rs`: the boundary at 100 for a row at 200; `ewridge.rs`: the weight). `window_every = 1` is unchanged |
 | S7 | `Spec::validate` gaps | `numpy.linalg.lstsq` for one sub-case; the fix is refusals | later: no library oracle for the fix |
 | S8 | `solve_failures` doc vs list | — | later: documentation |
 | S9 | `kalman` zero-weight row skips the per-target decay | `filterpy` | **fixed** — a zero-weight row with its target present decays `wj` and `wsig` as a null row does. Library, exact: `filterpy`'s `KalmanFilter` beside a `numpy` recursion for `σ²` -- `predict(Q)` on every row, `update(y, R = σ²/w, H = z)` only where there is a target and a positive weight, `σ²`'s weight decayed on every row -- gives our predictions to `1e-9` (Joseph form against the simple form). The zero-weight case failed on the old build and the null case, the control, passed. `tests/reference.py`'s `kalman_ref` had copied the skip; it decays now |
-| S10 | `rls` never predicts from `coef_prior` before its first row | — | later: no library oracle |
-| S11 | `Lasso::solve_failures` never written | — | later: no library oracle |
+| S10 | `rls` never predicts from `coef_prior` before its first row | — | **not a defect** (raised) — the review's test passes on the old build. Its premise, that EW-ridge predicts `x · prior` on row 0, is false: EW-ridge has no fit before its first solve and gates each target on the target's own weight, so it too predicts nothing until a row is learned, and the two agree from row 0 on every value and on which rows have one (`agrees_with_ewridge_from_the_first_row_with_a_prior`, kept as the pin). No change to `predict`. The minor items: `RlsV2`, whose `try_from` could not fail, is gone -- `Rls` deserializes directly -- and `lib.rs`'s schema-2 note was already history |
+| S11 | `Lasso::solve_failures` never written | — | **fixed** (batch 1) — one count per target and path point whose descent runs out of `max_cd_iters` before `cd_tol`; 0 on the old build with one sweep, and still 0 with enough sweeps |
 | S12 | `atomic.rs` Windows and durability caveats | — | later: no library oracle |
-| S13 | `robust` asymmetries in `step` and `solve` | — | later: no library oracle |
+| S13 | `robust` asymmetries in `step` and `solve` | — | **fixed** (batch 1). **The review's test for the second bullet passes on the old build** (raised): its collinear example is rescued by the jitter ladder, which counts the attempt, so `solve_failures > 0` either way. The defect is real -- a solve that fails at every jitter returned through `?` before the count -- and a correlation matrix every jitter fails on shows it (handed to the accumulator, since no stream of rows makes one): 0 on the old build, 1 now. The first bullet: a zero-weight row now ages `wsig` (failed on the old build, 14.65 against 11.90), held with N6 by the EW-mean oracle below |
 | S14 | `ew_class` reports the whole-history `n_eff` under a `window` | `numpy`: `Σ lam^age` in window | **fixed** — `n_eff()` is the window's weight (one subtraction from the snapshot), read by the gate, the report and `step`; failed `numpy` on the old build |
 | S15 | `EwCovModel::n_eff()` is the live weight under a `window` | `numpy`: `Σ lam^age` in window | **fixed** — the accessor reads the view; the emitted field was already windowed and is held to `numpy`, and a Rust assertion holds the accessor to it |
-| S16 | an `sgd` state without its `scaler` loads unscaled | — | later: no library oracle |
+| S16 | an `sgd` state without its `scaler` loads unscaled | — | **fixed** (batch 1) — a state whose `scaler` disagrees with `scale_features`, or whose AdaGrad sums disagree with its schedule, is refused by name; all four cases loaded on the old build |
 | S17 | `marginal` emits the live `n_eff`, accessor windowed | `numpy`: `Σ lam^age` in window | **fixed** — emits `n_eff()`; failed `numpy` on the old build |
 | S18 | `marginal` `"truncated"` serial rule floors at `MIN_POSITIVE` | `statsmodels` `cov_hac` | **fixed** — a truncated factor at or below zero is NaN, null in `bank.marginal()`, as `"geometric"` answers a factor it cannot form; it was floored at `MIN_POSITIVE`, and `n_serial` came out `inf`. Library: `statsmodels`' `acf` gives this pair's own lag-1 autocorrelations, about +0.8 and −0.8, which put the factor below zero, and ours agree with `acf` to T-S11's `0.02`; two positively autocorrelated series are the control, where `n_serial` is `n_kish` over the factor to `1e-12`. The review's exact `cov_hac` check does not hold (see the summary). Bartlett weights, positive by construction, would be a new option; kept for later |
 | S19 | the Gram and the closed row carry live accumulators under a `window` | `numpy.linalg.lstsq` on in-window vs all rows | **fixed** — `gram_of` reads the window's accumulators (`windowed_gram` on `ewridge` and `lasso`, `windowed_cov` on `ew_cov`), so `bank.gram()` and a closed row's Gram are the window's, and `po.gram.solve` on them is the fit `coef` reports. Library, exact: `numpy.linalg.lstsq` on the rows the last fit was read from equals both `bank.coef()` and `po.gram.solve(bank.gram())` at `1e-6`, and the Gram's `n_eff` is their weight; on the old build the solve gave the whole history's fit, and `window=None` was the control. **A decision for the user:** the window's snapshots do not carry the target moments, so under a window `target_means`, `target_vars` and `target_n_kish` are `None` -- the Gram's existing way of saying "this state cannot say" -- rather than the whole history's; snapshotting them would restore them, kept for later |
@@ -190,14 +203,18 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | S29 | `holt` reads the row weight as a gate | `pandas` `ewm` | later: needs a decision. `pandas` may be used in tests now, but the review's fix is a mean-form level, `l' = (lam·W·p + w·y)/(lam·W + w)`, in place of the textbook Holt recursion the model runs -- which `statsmodels`' `Holt` now pins exactly (T-S14). Which of the two `holt` is, is the user's call |
 | S30 | `holt` at an infinite level halflife | `statsmodels` `Holt` | later: needs the same decision as S29. At an infinite halflife the textbook rate is 0 and the level freezes at the first row; the mean form goes to the cumulative mean. `lam = 1` refused in `level_halflife`'s name is a message to reword with it |
 | S31 | `ftrl` `strict_binary`: documented error, silent skip | — | later: needs a decision |
-| S32 | `FtrlCfg::validate` accepts NaN | — | later: no library oracle |
+| S32 | `FtrlCfg::validate` accepts NaN | — | **fixed** (batch 1) — NaN refused in all four, as `pa` refuses it; accepted on the old build |
 
 ### P — performance, D — documentation, V — to confirm
 
 | ID | Status |
 |---|---|
 | P1–P5 | later: performance; benchmarks, not library tests |
-| D1–D10 | later: documentation |
+| D1 | not taken: excluded by the user (2026-09-14) -- hard rule 5, on backward file compatibility, stays as written |
+| D2 | **fixed** (batch 1) — one ladder, `factorize`, under `solve_spd` and `SpdFactor::of`; the solve is bit-identical, and a guard test holds the two to the same rung on a well-posed, a singular and an indefinite matrix |
+| D3, D4, D5 | **fixed** (batch 1) — `Kalman::coefficients`, `robust`'s module doc and `sgd`'s `scale_features` now say what the review says they left out. D4's `HuberRegressor` comparison is sklearn's, which the project does not take |
+| D6 | **fixed** (batch 1), and **short of the whole story** (raised). The window's note has been right since C17, as the review says; the test's "about eight significant figures" was never the window. Its oracle, `direct_window_fit`, put the ridge on the intercept, which the model leaves unpenalized, and at `ridge = 1e-8` that alone is the `3.8e-8` the `1e-6` tolerance hid. With the intercept free the two agree to `1.2e-14` over 284 comparisons, and the test holds `1e-12` |
+| D7–D10 | later: documentation |
 | V5, V7, V11, V23, V24, V25 | later: to confirm; none is a fix yet |
 | V22 | **closed** with task 81: `MIN_SCHEMA_VERSION` 8 refuses every layout older than `Run::len`, and with `RunWire` gone the field no longer defaults when absent, so a file without it is refused rather than loaded at `len = 0` |
 
@@ -281,6 +298,16 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   list; all three are kept. Task 79 is ticked there: it is this review's
   C5, fixed with C21 in `cb6c57c`.
 
+- 2026-09-15 — **batch 1**. Seventeen tests were written or extended
+  before any fix. Thirteen failed on the old build, each for the reason
+  its finding gives. Four passed: S10's, whose premise is false; the
+  review's own test for S13's second bullet, whose example the jitter
+  ladder rescues; S6's, which pins the true comment, as it should; and the
+  contract's new zero-weight check, a guard under which no model's
+  prediction went NaN. D2's guard test came with the refactor and holds on
+  either build. The user's decisions on S1, S2, S3, S23, S27, S29/S30, S31
+  and C24 are in `docs/PLAN.md` task 80, for batch 4.
+
 ## New observations (found while fixing; not in the review)
 
 - **N1** (while fixing C1) -- **fixed** in the library batch. `ewridge`
@@ -326,6 +353,22 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   the export carries, `E[z·y] − m·ȳ`, which loses `L²·ε` at a level `L`.
   Exporting the centred cross-moments would close it; kept for later, as a
   change to the export.
+- **N6** (while testing S13) -- **fixed** in batch 1. `ewridge`, `robust`
+  and `kalman` each keep `σ²`, the EW mean of the squared out-of-sample
+  errors, with its weight `wsig`. A row with a target and no prediction --
+  the rows after a clock gap has taken `n_eff` under `min_periods` --
+  rightly added nothing, and did not age `wsig` either, so `σ²` forgot less
+  across such rows than the clock says; in `robust` a zero-weight row did
+  the same (S13's first bullet). Every row ages `wsig` now, and a row adds
+  `w·r²` when it has a target, a weight and a prediction. The test is the
+  definition: an EW mean kept by hand beside each model over a stream with
+  nulls, zero-weight rows and such a gap, at `1e-12`. Each failed on the old
+  build at the first predicted row after the gap (`robust` sooner, at the
+  row after its first zero-weight row). Bit-identical wherever the old code
+  updated; `σ²` sets `kalman`'s noise and `robust`'s cuts, so their
+  predictions after such rows move. The stream's own `sigma` (`resid_var`)
+  was checked and is not affected: a row it does not learn is not stepped
+  by the model either, and its clock delta is carried to the next.
 - **N5** (while building task 81) -- **fixed**.
   `po.gram.solve(standardize=True)` and `po.gram.lasso_path` without an
   intercept scaled the centred co-moments against the raw cross-moments:

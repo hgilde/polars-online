@@ -25,6 +25,13 @@
 //! as 1 until one exists (no rows yet, or every residual so far exactly zero),
 //! so the first rows are weighted in the residual's own units.
 //!
+//! **`s` is not itself robust.** It is the plain EW mean of squared
+//! residuals, in which the rows Huber down-weights count at full weight, so
+//! an outlier inflates the scale the next rows' cuts are drawn in, and
+//! `huber_delta` is in units of that std, not of a robust one (a MAD, or a
+//! Huber-weighted variance). A burst of outliers widens the cut for the rows
+//! after it until the EW mean forgets them (review 2026-09-12, D4).
+//!
 //! Because the weights are per target, the `S` accumulator is per target here
 //! (one [`EwCov`] each) — unlike [`crate::EwRidge`], which shares one.
 
@@ -190,9 +197,16 @@ impl Robust {
             let b: Vec<f64> = self.r[j].clone();
             if self.cfg.standardize {
                 // Same scheme as EwRidge::solve_standardized, single target.
-                if let Some(sol) = self.solve_standardized(&b, k, j) {
-                    beta[j] = sol;
-                    continue;
+                // `None` is a solve that failed at every jitter: counted, as
+                // the plain one is below, and the previous fit kept. It
+                // returned through `?` before the count (review 2026-09-12,
+                // S13).
+                match self.solve_standardized(&b, k, j) {
+                    Some(sol) => {
+                        beta[j] = sol;
+                        continue;
+                    }
+                    None => self.solve_failures += 1,
                 }
             } else {
                 for i in off..k {
@@ -218,6 +232,7 @@ impl Robust {
 
     /// Centered statistics are read from this target's accumulator directly
     /// rather than re-derived from raw moments (see `EwCov`'s module docs).
+    /// `None` when every jitter failed; the caller counts it.
     fn solve_standardized(&mut self, b: &[f64], k: usize, j: usize) -> Option<Vec<f64>> {
         let off = usize::from(self.cfg.add_intercept);
         if off == 0 {
@@ -317,10 +332,16 @@ impl OnlineModel for Robust {
 
         // ---- update, reweighting by the PRIOR residual ----
         for j in 0..m {
+            // `σ²`'s weight ages on every row, as `wj` does, and a row adds to
+            // it only with a target, a weight and a prediction to measure the
+            // residual from. A zero or NaN weight skipped the ageing, and so
+            // did a row with no prediction (`min_periods` unmet after a clock
+            // gap), so `σ²` -- the scale of every cut -- forgot less across
+            // either than across a null (review 2026-09-12, S13; N6).
+            self.wsig[j] *= lam;
             let Some(yj) = y[j] else {
                 self.cov[j].decay(lam);
                 self.wj[j] *= lam;
-                self.wsig[j] *= lam;
                 continue;
             };
             let sigma = self.sig2[j].max(0.0).sqrt();
@@ -347,8 +368,8 @@ impl OnlineModel for Robust {
             self.wj[j] = wj_new;
             if pred[j].is_finite() {
                 let resid = yj - pred[j];
-                let ws_new = lam * self.wsig[j] + weight;
-                let s2 = (lam * self.wsig[j] * self.sig2[j] + weight * resid * resid) / ws_new;
+                let ws_new = self.wsig[j] + weight;
+                let s2 = (self.wsig[j] * self.sig2[j] + weight * resid * resid) / ws_new;
                 // Skipped when it would not be finite: an `inf` scale makes
                 // the Huber cut infinite (plain least squares for good) and
                 // the quantile weight `inf / inf` (docs/IMPROVEMENTS.md C2).
@@ -562,6 +583,161 @@ mod tests {
         // Either the jitter rescued it (counted) or the solve failed (counted);
         // silently succeeding on a singular system is the outcome to rule out.
         assert!(m.solve_failures > 0, "a singular solve must be recorded");
+    }
+
+    /// `a_solve_failure_is_counted_and_the_previous_fit_is_kept` on the
+    /// standardized path, as the review wrote it (2026-09-12, S13). The two
+    /// collinear features give a singular correlation matrix, which the
+    /// jitter ladder rescues and counts; a solve that fails outright is the
+    /// next test's.
+    #[test]
+    fn a_standardized_solve_failure_is_counted_and_the_previous_fit_is_kept() {
+        let mut c = cfg(2, 1, RobustLoss::Huber { delta: 1.5 });
+        c.ridge = 0.0;
+        c.standardize = true;
+        c.min_periods = 2.0;
+        let mut m = Robust::new(c).unwrap();
+        let mut s = 101u64;
+        for i in 0..40 {
+            let a = lcg(&mut s);
+            m.step(
+                &[a, a],
+                &[Some(2.0 * a + 1.0)],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let beta = m.coefficients().unwrap()[0].clone();
+        assert!(
+            beta.iter().all(|v| v.is_finite()),
+            "never NaN, even singular: {beta:?}"
+        );
+        assert!(m.solve_failures > 0, "a singular solve must be recorded");
+    }
+
+    /// A standardized solve that fails at every jitter keeps the previous
+    /// fit, as the plain one does, and is counted as the plain one is: it
+    /// returned through `?` before the count (review 2026-09-12, S13). No
+    /// stream of rows gives a correlation matrix that every jitter fails on,
+    /// so the accumulator is handed one: a correlation of 2.
+    #[test]
+    fn a_standardized_solve_that_fails_outright_is_counted() {
+        let mut c = cfg(2, 1, RobustLoss::Huber { delta: 1.5 });
+        c.standardize = true;
+        let mut m = Robust::new(c).unwrap();
+        let mut s = 103u64;
+        for i in 0..40 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            m.step(
+                &x,
+                &[Some(x[0] - x[1])],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let beta = m.coefficients().unwrap()[0].clone();
+        let before = m.solve_failures;
+        let (w, q) = (m.cov[0].n_eff(), m.cov[0].q_sum());
+        m.cov[0].set_moments(
+            &[1.0, 0.0, 0.0],
+            &[0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 0.0, 2.0, 1.0],
+            w,
+            q,
+        );
+        m.solve();
+        assert_eq!(
+            m.solve_failures,
+            before + 1,
+            "every jitter failed: one failure"
+        );
+        assert_eq!(
+            m.coefficients().unwrap()[0],
+            beta,
+            "and the previous fit is kept"
+        );
+    }
+
+    /// `null_targets_decay_the_residual_variance_weight_without_adding_to_it`
+    /// (ewridge.rs) with the target present at weight zero: a row that
+    /// teaches nothing leaves `σ²` where it was and ages its weight, as a
+    /// null row does. The zero weight skipped the ageing, so `σ²` -- the
+    /// scale of every Huber cut -- forgot less across such a row than across
+    /// a null (review 2026-09-12, S13; S9 was the same in `kalman`).
+    #[test]
+    fn a_zero_weight_row_ages_the_residual_variance_as_a_null_does() {
+        let mut c = cfg(1, 1, RobustLoss::Huber { delta: 1.5 });
+        c.decay = Decay::Halflife(10.0);
+        c.min_periods = 2.0;
+        let mut m = Robust::new(c).unwrap();
+        let mut s = 53u64;
+        for i in 0..60 {
+            let x = [lcg(&mut s)];
+            let y = 2.0 * x[0] + 0.1 + 0.05 * lcg(&mut s);
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let (sig, w) = (m.sig2[0], m.wsig[0]);
+        assert!(sig > 0.0 && w > 0.0);
+        let lam = 0.5f64.powf(3.0 / 10.0);
+        m.step(&[0.5], &[Some(-500.0)], 3.0, 0.0);
+        assert_eq!(m.sig2[0], sig, "weight 0 must not move sigma2");
+        assert!(
+            (m.wsig[0] - w * lam).abs() < 1e-12,
+            "but its weight ages: {} vs {}",
+            m.wsig[0],
+            w * lam
+        );
+    }
+
+    /// `σ²` is the EW mean of the squared out-of-sample errors: every row
+    /// ages its weight, and a row with a target, a weight and a prediction
+    /// adds `w·r²` (the row weight, not the robust one). Held on a stream
+    /// with zero-weight rows (S13) and a clock gap that takes `n_eff` under
+    /// `min_periods`, whose next rows have a target and no prediction and
+    /// aged nothing either (N6).
+    #[test]
+    fn the_residual_variance_ages_on_every_row() {
+        let hl = 10.0;
+        let mut c = cfg(1, 1, RobustLoss::Huber { delta: 1.5 });
+        c.decay = Decay::Halflife(hl);
+        c.min_periods = 3.0;
+        let mut m = Robust::new(c).unwrap();
+        let (mut want, mut wsig, mut unpredicted) = (0.0f64, 0.0f64, 0);
+        let mut s = 61u64;
+        for i in 0..160 {
+            let x = [lcg(&mut s)];
+            let y = 2.0 * x[0] + 0.1 + 0.2 * lcg(&mut s);
+            let d = match i {
+                0 => 0.0,
+                80 => 200.0,
+                _ => 1.0,
+            };
+            let (y, w) = match i % 9 {
+                4 => (None, 1.0),
+                7 => (Some(y), 0.0),
+                _ => (Some(y), 1.0),
+            };
+            let p = m.step(&x, &[y], d, w).pred[0];
+            wsig *= 0.5f64.powf(d / hl);
+            match y {
+                Some(y) if w > 0.0 && p.is_finite() => {
+                    let r = y - p;
+                    let ws_new = wsig + w;
+                    want = (wsig * want + w * r * r) / ws_new;
+                    wsig = ws_new;
+                }
+                Some(_) if w > 0.0 && wsig > 0.0 => unpredicted += 1,
+                _ => {}
+            }
+            let got = m.sigma2()[0];
+            assert!(
+                (got - want).abs() <= 1e-12 * want,
+                "row {i}: sigma2 {got}, the EW mean of the squared errors {want}"
+            );
+        }
+        assert!(
+            unpredicted >= 2,
+            "the gap must leave rows with no prediction"
+        );
     }
 
     #[test]

@@ -1580,7 +1580,7 @@ mod tests {
             KMeans::restore(&other),
             Err(StateError::WrongModel {
                 expected: "kmeans",
-                found: "ew_cov"
+                found: "ew_cov_accumulator"
             })
         ));
     }

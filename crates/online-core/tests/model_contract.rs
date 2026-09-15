@@ -612,7 +612,7 @@ fn every_state_kind_is_distinct_and_named() {
         State::new(ModelState::EwCov(Box::new(EwCov::new(1))))
             .model
             .kind(),
-        "ew_cov"
+        "ew_cov_accumulator"
     );
     assert_eq!(
         KMeans::new(kmeans_cfg()).unwrap().state().model.kind(),
@@ -1576,11 +1576,8 @@ fn zero_weight_rows_only_advance_the_clock<M: OnlineModel>(
     binary: bool,
     kind: &'static str,
 ) {
-    let (mut with, mut without) = (build(), build());
-    let mut s = 20260906u64;
-    let mut carried = 0.0;
-    for i in 0..80 {
-        let x: Vec<f64> = (0..K).map(|_| lcg(&mut s) * 3.0).collect();
+    let row = |s: &mut u64, i: usize| {
+        let x: Vec<f64> = (0..K).map(|_| lcg(s) * 3.0).collect();
         let y: Vec<Option<f64>> = (0..targets)
             .map(|j| {
                 let lin = 0.5 * (j as f64 + 1.0) + x[0] - 0.5 * x[1];
@@ -1592,7 +1589,28 @@ fn zero_weight_rows_only_advance_the_clock<M: OnlineModel>(
             _ if i % 5 == 0 => 3.0,
             _ => 1.0,
         };
-        if i % 7 == 3 {
+        (x, y, d)
+    };
+    // Every seventh row has weight 0, and so does the first row with a
+    // prediction -- where a weight a model keeps beside `n_eff` can still be
+    // 0, and a zero-weight row forms `0/0` in any division left unguarded
+    // (review 2026-09-12, C7: `lasso`'s selection). That row is found on a
+    // probe of the same stream.
+    let zero = |i: usize| i % 7 == 3;
+    let first = {
+        let (mut probe, mut s) = (build(), 20260906u64);
+        (0..80).find(|&i| {
+            let (x, y, d) = row(&mut s, i);
+            let w = if zero(i) { 0.0 } else { 1.0 };
+            probe.step(&x, &y, d, w).pred.iter().any(|p| p.is_finite())
+        })
+    };
+    let (mut with, mut without) = (build(), build());
+    let mut s = 20260906u64;
+    let mut carried = 0.0;
+    for i in 0..80 {
+        let (x, y, d) = row(&mut s, i);
+        if zero(i) || first == Some(i) {
             with.step(&x, &y, d, 0.0);
             carried += d;
             continue;
@@ -1611,6 +1629,16 @@ fn zero_weight_rows_only_advance_the_clock<M: OnlineModel>(
              without it -- a zero-weight row must advance the clock and nothing else",
             a.n_eff,
             b.n_eff
+        );
+        // Nor may it leave a NaN behind: a prediction the stream without it
+        // makes, the stream with it makes too (hard rule 9).
+        let finite = |p: &[f64]| p.iter().map(|v| v.is_finite()).collect::<Vec<_>>();
+        assert!(
+            !compare || finite(&a.pred) == finite(&b.pred),
+            "{kind}: row {i}: predictions {:?} in the stream with a zero-weight row, {:?} \
+             in the one without it",
+            a.pred,
+            b.pred
         );
     }
 }

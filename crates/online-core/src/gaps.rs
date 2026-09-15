@@ -390,7 +390,8 @@ impl Grams {
         old.get(*old_of.get(j)?)
     }
 
-    /// Each Gram with everything at or before the snapshot `old` removed
+    /// Each Gram with everything before the row the snapshot `old` precedes
+    /// removed
     /// (`crate::truncated`; `f` the decay since it), and an empty one where
     /// nothing of it is left. A Gram made after the snapshot is truncated
     /// against its ancestor's there ([`Grams::ancestor`]).
@@ -448,9 +449,16 @@ impl Grams {
                 (Some(qf), Some(qs)) => Some(af * qf + as_ * qs),
                 _ => None,
             };
-            let mut blended = EwCov::new(k);
-            blended.set_block_rows(fast.block_rows());
+            // The decaying prior under `ridge_decay` is a pseudo-observation
+            // on the sum scale, `prior_scale · ridge · I`, so it mixes as the
+            // sum-scale weights do, by `1 − f` and `f`: at `f = 1` the Gram is
+            // the twin's, prior and all. Built from `EwCov::new`, the blend
+            // put the prior back at full strength on every session boundary
+            // (review 2026-09-12, C6).
+            let prior = (1.0 - f) * fast.prior_scale() + f * slow.prior_scale();
+            let mut blended = fast.clone();
             blended.set_moments(&mean, &c, w_new, q);
+            blended.set_prior_scale(prior);
             self.grams[g] = blended;
         }
         moved
@@ -557,8 +565,8 @@ impl Acc {
         }
     }
 
-    /// The accumulators with everything at or before the snapshot `old`
-    /// removed, `f` the decay since it: `None` when nothing has aged out and
+    /// The accumulators with everything before the row the snapshot `old`
+    /// precedes removed, `f` the decay since it: `None` when nothing has aged out and
     /// the live accumulators are the answer, and an empty view, all weights
     /// 0, when nothing is left inside the window -- a clock gap longer than
     /// it (review 2026-09-12, C2). A target with no row left keeps weight 0

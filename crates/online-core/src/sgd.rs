@@ -105,6 +105,17 @@ pub struct SgdCfg {
     /// row's own weight applies to what it teaches, not to where it sits
     /// among the rows seen, so a prediction never depends on the weight and
     /// `predict` gives the step's number exactly.
+    ///
+    /// The coefficients are read out with the moments as they stand now,
+    /// while each step was taken in the coordinates of the moments on its
+    /// own row: `coefficients()`, `predict` and a constraint's projection
+    /// read the betas through today's scaler, so a coefficient "per unit of
+    /// `x`" moves with the scaler as well as with the fit, as `kalman`'s
+    /// does. And one gap only `sgd` has: the step standardizes with the row
+    /// admitted at unit weight, and the scaler then learns the row at its
+    /// own weight, so for a weight other than 1 the coordinates the gradient
+    /// was taken in and the ones the projection and the coefficients use a
+    /// moment later differ by that weight (review 2026-09-12, D5).
     #[serde(default)]
     pub scale_features: bool,
     /// Cap on `|gradient|` before the step. **Finite by default** (`1e3` via the
@@ -225,6 +236,23 @@ impl TryFrom<SgdV3> for Sgd {
         let (cfg, scaler, beta, g2, w_sum) = (v.cfg, v.scaler, v.beta, v.g2, v.w_sum);
         let k = cfg.k_total();
         let m = cfg.n_targets;
+        // What the cfg asks for, the state carries, and nothing else: a
+        // scaler exactly when `scale_features` is on, and AdaGrad's sums, one
+        // per target, exactly under AdaGrad. A file that lost its scaler
+        // loaded as a model reading raw inputs with coefficients learned on
+        // standardized ones, and one that lost its sums panicked on the first
+        // step (review 2026-09-12, S16).
+        if cfg.scale_features != scaler.is_some() {
+            return Err("sgd: the state's scaler does not match its cfg's scale_features".into());
+        }
+        let sums = if matches!(cfg.schedule, LearningRate::AdaGrad) {
+            m
+        } else {
+            0
+        };
+        if g2.len() != sums {
+            return Err("sgd: the state's AdaGrad sums do not match its cfg's schedule".into());
+        }
         if scaler.as_ref().is_some_and(|sc| sc.k() != k)
             || beta.len() != m
             || beta.iter().any(|b| b.len() != k)
@@ -1330,5 +1358,41 @@ mod tests {
         v.as_object_mut().unwrap().remove("scaler");
         let back: Sgd = serde_json::from_value(v).unwrap();
         assert!(back.scaler.is_none());
+    }
+
+    /// A state whose cfg says `scale_features` carries its scaler, and one
+    /// on AdaGrad its sums, one per target -- and neither carries what its
+    /// cfg does not ask for. A file that lost the scaler loaded as a model
+    /// reading raw inputs with coefficients learned on standardized ones;
+    /// one that lost its sums panicked on its first AdaGrad step
+    /// (review 2026-09-12, S16).
+    #[test]
+    fn a_state_is_refused_when_its_scaler_or_sums_disagree_with_its_cfg() {
+        let json = |c: &SgdCfg| serde_json::to_value(Sgd::new(c.clone()).unwrap()).unwrap();
+        let loads = |v: &serde_json::Value| serde_json::from_value::<Sgd>(v.clone()).is_ok();
+        let mut plain = cfg(2, SgdLoss::Squared);
+        plain.decay = Decay::Halflife(50.0); // JSON has no `inf`
+
+        let mut scaled = plain.clone();
+        scaled.scale_features = true;
+        let with = json(&scaled);
+        assert!(loads(&with), "the control");
+        let mut lost = with.clone();
+        lost.as_object_mut().unwrap().remove("scaler");
+        assert!(!loads(&lost), "scale_features without its scaler");
+        let mut stray = json(&plain);
+        stray["scaler"] = with["scaler"].clone();
+        assert!(!loads(&stray), "a scaler the cfg does not ask for");
+
+        let mut ada = plain.clone();
+        ada.schedule = LearningRate::AdaGrad;
+        let with = json(&ada);
+        assert!(loads(&with), "the control");
+        let mut lost = with.clone();
+        lost["g2"] = serde_json::json!([]);
+        assert!(!loads(&lost), "AdaGrad without its sums");
+        let mut stray = json(&plain);
+        stray["g2"] = with["g2"].clone();
+        assert!(!loads(&stray), "sums a constant rate does not keep");
     }
 }

@@ -358,6 +358,15 @@ impl Kalman {
     }
 
     /// Coefficients in the ORIGINAL feature units, per target.
+    ///
+    /// Under `standardize` the filter's state lives in standardized
+    /// coordinates, and each row's correction was made in the coordinates of
+    /// the feature means and scales as they stood on that row. They are read
+    /// out here with today's means and scales, so they are the coefficients
+    /// `pred` uses -- the two read the same state the same way -- but a
+    /// coefficient "per unit of `x`" moves with the standardizer as well as
+    /// with the fit, most in the early rows, while the scales settle
+    /// (review 2026-09-12, D3).
     pub fn coefficients(&self) -> Vec<Vec<f64>> {
         if !self.cfg.standardize {
             return self.beta.clone();
@@ -601,14 +610,20 @@ impl OnlineModel for Kalman {
                     }
                 }
             }
-            // EW residual variance from the out-of-sample prediction. The
-            // update is skipped when it would not be finite: `sig2` feeds the
-            // process noise, and an `inf` there puts `inf` on the diagonal of
-            // `P` and a NaN in every later gain.
+            // EW residual variance from the out-of-sample prediction. Its
+            // weight ages on every row, this one included, and the row adds
+            // its squared residual when it has a prediction to measure one
+            // from: a row with no prediction -- `min_periods` unmet after a
+            // clock gap -- aged nothing, so `σ²` forgot less across it than
+            // across a null (N6). The update is skipped when it would not be
+            // finite: `sig2` feeds the process noise, and an `inf` there puts
+            // `inf` on the diagonal of `P` and a NaN in every later gain.
+            let aged = lam * self.wsig[j];
+            self.wsig[j] = aged;
             if pred[j].is_finite() {
                 let resid = yj - pred[j];
-                let ws_new = lam * self.wsig[j] + weight;
-                let s2 = (lam * self.wsig[j] * self.sig2[j] + weight * resid * resid) / ws_new;
+                let ws_new = aged + weight;
+                let s2 = (aged * self.sig2[j] + weight * resid * resid) / ws_new;
                 if s2.is_finite() {
                     self.sig2[j] = s2;
                     self.wsig[j] = ws_new;
@@ -1010,6 +1025,53 @@ mod tests {
             );
         }
         assert!(wsig > 30.0 && want > 0.0);
+    }
+
+    /// The same mean across rows with no prediction: after a clock gap
+    /// takes `n_eff` under `min_periods`, the next rows have a target and
+    /// no prediction. They add nothing, and age `σ²`'s weight as every row
+    /// does; they aged nothing, so `σ²` -- which sets `R` and `Q` -- forgot
+    /// less across them than the clock says (N6, found beside review
+    /// 2026-09-12 S13).
+    #[test]
+    fn the_residual_variance_ages_across_rows_with_no_prediction() {
+        let hl = 25.0;
+        let mut c = cfg(1, 1, vec![f64::INFINITY]);
+        c.decay = Decay::Halflife(hl);
+        c.min_periods = 3.0;
+        c.standardize = false;
+        c.obs_var = Some(0.5);
+        let mut m = Kalman::new(c).unwrap();
+        let (mut want, mut wsig, mut unpredicted) = (0.0f64, 0.0f64, 0);
+        let mut s = 83u64;
+        for i in 0..160 {
+            let x = [lcg(&mut s)];
+            let y = 2.0 * x[0] + 0.3 * lcg(&mut s);
+            let d = match i {
+                0 => 0.0,
+                80 => 400.0,
+                _ => 1.0,
+            };
+            let p = m.step(&x, &[Some(y)], d, 1.0).pred[0];
+            wsig *= 0.5f64.powf(d / hl);
+            if p.is_finite() {
+                let r = y - p;
+                let ws_new = wsig + 1.0;
+                want = (wsig * want + r * r) / ws_new;
+                wsig = ws_new;
+            } else if wsig > 0.0 {
+                unpredicted += 1;
+            }
+            let got = m.sigma2()[0];
+            assert!(
+                (got - want).abs() <= 1e-12 * want,
+                "row {i}: sigma2 {got}, the EW mean of the squared errors {want}"
+            );
+        }
+        assert!(
+            unpredicted >= 2,
+            "the gap must leave rows with no prediction"
+        );
     }
 
     /// With `standardize = false`, `q = 0` and a fixed `obs_var`, the filter is
