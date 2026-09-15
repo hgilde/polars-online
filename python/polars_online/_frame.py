@@ -195,7 +195,10 @@ def _source(
     schema = step(bank, pl.DataFrame(schema=in_schema)).schema
     needed = _spec_columns(bank.specs)
     closed_path = _closed_path(closed_groups, bank.specs)
-    closed_schema = bank.closed_groups()
+    # Peeked, not drained: `make_bank` can hand back the caller's own bank
+    # (`lf.online.predict(bank)`), whose queue building a plan must leave
+    # alone (review 2026-09-12, C4).
+    closed_schema = bank.closed_groups(drop=False).clear()
 
     def source(
         with_columns: list[str] | None,
@@ -570,7 +573,10 @@ class DataFrameOnlineNamespace:
         closed_path = _closed_path(closed_groups, bank.specs)
         out = bank.fit_predict(self._df)
         if closed_path is not None:
-            _write_closed(closed_path, [bank.closed_groups()], bank.closed_groups())
+            # One drain, and its empty frame the schema: two calls were right
+            # only by the order Python evaluates arguments in (C4).
+            drained = bank.closed_groups()
+            _write_closed(closed_path, [drained], drained.clear())
         if save_path is not None:
             bank.save(save_path)
         return out

@@ -492,3 +492,23 @@ class TestExpressionSpecCache:
             "the fast halflife must accumulate less weight; equality would "
             "mean the cache served one spec for both expressions"
         )
+
+
+def test_an_infinity_in_a_later_chunk_of_a_column_is_skipped():
+    """Every row passes ``usable`` before a model steps, however its column
+    is laid out in memory: here a column in two chunks, with an infinity in
+    the second. The review asked whether the extraction could hand a value
+    past that check (2026-09-12, V11); it cannot, and this pins it."""
+    x = np.arange(40, dtype=float) % 7
+    y = 2 * x + 1.0
+    x_tail = x[20:].copy()
+    x_tail[5] = np.inf
+    head = pl.DataFrame({"x0": x[:20], "y": y[:20]})
+    tail = pl.DataFrame({"x0": x_tail, "y": y[20:]})
+    df = pl.concat([head, tail], rechunk=False)
+    assert df["x0"].n_chunks() == 2
+    bank = po.ModelBank([po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=50.0)])
+    out = bank.fit_predict(df).unnest("m")
+    assert bank.summary()["rows_skipped"].to_list() == [1]
+    last = out["pred_y"][-1]
+    assert last is not None and np.isfinite(last), out.tail(3)

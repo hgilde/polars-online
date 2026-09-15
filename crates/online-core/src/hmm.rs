@@ -521,6 +521,14 @@ impl crate::OnlineModel for Hmm {
             extra: None,
         };
         let lam = self.cfg.decay.factor(d_clock);
+        // The warm-up rows age as `n_eff` does, so the states the replay seeds
+        // weigh what `n_eff` does; replayed at their raw weights, a state
+        // began heavier than its rows' age warranted and its ridge weaker
+        // (review 2026-09-12, V25). `kmeans` ages its buffer the same way. The
+        // buffer is empty once the states are seeded.
+        for (_, w) in &mut self.buffer {
+            *w *= lam;
+        }
         if weight <= 0.0 {
             // Advance the clock and learn nothing: the counts age with the
             // accumulators, `n_eff` decays with them -- hard rule 8, the
@@ -672,6 +680,30 @@ mod tests {
                 (vec![c + lcg(&mut s), c + lcg(&mut s)], g)
             })
             .collect()
+    }
+
+    /// The warm-up replay gives each state its rows' weights as the clock has
+    /// aged them, as `n_eff` has: at seeding, the states' weights sum to
+    /// `n_eff`. They took the raw weights, replayed at `lam = 1`, so a state
+    /// began heavier than its rows' age warranted, and its `precision_prior`
+    /// ridge weaker (review 2026-09-12, V25).
+    #[test]
+    fn the_seeded_states_weigh_what_n_eff_does() {
+        let mut c = cfg(2, 2);
+        c.decay = Decay::Halflife(10.0);
+        let mut m = Hmm::new(c).unwrap();
+        let mut s = 5u64;
+        for (i, (x, _)) in stream(20, 17, 5).iter().enumerate() {
+            let w = 0.5 + lcg(&mut s).abs();
+            m.step(x, &[], if i == 0 { 0.0 } else { 1.0 }, w);
+        }
+        assert!(m.seeded, "twenty rows seed the states");
+        let total: f64 = (0..2).map(|j| m.state_cov(j).n_eff()).sum();
+        assert!(
+            (total - m.n_eff()).abs() <= 1e-12 * m.n_eff(),
+            "{total} in the states, {} in n_eff",
+            m.n_eff()
+        );
     }
 
     /// With a uniform `Π` and `learn = false`, the filter is the classifier:

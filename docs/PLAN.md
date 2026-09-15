@@ -1827,6 +1827,21 @@ note, not a task.
       beside `q` is documented, not refused, since the docs already say `q`
       overrides it and specs use the pair.
 
+      **P4 and P5, the user's decisions, 2026-09-15.** P4: the window's
+      snapshot ring gets both bounds the user asked for, chosen by one new
+      parameter that names the action and the budget, `window_budget =
+      {"thin": MiB}` or `{"refuse": MiB}`. Past the budget the ring either
+      refuses at runtime, naming the size and `window_every`, or thins: every
+      other snapshot dropped and the spacing doubled, so the boundary grows
+      coarser and never keeps an older row. P5: `fit_predict_batches` takes a
+      `closed_groups` path and drains after each batch, and the docs say a
+      `ModelBank`'s queue is bounded only by draining it; the runner writes
+      its closed-groups file chunk by chunk.
+
+      **Batch 3a, 2026-09-15**: C4, C19, P1, P2, P3, S12, V7 and V25 fixed;
+      V5, V11 and V24 closed; V25 is not a defect for `kmeans`, which the
+      review presumed. Batch 3b is P4 and P5, as decided above.
+
 - [x] 79. **`label_delay` ignores a clock event on a skipped row — found
       2026-09-11, checking task 78's parity; in released 0.5.1.** A reset
       that lands on a row the spec skips (a null feature, an unusable

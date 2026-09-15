@@ -438,6 +438,41 @@ def test_predict_closes_nothing():
     assert bank.closed_groups().height == 0
 
 
+def test_building_a_predict_plan_leaves_the_queue_alone():
+    """``lf.online.predict(bank)`` read its closed-row schema by draining the
+    caller's bank, so the rows fitted and not yet read were gone before the
+    plan ran -- from a call documented to leave the bank as it was (review
+    2026-09-12, C4)."""
+    bank = po.ModelBank([cov_spec(group_close="monotone")])
+    df = frame(["a", "b", "c"])
+    bank.fit_predict(df)
+    before = bank.closed_groups(drop=False).height
+    assert before > 0
+    plan = df.lazy().online.predict(bank)
+    assert bank.closed_groups(drop=False).height == before, "building the plan"
+    plan.collect()
+    assert bank.closed_groups(drop=False).height == before, "running it"
+
+
+def test_predict_scores_a_new_session_as_the_row_after_the_close():
+    """Under ``group_close = "session"`` a new session's rows are a fresh
+    stream's first rows to ``fit_predict``, which restarts at the change.
+    ``predict`` scored them with the closed session's fit and ``n_eff``
+    (review 2026-09-12, C19)."""
+    sess = ["m"] * 20 + ["t"] * 10
+    df = frame(["a"], n_per=30, session=sess)
+    spec = cov_spec(group_close="session", session="s", min_periods=5.0)
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df.head(20))
+    scored = bank.predict(df.tail(10))["c"].struct.unnest()
+    assert scored["n_eff"].to_list() == [0.0] * 10
+    stats = [c for c in scored.columns if c != "n_eff"]
+    assert all(scored[c].null_count() == 10 for c in stats), scored
+    fresh = po.ModelBank([spec]).fit_predict(df)["c"].struct.unnest().tail(10)
+    assert fresh["n_eff"][0] == 0.0, "fit_predict restarts at the change"
+    assert scored.head(1).equals(fresh.head(1))
+
+
 # --- refusals ----------------------------------------------------------------
 
 

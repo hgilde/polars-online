@@ -2340,7 +2340,11 @@ impl Stream {
                 buffered: false,
                 w: 1.0,
             };
-            let class = if adv.reset {
+            // A new session's row under `group_close = "session"` is a fresh
+            // stream's first row, as `fit_predict` restarts the stream at the
+            // change; it was scored by the closed session's fit (review
+            // 2026-09-12, C19).
+            let class = if adv.reset || (adv.session_changed && spec.closes_on_session()) {
                 fresh
             } else if adv.session_changed {
                 blended
@@ -2555,10 +2559,8 @@ fn build_instances<'a>(
     // Pulled in lockstep: each iterator yields disjoint `&mut`s, so every
     // Instance owns its own piece of everything.
     models
-        .enumerate()
-        .map(|(mi, model)| Instance {
+        .map(|model| Instance {
             spec,
-            mi,
             model,
             decay: *decays.next().expect("one per instance"),
             residuals: !spec.model.predicts_no_target(),
@@ -2647,10 +2649,10 @@ pub struct Scratch {
 
 /// One model instance's state and its disjoint slice of the chunk output.
 struct Instance<'a> {
-    /// For rebuilding this instance on a reset -- the spec is the only
-    /// description of a pristine model, and `mi` picks this one out of it.
+    /// For rebuilding this instance on a reset: the spec is the only
+    /// description of a pristine model, and `decay` says which of its
+    /// instances this is.
     spec: &'a Spec,
-    mi: usize,
     model: ModelRef<'a>,
     decay: Decay,
     /// False for a model that predicts no target (`ModelKind::
@@ -2689,10 +2691,9 @@ impl Instance<'_> {
     /// does, applied to one instance rather than the whole stream.
     fn reset(&mut self) {
         let spec = self.spec;
-        *self.model.get_mut() = build_models(spec)
-            .expect("spec was already validated")
-            .swap_remove(self.mi)
-            .1;
+        // This instance alone, at its own decay: `build_models` built every
+        // instance of the grid to keep one (review 2026-09-12, P2).
+        *self.model.get_mut() = build_one(spec, self.decay).expect("spec was already validated");
         self.resid_var.iter_mut().for_each(|v| *v = 0.0);
         self.resid_w.iter_mut().for_each(|v| *v = 0.0);
         if let Some(d) = self.drift.as_deref_mut() {

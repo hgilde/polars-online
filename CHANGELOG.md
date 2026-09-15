@@ -63,6 +63,14 @@ carries breaking changes, and any change to the numbers a model returns.
   `min_periods` is `k + 1` either way, the value the builders' default
   gave, so only a spec with `add_intercept = False` reports its first row
   one row later.
+- **A window costs less per row.** `predict` and `n_eff` read the window's
+  weights alone, where they copied the whole O(k²) accumulator on every row.
+  At k = 200 a windowed `ewridge` row went from 34.6 to 17.2 µs, and an
+  `ew_cov` that emits no statistics from 28.1 to 9.8 µs. Every number is
+  the same to the bit.
+- **`Kalman::pred_var` takes the row it answers for** (Rust API). It read
+  the last row's regressor, which a save drops, so a loaded filter answered
+  with the observation noise alone.
 
 ### Fixed
 
@@ -118,6 +126,18 @@ carries breaking changes, and any change to the numbers a model returns.
 - **`po.spec.coef_index` refuses every kind with no coefficients** with a
   `ValueError` naming it. Four of them raised whatever polars raises on an
   empty series.
+- **Building `lf.online.predict(bank)` leaves the bank's closed groups
+  alone.** Reading the output's schema drained them, so the rows a caller
+  had fitted and not yet read were gone before the plan ran.
+- **`predict` scores a new session the way `fit_predict` does** under
+  `group_close = "session"`: as the first row of a fresh stream, null with
+  `n_eff` 0. It scored the new session with the closed one's fit.
+- **`hmm`'s warm-up ages as `n_eff` does.** The states were seeded with the
+  buffered rows' raw weights, so they started heavier than the rows' age
+  warranted, and their ridge weaker. **Numbers change** for an `hmm` with a
+  finite halflife.
+- **A drift reset builds one model instance**, the one it resets, instead
+  of every instance of the halflife grid.
 
 ## [0.5.1] — 2026-09-11
 

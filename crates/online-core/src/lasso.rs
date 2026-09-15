@@ -142,9 +142,9 @@ pub struct Lasso {
 type Standardized = (Vec<f64>, Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f64>>);
 
 /// The accumulators a windowed path is fitted from, truncated to the window.
+/// The selection reads its errors per target ([`Lasso::window_sel_err`]).
 struct LassoView {
     acc: AccView,
-    sel_err: Vec<Vec<f64>>,
 }
 
 /// The window's clock and the snapshots it subtracts.
@@ -249,7 +249,7 @@ impl Lasso {
     /// The accumulated weight over every row: under a `window`, the weight
     /// inside it.
     pub fn n_eff(&self) -> f64 {
-        self.view().map_or(self.acc.cross.w, |v| v.acc.cross.w)
+        self.window_weights().map_or(self.acc.cross.w, |(w, _)| w)
     }
 
     /// The accumulators the path is fitted from: the live ones, or -- with a
@@ -261,6 +261,19 @@ impl Lasso {
     /// state, and a target with no row inside it keeps weight 0 while the
     /// others stay windowed (review 2026-09-12, C2).
     fn view(&self) -> Option<LassoView> {
+        let win = self.win.as_ref()?;
+        let (u, old) = win.snaps.boundary()?;
+        let f = self.cfg.decay.factor(win.clock - u);
+        let acc = self.acc.window(&old.acc, f)?;
+        Some(LassoView { acc })
+    }
+
+    /// The selection errors [`Self::view`] carried, every target's, until the
+    /// selection read them one target at a time (review 2026-09-12, P1):
+    /// kept, as it was, to hold [`Self::window_sel_err`] to it. `None` where
+    /// the view is.
+    #[cfg(test)]
+    fn view_sel_err(&self) -> Option<Vec<Vec<f64>>> {
         let win = self.win.as_ref()?;
         let (u, old) = win.snaps.boundary()?;
         let f = self.cfg.decay.factor(win.clock - u);
@@ -279,7 +292,45 @@ impl Lasso {
                 }
             }
         }
-        Some(LassoView { acc, sel_err })
+        Some(sel_err)
+    }
+
+    /// The window's weights alone, as [`Self::view`] has them: what `predict`
+    /// and `n_eff` read on every row, without the view's O(k²) truncation
+    /// (review 2026-09-12, P1). `None` where the live accumulators are the
+    /// answer.
+    fn window_weights(&self) -> Option<(f64, Vec<f64>)> {
+        let win = self.win.as_ref()?;
+        let (u, old) = win.snaps.boundary()?;
+        let f = self.cfg.decay.factor(win.clock - u);
+        self.acc.window_weights(&old.acc, f)
+    }
+
+    /// Target `j`'s selection errors as [`Self::view`] has them: inside the
+    /// window where one has truncated the accumulators, the live ones where it
+    /// has not, or where it is empty. One target's, without the Gram
+    /// truncation: the selection loop built the whole view once per target
+    /// per row (review 2026-09-12, P1).
+    fn window_sel_err(&self, j: usize) -> Vec<f64> {
+        let live = || self.sel_err[j].clone();
+        let Some(win) = self.win.as_ref() else {
+            return live();
+        };
+        let Some((u, old)) = win.snaps.boundary() else {
+            return live();
+        };
+        let f = self.cfg.decay.factor(win.clock - u);
+        match self.acc.window_weights(&old.acc, f) {
+            Some((w, _)) if w > 0.0 => crate::truncated_mean(
+                self.sel_w[j],
+                &self.sel_err[j],
+                old.sel_w[j],
+                &old.sel_err[j],
+                f,
+            )
+            .map_or_else(live, |(_w, e)| e.into_iter().map(|v| v.max(0.0)).collect()),
+            _ => live(),
+        }
     }
 
     /// One Gram's statistics in correlation form, for the targets `readers`
@@ -546,10 +597,7 @@ impl OnlineModel for Lasso {
             // *inside* it. Selecting on the whole history while fitting on
             // the window would pick a lambda for rows the coefficients no
             // longer see.
-            let err = match self.view() {
-                Some(v) => v.sel_err[j].clone(),
-                None => self.sel_err[j].clone(),
-            };
+            let err = self.window_sel_err(j);
             let mut best = 0usize;
             for li in 1..np {
                 if err[li] < err[best] {
@@ -592,11 +640,12 @@ impl OnlineModel for Lasso {
         let (m, np) = (self.cfg.n_targets, self.cfg.n_lambdas());
         // Under a `window`, the `n_eff` reported and gated on is the weight
         // inside it, as `EwRidge::predict` reports it (review 2026-09-12, C9).
-        // One view for that and for the per-target test (C2).
-        let view = self.view();
-        let (n_eff, wj) = match view.as_ref() {
-            Some(v) => (v.acc.cross.w, &v.acc.wj),
-            None => (self.acc.cross.w, &self.acc.wj),
+        // The weights alone for that and for the per-target test (C2), not
+        // the O(k²) view, which is the solve's (review 2026-09-12, P1).
+        let weights = self.window_weights();
+        let (n_eff, wj) = match weights.as_ref() {
+            Some((w, wj)) => (*w, wj.as_slice()),
+            None => (self.acc.cross.w, self.acc.wj.as_slice()),
         };
         let mut pred = vec![f64::NAN; m * np];
         if let (true, Some(beta)) = (n_eff >= self.cfg.min_periods, &self.beta) {
@@ -948,6 +997,47 @@ mod tests {
             long.solve_failures, 0,
             "and enough sweeps converge them all"
         );
+    }
+
+    /// `predict`, `n_eff` and the selection read the window without the
+    /// O(k²) view (review 2026-09-12, P1), and must read what it had, to the
+    /// bit: the weights, and each target's selection errors as the view
+    /// carried them.
+    #[test]
+    fn the_window_weights_and_errors_are_the_views_to_the_bit() {
+        let mut c = cfg(2, 2, vec![0.1, 0.0]);
+        c.decay = Decay::Halflife(15.0);
+        c.window = Some(12.0);
+        c.window_every = Some(3);
+        c.min_periods = 3.0;
+        let mut m = Lasso::new(c).unwrap();
+        let mut s = 73u64;
+        for i in 0..120 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y0 = (i % 5 != 2).then_some(x[0] - x[1]);
+            let y1 = (i % 3 != 1).then_some(x[0] + 0.5);
+            let d = match i {
+                0 => 0.0,
+                60 => 40.0,
+                _ => 1.0,
+            };
+            m.step(&x, &[y0, y1], d, if i % 11 == 4 { 0.0 } else { 1.0 });
+            let view = m.view();
+            let live = (m.acc.cross.w, m.acc.wj.clone());
+            let cheap = m.window_weights().unwrap_or_else(|| live.clone());
+            let full = view
+                .as_ref()
+                .map_or_else(|| live.clone(), |v| (v.acc.cross.w, v.acc.wj.clone()));
+            assert_eq!(cheap.0.to_bits(), full.0.to_bits(), "row {i}");
+            assert_eq!(cheap.1, full.1, "row {i}");
+            let errs = m.view_sel_err();
+            for j in 0..2 {
+                let want = errs
+                    .as_ref()
+                    .map_or_else(|| m.sel_err[j].clone(), |e| e[j].clone());
+                assert_eq!(m.window_sel_err(j), want, "row {i} target {j}");
+            }
+        }
     }
 
     #[test]

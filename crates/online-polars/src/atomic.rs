@@ -14,6 +14,17 @@
 //! on Unix, `MoveFileExW` on Windows), and a rename either happens or does
 //! not, so a reader sees the old file or the new one and never a half of
 //! either.
+//!
+//! Three limits, said here rather than found (review 2026-09-12, S12). On
+//! Windows the rename fails while another process holds the destination
+//! open without `FILE_SHARE_DELETE` -- a Python `open(path, "rb")`, a
+//! viewer, an indexer -- and the save reports that error rather than
+//! waiting; Rust's own `File` shares delete, so two writers in this library
+//! never meet it. The rename is not flushed to its directory, so on POSIX a
+//! power loss just after it can leave the old file: "old or new" holds, and
+//! "new" is durable once the directory is. And a process killed between
+//! creating the temporary and renaming it leaves `.name.tmpPID-seq` beside
+//! the destination, which nothing removes.
 
 use std::fs::{self, File};
 use std::io::{self, Write};

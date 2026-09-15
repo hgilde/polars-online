@@ -1439,7 +1439,30 @@ impl EwCovModel {
     /// was windowed, so the bank's readers of the accessor (`Bank::coef`, a
     /// closed row) disagreed with the struct (review 2026-09-12, S15).
     pub fn n_eff(&self) -> f64 {
-        self.view().n_eff()
+        self.window_n_eff()
+    }
+
+    /// The window's weight alone, as [`Self::view`]'s accumulator has it --
+    /// one subtraction, with `crate::truncated`'s rule for an empty window --
+    /// without the O(k²) copy the view is (review 2026-09-12, P3).
+    fn window_n_eff(&self) -> f64 {
+        let live = self.cov.n_eff();
+        let Some(win) = self.win.as_ref() else {
+            return live;
+        };
+        let Some((u, old)) = win.snaps.boundary() else {
+            return live;
+        };
+        if old.w == 0.0 {
+            return live;
+        }
+        let f = self.cfg.decay.factor(win.clock - u);
+        let w = live - f * old.w;
+        if w <= crate::window::EMPTY_FRACTION * live || !w.is_finite() {
+            0.0
+        } else {
+            w
+        }
     }
 
     /// The accumulator the statistics are read from: under a `window`, the
@@ -1688,10 +1711,15 @@ impl crate::OnlineModel for EwCovModel {
         // from the truncated accumulator, so `min_periods` gates on the
         // weight *inside* the window, which stops growing once the window is
         // full rather than rising for the life of the stream.
-        let view = self.view();
-        let n_eff = view.n_eff();
-        let pred = if n_eff >= self.cfg.min_periods {
-            self.read(&view, x)
+        // The weight gates, and the view is built only when there is a
+        // statistic to read from it: an `ew_cov` that emits none (E43's
+        // accumulate-only use) built the O(k²) copy every row for its
+        // `n_eff` (review 2026-09-12, P3).
+        let n_eff = self.window_n_eff();
+        let pred = if self.cfg.n_outputs() == 0 {
+            Vec::new()
+        } else if n_eff >= self.cfg.min_periods {
+            self.read(&self.view(), x)
         } else {
             vec![f64::NAN; self.cfg.n_outputs()]
         };

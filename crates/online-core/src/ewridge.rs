@@ -466,7 +466,7 @@ impl EwRidge {
     /// 8): under a `window`, the weight *inside* it, which stops growing once
     /// the window fills. That is what `min_periods` then gates on.
     pub fn n_eff(&self) -> f64 {
-        self.view().map_or(self.acc.cross.w, |v| v.acc.cross.w)
+        self.window_weights().map_or(self.acc.cross.w, |(w, _)| w)
     }
 
     /// Per-target **uncentered** cross-moments `r[t]`, each `k_total` long:
@@ -616,6 +616,17 @@ impl EwRidge {
             vec![0.0; m]
         };
         Some(RidgeView { acc, sig2 })
+    }
+
+    /// The window's weights alone, over every row and per target, as
+    /// [`Self::view`] has them: what `predict` and `n_eff` read on every row,
+    /// without the view's O(k²) truncation (review 2026-09-12, P1). `None`
+    /// where the live accumulators are the answer.
+    fn window_weights(&self) -> Option<(f64, Vec<f64>)> {
+        let win = self.win.as_ref()?;
+        let (u, old) = win.snaps.boundary()?;
+        let f = self.cfg.decay.factor(win.clock - u);
+        self.acc.window_weights(&old.acc, f)
     }
 
     fn solve(&mut self) {
@@ -1007,13 +1018,14 @@ impl OnlineModel for EwRidge {
     fn predict(&self, x: &[f64], _d_clock: f64) -> Step {
         debug_assert_eq!(x.len(), self.cfg.n_features);
         let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
-        // One view for the gate and the per-target test: under a `window`
-        // both read the weight inside it, so a target with nothing in the
-        // window reports nothing (C2).
-        let view = self.view();
-        let (n_eff, wj) = match view.as_ref() {
-            Some(v) => (v.acc.cross.w, &v.acc.wj),
-            None => (self.acc.cross.w, &self.acc.wj),
+        // The gate and the per-target test read the window's weights, so a
+        // target with nothing in the window reports nothing (C2) -- the
+        // weights alone, not the O(k²) view, which is the solve's and was
+        // built here every row for these two numbers (review 2026-09-12, P1).
+        let weights = self.window_weights();
+        let (n_eff, wj) = match weights.as_ref() {
+            Some((w, wj)) => (*w, wj.as_slice()),
+            None => (self.acc.cross.w, self.acc.wj.as_slice()),
         };
         let mut pred = vec![f64::NAN; m * nc];
         if let (true, Some(beta)) = (n_eff >= self.cfg.min_periods, &self.beta) {
@@ -1949,6 +1961,39 @@ mod tests {
                     m.n_eff()
                 );
             }
+        }
+    }
+
+    /// `predict` and `n_eff` read the window's weights without the O(k²)
+    /// view (review 2026-09-12, P1), and must read the view's numbers, to
+    /// the bit, on every row: before the window has aged anything out, while
+    /// it does, across a gap that empties it, and per target with gaps.
+    #[test]
+    fn the_window_weights_are_the_views_to_the_bit() {
+        let mut c = cfg(2, 2);
+        c.decay = Decay::Halflife(15.0);
+        c.window = Some(12.0);
+        c.window_every = Some(3);
+        c.min_periods = 0.0;
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 71u64;
+        for i in 0..120 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y0 = (i % 5 != 2).then_some(x[0] - x[1]);
+            let y1 = (i % 3 != 1).then_some(x[0] + 0.5);
+            let d = match i {
+                0 => 0.0,
+                60 => 40.0,
+                _ => 1.0,
+            };
+            m.step(&x, &[y0, y1], d, if i % 11 == 4 { 0.0 } else { 1.0 });
+            let live = (m.acc.cross.w, m.acc.wj.clone());
+            let cheap = m.window_weights().unwrap_or_else(|| live.clone());
+            let full = m
+                .view()
+                .map_or_else(|| live.clone(), |v| (v.acc.cross.w, v.acc.wj.clone()));
+            assert_eq!(cheap.0.to_bits(), full.0.to_bits(), "row {i}");
+            assert_eq!(cheap.1, full.1, "row {i}");
         }
     }
 

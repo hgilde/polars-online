@@ -602,6 +602,33 @@ impl Acc {
         })
     }
 
+    /// The window's weights alone, as [`Self::window`] computes them -- over
+    /// every row, and per target, with the same rules for an empty one --
+    /// without truncating a Gram or a cross-moment: the two numbers a row's
+    /// `predict` and `n_eff` read, which built the O(k²) view every row
+    /// (review 2026-09-12, P1). `None` where `window` is.
+    pub(crate) fn window_weights(&self, old: &AccSnap, f: f64) -> Option<(f64, Vec<f64>)> {
+        if old.cross.w == 0.0 {
+            return None;
+        }
+        let m = self.wj.len();
+        let w = self.cross.w - f * old.cross.w;
+        if w <= EMPTY_FRACTION * self.cross.w || !w.is_finite() {
+            return Some((0.0, vec![0.0; m]));
+        }
+        let wj = (0..m)
+            .map(|j| {
+                let wj = self.wj[j] - f * old.wj[j];
+                if wj > EMPTY_FRACTION * self.wj[j] && wj.is_finite() {
+                    wj
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        Some((w, wj))
+    }
+
     /// Mix toward a twin's accumulators, `(1 − f)` of this side's weight to
     /// `f` of the twin's, each weighted mean by its own weights: the Grams
     /// by theirs ([`Grams::blend`]), each target's moments by its own, and

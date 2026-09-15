@@ -918,6 +918,34 @@ mod tests {
         out
     }
 
+    /// The review (2026-09-12, V25) asked whether `kmeans` replays its warm-up
+    /// as `hmm` did, at `lam = 1` with each row's raw weight. It does not: it
+    /// ages the buffered weights on every row, so the centres start out
+    /// weighing what `n_eff` does. Written as the review's test, and it
+    /// passed on the build the review read.
+    #[test]
+    fn the_seeded_centres_weigh_what_n_eff_does() {
+        let mut c = cfg(3);
+        c.decay = Decay::Halflife(10.0);
+        c.warm_rows = 12;
+        let mut m = KMeans::new(c).unwrap();
+        let mut s = 9u64;
+        for (i, row) in blobs(6, 3).iter().enumerate() {
+            let w = 0.5 + lcg(&mut s).abs();
+            m.step(row, &[], if i == 0 { 0.0 } else { 1.0 }, w);
+            if m.seeded() {
+                break;
+            }
+        }
+        assert!(m.seeded(), "twelve rows seed three centres");
+        let total: f64 = m.clusters.iter().map(|c| c.n).sum();
+        assert!(
+            (total - m.n_eff()).abs() <= 1e-12 * m.n_eff(),
+            "{total} in the centres, {} in n_eff",
+            m.n_eff()
+        );
+    }
+
     /// The recursion written out longhand for `first` seeding, per-row
     /// checkpoints and no split–merge, on an irregular clock with weights,
     /// so the test cannot share a mistake with the implementation: seeds are
