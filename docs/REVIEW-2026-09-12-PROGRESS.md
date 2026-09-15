@@ -109,10 +109,12 @@ two agree to `3e-9`); and C22's two `holt` tests do not turn over -- with
 a clock since the last observation the level does stand still across a
 null, and what moves is the next row's forecast.
 
-**Nothing is kept for later** (V22 closed with task 81; batch 1 below
-closed fourteen, batch 2 thirteen, batch 3a eleven, batch 3b two, batch 4a
-four, batch 4b four, batch 4c two, batch 4d one, batch 4e one). D1 is
-excluded by the user.
+**Every finding is fixed or closed** (V22 closed with task 81; batch 1
+below closed fourteen, batch 2 thirteen, batch 3a eleven, batch 3b two,
+batch 4a four, batch 4b four, batch 4c two, batch 4d one, batch 4e one),
+and batch 5 wrote the second opinions the review listed that nothing had
+written. One new observation from it, N9, is raised and waits on the
+user's decision (`docs/PLAN.md` task 82). D1 is excluded by the user.
 The user's own
 design work (tasks 78 and 79), parked on `design/task-78` while the round
 ran, is merged into `main`.
@@ -485,6 +487,29 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   of a stream's instances, so nothing changes but the failure a mismatch
   would give. Every finding of the review is fixed but D1, which the user
   excluded.
+- 2026-09-15 — **batch 5**: the second opinions the review listed that
+  nothing had written, on the user's go-ahead. Each ran on the current
+  build; no code changes. **T-S18**, `pa` against river's `PARegressor`:
+  exact, `2e-15` on the predictions and `9e-16` on the coefficients over
+  500 rows in all three modes without an intercept -- once river is given
+  the loss its docstring names. river 0.26.1's `EpsilonInsensitiveHinge`,
+  a regression loss, opens with `y_true = y_true * 2 - 1`, a
+  classification line, so it scores a target of 2 as 3 (raised; the test
+  keeps river's own loss if a release fixes it). With an intercept the
+  step lands on the tube's edge here and overshoots by `ℓ/‖x‖²` in river,
+  as the review said; the test pins both. **T-S9**, `ew_cov` against
+  pandas' `ewm`: `mean`, `var`, `cov` and `corr` one row behind, since a
+  row's statistics are read before it, to rounding at offset 0; at `1e8`
+  both sides are within `6e-8` of an exact reference on the mean and
+  `2e-8` on the rest, ours as close as pandas or closer. The check is
+  absolute there: a relative one read `3e-4` wherever a covariance of two
+  independent columns crossed 0. The mean on an irregular clock is
+  pandas' with `times=` to `8e-12` (pandas rounds times to nanoseconds),
+  and the Gram's target moments and `marginal`'s `corr` are pandas' to a
+  few units in the last place. **T-S4**, the quantile half: `quantile`
+  does not settle on `statsmodels`' `QuantReg` -- N9, raised and not
+  fixed, with no test in the suite until the user decides.
+  `sgd(loss="quantile")` does, and is tested.
 
 ## New observations (found while fixing; not in the review)
 
@@ -558,6 +583,30 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   has mean zero. Both read raw moments there now. The tests compare with
   the models, a feature moved off zero (`test_gram_module.py`); the models'
   fit through the origin is held to `numpy` already (C8).
+- **N9** (while writing T-S4) -- **raised**, waits on the user's decision
+  (`docs/PLAN.md` task 82). `quantile` fits by IRLS on each row's *prior*
+  residual, each row weighed `2·side·s/max(|r|, quantile_eps·s)` and
+  frozen as it arrives. The review expected it to converge at `tau = 0.5`
+  and `halflife = inf` to `statsmodels`' `QuantReg` within the floor.
+  Measured with a skewed noise (`exponential(1)`, so the median's fit and
+  the mean's part by 0.3 in the intercept), it does not: the intercept is
+  0.157, 0.164 and 0.110 off at 5 000, 20 000 and 100 000 rows at the
+  median, and 0.93, 0.48 and 0.27 at the 0.9 quantile, where `QuantReg`'s
+  own standard error at 100 000 rows is about 0.003. With a symmetric noise
+  (Laplace) the median settles by 100 000 rows (0.03) and the 0.9
+  quantile does not (0.47). The floor moves it: at `quantile_eps` 0.1,
+  0.01, `1e-3` (the default) and `1e-4` the median's gap at 20 000 rows is
+  0.035, 0.100, 0.164 and 0.178. The reading: a row whose prior residual
+  happened to be near 0 keeps a weight up to `1/quantile_eps` times a
+  typical row's for ever, and pulls the fit toward the fit it was scored
+  by; `huber`'s weights are at most 1, and it is held to numpy (C11,
+  S27). `sgd(loss="quantile", schedule="inv_scaling")` does settle on
+  `QuantReg`, within 0.022 and 0.027 at 100 000 rows, and a test says so.
+  Options: document `quantile` as an approximation and point to `sgd`'s
+  quantile loss; raise the default floor (at 0.1 the median's gap at
+  20 000 rows is 0.035; what else it moves is unmeasured); or refit the
+  weights against the current fit, which a stream can do only over a
+  window of rows.
 - **N7** (while fixing S27) -- **fixed** in batch 4c. `sgd`'s
   `huber_delta` had no check in the spec, and the core's `delta <= 0.0`
   passes NaN, so a TOML `huber_delta = nan` built, and the first row with a
@@ -579,3 +628,9 @@ Nothing waits on a library now. `statsmodels`, `filterpy` and
 `bayesian-changepoint-detection` joined the `dev` group on 2026-09-13, and
 `pandas` may be used in tests (the user, the same day). What each finding
 still waits on is in the tables.
+
+`river` 0.26.1's `EpsilonInsensitiveHinge`, the loss its `PARegressor`
+uses, opens with `y_true = y_true * 2 - 1`, a classification line, so it
+scores a regression target of 2 as 3. T-S18 gives river the loss its
+docstring names (batch 5). Not reported upstream: that is the user's
+call.

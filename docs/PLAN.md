@@ -1667,6 +1667,16 @@ note, not a task.
       `hit_rate` (`test_diagnostics.py`'s E22 test among them) is regression
       and passes unchanged, since none of them named `binary=True`.
 
+- [ ] 82. **N9: `quantile` does not settle on the quantile regression --
+      found 2026-09-15, writing the code review's T-S4; waits on the user's
+      decision.** IRLS on each row's prior residual, with its weights frozen
+      as the rows arrive, keeps the fit off `statsmodels`' `QuantReg` at
+      every length measured: 0.11 in the intercept at the median and 0.27 at
+      the 0.9 quantile after 100 000 rows of a skewed noise, where
+      `QuantReg`'s standard error is about 0.003 and `sgd(loss="quantile")`
+      comes within 0.03. The measurements and the options are in
+      `docs/REVIEW-2026-09-12-PROGRESS.md`, N9.
+
 - [x] 81. **`target_gaps`: which rows a target's fit is read from -- the code
       review's N3, decided 2026-09-14.** With a target null on some rows,
       `ewridge` and `lasso` read the Gram over every row and the target's
@@ -1885,6 +1895,13 @@ note, not a task.
       `po.gram.solve`, `lasso_path` and `coef_stats` read them. With it
       every finding of the review is fixed but D1, which the user excluded;
       what was raised is in the progress file.
+
+      **Batch 5, 2026-09-15**: the review's second opinions that nothing had
+      written. T-S18: `pa` is river's `PARegressor` to `1e-15`, once river
+      is given the loss it documents (river 0.26.1's scores a target of 2
+      as 3). T-S9: `ew_cov`, the target moments and `marginal`'s pair are
+      pandas' `ewm`, absolute at `1e8`. T-S4's quantile half, which
+      `quantile` does not meet: N9, task 82; `sgd`'s quantile loss does.
 
 - [x] 79. **`label_delay` ignores a clock event on a skipped row — found
       2026-09-11, checking task 78's parity; in released 0.5.1.** A reset
