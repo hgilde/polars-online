@@ -206,9 +206,17 @@ pub use window::{Footprint, Moments, Snapshots, WindowBudget, truncated, truncat
 ///   centred, as `ew_ridge` does since 7 (the review's N2). A closed row's
 ///   Gram names its targets and carries their column means. No loader for
 ///   7: see [`MIN_SCHEMA_VERSION`].
-pub const SCHEMA_VERSION: u32 = 8;
+/// - 9: `holt` keeps the weight its level and its trend have gathered per
+///   target, which its weighted means need (the code review of 2026-09-12,
+///   S29/S30), and `ftrl` the discounted sum of its proximal steps (C24). No
+///   loader for 8: see [`MIN_SCHEMA_VERSION`].
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// Oldest state layout this build still loads.
+///
+/// **9 since 2026-09-15**, where it had been 8, on the same rule as the entry
+/// below: `holt`'s weights and `ftrl`'s proximal sum cannot be recovered
+/// from a schema-8 state, and pre-1.0 no loader is written for one.
 ///
 /// **8 since 2026-09-14**, where it had been 6. The user, on `target_gaps`
 /// (docs/PLAN.md task 81): "Do not worry about state saved before the next
@@ -232,4 +240,4 @@ pub const SCHEMA_VERSION: u32 = 8;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 8;
+pub const MIN_SCHEMA_VERSION: u32 = 9;

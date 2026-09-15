@@ -109,12 +109,13 @@ two agree to `3e-9`); and C22's two `holt` tests do not turn over -- with
 a clock since the last observation the level does stand still across a
 null, and what moves is the next row's forecast.
 
-**Kept for later: 12 items** (V22 closed with task 81; batch 1 below
-closed fourteen, batch 2 thirteen, batch 3a eleven, batch 3b two), each
-with its reason in the tables below -- a decision taken by the user on
-2026-09-15 and recorded in `docs/PLAN.md` task 80 (S1, S2, S3, S23, S27,
-S29, S30, S31 and C24 for batch 4), documentation (D9, D10), and one new
-observation, N4, which task 81 did half of. D1 is excluded by the user.
+**Kept for later: 8 items** (V22 closed with task 81; batch 1 below
+closed fourteen, batch 2 thirteen, batch 3a eleven, batch 3b two, batch 4a
+four), each with its reason in the tables below -- a decision taken by the
+user on 2026-09-15 and recorded in `docs/PLAN.md` task 80 (S1, S2, S3, S23
+and S27, for batches 4b and 4c), documentation (D9 and D10, begun in 4a),
+and one new observation, N4, which task 81 did half of. D1 is excluded by
+the user.
 The user's own
 design work (tasks 78 and 79), parked on `design/task-78` while the round
 ran, is merged into `main`.
@@ -164,7 +165,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | C21 | under `label_delay`, residual diagnostics fold the replay-time residual | `river.evaluate.progressive_val_score(delay=...)` | **fixed** — the replay folds the prediction the row was *scored* with: each instance keeps a queue of score-time predictions in step with the waiting rows (pushed as a buffered row is scored, taken back at its replay, dropped with them on a reset), saved with the stream and skipped when empty. **A decision for the user:** that field rides on schema 6 without a bump, as task 38's rode on 3 -- no file without a delay moves, the frozen schema-6 fixture re-saves unchanged, and an older build reading a new file just folds as it always did; `lib.rs` records it. Library, exact: river's `iter_progressive_val_score(delay=10)` on a running-mean regressor gives every prediction the frame carries (`1e-12`), and `sigma[t]²` is the mean of the emitted residuals over the rows matured by row `t` (`1e-9`; 0.305 against 0.389 on the old build). A save and reload mid-delay continues identically. The two `embargo` comparisons in `test_label_delay.py` became one: the doubled stream matches on `pred`, `resid` and `n_eff` to the bit and parts, by design, on every residual diagnostic (V21); E47's row says which residual is folded |
 | C22 | `holt` does not advance the level across a null or zero-weight row | `statsmodels` `ExponentialSmoothing` | **fixed** — each target keeps its clock since its last observation: a null or zero-weight row adds its delta, and the next observed row extrapolates, and forms both rates, over the whole gap, so the row is transparent. Library, exact: `statsmodels`' `Holt` reproduces our recursion to `1e-12` on a stream with no gaps (T-S14, the control that pins the mapping), and its state-space `ExponentialSmoothing` with a `NaN` in the series agrees with ours to `1e-9` on every row up to the one after the gap, which forecasts `l + 2b` (T-S17; the trend gain there is `α·β`, as the review said). Through the bank, a null or zero-weight row every third row gives what the stream gives with those rows removed, to `1e-12`. The gap and transparency tests failed on the old build; the control passed. `golden.rs` and `test_golden_pipeline.py` are re-frozen for `holt`: both streams have null targets, and only rows after one moved |
 | C23 | `bocpd`'s `Run` forms every scatter by subtraction | `bayesian_changepoint_detection` | **fixed** — each run keeps a weighted Welford mean and centred scatter, and `Ψₙ = Ψ₀ + S + (κ₀n/κₙ)(x̄ − μ₀)(x̄ − μ₀)ᵀ` subtracts nothing. Library, exact: the package's run-length posterior gives our `p_change`, `run_mode` and `run_mean` at offsets 0, `1e6` and `1e8`, the prior centred with the data -- `p_change` to `3.5e-15`, `5e-11` and `3e-9`, where the old build failed at `1e6` and `1e8`. Rust: Algorithm 1 longhand at `1e8` with a two-pass oracle (the old build missed it by `0.011`), and `gaussian` at `d = 3` gives at `1e8` what it gives at the origin, with no solve failure. A schema-6 run converts as it is read (`RunWire`) |
-| C24 | `ftrl`'s halflife shrinks the coefficients | none exists (river only at `inf`, the control) | later: no library oracle, and a design question |
+| C24 | `ftrl`'s halflife shrinks the coefficients | none exists (river only at `inf`, the control) | **fixed** (batch 4a), on the user's decision (river plus a repaired decay), and **short of the review's numbers** (raised). Under a halflife the proximal term is a decayed sum of its own; without one the weight is river's closed form, computed as river computes it, so T-R1 is unchanged and a Rust test holds it bit for bit. A constant 5 at `halflife = 100` settles at 4.65 where it settled at 2.25 -- the review asked for 5.0 ± 1e-3 -- because the penalties stay constants on the sums' scale, a mean-scale ridge of `(1 − λ)(β/α + l2)`. A gap still scales the coefficients by `λ^t(d + c)/(λ^t·d + c)`: 0.75 over 100 clock units where it was 0.70 (the review asked for 1). A logistic base rate of 0.9 at `halflife = 1000` reads 0.873 where it read 0.816 (the review asked for 0.90 ± 0.01). All three need the penalties scaled by the weight, which is not river's at `inf`. The Rust tests pin the longhand and the stated factor; both failed on the old build. T-A4's reference carries the sum, and gained the squared loss (D10) |
 
 ### S — two places that disagree
 
@@ -198,9 +199,9 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | S26 | `coef_index` refusals by name vs `IndexError` | — | **fixed** (batch 2) — `coef_index` refuses every kind with no coefficients, naming it; `marginal`, `rcov`, `corrchange` and `bocpd` raised an `IndexError` on the old build. The docstrings list the six |
 | S27 | the layers' lists of what may be infinite disagree | — | later: needs a per-parameter decision |
 | S28 | residual diagnostics disagree on a zero-weight row | `river.drift.PageHinkley`, `numpy.quantile` | **fixed** — a zero-weight row's residual stays out of `resid_quantiles`, the autocorrelation, the drift detector and `ew_cov`'s `mahal_q`, as it always did of `sigma`. Library, exact: river's `PageHinkley(alpha=1, mode="up")` reproduces ours flag for flag (checked on its own first, at three settings), and fed the bank's own `\|resid\|/sigma` series without the zero-weight row it reproduces the bank's drift column. No library needed for the rest: a zero-weight row's target, jumped a hundredfold, now changes no field on any later row, under `drift_action` `"flag"` and `"reset"`. On the old build all three failed (a quantile moved; under `"reset"` the row restarted the model; the drift column parted from river's at the row). The full gate then failed `tests/test_label_delay.py`'s `test_the_weight_free_diagnostics_are_where_the_two_differ`, which pinned S28 itself -- it asserted the native path and `embargo`'s doubled stream disagree on these three, attributing the gap to the oracle's zero-weight rows (the review's V21 notes exactly this). It now asserts they agree |
-| S29 | `holt` reads the row weight as a gate | `pandas` `ewm` | later: needs a decision. `pandas` may be used in tests now, but the review's fix is a mean-form level, `l' = (lam·W·p + w·y)/(lam·W + w)`, in place of the textbook Holt recursion the model runs -- which `statsmodels`' `Holt` now pins exactly (T-S14). Which of the two `holt` is, is the user's call |
-| S30 | `holt` at an infinite level halflife | `statsmodels` `Holt` | later: needs the same decision as S29. At an infinite halflife the textbook rate is 0 and the level freezes at the first row; the mean form goes to the cumulative mean. `lam = 1` refused in `level_halflife`'s name is a message to reword with it |
-| S31 | `ftrl` `strict_binary`: documented error, silent skip | — | later: needs a decision |
+| S29 | `holt` reads the row weight as a gate | `pandas` `ewm` | **fixed** (batch 4a), on the user's decision: level and trend are weighted means, `(λ·W·old + w·new)/(λ·W + w)`. The review's failing test -- the last 40 rows at weight 0.5 against 1 -- failed on the old build, the two levels the same to the last digit, and passes against a longhand of the weighted means. **Its exact check, a row at weight 2 is that row twice at no clock, passed on the old build** (raised): both sides ignored the weight, and a row at no clock changed nothing. It holds for the level and `n_eff`, not the trend, which reads a move over the clock. Library: statsmodels' `Holt` agrees exactly once the weights have saturated (T-S14 from row 1000, `rtol 1e-12`); the first rows part by design, which T-S14 now asserts and which failed on the old build. **Every `holt` stream's numbers move** (raised), weighted or not, since the gains start at 1; goldens re-frozen |
+| S30 | `holt` at an infinite level halflife | `statsmodels` `Holt` | **fixed** (batch 4a), with S29: an infinite halflife fits the whole history -- on `y = 3 + 2t` the forecast for row 199 is 399, where the old build gave the first row's 3.0 -- and `lam = 1` builds, as `halflife = inf`, where it was refused naming `level_halflife`. **`trend_halflife = inf` is the whole history's drift now**, not a trend pinned at zero (raised: a plain level with no trend has no spelling left) |
+| S31 | `ftrl` `strict_binary`: documented error, silent skip | — | **fixed** (batch 4a), on the user's decision: a `strict_binary` target other than 0 or 1 refuses the chunk at extraction, naming the row and the value, beside `ew_class`'s label check, so the bank is left as it was; on the old build the chunk ran. The model alone still skips such a row (a Rust caller's `step`), and `n_eff` still counts the rows an update-form model saw, as hard rule 8 is written |
 | S32 | `FtrlCfg::validate` accepts NaN | — | **fixed** (batch 1) — NaN refused in all four, as `pa` refuses it; accepted on the old build |
 
 ### P — performance, D — documentation, V — to confirm
@@ -216,7 +217,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | D6 | **fixed** (batch 1), and **short of the whole story** (raised). The window's note has been right since C17, as the review says; the test's "about eight significant figures" was never the window. Its oracle, `direct_window_fit`, put the ridge on the intercept, which the model leaves unpenalized, and at `ridge = 1e-8` that alone is the `3.8e-8` the `1e-6` tolerance hid. With the intercept free the two agree to `1.2e-14` over 284 comparisons, and the test holds `1e-12` |
 | D7 | **fixed** (batch 2) — the lists of models with no target now name all eight and point at `_spec.py`'s `UNSUPERVISED`; `gram_axes` says why it names `ew_cov` alone; the bank's tripwire comment says which refusals make it unreachable; `group_indices` calls `session_hash` instead of repeating it. `ModelBank.predict`'s `session_gap` line is C19's, for batch 3 |
 | D8 | **fixed** (batch 2), apart from `ewridge`'s docstring on `sigma` under a window, which S1 settles (batch 4). `_numeric_keys` reads every builder -- it missed `bocpd`'s floats among others, which a test now holds and which failed on the old build; `_json`'s NaN message names the spec of a list; `_checked` says the Rust side's floor of 1 for eight counts; the `lasso` and `bocpd` docstrings, `MarginalKwargs`, `spec.rs`'s `stats` and `covariance` docs and `closed_groups`' doc say what the code does |
-| D9, D10 | later: documentation |
+| D9, D10 | **begun** (batch 4a): `holt.rs`'s module doc (S29/S30); in D10, `ftrl.rs`'s module doc (C24), `the_row_weight_scales_the_gradient`'s comment -- the weight multiplies the loss, river's and sklearn's convention, so a row at weight 4 is not four rows -- `spec.rs`'s `strict_binary` (S31), and `reference.py`'s `ftrl_ref`, which gained the squared loss and names the decay's effect. The rest -- `combo_labels`, `predict_chunk`'s weight note, `max_dclock`'s doc (S3), `pa.rs` and `hmm.rs` -- are batch 4b and 4c |
 | V23 | **fixed** (batch 2), with S7 -- `feature_sets = []` is refused, naming `feature_sets`; on the old build it built, and `output_index` rendered no slot for a model that emits two |
 | V5 | **closed** (batch 3a) — the test the review asked for exists: `test_frame.py::test_pushdowns_are_honoured_after_the_model`, case "head then filter", compares the plan with the collected frame under both engines |
 | V7 | **fixed** (batch 3a) — confirmed through a real save: a reloaded filter's `pred_var()` was `R` alone, 0.25 against the saved filter's 0.2545, since it read the last row's regressor, a scratch a save does not keep. `pred_var` takes the row now, as `predict` does; nothing above the core reads it. The first version of the test passed on the old build because it restored from `state()`, an in-memory clone that keeps the scratch; it was corrected to go through the bytes, and then failed as the review said |
@@ -367,6 +368,36 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   `fit_predict_batches` writes what it drained however the chunks stop --
   a drained row has left the bank -- where the plan's source writes only at
   the end, its bank going with the plan.
+- 2026-09-15 — **batch 4a**: S29, S30, S31 and C24 fixed, on the user's
+  decisions, with D9's and D10's items for `holt.rs`, `ftrl.rs`, `spec.rs`
+  and `reference.py`. Every test was written first. On the old build the
+  seven Rust tests and six Python ones written to show a finding failed,
+  each for its finding's reason, and three controls passed as they should:
+  river's weight at `inf`, a constant weight cancelling, and the review's
+  exact check for S29 -- a row at weight 2 is that row twice at no clock --
+  which the old build also met, both sides ignoring the weight (raised).
+  Three things the decisions settle that may not have been pictured, all
+  raised. Every `holt` stream's numbers move, weighted or not, since the
+  weighted means' gains start at 1; statsmodels' `Holt` agrees from row
+  1000, and T-S14 now asserts the parting before it. `trend_halflife = inf`
+  is the whole history's drift, and a plain level has no spelling left. And
+  C24's repair stops short of the review's numbers -- a constant 5 at
+  `halflife = 100` settles at 4.65 (2.25 before; the review asked for 5.0),
+  a gap's factor is 0.75 (0.70; the review asked for 1), a logistic base
+  rate of 0.9 reads 0.873 at `halflife = 1000` (0.816; the review asked for
+  0.90) -- because the penalties stay on the sums' scale, which is what
+  keeps the undecayed model river's. Schema 9, and minimum 9: `holt`'s
+  weights and `ftrl`'s sum cannot be read from a schema-8 state.
+  The first gate failed one test of the model contract,
+  `holt_recovers_from_bounded_extremes` -- 7.85e80 against the twin's 0.52
+  at row 29,520, finite throughout. Its script's tail is 1500 halflives of
+  the probe's `HALFLIFE`, what a row at the bound with weight at the bound
+  needs to wash out of a mean-form accumulator; `holt`'s trend is one now,
+  and forgets on its own halflife, four times the level's. Measured on a
+  replica of the script: the default halflives recover to 1.1e-15 on a
+  tail four times as long, both at `HALFLIFE` to 1.6e-15 on the script's,
+  and the largest forecast on the way is 2.5e102, far from overflow. The
+  probe runs both halflives at `HALFLIFE` (1.3e-15); the model is unchanged.
 
 ## New observations (found while fixing; not in the review)
 

@@ -1595,17 +1595,22 @@ The one model that takes no features: it extrapolates the target's own
 level and trend.
 
 ```
-pred     = l + b·Δt
-l' = α·y + (1−α)·pred        b' = β·(l' − l)/Δt + (1−β)·b
+pred = l + b·Δt
+l'   = (λ_l·W·pred + w·y)/(λ_l·W + w)      b' = (λ_b·V·b + w·(l' − l)/Δt)/(λ_b·V + w)
 ```
 
 ```python
 baseline = po.spec.holt(
     "baseline", targets=["y"], clock="t", max_dclock=600.0,
-    level_halflife=200.0,        # α: how fast the level follows the target, in clock units
-    trend_halflife=2000.0,       # β: how fast the trend follows the level's movement; inf pins the trend at zero,
-)                                # leaving a plain exponentially weighted level. coef is [level, trend] per target
+    level_halflife=200.0,        # how fast the level forgets, in clock units
+    trend_halflife=2000.0,       # how fast the trend forgets; inf is the whole history's drift
+)                                # coef is [level, trend] per target
 ```
+
+Level and trend are weighted means of what each row observes and what the
+model forecast, `W` and `V` the weight each has gathered. A row at weight
+`w` counts `w` times. An infinite halflife forgets nothing, so
+`trend_halflife=inf` is the drift of the whole history.
 
 The trend is per clock unit, so an irregular clock extrapolates the right
 distance. There is no seasonal term, because a seasonal index is a `group`

@@ -649,6 +649,9 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             // the same thing here as it does for every other model.
             let level = level_halflife.unwrap_or(match decay {
                 Decay::Halflife(h) => h,
+                // `lam = 1` forgets nothing, as for every other model; its log
+                // is 0, and the division made it `-inf` (review 2026-09-12, S30).
+                Decay::Lam(1.0) => f64::INFINITY,
                 Decay::Lam(l) => -std::f64::consts::LN_2 / l.ln(),
             });
             let cfg = HoltCfg {

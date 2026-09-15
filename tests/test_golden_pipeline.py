@@ -454,25 +454,29 @@ GOLDEN: dict[str, float | str | None] = {
     "kalman_revert.n_eff@25": 7.999488060097996,
     "kalman_revert.n_eff@60": 12.473100285951407,
     "kalman_revert.n_eff@119": 14.963784088176922,
-    "ftrl.pred_y0@25": -4.004533091781381,
-    "ftrl.pred_y0@60": -0.2849015592079467,
-    "ftrl.pred_y0@119": -0.19641552391486483,
-    "ftrl.resid_y0@25": -0.8470727324533351,
-    "ftrl.resid_y0@60": -0.18713956960913125,
-    "ftrl.resid_y0@119": 0.145716752956636,
+    # Re-frozen 2026-09-15: under a halflife the proximal term is a decayed sum
+    # of its own (review 2026-09-12, C24).
+    "ftrl.pred_y0@25": -4.22640569924921,
+    "ftrl.pred_y0@60": -0.4694780613966558,
+    "ftrl.pred_y0@119": -0.14015174962929677,
+    "ftrl.resid_y0@25": -0.6252001249855059,
+    "ftrl.resid_y0@60": -0.002563067420422116,
+    "ftrl.resid_y0@119": 0.08945297867106794,
     "ftrl.n_eff@25": 7.999488060097996,
     "ftrl.n_eff@60": 12.473100285951407,
     "ftrl.n_eff@119": 14.963784088176922,
+    # Re-frozen 2026-09-15: level and trend are weighted means (review
+    # 2026-09-12, S29/S30), whose gains start at 1.
     # Re-frozen 2026-09-13: a null target is transparent to `holt` now -- the
     # next observed row forecasts over the clock since the last one -- where
     # the level stood still across it (review 2026-09-12, C22). The target is
     # null every 29th row from row 11, so all three rows moved; `n_eff` did not.
-    "holt.pred_y0@25": -0.11333589277905295,
-    "holt.pred_y0@60": 0.1824849926451675,
-    "holt.pred_y0@119": -1.2457153166294734,
-    "holt.resid_y0@25": -4.7382699314556636,
-    "holt.resid_y0@60": -0.6545261214622454,
-    "holt.resid_y0@119": 1.1950165456712445,
+    "holt.pred_y0@25": -1.6482424919748164,
+    "holt.pred_y0@60": 5.630591873314062,
+    "holt.pred_y0@119": -1.4684387824643939,
+    "holt.resid_y0@25": -3.2033633322599,
+    "holt.resid_y0@60": -6.10263300213114,
+    "holt.resid_y0@119": 1.4177400115061651,
     "holt.n_eff@25": 8.573837237596514,
     "holt.n_eff@60": 13.244185655943454,
     "holt.n_eff@119": 15.09397614533663,

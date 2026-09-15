@@ -1281,7 +1281,18 @@ fn pa_recovers_from_bounded_extremes() {
 
 #[test]
 fn holt_recovers_from_bounded_extremes() {
-    recovers_from_bounded_extremes(|| Holt::new(holt_cfg()).unwrap(), 2, Recovery::Twin(1e-9));
+    // The tail is 1500 halflives of HALFLIFE: what a row at the bound with
+    // weight at the bound needs to wash out of a mean-form accumulator. Since
+    // the code review's S29 `holt`'s level and trend are weighted means, so a
+    // row's weight counts, and the trend forgets such a row on its own
+    // halflife -- four times the level's by default, which would want a tail
+    // four times as long. So the probe runs both at HALFLIFE. (The textbook
+    // form it replaced ignored the weight, and recovered on the level's rate.)
+    let cfg = HoltCfg {
+        trend_halflife: HALFLIFE,
+        ..holt_cfg()
+    };
+    recovers_from_bounded_extremes(|| Holt::new(cfg.clone()).unwrap(), 2, Recovery::Twin(1e-9));
 }
 
 #[test]

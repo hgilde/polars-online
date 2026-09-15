@@ -817,12 +817,11 @@ const GOLDEN_HUBER: &[f64] = &[
     -0.06446675716780813,
 ];
 const GOLDEN_QUANTILE: &[f64] = &[0.2951076807653745, 2.232303167920436, -0.03927577244973528];
-const GOLDEN_FTRL_SQUARED: &[f64] = &[
-    0.31690964540626376,
-    1.6128031168738046,
-    -0.053001920184771734,
-];
-const GOLDEN_FTRL: &[f64] = &[0.4944157427243535, 0.5720078133207852, 0.4641448801691502];
+// Regenerated for the code review's C24 (2026-09-15), this and the next:
+// under a halflife the proximal term is a decayed sum of its own, where `n`
+// was decayed inside its square root and every coefficient shrank.
+const GOLDEN_FTRL_SQUARED: &[f64] = &[0.318866480347192, 1.8508278392193374, -0.059916896139190254];
+const GOLDEN_FTRL: &[f64] = &[0.49383104846406345, 0.5878407507142388, 0.4533087802341688];
 // Regenerated for docs/PLAN.md task 74 (2026-09-08): `scale_features`
 // standardises against the moments with the row admitted, so every
 // prediction of this scaled fit moved.
@@ -847,7 +846,13 @@ const GOLDEN_PA_BOX: &[f64] = &[0.5287388518302499, 1.679384820401434, 0.1590688
 // next observed row forecasts over the clock since the last one -- where the
 // level stood still across it (review 2026-09-12, C22). Row 20 comes before
 // the stream's null at row 31 and did not move.
-const GOLDEN_HOLT: &[f64] = &[0.6940554404209057, 0.5867765476609583, 0.2586162074232276];
+// Regenerated for the code review's S29/S30 (2026-09-15): level and trend
+// are weighted means, whose gains start at 1 where the textbook's were fixed.
+const GOLDEN_HOLT: &[f64] = &[
+    -1.5909733825311503,
+    0.07655111549786203,
+    0.17534943347133736,
+];
 const GOLDEN_SEQTEST: &[f64] = &[-0.6443570163905132, -1.086393303225433, -0.9577414997686987];
 const GOLDEN_SEQTEST_NEG: &[f64] = &[
     -0.9917118216489557,

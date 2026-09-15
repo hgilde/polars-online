@@ -88,8 +88,37 @@ carries breaking changes, and any change to the numbers a model returns.
   `closed_groups` path, and writes what it drained when the chunks stop --
   at their end, at a `break`, or at an error (the code review's P5). A
   `ModelBank`'s queue is bounded only by draining it.
+- **`holt`'s level and trend are weighted means** (the code review's S29
+  and S30). Each is `(λ·W·old + w·new)/(λ·W + w)`, as every accumulator here
+  is, so a row at weight `w` counts `w` times and an infinite halflife fits
+  the whole history. **Numbers change for every `holt` stream**, weighted or
+  not: the gains start at 1 and fall to the textbook's fixed ones as the
+  weight saturates, so the first rows follow the series sooner; from there
+  the fit is statsmodels' `Holt`. The textbook recursion read a weight only
+  as learn-or-not, and at an infinite halflife froze the level at the first
+  row. **`trend_halflife=inf` is now the whole history's drift, not a trend
+  pinned at zero**, and a plain level with no trend no longer has a
+  spelling. A row at the previous row's clock is a second observation the
+  level takes in. `lam=1` builds, as `halflife=inf`; it was refused in
+  `level_halflife`'s name.
+- **`ftrl` keeps its proximal term as a decayed sum** (the code review's
+  C24). Under a halflife, decaying `n` inside the square root shrank every
+  coefficient toward zero on every row: a constant target of 5 settled at
+  2.25 at `halflife=100`. It settles at 4.65 now, `5/(1 + (1 − λ)(β/α +
+  l2))`: the penalties stay constants on the sums' scale, a mean-scale ridge
+  of `(1 − λ)(β/α + l2)`, and a gap still scales the coefficients by
+  `λ^t(d + c)/(λ^t·d + c)`, which the docs state. **Numbers change for every
+  `ftrl` stream with a halflife**; without one it is river's to the bit, as
+  before.
+- **State files are schema 9.** `holt` and `ftrl` carry new state, and a
+  schema-8 file is refused by its version (pre-1.0, no loader).
 
 ### Fixed
+
+- **`ftrl(strict_binary=True)` refuses a chunk whose target is not 0 or 1**,
+  naming the row and the value, before any stream is touched (the code
+  review's S31). It skipped the row silently and still counted it toward
+  `n_eff`, where the docs said it was an error.
 
 - **`po.run` and the CLI held every closed group until the run ended** (the
   code review's P5). The `closed_groups` sidecar was drained once, after the

@@ -991,9 +991,13 @@ class TestHoltAcrossAMissingObservation:
     and its clock folded into the next row's.
 
     ``statsmodels`` is the second opinion twice. Its ``Holt`` is the textbook
-    recursion ``holt`` runs, exactly, on a row-count clock -- the control that
-    pins the mapping from halflives to smoothing weights (the review's
-    T-S14). Its state-space ``ExponentialSmoothing`` takes ``NaN`` in the
+    recursion, whose gains are fixed; ``holt``'s level and trend are weighted
+    means (review 2026-09-12, S29/S30), whose gains ``w / (lam·W + w)`` start
+    at 1 and fall to those fixed ones as the weight saturates. So the two part
+    over the first rows by design and agree exactly from row ``SETTLED`` on a
+    row-count clock -- the control that pins the mapping from halflives to
+    smoothing weights (the review's T-S14). Its state-space
+    ``ExponentialSmoothing`` takes ``NaN`` in the
     series and answers it with the prediction step alone, so the row after a
     missing one forecasts ``l + 2b`` from the ``l`` and ``b`` that stood
     before it, a number the gain does not enter (T-S17). Past that row the two
@@ -1001,6 +1005,9 @@ class TestHoltAcrossAMissingObservation:
     last observation, which is what a halflife in clock units means."""
 
     H_LEVEL, H_TREND = 6.0, 25.0
+    #: The row from which the weighted means' gains equal the fixed ones to
+    #: the last digit this test reads: ``0.5 ** (1000 / H_TREND)`` is 1e-12.
+    SETTLED = 1000
 
     @staticmethod
     def series(n: int) -> np.ndarray:
@@ -1009,7 +1016,7 @@ class TestHoltAcrossAMissingObservation:
 
     def test_the_recursion_is_statsmodels_holt(self):
         holtwinters = pytest.importorskip("statsmodels.tsa.holtwinters")
-        y = self.series(200)
+        y = self.series(self.SETTLED + 200)
         pred, level, trend = _holt(y, self.H_LEVEL, self.H_TREND)
         res = holtwinters.Holt(
             y, initialization_method="known", initial_level=y[0], initial_trend=0.0
@@ -1018,13 +1025,17 @@ class TestHoltAcrossAMissingObservation:
             smoothing_trend=1.0 - 0.5 ** (1.0 / self.H_TREND),
             optimized=False,
         )
-        np.testing.assert_allclose(pred[1:], res.fittedvalues[1:], rtol=1e-12)
+        fitted = np.asarray(res.fittedvalues)
+        # The first rows part by design: a weighted mean's first gains are
+        # larger than the fixed ones, so it follows the series sooner.
+        assert not np.allclose(pred[1:50], fitted[1:50], rtol=1e-6)
+        np.testing.assert_allclose(pred[self.SETTLED :], fitted[self.SETTLED :], rtol=1e-12)
         assert level == pytest.approx(res.level[-1], rel=1e-12)
         assert trend == pytest.approx(res.trend[-1], rel=1e-12)
 
     def test_the_row_after_a_missing_one_forecasts_two_trend_steps(self):
         es = pytest.importorskip("statsmodels.tsa.statespace.exponential_smoothing")
-        y = self.series(120)
+        y = self.series(self.SETTLED + 200)
         alpha = 1.0 - 0.5 ** (1.0 / self.H_LEVEL)
         beta = 1.0 - 0.5 ** (1.0 / self.H_TREND)
 
@@ -1039,15 +1050,17 @@ class TestHoltAcrossAMissingObservation:
             # The innovations form: the trend's gain is alpha·beta.
             return np.asarray(model.smooth([alpha, alpha * beta]).fittedvalues)
 
-        # With nothing missing, every row: the control that pins the mapping.
+        # With nothing missing, every settled row: the control that pins the
+        # mapping.
+        s = self.SETTLED
         pred, _, _ = _holt(y, self.H_LEVEL, self.H_TREND)
-        np.testing.assert_allclose(pred[1:], smooth(y)[1:], rtol=1e-9)
-        missing = 60
+        np.testing.assert_allclose(pred[s:], smooth(y)[s:], rtol=1e-9)
+        missing = s + 100
         gappy = y.copy()
         gappy[missing] = np.nan
         pred, _, _ = _holt(gappy, self.H_LEVEL, self.H_TREND)
-        # Every row up to the one after the gap, which is `l + 2b`.
-        np.testing.assert_allclose(pred[1 : missing + 2], smooth(gappy)[1 : missing + 2], rtol=1e-9)
+        # Every settled row up to the one after the gap, which is `l + 2b`.
+        np.testing.assert_allclose(pred[s : missing + 2], smooth(gappy)[s : missing + 2], rtol=1e-9)
 
     @pytest.mark.parametrize("how", ["null", "zero weight"])
     def test_a_row_it_cannot_learn_from_is_as_if_absent(self, how):

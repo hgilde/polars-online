@@ -398,6 +398,30 @@ fn extract(
                 label_column(df, spec, c, classes, layout)
             } else {
                 let v = f64_column(df, spec, "target", c, layout)?;
+                // A `strict_binary` target is 0 or 1, and anything else is an
+                // error naming the row, as a label outside `ew_class`'s
+                // classes is -- checked here, before any stream is touched, so
+                // the bank is left as it was (review 2026-09-12, S31). It was
+                // a silent skip that still counted the row toward `n_eff`.
+                if matches!(
+                    spec.model,
+                    ModelKind::Ftrl {
+                        strict_binary: true,
+                        ..
+                    }
+                ) {
+                    if let Some(j) = v
+                        .iter()
+                        .position(|f| f.is_finite() && *f != 0.0 && *f != 1.0)
+                    {
+                        polars_bail!(ComputeError:
+                            "spec {:?}: strict_binary target column {:?} has the value {} at \
+                             row {}, which is neither 0 nor 1; null the rows that should only \
+                             be scored, or drop strict_binary to clamp them into [0, 1]",
+                            spec.name, c, v[j], source_row(layout, j)
+                        );
+                    }
+                }
                 // `bocpd`'s hazard column rides in the targets slot and is
                 // not a target: it is a parameter, and a value the model
                 // cannot use makes the row report nulls and vanish from the

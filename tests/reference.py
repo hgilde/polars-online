@@ -647,11 +647,19 @@ def ftrl_ref(
     add_intercept: bool = True,
     min_periods: float = 10.0,
     strict_binary: bool = False,
+    loss: str = "logistic",
 ) -> dict[str, np.ndarray]:
-    """FTRL-proximal logistic oracle (docs/PLAN.md section 4.6, McMahan 2013).
+    """FTRL-proximal oracle (docs/PLAN.md section 4.6, McMahan 2013), for the
+    logistic loss and the squared one (E18).
 
-    Note the decay is applied to ``n`` and ``z`` *before* the proximal weights
-    are computed, so a row's prediction already reflects its own elapsed clock.
+    The decay is applied to ``n``, ``z`` and the proximal sum ``d`` *before*
+    the proximal weights are computed, so a row's prediction already reflects
+    its own elapsed clock. Without decay the rate is river's ``(beta +
+    sqrt(n)) / alpha``, which the proximal steps telescope to; under decay it
+    is ``beta / alpha + d``, their own discounted sum. Decaying ``n`` inside
+    the square root instead shrank every coefficient toward zero on every
+    row, by a factor between ``lam`` and ``sqrt(lam)`` (review 2026-09-12,
+    C24).
     """
     n, k = X.shape
     m = Y.shape[1]
@@ -659,6 +667,7 @@ def ftrl_ref(
     kt = k + off
     if reset is None:
         reset = np.zeros(n, dtype=bool)
+    forgets = np.isfinite(halflife)
 
     pred = np.full((n, m), np.nan)
     resid = np.full((n, m), np.nan)
@@ -669,6 +678,7 @@ def ftrl_ref(
         return {
             "n": np.zeros((m, kt)),
             "z": np.zeros((m, kt)),
+            "d": np.zeros((m, kt)),
             "w_sum": 0.0,
             "pending": 0.0,
         }
@@ -678,7 +688,11 @@ def ftrl_ref(
         for i in range(kt):
             zi = st["z"][j, i]
             if abs(zi) > l1:
-                out[i] = -(zi - np.sign(zi) * l1) / ((beta + np.sqrt(st["n"][j, i])) / alpha + l2)
+                if forgets:
+                    rate = beta / alpha + st["d"][j, i]
+                else:
+                    rate = (beta + np.sqrt(st["n"][j, i])) / alpha
+                out[i] = -(zi - np.sign(zi) * l1) / (rate + l2)
         return out
 
     st = init()
@@ -691,11 +705,12 @@ def ftrl_ref(
         z = np.concatenate(([1.0], X[i])) if add_intercept else X[i].copy()
         d = dclock[i] + st["pending"]
         st["pending"] = 0.0
-        lam = 0.5 ** (d / halflife) if np.isfinite(halflife) else 1.0
+        lam = 0.5 ** (d / halflife) if forgets else 1.0
 
         if lam != 1.0:
             st["n"] *= lam
             st["z"] *= lam
+            st["d"] *= lam
 
         n_eff[i] = st["w_sum"]
         ready = st["w_sum"] >= min_periods
@@ -703,7 +718,7 @@ def ftrl_ref(
         for j in range(m):
             b = weights(st, j)
             coef[i, j] = b
-            p = 1.0 / (1.0 + np.exp(-(z @ b)))
+            p = z @ b if loss == "squared" else 1.0 / (1.0 + np.exp(-(z @ b)))
             if ready:
                 pred[i, j] = p
                 if not np.isnan(Y[i, j]):
@@ -711,11 +726,12 @@ def ftrl_ref(
             if np.isnan(Y[i, j]) or w[i] <= 0.0:
                 continue
             yb = Y[i, j]
-            if strict_binary:
-                if yb not in (0.0, 1.0):
-                    continue
-            else:
-                yb = min(max(yb, 0.0), 1.0)
+            if loss == "logistic":
+                if strict_binary:
+                    if yb not in (0.0, 1.0):
+                        continue
+                else:
+                    yb = min(max(yb, 0.0), 1.0)
             err = p - yb
             for ii in range(kt):
                 g = err * z[ii] * w[i]
@@ -723,6 +739,7 @@ def ftrl_ref(
                 s = (np.sqrt(n_new) - np.sqrt(st["n"][j, ii])) / alpha
                 st["z"][j, ii] += g - s * b[ii]
                 st["n"][j, ii] = n_new
+                st["d"][j, ii] += s
         st["w_sum"] = lam * st["w_sum"] + w[i]
 
     return {"pred": pred, "resid": resid, "n_eff": n_eff, "coef": coef}

@@ -43,12 +43,25 @@ def test_predicts_the_next_value():
     assert pred == pytest.approx(df["y0"].to_list()[-1], abs=2.0)
 
 
-def test_a_pinned_trend_lags_a_trending_series():
-    df = _trending()
-    with_trend = _run(df)["m"].struct.field("pred_y0").to_list()[-1]
-    level_only = _run(df, trend_halflife=float("inf"))["m"].struct.field("pred_y0").to_list()[-1]
-    actual = df["y0"].to_list()[-1]
-    assert abs(with_trend - actual) < abs(level_only - actual)
+def test_an_infinite_trend_halflife_learns_the_whole_history_drift():
+    """``trend_halflife=inf`` forgets no slope, as ``inf`` means everywhere
+    else here. It used to pin the trend at zero, so the fit lagged a trending
+    series (review 2026-09-12, S30)."""
+    out = _run(_trending(), trend_halflife=float("inf"))
+    _, trend = out["m"].struct.field("coef").to_list()[-1]
+    assert trend == pytest.approx(2.0, abs=0.1)
+
+
+def test_lam_one_is_an_infinite_halflife():
+    """``lam=1`` is no forgetting, as for every other model: the same fit as
+    ``halflife=inf``. It became ``-inf`` on its way to a halflife and was
+    refused in ``level_halflife``'s name (review 2026-09-12, S30)."""
+    df = _trending(n=200)
+    kw = dict(targets=["y0"], clock="t", max_dclock=100.0, min_periods=3.0)
+    kw["trend_halflife"] = float("inf")
+    by_lam = po.ModelBank([po.spec.holt("m", lam=1.0, **kw)]).fit_predict(df)
+    by_inf = po.ModelBank([po.spec.holt("m", halflife=float("inf"), **kw)]).fit_predict(df)
+    assert by_lam.equals(by_inf, null_equal=True)
 
 
 def test_irregular_clock_extrapolates_the_right_distance():

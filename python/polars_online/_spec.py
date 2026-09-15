@@ -947,23 +947,32 @@ def ftrl(
     regression with no solves, and L1 support that ``ew_ridge`` does not have.
 
     Per-coordinate adaptive learning rates following McMahan et al. (2013),
-    with the accumulators decayed on the same clock as every other model here,
-    so it forgets on the same schedule::
+    with the sums decayed on the model's clock::
 
-        n_i   <- lam * n_i ;  zz_i <- lam * zz_i
-        b_i   = 0 if |zz_i| <= l1 else
-                -(zz_i - sign(zz_i) l1) / ((beta + sqrt(n_i)) / alpha + l2)
+        n_i   <- lam * n_i ;  zz_i <- lam * zz_i ;  d_i <- lam * d_i
+        b_i   = 0 if |zz_i| <= l1 else -(zz_i - sign(zz_i) l1) / (r_i + l2)
+        r_i   = beta / alpha + d_i                 (under a halflife)
+              = (beta + sqrt(n_i)) / alpha         (without one: river's)
         p     = sigmoid(z . b)
         g_i   = (p - y) * z_i * w
-        zz_i += g_i - ((sqrt(n_i + g_i^2) - sqrt(n_i)) / alpha) * b_i
-        n_i  += g_i^2
+        s_i   = (sqrt(n_i + g_i^2) - sqrt(n_i)) / alpha
+        zz_i += g_i - s_i * b_i ;  n_i += g_i^2 ;  d_i += s_i
 
-    (``z`` is the row's feature vector, intercept included; ``zz`` and ``n``
-    are the two per-coordinate accumulators.)
+    (``z`` is the row's feature vector, intercept included; ``zz``, ``n`` and
+    ``d`` are the per-coordinate sums.) Under a halflife the penalties are
+    constants on the sums' scale, so they act as a mean-scale ridge of
+    ``(1 - lam) * (beta / alpha + l2)``, and a row with no target and a clock
+    of ``t`` scales every coefficient by ``lam**t * (d + c) / (lam**t * d +
+    c)``, ``c = beta / alpha + l2`` -- about 0.75 over one halflife at
+    ``halflife=100``, where ``ewridge``'s fit does not move. Decaying ``n``
+    inside the square root had shrunk every coefficient on every row (review
+    2026-09-12, C24). For forgetting without the shrinkage, reset a
+    ``halflife=inf`` model on a ``session``, or use ``sgd`` or ``ewridge``.
     ``pred`` is the probability from the state *before* the update, so it is
     out-of-sample like every other model, and ``resid = y - p``. Defaults
     ``alpha=0.1, beta=1.0, l1=0.0, l2=1.0``. Non-0/1 targets are clamped into
-    [0, 1] unless ``strict_binary``, which skips them instead.
+    [0, 1] unless ``strict_binary``, which refuses a chunk holding one, naming
+    the row.
     """
     model: dict[str, Any] = {
         "type": "ftrl",
@@ -1349,21 +1358,31 @@ def holt(
 
     Per row and target, with ``s`` the clock since the target was last
     observed (this row's delta included, so ``s`` is the row's own delta on a
-    stream with no gaps) and halflife-derived rates
-    ``alpha = 1 - 0.5**(s/level_halflife)`` and likewise ``beta``::
+    stream with no gaps), ``w`` the row's weight, and ``W``, ``V`` the weight
+    the level and the trend have gathered, each decayed on its own halflife
+    (``lam_l = 0.5**(s/level_halflife)``, ``lam_b`` likewise)::
 
-        pred = l + b * s                      (extrapolate s clock units ahead)
-        l'   = alpha * y + (1 - alpha) * pred
-        b'   = beta * (l' - l) / s + (1 - beta) * b
+        pred = l + b * s                          (extrapolate s clock units ahead)
+        l'   = (lam_l * W * pred + w * y) / (lam_l * W + w)
+        b'   = (lam_b * V * b + w * (l' - l) / s) / (lam_b * V + w)
+
+    Level and trend are weighted means, as every accumulator here is: a row
+    at weight ``w`` counts ``w`` times, and an infinite halflife forgets
+    nothing and fits the whole history -- so ``trend_halflife=inf`` is the
+    whole history's drift, not a trend pinned at zero (review 2026-09-12,
+    S29/S30). The gains ``w / (lam * W + w)`` start at 1 and fall to the
+    textbook's fixed ``1 - lam`` as the weight saturates, so a new series is
+    followed sooner and the fit is statsmodels' ``Holt`` from there. A row at
+    the last row's clock is a second observation the level takes in; the
+    trend holds, since a move over no clock has no slope.
 
     A row with a null target or a zero weight leaves ``l`` and ``b`` where the
     last observation put them and carries its clock to the next one, so it
-    gives the same numbers as if it were absent. Deriving the rates from
+    gives the same numbers as if it were absent. Deriving the decays from
     halflives keeps the parameter meaning identical to every other model
     here, so an irregular clock forecasts the right distance ahead instead of
-    treating every row as one step. ``level_halflife``
-    defaults to the spec's ``halflife`` and ``trend_halflife`` to four times
-    that; ``trend_halflife=inf`` pins the trend, giving a plain EW level.
+    treating every row as one step. ``level_halflife`` defaults to the spec's
+    ``halflife`` and ``trend_halflife`` to four times that.
 
     ``coef`` is ``[level, trend]`` per target -- the whole state.
     """

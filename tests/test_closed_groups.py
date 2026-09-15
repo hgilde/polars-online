@@ -771,7 +771,7 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 def test_schema_version_is_current():
     # Pinned so a bump is a deliberate edit here, with the reason recorded in
-    # `SCHEMA_VERSION`'s own history: 8 is task 81's `target_gaps`, and the
-    # accumulators it splits by target.
-    assert po.schema_version() == 8
+    # `SCHEMA_VERSION`'s own history: 9 is the weights `holt`'s weighted
+    # means keep and `ftrl`'s proximal sum (review 2026-09-12, S29/S30, C24).
+    assert po.schema_version() == 9
     assert sys.version_info >= (3, 12)

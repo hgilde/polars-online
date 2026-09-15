@@ -425,7 +425,9 @@ impl<'de> Deserialize<'de> for SessionGapSpec {
 /// the compatibility: `MIN_SCHEMA_VERSION` became 6, the fixtures that
 /// proved older files load went, and a state saved by 0.2.0 has to be refit.
 /// It was taken again on 2026-09-14 (`MIN_SCHEMA_VERSION` 8, docs/PLAN.md
-/// task 81): a state saved before `target_gaps` has to be refit too.
+/// task 81): a state saved before `target_gaps` has to be refit too. And on
+/// 2026-09-15 (`MIN_SCHEMA_VERSION` 9, the code review's S29/S30 and C24): a
+/// state saved before `holt`'s weighted means and `ftrl`'s proximal sum.
 pub enum ModelKind {
     EwRidge {
         #[serde(default)]
@@ -587,8 +589,9 @@ pub enum ModelKind {
         l1: Option<f64>,
         #[serde(default)]
         l2: Option<f64>,
-        /// Error on targets that are not 0/1 rather than clamping them.
-        /// Logistic loss only.
+        /// Refuse a chunk whose target is not 0 or 1, naming the row, rather
+        /// than clamp it into [0, 1] (review 2026-09-12, S31). Logistic loss
+        /// only.
         #[serde(default)]
         strict_binary: bool,
         /// "logistic" (default, binary targets, `pred` is a probability) or
@@ -720,8 +723,9 @@ pub enum ModelKind {
         /// `halflife`.
         #[serde(default)]
         level_halflife: Option<f64>,
-        /// Halflife of the trend; `"inf"` pins it, giving a plain EW level.
-        /// Defaults to four times the level halflife.
+        /// Halflife of the trend; `"inf"` forgets no slope, so the trend is
+        /// the whole history's drift. Defaults to four times the level
+        /// halflife.
         #[serde(default)]
         trend_halflife: Option<Num>,
     },
@@ -2199,7 +2203,7 @@ impl Spec {
                 }
                 if trend_halflife.is_some_and(|h| h.0 <= 0.0 || h.0.is_nan()) {
                     return Err(format!(
-                        "spec {:?}: trend_halflife must be > 0 (\"inf\" pins the trend)",
+                        "spec {:?}: trend_halflife must be > 0 (\"inf\" forgets no slope)",
                         self.name
                     ));
                 }

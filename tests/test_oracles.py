@@ -425,6 +425,7 @@ class TestFtrlOracle:
             l1=kw.get("l1"),
             l2=kw.get("l2"),
             add_intercept=kw.get("add_intercept", True),
+            loss=kw.get("loss", "logistic"),
         )
         out = po.ModelBank([spec]).fit_predict(df)
         _close(
@@ -455,6 +456,13 @@ class TestFtrlOracle:
 
     def test_no_intercept(self):
         self._compare(self._binary(seed=9), add_intercept=False)
+
+    def test_squared_loss_under_a_halflife(self):
+        """The squared loss (E18) had no oracle here (review 2026-09-12,
+        D10), and under a halflife the proximal term is a decayed sum of its
+        own (C24), which the reference carries."""
+        df = self._binary(seed=11).with_columns(y0=1.5 * pl.col("x0") - 0.5 * pl.col("x1"))
+        self._compare(df, halflife=200.0, loss="squared", alpha=0.5, l2=0.01)
 
     def test_null_targets(self):
         df = self._binary(seed=10)

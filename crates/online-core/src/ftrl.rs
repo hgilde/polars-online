@@ -1,8 +1,8 @@
 //! Online regression via FTRL-proximal (docs/PLAN.md §4.6).
 //!
-//! Per-coordinate adaptive learning rates following McMahan et al. (2013), with
-//! the accumulators decayed by the same clock as every other model here so it
-//! forgets on the same schedule.
+//! Per-coordinate adaptive learning rates following McMahan et al. (2013),
+//! with the sums decayed on the model's clock -- which, for a closed form in
+//! sums, is not the forgetting every other model here does (below).
 //!
 //! Two losses, which differ only in the link and the gradient:
 //!
@@ -17,14 +17,32 @@
 //! probability, `g_i = (p - y) * z_i * w` the gradient):
 //!
 //! ```text
-//! decay:   n_i <- lam * n_i ;  zz_i <- lam * zz_i     (lam from the clock)
+//! decay:   n_i <- lam·n_i ;  zz_i <- lam·zz_i ;  d_i <- lam·d_i   (lam from the clock)
 //! predict: b_i = 0 if |zz_i| <= l1
-//!              = -(zz_i - sign(zz_i) l1) / ((beta + sqrt(n_i)) / alpha + l2)
+//!              = -(zz_i - sign(zz_i) l1) / (beta/alpha + d_i + l2)          under a halflife
+//!              = -(zz_i - sign(zz_i) l1) / ((beta + sqrt(n_i))/alpha + l2)  without one
 //!          p   = sigmoid(z . b)
 //! update:  s_i = (sqrt(n_i + g_i^2) - sqrt(n_i)) / alpha
-//!          zz_i += g_i - s_i b_i
-//!          n_i  += g_i^2
+//!          zz_i += g_i - s_i b_i ;  n_i += g_i^2 ;  d_i += s_i
 //! ```
+//!
+//! **What a halflife does here** (review 2026-09-12, C24). The proximal
+//! weight is a closed form in sums, and the sums decay. Without decay `d`
+//! telescopes to `sqrt(n)/alpha`, and the model is river's `FTRLProximal`,
+//! computed as river computes it (T-R1). Under a halflife `d` is the
+//! discounted sum of the steps themselves; decaying `n` inside the square
+//! root instead shrank every coefficient toward zero on every row, and a
+//! constant target of 5 settled at 2.25 at `halflife = 100`. What remains is
+//! the penalties: `beta`, `l1` and `l2` are constants on the sums' scale, so
+//! under a halflife they act as a mean-scale ridge of `(1 − lam)·(beta/alpha
+//! + l2)` -- the constant 5 settles at `5/(1 + (1 − lam)(beta/alpha + l2))`,
+//! 4.65 at `halflife = 100` and 4.96 at 1000 -- and a gap still costs: a row
+//! with no target and a clock of `t` scales every coefficient by
+//! `lam^t·(d + c)/(lam^t·d + c)`, `c = beta/alpha + l2`, about 0.75 over one
+//! halflife at 100, where a mean-form model like `ewridge` does not move.
+//! Constant penalties are what keep the undecayed model river's; for
+//! forgetting without the shrinkage, reset a `halflife = inf` model on a
+//! `session`, or use `sgd` or `ewridge`.
 //!
 //! `pred` is the probability computed from the state *before* the update, so it
 //! is out-of-sample like every other model; `resid = y - p`.
@@ -61,7 +79,10 @@ pub struct FtrlCfg {
     pub l1: f64,
     pub l2: f64,
     pub min_periods: f64,
-    /// Reject targets that are not 0/1 instead of clamping them. Logistic only.
+    /// A target that is not 0 or 1 is not learned from, where the default
+    /// clamps it into [0, 1]. Logistic only. The bank never hands the model
+    /// such a row: it refuses the chunk, naming the row (review 2026-09-12,
+    /// S31).
     pub strict_binary: bool,
     /// Logistic (default) or squared loss.
     #[serde(default)]
@@ -113,6 +134,10 @@ pub struct Ftrl {
     /// Per target: squared-gradient accumulators and the FTRL `z` state.
     n: Vec<Vec<f64>>,
     zz: Vec<Vec<f64>>,
+    /// Per target: the discounted sum of the proximal steps `s_i`, the rate's
+    /// term under a halflife, where `sqrt(n)/alpha` is without one (C24).
+    #[serde(default)]
+    prox: Vec<Vec<f64>>,
     w_sum: f64,
     #[serde(skip)]
     zbuf: Vec<f64>,
@@ -128,6 +153,7 @@ impl Ftrl {
         Ok(Self {
             n: vec![vec![0.0; k]; m],
             zz: vec![vec![0.0; k]; m],
+            prox: vec![vec![0.0; k]; m],
             w_sum: 0.0,
             zbuf: vec![0.0; k],
             coef: vec![0.0; k],
@@ -152,17 +178,34 @@ impl Ftrl {
 
     #[inline]
     fn weight(&self, j: usize, i: usize) -> f64 {
-        self.weight_of(self.zz[j][i], self.n[j][i])
+        self.weight_of(self.zz[j][i], self.n[j][i], self.prox[j][i])
     }
 
-    /// The proximal weight for one accumulator pair `(z, n)` -- the closed
+    /// Whether the sums decay at all. Without a halflife the rate is river's
+    /// `(beta + sqrt(n))/alpha`, computed as river computes it.
+    fn forgets(&self) -> bool {
+        match self.cfg.decay {
+            Decay::Halflife(h) => h.is_finite(),
+            Decay::Lam(l) => l != 1.0,
+        }
+    }
+
+    /// The proximal weight for one coordinate's `(z, n, d)` -- the closed
     /// form of the FTRL-Proximal update, shared by `step` and `predict`.
-    fn weight_of(&self, zz: f64, n: f64) -> f64 {
+    /// Under a halflife the rate's term is `d`, the discounted sum of the
+    /// proximal steps; without one it is `sqrt(n)/alpha`, which `d`
+    /// telescopes to (review 2026-09-12, C24; the module docs).
+    fn weight_of(&self, zz: f64, n: f64, prox: f64) -> f64 {
         if zz.abs() <= self.cfg.l1 {
             0.0
         } else {
             let sgn = if zz < 0.0 { -1.0 } else { 1.0 };
-            -(zz - sgn * self.cfg.l1) / ((self.cfg.beta + n.sqrt()) / self.cfg.alpha + self.cfg.l2)
+            let rate = if self.forgets() {
+                self.cfg.beta / self.cfg.alpha + prox
+            } else {
+                (self.cfg.beta + n.sqrt()) / self.cfg.alpha
+            };
+            -(zz - sgn * self.cfg.l1) / (rate + self.cfg.l2)
         }
     }
 
@@ -195,6 +238,7 @@ impl OnlineModel for Ftrl {
                 for i in 0..k {
                     self.n[j][i] *= lam;
                     self.zz[j][i] *= lam;
+                    self.prox[j][i] *= lam;
                 }
             }
         }
@@ -247,6 +291,7 @@ impl OnlineModel for Ftrl {
                 let s = (n_new.sqrt() - self.n[j][i].sqrt()) / self.cfg.alpha;
                 self.zz[j][i] += g - s * self.coef[i];
                 self.n[j][i] = n_new;
+                self.prox[j][i] += s;
             }
         }
         self.w_sum = lam * self.w_sum + weight;
@@ -273,7 +318,11 @@ impl OnlineModel for Ftrl {
                 let raw: f64 = (0..k)
                     .map(|i| {
                         let z = if i < off { 1.0 } else { x[i - off] };
-                        z * self.weight_of(self.zz[j][i] * lam, self.n[j][i] * lam)
+                        z * self.weight_of(
+                            self.zz[j][i] * lam,
+                            self.n[j][i] * lam,
+                            self.prox[j][i] * lam,
+                        )
                     })
                     .sum();
                 *p = match self.cfg.loss {
@@ -347,6 +396,9 @@ mod tests {
         }
     }
 
+    /// The model alone skips such a row. The bank never hands it one: it
+    /// refuses a chunk whose `strict_binary` target is not 0 or 1, naming the
+    /// row, before any stream sees it (review 2026-09-12, S31).
     #[test]
     fn strict_binary_skips_a_non_binary_target_instead_of_clamping_it() {
         // Two policies for a target outside {0, 1}: clamp it (the default) or
@@ -385,10 +437,16 @@ mod tests {
         assert_eq!(clamped, at_one, "y = 5 must behave exactly like y = 1");
     }
 
+    /// `g = err * z * weight`: the weight multiplies the row's loss, so its
+    /// gradient scales by `w` and its squared gradient, which sets the
+    /// coordinate's learning rate, by `w²` -- river's and sklearn's
+    /// convention. A row at weight 4 is therefore *not* four rows at weight
+    /// 1, as a weight is for the accumulators elsewhere here: it moves `zz`
+    /// four times as far only on the first row, where the coefficient is
+    /// still 0, and slows its coordinate's rate more than four light rows
+    /// would (review 2026-09-12, D10).
     #[test]
     fn the_row_weight_scales_the_gradient() {
-        // `g = err * z * weight`: a row at weight w must move the state as far
-        // as w rows of weight 1 would in the linear (squared-loss) case.
         let run = |w: f64, reps: usize| {
             let mut c = cfg(1, 1);
             c.loss = FtrlLoss::Squared;
@@ -683,5 +741,117 @@ mod tests {
                 m2.step(x, &[Some(*y)], 1.0, 1.0).pred
             );
         }
+    }
+
+    /// The recursion under decay written out longhand, for the squared loss
+    /// on an intercept alone: `n` and `zz` are decayed sums, and so is the
+    /// proximal term, `d = Σ λ^age·σ_s`, which `√n/α` telescopes to without
+    /// decay and does not with it (review 2026-09-12, C24). Each row's
+    /// prediction, and the last state `(zz, n, d)`.
+    fn decayed_longhand(c: &FtrlCfg, y: f64, rows: usize) -> (Vec<f64>, f64, f64, f64) {
+        let lam = c.decay.factor(1.0);
+        let (mut zz, mut n, mut d) = (0.0f64, 0.0f64, 0.0f64);
+        let mut preds = Vec::with_capacity(rows);
+        for i in 0..rows {
+            if i > 0 {
+                zz *= lam;
+                n *= lam;
+                d *= lam;
+            }
+            let b = if zz.abs() <= c.l1 {
+                0.0
+            } else {
+                -(zz - zz.signum() * c.l1) / (c.beta / c.alpha + d + c.l2)
+            };
+            preds.push(b);
+            let g = b - y;
+            let s = ((n + g * g).sqrt() - n.sqrt()) / c.alpha;
+            zz += g - s * b;
+            n += g * g;
+            d += s;
+        }
+        (preds, zz, n, d)
+    }
+
+    fn intercept_only(decay: Decay) -> FtrlCfg {
+        let mut c = cfg(1, 1);
+        c.loss = FtrlLoss::Squared;
+        c.decay = decay;
+        c.min_periods = 0.0;
+        c
+    }
+
+    /// A constant target, with the one feature at 0 so only the intercept
+    /// learns.
+    fn fit_constant(c: &FtrlCfg, y: f64, rows: usize) -> (Vec<f64>, Ftrl) {
+        let mut m = Ftrl::new(c.clone()).unwrap();
+        let preds = (0..rows)
+            .map(|i| {
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                m.step(&[0.0], &[Some(y)], d, 1.0).pred[0]
+            })
+            .collect();
+        (preds, m)
+    }
+
+    /// Under a halflife the proximal term is a decayed sum of its own. The
+    /// fit is the longhand's on every row, and a constant target of 5 settles
+    /// where sum-scale penalties put it, `5 / (1 + (1 − λ)(β/α + l2))` -- a
+    /// mean-scale ridge of `(1 − λ)(β/α + l2)` -- 4.65 at `halflife = 100`.
+    /// Decaying `n` inside `√n` had put it at 2.25 (review 2026-09-12, C24).
+    #[test]
+    fn a_decaying_state_keeps_its_proximal_sum() {
+        let c = intercept_only(Decay::Halflife(100.0));
+        let (preds, _) = fit_constant(&c, 5.0, 20_000);
+        let (want, ..) = decayed_longhand(&c, 5.0, 20_000);
+        for (i, (p, w)) in preds.iter().zip(&want).enumerate() {
+            assert!(
+                (p - w).abs() <= 1e-12 * w.abs().max(1.0),
+                "row {i}: {p} vs {w}"
+            );
+        }
+        let lam = c.decay.factor(1.0);
+        let settled = 5.0 / (1.0 + (1.0 - lam) * (c.beta / c.alpha + c.l2));
+        let last = preds[preds.len() - 1];
+        assert!(
+            (last - settled).abs() < 0.005 * settled,
+            "{last} vs {settled}"
+        );
+    }
+
+    /// What a gap still costs: the penalties are constants and the sums
+    /// decay, so a row with no target and a clock of `d` scales every
+    /// coefficient by `λ^d·(D + c)/(λ^d·D + c)`, `c = β/α + l2`, `D` the
+    /// proximal sum -- 0.75 over 100 clock units at `halflife = 100`, where
+    /// it was 0.70. The review asked for 1, which needs the penalties scaled
+    /// by the weight, and that is not river's at `inf` (C24).
+    #[test]
+    fn a_gap_shrinks_the_coefficients_by_the_stated_factor() {
+        let c = intercept_only(Decay::Halflife(100.0));
+        let (_, mut m) = fit_constant(&c, 5.0, 5_000);
+        let (_, _, _, d) = decayed_longhand(&c, 5.0, 5_000);
+        let before = m.coefficients()[0][0];
+        m.step(&[0.0], &[None], 100.0, 1.0);
+        let after = m.coefficients()[0][0];
+        let f = c.decay.factor(100.0);
+        let k = c.beta / c.alpha + c.l2;
+        let want = f * (d + k) / (f * d + k);
+        assert!(
+            (after / before - want).abs() < 1e-12,
+            "{} vs {want}",
+            after / before
+        );
+    }
+
+    /// Without decay the proximal term telescopes to `√n/α`, and the weight
+    /// is river's closed form computed as river computes it, so T-R1 holds
+    /// to the bit and the repair of C24 changes nothing at `halflife = inf`.
+    #[test]
+    fn without_decay_the_weights_are_rivers_closed_form() {
+        let c = intercept_only(Decay::Halflife(f64::INFINITY));
+        let (_, m) = fit_constant(&c, 5.0, 500);
+        let (zz, n) = (m.zz[0][0], m.n[0][0]);
+        let river = -zz / ((c.beta + n.sqrt()) / c.alpha + c.l2);
+        assert_eq!(m.coefficients()[0][0].to_bits(), river.to_bits());
     }
 }

@@ -1851,6 +1851,14 @@ note, not a task.
       `fit_predict_batches(closed_groups=)` writes what it drained however
       the chunks stop, where the plan's source writes only at the end.
 
+      **Batch 4a, 2026-09-15**: S29, S30, S31 and C24 fixed, as decided,
+      with D9's and D10's `holt` and `ftrl` items; schema 9. Raised: every
+      `holt` stream's numbers move (the weighted means' gains start at 1),
+      `trend_halflife = inf` is the whole history's drift with no spelling
+      left for a plain level, and C24's repair stops short of the review's
+      numbers, since the penalties stay constants on the sums' scale --
+      which is what keeps the undecayed model river's.
+
 - [x] 79. **`label_delay` ignores a clock event on a skipped row — found
       2026-09-11, checking task 78's parity; in released 0.5.1.** A reset
       that lands on a row the spec skips (a null feature, an unusable

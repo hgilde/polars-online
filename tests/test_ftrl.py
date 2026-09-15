@@ -125,10 +125,25 @@ def test_expression_equals_bank():
     assert one.select(keep).equals(expr.select(keep), null_equal=True)
 
 
-def test_strict_binary_rejects_non_binary_targets():
-    df = pl.DataFrame({"x0": [1.0, 2.0, 3.0], "x1": [0.0, 0.0, 0.0], "y0": [0.0, 0.5, 1.0]})
-    out = po.ModelBank([_spec(strict_binary=True, min_periods=0.0)]).fit_predict(df)
-    assert _pred(out).size == 3  # runs; the 0.5 row simply does not train
+def test_strict_binary_refuses_a_target_other_than_0_or_1():
+    """``strict_binary`` was documented as an error and ran as a silent skip
+    that still counted the row toward ``n_eff`` (review 2026-09-12, S31). The
+    chunk is refused, naming the row and the value, before any stream is
+    touched -- as a label outside ``ew_class``'s classes is -- so the bank is
+    left as it was and the corrected chunk can be fed. A null is no value,
+    and passes."""
+    df = pl.DataFrame(
+        {"x0": [1.0, 2.0, 3.0, 4.0], "x1": [0.0] * 4, "y0": [0.0, None, 0.5, 1.0]},
+        schema={"x0": pl.Float64, "x1": pl.Float64, "y0": pl.Float64},
+    )
+    bank = po.ModelBank([_spec(strict_binary=True, min_periods=0.0)])
+    before = bank.save_bytes()
+    with pytest.raises(ValueError, match=r"strict_binary.*row 2") as exc:
+        bank.fit_predict(df)
+    assert "0.5" in str(exc.value)
+    assert bank.save_bytes() == before, "the refused chunk touched the bank"
+    fixed = df.with_columns(y0=pl.when(pl.col("y0") == 0.5).then(None).otherwise(pl.col("y0")))
+    assert _pred(bank.fit_predict(fixed)).size == 4
 
 
 def test_bad_config_rejected():
