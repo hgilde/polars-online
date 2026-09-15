@@ -87,6 +87,39 @@ def test_selection_prefers_penalty_when_features_are_noise():
     assert (sel == 10.0).mean() > 0.8
 
 
+def test_an_infinite_select_halflife_selects_on_the_plain_mean():
+    """``select_halflife = inf`` scores each penalty by its plain mean
+    squared out-of-sample error over every row so far (review 2026-09-12,
+    S27); the builder refused it. numpy over the bank's own residual columns:
+    the selection a row reports is the argmin coming into it."""
+    rng = np.random.default_rng(5)
+    n = 900
+    x = rng.standard_normal((n, 3))
+    # Signal, then none: the unpenalized fit leads, and the plain mean hands
+    # the lead to a penalty long after an EW mean would have.
+    y = np.where(np.arange(n) < 300, 1.5 * x[:, 0], 0.0) + rng.standard_normal(n)
+    df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "x2": x[:, 2], "y0": y})
+    path = [1.0, 0.1, 0.0]
+    out = po.ModelBank([_spec(path, select_halflife=float("inf"))]).fit_predict(df)["m"]
+    resid = np.array(
+        [out.struct.field(f"resid_y0__l{lab}").to_numpy() for lab in ("1", "0.1", "0")], float
+    )
+    sel = out.struct.field("lam_selected_y0").to_numpy().astype(float)
+    counted = np.isfinite(resid[0])
+    e2 = np.where(counted, resid, 0.0) ** 2
+    before_sum = np.concatenate([np.zeros((3, 1)), np.cumsum(e2, axis=1)[:, :-1]], axis=1)
+    before_n = np.concatenate([[0], np.cumsum(counted)[:-1]])
+    picked = []
+    for i in np.flatnonzero((before_n > 0) & np.isfinite(sel)):
+        mean = before_sum[:, i] / before_n[i]
+        lo, second = np.sort(mean)[:2]
+        if second - lo <= 1e-9 * second:
+            continue  # a near tie: the running mean's rounding may break it
+        assert sel[i] == path[int(np.argmin(mean))], i
+        picked.append(sel[i])
+    assert len(picked) > 500 and len(set(picked)) > 1, set(picked)
+
+
 def test_chunk_invariance():
     df, _ = synthetic(seed=34, n_groups=2, n_rows=180, k=3, null_frac=0.0)
     spec = _spec([0.5, 0.0], group="group", halflife=200.0)

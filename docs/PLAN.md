@@ -1866,6 +1866,14 @@ note, not a task.
       folded delta and gate a target's output on its own weight. Batch 4c
       is S1, S27, N4 and the rest of D10.
 
+      **Batch 4c, 2026-09-15**: S27 fixed, as decided, and D10's rest. Seven
+      parameters take `inf` where it names a limit, nine say `finite`, and
+      `ridge` and `q` leave the Python table. Raised: the review's
+      `ridge`/`q` half was the table's alone, since the builders validate
+      through Rust. Two new observations fixed with it: N7 (`sgd`'s NaN
+      `huber_delta` reached `f64::clamp`) and N8 (`marginal` refused
+      `min_periods = inf`). S1 is batch 4d and N4 batch 4e.
+
 - [x] 79. **`label_delay` ignores a clock event on a skipped row — found
       2026-09-11, checking task 78's parity; in released 0.5.1.** A reset
       that lands on a row the spec skips (a null feature, an unusable

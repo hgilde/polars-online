@@ -447,6 +447,28 @@ class TestModelAveraging:
         m = np.isfinite(avg) & np.isfinite(sel)
         assert np.max(np.abs(avg[m] - sel[m])) < 1e-9
 
+    def test_an_infinite_eta_is_the_selection(self):
+        """``average_eta = inf`` is ``emit_selected``'s argmin: the best slot
+        weighs ``exp(0) = 1`` and every other ``exp(-inf) = 0``, a tie shared
+        (review 2026-09-12, S27). The builder refused it, and at the best slot
+        the formula's ``-inf * 0`` is NaN."""
+        out, _ = self._run(average_eta=float("inf"), emit_sigma=True)
+        preds = np.array([self._f(out, s) for s in self.SLOTS])
+        sig = np.array([self._f(out, s.replace("pred_", "sigma_", 1)) for s in self.SLOTS])
+        avg, sel = self._f(out, "pred_y0__averaged"), self._f(out, "pred_y0__selected")
+        ok = np.isfinite(preds) & np.isfinite(sig)
+        rows = np.flatnonzero(ok.any(axis=0))
+        assert rows.size > 1000 and np.isfinite(avg[rows]).all()
+        unique = 0
+        for i in rows:
+            s2, p = sig[ok[:, i], i] ** 2, preds[ok[:, i], i]
+            best = s2 == s2.min()
+            assert avg[i] == pytest.approx(p[best].mean(), rel=1e-15), i
+            if best.sum() == 1:
+                assert avg[i] == sel[i], i
+                unique += 1
+        assert unique > 1000
+
     def test_small_eta_is_the_equal_weight_mean(self):
         out, _ = self._run(average_eta=1e-6)
         avg = self._f(out, "pred_y0__averaged")

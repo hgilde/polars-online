@@ -233,13 +233,16 @@ spec, and the plugin's `online_run` is the bank.
 9. **`_spec.py`**: `@_checked def <name>(name, *, targets, features, <own
    parameters>, **common: Unpack[CommonKwargs])` returning
    `_common(name, {"type": "<name>", ...}, ...)`, with the update equations in
-   the docstring; a `_INF_OK` entry if any parameter accepts `inf` (Rust
-   parses those as `Num`); and the name in `__all__`. Then in **`spec.py`**,
+   the docstring; a `_INF_OK` entry for each parameter where `inf` means
+   something (Rust parses those as `Num`, and `validate` says `finite` of
+   every other float); and the name in `__all__`. Then in **`spec.py`**,
    the import and `__all__`.
    *Check*: `test_model_registry::test_every_rust_kind_has_exactly_one_builder`
    fails while a kind has no builder; `test_minimal_names_every_builder` then
    sends you to step 15. `test_error_messages::test_the_inf_table_matches
-   _the_rust_side` holds `_INF_OK` to what Rust accepts.
+   _the_rust_side` holds `_INF_OK` to what Rust's parser and `validate`
+   accept, and `crates/online-polars/tests/spec_inf.rs` holds `validate` to
+   the same verdicts from TOML, where it is the only gate.
 10. **`_kwargs.py`**: `class <Name>Kwargs(ExprKwargs, total=False)` with the
     builder's own parameters — the PEP 692 keywords the namespace method
     exposes.
@@ -358,6 +361,6 @@ the registry tests will fail in between, which is what they are for.
 - **A new parameter** on one model: the `Cfg` field and its validation in
   `new` (step 1), the `ModelKind` field with `#[serde(default)]` (step 6), the
   `build_one` default (step 7), the builder keyword (step 9), the
-  `<Name>Kwargs` entry (step 10), the snapshot (step 12). If it accepts `inf`,
-  `_INF_OK` (step 9). The typed-dict and inf-table tests catch the Python
+  `<Name>Kwargs` entry (step 10), the snapshot (step 12). If `inf` means something
+  for it, `_INF_OK` (step 9). The typed-dict and inf-table tests catch the Python
   half; the compiler catches the Rust half.

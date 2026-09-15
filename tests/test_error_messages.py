@@ -7,6 +7,7 @@ JSON offset, a Rust type or an internal method is a regression here.
 from __future__ import annotations
 
 import datetime
+import math
 import threading
 import types
 import typing
@@ -246,11 +247,13 @@ def _float_parameters(builder) -> dict[str, typing.Any]:
 
 @pytest.mark.parametrize("builder", BUILDERS, ids=lambda b: b.__name__)
 def test_the_inf_table_matches_the_rust_side(builder):
-    """``_INF_OK`` says which parameters Rust parses as ``Num`` (``inf``
-    allowed) rather than ``f64``. Feed ``"inf"`` straight to Rust for every
-    float parameter: an allowed one must get past the *parser* (a validation
-    refusal is fine), and a refused one must be refused by Rust too, or the
-    Python check is inventing a rule."""
+    """``_INF_OK`` says which parameters may be infinite. Feed ``"inf"``
+    straight to Rust for every float parameter: an allowed one must get past
+    the parser *and* past ``validate``'s finiteness checks (a refusal for want
+    of another parameter is fine), and a refused one must be refused by Rust
+    too, or the Python check is inventing a rule. It checked the parser alone,
+    which is the field's type, while ``validate`` refused two of the table's
+    entries (review 2026-09-12, S27)."""
     allowed = _spec._INF_OK["*"] | _spec._INF_OK.get(builder.__name__, frozenset())
     kwargs = {k: v for k, v in {**BASE, **BUILDERS[builder]}.items() if v is not None}
     for key, inf in _float_parameters(builder).items():
@@ -263,8 +266,81 @@ def test_the_inf_table_matches_the_rust_side(builder):
         except ValueError as e:
             if key in allowed:
                 assert "invalid spec" not in str(e), (key, str(e))
+                assert "finite" not in str(e), (key, str(e))
         else:
             assert key in allowed, f"{builder.__name__}.{key} accepts inf but is not in _INF_OK"
+
+
+# --- S27: inf where it means something, refused in both layers elsewhere ----
+
+#: Where ``inf`` means something (review 2026-09-12, S27; the user's decision
+#: of 2026-09-15): the builder takes it, and the bank builds with it. Each
+#: entry carries what the parameter needs beside it to be valid at all.
+INF_MEANS_SOMETHING = [
+    (po.spec.huber, "huber_delta", {}),  # least squares
+    (po.spec.sgd, "huber_delta", dict(loss="huber")),  # least squares
+    (po.spec.ewridge, "long_halflife", dict(session="s", session_gap=1.0, session_shrink=0.5)),
+    (po.spec.lasso, "select_halflife", {}),  # selection over the whole history
+    (po.spec.holt, "level_halflife", dict(halflife=None)),  # the cumulative fit (S30)
+    (po.spec.pa, "c", dict(mode="pa1")),  # mode "pa": the step is not capped
+    (po.spec.ewridge, "average_eta", dict(ridge=[1e-6, 1.0], emit_averaged=True)),  # the argmin
+]
+
+#: Where it means nothing: the builder refuses it, and so does the bank when
+#: the JSON carries ``"inf"``.
+INF_MEANS_NOTHING = [
+    (po.spec.ewridge, "drift_delta", dict(emit_drift=True), math.inf),
+    (po.spec.ewridge, "drift_threshold", dict(emit_drift=True), math.inf),
+    (po.spec.quantile, "quantile_eps", {}, math.inf),
+    (po.spec.pa, "eps", {}, math.inf),
+    (po.spec.ftrl, "alpha", {}, math.inf),
+    (po.spec.ftrl, "beta", {}, math.inf),
+    (po.spec.ftrl, "l1", {}, math.inf),
+    (po.spec.ftrl, "l2", {}, math.inf),
+    (po.spec.sgd, "learning_rate", {}, math.inf),
+    (po.spec.ewridge, "ridge", {}, math.inf),
+    (po.spec.kalman, "q", {}, [math.inf, 0.5]),
+]
+
+
+def _kwargs(builder, extra):
+    return {k: v for k, v in {**BASE, **BUILDERS[builder], **extra}.items() if v is not None}
+
+
+@pytest.mark.parametrize(
+    ("builder", "key", "extra"),
+    INF_MEANS_SOMETHING,
+    ids=[f"{b.__name__}.{k}" for b, k, _ in INF_MEANS_SOMETHING],
+)
+def test_inf_is_taken_where_it_means_something(builder, key, extra):
+    """A halflife that forgets nothing, a Huber loss that is least squares, a
+    step that is not capped, weights that are the argmin: the builder takes
+    ``inf`` and the bank builds with it. Python refused every one, and so did
+    Rust's parser, while its validation let TOML's ``inf`` through."""
+    po.ModelBank([builder("m", **{**_kwargs(builder, extra), key: math.inf})])
+
+
+@pytest.mark.parametrize(
+    ("builder", "key", "extra", "value"),
+    INF_MEANS_NOTHING,
+    ids=[f"{b.__name__}.{k}" for b, k, _, _ in INF_MEANS_NOTHING],
+)
+def test_inf_is_refused_where_it_means_nothing(builder, key, extra, value):
+    """A learning rate, a penalty, a tube or a threshold at ``inf`` is no
+    setting, and both layers say so by name: the builder's own check, whose
+    message ends ``got ...``, and the bank's, from the JSON. ``ridge`` and
+    ``q`` were in the Python table and refused by Rust alone, which the
+    builder reached anyway, since it validates through Rust."""
+    kwargs = _kwargs(builder, extra)
+    with pytest.raises(ValueError, match=f"{key} must be finite, got"):
+        builder("m", **{**kwargs, key: value})
+    spec = builder("m", **kwargs)
+    where = spec if key in spec else spec["model"]
+    where[key] = (
+        [("inf" if math.isinf(v) else v) for v in value] if isinstance(value, list) else "inf"
+    )
+    with pytest.raises(ValueError):
+        po.ModelBank([spec])
 
 
 # --- hand-built dicts: serde names the path, and the visitors say what fits --

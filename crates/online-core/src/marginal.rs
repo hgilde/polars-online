@@ -123,14 +123,11 @@ impl MarginalCfg {
                 self.n_targets
             ));
         }
-        if let Some(bad) = self
-            .min_periods
-            .iter()
-            .find(|v| v.is_nan() || v.is_infinite() || **v < 0.0)
-        {
-            return Err(format!(
-                "marginal: min_periods must be finite and >= 0, got {bad}"
-            ));
+        // `inf` is a gate that never opens, as for every other model and as
+        // the builders document; this model alone refused it (review
+        // 2026-09-12, S27).
+        if let Some(bad) = self.min_periods.iter().find(|v| v.is_nan() || **v < 0.0) {
+            return Err(format!("marginal: min_periods must be >= 0, got {bad}"));
         }
         // `MarginalLags::new` checks the lags themselves; this is the pair of
         // rules that involve `serial_rule`, which it cannot see.
@@ -1413,8 +1410,9 @@ mod tests {
         let mut c = cfg(1, 1);
         c.min_periods = vec![-1.0];
         err(c.clone(), "min_periods");
+        // A gate that never opens, as for every other model (S27).
         c.min_periods = vec![f64::INFINITY];
-        err(c.clone(), "min_periods");
+        assert!(Marginal::new(c.clone()).is_ok());
         c.min_periods = vec![f64::NAN];
         err(c.clone(), "min_periods");
         c.min_periods = vec![1.0, 2.0];

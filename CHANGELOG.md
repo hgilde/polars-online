@@ -125,8 +125,27 @@ carries breaking changes, and any change to the numbers a model returns.
   `exp(−eta·(σ² − σ²_best))`, in the target's units squared, so `eta = 1`
   was an equal-weight mean for a return and the argmin for a price.
   **`pred_<t>__averaged` changes** for every spec that emits it.
+- **`inf` is taken where it means something** (the code review's S27):
+  `huber_delta` is least squares for `huber` and the squared loss for
+  `sgd`, `long_halflife` makes the long run the whole history,
+  `select_halflife` selects on the plain mean, `level_halflife` forgets
+  nothing (as `halflife` does, the same knob), `pa`'s `c` caps nothing (mode
+  `"pa"`), and `average_eta` is `emit_selected`'s argmin, a tie shared. The
+  builders refused each, and JSON could not carry it. **Where it means
+  nothing it is refused by name**, in `validate` as in the builders:
+  `drift_delta` and `drift_threshold` (a detector that never fires),
+  `quantile_eps` and `pa`'s `eps` (a model that never learns), `ftrl`'s
+  `alpha`, `beta`, `l1` and `l2`, and `sgd`'s `learning_rate`. A TOML `inf`
+  got past `validate` for each. `ridge` and `kalman`'s `q` leave the
+  builders' table of what may be infinite; Rust refused both already.
+- **`marginal` takes `min_periods = inf`**, a gate that never opens, as
+  every other model does and the builders document. It alone refused it.
 
 ### Fixed
+
+- **`sgd(loss="huber")` panicked on a NaN `huber_delta`**, from TOML or the
+  Rust API: neither the spec nor the model checked it, and `f64::clamp`
+  panics on a NaN bound. Both refuse it now.
 
 - **`max_dclock` caps the time a run of skipped rows hands the next row**
   (the code review's S3). Each skipped row's delta was capped on its own and

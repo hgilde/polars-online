@@ -86,6 +86,15 @@ class TestLosses:
         hi, _ = _fit(df, loss="quantile", quantile=other)
         assert lo[0] < hi[0]
 
+    def test_an_infinite_huber_delta_is_the_squared_loss(self):
+        """Huber's gradient is the residual clipped at ``delta``, and at
+        ``inf`` nothing is clipped: the squared loss's fit, to the bit (review
+        2026-09-12, S27). The builder refused it."""
+        df = _linear(n=5000, noise=1.0)
+        _, hub = _fit(df, loss="huber", huber_delta=float("inf"))
+        _, sq = _fit(df, loss="squared")
+        assert hub.equals(sq, null_equal=True)
+
     def test_huber_beats_squared_under_contamination(self):
         rng = np.random.default_rng(4)
         n = 20000

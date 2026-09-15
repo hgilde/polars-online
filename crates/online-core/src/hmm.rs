@@ -79,7 +79,8 @@ pub struct HmmCfg {
     /// State means, `K*d` row-major: given, there is no warm-up. The pair
     /// enters the accumulators at **weight 1** -- one row's worth -- so the
     /// given states are a starting point that the stream washes out under
-    /// `learn = true`, and are held exactly under `learn = false`.
+    /// `learn = true` -- within about one halflife under a finite one, since
+    /// the pair weighs one row -- and are held exactly under `learn = false`.
     pub means: Option<Vec<f64>>,
     /// State covariances, `K*d*d` row-major, beside `means`.
     pub covs: Option<Vec<f64>>,

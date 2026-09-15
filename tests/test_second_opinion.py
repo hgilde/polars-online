@@ -456,7 +456,8 @@ class TestSessionShrinkBlend:
         assert g["target_means"][0] == pytest.approx(ybar, rel=1e-12, abs=1e-12)
         assert abs(g["target_vars"][0] - yvar) <= (1e-12 if offset == 0.0 else 1e-6) * yvar
 
-    def test_the_first_row_of_a_session_is_predicted_from_the_blend(self):
+    @pytest.mark.parametrize("long_halflife", [2000.0, float("inf")])
+    def test_the_first_row_of_a_session_is_predicted_from_the_blend(self, long_halflife):
         rng = np.random.default_rng(32)
         n1, n2 = 4300, 10
         n = n1 + n2
@@ -474,12 +475,14 @@ class TestSessionShrinkBlend:
             session="s",
             session_gap=1.0,
             session_shrink=1.0,  # the blend is the slow twin itself
-            long_halflife=2000.0,
+            long_halflife=long_halflife,
         )
         pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y")
-        # The slow twin's fit: every row of session 1 at 0.5 ** (age / 2000).
+        # The slow twin's fit: every row of session 1 at 0.5 ** (age / H). At
+        # H = inf the weights are numpy's unit ones: the long run is the whole
+        # history, which the builder refused (review 2026-09-12, S27).
         age = (n1 - 1) - np.arange(n1)
-        b = _wls(x[:n1, None], y[:n1], 0.5 ** (age / 2000.0))
+        b = _wls(x[:n1, None], y[:n1], 0.5 ** (age / long_halflife))
         assert pred[n1] == pytest.approx(b[0] + b[1] * x[n1], abs=1e-8)
         # E31: scoring that row against the bank fitted to the end of session 1
         # gives the same number, from a blended copy.
@@ -533,16 +536,18 @@ class TestNoInterceptIsNotCentred:
                 want = b[0] + x[i] @ b[1:] if intercept else x[i] @ b
                 assert pred[i] == pytest.approx(want, abs=1e-6), (intercept, i)
 
+    @pytest.mark.parametrize("delta", [1e9, float("inf")])
     @pytest.mark.parametrize("standardize", [False, True])
-    def test_huber_with_no_outliers_is_numpy_least_squares(self, standardize):
+    def test_huber_with_no_outliers_is_numpy_least_squares(self, standardize, delta):
         # C11, exact: with a delta no residual reaches, every IRLS weight is 1
-        # and the Huber fit is least squares.
+        # and the Huber fit is least squares. At `inf` that is the definition
+        # (review 2026-09-12, S27), which the builder refused, so it was 1e9.
         x, y = _no_intercept_rows(400, seed=42)
         spec = po.spec.huber(
             "m",
             targets=["y"],
             features=["x0", "x1"],
-            huber_delta=1e9,
+            huber_delta=delta,
             ridge=1e-12,
             standardize=standardize,
             halflife=float("inf"),
@@ -553,7 +558,7 @@ class TestNoInterceptIsNotCentred:
         pred = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y")
         for i in range(100, 400, 23):
             b = _wls(x[:i], y[:i], np.ones(i), intercept=False)
-            assert pred[i] == pytest.approx(x[i] @ b, abs=1e-8), (standardize, i)
+            assert pred[i] == pytest.approx(x[i] @ b, abs=1e-8), (standardize, delta, i)
 
     def test_kalman_coefficients_reproduce_its_predictions(self):
         # C10. The exact contract every coefficient model meets: the `coef`

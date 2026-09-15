@@ -14,19 +14,30 @@
 //! b    += min(w, 1) * tau * sign(y − p) * z
 //! ```
 //!
+//! With an intercept, `z` carries it as a constant 1, so it is inside
+//! `s = ||z||²` -- Crammer et al.'s augmented form -- where river's
+//! `PARegressor` and sklearn keep the intercept outside the norm: the one
+//! difference T-S18 has to map (review 2026-09-12, D10).
+//!
 //! **Weight note.** A row weight below 1 scales the step; a weight above 1
 //! counts as 1. The update is a projection onto the row's constraint, and
 //! repeating a projection changes nothing, so there is no "two observations"
-//! to emulate -- scaling past the projection would overshoot it.
+//! to emulate -- scaling past the projection would overshoot it. sklearn's
+//! `sample_weight` scales the step uncapped and river's `PARegressor` takes
+//! no weight, so a comparison with either holds for `w <= 1` only (T-S18;
+//! D10).
 //!
 //! **Decay note.** Unlike every other model here, PA keeps no accumulators, so
 //! there is nothing for the clock to decay: each step fully satisfies the
 //! current row's constraint and older rows survive only through the
 //! coefficients they left behind. `n_eff` is still decayed on the clock so
 //! `min_periods` means the same thing as elsewhere, but the coefficients
-//! themselves have no half-life. Use PA-I/PA-II (a finite `c`) when that
-//! aggressiveness is a problem: an outlier otherwise moves the fit as far as it
-//! takes to satisfy the outlier.
+//! themselves have no half-life -- so after a gap `min_periods` can withhold
+//! a fit exactly as good as the one before it, which is `ewridge`'s behaviour
+//! too (a mean-form fit does not move on a gap either): the library's
+//! convention rather than `pa`'s (CLAUDE.md rule 8; D10). Use PA-I/PA-II (a
+//! finite `c`) when that aggressiveness is a problem: an outlier otherwise
+//! moves the fit as far as it takes to satisfy the outlier.
 
 use serde::{Deserialize, Serialize};
 
@@ -54,7 +65,8 @@ pub struct PaCfg {
     pub add_intercept: bool,
     pub decay: Decay,
     pub mode: PaMode,
-    /// Aggressiveness. Ignored by [`PaMode::Pa`].
+    /// Aggressiveness. Ignored by [`PaMode::Pa`]; `inf` caps nothing, so
+    /// either bounded mode is [`PaMode::Pa`] exactly.
     pub c: f64,
     /// Width of the insensitive tube: rows already this close are passive.
     pub eps: f64,

@@ -50,7 +50,8 @@ and what it takes::
 It raises ``ValueError``, naming the spec and the parameter, for a value the
 model refuses: a count below 0; ``NaN`` anywhere; ``inf`` where it means
 nothing (it is allowed where it does -- ``halflife``, ``max_dclock``,
-``min_periods``, ``session_gap`` and the model parameters that say so);
+``min_periods``, ``session_gap``, ``average_eta`` and the model parameters
+that say so);
 neither ``halflife`` nor ``lam``; ``clock`` without ``max_dclock``; a column
 listed twice, or as both target and feature; a level outside ``(0, 1)``; an
 option not in the list the message gives; and each model's own rules.

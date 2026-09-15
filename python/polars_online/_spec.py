@@ -142,20 +142,27 @@ def _got(v: Any) -> str:
     return f"{type(v).__name__} {r if len(r) <= 60 else r[:57] + '...'}"
 
 
-# The parameters whose Rust type admits ``inf`` (``Num`` / ``FloatOrList``
-# rather than ``f64``): no decay, no ceiling, a pinned coefficient, no clip.
-# Everywhere else an infinity is refused here by name, because once it is
-# inside the model's tagged union serde can only say `expected f64`. Keyed by
-# builder because ``ridge`` is a grid for ``ewridge`` and a plain float for
-# ``huber``; ``"*"`` is the shared parameters. tests/test_error_messages.py
-# checks this table against the Rust side.
+# The parameters where ``inf`` means something: no decay, no ceiling, a
+# pinned coefficient, no clip, least squares (``huber_delta``), a step nothing
+# caps (``pa``'s ``c``), the argmin (``average_eta``). Rust parses these as
+# ``Num`` and ``validate`` takes them at ``inf``; everywhere else ``validate``
+# says ``finite``, and an infinity is refused here by name first, because
+# once it is inside the model's tagged union serde can only say `expected
+# f64`. The table was the fields whose Rust *type* admits ``inf``, which named
+# ``ridge`` and ``q``, both refused by ``validate``, and missed six that mean
+# something (review 2026-09-12, S27). Keyed by builder, since one name can be
+# a limit for one builder and no setting for another; ``"*"`` is the shared
+# parameters. tests/test_error_messages.py checks this table against the
+# Rust side.
 _INF_OK: dict[str, frozenset[str]] = {
-    "*": frozenset({"halflife", "min_periods", "max_dclock", "session_gap"}),
-    "ewridge": frozenset({"ridge"}),
-    "kalman": frozenset({"coef_halflife", "q", "revert_halflife"}),
-    "sgd": frozenset({"clip_gradient", "coef_min", "coef_max"}),
-    "pa": frozenset({"coef_min", "coef_max"}),
-    "holt": frozenset({"trend_halflife"}),
+    "*": frozenset({"halflife", "min_periods", "max_dclock", "session_gap", "average_eta"}),
+    "ewridge": frozenset({"long_halflife"}),
+    "lasso": frozenset({"select_halflife"}),
+    "kalman": frozenset({"coef_halflife", "revert_halflife"}),
+    "huber": frozenset({"huber_delta"}),
+    "sgd": frozenset({"clip_gradient", "coef_min", "coef_max", "huber_delta"}),
+    "pa": frozenset({"c", "coef_min", "coef_max"}),
+    "holt": frozenset({"level_halflife", "trend_halflife"}),
 }
 
 
@@ -448,8 +455,8 @@ def ewridge(
 
         ``session_shrink`` is a middle option between ``session_gap`` and a full
         reset (PLAN section 12 open question 1). A second accumulator tracks the
-        long-run relationship at ``long_halflife``, and on a session boundary the
-        two are mixed weight-respectingly::
+        long-run relationship at ``long_halflife`` (``inf``: the whole history),
+        and on a session boundary the two are mixed weight-respectingly::
 
             W'  = (1-f) * W_fast + f * W_slow
             S'  = ((1-f) * W_fast * S_fast + f * W_slow * S_slow) / W'
@@ -742,7 +749,8 @@ def lasso(
     Selection is free: predictions for every path point are computed anyway, so
     ``lam_selected_<target>`` is the argmin over the path of an EW mean squared
     out-of-sample error with halflife ``select_halflife`` (default: the model
-    halflife), reported as it stood before the row -- the lambda this row was
+    halflife; ``inf``, the plain mean over every row so far), reported as it
+    stood before the row -- the lambda this row was
     scored with, not the one its own error then elected. Outputs carry one
     pred/resid pair per path point.
 
@@ -871,7 +879,8 @@ def huber(
                  = d * s / |r|  otherwise
 
     The weights are per target, so ``S`` is per target here (one accumulator
-    each), unlike ew_ridge which shares one. Default ``huber_delta`` is 1.5.
+    each), unlike ew_ridge which shares one. Default ``huber_delta`` is 1.5;
+    ``inf`` cuts nothing, which is least squares.
     ``ridge`` (default ``1e-6``), ``standardize``, ``solve_every`` and
     ``max_rows_between_solves`` mean what they mean for :func:`ewridge`.
     """
@@ -1219,7 +1228,8 @@ def sgd(
     Note ``epsilon_insensitive`` has a sign-valued subgradient, so a constant
     rate oscillates in a band around the optimum; use ``inv_scaling`` with it.
     ``huber_delta`` here is in **target units**, unlike the ``huber`` model
-    where it is in units of the residual std.
+    where it is in units of the residual std; ``inf`` clips nothing, which is
+    the squared loss.
 
     Defaults: ``learning_rate=0.01``, ``l2=0.0``, ``huber_delta=1.0``,
     ``quantile`` must be given for that loss, ``eps=0.1`` (the half-width of
@@ -1304,7 +1314,8 @@ def pa(
         b    += tau * sign(y - p) * z
 
     ``mode`` is ``"pa"``, ``"pa1"`` (the default) or ``"pa2"``; ``c``
-    defaults to 1.0 and ``eps`` to 0.1, in target units.
+    defaults to 1.0 (``inf`` caps nothing, so either bounded mode is then
+    ``"pa"``) and ``eps`` to 0.1, in target units.
 
     A row weight below 1 scales ``tau``, so a half-weight row moves the fit
     half as far; a weight above 1 counts as 1. The update is a projection onto
@@ -1382,7 +1393,8 @@ def holt(
     halflives keeps the parameter meaning identical to every other model
     here, so an irregular clock forecasts the right distance ahead instead of
     treating every row as one step. ``level_halflife`` defaults to the spec's
-    ``halflife`` and ``trend_halflife`` to four times that.
+    ``halflife`` -- one knob under two names, ``inf`` included -- and
+    ``trend_halflife`` to four times that.
 
     ``coef`` is ``[level, trend]`` per target -- the whole state.
     """

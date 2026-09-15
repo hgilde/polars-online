@@ -360,7 +360,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 standardize: *standardize,
                 ridge_decay: *ridge_decay,
                 session_shrink: *session_shrink,
-                long_halflife: *long_halflife,
+                long_halflife: long_halflife.map(|n| n.0),
                 coef_prior: coef_prior.clone(),
                 min_periods: spec.min_periods_or_default(),
                 solve_every: solve_every.unwrap_or_else(|| spec.solve_every_default(decay)),
@@ -404,7 +404,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 decay,
                 lasso_path: lasso_path.clone(),
                 l1_ratio: l1_ratio.unwrap_or(1.0),
-                select_halflife: *select_halflife,
+                select_halflife: select_halflife.map(|n| n.0),
                 min_periods: spec.min_periods_or_default(),
                 solve_every: solve_every.unwrap_or_else(|| spec.solve_every_default(decay)),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
@@ -456,7 +456,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 add_intercept: spec.add_intercept,
                 decay,
                 loss: RobustLoss::Huber {
-                    delta: huber_delta.unwrap_or(1.5),
+                    delta: huber_delta.map_or(1.5, |n| n.0),
                 },
                 ridge: ridge.unwrap_or(1e-6),
                 standardize: *standardize,
@@ -583,7 +583,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             let loss = match loss.as_deref().unwrap_or("squared") {
                 "squared" => SgdLoss::Squared,
                 "huber" => SgdLoss::Huber {
-                    delta: huber_delta.unwrap_or(1.0),
+                    delta: huber_delta.map_or(1.0, |n| n.0),
                 },
                 "quantile" => SgdLoss::Quantile {
                     tau: quantile.ok_or("sgd: loss \"quantile\" needs a `quantile` level")?,
@@ -640,7 +640,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 add_intercept: spec.add_intercept,
                 decay,
                 mode,
-                c: c.unwrap_or(1.0),
+                c: c.map_or(1.0, |n| n.0),
                 eps: eps.unwrap_or(0.1),
                 min_periods: spec.min_periods_or_default(),
                 constraint: constraint(spec.k(), coef_min, coef_max, *coef_sum),
@@ -653,13 +653,17 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         } => {
             // Default the level to the spec's own halflife, so `halflife` means
             // the same thing here as it does for every other model.
-            let level = level_halflife.unwrap_or(match decay {
-                Decay::Halflife(h) => h,
-                // `lam = 1` forgets nothing, as for every other model; its log
-                // is 0, and the division made it `-inf` (review 2026-09-12, S30).
-                Decay::Lam(1.0) => f64::INFINITY,
-                Decay::Lam(l) => -std::f64::consts::LN_2 / l.ln(),
-            });
+            let level = match level_halflife {
+                Some(n) => n.0,
+                None => match decay {
+                    Decay::Halflife(h) => h,
+                    // `lam = 1` forgets nothing, as for every other model; its
+                    // log is 0, and the division made it `-inf` (review
+                    // 2026-09-12, S30).
+                    Decay::Lam(1.0) => f64::INFINITY,
+                    Decay::Lam(l) => -std::f64::consts::LN_2 / l.ln(),
+                },
+            };
             let cfg = HoltCfg {
                 n_targets: spec.m(),
                 level_halflife: level,

@@ -71,7 +71,12 @@ cargo run -p online-cli -- --config examples/bank.toml
    weight inside the window** -- in the field a model emits, in its `min_periods` gate,
    and in its accessor -- because that is what the fit is read from (review 2026-09-12,
    pattern D; `lasso`, `ew_class`, `marginal` and `ew_cov`'s accessor each said otherwise
-   in one of those three places).
+   in one of those three places). A model whose coefficients do not decay (`pa`, `sgd`)
+   still decays `n_eff`, so after a gap `min_periods` can withhold a fit exactly as good as
+   before it; `ewridge`'s mean-form fit does not move on a gap either, so this is the
+   library's convention, not one model's quirk (review 2026-09-12, D10). Each target's
+   `min_periods` is checked against that target's own weight where the model keeps one
+   (S2); the emitted `n_eff` is the shared weight either way.
 9. **A zero-weight row is legal** and means "advance the clock, learn nothing" — including
    as the *first* row of a stream, where `lam*w_sum + w` is 0 and the mean-form update's
    `a` and `b` are both 0/0. Guard every such division; an unguarded one poisons the state

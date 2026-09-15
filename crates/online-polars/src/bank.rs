@@ -4261,7 +4261,7 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
         // equal-weight mean for a return and the argmin for a price (review
         // 2026-09-12, S23). `sigma` is that error's square root, already
         // tracked for E12, so this costs one pass.
-        let eta = spec.average_eta.unwrap_or(1.0);
+        let eta = spec.average_eta.map_or(1.0, |n| n.0);
         for ch in chunks {
             let nr = ch.rows.len();
             for (ri, &i) in ch.rows.iter().enumerate() {
@@ -4294,12 +4294,21 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
                             let slot = t_i * nc + c_i;
                             let (s, p) = (sig(mi, slot), prd(mi, slot));
                             if s.is_finite() && p.is_finite() {
-                                let wgt = if best > 0.0 {
-                                    (-eta * (s * s / best - 1.0)).exp()
+                                // A slot past the best weighs `exp(-eta *
+                                // excess)`, and the best weighs 1 at any
+                                // `eta`: at `inf`, `-inf * 0` made it NaN
+                                // (review 2026-09-12, S27).
+                                let excess = if best > 0.0 {
+                                    s * s / best - 1.0
                                 } else if s * s == 0.0 {
-                                    1.0
-                                } else {
                                     0.0
+                                } else {
+                                    f64::INFINITY
+                                };
+                                let wgt = if excess > 0.0 {
+                                    (-eta * excess).exp()
+                                } else {
+                                    1.0
                                 };
                                 num += wgt * p;
                                 den += wgt;

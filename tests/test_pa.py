@@ -39,6 +39,17 @@ def test_recovers_a_noiseless_relationship(mode):
     assert c[2] == pytest.approx(-0.5, abs=0.05), f"{mode}: {c}"
 
 
+@pytest.mark.parametrize("mode", ["pa1", "pa2"])
+def test_an_infinite_c_is_the_unbounded_mode(mode):
+    """``c = inf`` caps nothing: ``min(l/s, inf) = l/s`` and ``l/(s + 0.5/inf)
+    = l/s``, so either bounded mode is mode ``"pa"`` to the bit (review
+    2026-09-12, S27). The builder refused it."""
+    df = _linear(noise=0.3)
+    _, bounded = _fit(df, mode=mode, c=float("inf"))
+    _, unbounded = _fit(df, mode="pa")
+    assert bounded.equals(unbounded, null_equal=True)
+
+
 def test_no_learning_rate_is_needed():
     # The point of PA: it reaches the answer with no rate to tune, where SGD at
     # a badly chosen rate does not.
@@ -156,5 +167,5 @@ def test_bad_config_rejected():
         _spec(mode="pa3")
     with pytest.raises(ValueError, match="pa c must be > 0"):
         _spec(c=0.0)
-    with pytest.raises(ValueError, match="pa eps must be >= 0"):
+    with pytest.raises(ValueError, match="pa eps must be finite and >= 0"):
         _spec(eps=-1.0)

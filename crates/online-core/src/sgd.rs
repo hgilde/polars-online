@@ -160,7 +160,9 @@ impl SgdCfg {
             return Err("sgd: clip_gradient must be > 0 (use inf to disable)".into());
         }
         match self.loss {
-            SgdLoss::Huber { delta } if delta <= 0.0 => {
+            // NaN too: `f64::clamp` panics on a NaN bound. `inf` clips
+            // nothing, which is the squared loss.
+            SgdLoss::Huber { delta } if delta <= 0.0 || delta.is_nan() => {
                 return Err("sgd: huber delta must be > 0".into());
             }
             SgdLoss::Quantile { tau }

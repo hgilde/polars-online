@@ -32,7 +32,9 @@ def _df(n: int = 60) -> pl.DataFrame:
 # (builder, kwargs beyond BASE, expected message fragment)
 REJECTED = [
     (po.spec.ewridge, dict(halflife=10.0, ridge=-1.0), "ridge must be finite and >= 0"),
-    (po.spec.ewridge, dict(halflife=10.0, ridge=INF), "ridge must be finite and >= 0"),
+    # The builder's own check since S27: `ridge` left the table of what may be
+    # infinite, where only Rust refused it (review 2026-09-12).
+    (po.spec.ewridge, dict(halflife=10.0, ridge=INF), "ridge must be finite, got float inf"),
     (po.spec.ewridge, dict(halflife=10.0, ridge=NAN), "ridge must not be NaN"),
     (po.spec.ewridge, dict(halflife=10.0, ridge=[1e-6, -1.0]), "ridge must be finite and >= 0"),
     (

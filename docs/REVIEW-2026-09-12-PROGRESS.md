@@ -109,13 +109,12 @@ two agree to `3e-9`); and C22's two `holt` tests do not turn over -- with
 a clock since the last observation the level does stand still across a
 null, and what moves is the next row's forecast.
 
-**Kept for later: 4 items** (V22 closed with task 81; batch 1 below
+**Kept for later: 2 items** (V22 closed with task 81; batch 1 below
 closed fourteen, batch 2 thirteen, batch 3a eleven, batch 3b two, batch 4a
-four, batch 4b four), each with its reason in the tables below -- a
-decision taken by the user on 2026-09-15 and recorded in `docs/PLAN.md`
-task 80 (S1 and S27, for batch 4c), documentation (D10, begun in 4a), and
-one new observation, N4, which task 81 did half of. D1 is excluded by the
-user.
+four, batch 4b four, batch 4c two), each with its reason in the tables
+below -- S1, on a decision the user took on 2026-09-15 and recorded in
+`docs/PLAN.md` task 80, for batch 4d, and one new observation, N4, which
+task 81 did half of, for batch 4e. D1 is excluded by the user.
 The user's own
 design work (tasks 78 and 79), parked on `design/task-78` while the round
 ran, is merged into `main`.
@@ -197,7 +196,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | S24 | the expression form packs no target for an unsupervised kind | — | **fixed** (batch 2) — the expression packs the column a model with no target reads from the targets slot (`ModelKind::targets_slot_column`: `hazard_col`, `exog_tvtp`), and refuses a feature expression named after the clock, session or weight column. On the old build both expression forms failed with "target column not found", and the aliased feature ran |
 | S25 | six doors, three depths for spec checking | — | **fixed** (batch 2) — `Spec::check` is fill, validate and build, and every door calls it: `Bank::new`, `RunConfig::validate` (which validated before the bank could fill), `validate_spec`, `output_fields`, `output_index`, `coef_fields` and the expression plugin's `parse_spec`. On the old build the E53 dict was refused by the three index functions and by the runner, and a `window` + `ridge_decay` spec got field names from the index functions while the bank refused it |
 | S26 | `coef_index` refusals by name vs `IndexError` | — | **fixed** (batch 2) — `coef_index` refuses every kind with no coefficients, naming it; `marginal`, `rcov`, `corrchange` and `bocpd` raised an `IndexError` on the old build. The docstrings list the six |
-| S27 | the layers' lists of what may be infinite disagree | — | later: needs a per-parameter decision |
+| S27 | the layers' lists of what may be infinite disagree | `numpy` `lstsq` (`huber_delta`, `long_halflife`); the bank's own `emit_selected` (`average_eta`); `numpy` over the bank's residuals (`select_halflife`); exact identities (`pa.c`, `sgd`'s `huber_delta`, `level_halflife`) | **fixed** (batch 4c), on the user's decision (`inf` where it means something): seven parameters are `Num` and in `_INF_OK`, nine say `finite` in `validate`, and `ridge` and `q` leave the table. **Raised:** the `ridge`/`q` half is the table's alone -- the builders validate through Rust, which refused both by name, so no user met it (the log, batch 4c) |
 | S28 | residual diagnostics disagree on a zero-weight row | `river.drift.PageHinkley`, `numpy.quantile` | **fixed** — a zero-weight row's residual stays out of `resid_quantiles`, the autocorrelation, the drift detector and `ew_cov`'s `mahal_q`, as it always did of `sigma`. Library, exact: river's `PageHinkley(alpha=1, mode="up")` reproduces ours flag for flag (checked on its own first, at three settings), and fed the bank's own `\|resid\|/sigma` series without the zero-weight row it reproduces the bank's drift column. No library needed for the rest: a zero-weight row's target, jumped a hundredfold, now changes no field on any later row, under `drift_action` `"flag"` and `"reset"`. On the old build all three failed (a quantile moved; under `"reset"` the row restarted the model; the drift column parted from river's at the row). The full gate then failed `tests/test_label_delay.py`'s `test_the_weight_free_diagnostics_are_where_the_two_differ`, which pinned S28 itself -- it asserted the native path and `embargo`'s doubled stream disagree on these three, attributing the gap to the oracle's zero-weight rows (the review's V21 notes exactly this). It now asserts they agree |
 | S29 | `holt` reads the row weight as a gate | `pandas` `ewm` | **fixed** (batch 4a), on the user's decision: level and trend are weighted means, `(λ·W·old + w·new)/(λ·W + w)`. The review's failing test -- the last 40 rows at weight 0.5 against 1 -- failed on the old build, the two levels the same to the last digit, and passes against a longhand of the weighted means. **Its exact check, a row at weight 2 is that row twice at no clock, passed on the old build** (raised): both sides ignored the weight, and a row at no clock changed nothing. It holds for the level and `n_eff`, not the trend, which reads a move over the clock. Library: statsmodels' `Holt` agrees exactly once the weights have saturated (T-S14 from row 1000, `rtol 1e-12`); the first rows part by design, which T-S14 now asserts and which failed on the old build. **Every `holt` stream's numbers move** (raised), weighted or not, since the gains start at 1; goldens re-frozen |
 | S30 | `holt` at an infinite level halflife | `statsmodels` `Holt` | **fixed** (batch 4a), with S29: an infinite halflife fits the whole history -- on `y = 3 + 2t` the forecast for row 199 is 399, where the old build gave the first row's 3.0 -- and `lam = 1` builds, as `halflife = inf`, where it was refused naming `level_halflife`. **`trend_halflife = inf` is the whole history's drift now**, not a trend pinned at zero (raised: a plain level with no trend has no spelling left) |
@@ -217,7 +216,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | D6 | **fixed** (batch 1), and **short of the whole story** (raised). The window's note has been right since C17, as the review says; the test's "about eight significant figures" was never the window. Its oracle, `direct_window_fit`, put the ridge on the intercept, which the model leaves unpenalized, and at `ridge = 1e-8` that alone is the `3.8e-8` the `1e-6` tolerance hid. With the intercept free the two agree to `1.2e-14` over 284 comparisons, and the test holds `1e-12` |
 | D7 | **fixed** (batch 2) — the lists of models with no target now name all eight and point at `_spec.py`'s `UNSUPERVISED`; `gram_axes` says why it names `ew_cov` alone; the bank's tripwire comment says which refusals make it unreachable; `group_indices` calls `session_hash` instead of repeating it. `ModelBank.predict`'s `session_gap` line is C19's, for batch 3 |
 | D8 | **fixed** (batch 2), apart from `ewridge`'s docstring on `sigma` under a window, which S1 settles (batch 4). `_numeric_keys` reads every builder -- it missed `bocpd`'s floats among others, which a test now holds and which failed on the old build; `_json`'s NaN message names the spec of a list; `_checked` says the Rust side's floor of 1 for eight counts; the `lasso` and `bocpd` docstrings, `MarginalKwargs`, `spec.rs`'s `stats` and `covariance` docs and `closed_groups`' doc say what the code does |
-| D9, D10 | D9 **fixed** (batches 4a and 4b): `holt.rs`'s module doc (S29/S30); the core's `combo_labels`, which nothing but its own test called -- the bank renders `stream::combos` -- is gone; `predict_chunk` says a row with an unusable weight is scored anyway; `max_dclock`'s doc says the folded total is capped (S3). D10 **begun** (batch 4a): `ftrl.rs`'s module doc (C24), `the_row_weight_scales_the_gradient`'s comment -- the weight multiplies the loss, river's and sklearn's convention, so a row at weight 4 is not four rows -- `spec.rs`'s `strict_binary` (S31), and `reference.py`'s `ftrl_ref`, which gained the squared loss and names the decay's effect. `pa.rs` and `hmm.rs` are batch 4c |
+| D9, D10 | D9 **fixed** (batches 4a and 4b): `holt.rs`'s module doc (S29/S30); the core's `combo_labels`, which nothing but its own test called -- the bank renders `stream::combos` -- is gone; `predict_chunk` says a row with an unusable weight is scored anyway; `max_dclock`'s doc says the folded total is capped (S3). D10 **fixed** (batches 4a and 4c): `ftrl.rs`'s module doc (C24), `the_row_weight_scales_the_gradient`'s comment -- the weight multiplies the loss, river's and sklearn's convention, so a row at weight 4 is not four rows -- `spec.rs`'s `strict_binary` (S31), and `reference.py`'s `ftrl_ref`, which gained the squared loss and names the decay's effect; in 4c `pa.rs`'s module doc (the intercept inside `‖z‖²`, where river and sklearn keep it outside; a weight compares with theirs at `w ≤ 1` only; `n_eff` decays and the coefficients do not), `hmm.rs`'s `HmmCfg::means` (a given state washes out within about one halflife) and that convention in hard rule 8 |
 | V23 | **fixed** (batch 2), with S7 -- `feature_sets = []` is refused, naming `feature_sets`; on the old build it built, and `output_index` rendered no slot for a model that emits two |
 | V5 | **closed** (batch 3a) — the test the review asked for exists: `test_frame.py::test_pushdowns_are_honoured_after_the_model`, case "head then filter", compares the plan with the collected frame under both engines |
 | V7 | **fixed** (batch 3a) — confirmed through a real save: a reloaded filter's `pred_var()` was `R` alone, 0.25 against the saved filter's 0.2545, since it read the last row's regressor, a scratch a save does not keep. `pred_var` takes the row now, as `predict` does; nothing above the core reads it. The first version of the test passed on the old build because it restored from `state()`, an in-memory clone that keeps the scratch; it was corrected to go through the bytes, and then failed as the review said |
@@ -421,6 +420,29 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   every model that reads features (`n_eff` at row 119, 14.96 → 15.11), and
   S2 moves `ridge`'s early conformal band and sigma, and the `seqtest` that
   compares its slots.
+- 2026-09-15 — **batch 4c**: S27 fixed, on the user's decision (`inf`
+  where it means something), and D10's rest. Every test was written first
+  and run on the old build. The layers disagree only where `inf` comes from
+  TOML, so the tests take both routes: a verdict per parameter through the
+  builders and the bank's JSON, and `crates/online-polars/tests/spec_inf.rs`
+  through TOML, where `validate` is the only gate. On the old build the
+  seven meaningful limits were refused by the builders, the nine meaningless
+  ones passed `validate` from TOML, and each second opinion's `inf` case
+  failed at the builder while its finite twin passed. **Raised, as the user
+  asked for a test that passes where the review expected it to fail:** the
+  review's `ridge` and `q` ("Python passes `inf` through and Rust refuses
+  it") are right about the table and wrong about the effect. The builders
+  validate through Rust as they build, and Rust refused both by name
+  ("ridge must be finite and >= 0", "q values must be finite and >= 0"), so
+  no user was handed a spec that failed later; the verdict test for `ridge`
+  passed on the old build. It now asks for the builder's own message, and
+  the table test asks that no allowed key be refused as infinite -- which
+  is how it found N8. Two more came out of the work: N7, a panic, and N8,
+  `marginal`'s `min_periods`. `pa.c = inf` and `level_halflife = inf` are
+  their named limits to the bit, as is `sgd`'s `huber_delta = inf` against
+  the squared loss; `huber_delta = inf` and `long_halflife = inf` match
+  `numpy`'s least squares, and `average_eta = inf` the selection wherever
+  the best slot is unique, a tie shared.
 
 ## New observations (found while fixing; not in the review)
 
@@ -490,6 +512,20 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   has mean zero. Both read raw moments there now. The tests compare with
   the models, a feature moved off zero (`test_gram_module.py`); the models'
   fit through the origin is held to `numpy` already (C8).
+- **N7** (while fixing S27) -- **fixed** in batch 4c. `sgd`'s
+  `huber_delta` had no check in the spec, and the core's `delta <= 0.0`
+  passes NaN, so a TOML `huber_delta = nan` built, and the first row with a
+  residual reached `r.clamp(-delta, delta)`, which panics on a NaN bound.
+  Making the field `Num` for S27 would have opened the same road to a
+  hand-built JSON dict. Both layers refuse NaN now;
+  `nan_is_refused_where_inf_means_something` holds every field S27 made
+  `Num` to it.
+- **N8** (while fixing S27) -- **fixed** in batch 4c. `marginal` refused
+  `min_periods = inf`, which the builders document as allowed, the spec
+  accepts, and every other model reads as a gate that never opens; its
+  unit test pinned the refusal, with no reason given since task 37. It
+  takes it now. Found by the table test asking that no allowed key be
+  refused as infinite.
 
 ## Libraries
 

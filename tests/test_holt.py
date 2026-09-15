@@ -64,6 +64,17 @@ def test_lam_one_is_an_infinite_halflife():
     assert by_lam.equals(by_inf, null_equal=True)
 
 
+def test_an_infinite_level_halflife_is_an_infinite_halflife():
+    """``level_halflife`` and ``halflife`` are one knob for holt, and ``inf``
+    is no forgetting under either name: the builder took it under one and
+    refused it under the other (review 2026-09-12, S27)."""
+    df = _trending(n=200)
+    kw = dict(targets=["y0"], clock="t", max_dclock=100.0, min_periods=3.0)
+    by_level = po.ModelBank([po.spec.holt("m", level_halflife=float("inf"), **kw)]).fit_predict(df)
+    by_inf = po.ModelBank([po.spec.holt("m", halflife=float("inf"), **kw)]).fit_predict(df)
+    assert by_level.equals(by_inf, null_equal=True)
+
+
 def test_irregular_clock_extrapolates_the_right_distance():
     # The trend is per clock unit, so a 5-unit gap must forecast 5 units ahead.
     df = _trending(n=400, step=5.0, noise=0.0)

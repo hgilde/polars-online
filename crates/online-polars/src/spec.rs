@@ -447,9 +447,10 @@ pub enum ModelKind {
         /// Needs `long_halflife`.
         #[serde(default)]
         session_shrink: Option<f64>,
-        /// Halflife of that twin.
+        /// Halflife of that twin; `"inf"` makes the long run the whole
+        /// history (review 2026-09-12, S27).
         #[serde(default)]
-        long_halflife: Option<f64>,
+        long_halflife: Option<Num>,
         #[serde(default)]
         solve_every: Option<f64>,
         #[serde(default)]
@@ -491,9 +492,10 @@ pub enum ModelKind {
         /// 1.0 = lasso, < 1.0 = elastic net.
         #[serde(default)]
         l1_ratio: Option<f64>,
-        /// Halflife of the EW squared error used to select lambda.
+        /// Halflife of the EW squared error used to select lambda; `"inf"`
+        /// selects on the plain mean over every row so far.
         #[serde(default)]
-        select_halflife: Option<f64>,
+        select_halflife: Option<Num>,
         #[serde(default)]
         solve_every: Option<f64>,
         #[serde(default)]
@@ -552,9 +554,10 @@ pub enum ModelKind {
     },
     /// Huber regression (docs/PLAN.md §4.5).
     Huber {
-        /// Cut point in units of the EW residual std. Default 1.5 ([`Spec::validate`]).
+        /// Cut point in units of the EW residual std. Default 1.5
+        /// ([`Spec::validate`]); `"inf"` cuts nothing, which is least squares.
         #[serde(default)]
-        huber_delta: Option<f64>,
+        huber_delta: Option<Num>,
         #[serde(default)]
         ridge: Option<f64>,
         #[serde(default)]
@@ -655,9 +658,10 @@ pub enum ModelKind {
         /// "poisson" or "logistic".
         #[serde(default)]
         loss: Option<String>,
-        /// Huber cut, in target units.
+        /// Huber cut, in target units; `"inf"` clips nothing, which is the
+        /// squared loss.
         #[serde(default)]
-        huber_delta: Option<f64>,
+        huber_delta: Option<Num>,
         #[serde(default)]
         quantile: Option<f64>,
         /// Width of the insensitive tube.
@@ -702,9 +706,10 @@ pub enum ModelKind {
         /// "pa1" (default), "pa" (unbounded) or "pa2" (damped).
         #[serde(default)]
         mode: Option<String>,
-        /// Aggressiveness cap. Ignored by "pa".
+        /// Aggressiveness cap. Ignored by "pa"; `"inf"` caps nothing, so
+        /// either bounded mode is "pa".
         #[serde(default)]
-        c: Option<f64>,
+        c: Option<Num>,
         /// Insensitive tube: rows already this close leave the fit alone.
         #[serde(default)]
         eps: Option<f64>,
@@ -720,9 +725,9 @@ pub enum ModelKind {
     /// features. The baseline a feature-based model should have to beat.
     Holt {
         /// Halflife of the level, in clock units. Defaults to the spec's own
-        /// `halflife`.
+        /// `halflife`, the same knob, `"inf"` included: no forgetting.
         #[serde(default)]
-        level_halflife: Option<f64>,
+        level_halflife: Option<Num>,
         /// Halflife of the trend; `"inf"` forgets no slope, so the trend is
         /// the whole history's drift. Defaults to four times the level
         /// halflife.
@@ -1503,10 +1508,10 @@ pub struct Spec {
     pub emit_averaged: bool,
     /// Sharpness of the averaging weights, `exp(−eta · (σ²/σ²_best − 1))`:
     /// at 1, a slot whose error is twice the best's weighs `e⁻¹` of it. Large
-    /// values approach `emit_selected`'s argmin; small values approach an
-    /// equal-weight mean. Default 1.
+    /// values approach `emit_selected`'s argmin, and `"inf"` is it, a tie
+    /// shared; small values approach an equal-weight mean. Default 1.
     #[serde(default)]
-    pub average_eta: Option<f64>,
+    pub average_eta: Option<Num>,
     /// Emit `selected_<target>` and `pred_<target>__selected`: online model
     /// selection across every grid slot for that target (ridge values, feature
     /// sets and halflives), by lowest EW out-of-sample error. Generalizes the
@@ -1650,10 +1655,10 @@ impl Spec {
                     level_halflife: Some(h),
                     ..
                 } => {
-                    if !positive(*h) {
+                    if !positive(h.0) {
                         return Err(format!("spec {:?}: level_halflife must be > 0", self.name));
                     }
-                    Ok(vec![(String::new(), Decay::Halflife(*h))])
+                    Ok(vec![(String::new(), Decay::Halflife(h.0))])
                 }
                 _ => Err(format!(
                     "spec {:?}: one of halflife/lam is required",
@@ -2039,11 +2044,22 @@ impl Spec {
                 ));
             }
         }
-        if self.drift_delta.is_some_and(|v| v < 0.0 || v.is_nan()) {
-            return Err(format!("spec {:?}: drift_delta must be >= 0", self.name));
+        // A tolerance or a threshold of `inf` is a detector that never
+        // fires: no setting (review 2026-09-12, S27).
+        if self.drift_delta.is_some_and(|v| v < 0.0 || !v.is_finite()) {
+            return Err(format!(
+                "spec {:?}: drift_delta must be finite and >= 0",
+                self.name
+            ));
         }
-        if self.drift_threshold.is_some_and(|v| v <= 0.0 || v.is_nan()) {
-            return Err(format!("spec {:?}: drift_threshold must be > 0", self.name));
+        if self
+            .drift_threshold
+            .is_some_and(|v| v <= 0.0 || !v.is_finite())
+        {
+            return Err(format!(
+                "spec {:?}: drift_threshold must be finite and > 0",
+                self.name
+            ));
         }
         if let Some(qs) = &self.resid_quantiles {
             if qs.is_empty() {
@@ -2089,8 +2105,11 @@ impl Spec {
                 self.name
             ));
         }
-        if self.average_eta.is_some_and(|v| v <= 0.0 || v.is_nan()) {
-            return Err(format!("spec {:?}: average_eta must be > 0", self.name));
+        if self.average_eta.is_some_and(|v| v.0 <= 0.0 || v.0.is_nan()) {
+            return Err(format!(
+                "spec {:?}: average_eta must be > 0 (\"inf\" is emit_selected's argmin)",
+                self.name
+            ));
         }
         // A knob whose switch is off does nothing: refused rather than
         // ignored, as elsewhere here (review 2026-09-12, S22). `drift_action
@@ -2206,7 +2225,7 @@ impl Spec {
                         self.name
                     ));
                 }
-                if level_halflife.is_some_and(|h| h <= 0.0 || h.is_nan()) {
+                if level_halflife.is_some_and(|h| h.0 <= 0.0 || h.0.is_nan()) {
                     return Err(format!("spec {:?}: level_halflife must be > 0", self.name));
                 }
                 if trend_halflife.is_some_and(|h| h.0 <= 0.0 || h.0.is_nan()) {
@@ -2225,15 +2244,24 @@ impl Spec {
                         ));
                     }
                 }
-                if c.is_some_and(|v| v <= 0.0 || v.is_nan()) {
-                    return Err(format!("spec {:?}: pa c must be > 0", self.name));
+                if c.is_some_and(|v| v.0 <= 0.0 || v.0.is_nan()) {
+                    return Err(format!(
+                        "spec {:?}: pa c must be > 0 (\"inf\" caps nothing: mode \"pa\")",
+                        self.name
+                    ));
                 }
-                if eps.is_some_and(|v| v < 0.0 || v.is_nan()) {
-                    return Err(format!("spec {:?}: pa eps must be >= 0", self.name));
+                // A tube of `inf` holds every row: a model that never learns
+                // (review 2026-09-12, S27).
+                if eps.is_some_and(|v| v < 0.0 || !v.is_finite()) {
+                    return Err(format!(
+                        "spec {:?}: pa eps must be finite and >= 0",
+                        self.name
+                    ));
                 }
             }
             ModelKind::Sgd {
                 loss,
+                huber_delta,
                 quantile,
                 learning_rate,
                 schedule,
@@ -2271,8 +2299,19 @@ impl Spec {
                         ));
                     }
                 }
-                if learning_rate.is_some_and(|v| v <= 0.0 || v.is_nan()) {
-                    return Err(format!("spec {:?}: learning_rate must be > 0", self.name));
+                if learning_rate.is_some_and(|v| v <= 0.0 || !v.is_finite()) {
+                    return Err(format!(
+                        "spec {:?}: learning_rate must be finite and > 0",
+                        self.name
+                    ));
+                }
+                // Unchecked, a NaN reached the core's `f64::clamp`, which
+                // panics on a NaN bound.
+                if huber_delta.is_some_and(|d| !positive(d.0)) {
+                    return Err(format!(
+                        "spec {:?}: huber_delta must be > 0 (\"inf\" is the squared loss)",
+                        self.name
+                    ));
                 }
             }
             ModelKind::EwCov {
@@ -2654,12 +2693,21 @@ impl Spec {
                 l2,
                 ..
             } => {
-                if alpha.is_some_and(|a| a <= 0.0 || a.is_nan()) {
-                    return Err(format!("spec {:?}: ftrl alpha must be > 0", self.name));
+                // At `inf` each is no setting: `alpha` leaves `-z/l2`, and
+                // `beta`, `l1` or `l2` zeroes every coordinate for ever
+                // (review 2026-09-12, S27).
+                if alpha.is_some_and(|a| a <= 0.0 || !a.is_finite()) {
+                    return Err(format!(
+                        "spec {:?}: ftrl alpha must be finite and > 0",
+                        self.name
+                    ));
                 }
                 for (name, v) in [("beta", beta), ("l1", l1), ("l2", l2)] {
-                    if v.is_some_and(|v| v < 0.0 || v.is_nan()) {
-                        return Err(format!("spec {:?}: ftrl {name} must be >= 0", self.name));
+                    if v.is_some_and(|v| v < 0.0 || !v.is_finite()) {
+                        return Err(format!(
+                            "spec {:?}: ftrl {name} must be finite and >= 0",
+                            self.name
+                        ));
                     }
                 }
             }
@@ -2669,8 +2717,11 @@ impl Spec {
                 solve_every,
                 ..
             } => {
-                if huber_delta.is_some_and(|d| !positive(d)) {
-                    return Err(format!("spec {:?}: huber_delta must be > 0", self.name));
+                if huber_delta.is_some_and(|d| !positive(d.0)) {
+                    return Err(format!(
+                        "spec {:?}: huber_delta must be > 0 (\"inf\" is least squares)",
+                        self.name
+                    ));
                 }
                 check_ridge(&self.name, *ridge)?;
                 check_solve_every(&self.name, *solve_every)?;
@@ -2685,8 +2736,13 @@ impl Spec {
                 if !(0.0 < *quantile && *quantile < 1.0) {
                     return Err(format!("spec {:?}: quantile must be in (0, 1)", self.name));
                 }
-                if quantile_eps.is_some_and(|e| !positive(e)) {
-                    return Err(format!("spec {:?}: quantile_eps must be > 0", self.name));
+                // A floor of `inf` weighs every row 0: a model that never
+                // learns (review 2026-09-12, S27).
+                if quantile_eps.is_some_and(|e| !positive(e) || !e.is_finite()) {
+                    return Err(format!(
+                        "spec {:?}: quantile_eps must be finite and > 0",
+                        self.name
+                    ));
                 }
                 check_ridge(&self.name, *ridge)?;
                 check_solve_every(&self.name, *solve_every)?;
@@ -2786,7 +2842,7 @@ impl Spec {
                 if l1_ratio.is_some_and(|r| !(0.0..=1.0).contains(&r)) {
                     return Err(format!("spec {:?}: l1_ratio must be in [0, 1]", self.name));
                 }
-                if select_halflife.is_some_and(|h| !positive(h)) {
+                if select_halflife.is_some_and(|h| !positive(h.0)) {
                     return Err(format!("spec {:?}: select_halflife must be > 0", self.name));
                 }
                 check_solve_every(&self.name, *solve_every)?;
@@ -2845,7 +2901,7 @@ impl Spec {
                     }
                 }
                 check_solve_every(&self.name, *solve_every)?;
-                if long_halflife.is_some_and(|h| !positive(h)) {
+                if long_halflife.is_some_and(|h| !positive(h.0)) {
                     return Err(format!("spec {:?}: long_halflife must be > 0", self.name));
                 }
                 if session_shrink.is_some_and(|f| !(0.0..=1.0).contains(&f)) {
