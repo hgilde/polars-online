@@ -1820,6 +1820,13 @@ note, not a task.
       premise, S13's test passing on the old build, S6 and D6 worse than
       written, C6's test unable to show it.
 
+      **Batch 2, 2026-09-15**, the spec layer: S5, S7, S8, S21, S22, S24,
+      S25, S26, C18, C20, D7, D8 and V23. `Spec::check` -- fill, validate,
+      build -- is the one door every entry point uses (S25). Every new test
+      failed on the old build. One call taken: `kalman`'s `coef_halflife`
+      beside `q` is documented, not refused, since the docs already say `q`
+      overrides it and specs use the pair.
+
 - [x] 79. **`label_delay` ignores a clock event on a skipped row — found
       2026-09-11, checking task 78's parity; in released 0.5.1.** A reset
       that lands on a row the spec skips (a null feature, an unusable

@@ -250,8 +250,8 @@ class DecoKwargs(ExprKwargs, total=False):
 
 
 class MarginalKwargs(ExprKwargs, total=False):
-    """``marginal`` has no parameters of its own: the pairs are fixed by the
-    calling column and the features, and everything else is shared."""
+    """``marginal``'s own parameters are its lag, bin and window options; the
+    pairs are fixed by the calling column and the features."""
 
     lags: list[int] | None
     serial_rule: str | None

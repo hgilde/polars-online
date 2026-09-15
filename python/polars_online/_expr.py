@@ -146,15 +146,33 @@ def _run(spec: dict[str, Any], target_expr: pl.Expr, feature_exprs: list[pl.Expr
         )
         raise TypeError(msg)
     _warn_in_memory(spec["model"]["type"], target_expr.meta.output_name())
-    # ew_cov, kmeans and micro have no target: their first feature *is* the
-    # calling column, so it must not be passed twice.
-    if spec["model"]["type"] in _spec.UNSUPERVISED:
-        args: list[pl.Expr] = []
+    # A model with no target (`_spec.UNSUPERVISED`) takes the calling column
+    # as its first feature, so it must not be passed twice, and packs no
+    # target -- unless it reads a column from the targets slot, ``bocpd``'s
+    # ``hazard_col`` or ``hmm``'s ``exog_tvtp``, which then never reached the
+    # bank (review 2026-09-12, S24). The order here must match `input_names`
+    # on the Rust side: targets, then features, then clock/session/weight.
+    model = spec["model"]
+    if model["type"] in _spec.UNSUPERVISED:
+        slot = model.get("hazard_col") or model.get("exog_tvtp")
+        args: list[pl.Expr] = [] if slot is None else [pl.col(slot)]
     else:
         # The calling expression supplies the first target; any `extra_targets`
-        # are ordinary columns. The order here must match `input_names` on the
-        # Rust side: targets, then features, then clock/session/weight.
+        # are ordinary columns.
         args = [target_expr, *(pl.col(t) for t in spec["targets"][1:])]
+    # A feature expression named after the clock, session or weight column
+    # would be that column as well: the Rust side reads the packed input by
+    # name and keeps the first of two (S24). The column itself is fine.
+    roles = {c for c in (spec["clock"], spec["session"], spec["weight"]) if c is not None}
+    for e in feature_exprs:
+        name = e.meta.output_name(raise_if_undetermined=False)
+        bare = e.meta.undo_aliases()
+        if name in roles and not (bare.meta.is_column() and bare.meta.output_name() == name):
+            msg = (
+                f'online: a feature expression is named "{name}", the name of the spec\'s '
+                "clock, session or weight column; give it an alias of its own"
+            )
+            raise TypeError(msg)
     args += feature_exprs
     for col in (spec["clock"], spec["session"], spec["weight"]):
         if col is not None:

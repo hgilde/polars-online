@@ -237,6 +237,18 @@ class TestExpressionFeatures:
         ).unnest("y0")
         _assert_same(expr, _bank_out(df, ["x0", "x1"], **kw))
 
+    def test_a_feature_aliased_to_the_weight_column_is_refused(self):
+        """The packed input is de-duplicated by name, so a feature
+        expression aliased to the weight column's name was the weight as
+        well, and the real weight was dropped without a word
+        (review 2026-09-12, S24)."""
+        df, _ = synthetic(seed=25, n_groups=1, n_rows=60, k=2)
+        lagged = pl.col("w").shift(1).alias("w")
+        with pytest.raises(TypeError, match='"w"'):
+            df.select(
+                pl.col("y0").online.ewridge(features=["x0", lagged], weight="w", halflife=50.0)
+            )
+
     def test_ew_cov_accepts_expressions(self):
         df, _ = synthetic(seed=24, n_groups=2, n_rows=100, k=2)
         out = df.select(

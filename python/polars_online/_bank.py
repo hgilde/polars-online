@@ -43,12 +43,18 @@ class ModelBank:
     """
 
     def __init__(self, specs: Iterable[dict[str, Any]]) -> None:
-        self._specs = list(specs)
-        self._native = _native.ModelBank(_json(self._specs))
+        self._native = _native.ModelBank(_json(list(specs)))
+        # The specs as the bank runs them -- filled, as a state file carries
+        # them -- so they read the same before a round trip as after it. The
+        # caller's own dicts were kept, and a dict the builders did not write
+        # was one spec here and another after a save (review 2026-09-12, S21).
+        self._specs = _from_json(self._native.specs_json())
 
     @property
     def specs(self) -> list[dict[str, Any]]:
-        """The specs this bank runs, as the dicts the builders made.
+        """The specs this bank runs: the dicts the builders made, with what a
+        hand-written dict may leave out filled in (``targets`` for a model with
+        no target, ``drift_action``).
 
         A state file carries them, so a bank loaded from one reports its
         specs without being told what they are -- every field, including the

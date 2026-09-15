@@ -199,6 +199,18 @@ def test_a_column_literally_named_inf_is_still_a_name():
     plt.assert_frame_equal(loaded.fit_predict(df), bank.fit_predict(df))
 
 
+def test_the_specs_are_the_banks_before_a_round_trip_as_after_it():
+    """A dict the builders did not write -- a ``bocpd`` with no ``targets``
+    and no ``drift_action`` -- was the caller's own before a save and the
+    bank's filled form after it, and ``coef_index``, ``gram`` and ``coef``
+    read the unfilled one (review 2026-09-12, S21)."""
+    hand = {"name": "b", "model": {"type": "bocpd", "prior_scale": [1.0]}, "features": ["x0"]}
+    bank = po.ModelBank([hand])
+    assert bank.specs == po.ModelBank.load_bytes(bank.save_bytes()).specs
+    assert bank.specs[0]["targets"] == ["x0"]
+    assert bank.specs[0]["drift_action"] == "flag"
+
+
 # --- the specs are a read-only view ------------------------------------------
 
 

@@ -12,6 +12,7 @@ to it.
 from __future__ import annotations
 
 import re
+import typing
 from pathlib import Path
 
 import polars_online as po
@@ -23,6 +24,7 @@ import test_portability
 import test_properties
 import test_semantics_all_models
 from polars_online import _polars_online as _native
+from polars_online import _spec
 
 ROOT = Path(__file__).resolve().parent.parent
 README = ROOT / "README.md"
@@ -110,6 +112,62 @@ def _builders() -> set[str]:
 
 def test_minimal_names_every_builder():
     assert set(MINIMAL) == _builders()
+
+
+def test_coef_index_is_a_layout_or_a_reason_for_every_kind():
+    """``coef_index`` refused three of the kinds with no ``coef`` by name and
+    the others with whatever polars raises on an empty series
+    (review 2026-09-12, S26)."""
+    for name in sorted(MINIMAL):
+        spec = _build(name)
+        kind = spec["model"]["type"]
+        try:
+            index = po.spec.coef_index(spec)
+        except ValueError as e:
+            assert kind in str(e), (name, str(e))
+            continue
+        assert index["position"].to_list() == list(range(index.height)), name
+
+
+def test_coef_every_is_taken_exactly_where_there_is_a_coef():
+    """``coef_every`` schedules the ``coef`` field, so a kind whose output has
+    none has nothing for it to do, and refuses it; the rule is held to the
+    renderer of the fields rather than to a list (review 2026-09-12, S22)."""
+    for name in sorted(MINIMAL):
+        spec = _build(name)
+        has_coef = any(f.startswith("coef") for f in po.spec.output_fields(spec))
+        kw: dict[str, object] = {"targets": ["y"], "features": ["x0"], "halflife": 50.0}
+        kw.update(MINIMAL[name])
+        kw = {k: v for k, v in kw.items() if v is not None}
+        builder = getattr(po.spec, name)
+        if has_coef:
+            builder("m", coef_every=5, **kw)
+        else:
+            try:
+                builder("m", coef_every=5, **kw)
+            except ValueError as e:
+                assert "coef_every" in str(e), (name, str(e))
+            else:
+                raise AssertionError(f"{name} has no coef and took coef_every")
+
+
+def _float_leaves(hint: object) -> set[object]:
+    leaves = {hint, *typing.get_args(hint)}
+    for _ in range(2):
+        leaves |= {a for h in list(leaves) for a in typing.get_args(h)}
+    return leaves
+
+
+def test_every_float_parameter_survives_a_state_file():
+    """A float parameter comes back from a state file as the float it was --
+    ``inf`` included -- only if ``_NUMERIC_KEYS`` names it, and that listed
+    sixteen builders of twenty-one (review 2026-09-12, D8)."""
+    for name in sorted(_builders()):
+        fn = getattr(po.spec, name)
+        hints = typing.get_type_hints(getattr(fn, "__wrapped__", fn))
+        floats = {k for k, h in hints.items() if float in _float_leaves(h)}
+        missing = floats - _spec._NUMERIC_KEYS
+        assert not missing, (name, sorted(missing))
 
 
 def test_every_rust_kind_has_exactly_one_builder():

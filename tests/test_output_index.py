@@ -94,6 +94,36 @@ class TestOutputIndex:
         assert sel.height == 6  # 3 kinds x 2 targets
         assert sel["target"].null_count() == 0
 
+    def test_a_single_combo_carries_its_machine_values(self):
+        """With one ridge and one feature set the combo's metadata was
+        empty, while a grid's carried both; and a single named set was
+        dropped from a ridge grid's (review 2026-09-12, S5)."""
+        one = po.spec.ewridge("m", targets=["y"], features=["x0"], halflife=10.0, ridge=0.5)
+        preds = po.spec.output_index(one).filter(pl.col("kind") == "pred")
+        assert preds["ridge"].to_list() == [0.5]
+        named = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0"],
+            halflife=10.0,
+            ridge=[0.5, 1.0],
+            feature_sets={"a": ["x0"]},
+        )
+        preds = po.spec.output_index(named).filter(pl.col("kind") == "pred")
+        assert preds["feature_set"].to_list() == ["a", "a"]
+
+    def test_an_empty_list_of_feature_sets_is_refused(self):
+        """``feature_sets = []`` beside a ridge grid rendered no slots for a
+        model that emits one per ridge (V23)."""
+        spec = po.spec.ewridge(
+            "m", targets=["y"], features=["x0"], halflife=10.0, ridge=[1e-6, 1e-3]
+        )
+        spec["model"]["feature_sets"] = []
+        with pytest.raises(ValueError, match="feature_sets"):
+            po.spec.output_index(spec)
+        with pytest.raises(ValueError, match="feature_sets"):
+            po.ModelBank([spec])
+
     def test_quantile_levels_are_machine_readable(self):
         idx = po.spec.output_index(grid_spec())
         q = idx.filter(pl.col("kind") == "absresid_q")

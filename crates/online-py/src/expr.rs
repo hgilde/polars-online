@@ -40,7 +40,9 @@ fn parse_spec(kwargs: &OnlineKwargs) -> PolarsResult<Spec> {
     // The expression API always streams over the column it receives; grouping
     // is polars' job via `.over()`.
     spec.group = None;
-    spec.validate()
+    // Filled, validated and built, as at every door (review 2026-09-12, S25):
+    // this one validated only, and left the rest to `online_run`'s bank.
+    spec.check()
         .map_err(|e| polars_err!(ComputeError: "{}", e))?;
     SPEC_CACHE.with(|c| *c.borrow_mut() = Some((kwargs.spec_json.clone(), spec.clone())));
     Ok(spec)
@@ -65,10 +67,13 @@ fn online_output(_input_fields: &[Field], kwargs: OnlineKwargs) -> PolarsResult<
 /// clock / session / weight that the spec uses. Polars strips input names, so
 /// they are reattached here.
 fn input_names(spec: &Spec) -> Vec<&str> {
-    // The unsupervised models (ew_cov, kmeans, micro) have no target column: their
-    // features are the whole input.
+    // A model with no target (`ModelKind::is_unsupervised`) packs none -- its
+    // features are the whole input -- unless it reads a column from the
+    // targets slot, `bocpd`'s `hazard_col` or `hmm`'s `exog_tvtp`, which is
+    // packed first as a target is. Left out, the column never reached the
+    // bank (review 2026-09-12, S24); `_run` in `_expr.py` packs the same.
     let mut names: Vec<&str> = if spec.model.is_unsupervised() {
-        Vec::new()
+        spec.model.targets_slot_column().into_iter().collect()
     } else {
         spec.targets.iter().map(String::as_str).collect()
     };

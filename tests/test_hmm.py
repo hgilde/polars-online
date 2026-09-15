@@ -193,6 +193,32 @@ def test_the_clock_is_a_number(c):
             assert np.allclose(a[live], b[live], rtol=1e-10, atol=1e-10)
 
 
+def test_the_expression_form_reads_the_exogenous_column():
+    """The expression packed no target for a model that learns from none,
+    so ``exog_tvtp`` -- which rides in the targets slot -- never reached the
+    bank (review 2026-09-12, S24)."""
+    df = blobs(n=600, run=100).with_columns(z=pl.Series(np.linspace(-1.0, 1.0, 600)))
+    kw = dict(
+        k=2,
+        precision_prior=1e-2,
+        halflife=1e9,
+        warm_rows=100,
+        seed_rule="lloyd",
+        exog_tvtp="z",
+        tvtp_coef=[[2.0, -2.0, -2.0, 2.0], [1.5, -1.5, -1.5, 1.5]],
+    )
+    via_expr = df.select(pl.col("x0").online.hmm(["x1"], **kw)).unnest("x0")
+    spec = po.spec.hmm("online", features=["x0", "x1"], **kw)
+    via_bank = po.ModelBank([spec]).fit_predict(df)["online"].struct.unnest()
+    assert via_expr.columns == via_bank.columns
+    for c in via_expr.columns:
+        if via_expr[c].dtype.is_numeric():
+            a, b = via_expr[c].to_numpy().astype(float), via_bank[c].to_numpy().astype(float)
+            assert ((np.isnan(a) & np.isnan(b)) | (a == b)).all(), c
+        else:
+            assert via_expr[c].to_list() == via_bank[c].to_list(), c
+
+
 def test_exog_tvtp_reads_the_column():
     df = blobs(n=600, run=50, seed=10).with_columns(
         z=pl.when(pl.int_range(pl.len()) < 300).then(0.0).otherwise(1.0)

@@ -118,6 +118,23 @@ fn config(input: &Path, output: &Path) -> RunConfig {
     }
 }
 
+/// `validate` on a config whose spec is a model with no target and no
+/// `targets` -- the dict the bank fills from `features[0]` (E53) -- without
+/// `fill_defaults` first. It checked each spec before the bank could fill
+/// it, and refused (review 2026-09-12, S25).
+#[test]
+fn validate_accepts_a_spec_the_bank_fills() {
+    let mut cfg = config(Path::new("in.parquet"), Path::new("out.parquet"));
+    cfg.specs = vec![
+        serde_json::from_str(
+            r#"{"name": "c", "model": {"type": "ew_cov"}, "features": ["x0", "x1"],
+                "halflife": 10.0}"#,
+        )
+        .unwrap(),
+    ];
+    cfg.validate().expect("the bank fills the targets");
+}
+
 fn no_progress(_: RunStats) -> PolarsResult<()> {
     Ok(())
 }

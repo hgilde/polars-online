@@ -997,13 +997,8 @@ fn group_indices(df: &DataFrame, spec: &Spec) -> PolarsResult<Vec<(GroupKey, Vec
             let mut order: Vec<(GroupKey, Vec<usize>)> = Vec::new();
             let mut slot_of: PlHashMap<u64, usize> = PlHashMap::default();
             for (i, v) in s.str()?.iter().enumerate() {
-                let h = match v {
-                    None => null_session_hash(),
-                    Some(v) => {
-                        let h = fnv1a(v.as_bytes());
-                        if h == null_session_hash() { h ^ 1 } else { h }
-                    }
-                };
+                // `session_hash`, not a copy of it (review 2026-09-12, D7).
+                let h = session_hash(v);
                 match slot_of.get(&h) {
                     Some(&slot) => order[slot].1.push(i),
                     None => {
@@ -1103,7 +1098,8 @@ where
 /// `tests/test_closed_groups.py` holds the two to each other.
 pub(crate) fn gram_axes(spec: &Spec) -> (Vec<String>, Vec<String>) {
     // `ew_cov` accumulates over the features alone -- no target, and so no
-    // constant column to regress one on.
+    // constant column to regress one on. It is the only model without a
+    // target that keeps a Gram (review 2026-09-12, D7).
     let unsupervised = matches!(spec.model, ModelKind::EwCov { .. });
     let mut columns = spec.features.clone();
     if spec.add_intercept && !unsupervised {
@@ -2099,23 +2095,21 @@ impl Bank {
         // What a spec may leave out, filled before anything reads it, so the
         // bank -- and the state file it writes -- carries the same spec
         // whichever surface wrote it (docs/ENHANCEMENTS.md E53).
+        // Filled, validated and built, as at every other door (`Spec::check`).
         for s in specs.iter_mut() {
-            s.fill_defaults();
+            s.check()?;
         }
         let mut names = std::collections::HashSet::new();
         for s in &specs {
-            s.validate()?;
-            // validate model construction eagerly too
-            crate::stream::build_models(s)?;
             if !names.insert(s.name.clone()) {
                 return Err(format!("duplicate spec name {:?}", s.name));
             }
             // The rendered field names are the user's handle on every output;
             // a duplicate inside one struct would otherwise surface much later
-            // as a confusing polars error. Cannot happen with today's grammar
-            // (targets are deduplicated and every suffix applies uniformly),
-            // so this is a tripwire for future grammar changes, not a code
-            // path with a known trigger.
+            // as a confusing polars error. `Spec::validate` refuses every way
+            // the grammar has of making one (a feature-set name given twice
+            // got here until review 2026-09-12, S7), so this is a tripwire for
+            // future grammar changes.
             let fields = output_fields(s);
             let mut seen_fields = HashSet::with_capacity(fields.len());
             if let Some(dup) = fields.into_iter().find(|f| !seen_fields.insert(f.clone())) {

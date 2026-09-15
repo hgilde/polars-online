@@ -143,7 +143,9 @@ VALUES = [
     (
         po.spec.ew_cov,
         dict(features=["x0", "y"], targets=None, pca=1, pca_every=0),
-        "ew_cov pca_every must be >= 1",
+        # The builder says the floor now, before the core does (review
+        # 2026-09-12, D8).
+        "pca_every must be >= 1, got 0",
     ),
     (
         po.spec.ew_cov,

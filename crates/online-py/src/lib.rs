@@ -352,8 +352,6 @@ impl PyModelBank {
             .map_err(PyValueError::new_err)
     }
 
-    /// The pairs of a `marginal` spec (`Bank::marginal`), one row per
-    /// (group, instance, feature, target).
     /// The groups that have closed and not been read (`Bank::closed_groups`),
     /// oldest first, as one long frame. `drop` removes them from the queue.
     #[pyo3(signature = (spec=None, drop=true))]
@@ -370,6 +368,8 @@ impl PyModelBank {
         ))
     }
 
+    /// The pairs of a `marginal` spec (`Bank::marginal`), one row per
+    /// (group, instance, feature, target).
     #[pyo3(signature = (spec, group=None))]
     fn marginal(slf: &Bound<'_, Self>, spec: usize, group: Option<&str>) -> PyResult<PyDataFrame> {
         let this = slf.try_borrow().map_err(|_| busy("marginal"))?;
@@ -600,14 +600,12 @@ fn run_config_frames(
     }
 }
 
-/// Validate a single spec (raises ValueError with the reason).
+/// Fill, validate and build a single spec, as the bank does
+/// (`Spec::check`; raises ValueError with the reason).
 #[pyfunction]
 fn validate_spec(spec_json: &str) -> PyResult<()> {
-    let spec: Spec = from_json(spec_json).map_err(PyValueError::new_err)?;
-    spec.validate().map_err(PyValueError::new_err)?;
-    online_polars::build_models(&spec)
-        .map(|_| ())
-        .map_err(PyValueError::new_err)
+    let mut spec: Spec = from_json(spec_json).map_err(PyValueError::new_err)?;
+    spec.check().map_err(PyValueError::new_err)
 }
 
 /// The output index as JSON: one object per field with the machine values its
@@ -616,8 +614,8 @@ fn validate_spec(spec_json: &str) -> PyResult<()> {
 /// into a DataFrame.
 #[pyfunction]
 fn spec_output_index(spec_json: &str) -> PyResult<String> {
-    let spec: Spec = from_json(spec_json).map_err(PyValueError::new_err)?;
-    spec.validate().map_err(PyValueError::new_err)?;
+    let mut spec: Spec = from_json(spec_json).map_err(PyValueError::new_err)?;
+    spec.check().map_err(PyValueError::new_err)?;
     serde_json::to_string(&online_polars::output_index(&spec))
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
@@ -627,8 +625,8 @@ fn spec_output_index(spec_json: &str) -> PyResult<String> {
 /// values (target, halflife/lam, ridge, feature_set, lambda, term).
 #[pyfunction]
 fn spec_coef_fields(spec_json: &str) -> PyResult<String> {
-    let spec: Spec = from_json(spec_json).map_err(PyValueError::new_err)?;
-    spec.validate().map_err(PyValueError::new_err)?;
+    let mut spec: Spec = from_json(spec_json).map_err(PyValueError::new_err)?;
+    spec.check().map_err(PyValueError::new_err)?;
     serde_json::to_string(&online_polars::coef_fields(&spec))
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
@@ -636,8 +634,8 @@ fn spec_coef_fields(spec_json: &str) -> PyResult<String> {
 /// Output field names for a spec, without building a bank.
 #[pyfunction]
 fn spec_output_fields(spec_json: &str) -> PyResult<Vec<String>> {
-    let spec: Spec = from_json(spec_json).map_err(PyValueError::new_err)?;
-    spec.validate().map_err(PyValueError::new_err)?;
+    let mut spec: Spec = from_json(spec_json).map_err(PyValueError::new_err)?;
+    spec.check().map_err(PyValueError::new_err)?;
     Ok(online_polars::output_fields(&spec))
 }
 

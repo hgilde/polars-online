@@ -265,12 +265,12 @@ impl RunConfig {
         if !self.no_output() {
             self.output_format()?;
         }
-        for s in &self.specs {
-            s.validate()?;
-        }
-        // The bank's own checks -- a duplicate name, a `seqtest` comparison
-        // naming a spec the bank has not got or a residual a side does not
-        // emit -- so that a dry run reports them and not the first chunk.
+        // Each spec's checks and the bank's -- a duplicate name, a `seqtest`
+        // comparison naming a spec the bank has not got or a residual a side
+        // does not emit -- so that a dry run reports them and not the first
+        // chunk. `Bank::new` fills each spec before it checks it
+        // (`Spec::check`); a validation of its own here refused a spec the
+        // bank would have filled (review 2026-09-12, S25).
         Bank::new(self.specs.clone())?;
         Ok(())
     }

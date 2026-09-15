@@ -112,9 +112,14 @@ impl AnyModel {
         dispatch!(self, m => m.clear_lags())
     }
 
-    /// Cumulative count of jittered or failed factorizations (docs/PLAN.md §7),
-    /// and for `bocpd` of rows whose predictive could not be evaluated.
-    /// Models that do not factorize (rls, kalman, ftrl) report 0.
+    /// What went wrong in a model's solves, counted (docs/PLAN.md §7):
+    /// `ew_ridge` and `robust` count their jittered or failed factorizations,
+    /// `lasso` its coordinate descents that ran out of sweeps, `ew_class` the
+    /// rows whose scoring met a failed factorization, `hmm` the rows its
+    /// filter could not evaluate, and `bocpd` the rows whose predictive could
+    /// not be. Every other model reports 0 because it counts nothing, not
+    /// because nothing can fail: `kalman` inverts an innovation variance, and
+    /// `ew_cov` solves for `mahal` and `partial_corr` (review 2026-09-12, S8).
     pub fn solve_failures(&self) -> u64 {
         match self {
             AnyModel::EwRidge(m) => m.solve_failures,
@@ -1138,9 +1143,6 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
         } => {
             let nr = ridge.as_ref().map(|r| r.to_vec().len()).unwrap_or(1);
             let nf = feature_sets.as_ref().map(|f| f.len()).unwrap_or(0).max(1);
-            if nr * nf == 1 {
-                return vec![Combo::default()];
-            }
             let ridges = ridge
                 .as_ref()
                 .map(FloatOrList::to_vec)
@@ -1152,7 +1154,13 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
             let mut out = Vec::new();
             for f in &fs_names {
                 for r in &ridges {
-                    let label = if nf == 1 {
+                    // The label names what varies; the machine values say what
+                    // the slot is, whatever the count. A single combo carried
+                    // none, and a single named set was dropped from a ridge
+                    // grid's (review 2026-09-12, S5).
+                    let label = if nr * nf == 1 {
+                        String::new()
+                    } else if nf == 1 {
                         format!("__r{}", crate::spec::num_label(*r))
                     } else if nr == 1 {
                         format!("__{f}")
@@ -1162,7 +1170,7 @@ pub fn combos(spec: &Spec) -> Vec<Combo> {
                     out.push(Combo {
                         label,
                         ridge: Some(*r),
-                        feature_set: (nf > 1).then(|| f.clone()),
+                        feature_set: feature_sets.is_some().then(|| f.clone()),
                         lambda: None,
                     });
                 }

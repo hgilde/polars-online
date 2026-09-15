@@ -46,9 +46,10 @@ fn marginal_round_trips_with_every_optional_part_present_or_absent() {
         for window in [None, Some(50.0)] {
             for bins in [None, Some(4usize)] {
                 // A window and bins are refused together (a snapshot of the
-                // histogram would be bins times the size of one), so that
-                // pairing has no state to encode.
-                if window.is_some() && bins.is_some() {
+                // histogram would be bins times the size of one), and so are
+                // a window and lags (the lag ring keeps no snapshot; review
+                // 2026-09-12, C18), so those pairings have no state to encode.
+                if window.is_some() && (bins.is_some() || !lags.is_empty()) {
                     continue;
                 }
                 let cfg = MarginalCfg {

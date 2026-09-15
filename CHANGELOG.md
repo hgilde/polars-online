@@ -38,6 +38,31 @@ carries breaking changes, and any change to the numbers a model returns.
   is least squares only when every feature has mean zero.
 - **State schema 8; files of schema 6 and 7 no longer load.** While the
   project is pre-1.0, a state saved before this release has to be refit.
+- **A spec that sets a knob its switch leaves off is refused**, where it
+  was ignored without a word. That covers `drift_action = "reset"`,
+  `drift_delta` or `drift_threshold` without `emit_drift`; `average_eta`
+  without `emit_averaged`; `resid_autocorr_lag` without `emit_autocorr`;
+  `long_halflife` without `session_shrink`; `session_gap` without
+  `session`; `on_clock_reset` without `clock`; and `coef_every` on a model
+  that reports no coefficients. `session_shrink` is refused beside
+  `session_gap = "reset"` or `group_close = "session"`, where the blend
+  never ran. `holt` takes `halflife` or `level_halflife`, not both.
+- **Feature sets and spec names are checked by name.** A set named twice, a
+  column twice in one set, an empty set and `feature_sets = []` are refused,
+  and so is a spec named `""`, `"spec"` or `"group"`, which the bank's
+  tables use for their own columns. `marginal` refuses `window` with
+  `lags`, as `ew_cov` does.
+- **Every way into the library checks a spec the same way.**
+  `output_fields`, `output_index`, `coef_fields`, the expression plugin and
+  a run config's `validate` now fill a spec's defaults and build its models,
+  as the bank does. A dict for a model with no target that leaves `targets`
+  out is accepted by all of them, and a spec the bank refuses is refused by
+  all of them.
+- **`add_intercept` no longer moves the warm-up** of `ew_cov`, `kmeans`,
+  `micro`, `ew_class` and `holt`, which have no intercept. Their default
+  `min_periods` is `k + 1` either way, the value the builders' default
+  gave, so only a spec with `add_intercept = False` reports its first row
+  one row later.
 
 ### Fixed
 
@@ -77,6 +102,22 @@ carries breaking changes, and any change to the numbers a model returns.
   and returned NaN from the first row; the spec layer refused only `alpha`.
 - **The bare `EwCov` state calls itself `ew_cov_accumulator`** in errors. It
   said `ew_cov`, which is the bank model's name.
+- **`bocpd` and `hmm` read the column they name.** A spec that named
+  `hazard_col` or `exog_tvtp` and left `targets` out had `targets` filled
+  from the first feature, which was then read as the hazard or the
+  exogenous series. **Numbers change** for such specs. The expression form
+  now packs that column too; before, it failed when the plan ran.
+- **A feature expression named after the clock, session or weight column
+  is refused** in the expression form. The plugin reads its inputs by name,
+  so such a feature silently replaced that column.
+- **`ModelBank.specs` is the spec the bank runs**, filled in, before a save
+  as after one. A hand-written dict read differently on the two sides of a
+  round trip.
+- **`output_index` and `coef_fields` carry a single combo's ridge**, and a
+  single named feature set's name; both were null.
+- **`po.spec.coef_index` refuses every kind with no coefficients** with a
+  `ValueError` naming it. Four of them raised whatever polars raises on an
+  empty series.
 
 ## [0.5.1] — 2026-09-11
 

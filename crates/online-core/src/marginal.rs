@@ -144,6 +144,19 @@ impl MarginalCfg {
         if self.window.is_none() && self.window_every.is_some() {
             return Err("marginal: window_every needs `window`".into());
         }
+        // The lag ring keeps no snapshot, so under a window every lagged
+        // co-moment was the whole history's, divided by the window's
+        // variances: a hybrid of two histories in `lagcorr`, `n_serial` and
+        // what is built from them. `ew_cov` refuses the pair for the same
+        // reason (review 2026-09-12, C18).
+        if self.window.is_some() && !self.lags.is_empty() {
+            return Err(
+                "marginal: window and lags cannot be combined. The lag ring keeps no snapshot, \
+                 so a windowed lagcorr would divide the whole history's lagged co-moment by the \
+                 window's variances. Use one or the other."
+                    .into(),
+            );
+        }
         if let Some(b) = self.bins.as_ref() {
             b.validate(self.n_features, self.n_targets)?;
             if self.window.is_some() {
@@ -1386,6 +1399,14 @@ mod tests {
         err(c.clone(), "2 entries for 1 targets");
         c.min_periods = vec![];
         err(c, "0 entries for 1 targets");
+        // The lag ring has no snapshot, so a window beside it reported the
+        // whole history's lagged co-moment over the window's variance;
+        // `ew_cov` refuses the pair, and so does this (review 2026-09-12,
+        // C18).
+        let mut c = cfg(1, 1);
+        c.window = Some(50.0);
+        c.lags = vec![1];
+        err(c, "window and lags");
         Marginal::new(cfg(3, 2)).unwrap();
     }
 

@@ -261,6 +261,39 @@ def test_the_hazard_can_be_read_from_a_column():
     assert mixed["run_mode"][199] < 40
 
 
+def test_a_spec_that_leaves_targets_out_reads_the_hazard_column_it_names():
+    """``hazard_col`` rides in the targets slot. A spec that named it and
+    left ``targets`` out had them filled from ``features[0]``, so the feature
+    was read as the hazard: refused at 1 or below, and above it silently the
+    expected run length (review 2026-09-12, C20)."""
+    x = normals(200, 17) + 10.0
+    h = np.where(np.arange(200) < 100, 1e9, 5.0)
+    df = pl.DataFrame({"x0": x, "h": h})
+    built = po.spec.bocpd(
+        "b", features=["x0"], hazard_col="h", prior_mean=[10.0], prior_scale=[1.0], prior_nu=2.0
+    )
+    hand = {k: v for k, v in built.items() if k != "targets"}
+    a = po.ModelBank([built]).fit_predict(df)["b"].struct.unnest()
+    b = po.ModelBank([hand]).fit_predict(df)["b"].struct.unnest()
+    assert a["p_change"].to_list() == b["p_change"].to_list()
+
+
+def test_the_expression_form_reads_the_hazard_column():
+    """The expression packed no target for a model that learns from none,
+    so ``hazard_col`` -- which rides in the targets slot -- never reached the
+    bank, and the plan failed when it ran (S24)."""
+    x = normals(200, 17)
+    df = pl.DataFrame({"x0": x, "h": np.where(np.arange(200) < 100, 1e9, 5.0)})
+    kw = dict(hazard_col="h", prior_scale=[1.0], prior_nu=2.0)
+    via_expr = df.select(pl.col("x0").online.bocpd([], **kw)).unnest("x0")
+    spec = po.spec.bocpd("online", features=["x0"], **kw)
+    via_bank = po.ModelBank([spec]).fit_predict(df)["online"].struct.unnest()
+    assert via_expr.columns == via_bank.columns
+    for c in via_expr.columns:
+        a, b = via_expr[c].to_numpy().astype(float), via_bank[c].to_numpy().astype(float)
+        assert ((np.isnan(a) & np.isnan(b)) | (a == b)).all(), c
+
+
 def test_an_unusable_hazard_in_the_column_is_refused_naming_the_row():
     """A hazard is the expected rows between changepoints, so 1 or less is
     not one. Such a row used to report nulls and vanish from the posterior

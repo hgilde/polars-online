@@ -252,8 +252,10 @@ stats = []
         spec = dict(cov_spec())
         spec["targets"] = []
         bank = po.ModelBank([spec])
-        assert bank.specs[0]["targets"] == []  # the caller's dict is untouched
-        # ... but what the bank runs, and saves, has them filled.
+        assert spec["targets"] == []  # the caller's dict is untouched
+        # What the bank runs has them filled, before a save as after it; the
+        # specs were the caller's dicts until one (review 2026-09-12, S21).
+        assert bank.specs[0]["targets"] == ["x0"]
         bank.fit_predict(frame(n=100))
         assert po.ModelBank.load_bytes(bank.save_bytes()).specs[0]["targets"] == ["x0"]
 

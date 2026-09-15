@@ -76,6 +76,48 @@ mod kinds_tests {
 }
 
 #[cfg(test)]
+mod fill_tests {
+    use super::Spec;
+
+    fn spec(json: &str) -> Spec {
+        serde_json::from_str(json).unwrap()
+    }
+
+    /// A column a model reads from the targets slot, named and not listed:
+    /// `fill_defaults` fills `targets` with it, as the builders write them,
+    /// not with `features[0]`, which was then read as the hazard or the
+    /// exogenous series (review 2026-09-12, C20).
+    #[test]
+    fn a_named_hazard_or_exogenous_column_fills_the_targets() {
+        for (model, col) in [
+            (r#"{"type": "bocpd", "hazard_col": "h"}"#, "h"),
+            (
+                r#"{"type": "hmm", "k": 2, "precision_prior": 0.1, "exog_tvtp": "z"}"#,
+                "z",
+            ),
+        ] {
+            let mut s = spec(&format!(
+                r#"{{"name": "m", "model": {model}, "features": ["x"]}}"#
+            ));
+            s.fill_defaults();
+            assert_eq!(s.targets, vec![col.to_string()], "{model}");
+        }
+    }
+
+    /// And a spec that lists another column in that slot is refused, naming
+    /// both: the model reads `targets[0]` whatever `hazard_col` says.
+    #[test]
+    fn a_hazard_column_beside_another_target_is_refused() {
+        let s = spec(
+            r#"{"name": "m", "model": {"type": "bocpd", "hazard_col": "h"},
+                "targets": ["y"], "features": ["x"]}"#,
+        );
+        let err = s.validate().unwrap_err();
+        assert!(err.contains("hazard_col") && err.contains("\"h\""), "{err}");
+    }
+}
+
+#[cfg(test)]
 mod num_label_tests {
     use super::num_label;
 
@@ -445,8 +487,13 @@ pub enum ModelKind {
         /// Per-factor coefficient halflife (scalar or one per slot, intercept
         /// first). `inf` pins a coefficient. Note this is the COEFFICIENT
         /// halflife; the spec-level `halflife` drives the standardization and
-        /// residual-variance statistics.
+        /// residual-variance statistics. Beside a `q` it is unused: the
+        /// process noise is `q`, and the derivation from this is skipped.
         coef_halflife: FloatOrList,
+        /// The process noise per slot, given outright rather than derived from
+        /// `coef_halflife`, which it then overrides -- as `_spec.py`'s
+        /// `kalman` docstring says, and `Kalman::q_into` does (review
+        /// 2026-09-12, S22 and V16).
         #[serde(default)]
         q: Option<Vec<Num>>,
         #[serde(default)]
@@ -517,7 +564,8 @@ pub enum ModelKind {
     /// EW moments of the feature columns, no regression (docs/PLAN.md §4.7).
     /// `targets` is ignored; every column of interest goes in `features`.
     EwCov {
-        /// Any of "mean", "var", "std", "cov", "corr", "partial_corr", "mahal".
+        /// Any of "mean", "var", "std", "cov", "corr", "partial_corr", "mahal",
+        /// "lagcorr" (the last with `lags`).
         /// Default: mean + std + corr.
         #[serde(default)]
         stats: Option<Vec<String>>,
@@ -929,7 +977,7 @@ pub enum ModelKind {
     Hmm {
         /// Hidden states, `>= 2`.
         k: usize,
-        /// `"full"` (default), `"shared"` or `"diag"`, as `ew_class`.
+        /// `"full"` (default), `"shared"` or `"diagonal"`, as `ew_class`.
         #[serde(default)]
         covariance: Option<String>,
         /// Ridge on every state covariance; **required**, since a state's
@@ -1130,10 +1178,40 @@ impl ModelKind {
         }
     }
 
+    /// The column a model with no target reads from the targets slot, when
+    /// the spec names one: `bocpd`'s `hazard_col` and `hmm`'s `exog_tvtp`.
+    /// It fills `targets` ([`Spec::fill_defaults`]) and is packed by the
+    /// expression plugin as a target is (review 2026-09-12, C20, S24).
+    pub fn targets_slot_column(&self) -> Option<&str> {
+        match self {
+            ModelKind::Bocpd { hazard_col, .. } => hazard_col.as_deref(),
+            ModelKind::Hmm { exog_tvtp, .. } => exog_tvtp.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// False for the models that report no coefficients -- no `coef` field
+    /// in their output: `ew_cov`, `seqtest`, `marginal`, `rcov`, `corrchange`
+    /// and `bocpd`. `tests/test_model_registry.py` holds this to the field
+    /// names, which are rendered elsewhere.
+    pub fn has_coef(&self) -> bool {
+        !matches!(
+            self,
+            ModelKind::EwCov { .. }
+                | ModelKind::SeqTest { .. }
+                | ModelKind::Marginal { .. }
+                | ModelKind::Rcov { .. }
+                | ModelKind::CorrChange { .. }
+                | ModelKind::Bocpd { .. }
+        )
+    }
+
     /// True for the models that learn from no target column: `ew_cov`,
-    /// `kmeans` and `micro`. Their `targets` mirror `features[0]` for
-    /// plumbing, so a target that is also a feature is not a leak for them,
-    /// and the expression plugin packs no target for them.
+    /// `kmeans`, `micro`, `deco`, `rcov`, `hmm`, `corrchange` and `bocpd`,
+    /// the list `_spec.py`'s `UNSUPERVISED` keeps too. Their `targets` mirror
+    /// `features[0]` for plumbing, so a target that is also a feature is not
+    /// a leak for them, and the expression plugin packs no target for them
+    /// -- except the column [`Self::targets_slot_column`] names.
     pub fn is_unsupervised(&self) -> bool {
         matches!(
             self,
@@ -1149,7 +1227,7 @@ impl ModelKind {
     }
 
     /// True for the models that predict no target as a number: the
-    /// unsupervised three, `ew_class`, whose target is a label it
+    /// unsupervised ones, `ew_class`, whose target is a label it
     /// classifies, `seqtest`, whose targets are the signs it tests, and
     /// `marginal`, whose targets are the columns it correlates the features
     /// with. Their outputs are statistics, assignments, posteriors or
@@ -1401,7 +1479,12 @@ impl Spec {
     /// Idempotent, and a no-op for a spec that already says both.
     pub fn fill_defaults(&mut self) {
         if self.targets.is_empty() && self.model.is_unsupervised() {
-            if let Some(first) = self.features.first() {
+            // A column the model reads from the slot fills it, as the
+            // builders write it. `features[0]` went there, and was then read
+            // as the hazard or the exogenous series (review 2026-09-12, C20).
+            if let Some(col) = self.model.targets_slot_column() {
+                self.targets = vec![col.to_string()];
+            } else if let Some(first) = self.features.first() {
                 self.targets = vec![first.clone()];
             }
         }
@@ -1588,6 +1671,14 @@ impl Spec {
             // one, so `P(r <= 1)` is 1 whatever the row: one row of
             // warm-up, and the prior is the gate after it.
             ModelKind::Bocpd { .. } => 1.0,
+            // No intercept to count: `add_intercept` has nothing to act on in
+            // these, and counted, it moved the first reported row (review
+            // 2026-09-12, S22). `k + 1` is what the builders' default gave.
+            ModelKind::EwCov { .. }
+            | ModelKind::KMeans { .. }
+            | ModelKind::Micro { .. }
+            | ModelKind::EwClass { .. }
+            | ModelKind::Holt { .. } => (self.k() + 1) as f64,
             _ => (self.k() + usize::from(self.add_intercept)) as f64,
         }
     }
@@ -1609,7 +1700,31 @@ impl Spec {
         }
     }
 
+    /// Everything a spec meets before a bank runs it, in one place: the
+    /// defaults it may leave out ([`Self::fill_defaults`]), its own rules
+    /// ([`Self::validate`]) and its models' (`build_models`, which builds each
+    /// instance and drops it). Every door a spec comes in by -- the bank, a
+    /// run config, the builders' check, `output_fields`, `output_index`,
+    /// `coef_fields` and the expression plugin -- goes through this, so a
+    /// spec is accepted or refused alike at each. They met one, two or all
+    /// three of the steps, by door (review 2026-09-12, S25).
+    pub fn check(&mut self) -> Result<(), String> {
+        self.fill_defaults();
+        self.validate()?;
+        crate::stream::build_models(self).map(|_| ())
+    }
+
     pub fn validate(&self) -> Result<(), String> {
+        // The bank's tables put `spec` and `group` columns beside a struct
+        // named after the spec (`ModelBank.last_row`), and an empty name names
+        // no struct at all (review 2026-09-12, S7).
+        if self.name.is_empty() || self.name == "spec" || self.name == "group" {
+            return Err(format!(
+                "spec {:?}: the name must be non-empty and neither \"spec\" nor \"group\", \
+                 which the bank's tables use for their own columns",
+                self.name
+            ));
+        }
         if self.targets.is_empty() {
             // An unsupervised spec is allowed to omit them, and
             // `fill_defaults` mirrors `features[0]` (E53) -- so an empty list
@@ -1869,6 +1984,54 @@ impl Spec {
         if self.average_eta.is_some_and(|v| v <= 0.0 || v.is_nan()) {
             return Err(format!("spec {:?}: average_eta must be > 0", self.name));
         }
+        // A knob whose switch is off does nothing: refused rather than
+        // ignored, as elsewhere here (review 2026-09-12, S22). `drift_action
+        // = "flag"` is what `fill_defaults` writes on every spec, so only
+        // `"reset"` asks for anything.
+        if !self.emit_drift {
+            if self.drift_action.as_deref() == Some("reset") {
+                return Err(format!(
+                    "spec {:?}: drift_action = \"reset\" needs emit_drift; the detector is built \
+                     only under that flag",
+                    self.name
+                ));
+            }
+            for (knob, set) in [
+                ("drift_delta", self.drift_delta.is_some()),
+                ("drift_threshold", self.drift_threshold.is_some()),
+            ] {
+                if set {
+                    return Err(format!("spec {:?}: {knob} needs emit_drift", self.name));
+                }
+            }
+        }
+        if self.average_eta.is_some() && !self.emit_averaged {
+            return Err(format!(
+                "spec {:?}: average_eta needs emit_averaged",
+                self.name
+            ));
+        }
+        if self.resid_autocorr_lag.is_some() && !self.emit_autocorr {
+            return Err(format!(
+                "spec {:?}: resid_autocorr_lag needs emit_autocorr",
+                self.name
+            ));
+        }
+        if self.session_gap.is_some() && self.session.is_none() {
+            return Err(format!("spec {:?}: session_gap needs session", self.name));
+        }
+        if self.on_clock_reset != OnClockReset::default() && self.clock.is_none() {
+            return Err(format!("spec {:?}: on_clock_reset needs clock", self.name));
+        }
+        // `coef_every` schedules the `coef` field, which a model with no
+        // coefficients does not have (review 2026-09-12, S22).
+        if self.coef_every > 0 && !self.model.has_coef() {
+            return Err(format!(
+                "spec {:?}: coef_every does not apply to {} (it reports no coefficients)",
+                self.name,
+                self.model.kind_name()
+            ));
+        }
         // Nothing residual-based applies to a model that predicts no target.
         // Refused rather than ignored: a flag that silently emits nothing
         // looks like a bug in the output, not in the spec.
@@ -1908,6 +2071,16 @@ impl Spec {
                 level_halflife,
                 trend_halflife,
             } => {
+                // One knob under two names: the level and `n_eff` followed
+                // `level_halflife`, and `sigma` and the diagnostics the
+                // spec's decay (review 2026-09-12, S22).
+                if level_halflife.is_some() && (self.halflife.is_some() || self.lam.is_some()) {
+                    return Err(format!(
+                        "spec {:?}: holt takes halflife and level_halflife as one knob; give \
+                         one (or lam)",
+                        self.name
+                    ));
+                }
                 if level_halflife.is_some_and(|h| h <= 0.0 || h.is_nan()) {
                     return Err(format!("spec {:?}: level_halflife must be > 0", self.name));
                 }
@@ -2267,12 +2440,17 @@ impl Spec {
             // CLI, the bank and the plugin all get the same messages; only
             // the block *names* are resolved here, where the feature list is.
             ModelKind::Bocpd { hazard_col, .. } => {
-                if hazard_col.is_some() && self.targets.len() != 1 {
-                    return Err(format!(
-                        "spec {:?}: bocpd hazard_col rides in the targets slot, so the spec must \
-                         have exactly one",
-                        self.name
-                    ));
+                // The model reads `targets[0]` as the hazard whatever the name
+                // here says, so the two must be one column (review
+                // 2026-09-12, C20).
+                if let Some(h) = hazard_col {
+                    if self.targets.as_slice() != std::slice::from_ref(h) {
+                        return Err(format!(
+                            "spec {:?}: bocpd reads hazard_col {h:?} from the targets slot, so \
+                             targets must be [{h:?}] (got {:?})",
+                            self.name, self.targets
+                        ));
+                    }
                 }
                 if self.halflife.is_some() || self.lam.is_some() {
                     return Err(format!(
@@ -2295,12 +2473,15 @@ impl Spec {
                     .map_err(|e| format!("spec {:?}: {e}", self.name))?;
             }
             ModelKind::Hmm { exog_tvtp, .. } => {
-                if exog_tvtp.is_some() && self.targets.len() != 1 {
-                    return Err(format!(
-                        "spec {:?}: hmm exog_tvtp rides in the targets slot, so the spec must \
-                         have exactly one",
-                        self.name
-                    ));
+                // As `bocpd`'s `hazard_col` (review 2026-09-12, C20).
+                if let Some(z) = exog_tvtp {
+                    if self.targets.as_slice() != std::slice::from_ref(z) {
+                        return Err(format!(
+                            "spec {:?}: hmm reads exog_tvtp {z:?} from the targets slot, so \
+                             targets must be [{z:?}] (got {:?})",
+                            self.name, self.targets
+                        ));
+                    }
                 }
                 crate::stream::hmm_cfg(self).map_err(|e| format!("spec {:?}: {e}", self.name))?;
             }
@@ -2558,6 +2739,34 @@ impl Spec {
                         self.name
                     ));
                 }
+                // Two prescriptions for one row. Under `session_gap = "reset"`
+                // the reset wins and the blend never runs; under `group_close
+                // = "session"` the stream starts over at the change, so the
+                // twin is never read (review 2026-09-12, S22).
+                if session_shrink.is_some() {
+                    if matches!(&self.session_gap, Some(SessionGapSpec::Word(w)) if w == "reset") {
+                        return Err(format!(
+                            "spec {:?}: session_shrink does not apply with session_gap = \
+                             \"reset\" (the reset replaces the state the blend would mix)",
+                            self.name
+                        ));
+                    }
+                    if self.closes_on_session() {
+                        return Err(format!(
+                            "spec {:?}: session_shrink does not apply with group_close = \
+                             \"session\" (the stream starts over at the change, so the twin is \
+                             never read)",
+                            self.name
+                        ));
+                    }
+                }
+                if long_halflife.is_some() && session_shrink.is_none() {
+                    return Err(format!(
+                        "spec {:?}: long_halflife needs session_shrink; it is the halflife of \
+                         the twin a session boundary blends toward",
+                        self.name
+                    ));
+                }
                 if let Some(c) = coef_prior {
                     let k_total = self.k() + usize::from(self.add_intercept);
                     if c.len() != self.m() || c.iter().any(|v| v.len() != k_total) {
@@ -2569,11 +2778,45 @@ impl Spec {
                     }
                 }
                 if let Some(fs) = feature_sets {
+                    // `[]` is every feature, one set, to the model, and no
+                    // slot at all to the field names, which rendered none for
+                    // a model emitting one per ridge (review 2026-09-12, V23).
+                    if fs.is_empty() {
+                        return Err(format!(
+                            "spec {:?}: feature_sets names no set; leave it out to fit every \
+                             feature",
+                            self.name
+                        ));
+                    }
+                    let mut names = std::collections::HashSet::new();
                     for (name, cols) in fs {
+                        // A name twice renders two slots under one field name,
+                        // which only the bank's tripwire caught (S7).
+                        if !names.insert(name.as_str()) {
+                            return Err(format!(
+                                "spec {:?}: feature_sets names {name:?} more than once",
+                                self.name
+                            ));
+                        }
+                        if cols.is_empty() {
+                            return Err(format!(
+                                "spec {:?}: feature set {name:?} is empty",
+                                self.name
+                            ));
+                        }
+                        let mut seen = std::collections::HashSet::new();
                         for c in cols {
                             if !self.features.contains(c) {
                                 return Err(format!(
                                     "spec {:?}: feature set {name:?} references unknown feature {c:?}",
+                                    self.name
+                                ));
+                            }
+                            // A column twice split its coefficient across two
+                            // identical slots, without a word (S7).
+                            if !seen.insert(c.as_str()) {
+                                return Err(format!(
+                                    "spec {:?}: feature set {name:?} lists {c:?} more than once",
                                     self.name
                                 ));
                             }

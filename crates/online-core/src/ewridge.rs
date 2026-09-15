@@ -312,7 +312,12 @@ impl EwRidgeCfg {
             }
         }
         for (name, idx) in &self.feature_sets {
-            if idx.is_empty() || idx.iter().any(|&i| i >= self.n_features) {
+            // Empty is its own message: an empty set has no index to be out
+            // of range (review 2026-09-12, S7).
+            if idx.is_empty() {
+                return Err(format!("feature set {name:?} is empty"));
+            }
+            if idx.iter().any(|&i| i >= self.n_features) {
                 return Err(format!("feature set {name:?} has out-of-range indices"));
             }
         }
@@ -2099,10 +2104,9 @@ mod tests {
         );
         good(&|c| c.coef_prior = Some(vec![vec![1.0, 2.0, 3.0]]));
 
-        bad(
-            &|c| c.feature_sets = vec![("a".into(), vec![])],
-            "out-of-range",
-        );
+        // Empty is its own message: it named "out-of-range indices", which
+        // an empty set has not got (review 2026-09-12, S7).
+        bad(&|c| c.feature_sets = vec![("a".into(), vec![])], "is empty");
         bad(
             &|c| c.feature_sets = vec![("a".into(), vec![2])],
             "out-of-range",

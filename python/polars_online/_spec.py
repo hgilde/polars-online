@@ -39,7 +39,7 @@ def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
     parameter name, rather than by the JSON offset serde would report. NumPy
     scalars are plain numbers here (``json`` alone refuses them)."""
 
-    def enc(v: Any, key: str) -> Any:
+    def enc(v: Any, key: str, who: Any) -> Any:
         if isinstance(v, bool):
             return v
         if isinstance(v, numbers.Integral):
@@ -47,18 +47,24 @@ def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
         if isinstance(v, numbers.Real):
             v = float(v)
             if math.isnan(v):
-                who = spec.get("name") if isinstance(spec, dict) else None
                 raise ValueError(f"spec {json.dumps(who)}: {key} must not be NaN")
             if math.isinf(v):
                 return "inf" if v > 0 else "-inf"
             return v
         if isinstance(v, dict):
-            return {k: enc(x, k) for k, x in v.items()}
+            return {k: enc(x, k, who) for k, x in v.items()}
         if isinstance(v, (list, tuple)):
-            return [enc(x, key) for x in v]
+            return [enc(x, key, who) for x in v]
         return v
 
-    return json.dumps(enc(spec, "spec"))
+    def name(s: Any) -> Any:
+        return s.get("name") if isinstance(s, dict) else None
+
+    # A list of specs is `ModelBank`'s path: each spec names its own NaN,
+    # where the message read `spec null` (review 2026-09-12, D8).
+    if isinstance(spec, list):
+        return json.dumps([enc(s, "spec", name(s)) for s in spec])
+    return json.dumps(enc(spec, "spec", name(spec)))
 
 
 def _from_json(text: str) -> Any:
@@ -159,6 +165,21 @@ def _finite(value: Any) -> bool:
     return True
 
 
+#: The int parameters whose Rust floor is 1, not 0 (review 2026-09-12, D8).
+_AT_LEAST_ONE = frozenset(
+    {
+        "window_every",
+        "pca_every",
+        "update_every",
+        "split_merge_every",
+        "prune_every",
+        "max_clusters",
+        "resid_autocorr_lag",
+        "k",
+    }
+)
+
+
 def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     """Check each keyword against ``fn``'s annotations (and ``_common``'s for
     the shared parameters) so a wrong shape names the parameter."""
@@ -184,14 +205,18 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
                 )
             if not _matches(value, hint):
                 raise TypeError(f"{who}: {key} must be {_describe(hint)}, got {_got(value)}")
-            # Every int parameter is a count (u32 on the Rust side).
+            # Every int parameter is a count (u32 on the Rust side), and some
+            # are counts of something there must be one of: the Rust side's
+            # floor, said here, where `0` passed with nothing said (review
+            # 2026-09-12, D8).
             if (
                 isinstance(value, numbers.Integral)
                 and not isinstance(value, bool)
                 and int in (hint, *typing.get_args(hint))
-                and value < 0
             ):
-                raise ValueError(f"{who}: {key} must be >= 0, got {value}")
+                floor = 1 if key in _AT_LEAST_ONE else 0
+                if value < floor:
+                    raise ValueError(f"{who}: {key} must be >= {floor}, got {value}")
             if key not in inf_ok and not _finite(value):
                 raise ValueError(f"{who}: {key} must be finite, got {_got(value)}")
         return fn(*args, **kwargs)
@@ -448,26 +473,15 @@ def ewridge(
 
 
 def _numeric_keys() -> frozenset[str]:
-    """Every parameter, across the builders, whose annotation admits a float."""
+    """Every parameter, across the builders, whose annotation admits a float.
+
+    Every builder in ``__all__``: a list kept by hand named sixteen of
+    twenty-one, and a float of the other five -- ``bocpd``'s ``hazard``, say
+    -- came back from a state file as the string ``"inf"`` (review
+    2026-09-12, D8)."""
     keys = set()
-    builders = (
-        ewridge,
-        rls,
-        lasso,
-        kalman,
-        huber,
-        quantile,
-        ftrl,
-        ew_cov,
-        sgd,
-        pa,
-        holt,
-        kmeans,
-        micro,
-        ew_class,
-        seqtest,
-        marginal,
-    )
+    helpers = {"output_fields", "output_index", "coef_fields", "coef_index"}
+    builders = [globals()[name] for name in __all__ if name not in helpers]
     for fn in (_common, *builders):
         for key, hint in typing.get_type_hints(getattr(fn, "__wrapped__", fn)).items():
             leaves = {hint, *typing.get_args(hint)}
@@ -543,8 +557,8 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
     sits beside ``pred_y__r0.5@h500``), then ``target``, ``halflife`` (or
     ``lam``), ``ridge``, ``feature_set``, ``lambda`` (lasso path point) and
     ``term`` -- ``"intercept"``, a feature name, or ``"level"`` /
-    ``"trend"`` for ``holt``. Empty for ``ew_cov`` and ``seqtest``, which
-    have none.
+    ``"trend"`` for ``holt``. Empty for the kinds that have none: ``ew_cov``,
+    ``seqtest``, ``marginal``, ``rcov``, ``corrchange`` and ``bocpd``.
 
     The names carry the ``coef_`` prefix and the target because a bare
     ``x1`` would collide with the feature column of that name in the same
@@ -604,9 +618,10 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
     table per instance, with the field each list sits in and the column
     name each entry unnests to. ``ValueError`` for a spec that is not
     valid, as for :func:`output_fields`, for an ``ew_cov`` spec, which has
-    no coefficients, for a ``seqtest`` spec, which emits evidence, and for a
+    no coefficients, for a ``seqtest`` spec, which emits evidence, for a
     ``micro`` spec, whose ``coef`` has as many rows as there are
-    established summaries and so no fixed layout.
+    established summaries and so no fixed layout, and for the other kinds
+    that emit none (``marginal``, ``rcov``, ``corrchange``, ``bocpd``).
     """
     kind = spec.get("model", {}).get("type")
     if kind == "ew_cov":
@@ -622,6 +637,13 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
         )
         raise ValueError(msg)
     cf = coef_fields(spec)
+    if cf.is_empty():
+        # Every kind with no ``coef``, not only the three named above:
+        # ``marginal``, ``rcov``, ``corrchange`` and ``bocpd`` reached the line
+        # below on an empty frame and raised whatever polars raises there
+        # (review 2026-09-12, S26).
+        msg = f"{kind} emits no coefficients"
+        raise ValueError(msg)
     first = cf["field"][0]
     return cf.filter(pl.col("field") == first).select(
         pl.col("position").cast(pl.Int64), "target", "ridge", "feature_set", "lambda", "term"
@@ -679,15 +701,6 @@ def lasso(
 
     Math: coordinate descent on the standardized centered statistics held in the
     same accumulators as ew_ridge. For each penalty ``l`` in the (decreasing)
-    ``window`` puts a **hard cutoff** on the history the path is fitted from,
-    in clock units: a row older than it is not in the Gram (docs/PLAN.md §13).
-    The selection error is truncated with it, so the ``lambda`` chosen is the
-    one that fits the window rather than one chosen on rows the fit has
-    dropped -- which means a window can change the *support*, not just the
-    coefficients: a feature with no evidence inside it goes to exactly zero.
-    ``window_every`` trades boundary tightness for memory, and can only
-    shorten the effective window.
-
     ``lasso_path``, with ``C`` the feature correlation matrix and ``c`` the
     feature-target correlations::
 
@@ -696,6 +709,15 @@ def lasso(
 
     warm-started along the path and across solves, then unscaled with the
     intercept recovered as ``ybar - m . beta``. ``l1_ratio < 1`` is elastic net.
+
+    ``window`` puts a **hard cutoff** on the history the path is fitted from,
+    in clock units: a row older than it is not in the Gram (docs/PLAN.md §13).
+    The selection error is truncated with it, so the ``lambda`` chosen is the
+    one that fits the window rather than one chosen on rows the fit has
+    dropped -- which means a window can change the *support*, not just the
+    coefficients: a feature with no evidence inside it goes to exactly zero.
+    ``window_every`` trades boundary tightness for memory, and can only
+    shorten the effective window.
 
     Selection is free: predictions for every path point are computed anyway, so
     ``lam_selected_<target>`` is the argmin over the path of an EW mean squared
@@ -2079,9 +2101,10 @@ def bocpd(
     changepoints. :meth:`ModelBank.predict` reads the column too, so it
     gives the same answer the step would for that row.
 
-    ``prior_scale`` is the prior scale of the variance: a positive number,
-    or a symmetric positive-definite ``d x d`` matrix (default: the
-    identity). ``prior_mean`` is ``mu_0`` (default: zeros), ``prior_kappa``
+    ``prior_scale`` is the prior scale of the variance, as a list: one
+    positive number ``[s]`` for ``s`` times the identity, or the ``d * d``
+    entries of a symmetric positive-definite matrix, row by row (default:
+    the identity). ``prior_mean`` is ``mu_0`` (default: zeros), ``prior_kappa``
     the weight of that mean in rows (default 1.0), and ``prior_nu`` the
     degrees of freedom (default ``d + 2``, the smallest that gives the
     Wishart a mean). ``min_periods`` gates
