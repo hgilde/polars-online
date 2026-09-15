@@ -398,16 +398,16 @@ class TestModelAveraging:
     """E14: `emit_averaged` — exponentially weighted forecaster over grid slots.
 
     The soft counterpart of `emit_selected`: weights are
-    `softmax(-eta * EW squared error)`, so averaging hedges where selection
-    commits.
+    `softmax(-eta * EW squared error / the best slot's)`, so averaging hedges
+    where selection commits, in any target's units (review 2026-09-12, S23).
     """
 
     SLOTS = ["pred_y0__r1e-8", "pred_y0__r1", "pred_y0__r100"]
 
-    def _run(self, n=4000, seed=1, noise=3.0, **kw):
+    def _run(self, n=4000, seed=1, noise=3.0, scale=1.0, **kw):
         rng = np.random.default_rng(seed)
         x = rng.standard_normal(n)
-        df = pl.DataFrame({"x0": x, "y0": 2 * x + noise * rng.standard_normal(n)})
+        df = pl.DataFrame({"x0": x, "y0": scale * (2 * x + noise * rng.standard_normal(n))})
         d = dict(
             targets=["y0"],
             features=["x0"],
@@ -453,6 +453,37 @@ class TestModelAveraging:
         mean = np.mean([self._f(out, s) for s in self.SLOTS], axis=0)
         m = np.isfinite(avg) & np.isfinite(mean)
         assert np.max(np.abs(avg[m] - mean[m])) < 1e-4
+
+    def test_is_the_same_average_in_any_units(self):
+        """``eta`` weighs each slot's error against the best slot's, as a
+        ratio, so the weights do not depend on the target's units: the same
+        stream with ``y`` ten thousand times larger gives an average ten
+        thousand times larger. The weights were ``exp(-eta * (sigma² -
+        sigma²_best))``, so ``eta = 1`` was an equal-weight mean for a return
+        and the argmin for a price (review 2026-09-12, S23)."""
+        base, _ = self._run()
+        big, _ = self._run(scale=1e4)
+        a, b = self._f(base, "pred_y0__averaged"), self._f(big, "pred_y0__averaged")
+        m = np.isfinite(a) & np.isfinite(b)
+        assert m.sum() > 1000
+        np.testing.assert_allclose(b[m], 1e4 * a[m], rtol=1e-9)
+
+    def test_the_weights_are_each_error_over_the_best(self):
+        """The formula, from the bank's own columns: each slot with a
+        prediction and a sigma on the row weighs ``exp(-eta * (sigma² /
+        sigma²_best - 1))``, normalized."""
+        eta = 0.7
+        out, _ = self._run(average_eta=eta, emit_sigma=True)
+        preds = np.array([self._f(out, s) for s in self.SLOTS])
+        sig = np.array([self._f(out, s.replace("pred_", "sigma_", 1)) for s in self.SLOTS])
+        avg = self._f(out, "pred_y0__averaged")
+        ok = np.isfinite(preds) & np.isfinite(sig)
+        rows = np.flatnonzero(ok.any(axis=0) & np.isfinite(avg))
+        assert rows.size > 1000
+        for i in rows:
+            s2, p = sig[ok[:, i], i] ** 2, preds[ok[:, i], i]
+            w = np.exp(-eta * (s2 / s2.min() - 1.0))
+            assert avg[i] == pytest.approx(np.dot(w, p) / w.sum(), rel=1e-12)
 
     def test_beats_the_worst_slot(self):
         out, df = self._run()

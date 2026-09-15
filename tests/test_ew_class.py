@@ -210,7 +210,8 @@ def replay(X, lab, *, halflife, min_periods, covariance, prior, t=None, w=None, 
             pending += d[i]
             rows.append(None)
             continue
-        out, n_eff = o.step(X[i].tolist(), lab[i], pending + d[i], wi)
+        # The folded total is capped too (review 2026-09-12, S3).
+        out, n_eff = o.step(X[i].tolist(), lab[i], min(pending + d[i], max_dclock), wi)
         pending = 0.0
         rows.append((out, n_eff))
     return rows, o

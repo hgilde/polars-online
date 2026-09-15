@@ -69,6 +69,14 @@ typing test, which did not exist when `holt` was added). `git show --stat
    a tiny refusing budget and fails for one that runs on, and
    `test_the_budget_table_names_every_windowed_builder` fails until a new
    builder that takes `window_budget` is in that test's table.
+   *A weight per target*: a model that keeps one -- the rows each target was
+   present on, as `ewridge`, `lasso`, `kalman`, `robust` and `holt` do --
+   overrides **`target_n_eff_into`**, so each target's `min_periods` is
+   checked against its own weight rather than the shared `n_eff` (review
+   2026-09-12, S2). The default leaves every target on the shared one.
+   *Check*: add the model to `tests/test_bank.py`'s
+   `test_a_sparse_target_warms_up_on_its_own_weight`, which fails for one
+   that keeps the default.
    *A parameter in the targets slot*: a model that reads a number out of
    `y` rather than regressing it — `bocpd`'s hazard column, `hmm`'s
    exogenous column — also overrides **`predict_with(x, y, d_clock)`**, or

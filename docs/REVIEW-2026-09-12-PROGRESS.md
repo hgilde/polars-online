@@ -109,13 +109,13 @@ two agree to `3e-9`); and C22's two `holt` tests do not turn over -- with
 a clock since the last observation the level does stand still across a
 null, and what moves is the next row's forecast.
 
-**Kept for later: 8 items** (V22 closed with task 81; batch 1 below
+**Kept for later: 4 items** (V22 closed with task 81; batch 1 below
 closed fourteen, batch 2 thirteen, batch 3a eleven, batch 3b two, batch 4a
-four), each with its reason in the tables below -- a decision taken by the
-user on 2026-09-15 and recorded in `docs/PLAN.md` task 80 (S1, S2, S3, S23
-and S27, for batches 4b and 4c), documentation (D9 and D10, begun in 4a),
-and one new observation, N4, which task 81 did half of. D1 is excluded by
-the user.
+four, batch 4b four), each with its reason in the tables below -- a
+decision taken by the user on 2026-09-15 and recorded in `docs/PLAN.md`
+task 80 (S1 and S27, for batch 4c), documentation (D10, begun in 4a), and
+one new observation, N4, which task 81 did half of. D1 is excluded by the
+user.
 The user's own
 design work (tasks 78 and 79), parked on `design/task-78` while the round
 ran, is merged into `main`.
@@ -172,8 +172,8 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | ID | Finding | Independent test | Status |
 |---|---|---|---|
 | S1 | bank `sigma`/`resid_z` not windowed | `numpy` over in-window residuals | later: needs a decision (route the model's `sigma2`, or correct two docstrings) |
-| S2 | per-target `min_periods` gates on the shared `n_eff` | — | later: needs a decision |
-| S3 | skipped-row time folded without the cap | `numpy` `lam^d` once decided | later: needs a decision (60 or 600) |
+| S2 | per-target `min_periods` gates on the shared `n_eff` | — | **fixed** (batch 4b), on the user's decision: each target's threshold is checked against its own weight -- the rows it was present on, inside the window under one -- through a new trait hook, `target_n_eff_into`, which `ewridge`, `lasso`, `kalman`, `robust` and `holt` override; the emitted `n_eff` stays the shared weight. The review's test, a target present on every tenth row under `min_periods = [5, 5]`, gave its first prediction at row 5 on the old build for all five models, and gives it at row 41, the row after its fifth observation |
+| S3 | skipped-row time folded without the cap | `numpy` `lam^d` once decided | **fixed** (batch 4b), on the user's decision: the folded total is capped at `max_dclock` and marked a capped gap. The review's test, ten skipped rows 100 apart under a cap of 60, handed the next row 660 on the old build and hands it 60. Through the bank, the `n_eff` two rows on is `0.5^(50/10) + 1` as `numpy` has it, where the old build's 550 gave 1.0 |
 | S4 | two model states share the kind `"ew_cov"` | — | **fixed** (batch 1) — the bare accumulator is `"ew_cov_accumulator"`, so `EwCovModel::restore` of one names what it found (failed on the old build); the kind is only ever an error message, never written to a file. Two tests pinned the old name (`kmeans.rs`, the contract's kind list) |
 | S5 | a single-combo `ew_ridge` loses its combo metadata | — | **fixed** (batch 2) — every `ew_ridge` combo carries its ridge, and its feature set wherever `feature_sets` names one; a single combo's label alone stays empty. On the old build `output_index`'s `ridge` was null for a single-ridge spec, and a single named set was dropped from a ridge grid's metadata |
 | S6 | `window.rs` disagrees with itself on the boundary row | — | **fixed** (batch 1), and **worse than the review says** (raised). The comments were wrong as it says -- the module doc is the true one, which the review's own test (a gap of twice the window at `every = 1`) pins, passing on the old build as it should -- and `trim`'s empty `if` and `new`'s `every.max(1)` are gone. What the review did not see: with `window_every` above 1, after a clock gap longer than the window, or wherever `every` rows span more clock than it, the newest snapshot was older than the window, `trim` kept it as the boundary, and rows the window excludes stayed in the fit -- at a cadence of 5 the row after a long gap reported a window weight of 2 where one row was inside, then 3 for 2. A row that finds the newest snapshot outside the window is now snapshotted whatever the cadence. Both new tests failed on the old build (`window.rs`: the boundary at 100 for a row at 200; `ewridge.rs`: the weight). `window_every = 1` is unchanged |
@@ -193,7 +193,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | S20 | PCA sign continuity keyed across groups under a session close | `numpy.linalg.eigh` per closed row | **fixed** — the continuity map is keyed by (spec, group, instance) for a spec that closes on session, (spec, instance) as before under `"monotone"`; the bank file keeps the old list for the latter and a new one, skipped when empty, for the former; `_bank.py`'s docstring now states both rules. Library, exact: each closed row's `eig_vecs` and `eig_vals` equal `numpy.linalg.eigh` on that row's own co-moments, sign-aligned with the same group's previous close. **The review's example does not show the defect**, which the first two versions of the test found by passing on the old code: two clouds that are reflections of each other, or any fixed pair of directions, stay consistent, because keyed by (spec, instance) every close is chained to the previous one whatever its group, and a fixed geometry chains consistently. The flip needs a group whose component moves across the other's between closes; the test's B alternates either side of `x1` beside an A along `x0`, and on the old code B's second close came out flipped. Shown by stashing the fix and rebuilding |
 | S21 | `ModelBank.specs` before vs after a round trip | — | **fixed** (batch 2) — `ModelBank.specs` is read from the native side at construction, as a loaded bank's always was, so a hand-written dict reads the same before a round trip as after it; builder dicts are unchanged. It needed D8's `_numeric_keys`, without which a float of five builders would have come back the string `"inf"` |
 | S22 | `Spec::validate` lets pairs through (pattern F) | `statsmodels` `Holt` for one sub-case | **fixed** (batch 2), one item documented rather than refused. Refused now, each built on the old build: `drift_action = "reset"`, `drift_delta` and `drift_threshold` without `emit_drift`; `average_eta` without `emit_averaged`; `resid_autocorr_lag` without `emit_autocorr`; `long_halflife` without `session_shrink`; `session_shrink` beside `session_gap = "reset"` or `group_close = "session"`; `session_gap` without `session`; `on_clock_reset` without `clock`; `holt`'s `halflife` or `lam` beside `level_halflife`; and `coef_every` on a model with no coefficients (held to the field names for every kind). `add_intercept` no longer moves the warm-up of `ew_cov`, `kmeans`, `micro`, `ew_class` and `holt`, which have no intercept: `k + 1`, the builders' default. **`kalman`'s `coef_halflife` beside `q` is documented, not refused**: `_spec.py` already says `q` overrides the derivation, `Kalman::q_into` does exactly that, and the round-trip tests use the pair, as the docs invite. The `window_every` and `sgd.quantile` items reach the core's checks through S25's one door |
-| S23 | `emit_averaged` weights in target units² | `river` `EWARegressor` (shape only) | later: needs a decision (scale-free `eta`, or document the units) |
+| S23 | `emit_averaged` weights in target units² | `river` `EWARegressor` (shape only) | **fixed** (batch 4b), on the user's decision: each slot weighs `exp(−eta·(σ²/σ²_best − 1))`, and at a best of 0 the ratio's limit, the argmin. The review's scale test -- `y × 1e4` with `eta` unchanged gives `pred_averaged × 1e4` -- failed on every row of the old build and passes at `rtol 1e-9`, and the formula is held exactly to the bank's own `sigma` columns (1.84 against 1.41 on the old build). River's `EWARegressor`, which the review called shape-only, is not a test here: it weighs by cumulative loss and this by an EW mean, so the two part by design |
 | S24 | the expression form packs no target for an unsupervised kind | — | **fixed** (batch 2) — the expression packs the column a model with no target reads from the targets slot (`ModelKind::targets_slot_column`: `hazard_col`, `exog_tvtp`), and refuses a feature expression named after the clock, session or weight column. On the old build both expression forms failed with "target column not found", and the aliased feature ran |
 | S25 | six doors, three depths for spec checking | — | **fixed** (batch 2) — `Spec::check` is fill, validate and build, and every door calls it: `Bank::new`, `RunConfig::validate` (which validated before the bank could fill), `validate_spec`, `output_fields`, `output_index`, `coef_fields` and the expression plugin's `parse_spec`. On the old build the E53 dict was refused by the three index functions and by the runner, and a `window` + `ridge_decay` spec got field names from the index functions while the bank refused it |
 | S26 | `coef_index` refusals by name vs `IndexError` | — | **fixed** (batch 2) — `coef_index` refuses every kind with no coefficients, naming it; `marginal`, `rcov`, `corrchange` and `bocpd` raised an `IndexError` on the old build. The docstrings list the six |
@@ -217,7 +217,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 | D6 | **fixed** (batch 1), and **short of the whole story** (raised). The window's note has been right since C17, as the review says; the test's "about eight significant figures" was never the window. Its oracle, `direct_window_fit`, put the ridge on the intercept, which the model leaves unpenalized, and at `ridge = 1e-8` that alone is the `3.8e-8` the `1e-6` tolerance hid. With the intercept free the two agree to `1.2e-14` over 284 comparisons, and the test holds `1e-12` |
 | D7 | **fixed** (batch 2) — the lists of models with no target now name all eight and point at `_spec.py`'s `UNSUPERVISED`; `gram_axes` says why it names `ew_cov` alone; the bank's tripwire comment says which refusals make it unreachable; `group_indices` calls `session_hash` instead of repeating it. `ModelBank.predict`'s `session_gap` line is C19's, for batch 3 |
 | D8 | **fixed** (batch 2), apart from `ewridge`'s docstring on `sigma` under a window, which S1 settles (batch 4). `_numeric_keys` reads every builder -- it missed `bocpd`'s floats among others, which a test now holds and which failed on the old build; `_json`'s NaN message names the spec of a list; `_checked` says the Rust side's floor of 1 for eight counts; the `lasso` and `bocpd` docstrings, `MarginalKwargs`, `spec.rs`'s `stats` and `covariance` docs and `closed_groups`' doc say what the code does |
-| D9, D10 | **begun** (batch 4a): `holt.rs`'s module doc (S29/S30); in D10, `ftrl.rs`'s module doc (C24), `the_row_weight_scales_the_gradient`'s comment -- the weight multiplies the loss, river's and sklearn's convention, so a row at weight 4 is not four rows -- `spec.rs`'s `strict_binary` (S31), and `reference.py`'s `ftrl_ref`, which gained the squared loss and names the decay's effect. The rest -- `combo_labels`, `predict_chunk`'s weight note, `max_dclock`'s doc (S3), `pa.rs` and `hmm.rs` -- are batch 4b and 4c |
+| D9, D10 | D9 **fixed** (batches 4a and 4b): `holt.rs`'s module doc (S29/S30); the core's `combo_labels`, which nothing but its own test called -- the bank renders `stream::combos` -- is gone; `predict_chunk` says a row with an unusable weight is scored anyway; `max_dclock`'s doc says the folded total is capped (S3). D10 **begun** (batch 4a): `ftrl.rs`'s module doc (C24), `the_row_weight_scales_the_gradient`'s comment -- the weight multiplies the loss, river's and sklearn's convention, so a row at weight 4 is not four rows -- `spec.rs`'s `strict_binary` (S31), and `reference.py`'s `ftrl_ref`, which gained the squared loss and names the decay's effect. `pa.rs` and `hmm.rs` are batch 4c |
 | V23 | **fixed** (batch 2), with S7 -- `feature_sets = []` is refused, naming `feature_sets`; on the old build it built, and `output_index` rendered no slot for a model that emits two |
 | V5 | **closed** (batch 3a) — the test the review asked for exists: `test_frame.py::test_pushdowns_are_honoured_after_the_model`, case "head then filter", compares the plan with the collected frame under both engines |
 | V7 | **fixed** (batch 3a) — confirmed through a real save: a reloaded filter's `pred_var()` was `R` alone, 0.25 against the saved filter's 0.2545, since it read the last row's regressor, a scratch a save does not keep. `pred_var` takes the row now, as `predict` does; nothing above the core reads it. The first version of the test passed on the old build because it restored from `state()`, an in-memory clone that keeps the scratch; it was corrected to go through the bytes, and then failed as the review said |
@@ -398,6 +398,29 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   tail four times as long, both at `HALFLIFE` to 1.6e-15 on the script's,
   and the largest forecast on the way is 2.5e102, far from overflow. The
   probe runs both halflives at `HALFLIFE` (1.3e-15); the model is unchanged.
+- 2026-09-15 — **batch 4b**: S2, S3 and S23 fixed, on the user's
+  decisions, with D9's last items. Every test was written first. On the
+  old build each one written to show a finding failed for its reason -- the
+  clock handed the next row 660 where the cap is 60, and 550 through the
+  bank (`n_eff` 1.0 against 1.03125); a target present on every tenth row
+  first predicted at row 5 under `[5, 5]`, for all five models that keep a
+  weight per target; the averaged prediction did not scale with `y` on any
+  row, and the formula check read 1.84 against 1.41 -- and the existing
+  tests of the classes they joined passed. S2 is a trait hook the stream
+  reads before the step, `target_n_eff_into`, since `Step` is built at
+  seventy sites; its meaning is `n_eff`'s, read where `predict` reads the
+  window's weights. The decisions reached the suite's own oracles, which
+  encoded the old rules: about seventeen replays folded skipped-row time
+  without the cap (the five `reference.py` references take a `max_dclock`
+  now, and their callers pass it), and three references gated a target's
+  output on the shared weight. The first version of that fix gated the
+  references' internal prediction too, and `kalman_ref`'s noise estimate,
+  which folds the model's own prediction whatever is emitted, drifted by
+  0.34 -- the gate is on the output, never the model. The pipeline goldens
+  moved as the two decisions say, 103 values: S3's capped fold reaches
+  every model that reads features (`n_eff` at row 119, 14.96 → 15.11), and
+  S2 moves `ridge`'s early conformal band and sigma, and the `seqtest` that
+  compares its slots.
 
 ## New observations (found while fixing; not in the review)
 

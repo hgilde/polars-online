@@ -492,6 +492,12 @@ impl Kalman {
 }
 
 impl OnlineModel for Kalman {
+    fn target_n_eff_into(&self, out: &mut Vec<f64>) -> bool {
+        out.clear();
+        out.extend_from_slice(&self.wj);
+        true
+    }
+
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         self.ensure_buffers();
         let k = self.cfg.k_total();

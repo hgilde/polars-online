@@ -251,7 +251,7 @@ timed = po.spec.ewridge(
     "timed", targets=["y"], features=["x0", "x1"],
     clock="t",                 # a numeric column that only goes up; None means the row count
     halflife=600.0,            # a row's weight halves every 600 clock units (or lam=, the weight kept per unit)
-    max_dclock=300.0,          # the most the clock may step between two rows; required with a clock
+    max_dclock=300.0,          # the most the clock may step between two rows a model learns from; required with a clock
     on_clock_reset="max",      # a backwards clock: "max" (the step is max_dclock), "zero", "reset_state", or "error"
     session="session",         # a column whose value changes at a session boundary ...
     session_gap=60.0,          # ... and the clock step to apply there, at most max_dclock; "reset" starts the model over
@@ -1044,8 +1044,8 @@ diag = po.spec.ewridge(
     emit_resid_z=True,           # resid_z_<slot>:   resid / sigma -- how surprising the row was, in units of recent error
     emit_selected=True,          # selected_<t>, pred_<t>__selected: the ridge value, feature set or halflife with the
                                  #                   lowest EW out-of-sample error so far
-    emit_averaged=True,          # pred_<t>__averaged: softmax(-eta * EW error) blend over the same choices -- hedges
-                                 #                   where emit_selected commits
+    emit_averaged=True,          # pred_<t>__averaged: softmax(-eta * EW error / the best's) blend over the same
+                                 #                   choices -- hedges where emit_selected commits
     emit_drift=True,             # drift_<slot>:     Page-Hinkley break detection on the residuals;
                                  #                   drift_action="reset" also starts the model over
     emit_metrics=True,           # ic_, r2_, hit_rate_<slot>: what po.eval computes, kept beside the model

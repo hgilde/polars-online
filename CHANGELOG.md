@@ -112,8 +112,27 @@ carries breaking changes, and any change to the numbers a model returns.
   before.
 - **State files are schema 9.** `holt` and `ftrl` carry new state, and a
   schema-8 file is refused by its version (pre-1.0, no loader).
+- **Each target's `min_periods` is checked against its own weight** (the
+  code review's S2) -- the rows it was present on, inside the window under
+  one -- for `ewridge`, `lasso`, `kalman`, `huber`, `quantile` and `holt`.
+  It was checked against the shared `n_eff`, the same for every target, so
+  a target present on one row in ten passed warm-up on the other targets'
+  count. **A sparse target's first prediction comes later**; the emitted
+  `n_eff` is the shared weight, as before.
+- **`emit_averaged` compares the slots' errors as ratios** (the code
+  review's S23): each slot weighs `exp(−eta·(σ²/σ²_best − 1))`, so `eta`
+  means the same in any target's units. The weights were
+  `exp(−eta·(σ² − σ²_best))`, in the target's units squared, so `eta = 1`
+  was an equal-weight mean for a return and the argmin for a price.
+  **`pred_<t>__averaged` changes** for every spec that emits it.
 
 ### Fixed
+
+- **`max_dclock` caps the time a run of skipped rows hands the next row**
+  (the code review's S3). Each skipped row's delta was capped on its own and
+  the folded total was not: ten skipped rows 100 apart under a cap of 60
+  handed the next row 660. **Numbers change** wherever a run of skipped rows
+  spans more than `max_dclock`.
 
 - **`ftrl(strict_binary=True)` refuses a chunk whose target is not 0 or 1**,
   naming the row and the value, before any stream is touched (the code

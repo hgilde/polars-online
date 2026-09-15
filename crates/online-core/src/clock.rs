@@ -75,8 +75,10 @@ pub enum SessionGap {
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ClockCfg {
-    /// Ceiling on the clock delta. Required when a clock column is used;
-    /// `f64::INFINITY` is valid for row-count clocks.
+    /// Ceiling on the clock delta a model sees between two rows it learns
+    /// from: a row's own delta, and the total a run of skipped rows carries
+    /// into the next accepted one (review 2026-09-12, S3). Required when a
+    /// clock column is used; `f64::INFINITY` is valid for row-count clocks.
     pub max_dclock: f64,
     pub on_clock_reset: OnClockReset,
     pub session_gap: Option<SessionGap>,
@@ -254,15 +256,20 @@ impl ClockState {
         self.started = true;
 
         if accept {
+            // The skipped rows' time is carried into this row's, and the
+            // ceiling holds for the total: `max_dclock` is the most a model
+            // sees between two rows it learns from. Ten skipped rows 100
+            // apart under a cap of 60 handed the next one 660 (review
+            // 2026-09-12, S3). A total over the cap is a capped gap.
             let total = self.pending + d;
             self.pending = 0.0;
             ClockAdvance {
-                d_clock: total,
+                d_clock: total.min(cfg.max_dclock),
                 reset,
                 accepted: true,
                 backwards,
                 session_changed,
-                capped,
+                capped: capped || total > cfg.max_dclock,
             }
         } else {
             self.pending += d;
@@ -514,6 +521,24 @@ mod tests {
         assert!(!s.accepted);
         let a = c.advance(&cfg, Some(5.0), None, true);
         assert_eq!(a.d_clock, 5.0); // 3 (pending) + 2
+    }
+
+    /// A skipped row's delta is capped on its own, and so is the total the
+    /// next accepted row is handed: ten skipped rows 100 apart under a cap of
+    /// 60 handed it 660, eleven times the ceiling `max_dclock` promises a
+    /// model sees (review 2026-09-12, S3). The fold is capped, and says so.
+    #[test]
+    fn a_skipped_run_hands_the_next_row_at_most_the_cap() {
+        let mut c = ClockState::new();
+        let cfg = cfg(60.0);
+        c.advance(&cfg, Some(0.0), None, true);
+        for i in 1..=10 {
+            let s = c.advance(&cfg, Some(100.0 * f64::from(i)), None, false);
+            assert!(!s.accepted);
+        }
+        let a = c.advance(&cfg, Some(1100.0), None, true);
+        assert_eq!(a.d_clock, 60.0);
+        assert!(a.capped, "a folded total past the cap is a capped gap");
     }
 
     #[test]

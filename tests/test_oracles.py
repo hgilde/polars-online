@@ -47,7 +47,7 @@ class TestKalmanOracle:
     def _compare(self, df, k=3, targets=("y0",), **kw):
         x, dc, w = _arrays(df, k)
         y = np.column_stack([df[t].to_numpy() for t in targets])
-        ref = kalman_ref(x, y, dc, w, **kw)
+        ref = kalman_ref(x, y, dc, w, max_dclock=MAXD, **kw)
         spec = po.spec.kalman(
             "m",
             targets=list(targets),
@@ -109,7 +109,7 @@ class TestKalmanOracle:
         df, _ = synthetic(seed=78, n_groups=1, n_rows=200, k=2, null_frac=0.0)
         x, dc, w = _arrays(df, 2)
         y = df["y0"].to_numpy().reshape(-1, 1)
-        ref = kalman_ref(x, y, dc, w, add_intercept=False, min_periods=10.0)
+        ref = kalman_ref(x, y, dc, w, add_intercept=False, min_periods=10.0, max_dclock=MAXD)
         spec = po.spec.kalman(
             "m",
             targets=["y0"],
@@ -320,6 +320,7 @@ class TestRobustOracles:
             halflife=300.0,
             loss="huber" if model == "huber" else "quantile",
             min_periods=5.0,
+            max_dclock=MAXD,
             **(ref_kw or {}),
         )
         spec = getattr(po.spec, model)(
@@ -409,6 +410,7 @@ class TestFtrlOracle:
             dc,
             df["w"].to_numpy(),
             min_periods=10.0,
+            max_dclock=30.0,
             **kw,
         )
         spec = po.spec.ftrl(
@@ -480,6 +482,7 @@ class TestFtrlOracle:
             dc,
             df["w"].to_numpy(),
             min_periods=10.0,
+            max_dclock=30.0,
         )
         spec = po.spec.ftrl(
             "m",

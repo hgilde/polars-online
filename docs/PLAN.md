@@ -1859,6 +1859,13 @@ note, not a task.
       numbers, since the penalties stay constants on the sums' scale --
       which is what keeps the undecayed model river's.
 
+      **Batch 4b, 2026-09-15**: S2, S3 and S23 fixed, as decided, with
+      D9's last items. S2 adds `OnlineModel::target_n_eff_into`, which the
+      models that keep a weight per target override (docs/EXTENDING.md);
+      the emitted `n_eff` is unchanged. The suite's oracles now cap the
+      folded delta and gate a target's output on its own weight. Batch 4c
+      is S1, S27, N4 and the rest of D10.
+
 - [x] 79. **`label_delay` ignores a clock event on a skipped row — found
       2026-09-11, checking task 78's parity; in released 0.5.1.** A reset
       that lands on a row the spec skips (a null feature, an unusable

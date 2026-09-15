@@ -89,7 +89,7 @@ class TestOracle:
     def _compare(self, df, k=3, targets=("y0",), **kw):
         x, dc, w = _arrays(df, k)
         y = np.column_stack([df[t].to_numpy() for t in targets])
-        ref = kalman_ref(x, y, dc, w, **kw)
+        ref = kalman_ref(x, y, dc, w, max_dclock=MAXD, **kw)
         spec = po.spec.kalman(
             "m",
             targets=list(targets),

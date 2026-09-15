@@ -248,6 +248,18 @@ pub trait OnlineModel: Sized {
         None
     }
 
+    /// Each target's own accumulated weight, with `n_eff`'s meaning --
+    /// before this row's update and before its own decay, and inside the
+    /// window under one -- for the per-target `min_periods` gate: the stream
+    /// checks each target's threshold against its own weight, where the
+    /// shared `n_eff` is the feature side's, the same for every target
+    /// (review 2026-09-12, S2). Clears and fills `out`, an entry a target,
+    /// and says whether it did; a model that keeps no weight per target
+    /// leaves every target on the shared `n_eff` -- hence the default.
+    fn target_n_eff_into(&self, _out: &mut Vec<f64>) -> bool {
+        false
+    }
+
     fn state(&self) -> State;
     fn restore(s: &State) -> Result<Self, StateError>;
     fn n_targets(&self) -> usize;

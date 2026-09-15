@@ -159,6 +159,19 @@ impl Holt {
 }
 
 impl OnlineModel for Holt {
+    /// Each target's weight is its level's, decayed over the clock since the
+    /// target was last observed: the rows it was present on (S2).
+    fn target_n_eff_into(&self, out: &mut Vec<f64>) -> bool {
+        out.clear();
+        out.extend(
+            self.w_level
+                .iter()
+                .zip(&self.since)
+                .map(|(&w, &s)| w * self.decays(s).0),
+        );
+        true
+    }
+
     fn step(&mut self, _x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         let m = self.cfg.n_targets;
         // The decays for a target observed on the previous row, where `s` is

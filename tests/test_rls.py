@@ -73,7 +73,17 @@ class TestRls:
         x = np.column_stack([df["x0"].to_numpy(), df["x1"].to_numpy()])
         y = df["y0"].to_numpy().reshape(-1, 1)
         dc, rs = compute_dclock(df["t"].to_numpy(), None, df.height, max_dclock=MAXD)
-        ref = rls_ref(x, y, dc, df["w"].to_numpy(), rs, halflife=HL, ridge=1.0, min_periods=5.0)
+        ref = rls_ref(
+            x,
+            y,
+            dc,
+            df["w"].to_numpy(),
+            rs,
+            halflife=HL,
+            ridge=1.0,
+            min_periods=5.0,
+            max_dclock=MAXD,
+        )
         _close(_np(out, "pred_y0"), ref["pred"][:, 0])
 
     def test_null_target_is_predict_only(self):

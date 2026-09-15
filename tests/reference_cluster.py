@@ -620,7 +620,9 @@ def kmeans_ref(
             for key in out:
                 out[key].append(None)
             continue
-        pred, n_eff = model.step([float(v) for v in row], pending, float(w))  # type: ignore[arg-type]
+        # The folded total is capped too (review 2026-09-12, S3).
+        d_row = min(pending, max_dclock)
+        pred, n_eff = model.step([float(v) for v in row], d_row, float(w))  # type: ignore[arg-type]
         pending = 0.0
         out["cluster"].append(None if math.isnan(pred[0]) else int(pred[0]))
         out["dist"].append(None if math.isnan(pred[1]) else pred[1])
@@ -936,7 +938,9 @@ def micro_ref(
             for key in out:
                 out[key].append(None)
             continue
-        pred, n_eff = model.step([float(v) for v in row], pending, float(w))  # type: ignore[arg-type]
+        # The folded total is capped too (review 2026-09-12, S3).
+        d_row = min(pending, max_dclock)
+        pred, n_eff = model.step([float(v) for v in row], d_row, float(w))  # type: ignore[arg-type]
         pending = 0.0
         out["cluster"].append(None if math.isnan(pred[0]) else int(pred[0]))
         out["dist"].append(None if math.isnan(pred[1]) else pred[1])

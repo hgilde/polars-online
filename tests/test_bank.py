@@ -260,6 +260,32 @@ class TestClockSemantics:
         w2 = w1 * 0.5 ** (20.0 / 10.0) + 1.0
         assert abs(n[3] - w2) < 1e-12
 
+    def test_skipped_rows_hand_the_next_row_at_most_the_cap(self):
+        """A row the model skips -- a null feature -- still moves the clock,
+        and its capped delta is carried to the next accepted row; that total
+        is capped too. Ten skipped rows 100 apart under a cap of 50 handed the
+        next row 550, eleven times what ``max_dclock`` promises a model sees
+        (review 2026-09-12, S3). ``n_eff`` is the weight before the row, so
+        the accepted row's decay shows on the row after it."""
+        t = [0.0] + [100.0 * i for i in range(1, 11)] + [1100.0, 1110.0]
+        x0 = [1.0] + [None] * 10 + [1.0, 1.0]
+        df = pl.DataFrame(
+            {"t": t, "x0": x0, "y0": [1.0] * len(t)},
+            schema={"t": pl.Float64, "x0": pl.Float64, "y0": pl.Float64},
+        )
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y0"],
+            features=["x0"],
+            clock="t",
+            halflife=10.0,
+            max_dclock=50.0,
+            max_rows_between_solves=1,
+            min_periods=1.0,
+        )
+        n = self._neff(po.ModelBank([spec]).fit_predict(df))
+        assert n[12] == pytest.approx(0.5 ** (50.0 / 10.0) + 1.0, abs=1e-12)
+
 
 class TestPerTargetMinPeriods:
     """E7: `min_periods` accepts one threshold per target.
@@ -295,6 +321,44 @@ class TestPerTargetMinPeriods:
     def test_a_scalar_still_applies_to_every_target(self):
         out = self._out(20.0)
         assert self._first(out, "pred_y0") == self._first(out, "pred_y1") == 21
+
+    @pytest.mark.parametrize("kind", ["ewridge", "lasso", "kalman", "huber", "holt"])
+    def test_a_sparse_target_warms_up_on_its_own_weight(self, kind):
+        """Each target's threshold is checked against that target's own weight
+        -- the rows it was present on -- where it was checked against the
+        shared ``n_eff``, the feature side's, the same for every target (review
+        2026-09-12, S2). ``y1`` is present on every tenth row, so under
+        ``min_periods=[5, 5]`` its first prediction is the row after its fifth
+        observation, row 41, not row 5; ``y0``, present on every row, is
+        unchanged, and the emitted ``n_eff`` stays the shared weight."""
+        n = 120
+        x = np.random.default_rng(2).standard_normal(n)
+        df = pl.DataFrame(
+            {"x0": x, "y0": 2 * x, "y1": [-x[i] if i % 10 == 0 else None for i in range(n)]},
+            schema={"x0": pl.Float64, "y0": pl.Float64, "y1": pl.Float64},
+        )
+        common = dict(targets=["y0", "y1"], halflife=float("inf"), min_periods=[5.0, 5.0])
+        solves = dict(features=["x0"], max_rows_between_solves=1)
+        spec = {
+            "ewridge": lambda: po.spec.ewridge("m", **solves, **common),
+            "lasso": lambda: po.spec.lasso("m", lasso_path=[1e-6], **solves, **common),
+            "kalman": lambda: po.spec.kalman(
+                "m", features=["x0"], coef_halflife=float("inf"), **common
+            ),
+            "huber": lambda: po.spec.huber("m", **solves, **common),
+            "holt": lambda: po.spec.holt("m", **common),
+        }[kind]()
+        out = po.ModelBank([spec]).fit_predict(df)
+        names = out["m"].struct.fields
+        pred = {
+            t: f"pred_{t}"
+            if f"pred_{t}" in names
+            else next(f for f in names if f.startswith(f"pred_{t}"))
+            for t in ("y0", "y1")
+        }
+        assert self._first(out, pred["y0"]) == 5
+        assert self._first(out, pred["y1"]) == 41
+        assert out["m"].struct.field("n_eff").to_list()[41] == pytest.approx(41.0)
 
     def test_a_late_target_has_no_residual_or_sigma_either(self):
         rng = np.random.default_rng(1)

@@ -40,6 +40,10 @@ def compute_dclock(
     handled per ``on_clock_reset``: "max" -> max_dclock, "zero" -> 0,
     "reset_state" -> reset. A session change overrides the delta with
     ``session_gap`` (or resets state if it is "reset").
+
+    Per row only: the references below fold a skipped row's delta into the
+    next accepted row's and cap that total at their own ``max_dclock``, as
+    the stream does (review 2026-09-12, S3).
     """
     d = np.zeros(n)
     reset = np.zeros(n, dtype=bool)
@@ -130,6 +134,7 @@ def ewridge_ref(
     min_periods: float | None = None,
     standardize: bool = False,
     ridge_decay: bool = False,
+    max_dclock: float = np.inf,
 ) -> dict[str, np.ndarray]:
     """EW-ridge oracle, solving every row. X: (n,k), Y: (n,m); NaN = null.
 
@@ -172,18 +177,24 @@ def ewridge_ref(
             st["pending"] += dclock[i]
             continue
         xi = np.concatenate(([1.0], x_raw)) if add_intercept else x_raw
-        d = dclock[i] + st["pending"]
+        d = min(dclock[i] + st["pending"], max_dclock)
         st["pending"] = 0.0
         lam = 0.5 ** (d / halflife)
 
         # ---- predict (state before update) ----
         ready = st["W"] >= min_periods and st["beta"] is not None
+        # The model's own prediction, which its own statistics fold; what is
+        # emitted waits, besides, for each target's own weight (review
+        # 2026-09-12, S2) -- a gate on the output, not on the model.
+        p_own = np.full(m, np.nan)
         if ready:
             for j in range(m):
                 if st["Wj"][j] > 0.0:
-                    pred[i, j] = xi @ st["beta"][:, j]
-                    if not np.isnan(Y[i, j]):
-                        resid[i, j] = Y[i, j] - pred[i, j]
+                    p_own[j] = xi @ st["beta"][:, j]
+                    if st["Wj"][j] >= min_periods:
+                        pred[i, j] = p_own[j]
+                        if not np.isnan(Y[i, j]):
+                            resid[i, j] = Y[i, j] - pred[i, j]
         n_eff[i] = st["W"]
 
         # ---- update ----
@@ -197,11 +208,10 @@ def ewridge_ref(
                     st["S"][j] = (keep * st["S"][j] + w[i] * np.outer(xi, xi)) / Wj_new
                     st["r"][:, j] = (keep * st["r"][:, j] + w[i] * xi * yij) / Wj_new
                 st["Wj"][j] = Wj_new
-                if not np.isnan(resid[i, j]):
+                if not np.isnan(p_own[j]):
+                    r_own = yij - p_own[j]
                     Ws_new = lam * st["Wsig"][j] + w[i]
-                    st["sig2"][j] = (
-                        lam * st["Wsig"][j] * st["sig2"][j] + w[i] * resid[i, j] ** 2
-                    ) / Ws_new
+                    st["sig2"][j] = (lam * st["Wsig"][j] * st["sig2"][j] + w[i] * r_own**2) / Ws_new
                     st["Wsig"][j] = Ws_new
             else:
                 st["Wj"][j] *= lam
@@ -240,6 +250,7 @@ def rls_ref(
     ridge: float = 1.0,
     add_intercept: bool = True,
     min_periods: float | None = None,
+    max_dclock: float = np.inf,
 ) -> dict[str, np.ndarray]:
     """Classic RLS oracle via direct normal-equation solves (no Sherman-Morrison).
 
@@ -279,7 +290,7 @@ def rls_ref(
             st["pending"] += dclock[i]
             continue
         xi = np.concatenate(([1.0], x_raw)) if add_intercept else x_raw
-        d = dclock[i] + st["pending"]
+        d = min(dclock[i] + st["pending"], max_dclock)
         st["pending"] = 0.0
         lam = 0.5 ** (d / halflife)
 
@@ -320,6 +331,7 @@ def kalman_ref(
     min_periods: float = 10.0,
     revert_halflife: float | list[float] = float("inf"),
     standardize: bool = True,
+    max_dclock: float = np.inf,
 ) -> dict[str, np.ndarray]:
     """Kalman / random-walk-beta oracle (docs/PLAN.md section 4.4).
 
@@ -386,7 +398,7 @@ def kalman_ref(
             st["pending"] += dclock[i]
             continue
         z = np.concatenate(([1.0], X[i])) if add_intercept else X[i].copy()
-        d = dclock[i] + st["pending"]
+        d = min(dclock[i] + st["pending"], max_dclock)
         st["pending"] = 0.0
         lam = 0.5 ** (d / halflife)
 
@@ -420,12 +432,18 @@ def kalman_ref(
 
         n_eff[i] = st["W"]
         ready = st["W"] >= min_periods
+        # The model's own prediction, which its own statistics fold; what is
+        # emitted waits, besides, for each target's own weight (review
+        # 2026-09-12, S2) -- a gate on the output, not on the model.
+        p_own = np.full(m, np.nan)
         if ready:
             for j in range(m):
                 if st["wj"][j] > 0.0:
-                    pred[i, j] = zs @ st["beta"][j]
-                    if not np.isnan(Y[i, j]):
-                        resid[i, j] = Y[i, j] - pred[i, j]
+                    p_own[j] = zs @ st["beta"][j]
+                    if st["wj"][j] >= min_periods:
+                        pred[i, j] = p_own[j]
+                        if not np.isnan(Y[i, j]):
+                            resid[i, j] = Y[i, j] - pred[i, j]
 
         for j in range(m):
             pi = 0 if share_p else j
@@ -454,8 +472,8 @@ def kalman_ref(
                 err = Y[i, j] - zs @ st["beta"][j]
                 st["beta"][j] = st["beta"][j] + gain * err
                 st["P"][pi] = st["P"][pi] - np.outer(gain, pz)
-            if not np.isnan(pred[i, j]):
-                r = Y[i, j] - pred[i, j]
+            if not np.isnan(p_own[j]):
+                r = Y[i, j] - p_own[j]
                 ws_new = lam * st["wsig"][j] + w[i]
                 st["sig2"][j] = (lam * st["wsig"][j] * st["sig2"][j] + w[i] * r * r) / ws_new
                 st["wsig"][j] = ws_new
@@ -512,6 +530,7 @@ def robust_ref(
     standardize: bool = False,
     add_intercept: bool = True,
     min_periods: float | None = None,
+    max_dclock: float = np.inf,
 ) -> dict[str, np.ndarray]:
     """Huber / quantile oracle (docs/PLAN.md section 4.5).
 
@@ -563,18 +582,24 @@ def robust_ref(
             st["pending"] += dclock[i]
             continue
         z = np.concatenate(([1.0], X[i])) if add_intercept else X[i].copy()
-        d = dclock[i] + st["pending"]
+        d = min(dclock[i] + st["pending"], max_dclock)
         st["pending"] = 0.0
         lam = 0.5 ** (d / halflife)
 
         n_eff[i] = st["w_raw"]
         ready = st["w_raw"] >= min_periods and st["beta"] is not None
+        # The model's own prediction, which its own statistics fold; what is
+        # emitted waits, besides, for each target's own weight (review
+        # 2026-09-12, S2) -- a gate on the output, not on the model.
+        p_own = np.full(m, np.nan)
         if ready:
             for j in range(m):
                 if st["wj"][j] > 0.0:
-                    pred[i, j] = z @ st["beta"][j]
-                    if not np.isnan(Y[i, j]):
-                        resid[i, j] = Y[i, j] - pred[i, j]
+                    p_own[j] = z @ st["beta"][j]
+                    if st["wj"][j] >= min_periods:
+                        pred[i, j] = p_own[j]
+                        if not np.isnan(Y[i, j]):
+                            resid[i, j] = Y[i, j] - pred[i, j]
 
         for j in range(m):
             if np.isnan(Y[i, j]):
@@ -584,10 +609,8 @@ def robust_ref(
                 continue
             sigma = np.sqrt(max(st["sig2"][j], 0.0))
             w_rob = (
-                _robust_weight(
-                    Y[i, j] - pred[i, j], sigma, loss, huber_delta, quantile, quantile_eps
-                )
-                if not np.isnan(pred[i, j])
+                _robust_weight(Y[i, j] - p_own[j], sigma, loss, huber_delta, quantile, quantile_eps)
+                if not np.isnan(p_own[j])
                 else 1.0
             )
             ww = w[i] * w_rob
@@ -606,8 +629,8 @@ def robust_ref(
             st["r"][j] = aj * st["r"][j] + bj * z * Y[i, j]
             st["wj"][j] = wj_new
 
-            if not np.isnan(pred[i, j]):
-                rr = Y[i, j] - pred[i, j]
+            if not np.isnan(p_own[j]):
+                rr = Y[i, j] - p_own[j]
                 ws_new = lam * st["wsig"][j] + w[i]
                 st["sig2"][j] = (lam * st["wsig"][j] * st["sig2"][j] + w[i] * rr * rr) / ws_new
                 st["wsig"][j] = ws_new
@@ -648,6 +671,7 @@ def ftrl_ref(
     min_periods: float = 10.0,
     strict_binary: bool = False,
     loss: str = "logistic",
+    max_dclock: float = np.inf,
 ) -> dict[str, np.ndarray]:
     """FTRL-proximal oracle (docs/PLAN.md section 4.6, McMahan 2013), for the
     logistic loss and the squared one (E18).
@@ -703,7 +727,7 @@ def ftrl_ref(
             st["pending"] += dclock[i]
             continue
         z = np.concatenate(([1.0], X[i])) if add_intercept else X[i].copy()
-        d = dclock[i] + st["pending"]
+        d = min(dclock[i] + st["pending"], max_dclock)
         st["pending"] = 0.0
         lam = 0.5 ** (d / halflife) if forgets else 1.0
 

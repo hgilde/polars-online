@@ -4255,8 +4255,12 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
     let mut avg_pred = vec![vec![None::<f64>; n]; if spec.emit_averaged { m } else { 0 }];
     if spec.emit_averaged {
         // Exponentially weighted forecaster: weight each slot by
-        // exp(-eta * EW squared error), normalized. `sigma` is that error's
-        // square root, already tracked for E12, so this costs one pass.
+        // exp(-eta * (sigma² / sigma²_best - 1)), normalized -- each slot's EW
+        // squared error as a ratio to the best slot's, so `eta` means the same
+        // in any target's units. The difference it replaced made `eta = 1` an
+        // equal-weight mean for a return and the argmin for a price (review
+        // 2026-09-12, S23). `sigma` is that error's square root, already
+        // tracked for E12, so this costs one pass.
         let eta = spec.average_eta.unwrap_or(1.0);
         for ch in chunks {
             let nr = ch.rows.len();
@@ -4269,8 +4273,9 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
                 let prd =
                     |mi: usize, slot: usize| ch.pred[ChunkOut::at(ch.n_slots, nr, mi, slot, ri)];
                 for (t_i, avg_t) in avg_pred.iter_mut().enumerate() {
-                    // Subtract the best loss before exponentiating, so the
-                    // weights are identical but nothing overflows.
+                    // The best loss is the denominator: the best slot weighs
+                    // exp(0) = 1, and no weight overflows. At a best of 0 the
+                    // ratio's limit is the argmin -- every slot at 0, no other.
                     let mut best = f64::INFINITY;
                     for mi in 0..n_models {
                         for c_i in 0..nc {
@@ -4289,7 +4294,13 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
                             let slot = t_i * nc + c_i;
                             let (s, p) = (sig(mi, slot), prd(mi, slot));
                             if s.is_finite() && p.is_finite() {
-                                let wgt = (-eta * (s * s - best)).exp();
+                                let wgt = if best > 0.0 {
+                                    (-eta * (s * s / best - 1.0)).exp()
+                                } else if s * s == 0.0 {
+                                    1.0
+                                } else {
+                                    0.0
+                                };
                                 num += wgt * p;
                                 den += wgt;
                             }

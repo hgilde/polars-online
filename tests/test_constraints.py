@@ -222,7 +222,9 @@ def sgd_replay(
             neffs.append(None)
             coefs.append(None)
             continue
-        d = pending  # skipped rows fold their (capped) deltas in
+        # Skipped rows fold their capped deltas in, and the total is capped
+        # too (review 2026-09-12, S3).
+        d = min(pending, max_dclock)
         pending = 0.0
         lam = 1.0 if halflife == INF else math.exp2(-(d / halflife))
         z = [1.0, *map(float, X[i])]
@@ -295,7 +297,9 @@ def pa_replay(
             neffs.append(None)
             coefs.append(None)
             continue
-        d = pending  # skipped rows fold their (capped) deltas in
+        # Skipped rows fold their capped deltas in, and the total is capped
+        # too (review 2026-09-12, S3).
+        d = min(pending, max_dclock)
         pending = 0.0
         lam = 1.0 if halflife == INF else math.exp2(-(d / halflife))
         z = [1.0, *map(float, X[i])]

@@ -122,6 +122,12 @@ impl AnyModel {
         dispatch!(self, m => m.window_over_budget())
     }
 
+    /// Each target's own weight, for the per-target warmup
+    /// ([`OnlineModel::target_n_eff_into`]).
+    pub fn target_n_eff_into(&self, out: &mut Vec<f64>) -> bool {
+        dispatch!(self, m => m.target_n_eff_into(out))
+    }
+
     /// What went wrong in a model's solves, counted (docs/PLAN.md §7):
     /// `ew_ridge` and `robust` count their jittered or failed factorizations,
     /// `lasso` its coordinate descents that ran out of sweeps, `ew_class` the
@@ -2321,8 +2327,9 @@ impl Stream {
     /// the residual quantiles, autocorrelation and metrics from the
     /// diagnostics as they stand; `n_eff` frozen; `coef` on the last
     /// accepted row of the chunk (the same coefficients score every row);
-    /// `drift` never fires. A weight column is not read. `&self`, so a
-    /// stream can be scored from several threads at once.
+    /// `drift` never fires. A weight column is not read, so a row
+    /// `fit_predict` would skip for an unusable weight is scored anyway.
+    /// `&self`, so a stream can be scored from several threads at once.
     #[allow(clippy::too_many_arguments)]
     pub fn predict_chunk(
         &self,
@@ -2686,6 +2693,9 @@ pub struct Scratch {
     r: Vec<f64>,
     sig: Vec<f64>,
     zs: Vec<f64>,
+    /// Each target's own weight before the row, when the model keeps one
+    /// (review 2026-09-12, S2).
+    tn: Vec<f64>,
 }
 
 /// One model instance's state and its disjoint slice of the chunk output.
@@ -2845,6 +2855,10 @@ fn run_instance(
             &row.xs
         };
         let m_targets = sc.ys.len();
+        // Each target's own weight, read before the step: the rows it was
+        // present on, as `n_eff` is the rows the model saw (review 2026-09-12,
+        // S2). `false` for a model that keeps only the shared one.
+        let own_weights = inst.model.get().target_n_eff_into(&mut sc.tn);
 
         let mut step = if learn {
             inst.model.get_mut().step(xs, &sc.ys, plan.d_clock, w)
@@ -2862,10 +2876,16 @@ fn run_instance(
         // Per-target warmup (ENHANCEMENTS E7). The model itself predicts once
         // the *smallest* threshold is met; a slot whose own target is not ready
         // is withheld here, before it can reach the residual, sigma, resid_z,
-        // drift or selection. Warmup gates output, not learning -- the model
-        // has already updated from this row.
+        // drift or selection -- ready by its own weight where the model keeps
+        // one, where it was the shared `n_eff` for every target (review
+        // 2026-09-12, S2). Warmup gates output, not learning -- the model has
+        // already updated from this row.
         for (tj, group) in step.pred.chunks_mut(nc).enumerate() {
-            if step_n_eff_below(step.n_eff, min_periods, tj) {
+            let weight = match sc.tn.get(tj) {
+                Some(&w) if own_weights => w,
+                _ => step.n_eff,
+            };
+            if step_n_eff_below(weight, min_periods, tj) {
                 group.fill(f64::NAN);
             }
         }

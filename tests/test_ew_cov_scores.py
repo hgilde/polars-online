@@ -205,7 +205,7 @@ class TestMahalOracle:
             prev_t = t[i]
             pending += d
             if accepted[i]:
-                lam[i] = math.exp2(-(pending / halflife))
+                lam[i] = math.exp2(-(min(pending, max_dclock) / halflife))  # capped (S3)
                 pending = 0.0
         ww = np.array([0.0 if v is None else v for v in w_col])
         states = replay(X, lam, ww, prior=prior, accepted=accepted)

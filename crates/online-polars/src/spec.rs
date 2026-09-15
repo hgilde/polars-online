@@ -1405,7 +1405,12 @@ pub struct Spec {
     /// one threshold per target, in `targets` order (ENHANCEMENTS E7) — a
     /// 5-minute-ahead target and a 1-day-ahead target rarely deserve the same
     /// warmup. Warmup gates *output*, not learning: the model still updates
-    /// from rows whose predictions are withheld.
+    /// from rows whose predictions are withheld. Each target's threshold is
+    /// checked against that target's own weight -- the rows it was present
+    /// on, inside the window under one -- where the model keeps one
+    /// (`ewridge`, `lasso`, `kalman`, `huber`, `quantile`, `holt`), and
+    /// against the shared `n_eff` otherwise; the emitted `n_eff` is the
+    /// shared weight either way (review 2026-09-12, S2).
     pub min_periods: Option<FloatOrList>,
     /// 0 = never; coefficients are also emitted on the last row of every chunk.
     #[serde(default)]
@@ -1488,15 +1493,18 @@ pub struct Spec {
     #[serde(default)]
     pub drift_action: Option<String>,
     /// Emit `pred_<target>__averaged`: an exponentially weighted average of
-    /// every slot's prediction, with weights `softmax(−eta · EW squared
-    /// error)` (ENHANCEMENTS E14). The soft counterpart of `emit_selected`:
-    /// averaging hedges where selection commits, which is usually the better
-    /// trade when several slots are close.
+    /// every slot's prediction, with weights `softmax(−eta · σ²/σ²_best)`,
+    /// each slot's EW squared error as a ratio to the best slot's
+    /// (ENHANCEMENTS E14; a ratio since the code review's S23, so `eta` does
+    /// not depend on the target's units). The soft counterpart of
+    /// `emit_selected`: averaging hedges where selection commits, which is
+    /// usually the better trade when several slots are close.
     #[serde(default)]
     pub emit_averaged: bool,
-    /// Sharpness of the averaging weights. Large values approach
-    /// `emit_selected`'s argmin; small values approach an equal-weight mean.
-    /// Default 1.
+    /// Sharpness of the averaging weights, `exp(−eta · (σ²/σ²_best − 1))`:
+    /// at 1, a slot whose error is twice the best's weighs `e⁻¹` of it. Large
+    /// values approach `emit_selected`'s argmin; small values approach an
+    /// equal-weight mean. Default 1.
     #[serde(default)]
     pub average_eta: Option<f64>,
     /// Emit `selected_<target>` and `pred_<target>__selected`: online model

@@ -58,7 +58,7 @@ def _oracle_frame(df: pl.DataFrame, k=3, n_targets=1, **ref_kw):
             max_dclock=MAXD,
             session_gap=GAP,
         )
-        out = ewridge_ref(x, y, dc, w, rs, **ref_defaults)
+        out = ewridge_ref(x, y, dc, w, rs, max_dclock=MAXD, **ref_defaults)
         pred[idx] = out["pred"]
         resid[idx] = out["resid"]
         n_eff[idx] = out["n_eff"]

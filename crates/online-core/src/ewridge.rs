@@ -186,22 +186,6 @@ impl EwRidgeCfg {
         self.feature_sets.len().max(1) * self.ridge.len()
     }
 
-    /// Human-readable combo labels, used by the bank for output field names.
-    pub fn combo_labels(&self) -> Vec<String> {
-        let fs: Vec<&str> = if self.feature_sets.is_empty() {
-            vec!["all"]
-        } else {
-            self.feature_sets.iter().map(|(n, _)| n.as_str()).collect()
-        };
-        let mut out = Vec::new();
-        for f in &fs {
-            for r in &self.ridge {
-                out.push(format!("{f}_r{r}"));
-            }
-        }
-        out
-    }
-
     pub fn validate(&self) -> Result<(), String> {
         if self.n_features == 0 || self.n_targets == 0 {
             return Err("n_features and n_targets must be >= 1".into());
@@ -965,6 +949,14 @@ impl OnlineModel for EwRidge {
     fn window_over_budget(&self) -> Option<(usize, usize)> {
         self.win.as_ref().and_then(|win| win.snaps.over_budget())
     }
+    fn target_n_eff_into(&self, out: &mut Vec<f64>) -> bool {
+        out.clear();
+        match self.window_weights() {
+            Some((_, wj)) => out.extend_from_slice(&wj),
+            None => out.extend_from_slice(&self.acc.wj),
+        }
+        true
+    }
 
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         debug_assert_eq!(x.len(), self.cfg.n_features);
@@ -1490,10 +1482,6 @@ mod tests {
         c.feature_sets = vec![("a".into(), vec![0, 1]), ("b".into(), vec![2])];
         let m = EwRidge::new(c.clone()).unwrap();
         assert_eq!(m.n_outputs(), 2 * 4);
-        assert_eq!(
-            c.combo_labels(),
-            vec!["a_r0.00000001", "a_r10", "b_r0.00000001", "b_r10"]
-        );
 
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 3u64;

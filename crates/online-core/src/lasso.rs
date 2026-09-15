@@ -563,6 +563,14 @@ impl OnlineModel for Lasso {
     fn window_over_budget(&self) -> Option<(usize, usize)> {
         self.win.as_ref().and_then(|win| win.snaps.over_budget())
     }
+    fn target_n_eff_into(&self, out: &mut Vec<f64>) -> bool {
+        out.clear();
+        match self.window_weights() {
+            Some((_, wj)) => out.extend_from_slice(&wj),
+            None => out.extend_from_slice(&self.acc.wj),
+        }
+        true
+    }
 
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         let m = self.cfg.n_targets;

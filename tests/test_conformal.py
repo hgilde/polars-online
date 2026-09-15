@@ -159,7 +159,7 @@ def row_plan(df, *, clock, max_dclock, halflife, weight, features):
         if not ok:
             continue
         accepted[i] = True
-        lam[i] = math.exp2(-(pending / halflife))
+        lam[i] = math.exp2(-(min(pending, max_dclock) / halflife))  # a capped total (S3)
         w[i] = float(wi)
         pending = 0.0
     return lam, w, accepted

@@ -101,7 +101,7 @@ def oracle(
             pending += d
             n_eff_col.append(None)
             continue
-        lam_i = lam_of(pending + d)
+        lam_i = lam_of(min(pending + d, cap))  # the folded total is capped too (S3)
         pending = 0.0
         processed.append(i)
         lam.append(lam_i)
