@@ -93,9 +93,10 @@ def run(
     sidecar file beside the output, in the format its extension names
     (ENHANCEMENTS E54; see :meth:`ModelBank.closed_groups` for the schema).
     It needs a spec with ``group_close`` and refuses ``predict``, which
-    closes nothing. The file is written once, at the end, through a
-    temporary renamed into place -- before ``save_state``, so a state file
-    always has the closed rows that go with it. ``output`` may be left out at
+    closes nothing. The bank is drained after every chunk and each drain
+    written as it comes, to a temporary renamed into place when the run
+    completes -- before ``save_state``, so a state file always has the
+    closed rows that go with it. ``output`` may be left out at
     the same time: that is the accumulate-only pass whose product is the
     closed groups. A run in which nothing closed writes an empty frame with
     the schema.

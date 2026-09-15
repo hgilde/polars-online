@@ -75,7 +75,9 @@ def _from_json(text: str) -> Any:
 
     def dec(v: Any, numeric: bool) -> Any:
         if isinstance(v, dict):
-            return {k: dec(x, k in _NUMERIC_KEYS) for k, x in v.items()}
+            # Under a numeric parameter a dict's values are numbers too:
+            # `window_budget = {"thin": inf}` (review 2026-09-12, P4).
+            return {k: dec(x, numeric or k in _NUMERIC_KEYS) for k, x in v.items()}
         if isinstance(v, list):
             return [dec(x, numeric) for x in v]
         if numeric and v in ("inf", "-inf"):
@@ -344,6 +346,7 @@ def ewridge(
     target_gaps: str = "own_rows",
     window: float | None = None,
     window_every: int | None = None,
+    window_budget: dict[str, float] | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """EW-ridge spec (docs/PLAN.md §4.1).
@@ -394,6 +397,14 @@ def ewridge(
     with the state -- and a halflife grid is one instance per entry, each with
     its own ring. ``window_every`` snapshots every ``n`` rows instead, which
     divides the memory and can only *shorten* the effective window.
+    ``window_budget`` bounds each ring in MiB and says what happens past it:
+    ``{"refuse": mib}`` stops the ring there and refuses the chunk, naming
+    its size and ``window_every`` -- and since the budget is checked as the
+    rows are learned, the bank then refuses to go on
+    (``ModelBank.fit_predict`` says why) -- while ``{"thin": mib}`` drops
+    every other snapshot and doubles the spacing, as often as it takes,
+    which like ``window_every`` can only shorten the window. Unset, a window
+    refuses past 256 MiB; ``float("inf")`` is no bound.
 
     ``n_eff``, ``sigma`` and ``resid_z`` come from the window too, so the
     reported spread describes the rows the fit describes. Mind the solve
@@ -468,6 +479,7 @@ def ewridge(
         "target_gaps": target_gaps,
         "window": window,
         "window_every": window_every,
+        "window_budget": window_budget,
     }
     return _common(name, model, targets=targets, features=features, **common)
 
@@ -692,6 +704,7 @@ def lasso(
     max_rows_between_solves: int | None = None,
     window: float | None = None,
     window_every: int | None = None,
+    window_budget: dict[str, float] | None = None,
     max_cd_iters: int | None = None,
     cd_tol: float | None = None,
     target_gaps: str = "own_rows",
@@ -717,7 +730,14 @@ def lasso(
     dropped -- which means a window can change the *support*, not just the
     coefficients: a feature with no evidence inside it goes to exactly zero.
     ``window_every`` trades boundary tightness for memory, and can only
-    shorten the effective window.
+    shorten the effective window. ``window_budget`` bounds each ring in MiB
+    and says what happens past it: ``{"refuse": mib}`` stops the ring there
+    and refuses the chunk, naming its size and ``window_every`` -- and since
+    the budget is checked as the rows are learned, the bank then refuses to
+    go on (``ModelBank.fit_predict`` says why) -- while ``{"thin": mib}``
+    drops every other snapshot and doubles the spacing, as often as it
+    takes, which like ``window_every`` can only shorten the window. Unset, a
+    window refuses past 256 MiB; ``float("inf")`` is no bound.
 
     Selection is free: predictions for every path point are computed anyway, so
     ``lam_selected_<target>`` is the argmin over the path of an EW mean squared
@@ -749,6 +769,7 @@ def lasso(
         "target_gaps": target_gaps,
         "window": window,
         "window_every": window_every,
+        "window_budget": window_budget,
     }
     return _common(name, model, targets=targets, features=features, **common)
 
@@ -969,6 +990,7 @@ def ew_cov(
     lags: list[int] | None = None,
     window: float | None = None,
     window_every: int | None = None,
+    window_budget: dict[str, float] | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Exponentially weighted moments of the feature columns (docs/PLAN.md 4.7).
@@ -1008,7 +1030,14 @@ def ew_cov(
     where memory grows with a *window* rather than with the state, at
     ``k**2 + k + 2`` doubles each, so a 1,000-row window over 20 columns is
     about 3 MB per group. ``window_every`` snapshots every ``n`` rows instead
-    and divides that by ``n``.
+    and divides that by ``n``. ``window_budget`` bounds each ring in MiB and
+    says what happens past it: ``{"refuse": mib}`` stops the ring there and
+    refuses the chunk, naming its size and ``window_every`` -- and since the
+    budget is checked as the rows are learned, the bank then refuses to go
+    on (``ModelBank.fit_predict`` says why) -- while ``{"thin": mib}`` drops
+    every other snapshot and doubles the spacing, as often as it takes,
+    which like ``window_every`` can only shorten the window. Unset, a window
+    refuses past 256 MiB; ``float("inf")`` is no bound.
 
     Four things to know before reading the numbers:
 
@@ -1112,6 +1141,7 @@ def ew_cov(
         "lags": lags,
         "window": window,
         "window_every": window_every,
+        "window_budget": window_budget,
     }
     if "targets" in common:
         msg = (
@@ -1565,6 +1595,7 @@ def ew_class(
     precision_prior: float,
     window: float | None = None,
     window_every: int | None = None,
+    window_budget: dict[str, float] | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Class-conditional Gaussian classifier -- quadratic discriminant
@@ -1587,6 +1618,18 @@ def ew_class(
     unaffected. Measured at 200k rows and 8 features, a window costs about
     1.7x on ``"full"``; the other models in this family cost 2.2x to 2.8x
     (``docs/PERFORMANCE.md`` §16).
+
+    The window keeps a ring of snapshots of the class moments, one per
+    learned row; ``window_every`` snapshots every ``n`` rows instead, which
+    divides the memory and can only shorten the effective window.
+    ``window_budget`` bounds each ring in MiB and says what happens past it:
+    ``{"refuse": mib}`` stops the ring there and refuses the chunk, naming
+    its size and ``window_every`` -- and since the budget is checked as the
+    rows are learned, the bank then refuses to go on
+    (``ModelBank.fit_predict`` says why) -- while ``{"thin": mib}`` drops
+    every other snapshot and doubles the spacing, as often as it takes,
+    which like ``window_every`` can only shorten the window. Unset, a window
+    refuses past 256 MiB; ``float("inf")`` is no bound.
 
     Not a regression: ``label`` names the column that holds the class of each
     row, and ``classes`` lists every value it can hold (``targets`` is not a
@@ -1652,6 +1695,7 @@ def ew_class(
         "precision_prior": precision_prior,
         "window": window,
         "window_every": window_every,
+        "window_budget": window_budget,
     }
     if "targets" in common:
         msg = f"spec {json.dumps(name)}: ew_class() takes `label`, not targets"
@@ -1753,6 +1797,7 @@ def marginal(
     bin_edges: dict[str, list[float]] | list[list[float]] | None = None,
     window: float | None = None,
     window_every: int | None = None,
+    window_budget: dict[str, float] | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Every (feature, target) pair's exponentially weighted moments, kept in
@@ -1807,6 +1852,18 @@ def marginal(
     regimes of opposite sign average to nothing over a long history, so an
     unwindowed pair can report no relationship where a windowed one reports a
     strong one.
+
+    The window keeps a ring of snapshots of every pair's moments, one per
+    learned row; ``window_every`` snapshots every ``n`` rows instead, which
+    divides the memory and can only shorten the effective window.
+    ``window_budget`` bounds each ring in MiB and says what happens past it:
+    ``{"refuse": mib}`` stops the ring there and refuses the chunk, naming
+    its size and ``window_every`` -- and since the budget is checked as the
+    rows are learned, the bank then refuses to go on
+    (``ModelBank.fit_predict`` says why) -- while ``{"thin": mib}`` drops
+    every other snapshot and doubles the spacing, as often as it takes,
+    which like ``window_every`` can only shorten the window. Unset, a window
+    refuses past 256 MiB; ``float("inf")`` is no bound.
 
     Not a regression and not a joint fit: each pair ``(x_j, y_t)`` is its own
     two-column ``ew_cov``, so a wide feature set against a few targets costs
@@ -1930,6 +1987,7 @@ def marginal(
         "bin_edges": edges,
         "window": window,
         "window_every": window_every,
+        "window_budget": window_budget,
     }
     return _common(name, model, targets=targets, features=features, **common)
 

@@ -71,8 +71,32 @@ carries breaking changes, and any change to the numbers a model returns.
 - **`Kalman::pred_var` takes the row it answers for** (Rust API). It read
   the last row's regressor, which a save drops, so a loaded filter answered
   with the observation noise alone.
+- **A window's snapshots have a memory budget** (`ewridge`, `lasso`,
+  `ew_cov`, `ew_class`, `marginal`; the code review's P4). The ring grew with
+  the window and nothing checked it: at k = 1000 over a 3,600-row window it
+  was about 29 GB per instance. A new parameter, `window_budget`, bounds each
+  ring in MiB. `{"thin": mib}` drops every other snapshot and doubles the
+  spacing, as often as it takes, which can only shorten the window.
+  `{"refuse": mib}` stops the ring at the budget and refuses the chunk,
+  naming the ring's size and `window_every`. **A window with no budget
+  refuses past 256 MiB**, so a run whose ring grew past that, which ran
+  before, now stops with that error; `{"refuse": float("inf")}` is no bound.
+  The budget is checked as the rows are learned, so a bank refused for it
+  has learned part of the chunk: it refuses every later `fit_predict`,
+  `predict` and `save`, and is rebuilt from its last save.
+- **`fit_predict_batches` drains the closed groups as it goes**, given a
+  `closed_groups` path, and writes what it drained when the chunks stop --
+  at their end, at a `break`, or at an error (the code review's P5). A
+  `ModelBank`'s queue is bounded only by draining it.
 
 ### Fixed
+
+- **`po.run` and the CLI held every closed group until the run ended** (the
+  code review's P5). The `closed_groups` sidecar was drained once, after the
+  last chunk, so its rows waited in the bank for the length of the run. The
+  bank is drained after every chunk now, and each drain goes to the
+  sidecar's writer as it comes; the file is published with the output, as
+  before.
 
 - **A window with `window_every` above 1 kept rows older than itself**
   (`ewridge`, `lasso`, `ew_cov`, `ew_class`, `marginal`). After a clock gap

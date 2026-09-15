@@ -211,6 +211,71 @@ def test_the_specs_are_the_banks_before_a_round_trip_as_after_it():
     assert bank.specs[0]["drift_action"] == "flag"
 
 
+def test_fit_predict_batches_drains_the_closed_groups_as_it_goes(tmp_path):
+    """A ``ModelBank``'s closed groups wait in its queue until something
+    drains it, and ``save`` writes them all. ``fit_predict_batches`` with a
+    ``closed_groups`` path drains after every batch, so the queue is empty
+    whenever a batch is handed on, and writes what it drained when the
+    batches run out (review 2026-09-12, P5; the user's decision of
+    2026-09-15)."""
+    spec, df, batches = _closing_batches()
+    bank = po.ModelBank([spec])
+    path = tmp_path / "closed.parquet"
+    for _ in bank.fit_predict_batches(batches, closed_groups=path):
+        assert bank.closed_groups(drop=False).height == 0, "drained as it goes"
+    want = po.ModelBank([spec])
+    want.fit_predict(df)
+    assert pl.read_parquet(path).equals(want.closed_groups())
+
+
+@pytest.mark.parametrize("stop", ["break", "error"])
+def test_fit_predict_batches_writes_what_it_drained_however_it_stops(tmp_path, stop):
+    """A drained row has left the bank, so the file is the only place it is.
+    A caller that stops after two batches, or a source that fails there,
+    still gets the rows those two closed written, and the file and the
+    bank's queue together hold every close."""
+    spec, _, batches = _closing_batches()
+
+    def source():
+        yield batches[0]
+        yield batches[1]
+        if stop == "error":
+            raise RuntimeError("the source failed")
+        yield from batches[2:]
+
+    bank = po.ModelBank([spec])
+    path = tmp_path / "closed.parquet"
+    gen = iter(bank.fit_predict_batches(source(), closed_groups=path))
+    next(gen)
+    next(gen)
+    if stop == "break":
+        gen.close()  # what a `break` out of a `for` over it does
+    else:
+        with pytest.raises(RuntimeError, match="the source failed"):
+            next(gen)
+    want = po.ModelBank([spec])
+    want.fit_predict(pl.concat(batches[:2]))
+    assert pl.read_parquet(path).equals(want.closed_groups())
+    assert bank.closed_groups(drop=False).height == 0
+
+
+def _closing_batches():
+    """Twelve groups of five rows, in key order, as six batches of ten: under
+    ``monotone`` a group closes when the next key arrives."""
+    spec = po.spec.ew_cov(
+        "c", features=["x0", "y"], halflife=40.0, group="g", group_close="monotone"
+    )
+    keys = [f"k{i:02d}" for i in range(12)]
+    df = pl.DataFrame(
+        {
+            "g": [k for k in keys for _ in range(5)],
+            "x0": [float((i * 7) % 11) for i in range(60)],
+            "y": [float((i * 5) % 13) for i in range(60)],
+        }
+    )
+    return spec, df, [df.slice(i, 10) for i in range(0, df.height, 10)]
+
+
 # --- the specs are a read-only view ------------------------------------------
 
 

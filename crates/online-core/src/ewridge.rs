@@ -379,6 +379,14 @@ struct RidgeMoments {
     sig2: Vec<f64>,
 }
 
+impl crate::Footprint for RidgeMoments {
+    fn footprint(&self) -> usize {
+        crate::Footprint::footprint(&self.acc)
+            + crate::window::floats(&self.wsig)
+            + crate::window::floats(&self.sig2)
+    }
+}
+
 /// The accumulators a windowed fit reads, with everything older than the
 /// window subtracted off.
 struct RidgeView {
@@ -948,6 +956,16 @@ impl EwRidge {
 }
 
 impl OnlineModel for EwRidge {
+    fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.set_budget(budget);
+        }
+    }
+
+    fn window_over_budget(&self) -> Option<(usize, usize)> {
+        self.win.as_ref().and_then(|win| win.snaps.over_budget())
+    }
+
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         debug_assert_eq!(x.len(), self.cfg.n_features);
         debug_assert_eq!(y.len(), self.cfg.n_targets);

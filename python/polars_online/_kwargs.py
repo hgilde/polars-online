@@ -107,6 +107,7 @@ class EwridgeKwargs(ExprKwargs, total=False):
     target_gaps: str
     window: float | None
     window_every: int | None
+    window_budget: dict[str, float] | None
 
 
 class RlsKwargs(ExprKwargs, total=False):
@@ -125,6 +126,7 @@ class LassoKwargs(ExprKwargs, total=False):
     target_gaps: str
     window: float | None
     window_every: int | None
+    window_budget: dict[str, float] | None
 
 
 class KalmanKwargs(ExprKwargs, total=False):
@@ -172,6 +174,7 @@ class EwCovKwargs(ExprKwargs, total=False):
     lags: list[int] | None
     window: float | None
     window_every: int | None
+    window_budget: dict[str, float] | None
 
 
 class SgdKwargs(ExprKwargs, total=False):
@@ -231,6 +234,7 @@ class EwClassKwargs(ExprKwargs, total=False):
     precision_prior: Required[float]
     window: float | None
     window_every: int | None
+    window_budget: dict[str, float] | None
 
 
 class SeqTestKwargs(ExprKwargs, total=False):
@@ -261,6 +265,7 @@ class MarginalKwargs(ExprKwargs, total=False):
     bin_edges: dict[str, list[float]] | list[list[float]] | None
     window: float | None
     window_every: int | None
+    window_budget: dict[str, float] | None
 
 
 class RcovKwargs(ExprKwargs, total=False):

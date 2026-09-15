@@ -1842,6 +1842,15 @@ note, not a task.
       V5, V11 and V24 closed; V25 is not a defect for `kmeans`, which the
       review presumed. Batch 3b is P4 and P5, as decided above.
 
+      **Batch 3b, 2026-09-15**: P4 and P5 fixed, as decided. Two calls of
+      mine, raised: a window with no `window_budget` refuses past 256 MiB per
+      ring; and a bank refused for its budget refuses every later
+      `fit_predict`, `predict` and `save`, since the budget is found as the
+      rows go in and the bank has by then learned part of the chunk (every
+      other refusal is checked before a stream is touched).
+      `fit_predict_batches(closed_groups=)` writes what it drained however
+      the chunks stop, where the plan's source writes only at the end.
+
 - [x] 79. **`label_delay` ignores a clock event on a skipped row — found
       2026-09-11, checking task 78's parity; in released 0.5.1.** A reset
       that lands on a row the spec skips (a null feature, an unusable
@@ -4232,10 +4241,13 @@ which also says which items it could *not* verify.
   extension as `output`'s is, CSV flattening as `output`'s; refused with
   `predict`, and refused when no spec has `group_close` ("closed_groups
   names a file but no spec closes groups" — the file would be empty by
-  construction). Written atomically at the end through a second writer
-  thread on the `write_file` path — temp sibling, rename, published only
-  when the run completes, before `save_state` — and **not** appended per
-  chunk: E35's rule, one code path. `output=None` with `closed_groups=` is
+  construction). Written atomically through a second writer thread on the
+  `write_file` path — temp sibling, rename, published only when the run
+  completes, before `save_state`. It was first written once, at the end
+  (E35's rule, one code path); since the code review's P5 (2026-09-15) the
+  bank is drained after every chunk and each drain goes to that writer as
+  it comes, so the rows no longer wait in the bank for the run.
+  `output=None` with `closed_groups=` is
   the accumulate-only pass. A run in which nothing closed writes an empty
   frame with the schema, as the empty-output rule does. The IO plugin
   (`lf.online.fit_predict(closed_groups=path)`) drains `closed_groups()`

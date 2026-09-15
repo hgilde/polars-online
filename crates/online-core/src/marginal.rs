@@ -308,6 +308,18 @@ struct MarginalMoments {
     sxy: Vec<f64>,
 }
 
+impl crate::Footprint for MarginalMoments {
+    fn footprint(&self) -> usize {
+        std::mem::size_of::<f64>()
+            + [
+                &self.wt, &self.qt, &self.my, &self.syy, &self.mx, &self.sxx, &self.sxy,
+            ]
+            .iter()
+            .map(|v| crate::window::floats(v))
+            .sum::<usize>()
+    }
+}
+
 /// Bartlett's serial-dependence factor `1 + 2·Σ_l rho_x(l)·rho_y(l)`, and
 /// the two fitted decays when the rule is geometric.
 ///
@@ -867,6 +879,16 @@ impl Marginal {
 }
 
 impl OnlineModel for Marginal {
+    fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.set_budget(budget);
+        }
+    }
+
+    fn window_over_budget(&self) -> Option<(usize, usize)> {
+        self.win.as_ref().and_then(|win| win.snaps.over_budget())
+    }
+
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         let out = self.predict(x, d_clock);
         let lam = self.cfg.decay.factor(d_clock);

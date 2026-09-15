@@ -16,6 +16,31 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Num(pub f64);
 
+/// A window's memory budget as a spec writes it: `{"thin": MiB}` or
+/// `{"refuse": MiB}`, the MiB a [`Num`] so that `"inf"`, no bound, reads
+/// from JSON (review 2026-09-12, P4; the user's decision of 2026-09-15).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowBudgetSpec {
+    Thin(Num),
+    Refuse(Num),
+}
+
+impl WindowBudgetSpec {
+    pub fn mib(&self) -> f64 {
+        match *self {
+            WindowBudgetSpec::Thin(m) | WindowBudgetSpec::Refuse(m) => m.0,
+        }
+    }
+
+    pub fn to_core(self) -> online_core::WindowBudget {
+        match self {
+            WindowBudgetSpec::Thin(m) => online_core::WindowBudget::Thin(m.0),
+            WindowBudgetSpec::Refuse(m) => online_core::WindowBudget::Refuse(m.0),
+        }
+    }
+}
+
 /// A number rendered for a **field name** (`__r{ridge}`, `@h{halflife}`,
 /// `absresid_q{level}`, `__l{lambda}`).
 ///
@@ -452,6 +477,11 @@ pub enum ModelKind {
         /// Learned rows between the snapshots the window is computed from.
         #[serde(default)]
         window_every: Option<usize>,
+        /// Past this many MiB the window's snapshots thin, or refuse the run
+        /// ([`WindowBudgetSpec`]); a spec that names none refuses past 256
+        /// MiB (review 2026-09-12, P4).
+        #[serde(default)]
+        window_budget: Option<WindowBudgetSpec>,
     },
     Lasso {
         /// Decreasing penalties on standardized stats; required.
@@ -482,6 +512,11 @@ pub enum ModelKind {
         /// Learned rows between the window's snapshots.
         #[serde(default)]
         window_every: Option<usize>,
+        /// Past this many MiB the window's snapshots thin, or refuse the run
+        /// ([`WindowBudgetSpec`]); a spec that names none refuses past 256
+        /// MiB (review 2026-09-12, P4).
+        #[serde(default)]
+        window_budget: Option<WindowBudgetSpec>,
     },
     Kalman {
         /// Per-factor coefficient halflife (scalar or one per slot, intercept
@@ -603,6 +638,11 @@ pub enum ModelKind {
         /// most one snapshot's spacing -- never lengthens it.
         #[serde(default)]
         window_every: Option<usize>,
+        /// Past this many MiB the window's snapshots thin, or refuse the run
+        /// ([`WindowBudgetSpec`]); a spec that names none refuses past 256
+        /// MiB (review 2026-09-12, P4).
+        #[serde(default)]
+        window_budget: Option<WindowBudgetSpec>,
     },
     /// Stochastic gradient descent with pluggable losses (ENHANCEMENTS E16).
     /// O(k) per row, no solves, and the only model here that takes count
@@ -790,6 +830,11 @@ pub enum ModelKind {
         /// Learned rows between the window's snapshots.
         #[serde(default)]
         window_every: Option<usize>,
+        /// Past this many MiB the window's snapshots thin, or refuse the run
+        /// ([`WindowBudgetSpec`]); a spec that names none refuses past 256
+        /// MiB (review 2026-09-12, P4).
+        #[serde(default)]
+        window_budget: Option<WindowBudgetSpec>,
     },
     /// Sequential test of a sign by betting (docs/ENHANCEMENTS.md E42;
     /// PLAN §11a, task 30): per target, two e-processes, one for "positive"
@@ -890,6 +935,11 @@ pub enum ModelKind {
         /// Learned rows between the window's snapshots.
         #[serde(default)]
         window_every: Option<usize>,
+        /// Past this many MiB the window's snapshots thin, or refuse the run
+        /// ([`WindowBudgetSpec`]); a spec that names none refuses past 256
+        /// MiB (review 2026-09-12, P4).
+        #[serde(default)]
+        window_budget: Option<WindowBudgetSpec>,
     },
     /// Dynamic equicorrelation (Engle & Kelly 2012; docs/ENHANCEMENTS.md
     /// E55): one number for the whole correlation matrix, `O(m)` a row where
@@ -1204,6 +1254,52 @@ impl ModelKind {
                 | ModelKind::CorrChange { .. }
                 | ModelKind::Bocpd { .. }
         )
+    }
+
+    /// A windowed kind's `window` and `window_budget`; `None` for a kind with
+    /// no window to bound.
+    pub fn window_parts(&self) -> Option<(Option<f64>, Option<WindowBudgetSpec>)> {
+        match self {
+            ModelKind::EwRidge {
+                window,
+                window_budget,
+                ..
+            }
+            | ModelKind::Lasso {
+                window,
+                window_budget,
+                ..
+            }
+            | ModelKind::EwCov {
+                window,
+                window_budget,
+                ..
+            }
+            | ModelKind::EwClass {
+                window,
+                window_budget,
+                ..
+            }
+            | ModelKind::Marginal {
+                window,
+                window_budget,
+                ..
+            } => Some((*window, *window_budget)),
+            _ => None,
+        }
+    }
+
+    /// The budget a model's window runs under: the spec's, or refuse past
+    /// 256 MiB where it names none (`online_core::WindowBudget::DEFAULT`).
+    /// `None` without a window.
+    pub fn window_budget(&self) -> Option<online_core::WindowBudget> {
+        let (window, budget) = self.window_parts()?;
+        window.map(|_| {
+            budget.map_or(
+                online_core::WindowBudget::DEFAULT,
+                WindowBudgetSpec::to_core,
+            )
+        })
     }
 
     /// True for the models that learn from no target column: `ew_cov`,
@@ -2023,6 +2119,23 @@ impl Spec {
         if self.on_clock_reset != OnClockReset::default() && self.clock.is_none() {
             return Err(format!("spec {:?}: on_clock_reset needs clock", self.name));
         }
+        // A budget bounds a window's snapshots, so it needs a window, and a
+        // budget of no bytes bounds nothing (review 2026-09-12, P4).
+        if let Some((window, Some(budget))) = self.model.window_parts() {
+            if window.is_none() {
+                return Err(format!(
+                    "spec {:?}: window_budget needs `window`",
+                    self.name
+                ));
+            }
+            let mib = budget.mib();
+            if mib <= 0.0 || mib.is_nan() {
+                return Err(format!(
+                    "spec {:?}: window_budget must be > 0 MiB (\"inf\" is no bound), got {mib}",
+                    self.name
+                ));
+            }
+        }
         // `coef_every` schedules the `coef` field, which a model with no
         // coefficients does not have (review 2026-09-12, S22).
         if self.coef_every > 0 && !self.model.has_coef() {
@@ -2159,6 +2272,7 @@ impl Spec {
                 lags,
                 window,
                 window_every,
+                window_budget: _,
             } => {
                 if let Some(w) = window {
                     if !w.is_finite() || *w <= 0.0 {
@@ -2361,6 +2475,7 @@ impl Spec {
                 precision_prior,
                 window,
                 window_every,
+                window_budget: _,
             } => {
                 if let Some(w) = window {
                     if !w.is_finite() || *w <= 0.0 {

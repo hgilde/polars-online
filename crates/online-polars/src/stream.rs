@@ -112,6 +112,16 @@ impl AnyModel {
         dispatch!(self, m => m.clear_lags())
     }
 
+    /// Bound the model's window ([`OnlineModel::set_window_budget`]).
+    pub fn set_window_budget(&mut self, budget: Option<online_core::WindowBudget>) {
+        dispatch!(self, m => m.set_window_budget(budget))
+    }
+
+    /// A refusing budget's overrun ([`OnlineModel::window_over_budget`]).
+    pub fn window_over_budget(&self) -> Option<(usize, usize)> {
+        dispatch!(self, m => m.window_over_budget())
+    }
+
     /// What went wrong in a model's solves, counted (docs/PLAN.md §7):
     /// `ew_ridge` and `robust` count their jittered or failed factorizations,
     /// `lasso` its coordinate descents that ran out of sweeps, `ew_class` the
@@ -289,7 +299,17 @@ fn constraint(
     (!c.is_trivial()).then_some(c)
 }
 
+/// One model instance, its window bounded as its spec says
+/// (`ModelKind::window_budget`). The budget is configuration, which a state
+/// does not carry, so every model built -- a stream's, a reset's -- gets it
+/// here, and every model restored gets it in [`Stream::restore`].
 fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
+    let mut m = build_bare(spec, decay)?;
+    m.set_window_budget(spec.model.window_budget());
+    Ok(m)
+}
+
+fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
     match &spec.model {
         ModelKind::EwRidge {
             ridge,
@@ -305,6 +325,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             target_gaps,
             window,
             window_every,
+            window_budget: _,
         } => {
             let fs = feature_sets
                 .as_ref()
@@ -368,6 +389,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             target_gaps,
             window,
             window_every,
+            window_budget: _,
         } => {
             let cfg = LassoCfg {
                 n_features: spec.k(),
@@ -503,6 +525,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             lags,
             window,
             window_every,
+            window_budget: _,
         } => {
             let names = stats
                 .clone()
@@ -701,6 +724,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             precision_prior,
             window,
             window_every,
+            window_budget: _,
         } => {
             let cfg = EwClassCfg {
                 n_features: spec.k(),
@@ -728,6 +752,7 @@ fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
         ModelKind::Marginal {
             window,
             window_every,
+            window_budget: _,
             lags,
             serial_rule,
             bins,
@@ -1338,6 +1363,13 @@ pub struct Stream {
 }
 
 impl Stream {
+    /// The first of this stream's model instances whose window has passed a
+    /// refusing budget: its ring's bytes and `window_every` (review
+    /// 2026-09-12, P4).
+    pub fn window_over_budget(&self) -> Option<(usize, usize)> {
+        self.models.iter().find_map(|(_, m)| m.window_over_budget())
+    }
+
     /// Summed over this stream's model instances (one per halflife).
     pub fn solve_failures(&self) -> u64 {
         self.models.iter().map(|(_, m)| m.solve_failures()).sum()
@@ -1822,6 +1854,12 @@ impl Stream {
             })
             .collect::<Result<Vec<_>, String>>()?;
         stream.models = models;
+        // The window's budget is configuration, which the state does not
+        // carry (`build_one`).
+        let budget = spec.model.window_budget();
+        for (_, m) in stream.models.iter_mut() {
+            m.set_window_budget(budget);
+        }
         stream.clock = saved.clock.clone();
         stream.rows_seen = saved.rows_seen;
         // Written before these fields existed => start the estimate over.

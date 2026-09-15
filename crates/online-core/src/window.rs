@@ -37,6 +37,48 @@ use serde::{Deserialize, Serialize};
 
 use crate::EwCov;
 
+/// What a window does when its snapshots pass a memory budget, and the
+/// budget in MiB (review 2026-09-12, P4; the user's decision of
+/// 2026-09-15). Past it the ring either thins -- every other snapshot
+/// dropped and the spacing doubled, as often as it takes, so the boundary
+/// grows coarser and never keeps an older row -- or stops: the snapshot that
+/// would cross is not kept, none is made after it, and the overrun is
+/// recorded for the caller to refuse the run on, naming the size and
+/// `window_every`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowBudget {
+    Thin(f64),
+    Refuse(f64),
+}
+
+impl WindowBudget {
+    /// Refuse past 256 MiB: the figure `gram_block_rows` refuses at, and
+    /// what a spec that names no budget gets.
+    pub const DEFAULT: WindowBudget = WindowBudget::Refuse(256.0);
+
+    /// The budget in MiB.
+    pub fn mib(&self) -> f64 {
+        match *self {
+            WindowBudget::Thin(m) | WindowBudget::Refuse(m) => m,
+        }
+    }
+
+    fn bytes(&self) -> f64 {
+        self.mib() * 1024.0 * 1024.0
+    }
+}
+
+/// The heap a snapshot holds, in bytes: what a window's budget counts.
+pub trait Footprint {
+    fn footprint(&self) -> usize;
+}
+
+/// Bytes in a slice of floats, for a [`Footprint`].
+pub(crate) fn floats(v: &[f64]) -> usize {
+    std::mem::size_of_val(v)
+}
+
 /// Snapshots of an accumulator, oldest first, spanning at most one window.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshots<S> {
@@ -51,6 +93,26 @@ pub struct Snapshots<S> {
     since: usize,
     /// `(clock of the row the snapshot precedes, snapshot)`.
     ring: VecDeque<(f64, S)>,
+    /// The budget, and a refusing budget's overrun: configuration the caller
+    /// sets after building or restoring the model, so not part of the
+    /// state, and two rings that differ only here are equal.
+    #[serde(skip)]
+    limit: Limit,
+}
+
+#[derive(Debug, Clone, Default)]
+struct Limit {
+    budget: Option<WindowBudget>,
+    over: Option<usize>,
+    /// The bytes the ring holds, kept as snapshots come and go so a push
+    /// costs no walk of the ring; counted afresh whenever a budget is set.
+    held: usize,
+}
+
+impl PartialEq for Limit {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl<S> Snapshots<S> {
@@ -67,6 +129,7 @@ impl<S> Snapshots<S> {
             every,
             since: usize::MAX, // the first row always snapshots
             ring: VecDeque::new(),
+            limit: Limit::default(),
         })
     }
 
@@ -80,37 +143,6 @@ impl<S> Snapshots<S> {
         self.ring.iter_mut().map(|(_, s)| s)
     }
 
-    /// Offer a snapshot of the state *as it stands before* the row at
-    /// `clock`, already decayed to that row. Taken when the cadence is due,
-    /// and whatever the cadence when the newest snapshot is older than the
-    /// window, so the boundary is always inside it (the module docs); `make`
-    /// is not called otherwise.
-    pub fn offer(&mut self, clock: f64, make: impl FnOnce() -> S) {
-        self.since = self.since.saturating_add(1);
-        let stale = self
-            .ring
-            .back()
-            .is_none_or(|&(t, _)| t < clock - self.window);
-        if self.since >= self.every || stale {
-            self.since = 0;
-            self.ring.push_back((clock, make()));
-        }
-    }
-
-    /// Drop what can never be the boundary again: everything strictly older
-    /// than `now - window`. What is left at the front is the oldest snapshot
-    /// inside the window, which is the boundary; [`Self::offer`] at `now`
-    /// has seen to it that there is one. (A stale front did not "subtract
-    /// the whole accumulator", as the comment here said: it subtracts the
-    /// state before the row it precedes, which keeps that row -- review
-    /// 2026-09-12, S6.)
-    pub fn trim(&mut self, now: f64) {
-        let oldest = now - self.window;
-        while self.ring.len() > 1 && self.ring[0].0 < oldest {
-            self.ring.pop_front();
-        }
-    }
-
     /// The snapshot to subtract, and the clock it is referenced at.
     pub fn boundary(&self) -> Option<&(f64, S)> {
         self.ring.front()
@@ -122,6 +154,114 @@ impl<S> Snapshots<S> {
 
     pub fn is_empty(&self) -> bool {
         self.ring.is_empty()
+    }
+}
+
+impl<S: Footprint> Snapshots<S> {
+    /// Drop what can never be the boundary again: everything strictly older
+    /// than `now - window`. What is left at the front is the oldest snapshot
+    /// inside the window, which is the boundary; [`Self::offer`] at `now`
+    /// has seen to it that there is one. (A stale front did not "subtract
+    /// the whole accumulator", as the comment here said: it subtracts the
+    /// state before the row it precedes, which keeps that row -- review
+    /// 2026-09-12, S6.)
+    pub fn trim(&mut self, now: f64) {
+        let oldest = now - self.window;
+        while self.ring.len() > 1 && self.ring[0].0 < oldest {
+            if let Some((_, s)) = self.ring.pop_front() {
+                self.limit.held = self.limit.held.saturating_sub(s.footprint());
+            }
+        }
+    }
+
+    /// Offer a snapshot of the state *as it stands before* the row at
+    /// `clock`, already decayed to that row. Taken when the cadence is due,
+    /// and whatever the cadence when the newest snapshot is older than the
+    /// window, so the boundary is always inside it (the module docs); `make`
+    /// is not called otherwise. Past a thinning budget the ring then thins;
+    /// a refusing one keeps no snapshot that would cross it, and makes none
+    /// after ([`WindowBudget`]).
+    pub fn offer(&mut self, clock: f64, make: impl FnOnce() -> S) {
+        self.since = self.since.saturating_add(1);
+        if self.limit.over.is_some() {
+            return;
+        }
+        let stale = self
+            .ring
+            .back()
+            .is_none_or(|&(t, _)| t < clock - self.window);
+        if self.since >= self.every || stale {
+            self.since = 0;
+            let snap = make();
+            let held = self.limit.held + snap.footprint();
+            // The ring stops short of a refusing budget: the caller refuses
+            // the run, and until it looks, the memory stays bounded.
+            let refuse = matches!(
+                self.limit.budget,
+                Some(b @ WindowBudget::Refuse(_)) if held as f64 > b.bytes()
+            );
+            if refuse {
+                self.limit.over = Some(held);
+                return;
+            }
+            self.limit.held = held;
+            self.ring.push_back((clock, snap));
+            self.enforce();
+        }
+    }
+
+    /// Bound the ring ([`WindowBudget`]), `None` for no bound. A ring already
+    /// past the new budget thins, or records its overrun, at once.
+    pub fn set_budget(&mut self, budget: Option<WindowBudget>) {
+        self.limit = Limit {
+            budget,
+            over: None,
+            held: self.bytes(),
+        };
+        self.enforce();
+    }
+
+    /// A refusing budget's overrun: the bytes the ring reached, and the
+    /// spacing it reached them at (`window_every`, doubled by any thinning).
+    pub fn over_budget(&self) -> Option<(usize, usize)> {
+        self.limit.over.map(|bytes| (bytes, self.every))
+    }
+
+    /// The bytes the ring's snapshots hold.
+    pub fn bytes(&self) -> usize {
+        self.ring.iter().map(|(_, s)| s.footprint()).sum()
+    }
+
+    fn enforce(&mut self) {
+        let Some(budget) = self.limit.budget else {
+            return;
+        };
+        let limit = budget.bytes();
+        if self.limit.held as f64 <= limit {
+            return;
+        }
+        match budget {
+            // Only a ring given a budget it is already past gets here: a
+            // snapshot that would cross one is turned away in `offer`.
+            WindowBudget::Refuse(_) => self.limit.over = Some(self.limit.held),
+            WindowBudget::Thin(_) => {
+                // Keep the newest and every second one before it, and take
+                // them half as often, until the ring fits. The front snapshot
+                // is the boundary, so losing it moves the boundary later: the
+                // window drops more rows, and never keeps an older one.
+                while self.limit.held as f64 > limit && self.ring.len() > 1 {
+                    let n = self.ring.len();
+                    self.ring = std::mem::take(&mut self.ring)
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(i, _)| (n - 1 - i) % 2 == 0)
+                        .map(|(_, e)| e)
+                        .collect();
+                    self.every = self.every.saturating_mul(2);
+                    self.limit.held = self.bytes();
+                }
+            }
+        }
     }
 }
 
@@ -159,6 +299,12 @@ impl Moments {
             m: cov.means().to_vec(),
             c: cov.comoments().to_vec(),
         }
+    }
+}
+
+impl Footprint for Moments {
+    fn footprint(&self) -> usize {
+        2 * std::mem::size_of::<f64>() + floats(&self.m) + floats(&self.c)
     }
 }
 
@@ -249,6 +395,69 @@ pub fn truncated_mean(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Eight bytes a snapshot, for rings of counters.
+    impl Footprint for usize {
+        fn footprint(&self) -> usize {
+            8
+        }
+    }
+
+    /// Past a thinning budget the ring keeps every other snapshot and
+    /// doubles its spacing until it fits, and its boundary stays inside the
+    /// window: it drops rows, never keeps an older one (review 2026-09-12,
+    /// P4).
+    #[test]
+    fn past_a_thinning_budget_the_ring_fits_and_its_boundary_stays_inside() {
+        let window = 100.0;
+        let mut snaps = Snapshots::new(window, 1).unwrap();
+        // Ten snapshots' worth.
+        snaps.set_budget(Some(WindowBudget::Thin(80.0 / (1024.0 * 1024.0))));
+        for i in 0..1000u32 {
+            let t = f64::from(i);
+            snaps.offer(t, || i as usize);
+            snaps.trim(t);
+            assert!(snaps.bytes() <= 80, "row {i}: {} bytes", snaps.bytes());
+            assert_eq!(snaps.limit.held, snaps.bytes(), "row {i}: the count");
+            let &(b, _) = snaps.boundary().unwrap();
+            assert!(b >= t - window, "row {i}: bounded at {b}");
+        }
+        assert!(snaps.every > 1, "and it takes its snapshots less often");
+        assert_eq!(
+            snaps.over_budget(),
+            None,
+            "a thinning budget refuses nothing"
+        );
+    }
+
+    /// Past a refusing budget the ring records the overrun, with its
+    /// spacing, for the caller to refuse the run on -- and stops there: the
+    /// snapshot that crossed is not kept and none is made after it, so the
+    /// memory the refusal bounds stays bounded until the caller checks.
+    #[test]
+    fn past_a_refusing_budget_the_ring_records_the_overrun() {
+        let mut snaps = Snapshots::new(100.0, 1).unwrap();
+        snaps.set_budget(Some(WindowBudget::Refuse(80.0 / (1024.0 * 1024.0))));
+        for i in 0..10u32 {
+            snaps.offer(f64::from(i), || i as usize);
+            assert_eq!(snaps.over_budget(), None, "row {i}: ten fit");
+        }
+        snaps.offer(10.0, || 10);
+        assert_eq!(snaps.over_budget(), Some((88, 1)));
+        assert_eq!(snaps.bytes(), 80, "the snapshot that crossed is not kept");
+        let mut made = 0;
+        for i in 11..1000u32 {
+            snaps.offer(f64::from(i), || {
+                made += 1;
+                i as usize
+            });
+            snaps.trim(f64::from(i));
+            assert!(snaps.bytes() <= 80, "row {i}: {} bytes", snaps.bytes());
+            assert_eq!(snaps.limit.held, snaps.bytes(), "row {i}: the count");
+        }
+        assert_eq!(made, 0, "no snapshot is made past a refusal");
+        assert_eq!(snaps.over_budget(), Some((88, 1)), "the first overrun");
+    }
 
     /// The module doc's boundary, which `trim`'s comment had the other way
     /// round (review 2026-09-12, S6): a snapshot is the state before the

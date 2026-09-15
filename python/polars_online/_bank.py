@@ -168,8 +168,14 @@ class ModelBank:
         struct would replace; or a group's clock runs backwards under
         ``on_clock_reset="error"`` (the other policies absorb it). A refused
         chunk leaves the bank exactly as it was, so the corrected chunk can
-        be fed. ``RuntimeError`` when the bank is in use on another thread
-        (class docstring).
+        be fed. The exception is a window past a refusing ``window_budget``
+        (``ValueError`` too, naming the ring's size and ``window_every``):
+        that is found as the rows are learned, so the chunk is refused after
+        some of it has been, and the bank then refuses every later
+        ``fit_predict``, ``predict`` and ``save`` rather than go on from
+        there -- rebuild it from its last save (review 2026-09-12, P4).
+        ``RuntimeError`` when the bank is in use on another thread (class
+        docstring).
         """
         self._check_frame(df, "fit_predict")
         outs = self._native.fit_predict(df)
@@ -229,14 +235,47 @@ class ModelBank:
             msg = f"ModelBank.{what} takes a polars DataFrame, got {type(df).__name__}"
         raise TypeError(msg)
 
-    def fit_predict_batches(self, batches: Iterable[pl.DataFrame]) -> Iterable[pl.DataFrame]:
+    def fit_predict_batches(
+        self,
+        batches: Iterable[pl.DataFrame],
+        closed_groups: str | Path | None = None,
+    ) -> Iterable[pl.DataFrame]:
         """Lazily map :meth:`fit_predict` over an iterator of chunks: each is
         fed as the generator reaches it, so ``lf.collect_batches()`` streams
         through the bank one chunk at a time. Whatever ``fit_predict`` raises
         for a chunk, this raises there; the chunks before it have been
-        learned from."""
-        for chunk in batches:
-            yield self.fit_predict(chunk)
+        learned from.
+
+        ``closed_groups``, a path, drains the bank's closed groups after
+        every chunk, so the queue is empty whenever a chunk is handed on, and
+        writes what it drained to that file, in the format its extension
+        names, when the chunks run out -- as ``lf.online.fit_predict(
+        closed_groups=)`` does, holding the drained rows until then. A bank's
+        queue is bounded only by draining it: without this, or
+        :meth:`closed_groups` between chunks, every closed group waits in the
+        bank, and :meth:`save` writes them all (review 2026-09-12, P5).
+
+        The file is written however the chunks stop -- at their end, at a
+        ``break``, or at an error -- because a drained row has left the
+        bank, and the file is then the only place it is. The file and the
+        bank's queue together always hold every group that closed. (The
+        plan's source writes only at the end, because its bank goes when the
+        plan does.)"""
+        from polars_online._frame import _closed_path, _write_closed
+
+        path = _closed_path(closed_groups, self._specs)
+        drained: list[pl.DataFrame] = []
+        try:
+            for chunk in batches:
+                out = self.fit_predict(chunk)
+                if path is not None:
+                    rows = self.closed_groups()
+                    if rows.height:
+                        drained.append(rows)
+                yield out
+        finally:
+            if path is not None:
+                _write_closed(path, drained, self.closed_groups(drop=False).clear())
 
     def coef(self, spec: str | int | None = None, group: str | None = None) -> pl.DataFrame:
         """The coefficients behind a fit: one row per (spec, group, instance,
@@ -774,7 +813,11 @@ class ModelBank:
         smaller than the largest one fed so far under ``"monotone"``, or a
         session that has ended under ``"session"`` -- and then drops the
         stream. That is what keeps a bank over an unbounded key space
-        bounded: without it, every key ever seen stays in memory.
+        bounded: without it, every key ever seen stays in memory. The rows
+        it emits wait here until they are read, so the queue is bounded
+        only by reading it: drain it between chunks, or pass
+        ``closed_groups=`` to :meth:`fit_predict_batches`, which does
+        (review 2026-09-12, P5).
 
         One row per (group, decay instance) -- and per Gram, where a spec
         reads several: under ``target_gaps="own_rows"`` targets that have

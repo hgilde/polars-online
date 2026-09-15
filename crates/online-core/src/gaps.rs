@@ -486,6 +486,38 @@ pub(crate) struct GramsSnap {
     of: Vec<usize>,
 }
 
+impl crate::Footprint for GramsSnap {
+    fn footprint(&self) -> usize {
+        self.grams
+            .iter()
+            .map(crate::Footprint::footprint)
+            .sum::<usize>()
+            + std::mem::size_of_val(self.of.as_slice())
+    }
+}
+
+impl crate::Footprint for Cross {
+    fn footprint(&self) -> usize {
+        std::mem::size_of::<f64>()
+            + crate::window::floats(&self.m)
+            + crate::window::floats(&self.my)
+            + self
+                .d
+                .iter()
+                .chain(&self.c)
+                .map(|v| crate::window::floats(v))
+                .sum::<usize>()
+    }
+}
+
+impl crate::Footprint for AccSnap {
+    fn footprint(&self) -> usize {
+        crate::Footprint::footprint(&self.grams)
+            + crate::window::floats(&self.wj)
+            + crate::Footprint::footprint(&self.cross)
+    }
+}
+
 /// A regression's accumulators over its rows: its Grams, and per target its
 /// weight, cross-moments and moments. The live ones, and a session twin's.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

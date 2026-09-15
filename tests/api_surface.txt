@@ -106,6 +106,7 @@
     precision_prior
     window = None
     window_every = None
+    window_budget = None
     common
   ew_cov:
     name
@@ -118,6 +119,7 @@
     lags = None
     window = None
     window_every = None
+    window_budget = None
     common
   ewridge:
     name
@@ -136,6 +138,7 @@
     target_gaps = 'own_rows'
     window = None
     window_every = None
+    window_budget = None
     common
   ftrl:
     name
@@ -218,6 +221,7 @@
     max_rows_between_solves = None
     window = None
     window_every = None
+    window_budget = None
     max_cd_iters = None
     cd_tol = None
     target_gaps = 'own_rows'
@@ -234,6 +238,7 @@
     bin_edges = None
     window = None
     window_every = None
+    window_budget = None
     common
   micro:
     name

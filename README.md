@@ -1504,6 +1504,15 @@ where memory grows with a *window* rather than with the state: about 3 MB
 per group for a 1,000-row window over 20 columns, divided by `window_every`
 if you snapshot less often.
 
+`window_budget` caps that memory per ring, in MiB. With `{"refuse": 64}`, a
+chunk that takes a ring past 64 MiB is refused, and the error names the
+ring's size and `window_every`. The budget is checked as the rows are
+learned, so by then the bank has learned part of that chunk. It refuses
+every later call rather than go on from there: rebuild it from its last
+save. With `{"thin": 64}`, the ring drops every other snapshot and doubles
+its spacing instead, which, like `window_every`, only ever shortens the
+window. A window with no budget refuses past 256 MiB.
+
 ```python
 cut = po.spec.ew_cov(
     "cut", features=["x0", "x1"], clock="t", max_dclock=300.0, halflife=500.0,

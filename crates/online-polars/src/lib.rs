@@ -40,6 +40,7 @@
 
 mod atomic;
 mod bank;
+mod column;
 mod pool;
 mod refresh;
 mod rows;

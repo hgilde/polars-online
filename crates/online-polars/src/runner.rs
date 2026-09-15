@@ -495,18 +495,11 @@ pub fn run_config_on(
             format,
         }
     };
-    let stats = run(&mut bank, input, out, opts, progress)?;
-    // The sidecar goes out before the state, so a state file always has the
-    // closed rows that go with it: the drain empties the bank's queue, and
-    // the state saved next is the state after the file was written. A run
-    // in which nothing closed writes an empty frame with the schema, as an
-    // empty output does.
-    if let Some((path, format)) = closed_target {
-        let df = bank
-            .closed_groups(None, true)
-            .map_err(|e| polars_err!(ComputeError: "{}", e))?;
-        write_one(path, format, df)?;
-    }
+    // The sidecar is written as the run goes -- drained after every chunk --
+    // and published with the output, before the state, so a state file
+    // always has the closed rows that go with it. A run in which nothing
+    // closed writes an empty frame with the schema, as an empty output does.
+    let stats = run_with(&mut bank, input, out, closed_target, opts, progress)?;
     if let Some(p) = &cfg.save_state {
         bank.save(p).map_err(|e| io_err("saving state", p, e))?;
     }
@@ -544,11 +537,30 @@ enum Write_ {
 /// The source's, the bank's ([`Bank::fit_predict`] or [`Bank::predict`]),
 /// the writer's (`PolarsError::IO` naming the file) or `progress`'s,
 /// whichever comes first; the bank is left as it was after the last chunk
-/// it accepted, and a file output is not published.
+/// it accepted -- unless a window passed a refusing `window_budget`, which
+/// is found as the rows go in and leaves the bank refusing to go on
+/// ([`Bank::fit_predict`]) -- and a file output is not published.
 pub fn run(
     bank: &mut Bank,
     input: Input<'_>,
     output: Output<'_>,
+    opts: RunOptions,
+    progress: impl FnMut(RunStats) -> PolarsResult<()>,
+) -> PolarsResult<RunStats> {
+    run_with(bank, input, output, None, opts, progress)
+}
+
+/// [`run`], with the bank's closed groups (E54) drained after every chunk
+/// into `closed` -- a file, in its format -- written through the output's
+/// atomic path and published, like the output, only by a run that reached
+/// its end. The bank's queue is one chunk deep, where a drain after the last
+/// chunk held every row that closed for the length of the run (review
+/// 2026-09-12, P5).
+fn run_with(
+    bank: &mut Bank,
+    input: Input<'_>,
+    output: Output<'_>,
+    closed: Option<(&Path, Format)>,
     opts: RunOptions,
     mut progress: impl FnMut(RunStats) -> PolarsResult<()>,
 ) -> PolarsResult<RunStats> {
@@ -589,6 +601,11 @@ pub fn run(
             // No writer thread and no sink: `deliver` drops the frame.
             Output::Discard => (None, None),
         };
+        // The closed groups' writer, fed a drained frame after every chunk.
+        let (closed_tx, closed_rx) = sync_channel::<Write_>(1);
+        let closed_writer =
+            closed.map(|(path, format)| scope.spawn(move || write_file(path, format, closed_rx)));
+        let mut closed_sent = false;
         // Hand a frame on, to the writer thread or the caller's callback.
         // A closed writer channel means the writer failed; its own error is
         // the one to report, and `join` below has it.
@@ -624,6 +641,17 @@ pub fn run(
                 let t = Instant::now();
                 deliver(out)?;
                 t_deliver_wait += t.elapsed();
+                if closed_writer.is_some() {
+                    let rows = bank
+                        .closed_groups(None, true)
+                        .map_err(|e| polars_err!(ComputeError: "{}", e))?;
+                    if rows.height() > 0 {
+                        closed_tx
+                            .send(Write_::Chunk(rows))
+                            .map_err(|_| polars_err!(ComputeError: "{}", WRITER_STOPPED))?;
+                        closed_sent = true;
+                    }
+                }
                 stats.rows += height;
                 stats.chunks += 1;
                 progress(stats)?;
@@ -639,12 +667,37 @@ pub fn run(
                 };
                 deliver(augment(bank, empty, opts.predict)?)?;
             }
+            if closed_writer.is_some() && !closed_sent {
+                // Nothing closed: the empty frame with the schema, as an
+                // empty output has.
+                let rows = bank
+                    .closed_groups(None, true)
+                    .map_err(|e| polars_err!(ComputeError: "{}", e))?;
+                closed_tx
+                    .send(Write_::Chunk(rows))
+                    .map_err(|_| polars_err!(ComputeError: "{}", WRITER_STOPPED))?;
+            }
             Ok(())
         };
         let result = run();
         // Dropping the receiver is what stops a reader still at work: its
         // next `send` fails and the query is told to stop.
         drop(read_rx);
+        // The closed groups' file goes the output's way: published by a run
+        // that got here in full, discarded by one that did not. Its own
+        // failure, when that is what stopped the run, is the one to report.
+        if let Some(w) = closed_writer {
+            if result.is_ok() {
+                let _ = closed_tx.send(Write_::End);
+            }
+            drop(closed_tx);
+            let written = w.join().expect("the closed-groups writer thread panicked");
+            match (&result, written) {
+                (Ok(()), Err(e)) => return Err(e),
+                (Err(e), Err(we)) if e.to_string() == WRITER_STOPPED => return Err(we),
+                _ => {}
+            }
+        }
         let t_writer = match (result, writer) {
             (Ok(()), Some(w)) => {
                 // Only a run that got here in full publishes the output.
@@ -764,19 +817,6 @@ fn write_file(path: &Path, format: Format, rx: Receiver<Write_>) -> PolarsResult
         }
         e => e,
     })
-}
-
-/// One frame to one file, through [`write_file`]'s atomic path: a temporary
-/// sibling renamed into place when the frame is complete. The `closed_groups`
-/// sidecar (E54), which is written once at the end of a run rather than
-/// appended per chunk -- E35's rule, one code path.
-fn write_one(path: &Path, format: Format, df: DataFrame) -> PolarsResult<()> {
-    let (tx, rx) = sync_channel::<Write_>(2);
-    tx.send(Write_::Chunk(df))
-        .and_then(|()| tx.send(Write_::End))
-        .expect("the receiver is alive until this function returns");
-    drop(tx);
-    write_file(path, format, rx).map(|_| ())
 }
 
 fn write_frames(path: &Path, format: Format, rx: Receiver<Write_>) -> PolarsResult<Duration> {

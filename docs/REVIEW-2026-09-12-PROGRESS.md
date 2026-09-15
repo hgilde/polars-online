@@ -109,13 +109,13 @@ two agree to `3e-9`); and C22's two `holt` tests do not turn over -- with
 a clock since the last observation the level does stand still across a
 null, and what moves is the next row's forecast.
 
-**Kept for later: 14 items** (V22 closed with task 81; batch 1 below
-closed fourteen, batch 2 thirteen, batch 3a eleven), each with its reason
-in the tables below -- a decision taken by the user on 2026-09-15 and
-recorded in `docs/PLAN.md` task 80 (S1, S2, S3, S23, S27, S29, S30, S31
-and C24 for batch 4; P4 and P5 for batch 3b), documentation (D9, D10),
-and one new observation, N4, which task 81 did half of. D1 is excluded by
-the user. The user's own
+**Kept for later: 12 items** (V22 closed with task 81; batch 1 below
+closed fourteen, batch 2 thirteen, batch 3a eleven, batch 3b two), each
+with its reason in the tables below -- a decision taken by the user on
+2026-09-15 and recorded in `docs/PLAN.md` task 80 (S1, S2, S3, S23, S27,
+S29, S30, S31 and C24 for batch 4), documentation (D9, D10), and one new
+observation, N4, which task 81 did half of. D1 is excluded by the user.
+The user's own
 design work (tasks 78 and 79), parked on `design/task-78` while the round
 ran, is merged into `main`.
 
@@ -209,7 +209,7 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
 |---|---|
 | P1, P3 | **fixed** (batch 3a) — `predict` and `n_eff` read the window's weights alone (`Acc::window_weights`, `EwCovModel::window_n_eff`), and `lasso`'s selection one target's errors (`window_sel_err`), instead of the O(k²) view, which is built now only to solve or to read statistics. Bit-identical: guard tests hold the cheap reads to the view on every row, through a clock gap that empties the window. Measured with `examples/window_bench.rs` at k = 200, a window of 1000 and `window_every` 25: a windowed `ewridge` row 34.6 → 17.2 µs (11.3 without a window), an accumulate-only windowed `ew_cov` row 28.1 → 9.8 µs (5.9 without) |
 | P2 | **fixed** (batch 3a) — `Instance::reset` builds its own instance at its own decay; it built every instance of the grid and kept one |
-| P4, P5 | next (batch 3b), on the user's decisions of 2026-09-15 (`docs/PLAN.md` task 80) |
+| P4, P5 | **fixed** (batch 3b), on the user's decisions of 2026-09-15 (`docs/PLAN.md` task 80). P4: `window_budget = {"thin": MiB}` or `{"refuse": MiB}` on the five windowed kinds, and a window with no budget refuses past 256 MiB per ring (**my default, raised**). A refusing ring stops at the budget -- the snapshot that would cross is not kept, and none is made after -- and the chunk is refused. The budget is found as the rows go in, so by then the bank has learned part of the chunk: it refuses every later `fit_predict`, `predict` and `save` rather than go on (**a design call, raised**). P5: the runner drains after every chunk and hands each drain to the sidecar's writer; `fit_predict_batches(closed_groups=)` drains after every batch and writes however the chunks stop; `closed_groups()` says the queue is bounded only by draining it. On the old build all fourteen tests failed for their findings' reasons |
 | D1 | not taken: excluded by the user (2026-09-14) -- hard rule 5, on backward file compatibility, stays as written |
 | D2 | **fixed** (batch 1) — one ladder, `factorize`, under `solve_spd` and `SpdFactor::of`; the solve is bit-identical, and a guard test holds the two to the same rung on a well-posed, a singular and an indefinite matrix |
 | D3, D4, D5 | **fixed** (batch 1) — `Kalman::coefficients`, `robust`'s module doc and `sgd`'s `scale_features` now say what the review says they left out. D4's `HuberRegressor` comparison is sklearn's, which the project does not take |
@@ -344,6 +344,29 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   P1 and P3 are measured rather than failed: a windowed row 34.6 → 17.2 µs
   and 28.1 → 9.8 µs, bit-identical. P4 and P5, on the user's decisions,
   are batch 3b.
+- 2026-09-15 — **batch 3b**: P4 and P5 fixed, on the user's decisions.
+  Every test was written first, and on the old build all fourteen failed
+  for their findings' reasons: P4's for want of `window_budget`, the
+  runner's sidecar as one record batch written at the end, and
+  `fit_predict_batches` for want of `closed_groups`. Three defects in my own
+  first version, found by its tests, are recorded so they are not repeated.
+  (1) A refusal cannot leave the bank as it was. Every other refusal is
+  checked before a stream is touched; the budget can only be found as the
+  rows go in, across groups learning in parallel, and cloning every touched
+  stream per chunk would cost what the default budget exists to bound. So a
+  bank refused for it refuses to go on (raised: a design call). (2) The
+  refusing ring kept growing through the rest of the run of rows the bank
+  checks after, and now stops at the budget. (3) The byte count walked the
+  whole ring on every snapshot -- O(ring) per row on every windowed spec,
+  now that each has a default budget -- and is a running count, held to a
+  walk in the unit tests. Two notes on method. polars 1.44's `read_ipc`
+  merges record batches (its `rechunk` is deprecated) and pyarrow is not a
+  dependency, so the runner's test counts batches from the IPC footer and
+  pins the count at two chunkings. And `bank.rs` passed the 200,000-byte
+  cap, so `F64Column` and its tests moved to `column.rs` unchanged.
+  `fit_predict_batches` writes what it drained however the chunks stop --
+  a drained row has left the bank -- where the plan's source writes only at
+  the end, its bank going with the plan.
 
 ## New observations (found while fixing; not in the review)
 

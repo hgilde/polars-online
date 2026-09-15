@@ -135,7 +135,7 @@ pub use seqtest::{SLOTS as SEQTEST_SLOTS, SeqTest, SeqTestCfg};
 pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::{SpdFactor, quad_forms_logdet, solve_spd};
 pub use stats::{EwAutoCorr, P2Quantile, SlotMetrics};
-pub use window::{Moments, Snapshots, truncated, truncated_mean};
+pub use window::{Footprint, Moments, Snapshots, WindowBudget, truncated, truncated_mean};
 
 /// Version of the serialized model-state layout.
 ///

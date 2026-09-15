@@ -1616,7 +1616,12 @@ and `"shared"` do not factorize per class and are unaffected.
 Memory is the other axis, and it is the one the feature genuinely changes:
 `O(rows in the window x state)`, where every other model here is `O(state)`.
 `window_every = m` divides that by `m` and shortens the effective window by at
-most one snapshot's spacing — never lengthens it.
+most one snapshot's spacing — never lengthens it. `window_budget` puts a bound
+on it per ring, in MiB: `{"refuse": mib}` refuses the chunk that crosses it,
+and `{"thin": mib}` drops every other snapshot and doubles the spacing as
+often as it takes, shortening the window the same way. A window with no
+budget refuses past 256 MiB (review 2026-09-12, P4; at `k = 1000` over a
+3,600-row window the ring was about 29 GB per instance, and nothing checked).
 
 ## 17. What `marginal`'s two views cost, and two costs that were not theirs (2026-09-07)
 

@@ -232,7 +232,8 @@ def _source(
             seen += chunk.height
             if closed_path is not None:
                 # Drained per chunk so the bank's queue stays bounded; the
-                # file is written once, at the end, as `po.run` writes it.
+                # file is written once, at the end, where `po.run` hands each
+                # drain to its writer as it comes (review 2026-09-12, P5).
                 # So the sidecar's rows -- one per closed (group, instance)
                 # -- are held until then: bounded by the number of closes,
                 # not by the input, and empty drains cost nothing

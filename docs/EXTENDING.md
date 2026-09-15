@@ -58,6 +58,17 @@ typing test, which did not exist when `holt` was added). `git show --stat
    contract's copy is taken with an *empty* ring, which grows back; the case
    that bites is a partly filled one, so the model's own unit tests need a
    save/restore at every depth from empty to full.
+   *A window*: a model with a `window` keeps its snapshots in
+   `online_core::Snapshots`, gives the snapshot type a **`Footprint`** (the
+   heap it holds, in bytes), and overrides **`set_window_budget`** and
+   **`window_over_budget`** to reach the ring, so that `window_budget` bounds
+   it (review 2026-09-12, P4). The trait's defaults do nothing, so a model
+   that forgets them compiles and ignores the budget.
+   *Check*: `tests/test_window_budget.py` —
+   `test_every_windowed_model_holds_its_budget` feeds each windowed kind past
+   a tiny refusing budget and fails for one that runs on, and
+   `test_the_budget_table_names_every_windowed_builder` fails until a new
+   builder that takes `window_budget` is in that test's table.
    *A parameter in the targets slot*: a model that reads a number out of
    `y` rather than regressing it — `bocpd`'s hazard column, `hmm`'s
    exogenous column — also overrides **`predict_with(x, y, d_clock)`**, or

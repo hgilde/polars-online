@@ -9,6 +9,7 @@ every chunking.
 """
 
 import os
+import struct
 import subprocess
 import sys
 
@@ -608,6 +609,51 @@ def test_the_sidecar_is_the_drained_frames_and_is_chunk_invariant(tmp_path):
         chunk_rows=2,
     )
     assert pl.read_parquet(other).equals(pl.read_parquet(side))
+
+
+def _ipc_record_batches(path) -> int:
+    """The record batches an Arrow IPC file holds, read from its footer:
+    polars' reader merges them, and pyarrow is not a dependency. The footer
+    is a flatbuffer ``Footer`` whose field 3, ``recordBatches``, is a vector
+    of one ``Block`` per batch."""
+    buf = path.read_bytes()
+    assert buf[:6] == b"ARROW1" and buf[-6:] == b"ARROW1", "not an Arrow IPC file"
+    (size,) = struct.unpack_from("<i", buf, len(buf) - 10)
+    footer = buf[len(buf) - 10 - size : len(buf) - 10]
+    (table,) = struct.unpack_from("<I", footer, 0)
+    vtable = table - struct.unpack_from("<i", footer, table)[0]
+    (vtable_size,) = struct.unpack_from("<H", footer, vtable)
+    slot = 4 + 2 * 3
+    field = struct.unpack_from("<H", footer, vtable + slot)[0] if slot < vtable_size else 0
+    if field == 0:
+        return 0
+    (rel,) = struct.unpack_from("<I", footer, table + field)
+    return struct.unpack_from("<I", footer, table + field + rel)[0]
+
+
+@pytest.mark.parametrize(("chunk_rows", "batches"), [(7, 3), (100, 1)])
+def test_the_runner_writes_the_sidecar_as_it_goes(tmp_path, chunk_rows, batches):
+    """``po.run`` drains the bank after every chunk and hands each drain to
+    the sidecar's writer, so a closed row reaches the file while the run is
+    still going instead of waiting in the bank for its end (review
+    2026-09-12, P5). The IPC writer keeps each drain as a record batch of its
+    own, which shows it: at 7 rows a chunk ``a``, ``b`` and ``c`` close in
+    three different chunks and the file holds three batches; in one chunk,
+    one. A single drain at the end wrote one batch either way."""
+    df = frame(["a", "b", "c", "d"], n_per=9)
+    df.write_parquet(tmp_path / "in.parquet")
+    side = tmp_path / "closed.arrow"
+    po.run(
+        input=tmp_path / "in.parquet",
+        output=tmp_path / "out.parquet",
+        specs=[cov_spec(group_close="monotone")],
+        closed_groups=side,
+        chunk_rows=chunk_rows,
+    )
+    assert _ipc_record_batches(side) == batches
+    driver = po.ModelBank([cov_spec(group_close="monotone")])
+    driver.fit_predict(df)
+    assert pl.read_ipc(side, memory_map=False).equals(driver.closed_groups())
 
 
 def test_the_io_plugin_writes_the_same_sidecar(tmp_path):

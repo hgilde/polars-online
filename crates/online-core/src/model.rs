@@ -235,6 +235,19 @@ pub trait OnlineModel: Sized {
     /// are untouched. Only the lags go.
     fn clear_lags(&mut self) {}
 
+    /// Bound this model's window, if it has one ([`crate::WindowBudget`]).
+    /// Configuration, not state: a caller sets it after building or
+    /// restoring the model, and a model without a window ignores it --
+    /// hence the default.
+    fn set_window_budget(&mut self, _budget: Option<crate::WindowBudget>) {}
+
+    /// What a refusing budget saw the window reach: its snapshots' bytes,
+    /// and its spacing (`window_every`, doubled by any thinning). `None`
+    /// while under budget, and for a model without a window.
+    fn window_over_budget(&self) -> Option<(usize, usize)> {
+        None
+    }
+
     fn state(&self) -> State;
     fn restore(s: &State) -> Result<Self, StateError>;
     fn n_targets(&self) -> usize;

@@ -162,6 +162,18 @@ struct LassoMoments {
     sel_err: Vec<Vec<f64>>,
 }
 
+impl crate::Footprint for LassoMoments {
+    fn footprint(&self) -> usize {
+        crate::Footprint::footprint(&self.acc)
+            + crate::window::floats(&self.sel_w)
+            + self
+                .sel_err
+                .iter()
+                .map(|v| crate::window::floats(v))
+                .sum::<usize>()
+    }
+}
+
 impl Lasso {
     pub fn new(cfg: LassoCfg) -> Result<Self, String> {
         cfg.validate()?;
@@ -542,6 +554,16 @@ impl Lasso {
 }
 
 impl OnlineModel for Lasso {
+    fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.set_budget(budget);
+        }
+    }
+
+    fn window_over_budget(&self) -> Option<(usize, usize)> {
+        self.win.as_ref().and_then(|win| win.snaps.over_budget())
+    }
+
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
         let m = self.cfg.n_targets;
         let np = self.cfg.n_lambdas();

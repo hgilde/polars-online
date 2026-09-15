@@ -9,11 +9,11 @@ use std::path::Path;
 use online_core::ClockCfg;
 use polars::chunked_array::builder::AnonymousOwnedListBuilder;
 use polars::prelude::*;
-use polars_arrow::bitmap::{Bitmap, MutableBitmap};
 use polars_utils::aliases::PlHashMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::column::F64Column;
 use crate::rows::FeatureRows;
 use crate::spec::{ModelKind, Spec};
 use crate::stream::{AnyModel, ChunkOut, Stream, StreamState, combo_labels};
@@ -836,6 +836,10 @@ fn process(
                         Ok(()) => {
                             stream.remember_last(&out);
                             outs.push((si, Ok(out)));
+                            if let Some((bytes, every)) = stream.window_over_budget() {
+                                outs.push((si, Err(over_budget(spec, key, bytes, every))));
+                                break 'segments;
+                            }
                         }
                         Err((raw, i)) => {
                             outs.push((si, Err(backwards_clock(spec, raw, i))));
@@ -943,6 +947,27 @@ fn compare_targets(
             Ok(gathered(d, layout))
         })
         .collect()
+}
+
+/// The error for a window past a refusing `window_budget` (review
+/// 2026-09-12, P4; the user's decision of 2026-09-15): names the spec, the
+/// group, the ring's size and the ways out. It is found as the rows go in --
+/// after the run of rows in which the ring stopped at the budget -- so the
+/// bank that raises it has learned part of the chunk, and marks itself
+/// `broken`.
+fn over_budget(spec: &Spec, key: &GroupKey, bytes: usize, every: usize) -> PolarsError {
+    let mib = spec.model.window_budget().map_or(0.0, |b| b.mib());
+    let group = key
+        .0
+        .as_deref()
+        .map_or(String::new(), |g| format!(" group {g:?}"));
+    polars_err!(ComputeError:
+        "spec {:?}{group}: the window's snapshots hold {:.3} MiB, past window_budget = \
+         {{\"refuse\": {mib}}}. Raise the budget, raise window_every ({every} now), or \
+         thin the snapshots instead ({{\"thin\": MiB}}).",
+        spec.name,
+        bytes as f64 / (1024.0 * 1024.0)
+    )
 }
 
 /// The error for a backwards clock under `on_clock_reset = "error"`: names the
@@ -1959,6 +1984,13 @@ pub struct Bank {
     /// high-water mark cannot be read under the wrong ordering
     /// (docs/REVIEW-E54-E64.md G1).
     key_integer: Vec<Option<bool>>,
+    /// Why the bank refuses to go on, once a chunk was refused after some
+    /// of its rows had been learned. A window past a refusing
+    /// `window_budget` is found as the rows go in, not before, so by then
+    /// the streams hold rows whose output was never returned (review
+    /// 2026-09-12, P4). `fit_predict`, `predict` and `save_bytes` refuse;
+    /// reading the state (`gram`, `summary`, `to_json`) does not.
+    broken: Option<String>,
 }
 
 /// Everything `assemble` needs that follows from the `Spec` alone.
@@ -2145,6 +2177,7 @@ impl Bank {
             high_water,
             pca_prev: HashMap::new(),
             key_integer,
+            broken: None,
         })
     }
 
@@ -2579,6 +2612,20 @@ impl Bank {
         Ok(())
     }
 
+    /// Refuse to go on from a chunk refused after some of it was learned
+    /// (the `broken` field).
+    fn refuse_if_broken(&self) -> PolarsResult<()> {
+        match &self.broken {
+            None => Ok(()),
+            Some(why) => Err(polars_err!(ComputeError:
+                "this bank cannot go on: a chunk was refused after some of its rows had \
+                 been learned, so its state holds rows whose output was never returned; \
+                 rebuild it from its last save. The refusal was: {}",
+                why
+            )),
+        }
+    }
+
     /// Run every spec over one chunk; returns one struct column per spec.
     /// Chunks must arrive in stream order within each group.
     ///
@@ -2593,8 +2640,13 @@ impl Bank {
     /// `on_clock_reset = "error"`; `Duplicate` for a spec named like an
     /// input column, which its struct would replace. A refused chunk leaves
     /// the bank exactly as it was -- no state is updated, no new group is
-    /// kept -- so the corrected chunk can be fed. And, on the first call
-    /// only, a `POLARS_ONLINE_MAX_THREADS` that is not a count of threads.
+    /// kept -- so the corrected chunk can be fed. The exception is a window
+    /// whose snapshots pass a refusing `window_budget` (`ComputeError`,
+    /// naming the ring's size and `window_every`): that is found as the rows
+    /// are learned, so the chunk is refused after some of it has been, and
+    /// every later `fit_predict`, `predict` and `save_bytes` is refused
+    /// rather than go on from there. And, on the first call only, a
+    /// `POLARS_ONLINE_MAX_THREADS` that is not a count of threads.
     pub fn fit_predict(&mut self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
         // Everything parallel below -- the `par_iter`s here and the
         // per-instance ones in `Stream` -- runs on the bank's own pool
@@ -2608,6 +2660,7 @@ impl Bank {
         let timing = std::env::var_os("ONLINE_TIMING").is_some();
         let t0 = std::time::Instant::now();
         let n = df.height();
+        self.refuse_if_broken()?;
         self.refuse_name_clash(df)?;
         // Independent per spec, and each is a full pass over its columns, so
         // they run in parallel with each other (docs/PERFORMANCE.md P3). The
@@ -2736,9 +2789,11 @@ impl Bank {
         // Two phases: a `seqtest` that compares two specs reads the residuals
         // they report for this chunk, so those run and assemble first, and
         // the comparisons after (docs/ENHANCEMENTS.md E42). The clock check
-        // above covered both, so nothing in either phase can refuse the
-        // chunk; the `forget` paths below are the tripwire that keeps that
-        // true if a stream ever grows another way to fail.
+        // above covered both. What can still refuse the chunk is found as the
+        // rows go in -- a window past a refusing `window_budget` (review
+        // 2026-09-12, P4) -- by which time the streams have learned part of
+        // it: the `forget` paths below drop the streams the chunk created,
+        // and the bank marks itself `broken` rather than go on from there.
         let (work2, work1): (Vec<_>, Vec<_>) = work
             .into_iter()
             .partition(|(si, ..)| derived[*si].compare.is_some());
@@ -2753,6 +2808,7 @@ impl Bank {
                 Err(e) => {
                     drop(work2);
                     forget(&mut self.states, &fresh);
+                    self.broken = Some(e.to_string());
                     return Err(e);
                 }
             }
@@ -2779,6 +2835,7 @@ impl Bank {
                     Ok(o) => per_spec_rows[si].push(o),
                     Err(e) => {
                         forget(&mut self.states, &fresh);
+                        self.broken = Some(e.to_string());
                         return Err(e);
                     }
                 }
@@ -2867,6 +2924,7 @@ impl Bank {
 
     fn predict_on_pool(&self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
         let n = df.height();
+        self.refuse_if_broken()?;
         self.refuse_name_clash(df)?;
         let groups: Vec<Vec<(GroupKey, Vec<usize>)>> = self
             .specs
@@ -3067,6 +3125,7 @@ impl Bank {
     }
 
     pub fn save_bytes(&self) -> Result<Vec<u8>, String> {
+        self.refuse_if_broken().map_err(|e| e.to_string())?;
         rmp_serde::to_vec_named(&self.to_file()).map_err(|e| e.to_string())
     }
 
@@ -4102,178 +4161,6 @@ fn slot_labels(spec: &Spec) -> Vec<String> {
     out
 }
 
-/// One output column under construction: a values buffer, NaN where no
-/// finite value has been set, and its validity bits. `finish` hands both to
-/// polars as they are: no `Vec<Option<f64>>` and no second copy into the
-/// `Series`.
-///
-/// The bits are packed a byte at a time as `scatter`'s run path copies a
-/// chunk, while its values are still in cache, and are trusted at `finish`
-/// only if every chunk went that way (`packed`); otherwise validity is
-/// `is_finite` over `values` in one pass at `finish`. Neither sets a bit per
-/// value as it lands: that read-modify-write was a third of assembling a
-/// 230-statistic `ew_cov`, and the separate pass re-read every value from
-/// memory (docs/PERFORMANCE.md §13). `n_eff` is the one column reported as it
-/// is, finite or not, so it alone keeps a bit set per row (`set`).
-struct F64Column {
-    values: Vec<f64>,
-    /// `values.len()` bits, packed little-endian as polars keeps them.
-    bits: Vec<u8>,
-    /// Every set value's bit is in `bits`.
-    packed: bool,
-    /// Scratch for `run`: one flag byte per row of the run.
-    flags: Vec<u8>,
-}
-
-impl F64Column {
-    fn new(n: usize) -> Self {
-        Self {
-            values: vec![f64::NAN; n],
-            bits: vec![0u8; n.div_ceil(8)],
-            packed: true,
-            flags: Vec::new(),
-        }
-    }
-
-    /// The contract is finite-or-null. NaN is the models' own null encoding,
-    /// but a diverged model can also reach exact +/-inf, and `is_nan` alone
-    /// would hand that to the user.
-    #[inline]
-    fn set_if_finite(&mut self, i: usize, v: f64) {
-        if v.is_finite() {
-            self.values[i] = v;
-            self.packed = false;
-        }
-    }
-
-    /// Valid whatever the value: `n_eff`, which is reported as it is.
-    #[inline]
-    fn set(&mut self, i: usize, v: f64) {
-        self.values[i] = v;
-        self.bits[i / 8] |= 1 << (i % 8);
-    }
-
-    /// The run `vals` of a chunk whose rows are `base..base + vals.len()`,
-    /// with `processed` alongside: a processed, finite value lands with its
-    /// bit, anything else leaves NaN and a clear bit -- exactly what
-    /// `set_if_finite` over the same rows gives.
-    ///
-    /// Two passes the compiler vectorizes -- the select into `values` with a
-    /// byte flag per row, then the flags packed eight at a time by the
-    /// multiply that gathers the low bit of each byte into one byte -- rather
-    /// than one pass that shifts each flag into place, which it compiles a
-    /// lane at a time: 0.5 ns a value against 0.3 in isolation
-    /// (docs/PERFORMANCE.md §13). The partial bytes at each end go bit by bit.
-    fn run(&mut self, base: usize, vals: &[f64], processed: &[bool]) {
-        let n = vals.len();
-        let dst = &mut self.values[base..base + n];
-        self.flags.clear();
-        self.flags.resize(n, 0);
-        let rows = dst
-            .iter_mut()
-            .zip(vals)
-            .zip(processed)
-            .zip(self.flags.iter_mut());
-        for (((d, &v), &p), f) in rows {
-            let ok = p & v.is_finite();
-            *d = if ok { v } else { f64::NAN };
-            *f = ok as u8;
-        }
-        let head = ((8 - base % 8) % 8).min(n);
-        let body = head + (n - head) / 8 * 8;
-        for k in (0..head).chain(body..n) {
-            if self.flags[k] != 0 {
-                self.bits[(base + k) / 8] |= 1 << ((base + k) % 8);
-            }
-        }
-        let bytes = &mut self.bits[(base + head) / 8..];
-        for (f, byte) in self.flags[head..body].chunks_exact(8).zip(bytes) {
-            let x = u64::from_le_bytes(f.try_into().expect("eight flags"));
-            *byte = (x.wrapping_mul(0x0102_0408_1020_4080) >> 56) as u8;
-        }
-    }
-
-    /// True where the value is set: finite, or -- with `all` -- written.
-    #[inline]
-    fn is_valid(&self, i: usize) -> bool {
-        if self.packed {
-            self.bits[i / 8] >> (i % 8) & 1 == 1
-        } else {
-            self.values[i].is_finite()
-        }
-    }
-
-    /// The validity as polars wants it: `None` when every row is valid.
-    fn validity(&mut self) -> Option<Bitmap> {
-        let n = self.values.len();
-        let bits = if self.packed {
-            MutableBitmap::from_vec(std::mem::take(&mut self.bits), n)
-        } else {
-            MutableBitmap::from_trusted_len_iter(self.values.iter().map(|v| v.is_finite()))
-        };
-        (bits.unset_bits() > 0).then(|| bits.into())
-    }
-
-    fn finish(mut self, name: PlSmallStr) -> Series {
-        let validity = self.validity();
-        Float64Chunked::from_vec_validity(name, self.values, validity).into_series()
-    }
-
-    /// The same column as `i32`, for a value that is an index or a count (a
-    /// `kmeans` assignment, a `micro` count). Every set value is a small
-    /// non-negative integer by construction; the null rows carry NaN and are
-    /// masked, not cast.
-    fn finish_i32(mut self, name: PlSmallStr) -> Series {
-        let validity = self.validity();
-        let values: Vec<i32> = self
-            .values
-            .iter()
-            .map(|&v| if v.is_finite() { v as i32 } else { 0 })
-            .collect();
-        Int32Chunked::from_vec_validity(name, values, validity).into_series()
-    }
-
-    /// The same column as `i64`, for an id that only ever grows (a `micro`
-    /// id or label).
-    fn finish_i64(mut self, name: PlSmallStr) -> Series {
-        let validity = self.validity();
-        let values: Vec<i64> = self
-            .values
-            .iter()
-            .map(|&v| if v.is_finite() { v as i64 } else { 0 })
-            .collect();
-        Int64Chunked::from_vec_validity(name, values, validity).into_series()
-    }
-
-    /// The same column as `Boolean`, for a `1.0` / `0.0` flag.
-    fn finish_bool(self, name: PlSmallStr) -> Series {
-        let values: Vec<Option<bool>> = self
-            .values
-            .iter()
-            .enumerate()
-            .map(|(i, &v)| self.is_valid(i).then_some(v == 1.0))
-            .collect();
-        Series::new(name, values.as_slice())
-    }
-
-    /// The same column as the class names, for an `ew_class` prediction:
-    /// every set value is a position in `classes` by construction (the model
-    /// emits the argmax over its own classes), and the null rows stay null.
-    fn finish_label(self, name: PlSmallStr, classes: &[String]) -> Series {
-        let values: Vec<Option<&str>> = self
-            .values
-            .iter()
-            .enumerate()
-            .map(|(i, &v)| {
-                self.is_valid(i)
-                    .then(|| classes.get(v as usize).map(String::as_str))
-                    .flatten()
-            })
-            .collect();
-        Series::new(name, values.as_slice())
-    }
-}
-
 /// Scatter one value per processed row of every chunk into a column:
 /// `run(chunk, n_rows)` is the field's `n_rows` values for that chunk in row
 /// order -- every `ChunkOut` buffer is slot-major, so that is one slice.
@@ -4561,113 +4448,4 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
         })?;
     let st = StructChunked::from_series(spec.name.as_str().into(), n, fields.iter())?;
     Ok(st.into_series().into())
-}
-
-#[cfg(test)]
-mod column_tests {
-    use super::F64Column;
-
-    /// A deterministic mix of finite, NaN and infinite values.
-    fn values(n: usize, seed: u64) -> Vec<f64> {
-        let mut x = seed;
-        (0..n)
-            .map(|i| {
-                x = x
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407);
-                match (x >> 33) % 7 {
-                    0 => f64::NAN,
-                    1 => f64::INFINITY,
-                    2 => f64::NEG_INFINITY,
-                    _ => i as f64 * 0.5 - 3.0,
-                }
-            })
-            .collect()
-    }
-
-    /// The packed run path is `set_if_finite` over the same rows, to the bit:
-    /// the same values, the same validity, whatever the alignment of the run
-    /// within the column and the mix of skipped and non-finite rows.
-    #[test]
-    fn a_packed_run_matches_the_scatter_bit_for_bit() {
-        for base in 0..17 {
-            for len in [0usize, 1, 3, 7, 8, 9, 15, 16, 17, 31, 33, 64, 100] {
-                let n = base + len + 5;
-                let vals = values(len, base as u64 * 1000 + len as u64);
-                let processed: Vec<bool> = (0..len).map(|k| (k * 7 + base) % 5 != 0).collect();
-
-                let mut fast = F64Column::new(n);
-                fast.run(base, &vals, &processed);
-                let mut slow = F64Column::new(n);
-                for (k, (&v, &p)) in vals.iter().zip(&processed).enumerate() {
-                    if p {
-                        slow.set_if_finite(base + k, v);
-                    }
-                }
-
-                assert!(fast.packed, "base {base} len {len}");
-                for i in 0..n {
-                    assert_eq!(
-                        fast.values[i].to_bits(),
-                        slow.values[i].to_bits(),
-                        "value at {i}: base {base} len {len}"
-                    );
-                    assert_eq!(
-                        fast.is_valid(i),
-                        slow.is_valid(i),
-                        "bit at {i}: base {base} len {len}"
-                    );
-                    assert_eq!(fast.is_valid(i), fast.values[i].is_finite());
-                }
-                let (fv, sv) = (fast.validity(), slow.validity());
-                assert_eq!(fv, sv, "validity: base {base} len {len}");
-            }
-        }
-    }
-
-    /// Once any row went through `set_if_finite`, the bits are not trusted:
-    /// validity comes from the values, so a mixed column is still right.
-    #[test]
-    fn a_mixed_column_falls_back_to_the_values() {
-        let n = 40;
-        let vals = values(16, 7);
-        let mut col = F64Column::new(n);
-        col.run(8, &vals, &[true; 16]);
-        col.set_if_finite(3, 1.5);
-        col.set_if_finite(30, f64::NAN);
-        assert!(!col.packed);
-        for i in 0..n {
-            assert_eq!(col.is_valid(i), col.values[i].is_finite());
-        }
-        let v = col.validity().expect("some rows are null");
-        for i in 0..n {
-            assert_eq!(v.get_bit(i), col.values[i].is_finite());
-        }
-    }
-
-    /// `set` is for `n_eff`: valid whatever the value, null where never set.
-    #[test]
-    fn set_is_valid_whatever_the_value() {
-        let mut col = F64Column::new(10);
-        col.set(2, f64::NAN);
-        col.set(9, 0.0);
-        assert!(col.packed);
-        let v = col.validity().expect("rows 0, 1, 3..9 are null");
-        assert_eq!(v.set_bits(), 2);
-        assert!(v.get_bit(2) && v.get_bit(9));
-    }
-
-    /// A fully valid column reports no validity at all, as polars expects.
-    #[test]
-    fn a_full_column_has_no_validity() {
-        let mut col = F64Column::new(24);
-        let vals: Vec<f64> = (0..24).map(|i| i as f64).collect();
-        col.run(0, &vals, &[true; 24]);
-        assert!(col.validity().is_none());
-        let mut col = F64Column::new(24);
-        for (i, &v) in vals.iter().enumerate() {
-            col.set_if_finite(i, v);
-        }
-        assert!(col.validity().is_none());
-    }
 }
