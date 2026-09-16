@@ -5,7 +5,15 @@ All notable changes to this project are documented here. The format follows
 [semantic versioning](https://semver.org/) — while pre-1.0, the minor version
 carries breaking changes, and any change to the numbers a model returns.
 
-## [Unreleased]
+## [0.6.0] — 2026-09-16
+
+A minor: many models return a different number than they did in 0.5.1, and
+the state schema is 10, so a file written by an earlier release is refused
+rather than loaded. Behind it are two full reviews of the library
+(`docs/REVIEW-2026-09-12.md`, `docs/REVIEW-2026-09-15.md`), a new reading
+for a target that is null on some rows (`target_gaps`), and the whole
+Python API reference and the README written again from scratch. Every
+entry that moves a number says so.
 
 ### Changed
 
@@ -321,6 +329,32 @@ carries breaking changes, and any change to the numbers a model returns.
   finite halflife.
 - **A drift reset builds one model instance**, the one it resets, instead
   of every instance of the halflife grid.
+
+### Documentation
+
+- **The Python API reference is written from scratch** to `docs/WRITING.md`:
+  the spec builders, `ModelBank`, the frame and expression namespaces, the
+  runner, and the `gram`, `eval`, `corr`, `prep` and `sim` modules. A
+  builder now states its fit as math, its parameters with their units, the
+  fields of the struct it writes with a link to `docs/OUTPUTS.md`, a
+  runnable example, and what it refuses. A function or model that generates
+  a downstream table summarises that table and the contents of its structs,
+  and links to them. Every `.. code-block:: python` in a public docstring
+  runs in the test suite: 59 of them.
+- **A mechanism is documented where its API is.** The review records under
+  `docs/` are unchanged, and the explanations they carried now also live in
+  the docstrings and Rust module comments that own the behaviour, so the
+  current state of the library is readable from the API alone.
+- **The README is written again from an outline**, so that like sits with
+  like, each idea is stated once, and no term is used before it is defined:
+  the introduction, the model table, install, how a bank sees a stream,
+  running a bank, saving and serving, preparing a stream, reading the fit,
+  diagnostics, the model sections, performance, and the comparisons. Prose
+  is kept for what code with comments cannot carry — the update rules, the
+  sweeps as tables, and the reason behind a rule — and all 58 of its Python
+  blocks run in the test suite. The steps for raising the Polars ceiling
+  moved to `docs/RELEASE-READINESS.md`, beside the measurements they rest
+  on.
 
 ## [0.5.1] — 2026-09-11
 
