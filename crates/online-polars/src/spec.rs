@@ -579,7 +579,9 @@ pub enum ModelKind {
         #[serde(default)]
         max_rows_between_solves: Option<u32>,
         /// Half-width of the band the fit takes its Newton step in, in units
-        /// of the EW residual std; default 0.2 (review 2026-09-12, N9).
+        /// of the EW residual std; default 0.2 (review 2026-09-12, N9), and
+        /// never narrower than `(k/n)^(2/5)` for the target's effective sample
+        /// `n` (the second review's F3).
         #[serde(default)]
         quantile_eps: Option<f64>,
     },

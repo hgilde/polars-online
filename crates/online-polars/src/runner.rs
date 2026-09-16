@@ -539,7 +539,10 @@ enum Write_ {
 /// whichever comes first; the bank is left as it was after the last chunk
 /// it accepted -- unless a window passed a refusing `window_budget`, which
 /// is found as the rows go in and leaves the bank refusing to go on
-/// ([`Bank::fit_predict`]) -- and a file output is not published.
+/// ([`Bank::fit_predict`]) -- and a file output is not published. A
+/// `closed_groups` sidecar is: the bank's closed groups are drained into it
+/// as the run goes, so it is published with whatever it drained, complete
+/// or not, and the bank's queue holds none of them.
 pub fn run(
     bank: &mut Bank,
     input: Input<'_>,
@@ -552,10 +555,10 @@ pub fn run(
 
 /// [`run`], with the bank's closed groups (E54) drained after every chunk
 /// into `closed` -- a file, in its format -- written through the output's
-/// atomic path and published, like the output, only by a run that reached
-/// its end. The bank's queue is one chunk deep, where a drain after the last
-/// chunk held every row that closed for the length of the run (review
-/// 2026-09-12, P5).
+/// atomic path and published by a run that reached its end, and by one that
+/// failed after draining anything (the second review of 2026-09-15, F2). The
+/// bank's queue is one chunk deep, where a drain after the last chunk held
+/// every row that closed for the length of the run (review 2026-09-12, P5).
 fn run_with(
     bank: &mut Bank,
     input: Input<'_>,
@@ -687,7 +690,13 @@ fn run_with(
         // that got here in full, discarded by one that did not. Its own
         // failure, when that is what stopped the run, is the one to report.
         if let Some(w) = closed_writer {
-            if result.is_ok() {
+            // Published by a run that got here in full, and by one that did
+            // not when it drained anything: a drained row has left the bank,
+            // and the file is the only place it is -- what
+            // `fit_predict_batches` does on a `break` or an error (the second
+            // review of 2026-09-15, F2). The output keeps its whole-run rule
+            // below.
+            if result.is_ok() || closed_sent {
                 let _ = closed_tx.send(Write_::End);
             }
             drop(closed_tx);

@@ -95,8 +95,10 @@ def run(
     It needs a spec with ``group_close`` and refuses ``predict``, which
     closes nothing. The bank is drained after every chunk and each drain
     written as it comes, to a temporary renamed into place when the run
-    completes -- before ``save_state``, so a state file always has the
-    closed rows that go with it. ``output`` may be left out at
+    stops, complete or not, since a drained row's only home is that file
+    (the output is published only by a run that completes) -- before
+    ``save_state``, so a state file always has the closed rows that go with
+    it. ``output`` may be left out at
     the same time: that is the accumulate-only pass whose product is the
     closed groups. A run in which nothing closed writes an empty frame with
     the schema.

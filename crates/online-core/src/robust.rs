@@ -33,6 +33,31 @@
 //! `statsmodels`' `QuantReg` at the median of a skewed noise after 20 000 rows,
 //! and 0.477 at the 0.9 quantile (review 2026-09-12, N9).
 //!
+//! Under three rows per coefficient of the rows the target was present on,
+//! the quantile fit warms up as ordinary least squares: a Newton step needs a
+//! Hessian, and a band around a fit built from a handful of rows is not one.
+//! And the band is never narrower than `(k/n)^(2/5)` of `s` for the target's
+//! effective sample `n` -- the smoothed-quantile bandwidth rate, which a long
+//! stream leaves behind and which keeps the Hessian fed under a short
+//! halflife, where the band's share of the sample is a few rows. The warm-up
+//! read the band's weight until the second review of 2026-09-15 (F3), which a
+//! halflife caps at that share, so a tail quantile at `halflife = 30` kept
+//! falling back into warm-up and covered 0.825 where 0.9 was asked. What
+//! that warm-up also did was rebuild a fit a row at the input bound had
+//! left behind. Such a row sets the Gram and the cross-moment at its own
+//! scale, and a mean-form accumulator forgets only through rows entering
+//! it; every later row is outside the band (its residual is at the bound's
+//! scale, where the band is a fraction of it), so only nudges arrive, each
+//! `2h * psi * z` over the band's weight -- nothing beside the bound's
+//! moments until that weight has decayed to nothing, and a step that
+//! outgrows the band once it has. The fit oscillates, the band's weight
+//! underflows after 1400 halflives, and the prediction is withheld (the
+//! bounded-extremes contract). So a band holding under one row per
+//! coefficient takes least-squares rows until it holds rows again: from
+//! one row up an outside row's step, `2h * |psi| / wj`, lands inside the
+//! band, and a band the floor keeps at a share of the sample is never near
+//! one row in steady state, so the warm-up's bias does not return.
+//!
 //! `s` is the EW residual std of that target as the row arrives, and is taken
 //! as 1 until one exists (no rows yet, or every residual so far exactly zero),
 //! so the first rows are weighted in the residual's own units.
@@ -137,7 +162,15 @@ pub struct Robust {
     cfg: RobustCfg,
     /// One accumulator per target (the robust weights are per target).
     cov: Vec<EwCov>,
+    /// Per target, the weight its accumulators hold: Huber's reweighted rows,
+    /// or the quantile band's. The mean-form cross-moment `r` is over it.
     wj: Vec<f64>,
+    /// Per target, the rows it was present on at their raw weights, decayed:
+    /// what the per-target `min_periods` gate reads (hard rule 8, S2) and the
+    /// quantile fit's warm-up counts. `wj` stood in for it, and for the
+    /// quantile that is the band's weight, which a halflife caps at the
+    /// band's share of the sample (the second review of 2026-09-15, F1).
+    wobs: Vec<f64>,
     r: Vec<Vec<f64>>,
     /// EW residual variance per target (drives the robust scale).
     sig2: Vec<f64>,
@@ -166,6 +199,7 @@ impl Robust {
         Ok(Self {
             cov: vec![EwCov::new(k); m],
             wj: vec![0.0; m],
+            wobs: vec![0.0; m],
             r: vec![vec![0.0; k]; m],
             sig2: vec![0.0; m],
             wsig: vec![0.0; m],
@@ -204,13 +238,25 @@ impl Robust {
     ///
     /// `pred` is the prediction the row was scored with, so both stay
     /// out-of-sample, and `scale` is the EW residual std, taken as 1 until one
-    /// exists. `aged` is this target's accumulated weight decayed to the row:
-    /// under `WARM_ROWS` of it per coefficient the quantile fit takes ordinary
-    /// least-squares rows, since a Newton step needs a Hessian to lean on and a
-    /// band around a fit built from a handful of rows is not one. That is the
-    /// warm-up, and it is what rebuilds the fit after a gap or a reset has aged
-    /// the weight away.
-    fn row_update(&self, yj: f64, pred: f64, scale: f64, weight: f64, aged: f64) -> RowUpdate {
+    /// exists. `present` is the weight of the rows this target was present
+    /// on, decayed to the row (`wobs`): under `WARM_ROWS` of it per
+    /// coefficient the quantile fit takes ordinary least-squares rows, since a
+    /// Newton step needs a Hessian to lean on and a band around a fit built
+    /// from a handful of rows is not one. That is the warm-up, and it is what
+    /// rebuilds the fit after a gap or a reset has aged the weight away. Past
+    /// it the band is at least `(k/present)^(2/5)` of `scale` wide, and
+    /// `aged`, the band's own weight decayed to the row, under one row per
+    /// coefficient is a fit the data has left behind, which takes
+    /// least-squares rows until the band holds rows again (the module docs).
+    fn row_update(
+        &self,
+        yj: f64,
+        pred: f64,
+        scale: f64,
+        weight: f64,
+        present: f64,
+        aged: f64,
+    ) -> RowUpdate {
         match self.cfg.loss {
             RobustLoss::Huber { delta } => {
                 let w_rob = if pred.is_finite() {
@@ -226,13 +272,15 @@ impl Robust {
                 }
             }
             RobustLoss::Quantile { tau } => {
-                if !pred.is_finite() || aged < WARM_ROWS * self.cfg.k_total() as f64 {
+                let k = self.cfg.k_total() as f64;
+                if !pred.is_finite() || present < WARM_ROWS * k || aged < k {
                     return RowUpdate::Fit {
                         w: weight,
                         target: yj,
                     };
                 }
-                let h = self.cfg.quantile_eps * scale;
+                let floor = (k / present).powf(0.4);
+                let h = scale * self.cfg.quantile_eps.max(floor);
                 let r = yj - pred;
                 if r.abs() < h {
                     RowUpdate::Fit {
@@ -383,7 +431,7 @@ impl Robust {
 impl OnlineModel for Robust {
     fn target_n_eff_into(&self, out: &mut Vec<f64>) -> bool {
         out.clear();
-        out.extend_from_slice(&self.wj);
+        out.extend_from_slice(&self.wobs);
         true
     }
 
@@ -414,15 +462,25 @@ impl OnlineModel for Robust {
             // gap), so `σ²` -- the scale of every cut -- forgot less across
             // either than across a null (review 2026-09-12, S13; N6).
             self.wsig[j] *= lam;
+            let present = lam * self.wobs[j];
             let Some(yj) = y[j] else {
                 self.cov[j].decay(lam);
                 self.wj[j] *= lam;
+                self.wobs[j] = present;
                 continue;
             };
+            // A row the target is present on counts at its raw weight, whatever
+            // the loss then does with it (hard rule 8).
+            self.wobs[j] = present
+                + if weight > 0.0 && weight.is_finite() {
+                    weight
+                } else {
+                    0.0
+                };
             let sigma = self.sig2[j].max(0.0).sqrt();
             let scale = if sigma > 0.0 { sigma } else { 1.0 };
             let aged = lam * self.wj[j];
-            match self.row_update(yj, pred[j], scale, weight, aged) {
+            match self.row_update(yj, pred[j], scale, weight, present, aged) {
                 // NaN is `inf / inf` from an overflowed residual against an
                 // overflowed scale; such a row cannot be learned from either.
                 RowUpdate::Fit { w, .. } if w.is_nan() || w <= 0.0 => {
@@ -917,6 +975,105 @@ mod tests {
         assert!(a < b && b < c, "quantile levels out of order: {a} {b} {c}");
     }
 
+    /// The weight the per-target gate reads is the rows the target was
+    /// present on, decayed -- hard rule 8's -- whatever the loss does with
+    /// them. From N9 to the second review's F1 the quantile fit reported its
+    /// band's weight, which a halflife caps at the band's share of the
+    /// effective sample, so a `min_periods` above that share closed the gate
+    /// for good.
+    #[test]
+    fn the_target_weight_is_the_rows_present_whatever_the_band_holds() {
+        let hl = 30.0;
+        let mut c = cfg(1, 1, RobustLoss::Quantile { tau: 0.9 });
+        c.decay = Decay::Halflife(hl);
+        c.min_periods = 0.0;
+        let mut m = Robust::new(c).unwrap();
+        let (mut want, mut s, mut out) = (0.0f64, 93u64, Vec::new());
+        for i in 0..400 {
+            let x = [lcg(&mut s)];
+            let (y, w) = match i % 9 {
+                4 => (None, 1.0),
+                7 => (Some(x[0] + lcg(&mut s)), 0.0),
+                _ => (Some(x[0] + lcg(&mut s)), 1.0),
+            };
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            m.target_n_eff_into(&mut out);
+            assert!(
+                (out[0] - want).abs() <= 1e-12 * want.max(1.0),
+                "row {i}: {} reported, {want} present",
+                out[0]
+            );
+            m.step(&x, &[y], d, w);
+            want *= 0.5f64.powf(d / hl);
+            if y.is_some() && w > 0.0 {
+                want += w;
+            }
+        }
+        assert!(want > 30.0, "the stream must have settled: {want}");
+    }
+
+    /// The bounded-extremes contract's case (batch 7): a row at the input
+    /// bound sets the Gram and the cross-moment at its own scale, every later
+    /// row is outside the band, and the nudges, `2h * psi * z` over the
+    /// band's weight, cannot move the fit until that weight has decayed to
+    /// nothing -- where each is a step that outgrows the band. The warm-up
+    /// rebuilt such a fit while it read the band's weight; since F3 moved it
+    /// to the rows present, a band holding under one row per coefficient
+    /// takes least-squares rows until it holds rows again.
+    #[test]
+    fn a_band_under_a_row_per_coefficient_takes_least_squares_rows() {
+        let hl = 20.0;
+        let lam = 0.5f64.powf(1.0 / hl);
+        let mut c = cfg(1, 1, RobustLoss::Quantile { tau: 0.5 });
+        c.decay = Decay::Halflife(hl);
+        c.min_periods = 0.0;
+        let mut m = Robust::new(c).unwrap();
+        let mut s = 11u64;
+        for i in 0..300 {
+            let x = [lcg(&mut s)];
+            let y = Some(x[0] + 0.1 * lcg(&mut s));
+            m.step(&x, &[y], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let mut out = Vec::new();
+        m.target_n_eff_into(&mut out);
+        assert!(
+            out[0] > 6.0 && m.wj[0] > 2.0,
+            "settled: {} present, {} in the band",
+            out[0],
+            m.wj[0]
+        );
+
+        // Past the warm-up, with the band holding rows: a row far outside
+        // it is a nudge, and the band's weight only decays.
+        let x = [0.3];
+        let wj = m.wj[0];
+        m.step(&x, &[Some(1e6)], 1.0, 1.0);
+        assert!(
+            (m.wj[0] - lam * wj).abs() <= 1e-12 * wj,
+            "a nudge weighs nothing: {} from {wj}",
+            m.wj[0]
+        );
+
+        // The band starved to under a row per coefficient (`k = 2`): the same
+        // row is a least-squares row, weighed at its weight and aimed at `y`.
+        m.wj[0] = 1.5;
+        let r0 = m.r[0][0];
+        m.step(&x, &[Some(1e6)], 1.0, 1.0);
+        let aged = lam * 1.5;
+        assert!(
+            (m.wj[0] - (aged + 1.0)).abs() <= 1e-12,
+            "the row's weight enters: {} for {}",
+            m.wj[0],
+            aged + 1.0
+        );
+        let want = aged / (aged + 1.0) * r0 + 1.0 / (aged + 1.0) * 1e6;
+        assert!(
+            (m.r[0][0] - want).abs() <= 1e-9 * want.abs(),
+            "the cross-moment took the row at its target: {} for {want}",
+            m.r[0][0]
+        );
+    }
+
     /// N9: after the warm-up a row outside the band moves the fit by its
     /// nudge alone -- the Gram's weight does not see it at all.
     #[test]
@@ -930,17 +1087,23 @@ mod tests {
             let y = 1.0 + x[0] + 0.3 * lcg(&mut s);
             m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
         }
-        let mut wj = Vec::new();
-        m.target_n_eff_into(&mut wj);
-        let (w_before, b_before) = (wj[0], m.coefficients().unwrap()[0].clone());
+        let gram_before = m.cov[0].n_eff();
+        let mut present = Vec::new();
+        m.target_n_eff_into(&mut present);
+        let (p_before, b_before) = (present[0], m.coefficients().unwrap()[0].clone());
         // Far above the fit, where the band is `quantile_eps * sigma` wide.
         m.step(&[0.5], &[Some(500.0)], 1.0, 1.0);
-        m.target_n_eff_into(&mut wj);
+        m.target_n_eff_into(&mut present);
         let b_after = m.coefficients().unwrap()[0].clone();
         assert!(
-            (wj[0] - w_before).abs() < 1e-12,
-            "a row outside the band weighs nothing: {w_before} -> {}",
-            wj[0]
+            (m.cov[0].n_eff() - gram_before).abs() < 1e-12,
+            "a row outside the band weighs nothing in the Gram: {gram_before} -> {}",
+            m.cov[0].n_eff()
+        );
+        assert!(
+            (present[0] - p_before - 1.0).abs() < 1e-12,
+            "and is a row the target was present on: {p_before} -> {}",
+            present[0]
         );
         assert!(
             b_after[0] > b_before[0],

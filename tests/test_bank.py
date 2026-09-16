@@ -322,7 +322,7 @@ class TestPerTargetMinPeriods:
         out = self._out(20.0)
         assert self._first(out, "pred_y0") == self._first(out, "pred_y1") == 21
 
-    @pytest.mark.parametrize("kind", ["ewridge", "lasso", "kalman", "huber", "holt"])
+    @pytest.mark.parametrize("kind", ["ewridge", "lasso", "kalman", "huber", "quantile", "holt"])
     def test_a_sparse_target_warms_up_on_its_own_weight(self, kind):
         """Each target's threshold is checked against that target's own weight
         -- the rows it was present on -- where it was checked against the
@@ -346,6 +346,7 @@ class TestPerTargetMinPeriods:
                 "m", features=["x0"], coef_halflife=float("inf"), **common
             ),
             "huber": lambda: po.spec.huber("m", **solves, **common),
+            "quantile": lambda: po.spec.quantile("m", quantile=0.5, **solves, **common),
             "holt": lambda: po.spec.holt("m", **common),
         }[kind]()
         out = po.ModelBank([spec]).fit_predict(df)

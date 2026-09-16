@@ -488,6 +488,65 @@ fn a_failed_run_leaves_the_previous_output_where_it_was() {
     cleanup(&[output]);
 }
 
+/// Twelve groups of five rows in key order: under `monotone` a group closes
+/// when the next key arrives, so two chunks of ten close three groups.
+fn closing_stream() -> DataFrame {
+    let n = 60;
+    let g: Vec<String> = (0..n).map(|i| format!("k{:02}", i / 5)).collect();
+    let x0: Vec<f64> = (0..n).map(|i| ((i * 7) % 11) as f64).collect();
+    let y: Vec<f64> = (0..n).map(|i| ((i * 5) % 13) as f64).collect();
+    df!("g" => g, "x0" => x0, "y" => y).unwrap()
+}
+
+fn closing_spec() -> online_polars::Spec {
+    serde_json::from_str(
+        r#"{"name": "c", "model": {"type": "ew_cov"}, "features": ["x0", "y"],
+            "halflife": 40.0, "group": "g", "group_close": "monotone"}"#,
+    )
+    .unwrap()
+}
+
+/// A run that fails still publishes the closed groups it drained before it
+/// failed: a drained row has left the bank, so the sidecar is the only place
+/// it is -- as `fit_predict_batches` writes on a `break` or an error (the
+/// second review's F2). The output keeps its rule: a product of the whole
+/// run, published by a run that reached its end.
+#[test]
+fn a_failed_run_publishes_the_closed_groups_it_drained() {
+    use online_polars::Bank;
+    let df = closing_stream();
+    let output = tmp("failed-closed.parquet");
+    let closed = tmp("failed-closed-groups.parquet");
+    let mut cfg = config(Path::new(""), &output);
+    cfg.specs = vec![closing_spec()];
+    cfg.closed_groups = Some(closed.clone());
+    let frames = vec![
+        Ok(df.slice(0, 10)),
+        Ok(df.slice(10, 10)),
+        Err(polars_err!(ComputeError: "the source went away")),
+    ];
+    let err = run_config_on(
+        &cfg,
+        Input::Batches {
+            frames: Box::new(frames.into_iter()),
+            schema: df.schema().as_ref().clone(),
+        },
+        no_progress,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("the source went away"), "{err}");
+    assert!(!output.exists(), "the output is a product of the whole run");
+    // What those two chunks closed, a bank fed the same rows says.
+    let mut bank = Bank::new(vec![closing_spec()]).unwrap();
+    bank.fit_predict(&df.slice(0, 20)).unwrap();
+    let want = bank.closed_groups(None, true).unwrap();
+    assert_eq!(want.height(), 3, "three groups closed before the failure");
+    assert!(closed.exists(), "the sidecar holds what was drained");
+    let got = read(&closed, Format::Parquet);
+    assert!(got.equals_missing(&want), "{got}\nvs\n{want}");
+    cleanup(&[closed]);
+}
+
 #[test]
 fn progress_reports_every_chunk() {
     let df = stream(250);

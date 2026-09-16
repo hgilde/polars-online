@@ -114,7 +114,9 @@ below closed fourteen, batch 2 thirteen, batch 3a eleven, batch 3b two,
 batch 4a four, batch 4b four, batch 4c two, batch 4d one, batch 4e one),
 and batch 5 wrote the second opinions the review listed that nothing had
 written. One new observation from it, N9, is fixed in batch 6
-(`docs/PLAN.md` task 82). D1 is excluded by the user.
+(`docs/PLAN.md` task 82). D1 is excluded by the user. The fixes were then
+reviewed from first principles (`docs/REVIEW-2026-09-15.md`): three
+findings, all in batches 4 to 6, fixed in batch 7.
 The user's own
 design work (tasks 78 and 79), parked on `design/task-78` while the round
 ran, is merged into `main`.
@@ -529,6 +531,27 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   `quantile` values are re-frozen -- `n_eff` is not among them, as it counts
   observations -- and `reference.py` mirrors the new rule, so T-A3 stays
   exact.
+- 2026-09-15 — **batch 7**: the second review's F1, F2 and F3 fixed, on
+  the user's instruction to fix everything. Test first, on the old build:
+  rows 20 to 28 without a prediction where `min_periods = 20` asked for
+  every row after 20; coverage 0.825 and 0.864 at `halflife` 30 and 40;
+  the core reporting 6.19 where 7.19 rows were present; a failed run's
+  sidecar absent. F1 and F3 have one cause -- `wj` serving as the
+  Hessian's mass and the target's evidence after N9 made them different
+  numbers -- and one fix: a per-target observation weight beside it, and
+  a floor on the band, `(k/n)^{2/5}`, so the Hessian has rows to lean on
+  where the band's share of a small sample would not. Measured after:
+  0.895 and 0.896, every row predicted at `min_periods = 20`, and
+  the long-halflife numbers unchanged to three figures. `huber`'s gate
+  moved to the same number, which the docs had claimed all along. The
+  gate then showed the warm-up had also been rebuilding a fit a row at
+  the input bound left behind (the bounded-extremes contract predicted
+  NaN at row 29,520, the band's weight having underflowed with every row
+  outside it): a band holding under one row per coefficient takes
+  least-squares rows until it holds rows again, a bar the floor keeps a
+  settled band well clear of. F2 is the sidecar published however the
+  run stops, when anything was drained. Two goldens re-frozen, the
+  quantile ones; schema 10.
 
 ## New observations (found while fixing; not in the review)
 
@@ -643,6 +666,18 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   0.2), and at 0.4 it is 0.08 the other way after 100 000 rows, the
   smoothing bias. `sgd(loss="quantile")` settles there too and keeps its
   test.
+
+## The second review (2026-09-15)
+
+The fixes above, read from first principles against the findings, the
+user's decisions and the documentation: `docs/REVIEW-2026-09-15.md`.
+Three findings, all in batches 4 to 6, fixed in batch 7 the same day.
+
+| | finding | status |
+|---|---|---|
+| F1 | `quantile`'s per-target `min_periods` gate read the band's weight, which a halflife caps; a `min_periods` above it closed the gate after the first predictions (178, 233, 2, 88, 155, 203 per thousand rows at `τ = 0.9`, `halflife = 100`, `min_periods = 20`) | **fixed** (batch 7): `robust` keeps a per-target observation weight, the rows present at their raw weights, which the gate and the warm-up read; `huber`'s gate reads it too; schema 10 |
+| F2 | the runner drained closed groups per chunk and published them only on a full run, so a failed `run` lost the rows a caller-owned bank had kept before P5 | **fixed** (batch 7): published with what was drained however the run stops, as `fit_predict_batches` does |
+| F3 | at short halflives `quantile`'s warm-up, read on the band's weight, kept recurring: coverage 0.825 at `halflife = 30`, 0.864 at 40, for `τ = 0.9` | **fixed** (batch 7): the warm-up counts the rows present, and the band is at least `(k/n)^{2/5}·σ` for the target's effective sample; 0.895 and 0.896 after |
 
 ## Libraries
 

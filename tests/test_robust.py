@@ -105,6 +105,63 @@ def test_quantile_coverage_is_the_level_asked_for():
     assert 0.87 < after < 0.92, after
 
 
+def test_quantile_predicts_every_row_under_a_finite_halflife():
+    """The per-target ``min_periods`` gate reads the rows a target was present
+    on (hard rule 8, S2). From N9 to the second review's F1 the quantile fit
+    reported its band's weight instead, which a halflife caps at the band's
+    share of the effective sample -- a fifteenth of it at ``tau = 0.9`` -- so
+    a ``min_periods`` above that share closed the gate again after the first
+    predictions: at ``halflife = 100`` and ``min_periods = 20`` the rows with
+    a prediction ran 178, 233, 2, 88, 155 and 203 per thousand, where
+    ``huber`` predicted every one. Once the gate opens, it stays open."""
+    rng = np.random.default_rng(13)
+    n = 6000
+    df = pl.DataFrame({"x0": rng.standard_normal(n), "y0": rng.standard_normal(n)})
+    spec = po.spec.quantile(
+        "m",
+        quantile=0.9,
+        targets=["y0"],
+        features=["x0"],
+        halflife=100.0,
+        min_periods=20.0,
+        max_rows_between_solves=1,
+    )
+    p = _pred(po.ModelBank([spec]).fit_predict(df))
+    finite = np.isfinite(p)
+    # The decayed weight reaches 20 a row or two after row 20; from there the
+    # gate stays open.
+    first = int(np.argmax(finite))
+    assert first <= 25, first
+    assert finite[first:].all(), np.flatnonzero(~finite[first:])[:5] + first
+
+
+@pytest.mark.parametrize("halflife", [30.0, 40.0])
+def test_quantile_hits_its_level_under_a_short_halflife(halflife):
+    """A short halflife leaves a tail quantile's band few rows: at ``tau =
+    0.9`` and ``halflife = 30`` about three rows' weight against a warm-up
+    bar of six, so the fit kept falling back into warm-up -- least-squares
+    rows aimed at the mean -- and its coverage read 0.825, and 0.864 at 40
+    (the second review's F3). The warm-up reads the rows present now, and
+    the band widens as the effective sample shrinks, so the level holds."""
+    n = 20000
+    rng = np.random.default_rng(13)
+    df = pl.DataFrame({"x0": rng.standard_normal(n), "y0": rng.standard_normal(n)})
+    spec = po.spec.quantile(
+        "m",
+        quantile=0.9,
+        targets=["y0"],
+        features=["x0"],
+        halflife=halflife,
+        min_periods=5.0,
+        max_rows_between_solves=1,
+    )
+    p = _pred(po.ModelBank([spec]).fit_predict(df))
+    y = df["y0"].to_numpy()
+    half = np.isfinite(p) & (np.arange(n) >= n // 2)
+    coverage = (y[half] < p[half]).mean()
+    assert 0.87 < coverage < 0.93, coverage
+
+
 def test_out_of_sample_on_noise():
     rng = np.random.default_rng(14)
     n = 3000

@@ -770,8 +770,9 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    # Pinned so a bump is a deliberate edit here, with the reason recorded in
-    # `SCHEMA_VERSION`'s own history: 9 is the weights `holt`'s weighted
-    # means keep and `ftrl`'s proximal sum (review 2026-09-12, S29/S30, C24).
-    assert po.schema_version() == 9
+    """The version a bank file names, held to the library's: 10 since the
+    second review of 2026-09-15, for `robust`'s per-target observation
+    weights (F1), after 9 the same day for `holt`'s weighted means and
+    `ftrl`'s proximal sum. Pre-1.0, an older file is refused by its version."""
+    assert po.schema_version() == 10
     assert sys.version_info >= (3, 12)

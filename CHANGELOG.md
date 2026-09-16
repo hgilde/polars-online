@@ -189,8 +189,48 @@ carries breaking changes, and any change to the numbers a model returns.
   after 8 000 rows at `0.1`, against 0.10 at 0.2) and a much wider one
   smooths the quantile toward the mean (0.08 the other way after 100 000
   rows at 0.4).
+- **`quantile`'s warm-up counts the rows present, and its band has a
+  floor** (the second review of 2026-09-15, F3). The warm-up read the
+  band's weight, which a halflife caps at the band's share of the
+  effective sample -- a fifteenth of it at `τ = 0.9` -- so under a short
+  halflife the fit kept falling back into warm-up, least-squares rows
+  aimed at the mean: coverage 0.825 at `halflife = 30` and 0.864 at 40
+  where 0.9 was asked. It counts the rows the target was present on now,
+  and the band is never narrower than `(k/n)^{2/5}` of `σ` for the
+  target's effective sample `n`, the smoothed-quantile bandwidth rate,
+  which a long stream leaves behind and which keeps the step fed where the
+  band's share of the sample would be a few rows. Measured after: 0.895
+  and 0.896. The warm-up had also rebuilt a fit a row at the input bound
+  left behind, whose moments the band's nudges cannot move until its
+  weight has decayed to nothing -- where each is a step that outgrows the
+  band, and the fit oscillates until that weight underflows (the
+  bounded-extremes contract, 1500 halflives on). A band holding under one
+  row per coefficient takes least-squares rows until it holds rows again;
+  the floor keeps a settled band well clear of that. **Numbers change**
+  for `quantile` streams under a finite halflife.
+- **The per-target `min_periods` gate reads the rows present for `huber`
+  and `quantile`** (F1). It read the target's accumulated weight, which
+  for `quantile` was the band's from N9 on -- so under a halflife a
+  `min_periods` above the band's saturated weight closed the gate again
+  after the first predictions: at `τ = 0.9`, `halflife = 100` and
+  `min_periods = 20`, predictions per thousand rows of 178, 233, 2, 88,
+  155 and 203 -- and for `huber` the reweighted sum. Both now read the
+  rows the target was present on, at their raw weights, decayed: hard rule
+  8's number, and the one the docs named. A `huber` stream whose warm-up
+  met outliers reports its first prediction a row or two earlier.
+- **State files are schema 10.** `robust` carries the per-target
+  observation weights, and a schema-9 file is refused by its version
+  (pre-1.0, no loader).
 
 ### Fixed
+
+- **A failed `run` publishes the closed groups it drained** (F2). The
+  sidecar was drained from the bank after every chunk and published only
+  by a run that completed, so a run that failed midway had drained the
+  earlier chunks' closed rows into a temporary it then deleted, and a
+  caller-owned bank no longer held them. It is published with what it
+  drained however the run stops, as `fit_predict_batches` already wrote
+  on a `break` or an error; the output keeps its whole-run rule.
 
 - **`sgd(loss="huber")` panicked on a NaN `huber_delta`**, from TOML or the
   Rust API: neither the spec nor the model checked it, and `f64::clamp`
@@ -201,6 +241,9 @@ carries breaking changes, and any change to the numbers a model returns.
   the folded total was not: ten skipped rows 100 apart under a cap of 60
   handed the next row 660. **Numbers change** wherever a run of skipped rows
   spans more than `max_dclock`.
+  A run of skipped rows past the cap also breaks adjacency, so `ew_cov`'s
+  and `marginal`'s lagged co-moments are cleared at the next row, as on a
+  capped row.
 
 - **`ftrl(strict_binary=True)` refuses a chunk whose target is not 0 or 1**,
   naming the row and the value, before any stream is touched (the code

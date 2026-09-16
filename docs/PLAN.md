@@ -1910,6 +1910,14 @@ note, not a task.
       pandas' `ewm`, absolute at `1e8`. T-S4's quantile half, which
       `quantile` does not meet: N9, task 82; `sgd`'s quantile loss does.
 
+      **Batch 7, 2026-09-15**: the second review's findings
+      (`docs/REVIEW-2026-09-15.md`): the quantile fit's warm-up and the
+      per-target gate read the rows present, the band has a floor in the
+      effective sample and takes least-squares rows while it holds under a
+      row per coefficient (what rebuilds a fit a row at the input bound
+      left behind), and a failed run publishes the closed groups it
+      drained. Schema 10.
+
 - [x] 79. **`label_delay` ignores a clock event on a skipped row — found
       2026-09-11, checking task 78's parity; in released 0.5.1.** A reset
       that lands on a row the spec skips (a null feature, an unusable

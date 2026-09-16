@@ -501,7 +501,7 @@ def kalman_ref(
     return {"pred": pred, "resid": resid, "n_eff": n_eff, "coef": coef}
 
 
-def _row_update(y, pred, scale, weight, aged, kt, loss, delta, tau, eps):
+def _row_update(y, pred, scale, weight, present, aged, kt, loss, delta, tau, eps):
     """What a row does to a target's accumulators, mirroring `robust.rs`'s
     `row_update` (docs/PLAN.md section 4.5).
 
@@ -510,8 +510,13 @@ def _row_update(y, pred, scale, weight, aged, kt, loss, delta, tau, eps):
     ``eps * scale``, linearised at the fit the row was scored with: inside the
     band a least-squares row with target ``y + 2h(tau - 1/2)``, outside it
     ``2h * psi(r) * z`` into the cross-moment and no weight in the Gram at all.
-    Under three rows per coefficient the fit is warming up and every row is an
-    ordinary least-squares one (review 2026-09-12, N9).
+    Under three rows per coefficient of the rows the target was present on
+    (``present``) the fit is warming up and every row is an ordinary
+    least-squares one (review 2026-09-12, N9), and past it the band is at
+    least ``(kt / present) ** 0.4`` of ``scale`` (the second review's F3). A
+    band holding under one row per coefficient (``aged``, its weight decayed
+    to the row) is a fit the data has left behind, and takes least-squares
+    rows until it holds rows again.
 
     Returns ``(kind, value, target)``: ``("fit", weight, target)`` or
     ``("nudge", nudge, None)``.
@@ -522,9 +527,9 @@ def _row_update(y, pred, scale, weight, aged, kt, loss, delta, tau, eps):
         cut = delta * scale
         a = abs(y - pred)
         return "fit", weight * (1.0 if (a <= cut or a == 0.0) else cut / a), y
-    if np.isnan(pred) or aged < 3.0 * kt:
+    if np.isnan(pred) or present < 3.0 * kt or aged < kt:
         return "fit", weight, y
-    h = eps * scale
+    h = scale * max(eps, (kt / present) ** 0.4)
     r = y - pred
     if abs(r) < h:
         return "fit", weight, y + 2.0 * h * (tau - 0.5)
@@ -583,6 +588,9 @@ def robust_ref(
             "mean": [np.zeros(kt) for _ in range(m)],
             "raw": [np.zeros((kt, kt)) for _ in range(m)],
             "wj": np.zeros(m),
+            # The rows each target was present on, at their raw weights: the
+            # per-target gate's number (the second review's F1).
+            "wobs": np.zeros(m),
             "r": [np.zeros(kt) for _ in range(m)],
             "sig2": np.zeros(m),
             "wsig": np.zeros(m),
@@ -615,17 +623,20 @@ def robust_ref(
             for j in range(m):
                 if st["wj"][j] > 0.0:
                     p_own[j] = z @ st["beta"][j]
-                    if st["wj"][j] >= min_periods:
+                    if st["wobs"][j] >= min_periods:
                         pred[i, j] = p_own[j]
                         if not np.isnan(Y[i, j]):
                             resid[i, j] = Y[i, j] - pred[i, j]
 
         for j in range(m):
+            present = lam * st["wobs"][j]
             if np.isnan(Y[i, j]):
                 st["W"][j] *= lam
                 st["wj"][j] *= lam
+                st["wobs"][j] = present
                 st["wsig"][j] *= lam
                 continue
+            st["wobs"][j] = present + (w[i] if w[i] > 0.0 else 0.0)
             sigma = np.sqrt(max(st["sig2"][j], 0.0))
             scale = sigma if sigma > 0.0 else 1.0
             aged_w, aged_wj = lam * st["W"][j], lam * st["wj"][j]
@@ -634,6 +645,7 @@ def robust_ref(
                 p_own[j],
                 scale,
                 w[i],
+                present,
                 aged_wj,
                 kt,
                 loss,

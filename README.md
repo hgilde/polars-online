@@ -1357,7 +1357,11 @@ Quantile at level τ takes one Newton step on the check loss smoothed by a
 uniform kernel of half-width `h = quantile_eps · σ`, linearised at that prior
 fit: a row inside the band is a least-squares row with target `y + 2h(τ − ½)`,
 and a row outside it adds `2h · ψ_τ(r) · z` to the cross-moment and nothing to
-the Gram, with `ψ_τ(r) = τ − 1{r < 0}`. (The IRLS weights of the check loss
+the Gram, with `ψ_τ(r) = τ − 1{r < 0}`; the band is never narrower than
+`(k/n)^{2/5}` of `σ` for the target's effective sample `n`, so a short
+halflife still leaves the step rows to lean on, and a band holding under one
+row per coefficient takes least-squares rows until it holds rows again, which
+rebuilds a fit a row at the input bound left behind. (The IRLS weights of the check loss
 are that step's secant, unbounded near zero, and freezing them held the fit
 near its own past fits — the review's N9.) Weights are per target, so the
 running sums are per target here.

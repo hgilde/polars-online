@@ -937,9 +937,16 @@ def quantile(
     ``quantile_eps`` (default ``0.2``) is that band's half-width in units of
     ``s``: the rows inside it are the curvature the step leans on, so a much
     narrower band converges more slowly and a much wider one smooths the
-    quantile toward the mean. Under three rows per coefficient the fit warms
-    up as ordinary least squares, which is also what rebuilds it after a gap
-    or a reset. ``ridge`` (default ``1e-6``), ``standardize``,
+    quantile toward the mean. The band is never narrower than ``(k/n)**0.4``
+    for the target's effective sample ``n`` -- the smoothed-quantile
+    bandwidth rate, which a long stream leaves behind and which keeps the
+    step fed under a short halflife, where the band's share of the sample is
+    a few rows. Under three rows per coefficient of the rows the target was
+    present on, the fit warms up as ordinary least squares, which is also
+    what rebuilds it after a gap or a reset; and a band holding under one
+    row per coefficient -- a fit a row at the input bound left behind, whose
+    moments the nudges cannot move -- takes least-squares rows until it
+    holds rows again. ``ridge`` (default ``1e-6``), ``standardize``,
     ``solve_every`` and ``max_rows_between_solves`` mean what they mean for
     :func:`ewridge`.
     """

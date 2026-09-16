@@ -212,6 +212,12 @@ pub use window::{
 ///   target, which its weighted means need (the code review of 2026-09-12,
 ///   S29/S30), and `ftrl` the discounted sum of its proximal steps (C24). No
 ///   loader for 8: see [`MIN_SCHEMA_VERSION`].
+/// - 10: `robust` keeps each target's observation weight beside its Gram's
+///   (the second review of 2026-09-15, F1): the rows the target was present
+///   on, which the per-target `min_periods` gate and the quantile fit's
+///   warm-up read, where both read the Gram's weight -- for the quantile the
+///   band's, which a halflife caps. No loader for 9: see
+///   [`MIN_SCHEMA_VERSION`].
 ///
 ///   The ring a stream cuts a windowed spread with (the code review's S1)
 ///   rides on 9 without a bump, as C21's record rode on 6: skipped when
@@ -219,9 +225,13 @@ pub use window::{
 ///   ignores it and reports the whole history's spread, as it always did. A
 ///   file saved by an earlier build of 9 restarts the ring on load, so for
 ///   one window its spread counts only the rows after the load.
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 10;
 
 /// Oldest state layout this build still loads.
+///
+/// **10 since 2026-09-15**, later the same day as 9: `robust`'s observation
+/// weights cannot be recovered from a schema-9 state, and pre-1.0 no loader
+/// is written for one.
 ///
 /// **9 since 2026-09-15**, where it had been 8, on the same rule as the entry
 /// below: `holt`'s weights and `ftrl`'s proximal sum cannot be recovered
@@ -249,4 +259,4 @@ pub const SCHEMA_VERSION: u32 = 9;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 9;
+pub const MIN_SCHEMA_VERSION: u32 = 10;
