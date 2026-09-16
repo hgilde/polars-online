@@ -612,6 +612,7 @@ def output_fields(spec: dict[str, Any]) -> list[str]:
     .. code-block:: python
 
         fields = po.spec.output_fields(spec)   # ['pred_y__r0.000001', ..., 'n_eff', 'coef']
+
     """
     return spec_output_fields(_json(spec))
 
@@ -1619,9 +1620,9 @@ def ew_cov(
         caps a gap and after a ``session_gap`` is applied. The edge is a
         discontinuity: a row ageing out drops its whole weight at once, so a
         windowed series has small steps an EWMA does not. And it is a subtraction,
-        so precision falls with the fraction discarded: negligible at ``window = 3
-        * halflife`` (an eighth of the mass), worse as the window shortens toward
-        the halflife.
+        so precision falls with the fraction discarded: negligible at ``window =
+        3 * halflife`` (an eighth of the mass), worse as the window shortens
+        toward the halflife.
 
         ``n_eff`` becomes the weight inside the window, which stops growing once
         the window fills, so ``min_periods`` gates on a quantity with a ceiling. A
@@ -2749,7 +2750,7 @@ def marginal(
         = 3000`` becoming ``n_serial = 557``. Cost: ``(3L + 1) * p * T + L * T``
         doubles beside the pair moments and a ring of ``max(lags)`` learned rows
         -- the one place ``marginal`` holds rows rather than state.
-        ``bins``, ``bin_rule``, ``bin_warm_rows``, ``bin_edges``
+    ``bins``, ``bin_rule``, ``bin_warm_rows``, ``bin_edges``
         The nonlinear view. Every statistic above is linear, and a feature can be
         strongly related to a target with ``corr`` at zero: a threshold, a V, a
         saturation. With ``bins = 16`` each pair also reports the target's weight,
@@ -3587,10 +3588,10 @@ def rcov(
     ``theta``, ``psd``, ``preavg_rows``
         ``"preavg"``'s window scale (default 1.0), form and override. ``psd =
         False`` is the balanced, bias-corrected form (optimal rate, not guaranteed
-        PSD); ``psd = True`` (the default) is the longer window ``k_n = ceil(theta
-        * block_rows^0.6)`` without the bias term, and clips any negative
-        eigenvalue, reporting ``psd_repaired``. ``preavg_rows`` fixes ``k_n`` (at
-        least 2) instead of deriving it from ``block_rows``.
+        PSD); ``psd = True`` (the default) is the longer window ``k_n =
+        ceil(theta * block_rows^0.6)`` without the bias term, and clips any
+        negative eigenvalue, reporting ``psd_repaired``. ``preavg_rows`` fixes
+        ``k_n`` (at least 2) instead of deriving it from ``block_rows``.
     ``noise_stride``, ``iv_stride``
         The two subsampled grids behind an automatic bandwidth (defaults 1 and
         20): the noise variance ``omega2`` from the dense one, deliberately biased

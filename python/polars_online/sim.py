@@ -1,29 +1,15 @@
-"""A seeded simulator for correlation regimes (docs/ENHANCEMENTS.md E64).
+"""A seeded simulator for correlation regimes.
 
-The detectors in this library — `deco`, `hmm`, `corrchange`, `bocpd` — are
-claims about streams whose correlation structure changes. A claim like that
-can only be measured against data whose truth is known, and the truth has to
-include the awkward parts: series that report at their own times, levels
-observed with additive noise, autocorrelated increments, a scale
-that moves with the regime, a periodic pattern, and an activity clock.
-
-:func:`regimes` produces all of it from one seed, and hands back the truth
-beside the data:
-
-``rows``
-    what a consumer sees: **levels** ``x_1 .. x_m`` (so
-    :func:`polars_online.prep.refresh_time` and then ``.diff()`` apply),
-    a clock, a cycle index and an optional activity count.
-``truth_rows``
-    per row: the block, the state, the scale multiplier and the
-    interpolation fraction.
-``truth_blocks``
-    per block: the state, the row count, and the block's true correlation
-    matrix as ``vech``.
+The detectors in this library (``deco``, ``hmm``, ``corrchange``, ``bocpd``)
+are claims about streams whose correlation structure changes. A claim like
+that can only be measured against data whose truth is known, and the truth has
+to include the awkward parts: series that report at their own times, levels
+observed with additive noise, autocorrelated increments, a scale that moves
+with the regime, a periodic pattern, and an activity clock. :func:`regimes`
+produces all of it from one seed, and hands back the truth beside the data.
 
 Everything is drawn from ``numpy.random.default_rng(seed)`` in one order, so
-two calls with the same seed give byte-identical frames. numpy only; no
-scipy.
+two calls with the same seed give byte-identical frames. numpy only; no scipy.
 """
 
 from __future__ import annotations
@@ -144,51 +130,90 @@ def regimes(
     activity: tuple[float, float] | None = None,
     seed: int = 0,
 ) -> dict[str, pl.DataFrame]:
-    """A simulated stream of ``m`` series whose correlation changes by regime.
+    """A simulated stream of ``m`` series whose correlation changes by regime, with
+    its truth.
 
-    ``states`` is a list of ``K`` correlation matrices (``m x m``, unit
-    diagonal, PSD) or ``K`` floats, each an equicorrelation. ``transition``
-    is the ``K x K`` row-stochastic matrix that drives one state per block,
-    and there are ``n_blocks`` blocks of ``rows_per_block`` rows.
-    ``durations`` (one positive block count per state) makes the sojourn
-    deterministic instead and draws the *next* state from ``transition``
-    with its diagonal removed — the recurring-state design, where each state
-    lasts exactly as long as it says.
+    The latent returns are ``eps_t ~ N(0, R_t)``, filtered to ``y_it = phi_i
+    y_i,t-1 + eps_it`` and scaled by ``exp(scale_state * s_t)``; the observed
+    series are their levels, the cumulative sums, plus noise. The documented truth
+    is the innovation correlation: an AR filter moves the return correlation of a
+    pair with unequal ``phi``, which is exactly what
+    :func:`polars_online.corr.fisher_se`'s inflation is about.
 
-    ``design="step"`` switches at the block boundary. ``design="smooth"``
-    interpolates the correlation matrix linearly over ``smooth_rows`` rows
-    around it; a convex combination of two correlation matrices is one, so
-    every matrix along the way is valid.
+    .. rubric:: Parameters
 
-    The latent returns are ``eps_t ~ N(0, R_t)``, filtered to
-    ``y_it = phi_i y_i,t-1 + eps_it`` and scaled by ``exp(scale_state * s_t)``.
-    **The documented truth is the innovation correlation**: an AR filter
-    moves the *return* correlation of a pair with unequal ``phi``, which is
-    exactly what :func:`polars_online.corr.fisher_se`'s inflation is about.
-    ``scale_state`` as a scalar makes the noise scale rise with the state index; as
-    a list it gives one multiplier exponent per state.
+    ``m``
+        The number of series, at least 2.
+    ``states``
+        ``K`` correlation matrices (``m x m``, unit diagonal, PSD) or ``K``
+        floats, each an equicorrelation.
+    ``transition``
+        The ``K x K`` row-stochastic matrix that drives one state per block.
+    ``n_blocks``, ``rows_per_block``
+        The blocks and the rows in each.
+    ``durations``
+        One positive block count per state: the sojourn becomes deterministic, and
+        the next state is drawn from ``transition`` with its diagonal removed --
+        the recurring-state design, where each state lasts exactly as long as it
+        says.
+    ``design``, ``smooth_rows``
+        ``"step"`` switches at the block boundary; ``"smooth"`` interpolates the
+        correlation matrix linearly over ``smooth_rows`` rows around it. A convex
+        combination of two correlation matrices is one, so every matrix along the
+        way is valid.
+    ``phi``
+        The AR(1) coefficient per series (a scalar for all), ``|phi| < 1``.
+    ``scale_state``
+        A scalar makes the noise scale rise with the state index; a list gives one
+        multiplier exponent per state.
+    ``async_rates``
+        Expected observations per row, per series: a row where series ``i``
+        reported nothing carries ``null`` for ``x_i``. Last-observation sampling
+        is one ``forward_fill`` away, and ``unpivot`` over the non-null rows is
+        :func:`polars_online.prep.refresh_time`'s long input.
+    ``noise``
+        The standard deviation of the noise added to each observed level. Noise on
+        the level is what the literature models, and it makes the observed return
+        an MA(1) with a negative first autocorrelation, the microstructure effect
+        ``rcov`` exists to undo.
+    ``cycle_profile``, ``cycle_rows``
+        ``cycle_rows`` multipliers in ``(0, 1]`` applied to the off-diagonal of
+        ``R_t`` at row ``t mod cycle_rows``, a mix towards the identity, so the
+        matrix stays PSD. ``cycle_rows`` defaults to ``rows_per_block``, and
+        ``session = t // cycle_rows``.
+    ``activity``
+        ``(mean, shape)`` for a Gamma count per row, with the mean scaled by the
+        same scale multiplier; ``clock`` is then the cumulative activity, and the
+        row index otherwise.
+    ``seed``
+        Two calls with the same seed give byte-identical frames.
 
-    ``cycle_profile`` is ``cycle_rows`` multipliers in ``(0, 1]`` applied to the
-    *off-diagonal* of ``R_t`` at row ``t mod cycle_rows`` — a mix towards
-    the identity, so the matrix stays PSD. ``cycle_rows`` defaults to
-    ``rows_per_block``, and ``session = t // cycle_rows``.
+    Returns ``{"rows", "truth_rows", "truth_blocks"}``:
 
-    ``activity`` is ``(mean, shape)`` for a Gamma count per row, with the
-    mean scaled by the same scale multiplier; ``clock`` is then the
-    cumulative activity, and the row index otherwise.
+    ``rows``
+        What a consumer sees: ``entity``, ``t``, ``clock``, ``session``, the
+        levels ``x_1 .. x_m``, and ``activity``.
+    ``truth_rows``
+        Per row: ``t``, ``block``, ``state``, ``scale_mult`` and ``mix``, the
+        interpolation fraction.
+    ``truth_blocks``
+        Per block: ``block``, ``state``, ``n_rows``, and ``corr``, the block's
+        true correlation matrix as ``vech``.
 
-    ``x_1 .. x_m`` are **levels**: the cumulative sum of the latent returns
-    plus ``noise * N(0, 1)`` per observed row. Noise on the *level* is what
-    the literature models, and it makes the observed return an MA(1) with a
-    negative first autocorrelation — the microstructure effect `rcov`
-    exists to undo. With ``async_rates`` (expected observations per row, per
-    series) a row where series ``i`` reported nothing carries ``null`` for
-    ``x_i``: last-observation sampling is one ``forward_fill`` away, and
-    ``unpivot`` over the non-null rows is
-    :func:`polars_online.prep.refresh_time`'s long input.
+    .. code-block:: python
 
-    Returns ``{"rows", "truth_rows", "truth_blocks"}``. Two calls with the
-    same ``seed`` give byte-identical frames.
+        sim = po.sim.regimes(
+            3, states=[0.2, 0.7], transition=[[0.9, 0.1], [0.1, 0.9]],
+            n_blocks=4, rows_per_block=50, phi=0.3, seed=1,
+        )
+        rows, truth = sim["rows"], sim["truth_blocks"]
+
+    ``ValueError`` for fewer than two series, a state that is not a correlation
+    matrix, a ``transition`` that is not row-stochastic or not ``K x K``,
+    ``durations`` that do not give one positive count per state, a ``design`` that
+    is neither, a ``phi`` outside ``(-1, 1)``, a ``cycle_profile`` of the wrong
+    length or outside ``(0, 1]``, an ``activity`` that is not two positive
+    numbers, and ``async_rates`` that are not ``m`` positive rates.
     """
     np = _np()
     if m < 2:

@@ -77,6 +77,7 @@ class InMemoryExpressionWarning(UserWarning):
         import warnings
 
         warnings.filterwarnings("ignore", category=po.InMemoryExpressionWarning)
+
     """
 
 
@@ -583,5 +584,6 @@ def online(expr: pl.Expr) -> OnlineNamespace:
     .. code-block:: python
 
         df.with_columns(po.online(pl.col("y")).ewridge(features=["x0"], halflife=10.0))
+
     """
     return OnlineNamespace(expr)

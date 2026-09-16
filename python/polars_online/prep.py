@@ -1,22 +1,21 @@
-"""Frame preparation: streams whose labels arrive late, and series that tick
-at their own times (docs/ENHANCEMENTS.md E47, E58).
+"""Frame preparation: streams whose labels arrive late, and series that tick at
+their own times.
 
-:func:`embargo` turns a frame into the doubled stream
-that a forward-looking target needs: every row appears twice, once as a
-prediction at its own clock with zero weight, and once as a lesson at
-``clock + delay``, the two merged back into clock order. It is the recipe a
-spec's ``label_delay`` runs natively, written out in Polars -- useful for
-seeing what the delay does, for a model that has no ``label_delay``, and as
-the oracle the native path is tested against.
+:func:`embargo` turns a frame into the doubled stream a forward-looking target
+needs: every row appears twice, once as a prediction at its own clock with
+zero weight, and once as a lesson at ``clock + delay``, the two merged back
+into clock order. It is the recipe a spec's ``label_delay`` runs natively,
+written out in polars: useful for seeing what the delay does, for a model that
+has no ``label_delay``, and as the oracle the native path is tested against.
 
 :func:`refresh_time` puts asynchronous series on a common grid by
 Barndorff-Nielsen, Hansen, Lunde & Shephard's refresh-time rule: a grid point
-wherever every series has ticked at least once since the last one. The scan
-is a Rust operator, wrapped here as a lazy source.
+wherever every series has ticked at least once since the last one. The scan is
+a Rust operator, wrapped here as a lazy source.
 
-Everything here is lazy and streaming -- ``merge_sorted`` on two sorted halves
-of the same frame, a chunk-fed operator for the grid -- so a stream too long
-to hold is still too long to hold and this does not change that.
+Everything here is lazy and streaming (``merge_sorted`` on two sorted halves
+of the same frame, a chunk-fed operator for the grid), so a stream too long to
+hold is still too long to hold, and this does not change that.
 """
 
 from __future__ import annotations
@@ -44,45 +43,49 @@ def embargo(
 ) -> pl.LazyFrame:
     """The doubled stream for a target that is only known ``delay`` later.
 
+    Why: a target that is a forward quantity over ``delay`` clock units is not
+    known at the row it sits on. A stream that learns it there has seen ``delay``
+    of the future before predicting the rows in between, and every "out-of-sample"
+    number after that is contaminated; with an autocorrelated feature, even a pure
+    noise column will show a correlation with its target. Zero-weight rows are
+    legal and mean "advance the clock, learn nothing", so the doubled stream says
+    exactly what is wanted: predict here, learn later.
+
     Every row comes back twice, in clock order:
 
-    - a **predict** row at ``clock``, with its weight forced to 0, so the
-      model scores it and learns nothing from it;
-    - a **learn** row at ``clock + delay``, carrying the same features and
-      target at full weight.
+    - a predict row at ``clock``, with its weight forced to 0, so the model scores
+      it and learns nothing from it;
+    - a learn row at ``clock + delay``, carrying the same features and target at
+      full weight.
 
-    A ``role`` column says which is which (``"predict"`` / ``"learn"``), so
-    the output is filtered back down with
-    ``out.filter(pl.col(role) == "predict")``.
+    A ``role`` column says which is which (``"predict"`` / ``"learn"``), so the
+    output is filtered back down with ``out.filter(pl.col(role) == "predict")``.
+    ``weight`` names an existing weight column; without it the function adds one,
+    named ``role + "_weight"``, that is 1 on learn rows and 0 on predict rows;
+    pass that name to the spec's ``weight=``.
 
-    Why bother: a target that is a forward quantity over ``delay`` clock
-    units is not known at the row it sits on. A stream that learns it there
-    has seen ``delay`` of the future before predicting the rows in between,
-    and every "out-of-sample" number after that is contaminated -- with an
-    autocorrelated feature, even a pure noise column will show a correlation
-    with its target. Zero-weight rows are legal and mean "advance the clock,
-    learn nothing", so the doubled stream says exactly what is wanted:
-    predict here, learn later.
+    .. code-block:: python
 
-    ``weight`` names an existing weight column; without it the function adds
-    one (named ``role + "_weight"``) that is 1 on learn rows and 0 on predict
-    rows -- pass that name to the spec's ``weight=``.
+        doubled = po.prep.embargo(lf, clock="t", delay=5.0)    # + _online_role, _online_role_weight
+        scored = doubled.online.fit_predict(
+            [po.spec.ewridge("m", targets=["y"], features=["x0"], clock="t", max_dclock=10.0,
+                             halflife=50.0, weight="_online_role_weight")]
+        ).filter(pl.col("_online_role") == "predict").collect()
 
-    The frame must already be in ``clock`` order, as a stream must be. The
-    result is sorted by ``clock`` with **learn rows before predict rows** at
-    the same clock value: a label whose ``delay`` has just run out is known
-    at that instant, so a prediction made then may use it. A spec's
-    ``label_delay`` releases in the same order, which is what lets the two
-    be compared row for row.
+    The frame must already be in ``clock`` order, as a stream must be. The result
+    is sorted by ``clock`` with learn rows before predict rows at the same clock
+    value: a label whose ``delay`` has just run out is known at that instant, so a
+    prediction made then may use it. A spec's ``label_delay`` releases in the same
+    order, which is what lets the two be compared row for row. A spec's
+    ``label_delay=`` does the same thing in the stream with no doubling and no
+    filtering, which is cheaper and does not need the frame rewritten; reach for
+    this when a delay has to be visible in the data (an oracle, a demonstration,
+    or an engine that is not this one).
 
-    ``delay`` must be finite and positive; ``0`` would be the undoubled
-    stream, and negative is a label from the past, which is not what this is
-    for.
-
-    A spec's ``label_delay=`` does the same thing in the stream with no
-    doubling and no filtering, which is cheaper and does not need the frame
-    rewritten. Reach for this when a delay has to be visible in the data --
-    an oracle, a demonstration, or an engine that is not this one.
+    ``ValueError`` for a ``delay`` that is not finite and positive (``0`` would be
+    the undoubled stream, and negative a label from the past), for a ``clock`` or
+    ``weight`` column the frame has not got, and for a frame that already has a
+    column named ``role``.
     """
     if not (delay > 0.0) or delay == float("inf"):
         msg = f"embargo: delay must be finite and > 0, got {delay!r}"
@@ -143,78 +146,80 @@ def refresh_time(
     keep: Sequence[str] = (),
     chunk_rows: int | None = None,
 ) -> pl.LazyFrame:
-    """Asynchronous series on a common grid, by refresh time (E58).
+    """Asynchronous series on a common grid, by refresh time.
 
-    Series observed at their own times cannot be correlated directly: the
-    Epps effect attenuates a correlation computed over a fine grid, and
-    filling forward invents observations. Barndorff-Nielsen, Hansen, Lunde &
-    Shephard's rule places a grid point at the first instant by which
-    **every** series has ticked at least once since the previous point, and
-    takes each series' last value there:
+    Series observed at their own times cannot be correlated directly: the Epps
+    effect attenuates a correlation computed over a fine grid, and filling forward
+    invents observations. Barndorff-Nielsen, Hansen, Lunde & Shephard's rule
+    places a grid point at the first instant by which every series has ticked at
+    least once since the previous point, and takes each series' last value there:
 
     .. code-block:: text
 
         tau_0     = max_i (first tick of series i)
         tau_{j+1} = max_i (first tick of series i strictly after tau_j)
 
-    Nothing is interpolated -- every value in the output was observed -- and
-    the grid adapts to the slowest series rather than carrying a stale value
-    across an interval.
+    Nothing is interpolated, every value in the output was observed, and the grid
+    adapts to the slowest series rather than carrying a stale value across an
+    interval.
 
-    The input is **long**: one row per tick, with a ``series`` column naming
-    it, a ``time`` and a ``value``. A wide frame is already synchronised;
+    The input is long: one row per tick, with a ``series`` column naming it, a
+    ``time`` and a ``value``. A wide frame is already synchronised;
     ``lf.unpivot(index=[time], variable_name="series", value_name="value")``
-    is the line that makes one from the other.
+    is the line that makes one from the other. ``names`` is required and gives the
+    series in output order; it is not discovered from the data because a lazy plan
+    has to declare its schema before a row is read, and the output columns are
+    named after the series. A row whose ``series`` is not in ``names`` is an error
+    naming it, since dropping it would hide a misspelling.
 
-    ``names`` is required and gives the series in output order. It is not
-    discovered from the data because a lazy plan has to declare its schema
-    before a row is read, and the output columns are named after the series.
-    A row whose ``series`` is not in ``names`` is an error naming it: dropping
-    it would hide a misspelling.
-
-    Output, one row per grid point:
+    Returns a lazy frame with one row per grid point:
 
     ``time_refresh``
-        The completing tick's time -- the max over series of their last
-        update, their Definition 1.
+        The completing tick's time: the max over series of their last update,
+        their Definition 1.
     ``<s>_value``
         Each series' last value at that instant.
     ``n_obs_<s>``
-        Ticks of ``s`` since the previous point, the *first* of which is the
-        one on the grid.
+        Ticks of ``s`` since the previous point, the first of which is the one on
+        the grid.
     ``retained_fraction``
-        ``m / sum(n_obs)``: how many of the interval's ticks the grid kept.
-        Look at it before trusting a correlation computed on the result.
+        ``m / sum(n_obs)``: how many of the interval's ticks the grid kept. Look
+        at it before trusting a correlation computed on the result.
 
-    plus the ``by`` column -- in the dtype it came in as -- and any ``keep``
-    columns, at their value on the completing tick. ``pairs=True`` runs an
-    independent two-series grid per unordered pair instead -- which keeps far
-    more of the data when one series is slow -- and returns the long frame ``(by?, pair,
-    time_refresh, a_value, b_value, n_obs_a, n_obs_b,
-    retained_fraction)`` with ``pair = "a|b"`` in ``names`` order.
+    plus the ``by`` column, in the dtype it came in as, and any ``keep`` columns
+    at their value on the completing tick. ``pairs=True`` runs an independent
+    two-series grid per unordered pair instead, which keeps far more of the data
+    when one series is slow, and returns the long frame ``(by?, pair,
+    time_refresh, a_value, b_value, n_obs_a, n_obs_b, retained_fraction)`` with
+    ``pair = "a|b"`` in ``names`` order.
 
-    **The staleness caveat** (their §2.1): the output looks synchronous and
-    is not. A refresh vector is treated as observed at ``time_refresh``, but
-    each series' value is up to one of its own inter-tick intervals old.
-    ``n_obs_<s>`` is that staleness made visible: the series with the
-    largest count is the one holding the grid up, and the one whose value is
-    freshest.
+    .. code-block:: python
 
-    Rows must be in ``time`` order within each ``by`` key, as a stream must
-    be; a time below the previous row's is a ``ValueError`` naming the row. A
-    null ``value`` is a tick that observed nothing, so it does not update the
-    series. Feeding the input in one chunk or a thousand gives the same grid:
-    a point is a property of the ticks up to it.
+        grid = po.prep.refresh_time(
+            ticks, series="symbol", names=["AAA", "BBB", "CCC"], time="t", value="px"
+        ).collect()
+        returns = grid.select(pl.col("^.*_value$").diff())   # what rcov and ew_cov take
 
-    **Ties are broken by row order**: "strictly after ``tau_j``" is read
-    against the row sequence, so a tick carrying the same timestamp as the
-    one that just closed a point, but later in the frame, belongs to the
-    next interval. That is what lets a point be emitted the moment its last
-    series ticks, which is what makes the result chunk-invariant. Sort the
-    input by ``time`` *and* by the order you want within a timestamp.
+    The staleness caveat (their section 2.1): the output looks synchronous and is
+    not. A refresh vector is treated as observed at ``time_refresh``, but each
+    series' value is up to one of its own inter-tick intervals old. ``n_obs_<s>``
+    is that staleness made visible: the series with the largest count is the one
+    holding the grid up, and the one whose value is freshest.
 
-    ``ValueError`` for fewer than two ``names`` or a duplicate, and for a
-    column the frame has not got.
+    Rows must be in ``time`` order within each ``by`` key, as a stream must be; a
+    time below the previous row's is a ``ValueError`` naming the row. A null
+    ``value`` is a tick that observed nothing, so it does not update the series.
+    Feeding the input in one chunk or a thousand gives the same grid, since a
+    point is a property of the ticks up to it. Ties are broken by row order:
+    "strictly after ``tau_j``" is read against the row sequence, so a tick
+    carrying the same timestamp as the one that just closed a point, but later in
+    the frame, belongs to the next interval. That is what lets a point be emitted
+    the moment its last series ticks, which is what makes the result
+    chunk-invariant; sort the input by ``time`` and by the order you want within a
+    timestamp.
+
+    ``ValueError`` for fewer than two ``names`` or a duplicate, for a column the
+    frame has not got, and for ``chunk_rows`` below 1.
     """
     lazy = lf.lazy()
     in_schema = lazy.collect_schema()

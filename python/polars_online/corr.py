@@ -1,26 +1,28 @@
-"""Correlation matrices, read and repaired (docs/ENHANCEMENTS.md E62).
+"""Correlation matrices, read and repaired.
 
-:mod:`polars_online.gram`'s complement. Where that module solves and
-diagnoses a design matrix, this one takes a **correlation matrix** and does
-the arithmetic that comes after a pass: repair it to the nearest one that is
-a correlation matrix, shrink it towards a structured target, summarise it as
-an equicorrelation or a block matrix, place its eigenvalues against the
-Marchenko-Pastur edges, score a forecast of it, undo the Epps attenuation,
-and put a standard error on a single correlation.
+:mod:`polars_online.gram`'s complement. Where that module solves and diagnoses
+a design matrix, this one takes a correlation matrix and does the arithmetic
+that comes after a pass: repair it to the nearest one that is a correlation
+matrix (:func:`nearest`), shrink it towards a structured target
+(:func:`shrink`), summarise it as an equicorrelation (:func:`equicorr`) or a
+block matrix (:func:`block_means`), place its eigenvalues against the
+Marchenko-Pastur edges (:func:`mp_edge`), score a forecast of it
+(:func:`loss`), undo the Epps attenuation (:func:`epps_invert`), and put a
+standard error on a single correlation (:func:`fisher_se`).
 
 Every function is a pure function of arrays. Where the input is a matrix it
 may equally be a mapping from :meth:`~polars_online.ModelBank.gram` or a row
-from :meth:`~polars_online.ModelBank.closed_groups`: :func:`matrix` reads
-all three.
+from :meth:`~polars_online.ModelBank.closed_groups`: :func:`matrix` reads all
+three.
 
-The arithmetic is the papers', named in each docstring, and every function
-is held against a longhand check in ``tests/test_corr.py`` -- Higham's own
+The arithmetic is the papers', named in each docstring, and every function is
+held against a longhand check in ``tests/test_corr.py``: Higham's own
 published examples for :func:`nearest`, Ledoit and Wolf's formulae for
 :func:`shrink`, the closed forms for the rest.
 
-Requires numpy, which is an optional extra of this package
-(``pip install polars-online[numpy]``) -- not a dependency, as it is not one
-of polars' either. Nothing here needs scipy or scikit-learn.
+Requires numpy, which is an optional extra of this package (``pip install
+polars-online[numpy]``), not a dependency, as it is not one of polars' either.
+Nothing here needs scipy or scikit-learn.
 """
 
 from __future__ import annotations
@@ -71,13 +73,14 @@ def _np() -> Any:
 
 
 def matrix(obj: Any) -> Any:
-    """The ``k x k`` correlation matrix of whatever this is.
+    """The ``k x k`` correlation matrix of whatever this is, as a float array.
 
-    An array (returned as a float array), a mapping from
-    :meth:`~polars_online.ModelBank.gram` or
-    :func:`polars_online.gram.from_row` (its ``comoments`` scaled), or a
-    one-row frame from :meth:`~polars_online.ModelBank.closed_groups` (read
-    through :func:`polars_online.gram.from_row` first).
+    An array is returned as a float array; a mapping from
+    :meth:`~polars_online.ModelBank.gram` or :func:`polars_online.gram.from_row`
+    gives its ``comoments`` scaled; a one-row frame from
+    :meth:`~polars_online.ModelBank.closed_groups` is read through
+    :func:`polars_online.gram.from_row` first. ``ValueError`` for an array that is
+    not square.
     """
     np = _np()
     if hasattr(obj, "to_dicts") or (
@@ -99,7 +102,8 @@ def matrix(obj: Any) -> Any:
 
 def to_z(rho: Any) -> Any:
     """Fisher's ``z = atanh(rho)``, elementwise, with ``|rho|`` clipped at
-    :data:`Z_CLIP` so a degenerate ``±1`` is finite (``z ~ 7.25``)."""
+    :data:`Z_CLIP` so a degenerate ``±1`` is finite (``z`` about 7.25).
+    """
     np = _np()
     return np.arctanh(np.clip(np.asarray(rho, dtype=float), -Z_CLIP, Z_CLIP))
 
@@ -118,8 +122,9 @@ def nearest(
 ) -> tuple[Any, float, int]:
     """The nearest correlation matrix to ``a``, by Higham (2002).
 
-    Alternating projections with Dykstra's correction -- his Algorithm 3.3,
-    written out::
+    Alternating projections with Dykstra's correction, his Algorithm 3.3:
+
+    .. code-block:: text
 
         dS_0 = 0,  Y_0 = A
         R_k  = Y_{k-1} - dS_{k-1}          # Dykstra's correction
@@ -129,27 +134,29 @@ def nearest(
 
     with ``P_U`` setting the diagonal to 1 and, for a diagonal weight ``w``,
     ``P_S(A) = W^-1/2 (W^1/2 A W^1/2)_+ W^-1/2`` where ``(.)_+`` clips the
-    eigenvalues at zero. It stops on his test (4.1): the largest of the
-    relative infinity-norm changes in ``X``, in ``Y``, and between them,
-    below ``tol``.
+    eigenvalues at zero. It stops on his test (4.1): the largest of the relative
+    infinity-norm changes in ``X``, in ``Y``, and between them, below ``tol``.
 
-    Returns ``(X, dist, iters)`` with ``dist`` the weighted Frobenius
-    distance ``||W^1/2 (A - X) W^1/2||_F``. Convergence is linear (a factor
-    of about 3 an iteration on his own examples), so ``max_iter`` is a
-    safety net rather than a knob; reaching it returns the last iterate.
+    Returns ``(X, dist, iters)``: the matrix, the weighted Frobenius distance
+    ``||W^1/2 (A - X) W^1/2||_F``, and the iterations taken. Convergence is linear
+    (a factor of about 3 an iteration on his own examples), so ``max_iter`` is a
+    safety net rather than a knob; reaching it returns the last iterate. The
+    result has an exactly unit diagonal and is PSD to ``tol``: the iteration
+    converges to the boundary of the cone, so the smallest eigenvalue can be a
+    small negative number of that order. Tighten ``tol`` if that matters; clipping
+    it here would break the diagonal again.
 
-    The result has an **exactly** unit diagonal and is PSD to ``tol``: the
-    iteration converges to the boundary of the cone, so the smallest
-    eigenvalue can be a small negative number of that order. Tighten
-    ``tol`` if that matters; clipping it here would break the diagonal
-    again.
+    .. code-block:: python
 
-    ``a`` must be square and finite; it is symmetrised on the way in, since
-    an "almost-correlation" matrix from two different estimates of the same
-    pair is the case this exists for. ``w`` is the diagonal of ``W`` as a
-    vector, all positive. ``max_iter`` must be at least 1: returning the
-    input unprojected, with a distance of 0, would say it was already a
-    correlation matrix.
+        almost = np.array([[1.0, 0.9, 0.7], [0.9, 1.0, 0.3], [0.7, 0.3, 1.0]])   # not PSD
+        fixed, dist, iters = po.corr.nearest(almost)
+
+    ``a`` must be square and finite; it is symmetrised on the way in, since an
+    "almost-correlation" matrix from two different estimates of the same pair is
+    the case this exists for. ``w`` is the diagonal of ``W`` as a vector, all
+    positive. ``max_iter`` must be at least 1: returning the input unprojected,
+    with a distance of 0, would say it was already a correlation matrix. Each is
+    ``ValueError``.
     """
     np = _np()
     x = matrix(a)
@@ -217,18 +224,19 @@ def nearest(
 def shrink(
     r: Any, target: str = "constant", alpha: float | None = None, x: Any = None
 ) -> tuple[Any, float]:
-    """``(1 - a) R + a F``: Ledoit and Wolf (2004) shrinkage towards a
-    structured target.
+    """``(1 - a) R + a F``: Ledoit and Wolf (2004) shrinkage towards a structured
+    target.
 
-    ``target="constant"`` (the default) is their constant-correlation
-    target: ``f_ii = s_ii`` and ``f_ij = rbar * sqrt(s_ii s_jj)`` with
-    ``rbar`` the mean off-diagonal correlation, which on a correlation
-    matrix is the equicorrelation matrix at ``rbar``.
-    ``target="identity"`` is the identity.
+    ``target = "constant"`` (the default) is their constant-correlation target:
+    ``f_ii = s_ii`` and ``f_ij = rbar * sqrt(s_ii s_jj)`` with ``rbar`` the mean
+    off-diagonal correlation, which on a correlation matrix is the equicorrelation
+    matrix at ``rbar``. ``target = "identity"`` is the identity.
 
-    ``alpha`` fixes the intensity. Left out, it is their optimal
-    ``delta = max(0, min(kappa / T, 1))`` with ``kappa = (pi - rho) / gamma``,
-    which needs the **rows**::
+    ``alpha`` fixes the intensity. Left out, it is their optimal ``delta = max(0,
+    min(kappa / T, 1))`` with ``kappa = (pi - rho) / gamma``, which needs the
+    rows:
+
+    .. code-block:: text
 
         pi_ij    = (1/T) sum_t ((y_it - ybar_i)(y_jt - ybar_j) - s_ij)**2
         theta_ii,ij = (1/T) sum_t ((y_it - ybar_i)**2 - s_ii)
@@ -237,26 +245,24 @@ def shrink(
                      * (sqrt(s_jj/s_ii) theta_ii,ij + sqrt(s_ii/s_jj) theta_jj,ij)
         gamma    = sum_ij (f_ij - s_ij)**2
 
-    ``pi`` and ``theta`` are fourth-moment sums, so they cannot be recovered
-    from ``R`` and ``T``: pass ``x`` as the ``T x k`` sample the matrix came
-    from (the standardised rows), or pass ``alpha`` yourself. One of the two
-    is required.
+    ``pi`` and ``theta`` are fourth-moment sums, so they cannot be recovered from
+    ``R`` and ``T``: pass ``x`` as the ``T x k`` sample the matrix came from (the
+    standardised rows), or pass ``alpha`` yourself. One of the two is required.
+    ``x`` has to be the sample ``r`` is of: ``s_ij`` above is the plain covariance
+    of ``x``, and ``gamma`` compares the target with it, so an ``r`` that is some
+    other estimate of the same pairs (a decayed one out of a bank, say) makes
+    ``kappa`` a comparison of two different matrices. The intensity is still in
+    ``[0, 1]`` and the result still a shrunk matrix, but it is not the optimal
+    intensity for the ``r`` handed in; pass ``alpha`` yourself when the two cannot
+    be the same sample. ``x`` needs at least two rows.
 
-    **``x`` has to be the sample ``r`` is of.** ``s_ij`` above is the plain
-    covariance of ``x``, and ``gamma`` compares the target with it, so an
-    ``r`` that is some other estimate of the same pairs -- a decayed one out
-    of a bank, say -- makes ``kappa`` a comparison of two different
-    matrices. The intensity is still in ``[0, 1]`` and the result still a
-    shrunk matrix, but it is not the optimal intensity for the ``r`` handed
-    in (docs/REVIEW-E54-E64.md K2). Pass ``alpha`` yourself when the two
-    cannot be the same sample. ``x`` needs at least two rows.
-
-    Returns ``(shrunk, alpha)``. The result is positive definite whenever
-    the target is and ``alpha > 0``, which is the point: a sample
-    correlation matrix from fewer rows than columns is singular, and this is
-    the cheapest honest repair. :func:`nearest` is the other one, and they
-    answer different questions -- shrinkage trades bias for variance,
-    Higham's projection changes the matrix as little as possible.
+    Returns ``(shrunk, alpha)``. The result is positive definite whenever the
+    target is and ``alpha > 0``, which is the point: a sample correlation matrix
+    from fewer rows than columns is singular, and this is the cheapest honest
+    repair. :func:`nearest` is the other one, and they answer different questions:
+    shrinkage trades bias for variance, Higham's projection changes the matrix as
+    little as possible. ``ValueError`` for a target that is neither, for ``alpha``
+    outside ``[0, 1]``, and for ``x`` of the wrong shape.
     """
     np = _np()
     s = matrix(r)
@@ -320,7 +326,9 @@ def shrink(
 
 
 def equicorr(r: Any) -> float:
-    """The mean off-diagonal correlation: the one number a `deco` tracks."""
+    """The mean off-diagonal correlation: the one number a ``deco`` tracks. ``nan``
+    below two columns.
+    """
     np = _np()
     m = matrix(r)
     k = m.shape[0]
@@ -331,11 +339,14 @@ def equicorr(r: Any) -> float:
 
 
 def equicorr_row(row: Any) -> float:
-    """Engle and Kelly's Lemma 2.3 on one **standardised** row::
+    """Engle and Kelly's Lemma 2.3 on one standardised row:
+
+    .. code-block:: text
 
         u = (S1**2 - S2) / ((n - 1) * S2),  S1 = sum(r), S2 = sum(r*r)
 
-    the same closed form `deco` computes per row (ENHANCEMENTS E55), offline.
+    the same closed form ``deco`` computes per row, offline. ``nan`` below two
+    entries or at ``S2 = 0``.
     """
     np = _np()
     v = np.asarray(row, dtype=float).reshape(-1)
@@ -347,14 +358,16 @@ def equicorr_row(row: Any) -> float:
 
 
 def equicorr_loglik(row: Any, rho: float) -> float:
-    """The Gaussian log-density of a **standardised** row under an
-    equicorrelation matrix at ``rho``, in closed form::
+    """The Gaussian log-density of a standardised row under an equicorrelation matrix
+    at ``rho``, in closed form:
+
+    .. code-block:: text
 
         det R  = (1 - rho)**(n-1) * (1 + (n-1) rho)
         r'R^-1 r = (S2 - rho S1**2 / (1 + (n-1) rho)) / (1 - rho)
 
-    which is `deco`'s ``loglik``, offline. ``nan`` outside
-    ``(-1/(n-1), 1)``, where ``R`` is not a correlation matrix.
+    which is ``deco``'s ``loglik``, offline. ``nan`` outside ``(-1/(n-1), 1)``,
+    where ``R`` is not a correlation matrix.
     """
     np = _np()
     v = np.asarray(row, dtype=float).reshape(-1)
@@ -368,9 +381,11 @@ def equicorr_loglik(row: Any, rho: float) -> float:
 
 
 def absorption(r: Any, k: int) -> float:
-    """Kritzman, Li, Page and Rigobon's absorption ratio: the share of total
-    variance the top ``k`` eigenvectors explain, ``sum_{i<=k} lam_i / sum
-    lam_i``. High means the market is moving as one thing."""
+    """Kritzman, Li, Page and Rigobon's absorption ratio: the share of total variance
+    the top ``k`` eigenvectors explain, ``sum_{i<=k} lam_i / sum lam_i``. High
+    means the market is moving as one thing. ``ValueError`` for ``k`` outside
+    ``1..n``.
+    """
     np = _np()
     vals = np.linalg.eigvalsh(matrix(r))[::-1]
     total = float(vals.sum())
@@ -381,10 +396,12 @@ def absorption(r: Any, k: int) -> float:
 
 
 def shift(ar_fast: Any, ar_slow: Any, *, scale: float | None = None) -> Any:
-    """The standardised absorption shift ``(fast - slow) / scale``,
-    elementwise over two aligned series of absorption ratios; ``scale``
-    defaults to the standard deviation of ``ar_slow`` over the sample. The
-    two windows are the caller's."""
+    """The standardised absorption shift ``(fast - slow) / scale``, elementwise over
+    two aligned series of absorption ratios.
+
+    ``scale`` defaults to the standard deviation of ``ar_slow`` over the sample;
+    the two windows are the caller's. ``ValueError`` for series that do not align.
+    """
     np = _np()
     fast = np.asarray(ar_fast, dtype=float)
     slow = np.asarray(ar_slow, dtype=float)
@@ -396,10 +413,11 @@ def shift(ar_fast: Any, ar_slow: Any, *, scale: float | None = None) -> Any:
 
 
 def spectral(r: Any, k: int) -> tuple[Any, Any]:
-    """The top ``k`` eigenpairs, descending: ``(values, vectors)`` with
-    ``vectors`` row-major ``k x n``, each signed so its largest-magnitude
-    entry is positive -- the rule `ew_cov`'s ``pca`` uses on a first
-    refresh, so the two agree up to that convention."""
+    """The top ``k`` eigenpairs, descending: ``(values, vectors)`` with ``vectors``
+    row-major ``k x n``, each signed so its largest-magnitude entry is positive --
+    the rule ``ew_cov``'s ``pca`` uses on a first refresh, so the two agree up to
+    that convention.
+    """
     np = _np()
     m = matrix(r)
     vals, vecs = np.linalg.eigh(m)
@@ -417,8 +435,9 @@ def from_spectral(vals: Any, vecs: Any, *, unit_diag: bool = True) -> Any:
     """``V' diag(vals) V``, completed to a unit diagonal when ``unit_diag``.
 
     The remainder ``1 - diag(V' L V)`` is non-negative, because the dropped
-    components are PSD, so adding it to the diagonal leaves a correlation
-    matrix rather than something that only looks like one.
+    components are PSD, so adding it to the diagonal leaves a correlation matrix
+    rather than something that only looks like one. ``ValueError`` for values and
+    vectors of different counts.
     """
     np = _np()
     lam = np.asarray(vals, dtype=float).reshape(-1)
@@ -435,11 +454,11 @@ def from_spectral(vals: Any, vecs: Any, *, unit_diag: bool = True) -> Any:
 def block_means(r: Any, labels: Sequence[Any]) -> tuple[Any, Any]:
     """The mean correlation within and between labelled blocks.
 
-    ``B[a, b]`` is the mean of ``R[i, j]`` over ``i`` in block ``a`` and
-    ``j`` in block ``b``, **excluding the diagonal** (a variable's
-    correlation with itself is 1 and says nothing about the block).
-    Returns ``(B, counts)`` with the number of pairs behind each mean, in
-    the order the labels first appear.
+    ``B[a, b]`` is the mean of ``R[i, j]`` over ``i`` in block ``a`` and ``j`` in
+    block ``b``, excluding the diagonal: a variable's correlation with itself is 1
+    and says nothing about the block. Returns ``(B, counts)`` with the number of
+    pairs behind each mean, in the order the labels first appear. ``ValueError``
+    for a label count that is not the column count.
     """
     np = _np()
     m = matrix(r)
@@ -469,8 +488,11 @@ def block_means(r: Any, labels: Sequence[Any]) -> tuple[Any, Any]:
 
 def from_blocks(b: Any, labels: Sequence[Any]) -> Any:
     """The block-equicorrelation matrix ``B`` describes: entry ``(i, j)`` is
-    ``B[block(i), block(j)]`` off the diagonal, and 1 on it. The inverse of
-    :func:`block_means` up to the within-block averaging, which is the test.
+    ``B[block(i), block(j)]`` off the diagonal, and 1 on it.
+
+    The inverse of :func:`block_means` up to the within-block averaging, which is
+    the test. ``ValueError`` for a ``B`` that is not square in the number of
+    blocks.
     """
     np = _np()
     bm = np.asarray(b, dtype=float)
@@ -492,13 +514,16 @@ def from_blocks(b: Any, labels: Sequence[Any]) -> Any:
 
 
 def mp_edge(n: int, m: int, sigma2: float = 1.0) -> tuple[float, float]:
-    """The Marchenko-Pastur edges for ``n`` observations of ``m`` series::
+    """The Marchenko-Pastur edges for ``n`` observations of ``m`` series:
+
+    .. code-block:: text
 
         lam_pm = sigma2 * (1 +- 1/sqrt(Q))**2,    Q = n / m
 
-    (Laloux, Cizeau, Bouchaud and Potters 1999). Eigenvalues inside them are
-    what pure noise produces; only those above ``lam_+`` carry information.
-    ``Q = 1`` gives ``(0, 4 sigma2)``.
+    (Laloux, Cizeau, Bouchaud and Potters 1999). Eigenvalues inside them are what
+    pure noise produces; only those above ``lam_+`` carry information. ``Q = 1``
+    gives ``(0, 4 sigma2)``. ``ValueError`` for ``n`` or ``m`` that is not
+    positive.
     """
     if n <= 0 or m <= 0:
         msg = f"corr.mp_edge: n and m must be positive, got {n} and {m}"
@@ -509,9 +534,9 @@ def mp_edge(n: int, m: int, sigma2: float = 1.0) -> tuple[float, float]:
 
 
 def mp_density(lam: Any, n: int, m: int, sigma2: float = 1.0) -> Any:
-    """The Marchenko-Pastur density ``(Q / 2 pi sigma2) sqrt((lam_+ - lam)
-    (lam - lam_-)) / lam``, zero outside the edges -- the curve to draw a
-    spectrum against."""
+    """The Marchenko-Pastur density ``(Q / 2 pi sigma2) sqrt((lam_+ - lam) (lam -
+    lam_-)) / lam``, zero outside the edges: the curve to draw a spectrum against.
+    """
     np = _np()
     lo, hi = mp_edge(n, m, sigma2)
     x = np.asarray(lam, dtype=float)
@@ -528,18 +553,20 @@ def mp_density(lam: Any, n: int, m: int, sigma2: float = 1.0) -> Any:
 
 
 def signal_share(z_blocks: Any, n_eff_blocks: Any) -> Any:
-    """How much of the between-block movement in a correlation is not
-    sampling noise.
+    """How much of the between-block movement in a correlation is not sampling noise.
 
     Per pair over ``B`` blocks, with ``z_b`` the Fisher-z of that block's
-    correlation and ``n_b`` its effective sample size::
+    correlation and ``n_b`` its effective sample size:
+
+    .. code-block:: text
 
         clip(1 - mean_b(1 / (n_b - 3)) / var_b(z_b), 0, 1)
 
-    ``1 / (n - 3)`` is the sampling variance of ``z``, so the ratio is the
-    share of the observed variance the floor explains, and one minus it is
-    what is left. ``0`` means the correlation moved no more than noise would.
-    A 1-D input (one pair) returns a scalar.
+    ``1 / (n - 3)`` is the sampling variance of ``z``, so the ratio is the share
+    of the observed variance the floor explains, and one minus it is what is left.
+    ``0`` means the correlation moved no more than noise would. A 1-D input (one
+    pair) returns a scalar. ``ValueError`` for block and sample-size counts that
+    differ.
     """
     np = _np()
     z = np.asarray(z_blocks, dtype=float)
@@ -565,20 +592,22 @@ def loss(
     """How wrong a forecast correlation matrix was.
 
     ``"qlike"`` is the Gaussian quasi-likelihood loss, shifted by the
-    forecast-free constant so that it is **zero at ``fcst == real`` and
-    positive elsewhere**::
+    forecast-free constant so that it is zero at ``fcst == real`` and positive
+    elsewhere:
+
+    .. code-block:: text
 
         tr(F^-1 R) - log det(F^-1 R) - k
 
-    ``"z_mse"`` is ``sum_{i<j} (z_ij(F) - z_ij(R))**2 * (n - 3)``, the
-    squared Fisher-z error in units of its own sampling standard error;
-    ``n`` is required.
-
-    ``"minvar"`` is Engle and Colacito's minimum-variance loss ``w'Rw`` with
-    ``w = F^-1 mu / (mu' F^-1 mu)``, the realised variance of the portfolio
-    the forecast would have held; ``mu`` defaults to ones. It is minimised
-    over ``F`` at ``F = R``, which is what makes it a proper scoring rule
-    for a covariance forecast.
+    ``"z_mse"`` is ``sum_{i<j} (z_ij(F) - z_ij(R))**2 * (n - 3)``, the squared
+    Fisher-z error in units of its own sampling standard error; ``n`` is required.
+    ``"minvar"`` is Engle and Colacito's minimum-variance loss ``w'Rw`` with ``w =
+    F^-1 mu / (mu' F^-1 mu)``, the realised variance of the portfolio the forecast
+    would have held; ``mu`` defaults to ones. It is minimised over ``F`` at ``F =
+    R``, which is what makes it a proper scoring rule for a covariance forecast.
+    ``nan`` where the loss is undefined (a non-positive determinant, a zero
+    denominator); ``ValueError`` for a kind that is none of the three, for
+    matrices of different shapes, and for ``"z_mse"`` without ``n``.
     """
     np = _np()
     f = matrix(fcst)
@@ -618,26 +647,26 @@ def loss(
 def epps_invert(gram_or_row: Any, *, L: int) -> Any:  # noqa: N803 - the paper's name
     """The correlation at scale ``L`` rows, from lagged co-moments at scale 1.
 
-    Toth and Kertesz's equation 12: a correlation computed over fine
-    intervals is attenuated because the two series do not move at the same
-    instants, and the attenuation is undone by summing the lagged
-    cross-covariances over the coarser interval. The weights are
-    **triangular**, on the numerator and on both denominators::
+    Toth and Kertesz's equation 12: a correlation computed over fine intervals is
+    attenuated because the two series do not move at the same instants, and the
+    attenuation is undone by summing the lagged cross-covariances over the coarser
+    interval. The weights are triangular, on the numerator and on both
+    denominators:
+
+    .. code-block:: text
 
         rho_L[a, b] = sum_x (L - |x|) C_x[a, b]
                       / sqrt(sum_x (L - |x|) C_x[a, a] * sum_x (L - |x|) C_x[b, b])
 
-    over ``x = -(L-1) .. L-1`` with ``C_{-x}[a, b] = C_x[b, a]`` -- so the
-    numerator is ``L C_0[a, b] + sum_{l=1}^{L-1} (L - l) (C_l[a, b] + C_l[b,
-    a])`` and each auto term is ``L C_0[a, a] + 2 sum_l (L - l) C_l[a, a]``.
+    over ``x = -(L-1) .. L-1`` with ``C_{-x}[a, b] = C_x[b, a]``, so the numerator
+    is ``L C_0[a, b] + sum_{l=1}^{L-1} (L - l) (C_l[a, b] + C_l[b, a])`` and each
+    auto term is ``L C_0[a, a] + 2 sum_l (L - l) C_l[a, a]``.
 
-    The input is a mapping from :meth:`~polars_online.ModelBank.gram` or a
-    closed row with ``lags`` and ``lag_comoments`` (ENHANCEMENTS E56), and
-    must carry **every** lag ``1 .. L-1``: build it with
-    ``ew_cov(lags=list(range(1, L)))``. A missing lag is an error naming it.
-
-    ``L = 1`` is the plain correlation, which is the identity this reduces
-    to.
+    The input is a mapping from :meth:`~polars_online.ModelBank.gram` or a closed
+    row with ``lags`` and ``lag_comoments``, and must carry every lag ``1 ..
+    L-1``: build it with ``ew_cov(lags=list(range(1, L)))``. Returns the ``k x k``
+    matrix; ``L = 1`` is the plain correlation, which is the identity this reduces
+    to. ``ValueError`` for ``L`` below 1 and for a missing lag, naming it.
     """
     np = _np()
     from polars_online import gram as _gram
@@ -678,21 +707,19 @@ def fisher_se(
 ) -> float:
     """The standard error of a correlation estimated from ``n`` observations.
 
-    ``1 / sqrt(n - 3)`` is the standard error of Fisher's ``z``. With
-    ``rho`` it is the delta-method error of the correlation itself,
-    ``(1 - rho**2) / sqrt(n - 3)``.
+    ``1 / sqrt(n - 3)`` is the standard error of Fisher's ``z``. With ``rho`` it
+    is the delta-method error of the correlation itself, ``(1 - rho**2) / sqrt(n -
+    3)``. With both ``phi`` it is inflated by ``sqrt((1 + phi_a phi_b) / (1 -
+    phi_a phi_b))`` for a pair of AR(1) series, from Bartlett's formula ``Var(r) ~
+    (1/n) sum_k rho_a(k) rho_b(k)`` and the geometric series ``1 + 2 sum_{k>=1}
+    (phi_a phi_b)**k``. Both of its assumptions matter: it holds under a zero true
+    cross-correlation and linear dependence, and it is not valid under ARCH-type
+    innovations, where the variance of a sample correlation depends on the fourth
+    moments and this understates it.
 
-    With both ``phi`` it is inflated by ``sqrt((1 + phi_a phi_b) / (1 -
-    phi_a phi_b))`` for a pair of AR(1) series. That comes from Bartlett's
-    formula ``Var(r) ~ (1/n) sum_k rho_a(k) rho_b(k)`` and the geometric
-    series ``1 + 2 sum_{k>=1} (phi_a phi_b)**k``. **Both of its assumptions
-    matter**: it holds under a *zero* true cross-correlation and linear
-    dependence, and it is not valid under ARCH-type innovations, where the
-    variance of a sample correlation depends on the fourth moments and this
-    understates it.
-
-    One ``phi`` without the other is an error: the inflation is a property
-    of the pair.
+    ``nan`` at ``n <= 3``. One ``phi`` without the other is a ``ValueError``, the
+    inflation being a property of the pair, and so is ``phi_a * phi_b`` outside
+    ``(-1, 1)``.
     """
     if n <= 3:
         return float("nan")
