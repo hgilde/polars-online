@@ -379,7 +379,11 @@ measured before the row's own update. So it is `0` on a stream's first row,
 runs one behind the row count while nothing is forgotten, settles at
 `1 / (1 − λ)` once forgetting balances arrival, and means the same thing in
 every model — which is what makes one `min_periods` mean the same thing
-across a bank.
+across a bank. A model that keeps a weight per target checks each target's
+threshold against its own, which is the weight of the rows that target was
+present on, so a target that is often null reports later than the others;
+the `n_eff` field is the shared weight either way. Which models keep one is in
+[`polars_online.spec`](https://hgilde.github.io/polars-online/spec.html).
 
 ### Nulls
 

@@ -404,14 +404,17 @@ def ewridge(
     with the state -- and a halflife grid is one instance per entry, each with
     its own ring. ``window_every`` snapshots every ``n`` rows instead, which
     divides the memory and can only *shorten* the effective window.
-    ``window_budget`` bounds each ring in MiB and says what happens past it:
-    ``{"refuse": mib}`` stops the ring there and refuses the chunk, naming
-    its size and ``window_every`` -- and since the budget is checked as the
-    rows are learned, the bank then refuses to go on
-    (``ModelBank.fit_predict`` says why) -- while ``{"thin": mib}`` drops
-    every other snapshot and doubles the spacing, as often as it takes,
-    which like ``window_every`` can only shorten the window. Unset, a window
-    refuses past 256 MiB; ``float("inf")`` is no bound.
+    ``window_budget`` bounds each ring in MiB, and says what happens when a
+    ring reaches the bound. ``{"thin": mib}`` drops every other snapshot
+    and doubles the spacing between the rest, as often as it takes; like
+    ``window_every``, that can only shorten the window. ``{"refuse": mib}``
+    keeps the ring at the bound and refuses the chunk, naming the ring's
+    size and ``window_every``. The budget is checked as the rows are
+    learned, so a refused chunk has been partly learned. The bank then
+    refuses every later ``fit_predict``, ``predict`` and ``save``; rebuild
+    it from its last save (:meth:`ModelBank.fit_predict`). Unset, a window
+    refuses past 256 MiB per ring; ``{"refuse": float("inf")}`` is no
+    bound.
 
     ``n_eff``, ``sigma`` and ``resid_z`` come from the window too, so the
     reported spread describes the rows the fit describes: the spread keeps a
@@ -443,7 +446,11 @@ def ewridge(
     ``ridge`` defaults to ``1e-6``. With ``standardize`` (default ``False``)
         the solve is done in correlation form and unscaled afterwards, and a
         feature whose variance is zero is dropped from the solve rather than
-        blowing it up.
+        blowing it up. Without an intercept nothing is centred: the system
+        is scaled by each column's root mean square instead. A fit through
+        the origin is then least squares through the origin, and the column
+        dropped is one that is all zero. ``lasso``, ``kalman``, ``huber``,
+        ``quantile`` and ``sgd`` standardize the same way.
         ``ridge`` may be a list (one fit per value, reported side by side) and
         ``feature_sets`` names subsets of ``features``, each a fit of its own
         reported as ``pred_<t>__<set>`` -- the full set is fitted only when it
@@ -468,7 +475,10 @@ def ewridge(
         so ``0`` keeps today's fit, ``1`` reverts fully to the long run, and
         anything between says "overnight, drift partway back". Unlike
         ``session_gap`` this changes what the model *believes*, not just how
-        confident it is.
+        confident it is. With ``ridge_decay`` the prior's scale mixes the
+        same way, ``1 - f`` of the model's and ``f`` of the twin's, so
+        ``session_shrink = 1`` lands exactly on the twin's fit, prior
+        included.
 
         Raises as every builder does (:mod:`polars_online.spec`); its own rules:
         a ``feature_sets`` entry naming a column not in ``features``, a ``coef_prior``
@@ -742,13 +752,7 @@ def lasso(
     coefficients: a feature with no evidence inside it goes to exactly zero.
     ``window_every`` trades boundary tightness for memory, and can only
     shorten the effective window. ``window_budget`` bounds each ring in MiB
-    and says what happens past it: ``{"refuse": mib}`` stops the ring there
-    and refuses the chunk, naming its size and ``window_every`` -- and since
-    the budget is checked as the rows are learned, the bank then refuses to
-    go on (``ModelBank.fit_predict`` says why) -- while ``{"thin": mib}``
-    drops every other snapshot and doubles the spacing, as often as it
-    takes, which like ``window_every`` can only shorten the window. Unset, a
-    window refuses past 256 MiB; ``float("inf")`` is no bound.
+    and thins or refuses past the bound, as for :func:`ewridge`.
     ``n_eff``, ``sigma`` and ``resid_z`` come from the window too, as for
     :func:`ewridge` (review 2026-09-12, S1).
 
@@ -757,8 +761,10 @@ def lasso(
     out-of-sample error with halflife ``select_halflife`` (default: the model
     halflife; ``inf``, the plain mean over every row so far), reported as it
     stood before the row -- the lambda this row was
-    scored with, not the one its own error then elected. Outputs carry one
-    pred/resid pair per path point.
+    scored with, not the one its own error then elected. A row of weight 0
+    adds no error and ages the errors so far, so the selection then moves
+    only by what the ageing forgets. Outputs carry one pred/resid pair per
+    path point.
 
     ``target_gaps`` is :func:`ewridge`'s: which rows a target's feature
     correlations are taken over where the target is null on some --
@@ -769,7 +775,8 @@ def lasso(
     ``max_rows_between_solves`` schedule the solves as for :func:`ewridge`;
     within a solve, coordinate descent stops after ``max_cd_iters`` sweeps
     (default 100) or when no coefficient moves by more than ``cd_tol``
-    (default ``1e-10``).
+    (default ``1e-10``); a descent that runs out of sweeps first is counted
+    in :meth:`ModelBank.solve_failures`, one per target and path point.
     """
     model: dict[str, Any] = {
         "type": "lasso",
@@ -820,13 +827,17 @@ def kalman(
     matching with EW-RLS). ``coef_halflife`` is a scalar or one value per slot
     (intercept first); ``inf`` pins that coefficient. An explicit ``q``
     overrides the derivation. Observation noise is the EW residual variance
-    unless ``obs_var`` is given.
+    unless ``obs_var`` is given. That variance is per target, and its
+    weight ages on every row, a row with no prediction or with weight 0
+    included; such a row, and a row whose target is null, ages the target's
+    weight the same way and learns nothing for it.
 
     ``p0`` is the initial coefficient covariance, ``P_0 = p0 I`` (default
     1.0). With ``standardize`` (default ``True``) the filter runs on
     standardized features, so ``coef_halflife`` and ``p0`` mean the same
     thing whatever the columns' scale; the reported coefficients are in the
-    original units either way.
+    original units either way. Without an intercept the features are scaled
+    by their root mean square and not centred, as for :func:`ewridge`.
 
     ``revert_halflife`` gives each slot a reversion halflife ``r_i``: between
     observations the coefficient shrinks toward zero by ``2^(-d / r_i)``, so a
@@ -887,8 +898,22 @@ def huber(
     The weights are per target, so ``S`` is per target here (one accumulator
     each), unlike ew_ridge which shares one. Default ``huber_delta`` is 1.5;
     ``inf`` cuts nothing, which is least squares.
-    ``ridge`` (default ``1e-6``), ``standardize``, ``solve_every`` and
-    ``max_rows_between_solves`` mean what they mean for :func:`ewridge`.
+
+    ``s`` is not itself robust. It is the plain EW standard deviation of the
+    residuals, in which the rows the cut down-weights count at full weight,
+    so a burst of outliers widens the cut for the rows after it until the
+    EW mean forgets them. ``huber_delta`` is in units of that std, not of a
+    robust one such as a MAD. Its weight ages on every row the model sees,
+    a row with no prediction or with weight 0 included, so it forgets
+    across a gap as the clock says. Until a residual exists, ``s`` is taken
+    as 1, so the first rows are weighted in the residual's own units.
+
+    ``min_periods`` counts the rows the target was present on, at their
+    raw weights, decayed. The reweighted sum, which an outlier lowers, is
+    not what it reads, so a stream whose warm-up meets outliers reports its
+    first prediction when the rows say to. ``ridge`` (default ``1e-6``),
+    ``standardize``, ``solve_every`` and ``max_rows_between_solves`` mean
+    what they mean for :func:`ewridge`.
     """
     model: dict[str, Any] = {
         "type": "huber",
@@ -918,37 +943,55 @@ def quantile(
     """Quantile regression at level ``quantile`` (docs/PLAN.md section 4.5).
 
     One Newton step per row on the check loss smoothed by a uniform kernel of
-    half-width ``h = quantile_eps * s``, linearised at the fit the row was
-    scored with, so it stays out-of-sample. With ``psi(r) = tau - 1{r < 0}``
-    and ``s`` the EW residual std::
+    half-width ``h``, linearised at the fit the row was scored with, so it
+    stays out-of-sample. With ``psi(r) = tau - 1{r < 0}`` and ``s`` the EW
+    residual std::
 
         |r| <  h:  a least-squares row, with target y + 2h(tau - 1/2)
         |r| >= h:  no weight in the Gram; 2h * psi(r) * z into the cross-moment
 
-    The smoothed loss has the same curvature either side of the fit, so the
-    rows' own history cancels. The IRLS weights this replaced,
-    ``2*side*s/max(|r|, eps*s)``, are that step's secant where this is its
-    tangent: unbounded as ``r`` goes to zero, so a row whose prior residual
-    happened to be near zero held the fit near the fit it was scored by for
-    ever, and the fit settled short of the quantile regression -- 0.164 short
-    of ``statsmodels``' ``QuantReg`` at the median of a skewed noise after
-    20 000 rows, where it is 0.005 now (review 2026-09-12, N9).
+    The smoothed loss has the same curvature on either side of the fit, so
+    the rows' own history cancels and the fit converges to the quantile
+    regression. Reweighting the rows by the check loss's IRLS weight,
+    ``psi(r) / r``, does not converge to it: that weight is the secant of
+    this step where the step is its tangent, and it is unbounded as ``r``
+    goes to zero, so a row whose prior residual happened to be near zero
+    holds the fit near the fit it was scored by. Measured at the median of
+    a skewed noise after 20 000 rows against ``statsmodels``' ``QuantReg``,
+    the step is 0.005 away, inside ``QuantReg``'s own standard error of
+    0.007, where the weights settled 0.164 short (review 2026-09-12, N9).
 
-    ``quantile_eps`` (default ``0.2``) is that band's half-width in units of
-    ``s``: the rows inside it are the curvature the step leans on, so a much
-    narrower band converges more slowly and a much wider one smooths the
-    quantile toward the mean. The band is never narrower than ``(k/n)**0.4``
-    for the target's effective sample ``n`` -- the smoothed-quantile
-    bandwidth rate, which a long stream leaves behind and which keeps the
-    step fed under a short halflife, where the band's share of the sample is
-    a few rows. Under three rows per coefficient of the rows the target was
-    present on, the fit warms up as ordinary least squares, which is also
-    what rebuilds it after a gap or a reset; and a band holding under one
-    row per coefficient -- a fit a row at the input bound left behind, whose
-    moments the nudges cannot move -- takes least-squares rows until it
-    holds rows again. ``ridge`` (default ``1e-6``), ``standardize``,
-    ``solve_every`` and ``max_rows_between_solves`` mean what they mean for
-    :func:`ewridge`.
+    ``h`` is ``quantile_eps * s`` (default ``0.2``). The rows inside the
+    band are the curvature the step leans on, so a much narrower band
+    converges more slowly and a much wider one smooths the quantile toward
+    the mean. The band is never narrower than ``(k / n) ** 0.4`` of ``s``,
+    for ``k`` coefficients and the target's effective sample ``n``, which
+    is the smoothed-quantile bandwidth rate. Under a halflife the band's
+    share of the sample is a few rows, and the floor is what keeps the step
+    fed there; a long stream leaves the floor behind. Coverage at
+    ``quantile = 0.9`` on normal noise reads 0.895 at ``halflife = 30`` and
+    0.900 from 200 up (the second review of 2026-09-15, F3).
+
+    Under three rows per coefficient of the rows the target was present on,
+    the fit is ordinary least squares: a Newton step needs a Hessian, and a
+    band around a fit built from a handful of rows is not one. The same rule
+    rebuilds the fit after a gap or a reset has aged the weight away. A band
+    holding under one row per coefficient takes least-squares rows too,
+    until it holds rows again. That is what rebuilds a fit a row at the
+    input bound leaves behind. Such a row sets the Gram and the cross-moment
+    at its own scale, and every later row is outside the band. Only nudges
+    arrive, each ``2h * psi * z`` over the band's weight; they cannot move
+    the fit until that weight has decayed to nothing, and each is then a
+    step that outgrows the band. From one row up an outside row's step
+    lands inside the band, and the floor keeps a settled band well clear of
+    one row, so the rule does not fire in steady state.
+
+    ``min_periods`` counts the rows the target was present on, at their
+    raw weights, decayed. The band's weight, which a halflife caps at the
+    band's share of the sample, is not what it reads. ``ridge`` (default
+    ``1e-6``),
+    ``standardize``, ``solve_every`` and ``max_rows_between_solves`` mean
+    what they mean for :func:`ewridge`.
     """
     model: dict[str, Any] = {
         "type": "quantile",
@@ -1077,14 +1120,8 @@ def ew_cov(
     where memory grows with a *window* rather than with the state, at
     ``k**2 + k + 2`` doubles each, so a 1,000-row window over 20 columns is
     about 3 MB per group. ``window_every`` snapshots every ``n`` rows instead
-    and divides that by ``n``. ``window_budget`` bounds each ring in MiB and
-    says what happens past it: ``{"refuse": mib}`` stops the ring there and
-    refuses the chunk, naming its size and ``window_every`` -- and since the
-    budget is checked as the rows are learned, the bank then refuses to go
-    on (``ModelBank.fit_predict`` says why) -- while ``{"thin": mib}`` drops
-    every other snapshot and doubles the spacing, as often as it takes,
-    which like ``window_every`` can only shorten the window. Unset, a window
-    refuses past 256 MiB; ``float("inf")`` is no bound.
+    and divides that by ``n``. ``window_budget`` bounds each ring in MiB
+    and thins or refuses past the bound, as for :func:`ewridge`.
 
     Four things to know before reading the numbers:
 
@@ -1105,9 +1142,11 @@ def ew_cov(
     ``n_eff`` becomes the weight *inside* the window, which stops growing
     once the window fills, so ``min_periods`` gates on a quantity with a
     ceiling. A clock gap longer than ``window`` empties it and the row
-    reports nulls rather than stale numbers. ``window`` does not combine with
-    ``lags`` or ``mahal_quantiles``, which accumulate over a history it does
-    not truncate; both are refused by name.
+    reports nulls rather than stale numbers. ``mahal``, ``partial_corr`` and
+    the PCA read the window's moments too, and the PCA refresh is gated on
+    the window's weight. ``window`` does not combine with ``lags`` or
+    ``mahal_quantiles``, which accumulate over a history it does not
+    truncate; both are refused by name.
 
     For moments on data that fits in memory, polars already does this --
     ``df.rolling(clock, period=...).agg(...)`` with an exponential weight
@@ -1165,9 +1204,10 @@ def ew_cov(
     ``comoments`` exactly. Lags are counted in **learned rows within the
     group**, not clock units, and must be strictly increasing and ``>= 1``;
     the list order is the output order. The ring of past rows is emptied on a
-    session change and on a clock gap beyond ``max_dclock``, the two events
-    after which "the row `l` back" no longer means a row `l` ago; a
-    zero-weight row ages the matrices and does not enter the ring.
+    session change and on a clock gap beyond ``max_dclock``, one row's or a
+    run of skipped rows' whose total the ceiling cut: the events after which
+    "the row `l` back" no longer means a row `l` ago. A zero-weight row ages
+    the matrices and does not enter the ring.
 
     Read them from :meth:`ModelBank.gram` as ``lags`` and ``lag_comoments``
     (an ``(L, k, k)`` array), or add ``"lagcorr"`` to ``stats`` to emit
@@ -1274,7 +1314,8 @@ def sgd(
     old can be tiny by chance and one step throws a coefficient the rest of
     a short group never brings back. The same standardized row serves the
     prediction and the step, and the coefficients come back in the caller's
-    units.
+    units. Without an intercept the row is scaled by each column's root
+    mean square and not centred, as for :func:`ewridge`.
 
     **Constrained coefficients** (ENHANCEMENTS E40). ``coef_min`` and
     ``coef_max`` bound each slope (one number for every feature, or a list
@@ -1682,14 +1723,11 @@ def ew_class(
     The window keeps a ring of snapshots of the class moments, one per
     learned row; ``window_every`` snapshots every ``n`` rows instead, which
     divides the memory and can only shorten the effective window.
-    ``window_budget`` bounds each ring in MiB and says what happens past it:
-    ``{"refuse": mib}`` stops the ring there and refuses the chunk, naming
-    its size and ``window_every`` -- and since the budget is checked as the
-    rows are learned, the bank then refuses to go on
-    (``ModelBank.fit_predict`` says why) -- while ``{"thin": mib}`` drops
-    every other snapshot and doubles the spacing, as often as it takes,
-    which like ``window_every`` can only shorten the window. Unset, a window
-    refuses past 256 MiB; ``float("inf")`` is no bound.
+    ``window_budget`` bounds each ring in MiB and thins or refuses past the
+    bound, as for :func:`ewridge`. ``n_eff`` is the weight inside the
+    window, in the struct and in the ``min_periods`` gate, and the class
+    moments a row is scored against are the window's, ``"full"``'s
+    factorization included.
 
     Not a regression: ``label`` names the column that holds the class of each
     row, and ``classes`` lists every value it can hold (``targets`` is not a
@@ -1916,14 +1954,11 @@ def marginal(
     The window keeps a ring of snapshots of every pair's moments, one per
     learned row; ``window_every`` snapshots every ``n`` rows instead, which
     divides the memory and can only shorten the effective window.
-    ``window_budget`` bounds each ring in MiB and says what happens past it:
-    ``{"refuse": mib}`` stops the ring there and refuses the chunk, naming
-    its size and ``window_every`` -- and since the budget is checked as the
-    rows are learned, the bank then refuses to go on
-    (``ModelBank.fit_predict`` says why) -- while ``{"thin": mib}`` drops
-    every other snapshot and doubles the spacing, as often as it takes,
-    which like ``window_every`` can only shorten the window. Unset, a window
-    refuses past 256 MiB; ``float("inf")`` is no bound.
+    ``window_budget`` bounds each ring in MiB and thins or refuses past the
+    bound, as for :func:`ewridge`. The ``n_eff`` the struct emits is the
+    weight inside the window, and so is the ``n_eff`` :meth:`ModelBank.marginal`
+    reports. ``lags`` and ``window`` are refused together: the ring of past
+    rows is not something a window's snapshot truncates.
 
     Not a regression and not a joint fit: each pair ``(x_j, y_t)`` is its own
     two-column ``ew_cov``, so a wide feature set against a few targets costs
@@ -2417,7 +2452,9 @@ def hmm(
     ``learn=False`` they are held exactly. Otherwise the first ``warm_rows``
     learned rows are buffered, ``kmeans``' ``seed_rule`` chooses centres
     among them, and the buffer is replayed through those centres as hard
-    assignments -- every output is null until then, as ``kmeans``' are.
+    assignments -- every output is null until then, as ``kmeans``' are. The
+    buffered rows age as ``n_eff`` does, so the states start at the weight
+    ``n_eff`` says, not at the rows' raw weights.
     ``learn=False`` with no states given is refused: there would be nothing
     to filter with.
 

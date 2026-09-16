@@ -207,7 +207,12 @@ class ModelBank:
         holds, frozen; ``coef`` is filled on the last accepted row (the same
         coefficients score every row); ``drift`` never fires; rows of a group
         the bank has never seen, or without usable features, are null
-        throughout, as a skipped row is in ``fit_predict``.
+        throughout, as a skipped row is in ``fit_predict``. Under
+        ``group_close = "session"``, a row from a session other than the
+        group's current one is scored as the first row of a fresh stream,
+        null with ``n_eff`` 0, because ``fit_predict`` would restart the
+        stream there. A row that ``session_gap = "reset"`` would restart on
+        is scored the same way.
 
         Raises what :meth:`fit_predict` raises for the same frame -- a
         missing or non-numeric column, a bad clock value -- except that a
@@ -905,12 +910,28 @@ class ModelBank:
         total failure keeps the previous coefficients. Both cases are counted
         here, so a nonzero value means the inputs are degenerate (constant or
         collinear features, or far too few observations for the feature count),
-        not that anything crashed. Models that do not factorize -- rls, kalman,
-        ftrl -- always report 0.
+        not that anything crashed. What each model counts:
 
-        ``bocpd`` counts rows here too: a row whose predictive could not be
-        evaluated reports nulls and leaves the run-length posterior where it
-        stands, and the count is what makes a run of them visible.
+        ``ewridge``, ``huber``, ``quantile``
+            A solve that needed jitter, or failed at every jitter and kept
+            the previous fit -- the standardized solve included.
+        ``lasso``
+            A coordinate descent that ran out of ``max_cd_iters`` sweeps
+            before every coefficient moved less than ``cd_tol``, one per
+            target and path point.
+        ``ew_class``
+            A row on which a class covariance could not be factorized.
+        ``hmm``
+            A row whose state densities could not be evaluated; the filter
+            is left where it stands.
+        ``bocpd``
+            A row whose predictive could not be evaluated: it reports nulls
+            and leaves the run-length posterior where it stands, and the
+            count is what makes a run of them visible.
+
+        Every other model reports 0 because it counts nothing, not because
+        nothing can fail: ``rls`` and ``kalman`` track an inverse, and the
+        gradient models keep no second moment to factorize.
         """
         names = self._native.spec_names()
         return {
@@ -989,9 +1010,15 @@ class ModelBank:
 
         Raises ``FileNotFoundError`` (or the ``OSError`` for what went wrong)
         when the file cannot be read, and ``ValueError`` when it can but is
-        not a bank this build loads: not a bank state file at all, written by
-        a newer build (the file's format or state schema version is above
-        this build's), or ``specs`` differ from the file's.
+        not a bank this build loads: not a bank state file at all; written
+        by a newer build (the file's format or state schema version is
+        above this build's); written under a state schema below this
+        build's floor, since before 1.0 a schema change is not carried
+        across and such a state is refit rather than loaded
+        (:func:`polars_online.schema_version` is the current schema); a state
+        that contradicts its own spec, such as an ``sgd`` state without the
+        scaler its ``scale_features`` needs; or ``specs`` differ from the
+        file's.
         """
         return cls.load_bytes(Path(path).read_bytes(), specs)
 

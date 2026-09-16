@@ -581,7 +581,10 @@ pub enum ModelKind {
         /// Half-width of the band the fit takes its Newton step in, in units
         /// of the EW residual std; default 0.2 (review 2026-09-12, N9), and
         /// never narrower than `(k/n)^(2/5)` for the target's effective sample
-        /// `n` (the second review's F3).
+        /// `n` (the second review's F3). A band holding under one row per
+        /// coefficient takes least-squares rows until it holds rows again,
+        /// which rebuilds a fit a row at the input bound left behind
+        /// (`online_core::robust`'s module docs).
         #[serde(default)]
         quantile_eps: Option<f64>,
     },
@@ -1418,7 +1421,11 @@ pub struct Spec {
     pub halflife: Option<FloatOrList>,
     #[serde(default)]
     pub lam: Option<f64>,
-    /// Ceiling on the clock delta, in clock units; `"inf"` for none.
+    /// Ceiling on the clock delta, in clock units; `"inf"` for none. It
+    /// caps the step between two rows a model learns from, so a run of
+    /// skipped rows hands the row after it at most this much clock (review
+    /// 2026-09-12, S3); a step the ceiling cut also clears `ew_cov`'s and
+    /// `marginal`'s lagged co-moments, adjacency being broken.
     #[serde(default)]
     pub max_dclock: Option<Num>,
     #[serde(default)]
@@ -1446,7 +1453,10 @@ pub struct Spec {
     pub coef_every: u32,
     /// Emit `sigma_<slot>`: the EW standard deviation of this slot's
     /// out-of-sample residuals, read from the state *before* each row. Off by
-    /// default because it widens the output struct.
+    /// default because it widens the output struct. Its weight ages on every
+    /// row, a row with no prediction or with weight 0 included (review
+    /// 2026-09-12, N6), and under a `window` it is the window's, as the fit
+    /// is (S1).
     #[serde(default)]
     pub emit_sigma: bool,
     /// Emit `resid_z_<slot>` = `resid / sigma`: how surprising this row was, in
