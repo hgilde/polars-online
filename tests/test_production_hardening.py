@@ -570,6 +570,71 @@ def _doc_blocks(rel: str) -> list[tuple[str, int, str]]:
 README_BLOCKS = _doc_blocks("README.md") + _doc_blocks("docs/RUNNER.md")
 
 
+def _rst_python_blocks(where: str, doc: str) -> list[tuple[str, int, str]]:
+    """Every ``.. code-block:: python`` in one docstring (dedented, as
+    `inspect.getdoc` gives it), with the line it starts on."""
+    out: list[tuple[str, int, str]] = []
+    lines = doc.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.strip() == ".. code-block:: python":
+            indent = len(line) - len(line.lstrip())
+            j, buf = i + 1, []
+            while j < len(lines):
+                nxt = lines[j]
+                if nxt.strip() == "":
+                    buf.append("")
+                elif len(nxt) - len(nxt.lstrip()) > indent:
+                    buf.append(nxt)
+                else:
+                    break
+                j += 1
+            body = "\n".join(buf).strip("\n")
+            pad = min(len(b) - len(b.lstrip()) for b in body.splitlines() if b.strip())
+            out.append((where, i + 1, "\n".join(b[pad:] for b in body.splitlines())))
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def _docstring_blocks() -> list[tuple[str, int, str]]:
+    """Every ``.. code-block:: python`` in the docstrings the API reference is
+    built from: each module in the reference, what its ``__all__`` exports,
+    and the public methods of an exported class. A docstring example is a
+    claim the reader trusts as much as a README block, so it runs the same
+    way (docs/WRITING.md, "Every code block runs")."""
+    import inspect
+
+    modules = [po, po.spec, po._bank, po._frame, po._runner, po._expr]
+    modules += [po.gram, po.eval, po.corr, po.prep, po.sim]
+    seen: set[int] = set()
+    out: list[tuple[str, int, str]] = []
+    for mod in modules:
+        objs = [(mod.__name__, mod)]
+        for name in getattr(mod, "__all__", ()):
+            obj = getattr(mod, name, None)
+            if obj is None:
+                continue
+            objs.append((f"{mod.__name__}.{name}", obj))
+            if inspect.isclass(obj):
+                for mname, member in vars(obj).items():
+                    if not mname.startswith("_") and callable(member):
+                        objs.append((f"{mod.__name__}.{name}.{mname}", member))
+        for where, obj in objs:
+            if id(obj) in seen:
+                continue
+            seen.add(id(obj))
+            doc = inspect.getdoc(obj)
+            if doc:
+                out.extend(_rst_python_blocks(where, doc))
+    return out
+
+
+DOCSTRING_BLOCKS = _docstring_blocks()
+
+
 def _closed_rows(df: pl.DataFrame) -> pl.DataFrame:
     """What `bank.closed_groups()` gives for the README's block example."""
     spec = po.spec.ew_cov(
@@ -718,3 +783,19 @@ class TestReadmeExamples:
         finally:
             os.environ.clear()
             os.environ.update(env)
+
+    def test_there_are_docstring_blocks_to_check(self):
+        assert len(DOCSTRING_BLOCKS) >= 10, DOCSTRING_BLOCKS
+
+    @pytest.mark.parametrize(
+        ("path", "line", "code"),
+        DOCSTRING_BLOCKS,
+        ids=[f"{p}:L{ln}" for p, ln, _ in DOCSTRING_BLOCKS],
+    )
+    def test_a_docstring_block_runs(self, path, line, code, tmp_path, monkeypatch):
+        """The API reference's examples, run in the README's namespace: a
+        block that needs a name the reader was never shown fails with a
+        `NameError`, which is the finding."""
+        monkeypatch.chdir(tmp_path)
+        ns = _readme_namespace(tmp_path)
+        exec(compile(code, f"{path}:{line}", "exec"), ns)
