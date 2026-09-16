@@ -351,7 +351,7 @@ entry that moves a number says so.
   running a bank, saving and serving, preparing a stream, reading the fit,
   diagnostics, the model sections, performance, and the comparisons. Prose
   is kept for what code with comments cannot carry — the update rules, the
-  sweeps as tables, and the reason behind a rule — and all 58 of its Python
+  sweeps as tables, and the reason behind a rule — and all 59 of its Python
   blocks run in the test suite. The steps for raising the Polars ceiling
   moved to `docs/RELEASE-READINESS.md`, beside the measurements they rest
   on.

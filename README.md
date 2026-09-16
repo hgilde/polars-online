@@ -54,34 +54,74 @@ accumulates gives the same answer in any order.
 | **stream**, **chunk** | the rows, in the order the bank reads them — time order, when a model forgets — and the pieces they arrive in. The bank takes one chunk at a time and its results never depend on where one chunk ended and the next began |
 | **state** | everything a bank has learned. Its size depends on the models, not on how many rows have gone past, which is why the stream can be any length |
 
-**The basic example.** A ridge regression per stock, fitted over a folder of
-parquet files, with the state saved when the last row is reached; then new
-rows scored against that state without learning from them:
+**One fit over every row.** Turn forgetting off and a model that solves
+converges to the batch fit over every row it has seen, in any row order
+([Without a decay](#without-a-decay-convergence-in-bounded-memory)). The
+state is then a complete summary of those rows, which is what makes it a
+model worth saving and serving: fit it over a folder of parquet files that
+never has to fit in memory, save it at the last row, then score new rows
+against it without learning from them.
 
 ```python
 import polars as pl
 import polars_online as po
 
-spec = po.spec.ewridge(
+ols = po.spec.ewridge(
     "ridge",                                          # the spec's name; its output column is named after it
     targets=["ret"], features=["signal_a", "signal_b"],
-    clock="ts", halflife=600.0, max_dclock=300.0,     # older rows count less: their weight halves every 600 s
+    halflife=float("inf"),                            # no forgetting: every row counts the same, so this is
+                                                      # ridge regression over the whole stream, in bounded memory
     group="stock_id",                                 # one separate regression per stock
 )
 
 (
     pl.scan_parquet("ticks/*.parquet")                # a Polars query over the files; nothing is read yet
-    .online.fit_predict([spec], save_state="bank.state")   # the bank, inside the query
-    .filter(pl.col("ridge").struct.field("n_eff") > 100)   # ordinary Polars on what comes out
+    .online.fit_predict([ols], save_state="bank.state")    # the bank, inside the query
+    .filter(pl.col("ridge").struct.field("n_eff") > 20)    # ordinary Polars on what comes out
     .sink_parquet("fitted.parquet")                   # runs the query, writing the result a chunk at a time
 )
 
 scored = pl.scan_parquet("today.parquet").online.predict("bank.state").collect()   # score; learn nothing
-flat = scored.online.unnest([spec])   # pred_ret, resid_ret, n_eff, coef_ret_intercept, coef_ret_signal_a, ...
+flat = scored.online.unnest([ols])   # pred_ret, resid_ret, n_eff, coef_ret_intercept, coef_ret_signal_a, ...
 # Each spec adds one column, named after it, whose value in each row is a record of named fields:
 # the prediction pred_<target>, the residual resid_<target>, the effective number of observations
 # n_eff, the coefficients coef, and the diagnostics you switch on. unnest spreads them into columns.
 ```
+
+**One fit that follows the recent rows.** Give the same spec a clock and a
+`halflife` and each row's weight halves every 600 seconds of `ts`. The fit
+is now *local*: it describes the recent past rather than the whole history,
+and it moves from row to row. So the thing to read is not the state it
+happens to end on but the path the coefficients took, which `coef_every=1`
+writes on every row.
+
+```python
+local = po.spec.ewridge(
+    "local", targets=["ret"], features=["signal_a", "signal_b"],
+    clock="ts", halflife=600.0, max_dclock=300.0,     # a row's weight halves every 600 s of ts, and a gap
+                                                      # longer than 300 s decays as though it were 300 s
+    group="stock_id",
+    coef_every=1,                                     # write the coefficients on every row, not once a chunk
+)
+
+betas = (
+    pl.scan_parquet("ticks/*.parquet")
+    .online.fit_predict([local])
+    .online.unnest([local])                           # coef_ret_intercept, coef_ret_signal_a, coef_ret_signal_b
+    .select("ts", "stock_id", "^coef_.*$")
+    .collect()
+)
+# One row per input row: each stock's exposure to each signal, as it stood before that row.
+# That is a time series -- plot it, difference it, or compare two stocks' exposures over a day.
+path = betas.filter(pl.col("stock_id") == "b0").select("ts", "coef_ret_signal_a")
+# null until the fit exists, then one value per row: how b0's return loaded on signal_a, over time.
+```
+
+The two examples answer different questions, and the difference is the
+decay. Without one, every row counts forever and the saved state is the
+model. With one, the state is only the last few hundred seconds, so the
+coefficients are the output and serving from the final state means
+predicting with the most recent fit alone.
 
 Mistakes are named: every keyword is checked against its type, and a
 missing column is reported by which spec wanted it and in what role.
@@ -103,9 +143,7 @@ Streams from markets bring their own shape, and the bank handles it: a
 clock (an hour with no rows), and a clock that resets between sessions. Put
 the same decay on one of the frame's own feature columns, with the rows
 sorted by it, and the fit becomes local in that feature — a curve rather
-than a line — in one pass. Turn decay off, and a model that solves for its
-coefficients converges to the ordinary batch fit over every row it has
-seen, whatever order the rows came in. [How a bank sees a
+than a line — in one pass. [How a bank sees a
 stream](#how-a-bank-sees-a-stream) explains each of these.
 
 **Two guarantees.** Every row is predicted before its own outcome is
