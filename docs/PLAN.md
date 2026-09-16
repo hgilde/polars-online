@@ -6084,6 +6084,35 @@ pass does not have to rediscover them:
   default lives in the docstring and in `stream.rs`, and the docstring was
   checked against `stream.rs` for every builder.
 
+**`v0.6.0` tagged, 2026-09-16.** The user asked to push and tag for the next
+minor bump. `CHANGELOG.md`'s `[Unreleased]` was cut as `0.6.0`, the version
+moved in `pyproject.toml`, `Cargo.toml`, `polars_online.__version__` and both
+lockfiles, and `docs/VALIDATION.md` was regenerated on it — it differs from
+the committed document in its version line alone, the one other changed line
+being a timing its test normalises away. A minor twice over by this package's
+own pre-1.0 rule: numbers move in many models, and the state schema is 10.
+
+The tag went on `9f6a5f9`, not on the release-preparation commit `bba23ed`.
+Between the two the user read the rewritten README and objected to its first
+example: it fitted a *decayed* regression over a folder of files and then
+served from the final state, when a decayed fit is local and that state holds
+only the last few hundred seconds, so the example taught the wrong habit. The
+introduction now leads with a no-decay fit — ridge regression over every row
+in bounded memory, where the saved state really is a summary of those rows and
+saving and serving is the point — and follows it with a local fit whose
+`coef_every=1` coefficient path is read as a time series, which is what a
+local fit is for. The paragraph after them lost the sentence restating
+no-decay convergence, and the README's running python-block count moved to 59.
+
+That move cost the first rehearsal: `release.yml` dispatched on `bba23ed`
+(35103650703) was cancelled once `main` passed that commit, because a
+rehearsal certifies only the commit it ran on. The precondition was met again
+on the new head — CI 35111714290 and rehearsal 35111713356 both green on
+`9f6a5f9` — and `v0.6.0` is annotated there. The tagged release run is
+35119720969; its `publish to PyPI` job parks on the owner's approval, which is
+the one step nothing here can take, and `v*` tags are immutable, so a tag that
+turns out wrong is left unapproved rather than moved.
+
 ## Follow-on documents
 
 Each of §11b–§11h below summarises one document under `docs/` and says what
