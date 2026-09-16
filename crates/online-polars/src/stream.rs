@@ -503,7 +503,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 min_periods: spec.min_periods_or_default(),
                 solve_every: solve_every.unwrap_or_else(|| spec.solve_every_default(decay)),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
-                quantile_eps: quantile_eps.unwrap_or(1e-3),
+                quantile_eps: quantile_eps.unwrap_or(0.2),
             };
             Ok(AnyModel::Robust(Box::new(Robust::new(cfg)?)))
         }

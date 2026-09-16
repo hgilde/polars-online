@@ -113,8 +113,8 @@ null, and what moves is the next row's forecast.
 below closed fourteen, batch 2 thirteen, batch 3a eleven, batch 3b two,
 batch 4a four, batch 4b four, batch 4c two, batch 4d one, batch 4e one),
 and batch 5 wrote the second opinions the review listed that nothing had
-written. One new observation from it, N9, is raised and waits on the
-user's decision (`docs/PLAN.md` task 82). D1 is excluded by the user.
+written. One new observation from it, N9, is fixed in batch 6
+(`docs/PLAN.md` task 82). D1 is excluded by the user.
 The user's own
 design work (tasks 78 and 79), parked on `design/task-78` while the round
 ran, is merged into `main`.
@@ -510,6 +510,25 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   does not settle on `statsmodels`' `QuantReg` -- N9, raised and not
   fixed, with no test in the suite until the user decides.
   `sgd(loss="quantile")` does, and is tested.
+- 2026-09-15 — **batch 6**: N9 fixed, on the user's go-ahead, and task 82
+  with it. Test first: the five tests written for it failed on the old build
+  for their reasons -- 0.164 and 0.477 from `QuantReg` at the median and the
+  0.9 quantile, 0.249 from the batch smoothed estimator at the same
+  bandwidth, 1.74 of a 3.0 level shift uncovered three halflives after it,
+  and a coverage of 0.777 where 0.9 was asked. The diagnosis is in N9: IRLS's
+  weight is the Newton step's secant, unbounded near zero, and freezing it
+  left a spring toward the fits the rows were scored by. `robust.rs` takes
+  the tangent instead, through one `row_update` both losses go through, so
+  `huber`'s arithmetic is bit-identical and only the quantile's arm is new.
+  Two things the measurements changed on the way: the warm-up is three rows
+  per coefficient, since at one the Gram is near singular and the ridge
+  turned it into coefficients in the hundreds; and the coverage test now
+  reads both the whole stream and its second half, because a tail quantile
+  on 8 000 rows is still arriving (0.858 against 0.893) and the old rule's
+  own number on the second half alone is seed-dependent. The goldens' six
+  `quantile` values are re-frozen -- `n_eff` is not among them, as it counts
+  observations -- and `reference.py` mirrors the new rule, so T-A3 stays
+  exact.
 
 ## New observations (found while fixing; not in the review)
 
@@ -583,44 +602,47 @@ Legend: **fixed** (commit) · **next** (library test available, queued) ·
   has mean zero. Both read raw moments there now. The tests compare with
   the models, a feature moved off zero (`test_gram_module.py`); the models'
   fit through the origin is held to `numpy` already (C8).
-- **N9** (while writing T-S4) -- **raised**, waits on the user's decision
-  (`docs/PLAN.md` task 82). `quantile` fits by IRLS on each row's *prior*
-  residual, each row weighed `2·side·s/max(|r|, quantile_eps·s)` and
-  frozen as it arrives. The review expected it to converge at `tau = 0.5`
-  and `halflife = inf` to `statsmodels`' `QuantReg` within the floor.
+- **N9** (while writing T-S4) -- **fixed** in batch 6, on the user's
+  go-ahead. `quantile` fitted by IRLS on each row's *prior* residual, each
+  row weighed `2·side·s/max(|r|, quantile_eps·s)` and frozen as it arrived.
   Measured with a skewed noise (`exponential(1)`, so the median's fit and
-  the mean's part by 0.3 in the intercept), it does not: the intercept is
-  0.157, 0.164 and 0.110 off at 5 000, 20 000 and 100 000 rows at the
-  median, and 0.93, 0.48 and 0.27 at the 0.9 quantile, where `QuantReg`'s
-  own standard error at 100 000 rows is about 0.003. With a symmetric noise
-  (Laplace) the median settles by 100 000 rows (0.03) and the 0.9
-  quantile does not (0.47). The floor moves it: at `quantile_eps` 0.1,
-  0.01, `1e-3` (the default) and `1e-4` the median's gap at 20 000 rows is
-  0.035, 0.100, 0.164 and 0.178. The reading: a row whose prior residual
-  happened to be near 0 keeps a weight up to `1/quantile_eps` times a
-  typical row's for ever, and pulls the fit toward the fit it was scored
-  by; `huber`'s weights are at most 1, and it is held to numpy (C11,
-  S27). `sgd(loss="quantile", schedule="inv_scaling")` does settle on
-  `QuantReg`, within 0.022 and 0.027 at 100 000 rows, and a test says so.
-  Options: document `quantile` as an approximation and point to `sgd`'s
-  quantile loss; raise the default floor (at 0.1 the median's gap at
-  20 000 rows is 0.035; what else it moves is unmeasured); or refit the
-  weights against the current fit, which a stream can do only over a
-  window of rows.
-- **N7** (while fixing S27) -- **fixed** in batch 4c. `sgd`'s
-  `huber_delta` had no check in the spec, and the core's `delta <= 0.0`
-  passes NaN, so a TOML `huber_delta = nan` built, and the first row with a
-  residual reached `r.clamp(-delta, delta)`, which panics on a NaN bound.
-  Making the field `Num` for S27 would have opened the same road to a
-  hand-built JSON dict. Both layers refuse NaN now;
-  `nan_is_refused_where_inf_means_something` holds every field S27 made
-  `Num` to it.
-- **N8** (while fixing S27) -- **fixed** in batch 4c. `marginal` refused
-  `min_periods = inf`, which the builders document as allowed, the spec
-  accepts, and every other model reads as a gate that never opens; its
-  unit test pinned the refusal, with no reason given since task 37. It
-  takes it now. Found by the table test asking that no allowed key be
-  refused as infinite.
+  the mean's part by 0.3 in the intercept), it did not settle on
+  `statsmodels`' `QuantReg`: the intercept was 0.157, 0.164 and 0.110 off at
+  5 000, 20 000 and 100 000 rows at the median, and 0.93, 0.48 and 0.27 at
+  the 0.9 quantile, where `QuantReg`'s own standard errors are 0.007 and
+  0.021; a `quantile = 0.9` fit's coverage read 0.777. The derivation, and
+  what the fix follows from: splitting the cross-moment by `y = p + r`
+  leaves the pinball subgradient beside a spring of strength
+  `E[w] ≈ 2sf(1 + ln(1/eps))` pulling the fit toward the fit each row was
+  scored against, where the subgradient's restoring slope is `2sf` -- so the
+  fit reaches `β̄ − (β̄ − β*)/(1 + ln(1/eps))`, an eighth of the way at the
+  default floor, and the bias falls as `n^{-1/8}` (20x the rows shrank the
+  gap 1.4x, and a larger floor shrank it: 0.035, 0.100, 0.164 and 0.178 at
+  `quantile_eps` 0.1, 0.01, `1e-3` and `1e-4`). IRLS's weight `ψ(r)/r` is
+  the *secant* of the Newton step whose tangent is `ψ'(r)`, and the secant
+  is unbounded as `r → 0`: a row whose prior residual was near zero kept a
+  weight of up to `1/quantile_eps` for ever. `huber`'s weights are at most
+  1, and it was unaffected (C11 and S27 hold it to numpy).
+
+  The fix takes the tangent: one Newton step on the check loss smoothed by a
+  uniform kernel of half-width `h = quantile_eps·σ`, linearised at the fit
+  the row was scored with -- the streaming case of the renewable estimator
+  for smoothed quantile regression. A row inside the band is a least-squares
+  row with target `y + 2h(τ − ½)`, a row outside adds `2h·ψ_τ(r)·z` to the
+  cross-moment and nothing to the Gram, and under three rows per coefficient
+  the fit warms up as ordinary least squares (at one row per coefficient the
+  Gram is near singular and the ridge turned it into coefficients in the
+  hundreds; the warm-up is also what rebuilds the fit after a gap). Measured
+  after it, at 20 000 rows: 0.005 from `QuantReg` at the median and 0.006 at
+  the 0.9 quantile, both inside its standard errors; 0.014 from the batch
+  smoothed estimator at the same bandwidth; coverage 0.858 over an
+  8 000-row stream and 0.893 over its second half, against 0.777 and 0.855;
+  and 2.87 of a 3.0 level shift covered three halflives after it, against
+  1.2. The bandwidth is a convergence/bias trade, and 0.2 is the measured
+  middle: at 0.1 the fit is 0.19 from `QuantReg` after 8 000 rows (0.10 at
+  0.2), and at 0.4 it is 0.08 the other way after 100 000 rows, the
+  smoothing bias. `sgd(loss="quantile")` settles there too and keeps its
+  test.
 
 ## Libraries
 

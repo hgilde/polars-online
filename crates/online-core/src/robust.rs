@@ -11,15 +11,27 @@
 //!          = d * s / |r|       otherwise
 //! ```
 //!
-//! Quantile (check loss at level tau), the IRLS weight of the check function,
-//! with `eps = quantile_eps` flooring `|r|` in units of `s` so a near-zero
-//! residual cannot produce an unbounded weight, and the whole thing scaled by
-//! `s` so the weights are O(1) rather than O(1/s):
+//! Quantile (check loss at level tau) does not reweight: it takes one Newton
+//! step on the check loss smoothed by a uniform kernel of half-width
+//! `h = quantile_eps * s`, linearised at the fit the row was scored with. The
+//! smoothed loss has curvature `1/(2h)` inside the band and none outside, so
+//! with `psi(r) = tau - 1{r < 0}` the row is:
 //!
 //! ```text
-//! w_robust = 2 * tau       * s / max(|r|, eps * s)    if r > 0
-//!          = 2 * (1 - tau) * s / max(|r|, eps * s)    otherwise
+//! |r| <  h:  a least-squares row, target y + 2h(tau - 1/2)
+//! |r| >= h:  no weight in the Gram; 2h * psi(r) * z into the cross-moment
 //! ```
+//!
+//! Both arms come from one identity: the Newton system's row is
+//! `z z' beta = z z' beta_prior + 2h * psi(r) * z`, and inside the band
+//! `2h * psi(r) = 2h(tau - 1/2) + r`, which folds the prior fit back out. The
+//! IRLS weight this replaced, `psi(r)/r`, is that step's *secant* where this is
+//! its tangent, and it is unbounded as `r -> 0`: a row whose prior residual
+//! happened to be near zero kept a weight of up to `1/quantile_eps` for ever,
+//! and the fit settled a fraction `1/(1 + ln(1/eps))` of the way from the mean
+//! of its own past fits to the quantile regression -- 0.164 short of
+//! `statsmodels`' `QuantReg` at the median of a skewed noise after 20 000 rows,
+//! and 0.477 at the 0.9 quantile (review 2026-09-12, N9).
 //!
 //! `s` is the EW residual std of that target as the row arrives, and is taken
 //! as 1 until one exists (no rows yet, or every residual so far exactly zero),
@@ -62,10 +74,32 @@ pub struct RobustCfg {
     pub min_periods: f64,
     pub solve_every: f64,
     pub max_rows_between_solves: u32,
-    /// Floor on |residual| in the quantile weight, in units of the EW residual
-    /// std, so a near-zero residual cannot produce an unbounded weight.
+    /// Half-width of the band a quantile fit takes its Newton step in, in
+    /// units of the EW residual std: rows inside carry the curvature, rows
+    /// outside only the score (the module docs). It was the floor under `|r|`
+    /// in an IRLS weight, bounding a weight rather than naming a band (review
+    /// 2026-09-12, N9).
     pub quantile_eps: f64,
 }
+
+/// What one row does to a target's accumulators ([`Robust::row_update`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RowUpdate {
+    /// A weighted least-squares row: `w` into the Gram, `target` into the
+    /// cross-moment.
+    Fit { w: f64, target: f64 },
+    /// A row outside the quantile band: the Gram takes nothing, the
+    /// cross-moment takes `nudge * z` (review 2026-09-12, N9).
+    Nudge { nudge: f64 },
+}
+
+/// Rows per coefficient a quantile fit accumulates as ordinary least squares
+/// before it starts taking Newton steps ([`Robust::row_update`]). Measured
+/// (review 2026-09-12, N9): at one row per coefficient the Gram is near
+/// singular and the ridge turns it into coefficients in the hundreds; three
+/// was stable at every bandwidth and feature count tried, and the fit it
+/// leaves is `QuantReg`'s to within one of its standard errors.
+const WARM_ROWS: f64 = 3.0;
 
 impl RobustCfg {
     pub fn k_total(&self) -> usize {
@@ -108,12 +142,13 @@ pub struct Robust {
     /// EW residual variance per target (drives the robust scale).
     sig2: Vec<f64>,
     wsig: Vec<f64>,
-    /// EW count of *observations* using the raw row weights, i.e. ignoring the
-    /// IRLS reweighting. This is what `n_eff` and `min_periods` mean everywhere
-    /// else, so the robust models report it too: the accumulators are scaled by
-    /// the robust weights, but the observation count must not be. (Quantile
-    /// weights can reach `2 / quantile_eps`, so counting them would inflate
-    /// `n_eff` by ~1000x and make `min_periods` meaningless.)
+    /// EW count of *observations* using the raw row weights, i.e. ignoring
+    /// what the loss does with them. This is what `n_eff` and `min_periods`
+    /// mean everywhere else, so the robust models report it too: Huber scales
+    /// the accumulators by its weights and a quantile fit weighs only the rows
+    /// inside its band, and the observation count must follow neither. (The
+    /// IRLS weights a quantile fit once used reached `2 / quantile_eps`, so
+    /// counting them inflated `n_eff` by ~1000x -- T-A5.)
     w_raw: f64,
     beta: Option<Vec<Vec<f64>>>,
     clock_since_solve: f64,
@@ -161,21 +196,55 @@ impl Robust {
         self.beta.as_deref()
     }
 
-    /// Robust weight multiplier for a prior residual (docs/PLAN.md §4.5).
-    fn robust_weight(&self, resid: f64, sigma: f64) -> f64 {
-        let s = if sigma > 0.0 { sigma } else { 1.0 };
+    /// What a row does to one target's accumulators (the module docs).
+    ///
+    /// Huber reweights it: an ordinary least-squares row at `min(1, delta*s/|r|)`,
+    /// a weight bounded by 1. The quantile loss linearises it instead, inside
+    /// the band or outside it, and the two arms are [`RowUpdate`]'s.
+    ///
+    /// `pred` is the prediction the row was scored with, so both stay
+    /// out-of-sample, and `scale` is the EW residual std, taken as 1 until one
+    /// exists. `aged` is this target's accumulated weight decayed to the row:
+    /// under `WARM_ROWS` of it per coefficient the quantile fit takes ordinary
+    /// least-squares rows, since a Newton step needs a Hessian to lean on and a
+    /// band around a fit built from a handful of rows is not one. That is the
+    /// warm-up, and it is what rebuilds the fit after a gap or a reset has aged
+    /// the weight away.
+    fn row_update(&self, yj: f64, pred: f64, scale: f64, weight: f64, aged: f64) -> RowUpdate {
         match self.cfg.loss {
             RobustLoss::Huber { delta } => {
-                let cut = delta * s;
-                let a = resid.abs();
-                if a <= cut || a == 0.0 { 1.0 } else { cut / a }
+                let w_rob = if pred.is_finite() {
+                    let cut = delta * scale;
+                    let a = (yj - pred).abs();
+                    if a <= cut || a == 0.0 { 1.0 } else { cut / a }
+                } else {
+                    1.0
+                };
+                RowUpdate::Fit {
+                    w: weight * w_rob,
+                    target: yj,
+                }
             }
             RobustLoss::Quantile { tau } => {
-                let floor = self.cfg.quantile_eps * s;
-                let a = resid.abs().max(floor);
-                let side = if resid > 0.0 { tau } else { 1.0 - tau };
-                // Scaled by s so the weights are O(1) rather than O(1/s).
-                2.0 * side * s / a
+                if !pred.is_finite() || aged < WARM_ROWS * self.cfg.k_total() as f64 {
+                    return RowUpdate::Fit {
+                        w: weight,
+                        target: yj,
+                    };
+                }
+                let h = self.cfg.quantile_eps * scale;
+                let r = yj - pred;
+                if r.abs() < h {
+                    RowUpdate::Fit {
+                        w: weight,
+                        target: yj + 2.0 * h * (tau - 0.5),
+                    }
+                } else {
+                    let psi = if r > 0.0 { tau } else { tau - 1.0 };
+                    RowUpdate::Nudge {
+                        nudge: weight * 2.0 * h * psi,
+                    }
+                }
             }
         }
     }
@@ -336,7 +405,7 @@ impl OnlineModel for Robust {
         let out = self.predict(x, d_clock);
         let pred = &out.pred;
 
-        // ---- update, reweighting by the PRIOR residual ----
+        // ---- update: Huber reweights the row, the quantile linearises it ----
         for j in 0..m {
             // `σ²`'s weight ages on every row, as `wj` does, and a row adds to
             // it only with a target, a weight and a prediction to measure the
@@ -351,34 +420,48 @@ impl OnlineModel for Robust {
                 continue;
             };
             let sigma = self.sig2[j].max(0.0).sqrt();
-            let w_rob = if pred[j].is_finite() {
-                self.robust_weight(yj - pred[j], sigma)
-            } else {
-                1.0
-            };
-            let w = weight * w_rob;
-            // NaN is `inf / inf` from an overflowed residual against an
-            // overflowed scale; such a row cannot be learned from either.
-            if w.is_nan() || w <= 0.0 {
-                self.cov[j].decay(lam);
-                self.wj[j] *= lam;
-                continue;
+            let scale = if sigma > 0.0 { sigma } else { 1.0 };
+            let aged = lam * self.wj[j];
+            match self.row_update(yj, pred[j], scale, weight, aged) {
+                // NaN is `inf / inf` from an overflowed residual against an
+                // overflowed scale; such a row cannot be learned from either.
+                RowUpdate::Fit { w, .. } if w.is_nan() || w <= 0.0 => {
+                    self.cov[j].decay(lam);
+                    self.wj[j] = aged;
+                    continue;
+                }
+                RowUpdate::Fit { w, target } => {
+                    self.cov[j].update(&self.zbuf, lam, w);
+                    let wj_new = aged + w;
+                    let a = aged / wj_new;
+                    let bb = w / wj_new;
+                    for (ri, zi) in self.r[j].iter_mut().zip(&self.zbuf) {
+                        *ri = a * *ri + bb * zi * target;
+                    }
+                    self.wj[j] = wj_new;
+                }
+                RowUpdate::Nudge { nudge } => {
+                    // Outside the band a row is one term of the score and none
+                    // of the Hessian: no weight in the Gram, and `2h*psi(r)*z`
+                    // into the cross-moment, which is a mean over `wj` -- so a
+                    // sum's worth of nudge enters divided by it (N9).
+                    self.cov[j].decay(lam);
+                    self.wj[j] = aged;
+                    if nudge.is_finite() && aged > 0.0 {
+                        for (ri, zi) in self.r[j].iter_mut().zip(&self.zbuf) {
+                            *ri += nudge * zi / aged;
+                        }
+                    }
+                }
             }
-            self.cov[j].update(&self.zbuf, lam, w);
-            let wj_new = lam * self.wj[j] + w;
-            let a = lam * self.wj[j] / wj_new;
-            let bb = w / wj_new;
-            for (ri, zi) in self.r[j].iter_mut().zip(&self.zbuf) {
-                *ri = a * *ri + bb * zi * yj;
-            }
-            self.wj[j] = wj_new;
             if pred[j].is_finite() {
                 let resid = yj - pred[j];
                 let ws_new = self.wsig[j] + weight;
                 let s2 = (self.wsig[j] * self.sig2[j] + weight * resid * resid) / ws_new;
                 // Skipped when it would not be finite: an `inf` scale makes
-                // the Huber cut infinite (plain least squares for good) and
-                // the quantile weight `inf / inf` (docs/IMPROVEMENTS.md C2).
+                // the Huber cut and the quantile band infinite, and every row
+                // after it a plain least-squares one for good
+                // (docs/IMPROVEMENTS.md C2).
                 if s2.is_finite() {
                     self.sig2[j] = s2;
                     self.wsig[j] = ws_new;
@@ -529,10 +612,11 @@ mod tests {
 
     #[test]
     fn n_eff_counts_observations_not_irls_weights() {
-        // The defect T-A5 found: the IRLS weights a quantile fit uses reach
-        // `2 / quantile_eps`, so counting them made `n_eff` -- and therefore
-        // `min_periods` -- meaningless. It must be the plain weighted
-        // observation count, identical to every other model's.
+        // The defect T-A5 found: the IRLS weights a quantile fit then used
+        // reached `2 / quantile_eps`, so counting them made `n_eff` -- and
+        // therefore `min_periods` -- meaningless. It must be the plain
+        // weighted observation count, identical to every other model's, and it
+        // still is now that the fit weighs the rows in its band (N9).
         for loss in [
             RobustLoss::Huber { delta: 1.5 },
             RobustLoss::Quantile { tau: 0.5 },
@@ -831,6 +915,71 @@ mod tests {
             hi.coefficients().unwrap()[0][0],
         );
         assert!(a < b && b < c, "quantile levels out of order: {a} {b} {c}");
+    }
+
+    /// N9: after the warm-up a row outside the band moves the fit by its
+    /// nudge alone -- the Gram's weight does not see it at all.
+    #[test]
+    fn a_quantile_row_outside_the_band_nudges_and_weighs_nothing() {
+        let mut c = cfg(1, 1, RobustLoss::Quantile { tau: 0.9 });
+        c.min_periods = 0.0;
+        let mut m = Robust::new(c).unwrap();
+        let mut s = 90u64;
+        for i in 0..200 {
+            let x = [lcg(&mut s)];
+            let y = 1.0 + x[0] + 0.3 * lcg(&mut s);
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        let mut wj = Vec::new();
+        m.target_n_eff_into(&mut wj);
+        let (w_before, b_before) = (wj[0], m.coefficients().unwrap()[0].clone());
+        // Far above the fit, where the band is `quantile_eps * sigma` wide.
+        m.step(&[0.5], &[Some(500.0)], 1.0, 1.0);
+        m.target_n_eff_into(&mut wj);
+        let b_after = m.coefficients().unwrap()[0].clone();
+        assert!(
+            (wj[0] - w_before).abs() < 1e-12,
+            "a row outside the band weighs nothing: {w_before} -> {}",
+            wj[0]
+        );
+        assert!(
+            b_after[0] > b_before[0],
+            "tau = 0.9 follows a row above it: {b_before:?} -> {b_after:?}"
+        );
+        assert!(
+            b_after[0] - b_before[0] < 1.0,
+            "by a nudge, not by the row itself: {b_before:?} -> {b_after:?}"
+        );
+    }
+
+    /// N9: under the warm-up a quantile fit is ordinary least squares, bit for
+    /// bit -- a Newton step needs a Hessian, and a band around a fit built from
+    /// a handful of rows is not one.
+    #[test]
+    fn a_quantile_fit_warms_up_as_least_squares() {
+        let mut qc = cfg(2, 1, RobustLoss::Quantile { tau: 0.7 });
+        qc.min_periods = 0.0;
+        let mut lc = cfg(2, 1, RobustLoss::Huber { delta: 1e9 });
+        lc.min_periods = 0.0;
+        let (mut q, mut l) = (Robust::new(qc).unwrap(), Robust::new(lc).unwrap());
+        let mut s = 91u64;
+        // `WARM_ROWS` per coefficient is nine rows here, so the tenth is the
+        // first the quantile fit takes a step on.
+        for i in 0..12 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = 0.5 + x[0] - 0.25 * x[1] + 0.3 * lcg(&mut s);
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            let qs = q.step(&x, &[Some(y)], d, 1.0);
+            let ls = l.step(&x, &[Some(y)], d, 1.0);
+            if (1..9).contains(&i) {
+                assert_eq!(qs.pred, ls.pred, "row {i} is inside the warm-up");
+            }
+        }
+        assert_ne!(
+            q.coefficients().unwrap()[0],
+            l.coefficients().unwrap()[0],
+            "and it parts from least squares once the band is in force"
+        );
     }
 
     #[test]

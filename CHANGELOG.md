@@ -160,6 +160,35 @@ carries breaking changes, and any change to the numbers a model returns.
   which kept `L²·ε` of the answer. At a level of `1e6` the offline solve's
   predictions were off by `2.5e-4`, and at `1e8` by 3. A closed-groups
   sidecar gains the column.
+- **`quantile` fits by a Newton step on the smoothed check loss** (the code
+  review's N9). It reweighted each row by the IRLS weight of its prior
+  residual, `2·side·σ/max(|r|, eps·σ)`, and froze that weight into the
+  accumulators. Splitting the cross-moment by `y = p + r` shows what that
+  left: beside the pinball subgradient, a spring of strength `E[w]` pulling
+  the fit back toward the fit each row was scored against, so it settled a
+  fraction `1/(1 + ln(1/eps))` of the way to the quantile regression -- 0.164
+  from `statsmodels`' `QuantReg` at the median of a skewed noise after 20 000
+  rows and 0.477 at the 0.9 quantile, against `QuantReg`'s own standard
+  errors of 0.007 and 0.021, and a `quantile = 0.9` fit whose coverage read
+  0.777. A row inside a band of half-width `h = quantile_eps·σ` is now a
+  least-squares row with target `y + 2h(τ − ½)`, and a row outside it adds
+  `2h·ψ_τ(r)·z` to the cross-moment and nothing to the Gram: the curvature is
+  the same density on both sides, so the rows' own history cancels. Measured
+  after it: 0.005 and 0.006 from `QuantReg`, inside its standard errors, and
+  a coverage of 0.858 over that stream and 0.893 over its second half.
+  **Numbers change for every `quantile` stream**, and the fit follows a level
+  shift the frozen weights lagged -- 600 rows after a jump of 3 it covers
+  2.87 of it, where it covered 1.2. `huber` is untouched, its weights having
+  always been bounded by 1.
+- **`quantile_eps` is that band's half-width, and defaults to 0.2**, where it
+  was the floor under `|r|` in the IRLS weight and defaulted to `1e-3`. It
+  still says "closer than this counts as zero"; what it bounds is the
+  curvature the step leans on rather than a weight. At 0.2 the band holds
+  about a fifth of a stream at the median and a fifteenth at the 0.9
+  quantile: a much narrower one converges more slowly (0.19 from `QuantReg`
+  after 8 000 rows at `0.1`, against 0.10 at 0.2) and a much wider one
+  smooths the quantile toward the mean (0.08 the other way after 100 000
+  rows at 0.4).
 
 ### Fixed
 

@@ -578,6 +578,8 @@ pub enum ModelKind {
         solve_every: Option<f64>,
         #[serde(default)]
         max_rows_between_solves: Option<u32>,
+        /// Half-width of the band the fit takes its Newton step in, in units
+        /// of the EW residual std; default 0.2 (review 2026-09-12, N9).
         #[serde(default)]
         quantile_eps: Option<f64>,
     },

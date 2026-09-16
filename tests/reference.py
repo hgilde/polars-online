@@ -501,18 +501,34 @@ def kalman_ref(
     return {"pred": pred, "resid": resid, "n_eff": n_eff, "coef": coef}
 
 
-def _robust_weight(resid: float, sigma: float, loss: str, delta: float, tau: float, eps: float):
-    """Robust IRLS weight of a *prior* residual (docs/PLAN.md section 4.5)."""
-    s = sigma if sigma > 0.0 else 1.0
+def _row_update(y, pred, scale, weight, aged, kt, loss, delta, tau, eps):
+    """What a row does to a target's accumulators, mirroring `robust.rs`'s
+    `row_update` (docs/PLAN.md section 4.5).
+
+    Huber reweights the row, bounded by 1. The quantile loss takes one Newton
+    step on the check loss smoothed by a uniform kernel of half-width
+    ``eps * scale``, linearised at the fit the row was scored with: inside the
+    band a least-squares row with target ``y + 2h(tau - 1/2)``, outside it
+    ``2h * psi(r) * z`` into the cross-moment and no weight in the Gram at all.
+    Under three rows per coefficient the fit is warming up and every row is an
+    ordinary least-squares one (review 2026-09-12, N9).
+
+    Returns ``(kind, value, target)``: ``("fit", weight, target)`` or
+    ``("nudge", nudge, None)``.
+    """
     if loss == "huber":
-        cut = delta * s
-        a = abs(resid)
-        return 1.0 if (a <= cut or a == 0.0) else cut / a
-    floor = eps * s
-    a = max(abs(resid), floor)
-    side = tau if resid > 0.0 else 1.0 - tau
-    # scaled by s so the weights are O(1) rather than O(1/s)
-    return 2.0 * side * s / a
+        if np.isnan(pred):
+            return "fit", weight, y
+        cut = delta * scale
+        a = abs(y - pred)
+        return "fit", weight * (1.0 if (a <= cut or a == 0.0) else cut / a), y
+    if np.isnan(pred) or aged < 3.0 * kt:
+        return "fit", weight, y
+    h = eps * scale
+    r = y - pred
+    if abs(r) < h:
+        return "fit", weight, y + 2.0 * h * (tau - 0.5)
+    return "nudge", weight * 2.0 * h * (tau if r > 0.0 else tau - 1.0), None
 
 
 def robust_ref(
@@ -525,7 +541,7 @@ def robust_ref(
     loss: str = "huber",
     huber_delta: float = 1.5,
     quantile: float = 0.5,
-    quantile_eps: float = 1e-3,
+    quantile_eps: float = 0.2,
     ridge: float = 1e-6,
     standardize: bool = False,
     add_intercept: bool = True,
@@ -534,15 +550,18 @@ def robust_ref(
 ) -> dict[str, np.ndarray]:
     """Huber / quantile oracle (docs/PLAN.md section 4.5).
 
-    IRLS on top of the EW-ridge accumulators: each row's weight is scaled by the
-    robust weight of its *prior* residual, so the reweighting is out-of-sample.
-    Because the weights are per target, ``S`` is per target here (unlike
-    ew_ridge, which shares one). Two details that matter for agreement:
+    Both losses read each row's *prior* residual, so both stay out-of-sample;
+    what they do with it is :func:`_row_update`'s. Because the weights are per
+    target, ``S`` is per target here (unlike ew_ridge, which shares one). Three
+    details that matter for agreement:
 
     - the robust weight scales the accumulator update, but ``sigma2_j`` is
       updated with the *raw* row weight, so the scale estimate is not itself
       shrunk by the reweighting;
-    - a row whose robust weight is zero still decays the accumulator.
+    - a row whose robust weight is zero still decays the accumulator;
+    - a quantile row outside the band decays the accumulators and adds its
+      nudge to the cross-moment, which is a mean, so the nudge enters divided
+      by the target's decayed weight (review 2026-09-12, N9).
     """
     n, k = X.shape
     m = Y.shape[1]
@@ -608,26 +627,41 @@ def robust_ref(
                 st["wsig"][j] *= lam
                 continue
             sigma = np.sqrt(max(st["sig2"][j], 0.0))
-            w_rob = (
-                _robust_weight(Y[i, j] - p_own[j], sigma, loss, huber_delta, quantile, quantile_eps)
-                if not np.isnan(p_own[j])
-                else 1.0
+            scale = sigma if sigma > 0.0 else 1.0
+            aged_w, aged_wj = lam * st["W"][j], lam * st["wj"][j]
+            kind, value, target = _row_update(
+                Y[i, j],
+                p_own[j],
+                scale,
+                w[i],
+                aged_wj,
+                kt,
+                loss,
+                huber_delta,
+                quantile,
+                quantile_eps,
             )
-            ww = w[i] * w_rob
-            if ww <= 0.0:
-                st["W"][j] *= lam
-                st["wj"][j] *= lam
-                continue
-            W_new = lam * st["W"][j] + ww
-            a, b = lam * st["W"][j] / W_new, ww / W_new
-            st["mean"][j] = a * st["mean"][j] + b * z
-            st["raw"][j] = a * st["raw"][j] + b * np.outer(z, z)
-            st["W"][j] = W_new
+            if kind == "nudge":
+                st["W"][j] = aged_w
+                st["wj"][j] = aged_wj
+                if aged_wj > 0.0:
+                    st["r"][j] = st["r"][j] + value * z / aged_wj
+            else:
+                ww = value
+                if ww <= 0.0:
+                    st["W"][j] = aged_w
+                    st["wj"][j] = aged_wj
+                    continue
+                W_new = aged_w + ww
+                a, b = aged_w / W_new, ww / W_new
+                st["mean"][j] = a * st["mean"][j] + b * z
+                st["raw"][j] = a * st["raw"][j] + b * np.outer(z, z)
+                st["W"][j] = W_new
 
-            wj_new = lam * st["wj"][j] + ww
-            aj, bj = lam * st["wj"][j] / wj_new, ww / wj_new
-            st["r"][j] = aj * st["r"][j] + bj * z * Y[i, j]
-            st["wj"][j] = wj_new
+                wj_new = aged_wj + ww
+                aj, bj = aged_wj / wj_new, ww / wj_new
+                st["r"][j] = aj * st["r"][j] + bj * z * target
+                st["wj"][j] = wj_new
 
             if not np.isnan(p_own[j]):
                 rr = Y[i, j] - p_own[j]

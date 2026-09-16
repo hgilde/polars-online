@@ -2063,10 +2063,11 @@ class TestTheEwMomentsArePandas:
 
 class TestSgdQuantileIsQuantReg:
     """T-S4's quantile half, met by the model that can meet it. ``quantile``
-    fits by IRLS on each row's prior residual, its weights frozen as the rows
-    arrive, and does not settle on ``statsmodels``' ``QuantReg`` at any
-    length measured -- N9 in the review's progress file, raised rather than
-    fixed. ``sgd(loss="quantile")`` takes the pinball loss's subgradient,
+    fitted by IRLS on each row's prior residual until N9, its weights frozen
+    as the rows arrived, and did not settle on ``statsmodels``' ``QuantReg``
+    at any length measured; it takes a Newton step on the smoothed check loss
+    now, and :class:`TestQuantileIsQuantReg` holds it there.
+    ``sgd(loss="quantile")`` takes the pinball loss's subgradient,
     and under ``inv_scaling`` it is ``QuantReg``'s fit to within ``0.03`` at
     100 000 rows (measured ``0.022`` and ``0.027``), at the median and the 0.9
     quantile of a skewed noise, where the mean's fit is 0.3 and 1.3 away."""
@@ -2096,3 +2097,83 @@ class TestSgdQuantileIsQuantReg:
         assert np.max(np.abs(got - want)) < 0.06, (got, want)
         # The check tells the quantile from the mean: least squares is far off.
         assert np.max(np.abs(np.linalg.lstsq(z, y, rcond=None)[0] - want)) > 0.25
+
+
+class TestQuantileIsQuantReg:
+    """T-S4's quantile half, and what N9 became. The model fits by one-step
+    Newton on the kernel-smoothed check loss: a row inside the band of
+    half-width ``h = quantile_eps * sigma`` is a least-squares row with target
+    ``y + 2h(tau - 1/2)``, and a row outside it nudges the cross-moment by
+    ``2h * psi_tau(r) * z`` and weighs nothing in the Gram. That settles on
+    ``statsmodels``' ``QuantReg``, where the frozen IRLS weights it replaced
+    did not: those were 0.164 off at the median and 0.477 at the 0.9 quantile
+    after 20 000 rows, against ``QuantReg``'s own standard errors of 0.007 and
+    0.021, where this one is 0.005 and 0.006 off (N9)."""
+
+    @staticmethod
+    def _rows(n, seed=3):
+        """Exponential noise, so the median's fit and the mean's part by 0.3
+        in the intercept and the check can tell them apart."""
+        rng = np.random.default_rng(seed)
+        x = rng.normal(0.0, 1.0, (n, 2))
+        return x, 1.0 + 2.0 * x[:, 0] - x[:, 1] + rng.exponential(1.0, n)
+
+    @staticmethod
+    def _fit(x, y, tau, **kw):
+        spec = po.spec.quantile(
+            "m",
+            targets=["y"],
+            features=["x0", "x1"],
+            quantile=tau,
+            max_rows_between_solves=1,
+            **kw,
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y}))
+        return bank.coef("m")["coef"].to_numpy()
+
+    @pytest.mark.parametrize(("tau", "tol"), [(0.5, 0.05), (0.9, 0.08)])
+    def test_the_fit_is_quantregs(self, tau, tol):
+        sm = pytest.importorskip("statsmodels.api")
+        x, y = self._rows(20_000)
+        got = self._fit(x, y, tau, halflife=float("inf"))
+        z = sm.add_constant(x)
+        want = np.asarray(sm.QuantReg(y, z).fit(q=tau).params)
+        assert np.max(np.abs(got - want)) <= tol, (got, want)
+        # The quantile it was asked for, not the mean: least squares is far off.
+        assert np.max(np.abs(np.linalg.lstsq(z, y, rcond=None)[0] - want)) > 0.25
+
+    def test_it_is_the_batch_smoothed_fit_at_the_same_bandwidth(self):
+        """The estimator the stream approximates, computed by hand: Newton to
+        convergence on the same smoothed loss, at the same bandwidth. A long
+        stream settles ``sigma``, so the band is the residual scale's."""
+        x, y = self._rows(20_000)
+        tau, eps = 0.9, 0.2
+        got = self._fit(x, y, tau, halflife=float("inf"), quantile_eps=eps)
+        z = np.column_stack([np.ones(len(y)), x])
+        b = np.linalg.lstsq(z, y, rcond=None)[0]
+        h = eps * np.std(y - z @ b)
+        for _ in range(200):
+            r = y - z @ b
+            near = np.abs(r) < h
+            psi = np.where(near, tau - 0.5 + r / (2.0 * h), tau - (r < 0))
+            step = np.linalg.solve((z[near].T @ z[near]) / (2.0 * h), z.T @ psi)
+            b = b + step
+            if np.max(np.abs(step)) < 1e-12:
+                break
+        assert np.max(np.abs(got - b)) <= 0.05, (got, b)
+
+    def test_it_follows_a_shift_the_frozen_weights_lagged(self):
+        """Under a halflife the fit has to move when the level does. The
+        weights the frozen IRLS left on old rows pulled it back toward the
+        fits those rows were scored by: 600 rows after a jump of 3 -- three
+        halflives -- it had covered 1.5 of it, where the quantile regression
+        of the rows then in the window had moved the whole way."""
+        sm = pytest.importorskip("statsmodels.api")
+        x, y = self._rows(10_000)
+        y[5000:] += 3.0
+        stop, window = 5600, 600
+        got = self._fit(x[:stop], y[:stop], 0.5, halflife=200.0)
+        lo = stop - window
+        want = np.asarray(sm.QuantReg(y[lo:stop], sm.add_constant(x[lo:stop])).fit(q=0.5).params)
+        assert np.max(np.abs(got - want)) <= 0.35, (got, want)

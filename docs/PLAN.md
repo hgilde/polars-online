@@ -155,10 +155,15 @@ State per target: coefficient mean `β_j`, covariance `P_j` (k×k); shared: `σ�
   documented, and `share_p: bool` **[validate]** offers the approximation P shared with σ² = mean.
 
 ### 4.5 Robust: Huber and quantile regression
-IRLS-style reweighting on 4.1's update: each row's weight is scaled by the robust weight of its
-*prior* residual (so still out-of-sample). Because the weights are per target, S is per target
-here — one accumulator per target, same API. Params: `huber_delta` in units of EW residual std
-(default 1.5 **[validate]**), `quantile` (τ) for the quantile variant via the check-loss weights.
+Huber reweights on 4.1's update: each row's weight is scaled by the robust weight of its *prior*
+residual (so still out-of-sample), bounded by 1. Quantile takes one Newton step on the check loss
+smoothed by a uniform kernel of half-width `h = quantile_eps · σ`, linearised at the fit the row was
+scored with: inside the band a least-squares row with target `y + 2h(τ − ½)`, outside it
+`2h · ψ_τ(r) · z` into the cross-moment and no weight in the Gram (the review's N9 — IRLS's weight is
+that step's secant, unbounded near zero, and freezing it held the fit near its own past fits).
+Because the weights are per target, S is per target here — one accumulator per target, same API.
+Params: `huber_delta` in units of EW residual std (default 1.5 **[validate]**), `quantile` (τ) and
+`quantile_eps` (the band, default 0.2) for the quantile variant.
 
 ### 4.6 Online logistic / FTRL-proximal
 For binary targets (direction, "signal accurate now"). FTRL-proximal with `alpha`, `beta`, `l1`,
@@ -1667,15 +1672,17 @@ note, not a task.
       `hit_rate` (`test_diagnostics.py`'s E22 test among them) is regression
       and passes unchanged, since none of them named `binary=True`.
 
-- [ ] 82. **N9: `quantile` does not settle on the quantile regression --
-      found 2026-09-15, writing the code review's T-S4; waits on the user's
-      decision.** IRLS on each row's prior residual, with its weights frozen
-      as the rows arrive, keeps the fit off `statsmodels`' `QuantReg` at
-      every length measured: 0.11 in the intercept at the median and 0.27 at
-      the 0.9 quantile after 100 000 rows of a skewed noise, where
-      `QuantReg`'s standard error is about 0.003 and `sgd(loss="quantile")`
-      comes within 0.03. The measurements and the options are in
-      `docs/REVIEW-2026-09-12-PROGRESS.md`, N9.
+- [x] 82. **N9: `quantile` did not settle on the quantile regression -- found
+      2026-09-15 writing the code review's T-S4, fixed the same day on the
+      user's go-ahead.** IRLS on each row's prior residual, with its weights
+      frozen as the rows arrived, kept the fit off `statsmodels`' `QuantReg`
+      at every length measured: 0.164 in the intercept at the median of a
+      skewed noise after 20 000 rows and 0.477 at the 0.9 quantile, where
+      `QuantReg`'s own standard errors are 0.007 and 0.021. It takes one
+      Newton step on the kernel-smoothed check loss now (`robust.rs`,
+      `row_update`), which lands inside those standard errors, and
+      `quantile_eps` is the band's half-width, default 0.2. The measurements
+      and the derivation are in `docs/REVIEW-2026-09-12-PROGRESS.md`, N9.
 
 - [x] 81. **`target_gaps`: which rows a target's fit is read from -- the code
       review's N3, decided 2026-09-14.** With a target null on some rows,

@@ -74,7 +74,7 @@ def test_quantile_levels_are_ordered():
     assert preds[0.1] < preds[0.5] < preds[0.9], preds
 
 
-def test_quantile_coverage_is_roughly_right():
+def test_quantile_coverage_is_the_level_asked_for():
     rng = np.random.default_rng(13)
     n = 8000
     df = pl.DataFrame({"x0": rng.standard_normal(n), "y0": rng.standard_normal(n)})
@@ -92,11 +92,17 @@ def test_quantile_coverage_is_roughly_right():
         ]
     ).fit_predict(df)
     p = _pred(out)
+    y = df["y0"].to_numpy()
     m = np.isfinite(p)
-    below = (df["y0"].to_numpy()[m] < p[m]).mean()
-    # IRLS quantile regression is approximate online; require the right side of
-    # the median and in the neighbourhood of 0.9.
-    assert 0.6 < below < 0.99, below
+    below = (y[m] < p[m]).mean()
+    settled = m & (np.arange(n) >= n // 2)
+    after = (y[settled] < p[settled]).mean()
+    # A tail quantile on 8 000 rows is still arriving -- at tau = 0.9 the band
+    # holds a fifteenth of them -- so the whole stream reads a little under the
+    # level and its second half reads the level: 0.858 and 0.893 measured,
+    # where the frozen IRLS weights this replaced read 0.777 and 0.855 (N9).
+    assert 0.84 < below < 0.90, below
+    assert 0.87 < after < 0.92, after
 
 
 def test_out_of_sample_on_noise():

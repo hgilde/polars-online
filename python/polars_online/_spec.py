@@ -917,15 +917,31 @@ def quantile(
 ) -> dict[str, Any]:
     """Quantile regression at level ``quantile`` (docs/PLAN.md section 4.5).
 
-    The IRLS weights of the check loss, applied to the prior residual::
+    One Newton step per row on the check loss smoothed by a uniform kernel of
+    half-width ``h = quantile_eps * s``, linearised at the fit the row was
+    scored with, so it stays out-of-sample. With ``psi(r) = tau - 1{r < 0}``
+    and ``s`` the EW residual std::
 
-        w_robust = 2 * tau       * s / max(|r|, eps * s)   if r > 0
-                 = 2 * (1 - tau) * s / max(|r|, eps * s)   otherwise
+        |r| <  h:  a least-squares row, with target y + 2h(tau - 1/2)
+        |r| >= h:  no weight in the Gram; 2h * psi(r) * z into the cross-moment
 
-    ``quantile_eps`` (default ``1e-3``) floors ``|r|`` (in units of the EW
-    residual std) so a near-zero residual cannot produce an unbounded weight.
-    ``ridge`` (default ``1e-6``), ``standardize``, ``solve_every`` and
-    ``max_rows_between_solves`` mean what they mean for :func:`ewridge`.
+    The smoothed loss has the same curvature either side of the fit, so the
+    rows' own history cancels. The IRLS weights this replaced,
+    ``2*side*s/max(|r|, eps*s)``, are that step's secant where this is its
+    tangent: unbounded as ``r`` goes to zero, so a row whose prior residual
+    happened to be near zero held the fit near the fit it was scored by for
+    ever, and the fit settled short of the quantile regression -- 0.164 short
+    of ``statsmodels``' ``QuantReg`` at the median of a skewed noise after
+    20 000 rows, where it is 0.005 now (review 2026-09-12, N9).
+
+    ``quantile_eps`` (default ``0.2``) is that band's half-width in units of
+    ``s``: the rows inside it are the curvature the step leans on, so a much
+    narrower band converges more slowly and a much wider one smooths the
+    quantile toward the mean. Under three rows per coefficient the fit warms
+    up as ordinary least squares, which is also what rebuilds it after a gap
+    or a reset. ``ridge`` (default ``1e-6``), ``standardize``,
+    ``solve_every`` and ``max_rows_between_solves`` mean what they mean for
+    :func:`ewridge`.
     """
     model: dict[str, Any] = {
         "type": "quantile",

@@ -816,7 +816,7 @@ const GOLDEN_HUBER: &[f64] = &[
     2.2047028651324143,
     -0.06446675716780813,
 ];
-const GOLDEN_QUANTILE: &[f64] = &[0.2951076807653745, 2.232303167920436, -0.03927577244973528];
+const GOLDEN_QUANTILE: &[f64] = &[0.2537034844497419, 2.1923626857247314, -0.07517416789899749];
 // Regenerated for the code review's C24 (2026-09-15), this and the next:
 // under a halflife the proximal term is a decayed sum of its own, where `n`
 // was decayed inside its square root and every coefficient shrank.

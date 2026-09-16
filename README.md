@@ -1351,20 +1351,23 @@ data is the intercept alone.
 
 *API:* [`po.spec.huber`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.huber) and [`po.spec.quantile`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.quantile) — *Rust:* [`robust.rs`](crates/online-core/src/robust.rs) — *Outputs:* [huber](docs/OUTPUTS.md#huber), [quantile](docs/OUTPUTS.md#quantile)
 
-Iteratively reweighted least squares on the ridge update, using each row's
-residual *before* the row is learned, so the reweighting stays
-out-of-sample. Huber: `w = min(1, δσ/|r|)`. Quantile at level τ: the check
-loss's own weight, `2τσ/|r|` above the fit and `2(1−τ)σ/|r|` below it, with
-`|r|` floored at `quantile_eps · σ` so a residual near zero cannot blow the
-weight up. Weights are per target, so the running sums are per target
-here.
+Both read each row's residual *before* the row is learned, so both stay
+out-of-sample. Huber reweights the ridge update by `w = min(1, δσ/|r|)`.
+Quantile at level τ takes one Newton step on the check loss smoothed by a
+uniform kernel of half-width `h = quantile_eps · σ`, linearised at that prior
+fit: a row inside the band is a least-squares row with target `y + 2h(τ − ½)`,
+and a row outside it adds `2h · ψ_τ(r) · z` to the cross-moment and nothing to
+the Gram, with `ψ_τ(r) = τ − 1{r < 0}`. (The IRLS weights of the check loss
+are that step's secant, unbounded near zero, and freezing them held the fit
+near its own past fits — the review's N9.) Weights are per target, so the
+running sums are per target here.
 
 ```python
 hub = po.spec.huber("hub", targets=["y"], features=["x0", "x1"], clock="t", max_dclock=300.0, halflife=600.0,
                     huber_delta=1.5)      # a residual beyond huber_delta * sigma is down-weighted
 med = po.spec.quantile("med", targets=["y"], features=["x0", "x1"], clock="t", max_dclock=300.0, halflife=600.0,
                        quantile=0.5,      # the level: 0.5 is a median regression
-                       quantile_eps=0.05) # |r| is floored at quantile_eps * sigma, so a residual near zero cannot blow the weight up
+                       quantile_eps=0.2)  # the band the Newton step leans on, in units of sigma (default 0.2)
 ```
 
 ### `sgd` — stochastic gradient descent
