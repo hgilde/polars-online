@@ -948,8 +948,49 @@ at the tag, on the newest version the declared range admits — so from 0.5.1
 on, 2.0.0 final is tested before any wheel is published under a range that
 includes it. The paragraph above was written when nothing checked the top
 of the range at release time; widening then would have meant declaring
-support and finding out afterwards. See the README, *Raising the ceiling to
-a new major*.
+support and finding out afterwards. See *Raising the ceiling to a new
+major*, below.
+
+### Raising the ceiling to a new major
+
+The ceiling is `<3`, raised from `<2` in 0.5.1, so a py-polars 3.0 is
+excluded until this is done again. The steps, in order:
+
+1. **The canary and the release job's advisory leg are already testing
+   it** — both unpin and both allow prereleases, so a release candidate of
+   the next major is exercised the week it appears. Read the last run before
+   starting. Raising the ceiling is also what moves that major under the
+   *blocking* leg, since that leg tests the range as declared.
+2. **Check the Rust side separately.** py-polars' major and the `polars`
+   crate's version are independent: as of 2026-09-10 py-polars is at
+   2.0.0rc1 while the newest crate is 0.55.2, the one `Cargo.toml` pins. A
+   Python major on its own needs no Rust change, because the wheel carries
+   its own statically linked copy and the two never meet — data crosses on
+   the Arrow C Data Interface.
+3. **Widen the range in `pyproject.toml`** — `polars>=1.34.0,<3` — and let
+   the lock resolve. That is the only required source change if steps 1–2
+   are clean.
+4. **Re-run `docs/VALIDATION.md`** (`uv run python scripts/validate.py >
+   docs/VALIDATION.md`): its header records the Polars version it was
+   generated with, which is why its test is marked `pins`.
+5. **Ship it as a minor**, not a patch: widening the Polars range is a minor
+   release by this package's own rule (the README, *This package's own
+   versioning*).
+
+What the 2.0 candidate measured, which is what `<3` was raised on rather
+than a guess that 2.x keeps the interface: the whole suite passes with the
+same numbers as on 1.44, all three interfaces work, and
+`LazyFrame.collect_batches` — the floor — is unchanged. One behaviour moved
+in our favour: a query that fails *after* the bank now stops the source
+instead of draining it, so `save_state` is not written on a long stream,
+narrowing the gap `docs/STATE-WORKFLOW.md` calls R6. The measurements are
+above, *Polars 2.0.0rc1, measured*.
+
+Raised on `2.0.0rc1`, before 2.0.0 final was on PyPI. That is deliberate
+and it costs nothing today: installers do not resolve to a release
+candidate, so every user still gets the newest 1.x until 2.0.0 ships, at
+which point they get it without waiting on a release of ours. The blocking
+leg is what covers the difference between the candidate and the final.
 
 ## Suggested order
 
