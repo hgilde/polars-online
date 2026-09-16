@@ -1,30 +1,28 @@
-"""The bank as a polars source: ``lf.online.fit_predict(specs)`` (ENHANCEMENTS E33).
+"""The bank as a polars source: ``lf.online.fit_predict(specs)``.
 
-A ``LazyFrame`` in, a ``LazyFrame`` out. Executing the plan streams the input
-through a fresh :class:`ModelBank` in ``chunk_rows`` chunks, so a query with
-the bank in it is O(chunk) in memory however long the stream is -- where the
-expression form, ``pl.col("y").online.<model>(...)``, in the same query is
+A ``LazyFrame`` in, a ``LazyFrame`` out. When the plan runs, its rows go
+through a bank that starts with nothing learned, one chunk at a time, so a
+query with the bank in it is O(chunk) in memory however long the stream is.
+The expression form, ``pl.col("y").online.<model>(...)``, in the same query is
 O(data): polars calls a user expression once with its whole column, and its
-streaming engine collects the column to do so (docs/PERFORMANCE.md section
-11; the expression warns about it, :mod:`polars_online._expr`). This is
-polars' IO-plugin mechanism (``polars.io.plugins.register_io_source``): the
-bank is registered as a *source*, the kind of node the engine pulls batches
-from, and what comes after it -- filters, selects, joins, ``sink_parquet`` --
-is polars' own.
+streaming engine collects the column to do so (the expression warns about it,
+:mod:`polars_online._expr`). The bank is registered as a polars source, the
+kind of node the engine pulls batches from, and what comes after it --
+filters, selects, joins, writing the result to a file -- is polars' own.
 
 The plan is pure: every execution starts from the same state (the specs'
 initial state, or ``load_state``, read when the plan is built), so collecting
-twice gives the same frame. ``save_state`` writes the state the execution
-ends in -- after the last row the source fed the bank -- atomically, and
-because the plan is pure that write is idempotent: polars runs a plan's
-source once per execution and twice, concurrently, when one query uses the
-plan twice (a self-join, ``pl.concat``, ``pl.collect_all`` of two sinks), and
-every run ends in the same state (docs/STATE-WORKFLOW.md).
+twice gives the same frame. ``save_state`` writes the state the execution ends
+in, after the last row the source fed the bank, atomically. Because the plan
+is pure that write is idempotent: polars runs a plan's source once per
+execution, and twice, concurrently, when one query uses the plan twice (a
+self-join, ``pl.concat``, ``pl.collect_all`` of two sinks), and every run ends
+in the same state.
 
-``df.online.fit_predict(specs)`` is the eager twin, ``ModelBank(specs)
-.fit_predict(df)`` in one call. ``online.unnest(specs)`` takes a bank's
-output apart: each spec's struct column becomes its fields as columns, with
-the ``coef`` list as one named column per coefficient
+``df.online.fit_predict(specs)`` is the eager twin,
+``ModelBank(specs).fit_predict(df)`` in one call. ``online.unnest(specs)``
+takes a bank's output apart: each spec's struct column becomes its fields as
+columns, with the ``coef`` list as one named column per coefficient
 (:func:`polars_online.spec.coef_fields`). Both namespaces are attached at
 import, which no type checker can see; :func:`fit_predict`, :func:`predict`
 and :func:`unnest` are the same calls with the frame as the first argument,
@@ -421,85 +419,90 @@ class LazyFrameOnlineNamespace:
     ) -> pl.LazyFrame:
         """The plan's rows plus one struct column per spec, learning as it goes.
 
-        Executing the returned plan -- ``collect()``, ``collect_batches()``,
-        ``sink_parquet()`` and the rest -- streams this plan's rows through a
-        new :class:`ModelBank` in ``chunk_rows`` chunks (default 100,000;
-        chunking never changes the numbers, only ``coef``'s reporting cadence),
-        so memory is O(chunk + state) whatever the length of the stream. Rows
-        must arrive in stream order, as for the bank. Filters, selections and
-        ``head`` applied after are pushed into the source: a filter never
-        changes what the bank learns from -- filter *before* to do that -- a
-        selection is read from the input, so a wide scan reads only the
-        columns the specs and the query need, and ``head(n)`` feeds the bank
-        the first ``n`` rows and no more.
+        Executing the returned plan (``collect()``, ``collect_batches()``,
+        ``sink_parquet()`` and the rest) streams this plan's rows through a new
+        :class:`ModelBank` in ``chunk_rows`` chunks, so memory is O(chunk + state)
+        whatever the length of the stream. ``chunk_rows`` defaults to 100,000, and
+        chunking never changes the numbers, only ``coef``'s reporting cadence. Rows
+        must arrive in stream order, as for the bank. The struct columns are what
+        :meth:`ModelBank.fit_predict` writes: one per spec, named after it, with the
+        fields :mod:`polars_online.spec` describes under *What a spec writes*.
 
-        ``specs`` are the bank's, or ``load_state`` names a saved bank to
-        resume from (with ``specs``, they are checked against the file). The
-        file is read when the plan is built, so the plan carries that state:
-        each execution starts from it afresh, and a plan collected twice
-        gives the same frame. ``save_state`` writes the state the execution
-        ends in -- after the last row the source fed the bank -- to that path
-        when it ends, atomically (:meth:`ModelBank.save`), so the file is the
-        old state or the new one and never half of either; ``load_state`` and
-        ``save_state`` may be the same path. Because the plan is pure the
-        write is the same whenever it happens: a plan used twice in one query
-        (a self-join, ``pl.concat``, ``pl.collect_all`` of two sinks) runs
-        twice and writes the same bytes twice. Nothing is written unless the
-        source reaches the last row: a run abandoned before then, or one the
-        bank ended with an error, leaves the file as it was; a node *after*
-        the bank failing does not stop the bank, so the state is written then
-        (docs/STATE-WORKFLOW.md) -- :func:`polars_online.run` saves only after
-        its output is committed, for the case where the two must be tied
-        together, and a dated ``save_state`` per batch of data keeps a rerun
-        from learning it twice.
+        .. code-block:: python
 
-        What the schema decides is reported while the plan is built, as
-        polars reports its own schema errors: ``ValueError`` for neither
-        ``specs`` nor ``load_state``, for ``chunk_rows`` below 1, for a spec
-        the bank refuses, and for a spec whose column the plan has not got,
-        is not numeric, or shares the spec's name (the checks of
-        :class:`ModelBank` and :meth:`ModelBank.fit_predict`, with the same
-        messages); ``FileNotFoundError`` for a ``load_state`` that is not
-        there or a ``save_state`` whose directory is not, ``ValueError`` for
-        a ``load_state`` that is not a bank this build loads or whose specs
-        are not ``specs`` (:meth:`ModelBank.load`). What only the values
-        decide -- a null clock, a negative weight, a clock running backwards
-        -- is reported when the plan runs, as polars' ``ComputeError``
-        carrying the bank's message, and so is a ``save_state`` that cannot
-        be written when the run ends, carrying the ``OSError``'s message and
-        the path.
+            fitted = lf.online.fit_predict([spec], save_state="fit.state").collect()
+            # one column per field, coef as one column per coefficient
+            flat = lf.online.fit_predict([spec]).online.unnest([spec]).collect()
 
-        ``closed_groups`` writes the groups that finished during the run to a
-        sidecar file, in the format its extension names
-        (:meth:`ModelBank.closed_groups`, ENHANCEMENTS E54). The queue is
-        drained after every chunk, so the bank stays bounded, and the one
-        file is written where ``save_state`` is written and under the same
-        rules and caveats: only when the source reaches its last row, once
-        per execution of the plan, and twice with the same bytes for a plan
-        used twice in one query. It needs a spec with ``group_close``; a
-        run in which nothing closed writes an empty frame with the schema.
+        Filters, selections and ``head`` applied after are pushed into the source. A
+        filter never changes what the bank learns from; filter before to do that. A
+        selection is read from the input, so a wide scan reads only the columns the
+        specs and the query need. ``head(n)`` feeds the bank the first ``n`` rows and
+        no more.
+
+        ``specs`` are the bank's, or ``load_state`` names a saved bank to resume from
+        (with ``specs``, they are checked against the file). The file is read when the
+        plan is built, so the plan carries that state: each execution starts from it
+        afresh, and a plan collected twice gives the same frame. ``save_state`` writes
+        the state the execution ends in, after the last row the source fed the bank,
+        to that path when it ends. The write is atomic (:meth:`ModelBank.save`), so
+        the file is the old state or the new one and never half of either, and
+        ``load_state`` and ``save_state`` may be the same path. Because the plan is
+        pure the write is the same whenever it happens: a plan used twice in one query
+        (a self-join, ``pl.concat``, ``pl.collect_all`` of two sinks) runs twice and
+        writes the same bytes twice. Nothing is written unless the source reaches the
+        last row: a run abandoned before then, or one the bank ended with an error,
+        leaves the file as it was. A node after the bank failing does not stop the
+        bank, so the state is written then. :func:`polars_online.run` saves only after
+        its output is committed, for the case where the two must be tied together, and
+        a dated ``save_state`` per batch of data keeps a rerun from learning it twice.
+
+        ``closed_groups`` writes the groups that finished during the run to a sidecar
+        file, in the format its extension names (:meth:`ModelBank.closed_groups`). The
+        queue is drained after every chunk, so the bank stays bounded. The one file is
+        written where ``save_state`` is written and under the same rules: only when
+        the source reaches its last row, once per execution of the plan, and twice
+        with the same bytes for a plan used twice in one query. It needs a spec with
+        ``group_close``; a run in which nothing closed writes an empty frame with the
+        schema.
+
+        What the schema decides is reported while the plan is built, as polars reports
+        its own schema errors. ``ValueError`` for neither ``specs`` nor
+        ``load_state``, for ``chunk_rows`` below 1, for a spec the bank refuses, and
+        for a spec whose column the plan has not got, is not numeric, or shares the
+        spec's name (the checks of :class:`ModelBank` and
+        :meth:`ModelBank.fit_predict`, with the same messages). ``FileNotFoundError``
+        for a ``load_state`` that is not there or a ``save_state`` whose directory is
+        not. ``ValueError`` for a ``load_state`` that is not a bank this build loads
+        or whose specs are not ``specs`` (:meth:`ModelBank.load`). What only the
+        values decide (a null clock, a negative weight, a clock running backwards) is
+        reported when the plan runs, as polars' ``ComputeError`` carrying the bank's
+        message. So is a ``save_state`` that cannot be written when the run ends,
+        carrying the ``OSError``'s message and the path.
         """
         return _fit_predict_lazy(self._lf, specs, load_state, save_state, chunk_rows, closed_groups)
 
     def predict(self, bank: ModelBank | State, *, chunk_rows: int | None = None) -> pl.LazyFrame:
         """The plan's rows scored against ``bank`` as it stands, learning nothing.
 
-        Each row gets :meth:`ModelBank.predict`'s struct: what the bank would
-        report for it as the next row of its group's stream, from the current
-        state, which the plan never moves. ``bank`` is a :class:`ModelBank`
-        (scored as it stands each time the plan runs; ``predict`` leaves it
-        untouched, so sharing it with a plan is safe) or a path to a saved
-        state, read when the plan is built -- build the plan again to pick up
-        a newer file. Target columns are optional, as for ``predict``;
-        ``chunk_rows`` is the read chunk.
+        Each row gets :meth:`ModelBank.predict`'s struct: what the bank would report
+        for it as the next row of its group's stream, from the current state, which
+        the plan never moves. ``bank`` is a :class:`ModelBank`, scored as it stands
+        each time the plan runs (``predict`` leaves it untouched, so sharing it with a
+        plan is safe), or a path to a saved state, read when the plan is built. Build
+        the plan again to pick up a newer file. Target columns are optional, as for
+        ``predict``; ``chunk_rows`` is the read chunk.
 
-        Reported while the plan is built: ``FileNotFoundError`` for a path
-        that is not there and ``ValueError`` for a file that is not a bank
-        this build loads (:meth:`ModelBank.load`), ``TypeError`` for a
-        ``bank`` that is neither a bank nor a path, ``ValueError`` for
-        ``chunk_rows`` below 1 and for a column the bank reads that the plan
-        has not got or that is not numeric (a missing target is fine). A
-        value the bank refuses -- a null clock, a negative weight -- is
+        .. code-block:: python
+
+            scored = lf.online.predict("bank.state").collect()    # the saved bank, unmoved
+
+        Reported while the plan is built: ``FileNotFoundError`` for a path that is not
+        there; ``ValueError`` for a file that is not a bank this build loads
+        (:meth:`ModelBank.load`); ``TypeError`` for a ``bank`` that is neither a bank
+        nor a path; ``ValueError`` for ``chunk_rows`` below 1, and for a column the
+        bank reads that the plan has not got or that is not numeric (a missing target
+        is fine). A value the bank refuses (a null clock, a negative weight) is
         reported when the plan runs, as polars' ``ComputeError`` carrying
         :meth:`ModelBank.predict`'s message.
         """
@@ -508,33 +511,33 @@ class LazyFrameOnlineNamespace:
     def unnest(self, specs: Specs | ModelBank | State) -> pl.LazyFrame:
         """The plan with each spec's struct column taken apart into columns.
 
-        ``lf.unnest(names)`` with the ``coef`` lists taken apart too: every
-        scalar field becomes a column of its own name (``pred_y``,
-        ``n_eff@h500``), and each ``coef`` list becomes one column per
-        coefficient, named ``coef_{target}_{term}{combo}{instance}`` --
-        ``coef_y_intercept``, ``coef_y_x1__r0.5@h500`` -- as
-        :func:`polars_online.spec.coef_fields` lists them. The columns take
-        the struct's place; the rest of the frame, and any spec column not
-        named, are left as they are. ``specs`` is the spec dicts, a
-        :class:`ModelBank` (its specs), or the path of a saved bank (which
-        carries them). So a scored plan, or a parquet the CLI wrote, comes
-        back flat::
+        ``lf.unnest(names)`` with the ``coef`` lists taken apart too: every scalar
+        field becomes a column of its own name (``pred_y``, ``n_eff@h500``), and each
+        ``coef`` list becomes one column per coefficient, named
+        ``coef_{target}_{term}{combo}{instance}`` (``coef_y_intercept``,
+        ``coef_y_x1__r0.5@h500``) as :func:`polars_online.spec.coef_fields` lists
+        them. The columns take the struct's place; the rest of the frame, and any spec
+        column not named, are left as they are. ``specs`` is the spec dicts, a
+        :class:`ModelBank` (its specs), or the path of a saved bank (which carries
+        them). So a scored plan, or a parquet the CLI wrote, comes back flat:
+
+        .. code-block:: python
 
             betas = (
-                pl.scan_parquet("out.parquet")
-                .online.unnest([ols])
+                lf.online.fit_predict([spec])
+                .online.unnest([spec])
                 .select("t", "^coef_.*$")
+                .collect()
             )
 
-        Reported while the plan is built: ``ValueError`` for a spec whose
-        column the plan has not got, is not a struct, or lacks a field the
-        spec produces, for a spec given twice and for a spec that is not
-        valid; ``TypeError`` for ``specs`` that are none of the three;
-        ``FileNotFoundError`` and :meth:`ModelBank.load`'s ``ValueError`` for
-        a path. Two specs that produce a field of the same name unnest to
-        the same column name, which polars reports as its ``DuplicateError``
-        -- unnest them one at a time, or rename the struct's fields first
-        (``pl.col("m").name.prefix_fields("m_")``).
+        Reported while the plan is built: ``ValueError`` for a spec whose column the
+        plan has not got, is not a struct, or lacks a field the spec produces, for a
+        spec given twice and for a spec that is not valid; ``TypeError`` for ``specs``
+        that are none of the three; ``FileNotFoundError`` and :meth:`ModelBank.load`'s
+        ``ValueError`` for a path. Two specs that produce a field of the same name
+        unnest to the same column name, which polars reports as its
+        ``DuplicateError``: unnest them one at a time, or rename the struct's fields
+        first (``pl.col("m").name.prefix_fields("m_")``).
         """
         return _unnest_lazy(self._lf, specs)
 
@@ -554,21 +557,24 @@ class DataFrameOnlineNamespace:
         save_state: State | None = None,
         closed_groups: State | None = None,
     ) -> pl.DataFrame:
-        """``ModelBank(specs).fit_predict(df)`` -- the frame plus one struct
-        column per spec, from a bank that is then dropped, or saved to
-        ``save_state`` first (:meth:`ModelBank.save`); ``load_state`` starts
-        it from a saved bank instead of the specs. Keep a bank of your own to
-        feed it more rows.
+        """``ModelBank(specs).fit_predict(df)`` in one call: the frame plus one struct
+        column per spec, from a bank that is then dropped.
 
-        ``closed_groups`` writes the groups that finished to a sidecar file
-        in the format its extension names, before ``save_state``
-        (:meth:`ModelBank.closed_groups`).
+        ``save_state`` saves the bank first (:meth:`ModelBank.save`), and
+        ``load_state`` starts it from a saved bank instead of the specs. Keep a bank
+        of your own to feed it more rows. ``closed_groups`` writes the groups that
+        finished to a sidecar file in the format its extension names, before
+        ``save_state`` (:meth:`ModelBank.closed_groups`).
+
+        .. code-block:: python
+
+            out = df.online.fit_predict([spec])
 
         Raises what :class:`ModelBank`, :meth:`ModelBank.fit_predict`,
-        :meth:`ModelBank.load` and :meth:`ModelBank.save` raise, and
-        ``ValueError`` for neither ``specs`` nor ``load_state``. A
-        ``save_state`` whose directory is not there is ``FileNotFoundError``
-        before the fit, not after it."""
+        :meth:`ModelBank.load` and :meth:`ModelBank.save` raise, and ``ValueError``
+        for neither ``specs`` nor ``load_state``. A ``save_state`` whose directory is
+        not there is ``FileNotFoundError`` before the fit, not after it.
+        """
         save_path = _save_path(save_state)
         bank = _bank(specs, load_state, "fit_predict")()
         closed_path = _closed_path(closed_groups, bank.specs)
@@ -583,20 +589,24 @@ class DataFrameOnlineNamespace:
         return out
 
     def predict(self, bank: ModelBank | State) -> pl.DataFrame:
-        """:meth:`ModelBank.predict` over the frame: scored against ``bank`` --
-        a :class:`ModelBank`, or the path of a saved one -- as it stands, which
-        does not move. Raises what :meth:`ModelBank.load` (for a path) and
-        :meth:`ModelBank.predict` raise, and ``TypeError`` for a ``bank`` that
-        is neither."""
+        """:meth:`ModelBank.predict` over the frame: scored against ``bank``, a
+        :class:`ModelBank` or the path of a saved one, as it stands, which does not
+        move.
+
+        Raises what :meth:`ModelBank.load` (for a path) and :meth:`ModelBank.predict`
+        raise, and ``TypeError`` for a ``bank`` that is neither.
+        """
         if not isinstance(bank, ModelBank):
             bank = ModelBank.load(os.fspath(bank))
         return bank.predict(self._df)
 
     def unnest(self, specs: Specs | ModelBank | State) -> pl.DataFrame:
-        """The frame with each spec's struct column taken apart into
-        columns, as :meth:`LazyFrameOnlineNamespace.unnest` does for a plan:
-        scalar fields under their own names, each ``coef`` list as one named
-        column per coefficient. Raises what the plan form does, on the call."""
+        """The frame with each spec's struct column taken apart into columns, as
+        :meth:`LazyFrameOnlineNamespace.unnest` does for a plan.
+
+        Scalar fields under their own names, each ``coef`` list as one named column
+        per coefficient. Raises what the plan form does, on the call.
+        """
         return self._df.select(_unnest_exprs(self._df.schema, _specs_of(specs, "unnest")))
 
 
@@ -633,16 +643,16 @@ def fit_predict(
     closed_groups: State | None = None,
     chunk_rows: int | None = None,
 ) -> pl.LazyFrame | pl.DataFrame:
-    """``frame.online.fit_predict(...)`` as a plain function, so that a type checker can see it.
+    """``frame.online.fit_predict(...)`` as a plain function, so that a type checker
+    can see it.
 
-    A ``LazyFrame`` gives a plan that streams the rows through a bank when it
-    runs (:meth:`LazyFrameOnlineNamespace.fit_predict`); a ``DataFrame`` gives
-    the frame with the bank's columns
-    (:meth:`DataFrameOnlineNamespace.fit_predict`). ``load_state`` starts the
-    bank from a saved one and ``save_state`` writes where it ends up;
-    ``chunk_rows`` is the plan's read chunk, and a frame already in memory is
-    fitted in one call. ``TypeError`` for a ``frame`` that is neither;
-    otherwise raises what the namespace method does.
+    A ``LazyFrame`` gives a plan that streams the rows through a bank when it runs
+    (:meth:`LazyFrameOnlineNamespace.fit_predict`); a ``DataFrame`` gives the
+    frame with the bank's columns (:meth:`DataFrameOnlineNamespace.fit_predict`).
+    ``load_state`` starts the bank from a saved one and ``save_state`` writes
+    where it ends up; ``chunk_rows`` is the plan's read chunk, and a frame already
+    in memory is fitted in one call. ``TypeError`` for a ``frame`` that is
+    neither; otherwise raises what the namespace method does.
     """
     if isinstance(frame, pl.LazyFrame):
         return _fit_predict_lazy(frame, specs, load_state, save_state, chunk_rows, closed_groups)
@@ -667,13 +677,13 @@ def predict(
 def predict(
     frame: pl.LazyFrame | pl.DataFrame, bank: ModelBank | State, *, chunk_rows: int | None = None
 ) -> pl.LazyFrame | pl.DataFrame:
-    """``frame.online.predict(bank)`` as a plain function, so that a type checker can see it.
+    """``frame.online.predict(bank)`` as a plain function, so that a type checker can
+    see it.
 
-    Scores the rows against ``bank`` as it stands and learns nothing: a plan
-    from a ``LazyFrame`` (:meth:`LazyFrameOnlineNamespace.predict`), a frame
-    from a ``DataFrame`` (:meth:`DataFrameOnlineNamespace.predict`).
-    ``TypeError`` for a ``frame`` that is neither; otherwise raises what the
-    namespace method does.
+    Scores the rows against ``bank`` as it stands and learns nothing: a plan from
+    a ``LazyFrame`` (:meth:`LazyFrameOnlineNamespace.predict`), a frame from a
+    ``DataFrame`` (:meth:`DataFrameOnlineNamespace.predict`). ``TypeError`` for a
+    ``frame`` that is neither; otherwise raises what the namespace method does.
     """
     if isinstance(frame, pl.LazyFrame):
         return _predict_lazy(frame, bank, chunk_rows)
@@ -692,13 +702,14 @@ def unnest(frame: pl.DataFrame, specs: Specs | ModelBank | State) -> pl.DataFram
 def unnest(
     frame: pl.LazyFrame | pl.DataFrame, specs: Specs | ModelBank | State
 ) -> pl.LazyFrame | pl.DataFrame:
-    """``frame.online.unnest(specs)`` as a plain function, so that a type checker can see it.
+    """``frame.online.unnest(specs)`` as a plain function, so that a type checker can
+    see it.
 
-    Takes each spec's struct column apart into columns, the ``coef`` lists
-    as one named column per coefficient: a plan from a ``LazyFrame``
+    Takes each spec's struct column apart into columns, the ``coef`` lists as one
+    named column per coefficient: a plan from a ``LazyFrame``
     (:meth:`LazyFrameOnlineNamespace.unnest`), a frame from a ``DataFrame``
-    (:meth:`DataFrameOnlineNamespace.unnest`). ``TypeError`` for a ``frame``
-    that is neither; otherwise raises what the namespace method does.
+    (:meth:`DataFrameOnlineNamespace.unnest`). ``TypeError`` for a ``frame`` that
+    is neither; otherwise raises what the namespace method does.
     """
     if isinstance(frame, pl.LazyFrame):
         return _unnest_lazy(frame, specs)

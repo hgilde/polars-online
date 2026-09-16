@@ -1,12 +1,12 @@
-"""Streaming runner (ENHANCEMENTS E8, E32).
+"""The streaming runner: the pipeline the ``online`` CLI runs, callable from
+Python.
 
-The same pipeline the ``online`` CLI runs, callable from Python: polars reads
-the source in chunks, the bank fits and predicts, and a writer thread writes
-the augmented frames out -- one chunk in flight per stage, so memory stays
-O(state + chunk) rather than O(data), without spawning a process. The reading
-here is py-polars' own (``LazyFrame.collect_batches``), so any source polars
-can scan -- a path in any format, a glob, a cloud URL, a query -- streams
-through, and so does any iterable of frames.
+Polars reads the source in chunks, the bank fits and predicts, and a writer
+thread writes the augmented frames out, one chunk in flight per stage, so
+memory stays O(state + chunk) rather than O(data), without spawning a process.
+The reading is py-polars' own (``LazyFrame.collect_batches``), so any source
+polars can scan -- a path in any format, a glob, a cloud URL, a query --
+streams through, and so does any iterable of frames.
 """
 
 from __future__ import annotations
@@ -53,90 +53,112 @@ def run(
 ) -> dict[str, int]:
     """Stream rows through a model bank and write them out with its columns.
 
-    ``input`` is a path (parquet, ipc, csv or ndjson, told from the extension
-    or named by ``input_format``; globs and cloud URLs as ``pl.scan_*`` takes
-    them), a ``LazyFrame`` (any query: the scan is polars', with whatever
-    options it needs), a ``DataFrame``, or any iterable of ``DataFrame``\\ s in
-    stream order -- chunks from a database cursor, a socket, a generator.
-    ``output`` is a path in any of the four formats, told the same way. Leave
-    it out -- and out of the config -- for a run whose product is its state:
-    the per-row output of an accumulator-only spec is `n_eff` and nothing
-    else, which over a billion rows is 8 GB of file written so it can be
-    deleted (ENHANCEMENTS E50). ``save_state`` is then required, since a run
-    that writes nothing and saves nothing has done nothing. ``no_output=True``
-    says the same thing over a config that names an output, and is what the
-    CLI's ``--no-output`` sets. An output that is written is written through a
-    temporary and renamed into place, so a run that fails
-    leaves the previous file where it was. CSV cannot hold the bank's struct
-    columns, so there each spec's struct is flattened to ``<spec>.<field>``
-    columns and a list field (``coef``) becomes a JSON string --
-    ``pl.col("ridge.coef").str.json_decode(pl.List(pl.Float64))`` reads it
-    back.
+    The output is the input's rows plus one struct column per spec, as
+    :meth:`ModelBank.fit_predict` writes them (:mod:`polars_online.spec`, *What a
+    spec writes*), in a file. Returns ``{"rows": ..., "chunks": ...}``.
 
-    ``config`` is a dict, a path to a TOML file, or ``None`` to build the
-    config from the keyword arguments. Keywords override whatever the config
-    supplies, so a checked-in TOML can be reused with a different input::
+    .. code-block:: python
 
+        po.run(input="ticks.parquet", output="fitted.parquet", specs=[spec], save_state="run.state")
+        # a checked-in config, with another input and output
         po.run("bank.toml", input="today.csv", output="today-out.parquet")
 
-    Returns ``{"rows": ..., "chunks": ...}``. Chunking never changes the
-    numbers -- it only trades memory for overhead -- so ``chunk_rows`` (the
-    reader's chunk; frames passed in directly are taken as they come) is
-    purely a resource knob. On data sorted by group, a chunk should span
-    several groups: the bank fits groups in parallel within a chunk.
+    .. rubric:: Parameters
 
-    ``keep_columns`` selects input columns before the bank sees them (and
-    before the scan reads them). ``progress(rows, chunks)`` is called after
-    each chunk; raising in it stops the run without publishing the output.
+    ``input``
+        A path, a ``LazyFrame``, a ``DataFrame``, or any iterable of
+        ``DataFrame``\\ s in stream order (chunks from a database cursor, a
+        socket, a generator). A path is parquet, ipc, csv or ndjson, told from the
+        extension or named by ``input_format``, with globs and cloud URLs as
+        ``pl.scan_*`` takes them. A ``LazyFrame`` is any query: the scan is
+        polars', with whatever options it needs.
 
-    ``closed_groups`` writes the groups that finished during the run to a
-    sidecar file beside the output, in the format its extension names
-    (ENHANCEMENTS E54; see :meth:`ModelBank.closed_groups` for the schema).
-    It needs a spec with ``group_close`` and refuses ``predict``, which
-    closes nothing. The bank is drained after every chunk and each drain
-    written as it comes, to a temporary renamed into place when the run
-    stops, complete or not, since a drained row's only home is that file
-    (the output is published only by a run that completes) -- before
-    ``save_state``, so a state file always has the closed rows that go with
-    it. ``output`` may be left out at
-    the same time: that is the accumulate-only pass whose product is the
-    closed groups. A run in which nothing closed writes an empty frame with
-    the schema.
+    ``output``
+        A path in any of the four formats, told the same way. Leave it out, and
+        out of the config, for a run whose product is its state: the per-row
+        output of an accumulator-only spec is ``n_eff`` and nothing else, which
+        over a billion rows is 8 GB of file written so it can be deleted.
+        ``save_state`` is then required, since a run that writes nothing and saves
+        nothing has done nothing. ``no_output=True`` says the same thing over a
+        config that names an output, and is what the CLI's ``--no-output`` sets.
+        An output that is written is written through a temporary and renamed into
+        place, so a run that fails leaves the previous file where it was. CSV
+        cannot hold the bank's struct columns, so there each spec's struct is
+        flattened to ``<spec>.<field>`` columns and a list field (``coef``)
+        becomes a JSON string;
+        ``pl.col("ridge.coef").str.json_decode(pl.List(pl.Float64))`` reads it
+        back.
+    ``config``
+        A dict, a path to a TOML file, or ``None`` to build the config from the
+        keyword arguments. Keywords override whatever the config supplies, so a
+        checked-in TOML can be reused with a different input.
+    ``specs``
+        The bank's specs, as the builders make them or as the TOML's ``[[specs]]``
+        entries.
+    ``chunk_rows``
+        The reader's chunk; frames passed in directly are taken as they come.
+        Chunking never changes the numbers, it only trades memory for overhead, so
+        this is purely a resource knob. On data sorted by group, a chunk should
+        span several groups: the bank fits groups in parallel within a chunk.
+    ``load_state``, ``save_state``
+        The bank to resume from, and where to save the bank the run ends in. The
+        state is saved last, after the output is in place, so a state file always
+        has an output to go with it.
+    ``closed_groups``
+        A sidecar file for the groups that finished during the run, in the format
+        its extension names (:meth:`ModelBank.closed_groups` has the columns). It
+        needs a spec with ``group_close`` and refuses ``predict``, which closes
+        nothing. The bank is drained after every chunk and each drain written as
+        it comes, to a temporary renamed into place when the run stops, complete
+        or not, since a drained row's only home is that file; the output, by
+        contrast, is published only by a run that completes. It is written before
+        ``save_state``, so a state file always has the closed rows that go with
+        it. ``output`` may be left out at the same time: that is the
+        accumulate-only pass whose product is the closed groups. A run in which
+        nothing closed writes an empty frame with the schema.
+    ``predict``
+        Score instead of learning: every row gets what the bank loaded from
+        ``load_state`` predicts for it as it stands (:meth:`ModelBank.predict`),
+        and the bank is not updated, so it needs ``load_state`` and refuses
+        ``save_state``. One TOML can serve both runs: the keyword drops the
+        config's ``save_state``, which belongs to the learning run, unless
+        ``save_state=`` is passed alongside it.
+    ``input_format``, ``output_format``
+        A format a path's extension does not name.
+    ``keep_columns``
+        Input columns to select before the bank sees them, and before the scan
+        reads them.
+    ``progress``
+        Called as ``progress(rows, chunks)`` after each chunk; raising in it stops
+        the run without publishing the output.
 
-    ``predict=True`` scores instead of learning: every row gets what the bank
-    loaded from ``load_state`` predicts for it as it stands
-    (:meth:`ModelBank.predict`), and the bank is not updated -- so it needs
-    ``load_state`` and refuses ``save_state``. One TOML can serve both runs:
-    the keyword drops the config's ``save_state``, which belongs to the
-    learning run, unless ``save_state=`` is passed alongside it.
+    .. rubric:: Raises
 
-    What is wrong with the call or the config is ``ValueError``, before a
-    row is read: no input; no specs; a spec the bank refuses
-    (:class:`ModelBank`); a key the config, a spec or its model has not
-    got, named with the keys there are (a misspelt key is never kept at its
-    default in silence); ``chunk_rows`` below 1; a format that cannot be
-    told from a path's extension, or that is not one of the four;
-    ``predict=True`` without ``load_state``, or with ``save_state``; an
-    iterable that produced no frames; a ``load_state`` that is not a bank
-    this build loads or whose specs are not ``specs``; and a TOML that does
-    not parse (``tomllib.TOMLDecodeError``). ``TypeError`` for a ``config``
-    that is none of the three, a ``progress`` that is not callable, or an
-    item of ``input`` that is not a ``DataFrame``. A file fails as the
-    ``OSError`` for what went wrong, with the path in the message: a
-    ``config`` or ``input`` that is not there (the scan is polars', so its
-    ``FileNotFoundError``), a ``load_state`` that cannot be read, an
-    ``output`` whose directory is not there, and a ``save_state`` whose
-    directory is not -- found out before the run, since after it the output
-    would be written and the state lost. A column the specs read that the
-    input has not got, or that ``keep_columns`` dropped, is the bank's
-    ``ValueError`` (a ``keep_columns`` name the input has not got is
-    polars' ``ColumnNotFoundError``); a value the bank refuses -- a null
-    clock, a negative weight, a clock running backwards -- is its
-    ``ValueError`` mid-run. Whatever stops the run -- the bank, the writer,
-    ``progress`` or the iterable raising (both come through as themselves)
-    -- leaves the previous ``output`` where it was and ``save_state``
-    unwritten: the state is saved last, after the output is in place, so a
-    state file always has an output to go with it.
+    What is wrong with the call or the config is ``ValueError``, before a row is
+    read. That is: no input; no specs; a spec the bank refuses
+    (:class:`ModelBank`); a key the config, a spec or its model has not got, named
+    with the keys there are, since a misspelt key is never kept at its default in
+    silence; ``chunk_rows`` below 1; a format that cannot be told from a path's
+    extension, or that is not one of the four; ``predict=True`` without
+    ``load_state``, or with ``save_state``; an iterable that produced no frames; a
+    ``load_state`` that is not a bank this build loads or whose specs are not
+    ``specs``; a TOML that does not parse (``tomllib.TOMLDecodeError``).
+    ``TypeError`` for a ``config`` that is none of the three, a ``progress`` that
+    is not callable, or an item of ``input`` that is not a ``DataFrame``.
+
+    A file fails as the ``OSError`` for what went wrong, with the path in the
+    message: a ``config`` or ``input`` that is not there (the scan is polars', so
+    its ``FileNotFoundError``), a ``load_state`` that cannot be read, an
+    ``output`` whose directory is not there, and a ``save_state`` whose directory
+    is not. The last is found out before the run, since after it the output would
+    be written and the state lost. A column the specs read that the input has not
+    got, or that ``keep_columns`` dropped, is the bank's ``ValueError``; a
+    ``keep_columns`` name the input has not got is polars'
+    ``ColumnNotFoundError``. A value the bank refuses (a null clock, a negative
+    weight, a clock running backwards) is its ``ValueError`` mid-run. Whatever
+    stops the run leaves the previous ``output`` where it was and ``save_state``
+    unwritten: the bank, the writer, ``progress`` or the iterable raising, the
+    last two coming through as themselves.
     """
     if isinstance(config, (str, Path)):
         cfg = tomllib.loads(Path(config).read_text())
