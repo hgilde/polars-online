@@ -858,10 +858,10 @@ fn assemble_phase(
     derived: &[SpecDerived],
     n: usize,
     rows: &[Vec<ChunkOut>],
-    out: &mut [Option<Column>],
+    out: &mut [Option<StructArray>],
     pick: impl Fn(usize) -> bool + Sync,
 ) -> PolarsResult<()> {
-    let built: Vec<(usize, Column)> = (0..specs.len())
+    let built: Vec<(usize, StructArray)> = (0..specs.len())
         .into_par_iter()
         .filter(|si| pick(*si))
         .map(|si| Ok((si, assemble(&specs[si], &derived[si], n, &rows[si])?)))
@@ -881,16 +881,35 @@ fn assemble_phase(
 fn compare_targets(
     spec: &Spec,
     (a, b): (usize, usize),
-    out: &[Option<Column>],
+    out: &[Option<StructArray>],
     layout: Layout<'_>,
 ) -> PolarsResult<Vec<Vec<f64>>> {
     let cmp = spec.model.compares().expect("resolved as a comparison");
-    let side = |si: usize, field: &str| -> PolarsResult<Vec<f64>> {
-        let col = out[si]
+    let side = |si: usize, name: &str| -> PolarsResult<Vec<f64>> {
+        let st = out[si]
             .as_ref()
             .expect("the two sides of a comparison are assembled in the first phase");
-        let field = col.struct_()?.field_by_name(field)?;
-        Ok(field.f64()?.iter().map(|v| v.unwrap_or(f64::NAN)).collect())
+        // The struct carries its own schema, so the field is found by name in
+        // it rather than through polars.
+        let i = st
+            .fields()
+            .iter()
+            .position(|f| f.name.as_str() == name)
+            .ok_or_else(|| {
+                polars_err!(ColumnNotFound:
+                    "spec {:?}: the compared field {:?} is not in the other spec's output",
+                    spec.name, name
+                )
+            })?;
+        let arr = st.values()[i]
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .ok_or_else(|| {
+                polars_err!(ComputeError:
+                    "spec {:?}: the compared field {:?} is not a float", spec.name, name
+                )
+            })?;
+        Ok(f64_values(arr).into_owned())
     };
     spec.targets
         .iter()
@@ -2462,7 +2481,8 @@ impl Bank {
                 }
             })
             .collect::<Result<_, String>>()?;
-        let col = assemble(s, d, keys.len(), &chunks).map_err(|e| e.to_string())?;
+        let st = assemble(s, d, keys.len(), &chunks).map_err(|e| e.to_string())?;
+        let col = named_column(s, st).map_err(|e| e.to_string())?;
         Ok((keys.into_iter().cloned().collect(), col))
     }
 
@@ -2607,22 +2627,25 @@ impl Bank {
     /// `POLARS_ONLINE_MAX_THREADS` that is not a count of threads.
     pub fn fit_predict(&mut self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
         let chunk = chunk_from_frame(df, &self.specs)?;
-        self.fit_predict_arrow(&chunk)
+        let arrays = self.fit_predict_arrow(&chunk)?;
+        named_columns(&self.specs, arrays)
     }
 
-    /// [`Self::fit_predict`] over an [`ArrowChunk`]: the same models, the
-    /// same state and the same output, for a caller holding Arrow arrays and
-    /// no polars frame to put them in. [`Self::fit_predict`] is this method
-    /// behind [`chunk_from_frame`], which is where every dtype decision about
-    /// a frame is made.
-    pub fn fit_predict_arrow(&mut self, chunk: &ArrowChunk) -> PolarsResult<Vec<Column>> {
+    /// [`Self::fit_predict`] over Arrow, for a caller holding Arrow arrays
+    /// and no polars frame to put them in: one struct array per spec, in
+    /// spec order, with the same fields in the same order as the struct
+    /// column the polars pair returns. The models, the state and the values
+    /// are the same. [`Self::fit_predict`] is this method between
+    /// [`chunk_from_frame`], where every dtype decision about a frame is
+    /// made, and naming each struct after its spec.
+    pub fn fit_predict_arrow(&mut self, chunk: &ArrowChunk) -> PolarsResult<Vec<StructArray>> {
         // Everything parallel below -- the `par_iter`s here and the
         // per-instance ones in `Stream` -- runs on the bank's own pool
         // (pool.rs), never on rayon's global one, whichever thread calls.
         crate::pool::pool()?.install(|| self.fit_predict_on_pool(chunk))
     }
 
-    fn fit_predict_on_pool(&mut self, chunk: &ArrowChunk) -> PolarsResult<Vec<Column>> {
+    fn fit_predict_on_pool(&mut self, chunk: &ArrowChunk) -> PolarsResult<Vec<StructArray>> {
         // Section timings to stderr when ONLINE_TIMING is set; costs one env
         // read per chunk. This is how docs/PERFORMANCE.md's numbers are made.
         let timing = std::env::var_os("ONLINE_TIMING").is_some();
@@ -2765,7 +2788,7 @@ impl Bank {
         let (work2, work1): (Vec<_>, Vec<_>) = work
             .into_iter()
             .partition(|(si, ..)| derived[*si].compare.is_some());
-        let mut out: Vec<Option<Column>> = specs.iter().map(|_| None).collect();
+        let mut out: Vec<Option<StructArray>> = specs.iter().map(|_| None).collect();
         let mut per_spec_rows: Vec<Vec<ChunkOut>> = (0..specs.len()).map(|_| Vec::new()).collect();
         let mut closed: Vec<ClosedRow> = Vec::new();
         let (rows1, closed1) = process(work1, specs, cfgs, &cols);
@@ -2888,16 +2911,17 @@ impl Bank {
     /// As [`Self::fit_predict`]'s, less a missing target, which is not one.
     pub fn predict(&self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
         let chunk = chunk_from_frame(df, &self.specs)?;
-        self.predict_arrow(&chunk)
+        let arrays = self.predict_arrow(&chunk)?;
+        named_columns(&self.specs, arrays)
     }
 
-    /// [`Self::predict`] over an [`ArrowChunk`], as [`Self::fit_predict_arrow`]
-    /// is to [`Self::fit_predict`].
-    pub fn predict_arrow(&self, chunk: &ArrowChunk) -> PolarsResult<Vec<Column>> {
+    /// [`Self::predict`] over Arrow, as [`Self::fit_predict_arrow`] is to
+    /// [`Self::fit_predict`].
+    pub fn predict_arrow(&self, chunk: &ArrowChunk) -> PolarsResult<Vec<StructArray>> {
         crate::pool::pool()?.install(|| self.predict_on_pool(chunk))
     }
 
-    fn predict_on_pool(&self, chunk: &ArrowChunk) -> PolarsResult<Vec<Column>> {
+    fn predict_on_pool(&self, chunk: &ArrowChunk) -> PolarsResult<Vec<StructArray>> {
         let n = chunk.height();
         self.refuse_if_broken()?;
         self.refuse_name_clash(chunk.names())?;
@@ -2933,7 +2957,7 @@ impl Bank {
         let (work2, work1): (Vec<_>, Vec<_>) = work
             .into_iter()
             .partition(|(si, ..)| derived[*si].compare.is_some());
-        let mut out: Vec<Option<Column>> = specs.iter().map(|_| None).collect();
+        let mut out: Vec<Option<StructArray>> = specs.iter().map(|_| None).collect();
         let mut per_spec_rows: Vec<Vec<ChunkOut>> = (0..specs.len()).map(|_| Vec::new()).collect();
         for (si, r) in score(work1, specs, cfgs, &cols) {
             per_spec_rows[si].push(r?);
@@ -4247,7 +4271,27 @@ fn coef_list_array(coef: &[Option<&Vec<f64>>]) -> Box<dyn ArrowArray> {
     ))
 }
 
-fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> PolarsResult<Column> {
+/// One spec's struct array as a named polars column. Naming the struct is
+/// the whole of what the polars adapter adds to an Arrow output.
+fn named_column(spec: &Spec, st: StructArray) -> PolarsResult<Column> {
+    Ok(Series::from_arrow(spec.name.as_str().into(), Box::new(st))?.into())
+}
+
+/// Every spec's struct array, named, in spec order.
+fn named_columns(specs: &[Spec], arrays: Vec<StructArray>) -> PolarsResult<Vec<Column>> {
+    specs
+        .iter()
+        .zip(arrays)
+        .map(|(s, st)| named_column(s, st))
+        .collect()
+}
+
+fn assemble(
+    spec: &Spec,
+    d: &SpecDerived,
+    n: usize,
+    chunks: &[ChunkOut],
+) -> PolarsResult<StructArray> {
     let SpecDerived {
         schema,
         slot_labels: labels,
@@ -4494,14 +4538,18 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
                 Source::Unset => unreachable!("every field is given a source in output_index"),
             })
         })?;
-    // One struct array, then one hand-off to polars: everything above this
-    // line is Arrow (docs/PLAN.md task 86).
+    // The output path is Arrow end to end: the struct array is what the bank
+    // returns, and giving it the spec's name is the adapter's job, not this
+    // function's (docs/PLAN.md task 86).
     let arrow_fields: Vec<ArrowField> = schema
         .iter()
         .zip(&arrays)
         .map(|(f, a)| ArrowField::new(f.field.as_str().into(), a.dtype().clone(), true))
         .collect();
-    let st = StructArray::new(ArrowDataType::Struct(arrow_fields), n, arrays, None);
-    let s = Series::from_arrow(spec.name.as_str().into(), Box::new(st))?;
-    Ok(s.into())
+    Ok(StructArray::new(
+        ArrowDataType::Struct(arrow_fields),
+        n,
+        arrays,
+        None,
+    ))
 }
