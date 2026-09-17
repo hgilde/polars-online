@@ -338,8 +338,9 @@ class ModelBank:
         Give it a ``LazyFrame`` and it does the chunking: the plan is read
         ``chunk_rows`` rows at a time (100,000 by default) and each chunk is fed as
         the generator reaches it, so memory is the state plus a chunk however long
-        the plan's input. A ``DataFrame`` is one chunk. An iterator of frames is fed
-        as it comes, and ``chunk_rows`` does not re-chunk it. Whatever
+        the plan's input. A ``DataFrame`` is one chunk, or ``chunk_rows`` slices of
+        it when that is given. An iterator of frames is fed as it comes, and
+        ``chunk_rows`` does not re-chunk it. Whatever
         ``fit_predict`` raises for a chunk, this raises there; the chunks before it
         have been learned from.
 
@@ -394,7 +395,10 @@ class ModelBank:
             rows = _native.default_chunk_rows() if chunk_rows is None else chunk_rows
             return batches.collect_batches(chunk_size=rows, maintain_order=True)
         if isinstance(batches, pl.DataFrame):
-            return [batches]
+            if chunk_rows is None:
+                return [batches]
+            # `iter_slices` is zero-copy: views of the one frame, in order.
+            return batches.iter_slices(n_rows=chunk_rows)
         return batches
 
     def fit(

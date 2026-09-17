@@ -388,7 +388,9 @@ def test_a_missing_column_names_the_spec_the_role_and_the_frame(role, kw):
         bank.fit_predict(_df())
     text = str(exc.value)
     assert f'spec "m": {role} column "nope" not found' in text, text
-    assert 'the frame has columns ["t", "x0", "y", "s"]' in text, text
+    # "input", not "frame": the same message serves the Arrow path, whose
+    # caller has a chunk and no frame (review 2026-09-17, A5).
+    assert 'the input has columns ["t", "x0", "y", "s"]' in text, text
 
 
 @pytest.mark.parametrize(
@@ -533,9 +535,12 @@ def test_a_lazyframe_is_told_to_collect():
         bank.fit_predict({"y": [1.0]})
 
 
-def test_concurrent_fit_predict_says_so():
+@pytest.mark.parametrize("method", ["fit_predict", "fit_predict_arrow"])
+def test_concurrent_fit_predict_says_so(method):
     """The GIL is released for the run, so a second thread *can* reach the
-    bank; it is refused with a sentence, not pyo3's "Already borrowed"."""
+    bank; it is refused with a sentence, not pyo3's "Already borrowed" -- and
+    the sentence names the method the caller used, the Arrow twin included
+    (review 2026-09-17, T6)."""
     n = 200_000
     df = pl.DataFrame(
         {
@@ -544,6 +549,7 @@ def test_concurrent_fit_predict_says_so():
         }
     )
     bank = po.ModelBank([_spec_dict(halflife=[10.0, 100.0, 1000.0], coef_every=1)])
+    call = getattr(bank, method)
     start = threading.Barrier(4)
     errors: list[BaseException] = []
     done: list[int] = []
@@ -551,7 +557,8 @@ def test_concurrent_fit_predict_says_so():
     def go():
         start.wait()
         try:
-            done.append(bank.fit_predict(df).height)
+            call(df)
+            done.append(1)
         except BaseException as e:  # noqa: BLE001
             errors.append(e)
 
@@ -564,6 +571,7 @@ def test_concurrent_fit_predict_says_so():
     assert errors, "four threads never overlapped; make the chunk bigger"
     for e in errors:
         assert isinstance(e, RuntimeError), e
+        assert f"ModelBank.{method}:" in str(e), str(e)
         assert "in use on another thread" in str(e), str(e)
         assert "one ordered stream" in str(e)
     # The bank is intact: the winners' rows are counted, nothing else happened.

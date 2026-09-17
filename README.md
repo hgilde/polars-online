@@ -7,8 +7,8 @@ also be local: a rolling fit that follows the recent rows, without
 refitting a window at every step. Rust core, Python API, and a standalone
 command line ([docs/RUNNER.md](docs/RUNNER.md)).
 
-> **A note on Polars versions.** Two of the three ways this library plugs
-> into Polars carry no stability promise from Polars, so `polars>=1.34.0,<3`
+> **A note on Polars versions.** Both of the ways this library plugs into
+> Polars carry no stability promise from Polars, so `polars>=1.34.0,<3`
 > is measured rather than guaranteed: a weekly job runs the whole test suite
 > on the newest Polars, every release runs it again before publishing, and
 > the response to a failure is decided in advance

@@ -107,14 +107,18 @@ def test_the_native_stub_names_the_built_module():
     assert functions == exported - set(classes)
     assert set(classes) <= exported, "the stub declares a class the module has not got"
     for name, cls in classes.items():
-        # Dunders are stripped from both sides. A pyclass may implement a
-        # protocol method that the stub should declare too
-        # (`__arrow_c_array__`), and `dir()` is filtered here, so declaring
-        # one must not read as a stub that has gone stale.
-        methods = {
-            n.name
-            for n in cls.body
-            if isinstance(n, ast.FunctionDef) and not n.name.startswith("_")
-        }
+        declared = {n.name for n in cls.body if isinstance(n, ast.FunctionDef)}
+        # The public names must match exactly, both ways: a method the stub
+        # lacks and a method the class lacks are each a stale stub.
+        public = {n for n in declared if not n.startswith("_")}
         want = {n for n in dir(getattr(native, name)) if not n.startswith("_")}
-        assert methods == want, name
+        assert public == want, name
+        # A dunder the stub declares -- a protocol method like
+        # `__arrow_c_array__` -- must exist on the class, or a type checker is
+        # being told about a method that is not there. The class may have
+        # dunders the stub does not declare; pyo3 adds many.
+        dunders = {n for n in declared if n.startswith("__") and n != "__init__"}
+        missing = dunders - set(dir(getattr(native, name)))
+        assert not missing, (
+            f"{name}: the stub declares {sorted(missing)}, which the class has not got"
+        )

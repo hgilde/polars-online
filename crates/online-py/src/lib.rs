@@ -168,18 +168,26 @@ impl PyArrowStruct {
     /// honour a request.
     #[pyo3(signature = (requested_schema=None))]
     fn __arrow_c_array__(
-        &mut self,
-        py: Python<'_>,
+        slf: &Bound<'_, Self>,
         requested_schema: Option<Bound<'_, PyAny>>,
     ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
         let _ = requested_schema;
-        let st = self.array.take().ok_or_else(|| {
+        let py = slf.py();
+        // The exclusive borrow, refused with a message of its own rather than
+        // pyo3's "Already borrowed", as every `ModelBank` method takes its.
+        let mut this = slf.try_borrow_mut().map_err(|_| {
+            PyRuntimeError::new_err(
+                "ArrowStruct.__arrow_c_array__: this struct is being exported on another \
+                 thread; a struct exports once, so wait for that call to return",
+            )
+        })?;
+        let st = this.array.take().ok_or_else(|| {
             PyValueError::new_err(
                 "this ArrowStruct has already been exported: the Arrow PyCapsule \
                  interface hands its buffers to the consumer, so it can be read once",
             )
         })?;
-        let (schema, array) = export_struct_to_c(&self.name, st);
+        let (schema, array) = export_struct_to_c(&this.name, st);
         let schema = PyCapsule::new_with_value(py, schema, c"arrow_schema")?;
         let array = PyCapsule::new_with_value(py, array, c"arrow_array")?;
         Ok((schema.into_any().unbind(), array.into_any().unbind()))

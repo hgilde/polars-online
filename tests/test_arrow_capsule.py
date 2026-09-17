@@ -113,3 +113,38 @@ def test_the_nested_coef_list_survives() -> None:
     assert got["coef"].dtype == pl.List(pl.Float64)
     assert got["coef"].null_count() == want["coef"].null_count()
     assert got["coef"].equals(want["coef"], null_equal=True)
+
+
+def test_an_empty_frame_gives_an_empty_struct_of_the_right_dtype() -> None:
+    """Nothing to feed is not an error, and the schema is still the spec's."""
+    df = frame()
+    out = po.ModelBank([SPEC])._native.fit_predict_arrow(df.clear())
+    s = pl.Series(out[0])
+    assert len(s) == 0
+    assert s.dtype == po.ModelBank([SPEC]).fit_predict(df)["m"].dtype
+
+
+def test_a_multi_chunk_frame_equals_the_rechunked_one() -> None:
+    """A batch from a scan can arrive as several chunks; the adapter reads them
+    as one array, and the numbers must not know the difference."""
+    df = frame()
+    mc = pl.concat([df.slice(0, 50), df.slice(50)], rechunk=False)
+    assert mc.n_chunks() > 1
+    got = pl.Series(po.ModelBank([SPEC])._native.fit_predict_arrow(mc)[0])
+    same(got, po.ModelBank([SPEC]).fit_predict(df.rechunk())["m"])
+
+
+def test_predict_arrow_on_a_bank_that_has_seen_nothing_is_null_throughout() -> None:
+    """A group the bank has never learned from scores as null, as ``predict``
+    documents -- over the Arrow path too."""
+    out = po.ModelBank([SPEC]).predict_arrow(frame())
+    s = pl.Series(out[0]).struct.unnest()
+    assert s["pred_y"].null_count() == len(s)
+
+
+def test_the_arrow_pair_refuses_a_lazyframe_by_name() -> None:
+    """The type check names the method the caller used, not its polars twin."""
+    with pytest.raises(TypeError, match="fit_predict_arrow takes a DataFrame"):
+        po.ModelBank([SPEC]).fit_predict_arrow(frame().lazy())  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="predict_arrow takes a DataFrame"):
+        po.ModelBank([SPEC]).predict_arrow(frame().lazy())  # type: ignore[arg-type]

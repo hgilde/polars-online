@@ -58,6 +58,10 @@ pub use arrow::{ArrowChunk, ArrowCol, chunk_from_frame, export_struct_to_c};
 // polars crate of the caller's own (docs/PLAN.md task 86).
 pub use polars_arrow::array::{Float64Array, Int64Array, StructArray, UInt64Array, Utf8ViewArray};
 pub use polars_arrow::ffi::{ArrowArray, ArrowSchema, export_array_to_c, export_field_to_c};
+// The string type `ArrowChunk` names its columns with. `ArrowChunk::new` takes
+// anything that converts to it, `&str` included, so a caller need not hold
+// one -- but may, and this is where it comes from.
+pub use polars::prelude::PlSmallStr;
 
 pub use bank::{
     Bank, Coef, CoefField, FieldMeta, Gram, GroupKey, PAR_MIN_ROWS, coef_fields, output_fields,

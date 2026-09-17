@@ -9,7 +9,9 @@
 
 use online_polars::{ArrowChunk, ArrowCol, Bank, Spec, chunk_from_frame};
 use polars::prelude::*;
-use polars_arrow::array::{Float64Array, MutableBinaryViewArray, Utf8ViewArray};
+use polars_arrow::array::{
+    Float64Array, Int64Array, MutableBinaryViewArray, UInt64Array, Utf8ViewArray,
+};
 
 fn spec() -> Spec {
     serde_json::from_str(
@@ -186,4 +188,118 @@ fn a_ragged_chunk_is_refused() {
     let text = err.to_string();
     assert!(text.contains("x0"), "{text}");
     assert!(text.contains("rows"), "{text}");
+}
+
+/// A column that is given must be listed: `names` is what decides whether a
+/// column a scoring call may leave out is absent, so one left out of it would
+/// silently score as missing (review 2026-09-17, B1).
+#[test]
+fn a_column_given_but_unlisted_is_refused() {
+    let cols = vec![("y", ArrowCol::F64(nums(&[1.0, 2.0])))];
+    let err = ArrowChunk::new(2, cols, Vec::<&str>::new()).unwrap_err();
+    assert!(err.to_string().contains("not listed in `names`"), "{err}");
+}
+
+/// The same name twice in the same form is a caller's mistake, and the first
+/// winning silently is the worst outcome of it (review 2026-09-17, B2).
+#[test]
+fn a_name_given_twice_in_one_form_is_refused() {
+    let cols = vec![
+        ("x0", ArrowCol::F64(nums(&[1.0, 2.0]))),
+        ("x0", ArrowCol::F64(nums(&[9.0, 9.0]))),
+    ];
+    let err = ArrowChunk::new(2, cols, vec!["x0"]).unwrap_err();
+    assert!(err.to_string().contains("given twice as a number"), "{err}");
+}
+
+/// ... but one name in two forms is the design: one spec's feature is
+/// another's group key, and each reads the form it wants.
+#[test]
+fn a_name_may_appear_as_a_number_and_as_a_key() {
+    let cols = vec![
+        ("k", ArrowCol::F64(nums(&[1.0, 2.0]))),
+        (
+            "k",
+            ArrowCol::I64(Int64Array::from_iter([Some(1i64), Some(2)])),
+        ),
+    ];
+    let chunk = ArrowChunk::new(2, cols, vec!["k"]).unwrap();
+    assert!(chunk.f64(&spec(), "feature", "k").is_ok());
+    assert!(chunk.key(&spec(), "group", "k").unwrap().is_integer());
+}
+
+/// A column present in a form the role does not read is named as such, not
+/// reported "not found" beside a list that includes it (review 2026-09-17, B3).
+#[test]
+fn a_column_in_the_wrong_form_is_named_as_such() {
+    let d = data(20);
+    let t = Int64Array::from_iter(d.t.iter().map(|v| Some(*v as i64)));
+    let cols = vec![
+        ("g", ArrowCol::Str(text(&d.g))),
+        ("t", ArrowCol::I64(t)),
+        ("x0", ArrowCol::F64(opt_nums(&d.x0))),
+        ("x1", ArrowCol::F64(nums(&d.x1))),
+        ("y", ArrowCol::F64(opt_nums(&d.y))),
+        ("w", ArrowCol::F64(nums(&d.w))),
+    ];
+    let chunk = ArrowChunk::new(d.t.len(), cols, vec!["g", "t", "x0", "x1", "y", "w"]).unwrap();
+    let err = Bank::new(vec![spec()])
+        .unwrap()
+        .fit_predict_arrow(&chunk)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("clock column \"t\" is given as an integer key"),
+        "{err}"
+    );
+    assert!(err.contains("read as a number"), "{err}");
+    assert!(!err.contains("not found"), "{err}");
+}
+
+/// The chunk with the group key in a given form; everything else as `chunk`.
+fn chunk_keyed(d: &Data, key: ArrowCol) -> ArrowChunk {
+    let cols = vec![
+        ("g", key),
+        ("t", ArrowCol::F64(nums(&d.t))),
+        ("x0", ArrowCol::F64(opt_nums(&d.x0))),
+        ("x1", ArrowCol::F64(nums(&d.x1))),
+        ("y", ArrowCol::F64(opt_nums(&d.y))),
+        ("w", ArrowCol::F64(nums(&d.w))),
+    ];
+    ArrowChunk::new(d.t.len(), cols, vec!["g", "t", "x0", "x1", "y", "w"]).unwrap()
+}
+
+/// An integer key built by hand takes the `I64` arm of `group_indices`, which
+/// the polars path reaches only through the adapter's cast; the two must bucket
+/// and order alike (review 2026-09-17, T7).
+#[test]
+fn an_i64_key_built_by_hand_matches_the_frame_path() {
+    let d = data(300);
+    let ints: Vec<i64> = d.g.iter().map(|g| i64::from(*g != "g0")).collect();
+    let mut df = frame(&d);
+    df.with_column(Column::new("g".into(), ints.clone()))
+        .unwrap();
+    let want = Bank::new(vec![spec()]).unwrap().fit_predict(&df).unwrap();
+    let key = ArrowCol::I64(Int64Array::from_iter(ints.iter().map(|v| Some(*v))));
+    let got = Bank::new(vec![spec()])
+        .unwrap()
+        .fit_predict_arrow(&chunk_keyed(&d, key))
+        .unwrap();
+    same(&want, got);
+}
+
+#[test]
+fn a_u64_key_built_by_hand_matches_the_frame_path() {
+    let d = data(300);
+    let ints: Vec<u64> = d.g.iter().map(|g| u64::from(*g != "g0")).collect();
+    let mut df = frame(&d);
+    df.with_column(Column::new("g".into(), ints.clone()))
+        .unwrap();
+    let want = Bank::new(vec![spec()]).unwrap().fit_predict(&df).unwrap();
+    let key = ArrowCol::U64(UInt64Array::from_iter(ints.iter().map(|v| Some(*v))));
+    let got = Bank::new(vec![spec()])
+        .unwrap()
+        .fit_predict_arrow(&chunk_keyed(&d, key))
+        .unwrap();
+    same(&want, got);
 }

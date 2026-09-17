@@ -267,6 +267,25 @@ def test_fit_leaves_the_state_fit_predict_batches_leaves():
     assert quiet.rows_seen() == kept.rows_seen() == df.height
 
 
+def test_a_frame_with_chunk_rows_is_fed_in_slices():
+    """``chunk_rows`` on a ``DataFrame`` slices it, rather than being checked and
+    then ignored (review 2026-09-17, B5): the same rows, in bounded pieces, and
+    the state the plan route leaves, byte for byte."""
+    df = _stream(seed=1)
+    outs = list(po.ModelBank([_one()]).fit_predict_batches(df, chunk_rows=9))
+    assert len(outs) == -(-df.height // 9)
+    assert pl.concat(outs).height == df.height
+    sliced = po.ModelBank([_one()])
+    for _ in sliced.fit_predict_batches(df, chunk_rows=9):
+        pass
+    planned = po.ModelBank([_one()])
+    for _ in planned.fit_predict_batches(df.lazy(), chunk_rows=9):
+        pass
+    assert sliced.save_bytes() == planned.save_bytes()
+    # Without a size, the frame is still one chunk.
+    assert len(list(po.ModelBank([_one()]).fit_predict_batches(df))) == 1
+
+
 def test_fit_over_an_empty_plan_is_not_an_error():
     """Nothing to learn from is a no-op that still leaves a loadable state."""
     bank = po.ModelBank([_one()])

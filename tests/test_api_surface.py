@@ -70,10 +70,15 @@ def describe_api() -> str:
             w(f"    {p.name}{default}")
     w("")
 
-    w("[ModelBank]")
+    w("[ModelBank]  # name and signature: a parameter added or a default moved is a diff here")
     for name in sorted(dir(po.ModelBank)):
         if not name.startswith("_") or name in ("__reduce__",):
-            w(f"  {name}")
+            obj = getattr(po.ModelBank, name)
+            try:
+                sig = str(inspect.signature(obj)) if callable(obj) else ""
+            except (TypeError, ValueError):
+                sig = ""
+            w(f"  {name}{sig}")
     w("")
 
     w("[frame namespaces]  # lf.online.<method> -> LazyFrame; df.online.<method> -> DataFrame")

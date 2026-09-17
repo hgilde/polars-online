@@ -94,6 +94,28 @@ carries breaking changes, and any change to the numbers a model returns.
   makes the fit out-of-sample, and the output columns are still built before
   they are dropped.
 
+### Changed
+
+- **`predict` refuses a group key that `group_close = "monotone"` cannot
+  order, as `fit_predict` does.** The check moved into the chunk adapter with
+  the Arrow work, so both calls meet it; before, `predict` alone ran on a float
+  key the spec could never have ordered. Pinned by a test either way.
+- **A hand-built `ArrowChunk` is validated.** `ArrowChunk::new` refuses a
+  column given but not listed in `names` -- it was silently invisible to the
+  check that lets a scoring call leave a target out, so the target scored as
+  missing -- and a name given twice in the same form, where the first silently
+  won. A column supplied in the wrong form, a clock as `Int64Array`, is named
+  as such rather than reported "not found" beside a list that includes it.
+  `new` takes any name that converts to a `PlSmallStr`, `&str` included, and
+  the crate re-exports `PlSmallStr`.
+- **`fit_predict_batches` slices a `DataFrame` when `chunk_rows` is given**,
+  where it validated the argument and then fed the frame whole.
+- **The API snapshot records `ModelBank` signatures, not names alone.** A
+  parameter added or a default moved on a method is now a diff in
+  `tests/api_surface.txt`, as it already was for the spec builders and the
+  frame namespaces; `fit_predict_batches` gaining `chunk_rows` had left no
+  trace.
+
 ### Removed
 
 - **The expression plugin is gone: `pl.col("y").online.<model>(...)`,

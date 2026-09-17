@@ -531,6 +531,17 @@ def test_a_key_dtype_that_cannot_be_ordered_is_refused():
         bank.fit_predict(df)
 
 
+def test_predict_refuses_a_key_dtype_that_cannot_be_ordered_too():
+    """The check moved into the chunk adapter with task 86, so ``predict`` meets
+    it as ``fit_predict`` does. Until 0.7.0 ``predict`` alone ran on a key the
+    spec could never have ordered; a spec invalid for the column is refused
+    whichever call reads it (review 2026-09-17, B4)."""
+    df = pl.DataFrame({"g": [1.5, 2.5], "x0": [1.0, 2.0], "x1": [1.0, 2.0]})
+    bank = po.ModelBank([cov_spec(group_close="monotone")])
+    with pytest.raises(ValueError, match="needs a group column it can order"):
+        bank.predict(df)
+
+
 def test_a_key_below_the_high_water_mark_is_refused():
     bank = po.ModelBank([cov_spec(group_close="monotone")])
     bank.fit_predict(frame(["a", "b"]))

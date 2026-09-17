@@ -57,6 +57,15 @@ impl ArrowCol {
     pub fn is_integer(&self) -> bool {
         matches!(self, Self::I64(_) | Self::U64(_))
     }
+
+    /// The form, for a message: what a caller gave, against what a role reads.
+    pub fn form(&self) -> &'static str {
+        match self {
+            Self::F64(_) => "a number",
+            Self::Str(_) => "text",
+            Self::I64(_) | Self::U64(_) => "an integer key",
+        }
+    }
 }
 
 /// The columns a bank reads for one chunk, already cast.
@@ -78,19 +87,47 @@ impl ArrowChunk {
     /// `Float64Array`, keys and labels as `Utf8ViewArray`, integer group keys
     /// as `Int64Array` or `UInt64Array`.
     ///
-    /// `names` is every column the source had, which need not be every column
-    /// given here: it is what an error message lists and what the spec-name
-    /// clash check reads.
-    pub fn new(
+    /// `names` is every column the source had, which may be more than the
+    /// columns given here but never fewer: it is what an error message lists,
+    /// what the spec-name clash check reads, and what decides whether a column
+    /// a scoring call may leave out is absent. Names are anything that
+    /// converts to a `PlSmallStr`, so a caller may pass `&str`.
+    ///
+    /// Refused: a column whose length is not `height`; a column given but not
+    /// listed in `names`, which would otherwise be invisible to that absence
+    /// check and silently score as if missing; and a name given twice in the
+    /// same form, where the first would silently win. A name *may* appear in
+    /// two forms -- one spec's feature is another's group key.
+    pub fn new<N: Into<PlSmallStr>, M: Into<PlSmallStr>>(
         height: usize,
-        cols: Vec<(PlSmallStr, ArrowCol)>,
-        names: Vec<PlSmallStr>,
+        cols: Vec<(N, ArrowCol)>,
+        names: Vec<M>,
     ) -> PolarsResult<Self> {
+        let cols: Vec<(PlSmallStr, ArrowCol)> =
+            cols.into_iter().map(|(n, c)| (n.into(), c)).collect();
+        let names: Vec<PlSmallStr> = names.into_iter().map(Into::into).collect();
         if let Some((name, col)) = cols.iter().find(|(_, c)| c.len() != height) {
             polars_bail!(ShapeMismatch:
                 "column {:?} has {} rows, the chunk has {}",
                 name.as_str(), col.len(), height
             );
+        }
+        if let Some((name, _)) = cols.iter().find(|(n, _)| !names.iter().any(|m| m == n)) {
+            polars_bail!(ColumnNotFound:
+                "column {:?} is given but not listed in `names`; every column given must be \
+                 listed, since `names` decides whether a column a scoring call may leave out \
+                 is absent",
+                name.as_str()
+            );
+        }
+        let mut seen: std::collections::HashSet<(&str, &'static str)> =
+            std::collections::HashSet::with_capacity(cols.len());
+        for (name, col) in &cols {
+            if !seen.insert((name.as_str(), col.form())) {
+                polars_bail!(Duplicate:
+                    "column {:?} is given twice as {}", name.as_str(), col.form()
+                );
+            }
         }
         Ok(Self {
             height,
@@ -115,7 +152,7 @@ impl ArrowChunk {
     pub fn f64(&self, spec: &Spec, role: &str, name: &str) -> PolarsResult<&Float64Array> {
         match self.find(name, |c| matches!(c, ArrowCol::F64(_))) {
             Some(ArrowCol::F64(a)) => Ok(a),
-            _ => Err(self.missing(spec, role, name)),
+            _ => Err(self.missing(spec, role, name, "a number")),
         }
     }
 
@@ -123,14 +160,14 @@ impl ArrowChunk {
     pub fn str(&self, spec: &Spec, role: &str, name: &str) -> PolarsResult<&Utf8ViewArray> {
         match self.find(name, |c| matches!(c, ArrowCol::Str(_))) {
             Some(ArrowCol::Str(a)) => Ok(a),
-            _ => Err(self.missing(spec, role, name)),
+            _ => Err(self.missing(spec, role, name, "text")),
         }
     }
 
     /// The group key column in whatever form the adapter chose for it.
     pub fn key(&self, spec: &Spec, role: &str, name: &str) -> PolarsResult<&ArrowCol> {
         self.find(name, |c| !matches!(c, ArrowCol::F64(_)))
-            .ok_or_else(|| self.missing(spec, role, name))
+            .ok_or_else(|| self.missing(spec, role, name, "text or an integer key"))
     }
 
     fn find(&self, name: &str, want: impl Fn(&ArrowCol) -> bool) -> Option<&ArrowCol> {
@@ -143,10 +180,21 @@ impl ArrowChunk {
     /// A column lookup that says which spec asked and what it asked for.
     /// Polars' own `not found: "x"` names neither, and in a bank of ten specs
     /// that is the difference between a fix and a search.
-    fn missing(&self, spec: &Spec, role: &str, name: &str) -> PolarsError {
+    ///
+    /// A column that *is* here, in a form the role does not read -- a clock
+    /// given as an integer array -- is named as such, rather than reported
+    /// "not found" beside a list that includes it. The polars adapter casts to
+    /// the wanted form, so that branch is only ever an Arrow caller's.
+    fn missing(&self, spec: &Spec, role: &str, name: &str, wanted: &str) -> PolarsError {
+        if let Some((_, c)) = self.cols.iter().find(|(n, _)| n == name) {
+            return polars_err!(SchemaMismatch:
+                "spec {:?}: {} column {:?} is given as {}, but a {} is read as {}",
+                spec.name, role, name, c.form(), role, wanted
+            );
+        }
         let have: Vec<&str> = self.names.iter().map(|n| n.as_str()).collect();
         polars_err!(ColumnNotFound:
-            "spec {:?}: {} column {:?} not found; the frame has columns {:?}",
+            "spec {:?}: {} column {:?} not found; the input has columns {:?}",
             spec.name, role, name, have
         )
     }
@@ -379,7 +427,20 @@ pub fn chunk_from_frame(df: &DataFrame, specs: &[Spec]) -> PolarsResult<ArrowChu
                 );
             }
         }
-        cols.push((name.clone(), cast_to(s, want, spec, role, name.as_str())?));
+        // One column read in two roles that cast to the same form -- a
+        // column that is a group key for one spec and a session for another,
+        // both text -- casts identically twice. `ArrowChunk::new` refuses a
+        // repeated `(name, form)` because a hand-built one hides a caller's
+        // mistake; here the two are the same array from the same source, so
+        // the second is dropped rather than pushed. A key and a feature on the
+        // same column cast to *different* forms and both stay.
+        let col = cast_to(s, want, spec, role, name.as_str())?;
+        if !cols
+            .iter()
+            .any(|(n, c)| n == &name && c.form() == col.form())
+        {
+            cols.push((name.clone(), col));
+        }
     }
     ArrowChunk::new(df.height(), cols, names)
 }

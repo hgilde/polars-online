@@ -122,6 +122,31 @@ class TestNothingLeaksAcrossTheBoundary:
         df = frame()
         assert_plateaus(lambda: po.ModelBank([SPEC]).fit_predict(df))
 
+    def test_many_tiny_groups(self):
+        """Fifty groups of thirty rows: the shape whose per-call fan-out once
+        doubled the RSS wobble and set `PAR_MIN_ROWS` (docs/PERFORMANCE.md, the
+        row floor). It was `test_plugin_over_groups` until the plugin went with
+        task 85; the bank's own group column feeds the same shape (review
+        2026-09-17, T1)."""
+        n, groups = 1500, 50
+        rng = np.random.default_rng(0)
+        df = pl.DataFrame(
+            {
+                "g": [f"g{i % groups}" for i in range(n)],
+                "x0": rng.standard_normal(n),
+                "y": rng.standard_normal(n),
+            }
+        )
+        spec = po.spec.ewridge(
+            "m", targets=["y"], features=["x0"], halflife=50.0, group="g", min_periods=2.0
+        )
+        # A wider window than the default: fanning fifty groups across the pool
+        # makes each call's allocator traffic noisier than a single group's, so
+        # a mark is averaged over 240 iterations rather than 120 to keep the
+        # wobble under the line. A true leak scales with iterations and still
+        # shows; only the noise divides down (review 2026-09-17, T1).
+        assert_plateaus(lambda: po.ModelBank([spec]).fit_predict(df), per_block=240)
+
     def test_multi_chunk_input(self):
         """`SeriesExport` carries `arrays: **ArrowArray` plus a length, so a
         chunked Series exports one ArrowArray per chunk. Each needs releasing."""

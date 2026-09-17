@@ -323,33 +323,33 @@
     coef_sum = None
     common
 
-[ModelBank]
-  __reduce__
-  closed_groups
-  coef
-  describe
-  drop_groups
-  fit
-  fit_predict
-  fit_predict_arrow
-  fit_predict_batches
-  gram
-  groups
-  last_row
-  load
-  load_bytes
-  marginal
-  output_fields
-  predict
-  predict_arrow
-  rows_seen
-  save
-  save_bytes
-  save_json
-  solve_failures
+[ModelBank]  # name and signature: a parameter added or a default moved is a diff here
+  __reduce__(self, /)
+  closed_groups(self, spec: 'str | int | None' = None, *, drop: 'bool' = True) -> 'pl.DataFrame'
+  coef(self, spec: 'str | int | None' = None, group: 'str | None' = None) -> 'pl.DataFrame'
+  describe(self, spec: 'str | int | None' = None, group: 'str | None' = None) -> 'pl.DataFrame'
+  drop_groups(self, keys: 'Iterable[str | None]', spec: 'str | int | None' = None) -> 'int'
+  fit(self, batches: 'pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame]', closed_groups: 'str | Path | None' = None, chunk_rows: 'int | None' = None) -> 'None'
+  fit_predict(self, df: 'pl.DataFrame') -> 'pl.DataFrame'
+  fit_predict_arrow(self, df: 'pl.DataFrame') -> 'list[_native.ArrowStruct]'
+  fit_predict_batches(self, batches: 'pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame]', closed_groups: 'str | Path | None' = None, chunk_rows: 'int | None' = None) -> 'Iterable[pl.DataFrame]'
+  gram(self, spec: 'str | int', group: 'str | None' = None) -> 'list[dict[str, Any]]'
+  groups(self, spec: 'str | int | None' = None) -> 'pl.DataFrame'
+  last_row(self, spec: 'str | int | None' = None, group: 'str | None' = None) -> 'pl.DataFrame'
+  load(path: 'str | Path', specs: 'Iterable[dict[str, Any]] | None' = None) -> 'ModelBank'
+  load_bytes(data: 'bytes', specs: 'Iterable[dict[str, Any]] | None' = None) -> 'ModelBank'
+  marginal(self, spec: 'str | int', group: 'str | None' = None) -> 'pl.DataFrame'
+  output_fields(self) -> 'dict[str, list[str]]'
+  predict(self, df: 'pl.DataFrame') -> 'pl.DataFrame'
+  predict_arrow(self, df: 'pl.DataFrame') -> 'list[_native.ArrowStruct]'
+  rows_seen(self) -> 'int'
+  save(self, path: 'str | Path') -> 'None'
+  save_bytes(self) -> 'bytes'
+  save_json(self, path: 'str | Path', *, pretty: 'bool' = True) -> 'None'
+  solve_failures(self) -> 'dict[str, dict[str | None, int]]'
   specs
-  summary
-  to_json
+  summary(self, spec: 'str | int | None' = None, group: 'str | None' = None) -> 'pl.DataFrame'
+  to_json(self, *, pretty: 'bool' = True) -> 'str'
 
 [frame namespaces]  # lf.online.<method> -> LazyFrame; df.online.<method> -> DataFrame
   LazyFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_rows: 'int | None' = None) -> 'pl.LazyFrame'

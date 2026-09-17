@@ -115,10 +115,16 @@ impl F64Column {
     }
 
     /// The validity as polars wants it: `None` when every row is valid.
-    fn validity(&mut self) -> Option<Bitmap> {
+    ///
+    /// Borrows `bits` rather than taking them, so a finisher may read
+    /// `is_valid` before or after this and get the same answer. The order used
+    /// to be load-bearing and enforced by a comment (review 2026-09-17, A3);
+    /// the cost of it not being is one copy of `n / 8` bytes for a packed
+    /// column, beside the `8 n` bytes of values it travels with.
+    fn validity(&self) -> Option<Bitmap> {
         let n = self.values.len();
         let bits = if self.packed {
-            MutableBitmap::from_vec(std::mem::take(&mut self.bits), n)
+            MutableBitmap::from_vec(self.bits.clone(), n)
         } else {
             MutableBitmap::from_trusted_len_iter(self.values.iter().map(|v| v.is_finite()))
         };
@@ -127,7 +133,7 @@ impl F64Column {
 
     /// The values and their validity as an Arrow array: no copy, since a
     /// primitive array *is* a values buffer and a validity bitmap.
-    pub(crate) fn finish_array(mut self) -> Float64Array {
+    pub(crate) fn finish_array(self) -> Float64Array {
         let validity = self.validity();
         PrimitiveArray::new(ArrowDataType::Float64, self.values.into(), validity)
     }
@@ -136,7 +142,7 @@ impl F64Column {
     /// `kmeans` assignment, a `micro` count). Every set value is a small
     /// non-negative integer by construction; the null rows carry NaN and are
     /// masked, not cast.
-    pub(crate) fn finish_i32_array(mut self) -> Int32Array {
+    pub(crate) fn finish_i32_array(self) -> Int32Array {
         let validity = self.validity();
         let values: Vec<i32> = self
             .values
@@ -148,7 +154,7 @@ impl F64Column {
 
     /// The same column as `i64`, for an id that only ever grows (a `micro`
     /// id or label).
-    pub(crate) fn finish_i64_array(mut self) -> Int64Array {
+    pub(crate) fn finish_i64_array(self) -> Int64Array {
         let validity = self.validity();
         let values: Vec<i64> = self
             .values
@@ -161,10 +167,11 @@ impl F64Column {
     /// The same column as `Boolean`, for a `1.0` / `0.0` flag.
     ///
     /// A boolean array is two bitmaps, values and validity. The values bitmap
-    /// is built *before* `validity` runs, because that takes `bits` and
-    /// `is_valid` reads them: a masked row's value is arbitrary, so `v == 1.0`
-    /// over every row is right and the mask decides what is seen.
-    pub(crate) fn finish_bool_array(mut self) -> BooleanArray {
+    /// is built from every row, masked or not: a masked row's value is
+    /// arbitrary, so `v == 1.0` over every row is right and the mask decides
+    /// what is seen. `validity` borrows `bits`, so the two may be built in
+    /// either order.
+    pub(crate) fn finish_bool_array(self) -> BooleanArray {
         let values: Bitmap =
             MutableBitmap::from_trusted_len_iter(self.values.iter().map(|&v| v == 1.0)).into();
         let validity = self.validity();
