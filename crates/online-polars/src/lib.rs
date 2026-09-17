@@ -38,6 +38,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+pub mod arrow;
 mod atomic;
 mod bank;
 mod column;
@@ -50,6 +51,7 @@ mod spec;
 mod stream;
 mod summary;
 
+pub use arrow::{ArrowChunk, ArrowCol, chunk_from_frame};
 pub use bank::{
     Bank, Coef, CoefField, FieldMeta, Gram, GroupKey, PAR_MIN_ROWS, coef_fields, output_fields,
     output_index,

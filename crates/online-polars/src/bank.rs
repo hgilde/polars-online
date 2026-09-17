@@ -10,8 +10,8 @@ use online_core::ClockCfg;
 use polars::chunked_array::builder::AnonymousOwnedListBuilder;
 use polars::prelude::*;
 use polars_arrow::array::{
-    Array as ArrowArray, BooleanArray, ListArray, MutableBinaryViewArray, PrimitiveArray,
-    StructArray, Utf8ViewArray,
+    Array as ArrowArray, BooleanArray, Float64Array, ListArray, MutableBinaryViewArray,
+    PrimitiveArray, StructArray, Utf8ViewArray,
 };
 use polars_arrow::bitmap::MutableBitmap;
 use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
@@ -20,6 +20,7 @@ use polars_utils::aliases::PlHashMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::arrow::{ArrowChunk, ArrowCol, chunk_from_frame, f64_values};
 use crate::column::F64Column;
 use crate::rows::FeatureRows;
 use crate::spec::{ModelKind, Spec};
@@ -116,82 +117,35 @@ struct SpecColumns {
     clock: Option<Vec<f64>>,
     session: Option<Vec<u64>>,
     weight: Option<Vec<f64>>,
-    /// The session column's *values*, in the frame's own row order, for a
+    /// The session column's *values*, in the chunk's own row order, for a
     /// spec that closes a group on a session change (E54): the closed row
     /// reports the span's session, and `session` above is a hash. Read at
-    /// one row per closed span, so it is the series rather than a gathered
+    /// one row per closed span, so it is the array rather than a gathered
     /// `Vec<Option<String>>` -- which would allocate a string per row of the
     /// chunk to use one of them.
-    session_str: Option<Series>,
-}
-
-/// A column lookup that says which spec asked and what it asked for. Polars'
-/// own `not found: "x"` names neither, and in a bank of ten specs that is the
-/// difference between a fix and a search.
-fn column<'a>(df: &'a DataFrame, spec: &Spec, role: &str, name: &str) -> PolarsResult<&'a Column> {
-    df.column(name).map_err(|_| {
-        let have: Vec<&str> = df.get_column_names().iter().map(|n| n.as_str()).collect();
-        polars_err!(ColumnNotFound:
-            "spec {:?}: {} column {:?} not found; the frame has columns {:?}",
-            spec.name, role, name, have
-        )
-    })
+    session_str: Option<Utf8ViewArray>,
 }
 
 /// Values as `f64`, null as NaN, in the order `layout` gives (see
-/// [`Layout`]). Zero-copy-ish for the common case: a null-free Float64
-/// column is a `memcpy` per arrow chunk when the layout is the identity and
-/// one gather otherwise. (A batch from `collect_batches` that spans two
-/// parquet row groups arrives as two chunks, so `cont_slice` alone is not
-/// the common case; docs/PERFORMANCE.md P11.)
+/// [`Layout`]). Zero-copy-ish for the common case: a null-free column is
+/// borrowed and copied straight out when the layout is the identity, and
+/// read at a stride otherwise.
 ///
-/// Only numeric, Boolean and Null columns are accepted. Anything else would be
-/// cast non-strictly, and a String column of numbers-as-text (or of anything)
-/// becomes all-null: every prediction null and no error to say why.
+/// There is no dtype check and no cast here: an [`ArrowChunk`] holds a
+/// numeric column as a `Float64Array` and nothing else, so both were made
+/// when the chunk was built (`crate::arrow`).
 fn f64_column(
-    df: &DataFrame,
+    chunk: &ArrowChunk,
     spec: &Spec,
     role: &str,
     name: &str,
     layout: Layout<'_>,
 ) -> PolarsResult<Vec<f64>> {
-    let s = f64_series(df, spec, role, name)?;
-    let ca = s.f64()?;
-    if let (Some(perm), Ok(slice)) = (layout, ca.cont_slice()) {
-        return Ok(perm.iter().map(|&i| slice[i]).collect());
-    }
-    Ok(gathered(materialized(ca), layout))
-}
-
-/// The column as a `Float64` series, in the frame's own order: the dtype
-/// check and the cast that every numeric read shares.
-fn f64_series(df: &DataFrame, spec: &Spec, role: &str, name: &str) -> PolarsResult<Series> {
-    let col = column(df, spec, role, name)?;
-    let dtype = col.dtype();
-    if !(dtype.is_numeric() || matches!(dtype, DataType::Boolean | DataType::Null)) {
-        polars_bail!(ComputeError:
-            "spec {:?}: {} column {:?} has dtype {}; it must be numeric \
-             (cast it, e.g. pl.col({:?}).cast(pl.Float64))",
-            spec.name, role, name, dtype, name
-        );
-    }
-    col.as_materialized_series().cast(&DataType::Float64)
-}
-
-/// The values of a `Float64` column as one vector, nulls as NaN, in the
-/// frame's own order -- the read for a column that is chunked or has nulls,
-/// which `cont_slice` refuses.
-fn materialized(ca: &Float64Chunked) -> Vec<f64> {
-    let mut v: Vec<f64> = Vec::with_capacity(ca.len());
-    for arr in ca.downcast_iter() {
-        match arr.validity() {
-            Some(valid) if valid.unset_bits() > 0 => {
-                v.extend(arr.iter().map(|x| x.copied().unwrap_or(f64::NAN)));
-            }
-            _ => v.extend_from_slice(arr.values().as_slice()),
-        }
-    }
-    v
+    let values = f64_values(chunk.f64(spec, role, name)?);
+    Ok(match layout {
+        Some(perm) => perm.iter().map(|&i| values[i]).collect(),
+        None => values.into_owned(),
+    })
 }
 
 /// The spec's feature columns as one row-major block (docs/PERFORMANCE.md
@@ -200,29 +154,28 @@ fn materialized(ca: &Float64Chunked) -> Vec<f64> {
 /// pass over all of them, so a wide chunk is never held as `k` separate
 /// vectors first.
 fn feature_rows(
-    df: &DataFrame,
+    chunk: &ArrowChunk,
     spec: &Spec,
     layout: Layout<'_>,
     par: bool,
 ) -> PolarsResult<FeatureRows> {
-    let series = map_maybe_par::<_, _, PolarsResult<Vec<Series>>>(&spec.features, par, |c| {
-        f64_series(df, spec, "feature", c)
-    })?;
-    // In place where the column is one null-free chunk, a copy otherwise.
-    fn source(s: &Series) -> PolarsResult<Cow<'_, [f64]>> {
-        let ca = s.f64()?;
-        Ok(match ca.cont_slice() {
-            Ok(slice) => Cow::Borrowed(slice),
-            Err(_) => Cow::Owned(materialized(ca)),
-        })
-    }
+    let arrays =
+        map_maybe_par::<_, _, PolarsResult<Vec<&Float64Array>>>(&spec.features, par, |c| {
+            chunk.f64(spec, "feature", c)
+        })?;
+    // In place where the column has no nulls to fill in, a copy otherwise.
     let sources: Vec<Cow<'_, [f64]>> = if par {
-        series.par_iter().map(source).collect::<PolarsResult<_>>()?
+        arrays.par_iter().map(|a| f64_values(a)).collect()
     } else {
-        series.iter().map(source).collect::<PolarsResult<_>>()?
+        arrays.iter().map(|a| f64_values(a)).collect()
     };
     let cols: Vec<&[f64]> = sources.iter().map(|s| &s[..]).collect();
-    Ok(FeatureRows::from_columns(&cols, df.height(), layout, par))
+    Ok(FeatureRows::from_columns(
+        &cols,
+        chunk.height(),
+        layout,
+        par,
+    ))
 }
 
 /// The order a spec's columns are extracted in: `None` is the frame's own
@@ -274,37 +227,22 @@ fn layout_of(groups: &[(GroupKey, Vec<usize>)], n: usize) -> Option<Vec<usize>> 
     Some(perm)
 }
 
-/// A session or group key as strings. Any dtype with a string form is a key
-/// (ints, dates and categoricals included); a nested one is refused by name.
-fn key_column(df: &DataFrame, spec: &Spec, role: &str, name: &str) -> PolarsResult<Series> {
-    let col = column(df, spec, role, name)?;
-    col.as_materialized_series()
-        .cast(&DataType::String)
-        .map_err(|e| {
-            polars_err!(ComputeError:
-                "spec {:?}: {} column {:?} has dtype {}, which cannot be used as a key: {}",
-                spec.name, role, name, col.dtype(), e
-            )
-        })
-}
-
 /// An `ew_class` label column as class indices: each value's position in
 /// `classes` as `f64`, null as NaN (a row scored but not learned from). Any
 /// dtype with a string form is a label, as for a key; a non-null value the
 /// spec does not list is an error naming the row, the value and the classes,
 /// rather than a row silently not learned from.
 fn label_column(
-    df: &DataFrame,
+    chunk: &ArrowChunk,
     spec: &Spec,
     name: &str,
     classes: &[String],
     layout: Layout<'_>,
 ) -> PolarsResult<Vec<f64>> {
-    let s = key_column(df, spec, "label", name)?;
-    let ca = s.str()?;
-    let mut v: Vec<f64> = Vec::with_capacity(ca.len());
+    let arr = chunk.str(spec, "label", name)?;
+    let mut v: Vec<f64> = Vec::with_capacity(arr.len());
     let mut last: Option<(&str, f64)> = None;
-    for (j, value) in ca.iter().enumerate() {
+    for (j, value) in arr.iter().enumerate() {
         v.push(match value {
             None => f64::NAN,
             Some(val) => match last {
@@ -373,24 +311,25 @@ where
     if par { rayon::join(a, b) } else { (a(), b()) }
 }
 
-/// `scoring` is [`Bank::predict`]'s reading of the frame: the features and
+/// `scoring` is [`Bank::predict`]'s reading of the chunk: the features and
 /// the clock are required as ever, a target or session column is read when
 /// present and taken as absent otherwise, and the weight column is not read
 /// at all -- a scoring row has nothing to weigh.
 ///
 /// Every column comes back in `layout` order. The columns are independent
-/// passes over the frame, so they are read in parallel (from [`PAR_MIN_ROWS`]
+/// passes over the chunk, so they are read in parallel (from [`PAR_MIN_ROWS`]
 /// up): with one spec in the bank this phase was a single thread copying
 /// every column in turn.
 fn extract(
-    df: &DataFrame,
+    chunk: &ArrowChunk,
     spec: &Spec,
     scoring: bool,
     layout: Layout<'_>,
 ) -> PolarsResult<SpecColumns> {
-    let optional = |name: &str| scoring && df.get_column_index(name).is_none();
-    let par = df.height() >= PAR_MIN_ROWS || df.height() * spec.features.len() >= PAR_MIN_CELLS;
-    let features = || feature_rows(df, spec, layout, par);
+    let optional = |name: &str| scoring && !chunk.has(name);
+    let par =
+        chunk.height() >= PAR_MIN_ROWS || chunk.height() * spec.features.len() >= PAR_MIN_CELLS;
+    let features = || feature_rows(chunk, spec, layout, par);
     let targets = || -> PolarsResult<Vec<Vec<f64>>> {
         // A comparison's targets are residual fields of two other specs'
         // output, which the bank fills in once those have run
@@ -400,11 +339,11 @@ fn extract(
         }
         map_maybe_par(&spec.targets, par, |c| {
             if optional(c) {
-                Ok(vec![f64::NAN; df.height()])
+                Ok(vec![f64::NAN; chunk.height()])
             } else if let ModelKind::EwClass { classes, .. } = &spec.model {
-                label_column(df, spec, c, classes, layout)
+                label_column(chunk, spec, c, classes, layout)
             } else {
-                let v = f64_column(df, spec, "target", c, layout)?;
+                let v = f64_column(chunk, spec, "target", c, layout)?;
                 // A `strict_binary` target is 0 or 1, and anything else is an
                 // error naming the row, as a label outside `ew_class`'s
                 // classes is -- checked here, before any stream is touched, so
@@ -459,28 +398,12 @@ fn extract(
     let clock = || -> PolarsResult<Option<Vec<f64>>> {
         match &spec.clock {
             Some(c) => {
-                // A temporal clock column is refused rather than cast. Casting one
-                // to f64 exposes its *internal representation*, so the same 60
-                // seconds becomes 60_000 / 60_000_000 / 60_000_000_000 clock units
-                // depending only on whether the column is Datetime(ms/us/ns), and a
-                // Date becomes 1 unit per day. `halflife`, `max_dclock` and
-                // `session_gap` all live in those units, so `halflife = 600` on a
-                // microsecond column silently means 600 microseconds: every row
-                // decays to nothing and the output is plausible-looking garbage
-                // with no error. Making the user cast is one expression and makes
-                // the intended scale explicit (docs/TESTING.md T-E10).
-                let dtype = column(df, spec, "clock", c)?.dtype().clone();
-                if dtype.is_temporal() {
-                    polars_bail!(ComputeError:
-                        "spec {:?}: clock column {:?} has dtype {}; a temporal clock would be \
-                         read as its internal representation (e.g. epoch microseconds), so \
-                         halflife/max_dclock/session_gap would silently be in those units. \
-                         Cast it to the scale you mean, e.g. \
-                         pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64), and use that column.",
-                        spec.name, c, dtype, c
-                    );
-                }
-                let v = f64_column(df, spec, "clock", c, layout)?;
+                // A temporal clock column is refused where the chunk is built
+                // rather than here: whether the source column was a Datetime
+                // is a question about the source, and by this point it is an
+                // `f64` array either way (`crate::arrow`, docs/TESTING.md
+                // T-E10).
+                let v = f64_column(chunk, spec, "clock", c, layout)?;
                 // Nulls arrive as NaN, which this rejects along with inf: a clock
                 // with no value has no defined delta either way.
                 if let Some(j) = v.iter().position(|f| !f.is_finite()) {
@@ -494,12 +417,12 @@ fn extract(
             None => Ok(None),
         }
     };
-    let session = || -> PolarsResult<(Option<Vec<u64>>, Option<Series>)> {
+    let session = || -> PolarsResult<(Option<Vec<u64>>, Option<Utf8ViewArray>)> {
         match &spec.session {
             Some(c) if !optional(c) => {
-                let s = key_column(df, spec, "session", c)?;
-                let hashes = gathered(s.str()?.iter().map(session_hash).collect(), layout);
-                let vals = spec.closes_on_session().then(|| s.clone());
+                let a = chunk.str(spec, "session", c)?;
+                let hashes = gathered(a.iter().map(session_hash).collect(), layout);
+                let vals = spec.closes_on_session().then(|| a.clone());
                 Ok((Some(hashes), vals))
             }
             _ => Ok((None, None)),
@@ -509,7 +432,7 @@ fn extract(
         match &spec.weight {
             Some(_) if scoring => Ok(None),
             Some(c) => {
-                let v = f64_column(df, spec, "weight", c, layout)?;
+                let v = f64_column(chunk, spec, "weight", c, layout)?;
                 // A negative weight is never meaningful for a weighted mean, and
                 // silently letting one through corrupts the accumulators (the EW
                 // count and the per-target cross moments disagree about whether the
@@ -834,7 +757,7 @@ fn process(
             starts.extend_from_slice(&bounds);
             let session_of = |row: usize| -> Option<String> {
                 let s = sc.session_str.as_ref()?;
-                s.str().ok()?.get(row).map(str::to_string)
+                s.get(row).map(str::to_string)
             };
             'segments: for (seg, &start) in starts.iter().enumerate() {
                 let end = starts.get(seg + 1).copied().unwrap_or(idx.len());
@@ -1031,39 +954,39 @@ fn forget(states: &mut [HashMap<GroupKey, Stream>], fresh: &[(usize, GroupKey)])
 /// that is stored and serialized, so state files are unaffected. A 64-bit
 /// collision would merge two groups; the same 2^-64 exposure the session hash
 /// already documents.
-fn group_indices(df: &DataFrame, spec: &Spec) -> PolarsResult<Vec<(GroupKey, Vec<usize>)>> {
+fn group_indices(chunk: &ArrowChunk, spec: &Spec) -> PolarsResult<Vec<(GroupKey, Vec<usize>)>> {
     match &spec.group {
-        None => Ok(vec![(GroupKey::ungrouped(), (0..df.height()).collect())]),
+        None => Ok(vec![(GroupKey::ungrouped(), (0..chunk.height()).collect())]),
         Some(g) => {
             // An integer key's text is its decimal, which is exactly what the
-            // String cast below would produce (`integer_group_keys_match_the_
+            // String cast would produce (`integer_group_keys_match_the_
             // string_cast` in tests/bank.rs pins the two paths to the same
             // keys and output), so the value itself is the bucket: no cast, no
             // hash, and no collision to document (docs/PERFORMANCE.md P11).
-            let col = column(df, spec, "group", g)?;
-            if col.dtype().is_integer() {
-                let s = col.as_materialized_series();
-                return Ok(if *s.dtype() == DataType::UInt64 {
-                    integer_groups(s.u64()?, |v| v)
-                } else {
-                    integer_groups(s.cast(&DataType::Int64)?.i64()?, |v| v as u64)
-                });
-            }
-            let s = key_column(df, spec, "group", g)?;
-            let mut order: Vec<(GroupKey, Vec<usize>)> = Vec::new();
-            let mut slot_of: PlHashMap<u64, usize> = PlHashMap::default();
-            for (i, v) in s.str()?.iter().enumerate() {
-                // `session_hash`, not a copy of it (review 2026-09-12, D7).
-                let h = session_hash(v);
-                match slot_of.get(&h) {
-                    Some(&slot) => order[slot].1.push(i),
-                    None => {
-                        slot_of.insert(h, order.len());
-                        order.push((GroupKey(v.map(str::to_string)), vec![i]));
+            // Which form a key arrives in is the chunk's choice, not this
+            // function's (`crate::arrow`).
+            match chunk.key(spec, "group", g)? {
+                ArrowCol::U64(a) => Ok(integer_groups(a.iter().map(|v| v.copied()), |v| v)),
+                ArrowCol::I64(a) => Ok(integer_groups(a.iter().map(|v| v.copied()), |v| v as u64)),
+                ArrowCol::Str(a) => {
+                    let mut order: Vec<(GroupKey, Vec<usize>)> = Vec::new();
+                    let mut slot_of: PlHashMap<u64, usize> = PlHashMap::default();
+                    for (i, v) in a.iter().enumerate() {
+                        // `session_hash`, not a copy of it (review 2026-09-12, D7).
+                        let h = session_hash(v);
+                        match slot_of.get(&h) {
+                            Some(&slot) => order[slot].1.push(i),
+                            None => {
+                                slot_of.insert(h, order.len());
+                                order.push((GroupKey(v.map(str::to_string)), vec![i]));
+                            }
+                        }
                     }
+                    Ok(order)
                 }
+                // `ArrowChunk::key` never returns the numeric form.
+                ArrowCol::F64(_) => unreachable!("a group key is never read as a number"),
             }
-            Ok(order)
         }
     }
 }
@@ -1099,40 +1022,29 @@ pub(crate) fn key_cmp(a: &GroupKey, b: &GroupKey, integer: bool) -> std::cmp::Or
 
 /// Is this spec's group column an integer one, so that [`key_cmp`] compares
 /// its keys as numbers? `Err` names a dtype `"monotone"` cannot order.
-fn group_key_is_integer(df: &DataFrame, spec: &Spec) -> PolarsResult<bool> {
+/// A dtype `"monotone"` cannot order is refused where the chunk is built, so
+/// by here the column is an integer or it is text.
+fn group_key_is_integer(chunk: &ArrowChunk, spec: &Spec) -> PolarsResult<bool> {
     let Some(g) = &spec.group else {
         return Ok(false);
     };
-    let dt = column(df, spec, "group", g)?.dtype().clone();
-    if dt.is_integer() {
-        return Ok(true);
-    }
-    if matches!(dt, DataType::String | DataType::Categorical(..)) {
-        return Ok(false);
-    }
-    polars_bail!(ComputeError:
-        "spec {:?}: group_close = \"monotone\" needs a group column it can order, and {:?} is \
-         {}; use an integer, String or Categorical key (a float or a temporal column can be \
-         cast to one)",
-        spec.name, g, dt
-    )
+    Ok(chunk.key(spec, "group", g)?.is_integer())
 }
 
 /// [`group_indices`] over an integer column: `bucket` maps a value to its
 /// 64-bit identity (sign extension is a bijection, so `as u64` serves every
 /// signed width), and the key text is formatted once per distinct group.
 fn integer_groups<T>(
-    ca: &ChunkedArray<T>,
-    bucket: impl Fn(T::Native) -> u64,
+    values: impl Iterator<Item = Option<T>>,
+    bucket: impl Fn(T) -> u64,
 ) -> Vec<(GroupKey, Vec<usize>)>
 where
-    T: PolarsNumericType,
-    T::Native: std::fmt::Display,
+    T: Copy + std::fmt::Display,
 {
     let mut order: Vec<(GroupKey, Vec<usize>)> = Vec::new();
     let mut slot_of: PlHashMap<u64, usize> = PlHashMap::default();
     let mut null_slot: Option<usize> = None;
-    for (i, v) in ca.iter().enumerate() {
+    for (i, v) in values.enumerate() {
         let slot = match v {
             None => *null_slot.get_or_insert_with(|| {
                 order.push((GroupKey(None), Vec::new()));
@@ -2643,11 +2555,11 @@ impl Bank {
     /// Outputs are attached with `with_column`, which replaces a column of
     /// the same name, so a spec named like an input would silently eat the
     /// input (the Python bank and the CLI runner both attach that way).
-    fn refuse_name_clash(&self, df: &DataFrame) -> PolarsResult<()> {
+    fn refuse_name_clash(&self, names: &[PlSmallStr]) -> PolarsResult<()> {
         if let Some(spec) = self
             .specs
             .iter()
-            .find(|s| df.get_column_index(&s.name).is_some())
+            .find(|s| names.iter().any(|n| n.as_str() == s.name.as_str()))
         {
             polars_bail!(Duplicate:
                 "spec {:?} has the same name as an input column; the output struct \
@@ -2694,20 +2606,30 @@ impl Bank {
     /// rather than go on from there. And, on the first call only, a
     /// `POLARS_ONLINE_MAX_THREADS` that is not a count of threads.
     pub fn fit_predict(&mut self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
+        let chunk = chunk_from_frame(df, &self.specs)?;
+        self.fit_predict_arrow(&chunk)
+    }
+
+    /// [`Self::fit_predict`] over an [`ArrowChunk`]: the same models, the
+    /// same state and the same output, for a caller holding Arrow arrays and
+    /// no polars frame to put them in. [`Self::fit_predict`] is this method
+    /// behind [`chunk_from_frame`], which is where every dtype decision about
+    /// a frame is made.
+    pub fn fit_predict_arrow(&mut self, chunk: &ArrowChunk) -> PolarsResult<Vec<Column>> {
         // Everything parallel below -- the `par_iter`s here and the
         // per-instance ones in `Stream` -- runs on the bank's own pool
         // (pool.rs), never on rayon's global one, whichever thread calls.
-        crate::pool::pool()?.install(|| self.fit_predict_on_pool(df))
+        crate::pool::pool()?.install(|| self.fit_predict_on_pool(chunk))
     }
 
-    fn fit_predict_on_pool(&mut self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
+    fn fit_predict_on_pool(&mut self, chunk: &ArrowChunk) -> PolarsResult<Vec<Column>> {
         // Section timings to stderr when ONLINE_TIMING is set; costs one env
         // read per chunk. This is how docs/PERFORMANCE.md's numbers are made.
         let timing = std::env::var_os("ONLINE_TIMING").is_some();
         let t0 = std::time::Instant::now();
-        let n = df.height();
+        let n = chunk.height();
         self.refuse_if_broken()?;
-        self.refuse_name_clash(df)?;
+        self.refuse_name_clash(chunk.names())?;
         // Independent per spec, and each is a full pass over its columns, so
         // they run in parallel with each other (docs/PERFORMANCE.md P3). The
         // groups come first because they decide the layout the columns are
@@ -2715,7 +2637,7 @@ impl Bank {
         let groups: Vec<Vec<(GroupKey, Vec<usize>)>> = self
             .specs
             .par_iter()
-            .map(|s| group_indices(df, s))
+            .map(|s| group_indices(chunk, s))
             .collect::<PolarsResult<_>>()?;
         // `group_close = "monotone"` reads the keys in the column's own
         // order, not `GroupKey`'s lexicographic one, and refuses a chunk
@@ -2724,7 +2646,7 @@ impl Bank {
         let mut integer_keys = vec![false; self.specs.len()];
         for (si, spec) in self.specs.iter().enumerate() {
             if spec.closes_monotone() {
-                integer_keys[si] = group_key_is_integer(df, spec)?;
+                integer_keys[si] = group_key_is_integer(chunk, spec)?;
                 // The mark and the keys have to be read in the same order.
                 // The forward direction -- an integer column against a mark
                 // that is not an integer -- `check_monotone` catches from
@@ -2764,7 +2686,7 @@ impl Bank {
             .specs
             .par_iter()
             .zip(layouts.par_iter())
-            .map(|(s, l)| extract(df, s, false, l.as_deref()))
+            .map(|(s, l)| extract(chunk, s, false, l.as_deref()))
             .collect::<PolarsResult<_>>()?;
         let t_extract = t1.elapsed();
         let t2 = std::time::Instant::now();
@@ -2965,24 +2887,31 @@ impl Bank {
     ///
     /// As [`Self::fit_predict`]'s, less a missing target, which is not one.
     pub fn predict(&self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
-        crate::pool::pool()?.install(|| self.predict_on_pool(df))
+        let chunk = chunk_from_frame(df, &self.specs)?;
+        self.predict_arrow(&chunk)
     }
 
-    fn predict_on_pool(&self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
-        let n = df.height();
+    /// [`Self::predict`] over an [`ArrowChunk`], as [`Self::fit_predict_arrow`]
+    /// is to [`Self::fit_predict`].
+    pub fn predict_arrow(&self, chunk: &ArrowChunk) -> PolarsResult<Vec<Column>> {
+        crate::pool::pool()?.install(|| self.predict_on_pool(chunk))
+    }
+
+    fn predict_on_pool(&self, chunk: &ArrowChunk) -> PolarsResult<Vec<Column>> {
+        let n = chunk.height();
         self.refuse_if_broken()?;
-        self.refuse_name_clash(df)?;
+        self.refuse_name_clash(chunk.names())?;
         let groups: Vec<Vec<(GroupKey, Vec<usize>)>> = self
             .specs
             .par_iter()
-            .map(|s| group_indices(df, s))
+            .map(|s| group_indices(chunk, s))
             .collect::<PolarsResult<_>>()?;
         let layouts: Vec<Option<Vec<usize>>> = groups.iter().map(|g| layout_of(g, n)).collect();
         let mut cols: Vec<SpecColumns> = self
             .specs
             .par_iter()
             .zip(layouts.par_iter())
-            .map(|(s, l)| extract(df, s, true, l.as_deref()))
+            .map(|(s, l)| extract(chunk, s, true, l.as_deref()))
             .collect::<PolarsResult<_>>()?;
 
         let specs = &self.specs;

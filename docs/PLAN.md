@@ -1674,19 +1674,47 @@ note, not a task.
       `hit_rate` (`test_diagnostics.py`'s E22 test among them) is regression
       and passes unchanged, since none of them named `binary=True`.
 
-- [ ] 86. **The bank on Arrow, with Polars as an adapter -- designed
-      2026-09-17, not started.** Goal: the model bank takes and returns Arrow,
-      so Polars becomes the most convenient way to use the library rather than
-      the only one, and the boundary stops riding on private py-polars methods.
-      **Not a batch.** `bank.rs` is 4,510 lines, with `stream.rs`, `refresh.rs`,
-      `summary.rs` and `column.rs` behind it, against 9 Rust and 84 Python test
-      files that feed and assert on frames. It needs its own session, with the
-      tests written before the code.
+- [ ] 86. **The bank on Arrow, with Polars as an adapter -- in progress,
+      2026-09-17.** Goal: the model bank takes and returns Arrow, so Polars
+      becomes the most convenient way to use the library rather than the only
+      one, and the boundary stops riding on private py-polars methods.
+      **Not a batch:** it is three seams, each landed and proven on its own
+      against the golden streams rather than as one change nothing can judge.
+
+      *Done:*
+
+      - **The output path.** Every output field is built as an Arrow array and
+        `column.rs` imports no polars at all. `coef` is a hand-built
+        `ListArray`, written out rather than delegated because a null list and
+        a null inside a list are different things. `assemble` ends at
+        `StructArray::new`, with one polars call left to give the struct the
+        spec's name.
+      - **The input path.** The bank reads an `ArrowChunk`, not a `DataFrame`,
+        and `fit_predict_arrow` / `predict_arrow` are public and mention no
+        polars. The split is by what a decision is *about*: every
+        polars-shaped one -- column lookup, the numeric refusal, the `Float64`
+        cast, the key and label cast to text, the integer-key choice, the
+        temporal-clock refusal, the refusal of a group dtype `"monotone"`
+        cannot order -- moved to `crate::arrow`; every model-shaped one stayed
+        in the bank, because it holds whoever supplies the data. `column`,
+        `f64_series`, `key_column` and `materialized` are gone.
+
+      *Left:*
+
+      - **The return type.** The Arrow entry points still hand back
+        `Vec<Column>`. The arrays are already Arrow inside `assemble`; what
+        remains is to return them and let the polars pair wrap.
+      - **The four accessor frame builders**: `summary_frame` and
+        `describe_frame` in `summary.rs`, the marginal builder and
+        `closed_frame` in `bank.rs`.
+      - **The Python side**, which is where the private-boundary motivation is
+        actually paid off: feed and read the bank over `__arrow_c_stream__`
+        rather than pyo3-polars' `PyDataFrame` / `PySeries`.
 
       *What the session of 2026-09-17 established, so it need not be redone:*
 
-      - **The bank's Polars use is thin and mechanical.** Input is one cast to
-        `Float64` (`bank.rs:161`), a borrowed slice when a column is one
+      - **The bank's Polars use is thin and mechanical.** Input was one cast to
+        `Float64`, a borrowed slice when a column is one
         null-free chunk, and a NaN-filling fallback already written against
         Arrow arrays. Output is `F64Column`: a values buffer plus validity bits
         packed little-endian, which is Arrow's own layout. What the bank asks of
