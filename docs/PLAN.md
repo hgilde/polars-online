@@ -1674,6 +1674,53 @@ note, not a task.
       `hit_rate` (`test_diagnostics.py`'s E22 test among them) is regression
       and passes unchanged, since none of them named `binary=True`.
 
+- [ ] 86. **The bank on Arrow, with Polars as an adapter -- designed
+      2026-09-17, not started.** Goal: the model bank takes and returns Arrow,
+      so Polars becomes the most convenient way to use the library rather than
+      the only one, and the boundary stops riding on private py-polars methods.
+      **Not a batch.** `bank.rs` is 4,510 lines, with `stream.rs`, `refresh.rs`,
+      `summary.rs` and `column.rs` behind it, against 9 Rust and 84 Python test
+      files that feed and assert on frames. It needs its own session, with the
+      tests written before the code.
+
+      *What the session of 2026-09-17 established, so it need not be redone:*
+
+      - **The bank's Polars use is thin and mechanical.** Input is one cast to
+        `Float64` (`bank.rs:161`), a borrowed slice when a column is one
+        null-free chunk, and a NaN-filling fallback already written against
+        Arrow arrays. Output is `F64Column`: a values buffer plus validity bits
+        packed little-endian, which is Arrow's own layout. What the bank asks of
+        a data layer is a contiguous float slice, a validity bitmap, a struct of
+        named children and a schema. Arrow provides all four.
+      - **The interchange was tested, not assumed.** Decimal, Boolean and
+        `Int16` inputs are accepted and produce the right struct. A full output
+        -- struct with a nested `List(Float64)` and five nulls -- round-trips
+        through `__arrow_c_stream__` / `pl.from_arrow` with exact frame
+        equality, preserved dtypes and preserved null counts. That was the
+        sharpest risk and it passed.
+      - **The motivation is the private boundary, not size.** pyo3-polars gets
+        `_s` off a Series and calls the private `_export`/`_import`
+        (`types.rs:181,250`), which is why the floor is 1.28.1 and why the
+        interface carries no promise. `__arrow_c_stream__` is public and
+        standardised; the pinned polars 1.44.2 already exposes it on both
+        frames and series.
+      - **Arrow does not reach the engine, and no longer needs to.** Streaming
+        scans, pushdown, multi-file globs, CSV inference and the parallel sinks
+        have no Arrow equivalent -- but that is the runner, which after task 83
+        is the command line's alone, where static linking costs nothing because
+        there is no second copy in the process.
+      - **What it would cost:** reimplementing the input cast (arrow-cast, or by
+        hand for the numeric types we accept); multi-chunk handling, which
+        `ChunkedArray` currently gives free; and returning record batches from
+        `summary`, `describe`, `coef`, `marginal` and `closed_groups` for Python
+        to wrap. Prototype the cast kernel and the chunk handling first -- that
+        is where the work actually is.
+      - **What it would open:** any Arrow producer as a source (DuckDB readers,
+        pyarrow datasets, Iceberg and Delta, Arrow Flight); Polars optional
+        rather than required, which needs the *Python* side restructured too,
+        since ten modules import it at module scope including `__init__.py`;
+        and one Polars in the process instead of two for the bank path.
+
 - [x] 85. **The expression plugin removed, 2026-09-17.** It was O(data) by
       polars' own rules and warned on every use since 2026-09-03 (task 19);
       keeping a surface whose whole behaviour contradicts the library's point
