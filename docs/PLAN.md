@@ -1674,12 +1674,17 @@ note, not a task.
       `hit_rate` (`test_diagnostics.py`'s E22 test among them) is regression
       and passes unchanged, since none of them named `binary=True`.
 
-- [ ] 86. **The bank on Arrow, with Polars as an adapter -- in progress,
-      2026-09-17.** Goal: the model bank takes and returns Arrow, so Polars
-      becomes the most convenient way to use the library rather than the only
-      one, and the boundary stops riding on private py-polars methods.
-      **Not a batch:** it is three seams, each landed and proven on its own
+- [ ] 86. **The bank on Arrow, with Polars as an adapter -- the bank is done,
+      two pieces deliberately are not, 2026-09-17.** Goal: the model bank takes
+      and returns Arrow, so Polars becomes the most convenient way to use the
+      library rather than the only one, and the boundary stops riding on
+      private py-polars methods. The first holds outright. The second holds on
+      the way *out* and not on the way *in*, which is why this stays open
+      rather than ticked -- see "not done" below, where the reason is an
+      ownership question in the C interface and not remaining effort.
+      **Not a batch:** four increments, each landed and proven on its own
       against the golden streams rather than as one change nothing can judge.
+      Released in 0.7.0.
 
       *Done:*
 
@@ -1714,18 +1719,39 @@ note, not a task.
         `Drop` that calls `release` only when the consumer has not taken it is
         what makes it safe, and polars-arrow already provides that.
 
-      *Left:*
+      *Not done, and the reason -- both examined rather than skipped:*
 
       - **The input direction from Python.** A frame still arrives as
-        `PyDataFrame`. Reading it as a capsule (`__arrow_c_stream__`) is what
-        would take the private interface off the boundary entirely rather than
-        off half of it.
-      - **The four accessor frame builders**: `summary_frame` and
-        `describe_frame` in `summary.rs`, the marginal builder and
-        `closed_frame` in `bank.rs`. Worth doing with their Python consumers
-        rather than ahead of them: converting one to Arrow while the extension
-        wraps the result straight back into a `DataFrame` is churn with
-        nothing observable to show for it.
+        `PyDataFrame`, so the private interface is off half the boundary and
+        not all of it. The obstacle is ownership, not effort. The C data
+        interface makes the *consumer* take ownership by moving the struct out
+        and nulling the producer's `release` pointer -- and polars-arrow keeps
+        `ArrowArray`'s fields `pub(super)`, so from outside that module the
+        struct can be moved out but the original cannot be marked released.
+        The imported array's `Drop` and the producing library's capsule
+        destructor would then both be entitled to call `release`. Getting past
+        it means writing a zeroed struct through a raw pointer, which is
+        exactly the kind of thing to prototype and measure rather than reason
+        about. The pieces, when someone does: `import_array_from_c` takes the
+        struct by value and wants the dtype separately, from
+        `import_field_from_c`; `ArrowArrayStreamReader::try_new` is the
+        stream-shaped alternative and raises the same question; the consumer
+        side is `PyCapsuleMethods::pointer_checked(Some(c"arrow_array"))`.
+      - **The four accessor frame builders.** Judged after reading all four,
+        not assumed: the rewrite is not worth it. `summary_frame` (13 columns)
+        and `describe_frame` (9) are flat and would convert easily. But
+        `closed_frame` is some forty columns across five conditional blocks and
+        leans on three separate polars list-builder families --
+        `ListPrimitiveChunkedBuilder` for `f64` and `i64`,
+        `ListStringChunkedBuilder`, and `AnonymousOwnedListBuilder`, which
+        materialises a `Series` per row to build a doubly nested
+        `List(List(Float64))`. By hand that is offsets at two levels and three
+        validity bitmaps for every such column, and `marginal` has ragged
+        inner lists besides. What it would buy does not match it: these calls
+        exist to hand back a *table*, which is the one thing polars' builders
+        are for, and they run where there is no second copy of polars in the
+        process. The boundary that motivated the task is the chunk path, and
+        that path is Arrow end to end.
 
       *What the session of 2026-09-17 established, so it need not be redone:*
 

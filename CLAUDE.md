@@ -116,10 +116,10 @@ Polars' extension mechanism is a `dlopen`ed C ABI by design, and nothing on
 crates.io publishes a `dylib` to link against anyway (0 of our 453
 dependencies; `crate-type` is the publisher's choice).
 
-13. **Know which of the interfaces a change rides on.** Two are left, and
-    neither carries a guarantee. (The expression plugin — the one path that
-    did — was removed in task 85: it read every row by construction, which is
-    the opposite of what this library is for.)
+13. **Know which of the interfaces a change rides on.** Three, and the two
+    that are py-polars' to change carry no guarantee. (The expression plugin —
+    which had a version handshake — was removed in task 85: it read every row
+    by construction, which is the opposite of what this library is for.)
     - **PyO3 extension types** (`PyDataFrame`/`PySeries`, i.e. `ModelBank`) —
       the README states these "are however only provided for convenience and
       **do not have stability guarantees** beyond that the latest definitions
@@ -132,9 +132,20 @@ dependencies; `crate-type` is the publisher's choice).
       projection, predicate or slice it pushes into a Python source, so the
       source honours all three (`python/polars_online/_frame.py`).
 
-    `polars>=1.34.0,<3` in `pyproject.toml` is therefore *measured* for both
-    paths but *guaranteed* for neither below the latest — and both of them
-    stream — see `docs/RELEASE-READINESS.md`.
+    - **The Arrow PyCapsule interface** (`ModelBank.fit_predict_arrow`, task
+      86) — the *output* side only, and the one path whose contract is not
+      py-polars' to change: `__arrow_c_array__` is an Arrow specification,
+      py-polars consumes it through the public `PySeries.from_arrow_c_array`,
+      and pyarrow and duckdb consume it too. A break here would be an
+      Arrow-level break rather than a polars one. Two caveats, both real: the
+      *input* still arrives as a `PyDataFrame`, so a `fit_predict_arrow` call
+      rides on this **and** on the first entry above; and which py-polars
+      versions expose `from_arrow_c_array` has not been measured here, so the
+      floor below is not known to hold for it.
+
+    `polars>=1.34.0,<3` in `pyproject.toml` is therefore *measured* for all
+    three but *guaranteed* for none below the latest — and the two that stream
+    are among those — see `docs/RELEASE-READINESS.md`.
     Treat a `ModelBank` or IO-plugin break on a new Polars as expected
     maintenance, not a surprise, and check those paths first. The floor is
     `LazyFrame.collect_batches` (py-polars 1.34.0), which the IO plugin reads

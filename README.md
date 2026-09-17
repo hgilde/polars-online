@@ -130,9 +130,9 @@ missing column is reported by which spec wanted it and in what role.
 query, as above: [`lf.online.fit_predict(specs)`](https://hgilde.github.io/polars-online/namespaces.html#polars_online._frame.LazyFrameOnlineNamespace.fit_predict)
 returns a `LazyFrame`, and running the query runs the bank. In your own
 Python loop: make a [`ModelBank`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank)
-and call `fit_predict` on each chunk yourself. Or as a Polars expression,
-for a frame that is already in memory; this third form loads every row at
-once, and warns to say so. [Running a bank](#running-a-bank) shows each.
+and call `fit_predict` on each chunk yourself. Or with no live Python at
+all: the standalone `online` command line runs the same specs from a file
+to a file. [Running a bank](#running-a-bank) shows each.
 
 **Time, decay and convergence.** The rows of a stream are not all equally
 relevant, so a model can forget: each row's weight halves every `halflife`
@@ -547,6 +547,22 @@ A bank is one ordered stream, so it is not for two threads at once; a
 call that finds it busy on another thread raises `RuntimeError` rather
 than interleave. `predict` learns nothing and may run from any number of
 threads.
+
+**The same output as Arrow**, for a consumer that is not Polars:
+
+```python
+structs = po.ModelBank([spec]).fit_predict_arrow(df)    # one per spec, as Arrow
+out = df.with_columns([pl.Series(s) for s in structs])  # or hand them straight to pyarrow or duckdb
+```
+
+Each struct is what that spec produced, exposing `__arrow_c_array__`. The
+values are `fit_predict`'s exactly — field for field, null for null — and only
+the way out differs. A Polars `Series` crosses on py-polars' private methods,
+which is why this package measures a Polars range rather than promising one;
+the capsule interface is an Arrow specification instead, so anything that
+speaks Arrow can read the result. Exporting hands the buffers to the consumer,
+so each struct is read once and says so if asked twice. `predict_arrow` is the
+same for `predict`.
 
 ### Outside a live Python process
 
@@ -2501,6 +2517,13 @@ the boundary through the Arrow C Data Interface, and a Polars without the two
 private methods it reads fails with a clean `AttributeError` before any data
 moves.
 
+There is a third way across, and it is the one not Polars' to change.
+[`fit_predict_arrow`](#in-a-loop-modelbank) hands each spec's output over the
+Arrow PyCapsule interface — an Arrow specification, which py-polars, pyarrow
+and duckdb all consume. A break there would be Arrow's rather than Polars'.
+It narrows the exposure rather than removing it: only the output side uses it
+today, and the frame still goes in as a Polars frame.
+
 ### How the pin moves
 
 A weekly job ([`polars-canary.yml`](.github/workflows/polars-canary.yml))
@@ -2549,14 +2572,14 @@ row, its EW moments agree in closed form and in the limit, its quantile and
 Huber models agree statistically.
 
 **Invariants, for every model**, checked at the bank and, where it
-applies, at the expression and command-line levels too:
+applies, at the command-line level too:
 
 | | |
 |---|---|
 | chunk invariance | one chunk, seven, four hundred, one row at a time, and with a save and load in the middle |
 | thread invariance | 1 thread against 8 |
 | group independence | a group's numbers do not depend on what else is in the bank |
-| the paths agree | expression ≡ bank; runner ≡ bank for every input source and format |
+| the paths agree | runner ≡ bank for every input source and format; the Arrow output ≡ the Polars one, field for field and null for null |
 | `predict` ≡ `fit_predict` | of the next row, field for field, with every diagnostic on |
 | stream semantics | the null policy, warm-up, and the clock |
 | `n_eff` | the same recursion in every model (`crates/online-core/tests/model_contract.rs`) |
