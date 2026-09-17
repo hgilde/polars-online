@@ -1,14 +1,22 @@
 //! One output column under construction, as the bank assembles its
-//! struct columns: the values and their validity bits, handed to polars
-//! without a second copy (docs/PERFORMANCE.md §13).
+//! struct columns: the values and their validity bits, handed on without a
+//! second copy (docs/PERFORMANCE.md §13).
+//!
+//! The buffers are Arrow's already -- a values `Vec` and a validity `Bitmap`
+//! are exactly what a primitive array is -- so every finisher builds an Arrow
+//! array and nothing here touches polars (docs/PLAN.md task 86). The one
+//! hand-off to polars is in `assemble`, where the struct array is named.
 
-use polars::prelude::*;
+use polars_arrow::array::{
+    BooleanArray, Float64Array, Int32Array, Int64Array, MutableBinaryViewArray, PrimitiveArray,
+    Utf8ViewArray,
+};
 use polars_arrow::bitmap::{Bitmap, MutableBitmap};
+use polars_arrow::datatypes::ArrowDataType;
 
 /// One output column under construction: a values buffer, NaN where no
-/// finite value has been set, and its validity bits. `finish` hands both to
-/// polars as they are: no `Vec<Option<f64>>` and no second copy into the
-/// `Series`.
+/// finite value has been set, and its validity bits. The finishers hand both
+/// to an Arrow array as they are: no `Vec<Option<f64>>` and no second copy.
 ///
 /// The bits are packed a byte at a time as `scatter`'s run path copies a
 /// chunk, while its values are still in cache, and are trusted at `finish`
@@ -117,63 +125,93 @@ impl F64Column {
         (bits.unset_bits() > 0).then(|| bits.into())
     }
 
-    pub(crate) fn finish(mut self, name: PlSmallStr) -> Series {
+    /// The values and their validity as an Arrow array: no copy, since a
+    /// primitive array *is* a values buffer and a validity bitmap.
+    pub(crate) fn finish_array(mut self) -> Float64Array {
         let validity = self.validity();
-        Float64Chunked::from_vec_validity(name, self.values, validity).into_series()
+        PrimitiveArray::new(ArrowDataType::Float64, self.values.into(), validity)
     }
 
     /// The same column as `i32`, for a value that is an index or a count (a
     /// `kmeans` assignment, a `micro` count). Every set value is a small
     /// non-negative integer by construction; the null rows carry NaN and are
     /// masked, not cast.
-    pub(crate) fn finish_i32(mut self, name: PlSmallStr) -> Series {
+    pub(crate) fn finish_i32_array(mut self) -> Int32Array {
         let validity = self.validity();
         let values: Vec<i32> = self
             .values
             .iter()
             .map(|&v| if v.is_finite() { v as i32 } else { 0 })
             .collect();
-        Int32Chunked::from_vec_validity(name, values, validity).into_series()
+        PrimitiveArray::new(ArrowDataType::Int32, values.into(), validity)
     }
 
     /// The same column as `i64`, for an id that only ever grows (a `micro`
     /// id or label).
-    pub(crate) fn finish_i64(mut self, name: PlSmallStr) -> Series {
+    pub(crate) fn finish_i64_array(mut self) -> Int64Array {
         let validity = self.validity();
         let values: Vec<i64> = self
             .values
             .iter()
             .map(|&v| if v.is_finite() { v as i64 } else { 0 })
             .collect();
-        Int64Chunked::from_vec_validity(name, values, validity).into_series()
+        PrimitiveArray::new(ArrowDataType::Int64, values.into(), validity)
     }
 
     /// The same column as `Boolean`, for a `1.0` / `0.0` flag.
-    pub(crate) fn finish_bool(self, name: PlSmallStr) -> Series {
-        let values: Vec<Option<bool>> = self
-            .values
-            .iter()
-            .enumerate()
-            .map(|(i, &v)| self.is_valid(i).then_some(v == 1.0))
-            .collect();
-        Series::new(name, values.as_slice())
+    ///
+    /// A boolean array is two bitmaps, values and validity. The values bitmap
+    /// is built *before* `validity` runs, because that takes `bits` and
+    /// `is_valid` reads them: a masked row's value is arbitrary, so `v == 1.0`
+    /// over every row is right and the mask decides what is seen.
+    pub(crate) fn finish_bool_array(mut self) -> BooleanArray {
+        let values: Bitmap =
+            MutableBitmap::from_trusted_len_iter(self.values.iter().map(|&v| v == 1.0)).into();
+        let validity = self.validity();
+        BooleanArray::new(ArrowDataType::Boolean, values, validity)
     }
 
     /// The same column as the class names, for an `ew_class` prediction:
     /// every set value is a position in `classes` by construction (the model
     /// emits the argmax over its own classes), and the null rows stay null.
-    pub(crate) fn finish_label(self, name: PlSmallStr, classes: &[String]) -> Series {
-        let values: Vec<Option<&str>> = self
-            .values
-            .iter()
-            .enumerate()
-            .map(|(i, &v)| {
+    pub(crate) fn finish_label_array(self, classes: &[String]) -> Utf8ViewArray {
+        let mut b = MutableBinaryViewArray::<str>::with_capacity(self.values.len());
+        for (i, &v) in self.values.iter().enumerate() {
+            b.push(
                 self.is_valid(i)
                     .then(|| classes.get(v as usize).map(String::as_str))
-                    .flatten()
-            })
-            .collect();
-        Series::new(name, values.as_slice())
+                    .flatten(),
+            );
+        }
+        b.into()
+    }
+}
+
+impl F64Column {
+    /// The boxed forms, for a caller assembling a struct from mixed arrays:
+    /// every branch of `assemble` yields `Box<dyn Array>`, so the boxing lives
+    /// here rather than at fourteen call sites.
+    pub(crate) fn finish_array_boxed(self) -> Box<dyn polars_arrow::array::Array> {
+        Box::new(self.finish_array())
+    }
+
+    pub(crate) fn finish_i32_array_boxed(self) -> Box<dyn polars_arrow::array::Array> {
+        Box::new(self.finish_i32_array())
+    }
+
+    pub(crate) fn finish_i64_array_boxed(self) -> Box<dyn polars_arrow::array::Array> {
+        Box::new(self.finish_i64_array())
+    }
+
+    pub(crate) fn finish_bool_array_boxed(self) -> Box<dyn polars_arrow::array::Array> {
+        Box::new(self.finish_bool_array())
+    }
+
+    pub(crate) fn finish_label_array_boxed(
+        self,
+        classes: &[String],
+    ) -> Box<dyn polars_arrow::array::Array> {
+        Box::new(self.finish_label_array(classes))
     }
 }
 

@@ -9,6 +9,13 @@ use std::path::Path;
 use online_core::ClockCfg;
 use polars::chunked_array::builder::AnonymousOwnedListBuilder;
 use polars::prelude::*;
+use polars_arrow::array::{
+    Array as ArrowArray, BooleanArray, ListArray, MutableBinaryViewArray, PrimitiveArray,
+    StructArray, Utf8ViewArray,
+};
+use polars_arrow::bitmap::MutableBitmap;
+use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
+use polars_arrow::offset::OffsetsBuffer;
 use polars_utils::aliases::PlHashMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -4242,6 +4249,75 @@ fn scatter(
     col
 }
 
+/// The three output fields that do not come from an [`F64Column`], as Arrow
+/// arrays: the drift flag, the selected slot's name, and the selected and
+/// averaged predictions (docs/PLAN.md task 86).
+fn opt_f64_array(vals: &[Option<f64>]) -> Box<dyn ArrowArray> {
+    let values: Vec<f64> = vals.iter().map(|v| v.unwrap_or(f64::NAN)).collect();
+    let validity = MutableBitmap::from_trusted_len_iter(vals.iter().map(Option::is_some));
+    let validity = (validity.unset_bits() > 0).then(|| validity.into());
+    Box::new(PrimitiveArray::new(
+        ArrowDataType::Float64,
+        values.into(),
+        validity,
+    ))
+}
+
+fn opt_bool_array(vals: &[Option<bool>]) -> Box<dyn ArrowArray> {
+    let values = MutableBitmap::from_trusted_len_iter(vals.iter().map(|v| v.unwrap_or(false)));
+    let validity = MutableBitmap::from_trusted_len_iter(vals.iter().map(Option::is_some));
+    let validity = (validity.unset_bits() > 0).then(|| validity.into());
+    Box::new(BooleanArray::new(
+        ArrowDataType::Boolean,
+        values.into(),
+        validity,
+    ))
+}
+
+fn opt_str_array(vals: &[Option<&str>]) -> Box<dyn ArrowArray> {
+    let mut b = MutableBinaryViewArray::<str>::with_capacity(vals.len());
+    for v in vals {
+        b.push(*v);
+    }
+    Box::new(Utf8ViewArray::from(b))
+}
+
+/// The `coef` field: a list per row, null where the row carried none. Built by
+/// hand rather than through a builder because the nulls are nested -- a null
+/// list and a null *inside* a list are different things, and the finite-or-null
+/// contract applies to both.
+fn coef_list_array(coef: &[Option<&Vec<f64>>]) -> Box<dyn ArrowArray> {
+    let mut offsets: Vec<i64> = Vec::with_capacity(coef.len() + 1);
+    offsets.push(0);
+    let mut values: Vec<f64> = Vec::new();
+    let mut inner = MutableBitmap::new();
+    let mut outer = MutableBitmap::with_capacity(coef.len());
+    for v in coef {
+        match v {
+            Some(flat) => {
+                for &c in flat.iter() {
+                    let ok = c.is_finite();
+                    values.push(if ok { c } else { f64::NAN });
+                    inner.push(ok);
+                }
+                outer.push(true);
+            }
+            None => outer.push(false),
+        }
+        offsets.push(values.len() as i64);
+    }
+    let inner_validity = (inner.unset_bits() > 0).then(|| inner.into());
+    let child = PrimitiveArray::new(ArrowDataType::Float64, values.into(), inner_validity);
+    let dtype = ListArray::<i64>::default_datatype(ArrowDataType::Float64);
+    let outer_validity = (outer.unset_bits() > 0).then(|| outer.into());
+    Box::new(ListArray::<i64>::new(
+        dtype,
+        OffsetsBuffer::try_from(offsets).expect("offsets are monotonic by construction"),
+        Box::new(child),
+        outer_validity,
+    ))
+}
+
 fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> PolarsResult<Column> {
     let SpecDerived {
         schema,
@@ -4383,28 +4459,28 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
     // `mi * per_model + slot`, the order `output_index` numbers the
     // per-instance fields in.
     let block = |ch: &ChunkOut, nr: usize| ch.n_slots * nr;
-    let fields: Vec<Series> =
+    let arrays: Vec<Box<dyn ArrowArray>> =
         map_maybe_par::<_, _, PolarsResult<_>>(schema, n >= PAR_MIN_ROWS, |f| {
-            let name: PlSmallStr = f.field.as_str().into();
             // Where field `i`'s run of `nr` values starts in a per-instance buffer.
             let at = |ch: &ChunkOut, nr: usize, i: usize| {
                 ChunkOut::at(ch.n_slots, nr, i / per_model, i % per_model, 0)
             };
             Ok(match f.src {
                 Source::Pred(i) | Source::Stat(i) => {
-                    scatter(n, chunks, false, |ch, nr| &ch.pred[at(ch, nr, i)..][..nr]).finish(name)
+                    scatter(n, chunks, false, |ch, nr| &ch.pred[at(ch, nr, i)..][..nr])
+                        .finish_array_boxed()
                 }
                 Source::Cluster(i) => {
                     scatter(n, chunks, false, |ch, nr| &ch.pred[at(ch, nr, i)..][..nr])
-                        .finish_i32(name)
+                        .finish_i32_array_boxed()
                 }
                 Source::Id(i) => {
                     scatter(n, chunks, false, |ch, nr| &ch.pred[at(ch, nr, i)..][..nr])
-                        .finish_i64(name)
+                        .finish_i64_array_boxed()
                 }
                 Source::Flag(i) => {
                     scatter(n, chunks, false, |ch, nr| &ch.pred[at(ch, nr, i)..][..nr])
-                        .finish_bool(name)
+                        .finish_bool_array_boxed()
                 }
                 Source::Label(i) => {
                     let classes: &[String] = match &spec.model {
@@ -4412,35 +4488,35 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
                         _ => unreachable!("only ew_class emits a label"),
                     };
                     scatter(n, chunks, false, |ch, nr| &ch.pred[at(ch, nr, i)..][..nr])
-                        .finish_label(name, classes)
+                        .finish_label_array_boxed(classes)
                 }
                 Source::Resid(i) => {
                     scatter(n, chunks, false, |ch, nr| &ch.resid[at(ch, nr, i)..][..nr])
-                        .finish(name)
+                        .finish_array_boxed()
                 }
                 Source::Sigma(i) => {
                     scatter(n, chunks, false, |ch, nr| &ch.sigma[at(ch, nr, i)..][..nr])
-                        .finish(name)
+                        .finish_array_boxed()
                 }
                 Source::ResidZ(i) => scatter(n, chunks, false, |ch, nr| {
                     &ch.resid_z[at(ch, nr, i)..][..nr]
                 })
-                .finish(name),
+                .finish_array_boxed(),
                 Source::Autocorr(i) => scatter(n, chunks, false, |ch, nr| {
                     &ch.autocorr[at(ch, nr, i)..][..nr]
                 })
-                .finish(name),
+                .finish_array_boxed(),
                 Source::Metric(k, i) => scatter(n, chunks, false, |ch, nr| {
                     // Model-major: instance mi owns 3 contiguous blocks.
                     let (mi, slot) = (i / per_model, i % per_model);
                     &ch.metrics[mi * 3 * block(ch, nr) + k * block(ch, nr) + slot * nr..][..nr]
                 })
-                .finish(name),
+                .finish_array_boxed(),
                 Source::Conformal(k, i) => scatter(n, chunks, false, |ch, nr| {
                     let (mi, slot) = (i / per_model, i % per_model);
                     &ch.conformal[mi * 3 * block(ch, nr) + k * block(ch, nr) + slot * nr..][..nr]
                 })
-                .finish(name),
+                .finish_array_boxed(),
                 Source::Quantile(i) => scatter(n, chunks, false, |ch, nr| {
                     // `(li * n_models + mi) * m * nc + slot`, as `output_index`
                     // numbers the quantile fields.
@@ -4449,13 +4525,12 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
                     &ch.resid_q[mi * n_levels * block(ch, nr) + li * block(ch, nr) + slot * nr..]
                         [..nr]
                 })
-                .finish(name),
-                Source::NEff(mi) => {
-                    scatter(n, chunks, true, |ch, nr| &ch.n_eff[mi * nr..][..nr]).finish(name)
-                }
+                .finish_array_boxed(),
+                Source::NEff(mi) => scatter(n, chunks, true, |ch, nr| &ch.n_eff[mi * nr..][..nr])
+                    .finish_array_boxed(),
                 Source::LamSelected(i) => {
                     scatter(n, chunks, false, |ch, nr| &ch.lam_selected[i * nr..][..nr])
-                        .finish(name)
+                        .finish_array_boxed()
                 }
                 Source::Drift(i) => {
                     let mut drift = vec![None::<bool>; n];
@@ -4467,11 +4542,11 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
                             }
                         }
                     }
-                    Series::new(name, drift.as_slice())
+                    opt_bool_array(&drift)
                 }
-                Source::SelPred(i) => Series::new(name, sel_pred[i].as_slice()),
-                Source::SelName(i) => Series::new(name, sel_name[i].as_slice()),
-                Source::AvgPred(i) => Series::new(name, avg_pred[i].as_slice()),
+                Source::SelPred(i) => opt_f64_array(&sel_pred[i]),
+                Source::SelName(i) => opt_str_array(&sel_name[i]),
+                Source::AvgPred(i) => opt_f64_array(&avg_pred[i]),
                 Source::Coef(mi) => {
                     let mut coef: Vec<Option<&Vec<f64>>> = vec![None; n];
                     for ch in chunks {
@@ -4483,28 +4558,21 @@ fn assemble(spec: &Spec, d: &SpecDerived, n: usize, chunks: &[ChunkOut]) -> Pola
                             }
                         }
                     }
-                    let mut b = ListPrimitiveChunkedBuilder::<Float64Type>::new(
-                        name,
-                        n,
-                        8,
-                        DataType::Float64,
-                    );
-                    for v in &coef {
-                        match v {
-                            // Finite-or-null inside the list too: an
-                            // `ew_class` class no row has carried yet has
-                            // NaN means, and a null says so.
-                            Some(flat) => {
-                                b.append_iter(flat.iter().map(|c| c.is_finite().then_some(*c)))
-                            }
-                            None => b.append_null(),
-                        }
-                    }
-                    b.finish().into_series()
+                    // Finite-or-null inside the list too: an `ew_class` class
+                    // no row has carried yet has NaN means, and a null says so.
+                    coef_list_array(&coef)
                 }
                 Source::Unset => unreachable!("every field is given a source in output_index"),
             })
         })?;
-    let st = StructChunked::from_series(spec.name.as_str().into(), n, fields.iter())?;
-    Ok(st.into_series().into())
+    // One struct array, then one hand-off to polars: everything above this
+    // line is Arrow (docs/PLAN.md task 86).
+    let arrow_fields: Vec<ArrowField> = schema
+        .iter()
+        .zip(&arrays)
+        .map(|(f, a)| ArrowField::new(f.field.as_str().into(), a.dtype().clone(), true))
+        .collect();
+    let st = StructArray::new(ArrowDataType::Struct(arrow_fields), n, arrays, None);
+    let s = Series::from_arrow(spec.name.as_str().into(), Box::new(st))?;
+    Ok(s.into())
 }
