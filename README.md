@@ -2180,9 +2180,9 @@ what to reach for, is in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
 ### Memory: which calls stream
 
-Every way of running a bank works a chunk at a time except the expression
-form. Measured as the most memory the process ever held, on one file of
-`ewridge` with 20 features, parquet in and parquet out:
+Every way of running a bank works a chunk at a time. Measured as the most
+memory the process ever held, on one file of `ewridge` with 20 features,
+parquet in and parquet out:
 
 | what you write | 3M rows | 12M rows | |
 |---|---:|---:|---|
@@ -2197,8 +2197,8 @@ Polars' reader has read ahead. The first two rows of the table do not grow
 with the file; what growth they show is the memory allocator keeping pages
 it has freed, and nearly all of the rest is Polars reading ahead in the
 parquet file. The read-ahead is sized from Polars' thread count, so
-`POLARS_MAX_THREADS` shrinks it ([Parallelism](#parallelism), below) and
-`POLARS_ROW_GROUP_PREFETCH_SIZE=1` takes it to 0.31–0.46 GB. Everything
+`POLARS_MAX_THREADS` shrinks it ([Parallelism](#parallelism), below), and
+the settings below tune it directly. Everything
 after the bank in a query — filters, joins, group-bys, writing the result —
 runs a chunk at a time as Polars itself does. That is Polars' rule for the
 steps *around* the bank too: a rolling window over groups (`.over("group")`
@@ -2207,10 +2207,50 @@ rows, against 0.25–0.28 GB without groups), whereas a bank's `group=` keeps
 one set of running sums per group and grows with the number of groups, not
 the number of rows.
 
+### Tuning memory with Polars' own settings
+
+A bank's own memory is its state plus the chunks in flight, and neither grows
+with the stream. What does grow is Polars' read-ahead: the streaming engine
+prefetches row groups ahead of whatever consumes them, sized from the thread
+count, and while a bank is the bottleneck a local disk needs none of it.
+
+Three environment variables move it. All are Polars' own, all are read at run
+time rather than at import, and all can be set from Python:
+
+```python
+import os
+
+os.environ["POLARS_ROW_GROUP_PREFETCH_SIZE"] = "1"   # row groups read ahead: the lever that matters
+os.environ["POLARS_MAX_THREADS"] = "4"               # scales the same term, since the prefetch is sized from it
+os.environ["POLARS_ROW_GROUP_PREFETCH_KBYTES_BUDGET"] = "65536"   # a byte cap on the same read-ahead
+```
+
+Measured on 8M rows by 12 columns in 80 row groups, peak resident memory, with
+the allocator's page retention off so the figure is live data rather than the
+high-water mark of everything ever allocated:
+
+| what runs | default | prefetch 1 |
+|---|---:|---:|
+| `lf.online.fit_predict(...).sink_parquet(...)` | 1.63 GB | 1.12 GB |
+| `bank.fit_predict_batches(lf)` | 1.41 GB | 1.07 GB |
+
+The prefetch is read per scan, not once at import, so unlike
+`POLARS_MAX_THREADS` it can be set at any point before the scan that should use
+it, and a scan that has already run does not lock it in. Setting it in the
+shell, before the import and after the import all give the same number.
+
+Two things to know before reading across to other measurements.
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md) reports a larger reduction on a file
+whose row groups hold 262,000 rows, where pinning the prefetch takes a run from
+1.86 GB to 0.51 GB. The gain depends on how much data one row group holds, so
+measure on your own files rather than carrying either ratio across. And the
+byte budget counts *compressed* bytes, which for a memory-mapped local file
+cost almost nothing, so it rarely binds.
+
 **Chunk size.** `chunk_rows` is how many rows the bank takes at a time: a
-keyword on `lf.online.fit_predict`, `lf.online.predict` and the runner,
-100,000 by default; with `ModelBank.fit_predict(df)` the chunk is whatever
-frame you pass. It never changes the numbers — one chunk or a thousand
+keyword on `lf.online.fit_predict`, `lf.online.predict` and
+`ModelBank.fit_predict_batches`, 100,000 by default; with
+`ModelBank.fit_predict(df)` the chunk is whatever frame you pass. It never changes the numbers — one chunk or a thousand
 gives the same output, and only where `coef` lands moves, since each
 stream reports its coefficients on its last row of every chunk. It does
 change the speed and the memory. The fixed cost of a chunk (handing the

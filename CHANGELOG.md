@@ -7,6 +7,22 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+### Documentation
+
+- **How to tune memory with Polars' own settings**, in the README. The
+  read-ahead is what grows, not the bank: the streaming engine prefetches row
+  groups ahead of whatever consumes them, sized from the thread count, and a
+  local disk needs none of it while a bank is the bottleneck. Three variables
+  move it, and the section says which, what they measure, and what not to
+  carry across. Measured here on 8M rows by 12 columns in 80 row groups, with
+  the allocator's page retention off: a sink goes 1.63 to 1.12 GB and a
+  batched bank 1.41 to 1.07 GB. The prefetch is read *per scan*, not once at
+  import, so it can be set from Python at any point before the scan that
+  should use it -- shell, before-import and after-import all give the same
+  number. The reduction depends on how much data a row group holds, so the
+  larger figure in `docs/PERFORMANCE.md` (1.86 to 0.51 GB, on 262,000-row
+  groups) does not carry to a file with smaller ones.
+
 ### Added
 
 - **`ModelBank.fit_predict_batches` takes a `LazyFrame`**, and does the
