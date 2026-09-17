@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "pyo3 + pyo3-polars bindings: ModelBank, the runner, and the expression plugin."
+description = "pyo3 + pyo3-polars bindings: ModelBank and the expression plugin."
 
 # Not published to crates.io. The Python wheel is the deliverable, and it is
 # built from this workspace by maturin with these as *path* dependencies -- the

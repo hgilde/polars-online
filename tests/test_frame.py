@@ -3,7 +3,7 @@
 A LazyFrame in, a LazyFrame out, streamed through a fresh bank when the plan
 runs, so a query with the bank in it stays O(chunk); the expression plugin in
 the same position is O(data) in either engine (docs/PERFORMANCE.md section
-11). Held here to the numbers `ModelBank` and `po.run` give on the same rows,
+11). Held here to the numbers `ModelBank` gives on the same rows,
 through both engines, every pushdown polars applies to a Python source, a
 streaming sink, and the eager and typed forms.
 """
@@ -176,12 +176,12 @@ def test_projection_reaches_the_input():
     assert len(calls) == 1000
 
 
-def test_sink_equals_run(tmp_path):
+def test_sink_equals_collect(tmp_path):
     df = _frame(n=20000)
     src = tmp_path / "in.parquet"
     df.write_parquet(src)
     ran = tmp_path / "run.parquet"
-    po.run(input=src, output=ran, specs=[_spec()], chunk_rows=3000)
+    pl.scan_parquet(src).online.fit_predict([_spec()], chunk_rows=3000).collect().write_parquet(ran)
     sunk = tmp_path / "sink.parquet"
     pl.scan_parquet(src).online.fit_predict([_spec()], chunk_rows=3000).sink_parquet(
         sunk, engine="streaming"
@@ -315,9 +315,8 @@ def _bank_after(df: pl.DataFrame, **kw) -> bytes:
 
 def test_save_state_is_the_banks_state_after_the_stream(tmp_path):
     """C1: the plan writes, when it ends, the state a bank fed the same rows
-    saves -- byte for byte, whatever the chunking, through either engine, and
-    the same bytes `po.run(save_state=)` writes; so do the eager and typed
-    forms. Building the plan writes nothing."""
+    saves -- byte for byte, whatever the chunking, through either engine; so
+    do the eager and typed forms. Building the plan writes nothing."""
     df = _frame(n=4000)
     want = _bank_after(df)
     state = tmp_path / "bank.state"
@@ -327,17 +326,15 @@ def test_save_state_is_the_banks_state_after_the_stream(tmp_path):
         assert plan.collect(engine=engine).equals(_bank_loop(df, 700))
         assert state.read_bytes() == want, engine
         state.unlink()
-    src = tmp_path / "in.parquet"
-    df.write_parquet(src)
-    po.run(input=src, output=tmp_path / "out.parquet", specs=[_spec()], save_state=state)
-    assert state.read_bytes() == want
     for spell in (
         lambda: df.online.fit_predict([_spec()], save_state=state),
         lambda: po.fit_predict(df, [_spec()], save_state=state),
         lambda: po.fit_predict(df.lazy(), [_spec()], save_state=state).collect(),
         lambda: po.fit_predict(df.lazy(), [_spec()], save_state=str(state)).collect(),
     ):
-        state.unlink()
+        # Each spelling must write the file itself, not inherit the last
+        # one's; `missing_ok` because the engine loop above left none.
+        state.unlink(missing_ok=True)
         assert spell().equals(po.ModelBank([_spec()]).fit_predict(df))
         assert state.read_bytes() == want
 
@@ -408,7 +405,7 @@ def test_a_run_that_does_not_reach_the_end_writes_nothing(tmp_path):
     assert not state.exists()
     # The known gap (R6): a node *after* the bank failing does not stop the
     # bank -- polars drains a Python source before it raises -- so the state
-    # after the whole stream is written although the query failed. `po.run`
+    # after the whole stream is written although the query failed. The CLI
     # saves only once its output is committed.
     #
     # py-polars 2.0 narrows this, which docs/STATE-WORKFLOW.md said it might

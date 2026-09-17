@@ -3,7 +3,7 @@ polars-online
 
 Streaming / online regression models for `Polars <https://pola.rs>`_: a
 Rust core exposed as a chunk-fed ``ModelBank``, as a ``LazyFrame`` plan
-that streams (``lf.online.fit_predict(specs)``), as a runner and CLI for
+that streams (``lf.online.fit_predict(specs)``), as a command line for
 files, and as an expression for a frame in memory. Predictions are
 out-of-sample by construction and the numbers are identical however the
 model is called.

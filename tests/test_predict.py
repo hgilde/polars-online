@@ -22,6 +22,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from conftest import run_online
 from data import synthetic
 from test_semantics_all_models import IDS, SWEEP
 
@@ -477,7 +478,7 @@ def test_fit_predict_is_refused_while_scoring():
     assert bank.fit_predict(df.head(10)).height == 10
 
 
-# --- the runner -------------------------------------------------------------------
+# --- the command line -------------------------------------------------------------
 
 
 class TestRunner:
@@ -507,29 +508,33 @@ class TestRunner:
         df.write_parquet(path)
         return df
 
-    def test_predict_scores_the_loaded_bank(self, tmp_path):
+    def test_predict_scores_the_loaded_bank(self, tmp_path, online_cli):
         train = self._write(tmp_path / "train.parquet")
         state = tmp_path / "bank.state"
-        po.run(
+        run_online(
+            online_cli,
+            tmp_path,
+            [self._spec()],
             input=tmp_path / "train.parquet",
             output=tmp_path / "o.parquet",
-            specs=[self._spec()],
             save_state=state,
         )
         score = self._write(tmp_path / "score.parquet", n=1000, seed=1).with_columns(
             pl.col("t") + train.height
         )
         score.write_parquet(tmp_path / "score.parquet")
-        stats = po.run(
+        run_online(
+            online_cli,
+            tmp_path,
+            [self._spec()],
             input=tmp_path / "score.parquet",
             output=tmp_path / "scored.parquet",
-            specs=[self._spec()],
             load_state=state,
             predict=True,
             chunk_rows=300,
         )
-        assert stats == {"rows": 1000, "chunks": 4}
         got = pl.read_parquet(tmp_path / "scored.parquet")
+        assert got.height == 1000
         want = po.ModelBank.load(state, [self._spec()]).predict(score)
         # `coef` is a reporting cadence (once per chunk per group), so it
         # lands on more rows in the chunked run; every other field is equal.
@@ -545,41 +550,53 @@ class TestRunner:
         # No learning: the state file is untouched, and the same state gives
         # the same answer again.
         again = tmp_path / "scored2.parquet"
-        po.run(
+        run_online(
+            online_cli,
+            tmp_path,
+            [self._spec()],
             input=tmp_path / "score.parquet",
             output=again,
-            specs=[self._spec()],
             load_state=state,
             predict=True,
             chunk_rows=300,
         )
         assert pl.read_parquet(again).equals(got, null_equal=True)
 
-    def test_predict_needs_a_state_and_refuses_to_save_one(self, tmp_path):
+    def test_predict_needs_a_state_and_refuses_to_save_one(self, tmp_path, online_cli):
         self._write(tmp_path / "in.parquet")
-        with pytest.raises(ValueError, match="predict = true needs load_state"):
-            po.run(
-                input=tmp_path / "in.parquet",
-                output=tmp_path / "o.parquet",
-                specs=[self._spec()],
-                predict=True,
-            )
-        state = tmp_path / "bank.state"
-        po.run(
+        res = run_online(
+            online_cli,
+            tmp_path,
+            [self._spec()],
             input=tmp_path / "in.parquet",
             output=tmp_path / "o.parquet",
-            specs=[self._spec()],
+            predict=True,
+            check=False,
+        )
+        assert res.returncode != 0
+        assert "predict = true needs load_state" in res.stderr, res.stderr
+        state = tmp_path / "bank.state"
+        run_online(
+            online_cli,
+            tmp_path,
+            [self._spec()],
+            input=tmp_path / "in.parquet",
+            output=tmp_path / "o.parquet",
             save_state=state,
         )
-        with pytest.raises(ValueError, match="save_state has nothing to save"):
-            po.run(
-                input=tmp_path / "in.parquet",
-                output=tmp_path / "o.parquet",
-                specs=[self._spec()],
-                load_state=state,
-                save_state=tmp_path / "again.state",
-                predict=True,
-            )
+        res = run_online(
+            online_cli,
+            tmp_path,
+            [self._spec()],
+            input=tmp_path / "in.parquet",
+            output=tmp_path / "o.parquet",
+            load_state=state,
+            save_state=tmp_path / "again.state",
+            predict=True,
+            check=False,
+        )
+        assert res.returncode != 0
+        assert "save_state has nothing to save" in res.stderr, res.stderr
 
     def test_one_toml_serves_both_the_learning_and_the_scoring_run(self, tmp_path, online_cli):
         """A checked-in config carries `save_state` for the learning run;
@@ -613,24 +630,20 @@ class TestRunner:
             ),
             encoding="utf-8",
         )
-        assert po.run(toml) == {"rows": 4000, "chunks": 1}
-        mtime = state.stat().st_mtime_ns
-        stats = po.run(
-            toml,
-            output=tmp_path / "scored.parquet",
-            load_state=state,
-            predict=True,
+        subprocess.run(
+            [str(online_cli), "--config", str(toml), "--quiet"], check=True, capture_output=True
         )
-        assert stats == {"rows": 4000, "chunks": 1}
+        mtime = state.stat().st_mtime_ns
+        subprocess.run(
+            [
+                str(online_cli), "--config", str(toml),
+                "--output", str(tmp_path / "scored.parquet"),
+                "--resume", str(state), "--predict", "--quiet",
+            ],
+            check=True,
+            capture_output=True,
+        )  # fmt: skip
         assert state.stat().st_mtime_ns == mtime, "predict must not rewrite the state"
-        with pytest.raises(ValueError, match="save_state has nothing to save"):
-            po.run(
-                toml,
-                output=tmp_path / "scored.parquet",
-                load_state=state,
-                save_state=tmp_path / "again.state",
-                predict=True,
-            )
         self._cli_agrees(
             online_cli, toml, state, mtime, pl.read_parquet(tmp_path / "scored.parquet")
         )
@@ -669,24 +682,27 @@ class TestRunner:
         assert res.returncode != 0
         assert "save_state has nothing to save" in res.stderr
 
-    def test_empty_input_still_writes_the_schema(self, tmp_path):
+    def test_empty_input_still_writes_the_schema(self, tmp_path, online_cli):
         df = self._write(tmp_path / "in.parquet")
         state = tmp_path / "bank.state"
-        po.run(
+        run_online(
+            online_cli,
+            tmp_path,
+            [self._spec()],
             input=tmp_path / "in.parquet",
             output=tmp_path / "o.parquet",
-            specs=[self._spec()],
             save_state=state,
         )
         df.clear().write_parquet(tmp_path / "empty.parquet")
-        stats = po.run(
+        run_online(
+            online_cli,
+            tmp_path,
+            [self._spec()],
             input=tmp_path / "empty.parquet",
             output=tmp_path / "e.parquet",
-            specs=[self._spec()],
             load_state=state,
             predict=True,
         )
-        assert stats == {"rows": 0, "chunks": 0}
         out = pl.read_parquet(tmp_path / "e.parquet")
         assert out.height == 0
         assert "ridge" in out.columns

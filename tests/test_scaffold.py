@@ -24,8 +24,8 @@ def test_schema_version_is_positive() -> None:
 # changed only in its header and one timing.
 BUILT_AGAINST = "1.44.2"
 # Measured floor -- see the note in pyproject.toml and the matrix in
-# docs/RELEASE-READINESS.md. `LazyFrame.collect_batches`, which `po.run` and
-# `lf.online.fit_predict` read with, arrived in 1.34.0.
+# docs/RELEASE-READINESS.md. `LazyFrame.collect_batches`, which
+# `lf.online.fit_predict` reads with, arrived in 1.34.0.
 SUPPORTED_FLOOR = "1.34.0"
 
 

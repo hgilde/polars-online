@@ -5,7 +5,7 @@ parameters every model shares -- the clock, the decay, the groups, the weights
 and the warm-up. It is a plain dict, JSON-able, and the same thing as a
 ``[[specs]]`` entry in the CLI's TOML. A builder assembles one, checks it and
 returns it; :class:`polars_online.ModelBank`, the ``online`` namespaces and
-:func:`polars_online.run` take lists of them.
+the ``online`` command line take lists of them.
 
 The builders are the documented way to write a spec. A dict written by hand is
 checked the same way when it is used, but only a builder can tell a misspelt

@@ -565,7 +565,7 @@ def _doc_blocks(rel: str) -> list[tuple[str, int, str]]:
     return out
 
 
-# The README, and the runner guide its `po.run` examples moved to (docs/PLAN.md
+# The README, and the runner guide its file-to-file examples live in (docs/PLAN.md
 # task 68): the fixture below already writes the files those examples read.
 README_BLOCKS = _doc_blocks("README.md") + _doc_blocks("docs/RUNNER.md")
 
@@ -607,7 +607,7 @@ def _docstring_blocks() -> list[tuple[str, int, str]]:
     way (docs/WRITING.md, "Every code block runs")."""
     import inspect
 
-    modules = [po, po.spec, po._bank, po._frame, po._runner, po._expr]
+    modules = [po, po.spec, po._bank, po._frame, po._expr]
     modules += [po.gram, po.eval, po.corr, po.prep, po.sim]
     seen: set[int] = set()
     out: list[tuple[str, int, str]] = []
@@ -648,7 +648,7 @@ def _closed_rows(df: pl.DataFrame) -> pl.DataFrame:
 def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     """What the README's prose has already introduced by the time a block runs:
     a frame with every column it names, a spec with the grid its field-name
-    examples assume, a fed bank, an output frame, and the files the runner
+    examples assume, a fed bank, an output frame, and the files the doc
     examples read. A block that needs something not here fails with a
     `NameError`, which is itself the finding -- the README would be using a
     name it never showed the reader."""
@@ -772,7 +772,7 @@ class TestReadmeExamples:
         ids=[f"{p}:L{ln}" for p, ln, _ in README_BLOCKS],
     )
     def test_a_readme_block_runs(self, path, line, code, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)  # the runner examples write next to the inputs
+        monkeypatch.chdir(tmp_path)  # the doc examples write next to the inputs
         # The parallelism blocks set thread-count variables; both pools are
         # long built in this process, so they change nothing here, but the
         # subprocess tests inherit the environment, so put it back.

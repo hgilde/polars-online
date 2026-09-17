@@ -18,6 +18,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from conftest import run_online
 
 HALFLIFE = 40.0
 
@@ -251,7 +252,7 @@ def test_the_lag_and_bin_blocks_follow_the_specs_that_asked():
 
 
 def test_the_sidecar_carries_the_nested_lists(tmp_path):
-    """Parquet has a form for a list of lists, so the runner's sidecar is
+    """Parquet has a form for a list of lists, so the sidecar is
     the driver's frames with the blocks in them, as it is without."""
     df = frame(["a", "b", "c"], n_per=30, seed=5).with_columns(y=pl.col("x1") - pl.col("x0"))
     df.write_parquet(tmp_path / "in.parquet")
@@ -267,13 +268,7 @@ def test_the_sidecar_carries_the_nested_lists(tmp_path):
         group_close="monotone",
     )
     side = tmp_path / "closed.parquet"
-    po.run(
-        input=tmp_path / "in.parquet",
-        output=tmp_path / "out.parquet",
-        specs=[spec],
-        closed_groups=side,
-        chunk_rows=25,
-    )
+    df.lazy().online.fit_predict([spec], closed_groups=side, chunk_rows=25).collect()
     driver = po.ModelBank([spec])
     frames = []
     for i in range(0, df.height, 25):
@@ -586,13 +581,9 @@ def test_the_sidecar_is_the_drained_frames_and_is_chunk_invariant(tmp_path):
     df = frame(["a", "b", "c", "d"], n_per=9)
     df.write_parquet(tmp_path / "in.parquet")
     side = tmp_path / "closed.parquet"
-    po.run(
-        input=tmp_path / "in.parquet",
-        output=tmp_path / "out.parquet",
-        specs=[cov_spec(group_close="monotone")],
-        closed_groups=side,
-        chunk_rows=7,
-    )
+    df.lazy().online.fit_predict(
+        [cov_spec(group_close="monotone")], closed_groups=side, chunk_rows=7
+    ).collect()
     driver = po.ModelBank([cov_spec(group_close="monotone")])
     frames = []
     for i in range(0, df.height, 7):
@@ -601,13 +592,9 @@ def test_the_sidecar_is_the_drained_frames_and_is_chunk_invariant(tmp_path):
     assert pl.read_parquet(side).equals(pl.concat(frames))
 
     other = tmp_path / "closed2.parquet"
-    po.run(
-        input=tmp_path / "in.parquet",
-        output=tmp_path / "out2.parquet",
-        specs=[cov_spec(group_close="monotone")],
-        closed_groups=other,
-        chunk_rows=2,
-    )
+    df.lazy().online.fit_predict(
+        [cov_spec(group_close="monotone")], closed_groups=other, chunk_rows=2
+    ).collect()
     assert pl.read_parquet(other).equals(pl.read_parquet(side))
 
 
@@ -632,21 +619,26 @@ def _ipc_record_batches(path) -> int:
 
 
 @pytest.mark.parametrize(("chunk_rows", "batches"), [(7, 3), (100, 1)])
-def test_the_runner_writes_the_sidecar_as_it_goes(tmp_path, chunk_rows, batches):
-    """``po.run`` drains the bank after every chunk and hands each drain to
+def test_the_runner_writes_the_sidecar_as_it_goes(tmp_path, chunk_rows, batches, online_cli):
+    """The runner drains the bank after every chunk and hands each drain to
     the sidecar's writer, so a closed row reaches the file while the run is
     still going instead of waiting in the bank for its end (review
     2026-09-12, P5). The IPC writer keeps each drain as a record batch of its
     own, which shows it: at 7 rows a chunk ``a``, ``b`` and ``c`` close in
     three different chunks and the file holds three batches; in one chunk,
-    one. A single drain at the end wrote one batch either way."""
+    one. A single drain at the end wrote one batch either way.
+
+    The query path holds its drains to the end instead, so this is the
+    command line's behaviour and is tested there."""
     df = frame(["a", "b", "c", "d"], n_per=9)
     df.write_parquet(tmp_path / "in.parquet")
     side = tmp_path / "closed.arrow"
-    po.run(
+    run_online(
+        online_cli,
+        tmp_path,
+        [cov_spec(group_close="monotone")],
         input=tmp_path / "in.parquet",
         output=tmp_path / "out.parquet",
-        specs=[cov_spec(group_close="monotone")],
         closed_groups=side,
         chunk_rows=chunk_rows,
     )
@@ -673,40 +665,43 @@ def test_the_io_plugin_writes_the_same_sidecar(tmp_path):
 def test_a_run_in_which_nothing_closed_writes_the_empty_schema(tmp_path):
     frame(["a"]).write_parquet(tmp_path / "in.parquet")
     side = tmp_path / "closed.parquet"
-    po.run(
-        input=tmp_path / "in.parquet",
-        output=tmp_path / "out.parquet",
-        specs=[cov_spec(group_close="monotone")],
-        closed_groups=side,
-    )
+    frame(["a"]).lazy().online.fit_predict(
+        [cov_spec(group_close="monotone")], closed_groups=side
+    ).collect()
     got = pl.read_parquet(side)
     assert got.height == 0
     empty = po.ModelBank([cov_spec(group_close="monotone")]).closed_groups()
     assert dict(got.schema) == dict(empty.schema)
 
 
-def test_closed_groups_is_refused_where_nothing_closes_and_with_predict(tmp_path):
+def test_closed_groups_is_refused_where_nothing_closes_and_with_predict(tmp_path, online_cli):
     frame(["a", "b"]).write_parquet(tmp_path / "in.parquet")
-    with pytest.raises(ValueError, match="no spec closes groups"):
-        po.run(
-            input=tmp_path / "in.parquet",
-            output=tmp_path / "out.parquet",
-            specs=[cov_spec()],
-            closed_groups=tmp_path / "closed.parquet",
-        )
+    res = run_online(
+        online_cli,
+        tmp_path,
+        [cov_spec()],
+        input=tmp_path / "in.parquet",
+        output=tmp_path / "out.parquet",
+        closed_groups=tmp_path / "closed.parquet",
+        check=False,
+    )
+    assert res.returncode != 0 and "no spec closes groups" in res.stderr, res.stderr
     with pytest.raises(ValueError, match="no spec closes groups"):
         frame(["a"]).lazy().online.fit_predict([cov_spec()], closed_groups=tmp_path / "c2.parquet")
     state = tmp_path / "b.state"
     po.ModelBank([cov_spec(group_close="monotone")]).save(state)
-    with pytest.raises(ValueError, match="no group ever closes"):
-        po.run(
-            input=tmp_path / "in.parquet",
-            output=tmp_path / "out.parquet",
-            specs=[cov_spec(group_close="monotone")],
-            load_state=state,
-            predict=True,
-            closed_groups=tmp_path / "closed.parquet",
-        )
+    res = run_online(
+        online_cli,
+        tmp_path,
+        [cov_spec(group_close="monotone")],
+        input=tmp_path / "in.parquet",
+        output=tmp_path / "out.parquet",
+        load_state=state,
+        predict=True,
+        closed_groups=tmp_path / "closed.parquet",
+        check=False,
+    )
+    assert res.returncode != 0 and "no group ever closes" in res.stderr, res.stderr
 
 
 def test_the_cli_writes_the_sidecar(tmp_path):

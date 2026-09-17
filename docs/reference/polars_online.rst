@@ -7,7 +7,6 @@
 .. autoclass:: polars_online.ModelBank
    :members:
 
-.. autofunction:: polars_online.run
 
 .. autofunction:: polars_online.fit_predict
 

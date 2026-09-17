@@ -397,11 +397,10 @@ class TestPlumbing:
         # Lazy plan.
         lazy = df.lazy().online.fit_predict([s]).collect().select("m").unnest("m")
         assert lazy.equals(one, null_equal=True)
-        # The runner, and the state it saves.
-        src, dst, state = tmp_path / "in.parquet", tmp_path / "out.parquet", tmp_path / "s.state"
+        # The state the bank saves carries the pairs back.
+        src, state = tmp_path / "in.parquet", tmp_path / "s.state"
         df.write_parquet(src)
-        po.run(input=src, output=dst, specs=[s], save_state=state, chunk_rows=64)
-        assert pl.read_parquet(dst).select("m").unnest("m").equals(one, null_equal=True)
+        ref.save(state)
         assert po.ModelBank.load(state).marginal("m").equals(pairs, null_equal=True)
         # The CLI, from TOML.
         cli_dst, cli_state = tmp_path / "cli.parquet", tmp_path / "cli.state"

@@ -271,7 +271,7 @@ initialisation quality is its only real justification. If it is ever built, the
 leak must be named in the output, not buried in a parameter.
 
 *The expression plugin cannot do it at all.* It receives its column once. The
-CLI and `po.run` over a file can re-scan cheaply; the IO plugin
+CLI over a file can re-scan cheaply; the IO plugin
 (`python/polars_online/_frame.py`) would have to re-execute its input plan
 inside the source, which doubles any upstream compute and is not obviously sound
 under polars' semantics for a plan used twice in one query. So a two-pass model

@@ -230,7 +230,7 @@ def _source(
             seen += chunk.height
             if closed_path is not None:
                 # Drained per chunk so the bank's queue stays bounded; the
-                # file is written once, at the end, where `po.run` hands each
+                # file is written once, at the end, where the CLI hands each
                 # drain to its writer as it comes (review 2026-09-12, P5).
                 # So the sidecar's rows -- one per closed (group, instance)
                 # -- are held until then: bounded by the number of closes,
@@ -253,7 +253,7 @@ def _source(
         # ended with an error never gets here, so the file, if any, stands.
         # A node after this one failing does not stop this one (polars
         # drains a Python source first), so the state is written even then;
-        # `po.run` saves after its output is committed, for callers who need
+        # the CLI saves after its output is committed, for callers who need
         # the two tied together.
         if closed_path is not None:
             _write_closed(closed_path, closed, closed_schema)
@@ -453,7 +453,7 @@ class LazyFrameOnlineNamespace:
         writes the same bytes twice. Nothing is written unless the source reaches the
         last row: a run abandoned before then, or one the bank ended with an error,
         leaves the file as it was. A node after the bank failing does not stop the
-        bank, so the state is written then. :func:`polars_online.run` saves only after
+        bank, so the state is written then. The ``online`` CLI saves only after
         its output is committed, for the case where the two must be tied together, and
         a dated ``save_state`` per batch of data keeps a rerun from learning it twice.
 

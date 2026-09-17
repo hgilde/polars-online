@@ -15,6 +15,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from conftest import run_online
 
 
 def frame(n=500, seed=0):
@@ -40,25 +41,33 @@ def ridge_spec(name="m", **kw):
 
 
 class TestARunWithNoOutput:
-    def test_it_saves_the_state_and_writes_nothing(self, tmp_path):
+    def test_it_saves_the_state_and_writes_nothing(self, tmp_path, online_cli):
         df = frame()
         src = tmp_path / "in.parquet"
         df.write_parquet(src)
         state = tmp_path / "b.state"
-        stats = po.run(specs=[cov_spec()], input=src, save_state=state, chunk_rows=100)
-        assert stats == {"rows": 500, "chunks": 5}
+        run_online(
+            online_cli, tmp_path, [cov_spec()], input=src, save_state=state, chunk_rows=100,
+            args=["--no-output"],
+        )  # fmt: skip
         # Nothing else was created -- not even the temporary the writer
-        # renames into place, since no writer ran.
-        assert {p.name for p in tmp_path.iterdir()} == {"in.parquet", "b.state"}
+        # renames into place, since no writer ran. (`bank.toml` is the config
+        # this test wrote, not the run's doing.)
+        assert {p.name for p in tmp_path.iterdir()} == {"in.parquet", "b.state", "bank.toml"}
 
-    def test_the_state_is_the_state_a_written_run_would_have_left(self, tmp_path):
+    def test_the_state_is_the_state_a_written_run_would_have_left(self, tmp_path, online_cli):
         df = frame(seed=1)
         src = tmp_path / "in.parquet"
         df.write_parquet(src)
         quiet, loud = tmp_path / "q.state", tmp_path / "l.state"
-        po.run(specs=[cov_spec()], input=src, save_state=quiet, chunk_rows=64)
-        po.run(
-            specs=[cov_spec()],
+        run_online(
+            online_cli, tmp_path, [cov_spec()], input=src, save_state=quiet, chunk_rows=64,
+            args=["--no-output"],
+        )  # fmt: skip
+        run_online(
+            online_cli,
+            tmp_path,
+            [cov_spec()],
             input=src,
             output=tmp_path / "out.parquet",
             save_state=loud,
@@ -66,46 +75,56 @@ class TestARunWithNoOutput:
         )
         assert quiet.read_bytes() == loud.read_bytes(), "the same run, minus the file"
 
-    def test_no_output_clears_a_config_that_names_one(self, tmp_path):
+    def test_no_output_clears_a_config_that_names_one(self, tmp_path, online_cli):
         df = frame()
         src = tmp_path / "in.parquet"
         df.write_parquet(src)
-        cfg = {
-            "output": str(tmp_path / "out.parquet"),
-            "save_state": str(tmp_path / "b.state"),
-            "specs": [cov_spec()],
-            "chunk_rows": 100,
-        }
-        po.run(cfg, input=src, no_output=True)
+        run_online(
+            online_cli,
+            tmp_path,
+            [cov_spec()],
+            input=src,
+            output=tmp_path / "out.parquet",
+            save_state=tmp_path / "b.state",
+            chunk_rows=100,
+            args=["--no-output"],
+        )
         assert not (tmp_path / "out.parquet").exists()
         assert (tmp_path / "b.state").exists()
 
-    def test_a_run_that_writes_nothing_and_saves_nothing_is_refused(self, tmp_path):
+    def test_a_run_that_writes_nothing_and_saves_nothing_is_refused(self, tmp_path, online_cli):
         df = frame(n=50)
         src = tmp_path / "in.parquet"
         df.write_parquet(src)
-        with pytest.raises(ValueError, match="somewhere to put its work"):
-            po.run(specs=[cov_spec()], input=src)
+        res = run_online(
+            online_cli, tmp_path, [cov_spec()], input=src, args=["--no-output"], check=False
+        )
+        assert res.returncode != 0
+        assert "somewhere to put its work" in res.stderr, res.stderr
 
-    def test_an_empty_input_is_not_an_error(self, tmp_path):
+    def test_an_empty_input_is_not_an_error(self, tmp_path, online_cli):
         """With an output, an empty input still writes an empty frame of the
         right schema. Without one there is nothing to write, and the run is a
         no-op that still saves its (empty) state."""
         src = tmp_path / "in.parquet"
         frame(n=0).write_parquet(src)
         state = tmp_path / "b.state"
-        stats = po.run(specs=[cov_spec()], input=src, save_state=state)
-        assert stats["rows"] == 0
+        run_online(
+            online_cli, tmp_path, [cov_spec()], input=src, save_state=state, args=["--no-output"]
+        )
         assert state.exists()
 
-    def test_it_works_for_a_learning_spec_too(self, tmp_path):
+    def test_it_works_for_a_learning_spec_too(self, tmp_path, online_cli):
         """Nothing about this is `ew_cov`-only: a ridge fit whose product is
         the coefficients need not write its predictions either."""
         df = frame(seed=2)
         src = tmp_path / "in.parquet"
         df.write_parquet(src)
         state = tmp_path / "b.state"
-        po.run(specs=[ridge_spec()], input=src, save_state=state, chunk_rows=100)
+        run_online(
+            online_cli, tmp_path, [ridge_spec()], input=src, save_state=state, chunk_rows=100,
+            args=["--no-output"],
+        )  # fmt: skip
         bank = po.ModelBank.load(state)
         want = po.ModelBank([ridge_spec()])
         want.fit_predict(df)
@@ -213,7 +232,7 @@ type = "{model}"
         bank = po.ModelBank.load(state)
         assert bank.specs[0]["targets"] == ["x0"], "filled from features[0]"
 
-    def test_the_filled_spec_is_the_one_python_writes(self, tmp_path):
+    def test_the_filled_spec_is_the_one_python_writes(self, tmp_path, online_cli):
         """E53's point: the two surfaces must produce the same spec, so a
         state saved from one resumes under the other."""
         df = frame(n=300, seed=5)
@@ -236,14 +255,12 @@ type = "ew_cov"
 stats = []
 """
         )
-        po.run(str(cfg))
+        subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
         from_python = tmp_path / "py.state"
-        po.run(
-            specs=[cov_spec(name="c")],
-            input=src,
-            save_state=from_python,
-            chunk_rows=100,
-        )
+        bank = po.ModelBank([cov_spec(name="c")])
+        for out in bank.fit_predict_batches(df.slice(i, 100) for i in range(0, df.height, 100)):
+            del out
+        bank.save(from_python)
         assert from_toml.read_bytes() == from_python.read_bytes()
 
     def test_a_bank_fills_them_too(self):

@@ -5,6 +5,21 @@ All notable changes to this project are documented here. The format follows
 [semantic versioning](https://semver.org/) — while pre-1.0, the minor version
 carries breaking changes, and any change to the numbers a model returns.
 
+## [Unreleased]
+
+### Removed
+
+- **`polars_online.run` is gone; the `online` command line keeps the runner.**
+  The runner's Python entry point built its chunk iterator with py-polars and
+  handed the frames to Rust, so it duplicated what `ModelBank` and
+  `lf.online.fit_predict` already do from Python while dragging the whole
+  Polars lazy engine, the parquet, CSV and IPC readers and the sinks into the
+  extension module, where no Python path reached them. File-to-file work is
+  the `online` binary's (`docs/RUNNER.md`), and in-process work is the bank's.
+  Its per-chunk `progress` callback has no command-line equivalent and is
+  removed rather than moved; a caller driving `fit_predict_batches` counts
+  chunks itself.
+
 ## [0.6.0] — 2026-09-16
 
 A minor: many models return a different number than they did in 0.5.1, and

@@ -27,7 +27,7 @@ Four kinds of check:
   before the chunk, a refused chunk updates neither phase.
 - **Edge cases and plumbing.** Warmup, per-target ``min_periods``, null and
   zero and out-of-bound values, a session reset, groups and a null key,
-  chunk invariance, save/load and pickle, the lazy path, the runner, the
+  chunk invariance, save/load and pickle, the lazy path, the
   CLI, the expression path (column mode; a comparison is refused with the
   way to write it), ``output_index`` dtypes, no coefficients, and every
   refusal by name.
@@ -730,16 +730,6 @@ class TestEdgeCases:
         lazy = df.lazy().online.fit_predict([s], chunk_rows=128).collect()
         assert bank.equals(lazy, null_equal=True)
         assert df.online.fit_predict([s]).equals(bank, null_equal=True)
-
-    def test_the_runner_agrees_with_the_bank(self, tmp_path):
-        df = regression(2000, seed=37, groups=["p", "q", "r"], null_every=7)
-        sides = two_sides(group="g")
-        c = po.spec.seqtest("c", targets=["y"], a="fast", b="slow", group="g")
-        want = po.ModelBank([*sides, c]).fit_predict(df)
-        src, dst = tmp_path / "in.parquet", tmp_path / "out.parquet"
-        df.write_parquet(src)
-        po.run(input=str(src), output=str(dst), specs=[*sides, c], chunk_rows=300)
-        assert want.equals(pl.read_parquet(dst), null_equal=True)
 
     def test_determinism(self):
         df = frame(n=3000, seed=38, groups=["p", "q"])

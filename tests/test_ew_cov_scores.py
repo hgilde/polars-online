@@ -21,6 +21,7 @@ components.
 """
 
 import math
+import subprocess
 
 import numpy as np
 import polars as pl
@@ -543,17 +544,7 @@ class TestStreamContract:
         out = po.ModelBank([s]).fit_predict(self._df(k=2))
         assert field(out, "pc0_var@h50")[-1] != field(out, "pc0_var@h500")[-1]
 
-    def test_the_runner_agrees_with_the_bank(self, tmp_path):
-        df = self._df(n=500).with_columns(g=pl.Series(["p", "q", "r", "s", "t"] * 100))
-        s = self._spec(group="g")
-        want = po.ModelBank([s]).fit_predict(df)
-        src, dst = tmp_path / "in.parquet", tmp_path / "out.parquet"
-        df.write_parquet(src)
-        po.run(input=str(src), output=str(dst), specs=[s])
-        got = pl.read_parquet(dst)
-        assert want.select("c").unnest("c").equals(got.select("c").unnest("c"), null_equal=True)
-
-    def test_a_toml_config_carries_the_new_keys(self, tmp_path):
+    def test_a_toml_config_carries_the_new_keys(self, tmp_path, online_cli):
         df = self._df(n=300)
         src, dst = tmp_path / "in.parquet", tmp_path / "out.parquet"
         df.write_parquet(src)
@@ -575,7 +566,14 @@ class TestStreamContract:
             "pca = 2\n"
             "pca_every = 7\n"
         )
-        po.run(cfg)
+        res = subprocess.run(
+            [str(online_cli), "--config", str(cfg), "--quiet"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        assert res.returncode == 0, res.stderr
         got = pl.read_parquet(dst).select("c").unnest("c")
         want = po.ModelBank([self._spec()]).fit_predict(df).select("c").unnest("c")
         assert got.equals(want, null_equal=True)

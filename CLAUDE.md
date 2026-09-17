@@ -142,8 +142,8 @@ dependencies; `crate-type` is the publisher's choice).
     stream are the unguaranteed ones — see `docs/RELEASE-READINESS.md`.
     Treat a `ModelBank` or IO-plugin break on a new Polars as expected
     maintenance, not a surprise, and check those paths first. The floor is
-    `LazyFrame.collect_batches` (py-polars 1.34.0), which `po.run` and the IO
-    plugin read with; `ModelBank` and the expression plugin alone work from
+    `LazyFrame.collect_batches` (py-polars 1.34.0), which the IO
+    plugin reads with; `ModelBank` and the expression plugin alone work from
     1.28.1.
 
 ## Style

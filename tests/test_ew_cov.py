@@ -320,18 +320,16 @@ class TestAccumulateOnly:
         bare, _ = self._pair()
         ref = po.ModelBank([bare])
         one = ref.fit_predict(df).select("c").unnest("c")
-        # Chunked, lazy, runner and expression: the same n_eff column, and the
-        # same Gram wherever a state comes out.
+        # Chunked, lazy and expression: the same n_eff column, and the same
+        # Gram wherever a state comes out.
         bank = po.ModelBank([bare])
         many = pl.concat([bank.fit_predict(df.slice(i, 101)) for i in range(0, df.height, 101)])
         assert many.select("c").unnest("c").equals(one)
         assert np.array_equal(bank.gram("c")[0]["comoments"], ref.gram("c")[0]["comoments"])
         lazy = df.lazy().online.fit_predict([bare]).collect().select("c").unnest("c")
         assert lazy.equals(one)
-        src, dst, state = tmp_path / "in.parquet", tmp_path / "out.parquet", tmp_path / "s.state"
-        df.write_parquet(src)
-        po.run(input=src, output=dst, specs=[bare], save_state=state)
-        assert pl.read_parquet(dst).select("c").unnest("c").equals(one)
+        state = tmp_path / "s.state"
+        bank.save(state)
         loaded = po.ModelBank.load(state)
         assert np.array_equal(loaded.gram("c")[0]["comoments"], ref.gram("c")[0]["comoments"])
         with pytest.warns(po.InMemoryExpressionWarning):

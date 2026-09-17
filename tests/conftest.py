@@ -50,3 +50,83 @@ def online_cli() -> Path:
     ]
     assert len(exes) == 1, f"expected one CLI artifact, got {exes}:\n{res.stdout}"
     return Path(exes[0])
+
+
+def _toml_value(v: object) -> str:
+    """One TOML scalar, list or inline table.
+
+    Infinities go as the strings the spec layer already uses for them
+    (`online_core::humanfloat`), so a config round-trips a `halflife = inf`
+    the way `po.spec` writes it.
+    """
+    if isinstance(v, bool):  # before int: bool is an int in Python
+        return "true" if v else "false"
+    if isinstance(v, str):
+        return f'"{v}"'
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        if v == float("inf"):
+            return '"inf"'
+        if v == float("-inf"):
+            return '"-inf"'
+        return repr(v)
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(_toml_value(x) for x in v) + "]"
+    if isinstance(v, dict):
+        return "{" + ", ".join(f"{k} = {_toml_value(x)}" for k, x in v.items()) + "}"
+    raise TypeError(f"no TOML form for {type(v).__name__}")
+
+
+def spec_toml(spec: dict) -> str:
+    """One `[[specs]]` block, with the model under `[specs.model]`.
+
+    `None` is dropped rather than written: a spec dict carries the keys its
+    builder did not fill, and TOML has no null.
+    """
+    lines = ["[[specs]]"]
+    model = None
+    for k, v in spec.items():
+        if k == "model":
+            model = v
+            continue
+        if v is None:
+            continue
+        lines.append(f"{k} = {_toml_value(v)}")
+    if model:
+        lines.append("[specs.model]")
+        for k, v in model.items():
+            if v is None:
+                continue
+            lines.append(f"{k} = {_toml_value(v)}")
+    return "\n".join(lines)
+
+
+def run_online(exe, tmp_path, specs, *, args=(), check=True, **top):
+    """Run the `online` binary over `specs`, from a TOML config written here.
+
+    `top` are the config's top-level keys (`input`, `output`, `save_state`,
+    `load_state`, `closed_groups`, `chunk_rows`, `predict`); paths are taken
+    as they come and written POSIX-style, which is what TOML wants on every
+    platform. `args` are extra command-line flags. Returns the
+    `CompletedProcess`, so a caller can assert on `returncode` and `stderr`;
+    `check=False` is for the refusals.
+    """
+    lines = []
+    for k, v in top.items():
+        if v is None:
+            continue
+        lines.append(f"{k} = {_toml_value(Path(v).as_posix() if isinstance(v, Path) else v)}")
+    lines.extend(spec_toml(s) for s in specs)
+    cfg = Path(tmp_path) / "bank.toml"
+    cfg.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    res = subprocess.run(
+        [str(exe), "--config", str(cfg), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if check:
+        assert res.returncode == 0, res.stderr
+    return res

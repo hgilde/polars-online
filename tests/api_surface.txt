@@ -12,7 +12,6 @@
   online
   predict
   prep
-  run
   schema_version
   sim
   spec

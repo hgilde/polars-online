@@ -61,7 +61,7 @@ bank.save("bank.state")
   (`InMemoryExpressionWarning`) on every use and must not be suggested for data that
   does not fit in memory.
 - **State has one vocabulary everywhere**: `load_state` and `save_state`, on the plan,
-  in `po.run`, in the TOML and on the CLI. A state file is versioned msgpack, written
+  on the bank, in the TOML and on the CLI. A state file is versioned msgpack, written
   atomically, and loads on macOS, Linux and Windows alike.
 - **Every spec adds one struct column** named after the spec, holding `pred_<target>`,
   `resid_<target>`, `n_eff`, `coef` and whatever diagnostics are switched on.

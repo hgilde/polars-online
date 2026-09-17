@@ -17,7 +17,7 @@ Three layers:
   caller's units under ``scale_features``.
 * **Edge cases** -- pinned slopes, infinite bounds, list vs scalar bounds,
   several targets, zero-weight and null-target rows, the input bound, chunk
-  invariance, save/load, ``predict``, groups, the expression, ``po.run``,
+  invariance, save/load, ``predict``, groups, the expression,
   the CLI, and every refusal by name.
 """
 
@@ -877,17 +877,13 @@ class TestEdgeCases:
                 ).unnest("y")
             assert bank.equals(expr, null_equal=True), method
 
-    def test_lazy_and_runner_agree_with_the_bank(self, tmp_path):
+    def test_lazy_agrees_with_the_bank(self):
         X, y, t, w = _stream(600, 3, seed=20)
         df = _frame(X, y, t, w)
         spec = po.spec.sgd("m", coef_min=0.0, coef_sum=1.0, **_clocked())
         want = po.ModelBank([spec]).fit_predict(df)
         lazy = df.lazy().online.fit_predict([spec]).collect()
         assert want.equals(lazy, null_equal=True)
-        src, dst = tmp_path / "in.parquet", tmp_path / "out.parquet"
-        df.write_parquet(src)
-        po.run(input=str(src), output=str(dst), specs=[spec])
-        assert want.equals(pl.read_parquet(dst), null_equal=True)
 
     def test_the_cli_runs_it(self, tmp_path, online_cli):
         X, y, t, w = _stream(400, 3, seed=21)

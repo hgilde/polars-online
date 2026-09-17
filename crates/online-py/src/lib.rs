@@ -1,7 +1,7 @@
-//! Python bindings: the `ModelBank` class, the runner entry point, and the
-//! `online` expression namespace plugin (docs/PLAN.md §6 -- in-memory only;
-//! the Python side warns on every use). Specs cross the boundary as JSON
-//! (Python dicts are serialized by the thin wrapper in `python/polars_online/`).
+//! Python bindings: the `ModelBank` class and the `online` expression
+//! namespace plugin (docs/PLAN.md §6 -- in-memory only; the Python side warns
+//! on every use). Specs cross the boundary as JSON (Python dicts are
+//! serialized by the thin wrapper in `python/polars_online/`).
 
 use online_polars::{Bank, GroupKey, Spec};
 use polars::prelude::PolarsError;
@@ -116,10 +116,10 @@ fn os_err(kind: std::io::ErrorKind, msg: String) -> PyErr {
     PyErr::from(std::io::Error::new(kind, msg))
 }
 
-/// A run's error as Python sees it: a file that could not be read or written
-/// (the runner's `IO` errors, kind intact) is an `OSError`; everything else --
-/// a config the runner refused, a column a spec names that the frames lack,
-/// a bank error mid-stream -- is a `ValueError` with the message.
+/// A polars error as Python sees it: a file that could not be read or written
+/// (`IO` errors, kind intact) is an `OSError`; everything else -- a column a
+/// spec names that the frames lack, a bank error mid-stream -- is a
+/// `ValueError` with the message.
 fn run_err(e: &PolarsError) -> PyErr {
     match e {
         PolarsError::IO { error, .. } => os_err(error.kind(), e.to_string()),
@@ -493,112 +493,10 @@ fn format_of_path(path: &str) -> PyResult<&'static str> {
         .map_err(PyValueError::new_err)
 }
 
-/// The runner's format names, in the order the docs list them.
-#[pyfunction]
-fn formats() -> Vec<&'static str> {
-    online_polars::Format::ALL
-        .iter()
-        .map(|f| f.name())
-        .collect()
-}
-
-/// The runner's `chunk_rows` when a config does not say.
+/// The bank's `chunk_rows` when a caller does not say.
 #[pyfunction]
 fn default_chunk_rows() -> usize {
     online_polars::DEFAULT_CHUNK_ROWS
-}
-
-/// A Python exception raised inside the run -- by the frames iterator or the
-/// progress callback -- kept whole, so the caller gets its `KeyboardInterrupt`
-/// or `ZeroDivisionError` back rather than a `ValueError` with its text.
-/// The run itself only sees a `PolarsError` and stops.
-#[derive(Clone, Default)]
-struct PyFailure(std::sync::Arc<std::sync::Mutex<Option<PyErr>>>);
-
-impl PyFailure {
-    fn set(&self, e: PyErr) -> polars::prelude::PolarsError {
-        let mut slot = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        let text = e.to_string();
-        slot.get_or_insert(e);
-        polars::prelude::PolarsError::ComputeError(text.into())
-    }
-
-    fn take(&self) -> Option<PyErr> {
-        self.0.lock().unwrap_or_else(|p| p.into_inner()).take()
-    }
-}
-
-/// Frames from a Python iterator, pulled on the runner's reader thread. The
-/// GIL is held for the `__next__` call and the frame's export, and released
-/// while the runner works; py-polars' own batch iterators release it
-/// themselves while they wait for the engine, so a plan with Python UDFs
-/// in it makes progress too.
-struct PyFrames {
-    iter: Py<pyo3::types::PyIterator>,
-    failure: PyFailure,
-}
-
-impl Iterator for PyFrames {
-    type Item = polars::prelude::PolarsResult<polars::prelude::DataFrame>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        Python::attach(|py| {
-            let item = self.iter.bind(py).clone().next()?;
-            Some(
-                item.and_then(|obj| obj.extract::<PyDataFrame>())
-                    .map(|df| df.0)
-                    .map_err(|e| self.failure.set(e)),
-            )
-        })
-    }
-}
-
-/// Stream frames through a bank and write the output file the config names
-/// (ENHANCEMENTS E8, E32). Config comes in as JSON; `frames` is an iterator
-/// of `polars.DataFrame`s in stream order -- `polars_online.run` makes it
-/// with py-polars' `collect_batches`, so the reading is py-polars' -- and
-/// `schema` an empty frame with their schema, for a stream with no frames.
-/// `progress`, if given, is called with `(rows, chunks)` after each chunk;
-/// raising in it ends the run without publishing the output. Returns
-/// `(rows, chunks)`.
-///
-/// The GIL is released for the run: the iterator and the callback take it
-/// back for their calls only.
-#[pyfunction]
-#[pyo3(signature = (config_json, frames, schema, progress=None))]
-fn run_config_frames(
-    py: Python<'_>,
-    config_json: &str,
-    frames: &Bound<'_, PyAny>,
-    schema: PyDataFrame,
-    progress: Option<Py<PyAny>>,
-) -> PyResult<(usize, usize)> {
-    let mut cfg: online_polars::RunConfig = from_json(config_json)
-        .map_err(|e| PyValueError::new_err(e.replacen("invalid spec", "invalid run config", 1)))?;
-    // What a spec may leave out, filled before anything reads it (E53).
-    cfg.fill_defaults();
-    let failure = PyFailure::default();
-    let frames = PyFrames {
-        iter: frames.try_iter()?.unbind(),
-        failure: failure.clone(),
-    };
-    let input = online_polars::Input::Batches {
-        frames: Box::new(frames),
-        schema: schema.0.schema().as_ref().clone(),
-    };
-    let report = |s: online_polars::RunStats| match &progress {
-        None => Ok(()),
-        Some(cb) => Python::attach(|py| {
-            cb.call1(py, (s.rows, s.chunks))
-                .map(|_| ())
-                .map_err(|e| failure.set(e))
-        }),
-    };
-    let result = py.detach(|| online_polars::run_config_on(&cfg, input, report));
-    match result {
-        Ok(stats) => Ok((stats.rows, stats.chunks)),
-        Err(e) => Err(failure.take().unwrap_or_else(|| run_err(&e))),
-    }
 }
 
 /// Fill, validate and build a single spec, as the bank does
@@ -683,9 +581,7 @@ fn _polars_online(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(thread_pool_size, m)?)?;
     m.add_function(wrap_pyfunction!(model_kinds, m)?)?;
     m.add_function(wrap_pyfunction!(validate_spec, m)?)?;
-    m.add_function(wrap_pyfunction!(run_config_frames, m)?)?;
     m.add_function(wrap_pyfunction!(format_of_path, m)?)?;
-    m.add_function(wrap_pyfunction!(formats, m)?)?;
     m.add_function(wrap_pyfunction!(default_chunk_rows, m)?)?;
     m.add_function(wrap_pyfunction!(spec_output_fields, m)?)?;
     m.add_function(wrap_pyfunction!(spec_output_index, m)?)?;

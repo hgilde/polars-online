@@ -37,7 +37,7 @@ class ModelBank:
 
     The same bank runs as a polars plan, ``lf.online.fit_predict(specs)``
     (:mod:`polars_online._frame`), and as a file-to-file job,
-    :func:`polars_online.run`; this class is the loop form, for a stream that
+    the ``online`` command line; this class is the loop form, for a stream that
     arrives as frames.
 
     .. code-block:: python

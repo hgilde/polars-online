@@ -16,6 +16,7 @@ that class of bug loud:
 """
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +26,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from conftest import run_online
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -400,13 +402,21 @@ class TestRunnerErrorPaths:
             "m", targets=["y0"], features=["x0"], halflife=100.0, min_periods=3.0
         )
 
-    def test_corrupt_input_errors_cleanly(self, tmp_path):
+    def test_corrupt_input_errors_cleanly(self, tmp_path, online_cli):
         bad = tmp_path / "bad.parquet"
         bad.write_bytes(b"PAR1 this is not really a parquet file")
-        with pytest.raises(Exception, match="(?i)parquet|deserialize|read"):
-            po.run(input=bad, output=tmp_path / "out.parquet", specs=[self._spec()])
+        res = run_online(
+            online_cli,
+            tmp_path,
+            [self._spec()],
+            input=bad,
+            output=tmp_path / "out.parquet",
+            check=False,
+        )
+        assert res.returncode != 0
+        assert re.search("(?i)parquet|deserialize|read", res.stderr), res.stderr
 
-    def test_a_bank_error_mid_stream_errors_cleanly(self, tmp_path):
+    def test_a_bank_error_mid_stream_errors_cleanly(self, tmp_path, online_cli):
         """The consumer errors while the reader is a chunk ahead: the
         rejection (a negative weight, row named) must propagate, and the
         reader must be shut down rather than left blocked on `send`."""
@@ -425,10 +435,19 @@ class TestRunnerErrorPaths:
             min_periods=3.0,
             weight="w",
         )
-        with pytest.raises(Exception, match="negative"):
-            po.run(input=src, output=tmp_path / "out.parquet", specs=[spec], chunk_rows=500)
+        res = run_online(
+            online_cli,
+            tmp_path,
+            [spec],
+            input=src,
+            output=tmp_path / "out.parquet",
+            chunk_rows=500,
+            check=False,
+        )
+        assert res.returncode != 0
+        assert "negative" in res.stderr, res.stderr
 
-    def test_a_failed_run_leaves_the_previous_output_intact(self, tmp_path):
+    def test_a_failed_run_leaves_the_previous_output_intact(self, tmp_path, online_cli):
         """The output is written to a temporary and renamed into place, so a
         run that dies on chunk eight does not replace yesterday's output with
         seven chunks and no footer (IMPROVEMENTS C6)."""
@@ -437,7 +456,7 @@ class TestRunnerErrorPaths:
         good = pl.DataFrame({"x0": rng.standard_normal(n), "y0": rng.standard_normal(n)})
         src, out = tmp_path / "in.parquet", tmp_path / "out.parquet"
         good.write_parquet(src)
-        po.run(input=src, output=out, specs=[self._spec()], chunk_rows=500)
+        run_online(online_cli, tmp_path, [self._spec()], input=src, output=out, chunk_rows=500)
         before = out.read_bytes()
 
         w = np.ones(n)
@@ -447,8 +466,11 @@ class TestRunnerErrorPaths:
         spec = po.spec.ewridge(
             "m", targets=["y0"], features=["x0"], halflife=100.0, min_periods=3.0, weight="w"
         )
-        with pytest.raises(Exception, match="negative"):
-            po.run(input=src, output=out, specs=[spec], chunk_rows=500)
+        res = run_online(
+            online_cli, tmp_path, [spec], input=src, output=out, chunk_rows=500, check=False
+        )
+        assert res.returncode != 0
+        assert "negative" in res.stderr, res.stderr
 
         assert out.read_bytes() == before, "the failed run overwrote the good output"
         assert pl.read_parquet(out).height == n

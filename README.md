@@ -578,8 +578,8 @@ warnings.filterwarnings("ignore", category=po.InMemoryExpressionWarning)
 ### Outside a live Python process
 
 A scheduled job, or a deployment with no Python at all, runs the same bank
-from a file to a file: [docs/RUNNER.md](docs/RUNNER.md) has `po.run` and the
-standalone `online` command line. Same specs, same state file, same numbers.
+from a file to a file: [docs/RUNNER.md](docs/RUNNER.md) has the standalone
+`online` command line. Same specs, same state file, same numbers.
 
 ## Saving, loading and serving
 
@@ -953,8 +953,8 @@ for _ in by_block.lazy().online.fit_predict([blocks], closed_groups="blocks.parq
     pass   # the per-row output is not wanted; only the sidecar file is
 ```
 
-(`by_block` and `blocks` are from the block above.) `po.run` and the command
-line write it too ([docs/RUNNER.md](docs/RUNNER.md)). What has closed and
+(`by_block` and `blocks` are from the block above.) The command line writes
+it too ([docs/RUNNER.md](docs/RUNNER.md)). What has closed and
 not been read is saved with the state, so a driver that saves between chunks
 does not lose rows silently.
 
@@ -2217,8 +2217,8 @@ form. Measured as the most memory the process ever held, on one file of
 | `for chunk in lf.collect_batches(): bank.fit_predict(chunk)` | 0.80 GB | 1.24 GB | your own loop |
 | `pl.col("y").online.ewridge(...)` in `with_columns` | | 7.3 GB | the expression: every row at once |
 
-[docs/RUNNER.md](docs/RUNNER.md) has the same row for `po.run` and the
-command line: flat too, at 0.95 / 0.73 GB and 1.41 / 0.75 GB.
+[docs/RUNNER.md](docs/RUNNER.md) has the same row for the command line:
+flat too, at 0.95 / 0.73 GB and 1.41 / 0.75 GB.
 
 Memory is three things: the state, the chunks in flight, and whatever
 Polars' reader has read ahead. The first two rows of the table do not grow

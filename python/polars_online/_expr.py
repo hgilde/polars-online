@@ -11,7 +11,7 @@ the bank give the same numbers by construction.
 Every call warns (:class:`InMemoryExpressionWarning`). Polars hands a stateful
 user expression its whole column in either engine, and its streaming engine
 collects the input to do so, so this form is O(data) where
-``lf.online.fit_predict(specs)`` and ``po.run`` are O(chunk): 7.3 GB against
+``lf.online.fit_predict(specs)`` is O(chunk): 7.3 GB against
 1.35 GB at 12M rows for the same model. That is polars' contract for a user
 expression, not something a plugin can change, and a reader who takes the
 expression for the natural streaming form gets the collecting one. The
@@ -148,7 +148,7 @@ def _run(spec: dict[str, Any], target_expr: pl.Expr, feature_exprs: list[pl.Expr
         msg = (
             "online: group_close is not an expression parameter; a closed group's row is a "
             "frame of its own, which an expression cannot return. Use a ModelBank, "
-            "lf.online.fit_predict(closed_groups=...) or po.run(closed_groups=...)."
+            "lf.online.fit_predict(closed_groups=...)."
         )
         raise TypeError(msg)
     _warn_in_memory(spec["model"]["type"], target_expr.meta.output_name())

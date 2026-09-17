@@ -25,6 +25,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from conftest import run_online
 from polars_online import prep
 
 HALFLIFE = 50.0
@@ -395,13 +396,13 @@ class TestTheSurfaces:
         lazy = df.lazy().online.fit_predict([s]).collect()
         assert lazy.select("m").unnest("m").equals(bank.select("m").unnest("m"), null_equal=True)
 
-    def test_the_runner_and_the_cli(self, tmp_path, online_cli):
+    def test_the_cli(self, tmp_path, online_cli):
         df = frame(n=300, seed=12)
         src = tmp_path / "in.parquet"
         df.write_parquet(src)
         s = spec(label_delay=6.0)
         out = tmp_path / "out.parquet"
-        po.run(specs=[s], input=src, output=out, chunk_rows=64)
+        run_online(online_cli, tmp_path, [s], input=src, output=out, chunk_rows=64)
 
         # `coef` rides the chunk cadence, as everywhere; every value is
         # compared.

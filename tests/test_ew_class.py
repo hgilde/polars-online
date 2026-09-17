@@ -23,7 +23,7 @@ check:
   labels, null features, zero weights, integer and boolean label columns,
   an undeclared label, chunk invariance, save/load, ``predict``, groups, the
   halflife grid, ``coef`` and its index, the expression path, the lazy
-  path, the runner, the CLI, and the refusals.
+  path, the CLI, and the refusals.
 """
 
 from __future__ import annotations
@@ -712,17 +712,6 @@ class TestEdgeCases:
         bank = po.ModelBank([s]).fit_predict(df)
         lazy = df.lazy().online.fit_predict([s]).collect()
         assert bank.equals(lazy, null_equal=True)
-
-    def test_the_runner_agrees_with_the_bank(self, tmp_path):
-        X, lab = gaussians(500, seed=26, **THREE)
-        df = frame(X, lab, null_every=7, g=["p", "q", "r", "s", "t"] * 100)
-        s = spec(group="g")
-        want = po.ModelBank([s]).fit_predict(df)
-        src, dst = tmp_path / "in.parquet", tmp_path / "out.parquet"
-        df.write_parquet(src)
-        po.run(input=str(src), output=str(dst), specs=[s])
-        got = pl.read_parquet(dst)
-        assert unnested(want).equals(unnested(got), null_equal=True)
 
 
 # --------------------------------------------------------------- refusals

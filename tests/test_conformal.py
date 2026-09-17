@@ -778,15 +778,3 @@ class TestStreamContract:
         next_lo = d + 1 + int(np.argmax(np.isfinite(lo[d + 1 :])))
         assert next_pred > d + 5, "the reset model waits for min_periods again"
         assert next_lo == next_pred + 2, "and the radius restarts with it"
-
-    def test_the_runner_agrees_with_the_bank(self, tmp_path):
-        df = messy(n=800, seed=10, groups=2)
-        spec = build("huber", {"max_rows_between_solves": 1}, group="g")
-        want = po.ModelBank([spec]).fit_predict(df)
-        src = tmp_path / "in.parquet"
-        dst = tmp_path / "out.parquet"
-        df.write_parquet(src)
-        po.run(input=str(src), output=str(dst), specs=[spec])
-        got = pl.read_parquet(dst)
-        for k in ("lo_y0", "hi_y0", "coverage_y0"):
-            np.testing.assert_array_equal(field(got, k), field(want, k), err_msg=k)

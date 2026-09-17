@@ -114,7 +114,7 @@ def run_with_pathway() -> None:
         y: float
 
     # Pathway supplies ordered rows; `fit_predict` is called per batch, and the
-    # bank carries state across batches exactly as it does for `po.run`.
+    # bank carries state across batches exactly as it does for the CLI.
     table = pw.io.csv.read("./ticks", schema=Schema, mode="streaming")
 
     @pw.udf

@@ -1672,6 +1672,20 @@ note, not a task.
       `hit_rate` (`test_diagnostics.py`'s E22 test among them) is regression
       and passes unchanged, since none of them named `binary=True`.
 
+- [x] 83. **The runner leaves Python; the `online` command line keeps it,
+      2026-09-17.** `polars_online.run` built its chunk iterator with py-polars
+      and handed the frames to `run_config_on`, so it duplicated what
+      `ModelBank` and `lf.online.fit_predict` already do while dragging the
+      lazy engine, the parquet/CSV/IPC readers and the sinks into the
+      extension module, which no Python path reached (`Input::Lazy` has one
+      constructor, `runner.rs:430`, and only the CLI reaches it). Removed:
+      `_runner.py`, `run_config_frames`, `PyFrames`, `PyFailure`, `formats()`.
+      Tests moved rather than dropped wherever the path survives -- the
+      hardening trio and the no-output and predict clusters to the command
+      line, the sidecar cases to the query path, `test_sink_equals_run` to a
+      sink-versus-collect comparison -- and deleted only where the bank half
+      sat in the same function. `progress` has no command-line equivalent and
+      is removed, not moved.
 - [x] 82. **N9: `quantile` did not settle on the quantile regression -- found
       2026-09-15 writing the code review's T-S4, fixed the same day on the
       user's go-ahead.** IRLS on each row's prior residual, with its weights
