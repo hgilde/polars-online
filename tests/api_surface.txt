@@ -1,7 +1,9 @@
 # polars-online public API surface. Regenerate: UPDATE_API_SURFACE=1 pytest
 
 [package]
+  ArrowStruct
   ModelBank
+  OrderNotGuaranteedWarning
   __version__
   corr
   eval
@@ -331,7 +333,7 @@
   drop_groups(self, keys: 'Iterable[str | None]', spec: 'str | int | None' = None) -> 'int'
   fit(self, batches: 'pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame]', closed_groups: 'str | Path | None' = None, chunk_rows: 'int | None' = None) -> 'None'
   fit_predict(self, df: 'pl.DataFrame') -> 'pl.DataFrame'
-  fit_predict_arrow(self, df: 'pl.DataFrame') -> 'list[_native.ArrowStruct]'
+  fit_predict_arrow(self, df: 'pl.DataFrame') -> 'list[ArrowStruct]'
   fit_predict_batches(self, batches: 'pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame]', closed_groups: 'str | Path | None' = None, chunk_rows: 'int | None' = None) -> 'Iterable[pl.DataFrame]'
   gram(self, spec: 'str | int', group: 'str | None' = None) -> 'list[dict[str, Any]]'
   groups(self, spec: 'str | int | None' = None) -> 'pl.DataFrame'
@@ -341,7 +343,7 @@
   marginal(self, spec: 'str | int', group: 'str | None' = None) -> 'pl.DataFrame'
   output_fields(self) -> 'dict[str, list[str]]'
   predict(self, df: 'pl.DataFrame') -> 'pl.DataFrame'
-  predict_arrow(self, df: 'pl.DataFrame') -> 'list[_native.ArrowStruct]'
+  predict_arrow(self, df: 'pl.DataFrame') -> 'list[ArrowStruct]'
   rows_seen(self) -> 'int'
   save(self, path: 'str | Path') -> 'None'
   save_bytes(self) -> 'bytes'

@@ -47,6 +47,27 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Added
 
+- **A plan whose row order is unspecified is warned about before a bank reads
+  it.** An online model learns in row order, so the order a plan delivers is
+  part of the model -- and `fit(lf)`, `fit_predict_batches(lf)` and
+  `lf.online.fit_predict` run the plan through polars' streaming engine, where
+  a `join`, `group_by` or `unique` without an order guarantee delivers a
+  different stream than `lf.collect()` gives. Measured on 200,000 rows:
+  `collect()` kept the input order, `collect_batches()` did not, and
+  `maintain_order="left"` made the two agree. So a plan checked by collecting
+  it learned something else when fed, silently. Each entry point now inspects
+  the plan when it is handed over and raises `OrderNotGuaranteedWarning`,
+  naming the node and the fix: `maintain_order="left"` on a join,
+  `maintain_order=True` on a `group_by`, a sort after a `unique` (whose flag
+  the streaming engine does not honour), or a sort before the bank. A sort
+  above the node settles it and is not flagged. Best-effort by design: the
+  inspection reads `LazyFrame.serialize(format="json")`, which polars has
+  deprecated, and falls silent rather than fail on a plan it cannot read --
+  one already holding a bank, for instance. The warning is a `UserWarning`,
+  shown by default; the note on each method is the guarantee under it.
+- **`ArrowStruct` is exported and documented.** `fit_predict_arrow` returned a
+  type a caller could neither import for an annotation nor find in the
+  reference; it is `polars_online.ArrowStruct` now.
 - **The model bank is Arrow inside, with Polars as an adapter.** The bank no
   longer reads a `DataFrame` or builds a named Series: it reads an
   `ArrowChunk` and returns one Arrow struct array per spec. `fit_predict` and
@@ -110,6 +131,11 @@ carries breaking changes, and any change to the numbers a model returns.
   the crate re-exports `PlSmallStr`.
 - **`fit_predict_batches` slices a `DataFrame` when `chunk_rows` is given**,
   where it validated the argument and then fed the frame whole.
+- **A broken bank refuses a chunk before the chunk is cast.** The Arrow
+  adapter had moved the cast ahead of the check, so a bank that could not go
+  on reported a column error instead, and did a frame's worth of casting to
+  find it. The "not found" message says "the input has columns", one wording
+  for a frame and for a hand-built chunk alike.
 - **The API snapshot records `ModelBank` signatures, not names alone.** A
   parameter added or a default moved on a method is now a diff in
   `tests/api_surface.txt`, as it already was for the spec builders and the

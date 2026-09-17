@@ -40,13 +40,20 @@ from polars_online import (
     spec,
 )
 from polars_online._bank import ModelBank
-from polars_online._frame import fit_predict, predict, unnest
-from polars_online._polars_online import native_version, schema_version, thread_pool_size
+from polars_online._frame import OrderNotGuaranteedWarning, fit_predict, predict, unnest
+from polars_online._polars_online import (
+    ArrowStruct,
+    native_version,
+    schema_version,
+    thread_pool_size,
+)
 
 __version__ = "0.7.0"
 
 __all__ = [
+    "ArrowStruct",
     "ModelBank",
+    "OrderNotGuaranteedWarning",
     "__version__",
     "corr",
     "eval",

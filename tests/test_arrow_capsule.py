@@ -61,7 +61,7 @@ def same(got: pl.Series, want: pl.Series) -> None:
 def test_the_arrow_output_is_the_polars_output() -> None:
     df = frame()
     want = po.ModelBank([SPEC]).fit_predict(df)["m"]
-    outs = po.ModelBank([SPEC])._native.fit_predict_arrow(df)
+    outs = po.ModelBank([SPEC]).fit_predict_arrow(df)
     assert len(outs) == 1
     same(pl.Series(outs[0]), want)
 
@@ -69,7 +69,7 @@ def test_the_arrow_output_is_the_polars_output() -> None:
 def test_the_capsule_carries_the_spec_name() -> None:
     """`pl.Series` does not take a name from the caller here, so the field's
     own name is what arrives -- and it must be the spec's."""
-    outs = po.ModelBank([SPEC])._native.fit_predict_arrow(frame(40))
+    outs = po.ModelBank([SPEC]).fit_predict_arrow(frame(40))
     assert outs[0].name == "m"
     assert pl.Series(outs[0]).name == "m"
 
@@ -78,16 +78,16 @@ def test_predict_arrow_is_predict() -> None:
     df = frame(160)
     by_polars, by_arrow = po.ModelBank([SPEC]), po.ModelBank([SPEC])
     by_polars.fit_predict(df)
-    by_arrow._native.fit_predict_arrow(df)
+    by_arrow.fit_predict_arrow(df)
     want = by_polars.predict(df)["m"]
-    outs = by_arrow._native.predict_arrow(df)
+    outs = by_arrow.predict_arrow(df)
     same(pl.Series(outs[0]), want)
 
 
 def test_a_struct_exports_once() -> None:
     """The interface hands its buffers to the consumer, so a second export
     would give away what has already been given. It refuses instead."""
-    outs = po.ModelBank([SPEC])._native.fit_predict_arrow(frame(20))
+    outs = po.ModelBank([SPEC]).fit_predict_arrow(frame(20))
     pl.Series(outs[0])
     with pytest.raises(ValueError, match="already been exported"):
         pl.Series(outs[0])
@@ -97,7 +97,7 @@ def test_one_struct_per_spec_in_spec_order() -> None:
     second = {**SPEC, "name": "n", "halflife": 10.0}
     df = frame(80)
     want = po.ModelBank([SPEC, second]).fit_predict(df)
-    outs = po.ModelBank([SPEC, second])._native.fit_predict_arrow(df)
+    outs = po.ModelBank([SPEC, second]).fit_predict_arrow(df)
     assert [o.name for o in outs] == ["m", "n"]
     for o in outs:
         same(pl.Series(o), want[o.name])
@@ -108,7 +108,7 @@ def test_the_nested_coef_list_survives() -> None:
     must preserve both, which a flat comparison would not catch."""
     df = frame(120)
     want = po.ModelBank([SPEC]).fit_predict(df)["m"].struct.unnest()
-    outs = po.ModelBank([SPEC])._native.fit_predict_arrow(df)
+    outs = po.ModelBank([SPEC]).fit_predict_arrow(df)
     got = pl.Series(outs[0]).rename("m").struct.unnest()
     assert got["coef"].dtype == pl.List(pl.Float64)
     assert got["coef"].null_count() == want["coef"].null_count()
@@ -118,7 +118,7 @@ def test_the_nested_coef_list_survives() -> None:
 def test_an_empty_frame_gives_an_empty_struct_of_the_right_dtype() -> None:
     """Nothing to feed is not an error, and the schema is still the spec's."""
     df = frame()
-    out = po.ModelBank([SPEC])._native.fit_predict_arrow(df.clear())
+    out = po.ModelBank([SPEC]).fit_predict_arrow(df.clear())
     s = pl.Series(out[0])
     assert len(s) == 0
     assert s.dtype == po.ModelBank([SPEC]).fit_predict(df)["m"].dtype
@@ -130,7 +130,7 @@ def test_a_multi_chunk_frame_equals_the_rechunked_one() -> None:
     df = frame()
     mc = pl.concat([df.slice(0, 50), df.slice(50)], rechunk=False)
     assert mc.n_chunks() > 1
-    got = pl.Series(po.ModelBank([SPEC])._native.fit_predict_arrow(mc)[0])
+    got = pl.Series(po.ModelBank([SPEC]).fit_predict_arrow(mc)[0])
     same(got, po.ModelBank([SPEC]).fit_predict(df.rechunk())["m"])
 
 

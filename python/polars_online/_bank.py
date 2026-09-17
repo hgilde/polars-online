@@ -10,6 +10,7 @@ from typing import Any
 import polars as pl
 
 from polars_online import _polars_online as _native
+from polars_online._polars_online import ArrowStruct
 from polars_online._spec import _from_json, _json, coef_index
 
 #: What `gram()` calls the constant column a spec's `add_intercept` puts in
@@ -260,7 +261,7 @@ class ModelBank:
         outs = self._native.predict(df)
         return df.with_columns([pl.Series(s) for s in outs])
 
-    def fit_predict_arrow(self, df: pl.DataFrame) -> list[_native.ArrowStruct]:
+    def fit_predict_arrow(self, df: pl.DataFrame) -> list[ArrowStruct]:
         """:meth:`fit_predict`, with the output handed back as Arrow.
 
         One struct per spec, in spec order, each exposing ``__arrow_c_array__`` --
@@ -292,7 +293,7 @@ class ModelBank:
         self._check_frame(df, "fit_predict_arrow")
         return self._native.fit_predict_arrow(df)
 
-    def predict_arrow(self, df: pl.DataFrame) -> list[_native.ArrowStruct]:
+    def predict_arrow(self, df: pl.DataFrame) -> list[ArrowStruct]:
         """:meth:`predict`, with the output handed back as Arrow.
 
         To :meth:`predict` what :meth:`fit_predict_arrow` is to
@@ -344,6 +345,15 @@ class ModelBank:
         ``fit_predict`` raises for a chunk, this raises there; the chunks before it
         have been learned from.
 
+        A plan runs through polars' streaming engine, and an online model learns
+        in row order, so the order the engine delivers is part of the result. A
+        ``join``, ``group_by`` or ``unique`` without an order guarantee delivers a
+        different stream there than ``lf.collect()`` gives, and may differ between
+        runs: give a join ``maintain_order="left"``, a ``group_by``
+        ``maintain_order=True``, and sort after a ``unique``, or sort before the
+        bank. A plan with such a node raises
+        :class:`polars_online.OrderNotGuaranteedWarning`, naming the node.
+
         .. code-block:: python
 
             for out in bank.fit_predict_batches(lf, chunk_rows=100):
@@ -359,13 +369,25 @@ class ModelBank:
         left the bank, and the file is then the only place it is. The file and the
         bank's queue together always hold every group that closed.
         """
+        return self._batches(batches, closed_groups, chunk_rows, "fit_predict_batches")
+
+    def _batches(
+        self,
+        batches: pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame],
+        closed_groups: str | Path | None,
+        chunk_rows: int | None,
+        what: str,
+    ) -> Iterable[pl.DataFrame]:
+        """The run behind :meth:`fit_predict_batches` and :meth:`fit`: the
+        arguments checked eagerly, then a generator. ``what`` is the public
+        method the caller used, for the messages that name it."""
         from polars_online._frame import _closed_path
 
         if chunk_rows is not None and chunk_rows < 1:
             msg = f"chunk_rows must be at least 1, got {chunk_rows}"
             raise ValueError(msg)
         path = _closed_path(closed_groups, self._specs)
-        return self._feed(self._chunks(batches, chunk_rows), path)
+        return self._feed(self._chunks(batches, chunk_rows, what), path)
 
     def _feed(self, source: Iterable[pl.DataFrame], path: str | None) -> Iterable[pl.DataFrame]:
         """The loop behind :meth:`fit_predict_batches`, once its arguments are
@@ -389,9 +411,15 @@ class ModelBank:
     def _chunks(
         batches: pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame],
         chunk_rows: int | None,
+        what: str,
     ) -> Iterable[pl.DataFrame]:
-        """The frames to feed, from a plan, a frame, or an iterator of frames."""
+        """The frames to feed, from a plan, a frame, or an iterator of frames.
+        Only a plan has an order still to be decided, so only a plan is
+        inspected for a node that leaves it unspecified."""
         if isinstance(batches, pl.LazyFrame):
+            from polars_online._frame import _warn_if_order_unspecified
+
+            _warn_if_order_unspecified(batches, f"ModelBank.{what}")
             rows = _native.default_chunk_rows() if chunk_rows is None else chunk_rows
             return batches.collect_batches(chunk_size=rows, maintain_order=True)
         if isinstance(batches, pl.DataFrame):
@@ -415,6 +443,13 @@ class ModelBank:
         billion rows is gigabytes written so they can be deleted; a fit whose
         product is its coefficients need not keep its predictions either.
 
+        The plan runs through polars' streaming engine, whose row order for a
+        ``join``, ``group_by`` or ``unique`` without an order guarantee is not the
+        order ``lf.collect()`` gives, and an online model learns in row order.
+        Give a join ``maintain_order="left"`` or sort before the bank; such a plan
+        raises :class:`polars_online.OrderNotGuaranteedWarning` naming the node
+        (:meth:`fit_predict_batches` says more).
+
         .. code-block:: python
 
             bank = po.ModelBank([spec])
@@ -427,7 +462,7 @@ class ModelBank:
         makes the fit out-of-sample, and the output columns are still built before
         they are dropped.
         """
-        for _ in self.fit_predict_batches(batches, closed_groups, chunk_rows):
+        for _ in self._batches(batches, closed_groups, chunk_rows, "fit"):
             pass
 
     def coef(self, spec: str | int | None = None, group: str | None = None) -> pl.DataFrame:

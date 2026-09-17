@@ -2626,6 +2626,10 @@ impl Bank {
     /// rather than go on from there. And, on the first call only, a
     /// `POLARS_ONLINE_MAX_THREADS` that is not a count of threads.
     pub fn fit_predict(&mut self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
+        // Before the frame is cast: a broken bank refuses the chunk whatever
+        // is in it, and a column error would otherwise hide that and the cast
+        // would be work thrown away (review 2026-09-17, second pass).
+        self.refuse_if_broken()?;
         let chunk = chunk_from_frame(df, &self.specs)?;
         let arrays = self.fit_predict_arrow(&chunk)?;
         named_columns(&self.specs, arrays)
@@ -2910,6 +2914,7 @@ impl Bank {
     ///
     /// As [`Self::fit_predict`]'s, less a missing target, which is not one.
     pub fn predict(&self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
+        self.refuse_if_broken()?;
         let chunk = chunk_from_frame(df, &self.specs)?;
         let arrays = self.predict_arrow(&chunk)?;
         named_columns(&self.specs, arrays)
@@ -4279,6 +4284,7 @@ fn named_column(spec: &Spec, st: StructArray) -> PolarsResult<Column> {
 
 /// Every spec's struct array, named, in spec order.
 fn named_columns(specs: &[Spec], arrays: Vec<StructArray>) -> PolarsResult<Vec<Column>> {
+    debug_assert_eq!(specs.len(), arrays.len(), "one struct array per spec");
     specs
         .iter()
         .zip(arrays)

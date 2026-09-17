@@ -452,6 +452,16 @@ which you use.
   rows and on each chunk's last row, so smaller chunks report it more
   often.
 
+Both rest on one thing the caller supplies: a fixed row order. An online
+model learns in row order, so a plan whose order polars does not guarantee
+is a different model each time it runs. A `LazyFrame` handed to a bank runs
+through polars' streaming engine, and a `join`, `group_by` or `unique` without
+an order guarantee delivers a different stream there than `lf.collect()`
+gives — measured: `collect()` kept the input order, `collect_batches()` did
+not. Give a join `maintain_order="left"`, a `group_by` `maintain_order=True`,
+sort after a `unique`, or sort before the bank. A plan with such a node
+raises `OrderNotGuaranteedWarning` when it is handed over, naming the node.
+
 ## Running a bank
 
 ### As a query: `lf.online.fit_predict`

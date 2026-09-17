@@ -7,6 +7,11 @@
 .. autoclass:: polars_online.ModelBank
    :members:
 
+.. autoclass:: polars_online.ArrowStruct
+   :members:
+
+.. autoclass:: polars_online.OrderNotGuaranteedWarning
+
 
 .. autofunction:: polars_online.fit_predict
 

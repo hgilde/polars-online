@@ -29,8 +29,12 @@ visibly typed.
 
 from __future__ import annotations
 
+import json
 import os
+import sys
+import warnings
 from collections.abc import Callable, Iterable, Iterator
+from types import FrameType
 from typing import Any, overload
 
 import polars as pl
@@ -43,6 +47,7 @@ from polars_online._spec import coef_fields, output_index
 __all__ = [
     "DataFrameOnlineNamespace",
     "LazyFrameOnlineNamespace",
+    "OrderNotGuaranteedWarning",
     "fit_predict",
     "predict",
     "unnest",
@@ -169,6 +174,130 @@ def _spec_columns(specs: Iterable[dict[str, Any]]) -> set[str]:
     return cols
 
 
+class OrderNotGuaranteedWarning(UserWarning):
+    """A plan handed to a bank has a row order polars does not guarantee.
+
+    An online model learns in row order, so the order a plan delivers is part of
+    the model. :meth:`ModelBank.fit`, :meth:`ModelBank.fit_predict_batches` and
+    ``lf.online.fit_predict`` run a plan through polars' streaming engine, and a
+    ``join``, ``group_by`` or ``unique`` without an order guarantee delivers a
+    different stream there than ``lf.collect()`` gives. Measured on 200,000
+    rows: ``collect()`` kept the input order and ``collect_batches()`` did not,
+    so a plan checked by collecting it learns something else when it is fed.
+    The order may also differ between runs.
+
+    The warning names each such node and its fix: ``maintain_order="left"`` on
+    a join, ``maintain_order=True`` on a ``group_by``, a ``sort`` after a
+    ``unique`` (the streaming engine does not honour its ``maintain_order``), or
+    a sort before the bank.
+
+    Best-effort by design. The plan is read through ``LazyFrame.serialize``,
+    a format polars has deprecated, and a plan polars cannot serialize -- one
+    already holding a bank, for instance -- is let through in silence: the
+    inspection never fails a run. For a plan whose order is fixed by other
+    means, ``warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning)``.
+    """
+
+
+def _user_stacklevel() -> int:
+    """The ``stacklevel`` that attributes a warning to the first frame outside
+    this package, so it points at the caller's line and not at the library's.
+    Counted from the function that calls this and then ``warnings.warn``."""
+    here = os.path.dirname(os.path.abspath(__file__)) + os.sep
+    frame: FrameType | None = sys._getframe(1)
+    level = 1
+    while frame is not None and os.path.abspath(frame.f_code.co_filename).startswith(here):
+        frame = frame.f_back
+        level += 1
+    return level
+
+
+def _walk(node: Any, found: list[str]) -> None:
+    """Collect the nodes of a serialized plan whose output order is unspecified,
+    top-down. A ``Sort`` settles the order of everything beneath it, so the
+    walk stops there; a join that keeps one side's order is followed on that
+    side alone. Anything unrecognised is descended into generically."""
+    if isinstance(node, list):
+        for item in node:
+            _walk(item, found)
+        return
+    if not isinstance(node, dict):
+        return
+    if len(node) == 1:
+        ((tag, body),) = node.items()
+        if tag == "Sort":
+            return
+        if tag == "Join" and isinstance(body, dict):
+            args = body.get("options", {}).get("args", {})
+            mode = str(args.get("maintain_order", "None")).lower()
+            if mode == "none":
+                found.append(
+                    'a join without maintain_order (pass maintain_order="left" to keep the '
+                    "order of the left input)"
+                )
+                _walk(body.get("input_left"), found)
+                _walk(body.get("input_right"), found)
+            elif mode == "left":
+                _walk(body.get("input_left"), found)
+            elif mode == "right":
+                _walk(body.get("input_right"), found)
+            else:
+                _walk(body.get("input_left"), found)
+                _walk(body.get("input_right"), found)
+            return
+        if tag == "GroupBy" and isinstance(body, dict):
+            if not body.get("maintain_order", False):
+                found.append("a group_by without maintain_order=True")
+            _walk(body.get("input"), found)
+            return
+        if tag == "Distinct" and isinstance(body, dict):
+            found.append(
+                "a unique(): the streaming engine does not honour maintain_order here, "
+                "so sort after it"
+            )
+            _walk(body.get("input"), found)
+            return
+    for value in node.values():
+        _walk(value, found)
+
+
+def _order_hazards(lf: pl.LazyFrame) -> list[str]:
+    """The nodes of ``lf`` whose output order is unspecified, each as a phrase
+    naming the fix; ``[]`` when there are none -- or when the plan cannot be
+    read, since this inspects a deprecated polars format and is best-effort by
+    design, never a reason for a run to fail."""
+    try:
+        with warnings.catch_warnings():
+            # polars' own deprecation of the json format is the library's to
+            # hear, not the caller's.
+            warnings.filterwarnings("ignore", message="'json' serialization format")
+            text = lf.serialize(format="json")
+        plan = json.loads(text)
+        found: list[str] = []
+        _walk(plan, found)
+    except Exception:  # any failure to read the plan is "no finding", by design
+        return []
+    return found
+
+
+def _warn_if_order_unspecified(lf: pl.LazyFrame, what: str) -> None:
+    """Warn, naming ``what`` the caller called, when ``lf`` has a node whose
+    output order is not guaranteed."""
+    hazards = _order_hazards(lf)
+    if not hazards:
+        return
+    msg = (
+        f"{what}: the plan's row order is not guaranteed, and an online model learns in "
+        f"row order. {len(hazards)} node(s) leave it unspecified: " + "; ".join(hazards) + ". "
+        "The streaming engine that runs the plan may deliver rows in an order lf.collect() "
+        "would not, and it may differ between runs. Give the plan a fixed order -- "
+        'maintain_order="left" on a join, maintain_order=True on a group_by, a sort after '
+        "a unique() or before the bank -- or, for a plan whose order is fixed by other "
+        'means, warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning).'
+    )
+    warnings.warn(OrderNotGuaranteedWarning(msg), stacklevel=_user_stacklevel())
+
+
 def _source(
     lf: pl.LazyFrame,
     make_bank: Callable[[], ModelBank],
@@ -181,6 +310,9 @@ def _source(
     if chunk_rows is not None and chunk_rows < 1:
         msg = f"chunk_rows must be at least 1, got {chunk_rows}"
         raise ValueError(msg)
+    # At build time, before anything runs: the order the plan will deliver is
+    # decided here, and a caller should hear about it before the first chunk.
+    _warn_if_order_unspecified(lf, f"lf.online.{getattr(step, '__name__', 'fit_predict')}")
     rows = chunk_rows or _native.default_chunk_rows()
     save_path = _save_path(save_state)
     in_schema = lf.collect_schema()
@@ -454,6 +586,15 @@ class LazyFrameOnlineNamespace:
         bank, so the state is written then. The ``online`` CLI saves only after
         its output is committed, for the case where the two must be tied together, and
         a dated ``save_state`` per batch of data keeps a rerun from learning it twice.
+
+        The plan runs through polars' streaming engine, and an online model learns
+        in row order, so the order the engine delivers is part of the result. A
+        ``join``, ``group_by`` or ``unique`` without an order guarantee delivers a
+        different stream there than ``lf.collect()`` gives, and may differ between
+        runs; give a join ``maintain_order="left"``, a ``group_by``
+        ``maintain_order=True``, and sort after a ``unique``, or sort before the
+        bank. A plan with such a node raises :class:`OrderNotGuaranteedWarning`
+        when it is built, naming the node.
 
         ``closed_groups`` writes the groups that finished during the run to a sidecar
         file, in the format its extension names (:meth:`ModelBank.closed_groups`). The

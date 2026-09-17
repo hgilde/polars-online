@@ -292,6 +292,18 @@ fn wanted(specs: &[Spec]) -> Vec<(PlSmallStr, Want)> {
     out
 }
 
+/// The form [`cast_to`] produces for a role on a dtype, known before the cast:
+/// a duplicate can then be skipped without paying for the cast it would throw
+/// away. Must agree with [`ArrowCol::form`].
+fn form_of(want: Want, dtype: &DataType) -> &'static str {
+    match want {
+        Want::Number => "a number",
+        Want::Text => "text",
+        Want::Key if dtype.is_integer() => "an integer key",
+        Want::Key => "text",
+    }
+}
+
 /// One `Series` as the Arrow array of a given form.
 fn cast_to(
     s: &Series,
@@ -429,18 +441,19 @@ pub fn chunk_from_frame(df: &DataFrame, specs: &[Spec]) -> PolarsResult<ArrowChu
         }
         // One column read in two roles that cast to the same form -- a
         // column that is a group key for one spec and a session for another,
-        // both text -- casts identically twice. `ArrowChunk::new` refuses a
-        // repeated `(name, form)` because a hand-built one hides a caller's
+        // both text -- would cast identically twice. `ArrowChunk::new` refuses
+        // a repeated `(name, form)` because a hand-built one hides a caller's
         // mistake; here the two are the same array from the same source, so
-        // the second is dropped rather than pushed. A key and a feature on the
-        // same column cast to *different* forms and both stay.
-        let col = cast_to(s, want, spec, role, name.as_str())?;
-        if !cols
+        // the second role is skipped -- before its cast, since the form is
+        // known from the role and the dtype. A key and a feature on the same
+        // column cast to *different* forms and both stay.
+        if cols
             .iter()
-            .any(|(n, c)| n == &name && c.form() == col.form())
+            .any(|(n, c)| n == &name && c.form() == form_of(want, s.dtype()))
         {
-            cols.push((name.clone(), col));
+            continue;
         }
+        cols.push((name.clone(), cast_to(s, want, spec, role, name.as_str())?));
     }
     ArrowChunk::new(df.height(), cols, names)
 }
