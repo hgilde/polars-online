@@ -331,6 +331,7 @@
   drop_groups
   fit
   fit_predict
+  fit_predict_arrow
   fit_predict_batches
   gram
   groups
@@ -340,6 +341,7 @@
   marginal
   output_fields
   predict
+  predict_arrow
   rows_seen
   save
   save_bytes

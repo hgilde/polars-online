@@ -260,6 +260,56 @@ class ModelBank:
         outs = self._native.predict(df)
         return df.with_columns([pl.Series(s) for s in outs])
 
+    def fit_predict_arrow(self, df: pl.DataFrame) -> list[_native.ArrowStruct]:
+        """:meth:`fit_predict`, with the output handed back as Arrow.
+
+        One struct per spec, in spec order, each exposing ``__arrow_c_array__`` --
+        the Arrow PyCapsule interface. The values are :meth:`fit_predict`'s exactly,
+        field for field and null for null; what differs is the way out. A polars
+        ``Series`` crosses on py-polars' private ``_export``/``_import``, which is
+        why this package carries a polars floor and why that interface promises no
+        stability. The capsule interface is public and standardised, so any Arrow
+        consumer reads it: ``pl.Series``, pyarrow, duckdb.
+
+        Use this to hand a bank's output to something that is not polars, or to
+        avoid a second copy of polars in the process. When you want a frame back,
+        :meth:`fit_predict` is the same call with the wrapping done for you.
+
+        Exporting hands the buffers to the consumer, so each struct can be read
+        once; reading one twice raises ``ValueError``. The struct's Arrow field
+        carries its spec's name, which is where the series below gets its name
+        from.
+
+        .. code-block:: python
+
+            bank = po.ModelBank([spec])
+            structs = bank.fit_predict_arrow(df)       # one per spec, Arrow not polars
+            out = df.with_columns([pl.Series(s) for s in structs])
+
+        The frame still goes *in* as a polars frame. Raises what
+        :meth:`fit_predict` raises for it.
+        """
+        self._check_frame(df, "fit_predict_arrow")
+        return self._native.fit_predict_arrow(df)
+
+    def predict_arrow(self, df: pl.DataFrame) -> list[_native.ArrowStruct]:
+        """:meth:`predict`, with the output handed back as Arrow.
+
+        To :meth:`predict` what :meth:`fit_predict_arrow` is to
+        :meth:`fit_predict`: the same scoring, the same values, and the bank left
+        exactly as it was. See :meth:`fit_predict_arrow` for what a struct is and
+        why it can be read only once.
+
+        .. code-block:: python
+
+            bank = po.ModelBank([spec])
+            bank.fit_predict(df)
+            structs = bank.predict_arrow(df)           # the bank unmoved
+            scored = df.with_columns([pl.Series(s) for s in structs])
+        """
+        self._check_frame(df, "predict_arrow")
+        return self._native.predict_arrow(df)
+
     @staticmethod
     def _check_frame(df: object, what: str) -> None:
         if isinstance(df, pl.DataFrame):

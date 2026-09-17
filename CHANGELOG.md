@@ -7,6 +7,8 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-09-17
+
 ### Documentation
 
 - **The runner guide's shell examples are executed, not asserted.** Its
@@ -44,6 +46,39 @@ carries breaking changes, and any change to the numbers a model returns.
   groups) does not carry to a file with smaller ones.
 
 ### Added
+
+- **The model bank is Arrow inside, with Polars as an adapter.** The bank no
+  longer reads a `DataFrame` or builds a named Series: it reads an
+  `ArrowChunk` and returns one Arrow struct array per spec. `fit_predict` and
+  `predict` are that pair between the adapter that makes a chunk from a frame
+  and the step that names each struct after its spec, so they behave exactly
+  as before — same values, same errors, same order.
+  The split is by what a decision is *about*. Everything Polars-shaped —
+  finding a column by name, refusing a dtype that is not numeric, the cast to
+  `Float64`, the cast of a key or a label to text, whether a group key is an
+  integer, and the refusals of a temporal clock and of a group column
+  `group_close = "monotone"` cannot order — moved into one adapter module.
+  Everything model-shaped stayed in the bank, because it holds whoever
+  supplies the data: a finite clock, a non-negative weight, a `strict_binary`
+  target that is 0 or 1, a hazard above 1, a label among the declared classes.
+  Four helpers went away entirely, and `compare_targets` — the one place the
+  bank read its *own* output back through Polars — now finds the field in the
+  struct's own schema.
+  What this opens: a caller holding Arrow arrays can feed the bank with no
+  Polars in the process, through `Bank::fit_predict_arrow`. Proven rather than
+  claimed, with a chunk built by hand from arrays nothing in Polars ever
+  touched.
+
+- **`ModelBank.fit_predict_arrow`**, the output over the Arrow PyCapsule
+  interface. `PySeries` reaches py-polars' private `_export`/`_import`, which
+  is why this package carries a Polars floor and why that interface promises
+  no stability; `__arrow_c_array__` is public and standardised, and any Arrow
+  consumer reads it — `pl.Series(obj)`, pyarrow, duckdb. The values are
+  `fit_predict`'s exactly: equal dtype, equal length, identical field names,
+  identical per-field null counts, and the nested `coef` list equal with nulls
+  compared rather than skipped. Exporting hands the buffers to the consumer,
+  so a struct exports once and says so if asked twice. The input side still
+  arrives as a frame.
 
 - **`ModelBank.fit_predict_batches` takes a `LazyFrame`**, and does the
   chunking itself: the plan is read `chunk_rows` rows at a time (100,000 by
