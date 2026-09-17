@@ -13,13 +13,17 @@
 //! -- stays in the bank, because it is true whoever supplies the data.
 
 use polars::prelude::*;
-use polars_arrow::array::{Float64Array, Int64Array, UInt64Array, Utf8ViewArray};
-use polars_arrow::datatypes::ArrowDataType;
+// The trait is brought in unnamed: `ArrowArray` below is the C Data Interface
+// struct, not `array::Array`, and the two must not collide.
+use polars_arrow::array::Array as _;
+use polars_arrow::array::{Float64Array, Int64Array, StructArray, UInt64Array, Utf8ViewArray};
+use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
+use polars_arrow::ffi::{ArrowArray, ArrowSchema, export_array_to_c, export_field_to_c};
 
 use crate::spec::{ModelKind, Spec};
 
 /// One column of an [`ArrowChunk`], in the form the bank reads it.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum ArrowCol {
     /// A number: null is a NaN to every consumer, so the validity is applied
     /// when the values are read rather than carried alongside.
@@ -60,6 +64,7 @@ impl ArrowCol {
 /// A name may appear twice with different forms: one spec may read a column as
 /// a feature and another as a group key, and the two want different arrays.
 /// Lookup is therefore by name *and* by the form the caller wants.
+#[derive(Debug)]
 pub struct ArrowChunk {
     height: usize,
     cols: Vec<(PlSmallStr, ArrowCol)>,
@@ -164,6 +169,31 @@ pub fn f64_values(a: &Float64Array) -> std::borrow::Cow<'_, [f64]> {
         ),
         _ => std::borrow::Cow::Borrowed(a.values().as_slice()),
     }
+}
+
+/// One spec's output struct as the two C Data Interface structs a consumer
+/// imports: the field, which carries the name and the struct's schema, and
+/// the array.
+///
+/// This is the whole of what a binding layer needs to hand a spec's output to
+/// another Arrow implementation -- pyarrow, duckdb, or py-polars'
+/// `Series.from_arrow_c_array` -- over the public, standardised interface
+/// rather than a private one (docs/PLAN.md task 86).
+///
+/// Ownership passes to the caller. Each struct carries a `release` callback
+/// into *this* binary, so the consumer frees what this binary allocated, with
+/// this binary's allocator; dropping one a consumer never took calls that
+/// callback, and dropping one it did take is a no-op, because taking it nulls
+/// the pointer. That is what makes the hand-off safe across two copies of a
+/// library, and it is the same mechanism the pyo3-polars boundary uses -- the
+/// difference being that this interface is public and versioned and that one
+/// is not.
+pub fn export_struct_to_c(name: &str, st: StructArray) -> (ArrowSchema, ArrowArray) {
+    let field = ArrowField::new(name.into(), st.dtype().clone(), true);
+    (
+        export_field_to_c(&field),
+        export_array_to_c(Box::new(st) as Box<dyn polars_arrow::array::Array>),
+    )
 }
 
 /// What role a spec reads a column in, which decides the form it is cast to.

@@ -2,10 +2,11 @@
 //! (Python dicts are serialized by the thin wrapper in
 //! `python/polars_online/`), and frames cross on the Arrow C Data Interface.
 
-use online_polars::{Bank, GroupKey, Spec};
+use online_polars::{Bank, GroupKey, Spec, StructArray, chunk_from_frame, export_struct_to_c};
 use polars::prelude::PolarsError;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyCapsule;
 use pyo3_polars::{PyDataFrame, PySeries};
 
 /// Route this extension's allocations through the allocator py-polars is
@@ -135,6 +136,68 @@ fn busy(what: &str) -> PyErr {
     ))
 }
 
+/// One spec's output struct, handed to Python over the Arrow PyCapsule
+/// interface instead of as a pyo3-polars `PySeries`.
+///
+/// A consumer -- `pl.Series`, pyarrow, duckdb -- calls `__arrow_c_array__`
+/// and takes ownership of the two C structs it returns. Exporting consumes
+/// the array, so a second call raises rather than hand out buffers that have
+/// already been given away.
+#[pyclass(name = "ArrowStruct", module = "polars_online._polars_online")]
+struct PyArrowStruct {
+    name: String,
+    array: Option<StructArray>,
+}
+
+#[pymethods]
+impl PyArrowStruct {
+    /// The spec this struct is the output of. The capsule carries the field
+    /// name, but `pl.Series(obj)` does not read it, so the caller names the
+    /// series itself.
+    #[getter]
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The Arrow PyCapsule interface: a `(schema, array)` pair of capsules
+    /// named `"arrow_schema"` and `"arrow_array"`, as the specification
+    /// requires.
+    ///
+    /// `requested_schema` is accepted and ignored. The bank emits one layout,
+    /// and the specification lets a producer return its own when it cannot
+    /// honour a request.
+    #[pyo3(signature = (requested_schema=None))]
+    fn __arrow_c_array__(
+        &mut self,
+        py: Python<'_>,
+        requested_schema: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+        let _ = requested_schema;
+        let st = self.array.take().ok_or_else(|| {
+            PyValueError::new_err(
+                "this ArrowStruct has already been exported: the Arrow PyCapsule \
+                 interface hands its buffers to the consumer, so it can be read once",
+            )
+        })?;
+        let (schema, array) = export_struct_to_c(&self.name, st);
+        let schema = PyCapsule::new_with_value(py, schema, c"arrow_schema")?;
+        let array = PyCapsule::new_with_value(py, array, c"arrow_array")?;
+        Ok((schema.into_any().unbind(), array.into_any().unbind()))
+    }
+}
+
+/// Each spec's struct array as an `ArrowStruct`, named after its spec.
+fn wrap_arrow(specs: &[Spec], arrays: Vec<StructArray>) -> Vec<PyArrowStruct> {
+    specs
+        .iter()
+        .zip(arrays)
+        .map(|(s, st)| PyArrowStruct {
+            name: s.name.clone(),
+            array: Some(st),
+        })
+        .collect()
+}
+
 #[pymethods]
 impl PyModelBank {
     #[new]
@@ -180,6 +243,49 @@ impl PyModelBank {
             .into_iter()
             .map(|c| PySeries(c.take_materialized_series()))
             .collect())
+    }
+
+    /// `fit_predict` with the output handed back as Arrow: one `ArrowStruct`
+    /// per spec, each exposing `__arrow_c_array__`.
+    ///
+    /// The values are `fit_predict`'s exactly; what differs is the way out.
+    /// `PySeries` reaches py-polars' private `_export`/`_import`, which is why
+    /// this package carries a polars floor and why that interface promises no
+    /// stability. The PyCapsule interface is public and standardised, and any
+    /// Arrow consumer can read it (docs/PLAN.md task 86).
+    ///
+    /// The frame still arrives as a `PyDataFrame`; moving the input over is
+    /// the other half of the work.
+    fn fit_predict_arrow(slf: &Bound<'_, Self>, df: PyDataFrame) -> PyResult<Vec<PyArrowStruct>> {
+        let mut this = slf
+            .try_borrow_mut()
+            .map_err(|_| busy("fit_predict_arrow"))?;
+        let bank = &mut this.inner;
+        let df = df.into();
+        let arrays = slf
+            .py()
+            .detach(|| {
+                let chunk = chunk_from_frame(&df, bank.specs())?;
+                bank.fit_predict_arrow(&chunk)
+            })
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(wrap_arrow(bank.specs(), arrays))
+    }
+
+    /// `predict` with the output handed back as Arrow, as
+    /// `fit_predict_arrow` is to `fit_predict`.
+    fn predict_arrow(slf: &Bound<'_, Self>, df: PyDataFrame) -> PyResult<Vec<PyArrowStruct>> {
+        let this = slf.try_borrow().map_err(|_| busy("predict_arrow"))?;
+        let bank = &this.inner;
+        let df = df.into();
+        let arrays = slf
+            .py()
+            .detach(|| {
+                let chunk = chunk_from_frame(&df, bank.specs())?;
+                bank.predict_arrow(&chunk)
+            })
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(wrap_arrow(bank.specs(), arrays))
     }
 
     /// `Bank::save`: the filesystem's error becomes the `OSError` of its
@@ -569,6 +675,7 @@ fn model_kinds() -> Vec<&'static str> {
 #[pymodule]
 fn _polars_online(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyModelBank>()?;
+    m.add_class::<PyArrowStruct>()?;
     m.add_class::<PyRefreshTime>()?;
     m.add_function(wrap_pyfunction!(native_version, m)?)?;
     m.add_function(wrap_pyfunction!(schema_version, m)?)?;

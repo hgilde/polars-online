@@ -1699,17 +1699,33 @@ note, not a task.
         in the bank, because it holds whoever supplies the data. `column`,
         `f64_series`, `key_column` and `materialized` are gone.
 
+      - **The return type.** `assemble` returns a `StructArray`, so
+        `fit_predict_arrow` and `predict_arrow` hand back one struct array per
+        spec and the polars pair is those two plus `named_column`.
+        `compare_targets` was the last place the bank read its *own* output
+        through polars (`col.struct_()?.field_by_name(..)`); it now finds the
+        field in the struct's own schema and downcasts the child.
+      - **The output reaches Python as Arrow.** `ModelBank.fit_predict_arrow`
+        returns `ArrowStruct` objects exposing `__arrow_c_array__`, which is
+        public and standardised, against `PySeries`' private
+        `_export`/`_import`. Proven equal to the polars path field for field,
+        nulls and the nested `coef` list included, and the export-once
+        contract holds. `export_struct_to_c` is the whole of the hand-off; a
+        `Drop` that calls `release` only when the consumer has not taken it is
+        what makes it safe, and polars-arrow already provides that.
+
       *Left:*
 
-      - **The return type.** The Arrow entry points still hand back
-        `Vec<Column>`. The arrays are already Arrow inside `assemble`; what
-        remains is to return them and let the polars pair wrap.
+      - **The input direction from Python.** A frame still arrives as
+        `PyDataFrame`. Reading it as a capsule (`__arrow_c_stream__`) is what
+        would take the private interface off the boundary entirely rather than
+        off half of it.
       - **The four accessor frame builders**: `summary_frame` and
         `describe_frame` in `summary.rs`, the marginal builder and
-        `closed_frame` in `bank.rs`.
-      - **The Python side**, which is where the private-boundary motivation is
-        actually paid off: feed and read the bank over `__arrow_c_stream__`
-        rather than pyo3-polars' `PyDataFrame` / `PySeries`.
+        `closed_frame` in `bank.rs`. Worth doing with their Python consumers
+        rather than ahead of them: converting one to Arrow while the extension
+        wraps the result straight back into a `DataFrame` is churn with
+        nothing observable to show for it.
 
       *What the session of 2026-09-17 established, so it need not be redone:*
 

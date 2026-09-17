@@ -107,6 +107,14 @@ def test_the_native_stub_names_the_built_module():
     assert functions == exported - set(classes)
     assert set(classes) <= exported, "the stub declares a class the module has not got"
     for name, cls in classes.items():
-        methods = {n.name for n in cls.body if isinstance(n, ast.FunctionDef)} - {"__init__"}
+        # Dunders are stripped from both sides. A pyclass may implement a
+        # protocol method that the stub should declare too
+        # (`__arrow_c_array__`), and `dir()` is filtered here, so declaring
+        # one must not read as a stub that has gone stale.
+        methods = {
+            n.name
+            for n in cls.body
+            if isinstance(n, ast.FunctionDef) and not n.name.startswith("_")
+        }
         want = {n for n in dir(getattr(native, name)) if not n.startswith("_")}
         assert methods == want, name

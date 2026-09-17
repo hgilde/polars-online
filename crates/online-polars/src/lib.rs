@@ -51,7 +51,14 @@ mod spec;
 mod stream;
 mod summary;
 
-pub use arrow::{ArrowChunk, ArrowCol, chunk_from_frame};
+pub use arrow::{ArrowChunk, ArrowCol, chunk_from_frame, export_struct_to_c};
+// The Arrow types an `ArrowChunk` is built from and a `fit_predict_arrow`
+// result is read as, plus the C Data Interface export a binding layer hands
+// to a consumer. Re-exported so that feeding the bank as Arrow needs no
+// polars crate of the caller's own (docs/PLAN.md task 86).
+pub use polars_arrow::array::{Float64Array, Int64Array, StructArray, UInt64Array, Utf8ViewArray};
+pub use polars_arrow::ffi::{ArrowArray, ArrowSchema, export_array_to_c, export_field_to_c};
+
 pub use bank::{
     Bank, Coef, CoefField, FieldMeta, Gram, GroupKey, PAR_MIN_ROWS, coef_fields, output_fields,
     output_index,
