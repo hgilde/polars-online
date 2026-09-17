@@ -99,9 +99,9 @@ material stays out of the repo.
 - **The bar is `O(1)` memory in `n` and `O(n · parameters)` processing**, which
   admits a constant number of passes (§2). Everything here is single-pass
   anyway; §2.1 records what a second pass would buy — chiefly seeding from the
-  whole stream instead of a prefix — and the two things standing in its way,
-  neither of which is complexity: it would be lookahead under hard rule 2, and
-  the expression plugin cannot express it.
+  whole stream instead of a prefix — and what stands in its way, which is not
+  complexity: it would be lookahead under hard rule 2, and no streaming surface
+  can re-read its input without re-executing the plan that produced it.
 - **The design worth the build decision is `micro`.** Seven reasons, each
   measured or cited above: it alone reaches the batch ceiling on the shapes
   that define the problem, where every k-means and GMM scores 0.000 (§7.8);
@@ -157,8 +157,9 @@ bank already enforces (`docs/PLAN.md` §2–§3, `CLAUDE.md`):
 9. **State is versioned msgpack**, loadable on macOS and Windows; `f64`
    throughout; no `unsafe` in `online-core`; the model knows nothing about
    Polars.
-10. **A static output schema** derivable from the spec alone — the expression
-    plugin has no other way to declare its output type.
+10. **A static output schema** derivable from the spec alone — `output_fields()`
+    declares a spec's columns before a single row is fed, which is what lets a
+    lazy plan know its own schema.
 
 Two of these are unusual for clustering and shape everything below: **3**
 (published stream clusterers are batch-at-a-time almost without exception) and
@@ -270,7 +271,7 @@ then load and score. Passing twice over the *same* data is the new thing, and
 initialisation quality is its only real justification. If it is ever built, the
 leak must be named in the output, not buried in a parameter.
 
-*The expression plugin cannot do it at all.* It receives its column once. The
+*The surfaces disagree about whether a second pass is even possible.* The
 CLI over a file can re-scan cheaply; the IO plugin
 (`python/polars_online/_frame.py`) would have to re-execute its input plan
 inside the source, which doubles any upstream compute and is not obviously sound

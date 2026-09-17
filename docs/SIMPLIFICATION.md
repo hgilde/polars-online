@@ -60,7 +60,7 @@ bug; the rest mostly remove typing.
 same order, by hand:
 
 - `output_fields()` (bank.rs, ~102 lines) builds the field *names*, which the
-  expression plugin uses to declare its return dtype;
+  Python side reads to know a spec's schema before a single row is fed;
 - `assemble()` (bank.rs, ~318 lines) builds the *Series*, re-deriving the same
   names with the same `format!` strings in the same nested loops.
 
@@ -71,8 +71,10 @@ appears in both, guarded by the same condition twice.
 
 **Why it matters beyond tidiness.** This exact duplication has already produced
 a real defect: E23's declared-vs-realized schema divergence, where an output was
-added to the assembler but not the declaration. The expression plugin takes its
-dtype from the declaration, so the bank kept working while `.over()` broke.
+added to the assembler but not the declaration. The expression plugin (removed
+in task 85) took its dtype from the declaration, so the bank kept working while
+`.over()` broke — the duplication outlived the surface that exposed it, which
+is the argument for deleting it rather than guarding it.
 `test_names_match_the_realized_struct_for_every_model` exists purely to catch
 recurrences — a guard against a duplication we could delete instead.
 

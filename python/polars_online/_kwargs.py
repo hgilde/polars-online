@@ -1,57 +1,44 @@
-"""The keyword parameters of every spec, as ``TypedDict`` classes (PEP 692).
+"""The shared keyword parameters of every spec, as ``TypedDict`` classes (PEP 692).
 
 The builders in ``_spec.py`` take the shared parameters as ``**common``; with
 ``**kwargs: Any`` an editor shows nothing and a typo is found at runtime.
 Annotating them as ``Unpack[...]`` of the classes below gives completion and
 type checking without changing a call (docs/IMPROVEMENTS.md U4).
 
-Each class is a copy of a builder's signature, and a copy drifts, so
-``tests/test_kwargs_typing.py`` pins every one to the builder it mirrors: same
-keys, same annotations, same required set. Change the builder and the test
-says which class to update. Defaults are not repeated here -- a TypedDict has
-none; the builder's signature is where they live.
+``CommonKwargs`` is pinned to the shared parameters by
+``tests/test_kwargs_typing.py``: same keys, same annotations, same required
+set. Change a shared parameter and the test says so. Defaults are not repeated
+here -- a TypedDict has none; the builder's signature is where they live.
+
+There were once 21 further classes here, one per model, mirroring each
+builder's *own* parameters to type the expression namespace's ``**kwargs``.
+Task 85 removed that namespace, and the test that held each class to its
+builder went with it. What was left was 21 unconsumed copies of builder
+signatures with nothing holding them to the originals -- which is exactly the
+drift the paragraph above exists to prevent. They were deleted on 2026-09-17
+rather than left to rot; rebuild them from the builders if a typed keyword
+surface is ever wanted again.
 
 No ``from __future__ import annotations`` here: under it ``Required[...]`` is
 a string the TypedDict machinery does not look inside, so every key would be
 optional at runtime and the test below could not see the required ones.
 """
 
-from typing import Required, TypedDict
+from typing import TypedDict
 
 __all__ = [
-    "BocpdKwargs",
     "CommonKwargs",
-    "CorrChangeKwargs",
-    "DecoKwargs",
-    "EwClassKwargs",
-    "EwCovKwargs",
-    "EwridgeKwargs",
     "ExprKwargs",
-    "FtrlKwargs",
-    "HmmKwargs",
-    "HoltKwargs",
-    "HuberKwargs",
-    "KMeansKwargs",
-    "MicroKwargs",
-    "KalmanKwargs",
-    "LassoKwargs",
-    "MarginalKwargs",
-    "PaKwargs",
-    "QuantileKwargs",
-    "RcovKwargs",
-    "RlsKwargs",
-    "SeqTestKwargs",
-    "SgdKwargs",
 ]
 
 
 class ExprKwargs(TypedDict, total=False):
     """The parameters every model shares, minus ``group`` and ``group_close``.
 
-    The base every builder's class inherits through :class:`CommonKwargs`. The
-    name is historical: it was the set the expression namespace took, before
-    that namespace was removed, and it survives as the shared base because ten
-    classes are built on it.
+    The base :class:`CommonKwargs` inherits from. The name is historical: it
+    was the set the expression namespace took, before that namespace was
+    removed. It survives as the shared base, and
+    ``tests/test_kwargs_typing.py`` holds it to the shared parameters.
     """
 
     add_intercept: bool
@@ -89,240 +76,3 @@ class CommonKwargs(ExprKwargs, total=False):
 
     group: str | None
     group_close: str | None
-
-
-# --- one per model: the builder's own parameters, over the shared ones -------
-
-
-class EwridgeKwargs(ExprKwargs, total=False):
-    ridge: float | list[float] | None
-    feature_sets: dict[str, list[str]] | None
-    standardize: bool
-    ridge_decay: bool
-    coef_prior: list[list[float]] | None
-    session_shrink: float | None
-    long_halflife: float | None
-    solve_every: float | None
-    max_rows_between_solves: int | None
-    gram_block_rows: int | None
-    target_gaps: str
-    window: float | None
-    window_every: int | None
-    window_budget: dict[str, float] | None
-
-
-class RlsKwargs(ExprKwargs, total=False):
-    ridge: float | None
-    coef_prior: list[list[float]] | None
-
-
-class LassoKwargs(ExprKwargs, total=False):
-    lasso_path: Required[list[float]]
-    l1_ratio: float | None
-    select_halflife: float | None
-    solve_every: float | None
-    max_rows_between_solves: int | None
-    max_cd_iters: int | None
-    cd_tol: float | None
-    target_gaps: str
-    window: float | None
-    window_every: int | None
-    window_budget: dict[str, float] | None
-
-
-class KalmanKwargs(ExprKwargs, total=False):
-    coef_halflife: Required[float | list[float]]
-    q: list[float] | None
-    obs_var: float | None
-    p0: float | None
-    share_p: bool
-    revert_halflife: float | list[float] | None
-    standardize: bool
-
-
-class HuberKwargs(ExprKwargs, total=False):
-    huber_delta: float | None
-    ridge: float | None
-    standardize: bool
-    solve_every: float | None
-    max_rows_between_solves: int | None
-
-
-class QuantileKwargs(ExprKwargs, total=False):
-    quantile: Required[float]
-    ridge: float | None
-    standardize: bool
-    solve_every: float | None
-    max_rows_between_solves: int | None
-    quantile_eps: float | None
-
-
-class FtrlKwargs(ExprKwargs, total=False):
-    alpha: float | None
-    beta: float | None
-    l1: float | None
-    l2: float | None
-    strict_binary: bool
-    loss: str
-
-
-class EwCovKwargs(ExprKwargs, total=False):
-    stats: list[str] | None
-    precision_prior: float | None
-    mahal_quantiles: list[float] | None
-    pca: int | None
-    pca_every: int | None
-    lags: list[int] | None
-    window: float | None
-    window_every: int | None
-    window_budget: dict[str, float] | None
-
-
-class SgdKwargs(ExprKwargs, total=False):
-    loss: str
-    huber_delta: float | None
-    quantile: float | None
-    eps: float | None
-    learning_rate: float | None
-    schedule: str
-    power: float | None
-    l2: float | None
-    clip_gradient: float | None
-    scale_features: bool
-    coef_min: float | list[float] | None
-    coef_max: float | list[float] | None
-    coef_sum: float | None
-
-
-class PaKwargs(ExprKwargs, total=False):
-    mode: str
-    c: float | None
-    eps: float | None
-    coef_min: float | list[float] | None
-    coef_max: float | list[float] | None
-    coef_sum: float | None
-
-
-class HoltKwargs(ExprKwargs, total=False):
-    level_halflife: float | None
-    trend_halflife: float | None
-
-
-class KMeansKwargs(ExprKwargs, total=False):
-    k: Required[int]
-    warm_rows: int | None
-    seed_rule: str | None
-    seed: int | None
-    update_every: int | None
-    split_merge: float | None
-    split_merge_every: int | None
-    dead_frac: float | None
-    standardize: bool | None
-
-
-class MicroKwargs(ExprKwargs, total=False):
-    eps: Required[float]
-    beta_mu: float | None
-    max_clusters: int | None
-    prune_every: int | None
-    macro_link: float | None
-    standardize: bool | None
-
-
-class EwClassKwargs(ExprKwargs, total=False):
-    classes: Required[list[str]]
-    covariance: str | None
-    precision_prior: Required[float]
-    window: float | None
-    window_every: int | None
-    window_budget: dict[str, float] | None
-
-
-class SeqTestKwargs(ExprKwargs, total=False):
-    """``seqtest``'s own parameters -- ``a``, ``b``, ``a_suffix``,
-    ``b_suffix`` -- compare two specs of a bank, and an expression is one
-    spec, so the namespace method takes none of them (it refuses them at
-    runtime, too): over an expression the test is column mode on the
-    calling column, and a comparison is column mode on the residual
-    difference the caller computes."""
-
-
-class DecoKwargs(ExprKwargs, total=False):
-    dynamics: str
-    alpha: float | None
-    beta: float | None
-    blocks: dict[str, list[str]] | None
-
-
-class MarginalKwargs(ExprKwargs, total=False):
-    """``marginal``'s own parameters are its lag, bin and window options; the
-    pairs are fixed by the calling column and the features."""
-
-    lags: list[int] | None
-    serial_rule: str | None
-    bins: int | None
-    bin_rule: str | None
-    bin_warm_rows: int | None
-    bin_edges: dict[str, list[float]] | list[list[float]] | None
-    window: float | None
-    window_every: int | None
-    window_budget: dict[str, float] | None
-
-
-class RcovKwargs(ExprKwargs, total=False):
-    kind: str
-    kernel: str
-    bandwidth: int | None
-    jitter: int
-    theta: float
-    psd: bool
-    block_rows: int | None
-    max_bandwidth: int | None
-    preavg_rows: int | None
-    noise_stride: int | None
-    iv_stride: int | None
-
-
-class HmmKwargs(ExprKwargs, total=False):
-    k: Required[int]
-    precision_prior: Required[float]
-    covariance: str
-    learn: bool
-    transition_prior: float | None
-    transition: list[float] | None
-    means: list[float] | None
-    covs: list[float] | None
-    warm_rows: int | None
-    seed_rule: str | None
-    seed: int | None
-    exog_tvtp: str | None
-    tvtp_coef: list[list[float]] | None
-
-
-class CorrChangeKwargs(ExprKwargs, total=False):
-    kind: str
-    span_rows: int | None
-    alpha: float
-    alpha_adjust: str
-    bandwidth: int | None
-    scalar: bool
-    crit: float | None
-    n_perm: int | None
-    permute_every: int | None
-    perm_block: int | None
-    norm: str
-    seed: int | None
-    reset: bool
-
-
-class BocpdKwargs(ExprKwargs, total=False):
-    hazard: float
-    hazard_col: str | None
-    emission: str
-    prior_mean: list[float] | None
-    prior_kappa: float | None
-    prior_nu: float | None
-    prior_scale: list[float] | None
-    robust_beta: float | None
-    prune_below: float | None
-    max_run: int | None

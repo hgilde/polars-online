@@ -68,7 +68,9 @@ so they stay where they are.
 | 8 | 1,363,018 | 3.1× |
 | 10 | 1,414,097 | **3.2×** |
 
-**The expression API**, 400k rows, k=20:
+**The expression API**, 400k rows, k=20 — measured while it existed. The
+expression form was removed in task 85 (2026-09-17); these numbers are part of
+why, and are kept as the record of it:
 
 | path | rows/s |
 |---|---|

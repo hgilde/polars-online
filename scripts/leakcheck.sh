@@ -35,11 +35,8 @@ PYBIN=$(uv run python -c 'import sys; print(sys.executable)')
 echo "interpreter: $PYBIN"
 
 WORK=$(cat <<'PY'
-import gc, os, sys, warnings
+import gc, os, sys
 import numpy as np, polars as pl, polars_online as po
-# The expression form warns on every call (it is O(data)); this is a frame in
-# memory, and a thousand warnings would bury the leak numbers.
-warnings.filterwarnings("ignore", category=po.InMemoryExpressionWarning)
 n = int(sys.argv[1])
 control = os.environ.get("LEAKCHECK_CONTROL") == "1"
 if control:
@@ -53,8 +50,13 @@ for i in range(n):
     df = df.with_columns(y=pl.col("x0") * 2)
     out = po.ModelBank([spec]).fit_predict(df)
     _ = out["m"].struct.field("pred_y").sum()
-    df.with_columns(pl.col("y").online.ewridge(features=["x0"], halflife=50.0,
-                                               min_periods=2.0))
+    # The other crossing. This was the expression plugin until task 85 removed
+    # it; the Arrow PyCapsule path replaces it and is the better subject, since
+    # its `release` callback runs in *this* binary and a capsule the consumer
+    # never takes must still be freed -- exactly what this check is for.
+    structs = po.ModelBank([spec]).fit_predict_arrow(df)
+    _ = pl.Series(structs[0]).struct.field("pred_y").sum()
+    po.ModelBank([spec]).fit_predict_arrow(df)   # exported by nobody, dropped
     if cat is None:
         cat = df.with_columns(c=pl.col("x1").cast(pl.String).cast(pl.Categorical))
     try:                       # the error path, where release is easiest to miss

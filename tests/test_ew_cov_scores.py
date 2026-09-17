@@ -606,11 +606,15 @@ class TestFields:
             "n_eff",
         ]
 
-    def test_kwargs_are_typed(self):
-        from polars_online._kwargs import EwCovKwargs
+    def test_the_builder_names_its_own_parameters(self):
+        # Was an assertion about `EwCovKwargs`, the TypedDict that typed the
+        # expression namespace's `**kwargs`. Task 85 removed that namespace and
+        # nothing consumed the class afterwards, so the same three names are
+        # asserted here against the surface a caller can actually reach.
+        import inspect
 
-        keys = EwCovKwargs.__annotations__
-        assert {"mahal_quantiles", "pca", "pca_every"} <= set(keys)
+        keys = set(inspect.signature(po.spec.ew_cov).parameters)
+        assert {"mahal_quantiles", "pca", "pca_every"} <= keys
 
 
 # --------------------------------------------------------------- validation

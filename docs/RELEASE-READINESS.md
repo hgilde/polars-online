@@ -427,8 +427,16 @@ is version-negotiated and refuses to load rather than misbehave, and
 **Correction, after reading what Polars actually promises.** The table above is
 *measured*, and the two paths do not carry the same weight of guarantee:
 
-- The **expression plugin** is the supported mechanism, with a MAJOR/MINOR
-  handshake the loader checks before its first call.
+- The **expression plugin** *was* the supported mechanism, with a MAJOR/MINOR
+  handshake the loader checks before its first call — and it is **gone**,
+  removed in task 85 (2026-09-17) because polars hands a stateful user
+  expression its whole column, so the one path carrying a guarantee was also
+  the one that could not stream. The measurements above stand as the record of
+  what it did; nothing below depends on it. Its place in the guarantee story is
+  now taken by the **Arrow PyCapsule interface**
+  (`ModelBank.fit_predict_arrow`, task 86), whose contract is Arrow's rather
+  than polars' — though it covers the output side only, so a call still crosses
+  the `PyDataFrame` boundary on the way in.
 - **`ModelBank` is not.** pyo3-polars' README: the `PyDataFrame`/`PySeries`
   types "are however only provided for convenience and **do not have stability
   guarantees beyond that the latest definitions should work for the latest

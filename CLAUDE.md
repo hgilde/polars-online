@@ -111,8 +111,13 @@ than reasoned about:
   statically linked plugin is safe rather than a double-free waiting to happen.
   Without it we silently ran on a second heap (and 43% slower).
 
-So rule 12 is satisfied for the plugin: it *is* the Rust-native way, because
-Polars' extension mechanism is a `dlopen`ed C ABI by design, and nothing on
+So rule 12 is satisfied, and **stays** satisfied now that the plugin is gone
+(task 85). The quotations above are the evidence that settled the question,
+not a description of a surface we still ship; what they established still
+holds of the wheel itself. `online-py` is a `cdylib` that Python `dlopen`s, it
+carries its own statically linked Polars, and the `PolarsAllocator` above is
+still what keeps allocation coherent between the two copies — which is why
+that `#[global_allocator]` line must stay whatever else changes. Nothing on
 crates.io publishes a `dylib` to link against anyway (0 of our 453
 dependencies; `crate-type` is the publisher's choice).
 

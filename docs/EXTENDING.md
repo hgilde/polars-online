@@ -120,7 +120,7 @@ typing test, which did not exist when `holt` was added). `git show --stat
    Prefer a configuration that exercises the busier path (a robust loss, an
    annealed rate, standardization) and add a second, plain one if the model
    has one (`sgd_squared_golden`, `ftrl_squared_golden`). This pins the core
-   arithmetic alone, so a move in the Python golden pipeline (step 16) can be
+   arithmetic alone, so a move in the Python golden pipeline (step 14) can be
    placed in the core or above it; it is also the only oracle `cargo mutants`
    can see for the recursion (docs/TESTING.md, the mutation blind spot).
    *Check*: `test_model_registry::test_the_core_golden_file_pins_every_model`
@@ -142,11 +142,10 @@ typing test, which did not exist when `holt` was added). `git show --stat
    nothing, and the bank counts its output slots from the schema. A model
    with **no target column at all** goes into `ModelKind::is_unsupervised`
    as well (`ew_cov`, `kmeans`, `micro`, `deco`, `rcov`, `hmm`, `corrchange`,
-   `bocpd`): the leak check exempts it and the expression packs no target for
-   it. `ew_class` is the model that is the
+   `bocpd`): the leak check exempts it. `ew_class` is the model that is the
    first and not the second — its label column travels as `targets[0]`, so
-   everything that reads the target column by name (`keep_columns`, the
-   lazy source's projection, the expression's packing) works unchanged.
+   everything that reads the target column by name (`keep_columns`, the lazy
+   source's projection) works unchanged.
    *Check*: `test_diagnostics::test_rejected_for_ew_cov` and
    `test_kmeans::TestRefusals::test_residual_diagnostics_are_refused_by_name`
    (and `test_micro`'s and `test_ew_class`'s twins) pin the refusal, for
@@ -184,7 +183,7 @@ typing test, which did not exist when `holt` was added). `git show --stat
    model left out of it restores as `WrongModel`; the save/load sweeps
    (`test_properties::test_save_load_is_transparent`,
    `test_semantics_all_models::test_save_load_mid_stream`) catch that once
-   the model is in their lists, which step 16 enforces.
+   the model is in their lists, which step 14 enforces.
 8. **`src/bank.rs`**: nothing, unless the outputs are not one `pred`/`resid`
    pair per target per combo — `ew_cov` (statistics, no target), `kmeans`
    (an assignment and two distances, no target), `micro` (a label, an id, a
@@ -244,31 +243,11 @@ spec, and the plugin's `online_run` is the bank.
    the import and `__all__`.
    *Check*: `test_model_registry::test_every_rust_kind_has_exactly_one_builder`
    fails while a kind has no builder; `test_minimal_names_every_builder` then
-   sends you to step 15. `test_error_messages::test_the_inf_table_matches
+   sends you to step 13. `test_error_messages::test_the_inf_table_matches
    _the_rust_side` holds `_INF_OK` to what Rust's parser and `validate`
    accept, and `crates/online-polars/tests/spec_inf.rs` holds `validate` to
    the same verdicts from TOML, where it is the only gate.
-10. **`_kwargs.py`**: `class <Name>Kwargs(ExprKwargs, total=False)` with the
-    builder's own parameters — the PEP 692 keywords the namespace method
-    exposes.
-    *Check*: `test_kwargs_typing::test_each_namespace_typed_dict_mirrors_its
-    _builder`.
-11. **`_expr.py`**: the namespace method, `**kwargs: Unpack[<Name>Kwargs]`,
-    building the spec with `targets=self._targets(extra_targets)` and calling
-    `_run`; and the name in `test_kwargs_typing.NAMESPACE_METHODS`. The
-    in-memory warning (PLAN §6) is issued inside `_run`, so the method gets
-    it for free; add the method to `TestTheExpressionWarnsThatItRunsInMemory
-    ._calls` in `test_expr.py`, which holds that dict to `model_kinds()` and
-    checks that the warning names the method. A builder parameter that
-    cannot mean anything over one expression — `seqtest`'s `a`/`b`/
-    `a_suffix`/`b_suffix` name two specs of a bank — is left out of the
-    TypedDict, listed in `test_kwargs_typing.EXPR_OMITS`, and refused by the
-    method at runtime with the way to write it (`test_seqtest.py::
-    test_the_expression_refuses_a_comparison_and_says_how_to_write_it`).
-    *Check*: `test_the_namespace_methods_are_the_builders` holds the class to
-    that list, and `test_model_registry::test_every_builder_has_a_namespace
-    _method` holds the list to the builders.
-12. **`tests/api_surface.txt`**: `UPDATE_API_SURFACE=1 uv run pytest
+10. **`tests/api_surface.txt`**: `UPDATE_API_SURFACE=1 uv run pytest
     tests/test_api_surface.py`, after adding a `<model> minimal` case to the
     `[output field grammar]` list in `tests/test_api_surface.py`. Field names
     are API; the snapshot is where they are pinned.
@@ -278,17 +257,16 @@ spec, and the plugin's `online_run` is the bank.
 
 ## 4. Tests — `tests/`
 
-13. **`tests/test_<model>.py`** (`test_robust.py` for `huber`/`quantile`):
+11. **`tests/test_<model>.py`** (`test_robust.py` for `huber`/`quantile`):
     the Python-side oracle (a numpy reference in `tests/reference.py` where
     the model has a closed form; a longhand recursion otherwise), through
-    `ModelBank`. The expression path is held to the bank for every model by
-    `test_semantics_all_models::test_expression_equals_bank`, so this file
-    is for the arithmetic, which the sweeps cannot see.
+    `ModelBank`. The per-model sweeps below cover the surfaces and the
+    schema, so this file is for the arithmetic, which they cannot see.
     *Check*: `test_model_registry::test_every_builder_has_a_per_model_test
     _file` fails for a builder with no such file, or one that never calls
     `po.spec.<builder>(`. Writing it moved `ewridge` and `rls` out of
     `test_bank.py`, where their oracles had lived unnamed.
-14. **Per-model sweeps**: one entry each in `test_semantics_all_models.MODELS`,
+12. **Per-model sweeps**: one entry each in `test_semantics_all_models.MODELS`,
     `test_properties.MODELS`, `test_edge_cases.MODELS` and
     `test_portability.TestOutputSchemaStability._ALL_MODELS`. Every entry is
     `(builder name, the least it needs to be constructible)`. The sweeps
@@ -307,10 +285,10 @@ spec, and the plugin's `online_run` is the bank.
     will ask it for 300 rows with every slot filled and fail.
     *Check*: `test_model_registry::test_the_sweeps_cover_every_regression
     _model`.
-15. **`tests/test_model_registry.py`**: the model's `MINIMAL` entry. This is
+13. **`tests/test_model_registry.py`**: the model's `MINIMAL` entry. This is
     the file that holds every list in this section to `KINDS`.
     *Check*: `test_minimal_names_every_builder`.
-16. **`tests/test_golden_pipeline.py`**: a spec in `specs()`, then
+14. **`tests/test_golden_pipeline.py`**: a spec in `specs()`, then
     `PRINT_GOLDEN=1 uv run pytest tests/test_golden_pipeline.py -s -k print`
     and copy **only the new model's lines** into `GOLDEN` — if any other
     line moved, that is a finding, not a regeneration.
@@ -320,11 +298,11 @@ spec, and the plugin's `online_run` is the bank.
 
 ## 5. Docs
 
-17. **`README.md`**: a `### \`<name>\` — ...` heading under `## Models`, with
+15. **`README.md`**: a `### \`<name>\` — ...` heading under `## Models`, with
     the equations, the parameters and when to reach for it.
     *Check*: `test_model_registry::test_the_readme_documents_every_model`
     (`huber` / `quantile` share a heading; the regex knows).
-18. **`CHANGELOG.md`**, and the design note wherever the model was proposed —
+16. **`CHANGELOG.md`**, and the design note wherever the model was proposed —
     `docs/PLAN.md` §4 for the original six, `docs/ENHANCEMENTS.md` for the
     rest. **No check.**
 
@@ -365,7 +343,6 @@ the registry tests will fail in between, which is what they are for.
   failing count there.
 - **A new parameter** on one model: the `Cfg` field and its validation in
   `new` (step 1), the `ModelKind` field with `#[serde(default)]` (step 6), the
-  `build_one` default (step 7), the builder keyword (step 9), the
-  `<Name>Kwargs` entry (step 10), the snapshot (step 12). If `inf` means something
-  for it, `_INF_OK` (step 9). The typed-dict and inf-table tests catch the Python
-  half; the compiler catches the Rust half.
+  `build_one` default (step 7), the builder keyword (step 9), the snapshot
+  (step 10). If `inf` means something for it, `_INF_OK` (step 9). The
+  inf-table test catches the Python half; the compiler catches the Rust half.
