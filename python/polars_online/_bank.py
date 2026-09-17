@@ -36,9 +36,9 @@ class ModelBank:
     on any OS (:meth:`load`), and scored against without moving (:meth:`predict`).
 
     The same bank runs as a polars plan, ``lf.online.fit_predict(specs)``
-    (:mod:`polars_online._frame`), and as a file-to-file job,
-    the ``online`` command line; this class is the loop form, for a stream that
-    arrives as frames.
+    (:mod:`polars_online._frame`), and as a file-to-file job, the ``online``
+    command line; this class is the in-process form, for a plan you hand it to
+    chunk (:meth:`fit_predict_batches`, :meth:`fit`) or frames you already have.
 
     .. code-block:: python
 
@@ -272,25 +272,30 @@ class ModelBank:
                 "collect it first (lf.collect())"
             )
             if what == "fit_predict":
-                msg += ", or feed it in chunks with fit_predict_batches(lf.collect_batches())"
+                msg += ", or hand the plan to fit_predict_batches(lf), which chunks it"
         else:
             msg = f"ModelBank.{what} takes a polars DataFrame, got {type(df).__name__}"
         raise TypeError(msg)
 
     def fit_predict_batches(
         self,
-        batches: Iterable[pl.DataFrame],
+        batches: pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame],
         closed_groups: str | Path | None = None,
+        chunk_rows: int | None = None,
     ) -> Iterable[pl.DataFrame]:
-        """:meth:`fit_predict` over an iterator of chunks, lazily.
+        """:meth:`fit_predict` over a plan or an iterator of chunks, lazily.
 
-        Each chunk is fed as the generator reaches it, so ``lf.collect_batches()``
-        streams through the bank one chunk at a time. Whatever ``fit_predict`` raises
-        for a chunk, this raises there; the chunks before it have been learned from.
+        Give it a ``LazyFrame`` and it does the chunking: the plan is read
+        ``chunk_rows`` rows at a time (100,000 by default) and each chunk is fed as
+        the generator reaches it, so memory is the state plus a chunk however long
+        the plan's input. A ``DataFrame`` is one chunk. An iterator of frames is fed
+        as it comes, and ``chunk_rows`` does not re-chunk it. Whatever
+        ``fit_predict`` raises for a chunk, this raises there; the chunks before it
+        have been learned from.
 
         .. code-block:: python
 
-            for out in bank.fit_predict_batches(lf.collect_batches(chunk_size=100)):
+            for out in bank.fit_predict_batches(lf, chunk_rows=100):
                 pass    # each `out` is a chunk plus the struct columns
 
         ``closed_groups``, a path, drains the bank's closed groups after every chunk,
@@ -303,12 +308,22 @@ class ModelBank:
         left the bank, and the file is then the only place it is. The file and the
         bank's queue together always hold every group that closed.
         """
-        from polars_online._frame import _closed_path, _write_closed
+        from polars_online._frame import _closed_path
 
+        if chunk_rows is not None and chunk_rows < 1:
+            msg = f"chunk_rows must be at least 1, got {chunk_rows}"
+            raise ValueError(msg)
         path = _closed_path(closed_groups, self._specs)
+        return self._feed(self._chunks(batches, chunk_rows), path)
+
+    def _feed(self, source: Iterable[pl.DataFrame], path: str | None) -> Iterable[pl.DataFrame]:
+        """The loop behind :meth:`fit_predict_batches`, once its arguments are
+        checked: a generator, so nothing here runs until a caller asks."""
+        from polars_online._frame import _write_closed
+
         drained: list[pl.DataFrame] = []
         try:
-            for chunk in batches:
+            for chunk in source:
                 out = self.fit_predict(chunk)
                 if path is not None:
                     rows = self.closed_groups()
@@ -318,6 +333,48 @@ class ModelBank:
         finally:
             if path is not None:
                 _write_closed(path, drained, self.closed_groups(drop=False).clear())
+
+    @staticmethod
+    def _chunks(
+        batches: pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame],
+        chunk_rows: int | None,
+    ) -> Iterable[pl.DataFrame]:
+        """The frames to feed, from a plan, a frame, or an iterator of frames."""
+        if isinstance(batches, pl.LazyFrame):
+            rows = _native.default_chunk_rows() if chunk_rows is None else chunk_rows
+            return batches.collect_batches(chunk_size=rows, maintain_order=True)
+        if isinstance(batches, pl.DataFrame):
+            return [batches]
+        return batches
+
+    def fit(
+        self,
+        batches: pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame],
+        closed_groups: str | Path | None = None,
+        chunk_rows: int | None = None,
+    ) -> None:
+        """Learn from every row and keep nothing: the run whose product is the state.
+
+        :meth:`fit_predict_batches` with the output dropped as it comes, so no
+        chunk's result is ever held and no frame is assembled from them. An
+        accumulator-only spec emits ``n_eff`` a row and nothing else, which over a
+        billion rows is gigabytes written so they can be deleted; a fit whose
+        product is its coefficients need not keep its predictions either.
+
+        .. code-block:: python
+
+            bank = po.ModelBank([spec])
+            bank.fit(lf, chunk_rows=100)
+            bank.save("bank.state")
+
+        The state this leaves is the state :meth:`fit_predict_batches` leaves over
+        the same rows, byte for byte. What it saves is the result, not the work:
+        each row is still predicted before it is learned from, because that is what
+        makes the fit out-of-sample, and the output columns are still built before
+        they are dropped.
+        """
+        for _ in self.fit_predict_batches(batches, closed_groups, chunk_rows):
+            pass
 
     def coef(self, spec: str | int | None = None, group: str | None = None) -> pl.DataFrame:
         """The coefficients behind every fit: one row per (spec, group, instance,

@@ -331,6 +331,7 @@
   coef
   describe
   drop_groups
+  fit
   fit_predict
   fit_predict_batches
   gram

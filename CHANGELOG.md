@@ -7,6 +7,22 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+### Added
+
+- **`ModelBank.fit_predict_batches` takes a `LazyFrame`**, and does the
+  chunking itself: the plan is read `chunk_rows` rows at a time (100,000 by
+  default) and fed chunk by chunk, so memory is the state plus a chunk however
+  long the plan's input. A `DataFrame` is one chunk. An iterator of frames is
+  fed as it comes, unchanged. This is the shape the file-to-file runner had,
+  without the file.
+- **`ModelBank.fit`**, the run whose product is its state: the same pass with
+  the output dropped as it comes, so no chunk's result is held and no frame is
+  assembled from them. The state it leaves is byte-identical to the one
+  `fit_predict_batches` leaves over the same rows. It saves the result, not the
+  work -- every row is still predicted before it is learned from, which is what
+  makes the fit out-of-sample, and the output columns are still built before
+  they are dropped.
+
 ### Removed
 
 - **`polars_online.run` is gone; the `online` command line keeps the runner.**

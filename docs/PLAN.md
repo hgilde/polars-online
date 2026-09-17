@@ -1672,6 +1672,19 @@ note, not a task.
       `hit_rate` (`test_diagnostics.py`'s E22 test among them) is regression
       and passes unchanged, since none of them named `binary=True`.
 
+- [x] 84. **The bank takes a plan, and learns without keeping the output,
+      2026-09-17.** `fit_predict_batches` accepts a `LazyFrame` and builds the
+      chunk iterator itself (`chunk_rows`, defaulting to the shared
+      `default_chunk_rows`), so the caller no longer writes
+      `lf.collect_batches()`; a `DataFrame` is one chunk and an iterator is
+      passed through. `fit` is the learn-only form -- the same generator with
+      its frames dropped -- which gives Python the runner's `--no-output` shape
+      now that the runner is the command line's alone (task 83). Measured
+      claim deliberately *not* made: this is not faster. The runner's own
+      discard path drops each frame after assembly (`runner.rs:618`), and so
+      does this; what it saves is the write and the assembled result.
+      `_check_frame`'s advice changed with it, since telling a caller to reach
+      for `collect_batches` is wrong once the method takes the plan.
 - [x] 83. **The runner leaves Python; the `online` command line keeps it,
       2026-09-17.** `polars_online.run` built its chunk iterator with py-polars
       and handed the frames to `run_config_on`, so it duplicated what

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pickle
 
+import numpy as np
 import polars as pl
 import polars.testing as plt
 import pytest
@@ -209,6 +210,69 @@ def test_the_specs_are_the_banks_before_a_round_trip_as_after_it():
     assert bank.specs == po.ModelBank.load_bytes(bank.save_bytes()).specs
     assert bank.specs[0]["targets"] == ["x0"]
     assert bank.specs[0]["drift_action"] == "flag"
+
+
+def _stream(n=40, seed=0):
+    rng = np.random.default_rng(seed)
+    return pl.DataFrame(
+        {
+            "t": np.arange(float(n)),
+            "x0": rng.standard_normal(n),
+            "y": rng.standard_normal(n),
+        }
+    )
+
+
+def _one(**kw):
+    return po.spec.ewridge(
+        "m", targets=["y"], features=["x0"], halflife=float("inf"), min_periods=2.0, **kw
+    )
+
+
+def test_fit_predict_batches_takes_a_plan_and_chunks_it():
+    """A LazyFrame in, and the method does the chunking: the same rows and the
+    same numbers as feeding the chunks by hand, whatever `chunk_rows` is."""
+    df = _stream()
+    want = pl.concat(
+        po.ModelBank([_one()]).fit_predict_batches(df.slice(i, 7) for i in range(0, 40, 7))
+    )
+    for rows in (7, 13, 1000):
+        got = pl.concat(po.ModelBank([_one()]).fit_predict_batches(df.lazy(), chunk_rows=rows))
+        # `coef` rides the chunk cadence; every other field is the same.
+        drop = lambda f: f.with_columns(  # noqa: E731
+            pl.col("m").struct.with_fields(pl.lit(None).alias("coef"))
+        )
+        assert drop(got).equals(drop(want), null_equal=True), rows
+    with pytest.raises(ValueError, match="chunk_rows must be at least 1"):
+        list(po.ModelBank([_one()]).fit_predict_batches(df.lazy(), chunk_rows=0))
+
+
+def test_a_frame_is_one_chunk():
+    df = _stream()
+    outs = list(po.ModelBank([_one()]).fit_predict_batches(df))
+    assert len(outs) == 1 and outs[0].height == df.height
+
+
+def test_fit_leaves_the_state_fit_predict_batches_leaves():
+    """The learn-only form is the same run with the output dropped: the state
+    it saves is byte-identical, so nothing about the fit depends on who reads
+    the frames."""
+    df = _stream(seed=1)
+    kept = po.ModelBank([_one()])
+    for _ in kept.fit_predict_batches(df.lazy(), chunk_rows=9):
+        pass
+    quiet = po.ModelBank([_one()])
+    assert quiet.fit(df.lazy(), chunk_rows=9) is None
+    assert quiet.save_bytes() == kept.save_bytes()
+    assert quiet.rows_seen() == kept.rows_seen() == df.height
+
+
+def test_fit_over_an_empty_plan_is_not_an_error():
+    """Nothing to learn from is a no-op that still leaves a loadable state."""
+    bank = po.ModelBank([_one()])
+    bank.fit(_stream().clear().lazy())
+    assert bank.rows_seen() == 0
+    assert po.ModelBank.load_bytes(bank.save_bytes()).rows_seen() == 0
 
 
 def test_fit_predict_batches_drains_the_closed_groups_as_it_goes(tmp_path):
