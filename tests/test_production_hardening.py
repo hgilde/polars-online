@@ -21,6 +21,7 @@ Both are now spec-validation errors, pinned below.
 import copy
 import os
 import pickle
+import subprocess
 import threading
 from pathlib import Path
 
@@ -549,13 +550,13 @@ class TestOddNames:
             po.ModelBank([_spec(features=["x0", "x9"])]).fit_predict(_df())
 
 
-def _doc_blocks(rel: str) -> list[tuple[str, int, str]]:
-    """Every ```python block in one document, with the line it starts on."""
+def _doc_blocks(rel: str, fence: str = "python") -> list[tuple[str, int, str]]:
+    """Every ```<fence> block in one document, with the line it starts on."""
     out: list[tuple[str, int, str]] = []
     in_block, buf, start = False, [], 0
     text = (REPO / rel).read_text(encoding="utf-8")
     for i, line in enumerate(text.splitlines(), 1):
-        if line.strip().startswith("```python"):
+        if line.strip().startswith(f"```{fence}"):
             in_block, buf, start = True, [], i
         elif line.strip() == "```" and in_block:
             in_block = False
@@ -568,6 +569,11 @@ def _doc_blocks(rel: str) -> list[tuple[str, int, str]]:
 # The README, and the runner guide its file-to-file examples live in (docs/PLAN.md
 # task 68): the fixture below already writes the files those examples read.
 README_BLOCKS = _doc_blocks("README.md") + _doc_blocks("docs/RUNNER.md")
+
+#: The runner guide's shell blocks, run against the built `online` binary.
+#: Only this document's: the README's ```sh blocks are `pip install`, `uv sync`
+#: and the development commands, which must never run from a test.
+SHELL_BLOCKS = _doc_blocks("docs/RUNNER.md", "sh")
 
 
 def _rst_python_blocks(where: str, doc: str) -> list[tuple[str, int, str]]:
@@ -704,13 +710,34 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     df[:200].write_parquet(tmp_path / "ticks" / "part-0.parquet")
     df[200:].write_parquet(tmp_path / "ticks" / "part-1.parquet")
     df.write_csv(tmp_path / "today.csv")
+    # `--input-format ipc` names a file whose extension does not say so.
+    df.write_ipc(tmp_path / "feed.dat")
     fed = po.ModelBank([spec])
     fed.fit_predict(df)
     fed.save(tmp_path / "bank.state")  # what section 2's `bank.save` left behind
+    cli_spec = po.spec.ewridge(
+        "ridge", targets=["y"], features=["x0"], halflife=500.0, min_periods=5.0
+    )
     (tmp_path / "bank.toml").write_text(
         'input = "ticks.parquet"\noutput = "fitted.parquet"\n\n'
         '[[specs]]\nname = "ridge"\ntargets = ["y"]\nfeatures = ["x0"]\n'
         'halflife = 500.0\nmin_periods = 5.0\n[specs.model]\ntype = "ew_ridge"\n',
+        encoding="utf-8",
+    )
+    # The guide's `--resume` examples need a state *its own config's* spec
+    # saved: a state refuses to load under specs it was not saved from, which
+    # is the point of that check. `bank.state` belongs to the README, which
+    # writes and reads it throughout, so the CLI's gets a name of its own.
+    cli_bank = po.ModelBank([cli_spec])
+    cli_bank.fit(df.lazy())
+    cli_bank.save(tmp_path / "run.state")
+    # The sidecar example needs a spec that closes groups; the config above
+    # has none, and the CLI refuses `--closed-groups` without one.
+    (tmp_path / "blocks.toml").write_text(
+        'input = "ticks.parquet"\noutput = "fitted.parquet"\n\n'
+        '[[specs]]\nname = "cov"\nfeatures = ["x0", "x1"]\n'
+        'halflife = 500.0\ngroup = "stock_id"\ngroup_close = "session"\n'
+        'session = "session"\n[specs.model]\ntype = "ew_cov"\n',
         encoding="utf-8",
     )
     return {
@@ -783,6 +810,36 @@ class TestReadmeExamples:
         finally:
             os.environ.clear()
             os.environ.update(env)
+
+    def test_there_are_shell_blocks_to_check(self):
+        assert len(SHELL_BLOCKS) >= 4, SHELL_BLOCKS
+
+    @pytest.mark.parametrize(
+        ("path", "line", "code"),
+        SHELL_BLOCKS,
+        ids=[f"{p}:L{ln}" for p, ln, _ in SHELL_BLOCKS],
+    )
+    def test_a_shell_block_runs(self, path, line, code, tmp_path, monkeypatch, online_cli):
+        """The runner guide is all command line now, so its examples are shell.
+        They run the same way the python blocks do: against the files the
+        fixture writes, in a directory of their own, with the built `online` on
+        PATH so the block runs exactly as written.
+
+        Only this document's: the README's ```sh blocks install the package and
+        drive the toolchain, which a test must not do."""
+        monkeypatch.chdir(tmp_path)
+        _readme_namespace(tmp_path)  # writes bank.toml, bank.state and the inputs
+        monkeypatch.setenv("PATH", f"{online_cli.parent}{os.pathsep}{os.environ['PATH']}")
+        for command in (c for c in code.splitlines() if c.strip()):
+            res = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            assert res.returncode == 0, f"{command}\n{res.stderr}"
 
     def test_there_are_docstring_blocks_to_check(self):
         assert len(DOCSTRING_BLOCKS) >= 10, DOCSTRING_BLOCKS

@@ -16,14 +16,35 @@ The same pipeline as one binary and one TOML
 ([examples/bank.toml](../examples/bank.toml)), for a deployment with no
 Python. The binaries are attached to each GitHub release.
 
+The config names the input, the output and the specs; every key it carries
+can be overridden on the command line. A plain run, and one that resumes from
+a state and saves it again:
+
 ```sh
 online --config bank.toml
-online --config bank.toml --resume bank.state --save-state bank.state
-online --config bank.toml --resume bank.state --predict --input today.parquet
-online --config bank.toml --input ticks.csv --output scored.ndjson
-online --config bank.toml --input feed.dat --input-format ipc
-online --config bank.toml --no-output --save-state gram.state   # the state is the product
-online --config bank.toml --dry-run          # validate and print the output schema
+online --config bank.toml --resume run.state --save-state run.state
+```
+
+Score without learning, against the state a previous run left:
+
+```sh
+online --config bank.toml --resume run.state --predict --input today.parquet
+```
+
+Read and write any of the four formats. The extension decides, unless the
+file does not say and `--input-format` does:
+
+```sh
+online --config bank.toml --input today.csv --output scored.ndjson
+online --config bank.toml --input feed.dat --input-format ipc --output out.parquet
+```
+
+A run whose product is its state writes no per-row output, and a dry run
+validates the config and prints the output schema without reading a row:
+
+```sh
+online --config bank.toml --no-output --save-state gram.state
+online --config bank.toml --dry-run
 ```
 
 `--predict` scores against the resumed state and learns nothing; it drops
@@ -35,8 +56,9 @@ A TOML spec for a model that learns from no target — `ew_cov`, `kmeans`,
 way the Python builders fill it. The two surfaces then write byte-identical
 specs, so a state saved from one resumes under the other. The command line
 reads with polars' own scanners, which on a stable toolchain lack the SIMD
-CSV parser py-polars' wheels have, so for a large CSV `po.run` is the faster
-of the two. In TOML, a Windows path needs single quotes or forward slashes
+CSV parser py-polars' wheels have, so a large CSV reads faster through
+py-polars and `ModelBank.fit_predict_batches`. In TOML, a Windows path needs
+single quotes or forward slashes
 (`input = 'C:\data\in.parquet'`), since a backslash in a double-quoted string
 starts an escape sequence.
 
@@ -46,10 +68,10 @@ has, and `run` with a callback instead of an output file.
 
 ## The state vocabulary is the same everywhere
 
-`load_state` and `save_state` on `po.run`, `--resume` / `--save-state` /
-`--predict` on the command line, and the same two words on
-`lf.online.fit_predict` all read and write the same file, and the bytes are
-the same whichever wrote them ([Saving, loading and
+`--resume` / `--save-state` / `--predict` on the command line, and
+`load_state` and `save_state` on `lf.online.fit_predict` and
+`ModelBank.save`, all read and write the same file, and the bytes are the
+same whichever wrote them ([Saving, loading and
 serving](../README.md#saving-loading-and-serving)).
 
 ## Closed groups to a sidecar file
@@ -61,8 +83,11 @@ all is the whole shape of an accumulate-only pass over a stream that does not
 fit in memory:
 
 ```sh
-online --config bank.toml --no-output --closed-groups blocks.parquet
+online --config blocks.toml --no-output --closed-groups blocks.parquet
 ```
+
+The config needs a spec with `group_close`; without one the run is refused,
+naming the spec that should close.
 
 `ModelBank.fit_predict_batches(closed_groups=path)` and
 `lf.online.fit_predict(closed_groups=path)` write the same file from Python.
@@ -91,23 +116,24 @@ the calling thread, a writer thread — with one chunk in flight per stage; `ONL
 Reading and writing are polars' work on polars' pool: parquet pages are
 encoded a column at a time there, NDJSON a slice per thread.
 
-The GIL is released while a chunk is in the bank, so independent `po.run`
-calls in threads of one process share the bank's one thread pool
+The GIL is released while a chunk is in the bank, so independent
+`ModelBank` calls in threads of one process share the bank's one thread pool
 (`POLARS_ONLINE_MAX_THREADS`; the README's
 [Parallelism](../README.md#parallelism) has the full account, including
 polars' own pool and how the two interact).
 
-`chunk_rows` is a keyword on `po.run` and on the command line
-(`--chunk-rows`, or `chunk_rows` in the TOML), with the same meaning and the
-same default (100,000) as on `lf.online.fit_predict`. It never changes the
+`chunk_rows` is a keyword on the command line (`--chunk-rows`, or
+`chunk_rows` in the TOML), with the same meaning and the same default
+(100,000) as on `lf.online.fit_predict` and
+`ModelBank.fit_predict_batches`. It never changes the
 numbers: one chunk or a thousand gives the same output, and the only thing
 that moves is where `coef` lands, since each stream reports its coefficients
 on its last row of every chunk.
 
 ## Versioning
 
-The floor is `LazyFrame.collect_batches`, which `po.run` and
-`lf.online.fit_predict` read with and py-polars added in 1.34.0; the whole
+The floor is `LazyFrame.collect_batches`, which `lf.online.fit_predict` and
+`ModelBank.fit_predict_batches` read with and py-polars added in 1.34.0; the whole
 suite passes on 1.34.0, 1.38.1 and 1.44.1 with identical numbers. The
 README's [Versioning and the Polars pin](../README.md#versioning-and-the-polars-pin)
 has the full matrix and which interfaces carry a promise.

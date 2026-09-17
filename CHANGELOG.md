@@ -9,6 +9,26 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Documentation
 
+- **The runner guide's shell examples are executed, not asserted.** Its
+  Python block became a command-line invocation when the runner left Python
+  (task 83), which left the guide with no runnable examples at all while the
+  README's every Python block runs. The harness now collects ```sh blocks
+  from that guide -- and only that guide, since the README's are `pip
+  install`, `uv sync` and the development commands -- and runs each line
+  against the built `online` binary, in a directory holding the files the
+  fixture writes, with the binary on `PATH` so a block runs exactly as
+  printed.
+  The first run found three false claims in the guide, all now fixed rather
+  than worked around: the `--resume` examples read a state saved from a
+  *different* spec than the config declared, so they could not have loaded;
+  the sidecar example borrowed a config with no `group_close`, which the
+  binary correctly refuses; and the state-vocabulary paragraph, the
+  parallelism note, the chunk-size note and the version floor all still cited
+  the removed Python entry point. The seven-line montage of invocations is
+  now separate blocks, each self-contained, because an example that cannot
+  run on its own cannot be checked.
+
+
 - **How to tune memory with Polars' own settings**, in the README. The
   read-ahead is what grows, not the bank: the streaming engine prefetches row
   groups ahead of whatever consumes them, sized from the thread count, and a
