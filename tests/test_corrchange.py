@@ -317,13 +317,3 @@ def test_a_zero_weight_row_is_not_a_row_of_the_span():
 def test_a_bad_spec_is_refused_by_name(kw, message):
     with pytest.raises(ValueError, match=message):
         spec(**kw)
-
-
-def test_the_expression_equals_the_bank():
-    df = pair(300, 0.4, seed=19)
-    want = run(df, span_rows=100)
-    with pytest.warns(po.InMemoryExpressionWarning):
-        got = df.select(pl.col("x0").online.corrchange(["x1"], span_rows=100).alias("c"))[
-            "c"
-        ].struct.unnest()
-    assert want.equals(got)

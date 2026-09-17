@@ -607,7 +607,7 @@ def _docstring_blocks() -> list[tuple[str, int, str]]:
     way (docs/WRITING.md, "Every code block runs")."""
     import inspect
 
-    modules = [po, po.spec, po._bank, po._frame, po._expr]
+    modules = [po, po.spec, po._bank, po._frame]
     modules += [po.gram, po.eval, po.corr, po.prep, po.sim]
     seen: set[int] = set()
     out: list[tuple[str, int, str]] = []

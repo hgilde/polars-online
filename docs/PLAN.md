@@ -23,15 +23,17 @@ decision below, 2026-09-03) -- usable two ways with identical numerics:
    registered as a polars IO-plugin source, a `LazyFrame` that streams when it runs (E33);
    `df.online.fit_predict(specs)` for a frame in memory.
 2. **Streaming runner** — same bank as a read → fit → write pipeline, memory O(state + chunk):
-   `po.run(...)` from Python (any source py-polars can stream, parquet / ipc / csv / ndjson out),
-   or the Rust `online` CLI (the same formats, TOML config, no Python) for deployment.
+   the Rust `online` CLI (parquet / ipc / csv / ndjson, TOML config, no Python) for
+   deployment. Its Python entry point `po.run` was removed in task 83: `ModelBank` and the
+   plan already do in-process work, and the runner dragged the lazy engine into the
+   extension for code no Python path reached.
 
 Both share `online-polars` and `online-core`. A third way, the **expression plugin**
-(`pl.col("y").online.<model>(...)`, with `.over(group)`), was built first and is the
-**in-memory** form (§6): polars calls a user expression with the whole column in either
-engine, so it is the one O(data) surface. It stays, for a frame already in memory, and every
-call warns with `InMemoryExpressionWarning` naming the plan — so the difference is learned at
-the call site, not from a memory profile.
+(`pl.col("y").online.<model>(...)`, with `.over(group)`), was built first and removed in
+task 85: polars calls a user expression with the whole column in either engine, so it was
+the one O(data) surface, and a surface that cannot stream contradicts the point of the
+library. Everything it did the bank and the plan do — a feature that was an expression
+becomes a column computed before the call, and `.over(group)` becomes the spec's `group`.
 
 ## 2. Core contract (Rust, `online-core`)
 
@@ -1672,6 +1674,23 @@ note, not a task.
       `hit_rate` (`test_diagnostics.py`'s E22 test among them) is regression
       and passes unchanged, since none of them named `binary=True`.
 
+- [x] 85. **The expression plugin removed, 2026-09-17.** It was O(data) by
+      polars' own rules and warned on every use since 2026-09-03 (task 19);
+      keeping a surface whose whole behaviour contradicts the library's point
+      cost more than it bought. Deleted: `crates/online-py/src/expr.rs`,
+      `python/polars_online/_expr.py`, `tests/test_expr.py`, the `online`
+      namespace, `po.online` and `InMemoryExpressionWarning`. **The build
+      consequence is the real prize and was measured, not assumed**:
+      `pyo3-polars/derive` turned on `polars-plan/python`, which only
+      `polars-lazy/python` propagates to `polars-mem-engine`, so `derive` was
+      the reason `lazy` was in the extension's features at all. Both are gone
+      and `cargo check -p online-py` is clean. ~30 expression tests went too:
+      both paths call the same `Bank::fit_predict`, so they tested packing, not
+      arithmetic (survey in the session log: every model file keeps 3-60 bank
+      tests, five keep numpy oracles). Four tests were *restored* after a bulk
+      deletion over-reached -- two `test_every_surface_runs_it`, the
+      two-specs-stay-distinct hardening case, and two typed-dict runtime cases
+      -- because their subject survives the plugin.
 - [x] 84. **The bank takes a plan, and learns without keeping the output,
       2026-09-17.** `fit_predict_batches` accepts a `LazyFrame` and builds the
       chunk iterator itself (`chunk_rows`, defaulting to the shared

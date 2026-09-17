@@ -3,12 +3,10 @@
 A ``LazyFrame`` in, a ``LazyFrame`` out. When the plan runs, its rows go
 through a bank that starts with nothing learned, one chunk at a time, so a
 query with the bank in it is O(chunk) in memory however long the stream is.
-The expression form, ``pl.col("y").online.<model>(...)``, in the same query is
-O(data): polars calls a user expression once with its whole column, and its
-streaming engine collects the column to do so (the expression warns about it,
-:mod:`polars_online._expr`). The bank is registered as a polars source, the
-kind of node the engine pulls batches from, and what comes after it --
-filters, selects, joins, writing the result to a file -- is polars' own.
+The bank is registered as a polars source, the kind of node the engine pulls
+batches from, and what comes after it -- filters, selects, joins, writing the
+result to a file -- is polars' own. A filter after the bank never changes what
+the bank learns from; one that should belongs before it.
 
 The plan is pure: every execution starts from the same state (the specs'
 initial state, or ``load_state``, read when the plan is built), so collecting

@@ -1,34 +1,23 @@
-"""The ``**kwargs`` of the expression namespace and the ``**common`` of the
-builders are typed with PEP 692 ``Unpack[TypedDict]`` (docs/IMPROVEMENTS.md
-U4), so an editor completes them and a type checker catches a typo. Each
-TypedDict is a copy of a builder's signature, and a copy drifts, so every one
-is pinned here to the builder it mirrors: same keys, same annotations, same
-required set. Change a builder and this says which class to update.
+"""The ``**common`` of the spec builders is typed with PEP 692
+``Unpack[TypedDict]`` (docs/IMPROVEMENTS.md U4), so an editor completes it and
+a type checker catches a typo. Each TypedDict is a copy of a builder's
+signature, and a copy drifts, so every one is pinned here to the builder it
+mirrors: same keys, same annotations, same required set. Change a builder and
+this says which class to update.
 """
 
 from __future__ import annotations
 
-import inspect
 import typing
 
 import polars as pl
 import pytest
 
 import polars_online as po
-from polars_online import _expr, _kwargs, _spec
+from polars_online import _kwargs, _spec
 
-# What the expression supplies itself, and so does not take as a keyword
-# (the expression's own column is ew_class's label). `group_close` goes with
-# `group`: `.over()` has no end-of-group signal to close on, and an
-# expression returns one column of the frame's height, with nowhere to put a
-# closed row (E54, test_closed_groups.py).
-EXPR_SUPPLIES = {"name", "targets", "features", "group", "group_close", "label"}
-# What a builder takes that an expression cannot: seqtest's `a`/`b` compare
-# two specs of a bank, and an expression is one spec. The namespace method
-# refuses them at runtime, and its TypedDict leaves them out so that a type
-# checker does too (test_seqtest.py::test_the_expression_refuses_a_comparison).
-EXPR_OMITS: dict[str, set[str]] = {"seqtest": {"a", "b", "a_suffix", "b_suffix"}}
-NAMESPACE_METHODS = [
+# Every model with a spec builder: what the parametrised test below covers.
+BUILDERS = [
     "bocpd",
     "corrchange",
     "deco",
@@ -65,86 +54,40 @@ def _common_hints() -> dict[str, object]:
     return {k: v for k, v in _hints(_spec._common).items() if k not in ("name", "model")}
 
 
-def _typed_dict_behind(method) -> type:
-    kw = typing.get_type_hints(method)["kwargs"]
-    assert typing.get_origin(kw) is typing.Unpack, kw
-    (td,) = typing.get_args(kw)
-    assert typing.is_typeddict(td), td
-    return td
-
-
-def test_the_namespace_methods_are_the_builders():
-    public = [n for n in dir(_expr.OnlineNamespace) if not n.startswith("_")]
-    assert sorted(public) == sorted(NAMESPACE_METHODS)
-
-
 def test_common_kwargs_mirror_the_shared_parameters():
     shared = {k: v for k, v in _common_hints().items() if k not in ("targets", "features")}
     assert typing.get_type_hints(_kwargs.CommonKwargs) == shared
-    # The expression form is the same minus the group, which is .over()'s
-    # job, and the close policy that goes with it (E54).
+    # `ExprKwargs` is the shared base: everything but the group and its
+    # close policy, which only the builders take.
     assert typing.get_type_hints(_kwargs.ExprKwargs) == {
         k: v for k, v in shared.items() if k not in ("group", "group_close")
     }
     assert _kwargs.CommonKwargs.__required_keys__ == frozenset()
 
 
-@pytest.mark.parametrize("name", NAMESPACE_METHODS)
+@pytest.mark.parametrize("name", BUILDERS)
 def test_each_builder_takes_common_as_the_typed_dict(name):
     builder = _unwrapped(getattr(_spec, name))
     assert typing.get_type_hints(builder)["common"] == typing.Unpack[_kwargs.CommonKwargs]
-
-
-@pytest.mark.parametrize("name", NAMESPACE_METHODS)
-def test_each_namespace_typed_dict_mirrors_its_builder(name):
-    builder = _unwrapped(getattr(_spec, name))
-    td = _typed_dict_behind(getattr(_expr.OnlineNamespace, name))
-
-    skip = EXPR_SUPPLIES | EXPR_OMITS.get(name, set()) | {"common"}
-    own = {k: v for k, v in _hints(builder).items() if k not in skip}
-    shared = {k: v for k, v in _common_hints().items() if k not in EXPR_SUPPLIES}
-    assert typing.get_type_hints(td) == {**shared, **own}, name
-
-    required = {
-        p.name
-        for p in inspect.signature(builder).parameters.values()
-        if p.default is inspect.Parameter.empty and p.name not in skip
-    }
-    assert set(td.__required_keys__) == required, name
-
-
-def test_po_online_is_the_registered_namespace():
-    # pl.col("y").online is invisible to a type checker ("Expr" has no
-    # attribute "online"); po.online(expr) is the same thing, visibly typed.
-    df = pl.DataFrame({"y": [1.0, 2.0, 3.0, 4.0], "x0": [1.0, 3.0, 2.0, 5.0]})
-    typed = po.online(pl.col("y")).ewridge(features=["x0"], halflife=2.0)
-    registered = pl.col("y").online.ewridge(features=["x0"], halflife=2.0)
-    assert typed.meta.eq(registered)
-    assert df.with_columns(typed).equals(df.with_columns(registered))
-
-
-def test_the_expression_refuses_a_group_keyword():
-    # The Rust side sets group = None: it would have been silently ignored.
-    with pytest.raises(TypeError, match=r"group is not an expression parameter.*\.over\('g'\)"):
-        pl.col("y").online.ewridge(features=["x0"], halflife=10.0, group="g")
 
 
 def test_a_typo_is_still_named_at_runtime():
     with pytest.raises(
         TypeError, match="ewridge\\(\\) got an unexpected keyword argument 'halflif'"
     ):
-        pl.col("y").online.ewridge(features=["x0"], halflif=10.0)
+        po.spec.ewridge("m", targets=["y"], features=["x0"], halflif=10.0)
 
 
 def test_the_typed_dicts_change_nothing_at_runtime():
     # A TypedDict is a plain dict at runtime: the same kwargs reach the same
     # builder, and a required key missing is still the builder's error.
     df = pl.DataFrame({"y": [1.0, 2.0, 3.0, 4.0], "x0": [1.0, 3.0, 2.0, 5.0]})
-    out = df.with_columns(pl.col("y").online.ewridge(features=["x0"], halflife=2.0).alias("f"))
+    spec = po.spec.ewridge("f", targets=["y"], features=["x0"], halflife=2.0, min_periods=1.0)
+    out = po.ModelBank([spec]).fit_predict(df)
     assert isinstance(out.schema["f"], pl.Struct)
     assert out["f"].struct.field("pred_y").null_count() < 4
     with pytest.raises(TypeError, match="missing 1 required keyword-only argument: 'lasso_path'"):
-        pl.col("y").online.lasso(features=["x0"], halflife=2.0)
+        po.spec.lasso("m", targets=["y"], features=["x0"], halflife=2.0)
 
 
 def test_the_native_stub_names_the_built_module():

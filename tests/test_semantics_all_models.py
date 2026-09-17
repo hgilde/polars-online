@@ -254,20 +254,6 @@ class TestUniversalInvariants:
         keep = [c for c in a.columns if not c.startswith("coef")]
         assert a.select(keep).equals(b.select(keep), null_equal=True)
 
-    def test_expression_equals_bank(self, model, extra):
-        df = frame(n=80, seed=6, binary=model == "ftrl")
-        spec = build(model, extra)
-        bank = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-        kwargs = {k: v for k, v in spec["model"].items() if k != "type" and v is not None}
-        kwargs.update(halflife=200.0, min_periods=2.0)
-        expr = df.select(
-            getattr(pl.col("y0").online, model)(**kwargs)
-            if model == "holt"
-            else getattr(pl.col("y0").online, model)(features=["x0", "x1"], **kwargs)
-        ).unnest("y0")
-        keep = [c for c in bank.columns if not c.startswith("coef")]
-        assert bank.select(keep).equals(expr.select(keep), null_equal=True)
-
     def test_outputs_are_never_non_finite(self, model, extra):
         rng = np.random.default_rng(7)
         n = 300

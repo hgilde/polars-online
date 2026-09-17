@@ -2,7 +2,7 @@
 
 The public surface is much larger than `__all__`: it includes every spec
 constructor's keyword names **and default values** (changing a default silently
-changes users' numbers), the expression namespace, and — largest and least
+changes users' numbers), and — largest and least
 obvious — the **output field names**. Users index the result struct by strings
 like `pred_y__r0.5@h100`; those strings are produced by `format!` over floats,
 and rustc's float formatting is an implementation detail that has changed
@@ -73,13 +73,6 @@ def describe_api() -> str:
     w("[ModelBank]")
     for name in sorted(dir(po.ModelBank)):
         if not name.startswith("_") or name in ("__reduce__",):
-            w(f"  {name}")
-    w("")
-
-    w("[expression namespace]  # pl.col(...).online.<method>")
-    ns = pl.col("x").online
-    for name in sorted(dir(ns)):
-        if not name.startswith("_"):
             w(f"  {name}")
     w("")
 

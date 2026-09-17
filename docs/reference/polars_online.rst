@@ -14,9 +14,6 @@
 
 .. autofunction:: polars_online.unnest
 
-.. autofunction:: polars_online.online
-
-.. autoclass:: polars_online.InMemoryExpressionWarning
 
 .. autofunction:: polars_online.native_version
 

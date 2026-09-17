@@ -724,18 +724,6 @@ class TestEdgeCases:
         ]
         assert idx["columns"][0].to_list() == ["x0", "x1"]
 
-    def test_expression_equals_bank(self):
-        X, _ = blobs(n=400, seed=35)
-        df = frame(X).with_columns(g=pl.Series(["p", "q"] * 200))
-        bank = unnested(po.ModelBank([spec(group="g")]).fit_predict(df))
-        with pytest.warns(po.InMemoryExpressionWarning):
-            expr = df.select(
-                pl.col("x0")
-                .online.micro(["x1"], eps=0.1, halflife=1000.0, min_periods=5.0)
-                .over("g")
-            ).unnest("x0")
-        assert bank.equals(expr, null_equal=True)
-
     def test_lazy_path_equals_bank(self):
         X, _ = blobs(n=500, seed=36)
         df = frame(X)

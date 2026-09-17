@@ -96,27 +96,6 @@ def test_chunk_invariance():
     assert one.select(keep).equals(many.select(keep), null_equal=True)
 
 
-def test_expression_equals_bank():
-    df, _ = synthetic(seed=45, n_groups=2, n_rows=200, k=3, null_frac=0.0)
-    spec = _spec(group="group", clock="t", max_dclock=50.0, weight="w")
-    one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-    keep = [c for c in one.columns if not c.startswith("coef")]
-    expr = df.select(
-        pl.col("y0")
-        .online.kalman(
-            features=["x0", "x1", "x2"],
-            coef_halflife=100.0,
-            halflife=500.0,
-            min_periods=20.0,
-            clock="t",
-            max_dclock=50.0,
-            weight="w",
-        )
-        .over("group")
-    ).unnest("y0")
-    assert one.select(keep).equals(expr.select(keep), null_equal=True)
-
-
 def test_bad_config_rejected():
     with pytest.raises(ValueError, match="coef_halflife"):
         _spec(coef_halflife=[1.0, 2.0])  # wrong length for k=3 + intercept

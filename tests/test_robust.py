@@ -213,16 +213,6 @@ def test_chunk_invariance():
     assert one.select(keep).equals(many.select(keep), null_equal=True)
 
 
-def test_expression_equals_bank():
-    df, kw, spec = _plumbing_case()
-    one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-    keep = [c for c in one.columns if not c.startswith("coef")]
-    expr = df.select(
-        pl.col("y0").online.huber(**{k: v for k, v in kw.items() if k != "targets"}).over("group")
-    ).unnest("y0")
-    assert one.select(keep).equals(expr.select(keep), null_equal=True)
-
-
 def test_bad_config_rejected():
     with pytest.raises(ValueError, match="quantile"):
         po.spec.quantile("m", quantile=0.0, targets=["y0"], features=["x0"], halflife=10.0)

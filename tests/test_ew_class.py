@@ -687,24 +687,6 @@ class TestEdgeCases:
         assert idx["target"].to_list()[:4] == ["y"] * 4
         assert idx["columns"][0].to_list() == ["x0", "x1"]
 
-    def test_expression_equals_bank(self):
-        X, lab = gaussians(400, seed=24, **THREE)
-        df = frame(X, lab, null_every=7, g=["p", "q"] * 200)
-        bank = unnested(po.ModelBank([spec(group="g")]).fit_predict(df))
-        with pytest.warns(po.InMemoryExpressionWarning):
-            expr = df.select(
-                pl.col("y")
-                .online.ew_class(
-                    ["x0", "x1"],
-                    classes=["a", "b", "c"],
-                    precision_prior=1.0,
-                    halflife=200.0,
-                    min_periods=5.0,
-                )
-                .over("g")
-            ).unnest("y")
-        assert bank.equals(expr, null_equal=True)
-
     def test_lazy_path_equals_bank(self):
         X, lab = gaussians(500, seed=25, **THREE)
         df = frame(X, lab, null_every=7)

@@ -338,40 +338,6 @@ class TestOracleOnTheStreamPlumbing:
         narrow = field(out, "hi_y0@h50") - field(out, "lo_y0@h50")
         assert not np.allclose(np.nan_to_num(wide), np.nan_to_num(narrow))
 
-    def test_the_expression_matches_the_bank(self):
-        df = messy(n=800, seed=5).drop("w")
-        bank = po.ModelBank(
-            [
-                po.spec.ewridge(
-                    "m",
-                    targets=["y0"],
-                    features=["x0", "x1"],
-                    clock="t",
-                    max_dclock=10.0,
-                    halflife=100.0,
-                    min_periods=3.0,
-                    conformal=0.9,
-                    max_rows_between_solves=1,
-                )
-            ]
-        ).fit_predict(df)
-        with pytest.warns(po.InMemoryExpressionWarning):
-            expr = df.select(
-                pl.col("y0")
-                .online.ewridge(
-                    ["x0", "x1"],
-                    clock="t",
-                    max_dclock=10.0,
-                    halflife=100.0,
-                    min_periods=3.0,
-                    conformal=0.9,
-                    max_rows_between_solves=1,
-                )
-                .alias("m")
-            )
-        for k in ("lo_y0", "hi_y0", "coverage_y0"):
-            np.testing.assert_array_equal(field(expr, k), field(bank, k))
-
 
 # --- 2. the guarantee, at scale ----------------------------------------------------
 

@@ -379,17 +379,6 @@ def test_the_clock_is_a_number(c):
             assert np.allclose(a[live], b[live], rtol=1e-12, atol=1e-12)
 
 
-def test_the_expression_equals_the_bank():
-    df = frame(n=300)
-    spec = po.spec.deco("d", features=cols(4), halflife=HALFLIFE, min_periods=0.0)
-    want = run(spec, df)
-    with pytest.warns(po.InMemoryExpressionWarning):
-        got = df.select(
-            pl.col("x0").online.deco(cols(4)[1:], halflife=HALFLIFE, min_periods=0.0).alias("d")
-        )["d"].struct.unnest()
-    assert want.equals(got)
-
-
 # --- refusals ----------------------------------------------------------------
 
 

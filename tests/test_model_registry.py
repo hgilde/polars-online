@@ -180,11 +180,11 @@ def test_every_rust_kind_has_exactly_one_builder():
     assert sorted(built.values()) == sorted(kinds), built
 
 
-def test_every_builder_has_a_namespace_method():
-    """`test_kwargs_typing` holds the namespace's public methods to its own
-    list; this holds that list to the builders, so a model reachable from
-    `po.spec` is reachable from `pl.col(...).online` too."""
-    assert set(test_kwargs_typing.NAMESPACE_METHODS) == _builders()
+def test_the_builder_list_covers_every_builder():
+    """`test_kwargs_typing` parametrises its typed-dict checks on its own list
+    of builders; this holds that list to what `po.spec` exports, so a model
+    added to one cannot be missed by the other."""
+    assert set(test_kwargs_typing.BUILDERS) == _builders()
 
 
 def test_the_api_snapshot_pins_every_models_output_fields():

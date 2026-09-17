@@ -117,14 +117,6 @@ def test_chunk_invariance():
     assert one.select(keep).equals(many.select(keep), null_equal=True)
 
 
-def test_expression_equals_bank():
-    df, kw, spec = _plumbing_case()
-    one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-    keep = [c for c in one.columns if not c.startswith("coef")]
-    expr = df.select(pl.col("y0").online.ftrl(**kw).over("group")).unnest("y0")
-    assert one.select(keep).equals(expr.select(keep), null_equal=True)
-
-
 def test_strict_binary_refuses_a_target_other_than_0_or_1():
     """``strict_binary`` was documented as an error and ran as a silent skip
     that still counted the row toward ``n_eff`` (review 2026-09-12, S31). The
@@ -248,24 +240,6 @@ class TestSquaredLoss:
         )
         keep = [c for c in one.columns if not c.startswith("coef")]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
-
-    def test_expression_equals_bank(self):
-        df = self._data(n=400, seed=7)
-        spec = self._spec()
-        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-        keep = [c for c in one.columns if not c.startswith("coef")]
-        expr = df.select(
-            pl.col("y0").online.ftrl(
-                features=["x0", "x1", "x2"],
-                loss="squared",
-                alpha=0.5,
-                l1=0.0,
-                l2=0.01,
-                halflife=float("inf"),
-                min_periods=10.0,
-            )
-        ).unnest("y0")
-        assert one.select(keep).equals(expr.select(keep), null_equal=True)
 
     def test_strict_binary_is_rejected(self):
         with pytest.raises(ValueError, match="strict_binary"):

@@ -312,9 +312,9 @@ class TestOutputSchemaStability:
     def test_names_match_the_realized_struct(self, extra):
         # The declared schema and the produced struct must agree exactly, for
         # every combination of optional outputs. They diverged once, when an
-        # output was added to the assembler but not to `output_fields`: the
-        # expression plugin takes its dtype from the declaration, so such a
-        # divergence breaks `.over()` while the bank keeps working.
+        # output was added to the assembler but not to `output_fields`: a
+        # caller that reads the declared schema would then be told one dtype
+        # and handed another.
         spec = po.spec.ewridge(
             "m",
             targets=["y0"],
@@ -361,8 +361,8 @@ class TestOutputSchemaStability:
         The optional outputs are assembled in the stream layer, but each model
         contributes its own prediction and coefficient slots, so a model added
         after `output_fields` was written can declare a different schema from
-        the one it produces -- and the expression plugin, which takes its dtype
-        from the declaration, would break on it while the bank kept working.
+        the one it produces, and anything reading the declaration would be told
+        one dtype and handed another.
         `sgd`, `pa`, `holt` and `ew_cov` all postdate that test.
         """
         spec = getattr(po.spec, model)(

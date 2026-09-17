@@ -168,21 +168,6 @@ class TestPlumbing:
         keep = [c for c in one.columns if not c.startswith("coef")]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
 
-    def test_expression_equals_bank(self):
-        df = _linear(n=400, seed=9)
-        spec = _spec()
-        one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-        keep = [c for c in one.columns if not c.startswith("coef")]
-        expr = df.select(
-            pl.col("y0").online.sgd(
-                features=["x0", "x1"],
-                halflife=float("inf"),
-                min_periods=10.0,
-                learning_rate=0.05,
-            )
-        ).unnest("y0")
-        assert one.select(keep).equals(expr.select(keep), null_equal=True)
-
     def test_save_load(self, tmp_path):
         df = _linear(n=400, seed=10)
         spec = _spec(schedule="adagrad", learning_rate=0.5)

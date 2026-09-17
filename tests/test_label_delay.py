@@ -438,27 +438,6 @@ max_rows_between_solves = 1
         subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
         assert fields(pl.read_parquet(cli_out)).equals(want, null_equal=True)
 
-    def test_the_expression_form(self):
-        df = frame(n=200, seed=13)
-        s = spec(label_delay=4.0)
-        want = po.ModelBank([s]).fit_predict(df)["m"].struct.field("pred_y").to_numpy()
-        with pytest.warns(po.InMemoryExpressionWarning):
-            got = df.select(
-                po.online(pl.col("y")).ewridge(
-                    ["x"],
-                    clock="t",
-                    halflife=HALFLIFE,
-                    max_dclock=1e9,
-                    min_periods=3.0,
-                    standardize=False,
-                    max_rows_between_solves=1,
-                    label_delay=4.0,
-                )
-            )
-        out = got.to_series().struct.field("pred_y").to_numpy()
-        assert (np.isnan(out) == np.isnan(want)).all()
-        assert np.array_equal(out[np.isfinite(out)], want[np.isfinite(want)])
-
 
 class TestRefusals:
     @pytest.mark.parametrize("bad", [0.0, -1.0, float("inf"), float("nan")])

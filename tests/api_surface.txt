@@ -1,7 +1,6 @@
 # polars-online public API surface. Regenerate: UPDATE_API_SURFACE=1 pytest
 
 [package]
-  InMemoryExpressionWarning
   ModelBank
   __version__
   corr
@@ -9,7 +8,6 @@
   fit_predict
   gram
   native_version
-  online
   predict
   prep
   schema_version
@@ -350,29 +348,6 @@
   specs
   summary
   to_json
-
-[expression namespace]  # pl.col(...).online.<method>
-  bocpd
-  corrchange
-  deco
-  ew_class
-  ew_cov
-  ewridge
-  ftrl
-  hmm
-  holt
-  huber
-  kalman
-  kmeans
-  lasso
-  marginal
-  micro
-  pa
-  quantile
-  rcov
-  rls
-  seqtest
-  sgd
 
 [frame namespaces]  # lf.online.<method> -> LazyFrame; df.online.<method> -> DataFrame
   LazyFrame.online.fit_predict(specs: 'Specs | None' = None, *, load_state: 'State | None' = None, save_state: 'State | None' = None, closed_groups: 'State | None' = None, chunk_rows: 'int | None' = None) -> 'pl.LazyFrame'

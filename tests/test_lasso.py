@@ -135,25 +135,6 @@ def test_chunk_invariance():
     assert one.select(keep).equals(many.select(keep), null_equal=True)
 
 
-def test_expression_equals_bank():
-    df, _ = synthetic(seed=34, n_groups=2, n_rows=180, k=3, null_frac=0.0)
-    spec = _spec([0.5, 0.0], group="group", halflife=200.0)
-    one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-    keep = [c for c in one.columns if not c.startswith("coef")]
-    expr = df.select(
-        pl.col("y0")
-        .online.lasso(
-            features=["x0", "x1", "x2"],
-            lasso_path=[0.5, 0.0],
-            halflife=200.0,
-            max_rows_between_solves=1,
-            min_periods=10.0,
-        )
-        .over("group")
-    ).unnest("y0")
-    assert one.select(keep).equals(expr.select(keep), null_equal=True)
-
-
 def test_path_must_be_decreasing():
     with pytest.raises(ValueError, match="decreasing"):
         _spec([0.1, 1.0])

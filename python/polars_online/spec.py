@@ -246,8 +246,8 @@ A spec that came back from a builder is valid. One edited afterwards is
 checked again wherever it is used, and a key no spec has is refused there
 rather than ignored. Every way in checks a spec the same way, so a spec one of
 them refuses is refused by all of them: :class:`polars_online.ModelBank`,
-:func:`output_fields`, :func:`output_index`, :func:`coef_fields`, the
-expression form and a run config each fill its defaults and build its models.
+:func:`output_fields`, :func:`output_index`, :func:`coef_fields` and a run
+config each fill its defaults and build its models.
 """
 
 from polars_online._spec import (

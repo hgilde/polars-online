@@ -736,24 +736,6 @@ def _cli():
     return []  # pragma: no cover
 
 
-def test_the_expression_namespace_has_no_group_close():
-    """`.over()` has no end-of-group signal to close on, and an expression
-    returns one column of the frame's height -- there is nowhere to put a
-    closed row. Both doors are shut: the parameter is not in `ExprKwargs`,
-    and passing it anyway is refused by name."""
-    from polars_online._kwargs import CommonKwargs, ExprKwargs
-
-    assert "group_close" not in ExprKwargs.__annotations__
-    assert "group_close" in CommonKwargs.__annotations__
-    # No group: the spec itself is refused, since a close needs a key.
-    with pytest.raises(ValueError, match="group_close needs a group column"):
-        pl.col("x0").online.ew_cov(["x1"], halflife=HALFLIFE, group_close="monotone")
-    # With one, the group refusal comes first and names `.over` -- there is
-    # no way through to a closing expression.
-    with pytest.raises(TypeError, match="group is not an expression parameter"):
-        pl.col("x0").online.ew_cov(["x1"], halflife=HALFLIFE, group="g", group_close="monotone")
-
-
 def test_from_row_refuses_a_row_with_no_accumulators():
     spec = po.spec.holt("h", targets=["x0"], halflife=HALFLIFE, group="g", group_close="monotone")
     bank = po.ModelBank([spec])

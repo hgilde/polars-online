@@ -129,15 +129,6 @@ class TestPlumbing:
         rest = df.slice(150, 150)
         assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
 
-    def test_expression_equals_bank(self):
-        df = _df(n=400).with_columns(g=pl.Series(["p", "q"] * 200))
-        spec = _spec(group="g")
-        bank = po.ModelBank([spec]).fit_predict(df).select("c").unnest("c")
-        expr = df.select(
-            pl.col("x0").online.ew_cov(["x1"], halflife=NO_DECAY, min_periods=5.0).over("g")
-        ).unnest("x0")
-        assert bank.equals(expr, null_equal=True)
-
     def test_groups_are_independent(self):
         df = _df(n=400).with_columns(g=pl.Series(["p", "q"] * 200))
         spec = _spec(group="g")
@@ -320,8 +311,8 @@ class TestAccumulateOnly:
         bare, _ = self._pair()
         ref = po.ModelBank([bare])
         one = ref.fit_predict(df).select("c").unnest("c")
-        # Chunked, lazy and expression: the same n_eff column, and the same
-        # Gram wherever a state comes out.
+        # Chunked and lazy: the same n_eff column, and the same Gram wherever
+        # a state comes out.
         bank = po.ModelBank([bare])
         many = pl.concat([bank.fit_predict(df.slice(i, 101)) for i in range(0, df.height, 101)])
         assert many.select("c").unnest("c").equals(one)
@@ -332,11 +323,6 @@ class TestAccumulateOnly:
         bank.save(state)
         loaded = po.ModelBank.load(state)
         assert np.array_equal(loaded.gram("c")[0]["comoments"], ref.gram("c")[0]["comoments"])
-        with pytest.warns(po.InMemoryExpressionWarning):
-            expr = df.select(
-                pl.col("x0").online.ew_cov(["x1", "x2"], stats=[], halflife=NO_DECAY).alias("c")
-            )
-        assert expr.select("c").unnest("c").equals(one)
 
     def test_pca_and_mahal_stand_without_a_statistic(self):
         df = _df(n=600)

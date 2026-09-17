@@ -1,9 +1,8 @@
 """E33: the bank as a polars source -- `lf.online.fit_predict(specs)`.
 
 A LazyFrame in, a LazyFrame out, streamed through a fresh bank when the plan
-runs, so a query with the bank in it stays O(chunk); the expression plugin in
-the same position is O(data) in either engine (docs/PERFORMANCE.md section
-11). Held here to the numbers `ModelBank` gives on the same rows,
+runs, so a query with the bank in it stays O(chunk). Held here to the numbers
+`ModelBank` gives on the same rows,
 through both engines, every pushdown polars applies to a Python source, a
 streaming sink, and the eager and typed forms.
 """

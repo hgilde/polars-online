@@ -858,25 +858,6 @@ class TestEdgeCases:
         solo = po.ModelBank([spec]).fit_predict(df.filter(pl.col("g") == "q"))
         assert both.filter(pl.col("g") == "q").equals(solo, null_equal=True)
 
-    def test_expression_equals_bank(self):
-        X, y, t, w = _stream(600, 3, seed=19, missing=False)
-        df = _frame(X, y, g=["p", "q", "r"] * 200)
-        for builder, method in ((po.spec.sgd, "sgd"), (po.spec.pa, "pa")):
-            spec = builder("m", group="g", coef_min=0.0, coef_sum=1.0, **_base())
-            bank = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-            with pytest.warns(po.InMemoryExpressionWarning):
-                expr = df.select(
-                    getattr(pl.col("y").online, method)(
-                        features=["x0", "x1", "x2"],
-                        halflife=INF,
-                        min_periods=5.0,
-                        coef_every=1,
-                        coef_min=0.0,
-                        coef_sum=1.0,
-                    ).over("g")
-                ).unnest("y")
-            assert bank.equals(expr, null_equal=True), method
-
     def test_lazy_agrees_with_the_bank(self):
         X, y, t, w = _stream(600, 3, seed=20)
         df = _frame(X, y, t, w)

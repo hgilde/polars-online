@@ -736,48 +736,6 @@ class TestEdgeCases:
         runs = [po.ModelBank([spec(group="g")]).fit_predict(df) for _ in range(3)]
         assert runs[0].equals(runs[1]) and runs[0].equals(runs[2])
 
-    def test_expression_equals_bank(self):
-        df = frame(n=800, m=2, seed=39, null_every=6, groups=["p", "q"])
-        bank = unnested(
-            po.ModelBank([spec(targets=["d0", "d1"], group="g", min_periods=2.0)]).fit_predict(df)
-        )
-        with pytest.warns(po.InMemoryExpressionWarning):
-            expr = df.select(
-                pl.col("d0").online.seqtest(extra_targets=["d1"], min_periods=2.0).over("g")
-            ).unnest("d0")
-        assert bank.equals(expr, null_equal=True)
-        with pytest.warns(po.InMemoryExpressionWarning):
-            typed = df.select(po.online(pl.col("d0")).seqtest(min_periods=2.0).over("g")).unnest(
-                "d0"
-            )
-        assert typed.equals(
-            bank.select([c for c in bank.columns if not c.endswith("_d1")]), null_equal=True
-        )
-
-    def test_the_expression_refuses_a_comparison_and_says_how_to_write_it(self):
-        with pytest.raises(
-            TypeError, match=r"seqtest a, b compare two specs of a bank.*\|resid_b\|"
-        ):
-            pl.col("d").online.seqtest(a="fast", b="slow")
-        with pytest.raises(TypeError, match="seqtest a_suffix compare"):
-            pl.col("d").online.seqtest(a_suffix="@h20")
-        # The way it says: column mode on the difference.
-        df = regression(1500, seed=40)
-        sides = two_sides()
-        c = po.spec.seqtest("c", targets=["y"], a="fast", b="slow")
-        out = po.ModelBank([*sides, c]).fit_predict(df)
-        with pytest.warns(po.InMemoryExpressionWarning):
-            expr = out.select(
-                (
-                    pl.col("slow").struct.field("resid_y").abs()
-                    - pl.col("fast").struct.field("resid_y").abs()
-                )
-                .alias("d")
-                .online.seqtest()
-            ).unnest("d")
-        assert expr["log_e_pos_d"].equals(out["c"].struct.field("log_e_a_y"), null_equal=True)
-        assert expr["n_neg_d"].equals(out["c"].struct.field("wins_b_y"), null_equal=True)
-
     def test_output_index_declares_the_fields_and_dtypes(self):
         s = spec(targets=["d0", "d1"])
         idx = po.spec.output_index(s)

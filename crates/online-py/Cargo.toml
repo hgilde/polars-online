@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "pyo3 + pyo3-polars bindings: ModelBank and the expression plugin."
+description = "pyo3 + pyo3-polars bindings: the Python ModelBank class."
 
 # Not published to crates.io. The Python wheel is the deliverable, and it is
 # built from this workspace by maturin with these as *path* dependencies -- the
@@ -27,9 +27,13 @@ polars.workspace = true
 # `extension-module` is NOT enabled here: it would break plain `cargo build`/`cargo test`
 # (no libpython to link against). maturin turns it on via `features` in pyproject.toml.
 pyo3 = { workspace = true, features = ["abi3-py312"] }
-# "lazy" is not optional here: pyo3-polars/derive turns on polars-plan/python, and only
-# polars-lazy/python propagates that to polars-mem-engine (otherwise it fails to compile).
-pyo3-polars = { workspace = true, features = ["derive", "lazy", "dtype-struct"] }
+# `derive` (the expression-plugin macro) went with the plugin in task 85, and
+# "lazy" went with it: `derive` turned on polars-plan/python, which only
+# polars-lazy/python propagates to polars-mem-engine, and that was the whole
+# reason "lazy" was here. Measured, not assumed -- `cargo check -p online-py`
+# builds clean without either. The extension no longer asks pyo3-polars for the
+# query engine; `online-polars` still does, for the runner the CLI uses.
+pyo3-polars = { workspace = true, features = ["dtype-struct"] }
 serde.workspace = true
 serde_json.workspace = true
 # Names the field a spec failed to parse at ("model.quantile"), not a JSON offset.

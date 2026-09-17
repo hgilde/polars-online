@@ -498,27 +498,6 @@ class TestStreamContract:
         for name in ("mahal", "mahal_q0.9", "pc0_score", "pc1_var"):
             np.testing.assert_array_equal(field(scored, name)[:1], field(learned, name))
 
-    def test_expression_equals_bank(self):
-        df = self._df().with_columns(g=pl.Series(["p", "q"] * 400))
-        s = self._spec(group="g")
-        bank = po.ModelBank([s]).fit_predict(df).select("c").unnest("c")
-        with pytest.warns(po.InMemoryExpressionWarning):
-            expr = df.select(
-                pl.col("x0")
-                .online.ew_cov(
-                    ["x1", "x2", "x3"],
-                    stats=["mean", "mahal"],
-                    precision_prior=1e-4,
-                    mahal_quantiles=[0.9],
-                    pca=2,
-                    pca_every=7,
-                    halflife=100.0,
-                    min_periods=5.0,
-                )
-                .over("g")
-            ).unnest("x0")
-        assert bank.equals(expr, null_equal=True)
-
     def test_halflife_grid_names_every_slot(self):
         s = spec(
             2, halflife=[50.0, 500.0], stats=["mahal"], mahal_quantiles=[0.5], pca=1, pca_every=1

@@ -1,16 +1,14 @@
 """Streaming and online regression models for Polars.
 
-One Rust core, reached three ways:
+One Rust core, reached two ways:
 
 1. :class:`ModelBank`, a bank fed one chunk at a time, with memory O(state)
-   rather than O(data); and the same bank as a plan,
-   ``lf.online.fit_predict(specs)``, a ``LazyFrame`` that streams, or
-   ``df.online.fit_predict(specs)`` for a frame in memory;
-2. :func:`run`, or the ``online`` CLI: parquet, ipc, csv or ndjson in and out,
-   with the state saved and resumed between runs;
-3. the expression namespace, ``pl.col("y").online.<model>(...)``, for a frame
-   in memory only: polars hands a user expression its whole column in either
-   engine, so every use warns (:class:`InMemoryExpressionWarning`).
+   rather than O(data); hand it a ``LazyFrame`` and it does the chunking
+   (:meth:`ModelBank.fit_predict_batches`, :meth:`ModelBank.fit`). The same
+   bank runs as a plan, ``lf.online.fit_predict(specs)``, a ``LazyFrame`` that
+   streams, or ``df.online.fit_predict(specs)`` for a frame in memory;
+2. the ``online`` command line: parquet, ipc, csv or ndjson in and out, with
+   the state saved and resumed between runs (``docs/RUNNER.md``).
 
 A spec names a model and the columns it reads (:mod:`polars_online.spec`);
 every way in takes a list of them and writes one struct column per spec.
@@ -33,7 +31,6 @@ replaces an output or a state file.
 """
 
 from polars_online import (
-    _expr,  # noqa: F401  (registers the expression namespace)
     _frame,  # noqa: F401  (registers the frame namespaces)
     corr,
     eval,
@@ -43,14 +40,12 @@ from polars_online import (
     spec,
 )
 from polars_online._bank import ModelBank
-from polars_online._expr import InMemoryExpressionWarning, online
 from polars_online._frame import fit_predict, predict, unnest
 from polars_online._polars_online import native_version, schema_version, thread_pool_size
 
 __version__ = "0.6.0"
 
 __all__ = [
-    "InMemoryExpressionWarning",
     "ModelBank",
     "__version__",
     "corr",
@@ -58,7 +53,6 @@ __all__ = [
     "fit_predict",
     "gram",
     "native_version",
-    "online",
     "predict",
     "prep",
     "schema_version",

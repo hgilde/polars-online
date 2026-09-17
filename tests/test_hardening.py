@@ -483,37 +483,27 @@ class TestExpressionSpecCache:
     different specs evaluated on the same thread must not bleed into each
     other, and the cache must not survive incorrectly across .over groups."""
 
-    def test_two_specs_in_one_select_stay_distinct(self):
+    def test_two_specs_in_one_query_stay_distinct(self):
+        """Two specs differing only in halflife must not share a state: the
+        faster one accumulates less weight at every row. Equality here would
+        mean one spec's model served both."""
         n = 4000
         rng = np.random.default_rng(5)
         x = rng.standard_normal(n)
         df = pl.DataFrame(
-            {
-                "x0": x,
-                "y": 2 * x + 0.1 * rng.standard_normal(n),
-                "g": np.arange(n) % 8,
-            }
+            {"x0": x, "y": 2 * x + 0.1 * rng.standard_normal(n), "g": np.arange(n) % 8}
         )
-        fast = (
-            pl.col("y")
-            .online.ewridge(features=["x0"], halflife=50.0, min_periods=5.0)
-            .over("g")
-            .alias("fast")
+        fast = po.spec.ewridge(
+            "fast", targets=["y"], features=["x0"], halflife=50.0, min_periods=5.0, group="g"
         )
-        slow = (
-            pl.col("y")
-            .online.ewridge(features=["x0"], halflife=5000.0, min_periods=5.0)
-            .over("g")
-            .alias("slow")
+        slow = po.spec.ewridge(
+            "slow", targets=["y"], features=["x0"], halflife=5000.0, min_periods=5.0, group="g"
         )
-        out = df.select(fast, slow)
+        out = po.ModelBank([fast, slow]).fit_predict(df)
         pf = out["fast"].struct.field("n_eff").to_numpy().astype(float)
         ps = out["slow"].struct.field("n_eff").to_numpy().astype(float)
         mask = np.isfinite(pf) & np.isfinite(ps) & (np.arange(n) > 800)
-        assert (pf[mask] < ps[mask]).all(), (
-            "the fast halflife must accumulate less weight; equality would "
-            "mean the cache served one spec for both expressions"
-        )
+        assert (pf[mask] < ps[mask]).all(), "the fast halflife must accumulate less weight"
 
 
 def test_an_infinity_in_a_later_chunk_of_a_column_is_skipped():

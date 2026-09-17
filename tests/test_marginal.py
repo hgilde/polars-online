@@ -9,7 +9,6 @@ null and zero-weight rows -- on every surface that runs a spec.
 """
 
 import subprocess
-import warnings
 
 import numpy as np
 import polars as pl
@@ -262,6 +261,47 @@ class TestArithmetic:
 
 
 class TestPlumbing:
+    def test_every_surface_runs_it(self, tmp_path, online_cli):
+        df = frame(n=500, null_target_every=7, weights=True, clock=True, seed=10)
+        s = spec(weight="w", clock="t", max_dclock=10.0, halflife=40.0)
+        ref = po.ModelBank([s])
+        one = ref.fit_predict(df).select("m").unnest("m")
+        pairs = ref.marginal("m")
+        # Lazy plan.
+        lazy = df.lazy().online.fit_predict([s]).collect().select("m").unnest("m")
+        assert lazy.equals(one, null_equal=True)
+        # The state the bank saves carries the pairs back.
+        src, state = tmp_path / "in.parquet", tmp_path / "s.state"
+        df.write_parquet(src)
+        ref.save(state)
+        assert po.ModelBank.load(state).marginal("m").equals(pairs, null_equal=True)
+        # The CLI, from TOML.
+        cli_dst, cli_state = tmp_path / "cli.parquet", tmp_path / "cli.state"
+        cfg = tmp_path / "bank.toml"
+        cfg.write_text(
+            "\n".join(
+                [
+                    f'input = "{src.as_posix()}"',
+                    f'output = "{cli_dst.as_posix()}"',
+                    f'save_state = "{cli_state.as_posix()}"',
+                    "chunk_rows = 100",
+                    "[[specs]]",
+                    'name = "m"',
+                    'targets = ["y0", "y1"]',
+                    'features = ["x0", "x1", "x2"]',
+                    'clock = "t"',
+                    "max_dclock = 10.0",
+                    "halflife = 40.0",
+                    'weight = "w"',
+                    "[specs.model]",
+                    'type = "marginal"',
+                ]
+            )
+        )
+        subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
+        assert pl.read_parquet(cli_dst).select("m").unnest("m").equals(one, null_equal=True)
+        assert po.ModelBank.load(cli_state).marginal("m").equals(pairs, null_equal=True)
+
     def test_the_struct_holds_n_eff_alone(self):
         s = spec()
         assert po.spec.output_fields(s) == ["n_eff"]
@@ -387,70 +427,6 @@ class TestPlumbing:
             bank.marginal("nope")
         with pytest.raises(IndexError):
             bank.marginal(5)
-
-    def test_every_surface_runs_it(self, tmp_path, online_cli):
-        df = frame(n=500, null_target_every=7, weights=True, clock=True, seed=10)
-        s = spec(weight="w", clock="t", max_dclock=10.0, halflife=40.0)
-        ref = po.ModelBank([s])
-        one = ref.fit_predict(df).select("m").unnest("m")
-        pairs = ref.marginal("m")
-        # Lazy plan.
-        lazy = df.lazy().online.fit_predict([s]).collect().select("m").unnest("m")
-        assert lazy.equals(one, null_equal=True)
-        # The state the bank saves carries the pairs back.
-        src, state = tmp_path / "in.parquet", tmp_path / "s.state"
-        df.write_parquet(src)
-        ref.save(state)
-        assert po.ModelBank.load(state).marginal("m").equals(pairs, null_equal=True)
-        # The CLI, from TOML.
-        cli_dst, cli_state = tmp_path / "cli.parquet", tmp_path / "cli.state"
-        cfg = tmp_path / "bank.toml"
-        cfg.write_text(
-            "\n".join(
-                [
-                    f'input = "{src.as_posix()}"',
-                    f'output = "{cli_dst.as_posix()}"',
-                    f'save_state = "{cli_state.as_posix()}"',
-                    "chunk_rows = 100",
-                    "[[specs]]",
-                    'name = "m"',
-                    'targets = ["y0", "y1"]',
-                    'features = ["x0", "x1", "x2"]',
-                    'clock = "t"',
-                    "max_dclock = 10.0",
-                    "halflife = 40.0",
-                    'weight = "w"',
-                    "[specs.model]",
-                    'type = "marginal"',
-                ]
-            )
-        )
-        subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
-        assert pl.read_parquet(cli_dst).select("m").unnest("m").equals(one, null_equal=True)
-        assert po.ModelBank.load(cli_state).marginal("m").equals(pairs, null_equal=True)
-        # The expression: the same n_eff column, a warning, and no pairs.
-        with pytest.warns(po.InMemoryExpressionWarning):
-            expr = df.select(
-                pl.col("y0")
-                .online.marginal(
-                    ["x0", "x1", "x2"],
-                    extra_targets=["y1"],
-                    weight="w",
-                    clock="t",
-                    max_dclock=10.0,
-                    halflife=40.0,
-                )
-                .alias("m")
-            )
-        assert expr.select("m").unnest("m").equals(one, null_equal=True)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", po.InMemoryExpressionWarning)
-            typed = df.select(
-                po.online(pl.col("y0"))
-                .marginal(["x0", "x1", "x2"], halflife=40.0, clock="t", max_dclock=10.0, weight="w")
-                .alias("m")
-            )
-        assert typed.schema["m"] == pl.Struct({"n_eff": pl.Float64})
 
     def test_determinism(self):
         df = frame(n=800, groups=["p", "q"], seed=11)

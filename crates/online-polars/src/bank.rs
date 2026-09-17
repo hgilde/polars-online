@@ -324,9 +324,9 @@ fn label_column(
 /// Below this many rows a chunk's columns are read, and a spec's fields
 /// assembled, on the calling thread. A task at the floor is a 32 KB copy,
 /// about what a rayon dispatch costs, so there is nothing to gain -- and
-/// something to lose: under `.over()` the expression plugin hands the bank
-/// groups of a few dozen rows, and fanning those out spread their
-/// allocations over the pool's threads. Measured as a doubled RSS wobble in
+/// something to lose: a caller that hands the bank many small chunks -- a few
+/// dozen rows each -- spreads their allocations over the pool's threads when
+/// they fan out. Measured as a doubled RSS wobble in
 /// `tests/test_ffi_memory.py` (±4.6 vs ±2 KB per call around a flat mean)
 /// with no change in speed (docs/PERFORMANCE.md §12). Public so that
 /// `tests/chunk_plan.rs` can run the same frames on both sides of it.
@@ -3338,10 +3338,10 @@ pub struct FieldMeta {
     pub columns: Option<Vec<String>>,
     /// The polars dtype the field is materialized with, as its string form
     /// (`f64`, `bool`, `str`, `list[f64]`). Set from `src`, so it is the same
-    /// table `assemble` fills the buffers from; the expression plugin declares
-    /// its output struct from [`FieldMeta::dtype`] (docs/IMPROVEMENTS.md C1 —
-    /// a name-prefix guess there once declared `drift_*` as `f64` while the
-    /// bank produced `bool`, and polars refused the struct).
+    /// table `assemble` fills the buffers from, so a declared output struct and
+    /// the values that land in it cannot disagree (docs/IMPROVEMENTS.md C1 — a
+    /// name-prefix guess once declared `drift_*` as `f64` while the bank
+    /// produced `bool`, and polars refused the struct).
     pub dtype: String,
     /// Which assembled buffer, and where in it, this field's values come from.
     /// Private and not serialized: it is how `assemble` walks this schema

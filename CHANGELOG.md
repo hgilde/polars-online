@@ -25,6 +25,25 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Removed
 
+- **The expression plugin is gone: `pl.col("y").online.<model>(...)`,
+  `po.online`, and `InMemoryExpressionWarning` with it.** It read every row by
+  construction -- polars hands a stateful user expression its whole column in
+  either engine -- so it was the one surface that could not stream, and it
+  warned on every use to say so. Everything it did, the bank and the plan do
+  without the warning: features that were expressions become columns computed
+  before the call, and `.over(group)` becomes the spec's `group`.
+  **What it cost the wheel, measured rather than assumed.** The plugin needed
+  `pyo3-polars`'s `derive` feature, which turns on `polars-plan/python`, which
+  only `polars-lazy/python` propagates to `polars-mem-engine` -- so `derive`
+  was why `lazy` was there too. With the plugin gone, `cargo check -p online-py`
+  builds clean without either, and the extension no longer asks pyo3-polars for
+  the query engine. `online-polars` still does, for the runner the command line
+  uses.
+  About thirty tests went with it. They asserted expression-equals-bank, but
+  both entry points call the same `Bank::fit_predict` in Rust, so what they
+  checked was the plugin's column packing, not any model's arithmetic; each
+  model keeps its own bank tests and, for five of them, its numpy oracle.
+
 - **`polars_online.run` is gone; the `online` command line keeps the runner.**
   The runner's Python entry point built its chunk iterator with py-polars and
   handed the frames to Rust, so it duplicated what `ModelBank` and

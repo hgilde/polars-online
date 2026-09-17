@@ -1,7 +1,6 @@
 """The keyword parameters of every spec, as ``TypedDict`` classes (PEP 692).
 
-The builders in ``_spec.py`` take the shared parameters as ``**common`` and the
-expression namespace in ``_expr.py`` takes everything as ``**kwargs``; with
+The builders in ``_spec.py`` take the shared parameters as ``**common``; with
 ``**kwargs: Any`` an editor shows nothing and a typo is found at runtime.
 Annotating them as ``Unpack[...]`` of the classes below gives completion and
 type checking without changing a call (docs/IMPROVEMENTS.md U4).
@@ -47,10 +46,13 @@ __all__ = [
 
 
 class ExprKwargs(TypedDict, total=False):
-    """The parameters every model shares, as the expression namespace takes
-    them: ``_common``'s keywords minus what the expression itself supplies
-    -- the target is the calling column, the features are the method's own
-    argument, and grouping is ``.over(group)``."""
+    """The parameters every model shares, minus ``group`` and ``group_close``.
+
+    The base every builder's class inherits through :class:`CommonKwargs`. The
+    name is historical: it was the set the expression namespace took, before
+    that namespace was removed, and it survives as the shared base because ten
+    classes are built on it.
+    """
 
     add_intercept: bool
     clock: str | None
@@ -83,8 +85,7 @@ class ExprKwargs(TypedDict, total=False):
 
 class CommonKwargs(ExprKwargs, total=False):
     """What the builders take as ``**common``: the above plus the group and
-    its close policy. The expression namespace has neither -- it groups with
-    ``.over()``, which has no end-of-group signal to close on."""
+    its close policy."""
 
     group: str | None
     group_close: str | None

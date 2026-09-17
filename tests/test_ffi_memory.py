@@ -122,37 +122,6 @@ class TestNothingLeaksAcrossTheBoundary:
         df = frame()
         assert_plateaus(lambda: po.ModelBank([SPEC]).fit_predict(df))
 
-    def test_expression_plugin(self):
-        df = frame()
-        assert_plateaus(
-            lambda: df.with_columns(
-                pl.col("y").online.ewridge(features=["x0", "x1"], halflife=50.0, min_periods=2.0)
-            )
-        )
-
-    def test_plugin_over_groups(self):
-        """The longest ramp of any case here, and the reason the primitive
-        finds the plateau rather than assuming one.
-
-        Since the groups run across polars' thread pool (docs/IMPROVEMENTS.md
-        P1) every worker thread grows its own arena, and that takes ~600
-        iterations to level off rather than 40: measured 10 → 5 → 4 → 0
-        KB/iter over successive blocks, then flat or falling. This test used
-        to say so by passing ``warmup=600`` while every other caller took the
-        default of 40 -- a workaround that was right here and silently wrong
-        everywhere else, which is what `ubuntu-latest` found on 2026-09-08.
-        `assert_plateaus` now walks to the plateau for all of them, so there
-        is nothing to pass.
-        """
-        df = frame().with_columns(g=pl.Series(np.arange(1500) % 50))
-        assert_plateaus(
-            lambda: df.with_columns(
-                pl.col("y")
-                .online.ewridge(features=["x0"], halflife=50.0, min_periods=2.0)
-                .over("g")
-            )
-        )
-
     def test_multi_chunk_input(self):
         """`SeriesExport` carries `arrays: **ArrowArray` plus a length, so a
         chunked Series exports one ArrowArray per chunk. Each needs releasing."""
@@ -178,21 +147,6 @@ class TestNothingLeaksAcrossTheBoundary:
         def raises():
             with pytest.raises(ValueError, match="has dtype cat; it must be numeric"):
                 po.ModelBank([SPEC]).fit_predict(bad)
-
-        assert_plateaus(raises)
-
-    def test_the_plugin_error_path_still_releases(self):
-        """The same question for the other FFI path, where it is sharper: the
-        engine has already exported the inputs when our plugin returns an
-        error, so releasing them is the loader's job on a path that only runs
-        when something has gone wrong."""
-        bad = frame().with_columns(c=pl.col("x1").cast(pl.String).cast(pl.Categorical))
-
-        def raises():
-            with pytest.raises(pl.exceptions.ComputeError, match="it must be numeric"):
-                bad.with_columns(
-                    pl.col("y").online.ewridge(features=["c"], halflife=50.0, min_periods=2.0)
-                )
 
         assert_plateaus(raises)
 
@@ -333,30 +287,6 @@ class TestNothingCrashes:
                                    schema={"x0": pl.Float64, "y": pl.Float64})
             for _ in range(50):
                 bank.fit_predict(allnull)
-        """)
-
-    def test_interleaved_banks_and_plugin(self):
-        """Both FFI paths alive at once, each holding exports from the other."""
-        run_isolated("""
-            import gc
-            import numpy as np, polars as pl, polars_online as po
-            rng = np.random.default_rng(3)
-            spec = po.spec.ewridge("m", targets=["y"], features=["x0"],
-                                   halflife=20.0, min_periods=2.0)
-            banks = [po.ModelBank([spec]) for _ in range(4)]
-            held = []
-            for i in range(120):
-                df = pl.DataFrame({"x0": rng.standard_normal(250)})
-                df = df.with_columns(y=pl.col("x0"))
-                held.append(banks[i % 4].fit_predict(df))
-                held.append(df.with_columns(
-                    pl.col("y").online.ewridge(features=["x0"], halflife=20.0,
-                                               min_periods=2.0)))
-                if len(held) > 8:
-                    held.pop(0); held.pop(0)
-                if i % 10 == 0:
-                    gc.collect()
-            assert len(held) > 0
         """)
 
     def test_pickled_bank_survives_a_round_trip(self):

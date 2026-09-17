@@ -1,7 +1,6 @@
-//! Python bindings: the `ModelBank` class and the `online` expression
-//! namespace plugin (docs/PLAN.md §6 -- in-memory only; the Python side warns
-//! on every use). Specs cross the boundary as JSON (Python dicts are
-//! serialized by the thin wrapper in `python/polars_online/`).
+//! Python bindings: the `ModelBank` class. Specs cross the boundary as JSON
+//! (Python dicts are serialized by the thin wrapper in
+//! `python/polars_online/`), and frames cross on the Arrow C Data Interface.
 
 use online_polars::{Bank, GroupKey, Spec};
 use polars::prelude::PolarsError;
@@ -27,11 +26,6 @@ use pyo3_polars::{PyDataFrame, PySeries};
 /// nor return pages to the first.
 #[global_allocator]
 static ALLOC: pyo3_polars::PolarsAllocator = pyo3_polars::PolarsAllocator::new();
-
-/// The expression namespace plugin (docs/PLAN.md section 6). Polars hands it
-/// the whole column in either engine, so `python/polars_online/_expr.py`
-/// warns on every use and points at `lf.online.fit_predict` for a stream.
-mod expr;
 
 /// Parse a spec (or a list of them) from the JSON the Python builders emit.
 ///

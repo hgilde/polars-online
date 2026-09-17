@@ -98,24 +98,3 @@ class TestRls:
         row = out.row(3, named=True)["m"]
         assert row["pred_y0"] is not None
         assert row["resid_y0"] is None
-
-    def test_expression_equals_bank(self):
-        df, _ = synthetic(seed=23, n_groups=2, n_rows=120, k=2, null_frac=0.0)
-        kw = dict(clock="t", halflife=HL, max_dclock=MAXD, weight="w", ridge=0.5, min_periods=5.0)
-        bank = (
-            po.ModelBank(
-                [po.spec.rls("m", targets=["y0"], features=["x0", "x1"], group="group", **kw)]
-            )
-            .fit_predict(df)
-            .select("m")
-            .unnest("m")
-        )
-        expr = df.select(pl.col("y0").online.rls(features=["x0", "x1"], **kw).over("group")).unnest(
-            "y0"
-        )
-        for c in bank.columns:
-            if c.startswith("coef"):
-                continue
-            x, y = bank[c].to_numpy().astype(float), expr[c].to_numpy().astype(float)
-            nan = np.isnan(x) & np.isnan(y)
-            assert (nan | (x == y)).all(), c

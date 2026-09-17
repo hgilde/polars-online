@@ -139,17 +139,6 @@ def test_chunk_invariance():
     assert one.select(keep).equals(many.select(keep), null_equal=True)
 
 
-def test_expression_equals_bank():
-    df = _linear(n=400, seed=9, noise=0.1)
-    spec = _spec()
-    one = po.ModelBank([spec]).fit_predict(df).select("m").unnest("m")
-    keep = [c for c in one.columns if not c.startswith("coef")]
-    expr = df.select(
-        pl.col("y0").online.pa(features=["x0", "x1"], halflife=float("inf"), min_periods=10.0)
-    ).unnest("y0")
-    assert one.select(keep).equals(expr.select(keep), null_equal=True)
-
-
 def test_save_load(tmp_path):
     df = _linear(n=400, seed=10, noise=0.1)
     spec = _spec()

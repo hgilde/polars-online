@@ -548,33 +548,6 @@ call that finds it busy on another thread raises `RuntimeError` rather
 than interleave. `predict` learns nothing and may run from any number of
 threads.
 
-### The expression form (in memory only)
-
-For a frame that is already in memory, the shortest way to write a model is
-as a Polars expression:
-
-```python
-out = df.with_columns(
-    pl.col("y").online.ewridge(
-        features=["x0", "x1", pl.col("y").shift(1).alias("y_lag")],   # features may be expressions
-        clock="t", halflife=600.0, max_dclock=300.0,
-    ).over("group").alias("fit")            # evaluated per group: a lag never crosses a group boundary
-)
-```
-
-This form reads all of its input into memory at once — putting it inside a
-lazy query does not change that — and every call warns with
-[`polars_online.InMemoryExpressionWarning`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.InMemoryExpressionWarning) to say so. On a frame
-that fits, that is fine, and one line says so:
-
-```python
-import warnings
-
-warnings.filterwarnings("ignore", category=po.InMemoryExpressionWarning)
-```
-
-[`po.online(pl.col("y"))`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.online) is the same thing as a plain function.
-
 ### Outside a live Python process
 
 A scheduled job, or a deployment with no Python at all, runs the same bank
@@ -2215,7 +2188,6 @@ form. Measured as the most memory the process ever held, on one file of
 |---|---:|---:|---|
 | `lf.online.fit_predict([spec])` | 0.90 GB | 1.35 GB | the bank inside a query |
 | `for chunk in lf.collect_batches(): bank.fit_predict(chunk)` | 0.80 GB | 1.24 GB | your own loop |
-| `pl.col("y").online.ewridge(...)` in `with_columns` | | 7.3 GB | the expression: every row at once |
 
 [docs/RUNNER.md](docs/RUNNER.md) has the same row for the command line:
 flat too, at 0.95 / 0.73 GB and 1.41 / 0.75 GB.
@@ -2305,7 +2277,6 @@ state file holds them all. Where the parallelism comes from:
 | specs | eight single-group specs in one bank run in 130 ms against 515 ms one at a time |
 | halflives | each halflife in a grid is its own set of running sums, and the instances of a stream run alongside each other; ridge and feature-set grids share one set of sums and are expanded at solve time, so they need no thread |
 | Python | Python's global lock is released while a chunk is in the bank, so a Python reader thread can run ahead of `ModelBank.fit_predict` |
-| the expression form | under `.over("group")`, Polars runs the groups through its own pool: 12.2M rows/s at 1000 groups |
 
 Thread count is `POLARS_ONLINE_MAX_THREADS` for the bank's pool and
 `POLARS_MAX_THREADS` for Polars' readers and writers; unset, each is one
@@ -2470,28 +2441,25 @@ requirement is a range, because the two copies never meet. The floor is
 `LazyFrame.collect_batches`, which `lf.online.fit_predict` and the
 file-to-file runner read with and py-polars added in 1.34.0; the whole
 suite passes on 1.34.0, 1.38.1, 1.44.1 and the 2.0 release candidate with
-identical numbers. `ModelBank` and the expression form alone work from
-1.28.1. The pins are asserted by a test; the matrix is in
+identical numbers. `ModelBank` alone works from 1.28.1. The pins are asserted by a test; the matrix is in
 [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md).
 
 ### Which interfaces carry a promise
 
-Polars supports three, and only one carries a guarantee:
+This library uses two of Polars' extension points, and neither carries a
+guarantee:
 
-- the **expression plugin** — the supported path, with a negotiated handshake;
 - **pyo3-polars' extension types** (`ModelBank`) — provided "for
   convenience", with no guarantee beyond the latest definitions working for
   the latest Polars;
 - the **IO plugin** (`lf.online.fit_predict`) — documented, but `@unstable`
   in py-polars.
 
-The two that work a chunk at a time are the two without a promise, so a
-break on a new Polars is expected maintenance, not a surprise. A mismatch
-is an error, not a crash: `ModelBank` and the expression plugin move data
-across the boundary through the Arrow C Data Interface, the plugin loader
-negotiates its ABI and refuses a major it does not know, and a Polars
-without the two private methods `ModelBank` reads fails with a clean
-`AttributeError` before any data moves.
+Both of them stream, so a break on a new Polars is expected maintenance, not
+a surprise. A mismatch is an error, not a crash: `ModelBank` moves data across
+the boundary through the Arrow C Data Interface, and a Polars without the two
+private methods it reads fails with a clean `AttributeError` before any data
+moves.
 
 ### How the pin moves
 

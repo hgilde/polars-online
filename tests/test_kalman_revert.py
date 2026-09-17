@@ -567,27 +567,6 @@ class TestPlumbing:
                 .equals(alone.select(keep), null_equal=True)
             ), g
 
-    def test_expression_equals_bank(self):
-        df, _ = synthetic(seed=111, n_groups=2, n_rows=300, k=3, null_frac=0.0)
-        one = po.ModelBank([self._spec()]).fit_predict(df).select("m").unnest("m")
-        keep = [c for c in one.columns if not c.startswith("coef")]
-        with pytest.warns(po.InMemoryExpressionWarning):
-            expr = df.select(
-                pl.col("y0")
-                .online.kalman(
-                    features=["x0", "x1", "x2"],
-                    coef_halflife=100.0,
-                    halflife=500.0,
-                    min_periods=20.0,
-                    clock="t",
-                    max_dclock=MAXD,
-                    weight="w",
-                    revert_halflife=[INF, 40.0, 40.0, 10.0],
-                )
-                .over("group")
-            ).unnest("y0")
-        assert one.select(keep).equals(expr.select(keep), null_equal=True)
-
     def test_lazy_plan_equals_bank(self):
         df, _ = synthetic(seed=112, n_groups=2, n_rows=300, k=3, null_frac=0.0)
         spec = self._spec()

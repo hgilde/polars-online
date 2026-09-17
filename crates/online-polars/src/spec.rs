@@ -1246,8 +1246,8 @@ impl ModelKind {
 
     /// The column a model with no target reads from the targets slot, when
     /// the spec names one: `bocpd`'s `hazard_col` and `hmm`'s `exog_tvtp`.
-    /// It fills `targets` ([`Spec::fill_defaults`]) and is packed by the
-    /// expression plugin as a target is (review 2026-09-12, C20, S24).
+    /// It fills `targets` ([`Spec::fill_defaults`]) so the column is read
+    /// from the targets slot (review 2026-09-12, C20, S24).
     pub fn targets_slot_column(&self) -> Option<&str> {
         match self {
             ModelKind::Bocpd { hazard_col, .. } => hazard_col.as_deref(),
@@ -1342,8 +1342,8 @@ impl ModelKind {
     /// `kmeans`, `micro`, `deco`, `rcov`, `hmm`, `corrchange` and `bocpd`,
     /// the list `_spec.py`'s `UNSUPERVISED` keeps too. Their `targets` mirror
     /// `features[0]` for plumbing, so a target that is also a feature is not
-    /// a leak for them, and the expression plugin packs no target for them
-    /// -- except the column [`Self::targets_slot_column`] names.
+    /// a leak for them -- except the column [`Self::targets_slot_column`]
+    /// names, which is read as a target is.
     pub fn is_unsupervised(&self) -> bool {
         matches!(
             self,
@@ -1851,10 +1851,10 @@ impl Spec {
     /// defaults it may leave out ([`Self::fill_defaults`]), its own rules
     /// ([`Self::validate`]) and its models' (`build_models`, which builds each
     /// instance and drops it). Every door a spec comes in by -- the bank, a
-    /// run config, the builders' check, `output_fields`, `output_index`,
-    /// `coef_fields` and the expression plugin -- goes through this, so a
-    /// spec is accepted or refused alike at each. They met one, two or all
-    /// three of the steps, by door (review 2026-09-12, S25).
+    /// run config, the builders' check, `output_fields`, `output_index` and
+    /// `coef_fields` -- goes through this, so a spec is accepted or refused
+    /// alike at each. They met one, two or all three of the steps, by door
+    /// (review 2026-09-12, S25).
     pub fn check(&mut self) -> Result<(), String> {
         self.fill_defaults();
         self.validate()?;
