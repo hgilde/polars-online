@@ -193,11 +193,14 @@ class OrderNotGuaranteedWarning(UserWarning):
     ``unique`` (the streaming engine does not honour its ``maintain_order``), or
     a sort before the bank.
 
-    Best-effort by design. The plan is read through ``LazyFrame.serialize``,
-    a format polars has deprecated, and a plan polars cannot serialize -- one
-    already holding a bank, for instance -- is let through in silence: the
-    inspection never fails a run. For a plan whose order is fixed by other
-    means, ``warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning)``.
+    Best-effort by design. The plan's ``explain`` text is read first, and only
+    when it names a join, an aggregation or a ``unique`` is the plan read
+    through ``LazyFrame.serialize`` -- a format polars has deprecated -- and
+    walked. A plan polars cannot serialize is let through in silence: one
+    already holding a bank, for instance, so a join stacked *above* such a
+    plan is not reported, on any version. The inspection never fails a run.
+    For a plan whose order is fixed by other means,
+    ``warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning)``.
 
     **Not raised by** :meth:`ModelBank.fit` **when every spec is an accumulator
     with no decay** -- ``ewridge``, ``rls``, ``huber`` or ``lasso`` at
@@ -336,9 +339,11 @@ def _walk(node: Any, found: list[str]) -> None:
 #: warned about, silently, which is the worst shape this code can fail in, so
 #: ``test_order_hazards.py`` fails if the two ever diverge. ``Sort`` is absent
 #: on purpose: it ends the walk rather than reporting anything, so a plan whose
-#: only node is a sort has no hazard to find. Checked across every join variant
-#: (inner, left, right, full, semi, anti, cross), ``group_by`` and ``unique``:
-#: each carries its marker, and a plan with no hazard carries none.
+#: only node is a sort has no hazard to find. Checked, filter against raw walk,
+#: across every join form -- the seven ``how=`` variants plus ``join_asof`` and
+#: ``join_where`` -- and ``group_by``, ``group_by_dynamic``, ``rolling``,
+#: three ``unique`` forms and ``merge_sorted``: no disagreement in any, each
+#: hazard carries its marker, and a plan with no hazard carries none.
 _HAZARD_TAGS: dict[str, str] = {
     "Join": "JOIN",
     "GroupBy": "AGGREGATE",
@@ -370,12 +375,15 @@ def _order_hazards(lf: pl.LazyFrame, plan_text: str | None = None) -> list[str]:
     read first as a filter: no hazard marker in it means no node this reports,
     so the deprecated ``serialize(format="json")`` is never touched -- which on
     a 200-column plan is 2.13 ms saved, and on any plan is one less use of a
-    format polars has said it is removing. A plan that cannot be explained
-    falls through to the JSON path rather than being skipped, so the filter can
-    only ever make the check cheaper, never blinder."""
+    format polars has said it is removing. A plan that cannot be explained, or
+    that explains to nothing, falls through to the JSON path rather than being
+    skipped, so the filter can only ever make the check cheaper, never blinder.
+    (``if plan_text``, not ``is not None``: an empty string would otherwise
+    read as "inspected, no markers" and skip a real hazard -- unreachable
+    today, since polars never explains a plan to nothing, and closed anyway.)"""
     if plan_text is None:
         plan_text = _plan_text(lf)
-    if plan_text is not None and not any(m in plan_text for m in _HAZARD_TAGS.values()):
+    if plan_text and not any(m in plan_text for m in _HAZARD_TAGS.values()):
         return []
     try:
         with warnings.catch_warnings():

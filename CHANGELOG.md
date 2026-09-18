@@ -7,6 +7,17 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+## [0.7.4] — 2026-09-18
+
+A patch: `fit(lf)` reads its plan once and skips the deprecated JSON scan
+where nothing in the plan can match, 2.3× faster on a small fit. No model
+returns a different number than it did in 0.7.3, the state schema is
+unchanged, and no spec changed. The review before this tag found no live
+defect; one latent blind path — an empty `explain` text would have been read
+as "no markers" and skipped a real hazard, though polars never produces one
+— is closed and pinned, and the join-variant test now covers `right`, `full`,
+`join_asof` and `join_where` as the code comment already claimed.
+
 ### Changed
 
 - **A plan is read once per run, and the deprecated JSON scan is skipped when

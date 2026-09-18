@@ -223,6 +223,38 @@ def test_every_join_variant_carries_its_marker(how, marker):
     assert _order_hazards(lf), "a join without maintain_order should still be a hazard"
 
 
+@pytest.mark.parametrize("form", ["right", "full", "asof", "where"])
+def test_the_other_join_forms_carry_the_marker_too(form):
+    """``right`` and ``full`` complete the ``how=`` set; ``join_asof`` and
+    ``join_where`` are separate calls that serialize to the same ``Join`` tag
+    the walk reports, so the test above cannot reach them by parameter.
+    Measured filter-against-raw-walk with no disagreement, and pinned so the
+    ``_HAZARD_TAGS`` comment has a test behind every form it names."""
+    from polars_online._frame import _order_hazards
+
+    other = right()
+    if form == "asof":
+        keyed = other.with_columns(t=pl.col("k").cast(pl.Float64)).drop("k")
+        lf = left().join_asof(keyed, on="t")
+    elif form == "where":
+        lf = left().join_where(other, pl.col("k") < pl.col("k_right"))
+    else:
+        lf = left().join(other, on="k", how=form)
+    assert "JOIN" in lf.explain(optimized=False)
+    assert _order_hazards(lf), f"join form {form!r} should still be a hazard"
+
+
+def test_an_empty_plan_text_falls_through_rather_than_skipping():
+    """The blind path the pre-tag review found: ``plan_text=""`` once read as
+    "inspected, no markers" and skipped the JSON walk, missing a real hazard.
+    polars never explains a plan to nothing, so it was unreachable -- but the
+    filter's contract is "never blinder", so it is closed here and pinned."""
+    from polars_online._frame import _order_hazards
+
+    lf = left().join(right(), on="k")
+    assert _order_hazards(lf, plan_text=""), "an empty explain must fall through to the walk"
+
+
 def test_a_plan_with_no_hazard_node_skips_the_json_read(monkeypatch):
     """The saving itself: a plan whose ``explain`` holds no marker must not
     touch ``serialize``, which is the deprecated format this avoids."""
