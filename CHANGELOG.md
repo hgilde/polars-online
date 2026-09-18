@@ -7,6 +7,14 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-09-18
+
+A patch: a plan that read a spent Arrow stream is reported now, rather than
+passing for a fit that learned nothing. No model returns a different number
+than it did in 0.7.0, the state schema is unchanged, and no spec changed —
+`ConsumedSourceWarning` is a diagnostic over what a bank already did, and the
+only public name this release adds.
+
 ### Fixed
 
 - **A plan that read a spent Arrow stream no longer passes for a fit.** An
