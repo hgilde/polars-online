@@ -186,6 +186,76 @@ def test_a_plan_already_holding_a_bank_is_not_readable_and_still_runs():
     assert bank.rows_seen() == 9
 
 
+def test_the_prefilter_and_the_walk_cannot_drift_apart():
+    """``_order_hazards`` skips the deprecated JSON read when ``explain``'s
+    text holds none of ``_HAZARD_TAGS``' markers. That is only safe while the
+    table lists every tag ``_walk`` reports: one handled there and missing
+    here would stop being warned about **silently**, which is the worst way
+    this code can fail. ``Sort`` is excluded because it ends the walk rather
+    than reporting anything."""
+    import inspect
+    import re
+
+    from polars_online import _frame
+
+    handled = set(re.findall(r'tag == "(\w+)"', inspect.getsource(_frame._walk))) - {"Sort"}
+    assert handled, "the walk's tags could not be read; this guard is not checking anything"
+    assert handled == set(_frame._HAZARD_TAGS), (
+        f"_walk reports {sorted(handled)} but _HAZARD_TAGS lists "
+        f"{sorted(_frame._HAZARD_TAGS)}; add the missing tag's explain marker, "
+        "or the pre-filter will skip plans that should warn"
+    )
+
+
+@pytest.mark.parametrize(
+    ("how", "marker"),
+    [("inner", "JOIN"), ("left", "JOIN"), ("semi", "JOIN"), ("anti", "JOIN"), ("cross", "JOIN")],
+)
+def test_every_join_variant_carries_its_marker(how, marker):
+    """The pre-filter rests on ``explain`` naming each hazard node. Checked
+    across the join variants because one unnamed variant would be skipped
+    without a warning and without a failure."""
+    other = right()
+    lf = left().join(other, on=None if how == "cross" else "k", how=how)
+    from polars_online._frame import _order_hazards
+
+    assert marker in lf.explain(optimized=False)
+    assert _order_hazards(lf), "a join without maintain_order should still be a hazard"
+
+
+def test_a_plan_with_no_hazard_node_skips_the_json_read(monkeypatch):
+    """The saving itself: a plan whose ``explain`` holds no marker must not
+    touch ``serialize``, which is the deprecated format this avoids."""
+    from polars_online import _frame
+
+    # A `BaseException`, deliberately: `_order_hazards` wraps the JSON path in
+    # `except Exception`, so an `AssertionError` raised here would be swallowed
+    # and the test would pass whether or not the filter worked.
+    class _SerializeCalled(BaseException):
+        pass
+
+    def forbidden(self, *args, **kwargs):
+        raise _SerializeCalled("serialize was called for a plan with no hazard marker")
+
+    monkeypatch.setattr(pl.LazyFrame, "serialize", forbidden)
+    lf = left().filter(pl.col("t") > 0).select("t", "x0", "y")
+    assert _frame._order_hazards(lf) == []
+    quiet(lambda: po.ModelBank([SPEC]).fit(lf))
+
+
+def test_a_plan_that_cannot_be_explained_still_reads_the_json(monkeypatch):
+    """Fail open: if ``explain`` raises, the filter must fall through to the
+    JSON path rather than skip the check, so it can only make the inspection
+    cheaper, never blinder."""
+    from polars_online import _frame
+
+    monkeypatch.setattr(
+        pl.LazyFrame, "explain", lambda self, **kw: (_ for _ in ()).throw(RuntimeError("no plan"))
+    )
+    lf = left().join(right(), on="k")
+    assert _frame._order_hazards(lf), "a hazard must still be found when explain fails"
+
+
 def test_the_warning_is_a_user_warning_shown_by_default():
     """A ``DeprecationWarning`` is hidden outside ``__main__``, i.e. in the
     pipeline module where this matters; a ``UserWarning`` is shown."""

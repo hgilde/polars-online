@@ -2189,3 +2189,63 @@ moments with itself admitted, read off the accumulator as one more Welford
 step per feature without writing it back — and `sgd_bench` measured
 20.7 µs a row before it and 21.3 after at `k = 10,000`, within the
 run-to-run spread (the table above is the earlier run).
+
+## 21. What inspecting the plan costs `fit(lf)` (2026-09-18)
+
+Asked whether `fit` had become slower on small inputs. It had not. What is
+true is structural, and it has been true since `fit` existed.
+
+**The bisect.** Each tag's `python/polars_online/` run against **one**
+compiled extension, so only the Python changed; 100 rows, `min` of 50 runs of
+20 calls, a fresh `ModelBank` per call.
+
+| version | `fit(DataFrame)` | `fit(LazyFrame)` | plan overhead |
+|---|---:|---:|---:|
+| v0.6.0 | — | — | `ModelBank.fit` did not exist |
+| v0.7.0 | 0.102 ms | 0.371 ms | +0.269 ms |
+| v0.7.1 | 0.103 ms | 0.381 ms | +0.278 ms |
+| v0.7.2 | 0.102 ms | 0.376 ms | +0.274 ms |
+| v0.7.3 | 0.102 ms | 0.382 ms | +0.280 ms |
+| **after** | 0.104 ms | **0.164 ms** | **+0.060 ms** |
+
+0.371 → 0.382 across four releases is ~3% drift, inside the run-to-run
+spread, and `fit(DataFrame)` never moved. `ConsumedSourceWarning`'s
+`explain` call, added in 0.7.1 and predicted to cost ~0.1 ms, cost about
+0.01: measuring `explain` alone had caught first-call warmup, not the steady
+state. **`fit` is new in 0.7.0**, so there is no earlier number; a caller who
+moved to `fit(lf)` from `fit(df)` or `fit_predict_batches` meets this cost
+for the first time and reads it as a slowdown.
+
+**What it actually is.** `fit(lf)` inspected the plan twice — `explain` for
+the Python-scan test, `serialize(format="json")` plus a walk for the order
+hazards — a fixed ~0.27 ms against ~0.10 ms of fitting. On a small input the
+inspection *is* the call: 3.7× `fit(df)`, unchanged since 0.7.0.
+
+**The fix is not to make the scan faster.** Reading `explain` once and
+sharing it, then using its text as a filter — no `JOIN`, `AGGREGATE` or
+`UNIQUE` means no node the walk can report — skips the JSON entirely on the
+plans that have no hazard, which is most of them. Sharing is what makes it a
+saving: reading `explain` twice costs more than the JSON scan it avoids on a
+small plan (0.105 ms against 0.074 ms).
+
+The JSON path's own shape says the same thing. By plan, `serialize` /
+`json.loads` / walk:
+
+| plan | JSON bytes | serialize | loads | walk | total |
+|---|---:|---:|---:|---:|---:|
+| trivial scan | 2,176 | 0.190 ms | 0.024 | 0.037 | 0.074 ms |
+| with a join | 3,876 | 0.017 ms | 0.033 | 0.060 | 0.115 ms |
+| 50 `with_columns` | 13,106 | 0.027 ms | 0.061 | 0.123 | 0.210 ms |
+| 200-column schema | 74,337 | 0.137 ms | 0.667 | 1.280 | **2.13 ms** |
+
+It scales with schema width, and the **walk** dominates there (1.28 ms of
+2.13), not the serialization — so trimming the serializer would have been
+optimising the wrong half. The filter removes all of it: `explain` on that
+200-column plan is 0.001 ms, because a plain frame's explain is one line
+whatever the width while `serialize` dumps the whole schema.
+
+**Measure the case the user has, not the one that flatters.** The first pass
+of this used a `lam=1.0` spec and reported no gain — that spec is order-free,
+so since 0.7.2 it already skipped the order check, and the benchmark was
+measuring a fast path built two releases earlier rather than the common one.
+A `halflife` spec never qualifies, and that is where the 2.3× is.

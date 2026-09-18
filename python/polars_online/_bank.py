@@ -385,6 +385,7 @@ class ModelBank:
         from polars_online._frame import (
             _closed_path,
             _order_free,
+            _plan_text,
             _warn_if_order_unspecified,
         )
 
@@ -392,6 +393,16 @@ class ModelBank:
             msg = f"chunk_rows must be at least 1, got {chunk_rows}"
             raise ValueError(msg)
         path = _closed_path(closed_groups, self._specs)
+        # Bound as a narrowed local rather than an `is_plan` flag: a bool does
+        # not carry the type, so mypy could not see that the three calls below
+        # get a `LazyFrame`. Only a frame or an iterator of frames reaches
+        # `None`, and neither has a plan to read.
+        plan = batches if isinstance(batches, pl.LazyFrame) else None
+        # Both checks below read the plan through `explain`. Read it once and
+        # hand it to both: reading it twice costs more than the JSON scan the
+        # order check skips on a small plan (0.105 ms against 0.074 ms), so
+        # sharing is what makes the skip a saving rather than a wash.
+        plan_text = _plan_text(plan) if plan is not None else None
         # The order a plan delivers is the model, so a plan is inspected
         # before a row moves. The exception is `fit`, whose product is the
         # state alone: over accumulator-only specs with no decay the same
@@ -399,8 +410,8 @@ class ModelBank:
         # there would be a false positive. `fit_predict_batches` never
         # qualifies, because it hands back predictions and every prediction
         # is out-of-sample -- reordering moves all of them.
-        if isinstance(batches, pl.LazyFrame) and not (what == "fit" and _order_free(self._specs)):
-            _warn_if_order_unspecified(batches, f"ModelBank.{what}")
+        if plan is not None and not (what == "fit" and _order_free(self._specs)):
+            _warn_if_order_unspecified(plan, f"ModelBank.{what}", plan_text)
         # A plan whose source is a Python scan may be reading a single-use
         # Arrow stream, which yields nothing the second time and says nothing
         # about it. Decided here, before a row moves, because `explain` must
@@ -408,9 +419,7 @@ class ModelBank:
         from polars_online._frame import _is_python_scan
 
         guard = (
-            f"ModelBank.{what}"
-            if isinstance(batches, pl.LazyFrame) and _is_python_scan(batches)
-            else None
+            f"ModelBank.{what}" if plan is not None and _is_python_scan(plan, plan_text) else None
         )
         return self._feed(self._chunks(batches, chunk_rows), path, guard)
 

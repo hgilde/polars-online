@@ -251,7 +251,7 @@ class ConsumedSourceWarning(UserWarning):
 _PYTHON_SCAN = re.compile(r"PYTHON(?:\[[^\]]*\])?\s+SCAN")
 
 
-def _is_python_scan(lf: pl.LazyFrame) -> bool:
+def _is_python_scan(lf: pl.LazyFrame, plan_text: str | None = None) -> bool:
     """Whether ``lf``'s source is a Python scan, which is what an Arrow C
     stream and this package's own plan form both are.
 
@@ -259,11 +259,11 @@ def _is_python_scan(lf: pl.LazyFrame) -> bool:
     consume the very stream this is here to protect (checked: a plan still
     yields its rows after being explained). Any failure to read the plan is
     "not a python scan", so the guard never turns a working run into an
-    error."""
-    try:
-        return bool(_PYTHON_SCAN.search(lf.explain(optimized=False)))
-    except Exception:  # a plan that cannot be explained is not one to guard
-        return False
+    error. ``plan_text`` is that output when the caller already has it, so a
+    run reads the plan once for this and the order check together."""
+    if plan_text is None:
+        plan_text = _plan_text(lf)
+    return bool(plan_text and _PYTHON_SCAN.search(plan_text))
 
 
 def _user_stacklevel() -> int:
@@ -328,11 +328,55 @@ def _walk(node: Any, found: list[str]) -> None:
         _walk(value, found)
 
 
-def _order_hazards(lf: pl.LazyFrame) -> list[str]:
+#: The plan tags :func:`_walk` reports, each with the substring polars'
+#: ``explain`` prints for it. Two things read this: the walk, which is the
+#: authority on what counts as a hazard, and the pre-filter below, which skips
+#: the deprecated JSON read when none of these can be in the plan. **They must
+#: not drift apart** -- a tag the walk handles but this omits would stop being
+#: warned about, silently, which is the worst shape this code can fail in, so
+#: ``test_order_hazards.py`` fails if the two ever diverge. ``Sort`` is absent
+#: on purpose: it ends the walk rather than reporting anything, so a plan whose
+#: only node is a sort has no hazard to find. Checked across every join variant
+#: (inner, left, right, full, semi, anti, cross), ``group_by`` and ``unique``:
+#: each carries its marker, and a plan with no hazard carries none.
+_HAZARD_TAGS: dict[str, str] = {
+    "Join": "JOIN",
+    "GroupBy": "AGGREGATE",
+    "Distinct": "UNIQUE",
+}
+
+
+def _plan_text(lf: pl.LazyFrame) -> str | None:
+    """``explain`` once per run, for the two checks that read a plan.
+
+    Both :func:`_is_python_scan` and :func:`_order_hazards` want this text, and
+    reading it twice costs more than the JSON scan it saves on a small plan
+    (0.105 ms against 0.074 ms, measured) -- so a caller reads it once and
+    hands it to both. ``None`` when the plan cannot be explained, which every
+    reader treats as "no finding" rather than as an error."""
+    try:
+        return lf.explain(optimized=False)
+    except Exception:  # a plan that cannot be explained is not one to inspect
+        return None
+
+
+def _order_hazards(lf: pl.LazyFrame, plan_text: str | None = None) -> list[str]:
     """The nodes of ``lf`` whose output order is unspecified, each as a phrase
     naming the fix; ``[]`` when there are none -- or when the plan cannot be
     read, since this inspects a deprecated polars format and is best-effort by
-    design, never a reason for a run to fail."""
+    design, never a reason for a run to fail.
+
+    ``plan_text`` is ``explain``'s output when the caller already has it. It is
+    read first as a filter: no hazard marker in it means no node this reports,
+    so the deprecated ``serialize(format="json")`` is never touched -- which on
+    a 200-column plan is 2.13 ms saved, and on any plan is one less use of a
+    format polars has said it is removing. A plan that cannot be explained
+    falls through to the JSON path rather than being skipped, so the filter can
+    only ever make the check cheaper, never blinder."""
+    if plan_text is None:
+        plan_text = _plan_text(lf)
+    if plan_text is not None and not any(m in plan_text for m in _HAZARD_TAGS.values()):
+        return []
     try:
         with warnings.catch_warnings():
             # polars' own deprecation of the json format is the library's to
@@ -472,10 +516,11 @@ def _order_free(specs: Any) -> bool:
     return True
 
 
-def _warn_if_order_unspecified(lf: pl.LazyFrame, what: str) -> None:
+def _warn_if_order_unspecified(lf: pl.LazyFrame, what: str, plan_text: str | None = None) -> None:
     """Warn, naming ``what`` the caller called, when ``lf`` has a node whose
-    output order is not guaranteed."""
-    hazards = _order_hazards(lf)
+    output order is not guaranteed. ``plan_text`` is ``explain``'s output when
+    the caller already has it (see :func:`_plan_text`)."""
+    hazards = _order_hazards(lf, plan_text)
     if not hazards:
         return
     msg = (
@@ -505,12 +550,16 @@ def _source(
     # At build time, before anything runs: the order the plan will deliver is
     # decided here, and a caller should hear about it before the first chunk.
     called = f"lf.online.{getattr(step, '__name__', 'fit_predict')}"
-    _warn_if_order_unspecified(lf, called)
+    # One `explain` for both plan checks: the order hazards below and the
+    # Python-scan test further down. Reading it twice would cost more than the
+    # JSON scan the first one skips.
+    plan_text = _plan_text(lf)
+    _warn_if_order_unspecified(lf, called, plan_text)
     # Also decided here, off the plan as handed over: whether its source is a
     # Python scan, which is the shape `pl.scan_arrow_c_stream` has and so the
     # shape a single-use stream arrives in. Read now because `explain` must
     # see the caller's plan, and acted on below only if the run sees no rows.
-    python_scan = _is_python_scan(lf)
+    python_scan = _is_python_scan(lf, plan_text)
     rows = chunk_rows or _native.default_chunk_rows()
     save_path = _save_path(save_state)
     in_schema = lf.collect_schema()

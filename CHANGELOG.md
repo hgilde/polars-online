@@ -7,6 +7,45 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+### Changed
+
+- **A plan is read once per run, and the deprecated JSON scan is skipped when
+  nothing in it can be a hazard.** `fit(lf)` inspected the plan twice: once
+  through `explain` for `ConsumedSourceWarning`, and once through
+  `serialize(format="json")` for `OrderNotGuaranteedWarning`. The `explain`
+  text is now read once and handed to both, and it is read *first* as a
+  filter — a plan whose text holds no `JOIN`, `AGGREGATE` or `UNIQUE` cannot
+  contain a node the order walk reports, so the JSON is never touched.
+
+  Measured on a 100-row fit with a typical `halflife` spec: **0.382 ms →
+  0.164 ms**, the fixed plan overhead falling from +0.280 ms to +0.060 ms
+  (4.7×). Sharing the text is what makes this a saving rather than a wash —
+  reading `explain` twice would cost more than the JSON scan it avoids on a
+  small plan. On a 200-column schema the JSON path alone was 2.13 ms, of which
+  the walk, not the serialization, was 1.28 ms.
+
+  The stronger reason is durability, not speed: `serialize(format="json")` is
+  deprecated in polars, and most plans now never reach it.
+
+  The filter can only make the check cheaper, never blinder. A plan that
+  cannot be explained falls through to the JSON path rather than being
+  skipped, and `_HAZARD_TAGS` — the one table both the filter and the walk
+  read — is guarded by a test that fails if the walk ever reports a tag the
+  table omits, since such a drift would silently stop warning. Checked across
+  every join variant (inner, left, right, full, semi, anti, cross),
+  `group_by` and `unique`: each carries its marker, and a plan with no hazard
+  carries none.
+
+  **No regression preceded this.** Bisected across `v0.7.0`–`v0.7.3` by
+  running each tag's Python package against one compiled extension:
+  `fit(LazyFrame)` was 0.371, 0.381, 0.376, 0.382 ms — ~3% drift, inside
+  noise — and `fit(DataFrame)` flat at 0.102 ms throughout. `ModelBank.fit`
+  did not exist before 0.7.0, so there is nothing older to compare. What is
+  real is structural and has been true since `fit` was introduced: the plan
+  inspection is a fixed ~0.27 ms against ~0.10 ms of fitting, so on small
+  inputs `fit(lf)` has always cost several times `fit(df)`. That is the cost
+  this change removes.
+
 ## [0.7.3] — 2026-09-18
 
 A patch: the spent-stream guard reads polars 2.0's plan spelling as well as
