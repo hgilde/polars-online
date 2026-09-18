@@ -24,7 +24,8 @@ decisions there, not in chat.
 
 ```
 crates/online-core/    pure Rust models, NO polars dependency, exhaustively unit-tested
-crates/online-polars/  Rust-side integration: model bank over Polars DataFrames / parquet streams
+crates/online-polars/  Rust-side integration: the model bank over Arrow chunks (a polars adapter
+                       builds one from a frame), and the runner over parquet streams
 crates/online-cli/     binary: parquet in -> parquet out, config from TOML
 crates/online-py/      pyo3 + pyo3-polars: the Python ModelBank class
 python/polars_online/  Python package (thin wrappers, frame namespaces)

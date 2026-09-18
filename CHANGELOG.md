@@ -11,6 +11,19 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Documentation
 
+- **Every document reads as the code stands.** A sweep for what tasks 83, 85
+  and 86 and the 0.7.0 release had left behind: `docs/PLAN.md` §6 described
+  the expression plugin as shipping and is now the record of its removal and
+  the reason; `docs/STATE-WORKFLOW.md` presented `po.run` as a live surface in
+  its four-step guide, its table and its rules, and now carries a dated note
+  with the CLI and `ModelBank.fit(lf)` in its place; `docs/PERFORMANCE.md`'s
+  runner and memory sections say what their `po.run` and expression rows now
+  are; `runner.rs`'s doc comments no longer describe a Python caller; the
+  testing ledger's runner row cites the tests that exist rather than the
+  deleted `test_runner.py`; the extending guide no longer cites a deleted
+  helper; the version-pin examples say `~=0.7.0`; and CLAUDE.md's layout
+  calls the bank what it is. The ledgers -- this file, the enhancement and
+  improvement lists, the phrasing and review logs -- keep their history.
 - **The runner guide's shell examples are executed, not asserted.** Its
   Python block became a command-line invocation when the runner left Python
   (task 83), which left the guide with no runnable examples at all while the

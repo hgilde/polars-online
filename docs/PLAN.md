@@ -199,45 +199,42 @@ with the same clock as everything else. Output `pred` is a probability; `resid =
   row, session/clock reset policies honored by scoring a fresh model (ENHANCEMENTS E31); Rust
   CLI reads the same specs from TOML.
 
-## 6. Expression plugin (`online-py`) — in-memory only, warns since 2026-09-03
+## 6. Expression plugin (`online-py`) — removed in task 85, 2026-09-17
 
-`pyo3-polars` expression with `is_elementwise=False`, `returns_scalar=False`, one namespace
-`online` with one function per model. Runs a single spec over the full column it receives
-(so `.over(group)` gives per-group streams). Output dtype is a struct built from the spec.
-Grids are allowed but produce wide structs; the bank is the recommended surface for grids.
-The implementation is the bank itself: `_expr.py` packs every input into one struct (the
-polars path that spreads `.over` groups across threads), and `online_run` in
-`crates/online-py/src/expr.rs` unpacks it into a frame and runs `Bank::fit_predict` on it —
-so expression ≡ bank by construction.
+There was a third surface: a `pyo3-polars` expression with `is_elementwise=False`, one
+namespace `online` with one function per model, running a single spec over the full column
+it received (so `.over(group)` gave per-group streams), implemented as the bank itself so
+that expression ≡ bank by construction. It is gone — `crates/online-py/src/expr.rs`,
+`_expr.py`, `tests/test_expr.py`, the namespace, `po.online` and
+`InMemoryExpressionWarning` — and this section records why, because the reason is a fact
+about polars and not about this library.
 
-**Why it warns.** Polars hands a non-elementwise user expression its whole column: in the
-in-memory engine by definition, and in the streaming engine because a plugin lowers to a
-`columnar-function` node — collect the input, call once, re-emit. There is no way for a
-plugin to say "call me per morsel, in order, and let me keep state" (§11a, 2026-09-02). So
-`lf.with_columns(pl.col("y").online.ewridge(..)).sink_parquet(..)` measured 7.3 GB at 12M
-rows where `lf.online.fit_predict([spec]).sink_parquet(..)` measures 1.35 GB
-(`docs/PERFORMANCE.md` §11) — the same numbers, two memory profiles, and users read the
-expression as the natural form. The first answer (task 19 as first committed) was to
-take the expression out of the wheel behind a cargo feature; that left a user who wrote it with
-polars' bare `AttributeError: 'Expr' object has no attribute 'online'` and no pointer, and
-left the plugin's runtime tests skipped in CI. The answer that stands is to keep it and say
-so at the call site: every namespace method issues `polars_online.InMemoryExpressionWarning`
-(`_expr.py`, `_warn_in_memory`) with the reason, the plan to write instead, and the one-line
-filter for someone using it on a frame in memory on purpose. It is a `UserWarning`, shown by
-default from anywhere; a `DeprecationWarning` is hidden outside `__main__`, i.e. in exactly
-the pipeline module where it matters (`tests/test_expr.py` checks both facts in a
-subprocess). Nothing else changes: the plugin ships, `pl.Expr.online` is registered on
-import, `po.online` is exported, the tests run in every build, and the README shows the two
-forms side by side in its closing note. Nothing about the model needs the expression:
-the bank fans out over (spec × group) with rayon, so `group=` is the parallel path
-`.over(group)` is, and `df.online.fit_predict(specs)` is the in-memory call; what the
-expression adds is features as expressions (a lag under `.over` stays in its group) and the
-plugin ABI's MAJOR/MINOR handshake, the one polars stability guarantee we ride on
-(CLAUDE.md rule 13).
+**Why it could not stream.** Polars hands a non-elementwise user expression its whole
+column: in the in-memory engine by definition, and in the streaming engine because a plugin
+lowers to a `columnar-function` node — collect the input, call once, re-emit. There is no
+way for a plugin to say "call me per morsel, in order, and let me keep state" (§11a,
+2026-09-02). So `lf.with_columns(pl.col("y").online.ewridge(..)).sink_parquet(..)` measured
+7.3 GB at 12M rows where `lf.online.fit_predict([spec]).sink_parquet(..)` measures 1.35 GB
+(`docs/PERFORMANCE.md` §11): the same numbers, two memory profiles, and users read the
+expression as the natural form. From 2026-09-03 (task 19) it warned on every use to say so.
+A cargo-feature gate was tried first and reverted the same day — it handed users polars'
+bare `AttributeError` and left the plugin's runtime tests skipped in CI — and the warning
+was the answer that stood for two weeks. Once the plan form existed and streamed, a surface
+whose every use carried a warning against itself cost more than it bought, and it was
+removed rather than kept dormant. The build consequence was measured, not assumed:
+`pyo3-polars/derive` was the only reason the lazy engine was in the extension's features.
 
-**What would remove the warning.** A polars node that lets a user expression run per morsel,
-in order, with state — i.e. a streaming-engine contract for stateful UDFs. Until then the
-expression can only ever be the in-memory form, and the bank already is that.
+**Nothing the model needed went with it.** The bank fans out over (spec × group) on its own
+pool, so `group=` is the parallel path `.over(group)` was; `df.online.fit_predict(specs)` is
+the in-memory call; a feature that was an expression becomes a column computed before the
+call. What it alone offered was the plugin ABI's MAJOR/MINOR handshake, the one polars
+stability guarantee this library rode on. Its place in that story is the Arrow PyCapsule
+interface of `ModelBank.fit_predict_arrow` (task 86, CLAUDE.md rule 13), whose contract is
+Arrow's rather than polars' to change.
+
+**What would bring an expression form back.** A polars node that lets a user expression run
+per morsel, in order, with state — a streaming-engine contract for stateful UDFs. Until then
+an expression can only ever be the in-memory form, and the bank already is that.
 
 ## 7. Numerics
 

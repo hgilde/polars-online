@@ -10,11 +10,19 @@ that updates a `ModelBank` object, or takes one as `load_state` — was
 decided against: the file is the state's one form on the plan surface,
 and a bank object stays the loop's (§1, §3 B/E).
 
+**Read with one change since (task 83, 2026-09-17).** `po.run`, the Python
+runner this document names as a third surface, was removed: the command line
+`online` keeps the file-to-file runner, and in Python a plan goes to
+`ModelBank.fit(lf)` or `fit_predict_batches(lf)`, which chunk it themselves.
+Every measurement and decision below stands; where the text says `po.run`
+as a surface that exists, read the CLI for the file-to-file role and
+`ModelBank.fit(lf)` for the in-process one.
+
 ## The workflow, in four steps
 
 This is the part to read if you want to *use* the state workflow; the
 numbered sections after it are the research that decided it. Every surface —
-the plan, the eager frame, `ModelBank`, `po.run` and the CLI — uses the same
+the plan, the eager frame, `ModelBank` and the CLI — uses the same
 two words, `load_state` and `save_state`, and a state file is the same file
 whichever of them wrote it.
 
@@ -29,8 +37,8 @@ bank when the source has fed it its last row:
 
 The write is atomic — a reader sees the old file or the new one — and it
 happens only on a run that reaches the end: an error, or a plan that polars
-abandons, leaves the file as it was. `po.run("bank.toml", ...)` and the CLI
-do the same from a `save_state` in the TOML.
+abandons, leaves the file as it was. The CLI does the same from a
+`save_state` in the TOML.
 
 **2. Inspect it.** The file is a `ModelBank`: `po.ModelBank.load(path)` gives
 the object back, with `coef()` (the betas), `last_row()`, `summary()` and
@@ -40,8 +48,8 @@ for a store that is not a file.
 
 **3. Serve from it, learning nothing.** `lf.online.predict("ridge.state")`
 scores every row against the state as it stands and never updates it, so
-the same rows score the same way twice, on any thread count. `po.run(...,
-predict=True)` is the batch form; it refuses `save_state`.
+the same rows score the same way twice, on any thread count. `online
+--resume p --predict` is the file-to-file form; it refuses `--save-state`.
 
 **4. Learn on from it.** `lf.online.fit_predict(load_state="ridge.state",
 save_state="ridge.state")` resumes and replaces; the specs come from the
@@ -62,7 +70,7 @@ bounded memory *without* updating it; **(4)** load the state and update it
 with new data. The requirement is that these read naturally in the
 polars-native syntax, `lf.online.*`.
 
-Every step already exists on the `ModelBank`, `po.run` and CLI surfaces, and
+Every step already existed on the `ModelBank`, `po.run` and CLI surfaces, and
 steps (1), (3) and the load half of (4) exist on the plan surface. The one
 thing the plan surface cannot do is **let state out**: `lf.online.fit_predict`
 was made *pure* on purpose (ENHANCEMENTS E33, PLAN §11a) — a fresh bank per
@@ -80,17 +88,17 @@ whole chunk and trims the output), and `load_state` must be read when the
 plan is built, not when it runs. One thing cannot be had: the source does not
 learn whether the *query* succeeded, so a node after it failing still leaves
 the state written (polars drains the source first, in every engine); where
-"state only if the output landed" is required, `po.run` is that call
-and stays so.
+"state only if the output landed" is required, the CLI is that call
+and stays so (as `po.run` was, until task 83 removed it).
 
 ## 1. What existed before the decision, per step and surface
 
-| step | `ModelBank` | `po.run` / TOML / CLI | plan `lf.online.*` (and `df.online.*`, `po.fit_predict`) |
+| step | `ModelBank` | TOML / CLI (and `po.run`, until task 83) | plan `lf.online.*` (and `df.online.*`, `po.fit_predict`) |
 |---|---|---|---|
-| (1) fit online, bounded | `bank.fit_predict(chunk)` in a `collect_batches` loop; `fit_predict_batches(iter)` | `po.run(input=path\|lf\|df\|iter, output=path, specs=)` — polars reads in chunks, the bank fits, a writer thread writes; O(state + chunk) | `lf.online.fit_predict(specs).sink_parquet(..)` / `.collect_batches()` — O(chunk) |
+| (1) fit online, bounded | `bank.fit(lf)` / `fit_predict_batches(lf)`, which chunk the plan; or `fit_predict(chunk)` in a loop of your own | `online --config bank.toml` — polars reads in chunks, the bank fits, a writer thread writes; O(state + chunk) | `lf.online.fit_predict(specs).sink_parquet(..)` / `.collect_batches()` — O(chunk) |
 | (2) export state | `bank.save(path)` (atomic), `bank.save_bytes()`, `pickle`; inspect with `groups()`, `coef()`, `last_row()`, `summary()`, `describe()`, `gram()` | `save_state=` / `[save_state]` / `--save-state`, written after the output is committed | **none** — the bank was dropped when the source ended (E33: "no `save_state`"); now `save_state=` (§4) |
-| (3) load, predict, no update | `ModelBank.load(path).predict(df)`; `load_bytes` | `po.run(load_state=, predict=True)`; `--resume p --predict` | `lf.online.predict(bank_or_path)` — pure, the bank does not move |
-| (4) load, update | `ModelBank.load(p).fit_predict(df)` then `save` | `po.run(load_state=, save_state=)`; `--resume p --save-state p` | `lf.online.fit_predict(load_state=p)` learns on from `p`, **could not save**; now `load_state=p, save_state=p` |
+| (3) load, predict, no update | `ModelBank.load(path).predict(df)`; `load_bytes` | `--resume p --predict` | `lf.online.predict(bank_or_path)` — pure, the bank does not move |
+| (4) load, update | `ModelBank.load(p).fit_predict(df)` then `save` | `--resume p --save-state p` | `lf.online.fit_predict(load_state=p)` learns on from `p`, **could not save**; now `load_state=p, save_state=p` |
 
 So the gap was one cell, twice: getting state *out* of a streamed plan. The
 Rust side (`crates/online-polars/src/runner.rs`, the CLI) needs nothing: it
@@ -241,14 +249,14 @@ The rules — each one checked in §5:
   output. `sort().head(n)` is not pushed (F4): the bank sees every row and
   the state is the whole stream's (C4b), which is right, since the query did
   read every row.
-- **R5 — `predict` refuses `save_state`**, as `po.run(predict=True)` does:
+- **R5 — `predict` refuses `save_state`**, as `online --predict` does:
   it learns nothing, so there is nothing to save.
 - **R6 — the one gap, stated.** Because polars drains the source before
   surfacing a later node's error (F5), a query that fails *after* the bank —
   a full disk under `sink_parquet`, a bad cast — leaves `save_state` written
   with the complete, valid state of the whole stream while the query's own
   output is missing. With `load_state=p, save_state=p` a rerun then learns
-  the data twice. `po.run` saves only after the writer has committed the
+  the data twice. The CLI saves only after the writer has committed the
   output and is the call for "state only if the output landed"; the
   plan's docstring and the README say so, and recommend a dated
   `save_state` per batch of data (`ridge-2026-01.state`) for the in-place
@@ -323,7 +331,7 @@ A stand-alone `register_io_source` source with R1–R4 built in, against
    counter, so no two writers — threads or processes — share one; the
    destination is the old file or one writer's whole file. This also closes
    the same hole for `ModelBank.save` called from two threads, which existed
-   before the plan could write anything, and for `po.run`'s output file
+   before the plan could write anything, and for the runner's output file
    (`AtomicFile::create` in `runner.rs`). Held by
    `two_writers_of_one_destination_do_not_share_a_temporary` (50 rounds ×
    2 threads × 200 kB, every read is one writer's bytes; it fails under the

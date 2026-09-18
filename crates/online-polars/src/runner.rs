@@ -1,4 +1,4 @@
-//! Streaming runner shared by the CLI and `polars_online.run` (docs/PLAN.md
+//! Streaming runner behind the `online` CLI (docs/PLAN.md
 //! §11 task 15; docs/ENHANCEMENTS.md E32).
 //!
 //! Any source polars can scan comes in, any file format polars can write goes
@@ -133,15 +133,16 @@ impl Format {
     }
 }
 
-/// A run description, deserialized from TOML by the CLI and from JSON by
-/// `polars_online.run`. An unknown key is refused, naming the keys there
+/// A run description, deserialized from TOML by the CLI (and, until task 83
+/// removed it, from JSON by the Python runner). An unknown key is refused,
+/// naming the keys there
 /// are, so a misspelt one cannot silently fall back to its default.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunConfig {
     /// Input path. Empty when the caller supplies the source itself
-    /// ([`run_config_on`]), which is how `polars_online.run` passes a
-    /// `LazyFrame`.
+    /// ([`run_config_on`]), as a Rust caller with a `LazyFrame` of its own
+    /// does.
     #[serde(default)]
     pub input: PathBuf,
     /// Output path. Empty for a run whose product is its state
@@ -208,8 +209,8 @@ impl RunConfig {
     /// [`run_config_on`] does not need.
     /// [`Spec::fill_defaults`] for every spec, so a config parsed from TOML
     /// carries the same specs a Python caller would have built
-    /// (docs/ENHANCEMENTS.md E53). Called by the CLI and by
-    /// `polars_online.run` after the config is read; idempotent.
+    /// (docs/ENHANCEMENTS.md E53). Called by the CLI after the config is
+    /// read; idempotent.
     pub fn fill_defaults(&mut self) {
         for s in self.specs.iter_mut() {
             s.fill_defaults();

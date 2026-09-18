@@ -847,8 +847,8 @@ Short, in the README and CONTRIBUTING:
 - **Changing a default is a breaking change**, because it changes results
   silently. It needs a minor bump pre-1.0, a major bump after, and a CHANGELOG
   entry saying what moved and by how much.
-- Pre-1.0, the **minor** version carries breaking changes; `~=0.1.0` is the
-  pin for users who want stability.
+- Pre-1.0, the **minor** version carries breaking changes; `~=0.7.0` (the
+  current minor) is the pin for users who want stability.
 
 ## What not to do
 
@@ -911,7 +911,7 @@ assertion to hold on both.
 
 That is a narrowing of a documented hazard, not a regression: the dangerous
 case is the state being written when the output was not, and 2.0 does that
-less often. `po.run` remains the transactional call either way.
+less often. The `online` CLI remains the transactional call either way.
 
 ### The other failure is the canary's own hygiene
 

@@ -252,7 +252,8 @@ fn csv_lists_read_back_as_lists() {
     let nulls = got.column("ridge.coef").unwrap().null_count();
     assert!(nulls > 100 && nulls < 200, "{nulls}");
     // The documented way back is `str.json_decode(pl.List(pl.Float64))`,
-    // polars' JSON parser (held bit-exact in tests/test_runner.py); here,
+    // polars' JSON parser (this test is the guarantee since tests/test_runner.py
+    // went with the Python runner in task 83); here,
     // the same parse by hand with the standard library's correctly rounded
     // `f64::from_str`. (serde_json's default float parsing is best-effort
     // and lands an ulp off on some of these.)

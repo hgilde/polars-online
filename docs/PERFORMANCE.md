@@ -172,7 +172,8 @@ that moves a golden number is wrong by definition.
 - [x] **P3 — Extraction and grouping without materialization.** *Done.*
   Columns extract to plain `Vec<f64>` with **NaN for null** instead of
   `Vec<Option<f64>>` — half the bytes, no per-value branch, and a `memcpy` via
-  `cont_slice()` for a null-free contiguous column. Sound because every
+  `cont_slice()` for a null-free contiguous column (since task 86 the same
+  borrow is `f64_values` over the Arrow array, in `crate::arrow`). Sound because every
   consumer already collapsed the two (a feature or weight counts only when
   `is_finite`, a target only when finite); the clock is the one column where
   null is an error, and that check now catches NaN with it. Group keys are
@@ -280,9 +281,10 @@ that moves a golden number is wrong by definition.
   themselves (2026-09-04).** *Done.* A spec's columns are read in parallel
   from `PAR_MIN_ROWS` up (one spec meant one thread copying every column);
   a column with more than one arrow chunk — what `collect_batches` hands over
-  when a batch spans two parquet row groups — is copied chunk by chunk with
+  when a batch spans two parquet row groups — was copied chunk by chunk with
   `downcast_iter` rather than falling to the per-element path when
-  `cont_slice` fails; and an integer group key is bucketed by its value
+  `cont_slice` failed (since task 86 the adapter rechunks such a column once,
+  measured at no cost: docs/REVIEW-2026-09-17.md §4); and an integer group key is bucketed by its value
   (`integer_groups`, `PlHashMap` — foldhash rather than SipHash) instead of
   being cast to `String` and hashed, since its text *is* its decimal
   (`integer_group_keys_match_the_string_cast` pins the two paths to the same
@@ -500,6 +502,13 @@ prediction from `predict` instead of an inlined copy of the same loop.
 
 ## 10. The runner: every format, every source (E32, 2026-09-02)
 
+*Read since task 83 (2026-09-17):* `po.run`, the Python entry to this runner,
+was removed; the numbers below stand as the record of what they measured.
+The pipeline they measured runs today as the `online` CLI (the Rust reader,
+`Input::Lazy`) and, in Python, as `ModelBank.fit(lf)` / `fit_predict_batches(lf)`
+— the same `collect_batches` read and the same bank, without the writer
+thread. `Input::Batches` remains for a Rust caller with frames of its own.
+
 The runner is a three-stage pipeline — a reader thread, the bank on the
 calling thread, a writer thread — with one chunk in flight per stage. E32
 made the reader pluggable: `Input::Lazy` is a polars plan read by the
@@ -627,6 +636,12 @@ parallel slices of each chunk and written in order. Output goes through a
 temporary sibling and a rename, as `save` does.
 
 ## 11. Memory: which surface is O(data) (2026-09-02)
+
+*Read since 2026-09-17:* the `po.run` rows are the Python runner, removed in
+task 83 (its in-process successor is `ModelBank.fit(lf)`, which reads the same
+way as the bank loop measured beside it); the expression rows are the plugin,
+removed in task 85 for exactly the O(data) this section measured. Both stand
+as the record. The README's "Tuning memory" section is the current guidance.
 
 The claim on the README's first line is that the bank and the runner run on
 data that does not fit in memory. §10's note that the plugin is O(data)

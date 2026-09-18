@@ -211,9 +211,10 @@ typing test, which did not exist when `holt` was added). `git show --stat
    counts), `Source::Flag` a `Boolean`, `Source::Label` a class index
    materialized as its name (`F64Column::finish_label`; NaN is null for all
    four). An *input* that is not an `f64` column needs its own reader in
-   `extract`: `ew_class`'s label goes through `label_column` (`key_column`,
-   so it is cast to String like `group`, then mapped to the class index,
-   with an undeclared value an error naming the row). An input that is
+   `extract`: `ew_class`'s label goes through `label_column` — the adapter
+   (`crate::arrow`, `Want::Text`) has cast it to text as it does a group
+   key, and the bank maps it to the class index, with an undeclared value
+   an error naming the row. An input that is
    *another spec's output* — `seqtest`'s `a`/`b` comparison reads
    `resid_<t>` from the two sides' structs — makes the spec a phase-two
    spec: `ModelKind::compares()` names the sides, `resolve_compare` checks
