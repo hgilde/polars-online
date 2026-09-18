@@ -420,9 +420,13 @@ package needs. The whole suite (1037 tests) passes on 1.34.0, 1.38.1 and
 1.44.1 with identical numbers, and `tests/test_scaffold.py` pins the declared
 floor so a change to either has to change both.
 
-The ceiling is a bet that 1.x keeps the interface, hedged twice: the plugin ABI
-is version-negotiated and refuses to load rather than misbehave, and
-`polars-canary.yml` runs the suite against the latest polars weekly.
+The ceiling is a bet that 1.x keeps the interface, hedged once now:
+`polars-canary.yml` runs the suite against the latest polars weekly. It was
+hedged twice until task 85 — the expression plugin's ABI was version-negotiated
+and refused to load rather than misbehave — and that half went with the plugin.
+What remains on the paths that are left is a loud failure rather than a
+negotiated one: `PySeries._export` missing is a clean `AttributeError` before
+any data moves.
 
 **Correction, after reading what Polars actually promises.** The table above is
 *measured*, and the two paths do not carry the same weight of guarantee:

@@ -656,7 +656,12 @@ def test_the_runner_writes_the_sidecar_as_it_goes(tmp_path, chunk_rows, batches,
     assert _ipc_record_batches(side) == batches
     driver = po.ModelBank([cov_spec(group_close="monotone")])
     driver.fit_predict(df)
-    assert pl.read_ipc(side, memory_map=False).equals(driver.closed_groups())
+    # No `memory_map=`: polars 2.0 removed the keyword from `read_ipc`, and on
+    # 1.x it already defaults to `False` -- so this was passing the default
+    # explicitly and dropping it changes nothing on either version. Passing it
+    # made the advisory next-major leg of `release.yml` red on 2.0.0rc1 from
+    # 0.6.0 onward, the only two failures in that leg.
+    assert pl.read_ipc(side).equals(driver.closed_groups())
 
 
 def test_the_io_plugin_writes_the_same_sidecar(tmp_path):

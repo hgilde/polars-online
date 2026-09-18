@@ -49,10 +49,11 @@ dependencies = [
     # suite passes on 2.0.0rc1 with the same numbers as on 1.44, all three
     # interfaces work, and `LazyFrame.collect_batches` -- the floor -- is
     # unchanged (`docs/RELEASE-READINESS.md`). It is still a bet on the rest
-    # of 2.x, hedged three ways: the plugin ABI is version-negotiated and
-    # refuses to load rather than misbehave, `polars-canary.yml` runs the
-    # suite against the latest polars weekly, and `release.yml` runs it again
-    # at the tag on the newest version this range admits, blocking.
+    # of 2.x, hedged two ways: `polars-canary.yml` runs the suite against the
+    # latest polars weekly, and `release.yml` runs it again at the tag on the
+    # newest version this range admits, blocking. It was hedged three ways
+    # until task 85: the expression plugin's ABI was version-negotiated and
+    # refused to load rather than misbehave, and that hedge went with it.
     "polars>=1.34.0,<3",
 ]
 

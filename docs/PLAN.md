@@ -6276,7 +6276,7 @@ turns out wrong is left unapproved rather than moved.
 ## Follow-on documents
 
 Each of §11b–§11h below summarises one document under `docs/` and says what
-became of it. Three more carry no section of their own:
+became of it. Four more carry no section of their own:
 
 - `docs/ENHANCEMENTS.md` — every model and feature after the first seven
   (E1–E64): proposed, measured, built or declined.
@@ -6286,6 +6286,13 @@ became of it. Three more carry no section of their own:
   streamed plan: what polars does with a Python source, measured; the
   candidate forms; the rules `save_state=` on the plan follows and the
   decisions behind them (task 20).
+- `docs/ARROW-SOURCES.md` — research and a proposal (2026-09-17, nothing
+  built) on feeding a bank from any Arrow producer: which libraries implement
+  the PyCapsule interface, the tier that already works through polars with no
+  new dependency, what a *native* import would cost (a second Arrow
+  implementation beside polars-arrow — raised under rule 12, not decided),
+  and a comparison with DuckDB's own statistics and learning extensions,
+  which are broad but batch-first and keep no state between queries.
 
 ## 11b. Performance plan
 

@@ -130,6 +130,17 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Changed
 
+- **The advisory next-major CI leg is green again.** One test line passed
+  `memory_map=False` to `pl.read_ipc`, a keyword polars 2.0 removed, which
+  made the `release.yml` "next major" leg red on 2.0.0rc1 from 0.6.0 onward --
+  two failures in 2,639, both the same parametrised test. On polars 1.x that
+  keyword already defaults to `False`, so it was passing the default
+  explicitly and dropping it changes nothing on either version. Verified by
+  building the wheel and running the test against a real 2.0.0rc1, not by
+  reading the signature. Test-side only: the package never passes
+  `memory_map`, so no published wheel was ever affected, and the leg is
+  `continue-on-error` by design so it never withheld a release.
+
 - **`predict` refuses a group key that `group_close = "monotone"` cannot
   order, as `fit_predict` does.** The check moved into the chunk adapter with
   the Arrow work, so both calls meet it; before, `predict` alone ran on a float
