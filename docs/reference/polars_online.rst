@@ -12,6 +12,8 @@
 
 .. autoclass:: polars_online.OrderNotGuaranteedWarning
 
+.. autoclass:: polars_online.ConsumedSourceWarning
+
 
 .. autofunction:: polars_online.fit_predict
 

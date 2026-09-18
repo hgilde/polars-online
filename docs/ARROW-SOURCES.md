@@ -19,9 +19,23 @@ import duckdb, polars as pl, polars_online as po
 
 rel = duckdb.sql("SELECT t, x0, y FROM read_parquet('ticks/*.parquet') ORDER BY t")
 bank = po.ModelBank([spec])
-for chunk in pl.from_arrow(rel.record_batch(100_000)):   # or pl.DataFrame(rel)
-    out = bank.fit_predict(chunk)
+# `scan_arrow_c_stream` rides the capsule interface, so it needs no pyarrow --
+# `rel.pl()`, `rel.to_arrow_reader()` and `rel.fetch_record_batch()` all do
+# (checked on duckdb 1.5.5: each raises ModuleNotFoundError without it). It is
+# also the streaming path: the bank chunks the plan itself.
+for out in bank.fit_predict_batches(pl.scan_arrow_c_stream(rel), chunk_rows=100_000):
+    ...
 ```
+
+Two corrections to what this block used to say, both measured on duckdb 1.5.5
+rather than recalled. `rel.record_batch(...)` is **not** a method — a relation
+resolves an unknown attribute as a column name, so it raises
+`AttributeError: This relation does not contain a column by the name of
+'record_batch'`; the surviving spellings are `fetch_record_batch` and
+`to_arrow_reader`, and both need pyarrow. And `pl.from_arrow(rel)` works but
+warns: polars 2.0 will return a `Series` rather than a `DataFrame` from an
+`ArrowStreamExportable`, so it is the wrong spelling to put in a document that
+outlives 1.x.
 
 This works because py-polars consumes the PyCapsule interface: `pl.Series(obj)`
 dispatches to `PySeries.from_arrow_c_array` and `polars._utils.pycapsule`
@@ -92,23 +106,35 @@ and **no test exercises it** (`grep duckdb tests/` is empty). That claim should
 be tested or softened; it is the same class of untested assertion the
 2026-09-17 review was written to catch.
 
-**The wrinkle, and it cuts our way.** DuckDB issue
-[#17084](https://github.com/duckdb/duckdb/issues/17084) reports that
-`__arrow_c_stream__` on a DuckDB relation works **once**; a second call raises
-`InvalidInputException: There is no query result`. The reporter observes that
-PyArrow, Polars and Pandas all permit repeated calls.
+**A wrinkle worth knowing — and it no longer cuts our way.** DuckDB issue
+[#17084](https://github.com/duckdb/duckdb/issues/17084) reported that
+`__arrow_c_stream__` on a DuckDB relation works **once**, a second call raising
+`InvalidInputException: There is no query result`, and an earlier draft of this
+section cited that as precedent for our own single-use export. **Measured on
+duckdb 1.5.5, it does not reproduce: both calls succeed.** The issue has been
+fixed since it was filed, so the precedent is gone, and citing it was reading a
+bug report as current behaviour. `tests/test_consumed_source.py` now pins the
+live behaviour, so if it changes again this section hears about it.
 
-This matters for us because `ArrowStruct.__arrow_c_array__` **deliberately**
-exports once and raises on a second call — the spec says capsules "can only be
-consumed once", and exporting hands the buffers away. So:
+What remains true is the more useful fact, and it sits one level down: the
+*stream* a consumer captures is single-use even though the relation is not.
+`pl.scan_arrow_c_stream(rel)` collected twice gives its rows and then **zero**,
+silently, with no error from polars — measured, and now reported by
+`ConsumedSourceWarning`.
 
-- Against the spec, we are right, and so is DuckDB.
-- Against the *installed base*, PyArrow/Polars/Pandas are more permissive, and
-  a consumer written against their leniency will break on ours.
+So on the export side we stand with the specification and against the installed
+base, without DuckDB beside us any more:
+
+- The spec is unambiguous: capsules "can only be consumed once", and exporting
+  hands the buffers away. `ArrowStruct.__arrow_c_array__` **deliberately**
+  raises on a second call.
+- PyArrow, Polars, Pandas — and now DuckDB — all permit repeated calls, so a
+  consumer written against their leniency will break on ours.
 
 **Decision to take, not defer:** keep the single-use contract (it is what the
-spec says and what prevents a double free), and document it beside the DuckDB
-precedent so it reads as conformance rather than as our quirk.
+spec says, and what prevents a double free), but document it as *ours* rather
+than as conformance with a neighbour, because the permissive behaviour is now
+what a user will have met everywhere else.
 
 ---
 
@@ -196,12 +222,23 @@ The difference is not "which has more models". It is **what a fit is**.
 |---|---|---|
 | **fit shape** | aggregate over a group; recomputed per query | one state per (spec, group), updated per row |
 | **state between queries** | none — "models are computed per query; no persistent state" | the state *is* the product; `save`/`load`, resume mid-stream |
-| **memory** | O(rows in the group) for the scan | O(state), independent of stream length |
+| **memory** | O(rows in the group) for the scan | O(state) in the bank; the *pipeline* is only as bounded as its source — see below |
 | **decay** | none | every row's weight halves every `halflife` **clock** units, on a column you name |
 | **out-of-sample** | `*_fit_predict_agg` splits train/test by a column | by construction: every row predicted *before* its own target is learned |
 | **new data** | rescan and refit | feed the chunk; the state moves forward |
 | **drift** | refit on a window you choose | `emit_drift`, `drift_action="reset"` |
 | **row order** | irrelevant to an aggregate | *is* the model |
+
+**On that memory row, measured rather than assumed.** The bank's own state is
+O(state) and that is not in question. What is *not* earned is the end-to-end
+claim: draining a DuckDB relation **with no bank attached at all** cost 106 MB
+at 1M rows and 271 MB at 4M, so the growth is the producer's side, not ours.
+Nor is it the chunk size — a sweep held 410 MB at both 10k and 50k rows per
+chunk and 588 MB at 1M, which is not O(chunk) at the low end, and page-release
+environment variables moved none of it. So "a bank over DuckDB runs in bounded
+memory" is a claim this document must not make until the source side is
+measured properly; what it may say is that the bank contributes O(state) to
+whatever the source costs.
 
 DuckDB is batch-first by design; its incremental support is
 [described as experimental rather than production-grade streaming](https://medium.com/@bhagyarana80/streaming-analytics-with-duckdb-incremental-updates-redefining-olap-50a4238ec3cf).
@@ -233,6 +270,19 @@ for on the polars side, and the equivalent SQL advice is: put an explicit
 so here documentation is the only guard — which is an argument for tier 0 being
 a *documentation* job first and a code job second.
 
+**A second caution, and this one is now guarded in code.** A relation is
+consumed once (§3), and so is the `LazyFrame` built over it: collected a
+second time it yields **nothing**, silently, with no error from polars. A bank
+fed the same plan twice therefore learns from every row and then from none,
+and the second run leaves a state that looks finished and is empty — measured
+at 1,000 rows, then 0. `ModelBank.fit`, `ModelBank.fit_predict_batches` and
+`lf.online.fit_predict` now raise `ConsumedSourceWarning` when a plan whose
+source is a Python scan delivers no rows at all. The pair is the
+discriminator, not either half: re-collecting a `scan_parquet` is legitimate,
+and this package's own plan form carries the same `PYTHON SCAN` marker while
+being reusable, so neither trips it. The fix in a DuckDB pipeline is to build
+the relation *inside* the loop, not outside it.
+
 ---
 
 ## 6. Proposed work, in order
@@ -243,7 +293,16 @@ a *documentation* job first and a code job second.
    both directions. Add `duckdb`, `pyarrow`, `adbc-driver-manager` to the `dev`
    dependency group only — never to the package, which keeps its single
    `polars` dependency.
-2. **Document the single-use contract** beside the DuckDB precedent (§3).
+   **Started 2026-09-17:** `duckdb` is in the `dev` group, and
+   `tests/test_consumed_source.py` covers DuckDB → bank over an ordered
+   relation, the pyarrow-free path, and what `#17084` actually does on the
+   installed version. Still to do: `pyarrow` and `adbc-driver-manager`, the
+   README's untested "straight to duckdb" claim, and the user-facing section.
+2. ~~**Document the single-use contract** beside the DuckDB precedent (§3).~~
+   **Done — and the premise changed.** There is no DuckDB precedent any more
+   (§3, measured on 1.5.5), so the contract is documented as *ours*. The
+   related hazard one level down — a captured *stream* being spent while the
+   relation is not — is documented and now guarded by `ConsumedSourceWarning`.
 3. **Order guidance** for SQL sources (§5's caution).
 4. **Decide §4.** My recommendation: pursue C upstream, hold B, decline A.
 5. **Only then**, if §4 resolves, the native import: `ModelBank.fit_predict_capsule(obj)`

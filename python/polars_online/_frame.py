@@ -45,6 +45,7 @@ from polars_online._bank import ModelBank
 from polars_online._spec import coef_fields, output_index
 
 __all__ = [
+    "ConsumedSourceWarning",
     "DataFrameOnlineNamespace",
     "LazyFrameOnlineNamespace",
     "OrderNotGuaranteedWarning",
@@ -199,6 +200,45 @@ class OrderNotGuaranteedWarning(UserWarning):
     """
 
 
+class ConsumedSourceWarning(UserWarning):
+    """A plan that reads a single-use source fed a bank no rows at all.
+
+    An Arrow C stream is consumed once: the specification says a capsule "can
+    only be consumed once", and a producer hands its buffers away. So a
+    ``LazyFrame`` built by ``pl.scan_arrow_c_stream(...)`` -- over a DuckDB
+    relation, a ``pyarrow.RecordBatchReader``, anything exposing
+    ``__arrow_c_stream__`` -- works the first time it is collected and then
+    yields **nothing**, silently, with no error from polars. A bank fed the
+    same plan twice therefore learns from every row and then from none, and
+    the second run leaves a state that looks finished and is empty.
+
+    This warns rather than raises, because a source may legitimately have no
+    rows -- an empty query is not a mistake. It is raised only for a plan
+    whose source is a Python scan *and* which yielded nothing, which is the
+    shape a consumed stream has; an in-memory frame's ``.lazy()`` and a
+    ``scan_parquet`` cannot trip it, and both are safely reusable.
+
+    The fix is to rebuild the plan per run -- ``pl.scan_arrow_c_stream(con.sql(q))``
+    inside the loop rather than outside it -- since the producer will make a
+    fresh stream.
+    """
+
+
+def _is_python_scan(lf: pl.LazyFrame) -> bool:
+    """Whether ``lf``'s source is a Python scan, which is what an Arrow C
+    stream and this package's own plan form both are.
+
+    Read from ``explain``, which does not execute the plan and so cannot
+    consume the very stream this is here to protect (checked: a plan still
+    yields its rows after being explained). Any failure to read the plan is
+    "not a python scan", so the guard never turns a working run into an
+    error."""
+    try:
+        return "PYTHON SCAN" in lf.explain(optimized=False)
+    except Exception:  # a plan that cannot be explained is not one to guard
+        return False
+
+
 def _user_stacklevel() -> int:
     """The ``stacklevel`` that attributes a warning to the first frame outside
     this package, so it points at the caller's line and not at the library's.
@@ -312,7 +352,13 @@ def _source(
         raise ValueError(msg)
     # At build time, before anything runs: the order the plan will deliver is
     # decided here, and a caller should hear about it before the first chunk.
-    _warn_if_order_unspecified(lf, f"lf.online.{getattr(step, '__name__', 'fit_predict')}")
+    called = f"lf.online.{getattr(step, '__name__', 'fit_predict')}"
+    _warn_if_order_unspecified(lf, called)
+    # Also decided here, off the plan as handed over: whether its source is a
+    # Python scan, which is the shape `pl.scan_arrow_c_stream` has and so the
+    # shape a single-use stream arrives in. Read now because `explain` must
+    # see the caller's plan, and acted on below only if the run sees no rows.
+    python_scan = _is_python_scan(lf)
     rows = chunk_rows or _native.default_chunk_rows()
     save_path = _save_path(save_state)
     in_schema = lf.collect_schema()
@@ -389,6 +435,23 @@ def _source(
             _write_closed(closed_path, closed, closed_schema)
         if save_path is not None:
             bank.save(save_path)
+        # Last, so a state file is written before anything is said about it.
+        # `n_rows == 0` is a `head(0)` pushed into the scan, where no rows is
+        # what the query asked for rather than a stream that is spent.
+        if python_scan and seen == 0 and n_rows != 0:
+            warnings.warn(
+                ConsumedSourceWarning(
+                    f"{called}: the plan yielded no rows, and its source is a Python scan -- "
+                    "which is what `pl.scan_arrow_c_stream` builds over a DuckDB relation, a "
+                    "pyarrow reader, or anything exposing `__arrow_c_stream__`. Such a stream "
+                    "is consumed once: collected a second time it yields nothing, with no "
+                    "error, so this bank has learned from nothing. Rebuild the plan per "
+                    "collect (call `pl.scan_arrow_c_stream(...)` inside the loop, not outside "
+                    "it). If the source really is empty, silence this with "
+                    'warnings.simplefilter("ignore", polars_online.ConsumedSourceWarning).'
+                ),
+                stacklevel=_user_stacklevel(),
+            )
 
     # `is_pure` tells polars two occurrences of this scan in one plan are the
     # same node, which lets it drop one of them: in the source it is the only

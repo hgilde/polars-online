@@ -7,6 +7,48 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A plan that read a spent Arrow stream no longer passes for a fit.** An
+  Arrow C stream is consumed once — the PyCapsule specification says a capsule
+  "can only be consumed once" — so a `LazyFrame` from
+  `pl.scan_arrow_c_stream(...)` over a DuckDB relation or a pyarrow reader
+  gives its rows the first time it is collected and nothing every time after,
+  silently, with no error from polars (measured: 1,000 rows, then 0). A bank
+  fed that plan twice learned from every row and then from none, and the
+  second run left a state that looked finished and was empty.
+  `ModelBank.fit`, `ModelBank.fit_predict_batches` and `lf.online.fit_predict`
+  now raise `ConsumedSourceWarning` when a plan whose source is a Python scan
+  delivers no rows at all, naming the call, the fix (rebuild the plan per run)
+  and how to silence it. The *pair* is the discriminator, not either half:
+  re-collecting a `scan_parquet` is legitimate, and this package's own plan
+  form carries the same `PYTHON SCAN` marker while being perfectly reusable,
+  so neither can trip it — nor can an empty in-memory frame, which stays an
+  ordinary run. It warns rather than raises because an empty query is not a
+  mistake, and a `head(0)` pushed into the scan is excluded for the same
+  reason. The check reads `explain`, which does not execute the plan and so
+  cannot consume the stream it exists to protect.
+
+### Changed
+
+- **`duckdb` joins the `dev` dependency group**, which turned three claims in
+  `docs/ARROW-SOURCES.md` from recalled into measured — and two of them were
+  wrong. Its DuckDB recipe did not run: `record_batch` is not a method on
+  duckdb 1.5.5, and a relation resolves an unknown attribute as a column name,
+  so it raised `AttributeError: This relation does not contain a column by the
+  name of 'record_batch'`; the surviving spellings (`fetch_record_batch`,
+  `to_arrow_reader`, `rel.pl()`) all need pyarrow, so the recipe is now
+  `pl.scan_arrow_c_stream(rel)`, which needs neither and streams. Its §3 cited
+  DuckDB issue #17084 for a relation's `__arrow_c_stream__` working only once
+  and built a decision on that precedent; on 1.5.5 both calls succeed, so the
+  precedent is gone — what survives is that the captured *stream* is
+  single-use while the relation is not. And its comparison table claimed
+  memory "O(state), independent of stream length" end to end, which the
+  measurements do not earn (106 MB at 1M rows and 271 MB at 4M with no bank
+  attached at all). The package's own dependencies are unchanged: it still
+  requires only `polars`, and every duckdb test is `importorskip`ed, so none
+  of this is needed to run the suite.
+
 ## [0.7.0] — 2026-09-17
 
 ### Documentation

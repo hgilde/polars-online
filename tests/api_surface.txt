@@ -2,6 +2,7 @@
 
 [package]
   ArrowStruct
+  ConsumedSourceWarning
   ModelBank
   OrderNotGuaranteedWarning
   __version__

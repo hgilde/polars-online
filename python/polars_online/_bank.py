@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import warnings
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -387,16 +388,38 @@ class ModelBank:
             msg = f"chunk_rows must be at least 1, got {chunk_rows}"
             raise ValueError(msg)
         path = _closed_path(closed_groups, self._specs)
-        return self._feed(self._chunks(batches, chunk_rows, what), path)
+        # A plan whose source is a Python scan may be reading a single-use
+        # Arrow stream, which yields nothing the second time and says nothing
+        # about it. Decided here, before a row moves, because `explain` must
+        # be read off the plan the caller gave.
+        from polars_online._frame import _is_python_scan
 
-    def _feed(self, source: Iterable[pl.DataFrame], path: str | None) -> Iterable[pl.DataFrame]:
+        guard = (
+            f"ModelBank.{what}"
+            if isinstance(batches, pl.LazyFrame) and _is_python_scan(batches)
+            else None
+        )
+        return self._feed(self._chunks(batches, chunk_rows, what), path, guard)
+
+    def _feed(
+        self,
+        source: Iterable[pl.DataFrame],
+        path: str | None,
+        guard: str | None = None,
+    ) -> Iterable[pl.DataFrame]:
         """The loop behind :meth:`fit_predict_batches`, once its arguments are
-        checked: a generator, so nothing here runs until a caller asks."""
-        from polars_online._frame import _write_closed
+        checked: a generator, so nothing here runs until a caller asks.
+
+        ``guard`` names the calling method when the source is a plan that might
+        be reading a single-use Arrow stream; a run that then sees no rows at
+        all is reported rather than passed off as a finished fit."""
+        from polars_online._frame import ConsumedSourceWarning, _user_stacklevel, _write_closed
 
         drained: list[pl.DataFrame] = []
+        rows_seen = 0
         try:
             for chunk in source:
+                rows_seen += chunk.height
                 out = self.fit_predict(chunk)
                 if path is not None:
                     rows = self.closed_groups()
@@ -406,6 +429,22 @@ class ModelBank:
         finally:
             if path is not None:
                 _write_closed(path, drained, self.closed_groups(drop=False).clear())
+        # After the loop and outside the `finally`, so an error on the way
+        # through is the thing the caller hears about, not this.
+        if guard is not None and rows_seen == 0:
+            warnings.warn(
+                ConsumedSourceWarning(
+                    f"{guard}: the plan yielded no rows, and its source is a Python scan -- "
+                    "which is what `pl.scan_arrow_c_stream` builds over a DuckDB relation, a "
+                    "pyarrow reader, or anything exposing `__arrow_c_stream__`. Such a stream "
+                    "is consumed once: collected a second time it yields nothing, with no "
+                    "error, so this bank has learned from nothing. Rebuild the plan per run "
+                    "(call `pl.scan_arrow_c_stream(...)` inside the loop, not outside it). If "
+                    "the source really is empty, silence this with "
+                    'warnings.simplefilter("ignore", polars_online.ConsumedSourceWarning).'
+                ),
+                stacklevel=_user_stacklevel(),
+            )
 
     @staticmethod
     def _chunks(

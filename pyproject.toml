@@ -105,6 +105,12 @@ dev = [
     # The package is typed (py.typed, the pyo3 stub, PEP 692 kwargs); mypy in
     # the gate is what keeps that true. Pure Python, seconds to run.
     "mypy>=1.14",
+    # tests/test_consumed_source.py reproduces the spent-stream hazard on a
+    # real relation rather than a stand-in, and pins what DuckDB issue #17084
+    # actually does on the installed version. Dev only: the package keeps its
+    # single `polars` dependency, and every duckdb test is `importorskip`ed,
+    # so none of this is needed to run the suite.
+    "duckdb>=1.5.5",
 ]
 # The API reference: Sphinx over the docstrings, which are written in its
 # dialect (``:class:`` roles, ``::`` literal blocks). Its own group, so a
