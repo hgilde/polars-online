@@ -7,6 +7,44 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+## [0.7.3] — 2026-09-18
+
+A patch: the spent-stream guard reads polars 2.0's plan spelling as well as
+1.x's. No model returns a different number than it did in 0.7.2, the state
+schema is unchanged, and no spec changed — one string match widens.
+
+### Fixed
+
+- **`ConsumedSourceWarning`'s discriminator missed this package's own plan
+  form on polars 2.0.** py-polars 2.0 renders an IO source that was given an
+  `explain_name` as `PYTHON[<name>] SCAN` rather than `PYTHON SCAN`, and
+  `_explain_kwargs` names our plan form `polars-online` — passed only where
+  the signature accepts it, so 2.0 gets the name and 1.x does not. The check
+  tested for the literal `"PYTHON SCAN"`, so on 2.0 it stopped recognising our
+  own plan, and `release.yml`'s advisory next-major leg failed the assertion
+  that documents why the marker alone is not the discriminator (1 failed,
+  2,660 passed, on 2.0.0-rc.1).
+
+  **What was never affected**, measured on 2.0.0-rc.1 rather than assumed:
+  `pl.scan_arrow_c_stream` is *not* named by polars — neither over a polars
+  frame nor over a DuckDB relation — so both still read `PYTHON SCAN`, and a
+  second `fit` over a spent DuckDB stream still raised
+  `ConsumedSourceWarning` there. The defect never reached the hazard the
+  guard exists for; it was confined to our own plan form, which is reusable
+  in any case. No user could meet it either: 2.0.0 final is not on PyPI
+  (latest 1.44.2, with 2.0.0rc1 the only 2.x), and installers decline
+  prereleases, so `polars>=1.34.0,<3` resolves to 1.44.2. The advisory leg
+  did exactly what it exists for — catching a break before the major ships.
+
+  The pattern now matches `PYTHON(\[...\])?\s+SCAN`, so 1.x and 2.0 behave the
+  same rather than quietly differently; on 1.44.2 the answers are unchanged
+  where they were already right. Both spellings are pinned as literal text, so
+  they hold with no 2.0 install, alongside three shapes that must *not* match
+  — an in-memory frame, a parquet scan, and a bare `SCAN []` — because the
+  risk in widening this pattern is that it starts matching anything with
+  `SCAN` in it, and would then warn on exactly the reusable sources the guard
+  exists to leave alone.
+
 ## [0.7.2] — 2026-09-18
 
 A patch: `ModelBank.fit` stops warning about a row order that cannot change

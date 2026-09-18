@@ -927,6 +927,29 @@ canary's `-m "not soak and not pins"` does not deselect it. Marking it
 `pins` would make the canary's signal mean only "Polars broke us", which is
 what that job exists for.
 
+**Done since (`e6da97c`), so the paragraph above is the argument, not the
+state.** `tests/test_validation_doc.py` now carries `@pytest.mark.pins` and
+the canary deselects it, and `test_a_run_that_does_not_reach_the_end_writes_nothing`
+became version-aware about the R6 narrowing rather than asserting 1.x alone.
+Both of the two failures recorded above are therefore closed. Re-measured on
+2026-09-18 against `2.0.0-rc.1` (still the only 2.x on PyPI; stable is
+1.44.2): **2,679 passed, 2 skipped, 5 deselected, 0 failed.**
+
+Every test that *can* run on 2.0 did. The first pass of that measurement read
+2,651 passed and **30 skipped**, and the 28 extra skips were not a result --
+they were `pandas`, `statsmodels`, `filterpy` and
+`bayesian_changepoint_detection` missing from the throwaway venv, so the
+oracle comparisons never executed. Installing them turns those 28 into passes
+and leaves only two skips, neither about polars (`test_golden_pipeline`
+"regeneration only", `test_semantics_all_models` "holt has no features"). The
+5 deselected are the 3 `pins` and 2 `soak`: `pins` asserts properties *of the
+pin itself* (`pl.__version__ == BUILT_AGAINST`, the version recorded in a
+generated document), so it cannot pass on an unpinned run by construction, and
+that is the canary's design rather than a gap.
+
+The `online` CLI is unaffected either way: it links the Rust `polars` 0.55.2
+and never touches py-polars, so a py-polars major cannot reach it.
+
 ### What 2.0 adds that this library could use
 
 `polars.io.plugins.register_io_source` gained two keywords:

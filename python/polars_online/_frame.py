@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import warnings
 from collections.abc import Callable, Iterable, Iterator
@@ -238,6 +239,18 @@ class ConsumedSourceWarning(UserWarning):
     """
 
 
+#: A Python source in ``explain``, in both spellings polars uses. 1.x writes
+#: ``PYTHON SCAN []``; 2.0 writes ``PYTHON[<name>] SCAN []`` for a source given
+#: an ``explain_name``, which is what ``_explain_kwargs`` gives this package's
+#: own plan form. A literal ``"PYTHON SCAN" in text`` therefore stopped
+#: recognising our plan on 2.0 -- measured on 2.0.0-rc.1, where
+#: `scan_arrow_c_stream` is *not* named and still reads ``PYTHON SCAN``, so the
+#: spent-stream guard kept working and only our own plan form was missed.
+#: Matching both keeps the behaviour the same on either polars rather than
+#: quietly different.
+_PYTHON_SCAN = re.compile(r"PYTHON(?:\[[^\]]*\])?\s+SCAN")
+
+
 def _is_python_scan(lf: pl.LazyFrame) -> bool:
     """Whether ``lf``'s source is a Python scan, which is what an Arrow C
     stream and this package's own plan form both are.
@@ -248,7 +261,7 @@ def _is_python_scan(lf: pl.LazyFrame) -> bool:
     "not a python scan", so the guard never turns a working run into an
     error."""
     try:
-        return "PYTHON SCAN" in lf.explain(optimized=False)
+        return bool(_PYTHON_SCAN.search(lf.explain(optimized=False)))
     except Exception:  # a plan that cannot be explained is not one to guard
         return False
 

@@ -212,6 +212,45 @@ def test_a_python_scan_with_rows_is_recognised_and_a_parquet_scan_is_not(tmp_pat
     assert not _is_python_scan(pl.scan_parquet(path))
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param("PYTHON SCAN []", id="polars-1.x"),
+        pytest.param("PYTHON[polars-online] SCAN []", id="polars-2.0-named"),
+    ],
+)
+def test_both_spellings_of_a_python_scan_are_recognised(line):
+    """polars 2.0 renders a source given an ``explain_name`` as
+    ``PYTHON[<name>] SCAN``, and ``_explain_kwargs`` names this package's own
+    plan form ``polars-online``. A literal ``"PYTHON SCAN" in text`` missed
+    that, and the release run's 2.0 leg failed on it.
+
+    Measured on 2.0.0-rc.1: ``scan_arrow_c_stream`` over a polars frame *and*
+    over a DuckDB relation both still read ``PYTHON SCAN``, unnamed, so the
+    spent-stream guard went on working there and only our own plan form was
+    misread. Pinned as text so both spellings hold without a 2.0 install."""
+    from polars_online._frame import _PYTHON_SCAN
+
+    assert _PYTHON_SCAN.search(line)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'DF ["t", "x0", "y"]; PROJECT */3 COLUMNS',
+        "Parquet SCAN [/tmp/a.parquet]",
+        "SCAN []",
+    ],
+)
+def test_a_source_that_is_not_a_python_scan_is_not_matched(line):
+    """The pattern must not widen into "anything with SCAN in it": an
+    in-memory frame and a parquet scan are both reusable, and warning on them
+    would be the false positive the guard is built to avoid."""
+    from polars_online._frame import _PYTHON_SCAN
+
+    assert not _PYTHON_SCAN.search(line)
+
+
 def test_a_plan_that_cannot_be_explained_is_let_through(monkeypatch):
     """Best-effort: a plan the guard cannot read is never a reason to fail."""
     from polars_online import _frame as frame_mod
