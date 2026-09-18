@@ -7,6 +7,15 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-09-18
+
+A patch: `ModelBank.fit` stops warning about a row order that cannot change
+what it leaves behind. No model returns a different number than it did in
+0.7.1, the state schema is unchanged, and no spec changed. What moves is where
+a warning fires, and it fires in strictly fewer places — every case that
+warned before still warns, except a fit whose result provably does not depend
+on the order.
+
 ### Changed
 
 - **`ModelBank.fit` no longer warns about row order where order cannot change
