@@ -7,6 +7,41 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+### Changed
+
+- **`ModelBank.fit` no longer warns about row order where order cannot change
+  what it produces.** A fit whose every spec is an accumulator with no decay —
+  `ewridge`, `rls`, `huber` or `lasso` at `lam=1.0` — reaches the same
+  coefficients whatever order the rows arrived in, because its sums commute.
+  Measured over 200 rows, ordered against shuffled: 3.3e-16, 8.9e-16, 6.7e-16
+  and 7.8e-16 respectively — **to rounding, never to the bit**, since the sums
+  commute mathematically but not in floating point. `fit` returns nothing and
+  keeps only the state, so for those specs the order genuinely does not matter
+  and `OrderNotGuaranteedWarning` was a false positive.
+
+  The exception is deliberately narrow, and the measurements are why. It does
+  **not** extend to `fit_predict_batches` or `lf.online.fit_predict` over the
+  very same specs: `pred` is out-of-sample by construction, so row *i* is
+  predicted from the rows before it and reordering moves every prediction —
+  1.33 on the same rows whose coefficients agreed to 3.3e-16. Nor does it
+  extend to any model whose update does not commute, which is every other one:
+  with no decay at all, `sgd` moves 5.9e-03, `pa` 5.1e-02, `ftrl` 3.3e-02 and
+  `quantile` 2.8e-03. "No halflife" is not on its own a reason to expect order
+  not to matter.
+
+  Each disqualifying option was measured rather than assumed: `window` 8.3e-03
+  (and it lives *inside* the nested `model` dict for `ewridge` and `lasso`, so
+  a top-level check would miss it), `gram_block_rows` 6.3e-04 — which row sits
+  in the pending block when a solve fires depends on arrival order —
+  `label_delay` 4.3e-04, and `drift_action="reset"` **8.9e-01**, the largest of
+  all. That last one read as harmless at 3.3e-16 until the fixture actually
+  made drift fire: a green result from a code path that never executed is not
+  evidence, and it is now denied on measurement. Options whose path could not
+  be made to fire at all — `session`/`session_gap`, `ridge_decay`,
+  `long_halflife`/`session_shrink` — are denied as unproven rather than
+  promoted. A spec key the check does not recognise counts as unsafe, so an
+  option added later cannot quietly become exempt.
+
 ## [0.7.1] — 2026-09-18
 
 A patch: a plan that read a spent Arrow stream is reported now, rather than

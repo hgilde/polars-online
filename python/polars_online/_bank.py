@@ -382,12 +382,25 @@ class ModelBank:
         """The run behind :meth:`fit_predict_batches` and :meth:`fit`: the
         arguments checked eagerly, then a generator. ``what`` is the public
         method the caller used, for the messages that name it."""
-        from polars_online._frame import _closed_path
+        from polars_online._frame import (
+            _closed_path,
+            _order_free,
+            _warn_if_order_unspecified,
+        )
 
         if chunk_rows is not None and chunk_rows < 1:
             msg = f"chunk_rows must be at least 1, got {chunk_rows}"
             raise ValueError(msg)
         path = _closed_path(closed_groups, self._specs)
+        # The order a plan delivers is the model, so a plan is inspected
+        # before a row moves. The exception is `fit`, whose product is the
+        # state alone: over accumulator-only specs with no decay the same
+        # rows reach the same state in any order (to rounding), so warning
+        # there would be a false positive. `fit_predict_batches` never
+        # qualifies, because it hands back predictions and every prediction
+        # is out-of-sample -- reordering moves all of them.
+        if isinstance(batches, pl.LazyFrame) and not (what == "fit" and _order_free(self._specs)):
+            _warn_if_order_unspecified(batches, f"ModelBank.{what}")
         # A plan whose source is a Python scan may be reading a single-use
         # Arrow stream, which yields nothing the second time and says nothing
         # about it. Decided here, before a row moves, because `explain` must
@@ -399,7 +412,7 @@ class ModelBank:
             if isinstance(batches, pl.LazyFrame) and _is_python_scan(batches)
             else None
         )
-        return self._feed(self._chunks(batches, chunk_rows, what), path, guard)
+        return self._feed(self._chunks(batches, chunk_rows), path, guard)
 
     def _feed(
         self,
@@ -450,15 +463,12 @@ class ModelBank:
     def _chunks(
         batches: pl.LazyFrame | pl.DataFrame | Iterable[pl.DataFrame],
         chunk_rows: int | None,
-        what: str,
     ) -> Iterable[pl.DataFrame]:
         """The frames to feed, from a plan, a frame, or an iterator of frames.
-        Only a plan has an order still to be decided, so only a plan is
-        inspected for a node that leaves it unspecified."""
-        if isinstance(batches, pl.LazyFrame):
-            from polars_online._frame import _warn_if_order_unspecified
 
-            _warn_if_order_unspecified(batches, f"ModelBank.{what}")
+        The plan's order is inspected by :meth:`_batches`, which can see the
+        specs; whether the warning applies depends on them, and this cannot."""
+        if isinstance(batches, pl.LazyFrame):
             rows = _native.default_chunk_rows() if chunk_rows is None else chunk_rows
             return batches.collect_batches(chunk_size=rows, maintain_order=True)
         if isinstance(batches, pl.DataFrame):
@@ -488,6 +498,18 @@ class ModelBank:
         Give a join ``maintain_order="left"`` or sort before the bank; such a plan
         raises :class:`polars_online.OrderNotGuaranteedWarning` naming the node
         (:meth:`fit_predict_batches` says more).
+
+        **With one exception, and it is this method's alone.** A fit whose every
+        spec is an accumulator with no decay -- ``ewridge``, ``rls``, ``huber`` or
+        ``lasso`` at ``lam=1.0``, no ``window``, no session, no drift reset --
+        reaches the same coefficients whatever order the rows arrived in, because
+        its sums commute. Measured to rounding, not to the bit: 3.3e-16 over 200
+        rows. Since :meth:`fit` returns nothing and keeps only the state, the
+        order genuinely does not matter there, and no warning is raised. It still
+        is for :meth:`fit_predict_batches` over the same specs, whose predictions
+        are out-of-sample and so move with the order (1.33 on those same rows),
+        and for every model whose update does not commute -- ``sgd``, ``pa``,
+        ``ftrl`` and ``quantile`` differ materially with no decay at all.
 
         .. code-block:: python
 

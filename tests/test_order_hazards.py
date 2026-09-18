@@ -198,3 +198,157 @@ def test_the_warning_points_at_the_caller_not_the_library():
     with pytest.warns(po.OrderNotGuaranteedWarning) as rec:
         po.ModelBank([SPEC]).fit(lf, chunk_rows=4)
     assert rec[0].filename == __file__, rec[0].filename
+
+
+# ------------------------------------ the exception: a fit whose order cannot
+# ------------------------------------ change what it leaves behind
+
+#: No decay, no window, nothing that reads a sequence: an accumulation, whose
+#: sums commute. `SPEC` above has a `halflife`, so every test before this one
+#: is disqualified and warns exactly as it did.
+FREE = po.spec.ewridge("m", targets=["y"], features=["x0"], lam=1.0, min_periods=1.0)
+
+
+def _rows(n: int = 200) -> pl.DataFrame:
+    """Enough rows that a shuffle says something; `left()` has nine."""
+    import math
+
+    x0 = [math.sin(i * 0.3) for i in range(n)]
+    return pl.DataFrame(
+        {
+            "t": [float(i) for i in range(n)],
+            "x0": x0,
+            "y": [0.7 * x0[i] + 0.05 * math.sin(i) for i in range(n)],
+        }
+    )
+
+
+def _coefs(spec, frame) -> list[float]:
+    bank = po.ModelBank([spec])
+    bank.fit(frame.lazy())
+    return bank.coef("m")["coef"].to_list()
+
+
+def _spread(spec, frame) -> float:
+    """How far the fitted coefficients move when the same rows arrive shuffled."""
+    shuffled = frame.sample(fraction=1.0, shuffle=True, seed=7)
+    a, b = _coefs(spec, frame), _coefs(spec, shuffled)
+    assert len(a) == len(b)
+    return max(abs(x - y) for x, y in zip(a, b, strict=True))
+
+
+def test_an_accumulator_with_no_decay_is_recognised_as_order_free():
+    from polars_online._frame import _order_free
+
+    assert _order_free([FREE])
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        pytest.param(SPEC, id="halflife"),
+        pytest.param(
+            po.spec.ewridge(
+                "m", targets=["y"], features=["x0"], lam=1.0, window=50, min_periods=1.0
+            ),
+            id="window",
+        ),
+        pytest.param(
+            po.spec.sgd("m", targets=["y"], features=["x0"], lam=1.0, min_periods=1.0),
+            id="gradient-model",
+        ),
+        pytest.param(
+            po.spec.ewridge(
+                "m",
+                targets=["y"],
+                features=["x0"],
+                lam=1.0,
+                min_periods=1.0,
+                drift_action="reset",
+                drift_threshold=0.5,
+                drift_delta=0.01,
+                emit_drift=True,
+            ),
+            id="drift-reset",
+        ),
+    ],
+)
+def test_what_is_not_order_free(spec):
+    """``window`` lives *inside* the nested ``model`` dict, so a check that
+    read only top-level keys would let a windowed spec through -- the worst
+    case after a drift reset, which moves the coefficients by 8.9e-01."""
+    from polars_online._frame import _order_free
+
+    assert not _order_free([spec])
+
+
+def test_an_unrecognised_spec_key_is_not_order_free():
+    """The property that makes this safe to ship: a key in neither table fails
+    the check, so an option added later cannot quietly become exempt."""
+    from polars_online._frame import _order_free
+
+    assert not _order_free([{**FREE, "an_option_added_later": 7}])
+
+
+def test_one_disqualifying_spec_disqualifies_the_bank():
+    from polars_online._frame import _order_free
+
+    grad = po.spec.sgd("m2", targets=["y"], features=["x0"], lam=1.0, min_periods=1.0)
+    assert not _order_free([FREE, grad])
+    assert not _order_free([])
+
+
+def test_fit_over_an_order_free_spec_says_nothing():
+    """The false positive this removes: the plan's order is unspecified, and
+    for this fit it cannot matter."""
+    quiet(lambda: po.ModelBank([FREE]).fit(left().join(right(), on="k")))
+
+
+def test_the_same_spec_still_warns_wherever_predictions_are_handed_back():
+    """`fit` keeps only the state; everything else returns predictions, and a
+    prediction is out-of-sample -- so reordering moves all of them."""
+    lf = left().join(right(), on="k")
+    with pytest.warns(po.OrderNotGuaranteedWarning):
+        list(po.ModelBank([FREE]).fit_predict_batches(lf))
+    with pytest.warns(po.OrderNotGuaranteedWarning):
+        lf.online.fit_predict([FREE]).collect()
+
+
+def test_a_disqualified_fit_still_warns():
+    lf = left().join(right(), on="k")
+    with pytest.warns(po.OrderNotGuaranteedWarning):
+        po.ModelBank([SPEC]).fit(lf)
+
+
+# --------------------------------------------- the premise, re-derived here so
+# --------------------------------------------- the suppression cannot outlive it
+
+
+def test_an_accumulators_coefficients_commute():
+    """To rounding, never to the bit: the Gram sums commute mathematically but
+    not in floating point. If this ever fails, the exception above is wrong."""
+    assert _spread(FREE, _rows()) < 1e-12
+
+
+def test_a_gradient_models_coefficients_do_not_commute_even_with_no_decay():
+    """Why "no halflife" is not on its own a reason to expect order not to
+    matter: this update is not commutative, and no decay does not change that."""
+    grad = po.spec.sgd("m", targets=["y"], features=["x0"], lam=1.0, min_periods=1.0)
+    assert _spread(grad, _rows()) > 1e-6
+
+
+def test_predictions_move_even_where_the_coefficients_do_not():
+    """The reason the exception stops at `fit`. Same spec, same rows: the
+    coefficients agree to rounding and the predictions do not."""
+    frame = _rows()
+    shuffled = frame.sample(fraction=1.0, shuffle=True, seed=7)
+
+    def preds(f: pl.DataFrame) -> list[float]:
+        out = po.ModelBank([FREE]).fit_predict(f)
+        field = next(x for x in out["m"].struct.fields if x.startswith("pred"))
+        return f.with_columns(p=out["m"].struct.field(field)).sort("t")["p"].to_list()
+
+    a, b = preds(frame), preds(shuffled)
+    both = [(x, y) for x, y in zip(a, b, strict=True) if x is not None and y is not None]
+    assert both, "no row was predicted in both runs"
+    assert max(abs(x - y) for x, y in both) > 1e-6

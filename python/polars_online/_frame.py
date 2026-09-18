@@ -197,6 +197,20 @@ class OrderNotGuaranteedWarning(UserWarning):
     already holding a bank, for instance -- is let through in silence: the
     inspection never fails a run. For a plan whose order is fixed by other
     means, ``warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning)``.
+
+    **Not raised by** :meth:`ModelBank.fit` **when every spec is an accumulator
+    with no decay** -- ``ewridge``, ``rls``, ``huber`` or ``lasso`` at
+    ``lam=1.0``, no ``window``, no session, no drift reset. Those sums commute,
+    so the state after that fit is the same whatever the order (to rounding:
+    3.3e-16 over 200 rows), and ``fit`` keeps only the state. The exception is
+    that narrow on purpose. It does not extend to ``fit_predict_batches`` or to
+    the plan form, whose predictions are out-of-sample and so move with the
+    order even where the coefficients do not (1.33 on the same rows); nor to a
+    model whose update does not commute, which is every other one -- ``sgd``,
+    ``pa``, ``ftrl`` and ``quantile`` all differ materially with no decay at
+    all, so "no halflife" is not by itself a reason to expect order not to
+    matter. A spec option the check does not recognise counts as unsafe, so a
+    key added later cannot quietly become exempt.
     """
 
 
@@ -318,6 +332,131 @@ def _order_hazards(lf: pl.LazyFrame) -> list[str]:
     except Exception:  # any failure to read the plan is "no finding", by design
         return []
     return found
+
+
+#: Models whose fit is an accumulation, so the state after a ``fit()`` is the
+#: same whatever order the rows arrived in -- **to rounding, never to the
+#: bit**: the Gram sums commute mathematically but not in floating point.
+#: Measured over 200 rows with no decay: ``ewridge`` 3.3e-16, ``rls`` 8.9e-16,
+#: ``huber`` 6.7e-16, ``lasso`` 7.8e-16. Every other model moves materially
+#: even with no decay at all, because its update is not commutative --
+#: ``sgd`` 5.9e-03, ``pa`` 5.1e-02, ``ftrl`` 3.3e-02, ``quantile`` 2.8e-03 --
+#: so "no halflife" is not on its own a reason to expect order not to matter.
+_ORDER_FREE_MODELS = frozenset({"ew_ridge", "rls", "huber", "lasso"})
+
+#: Spec keys that change the *path* a fit takes, with the only values that
+#: leave it order-free. Measured on the same rows: ``window`` 8.3e-03,
+#: ``gram_block_rows`` 6.3e-04 (which row sits in the pending block when a
+#: solve fires depends on arrival order), ``label_delay`` 4.3e-04, and
+#: ``drift_action="reset"`` **8.9e-01** -- the largest of all, and the one that
+#: read as harmless until the fixture actually made drift fire. The rest are
+#: denied as *unproven* rather than refuted: their code path never ran in the
+#: probe, and a green result from a path that did not execute is not evidence.
+_ORDER_FREE_ONLY_WHEN: dict[str, tuple[Any, ...]] = {
+    "lam": (1.0,),
+    "halflife": (None,),
+    "window": (None,),
+    "window_budget": (None,),
+    "window_every": (None,),
+    "label_delay": (None,),
+    "gram_block_rows": (None,),
+    "drift_action": ("flag",),
+    "session": (None,),
+    "session_gap": (None,),
+    "session_shrink": (None,),
+    "long_halflife": (None,),
+    "ridge_decay": (False,),
+    "conformal": (None,),
+    "conformal_rate": (None,),
+    "average_eta": (None,),
+    "emit_averaged": (False,),
+    "group_close": (None,),
+    "weight": (None,),
+    "on_clock_reset": ("max",),
+    "target_gaps": ("own_rows",),
+    "coef_every": (0,),
+    "emit_autocorr": (False,),
+    "emit_metrics": (False,),
+    "emit_resid_z": (False,),
+    "emit_selected": (False,),
+    "emit_sigma": (False,),
+    "resid_autocorr_lag": (None,),
+    "resid_quantiles": (None,),
+}
+
+#: Keys free to hold any value without touching order-freeness: what the fit
+#: reads, how it solves, and (for ``emit_drift``, measured at 3.3e-16 with
+#: ``drift_action`` left at ``"flag"``) what it reports. ``group`` is here
+#: because each group accumulates independently, and ``standardize`` and
+#: ``select_halflife`` because both measured at rounding.
+_ORDER_FREE_ANY = frozenset(
+    {
+        "name",
+        "type",
+        "targets",
+        "features",
+        "feature_sets",
+        "min_periods",
+        "group",
+        "clock",
+        "max_dclock",
+        "add_intercept",
+        "standardize",
+        "ridge",
+        "coef_prior",
+        "solve_every",
+        "max_rows_between_solves",
+        "huber_delta",
+        "cd_tol",
+        "l1_ratio",
+        "lasso_path",
+        "max_cd_iters",
+        "select_halflife",
+        "emit_drift",
+        "drift_delta",
+        "drift_threshold",
+    }
+)
+
+
+def _spec_items(spec: Any) -> Any:
+    """Every ``(key, value)`` of a spec, with the nested ``model`` dict walked
+    in place -- ``window`` lives *there* for ``ewridge`` and ``lasso``, not at
+    the top level, so a top-level-only check would miss a windowed spec, which
+    is the worst case after a drift reset."""
+    for key, value in spec.items():
+        if key == "model" and isinstance(value, dict):
+            yield from value.items()
+        else:
+            yield key, value
+
+
+def _order_free(specs: Any) -> bool:
+    """Whether ``ModelBank.fit`` over these specs reaches the same state
+    whatever order the rows arrive in -- to rounding, not to the bit.
+
+    Deliberately narrow, and **unknown means no**: a key in neither table
+    fails the check, so a spec option added later cannot quietly become exempt
+    from the warning. Relaxing an entry is a measurement, not a guess.
+
+    This is about ``fit()`` alone, whose product is the state. It is never
+    about a prediction: ``pred`` is out-of-sample by construction, so row *i*
+    is predicted from the rows before it, and reordering moves every
+    prediction even where the coefficients commute (measured: 1.33 on a
+    no-decay ``ewridge`` whose coefficients agreed to 3.3e-16)."""
+    if not specs:
+        return False
+    for spec in specs:
+        model = spec.get("model")
+        if not isinstance(model, dict) or model.get("type") not in _ORDER_FREE_MODELS:
+            return False
+        for key, value in _spec_items(spec):
+            if key in _ORDER_FREE_ONLY_WHEN:
+                if not any(value == ok for ok in _ORDER_FREE_ONLY_WHEN[key]):
+                    return False
+            elif key not in _ORDER_FREE_ANY:
+                return False
+    return True
 
 
 def _warn_if_order_unspecified(lf: pl.LazyFrame, what: str) -> None:
