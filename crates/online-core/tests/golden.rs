@@ -145,6 +145,24 @@ fn ew_ridge_standardized_golden() {
     check("ew_ridge_std", &signature(&mut m, 0), GOLDEN_EW_RIDGE_STD);
 }
 
+#[test]
+fn ew_ridge_windowed_golden() {
+    // A hard window with `window_every = 3`: the fit reads only the rows
+    // inside the window, and a snapshot is kept every third row. This pins it
+    // so P1's move of the snapshot build into the `offer` closure -- built
+    // only when it is kept, not on every row -- cannot move a number (review
+    // 2026-09-18, P1).
+    let mut c = ewridge_cfg(false, 1e-4);
+    c.window = Some(30.0);
+    c.window_every = Some(3);
+    let mut m = EwRidge::new(c).unwrap();
+    check(
+        "ew_ridge_windowed",
+        &signature(&mut m, 0),
+        GOLDEN_EW_RIDGE_WINDOWED,
+    );
+}
+
 /// The through-origin fits move no number above (every signature there has
 /// an intercept), so the branches that only they take -- `ew_ridge`'s
 /// standardized solve through the origin, with the warm prior it dropped
@@ -847,6 +865,8 @@ const GOLDEN_DECO_LOGLIK: &[f64] = &[-2.2831901919538913, -3.7586606055778677, -
 // 59 moved; row 20, before it, moved in the last bits only (`lasso` keeps
 // its cross-moments centred now, N2).
 const GOLDEN_EW_RIDGE: &[f64] = &[0.23958810892448573, 2.20363868480897, -0.06755913936964057];
+const GOLDEN_EW_RIDGE_WINDOWED: &[f64] =
+    &[0.23958810892448573, 2.192008777608849, -0.07602329017942382];
 const GOLDEN_EW_RIDGE_STD: &[f64] = &[
     0.24074332641726603,
     2.1866449169182474,

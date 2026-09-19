@@ -165,7 +165,7 @@ fn probe_with<M: OnlineModel>(
 /// move under `clear_lags`. Everything else must not: `clear_lags` is not a
 /// reset, and a model that quietly threw away a mean here would look like a
 /// decay bug three chunks later (docs/PLAN.md task 47).
-const KEEPS_LAGS: &[&str] = &["rcov", "corrchange", "ew_cov"];
+const KEEPS_LAGS: &[&str] = &["rcov", "corrchange", "ew_cov", "marginal"];
 
 /// Models that report on some rows and not others by design -- a span-based
 /// test writes its statistic where the span closes -- so the predict-parity
@@ -585,8 +585,26 @@ fn every_state_kind_is_distinct_and_named() {
     // `ModelState::kind` names the model in every state error; a mutation that
     // returns a constant would make "expected X, found Y" meaningless.
     let kinds = [
-        "ew_ridge", "rls", "lasso", "kalman", "robust", "ftrl", "sgd", "pa", "holt", "ew_cov",
-        "kmeans", "micro", "ew_class", "seqtest", "marginal",
+        "ew_ridge",
+        "rls",
+        "lasso",
+        "kalman",
+        "robust",
+        "ftrl",
+        "sgd",
+        "pa",
+        "holt",
+        "ew_cov",
+        "kmeans",
+        "micro",
+        "ew_class",
+        "seqtest",
+        "marginal",
+        "deco",
+        "rcov",
+        "hmm",
+        "corrchange",
+        "bocpd",
     ];
     let mut seen = std::collections::HashSet::new();
     for k in kinds {
@@ -698,7 +716,10 @@ fn marginal_cfg() -> MarginalCfg {
         n_targets: 2,
         decay: decay(),
         min_periods: vec![3.0; 2],
-        lags: Vec::new(),
+        // A lag, so the contract exercises marginal's `clear_lags` arm (it
+        // keeps a lag ring; review 2026-09-18, T2) -- which is why marginal is
+        // in KEEPS_LAGS above.
+        lags: vec![1],
         serial_rule: None,
         bins: None,
         window: None,
@@ -1925,7 +1946,6 @@ fn hmm_recovers_from_bounded_extremes() {
     // return to the twin's once the extreme row has decayed away.
     let rows = bounded_script(0);
     let mut m = Hmm::new(hmm_cfg()).unwrap();
-    let mut twin = Hmm::new(hmm_cfg()).unwrap();
     for r in &rows {
         let step = m.step(&r.x, &r.y, 1.0, r.w);
         assert!(step.n_eff.is_finite());
@@ -1938,11 +1958,11 @@ fn hmm_recovers_from_bounded_extremes() {
             assert!(p.iter().all(|v| (0.0..=1.0).contains(v)));
             assert!((p.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         }
-        if !r.extreme {
-            twin.step(&r.x, &r.y, 1.0, r.w);
-        }
     }
-    let _ = twin;
+    // A clean twin was stepped through this whole script and then discarded:
+    // agreement is not a property a filter has (the comment above), so the
+    // twin proved nothing and ran a full-covariance two-state filter for
+    // ~30 500 rows on every `cargo test` for nothing (review 2026-09-18, T2).
     // Every state's moments are finite, and the model goes on filtering.
     for s in 0..2 {
         assert!(m.state_cov(s).means().iter().all(|v| v.is_finite()));

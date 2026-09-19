@@ -287,9 +287,17 @@ impl Kalman {
         &self.sig2
     }
 
-    /// Predictive variance of the *last* prediction, per target:
-    /// `zᵀ P_j z + R_j` — parameter uncertainty plus observation noise
-    /// (ENHANCEMENTS E12).
+    /// Variance of the *last* prediction, per target: `zᵀ P_j z + R_j` —
+    /// parameter uncertainty plus observation noise (ENHANCEMENTS E12).
+    ///
+    /// `P` here is the covariance as it stands, so this is the **filtered**
+    /// variance at the last regressor `z`, not the one-step-ahead predictive
+    /// variance: that would carry `P` through the transition and add the
+    /// process noise for the next step's gap, `zᵀ(Φ P Φᵀ + Q·Δ)z + R`. The
+    /// two differ by `zᵀ(Φ P Φᵀ − P + Q·Δ)z`, which the default random walk
+    /// (`Φ = I`) reduces to `Q·Δ`: negligible under a halflife-derived `q`
+    /// (about 0.7 % of `R` at halflife 100), not under a large explicit `q`
+    /// (review 2026-09-18, D2).
     ///
     /// This is the piece `sigma` alone cannot give. `sigma` is the spread of
     /// realized errors; this also knows how unsure the filter is about its own

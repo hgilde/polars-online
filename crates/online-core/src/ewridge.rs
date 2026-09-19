@@ -997,12 +997,16 @@ impl OnlineModel for EwRidge {
         // itself, so the boundary cannot depend on the chunking.
         if let Some(win) = self.win.as_mut() {
             let t = win.clock + d_clock;
-            let snap = RidgeMoments {
+            // Built inside the closure, so the O(k²) snapshot is only formed
+            // on the rows `offer` actually keeps -- one in `window_every` --
+            // rather than on every row and then dropped (review 2026-09-18,
+            // P1). The closure reads `acc`/`wsig`/`sig2`, disjoint fields from
+            // `win`, so the borrows do not collide.
+            win.snaps.offer(t, || RidgeMoments {
                 acc: self.acc.snapshot(lam),
                 wsig: self.wsig.iter().map(|w| w * lam).collect(),
                 sig2: self.sig2.clone(),
-            };
-            win.snaps.offer(t, || snap);
+            });
             win.clock = t;
             win.snaps.trim(t);
         }

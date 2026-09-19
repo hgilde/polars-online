@@ -1,7 +1,7 @@
 //! Bank-level integration tests: chunk invariance, save/load mid-stream,
 //! per-group independence (docs/PLAN.md §9). The oracle tests live in pytest.
 
-use online_polars::{Bank, ChunkOut, GroupKey, Spec, Stream};
+use online_polars::{Bank, ChunkOut, GroupKey, ModelKind, Spec, Stream};
 use polars::prelude::*;
 
 fn spec_json(name: &str, group: bool) -> Spec {
@@ -644,6 +644,16 @@ fn only_models_that_predict_a_target_have_residual_fields() {
         r#"{"type": "ew_class", "classes": ["a", "b"], "precision_prior": 1.0}"#,
         r#"{"type": "seqtest"}"#,
         r#"{"type": "marginal"}"#,
+        // The regime and covariance kinds that predict no target, so this
+        // test covers every ModelKind rather than a subset (review
+        // 2026-09-18, T3). Only parsed here -- their run-time needs (rcov's
+        // `group_close`, a hazard column) are not required to read the output
+        // schema.
+        r#"{"type": "deco"}"#,
+        r#"{"type": "rcov"}"#,
+        r#"{"type": "hmm", "k": 2, "precision_prior": 0.1}"#,
+        r#"{"type": "corrchange"}"#,
+        r#"{"type": "bocpd"}"#,
     ];
     let mut seen = Vec::new();
     for model in kinds {
@@ -669,7 +679,15 @@ fn only_models_that_predict_a_target_have_residual_fields() {
     }
     seen.sort();
     seen.dedup();
-    assert_eq!(seen.len(), kinds.len(), "one spec per model kind: {seen:?}");
+    // Against `ModelKind::KINDS`, not `kinds.len()`: a new kind added to the
+    // enum and forgotten here now fails this test rather than passing a
+    // subset (review 2026-09-18, T3).
+    assert_eq!(
+        seen.len(),
+        ModelKind::KINDS.len(),
+        "every ModelKind needs a spec here: have {seen:?}, KINDS is {:?}",
+        ModelKind::KINDS
+    );
 }
 
 /// `n` rows of `k` finite features `x0..`, a target `y` on the first two and

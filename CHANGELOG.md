@@ -62,6 +62,24 @@ state schema is 11.
   restored model's width with the spec's. All of it is refused as an
   invalid state, as `ew_ridge`, `sgd` and `kalman` already did, and the
   bit-flip fuzz now runs `fit_predict` on every state that loads (B3).
+- **The sign hit rate ages on an excluded zero target.** Under a non-binary
+  loss a finite `y == 0` is not scored (it has no sign), but it now ages the
+  hit weight like any other row; before, the hit rate ran on a different
+  clock from `ic` and `r2` on a stream with exact zeros (S1).
+- **`ew_cov`'s lag-correlation reads `None` until a pair of the configured
+  lag exists.** For `lag >= 2` the accessor returned `Some(0.0)` for the
+  first `lag - 1` rows, before any lagged pair had been seen (D1).
+- **A windowed `marginal` or `ew_class` reports `n_eff` as exactly 0 once a
+  gap empties the window**, matching its pairs, rather than the rounding
+  crumb the truncating subtraction left (S4).
+
+### Performance
+
+- **The windowed models build their per-row snapshot only when the window
+  keeps it.** `ew_ridge`, `ew_cov`, `lasso`, `marginal` and `ew_class` built
+  an O(k²) snapshot on every row and dropped all but one in `window_every`;
+  it is now formed inside the store, so the discarded ones are never built.
+  No output changes (P1).
 
 ### Changed
 

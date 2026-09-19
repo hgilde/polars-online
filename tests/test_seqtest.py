@@ -688,9 +688,11 @@ class TestEdgeCases:
             mask = pl.col("g").is_null() if g is None else pl.col("g") == g
             solo = po.ModelBank([spec()]).fit_predict(df.filter(mask).drop("g"))
             assert unnested(both.filter(mask)).equals(unnested(solo), null_equal=True), g
-        assert sorted(
-            po.ModelBank([spec(group="g")]).fit_predict(df)["g"].unique().to_list(), key=str
-        )
+        # A null key is its own group: the three keys are present, null and
+        # all. The old `assert sorted(...)` on a non-empty list was always
+        # true (review 2026-09-18, minor).
+        keys = po.ModelBank([spec(group="g")]).fit_predict(df)["g"].unique().to_list()
+        assert set(keys) == {"p", "q", None}, keys
 
     def test_the_clock_neither_decays_nor_stops_it(self):
         # No decay: the same stream on a regular clock, an irregular one and

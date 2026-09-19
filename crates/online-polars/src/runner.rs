@@ -477,6 +477,12 @@ pub fn run_config_on(
     if let Some(p) = &cfg.save_state {
         check_parent("saving state", p)?;
     }
+    // The output directory too, so an unwritable one is refused before the
+    // bank learns a chunk rather than by the writer thread mid-run (review
+    // 2026-09-18, minor). Skipped under `--no-output`, where the path is empty.
+    if !cfg.no_output() {
+        check_parent("writing output", &cfg.output)?;
+    }
     let closed_target = cfg
         .closed_groups_target()
         .map_err(|e| polars_err!(ComputeError: "{}", e))?;

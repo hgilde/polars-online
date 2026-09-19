@@ -40,8 +40,8 @@ them, and the README's *Diagnostics* table has them.
 
 | field | meaning |
 |---|---|
-| `u` | the equicorrelation the block currently sits at |
-| `rho` | the correlation that implies for every pair in the block |
+| `u` | the equicorrelation this row alone implies (Lemma 2.3, from the standardized row) |
+| `rho` | the block's equicorrelation level, the smoothed value `u` is folded into |
 | `loglik` | log-likelihood of the row under the fitted model |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
 | `coef` | the coefficients behind the fit, refreshed on the solve schedule |

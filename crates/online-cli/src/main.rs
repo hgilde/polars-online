@@ -209,12 +209,22 @@ fn run() -> Result<(), String> {
     if !quiet {
         eprintln!();
     }
-    println!(
-        "wrote {} rows ({} chunks) to {}",
-        stats.rows,
-        stats.chunks,
-        cfg.output.display()
-    );
+    if cfg.no_output() {
+        // Under `--no-output` the path is empty, so name the outcome rather
+        // than print a trailing "to " with nothing after it (review
+        // 2026-09-18, minor).
+        println!(
+            "processed {} rows ({} chunks), no output",
+            stats.rows, stats.chunks
+        );
+    } else {
+        println!(
+            "wrote {} rows ({} chunks) to {}",
+            stats.rows,
+            stats.chunks,
+            cfg.output.display()
+        );
+    }
     if let Some(p) = &cfg.closed_groups {
         println!("wrote closed groups to {}", p.display());
     }

@@ -206,9 +206,26 @@ def test_exog_tvtp_reads_the_column():
         tvtp_coef=[[0.0, 0.0, 0.0, 0.0], [0.0, 5.0, 0.0, 0.0]],
     )
     assert out["p1_0"].drop_nulls().len() > 0
-    # z = 0: row 0 of Pi is uniform. z = 1: it leans hard to state 1, so a
-    # row that was in state 0 predicts state 1.
-    assert out["p1_1"][350] > out["p1_1"][50] or out["p1_0"][50] < 1.0
+    # z = 0: the base transition. z = 1: it leans hard to state 1, so a row
+    # in the z = 1 stretch predicts state 1 more strongly than one in the
+    # z = 0 stretch. The old assertion had an `or p1_0[50] < 1.0` disjunct
+    # that is true on any non-degenerate row, so nothing failed if the column
+    # was ignored (review 2026-09-18, T5).
+    assert out["p1_1"][350] > out["p1_1"][50], (out["p1_1"][350], out["p1_1"][50])
+    # Control: the same stream with z = 0 everywhere is the base transition,
+    # so if the column were read at all its p1_1 at row 350 must differ.
+    base = run(
+        df.with_columns(z=pl.lit(0.0)),
+        learn=False,
+        means=[-2.0, -2.0, 2.0, 2.0],
+        covs=[1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0],
+        exog_tvtp="z",
+        tvtp_coef=[[0.0, 0.0, 0.0, 0.0], [0.0, 5.0, 0.0, 0.0]],
+    )
+    assert abs(out["p1_1"][350] - base["p1_1"][350]) > 0.05, (
+        out["p1_1"][350],
+        base["p1_1"][350],
+    )
 
 
 def test_min_periods_gates_the_report_not_the_update():

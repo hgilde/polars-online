@@ -367,10 +367,11 @@ def test_a_session_close_splits_the_run_and_restarts_the_stream():
     assert closed["rows_fed"].to_list() == [5, 5]
     # The new session's first row is a first row: its clock starts over.
     assert closed["clock_min"].to_list() == [0.0, 5.0]
-    assert bank.gram("c")[0]["n_eff"] == pytest.approx(
-        po.ModelBank([cov_spec(group_close="session", session="s")]).fit_predict(df.tail(5)).height
-        and bank.gram("c")[0]["n_eff"]
-    )
+    # The live gram is the current five-row span. The old assertion compared
+    # `n_eff` with `height and n_eff`, and `height` (5) is truthy, so it
+    # compared the value with itself (review 2026-09-18, minor). Five rows at
+    # halflife 40 sum to 4.83.
+    assert 4.5 < bank.gram("c")[0]["n_eff"] < 5.0, bank.gram("c")[0]["n_eff"]
 
 
 @pytest.mark.parametrize("size", [1, 2, 4, 15])

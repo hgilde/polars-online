@@ -33,7 +33,14 @@ source scripts/env.sh
 args=(--package online-core -j 4 --minimum-test-timeout 10)
 # Anything starting with `-` is a cargo-mutants flag; a bare word is a file to
 # scope to. That keeps the common `./scripts/mutants.sh some/file.rs` working
-# while allowing `--iterate` and `--in-diff` through.
+# while allowing `--iterate` and `--in-diff <(...)` through: a `-`-flag takes
+# the following bare word as its value, which is what `--in-diff` needs.
+#
+# The corollary is that a value-less flag must not be followed by a bare file:
+# `--iterate some/file.rs` hands the file to `--iterate` instead of `--file`.
+# Scope with a bare file (`mutants.sh some/file.rs`) or pass `--iterate` alone;
+# to combine, use `--file`: `mutants.sh --iterate --file some/file.rs` (review
+# 2026-09-18).
 while [ $# -gt 0 ]; do
     case "$1" in
         -*) args+=("$1"); shift; if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then args+=("$1"); shift; fi ;;

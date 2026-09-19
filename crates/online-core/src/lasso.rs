@@ -642,12 +642,13 @@ impl OnlineModel for Lasso {
         // row's clock, so subtracting it later retains this row and after.
         if let Some(win) = self.win.as_mut() {
             let t = win.clock + d_clock;
-            let snap = LassoMoments {
+            // Built inside the closure so the snapshot is only formed on the
+            // rows `offer` keeps, not on every row (review 2026-09-18, P1).
+            win.snaps.offer(t, || LassoMoments {
                 acc: self.acc.snapshot(lam_decay),
                 sel_w: self.sel_w.iter().map(|w| w * lam_decay).collect(),
                 sel_err: self.sel_err.clone(),
-            };
-            win.snaps.offer(t, || snap);
+            });
             win.clock = t;
             win.snaps.trim(t);
         }

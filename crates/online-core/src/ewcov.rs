@@ -1705,8 +1705,9 @@ impl crate::OnlineModel for EwCovModel {
         // boundary cannot depend on how the data was chunked (hard rule 3).
         if let Some(win) = self.win.as_mut() {
             let t = win.clock + d_clock;
-            let snap = crate::Moments::of(&self.cov, lam);
-            win.snaps.offer(t, || snap);
+            // Built inside the closure so the O(k²) snapshot is only formed on
+            // the rows `offer` keeps, not on every row (review 2026-09-18, P1).
+            win.snaps.offer(t, || crate::Moments::of(&self.cov, lam));
             win.clock = t;
             win.snaps.trim(t);
         }

@@ -105,7 +105,7 @@ def test_the_bank_really_did_learn_nothing_on_the_second_run():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", po.ConsumedSourceWarning)
         second.fit(lf)
-    assert second.coef("m").height == 0 or second.coef("m")["value"].is_null().all(), (
+    assert second.coef("m").height == 0 or second.coef("m")["coef"].is_null().all(), (
         "the second bank saw rows, so this test no longer reproduces the hazard"
     )
     assert first.coef("m").height > 0, "the first bank should have fit"

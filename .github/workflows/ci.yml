@@ -11,9 +11,11 @@ name: CI
 #   private, manual dispatch      ->  all three (an explicit human decision)
 #   public, anything              ->  all three
 #
-# The switch is `github.event.repository.private`, tested with `!= false` so a
+# The switch is `github.event.repository.private`, tested with `== false` so a
 # missing field -- an event whose payload has no repository -- falls to the
-# CHEAP side rather than the expensive one. tests/test_ci_cost_policy.py pins
+# CHEAP side rather than the expensive one: only an explicit `private == false`
+# (a known-public repo) takes the expensive branch, and `null == false` is
+# false, so a missing field does not. tests/test_ci_cost_policy.py pins
 # every clause of this, because the previous version of this expression read
 # `event_name == 'push' && cheap || expensive` and so quietly handed the full
 # macOS matrix to every pull request: 830 billed minutes, 37% of the month, on

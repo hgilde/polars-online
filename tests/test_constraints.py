@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import math
 import subprocess
+import zlib
 
 import numpy as np
 import polars as pl
@@ -411,7 +412,12 @@ class TestOracle:
     @pytest.mark.parametrize("schedule", ["constant", "inv_scaling", "adagrad"])
     def test_sgd_matches_the_replay(self, which, schedule):
         kw = CONSTRAINTS[which]
-        X, y, t, w = _stream(3000, 3, seed=hash((which, schedule)) % 1000, truth=[0.4, 0.3, -0.2])
+        # `crc32`, not `hash`: `str.__hash__` is salted per process
+        # (PYTHONHASHSEED), so a `hash`-derived seed -- and the stream each
+        # case runs on -- changed every run, and a failure would not reproduce
+        # under `-k` (review 2026-09-18, T4).
+        seed = zlib.crc32(f"{which}/{schedule}".encode()) % 1000
+        X, y, t, w = _stream(3000, 3, seed=seed, truth=[0.4, 0.3, -0.2])
         lo, hi, s = _bounds(3, kw)
         spec = po.spec.sgd(
             "m",
@@ -450,7 +456,9 @@ class TestOracle:
     @pytest.mark.parametrize("mode", ["pa", "pa1", "pa2"])
     def test_pa_matches_the_replay(self, which, mode):
         kw = CONSTRAINTS[which]
-        X, y, t, w = _stream(3000, 3, seed=hash((which, mode)) % 1000, truth=[0.4, 0.3, -0.2])
+        # A process-stable seed, as above (review 2026-09-18, T4).
+        seed = zlib.crc32(f"{which}/{mode}".encode()) % 1000
+        X, y, t, w = _stream(3000, 3, seed=seed, truth=[0.4, 0.3, -0.2])
         lo, hi, s = _bounds(3, kw)
         spec = po.spec.pa(
             "m",

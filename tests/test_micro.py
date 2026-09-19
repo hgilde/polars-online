@@ -687,7 +687,8 @@ class TestEdgeCases:
         lengths = {len(c) for c in coef.drop_nulls()}
         assert all(n % 6 == 0 for n in lengths) and len(lengths) > 3
         last = np.array(coef[-1]).reshape(-1, 6)
-        assert len(set(last[:, 1])) == out["n_clusters"][-1] or True  # counted before the row
+        # (The old `... or True` line here asserted nothing; the oracle check
+        # below is the real one -- review 2026-09-18, minor.)
         m = ref.micro_ref(X.tolist(), eps=0.1, halflife=1000.0, min_periods=0.0)["model"][0]
         assert len(set(last[:, 1])) == m.n_clusters
         assert (last[:, 2] >= 3.0).all(), "a potential summary weighs at least beta_mu"

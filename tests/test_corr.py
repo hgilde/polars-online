@@ -357,7 +357,6 @@ def test_a_noise_spectrum_lies_inside_the_edges():
 
 
 def test_signal_share_is_zero_for_pure_noise_and_one_for_a_real_move():
-    rng = np.random.default_rng(9)
     n = 200
     # Blocks whose true correlation never moves: all the variation is the
     # sampling floor.
@@ -372,7 +371,6 @@ def test_signal_share_is_zero_for_pure_noise_and_one_for_a_real_move():
     both = np.column_stack([noise, real])
     got = corr.signal_share(both, np.full(40, n))
     assert got.shape == (2,) and got[1] > got[0]
-    assert rng is not None
 
 
 # --- scoring --------------------------------------------------------------

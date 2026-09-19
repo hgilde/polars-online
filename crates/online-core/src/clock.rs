@@ -178,6 +178,19 @@ impl ClockState {
     /// // state to nothing.
     /// assert_eq!(clock.advance(&cfg, Some(1e6), None, true).d_clock, 60.0);
     /// ```
+    ///
+    /// `on_clock_reset` handles a *backwards* delta, and only within a
+    /// session: on a session change the delta is `session_gap` if set,
+    /// otherwise the raw delta clamped to `[0, max_dclock]` -- so a backwards
+    /// raw delta whose row *also* changes session is clamped to 0 rather than
+    /// routed through `on_clock_reset`. The bank never builds that
+    /// combination (a spec with a `session` column requires `session_gap`
+    /// unless `group_close = "session"`, which resegments the run at each
+    /// boundary so the clock never compares across one; `spec.rs`), so it
+    /// reaches only a direct `online-core` caller. Such a caller that wants a
+    /// backwards clock refused across a session change must leave `session`
+    /// unset for that check; here a session change with `session_gap = None`
+    /// is deliberately an ordinary forward row (review 2026-09-18, B1).
     pub fn advance(
         &mut self,
         cfg: &ClockCfg,

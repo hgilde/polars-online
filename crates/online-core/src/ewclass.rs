@@ -297,7 +297,16 @@ impl EwClass {
         match win.snaps.boundary() {
             Some((u, old)) if old.n_eff > 0.0 => {
                 let f = self.cfg.decay.factor(win.clock - u);
-                (self.n_eff - f * old.n_eff).max(0.0)
+                let wn = self.n_eff - f * old.n_eff;
+                // Zeroed below the same `EMPTY_FRACTION` the windowed
+                // covariance uses, so after a gap that empties the window the
+                // reported weight is 0 exactly rather than a rounding crumb
+                // (review 2026-09-18, S4).
+                if wn <= crate::window::EMPTY_FRACTION * self.n_eff || !wn.is_finite() {
+                    0.0
+                } else {
+                    wn
+                }
             }
             _ => self.n_eff,
         }
@@ -570,15 +579,17 @@ impl OnlineModel for EwClass {
         // this row and everything after.
         if let Some(win) = self.win.as_mut() {
             let t = win.clock + d_clock;
-            let snap = ClassMoments {
+            // Built inside the closure so the per-class snapshot is only
+            // formed on the rows `offer` keeps, not on every row (review
+            // 2026-09-18, P1).
+            win.snaps.offer(t, || ClassMoments {
                 n_eff: self.n_eff * lam,
                 classes: self
                     .classes
                     .iter()
                     .map(|c| crate::Moments::of(c, lam))
                     .collect(),
-            };
-            win.snaps.offer(t, || snap);
+            });
             win.clock = t;
             win.snaps.trim(t);
             // A window's truncated covariance moves every row, because the
@@ -683,6 +694,29 @@ mod tests {
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         ((*state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    }
+
+    /// After a gap that empties the window, `n_eff` is 0 exactly, not the
+    /// rounding crumb the truncating subtraction leaves (review 2026-09-18,
+    /// S4).
+    #[test]
+    fn a_gap_that_empties_the_window_leaves_n_eff_exactly_zero() {
+        let mut c = cfg(2, 2, Covariance::Diagonal);
+        c.decay = Decay::Halflife(25.0);
+        c.window = Some(70.0);
+        c.window_every = Some(1);
+        let mut m = EwClass::new(c).unwrap();
+        let mut s = 11u64;
+        for i in 0..40 {
+            let label = f64::from(lcg(&mut s) > 0.0);
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let d = if i == 0 { 0.0 } else { 2.0 };
+            crate::OnlineModel::step(&mut m, &x, &[Some(label)], d, 1.0);
+        }
+        for _ in 0..60 {
+            crate::OnlineModel::step(&mut m, &[0.0, 0.0], &[None], 2.0, 0.0);
+        }
+        assert_eq!(m.n_eff(), 0.0, "n_eff is a crumb, not 0");
     }
 
     fn cfg(k: usize, nc: usize, covariance: Covariance) -> EwClassCfg {

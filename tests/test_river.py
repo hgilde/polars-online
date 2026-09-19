@@ -71,40 +71,45 @@ class TestFtrlRecursion:
 
     @pytest.mark.parametrize("l1", [0.0, 0.5])
     def test_weights_match_river_given_the_same_gradients(self, l1):
+        # `try/finally` so a failure in the `l1 = 0.5` case cannot leave the
+        # class attribute set for the two other tests that read `self.L1`
+        # (review 2026-09-18, minor).
         type(self).L1 = l1
-        df = self._data()
-        out = self._ours(df)
-        coef = np.array(out["m"].struct.field("coef").to_list(), dtype=float)
-        x = np.column_stack([df["x0"].to_numpy(), df["x1"].to_numpy()])
-        y = df["y0"].to_numpy()
+        try:
+            df = self._data()
+            out = self._ours(df)
+            coef = np.array(out["m"].struct.field("coef").to_list(), dtype=float)
+            x = np.column_stack([df["x0"].to_numpy(), df["x1"].to_numpy()])
+            y = df["y0"].to_numpy()
 
-        opt = optim.FTRLProximal(alpha=self.ALPHA, beta=self.BETA, l1=l1, l2=self.L2)
-        w = {"x0": 0.0, "x1": 0.0}
-        max_diff = 0.0
-        for t in range(len(y)):
-            # The weights our model used to predict row t are the ones it
-            # emitted after row t-1 (zeros before the first row).
-            prev = coef[t - 1] if t > 0 else np.zeros(2)
-            p = _sigmoid(x[t] @ prev)
-            g = {"x0": (p - y[t]) * x[t, 0], "x1": (p - y[t]) * x[t, 1]}
-            # river recomputes w from z (i.e. `prev`) and then advances z.
-            w = opt._step_with_dict(w, g)
-            max_diff = max(max_diff, np.max(np.abs(np.array([w["x0"], w["x1"]]) - prev)))
-            # after the step, river's z must imply exactly our post-row weights
-            after = np.array(
-                [
-                    0.0
-                    if abs(opt.z[k]) <= l1
-                    else -(opt.z[k] - np.sign(opt.z[k]) * l1)
-                    / ((self.BETA + opt.n[k] ** 0.5) / self.ALPHA + self.L2)
-                    for k in ("x0", "x1")
-                ]
-            )
-            assert np.allclose(after, coef[t], atol=1e-12), (
-                f"row {t}: river z/n implies {after}, we emitted {coef[t]}"
-            )
-        assert max_diff < 1e-12, "river's own proximal step disagrees with our weights"
-        type(self).L1 = 0.0
+            opt = optim.FTRLProximal(alpha=self.ALPHA, beta=self.BETA, l1=l1, l2=self.L2)
+            w = {"x0": 0.0, "x1": 0.0}
+            max_diff = 0.0
+            for t in range(len(y)):
+                # The weights our model used to predict row t are the ones it
+                # emitted after row t-1 (zeros before the first row).
+                prev = coef[t - 1] if t > 0 else np.zeros(2)
+                p = _sigmoid(x[t] @ prev)
+                g = {"x0": (p - y[t]) * x[t, 0], "x1": (p - y[t]) * x[t, 1]}
+                # river recomputes w from z (i.e. `prev`) and then advances z.
+                w = opt._step_with_dict(w, g)
+                max_diff = max(max_diff, np.max(np.abs(np.array([w["x0"], w["x1"]]) - prev)))
+                # after the step, river's z must imply exactly our post-row weights
+                after = np.array(
+                    [
+                        0.0
+                        if abs(opt.z[k]) <= l1
+                        else -(opt.z[k] - np.sign(opt.z[k]) * l1)
+                        / ((self.BETA + opt.n[k] ** 0.5) / self.ALPHA + self.L2)
+                        for k in ("x0", "x1")
+                    ]
+                )
+                assert np.allclose(after, coef[t], atol=1e-12), (
+                    f"row {t}: river z/n implies {after}, we emitted {coef[t]}"
+                )
+            assert max_diff < 1e-12, "river's own proximal step disagrees with our weights"
+        finally:
+            type(self).L1 = 0.0
 
     def test_river_model_lags_us_by_one_step(self):
         """Pins the ordering difference itself, so a future change on either

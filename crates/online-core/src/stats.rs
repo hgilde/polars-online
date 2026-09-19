@@ -155,9 +155,13 @@ impl EwAutoCorr {
         self.lag == other.lag && self.buf.len() <= self.lag + 1
     }
 
-    /// `None` until a lagged pair has been seen.
+    /// `None` until a lagged pair has been seen. `var > 0` is reached at the
+    /// second distinct observation, but for `lag >= 2` no pair exists yet
+    /// then, so the buffer's own fill is the gate rather than the variance
+    /// (review 2026-09-18, D1).
     pub fn get(&self) -> Option<f64> {
-        (self.w > 0.0 && self.var > 0.0).then(|| (self.cross / self.var).clamp(-1.0, 1.0))
+        (self.buf.len() == self.lag + 1 && self.var > 0.0)
+            .then(|| (self.cross / self.var).clamp(-1.0, 1.0))
     }
 
     /// One observation with decay factor `lam`.
@@ -316,6 +320,13 @@ impl SlotMetrics {
             };
             self.hits = (lam * self.hit_w * self.hits + w * hit) / hw;
             self.hit_w = hw;
+        } else {
+            // A finite `y == 0` under a non-binary loss has no sign to hit,
+            // so it is not scored -- but it still happened, so it must age
+            // the hit weight exactly as a skipped row does above, or the hit
+            // rate runs on a different clock from `ic` and `r2` on any stream
+            // with exact zeros (review 2026-09-18, S1).
+            self.hit_w *= lam;
         }
     }
 }
@@ -527,6 +538,21 @@ mod tests {
     fn autocorr_rejects_lag_zero() {
         assert!(EwAutoCorr::new(0).is_err());
     }
+
+    #[test]
+    fn autocorr_is_none_until_a_pair_of_the_right_lag_exists() {
+        // At lag 3 the first pair is between observation 1 and observation 4,
+        // so `get` is None through the first three distinct values (where
+        // `var > 0` alone would have returned Some(0.0)) and Some only from
+        // the fourth (review 2026-09-18, D1).
+        let mut ac = EwAutoCorr::new(3).unwrap();
+        for (i, x) in [1.0, 2.0, 3.0].into_iter().enumerate() {
+            ac.update(x, 1.0);
+            assert!(ac.get().is_none(), "some after {} obs", i + 1);
+        }
+        ac.update(4.0, 1.0);
+        assert!(ac.get().is_some(), "none after the fourth observation");
+    }
 }
 
 #[cfg(test)]
@@ -619,6 +645,31 @@ mod metric_tests {
         assert!(
             m.hit_rate().unwrap() > 0.9,
             "did not forget: {:?}",
+            m.hit_rate()
+        );
+    }
+
+    #[test]
+    fn an_excluded_zero_target_still_ages_the_hit_weight() {
+        // A finite `y == 0` under a non-binary loss is not a hit either way,
+        // but it must age `hit_w` like any other row: a run of them leaves the
+        // hit rate hostage to evidence from before them, so the next real row
+        // barely moves it (review 2026-09-18, S1). Build a near-perfect hit
+        // rate, run a long stretch of excluded zeros, then miss once; with the
+        // ageing the miss dominates a nearly weightless history.
+        let lam = 0.5;
+        let mut m = SlotMetrics::new();
+        for _ in 0..20 {
+            m.update(1.0, 1.0, lam, 1.0, false); // a hit
+        }
+        assert!(m.hit_rate().unwrap() > 0.99);
+        for _ in 0..40 {
+            m.update(1.0, 0.0, lam, 1.0, false); // excluded: y == 0
+        }
+        m.update(-1.0, 1.0, lam, 1.0, false); // a miss
+        assert!(
+            m.hit_rate().unwrap() < 0.01,
+            "the zeros did not age the hit weight: {:?}",
             m.hit_rate()
         );
     }

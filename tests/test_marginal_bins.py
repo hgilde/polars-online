@@ -136,6 +136,9 @@ def test_a_linear_relation_is_found_by_both():
 def test_no_relation_gives_a_small_gain_and_a_calibrated_statistic():
     p = pairs(stream(shape="flat"))
     assert p["split_gain"] < 0.05, p["split_gain"]
+    # The "calibrated statistic" in the name: on a flat stream the split-gain
+    # t-statistic is near zero, not just the gain (review 2026-09-18, minor).
+    assert abs(p["split_gain_t"]) < 3, p["split_gain_t"]
 
 
 def test_the_response_curve_is_the_targets_moments_in_each_bin():

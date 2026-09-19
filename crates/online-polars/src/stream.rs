@@ -579,6 +579,10 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 n_features: spec.k(),
                 decay,
                 stats,
+                // Floored at 2: a variance needs two rows, so a spec asking
+                // for fewer (including 0) is quietly raised rather than
+                // refused -- a covariance below two rows has nothing to
+                // report (review 2026-09-18, minor).
                 min_periods: spec.min_periods_per_target()[0].max(2.0),
                 precision_prior: *precision_prior,
                 mahal_quantiles: mahal_quantiles.clone().unwrap_or_default(),

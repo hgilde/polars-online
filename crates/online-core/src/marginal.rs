@@ -45,6 +45,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Decay, OnlineModel, State, StateError, Step};
 
+/// A windowed weight `wn` (current minus the aged boundary), zeroed when it
+/// is a rounding crumb below `EMPTY_FRACTION` of the untruncated weight `w` --
+/// the same emptiness test `Marginal::cut` applies to each pair, so the
+/// model's `n_eff` and its pairs agree after a gap (review 2026-09-18, S4).
+fn empty_or(wn: f64, w: f64) -> f64 {
+    if wn <= crate::window::EMPTY_FRACTION * w || !wn.is_finite() {
+        0.0
+    } else {
+        wn
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MarginalCfg {
     pub n_features: usize,
@@ -591,10 +603,13 @@ impl Marginal {
     }
 
     /// The accumulated weight the pairs are read from: under a `window`, the
-    /// weight inside it.
+    /// weight inside it. The remainder is zeroed below the same
+    /// `EMPTY_FRACTION` the pairs use, so after a gap that empties the window
+    /// this reports 0 exactly rather than the rounding crumb the subtraction
+    /// leaves, matching every `Pair::n_eff` (review 2026-09-18, S4).
     pub fn n_eff(&self) -> f64 {
         match self.boundary() {
-            Some((old, f)) => (self.w_sum - f * old.w_sum).max(0.0),
+            Some((old, f)) => empty_or(self.w_sum - f * old.w_sum, self.w_sum),
             None => self.w_sum,
         }
     }
@@ -602,7 +617,7 @@ impl Marginal {
     /// `W_t`, the weight behind target `t`'s pairs.
     pub fn target_weight(&self, t: usize) -> f64 {
         match self.boundary() {
-            Some((old, f)) => (self.wt[t] - f * old.wt[t]).max(0.0),
+            Some((old, f)) => empty_or(self.wt[t] - f * old.wt[t], self.wt[t]),
             None => self.wt[t],
         }
     }
@@ -904,7 +919,9 @@ impl OnlineModel for Marginal {
         // itself, so the boundary cannot depend on the chunking.
         if let Some(win) = self.win.as_mut() {
             let t = win.clock + d_clock;
-            let snap = MarginalMoments {
+            // Built inside the closure so the snapshot is only formed on the
+            // rows `offer` keeps, not on every row (review 2026-09-18, P1).
+            win.snaps.offer(t, || MarginalMoments {
                 w_sum: self.w_sum * lam,
                 wt: self.wt.iter().map(|w| w * lam).collect(),
                 qt: self.qt.iter().map(|q| q * lam * lam).collect(),
@@ -913,8 +930,7 @@ impl OnlineModel for Marginal {
                 mx: self.mx.clone(),
                 sxx: self.sxx.clone(),
                 sxy: self.sxy.clone(),
-            };
-            win.snaps.offer(t, || snap);
+            });
             win.clock = t;
             win.snaps.trim(t);
         }
@@ -1395,6 +1411,36 @@ mod tests {
             assert_eq!(a.mean_x.to_bits(), b.mean_x.to_bits(), "feature {j} mean");
             assert_eq!(a.cov.to_bits(), b.cov.to_bits(), "feature {j} cov");
             assert_eq!(a.n_eff.to_bits(), b.n_eff.to_bits(), "feature {j} n_eff");
+        }
+    }
+
+    /// After a gap that empties the window, the model's `n_eff` is 0 exactly,
+    /// as every pair's is -- not the rounding crumb the truncating
+    /// subtraction leaves (review 2026-09-18, S4).
+    #[test]
+    fn a_gap_that_empties_the_window_leaves_n_eff_exactly_zero() {
+        let (halflife, window) = (25.0, 70.0);
+        let mut c = cfg(2, 1);
+        c.decay = Decay::Halflife(halflife);
+        c.window = Some(window);
+        let mut m = Marginal::new(c).unwrap();
+        let mut seed = 7u64;
+        // Fill the window with real rows.
+        for i in 0..40 {
+            let x = [lcg(&mut seed), lcg(&mut seed)];
+            let y = x[0] - x[1];
+            let d = if i == 0 { 0.0 } else { 2.0 };
+            crate::OnlineModel::step(&mut m, &x, &[Some(y)], d, 1.0);
+        }
+        // Advance the clock well past the window with zero-weight rows: the
+        // clock moves, nothing is learned, so the window empties.
+        for _ in 0..60 {
+            crate::OnlineModel::step(&mut m, &[0.0, 0.0], &[Some(0.0)], 2.0, 0.0);
+        }
+        assert_eq!(m.n_eff(), 0.0, "n_eff is a crumb, not 0");
+        assert_eq!(m.target_weight(0), 0.0, "target_weight is a crumb, not 0");
+        for j in 0..2 {
+            assert_eq!(m.pair(0, j).n_eff, 0.0, "pair {j} n_eff is a crumb, not 0");
         }
     }
 
