@@ -166,6 +166,14 @@ impl AnyModel {
         dispatch!(self, m => m.n_outputs())
     }
 
+    pub fn n_features(&self) -> usize {
+        dispatch!(self, m => m.n_features())
+    }
+
+    pub fn n_targets(&self) -> usize {
+        dispatch!(self, m => m.n_targets())
+    }
+
     /// The accumulated weight behind the model as it stands: what the next
     /// row's `n_eff` field reports (before that row's update).
     pub fn n_eff(&self) -> f64 {
@@ -1907,8 +1915,21 @@ impl Stream {
             .models
             .drain(..)
             .zip(&saved.models)
-            .map(|((suffix, _), st)| {
-                Ok((suffix, AnyModel::restore(st).map_err(|e| e.to_string())?))
+            .map(|((suffix, fresh), st)| {
+                let m = AnyModel::restore(st).map_err(|e| e.to_string())?;
+                // The state's cfg is the model's, but the stream feeds it the
+                // spec's columns and reads the spec's slots: a state whose
+                // cfg is another width would index past both (review
+                // 2026-09-18, B3).
+                if m.n_features() != fresh.n_features()
+                    || m.n_targets() != fresh.n_targets()
+                    || m.n_outputs() != fresh.n_outputs()
+                {
+                    return Err(format!(
+                        "saved state's model {suffix:?} is not this spec's shape"
+                    ));
+                }
+                Ok((suffix, m))
             })
             .collect::<Result<Vec<_>, String>>()?;
         stream.models = models;
@@ -1920,8 +1941,46 @@ impl Stream {
         }
         stream.clock = saved.clock.clone();
         stream.rows_seen = saved.rows_seen;
-        // Written before these fields existed => start the estimate over.
-        if saved.resid_var.len() == stream.resid_var.len() {
+        // A saved per-instance, per-slot diagnostic is taken when it is
+        // shaped as this spec's; one absent, or sized for another spec
+        // (written before the field existed, or under a spec that has since
+        // gained or lost the option), starts over. One with this spec's
+        // number of instances but another width is corrupt and is refused:
+        // it reached `build_instances`'s "one per instance" and the slot
+        // loops as a panic (review 2026-09-18, B3).
+        fn take_diag<T: Clone>(
+            name: &str,
+            saved: &[Vec<T>],
+            live: &mut Vec<Vec<T>>,
+            same: impl Fn(&T, &T) -> bool,
+        ) -> Result<(), String> {
+            if saved.len() != live.len() {
+                return Ok(());
+            }
+            let fits = saved
+                .iter()
+                .zip(live.iter())
+                .all(|(s, l)| s.len() == l.len() && s.iter().zip(l).all(|(a, b)| same(a, b)));
+            if !fits {
+                return Err(format!("saved state's {name} do not fit this spec"));
+            }
+            *live = saved.to_vec();
+            Ok(())
+        }
+        // The variance and its weight are one estimate: both or neither.
+        let n = stream.resid_var.len();
+        if saved.resid_var.len() == n || saved.resid_w.len() == n {
+            let fits = saved.resid_var.len() == n
+                && saved.resid_w.len() == n
+                && saved
+                    .resid_var
+                    .iter()
+                    .zip(&stream.resid_var)
+                    .chain(saved.resid_w.iter().zip(&stream.resid_w))
+                    .all(|(s, l)| s.len() == l.len());
+            if !fits {
+                return Err("saved state's residual variances do not fit this spec".into());
+            }
             stream.resid_var = saved.resid_var.clone();
             stream.resid_w = saved.resid_w.clone();
         }
@@ -1943,26 +2002,46 @@ impl Stream {
                 live.set_budget(budget);
             }
         }
-        if saved.drift.len() == stream.drift.len() {
-            stream.drift = saved.drift.clone();
-        }
-        if saved.resid_q.len() == stream.resid_q.len() {
-            stream.resid_q = saved.resid_q.clone();
-        }
-        if saved.autocorr.len() == stream.autocorr.len() {
-            stream.autocorr = saved.autocorr.clone();
-        }
-        if saved.metrics.len() == stream.metrics.len() {
-            stream.metrics = saved.metrics.clone();
-        }
-        if saved.conformal.len() == stream.conformal.len() {
-            stream.conformal = saved.conformal.clone();
-        }
+        take_diag(
+            "drift detectors",
+            &saved.drift,
+            &mut stream.drift,
+            |_, _| true,
+        )?;
+        take_diag(
+            "residual quantiles",
+            &saved.resid_q,
+            &mut stream.resid_q,
+            |s, l| s.len() == l.len(),
+        )?;
+        take_diag(
+            "autocorrelations",
+            &saved.autocorr,
+            &mut stream.autocorr,
+            |s, l| s.same_shape(l),
+        )?;
+        take_diag("metrics", &saved.metrics, &mut stream.metrics, |_, _| true)?;
+        take_diag(
+            "conformal intervals",
+            &saved.conformal,
+            &mut stream.conformal,
+            |_, _| true,
+        )?;
         // A file written by a spec with a `label_delay` carries the rows it
         // had not learned from yet; one written without a delay has none, and
         // one restored under a spec that has since gained or lost a delay
         // gets whatever the file holds, which is what "resume this stream"
         // means (E47).
+        // Each waiting row is replayed into `step` with the spec's columns,
+        // so it must carry exactly them (review 2026-09-18, B3).
+        let (nf, nt) = (spec.features.len(), spec.targets.len());
+        if saved
+            .pending
+            .iter()
+            .any(|r| r.xs.len() != nf || r.ys.len() != nt)
+        {
+            return Err("saved state's pending rows do not fit this spec".into());
+        }
         stream.pending = saved.pending.clone();
         // The score-time predictions ride with the waiting rows (C21). A file
         // written before they were kept has none: each of its waiting rows

@@ -96,6 +96,63 @@ fn marginal_round_trips_with_every_optional_part_present_or_absent() {
     }
 }
 
+/// The same rule on `ew_cov`, whose optional parts are the lag ring and the
+/// window. `EwCovModel` skipped both `lag` and `win` when `None`, `lag`
+/// first, so a windowed model without lags wrote `[…, win]` compactly and
+/// read `win` back into `lag`'s slot; and the window's snapshots
+/// (`window::Moments`) skipped `q` -- `Some` only where a Kish sum is kept,
+/// which `ew_cov`'s is not -- ahead of `m` and `c`, so a snapshot decoded
+/// its mean into `q` (the review of 2026-09-18, B6 and B7). Bank files are
+/// named and never broke; the compact form is the rule's tripwire.
+#[test]
+fn ew_cov_round_trips_with_every_optional_part_present_or_absent() {
+    for lags in [vec![], vec![1usize]] {
+        for window in [None, Some(50.0)] {
+            // A window and lags are refused together (the lag ring keeps no
+            // snapshot; review 2026-09-12, C18).
+            if window.is_some() && !lags.is_empty() {
+                continue;
+            }
+            let cfg = online_core::EwCovCfg {
+                n_features: 2,
+                decay: Decay::Halflife(10.0),
+                stats: vec![online_core::EwCovStat::Mean, online_core::EwCovStat::Corr],
+                min_periods: 0.0,
+                precision_prior: None,
+                mahal_quantiles: vec![],
+                pca: 0,
+                pca_every: 0,
+                lags: lags.clone(),
+                window,
+                window_every: window.map(|_| 1),
+            };
+            let mut m = online_core::EwCovModel::new(cfg).unwrap();
+            for i in 0..10 {
+                let v = i as f64;
+                OnlineModel::step(&mut m, &[v, -0.5 * v + 1.0], &[], v, 1.0);
+            }
+            roundtrip(&m, &format!("ew_cov lags={lags:?} window={window:?}"));
+        }
+    }
+}
+
+/// The rule at the type that broke it: a snapshot without a Kish sum is
+/// `Moments { q: None, .. }`, and with `q` skipped and not last the compact
+/// form wrote `[w, m, c]` and read `m` back into `q` (review 2026-09-18,
+/// B7). No model writes one today -- `EwCov::new` starts `q_sum` at
+/// `Some(0)`, which is why the windowed `ew_cov` above never tripped it --
+/// so this is the tripwire for the rule, not a reproduction through a model.
+#[test]
+fn a_snapshot_without_a_kish_sum_round_trips_compactly() {
+    let snap = online_core::Moments {
+        w: 3.0,
+        q: None,
+        m: vec![1.0, -2.0],
+        c: vec![4.0, 0.5, 0.5, 9.0],
+    };
+    roundtrip(&snap, "Moments without q");
+}
+
 /// A `humanfloat`-annotated field must be **byte-identical** to a bare `f64`
 /// in msgpack, and tagged in JSON.
 ///

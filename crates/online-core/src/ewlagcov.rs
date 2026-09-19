@@ -92,6 +92,16 @@ impl EwLagCov {
         self.k
     }
 
+    /// Whether the matrices and the ring are those of `k` features at
+    /// `lags`: what a restored state must hold to be updated (review
+    /// 2026-09-18, B3).
+    pub fn has_shape(&self, k: usize, lags: &[usize]) -> bool {
+        self.k == k
+            && self.lags.as_slice() == lags
+            && self.c.len() == lags.len() * k * k
+            && self.ring.iter().all(|r| r.len() == k)
+    }
+
     /// The lags, in output order.
     pub fn lags(&self) -> &[usize] {
         &self.lags

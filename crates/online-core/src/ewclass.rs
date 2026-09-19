@@ -620,7 +620,21 @@ impl OnlineModel for EwClass {
     fn restore(s: &State) -> Result<Self, StateError> {
         check_schema(s)?;
         match &s.model {
-            ModelState::EwClass(m) => Ok((**m).clone()),
+            ModelState::EwClass(m) => {
+                let m = (**m).clone();
+                // One accumulator per class at the cfg's width, and a window
+                // exactly when the cfg asks for one (review 2026-09-18, B3).
+                let (k, nc) = (m.cfg.n_features, m.cfg.n_classes);
+                if m.classes.len() != nc
+                    || m.classes.iter().any(|c| !c.has_shape(k))
+                    || m.win.is_some() != m.cfg.window.is_some()
+                {
+                    return Err(StateError::Invalid(
+                        "ew_class: the state has the wrong shape".into(),
+                    ));
+                }
+                Ok(m)
+            }
             other => Err(StateError::WrongModel {
                 expected: "ew_class",
                 found: other.kind(),
@@ -646,6 +660,23 @@ impl OnlineModel for EwClass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state with fewer classes than the cfg is refused, where it loaded
+    /// and panicked on the first `step` (review 2026-09-18, B3).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let m = EwClass::new(cfg(2, 2, Covariance::Full)).unwrap();
+        let mut s = m.state();
+        let ModelState::EwClass(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.classes.pop();
+        match EwClass::restore(&s) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
 
     fn lcg(state: &mut u64) -> f64 {
         *state = state

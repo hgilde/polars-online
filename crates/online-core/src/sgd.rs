@@ -153,10 +153,14 @@ impl SgdCfg {
         if self.learning_rate <= 0.0 || self.learning_rate.is_nan() {
             return Err("sgd: learning_rate must be > 0".into());
         }
-        if self.l2 < 0.0 {
+        // NaN passes `v < 0.0` and `v <= 0.0` alike, so each bound below
+        // names it: a NaN `clip_gradient` reached `f64::clamp`, which panics
+        // on a NaN bound, on the first learned row; a NaN `l2`, `eps` or
+        // `power` poisoned every coefficient or rate (review 2026-09-18, B4).
+        if self.l2.is_nan() || self.l2 < 0.0 {
             return Err("sgd: l2 must be >= 0".into());
         }
-        if self.clip_gradient <= 0.0 {
+        if self.clip_gradient.is_nan() || self.clip_gradient <= 0.0 {
             return Err("sgd: clip_gradient must be > 0 (use inf to disable)".into());
         }
         match self.loss {
@@ -170,13 +174,13 @@ impl SgdCfg {
             {
                 return Err("sgd: quantile must be in (0, 1)".into());
             }
-            SgdLoss::EpsilonInsensitive { eps } if eps < 0.0 => {
+            SgdLoss::EpsilonInsensitive { eps } if eps.is_nan() || eps < 0.0 => {
                 return Err("sgd: eps must be >= 0".into());
             }
             _ => {}
         }
         if let LearningRate::InvScaling { power } = self.schedule {
-            if power < 0.0 {
+            if power.is_nan() || power < 0.0 {
                 return Err("sgd: inv_scaling power must be >= 0".into());
             }
         }
@@ -743,6 +747,20 @@ mod tests {
         // clip_gradient is a magnitude bound, so inf disables it rather than
         // being an error, but zero would clip everything to nothing.
         bad(&|c| c.clip_gradient = 0.0, "clip_gradient must be > 0");
+        // NaN passed every `<= 0.0` / `< 0.0` test here: a NaN clip then
+        // panicked in `f64::clamp` on the first learned row, a NaN `l2`
+        // poisoned every coefficient, a NaN `eps` emptied the tube and a NaN
+        // `power` made every rate NaN (review 2026-09-18, B4).
+        bad(&|c| c.clip_gradient = f64::NAN, "clip_gradient must be > 0");
+        bad(&|c| c.l2 = f64::NAN, "l2 must be >= 0");
+        bad(
+            &|c| c.loss = SgdLoss::EpsilonInsensitive { eps: f64::NAN },
+            "eps must be >= 0",
+        );
+        bad(
+            &|c| c.schedule = LearningRate::InvScaling { power: f64::NAN },
+            "power must be >= 0",
+        );
         let mut ok = cfg(2, SgdLoss::Squared);
         ok.clip_gradient = f64::INFINITY;
         ok.validate().unwrap();

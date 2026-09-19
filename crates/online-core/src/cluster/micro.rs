@@ -615,7 +615,21 @@ impl OnlineModel for Micro {
     fn restore(s: &State) -> Result<Self, StateError> {
         check_schema(s)?;
         match &s.model {
-            ModelState::Micro(m) => Ok((**m).clone()),
+            ModelState::Micro(m) => {
+                let m = (**m).clone();
+                // The feature moments, the metric weights and every centre
+                // `p` wide (review 2026-09-18, B3).
+                let p = m.cfg.n_features;
+                if !m.moments.has_shape(p)
+                    || m.mw.len() != p
+                    || m.mc.iter().any(|c| c.s.c.len() != p)
+                {
+                    return Err(StateError::Invalid(
+                        "micro: the state has the wrong shape".into(),
+                    ));
+                }
+                Ok(m)
+            }
             other => Err(StateError::WrongModel {
                 expected: "micro",
                 found: other.kind(),
@@ -641,6 +655,23 @@ impl OnlineModel for Micro {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state whose vectors are not the cfg's is refused, where it loaded
+    /// and panicked on the first `step` (review 2026-09-18, B3).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let m = Micro::new(cfg()).unwrap();
+        let mut s = m.state();
+        let ModelState::Micro(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.mw.pop();
+        match Micro::restore(&s) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
 
     fn lcg(state: &mut u64) -> f64 {
         *state = state

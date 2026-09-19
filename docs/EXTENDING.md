@@ -92,6 +92,18 @@ typing test, which did not exist when `holt` was added). `git show --stat
    *Check*: `predict_is_the_step_without_the_step` calls `predict_with`, and
    `a_value_in_the_targets_slot_reaches_predict` feeds a column that varies
    and counts the rows where ignoring it would change the answer.
+   *Restoring*: `restore` checks the state's shape against its cfg before
+   returning it — every vector at the width `new` gives it, one accumulator
+   per target or class, a window or a lag ring exactly when the cfg asks for
+   one — and refuses a mismatch as `StateError::Invalid(".. wrong shape")`
+   (review 2026-09-18, B3). A state's vectors are whatever a hand-edited
+   JSON file or a flipped length header makes them, and an unchecked one
+   loaded and panicked on the first `step`'s indexing. The nested
+   accumulators (`EwCov`, `EwLagCov`, `MarginalLags`, `MarginalBins`,
+   `FeatureMoments`) carry a `has_shape` for it.
+   *Check*: each model's `a_state_of_the_wrong_shape_is_refused` unit test,
+   and `crates/online-polars/tests/summary.rs`'s bit-flip fuzz, which runs
+   `fit_predict` on every state that loads and fails on a panic.
 2. **`src/lib.rs`**: `pub use <model>::{<Model>, <Model>Cfg};`.
    *Check*: the compiler, as soon as `online-polars` names the type.
 3. **`src/model.rs`**: a `ModelState::<Model>(Box<...>)` variant and its arm
@@ -183,7 +195,13 @@ typing test, which did not exist when `holt` was added). `git show --stat
    model left out of it restores as `WrongModel`; the save/load sweeps
    (`test_properties::test_save_load_is_transparent`,
    `test_semantics_all_models::test_save_load_mid_stream`) catch that once
-   the model is in their lists, which step 14 enforces.
+   the model is in their lists, which step 14 enforces. `Stream::restore`
+   then compares each restored model's `n_features`, `n_targets` and
+   `n_outputs` with the fresh model's, so a state of another width is
+   refused before the first row rather than indexing past the spec's
+   columns (review 2026-09-18, B3); a model whose widths are not the cfg's
+   own — a grid, a per-target layout — must answer those three from the
+   same cfg both times.
 8. **`src/bank.rs`**: nothing, unless the outputs are not one `pred`/`resid`
    pair per target per combo — `ew_cov` (statistics, no target), `kmeans`
    (an assignment and two distances, no target), `micro` (a label, an id, a

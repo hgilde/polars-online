@@ -618,7 +618,24 @@ impl crate::OnlineModel for Hmm {
     fn restore(s: &crate::State) -> Result<Self, crate::StateError> {
         crate::check_schema(s)?;
         match &s.model {
-            crate::ModelState::Hmm(m) => Ok((**m).clone()),
+            crate::ModelState::Hmm(m) => {
+                let m = (**m).clone();
+                // `k` states at the cfg's width, `k` marginals, a `k×k`
+                // transition matrix and buffered rows `d` long (review
+                // 2026-09-18, B3).
+                let (k, d) = (m.cfg.k, m.cfg.n_features);
+                if m.states.len() != k
+                    || m.states.iter().any(|s| !s.has_shape(d))
+                    || m.p.len() != k
+                    || m.a.len() != k * k
+                    || m.buffer.iter().any(|(x, _)| x.len() != d)
+                {
+                    return Err(crate::StateError::Invalid(
+                        "hmm: the state has the wrong shape".into(),
+                    ));
+                }
+                Ok(m)
+            }
             other => Err(crate::StateError::WrongModel {
                 expected: "hmm",
                 found: other.kind(),
@@ -642,6 +659,23 @@ impl crate::OnlineModel for Hmm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state whose vectors are not the cfg's is refused, where it loaded
+    /// and panicked on the first `step` (review 2026-09-18, B3).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let m = Hmm::new(cfg(2, 2)).unwrap();
+        let mut s = m.state();
+        let ModelState::Hmm(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.p.pop();
+        match Hmm::restore(&s) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
     use crate::{EwClass, EwClassCfg, OnlineModel};
 
     fn lcg(state: &mut u64) -> f64 {

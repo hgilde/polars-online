@@ -250,6 +250,15 @@ impl OnlineModel for Pa {
         match &s.model {
             ModelState::Pa(m) => {
                 let mut m = (**m).clone();
+                let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
+                // One coefficient row per target at the cfg's width; a
+                // short one loaded and panicked on the first `step` (review
+                // 2026-09-18, B3).
+                if m.beta.len() != n || m.beta.iter().any(|b| b.len() != k) {
+                    return Err(StateError::Invalid(
+                        "pa: the coefficients have the wrong shape".into(),
+                    ));
+                }
                 m.ensure_buffers();
                 Ok(m)
             }
@@ -272,6 +281,23 @@ impl OnlineModel for Pa {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state whose vectors are not the cfg's is refused, where it loaded
+    /// and panicked on the first `step` (review 2026-09-18, B3).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let m = Pa::new(cfg(2, PaMode::Pa1)).unwrap();
+        let mut s = m.state();
+        let ModelState::Pa(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.beta[0].pop();
+        match Pa::restore(&s) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
 
     fn lcg(state: &mut u64) -> f64 {
         *state = state

@@ -409,6 +409,11 @@ class KMeansRef:
                     f.clear()
 
     def winsorize_radii(self) -> None:
+        # While no cluster has a trusted radius there is no cut to place a
+        # far row at, and a far pool left over from seeding would otherwise
+        # set the radius to inf (review 2026-09-18, B5).
+        if not math.isfinite(self.far_cut):
+            return
         for c, f in zip(self.clusters, self.far, strict=True):
             if f.n > 0.0:
                 c.r2 = (c.n * c.r2 + f.n * self.far_cut) / (c.n + f.n)

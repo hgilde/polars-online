@@ -347,6 +347,17 @@ impl OnlineModel for Ftrl {
         match &s.model {
             ModelState::Ftrl(m) => {
                 let mut m = (**m).clone();
+                let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
+                let rows = |v: &[Vec<f64>]| v.len() == n && v.iter().all(|r| r.len() == k);
+                // The three per-target accumulators at the cfg's width.
+                // `prox` is `serde(default)`, so a state without it loaded
+                // as `[]` and `self.prox[j][i]` panicked on the first `step`
+                // (review 2026-09-18, B3).
+                if !rows(&m.n) || !rows(&m.zz) || !rows(&m.prox) {
+                    return Err(StateError::Invalid(
+                        "ftrl: the accumulators have the wrong shape".into(),
+                    ));
+                }
                 m.ensure_buffers();
                 Ok(m)
             }
@@ -369,6 +380,24 @@ impl OnlineModel for Ftrl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state whose vectors are not the cfg's is refused, where it loaded
+    /// and panicked on the first `step`: here the `serde(default)` case, a
+    /// file without `prox` (review 2026-09-18, B3).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let m = Ftrl::new(cfg(2, 1)).unwrap();
+        let mut s = m.state();
+        let ModelState::Ftrl(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.prox.clear();
+        match Ftrl::restore(&s) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
 
     fn lcg(state: &mut u64) -> f64 {
         *state = state

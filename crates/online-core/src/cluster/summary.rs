@@ -205,6 +205,12 @@ impl FeatureMoments {
         }
     }
 
+    /// Whether the moments are those of `p` features: what a restored state
+    /// must hold to be updated (review 2026-09-18, B3).
+    pub fn has_shape(&self, p: usize) -> bool {
+        self.mean.len() == p && self.var.len() == p
+    }
+
     /// The clock passes: `W *= lam`.
     #[inline]
     pub fn decay(&mut self, lam: f64) {

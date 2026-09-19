@@ -100,6 +100,65 @@ fn inf_is_refused_by_name_where_it_means_nothing() {
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
+/// Where NaN is no setting at all -- which is everywhere -- and the spec
+/// layer leaves the check to the core: the fields whose core `validate`
+/// tested `v <= 0.0` / `v < 0.0`, which a NaN passes (review 2026-09-18,
+/// B4). Each is refused, by the spec or by the bank, with its name.
+const NAN_IS_NO_SETTING: [(&str, &str, &str); 9] = [
+    ("", "type = \"sgd\"\nclip_gradient = nan", "clip_gradient"),
+    ("", "type = \"sgd\"\nl2 = nan", "l2"),
+    (
+        "",
+        "type = \"sgd\"\nloss = \"epsilon_insensitive\"\neps = nan",
+        "eps",
+    ),
+    (
+        "",
+        "type = \"sgd\"\nschedule = \"inv_scaling\"\npower = nan",
+        "power",
+    ),
+    ("", "type = \"kalman\"\ncoef_halflife = nan", "halflife"),
+    (
+        "",
+        "type = \"kalman\"\ncoef_halflife = 10.0\np0 = nan",
+        "p0",
+    ),
+    (
+        "",
+        "type = \"kalman\"\ncoef_halflife = 10.0\nq = [nan, 0.5]",
+        "q",
+    ),
+    (
+        "",
+        "type = \"kalman\"\ncoef_halflife = 10.0\nobs_var = nan",
+        "obs_var",
+    ),
+    (
+        "",
+        "type = \"rls\"\ncoef_prior = [[nan, 0.0]]",
+        "coef_prior",
+    ),
+];
+
+#[test]
+fn nan_is_refused_by_name_where_the_core_is_the_only_gate() {
+    let wrong: Vec<String> = NAN_IS_NO_SETTING
+        .iter()
+        .filter_map(|(top, model, name)| {
+            let mut s = spec(top, model);
+            let built = s.check().and_then(|()| Bank::new(vec![s]).map(|_| ()));
+            match built {
+                Ok(()) => Some(format!("{name} = nan was accepted")),
+                Err(e) if !e.contains(name) => {
+                    Some(format!("{name}: refused without its name: {e}"))
+                }
+                Err(_) => None,
+            }
+        })
+        .collect();
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
 /// `Num` reads JSON's `"nan"` as it reads `"inf"`, so each field that became
 /// one needs a `validate` that refuses NaN; TOML's `nan` reaches the same
 /// check. `sgd`'s `huber_delta` had none, in the spec or in the core, and a

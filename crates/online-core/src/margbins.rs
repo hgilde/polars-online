@@ -163,6 +163,20 @@ impl MarginalBins {
         })
     }
 
+    /// Whether the edges, the offsets and the three cell vectors are those
+    /// of `p` features and `n_targets` targets: what a restored state must
+    /// hold to be updated (review 2026-09-18, B3).
+    pub fn has_shape(&self, p: usize, n_targets: usize) -> bool {
+        let cells = self.off.last().map_or(0, |&o| o * n_targets);
+        self.p == p
+            && self.n_targets == n_targets
+            && self.edges.len() == p
+            && self.off.len() == p + 1
+            && self.w.len() == cells
+            && self.mean.len() == cells
+            && self.m2.len() == cells
+    }
+
     /// Bins feature `j` actually has, which is one more than its edges.
     pub fn n_bins(&self, j: usize) -> usize {
         self.edges[j].len() + 1

@@ -77,6 +77,12 @@ impl RlsCfg {
             if c.len() != self.n_targets || c.iter().any(|v| v.len() != self.k_total()) {
                 return Err("rls: coef_prior must be n_targets x k_total".into());
             }
+            // The prior enters `u_0 = sqrt(ridge) * prior`, and a non-finite
+            // entry there never leaves the QR state; `ew_ridge` refused it,
+            // this did not (review 2026-09-18, B4).
+            if c.iter().flatten().any(|v| !v.is_finite()) {
+                return Err("rls: coef_prior must be finite".into());
+            }
         }
         Ok(())
     }
@@ -286,6 +292,16 @@ impl OnlineModel for Rls {
         match &s.model {
             ModelState::Rls(m) => {
                 let mut m = (**m).clone();
+                let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
+                let rows = |v: &[Vec<f64>]| v.len() == n && v.iter().all(|r| r.len() == k);
+                // A factor or a per-target vector of the wrong length loaded
+                // and panicked on the first `step`'s indexing (review
+                // 2026-09-18, B3).
+                if m.r.len() != k * k || !rows(&m.u) || !rows(&m.beta) {
+                    return Err(StateError::Invalid(
+                        "rls: the accumulators have the wrong shape".into(),
+                    ));
+                }
                 m.ensure_buffers();
                 Ok(m)
             }
@@ -308,6 +324,23 @@ impl OnlineModel for Rls {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state whose vectors are not the cfg's is refused, where it loaded
+    /// and panicked on the first `step` (review 2026-09-18, B3).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let m = Rls::new(rls_cfg(2, 1, 100.0, 1.0)).unwrap();
+        let mut s = m.state();
+        let ModelState::Rls(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.r.pop();
+        match Rls::restore(&s) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
     use crate::{EwRidge, EwRidgeCfg};
 
     fn lcg(state: &mut u64) -> f64 {
@@ -353,6 +386,17 @@ mod tests {
         bad(
             &|c| c.coef_prior = Some(vec![vec![0.0; 2]]),
             "n_targets x k_total",
+        );
+        // A non-finite entry enters `u_0 = sqrt(ridge) * prior` and the QR
+        // state never recovers; `ew_ridge` refuses it, this did not (review
+        // 2026-09-18, B4).
+        bad(
+            &|c| c.coef_prior = Some(vec![vec![0.0, f64::NAN, 0.0]]),
+            "coef_prior must be finite",
+        );
+        bad(
+            &|c| c.coef_prior = Some(vec![vec![f64::INFINITY, 0.0, 0.0]]),
+            "coef_prior must be finite",
         );
         let mut ok = rls_cfg(2, 1, 100.0, 1.0);
         ok.coef_prior = Some(vec![vec![1.0, 2.0, 3.0]]);

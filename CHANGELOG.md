@@ -7,6 +7,69 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+The review of 2026-09-18 (`docs/REVIEW-2026-09-18.md`: every file in the
+repository read, each finding reproduced by the test that now pins it) found
+three defects that returned silently wrong numbers, and a set of crashes and
+lost guards. All are fixed here. Numbers move for `corrchange`, for
+`huber`/`quantile` on data with a level, for `ew_ridge` through the origin
+with a prior, and for `kmeans` where a far row sat in the seed buffer; the
+state schema is 11.
+
+### Fixed
+
+- **`corrchange`'s monitor statistic depended on the columns' units.** The
+  delta-method gradient of `ρ` with respect to the two variances carried
+  `σ²` where it needed `σ³`, so the long-run variance of the estimate scaled
+  with the data: on `(x, 100·y)` the size test read 0 flags in 200 where
+  5 % is nominal. The gradient is now `[−½σ_xy/(σ_x³σ_y), −½σ_xy/(σ_xσ_y³),
+  1/(σ_xσ_y)]`, and the statistic is free of the units to 1e-9 (S3).
+- **`huber` and `quantile` lost the fit on data with a level.** The robust
+  models kept raw cross-moments `E[z·y]` beside a centred covariance, and at
+  a level of 1e8 the slopes were rounding noise (a quantile slope of 1.000
+  for 2.032). The cross-moments are now centred, `E[(z − m)(y − ȳ)]` in
+  Welford form, with the intercept solved out; a level of 1e8 costs the fit
+  nothing (S2).
+- **`ew_ridge` dropped `coef_prior` in the standardized solve through the
+  origin.** With `standardize = true` and `add_intercept = false` the prior
+  never entered the right-hand side: `ridge = 1e12` landed on zero, not on
+  the prior, and a moderate ridge fit the same with a prior as without. It
+  enters as `ridge · c0 · s`, the prior in standardized units (B2).
+- **A NaN passed the core validators of `sgd`, `kalman` and `rls`.** Each
+  bound tested `v <= 0` or `v < 0`, which a NaN passes: a NaN
+  `clip_gradient` panicked in `f64::clamp` on the first learned row, a NaN
+  `obs_var` made `kalman` predict its prior for the life of the stream with
+  no error, and a NaN entry in `rls`'s `coef_prior` never left the QR state.
+  Every such field is refused by name, from TOML and from hand-written JSON
+  as the Python builders already did (B4).
+- **`kmeans`: a far row in the seed buffer set a cluster radius to ∞.**
+  Seeding marks rows far by the buffer's own cut, and the first split-merge
+  check folded that pool at a cut of ∞ before any cluster had a trusted
+  radius, after which the typical radius was ∞ or NaN. The pool is skipped
+  while there is no cut to place it at (B5).
+- **A windowed `ew_cov` without lags did not round-trip in the compact
+  encoding.** Two `skip_serializing_if` fields, one of them not last, in a
+  positional encoding: the window decoded into the lag slot. `ew_cov` writes
+  its lag slot as `nil` (B6). A window snapshot's Kish sum is now its last
+  field for the same rule; no model wrote a snapshot without one, so nothing
+  observed changes there (B7).
+- **Every model's `restore`, and the stream's, check the state's shape
+  against its cfg.** `rls`, `robust`, `pa`, `ftrl`, `lasso`'s selection
+  fields, `deco`, `ew_cov`, `rcov`, `corrchange`, `marginal`, `ew_class`,
+  `hmm`, `holt`, `bocpd`, `seqtest`, `kmeans` and `micro` loaded a state
+  whose vectors had the wrong length and panicked on the first row; the
+  stream copied its per-instance diagnostics with only their outer length
+  checked, replayed waiting rows of any width, and never compared a
+  restored model's width with the spec's. All of it is refused as an
+  invalid state, as `ew_ridge`, `sgd` and `kalman` already did, and the
+  bit-flip fuzz now runs `fit_predict` on every state that loads (B3).
+
+### Changed
+
+- **State schema 11.** `huber`/`quantile` keep centred cross-moments,
+  `ew_cov` writes its lag slot unconditionally, and a window snapshot's
+  Kish sum is its last field. States saved by 0.7.x do not load
+  (`MIN_SCHEMA_VERSION` is 11, the pre-1.0 policy).
+
 ## [0.7.4] — 2026-09-18
 
 A patch: `fit(lf)` reads its plan once and skips the deprecated JSON scan

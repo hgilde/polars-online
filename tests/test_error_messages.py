@@ -271,6 +271,48 @@ def test_the_inf_table_matches_the_rust_side(builder):
             assert key in allowed, f"{builder.__name__}.{key} accepts inf but is not in _INF_OK"
 
 
+@pytest.mark.parametrize("builder", BUILDERS, ids=lambda b: b.__name__)
+def test_nan_is_no_setting_for_any_float_parameter(builder):
+    """The NaN twin of the `inf` sweep above: there is no parameter for which
+    NaN means something, so the bank must refuse the word ``"nan"`` -- which
+    a hand-written JSON spec can carry, the Python builders refusing it before
+    anything is serialized -- for every float parameter of every builder.
+    Two doors: a key that accepts words (``"inf"``) parses ``"nan"`` too and
+    must then be refused *by name* from a validator; a plain float key never
+    parses the word, and the parser's type error is the refusal (JSON has no
+    NaN to carry into it; TOML's ``nan`` literal is the Rust side's
+    ``spec_inf.rs``). The spec layer named every key it validates itself; the
+    core validators of ``sgd`` (``clip_gradient``, ``power``, ``l2``,
+    ``eps``) and ``kalman`` (``halflife``, ``p0``, ``q``, ``obs_var``) tested
+    ``v <= 0.0`` / ``v < 0.0``, which a NaN passes, and ``rls`` never checked
+    its prior's entries: a NaN ``clip_gradient`` then panicked in
+    ``f64::clamp`` on the first learned row, and a NaN ``obs_var`` made
+    ``kalman`` predict its prior for the life of the stream with no error
+    (review 2026-09-18, B4)."""
+    kwargs = {k: v for k, v in {**BASE, **BUILDERS[builder]}.items() if v is not None}
+    swept = 0
+    for key, inf in _float_parameters(builder).items():
+        if "inf" not in repr(inf):
+            continue  # a list of names or lags: no float to make a NaN of
+        spec = builder("m", **kwargs)
+        where = spec if key in spec else spec["model"]
+        assert key in where, f"{builder.__name__}.{key} is not a key of the spec dict"
+        where[key] = _nan_shaped_like(inf)
+        with pytest.raises(ValueError) as caught:
+            po.ModelBank([spec])
+        msg = str(caught.value)
+        assert key in msg or 'string "nan", expected f64' in msg, (key, msg)
+        swept += 1
+    assert swept > 0, f"{builder.__name__} has no float parameter to sweep"
+
+
+def _nan_shaped_like(inf):
+    """``"inf"`` in whatever nesting `_inf_shaped_like` chose, as ``"nan"``."""
+    if inf is None:
+        return None
+    return "nan" if inf == "inf" else [_nan_shaped_like(v) for v in inf]
+
+
 # --- S27: inf where it means something, refused in both layers elsewhere ----
 
 #: Where ``inf`` means something (review 2026-09-12, S27; the user's decision

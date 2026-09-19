@@ -740,7 +740,18 @@ impl crate::OnlineModel for CorrChange {
     fn restore(s: &crate::State) -> Result<Self, crate::StateError> {
         crate::check_schema(s)?;
         match &s.model {
-            crate::ModelState::CorrChange(m) => Ok((**m).clone()),
+            crate::ModelState::CorrChange(m) => {
+                let m = (**m).clone();
+                // The diagnostics and every ring row at the cfg's width
+                // (review 2026-09-18, B3).
+                let d = m.cfg.n_features;
+                if m.diag.k() != d || m.ring.iter().any(|r| r.len() != d) {
+                    return Err(crate::StateError::Invalid(
+                        "corrchange: the state has the wrong shape".into(),
+                    ));
+                }
+                Ok(m)
+            }
             other => Err(crate::StateError::WrongModel {
                 expected: "corrchange",
                 found: other.kind(),
@@ -764,6 +775,23 @@ impl crate::OnlineModel for CorrChange {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A ring row narrower than the cfg is refused, where it loaded and
+    /// panicked on the first `step` (review 2026-09-18, B3).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let m = CorrChange::new(cfg(2, CorrChangeKind::Monitor)).unwrap();
+        let mut s = m.state();
+        let ModelState::CorrChange(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.ring.push_back(vec![0.0]);
+        match CorrChange::restore(&s) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
     use crate::OnlineModel;
 
     fn cfg(d: usize, kind: CorrChangeKind) -> CorrChangeCfg {

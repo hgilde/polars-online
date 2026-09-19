@@ -783,7 +783,26 @@ impl crate::OnlineModel for Bocpd {
     fn restore(s: &crate::State) -> Result<Self, crate::StateError> {
         crate::check_schema(s)?;
         match &s.model {
-            crate::ModelState::Bocpd(m) => Ok((**m).clone()),
+            crate::ModelState::Bocpd(m) => {
+                let m = (**m).clone();
+                // One log-joint per run, at least one run, and every run's
+                // moments at the emission's width (review 2026-09-18, B3).
+                let d = m.cfg.n_features;
+                let m2 = if m.cfg.emission == BocpdEmission::Gaussian {
+                    d * d
+                } else {
+                    d
+                };
+                if m.runs.is_empty()
+                    || m.runs.len() != m.logjoint.len()
+                    || m.runs.iter().any(|r| r.mean.len() != d || r.m2.len() != m2)
+                {
+                    return Err(crate::StateError::Invalid(
+                        "bocpd: the state has the wrong shape".into(),
+                    ));
+                }
+                Ok(m)
+            }
             other => Err(crate::StateError::WrongModel {
                 expected: "bocpd",
                 found: other.kind(),
@@ -807,6 +826,23 @@ impl crate::OnlineModel for Bocpd {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A log-joint without its run is refused, where it loaded and panicked
+    /// on the first `step` (review 2026-09-18, B3).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let m = Bocpd::new(cfg(2)).unwrap();
+        let mut s = m.state();
+        let ModelState::Bocpd(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.logjoint.push(0.0);
+        match Bocpd::restore(&s) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
     use crate::OnlineModel;
 
     fn cfg(d: usize) -> BocpdCfg {

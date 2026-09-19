@@ -109,14 +109,19 @@ impl KalmanCfg {
             if q.len() != k {
                 return Err(format!("kalman: q must have length {k}"));
             }
-            if q.iter().any(|&v| v < 0.0) {
+            // NaN passes `v < 0.0` and `v <= 0.0` alike, so each bound in
+            // this function names it. A NaN `obs_var` was the silent case:
+            // `s_inn` NaN on every row, the update's guard never met, and
+            // the filter predicting its prior for the life of the stream
+            // with no error and no counted failure (review 2026-09-18, B4).
+            if q.iter().any(|&v| v.is_nan() || v < 0.0) {
                 return Err("kalman: q values must be >= 0".into());
             }
         } else {
             if self.halflife.len() != 1 && self.halflife.len() != k {
                 return Err(format!("kalman: halflife must have length 1 or {k}"));
             }
-            if self.halflife.iter().any(|&h| h <= 0.0) {
+            if self.halflife.iter().any(|&h| h.is_nan() || h <= 0.0) {
                 return Err("kalman: halflife values must be > 0 (inf pins)".into());
             }
         }
@@ -126,10 +131,10 @@ impl KalmanCfg {
         if self.revert_halflife.iter().any(|&h| h.is_nan() || h <= 0.0) {
             return Err("kalman: revert_halflife values must be > 0 (inf = random walk)".into());
         }
-        if self.p0 <= 0.0 {
+        if self.p0.is_nan() || self.p0 <= 0.0 {
             return Err("kalman: p0 must be > 0".into());
         }
-        if self.obs_var.is_some_and(|v| v <= 0.0) {
+        if self.obs_var.is_some_and(|v| v.is_nan() || v <= 0.0) {
             return Err("kalman: obs_var must be > 0".into());
         }
         Ok(())
@@ -796,6 +801,14 @@ mod tests {
         bad(&|c| c.obs_var = Some(-1.0), "obs_var must be > 0");
         good(&|c| c.obs_var = None);
         good(&|c| c.obs_var = Some(1e-9));
+        // NaN passed every `<= 0.0` / `< 0.0` test here. A NaN `obs_var` was
+        // the silent one: `s_inn` is NaN on every row, the update's guard is
+        // never met, and the filter predicts its prior for the life of the
+        // stream with no error and no counted failure (review 2026-09-18, B4).
+        bad(&|c| c.obs_var = Some(f64::NAN), "obs_var must be > 0");
+        bad(&|c| c.p0 = f64::NAN, "p0 must be > 0");
+        bad(&|c| c.halflife = vec![f64::NAN], "must be > 0");
+        bad(&|c| c.q = Some(vec![0.0, f64::NAN, 0.0]), "must be >= 0");
 
         cfg(2, 1, vec![100.0]).validate().unwrap();
     }

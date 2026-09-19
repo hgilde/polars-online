@@ -198,6 +198,18 @@ impl StridedRv {
         }
     }
 
+    /// Whether the partial sums and the accumulators are those of `k`
+    /// returns at `stride`: what a restored state must hold to be pushed to
+    /// (review 2026-09-18, B3).
+    fn has_shape(&self, k: usize, stride: usize) -> bool {
+        self.k == k
+            && self.stride == stride
+            && self.partial.len() == stride * k
+            && self.rv.len() == stride * k
+            && self.rq.len() == stride * k
+            && self.counts.len() == stride
+    }
+
     fn push(&mut self, x: &[f64]) {
         let (s, k) = (self.stride, self.k);
         for o in 0..s {
@@ -934,6 +946,30 @@ impl crate::OnlineModel for Rcov {
                 while m.tail.len() > m.cfg.jitter {
                     m.tail.pop_front();
                 }
+                // Every accumulator at the cfg's width and every buffered
+                // return row `k` long; `restore` only trimmed the tail
+                // (review 2026-09-18, B3).
+                let k = m.cfg.n_features;
+                let kk = k * k;
+                let bandwidth = m.cfg.ring_for().unwrap_or(0);
+                let rows_k = m
+                    .head
+                    .iter()
+                    .chain(&m.tail)
+                    .chain(&m.fin)
+                    .chain(&m.pre_ring)
+                    .all(|r| r.len() == k);
+                if m.raw.len() != kk
+                    || m.pre_sum.len() != kk
+                    || m.gamma.len() != (bandwidth + 1) * kk
+                    || !rows_k
+                    || !m.dense.has_shape(k, m.cfg.noise_stride)
+                    || !m.sparse.has_shape(k, m.cfg.iv_stride)
+                {
+                    return Err(crate::StateError::Invalid(
+                        "rcov: the state has the wrong shape".into(),
+                    ));
+                }
                 Ok(m)
             }
             other => Err(crate::StateError::WrongModel {
@@ -960,6 +996,23 @@ impl crate::OnlineModel for Rcov {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state whose vectors are not the cfg's is refused, where it loaded
+    /// and panicked on the first `step` (review 2026-09-18, B3).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let m = Rcov::new(cfg(2, RcovKind::Plain)).unwrap();
+        let mut s = m.state();
+        let ModelState::Rcov(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.raw.pop();
+        match Rcov::restore(&s) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
     use crate::{EwCov, OnlineModel};
 
     fn lcg(state: &mut u64) -> f64 {

@@ -395,6 +395,15 @@ impl KMeans {
     /// metric left behind — widens it by `far_factor` per check until its
     /// rows are within reach again.
     fn winsorize_radii(&mut self) {
+        // While no cluster has a trusted radius there is no cut to place a
+        // far row at. `try_seed` marks rows far by the buffer's own cut, so
+        // the pool can be non-empty here before any cluster has
+        // `RADIUS_ROWS`; folding it at a cut of ∞ set the radius to ∞, and
+        // the next refresh a typical radius of ∞ or NaN (review 2026-09-18,
+        // B5). The pool is cleared by the caller either way.
+        if !self.far_cut.is_finite() {
+            return;
+        }
         for (c, f) in self.clusters.iter_mut().zip(&self.far) {
             if f.n > 0.0 {
                 c.r2 = (c.n * c.r2 + f.n * self.far_cut) / (c.n + f.n);
@@ -854,7 +863,31 @@ impl OnlineModel for KMeans {
     fn restore(s: &State) -> Result<Self, StateError> {
         check_schema(s)?;
         match &s.model {
-            ModelState::KMeans(m) => Ok((**m).clone()),
+            ModelState::KMeans(m) => {
+                let m = (**m).clone();
+                // Empty until seeded, then exactly `k` of each per-cluster
+                // vector, every centre and buffered row `p` wide (review
+                // 2026-09-18, B3).
+                let (p, k) = (m.cfg.n_features, m.cfg.k);
+                let count = if m.clusters.is_empty() { 0 } else { k };
+                let sums =
+                    |s: &[ClusterSummary]| s.len() == count && s.iter().all(|c| c.c.len() == p);
+                if !m.moments.has_shape(p)
+                    || m.mw.len() != p
+                    || !sums(&m.clusters)
+                    || !sums(&m.batch)
+                    || !sums(&m.far)
+                    || m.rows.len() != count
+                    || m.far_rows.len() != count
+                    || m.buf_w.len() != m.buf.len()
+                    || m.buf.iter().any(|z| z.len() != p)
+                {
+                    return Err(StateError::Invalid(
+                        "kmeans: the state has the wrong shape".into(),
+                    ));
+                }
+                Ok(m)
+            }
             other => Err(StateError::WrongModel {
                 expected: "kmeans",
                 found: other.kind(),
@@ -880,6 +913,23 @@ impl OnlineModel for KMeans {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state whose vectors are not the cfg's is refused, where it loaded
+    /// and panicked on the first `step` (review 2026-09-18, B3).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let m = KMeans::new(cfg(3)).unwrap();
+        let mut s = m.state();
+        let ModelState::KMeans(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.mw.pop();
+        match KMeans::restore(&s) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
 
     fn lcg(state: &mut u64) -> f64 {
         *state = state
@@ -916,6 +966,48 @@ mod tests {
             }
         }
         out
+    }
+
+    /// A far row in the seed buffer is a far summary from the first row
+    /// after seeding, while `far_cut` is still `∞` (no cluster has
+    /// `RADIUS_ROWS` rows yet). The first split-merge check then folded that
+    /// summary into the cluster's radius at the cut -- `∞` -- and the radius
+    /// was `∞`, then NaN at the next merge, and the cut with it: every row
+    /// far, or none (the review of 2026-09-18, B5). Every radius and the
+    /// cut stay finite after every checkpoint, whatever the buffer held.
+    #[test]
+    fn a_far_row_in_the_seed_buffer_leaves_every_radius_finite() {
+        let mut c = cfg(3);
+        c.warm_rows = 8;
+        c.split_merge = 0.5;
+        c.split_merge_every = 2;
+        let mut m = KMeans::new(c).unwrap();
+        let mut rows = blobs(20, 5);
+        rows[3] = [100.0, 100.0];
+        for (i, row) in rows.iter().enumerate() {
+            m.step(row, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            if !m.seeded() {
+                continue;
+            }
+            for (j, cl) in m.clusters.iter().enumerate() {
+                assert!(
+                    cl.r2.is_finite(),
+                    "row {i}: cluster {j} has radius² {}",
+                    cl.r2
+                );
+            }
+            assert!(
+                m.far_cut.is_finite() || m.far_cut == f64::INFINITY,
+                "row {i}: far_cut {}",
+                m.far_cut
+            );
+            assert!(
+                m.r2_typical.is_finite(),
+                "row {i}: r2_typical {}",
+                m.r2_typical
+            );
+        }
+        assert!(m.seeded());
     }
 
     /// The review (2026-09-12, V25) asked whether `kmeans` replays its warm-up

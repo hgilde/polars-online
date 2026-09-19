@@ -18,6 +18,7 @@ This round found and fixed two real defects before writing a single test:
 Both are now spec-validation errors, pinned below.
 """
 
+import contextlib
 import copy
 import os
 import pickle
@@ -441,14 +442,23 @@ class TestSerializationRobustness:
                 po.ModelBank.load_bytes(bytes(blob))
             blob[i] = old
         detected = 0
+        probe = _df(n=3)
         for _ in range(300):  # anywhere at all: clean outcome only
             i = int(rng.integers(0, len(blob)))
             old = blob[i]
             blob[i] = int(rng.integers(0, 256))
             try:
-                po.ModelBank.load_bytes(bytes(blob))
+                loaded = po.ModelBank.load_bytes(bytes(blob))
             except Exception:
                 detected += 1
+            else:
+                # A state that loaded must also learn without a panic: a
+                # flipped length in a model's vectors loaded and then
+                # indexed out of bounds on the first row (review
+                # 2026-09-18, B3). A ValueError is a clean outcome; a
+                # `PanicException` is not, and is not an `Exception`.
+                with contextlib.suppress(ValueError):
+                    loaded.fit_predict(probe)
             finally:
                 blob[i] = old
         assert detected > 0, "not a single payload corruption was detected"

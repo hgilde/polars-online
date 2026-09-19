@@ -188,7 +188,21 @@ impl OnlineModel for SeqTest {
     fn restore(s: &State) -> Result<Self, StateError> {
         check_schema(s)?;
         match &s.model {
-            ModelState::SeqTest(m) => Ok((**m).clone()),
+            ModelState::SeqTest(m) => {
+                let m = (**m).clone();
+                // The four per-target vectors at the cfg's width (review
+                // 2026-09-18, B3).
+                let n = m.cfg.n_targets;
+                if [&m.n_pos, &m.n_neg, &m.log_e_pos, &m.log_e_neg]
+                    .iter()
+                    .any(|v| v.len() != n)
+                {
+                    return Err(StateError::Invalid(
+                        "seqtest: the state has the wrong shape".into(),
+                    ));
+                }
+                Ok(m)
+            }
             other => Err(StateError::WrongModel {
                 expected: "seqtest",
                 found: other.kind(),
@@ -213,6 +227,23 @@ impl OnlineModel for SeqTest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state whose vectors are not the cfg's is refused, where it loaded
+    /// and panicked on the first `step` (review 2026-09-18, B3).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let m = SeqTest::new(cfg(2)).unwrap();
+        let mut s = m.state();
+        let ModelState::SeqTest(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.n_pos.pop();
+        match SeqTest::restore(&s) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
 
     fn cfg(m: usize) -> SeqTestCfg {
         SeqTestCfg {

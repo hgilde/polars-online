@@ -263,8 +263,21 @@ impl OnlineModel for Holt {
         match &s.model {
             ModelState::Holt(m) => {
                 let mut m = (**m).clone();
-                if m.since.len() != m.cfg.n_targets {
-                    m.since = vec![0.0; m.cfg.n_targets];
+                let n = m.cfg.n_targets;
+                if m.since.len() != n {
+                    m.since = vec![0.0; n];
+                }
+                // The rest are checked, not repaired: a level or a weight
+                // vector of the wrong length loaded and panicked on the
+                // first `step` (review 2026-09-18, B3).
+                if m.seen.len() != n
+                    || [&m.level, &m.trend, &m.w_level, &m.w_trend]
+                        .iter()
+                        .any(|v| v.len() != n)
+                {
+                    return Err(StateError::Invalid(
+                        "holt: the state has the wrong shape".into(),
+                    ));
                 }
                 Ok(m)
             }
@@ -288,6 +301,23 @@ impl OnlineModel for Holt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state whose vectors are not the cfg's is refused, where it loaded
+    /// and panicked on the first `step` (review 2026-09-18, B3).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let m = Holt::new(cfg(10.0, 20.0)).unwrap();
+        let mut s = m.state();
+        let ModelState::Holt(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.level.pop();
+        match Holt::restore(&s) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
 
     fn lcg(state: &mut u64) -> f64 {
         *state = state

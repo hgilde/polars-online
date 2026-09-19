@@ -148,6 +148,13 @@ impl EwAutoCorr {
         })
     }
 
+    /// Whether a restored tracker is at `other`'s lag with a buffer that lag
+    /// can have filled: what a saved diagnostic must hold to continue as
+    /// this spec's (review 2026-09-18, B3).
+    pub fn same_shape(&self, other: &Self) -> bool {
+        self.lag == other.lag && self.buf.len() <= self.lag + 1
+    }
+
     /// `None` until a lagged pair has been seen.
     pub fn get(&self) -> Option<f64> {
         (self.w > 0.0 && self.var > 0.0).then(|| (self.cross / self.var).clamp(-1.0, 1.0))

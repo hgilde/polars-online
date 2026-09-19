@@ -282,10 +282,16 @@ pub const EMPTY_FRACTION: f64 = 1e-12;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Moments {
     pub w: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub q: Option<f64>,
     pub m: Vec<f64>,
     pub c: Vec<f64>,
+    /// The Kish sum, where the accumulator keeps one. Last, and the only
+    /// skipped field: the compact encoding is positional, and a snapshot
+    /// without it decoded `m` into this slot (review 2026-09-18, B7; no
+    /// model writes one today, `EwCov::new` starts `q_sum` at `Some(0)`,
+    /// so this is the rule kept rather than a failure seen; the byte change
+    /// rides on `SCHEMA_VERSION` 11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub q: Option<f64>,
 }
 
 impl Moments {

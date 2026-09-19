@@ -592,7 +592,26 @@ impl OnlineModel for Robust {
         match &s.model {
             ModelState::Robust(m) => {
                 let mut m = (**m).clone();
-                m.zbuf = vec![0.0; m.cfg.k_total()];
+                let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
+                // One accumulator, one cross-moment row and one of each
+                // scalar per target, all at the cfg's width; a short one
+                // loaded and panicked on the first `step` (review
+                // 2026-09-18, B3).
+                let per_target = [&m.wj, &m.wobs, &m.ybar, &m.sig2, &m.wsig];
+                if m.cov.len() != n
+                    || m.cov.iter().any(|c| !c.has_shape(k))
+                    || m.cross.len() != n
+                    || m.cross.iter().any(|c| c.len() != k)
+                    || per_target.iter().any(|v| v.len() != n)
+                    || m.beta
+                        .as_ref()
+                        .is_some_and(|b| b.len() != n || b.iter().any(|v| v.len() != k))
+                {
+                    return Err(StateError::Invalid(
+                        "robust: the accumulators have the wrong shape".into(),
+                    ));
+                }
+                m.zbuf = vec![0.0; k];
                 Ok(m)
             }
             other => Err(StateError::WrongModel {
@@ -614,6 +633,23 @@ impl OnlineModel for Robust {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state whose vectors are not the cfg's is refused, where it loaded
+    /// and panicked on the first `step` (review 2026-09-18, B3).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let m = Robust::new(cfg(2, 1, RobustLoss::Huber { delta: 1.0 })).unwrap();
+        let mut s = m.state();
+        let ModelState::Robust(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.cross[0].pop();
+        match Robust::restore(&s) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
     use crate::{EwRidge, EwRidgeCfg};
 
     fn lcg(state: &mut u64) -> f64 {

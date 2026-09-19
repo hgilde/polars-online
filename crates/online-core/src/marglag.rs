@@ -144,6 +144,23 @@ impl MarginalLags {
         &self.lags
     }
 
+    /// Whether every matrix and both rings are those of `p` features, `t`
+    /// targets and `lags`: what a restored state must hold to be updated
+    /// (review 2026-09-18, B3).
+    pub fn has_shape(&self, p: usize, t: usize, lags: &[usize]) -> bool {
+        let l = lags.len();
+        self.p == p
+            && self.t == t
+            && self.lags.as_slice() == lags
+            && self.cyy.len() == l
+            && self.cyy.iter().all(|v| v.len() == t)
+            && [&self.cxx, &self.cxy, &self.cyx]
+                .iter()
+                .all(|m| m.len() == l && m.iter().all(|v| v.len() == p * t))
+            && self.ring_x.iter().all(|r| r.len() == p)
+            && self.ring_y.iter().all(|r| r.len() == t)
+    }
+
     /// `E_w[dy_t·dy_{t−ℓ}]` for target `t`, at the `li`-th configured lag.
     pub fn cyy(&self, li: usize, t: usize) -> f64 {
         self.cyy[li][t]

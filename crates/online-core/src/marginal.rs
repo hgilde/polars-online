@@ -402,6 +402,15 @@ struct Binned {
     pending_lam: f64,
 }
 
+impl Binned {
+    /// Whether the histogram, once the edges exist, and every held row are
+    /// those of `p` features and `t` targets (review 2026-09-18, B3).
+    fn has_shape(&self, p: usize, t: usize) -> bool {
+        self.hist.as_ref().is_none_or(|h| h.has_shape(p, t))
+            && self.held.iter().all(|r| r.x.len() == p && r.y.len() == t)
+    }
+}
+
 /// One warm-up row, kept whole so the replay can be exact.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct HeldRow {
@@ -964,7 +973,34 @@ impl OnlineModel for Marginal {
     fn restore(s: &State) -> Result<Self, StateError> {
         crate::check_schema(s)?;
         match &s.model {
-            crate::ModelState::Marginal(m) => Ok((**m).clone()),
+            crate::ModelState::Marginal(m) => {
+                let m = (**m).clone();
+                let (p, t) = (m.cfg.n_features, m.cfg.n_targets);
+                // Every per-pair vector at `p·t`, every per-target one at
+                // `t`, and the boxed parts exactly as the cfg asks (review
+                // 2026-09-18, B3).
+                let lag_ok = match &m.lag {
+                    Some(l) => l.has_shape(p, t, &m.cfg.lags),
+                    None => m.cfg.lags.is_empty(),
+                };
+                let bins_ok = match (&m.bins, &m.cfg.bins) {
+                    (Some(b), Some(_)) => b.has_shape(p, t),
+                    (None, None) => true,
+                    _ => false,
+                };
+                if [&m.wt, &m.qt, &m.my, &m.syy].iter().any(|v| v.len() != t)
+                    || [&m.mx, &m.sxx, &m.sxy].iter().any(|v| v.len() != p * t)
+                    || m.cfg.min_periods.len() != t
+                    || !lag_ok
+                    || !bins_ok
+                    || m.win.is_some() != m.cfg.window.is_some()
+                {
+                    return Err(StateError::Invalid(
+                        "marginal: the state has the wrong shape".into(),
+                    ));
+                }
+                Ok(m)
+            }
             other => Err(StateError::WrongModel {
                 expected: "marginal",
                 found: other.kind(),
@@ -990,6 +1026,23 @@ impl OnlineModel for Marginal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state whose vectors are not the cfg's is refused, where it loaded
+    /// and panicked on the first `step` (review 2026-09-18, B3).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let m = Marginal::new(cfg(2, 1)).unwrap();
+        let mut s = m.state();
+        let ModelState::Marginal(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.mx.pop();
+        match Marginal::restore(&s) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
     use crate::{EwCov, EwCovCfg, EwCovModel, EwCovStat};
 
     fn lcg(state: &mut u64) -> f64 {

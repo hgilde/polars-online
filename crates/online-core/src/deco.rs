@@ -440,7 +440,24 @@ impl crate::OnlineModel for Deco {
     fn restore(s: &crate::State) -> Result<Self, crate::StateError> {
         crate::check_schema(s)?;
         match &s.model {
-            crate::ModelState::Deco(m) => Ok((**m).clone()),
+            crate::ModelState::Deco(m) => {
+                let m = (**m).clone();
+                // `blocks` is read from the state and indexes the features
+                // in `block_sums`, so it must be the cfg's own; the two
+                // correlation vectors are one per block pair (review
+                // 2026-09-18, B3).
+                let values = n_values(m.blocks.len());
+                if m.diag.k() != m.cfg.n_features
+                    || m.blocks != m.cfg.resolved_blocks()
+                    || m.rho.len() != values
+                    || m.rho_bar.len() != values
+                {
+                    return Err(crate::StateError::Invalid(
+                        "deco: the state has the wrong shape".into(),
+                    ));
+                }
+                Ok(m)
+            }
             other => Err(crate::StateError::WrongModel {
                 expected: "deco",
                 found: other.kind(),
@@ -506,6 +523,23 @@ impl Deco {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state whose vectors are not the cfg's is refused, where it loaded
+    /// and panicked on the first `step` (review 2026-09-18, B3).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let m = Deco::new(cfg(3)).unwrap();
+        let mut s = m.state();
+        let ModelState::Deco(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.rho.pop();
+        match Deco::restore(&s) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
     use crate::OnlineModel;
 
     fn lcg(state: &mut u64) -> f64 {

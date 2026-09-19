@@ -800,7 +800,7 @@ fn truncated_and_bit_flipped_files_are_refused_or_loaded_never_panic() {
     feed(&mut bank, &df, 2);
     let bytes = bank.save_bytes().unwrap();
     let survives = |b: &[u8], what: &str| {
-        if let Ok(loaded) = Bank::load_bytes(b, Some(&specs)) {
+        if let Ok(mut loaded) = Bank::load_bytes(b, Some(&specs)) {
             // Loaded: usable and re-saveable, whatever the bytes were.
             let _ = loaded.summary(0, None).unwrap();
             let _ = loaded.describe(0, None).unwrap();
@@ -809,6 +809,10 @@ fn truncated_and_bit_flipped_files_are_refused_or_loaded_never_panic() {
             loaded
                 .save_bytes()
                 .unwrap_or_else(|e| panic!("{what}: re-save: {e}"));
+            // And *learnable*: a flipped length header in a model's vectors
+            // loaded until the review of 2026-09-18 (B3) and panicked on the
+            // first row's indexing. An error is fine; a panic is not.
+            let _ = loaded.fit_predict(&df.slice(0, 1));
         }
     };
     let mut loaded_short = 0;

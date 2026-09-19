@@ -706,7 +706,22 @@ impl OnlineModel for Lasso {
             ModelState::Lasso(m) => {
                 let mut m = (**m).clone();
                 let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
-                if !m.acc.has_shape(n, k) {
+                // The selection fields too: `sel_idx` indexes `lasso_path`
+                // in `lam_selected`, and a window is carried exactly when
+                // the cfg asks for one (review 2026-09-18, B3).
+                let np = m.cfg.n_lambdas();
+                let selection = m.sel_err.len() == n
+                    && m.sel_err.iter().all(|e| e.len() == np)
+                    && m.sel_w.len() == n
+                    && m.sel_idx.len() == n
+                    && m.sel_idx.iter().all(|&i| i < np)
+                    && m.beta.as_ref().is_none_or(|b| {
+                        b.len() == n
+                            && b.iter()
+                                .all(|t| t.len() == np && t.iter().all(|c| c.len() == k))
+                    })
+                    && m.win.is_some() == m.cfg.window.is_some();
+                if !m.acc.has_shape(n, k) || !selection {
                     return Err(StateError::Invalid(
                         "lasso: the accumulators have the wrong shape".into(),
                     ));
@@ -737,6 +752,23 @@ impl OnlineModel for Lasso {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A selection index past the path is refused, where it loaded and
+    /// panicked in `lam_selected` (review 2026-09-18, B3).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let m = Lasso::new(cfg(2, 1, vec![0.1, 0.01])).unwrap();
+        let mut s = m.state();
+        let ModelState::Lasso(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.sel_idx[0] = 2;
+        match Lasso::restore(&s) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
 
     fn lcg(state: &mut u64) -> f64 {
         *state = state

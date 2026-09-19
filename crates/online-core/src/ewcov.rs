@@ -239,6 +239,13 @@ impl EwCov {
         self.k
     }
 
+    /// Whether the accumulator is over `k` slots with its vectors sized to
+    /// match: what a restored state must hold to be updated (review
+    /// 2026-09-18, B3).
+    pub fn has_shape(&self, k: usize) -> bool {
+        self.k == k && self.m.len() == k && self.c.len() == k * k
+    }
+
     pub fn has_precision_prior(&self) -> bool {
         self.precision_prior > 0.0
     }
@@ -1248,11 +1255,13 @@ pub struct EwCovModel {
     /// Learned rows since the last refresh.
     #[serde(default)]
     since_pca: usize,
-    /// Lagged cross-moments, when the spec asks for lags (E56). Skipped when
-    /// absent, so an accumulator without them writes the bytes it always
-    /// did, and a state written before task 48 loads with `None` and starts
-    /// a fresh ring under a spec that has since gained `lags`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Lagged cross-moments, when the spec asks for lags (E56). Written as
+    /// `nil` when absent: the compact encoding is positional, so at most one
+    /// field may be skipped and it must be the last, which is `win`. With
+    /// both skipped, a windowed model without lags decoded its window into
+    /// this slot (review 2026-09-18, B6; the byte change rides on
+    /// `SCHEMA_VERSION` 11).
+    #[serde(default)]
     lag: Option<crate::EwLagCov>,
     /// The hard-cutoff window, when the spec asks for one (docs/PLAN.md §13).
     /// Absent otherwise, so an ordinary accumulator writes the bytes it
@@ -1764,6 +1773,27 @@ impl crate::OnlineModel for EwCovModel {
                             .map_err(crate::StateError::Invalid)?,
                     );
                 }
+                // What the cfg asks for, the state carries, at the cfg's
+                // width, and nothing else; `restore` checked none of it
+                // (review 2026-09-18, B3).
+                let k = m.cfg.n_features;
+                let lag_ok = match &m.lag {
+                    Some(l) => l.has_shape(k, &m.cfg.lags),
+                    None => m.cfg.lags.is_empty(),
+                };
+                let pca_ok = m.pca.as_ref().is_none_or(|p| {
+                    p.eig.len() <= m.cfg.pca && p.loadings.len() == p.eig.len() * k
+                });
+                if !m.cov.has_shape(k)
+                    || m.mahal_q.len() != m.cfg.mahal_quantiles.len()
+                    || !lag_ok
+                    || !pca_ok
+                    || m.win.is_some() != m.cfg.window.is_some()
+                {
+                    return Err(crate::StateError::Invalid(
+                        "ew_cov: the state has the wrong shape".into(),
+                    ));
+                }
                 Ok(m)
             }
             other => Err(crate::StateError::WrongModel {
@@ -1793,6 +1823,23 @@ impl crate::OnlineModel for EwCovModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A state whose accumulator is not the cfg's width is refused, where
+    /// it loaded and panicked on the first `step` (review 2026-09-18, B3).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        use crate::{ModelState, OnlineModel, StateError};
+        let m = EwCovModel::new(model_cfg(2, vec![EwCovStat::Mean])).unwrap();
+        let mut s = m.state();
+        let ModelState::EwCovModel(inner) = &mut s.model else {
+            unreachable!()
+        };
+        inner.cov = EwCov::new(3);
+        match EwCovModel::restore(&s) {
+            Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+    }
 
     /// Direct O(n^2) recomputation with explicit decayed weights.
     fn direct(xs: &[Vec<f64>], lams: &[f64], ws: &[f64]) -> (f64, Vec<f64>, Vec<f64>) {
