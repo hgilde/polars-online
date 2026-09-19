@@ -769,3 +769,25 @@ class TestEdgeCases:
         assert big[-1] == pytest.approx(mahal_oracle(X[-1], m, c, scale, 1e3), rel=1e-9)
         # With the ridge nearly gone the two agree.
         assert small[-1] == pytest.approx(mahal_oracle(X[-1], m, c, scale, 1e-9), rel=1e-9)
+
+
+def test_pca_variance_scales_and_the_shares_are_invariant_at_a_tiny_scale():
+    """At a column scale of 1e-100 the eigenvalues scale by 1e-200 while the
+    shares (eig / trace) are unchanged and still sum to one -- the ratio does
+    not become 0/0 (review 2026-09-18, phase 4)."""
+    X, _ = gaussian(800, 4, 3)
+
+    def pcs(scale):
+        s = spec(4, stats=["mean"], precision_prior=None, pca=4, pca_every=10, halflife=NO_DECAY)
+        out = po.ModelBank([s]).fit_predict(frame(X * scale))
+        var = [field(out, f"pc{j}_var")[-1] for j in range(4)]
+        share = [field(out, f"pc{j}_share")[-1] for j in range(4)]
+        return var, share
+
+    v1, s1 = pcs(1.0)
+    vt, st = pcs(1e-100)
+    assert np.isfinite(st).all()
+    assert np.allclose(st, s1, rtol=1e-9)
+    assert sum(st) == pytest.approx(1.0, abs=1e-9)
+    for a, b in zip(v1, vt, strict=True):
+        assert b == pytest.approx(a * 1e-200, rel=1e-6)

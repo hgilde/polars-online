@@ -438,3 +438,29 @@ def test_label_delay_is_accepted_as_ew_cov_accepts_it():
 def test_a_decay_is_required():
     with pytest.raises(ValueError, match="halflife/lam"):
         po.spec.deco("d", features=cols(4))
+
+
+# --- phase-4 coverage: a wide block (the tests above are k <= 5) --------------
+
+
+def test_a_wide_block_matches_ew_covs_mean_of_u_to_the_bit():
+    """`deco` folds `u` into `rho` through the same mean-form recursion at any
+    width; at k = 24 this also drives the Woodbury path in the density. `rho`
+    still reproduces `ew_cov`'s mean of the `u` sequence exactly (review
+    2026-09-18, phase 4)."""
+    df = frame(n=1200, k=24, rho=0.4, seed=7)
+    out = run(po.spec.deco("d", features=cols(24), halflife=HALFLIFE, min_periods=0.0), df)
+    u = out["u"].to_numpy()
+    rho = out["rho"].to_numpy()
+    live = np.isfinite(u)
+    assert live.sum() > 1000
+    mean = run(
+        po.spec.ew_cov("m", features=["u"], halflife=HALFLIFE, stats=["mean"], min_periods=0.0),
+        pl.DataFrame({"u": u[live]}),
+    )["mean_u"].to_numpy()
+    both = np.isfinite(rho[live]) & np.isfinite(mean)
+    assert both.sum() > 1000
+    assert np.array_equal(rho[live][both], mean[both]), "the mean forms drifted at width 24"
+    # `loglik` is finite once the level exists (i.e. wherever `rho` is).
+    loglik = out["loglik"].to_numpy()
+    assert np.isfinite(loglik[np.isfinite(rho)]).all()

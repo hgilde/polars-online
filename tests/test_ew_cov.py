@@ -570,3 +570,31 @@ class TestLaggedComoments:
         assert len(row["lag_comoments"][0]) == 2 * 2 * 2
         g = po.gram.from_row(row)
         assert g["lags"] == [1, 2] and g["lag_comoments"].shape == (2, 2, 2)
+
+
+def test_a_large_offset_and_a_tiny_scale_leave_the_centred_moments():
+    """`ew_cov` keeps centred co-moments, so a level of 1e8 costs the variance
+    and the correlation almost nothing, and a scale of 1e-100 rescales the
+    variance exactly while the correlation is unchanged (review 2026-09-18,
+    phase 4)."""
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal(3000)
+    b = 0.6 * a + 0.8 * rng.standard_normal(3000)
+    c = rng.standard_normal(3000)
+
+    def moments(x0, x1, x2):
+        df = pl.DataFrame({"x0": x0, "x1": x1, "x2": x2})
+        out = po.ModelBank(
+            [_spec(features=("x0", "x1", "x2"), stats=["mean", "var", "corr"])]
+        ).fit_predict(df)
+        return _last(out, "var_x0"), _last(out, "corr_x0_x1"), _last(out, "mean_x0")
+
+    v, r, mean = moments(a, b, c)
+    vo, ro, mo = moments(a + 1e8, b + 1e8, c + 1e8)
+    assert mo == pytest.approx(1e8 + mean, rel=1e-12)
+    assert vo == pytest.approx(v, rel=1e-6)
+    assert ro == pytest.approx(r, rel=1e-6)
+    vt, rt, _ = moments(a * 1e-100, b * 1e-100, c * 1e-100)
+    assert vt == pytest.approx(v * 1e-200, rel=1e-6)
+    assert rt == pytest.approx(r, rel=1e-9)
+    assert np.isfinite([vt, rt]).all()

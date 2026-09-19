@@ -436,3 +436,23 @@ class TestPlumbing:
             bank.fit_predict(df)
             runs.append(bank.marginal("m"))
         assert runs[0].equals(runs[1]) and runs[0].equals(runs[2])
+
+
+def test_a_wide_pair_set_matches_ew_cov_to_the_bit():
+    """The pair layout at p = 12 features x m = 3 targets -- 36 pair slots,
+    indexed t * p + j -- against `ew_cov` on a sample of pairs (review
+    2026-09-18, phase 4)."""
+    df = frame(n=600, p=12, m=3, weights=True, clock=True, seed=2)
+    common = dict(weight="w", clock="t", max_dclock=10.0, halflife=40.0, min_periods=5.0)
+    feats = [f"x{j}" for j in range(12)]
+    targs = [f"y{t}" for t in range(3)]
+    bank = po.ModelBank([spec(features=feats, targets=targs, **common)])
+    bank.fit_predict(df.head(-1))
+    got = bank.marginal("m")
+    for f, t in (("x0", "y0"), ("x7", "y2"), ("x11", "y1")):
+        cov = po.spec.ew_cov("c", features=[f, t], stats=["mean", "var", "cov", "corr"], **common)
+        last = po.ModelBank([cov]).fit_predict(df)["c"].to_list()[-1]
+        pair = got.filter((pl.col("feature") == f) & (pl.col("target") == t)).row(0, named=True)
+        assert pair["corr"] == last[f"corr_{f}_{t}"], (f, t)
+        assert pair["var_x"] == last[f"var_{f}"], (f, t)
+        assert pair["mean_y"] == last[f"mean_{t}"], (f, t)

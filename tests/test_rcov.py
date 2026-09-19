@@ -350,3 +350,61 @@ def test_a_fractional_weight_is_refused_naming_the_row():
     bank = po.ModelBank([spec(kind="plain", weight="w")])
     with pytest.raises(ValueError, match="row 20; rcov takes 0 or 1"):
         bank.fit_predict(df)
+
+
+# --- phase-4 coverage: three columns (every test above is k = 2) -------------
+
+
+def test_plain_at_three_columns_is_the_raw_second_moment_over_six_pairs():
+    """The vech layout and the plain estimate at k = 3: six entries of a
+    3x3 block, not the three of a 2x2 (review 2026-09-18, phase 4)."""
+    cols3 = ["x0", "x1", "x2"]
+    df = ticks(k=3, blocks=2)
+    bank = po.ModelBank(
+        [
+            po.spec.rcov(
+                "r",
+                features=cols3,
+                group="b",
+                group_close="monotone",
+                block_rows=600,
+                kind="plain",
+            )
+        ]
+    )
+    bank.fit_predict(df)
+    rows = bank.closed_groups(drop=False)
+    first = df.filter(pl.col("b") == 0)
+    ref = po.ModelBank([po.spec.ew_cov("c", features=cols3, lam=1.0, stats=[])])
+    ref.fit_predict(first.select(cols3))
+    g = ref.gram("c")[0]
+    raw = np.array(g["comoments"]) + np.outer(g["means"], g["means"])
+    want = raw * first.height
+    got = unvech(rows["rcov"][0].to_list(), 3)
+    assert got.shape == (3, 3)
+    assert np.allclose(got, want, rtol=1e-9, atol=0)
+    assert rows["rcov_n"][0] == first.height
+
+
+def test_the_noise_robust_kinds_differ_from_plain_at_three_columns():
+    cols3 = ["x0", "x1", "x2"]
+    df = ticks(k=3, noise=0.01)
+    var = {}
+    for kind in ("plain", "kernel", "preavg"):
+        bank = po.ModelBank(
+            [
+                po.spec.rcov(
+                    "r",
+                    features=cols3,
+                    group="b",
+                    group_close="monotone",
+                    block_rows=600,
+                    kind=kind,
+                    **({"bandwidth": 4} if kind == "kernel" else {}),
+                )
+            ]
+        )
+        bank.fit_predict(df)
+        var[kind] = unvech(bank.closed_groups(drop=False)["rcov"][0].to_list(), 3)[0, 0]
+    assert var["plain"] > var["kernel"] * 1.5, var
+    assert var["plain"] > var["preavg"] * 1.5, var

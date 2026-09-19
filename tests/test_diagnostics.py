@@ -830,3 +830,17 @@ class TestStreamingMetrics:
         b = po.ModelBank.load(p, specs=[spec])
         rest = df.slice(300, 300)
         assert a.fit_predict(rest).equals(b.fit_predict(rest), null_equal=True)
+
+
+def test_p2_quantiles_withhold_below_five_residuals_and_span_extreme_levels():
+    """P² places five markers, so with too few residuals it reports null, not
+    a bogus value; and it accepts levels out at 0.001 / 0.999, ordered
+    (review 2026-09-18, phase 4)."""
+    out = po.ModelBank([_spec(min_periods=3.0, resid_quantiles=[0.5])]).fit_predict(_df(n=6))
+    name = next(f.name for f in out.schema["m"].fields if f.name.startswith("absresid_q"))
+    assert out["m"].struct.field(name).to_list() == [None] * 6
+    out2 = po.ModelBank([_spec(resid_quantiles=[0.001, 0.5, 0.999])]).fit_predict(_df(n=500))
+    names = [f.name for f in out2.schema["m"].fields if f.name.startswith("absresid_q")]
+    last = [out2["m"].struct.field(nm).to_list()[-1] for nm in names]
+    assert all(np.isfinite(last)), last
+    assert last[0] <= last[1] <= last[2], last

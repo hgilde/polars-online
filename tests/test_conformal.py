@@ -744,3 +744,19 @@ class TestStreamContract:
         next_lo = d + 1 + int(np.argmax(np.isfinite(lo[d + 1 :])))
         assert next_pred > d + 5, "the reset model waits for min_periods again"
         assert next_lo == next_pred + 2, "and the radius restarts with it"
+
+
+def test_a_tiny_scale_target_gives_a_tiny_finite_radius():
+    """The interval half-width is built from `sigma`, so a target at 1e-100
+    gives a radius near 1e-100 -- finite, and neither 0 nor the unit-scale
+    width (review 2026-09-18, phase 4)."""
+    base = _small()
+    tiny = base.with_columns(x0=pl.col("x0") * 1e-100, y0=pl.col("y0") * 1e-100)
+
+    def width(df):
+        out = po.ModelBank([_spec()]).fit_predict(df)
+        return field(out, "hi_y0") - field(out, "lo_y0")
+
+    wt = width(tiny)
+    assert np.isfinite(wt[20:]).all()
+    assert 1e-101 < wt[-1] < 1e-98, wt[-1]

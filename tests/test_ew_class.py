@@ -810,3 +810,46 @@ class TestRefusals:
         )
         assert got.equals(want, null_equal=True)
         assert got["class"].dtype == pl.String
+
+
+# --- phase-4 coverage: wider than six features, and a class seen once --------
+
+
+def test_a_wide_class_problem_reaches_the_bayes_rate():
+    """The calibration test above is k = 6; this is k = 12 (review 2026-09-18,
+    phase 4)."""
+    k = 12
+    means = [[0.0] * k, [2.0] * 6 + [0.0] * 6, [0.0] * 6 + [2.0] * 6]
+    covs = [np.eye(k).tolist()] * 3
+    X, lab = gaussians(40_000, means, covs, seed=7)
+    df = frame(X, lab)
+    s = spec(
+        features=[f"x{i}" for i in range(k)],
+        halflife=20_000.0,
+        min_periods=50.0,
+        precision_prior=0.1,
+    )
+    got = unnested(po.ModelBank([s]).fit_predict(df))
+    truth = np.array(["abc"[v] for v in lab])
+    pred = np.array(got["class"].to_list()[20_000:])
+    acc = float(np.mean(pred == truth[20_000:]))
+    ceiling = bayes_rate(X[20_000:], lab[20_000:], means, covs)
+    assert ceiling > 0.7, ceiling
+    assert acc >= ceiling - 0.03, (acc, ceiling)
+    p = np.column_stack([got[f"p_{c}"].to_numpy()[20_000:] for c in "abc"])
+    assert np.abs(p.sum(axis=1) - 1.0).max() < 1e-12
+
+
+def test_a_class_seen_once_still_scores_finite_posteriors():
+    """Its co-moments are singular, carried by the prior alone; scoring must
+    stay finite and the posteriors still sum to one (review 2026-09-18,
+    phase 4)."""
+    X, lab = gaussians(2000, means=[[0.0, 0.0], [4.0, 0.0]], covs=[np.eye(2).tolist()] * 2, seed=8)
+    X = np.vstack([X, [10.0, 10.0]])
+    lab = np.append(lab, 2)  # a single row of class "c"
+    df = frame(X, lab)
+    got = unnested(po.ModelBank([spec(precision_prior=1.0, min_periods=5.0)]).fit_predict(df))
+    p = np.column_stack([got[f"p_{c}"].to_numpy() for c in "abc"])
+    live = np.isfinite(p).all(axis=1)
+    assert live.sum() > 1500
+    assert np.abs(p[live].sum(axis=1) - 1.0).max() < 1e-9

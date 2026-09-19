@@ -324,3 +324,70 @@ def test_a_missing_exogenous_value_is_the_base_transition():
 def test_a_bad_spec_is_refused_by_name(kw, message):
     with pytest.raises(ValueError, match=message):
         spec(**kw)
+
+
+# --- phase-4 coverage: more states and more features (tests above are k = 2,
+# d = 2) ---------------------------------------------------------------------
+
+
+def test_the_filter_at_three_states_and_one_feature_is_the_hamilton_recursion():
+    """Every longhand test above is k = 2, d = 2. Three states over one
+    feature, at fixed parameters, against the recursion (review 2026-09-18,
+    phase 4)."""
+    df = blobs(n=400, run=40, d=1, seed=2)
+    k, d = 3, 1
+    means = [-3.0, 0.0, 3.0]
+    covs = [1.0, 1.0, 1.0]
+    pi = np.array([[0.8, 0.1, 0.1], [0.1, 0.8, 0.1], [0.1, 0.1, 0.8]])
+    out = run(
+        df,
+        k=k,
+        features=["x0"],
+        learn=False,
+        means=means,
+        covs=covs,
+        transition=pi.flatten().tolist(),
+        transition_prior=1.0,
+    )
+    ridge = 1e-2
+    mu = np.array(means).reshape(k, d)
+    p = np.full(k, 1.0 / k)
+    x = df.select("x0").to_numpy()
+    for t in range(len(x)):
+        pred = p @ pi
+        f = np.array(
+            [
+                np.exp(
+                    -0.5
+                    * (
+                        d * np.log(2 * np.pi)
+                        + d * np.log(1.0 + ridge)
+                        + ((x[t] - mu[st]) ** 2 / (1.0 + ridge)).sum()
+                    )
+                )
+                for st in range(k)
+            ]
+        )
+        z = float(pred @ f)
+        assert out["p_0"][t] == pytest.approx(p[0], abs=1e-12)
+        assert out["p1_0"][t] == pytest.approx(pred[0], abs=1e-12)
+        assert out["loglik"][t] == pytest.approx(np.log(z), rel=1e-9)
+        p = pred * f / z
+
+
+def test_the_full_covariance_filter_recovers_states_at_four_features():
+    """The `full` shape solves a d x d system per state; the tests above only
+    reach d = 2. Four features, two well-separated blobs (review 2026-09-18,
+    phase 4)."""
+    df = blobs(n=4000, run=200, sep=4.0, d=4, seed=3)
+    out = run(df, features=["x0", "x1", "x2", "x3"], warm_rows=200, covariance="full")
+    live = out.drop("coef").drop_nulls()
+    assert live.height > 3000
+    state = out["state"].to_numpy()
+    truth = df["g"].to_numpy()
+    ok = np.isfinite(state.astype(float))
+    agree = (state[ok] == truth[ok]).mean()
+    assert max(agree, 1 - agree) > 0.9, agree
+    p = live.select("p_0", "p_1").to_numpy()
+    assert np.allclose(p.sum(axis=1), 1.0)
+    assert ((p >= 0) & (p <= 1)).all()

@@ -447,3 +447,16 @@ def test_chunks_and_a_reload_do_not_move_it():
 def test_bad_parameters_are_refused(kwargs, message):
     with pytest.raises(ValueError, match=message):
         po.spec.bocpd("b", features=["x0"], **kwargs)
+
+
+# --- phase-4 coverage: three features (the diagonal tests above reach d = 2) --
+
+
+def test_three_features_are_a_product_of_student_ts():
+    """The diagonal emission on `d = 3`, against the same longhand as the
+    `d = 2` test (review 2026-09-18, phase 4)."""
+    rng = np.random.default_rng(12)
+    x = np.column_stack([rng.normal(0, 1, 80), rng.normal(0, 2, 80), rng.normal(0, 0.5, 80)])
+    out = run(x, hazard=40.0, prior_nu=2.0, prior_scale=[1.0], prune_below=0.0)
+    _, scores = longhand(x, 40.0)
+    assert out["logscore"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-12)
