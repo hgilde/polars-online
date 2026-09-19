@@ -196,6 +196,42 @@ impl HmmCfg {
 /// row, and the per-state log densities the transition counts need.
 type Update = (Vec<f64>, Vec<f64>);
 
+/// Per-state Cholesky factors for the `full` shape: built on demand and
+/// dropped whenever a state changes. Derived state -- a pure function of the
+/// accumulators -- so it is neither serialized (rebuilt after a load) nor
+/// compared. The same cache `ew_class` keeps (docs/PERFORMANCE.md §13); the
+/// win is the `learn = false` scorer, which never changes a state and so
+/// factorizes each state once rather than on every row (review 2026-09-18).
+#[derive(Debug, Clone, Default)]
+struct Factors(Vec<Option<SpdFactor>>);
+
+impl PartialEq for Factors {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Factors {
+    /// The ready factor for state `s`, or `None` if it must be built.
+    fn peek(&self, s: usize) -> Option<&SpdFactor> {
+        self.0.get(s).and_then(Option::as_ref)
+    }
+
+    /// Store state `s`'s factor, sizing the cache to `k` states first.
+    fn set(&mut self, s: usize, k: usize, f: Option<SpdFactor>) {
+        if self.0.len() != k {
+            self.0 = vec![None; k];
+        }
+        self.0[s] = f;
+    }
+
+    /// Drop every factor; the next `ensure_factors` rebuilds, so a stale
+    /// factor is never read.
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
 /// A Gaussian hidden Markov model; see the module docs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Hmm {
@@ -212,6 +248,9 @@ pub struct Hmm {
     buffer: Vec<(Vec<f64>, f64)>,
     seeded: bool,
     pub solve_failures: u64,
+    /// The `full` shape's per-state factors between rows; see [`Factors`].
+    #[serde(skip)]
+    factors: Factors,
 }
 
 impl Hmm {
@@ -240,9 +279,27 @@ impl Hmm {
             buffer: Vec::new(),
             seeded,
             solve_failures: 0,
+            factors: Factors::default(),
             states,
             cfg,
         })
+    }
+
+    /// Build the `full` shape's per-state factors from the current (pre-row)
+    /// accumulators so `read` reuses them instead of factorizing every row.
+    /// A no-op for the other shapes and before seeding; the state-updating
+    /// paths `clear` the cache, so under `learn = false` it is built once.
+    fn ensure_factors(&mut self) {
+        if !self.seeded || !matches!(self.cfg.covariance, Covariance::Full) {
+            return;
+        }
+        let (k, d) = (self.cfg.k, self.cfg.n_features);
+        for s in 0..k {
+            if self.factors.peek(s).is_none() {
+                let m = self.state_matrix(s);
+                self.factors.set(s, k, SpdFactor::of(&m, d));
+            }
+        }
     }
 
     pub fn cfg(&self) -> &HmmCfg {
@@ -400,7 +457,18 @@ impl Hmm {
                     for (dv, (xi, mi)) in delta.iter_mut().zip(x.iter().zip(cov.means())) {
                         *dv = xi - mi;
                     }
-                    let f = SpdFactor::of(&self.state_matrix(s), d)?;
+                    // The cached factor when `ensure_factors` has built it
+                    // (the same `SpdFactor::of` on the same matrix, so the
+                    // result is bit-identical); otherwise built here, which is
+                    // the `&self` predict path and the failure case.
+                    let built;
+                    let f = match self.factors.peek(s) {
+                        Some(f) => f,
+                        None => {
+                            built = SpdFactor::of(&self.state_matrix(s), d)?;
+                            &built
+                        }
+                    };
                     *o = base - 0.5 * f.log_det() - 0.5 * f.quad_forms(&delta, d, 1)[0];
                 }
             }
@@ -510,11 +578,13 @@ impl Hmm {
         }
         self.buffer.clear();
         self.seeded = true;
+        self.factors.clear();
     }
 }
 
 impl crate::OnlineModel for Hmm {
     fn step(&mut self, x: &[f64], _y: &[Option<f64>], d_clock: f64, weight: f64) -> crate::Step {
+        self.ensure_factors();
         let (pred, extra) = self.read(x, self.exog_of(_y));
         let out = crate::Step {
             pred,
@@ -542,10 +612,12 @@ impl crate::OnlineModel for Hmm {
                 for s in self.states.iter_mut() {
                     s.update(x, lam, 0.0);
                 }
+                self.factors.clear();
             }
             return out;
         }
-        self.n_eff = lam * self.n_eff + weight;
+        let before = self.n_eff;
+        self.n_eff = lam * before + weight;
         if !self.seeded {
             self.buffer.push((x.to_vec(), weight));
             if self.buffer.len() >= self.cfg.warm_rows {
@@ -554,7 +626,20 @@ impl crate::OnlineModel for Hmm {
             return out;
         }
         let Some((post, logf)) = extra else {
+            // The densities were all non-finite, so the row cannot be scored
+            // or learned. It still happened, so it ages the clock like a
+            // zero-weight row -- `n_eff`, the counts and the states all decay
+            // by `lam`, nothing is added -- rather than `n_eff` advancing on
+            // its own (review 2026-09-18).
             self.solve_failures += 1;
+            self.n_eff = lam * before;
+            if self.cfg.learn {
+                self.a.iter_mut().for_each(|v| *v *= lam);
+                for s in self.states.iter_mut() {
+                    s.update(x, lam, 0.0);
+                }
+                self.factors.clear();
+            }
             return out;
         };
         if self.cfg.learn {
@@ -586,6 +671,7 @@ impl crate::OnlineModel for Hmm {
             for (s, cov) in self.states.iter_mut().enumerate() {
                 cov.update(x, lam, weight * post[s]);
             }
+            self.factors.clear();
         }
         self.p = post;
         out
@@ -677,6 +763,35 @@ mod tests {
         }
     }
     use crate::{EwClass, EwClassCfg, OnlineModel};
+
+    /// A row whose densities are all non-finite cannot be scored or learned,
+    /// but it still happened: it must age `n_eff`, the counts and the states
+    /// together, as a zero-weight row does -- not advance `n_eff` alone
+    /// (review 2026-09-18). At `halflife = inf` (lam = 1) that means `n_eff`
+    /// does not move on the failed row. A huge but finite feature overflows
+    /// the quadratic form and forces the failure.
+    #[test]
+    fn a_row_that_fails_to_score_does_not_advance_n_eff() {
+        let mut m = Hmm::new(cfg(2, 2)).unwrap();
+        for (x, _) in &stream(200, 11, 40) {
+            crate::OnlineModel::step(&mut m, x, &[], 1.0, 1.0);
+        }
+        let n_eff_before = m.n_eff;
+        let sum_before: f64 = (0..2).map(|s| m.state_cov(s).n_eff()).sum();
+        let fails = m.solve_failures;
+        crate::OnlineModel::step(&mut m, &[1e300, 1e300], &[], 1.0, 1.0);
+        assert_eq!(
+            m.solve_failures,
+            fails + 1,
+            "the huge row did not fail to score"
+        );
+        assert_eq!(m.n_eff, n_eff_before, "a failed row advanced n_eff alone");
+        let sum_after: f64 = (0..2).map(|s| m.state_cov(s).n_eff()).sum();
+        assert_eq!(
+            sum_after, sum_before,
+            "a failed row moved the state weights"
+        );
+    }
 
     fn lcg(state: &mut u64) -> f64 {
         *state = state

@@ -770,3 +770,37 @@ def test_schema_version_is_current():
     `ftrl`'s proximal sum. Pre-1.0, an older file is refused by its version."""
     assert po.schema_version() == 11
     assert sys.version_info >= (3, 12)
+
+
+def test_an_integer_key_used_as_both_session_and_group_orders_numerically():
+    """When one integer column is both `session` (cast to text) and `group`
+    (a key), `group_close = "monotone"` must still order it numerically, so a
+    numerically sorted key spanning single and double digits is not refused as
+    out of order at "10 after 9" (review 2026-09-18, V12)."""
+    n = 40
+    g = np.repeat(np.arange(1, 21), 2).astype(np.int64)  # ..., 9, 9, 10, 10, ...
+    df = pl.DataFrame(
+        {
+            "x0": np.random.default_rng(0).standard_normal(n),
+            "y": np.random.default_rng(1).standard_normal(n),
+            "k": g,
+            "t": np.arange(float(n)),
+        }
+    )
+    spec = po.spec.ewridge(
+        "m",
+        targets=["y"],
+        features=["x0"],
+        halflife=10.0,
+        group="k",
+        session="k",
+        session_gap=1.0,
+        clock="t",
+        max_dclock=100.0,
+        group_close="monotone",
+    )
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df)  # must not raise "group 10 after group 9"
+    keys = [int(k) for k in bank.closed_groups(drop=False)["group"].to_list()]
+    assert keys == sorted(keys), keys  # numeric order, not lexical
+    assert 9 in keys and 10 in keys and keys.index(9) < keys.index(10), keys

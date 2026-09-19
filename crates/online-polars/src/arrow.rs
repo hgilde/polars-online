@@ -166,7 +166,15 @@ impl ArrowChunk {
 
     /// The group key column in whatever form the adapter chose for it.
     pub fn key(&self, spec: &Spec, role: &str, name: &str) -> PolarsResult<&ArrowCol> {
-        self.find(name, |c| !matches!(c, ArrowCol::F64(_)))
+        // Prefer an integer form. The same column can be present in two forms
+        // -- one used as both `session` (cast to text) and `group` (a key)
+        // pushes a `Str` and an integer under the same name -- and picking the
+        // text one made `group_close = "monotone"` order it lexically, so a
+        // numerically sorted integer key was refused at "10 after 9" (review
+        // 2026-09-18, V12). The integer form is the one `monotone` reads as a
+        // number.
+        self.find(name, |c| matches!(c, ArrowCol::I64(_) | ArrowCol::U64(_)))
+            .or_else(|| self.find(name, |c| !matches!(c, ArrowCol::F64(_))))
             .ok_or_else(|| self.missing(spec, role, name, "text or an integer key"))
     }
 

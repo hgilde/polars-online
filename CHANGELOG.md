@@ -72,6 +72,14 @@ state schema is 11.
 - **A windowed `marginal` or `ew_class` reports `n_eff` as exactly 0 once a
   gap empties the window**, matching its pairs, rather than the rounding
   crumb the truncating subtraction left (S4).
+- **An integer column used as both `session` and `group` is ordered
+  numerically under `group_close = "monotone"`.** It was read as text, so a
+  numerically sorted key spanning single and double digits was refused at
+  "10 after 9".
+- **`hmm`: a row whose state densities are all non-finite ages the whole
+  filter, not just `n_eff`.** Such a row now decays the states and the
+  transition counts like a zero-weight row instead of advancing `n_eff`
+  alone; it is rare (every state's density must underflow at once).
 
 ### Performance
 
@@ -80,6 +88,11 @@ state schema is 11.
   an O(k²) snapshot on every row and dropped all but one in `window_every`;
   it is now formed inside the store, so the discarded ones are never built.
   No output changes (P1).
+- **`hmm`'s `full` covariance shape caches its per-state factorization**, as
+  `ew_class` does, so a `learn = false` scorer factorizes each state once
+  rather than on every row. Output is bit-identical.
+- **`refresh_time` clones a group key only when the group is first seen**, not
+  on every row.
 
 ### Changed
 
