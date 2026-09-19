@@ -92,7 +92,9 @@ mod stats;
 mod window;
 
 pub use bocpd::{Bocpd, BocpdCfg, BocpdEmission};
-pub use clock::{ClockAdvance, ClockCfg, ClockState, Decay, OnClockReset, SessionGap};
+pub use clock::{
+    ClockAdvance, ClockCfg, ClockState, Decay, Disorder, OnClockReset, SessionGap, TYPICAL_LAM,
+};
 pub use cluster::{
     ClusterSummary, FeatureMoments, KMeans, KMeansCfg, LINK_FACTOR, LINK_FLOOR, LINK_QUANTILE,
     Micro, MicroCfg, MicroCluster, SeedRule, SplitMix64, dist2, merged_radius2,

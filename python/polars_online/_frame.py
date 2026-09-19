@@ -465,6 +465,11 @@ _ORDER_FREE_ANY = frozenset(
         "group",
         "clock",
         "max_dclock",
+        # The two disorder checks refuse out-of-order input loudly rather than
+        # changing any number a fit produces, so they leave order-freeness
+        # where it was (design note of 2026-09-19).
+        "min_session_clock",
+        "backwards_jitter_ratio",
         "add_intercept",
         "standardize",
         "ridge",

@@ -196,6 +196,10 @@ class TestClockSemantics:
         if session is not None:
             data["session"] = session
         df = pl.DataFrame(data)
+        # This class tests what each `on_clock_reset` policy does with a
+        # backwards clock, so the clock's disorder checks -- on by default,
+        # and they would refuse these small steps back as out-of-order rows
+        # before any policy saw them -- are off here.
         spec = po.spec.ewridge(
             "m",
             targets=["y0"],
@@ -204,6 +208,8 @@ class TestClockSemantics:
             halflife=10.0,
             max_dclock=50.0,
             on_clock_reset=on_clock_reset,
+            backwards_jitter_ratio=0.0,
+            min_session_clock=0.0,
             session="session" if session is not None else None,
             session_gap=session_gap,
             max_rows_between_solves=1,

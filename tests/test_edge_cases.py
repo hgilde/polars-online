@@ -763,11 +763,16 @@ class TestStrictClock:
         )
 
     def _spec_for(self, policy, **kw):
+        # The policies themselves are under test, so the clock's disorder
+        # checks (on by default; they would refuse the fixture's small step
+        # back before any policy saw it) are off here.
         return _spec(
             clock="t",
             max_dclock=10.0,
             halflife=5.0,
             on_clock_reset=policy,
+            backwards_jitter_ratio=0.0,
+            min_session_clock=0.0,
             min_periods=0.0,
             **kw,
         )

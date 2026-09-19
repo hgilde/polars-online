@@ -26,30 +26,39 @@ fn spec(json: &str) -> Spec {
 /// label (counts only for the label); a ridge on the row-count clock (no
 /// clock range); and a comparison, whose one "target" is the comparison's
 /// own difference of residuals.
+///
+/// The clocked specs switch the clock's disorder checks off (design note of
+/// 2026-09-19): `make_df` steps the clock back by 3 within a session on
+/// purpose, so the summary's `clock_backwards` count has something to count,
+/// and that step is exactly what the jitter check (on by default) refuses.
 fn specs() -> Vec<Spec> {
     vec![
         spec(
             r#"{"name": "m", "model": {"type": "ew_ridge", "ridge": 1e-6},
                 "targets": ["y"], "features": ["x0", "x1"], "clock": "t",
                 "session": "sess", "session_gap": "reset", "weight": "w",
-                "group": "g", "halflife": 10.0, "max_dclock": 30.0}"#,
+                "group": "g", "halflife": 10.0, "max_dclock": 30.0,
+                "backwards_jitter_ratio": 0, "min_session_clock": 0}"#,
         ),
         spec(
             r#"{"name": "r", "model": {"type": "ew_ridge", "ridge": 1e-6},
                 "targets": ["y"], "features": ["x0", "x1"], "clock": "t",
                 "on_clock_reset": "reset_state", "group": "g",
-                "halflife": 10.0, "max_dclock": 30.0}"#,
+                "halflife": 10.0, "max_dclock": 30.0,
+                "backwards_jitter_ratio": 0, "min_session_clock": 0}"#,
         ),
         spec(
             r#"{"name": "c", "model": {"type": "ew_cov"},
                 "targets": ["x0"], "features": ["x0", "x1", "y"], "clock": "t",
-                "group": "g", "halflife": 10.0, "max_dclock": 30.0}"#,
+                "group": "g", "halflife": 10.0, "max_dclock": 30.0,
+                "backwards_jitter_ratio": 0, "min_session_clock": 0}"#,
         ),
         spec(
             r#"{"name": "k", "model": {"type": "ew_class", "classes": ["up", "down"],
                 "precision_prior": 1.0},
                 "targets": ["lbl"], "features": ["x0", "x1"], "clock": "t",
-                "group": "g", "halflife": 10.0, "max_dclock": 30.0}"#,
+                "group": "g", "halflife": 10.0, "max_dclock": 30.0,
+                "backwards_jitter_ratio": 0, "min_session_clock": 0}"#,
         ),
         spec(
             r#"{"name": "n", "model": {"type": "ew_ridge", "ridge": 1e-6},
@@ -59,7 +68,8 @@ fn specs() -> Vec<Spec> {
         spec(
             r#"{"name": "s", "model": {"type": "seqtest", "a": "m", "b": "r"},
                 "targets": ["y"], "features": [], "group": "g", "clock": "t",
-                "max_dclock": 30.0}"#,
+                "max_dclock": 30.0,
+                "backwards_jitter_ratio": 0, "min_session_clock": 0}"#,
         ),
     ]
 }

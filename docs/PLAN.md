@@ -75,6 +75,8 @@ input order; no allocation in the hot path after warmup (preallocate buffers in 
 | `lam` | float | per-row decay factor, alternative to `halflife` |
 | `max_dclock` | float | ceiling on clock delta (required if `clock` given); `0` disables decay, `inf` removes the ceiling |
 | `on_clock_reset` | `"max"` \| `"zero"` \| `"reset_state"` \| `"error"` | negative delta handling; default `"max"`. `"error"` refuses the whole chunk and leaves the bank untouched (IMPROVEMENTS C3) |
+| `min_session_clock` | float | two backwards jumps within a session closer than this (clock units) are out-of-order rows, not two boundaries: the chunk is refused whatever `on_clock_reset` says. Default `max_dclock`; `0` disables. Needs `clock` |
+| `backwards_jitter_ratio` | float | a backwards jump no larger than this many typical forward steps (an EW mean of the forward deltas) is jitter, refused on its first occurrence. Default `1.0`; `0` disables. Needs `clock` |
 | `session` | str \| None | column; on change apply `session_gap` |
 | `session_gap` | float \| `"reset"` | clock units to apply at session change |
 | `weight` | str \| None | row weight column, default 1 |
@@ -87,6 +89,16 @@ Per-row decay: `λ_row = 0.5 ** (Δ / halflife)`; `n_eff` = EW count with the sa
 ### Clock semantics
 - Δ = clock − prev_clock, clipped to `[0, max_dclock]` (with `on_clock_reset="zero"`) or
   Δ<0 ⇒ `max_dclock` (`"max"`, default) or state reset (`"reset_state"`).
+- Δ<0 that is *obviously* out-of-order data is refused whatever the policy, and the
+  bank is untouched (design note of 2026-09-19): a step back no larger than
+  `backwards_jitter_ratio` typical forward steps (jitter: a row one tick late, two
+  sources never merged),
+  or a second backwards jump within `min_session_clock` of the previous one (a
+  "session" too short to be one). A single jump that then holds is a boundary and
+  takes the policy. Both on by default; the error names the rule and the key that
+  disables it. They guard what the bank *learns*: `predict` scores a row before the
+  last learned clock as the policy says, as it always did (re-scoring learned rows is
+  ordinary), and `"error"` refuses there as the user chose.
 - Session change ⇒ Δ := `session_gap` (or reset), regardless of the clock delta.
 - First row of a group ⇒ Δ = 0.
 - The clock is per group (the expression API gets the group's rows via `.over()`).

@@ -29,6 +29,8 @@
   lam = None
   max_dclock = None
   on_clock_reset = 'max'
+  min_session_clock = None
+  backwards_jitter_ratio = None
   session = None
   session_gap = None
   weight = None

@@ -170,7 +170,20 @@ class TestClockSemantics:
         rng = np.random.default_rng(1)
         y = (rng.random(n) < 0.5).astype(float) if model == "ftrl" else np.arange(float(n))
         df = pl.DataFrame({"t": t, "x0": np.arange(float(n)), "x1": np.ones(n), "y0": y})
-        return run(model, extra, df, clock="t", max_dclock=4.0, min_periods=0.0, **kw)
+        # The clock policies are what this class tests, so the clock's
+        # disorder checks (on by default; they would refuse these steps back
+        # as out-of-order rows before any policy saw them) are off here.
+        return run(
+            model,
+            extra,
+            df,
+            clock="t",
+            max_dclock=4.0,
+            min_periods=0.0,
+            backwards_jitter_ratio=0.0,
+            min_session_clock=0.0,
+            **kw,
+        )
 
     def test_gap_is_capped_at_max_dclock(self, model, extra):
         out = self._clocked(model, extra, [0.0, 1.0, 1e9, 1e9 + 1])

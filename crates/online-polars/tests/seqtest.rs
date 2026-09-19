@@ -9,8 +9,16 @@ use online_core::{OnlineModel, SeqTest, SeqTestCfg};
 use online_polars::{Bank, Spec, output_fields, output_index};
 use polars::prelude::*;
 
+/// Ungrouped, a spec here reads the two interleaved groups' clocks as one
+/// stream, which the clock's disorder checks (on by default) rightly refuse;
+/// the ungrouped branch switches them off, the tests being about the
+/// comparison, not the clock (design note of 2026-09-19).
 fn ridge(name: &str, halflife: f64, group: bool) -> Spec {
-    let g = if group { r#""group": "g","# } else { "" };
+    let g = if group {
+        r#""group": "g","#
+    } else {
+        r#""backwards_jitter_ratio": 0, "min_session_clock": 0,"#
+    };
     serde_json::from_str(&format!(
         r#"{{
             "name": "{name}",
@@ -28,7 +36,12 @@ fn ridge(name: &str, halflife: f64, group: bool) -> Spec {
 }
 
 fn compare(name: &str, a: &str, b: &str, group: bool) -> Spec {
-    let g = if group { r#""group": "g","# } else { "" };
+    // As `ridge`: the ungrouped branch switches the disorder checks off.
+    let g = if group {
+        r#""group": "g","#
+    } else {
+        r#""backwards_jitter_ratio": 0, "min_session_clock": 0,"#
+    };
     serde_json::from_str(&format!(
         r#"{{
             "name": "{name}",

@@ -53,6 +53,24 @@ sees a stream* is the guide to them; this is the reference.
     default): the step is ``max_dclock``. ``"zero"``: no step.
     ``"reset_state"``: the model starts over. ``"error"``: the chunk is
     refused, naming the row.
+``min_session_clock``, ``backwards_jitter_ratio``
+    Why: it is easy to feed rows out of order by accident, and every policy
+    but ``"error"`` would absorb it into plausible, wrong output. What: two
+    checks, on by default, that refuse a backwards jump which is *obviously*
+    not a session boundary, whatever ``on_clock_reset`` says -- the chunk is
+    refused naming the row and the rule, and the bank is untouched. A step
+    back no larger than ``backwards_jitter_ratio`` typical forward steps (an
+    EW mean of the forward deltas; default ``1.0``) is jitter -- a transposed
+    pair, a row one tick late, two sources never merged -- and is refused the
+    first time. A second
+    backwards jump within ``min_session_clock`` clock units of the previous
+    one (default ``max_dclock``, the largest gap that still counts as
+    adjacency; off when that is ``inf``) is a session too short to be one. A
+    single jump that then holds is a boundary and takes the policy. ``0``
+    disables either check; the error says which key. Both need ``clock``.
+    They guard learning: ``predict`` scores a row that sits before the last
+    learned clock as the policy says (re-scoring learned rows is ordinary),
+    and only ``"error"`` refuses there. Units: clock units and a ratio.
 ``session``, ``session_gap``
     Why: a stream in market-data-like sessions has boundaries where the clock
     stops measuring time -- overnight, over a weekend. What: ``session`` names
@@ -237,8 +255,9 @@ ignored: ``drift_delta``, ``drift_threshold`` or ``drift_action = "reset"``
 without ``emit_drift``, ``average_eta`` without ``emit_averaged``,
 ``resid_autocorr_lag`` without ``emit_autocorr``, ``long_halflife`` without
 ``session_shrink``, ``session_gap`` without ``session``, an ``on_clock_reset``
-other than the default without ``clock``, and ``coef_every`` on a model that
-reports no coefficients. Names are checked too: a feature set named twice, a
+other than the default, ``min_session_clock`` or ``backwards_jitter_ratio``
+without ``clock``, and ``coef_every`` on a model that reports no
+coefficients. Names are checked too: a feature set named twice, a
 column twice in one set, an empty set, and a spec named ``""``, ``"spec"`` or
 ``"group"``, which the bank's tables use for their own columns.
 

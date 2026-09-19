@@ -7,6 +7,25 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+### Added
+
+- **Obviously out-of-order rows are refused by default, whatever
+  `on_clock_reset` says.** Two checks on the clock, each disabled with `0`,
+  each named in the error together with the key that turns it off:
+  `backwards_jitter_ratio` (default `1.0`) refuses a backwards step no larger
+  than that many typical forward steps -- a transposed pair, a row one tick
+  late, two sources never merged -- on its first occurrence;
+  `min_session_clock` (default
+  `max_dclock`, off when that is `inf`) refuses a second backwards jump
+  closer than that to the previous one, a "session" too short to be one. A
+  single backwards jump that then holds is still a session boundary and
+  takes the policy as before. The refusal is chunk-level through the
+  existing pre-scan, so the bank is untouched. Both need `clock`, and both
+  guard learning only: `predict` scores a row before the last learned clock
+  as the policy says, as it always did. This is a behaviour change for
+  streams that fed such rows under `"max"`, `"zero"` or `"reset_state"`,
+  which absorbed them silently; `"error"` streams see no change.
+
 The review of 2026-09-18 (`docs/REVIEW-2026-09-18.md`: every file in the
 repository read, each finding reproduced by the test that now pins it) found
 three defects that returned silently wrong numbers, and a set of crashes and

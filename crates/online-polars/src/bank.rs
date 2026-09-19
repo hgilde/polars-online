@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use online_core::ClockCfg;
+use online_core::{ClockCfg, Disorder};
 use polars::chunked_array::builder::AnonymousOwnedListBuilder;
 use polars::prelude::*;
 use polars_arrow::array::{
@@ -795,8 +795,8 @@ fn process(
                                 break 'segments;
                             }
                         }
-                        Err((raw, i)) => {
-                            outs.push((si, Err(backwards_clock(spec, raw, i))));
+                        Err((raw, i, why)) => {
+                            outs.push((si, Err(backwards_clock(spec, raw, i, why))));
                             break 'segments;
                         }
                     }
@@ -843,7 +843,7 @@ fn score(
                         base,
                         &mut out,
                     )
-                    .map_err(|(raw, i)| backwards_clock(spec, raw, i))?;
+                    .map_err(|(raw, i, why)| backwards_clock(spec, raw, i, why))?;
                 Ok(out)
             })();
             (si, r)
@@ -943,18 +943,51 @@ fn over_budget(spec: &Spec, key: &GroupKey, bytes: usize, every: usize) -> Polar
     )
 }
 
-/// The error for a backwards clock under `on_clock_reset = "error"`: names the
-/// spec, the column, the size of the step back, the row, and the way out.
-fn backwards_clock(spec: &Spec, raw: f64, row: usize) -> PolarsError {
-    polars_err!(ComputeError:
-        "spec {:?}: clock column {:?} goes backwards by {} at row {} \
-         (on_clock_reset = \"error\"); the bank was not updated. Sort each \
-         group by the clock, or choose \"max\"/\"zero\"/\"reset_state\" to \
-         define what a backwards clock means.",
-        spec.name,
-        spec.clock.as_deref().unwrap_or("<row count>"),
-        -raw, row
-    )
+/// The error for a refused backwards clock: names the spec, the column, the
+/// size of the step back, the row, and the way out. Under `on_clock_reset =
+/// "error"` (`why` is `None`) the way out is a sort or another policy; under
+/// a disorder rule it is the rule's numbers, the likely cause, and the exact
+/// key that disables that rule. Either way the bank was not updated.
+fn backwards_clock(spec: &Spec, raw: f64, row: usize, why: Option<Disorder>) -> PolarsError {
+    let column = spec.clock.as_deref().unwrap_or("<row count>");
+    match why {
+        None => polars_err!(ComputeError:
+            "spec {:?}: clock column {:?} goes backwards by {} at row {} \
+             (on_clock_reset = \"error\"); the bank was not updated. Sort each \
+             group by the clock, or choose \"max\"/\"zero\"/\"reset_state\" to \
+             define what a backwards clock means.",
+            spec.name, column, -raw, row
+        ),
+        Some(Disorder::Jitter {
+            back,
+            typical,
+            ratio,
+        }) => polars_err!(ComputeError:
+            "spec {:?}: clock column {:?} steps back by {} at row {}, no more than \
+             {} typical forward step(s) of {} -- out-of-order rows, not a session \
+             boundary (a boundary jumps back by a session's span); the bank was \
+             not updated. Sort each group by the clock, or add a `session` \
+             column if these are real boundaries. To accept such steps set \
+             backwards_jitter_ratio = 0 (this rule) or on_clock_reset to define \
+             what a backwards clock means.",
+            spec.name, column, back, row, ratio, typical
+        ),
+        Some(Disorder::TooSoon {
+            back,
+            span,
+            min_session_clock,
+        }) => polars_err!(ComputeError:
+            "spec {:?}: clock column {:?} goes backwards by {} at row {}, only {} \
+             clock units after the previous backwards jump (min_session_clock = \
+             {}, which defaults to max_dclock) -- two boundaries that close \
+             together are out-of-order rows, not sessions; the bank was not \
+             updated. Sort each group by the clock, or add a `session` column \
+             if these are real boundaries. To accept such jumps set \
+             min_session_clock = 0 (this rule) or lower it to the shortest \
+             session you expect.",
+            spec.name, column, back, row, span, min_session_clock
+        ),
+    }
 }
 
 /// Drop the streams a refused chunk materialized, `(spec index, key)` each.
@@ -2773,7 +2806,7 @@ impl Bank {
                     idx,
                     *base,
                 )
-                .map_err(|(raw, i)| backwards_clock(&specs[*si], raw, i))
+                .map_err(|(raw, i, why)| backwards_clock(&specs[*si], raw, i, why))
         });
         if let Err(e) = checked {
             drop(work);

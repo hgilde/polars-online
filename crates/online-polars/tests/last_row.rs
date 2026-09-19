@@ -48,11 +48,15 @@ fn other_specs() -> Vec<Spec> {
         "targets": ["y"], "features": ["x0", "x1"], "clock": "t",
         "halflife": 20.0, "max_dclock": 30.0, "group": "g"
     }"#;
+    // Ungrouped over the two interleaved groups, `c` sees their clocks as one
+    // stream; the disorder checks (on by default) would rightly refuse that,
+    // and are off here because the test is about the last row, not the clock.
     let cov = r#"{
         "name": "c",
         "model": {"type": "ew_cov"},
         "targets": ["x0"], "features": ["x0", "x1", "y"], "clock": "t",
-        "halflife": 20.0, "max_dclock": 30.0
+        "halflife": 20.0, "max_dclock": 30.0,
+        "backwards_jitter_ratio": 0, "min_session_clock": 0
     }"#;
     vec![
         serde_json::from_str(lasso).unwrap(),

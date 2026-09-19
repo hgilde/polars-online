@@ -24,8 +24,20 @@ import pytest
 
 import polars_online as po
 
+# The joins and group-bys below reorder `left()`'s rows, so its clock runs
+# backwards again and again -- exactly what the clock's disorder checks (on by
+# default) refuse as out-of-order rows. They are off here because these tests
+# are about the *plan* warning, which must fire before any row is read.
 SPEC = po.spec.ewridge(
-    "m", targets=["y"], features=["x0"], clock="t", halflife=10.0, max_dclock=5.0, min_periods=1.0
+    "m",
+    targets=["y"],
+    features=["x0"],
+    clock="t",
+    halflife=10.0,
+    max_dclock=5.0,
+    min_periods=1.0,
+    backwards_jitter_ratio=0.0,
+    min_session_clock=0.0,
 )
 
 

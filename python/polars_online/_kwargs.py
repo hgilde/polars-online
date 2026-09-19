@@ -47,6 +47,8 @@ class ExprKwargs(TypedDict, total=False):
     lam: float | None
     max_dclock: float | None
     on_clock_reset: str
+    min_session_clock: float | None
+    backwards_jitter_ratio: float | None
     session: str | None
     session_gap: float | str | None
     weight: str | None

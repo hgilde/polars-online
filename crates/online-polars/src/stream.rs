@@ -3,13 +3,13 @@
 
 use online_core::{
     Bocpd, BocpdCfg, BocpdEmission, ChangeNorm, ClockState, Conformal, Constraint, CorrChange,
-    CorrChangeCfg, CorrChangeKind, Covariance, Decay, Deco, DecoCfg, DecoDynamics, EwAutoCorr,
-    EwClass, EwClassCfg, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl, FtrlCfg,
-    FtrlLoss, Hmm, HmmCfg, Holt, HoltCfg, INPUT_BOUND, KMeans, KMeansCfg, Kalman, KalmanCfg, Lasso,
-    LassoCfg, LearningRate, Marginal, MarginalCfg, Micro, MicroCfg, ModelState, OnlineModel,
-    P2Quantile, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg, Robust,
-    RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss, SlotMetrics, State,
-    StateError,
+    CorrChangeCfg, CorrChangeKind, Covariance, Decay, Deco, DecoCfg, DecoDynamics, Disorder,
+    EwAutoCorr, EwClass, EwClassCfg, EwCovCfg, EwCovModel, EwCovStat, EwRidge, EwRidgeCfg, Ftrl,
+    FtrlCfg, FtrlLoss, Hmm, HmmCfg, Holt, HoltCfg, INPUT_BOUND, KMeans, KMeansCfg, Kalman,
+    KalmanCfg, Lasso, LassoCfg, LearningRate, Marginal, MarginalCfg, Micro, MicroCfg, ModelState,
+    OnlineModel, P2Quantile, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg,
+    Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss,
+    SlotMetrics, State, StateError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +17,11 @@ use crate::resid_window::ResidWindow;
 use crate::rows::FeatureRows;
 use crate::spec::{FloatOrList, ModelKind, Spec};
 use crate::summary::DataSummary;
+
+/// A refused backwards clock: the raw delta, the absolute row it happened at,
+/// and the disorder rule that refused it -- `None` when it was the `error`
+/// policy alone. The bank turns it into the error naming all three.
+pub type ClockRefusal = (f64, usize, Option<Disorder>);
 
 /// Enum dispatch over the models the bank can run (serde-friendly).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2095,12 +2100,22 @@ impl Stream {
         session: Option<&[u64]>,
         rows: &[usize],
         base: usize,
-    ) -> Result<(), (f64, usize)> {
-        // A row-count clock cannot go backwards, and no other policy refuses a
-        // row, so this costs nothing unless it can fail.
-        let (Some(clock), online_core::OnClockReset::Error) = (clock, cfg.on_clock_reset) else {
+    ) -> Result<(), ClockRefusal> {
+        // A row-count clock cannot go backwards, so this costs nothing there.
+        // With a clock it can fail under the `error` policy or, whatever the
+        // policy, under either disorder rule (`min_session_clock`,
+        // `backwards_jitter_ratio` -- on by default from the spec), so the
+        // pass runs whenever one of those can refuse a row: that is what
+        // keeps the refusal chunk-level and the bank untouched.
+        let Some(clock) = clock else {
             return Ok(());
         };
+        let can_refuse = matches!(cfg.on_clock_reset, online_core::OnClockReset::Error)
+            || cfg.min_session_clock > 0.0
+            || cfg.backwards_jitter_ratio > 0.0;
+        if !can_refuse {
+            return Ok(());
+        }
         let mut state = self.clock.clone();
         for (ri, &row) in rows.iter().enumerate() {
             let at = base + ri;
@@ -2108,7 +2123,7 @@ impl Stream {
             // is refused depends on the clock and session alone.
             let adv = state.advance(cfg, Some(clock[at]), session.map(|s| s[at]), true);
             if let Some(raw) = adv.backwards {
-                return Err((raw, row));
+                return Err((raw, row, adv.disorder));
             }
         }
         Ok(())
@@ -2160,7 +2175,7 @@ impl Stream {
         base: usize,
         out: &mut ChunkOut,
         last: bool,
-    ) -> Result<(), (f64, usize)> {
+    ) -> Result<(), ClockRefusal> {
         let n_rows = rows.len();
         out.rows.extend_from_slice(rows);
 
@@ -2181,10 +2196,11 @@ impl Stream {
             // what to do about it; the summary counts them (task 35).
             let below = matches!((c, clock_state.last_clock()), (Some(c), Some(p)) if c < p);
             let adv = clock_state.advance(cfg, c, session.map(|s| s[i]), accept);
-            // `on_clock_reset = "error"`: hand the offending delta back so the
-            // caller can name the row and column.
+            // `on_clock_reset = "error"`, or a disorder rule: hand the
+            // offending delta (and the rule) back so the caller can name the
+            // row and column.
             if let Some(raw) = adv.backwards {
-                return Err((raw, row));
+                return Err((raw, row, adv.disorder));
             }
             if accept {
                 rows_seen += 1;
@@ -2496,7 +2512,7 @@ impl Stream {
         rows: &[usize],
         base: usize,
         out: &mut ChunkOut,
-    ) -> Result<(), (f64, usize)> {
+    ) -> Result<(), ClockRefusal> {
         let n_rows = rows.len();
         out.rows.extend_from_slice(rows);
         // Three classes of row, by what the clock says the row would do to
@@ -2506,6 +2522,17 @@ impl Stream {
         // (class, position in it) of the last accepted row, which carries
         // the coefficients for the chunk.
         let mut last_accepted: Option<(usize, usize)> = None;
+        // Scoring learns nothing, so the clock's disorder checks -- which
+        // guard what the bank *learns* from out-of-order rows -- do not apply:
+        // a fresh frame scored against the bank as it stands may well sit a
+        // little before the last learned clock, and such a row is scored as
+        // the policy says, as it always was. The `error` policy still refuses
+        // it, that being the user's own choice.
+        let cfg = &online_core::ClockCfg {
+            min_session_clock: 0.0,
+            backwards_jitter_ratio: 0.0,
+            ..*cfg
+        };
         for (ri, &row) in rows.iter().enumerate() {
             let i = base + ri;
             let accept = all_usable(features.row(i));
@@ -2515,7 +2542,7 @@ impl Stream {
                     .clone()
                     .advance(cfg, clock.map(|c| c[i]), session.map(|s| s[i]), true);
             if let Some(raw) = adv.backwards {
-                return Err((raw, row));
+                return Err((raw, row, adv.disorder));
             }
             if accept {
                 out.processed[ri] = true;

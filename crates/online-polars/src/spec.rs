@@ -1430,6 +1430,19 @@ pub struct Spec {
     pub max_dclock: Option<Num>,
     #[serde(default)]
     pub on_clock_reset: OnClockReset,
+    /// Two backwards clock jumps within a session closer than this, in clock
+    /// units, are out-of-order rows, not two boundaries: the chunk is refused
+    /// whatever `on_clock_reset` says, and the bank is untouched. Defaults to
+    /// `max_dclock` (off when that is `inf`, which has no scale); `0`
+    /// disables. Needs `clock` (design note of 2026-09-19).
+    #[serde(default)]
+    pub min_session_clock: Option<Num>,
+    /// A backwards jump smaller than this many typical forward steps (an EW
+    /// mean of the forward deltas) is jitter, refused on its first occurrence
+    /// whatever `on_clock_reset` says. Default `1.0`; `0` disables. Needs
+    /// `clock`.
+    #[serde(default)]
+    pub backwards_jitter_ratio: Option<Num>,
     #[serde(default)]
     pub session: Option<String>,
     #[serde(default)]
@@ -1780,10 +1793,37 @@ impl Spec {
                 self.name
             ));
         }
+        // The two disorder checks: a value each must be finite and >= 0 (0
+        // disables; `inf` is no setting -- it would refuse every second jump
+        // or every jump). Their defaults are where "on by default" lives:
+        // the frequency rule at `max_dclock`, the scale the user already
+        // chose, and off when that scale is `inf`; the jitter rule at one
+        // typical step.
+        for (name, value) in [
+            ("min_session_clock", self.min_session_clock),
+            ("backwards_jitter_ratio", self.backwards_jitter_ratio),
+        ] {
+            if value.is_some_and(|v| !(v.0.is_finite() && v.0 >= 0.0)) {
+                return Err(format!(
+                    "spec {:?}: {name} must be finite and >= 0 (0 disables the check)",
+                    self.name
+                ));
+            }
+        }
+        let max_dclock = self.max_dclock.map_or(f64::INFINITY, |m| m.0);
         Ok(ClockCfg {
-            max_dclock: self.max_dclock.map_or(f64::INFINITY, |m| m.0),
+            max_dclock,
             on_clock_reset: self.on_clock_reset,
             session_gap,
+            min_session_clock: self.min_session_clock.map_or(
+                if max_dclock.is_finite() {
+                    max_dclock
+                } else {
+                    0.0
+                },
+                |v| v.0,
+            ),
+            backwards_jitter_ratio: self.backwards_jitter_ratio.map_or(1.0, |v| v.0),
         })
     }
 
@@ -2183,6 +2223,19 @@ impl Spec {
         }
         if self.on_clock_reset != OnClockReset::default() && self.clock.is_none() {
             return Err(format!("spec {:?}: on_clock_reset needs clock", self.name));
+        }
+        // The disorder checks read the clock; given without one they would be
+        // silently ignored, and a key that does nothing is refused here.
+        for (name, given) in [
+            ("min_session_clock", self.min_session_clock.is_some()),
+            (
+                "backwards_jitter_ratio",
+                self.backwards_jitter_ratio.is_some(),
+            ),
+        ] {
+            if given && self.clock.is_none() {
+                return Err(format!("spec {:?}: {name} needs clock", self.name));
+            }
         }
         // A budget bounds a window's snapshots, so it needs a window, and a
         // budget of no bytes bounds nothing (review 2026-09-12, P4).

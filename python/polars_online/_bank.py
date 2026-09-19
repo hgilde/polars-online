@@ -204,8 +204,11 @@ class ModelBank:
         - the clock has a null or non-finite value;
         - a weight is negative (a null weight skips the row);
         - a spec is named like an input column, which the struct would replace;
-        - a group's clock runs backwards under ``on_clock_reset = "error"`` (the other
-          policies absorb it).
+        - a group's clock runs backwards under ``on_clock_reset = "error"``, or is
+          obviously out of order under any policy -- a step back smaller than a
+          typical forward step, or a second backwards jump within
+          ``min_session_clock`` of the previous one (both checks on by default;
+          the error names the key that disables the one that fired).
 
         A refused chunk leaves the bank exactly as it was, so the corrected chunk can
         be fed. The exception is a window past a refusing ``window_budget``

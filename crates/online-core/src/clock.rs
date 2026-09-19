@@ -82,16 +82,60 @@ pub struct ClockCfg {
     pub max_dclock: f64,
     pub on_clock_reset: OnClockReset,
     pub session_gap: Option<SessionGap>,
+    /// Two backwards clock jumps within a session closer than this, in clock
+    /// units, are out-of-order data, not two session boundaries: the second
+    /// is refused as [`Disorder::TooSoon`] whatever `on_clock_reset` says. A
+    /// single jump that then holds is a boundary and takes the policy. `0`
+    /// disables. The spec defaults it to `max_dclock`, the largest gap that
+    /// still counts as adjacency -- a "session" shorter than one such gap is
+    /// not a session -- so the scale comes from a value already chosen.
+    pub min_session_clock: f64,
+    /// A backwards jump no larger than this multiple of the typical forward
+    /// step (an EW mean of the forward deltas, [`TYPICAL_LAM`]) is jitter --
+    /// two sources never merged, a transposed pair, a row one tick late --
+    /// not a boundary, and is refused as [`Disorder::Jitter`] on its first
+    /// occurrence. A real boundary jumps back by a session's span, many
+    /// steps. `0` disables; the spec defaults it to `1.0`. Silent until a
+    /// forward step has been seen.
+    pub backwards_jitter_ratio: f64,
 }
 
 impl Default for ClockCfg {
+    /// Both disorder checks **off** here: this is the bare core default. The
+    /// spec layer is where "on by default" lives (`min_session_clock =
+    /// max_dclock`, `backwards_jitter_ratio = 1.0`), so a direct core caller
+    /// opts in explicitly and the core's own tests keep their literal meaning.
     fn default() -> Self {
         Self {
             max_dclock: f64::INFINITY,
             on_clock_reset: OnClockReset::default(),
             session_gap: None,
+            min_session_clock: 0.0,
+            backwards_jitter_ratio: 0.0,
         }
     }
+}
+
+/// Per-row decay of the typical-forward-step estimate the jitter rule reads:
+/// a row-halflife of about 70 rows. A literal rather than `2^(-1/h)`, so the
+/// value persisted in the clock state carries no libm result and is the same
+/// bits on every platform (the portability rule).
+pub const TYPICAL_LAM: f64 = 0.99;
+
+/// Why a backwards clock jump was refused as obviously out-of-order data,
+/// carried on [`ClockAdvance::disorder`] for the caller's message. Each names
+/// the numbers that decided it and the setting that disables the rule.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Disorder {
+    /// The step back was no larger than `ratio` typical forward steps.
+    Jitter { back: f64, typical: f64, ratio: f64 },
+    /// The previous backwards jump was `span` clock units ago, under
+    /// `min_session_clock`.
+    TooSoon {
+        back: f64,
+        span: f64,
+        min_session_clock: f64,
+    },
 }
 
 /// Result of advancing the clock by one row.
@@ -104,10 +148,15 @@ pub struct ClockAdvance {
     pub reset: bool,
     /// Whether the row was accepted (mirrors the `accept` argument).
     pub accepted: bool,
-    /// Set when `on_clock_reset` is [`OnClockReset::Error`] and the raw delta
-    /// was negative: the caller must turn this into an error naming the row.
+    /// Set when the raw delta was negative and the row is refused: under
+    /// `on_clock_reset` = [`OnClockReset::Error`], or -- whatever the policy
+    /// -- when the jump is obviously out-of-order data (`disorder` says
+    /// which rule). The caller must turn this into an error naming the row.
     /// Carries the offending raw delta.
     pub backwards: Option<f64>,
+    /// With `backwards`: the disorder rule that refused the jump, `None` when
+    /// it was the `error` policy alone. Carries the numbers for the message.
+    pub disorder: Option<Disorder>,
     /// The session id differs from the previous row's. Reported separately
     /// from `reset` so a caller can do something gentler than starting over —
     /// see `session_shrink` (ENHANCEMENTS E6).
@@ -134,6 +183,20 @@ pub struct ClockState {
     pending: f64,
     /// Whether any row has been seen (drives the row-count clock's first delta).
     started: bool,
+    /// The clock value the last accepted in-session backwards jump landed
+    /// on: where the current inferred session began. `None` before any
+    /// jump, and cleared by an explicit session change. The frequency rule
+    /// measures the previous session's span from it (a clock value, so
+    /// portable bits).
+    #[serde(default)]
+    session_start: Option<f64>,
+    /// EW mean of the positive forward deltas, decayed by [`TYPICAL_LAM`]
+    /// per row: the typical step the jitter rule reads. Zero weight before
+    /// any forward step, when the rule is silent.
+    #[serde(default)]
+    typical: f64,
+    #[serde(default)]
+    typical_w: f64,
 }
 
 impl ClockState {
@@ -165,7 +228,7 @@ impl ClockState {
     /// ```
     /// use online_core::{ClockCfg, ClockState, OnClockReset};
     ///
-    /// let cfg = ClockCfg { max_dclock: 60.0, on_clock_reset: OnClockReset::Max, session_gap: None };
+    /// let cfg = ClockCfg { max_dclock: 60.0, on_clock_reset: OnClockReset::Max, ..ClockCfg::default() };
     /// let mut clock = ClockState::new();
     /// // The first row of a stream has nothing to be a delta from.
     /// assert_eq!(clock.advance(&cfg, Some(1000.0), None, true).d_clock, 0.0);
@@ -216,11 +279,15 @@ impl ClockState {
 
         let mut reset = false;
         let mut backwards = None;
+        let mut disorder = None;
         let mut capped = false;
         let mut d = match raw {
             None => 0.0,
             Some(raw) => {
                 if session_changed {
+                    // An explicit boundary: the inferred-session memory the
+                    // frequency rule keeps starts over here.
+                    self.session_start = None;
                     match cfg.session_gap {
                         Some(SessionGap::Reset) => {
                             reset = true;
@@ -236,24 +303,78 @@ impl ClockState {
                         }
                     }
                 } else if raw < 0.0 {
-                    match cfg.on_clock_reset {
-                        OnClockReset::Max => {
-                            // The policy says "as far apart as they can be",
-                            // which is the ceiling: adjacency is gone.
-                            capped = true;
-                            cfg.max_dclock
-                        }
-                        OnClockReset::Zero => 0.0,
-                        OnClockReset::ResetState => {
-                            reset = true;
-                            0.0
-                        }
-                        OnClockReset::Error => {
-                            backwards = Some(raw);
-                            0.0
+                    // Obvious disorder is refused whatever the absorbing
+                    // policy says: a reset or a capped delta on shuffled or
+                    // interleaved rows is worse than stopping. Two rules,
+                    // each off at 0. A step back no larger than the typical
+                    // forward step is jitter, caught on its first occurrence;
+                    // a second jump within `min_session_clock` of the
+                    // previous one is a "session" too short to be one. A
+                    // single jump that then holds is a boundary and takes the
+                    // policy. The `error` policy refuses every backwards jump
+                    // already, and keeps its own message: the rules add
+                    // nothing there.
+                    let back = -raw;
+                    let refuses_all = matches!(cfg.on_clock_reset, OnClockReset::Error);
+                    // `<=`, not `<`: on an integer grid a row one tick late
+                    // steps back by exactly one typical step, and that is the
+                    // commonest accident, not a boundary.
+                    let jitter = !refuses_all
+                        && cfg.backwards_jitter_ratio > 0.0
+                        && self.typical_w > 0.0
+                        && back <= cfg.backwards_jitter_ratio * self.typical;
+                    let span = self.prev_clock.zip(self.session_start).map(|(p, s)| p - s);
+                    let too_soon = !refuses_all
+                        && cfg.min_session_clock > 0.0
+                        && span.is_some_and(|s| s < cfg.min_session_clock);
+                    if jitter {
+                        disorder = Some(Disorder::Jitter {
+                            back,
+                            typical: self.typical,
+                            ratio: cfg.backwards_jitter_ratio,
+                        });
+                        backwards = Some(raw);
+                        0.0
+                    } else if too_soon {
+                        disorder = Some(Disorder::TooSoon {
+                            back,
+                            span: span.unwrap_or(0.0),
+                            min_session_clock: cfg.min_session_clock,
+                        });
+                        backwards = Some(raw);
+                        0.0
+                    } else {
+                        match cfg.on_clock_reset {
+                            OnClockReset::Max => {
+                                // The policy says "as far apart as they can
+                                // be", which is the ceiling: adjacency is
+                                // gone. The inferred session begins here.
+                                self.session_start = clock;
+                                capped = true;
+                                cfg.max_dclock
+                            }
+                            OnClockReset::Zero => {
+                                self.session_start = clock;
+                                0.0
+                            }
+                            OnClockReset::ResetState => {
+                                self.session_start = clock;
+                                reset = true;
+                                0.0
+                            }
+                            OnClockReset::Error => {
+                                backwards = Some(raw);
+                                0.0
+                            }
                         }
                     }
                 } else {
+                    // A forward step feeds the typical-step estimate the
+                    // jitter rule reads; a repeated clock is not a step.
+                    if raw > 0.0 {
+                        self.typical_w = TYPICAL_LAM * self.typical_w + 1.0;
+                        self.typical += (raw - self.typical) / self.typical_w;
+                    }
                     capped = raw > cfg.max_dclock;
                     raw.min(cfg.max_dclock)
                 }
@@ -281,6 +402,7 @@ impl ClockState {
                 reset,
                 accepted: true,
                 backwards,
+                disorder,
                 session_changed,
                 capped: capped || total > cfg.max_dclock,
             }
@@ -291,6 +413,7 @@ impl ClockState {
                 reset,
                 accepted: false,
                 backwards,
+                disorder,
                 session_changed,
                 capped,
             }
@@ -349,7 +472,7 @@ mod tests {
             let cfg = ClockCfg {
                 max_dclock: 60.0,
                 on_clock_reset: policy,
-                session_gap: None,
+                ..Default::default()
             };
             let mut c = ClockState::new();
             c.advance(&cfg, Some(100.0), None, true);
@@ -367,6 +490,7 @@ mod tests {
             max_dclock: 60.0,
             on_clock_reset: OnClockReset::Max,
             session_gap: Some(SessionGap::Gap(g)),
+            ..Default::default()
         };
         for (gap, want) in [(30.0, false), (600.0, true)] {
             let cfg = with_gap(gap);
@@ -381,6 +505,7 @@ mod tests {
             max_dclock: 60.0,
             on_clock_reset: OnClockReset::Max,
             session_gap: Some(SessionGap::Reset),
+            ..Default::default()
         };
         let mut c = ClockState::new();
         c.advance(&cfg, Some(0.0), Some(1), true);
@@ -445,7 +570,7 @@ mod tests {
             let cfg = ClockCfg {
                 max_dclock: 10.0,
                 on_clock_reset: policy,
-                session_gap: None,
+                ..Default::default()
             };
             assert_eq!(c.advance(&cfg, Some(5.0), None, true).d_clock, 0.0);
             let a = c.advance(&cfg, Some(5.0), None, true);
@@ -474,7 +599,7 @@ mod tests {
         let cfg = ClockCfg {
             max_dclock: 50.0,
             on_clock_reset: OnClockReset::Error,
-            session_gap: None,
+            ..Default::default()
         };
         assert!(c.advance(&cfg, Some(0.0), None, true).backwards.is_none());
         assert!(c.advance(&cfg, Some(10.0), None, true).backwards.is_none());
@@ -523,6 +648,134 @@ mod tests {
         c.advance(&cfg, Some(0.0), Some(0), true);
         let a = c.advance(&cfg, Some(10.0), Some(1), true);
         assert!(a.reset);
+    }
+
+    /// The two disorder rules (design note of 2026-09-19): a step back
+    /// smaller than the typical forward step is jitter, refused on its first
+    /// occurrence; a single jump that then holds is a boundary and takes the
+    /// policy.
+    #[test]
+    fn a_step_back_smaller_than_the_typical_step_is_jitter() {
+        let cfg = ClockCfg {
+            max_dclock: 1e9,
+            backwards_jitter_ratio: 1.0,
+            ..Default::default()
+        };
+        let mut c = ClockState::new();
+        for t in [0.0, 10.0, 20.0, 30.0, 40.0] {
+            assert!(c.advance(&cfg, Some(t), None, true).backwards.is_none());
+        }
+        // Back by 3 on a typical step of 10: jitter, refused under the
+        // default `max` policy that would otherwise have absorbed it.
+        let a = c.advance(&cfg, Some(37.0), None, true);
+        assert_eq!(a.backwards, Some(-3.0));
+        match a.disorder {
+            Some(Disorder::Jitter {
+                back,
+                typical,
+                ratio,
+            }) => {
+                assert_eq!(back, 3.0);
+                assert!((typical - 10.0).abs() < 1e-12, "{typical}");
+                assert_eq!(ratio, 1.0);
+            }
+            other => panic!("{other:?}"),
+        }
+        // Back by 50 -- five typical steps -- is a boundary: the policy
+        // applies and nothing is refused.
+        let mut c = ClockState::new();
+        for t in [0.0, 10.0, 20.0, 30.0, 40.0] {
+            c.advance(&cfg, Some(t), None, true);
+        }
+        let b = c.advance(&cfg, Some(-10.0), None, true);
+        assert!(b.backwards.is_none() && b.disorder.is_none());
+        assert!(b.capped, "the `max` policy took the boundary");
+    }
+
+    /// A second backwards jump within `min_session_clock` of the previous
+    /// one is a session too short to be one -- out-of-order data -- while
+    /// the same jump after the session has run long enough is another
+    /// boundary.
+    #[test]
+    fn a_second_backwards_jump_too_soon_is_out_of_order() {
+        let cfg = ClockCfg {
+            max_dclock: 1e9,
+            min_session_clock: 60.0,
+            ..Default::default()
+        };
+        let mut c = ClockState::new();
+        for t in [0.0, 100.0, 200.0, 300.0] {
+            c.advance(&cfg, Some(t), None, true);
+        }
+        let first = c.advance(&cfg, Some(50.0), None, true);
+        assert!(first.backwards.is_none() && first.capped);
+        c.advance(&cfg, Some(60.0), None, true);
+        c.advance(&cfg, Some(70.0), None, true);
+        // 20 clock units into the new session, another jump back.
+        let second = c.advance(&cfg, Some(10.0), None, true);
+        assert_eq!(second.backwards, Some(-60.0));
+        match second.disorder {
+            Some(Disorder::TooSoon {
+                back,
+                span,
+                min_session_clock,
+            }) => {
+                assert_eq!(back, 60.0);
+                assert_eq!(span, 20.0);
+                assert_eq!(min_session_clock, 60.0);
+            }
+            other => panic!("{other:?}"),
+        }
+        let mut c = ClockState::new();
+        for t in [0.0, 100.0, 200.0, 300.0] {
+            c.advance(&cfg, Some(t), None, true);
+        }
+        c.advance(&cfg, Some(50.0), None, true);
+        for t in [60.0, 70.0, 80.0, 90.0, 100.0, 110.0, 120.0] {
+            c.advance(&cfg, Some(t), None, true);
+        }
+        let later = c.advance(&cfg, Some(10.0), None, true);
+        assert!(later.backwards.is_none(), "{:?}", later.disorder);
+    }
+
+    /// Both rules at 0 -- the core default -- and every backwards jump takes
+    /// the policy as before, jitter-sized or repeated.
+    #[test]
+    fn the_disorder_rules_off_leave_the_policy_alone() {
+        let cfg = ClockCfg {
+            max_dclock: 1e9,
+            ..Default::default()
+        };
+        let mut c = ClockState::new();
+        for t in [0.0, 10.0, 20.0] {
+            c.advance(&cfg, Some(t), None, true);
+        }
+        assert!(c.advance(&cfg, Some(19.0), None, true).backwards.is_none());
+        assert!(c.advance(&cfg, Some(18.0), None, true).backwards.is_none());
+    }
+
+    /// A session column declares its boundaries, so a declared change starts
+    /// the frequency rule's memory over: the first in-session jump of the new
+    /// session is a boundary, not a second jump too soon after the old one.
+    #[test]
+    fn an_explicit_session_change_clears_the_inferred_session() {
+        let cfg = ClockCfg {
+            max_dclock: 1e9,
+            min_session_clock: 60.0,
+            session_gap: Some(SessionGap::Gap(1.0)),
+            ..Default::default()
+        };
+        let mut c = ClockState::new();
+        for t in [0.0, 100.0, 200.0] {
+            c.advance(&cfg, Some(t), Some(1), true);
+        }
+        c.advance(&cfg, Some(50.0), Some(1), true);
+        c.advance(&cfg, Some(60.0), Some(1), true);
+        let changed = c.advance(&cfg, Some(0.0), Some(2), true);
+        assert!(changed.session_changed && changed.backwards.is_none());
+        c.advance(&cfg, Some(10.0), Some(2), true);
+        let a = c.advance(&cfg, Some(5.0), Some(2), true);
+        assert!(a.backwards.is_none(), "{:?}", a.disorder);
     }
 
     #[test]

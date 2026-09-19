@@ -73,11 +73,16 @@ fn grouped_specs(group: &str) -> Vec<Spec> {
 /// frame's own and which shares the chunk's task pool with the others.
 fn all_specs(group: &str) -> Vec<Spec> {
     let mut specs = grouped_specs(group);
+    // Ungrouped, `solo` reads the forty interleaved groups' clocks as one
+    // stream, which the disorder checks (on by default) rightly refuse as
+    // out-of-order rows; they are off here because this spec is about the
+    // layout, not the clock (design note of 2026-09-19).
     specs.push(spec(
         "solo",
         None,
         "60.0",
-        r#""session_gap": 10.0, "coef_every": 1,"#,
+        r#""session_gap": 10.0, "coef_every": 1,
+           "backwards_jitter_ratio": 0, "min_session_clock": 0,"#,
     ));
     specs
 }

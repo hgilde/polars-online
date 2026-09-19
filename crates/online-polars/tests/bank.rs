@@ -4,6 +4,13 @@
 use online_polars::{Bank, ChunkOut, GroupKey, ModelKind, Spec, Stream};
 use polars::prelude::*;
 
+/// The clock's disorder checks (on by default; design note of 2026-09-19)
+/// are off in these specs: ungrouped, or re-keyed onto a column the
+/// fixture's per-group clock does not follow, a spec here reads interleaved
+/// clocks as one stream, which the checks rightly refuse as out-of-order
+/// rows. The tests are about groups, keys and chunks, not the clock; the one
+/// that is about the clock, `an_ungrouped_view_of_interleaved_groups_is_refused_by_default`,
+/// builds its spec without this.
 fn spec_json(name: &str, group: bool) -> Spec {
     let g = if group { r#""group": "g","# } else { "" };
     serde_json::from_str(&format!(
@@ -15,12 +22,37 @@ fn spec_json(name: &str, group: bool) -> Spec {
             "clock": "t",
             "halflife": 60.0,
             "max_dclock": 30.0,
+            "backwards_jitter_ratio": 0,
+            "min_session_clock": 0,
             "weight": "w",
             {g}
             "min_periods": 5.0
         }}"#
     ))
     .unwrap()
+}
+
+/// What `spec_json` switches off, seen once: an ungrouped spec over the two
+/// interleaved groups reads their clocks as one stream that steps back on
+/// every other row, and the jitter check refuses the chunk by name, leaving
+/// the bank untouched -- where the `max` policy used to absorb every step
+/// into plausible, wrong output.
+#[test]
+fn an_ungrouped_view_of_interleaved_groups_is_refused_by_default() {
+    let spec: Spec = serde_json::from_str(
+        r#"{
+            "name": "u",
+            "model": {"type": "ew_ridge", "ridge": 1e-6},
+            "targets": ["y"], "features": ["x0", "x1"], "clock": "t",
+            "halflife": 60.0, "max_dclock": 30.0, "weight": "w", "min_periods": 5.0
+        }"#,
+    )
+    .unwrap();
+    let mut bank = Bank::new(vec![spec]).unwrap();
+    let err = bank.fit_predict(&make_df(200)).unwrap_err().to_string();
+    assert!(err.contains("backwards_jitter_ratio"), "{err}");
+    assert!(err.contains("out-of-order rows"), "{err}");
+    assert_eq!(bank.rows_seen(), 0, "the refused chunk taught nothing");
 }
 
 /// Deterministic stream over 2 groups with nulls sprinkled in.

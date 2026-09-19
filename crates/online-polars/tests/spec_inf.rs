@@ -44,7 +44,19 @@ const MEANS_SOMETHING: [(&str, &str); 7] = [
 ];
 
 /// Where it is no setting: a step, a penalty, a tube or a threshold at `inf`.
-const MEANS_NOTHING: [(&str, &str, &str); 11] = [
+const MEANS_NOTHING: [(&str, &str, &str); 13] = [
+    // The disorder checks: `inf` would refuse every second jump, or every
+    // jump; `0` is the way to switch one off (design note of 2026-09-19).
+    (
+        "clock = \"t\"\nmax_dclock = 10.0\nmin_session_clock = inf",
+        "type = \"ew_ridge\"",
+        "min_session_clock",
+    ),
+    (
+        "clock = \"t\"\nmax_dclock = 10.0\nbackwards_jitter_ratio = inf",
+        "type = \"ew_ridge\"",
+        "backwards_jitter_ratio",
+    ),
     (
         "emit_drift = true\ndrift_delta = inf",
         "type = \"ew_ridge\"",
