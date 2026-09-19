@@ -370,12 +370,17 @@ impl ClockState {
                     }
                 } else {
                     // A forward step feeds the typical-step estimate the
-                    // jitter rule reads; a repeated clock is not a step.
-                    if raw > 0.0 {
+                    // jitter rule reads. A repeated clock is not a step, and
+                    // nor is a gap over the cap: by the caller's own
+                    // `max_dclock` that is not adjacency, and fed in, one
+                    // weekend would put the typical step at a value the data
+                    // never shows and refuse real boundaries as jitter for a
+                    // hundred rows after it.
+                    capped = raw > cfg.max_dclock;
+                    if raw > 0.0 && !capped {
                         self.typical_w = TYPICAL_LAM * self.typical_w + 1.0;
                         self.typical += (raw - self.typical) / self.typical_w;
                     }
-                    capped = raw > cfg.max_dclock;
                     raw.min(cfg.max_dclock)
                 }
             }
@@ -736,6 +741,94 @@ mod tests {
         }
         let later = c.advance(&cfg, Some(10.0), None, true);
         assert!(later.backwards.is_none(), "{:?}", later.disorder);
+    }
+
+    /// A repeated clock value is not a step, so a run of them does not dilute
+    /// the typical step the jitter rule reads: after steps of 10 and three
+    /// repeats, a step back of 3 is still jitter against a typical of 10.
+    #[test]
+    fn a_repeated_clock_does_not_feed_the_typical_step() {
+        let cfg = ClockCfg {
+            max_dclock: 1e9,
+            backwards_jitter_ratio: 1.0,
+            ..Default::default()
+        };
+        let mut c = ClockState::new();
+        for t in [0.0, 10.0, 20.0, 20.0, 20.0, 20.0] {
+            assert!(c.advance(&cfg, Some(t), None, true).backwards.is_none());
+        }
+        let a = c.advance(&cfg, Some(17.0), None, true);
+        match a.disorder {
+            Some(Disorder::Jitter { typical, .. }) => assert_eq!(typical, 10.0),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A forward gap over `max_dclock` is not a step either: by the caller's
+    /// own cap it is not adjacency. Fed in, one weekend would put the typical
+    /// step at a value the data never shows and refuse real boundaries as
+    /// jitter for a hundred rows after it.
+    #[test]
+    fn a_gap_over_the_cap_does_not_feed_the_typical_step() {
+        let cfg = ClockCfg {
+            max_dclock: 100.0,
+            backwards_jitter_ratio: 1.0,
+            ..Default::default()
+        };
+        let mut c = ClockState::new();
+        for t in [0.0, 10.0, 20.0, 30.0] {
+            c.advance(&cfg, Some(t), None, true);
+        }
+        assert!(c.advance(&cfg, Some(100_030.0), None, true).capped);
+        c.advance(&cfg, Some(100_040.0), None, true);
+        // A step back of 500 is fifty typical steps: a boundary, not jitter.
+        let a = c.advance(&cfg, Some(99_540.0), None, true);
+        assert!(a.backwards.is_none() && a.disorder.is_none() && a.capped);
+        c.advance(&cfg, Some(99_550.0), None, true);
+        let a = c.advance(&cfg, Some(99_545.0), None, true);
+        match a.disorder {
+            Some(Disorder::Jitter { typical, .. }) => assert_eq!(typical, 10.0),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The frequency rule is strict: a second jump exactly `min_session_clock`
+    /// after the previous one is a session of that length, and a boundary.
+    #[test]
+    fn a_second_jump_exactly_min_session_clock_apart_is_a_boundary() {
+        let cfg = ClockCfg {
+            max_dclock: 1e9,
+            min_session_clock: 30.0,
+            ..Default::default()
+        };
+        let mut c = ClockState::new();
+        for t in [0.0, 100.0, 200.0] {
+            c.advance(&cfg, Some(t), None, true);
+        }
+        c.advance(&cfg, Some(50.0), None, true); // the boundary
+        for t in [60.0, 70.0, 80.0] {
+            c.advance(&cfg, Some(t), None, true); // a span of exactly 30
+        }
+        let a = c.advance(&cfg, Some(10.0), None, true);
+        assert!(a.backwards.is_none(), "{:?}", a.disorder);
+    }
+
+    /// Before any forward step there is no typical step and no session start,
+    /// so a first delta that steps back is a boundary, and the inferred
+    /// session begins there.
+    #[test]
+    fn the_first_delta_may_step_back() {
+        let cfg = ClockCfg {
+            max_dclock: 1e9,
+            min_session_clock: 30.0,
+            backwards_jitter_ratio: 1.0,
+            ..Default::default()
+        };
+        let mut c = ClockState::new();
+        c.advance(&cfg, Some(100.0), None, true);
+        let a = c.advance(&cfg, Some(0.0), None, true);
+        assert!(a.backwards.is_none() && a.disorder.is_none() && a.capped);
+        assert_eq!(c.session_start, Some(0.0));
     }
 
     /// Both rules at 0 -- the core default -- and every backwards jump takes

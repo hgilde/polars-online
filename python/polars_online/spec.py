@@ -60,7 +60,8 @@ sees a stream* is the guide to them; this is the reference.
     not a session boundary, whatever ``on_clock_reset`` says -- the chunk is
     refused naming the row and the rule, and the bank is untouched. A step
     back no larger than ``backwards_jitter_ratio`` typical forward steps (an
-    EW mean of the forward deltas; default ``1.0``) is jitter -- a transposed
+    EW mean of the forward deltas within ``max_dclock``, a gap over the cap
+    not being a step; default ``1.0``) is jitter -- a transposed
     pair, a row one tick late, two sources never merged -- and is refused the
     first time. A second
     backwards jump within ``min_session_clock`` clock units of the previous

@@ -1437,10 +1437,10 @@ pub struct Spec {
     /// disables. Needs `clock` (design note of 2026-09-19).
     #[serde(default)]
     pub min_session_clock: Option<Num>,
-    /// A backwards jump smaller than this many typical forward steps (an EW
-    /// mean of the forward deltas) is jitter, refused on its first occurrence
-    /// whatever `on_clock_reset` says. Default `1.0`; `0` disables. Needs
-    /// `clock`.
+    /// A backwards jump no larger than this many typical forward steps (an EW
+    /// mean of the forward deltas within `max_dclock`: a gap over the cap is
+    /// not a step) is jitter, refused on its first occurrence whatever
+    /// `on_clock_reset` says. Default `1.0`; `0` disables. Needs `clock`.
     #[serde(default)]
     pub backwards_jitter_ratio: Option<Num>,
     #[serde(default)]
