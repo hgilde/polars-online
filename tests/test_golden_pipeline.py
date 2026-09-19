@@ -655,10 +655,13 @@ GOLDEN: dict[str, float | str | None] = {
     "corrchange.n_eff@25": 11.0,
     "corrchange.n_eff@60": 29.0,
     "corrchange.n_eff@119": 57.0,
-    "corrchange.stat#0": 0.4187229847749789,
-    "corrchange.stat#1": 0.8327434734281521,
-    "corrchange.stat#2": 0.4018108796040254,
-    "corrchange.stat#3": 0.7687800247316329,
+    # Re-frozen 2026-09-19: the review's S3 corrected `corrchange`'s D₃
+    # gradient (σ³ where it had σ²), which moves the monitor statistic; no
+    # other key moved.
+    "corrchange.stat#0": 1.0721348056303184,
+    "corrchange.stat#1": 1.0584184395238514,
+    "corrchange.stat#2": 0.9351588646528833,
+    "corrchange.stat#3": 0.761834453284964,
     "hmm.p_0@25": 0.0019837560822976905,
     "hmm.p_0@60": 0.7065450485379252,
     "hmm.p_0@119": 3.6843316145567297e-07,

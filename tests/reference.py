@@ -586,12 +586,18 @@ def robust_ref(
         return {
             "W": np.zeros(m),
             "mean": [np.zeros(kt) for _ in range(m)],
-            "raw": [np.zeros((kt, kt)) for _ in range(m)],
+            # Centred co-moments and cross-moments, by the weighted Welford
+            # recursion `EwCov::update` and `Robust::step` take: `C = E[(z −
+            # m)(z − m)']`, `c = E[(z − m)(y − ȳ)]`, `ȳ` beside them. They were
+            # the raw `E[z z']` and `E[z·y]`, which the solve centred by
+            # subtraction and so lost `level²·ε` (review 2026-09-18, S2).
+            "C": [np.zeros((kt, kt)) for _ in range(m)],
+            "c": [np.zeros(kt) for _ in range(m)],
+            "ybar": np.zeros(m),
             "wj": np.zeros(m),
             # The rows each target was present on, at their raw weights: the
             # per-target gate's number (the second review's F1).
             "wobs": np.zeros(m),
-            "r": [np.zeros(kt) for _ in range(m)],
             "sig2": np.zeros(m),
             "wsig": np.zeros(m),
             # EW count of observations under the RAW row weights: the
@@ -657,7 +663,12 @@ def robust_ref(
                 st["W"][j] = aged_w
                 st["wj"][j] = aged_wj
                 if aged_wj > 0.0:
-                    st["r"][j] = st["r"][j] + value * z / aged_wj
+                    # A sum's worth of nudge over the band's weight, centred:
+                    # the raw `r += nudge·z/wj` is `ȳ += nudge/wj` and
+                    # `c += nudge·(z − m)/wj`, exactly.
+                    step = value / aged_wj
+                    st["c"][j] = st["c"][j] + step * (z - st["mean"][j])
+                    st["ybar"][j] += step
             else:
                 ww = value
                 if ww <= 0.0:
@@ -666,14 +677,15 @@ def robust_ref(
                     continue
                 W_new = aged_w + ww
                 a, b = aged_w / W_new, ww / W_new
-                st["mean"][j] = a * st["mean"][j] + b * z
-                st["raw"][j] = a * st["raw"][j] + b * np.outer(z, z)
+                # Deviations from the means before the row.
+                d = z - st["mean"][j]
+                dy = target - st["ybar"][j]
+                st["C"][j] = a * st["C"][j] + a * b * np.outer(d, d)
+                st["c"][j] = a * st["c"][j] + a * b * d * dy
+                st["mean"][j] = st["mean"][j] + b * d
+                st["ybar"][j] += b * dy
                 st["W"][j] = W_new
-
-                wj_new = aged_wj + ww
-                aj, bj = aged_wj / wj_new, ww / wj_new
-                st["r"][j] = aj * st["r"][j] + bj * z * target
-                st["wj"][j] = wj_new
+                st["wj"][j] = aged_wj + ww
 
             if not np.isnan(p_own[j]):
                 rr = Y[i, j] - p_own[j]
@@ -686,20 +698,58 @@ def robust_ref(
         beta = np.zeros((m, kt))
         for j in range(m):
             if st["wj"][j] > 0.0:
-                beta[j] = _solve_ridge(
-                    st["raw"][j],
-                    st["r"][j],
-                    st["W"][j],
+                beta[j] = _solve_centred(
+                    st["mean"][j],
+                    st["C"][j],
+                    st["c"][j],
+                    st["ybar"][j],
                     ridge,
                     add_intercept,
                     standardize,
-                    False,
-                    1.0,
                 )
         st["beta"] = beta
         coef[i] = beta
 
     return {"pred": pred, "resid": resid, "n_eff": n_eff, "coef": coef}
+
+
+def _solve_centred(
+    mean: np.ndarray,
+    C: np.ndarray,
+    c: np.ndarray,
+    ybar: float,
+    ridge: float,
+    add_intercept: bool,
+    standardize: bool,
+) -> np.ndarray:
+    """`Robust::solve` on centred moments (review 2026-09-18, S2).
+
+    With an intercept: the slopes from the centred system, `(C_ff/(s s') +
+    ridge I) b = c_f/s`, `s` the feature standard deviations when
+    standardized and 1 otherwise, then `beta_0 = ȳ − m_f · beta_f`. Through
+    the origin nothing can absorb a level, so the raw system is the fit
+    asked for: `E[z z'] = C + m m'` and `E[z·y] = c + m·ȳ`, scaled by the
+    raw second-moment diagonals when standardized."""
+    kt = len(mean)
+    if add_intercept:
+        Cf, cf, mf = C[1:, 1:], c[1:], mean[1:]
+        s = np.sqrt(np.maximum(np.diag(Cf), 0.0)) if standardize else np.ones(kt - 1)
+        keep = s > 1e-12
+        beta = np.zeros(kt)
+        if keep.any():
+            A = Cf[np.ix_(keep, keep)] / np.outer(s[keep], s[keep]) + ridge * np.eye(keep.sum())
+            beta[1:][keep] = np.linalg.solve(A, cf[keep] / s[keep]) / s[keep]
+        beta[0] = ybar - mf @ beta[1:]
+        return beta
+    raw = C + np.outer(mean, mean)
+    r = c + mean * ybar
+    s = np.sqrt(np.maximum(np.diag(raw), 0.0)) if standardize else np.ones(kt)
+    keep = s > 0.0
+    beta = np.zeros(kt)
+    if keep.any():
+        A = raw[np.ix_(keep, keep)] / np.outer(s[keep], s[keep]) + ridge * np.eye(keep.sum())
+        beta[keep] = np.linalg.solve(A, r[keep] / s[keep]) / s[keep]
+    return beta
 
 
 def ftrl_ref(

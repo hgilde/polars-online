@@ -163,7 +163,8 @@ pub struct Robust {
     /// One accumulator per target (the robust weights are per target).
     cov: Vec<EwCov>,
     /// Per target, the weight its accumulators hold: Huber's reweighted rows,
-    /// or the quantile band's. The mean-form cross-moment `r` is over it.
+    /// or the quantile band's. The mean-form cross-moment `cross` is over it,
+    /// and so is `cov`, whose weight it equals.
     wj: Vec<f64>,
     /// Per target, the rows it was present on at their raw weights, decayed:
     /// what the per-target `min_periods` gate reads (hard rule 8, S2) and the
@@ -171,7 +172,18 @@ pub struct Robust {
     /// quantile that is the band's weight, which a halflife caps at the
     /// band's share of the sample (the second review of 2026-09-15, F1).
     wobs: Vec<f64>,
-    r: Vec<Vec<f64>>,
+    /// Per target, the centred cross-moment `c_j = E[(z − m_j)(y − ȳ_j)]`
+    /// over `wj`, with `m_j` its accumulator's mean, and `ȳ_j` beside it
+    /// (`ybar`). With an intercept slot 0 is exactly 0: `z_0 − m_0 = 0` once
+    /// a row has entered. They were kept raw, `E[z·y]`, and the solves read
+    /// the raw normal equations or centred them by subtraction, which loses
+    /// `level²·ε` -- the whole fit at `1e8` -- where `ew_ridge` and `lasso`
+    /// were moved to centred moments in the 2026-09-12 round and this model
+    /// was not (the review of 2026-09-18, S2). A quantile nudge, a sum's worth
+    /// of `2h·psi·z` over `wj`, enters as `ȳ += nudge/wj` and `c += nudge·(z
+    /// − m)/wj`: the raw step `E[z·y] += nudge·z/wj` transformed exactly.
+    cross: Vec<Vec<f64>>,
+    ybar: Vec<f64>,
     /// EW residual variance per target (drives the robust scale).
     sig2: Vec<f64>,
     wsig: Vec<f64>,
@@ -200,7 +212,8 @@ impl Robust {
             cov: vec![EwCov::new(k); m],
             wj: vec![0.0; m],
             wobs: vec![0.0; m],
-            r: vec![vec![0.0; k]; m],
+            cross: vec![vec![0.0; k]; m],
+            ybar: vec![0.0; m],
             sig2: vec![0.0; m],
             wsig: vec![0.0; m],
             w_raw: 0.0,
@@ -299,47 +312,27 @@ impl Robust {
 
     fn solve(&mut self) {
         let k = self.cfg.k_total();
-        let off = usize::from(self.cfg.add_intercept);
         let mut beta = vec![vec![0.0; k]; self.cfg.n_targets];
         for j in 0..self.cfg.n_targets {
             if self.wj[j] <= 0.0 {
                 continue;
             }
-            let mut a = vec![0.0; k * k];
-            for i in 0..k {
-                for jj in 0..k {
-                    a[i * k + jj] = self.cov[j].raw(i, jj);
-                }
-            }
-            let b: Vec<f64> = self.r[j].clone();
-            if self.cfg.standardize {
-                // Same scheme as EwRidge::solve_standardized, single target.
-                // `None` is a solve that failed at every jitter: counted, as
-                // the plain one is below, and the previous fit kept. It
-                // returned through `?` before the count (review 2026-09-12,
-                // S13).
-                match self.solve_standardized(&b, k, j) {
-                    Some(sol) => {
-                        beta[j] = sol;
-                        continue;
-                    }
-                    None => self.solve_failures += 1,
-                }
+            // `None` is a solve that failed at every jitter: counted, and the
+            // previous fit kept. It returned through `?` before the count
+            // (review 2026-09-12, S13).
+            let solved = if self.cfg.add_intercept {
+                self.solve_centred(k, j)
             } else {
-                for i in off..k {
-                    a[i * k + i] += self.cfg.ridge;
-                }
-                match solve_spd(&a, &b, k, 1) {
-                    Some((x, jit)) => {
-                        self.solve_failures += u64::from(jit);
-                        beta[j] = x;
-                        continue;
+                self.solve_through_origin(k, j)
+            };
+            match solved {
+                Some(sol) => beta[j] = sol,
+                None => {
+                    self.solve_failures += 1;
+                    if let Some(prev) = &self.beta {
+                        beta[j] = prev[j].clone();
                     }
-                    None => self.solve_failures += 1,
                 }
-            }
-            if let Some(prev) = &self.beta {
-                beta[j] = prev[j].clone();
             }
         }
         self.beta = Some(beta);
@@ -347,57 +340,36 @@ impl Robust {
         self.rows_since_solve = 0;
     }
 
-    /// Centered statistics are read from this target's accumulator directly
-    /// rather than re-derived from raw moments (see `EwCov`'s module docs).
-    /// `None` when every jitter failed; the caller counts it.
-    fn solve_standardized(&mut self, b: &[f64], k: usize, j: usize) -> Option<Vec<f64>> {
-        let off = usize::from(self.cfg.add_intercept);
-        if off == 0 {
-            // No intercept: scale by the raw second moment and solve the raw
-            // normal equations, as `EwRidge`'s no-intercept branch does. This
-            // centred the Gram and kept the raw right-hand side -- the hybrid
-            // system C8 found in `lasso`, least squares only when every
-            // feature has mean zero (review 2026-09-12, C11).
-            let s: Vec<f64> = (0..k)
-                .map(|i| self.cov[j].raw(i, i).max(0.0).sqrt())
-                .collect();
-            let keep: Vec<usize> = (0..k).filter(|&i| s[i] > 0.0).collect();
-            let kk = keep.len();
-            let mut out = vec![0.0; k];
-            if kk > 0 {
-                let mut asub = vec![0.0; kk * kk];
-                for (i2, &i) in keep.iter().enumerate() {
-                    for (j2, &jj) in keep.iter().enumerate() {
-                        asub[i2 * kk + j2] = self.cov[j].raw(i, jj) / (s[i] * s[jj]);
-                    }
-                    asub[i2 * kk + i2] += self.cfg.ridge;
-                }
-                let bsub: Vec<f64> = keep.iter().map(|&i| b[i] / s[i]).collect();
-                let (sol, jit) = solve_spd(&asub, &bsub, kk, 1)?;
-                self.solve_failures += u64::from(jit);
-                for (i2, &i) in keep.iter().enumerate() {
-                    out[i] = sol[i2] / s[i];
-                }
-            }
-            return Some(out);
-        }
-        let kf = k - off;
-        // Materialized up front: the solve below borrows `self` mutably.
-        let means: Vec<f64> = (0..k).map(|i| self.cov[j].mean(i)).collect();
-        let mean = |i: usize| means[i];
+    /// The solve with an intercept, plain or standardized, on the centred
+    /// system, as [`crate::EwRidge`]'s `solve_centred`: the slopes from the
+    /// accumulator's centred co-moments over the features and the target's
+    /// centred cross-moment, then `beta_0 = ȳ − m·beta`. Plain, nothing is
+    /// scaled and nothing dropped, the estimator the raw normal equations
+    /// with an unpenalized intercept define; standardized, the co-moments
+    /// are scaled to correlation form and a ~zero-variance feature is
+    /// dropped (coefficient 0). Nothing level-sized is subtracted from
+    /// anything on the way (S2). `None` when every jitter failed.
+    fn solve_centred(&mut self, k: usize, j: usize) -> Option<Vec<f64>> {
+        let kf = k - 1;
+        let cov = &self.cov[j];
         let mut c = vec![0.0; kf * kf];
         for i in 0..kf {
             for jj in 0..kf {
-                c[i * kf + jj] = self.cov[j].cov(i + off, jj + off);
+                c[i * kf + jj] = cov.cov(i + 1, jj + 1);
             }
         }
-        let s: Vec<f64> = (0..kf).map(|i| c[i * kf + i].max(0.0).sqrt()).collect();
-        let raws: Vec<f64> = (0..kf).map(|i| self.cov[j].raw(i + off, i + off)).collect();
-        let keep: Vec<usize> = (0..kf)
-            .filter(|&i| crate::variance_is_usable(c[i * kf + i], raws[i]))
-            .collect();
+        let (s, keep): (Vec<f64>, Vec<usize>) = if self.cfg.standardize {
+            let s = (0..kf).map(|i| c[i * kf + i].max(0.0).sqrt()).collect();
+            let keep = (0..kf)
+                .filter(|&i| crate::variance_is_usable(c[i * kf + i], cov.raw(i + 1, i + 1)))
+                .collect();
+            (s, keep)
+        } else {
+            (vec![1.0; kf], (0..kf).collect())
+        };
         let kk = keep.len();
         let mut out = vec![0.0; k];
+        let mut jitter = 0u32;
         if kk > 0 {
             let mut asub = vec![0.0; kk * kk];
             for (i2, &i) in keep.iter().enumerate() {
@@ -406,24 +378,65 @@ impl Robust {
                 }
                 asub[i2 * kk + i2] += self.cfg.ridge;
             }
-            let ybar = if off == 1 { b[0] } else { 0.0 };
-            let mut bsub = vec![0.0; kk];
-            for (i2, &i) in keep.iter().enumerate() {
-                bsub[i2] = (b[i + off] - mean(i + off) * ybar) / s[i];
-            }
+            let bsub: Vec<f64> = keep.iter().map(|&i| self.cross[j][i + 1] / s[i]).collect();
             let (sol, jit) = solve_spd(&asub, &bsub, kk, 1)?;
-            self.solve_failures += u64::from(jit);
+            jitter = jit;
             for (i2, &i) in keep.iter().enumerate() {
-                out[i + off] = sol[i2] / s[i];
+                out[i + 1] = sol[i2] / s[i];
             }
         }
-        if off == 1 {
-            let mut b0 = b[0];
-            for i in 0..kf {
-                b0 -= mean(i + off) * out[i + off];
-            }
-            out[0] = b0;
+        let mut b0 = self.ybar[j];
+        for i in 0..kf {
+            b0 -= cov.mean(i + 1) * out[i + 1];
         }
+        out[0] = b0;
+        self.solve_failures += u64::from(jitter);
+        Some(out)
+    }
+
+    /// The solve through the origin, on the raw system: every slot is a
+    /// slope and every slot is penalized, and the right-hand side is the
+    /// uncentred `E[z·y] = c + m·ȳ`, one step from what is kept. Nothing is
+    /// centred through the origin -- a level cannot be absorbed there -- so
+    /// the raw form is the fit asked for, as `EwRidge`'s no-intercept branch
+    /// has it. Standardized, the system is scaled by the raw second-moment
+    /// diagonals (a slot with none is dropped): this centred the Gram and
+    /// kept the raw right-hand side once, the hybrid system C8 found in
+    /// `lasso`, least squares only when every feature has mean zero (review
+    /// 2026-09-12, C11). `None` when every jitter failed.
+    fn solve_through_origin(&mut self, k: usize, j: usize) -> Option<Vec<f64>> {
+        let cov = &self.cov[j];
+        let ybar = self.ybar[j];
+        let b: Vec<f64> = (0..k)
+            .map(|i| self.cross[j][i] + cov.mean(i) * ybar)
+            .collect();
+        let s: Vec<f64> = if self.cfg.standardize {
+            (0..k).map(|i| cov.raw(i, i).max(0.0).sqrt()).collect()
+        } else {
+            vec![1.0; k]
+        };
+        // No centering here, so no cancellation: any strictly positive raw
+        // moment is usable.
+        let keep: Vec<usize> = (0..k).filter(|&i| s[i] > 0.0).collect();
+        let kk = keep.len();
+        let mut out = vec![0.0; k];
+        let mut jitter = 0u32;
+        if kk > 0 {
+            let mut asub = vec![0.0; kk * kk];
+            for (i2, &i) in keep.iter().enumerate() {
+                for (j2, &jj) in keep.iter().enumerate() {
+                    asub[i2 * kk + j2] = cov.raw(i, jj) / (s[i] * s[jj]);
+                }
+                asub[i2 * kk + i2] += self.cfg.ridge;
+            }
+            let bsub: Vec<f64> = keep.iter().map(|&i| b[i] / s[i]).collect();
+            let (sol, jit) = solve_spd(&asub, &bsub, kk, 1)?;
+            jitter = jit;
+            for (i2, &i) in keep.iter().enumerate() {
+                out[i] = sol[i2] / s[i];
+            }
+        }
+        self.solve_failures += u64::from(jitter);
         Some(out)
     }
 }
@@ -489,26 +502,38 @@ impl OnlineModel for Robust {
                     continue;
                 }
                 RowUpdate::Fit { w, target } => {
-                    self.cov[j].update(&self.zbuf, lam, w);
+                    // The same `a`/`b` as `EwCov::update` forms from the same
+                    // weights, and the deviations from the means *before* the
+                    // row, as it takes them -- so the cross-moment is read
+                    // before the accumulator moves.
                     let wj_new = aged + w;
                     let a = aged / wj_new;
                     let bb = w / wj_new;
-                    for (ri, zi) in self.r[j].iter_mut().zip(&self.zbuf) {
-                        *ri = a * *ri + bb * zi * target;
+                    let dy = target - self.ybar[j];
+                    let ab_dy = a * bb * dy;
+                    let cov = &self.cov[j];
+                    for (i, (ci, zi)) in self.cross[j].iter_mut().zip(&self.zbuf).enumerate() {
+                        *ci = a * *ci + ab_dy * (zi - cov.mean(i));
                     }
+                    self.ybar[j] += bb * dy;
+                    self.cov[j].update(&self.zbuf, lam, w);
                     self.wj[j] = wj_new;
                 }
                 RowUpdate::Nudge { nudge } => {
                     // Outside the band a row is one term of the score and none
                     // of the Hessian: no weight in the Gram, and `2h*psi(r)*z`
                     // into the cross-moment, which is a mean over `wj` -- so a
-                    // sum's worth of nudge enters divided by it (N9).
+                    // sum's worth of nudge enters divided by it (N9). Centred,
+                    // that is `ȳ += nudge/wj` and `c += nudge·(z − m)/wj`.
                     self.cov[j].decay(lam);
                     self.wj[j] = aged;
                     if nudge.is_finite() && aged > 0.0 {
-                        for (ri, zi) in self.r[j].iter_mut().zip(&self.zbuf) {
-                            *ri += nudge * zi / aged;
+                        let step = nudge / aged;
+                        let cov = &self.cov[j];
+                        for (i, (ci, zi)) in self.cross[j].iter_mut().zip(&self.zbuf).enumerate() {
+                            *ci += step * (zi - cov.mean(i));
                         }
+                        self.ybar[j] += step;
                     }
                 }
             }
@@ -1056,8 +1081,10 @@ mod tests {
 
         // The band starved to under a row per coefficient (`k = 2`): the same
         // row is a least-squares row, weighed at its weight and aimed at `y`.
+        // `wj` is set by hand, so the accumulator's own weight is left where
+        // it was; the target mean's share is the one `wj` gives.
         m.wj[0] = 1.5;
-        let r0 = m.r[0][0];
+        let y0 = m.ybar[0];
         m.step(&x, &[Some(1e6)], 1.0, 1.0);
         let aged = lam * 1.5;
         assert!(
@@ -1066,12 +1093,119 @@ mod tests {
             m.wj[0],
             aged + 1.0
         );
-        let want = aged / (aged + 1.0) * r0 + 1.0 / (aged + 1.0) * 1e6;
+        let want = y0 + 1.0 / (aged + 1.0) * (1e6 - y0);
         assert!(
-            (m.r[0][0] - want).abs() <= 1e-9 * want.abs(),
-            "the cross-moment took the row at its target: {} for {want}",
-            m.r[0][0]
+            (m.ybar[0] - want).abs() <= 1e-9 * want.abs(),
+            "the target mean took the row at its target: {} for {want}",
+            m.ybar[0]
         );
+    }
+
+    /// A level costs the fit nothing (the review of 2026-09-18, S2), as
+    /// `ew_ridge`'s test of the same name says of it: Huber at a `delta` that
+    /// makes it least squares, on the same stream at the origin and shifted
+    /// by `1e8` -- features and target alike, a price regressed on prices --
+    /// gives the same slopes and predictions that differ by the shift, plain
+    /// and standardized. The cross-moments were raw, and both solves lost
+    /// `L²·ε`, which at `1e8` was the whole fit. The tolerances are the
+    /// data's own resolution at `1e8`, `ulp ≈ 1.5e-8`.
+    #[test]
+    fn a_level_costs_the_fit_nothing() {
+        for standardize in [false, true] {
+            let run = |level: f64| {
+                let mut c = cfg(2, 1, RobustLoss::Huber { delta: 1e9 });
+                c.standardize = standardize;
+                c.ridge = 1e-6;
+                c.decay = Decay::Halflife(200.0);
+                c.min_periods = 10.0;
+                let mut m = Robust::new(c).unwrap();
+                let mut s = 29u64;
+                let mut preds = Vec::new();
+                for i in 0..600 {
+                    let u = [lcg(&mut s), lcg(&mut s)];
+                    let x = [level + u[0], level + u[1]];
+                    let y = level + 2.0 * u[0] - u[1] + 0.1 * lcg(&mut s);
+                    let d = if i == 0 { 0.0 } else { 1.0 };
+                    preds.push(m.step(&x, &[Some(y)], d, 1.0).pred[0] - level);
+                }
+                (preds, m.coefficients().unwrap()[0].clone())
+            };
+            let ((p0, b0), (p8, b8)) = (run(0.0), run(1e8));
+            for i in 1..3 {
+                assert!(
+                    (b0[i] - b8[i]).abs() < 1e-6,
+                    "standardize {standardize}: slope {i}: {} vs {}",
+                    b0[i],
+                    b8[i]
+                );
+            }
+            let mut worst = 0.0f64;
+            for (t, (a, b)) in p0.iter().zip(&p8).enumerate() {
+                assert_eq!(a.is_finite(), b.is_finite(), "row {t}: {a} vs {b}");
+                if a.is_finite() {
+                    worst = worst.max((a - b).abs());
+                }
+            }
+            assert!(
+                worst < 1e-5,
+                "standardize {standardize}: the predictions part by {worst}"
+            );
+        }
+    }
+
+    /// The same for the quantile loss, whose nudge enters the same centred
+    /// cross-moment: `ȳ += nudge/wj`, `c += nudge·(z − m)/wj` (S2).
+    #[test]
+    fn a_level_costs_the_quantile_fit_nothing() {
+        let run = |level: f64| {
+            let mut c = cfg(1, 1, RobustLoss::Quantile { tau: 0.75 });
+            c.decay = Decay::Halflife(500.0);
+            c.min_periods = 20.0;
+            let mut m = Robust::new(c).unwrap();
+            let mut s = 37u64;
+            let mut preds = Vec::new();
+            for i in 0..1500 {
+                let u = lcg(&mut s);
+                let y = level + 2.0 * u + lcg(&mut s);
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                preds.push(m.step(&[level + u], &[Some(y)], d, 1.0).pred[0] - level);
+            }
+            (preds, m.coefficients().unwrap()[0].clone())
+        };
+        let ((p0, b0), (p8, b8)) = (run(0.0), run(1e8));
+        assert!(
+            (b0[1] - 2.0).abs() < 0.2,
+            "the fixture is not what it claims: {b0:?}"
+        );
+        assert!(
+            (b0[1] - b8[1]).abs() < 1e-6,
+            "slope: {} vs {}",
+            b0[1],
+            b8[1]
+        );
+        let mut worst = 0.0f64;
+        for (a, b) in p0.iter().zip(&p8) {
+            assert_eq!(a.is_finite(), b.is_finite());
+            if a.is_finite() {
+                worst = worst.max((a - b).abs());
+            }
+        }
+        assert!(worst < 1e-5, "the predictions part by {worst}");
+    }
+
+    /// With an intercept the cross-moment's slot 0 is exactly 0: `z_0 = 1`
+    /// and `m_0 = 1` once a row has entered, so nothing level-sized ever sits
+    /// in the right-hand side (S2).
+    #[test]
+    fn the_intercept_slot_of_the_cross_moment_is_exactly_zero() {
+        let mut m = Robust::new(cfg(2, 1, RobustLoss::Huber { delta: 1.5 })).unwrap();
+        let mut s = 41u64;
+        for i in 0..50 {
+            let x = [1e8 + lcg(&mut s), 1e8 + lcg(&mut s)];
+            let y = 1e8 + x[0] - x[1];
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            assert_eq!(m.cross[0][0], 0.0, "row {i}");
+        }
     }
 
     /// N9: after the warm-up a row outside the band moves the fit by its

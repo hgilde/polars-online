@@ -225,9 +225,20 @@ pub use window::{
 ///   ignores it and reports the whole history's spread, as it always did. A
 ///   file saved by an earlier build of 9 restarts the ring on load, so for
 ///   one window its spread counts only the rows after the load.
-pub const SCHEMA_VERSION: u32 = 10;
+/// - 11: `robust` keeps each target's cross-moments centred, `c_j = E[(z −
+///   m_j)(y − ȳ_j)]` beside `ȳ_j`, where it kept them raw, `E[z·y]`, and
+///   solved the raw normal equations or centred them by subtraction -- the
+///   `level²·ε` loss `ew_ridge` and `lasso` were cured of in 7 and 8, left
+///   behind here (the review of 2026-09-18, S2). No loader for 10: see
+///   [`MIN_SCHEMA_VERSION`].
+pub const SCHEMA_VERSION: u32 = 11;
 
 /// Oldest state layout this build still loads.
+///
+/// **11 since 2026-09-19**, on the same rule as the entries below: a
+/// schema-10 `robust` state's raw cross-moments could be centred on load,
+/// but only by the subtraction the change exists to remove, and pre-1.0 no
+/// loader is written for one.
 ///
 /// **10 since 2026-09-15**, later the same day as 9: `robust`'s observation
 /// weights cannot be recovered from a schema-9 state, and pre-1.0 no loader
@@ -259,4 +270,4 @@ pub const SCHEMA_VERSION: u32 = 10;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 10;
+pub const MIN_SCHEMA_VERSION: u32 = 11;

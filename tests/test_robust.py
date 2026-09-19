@@ -218,3 +218,72 @@ def test_bad_config_rejected():
         po.spec.quantile("m", quantile=0.0, targets=["y0"], features=["x0"], halflife=10.0)
     with pytest.raises(ValueError, match="huber_delta"):
         po.spec.huber("m", huber_delta=-1.0, targets=["y0"], features=["x0"], halflife=10.0)
+
+
+@pytest.mark.parametrize("standardize", [False, True], ids=["plain", "standardized"])
+def test_a_level_costs_the_fit_nothing(standardize):
+    """Huber at ``huber_delta = 1e9`` is least squares, and least squares is
+    invariant to a shift of every column: the same stream at a level of
+    ``1e8`` must give the same slopes, and the same predictions less the
+    level. ``robust`` kept raw cross-moments, ``E[z·y]``, and solved the raw
+    normal equations (or centred them by subtraction), which loses
+    ``level²·ε`` -- the whole fit at ``1e8`` -- where ``ewridge`` and
+    ``lasso`` were moved to centred cross-moments in the 2026-09-12 round
+    (review 2026-09-18, S2)."""
+    rng = np.random.default_rng(21)
+    n = 2000
+    x0, x1 = rng.standard_normal(n), rng.standard_normal(n)
+    y = 1.5 * x0 - 0.5 * x1 + 0.3 * rng.standard_normal(n)
+    common = dict(
+        targets=["y0"],
+        features=["x0", "x1"],
+        halflife=1e9,
+        min_periods=10.0,
+        max_rows_between_solves=1,
+        coef_every=1,
+        huber_delta=1e9,
+        standardize=standardize,
+    )
+
+    def fit(level):
+        df = pl.DataFrame({"x0": x0 + level, "x1": x1 + level, "y0": y + level})
+        out = po.ModelBank([po.spec.huber("m", **common)]).fit_predict(df)
+        return np.array(out["m"].struct.field("coef").to_list()[-1]), _pred(out)
+
+    coef0, pred0 = fit(0.0)
+    coef8, pred8 = fit(1e8)
+    assert coef0[1:] == pytest.approx([1.5, -0.5], abs=0.05), "the fixture is not what it claims"
+    assert coef8[1:] == pytest.approx(coef0[1:], abs=1e-6), (coef8, coef0)
+    m = np.isfinite(pred0) & np.isfinite(pred8)
+    assert m.sum() > n - 20
+    assert np.max(np.abs((pred8[m] - 1e8) - pred0[m])) < 1e-5
+
+
+def test_a_level_costs_the_quantile_fit_nothing():
+    """The same shift invariance for the quantile loss, whose nudge enters
+    the same cross-moment (S2)."""
+    rng = np.random.default_rng(22)
+    n = 3000
+    x0 = rng.standard_normal(n)
+    y = 2.0 * x0 + rng.standard_normal(n)
+    common = dict(
+        targets=["y0"],
+        features=["x0"],
+        halflife=1e9,
+        min_periods=20.0,
+        max_rows_between_solves=1,
+        coef_every=1,
+        quantile=0.75,
+    )
+
+    def fit(level):
+        df = pl.DataFrame({"x0": x0 + level, "y0": y + level})
+        out = po.ModelBank([po.spec.quantile("m", **common)]).fit_predict(df)
+        return np.array(out["m"].struct.field("coef").to_list()[-1]), _pred(out)
+
+    coef0, pred0 = fit(0.0)
+    coef8, pred8 = fit(1e8)
+    assert coef0[1] == pytest.approx(2.0, abs=0.1), "the fixture is not what it claims"
+    assert coef8[1] == pytest.approx(coef0[1], abs=1e-6), (coef8, coef0)
+    m = np.isfinite(pred0) & np.isfinite(pred8)
+    assert np.max(np.abs((pred8[m] - 1e8) - pred0[m])) < 1e-5

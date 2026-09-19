@@ -745,8 +745,8 @@ impl EwRidge {
                             &mut failures,
                             &zidx,
                             &b,
-                            kc,
-                            mr,
+                            &readers,
+                            self.cfg.coef_prior.as_deref(),
                             ridge,
                         )
                     }
@@ -799,17 +799,26 @@ impl EwRidge {
     /// The standardized solve through the origin, on one combo's raw
     /// sub-block: scaled by the raw second-moment diagonals -- there is no
     /// centering here, so no cancellation either -- solved and unscaled. `b`
-    /// is the per-target uncentred right-hand side, and `zidx` maps the
-    /// combo's slots to accumulator indices.
+    /// is the reader-major uncentred right-hand side, `readers` the targets
+    /// it holds, and `zidx` maps the combo's slots to accumulator indices.
+    /// A warm prior shrinks toward `coef_prior` rather than toward zero,
+    /// entering the right-hand side on the standardized scale as
+    /// `ridge · c0 · s` (a coefficient there is `beta · s`), the same form
+    /// as [`EwRidge::solve_centred`]'s. This branch alone never read the
+    /// prior, so a standardized fit through the origin was un-warmed with
+    /// no error (review 2026-09-18, B2).
+    #[allow(clippy::too_many_arguments)]
     fn solve_scaled_through_origin(
         cov: &EwCov,
         failures: &mut u64,
         zidx: &[usize],
         b: &[f64],
-        kc: usize,
-        m: usize,
+        readers: &[usize],
+        coef_prior: Option<&[Vec<f64>]>,
         ridge: f64,
     ) -> Option<Vec<f64>> {
+        let kc = zidx.len();
+        let m = readers.len();
         let s: Vec<f64> = (0..kc)
             .map(|i| cov.raw(zidx[i], zidx[i]).max(0.0).sqrt())
             .collect();
@@ -828,9 +837,12 @@ impl EwRidge {
             asub[i2 * kk + i2] += ridge;
         }
         let mut bsub = vec![0.0; kk * m];
-        for j in 0..m {
+        for (jj, &j) in readers.iter().enumerate() {
             for (i2, &i) in keep.iter().enumerate() {
-                bsub[j * kk + i2] = b[j * kc + i] / s[i];
+                bsub[jj * kk + i2] = b[jj * kc + i] / s[i];
+                if let Some(c0) = coef_prior {
+                    bsub[jj * kk + i2] += ridge * c0[j][zidx[i]] * s[i];
+                }
             }
         }
         let sol = Self::run_solve(failures, &asub, &bsub, kk, m)?;

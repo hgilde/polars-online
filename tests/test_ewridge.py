@@ -433,3 +433,51 @@ def test_a_bandwidth_in_the_clock_column_follows_a_curve_a_line_cannot():
 
     assert rms(narrow) < 0.12 < rms(wide) < rms(line)
     assert rms(line) > 0.35
+
+
+class TestWarmPriorsThroughTheOrigin:
+    """``coef_prior`` on the one solve that dropped it: standardized, no
+    intercept. The three other branches move the penalty's target into the
+    right-hand side; ``solve_scaled_through_origin`` scaled, solved and
+    unscaled the bare ``b`` and never read the prior, so a warm-started,
+    standardized, through-origin fit was an un-warmed one with no error
+    (review 2026-09-18, B2)."""
+
+    @staticmethod
+    def _frame(n=500, seed=9):
+        rng = np.random.default_rng(seed)
+        x0, x1 = rng.standard_normal(n), rng.standard_normal(n)
+        return pl.DataFrame({"x0": x0, "x1": x1, "y0": 3.0 * x0 - 2.0 * x1})
+
+    @staticmethod
+    def _coef(df, **kw):
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y0"],
+            features=["x0", "x1"],
+            halflife=float("inf"),
+            min_periods=5.0,
+            max_rows_between_solves=1,
+            coef_every=1,
+            add_intercept=False,
+            standardize=True,
+            **kw,
+        )
+        out = po.ModelBank([spec]).fit_predict(df)
+        return np.array(out["m"].struct.field("coef").to_list()[-1])
+
+    def test_an_overwhelming_ridge_lands_on_the_prior(self):
+        prior = [3.0, -2.0]
+        got = self._coef(self._frame(), ridge=1e12, coef_prior=[prior])
+        assert got == pytest.approx(prior, abs=1e-3), got
+
+    def test_a_prior_moves_a_moderate_ridge_toward_itself(self):
+        """At a ridge that bites, the fit with a prior sits strictly closer to
+        the prior than the fit without one -- on every slope -- and the two
+        are not the same numbers."""
+        df = self._frame()
+        prior = np.array([5.0, 1.0])
+        with_prior = self._coef(df, ridge=50.0, coef_prior=[prior.tolist()])
+        without = self._coef(df, ridge=50.0)
+        assert not np.allclose(with_prior, without), "the prior changed nothing"
+        assert (np.abs(with_prior - prior) < np.abs(without - prior)).all(), (with_prior, without)

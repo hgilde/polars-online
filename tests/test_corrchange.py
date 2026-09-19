@@ -99,6 +99,9 @@ def test_the_size_is_near_nominal_on_gaussian_pairs():
         size = flags / reps
         se = (want * (1 - want) / reps) ** 0.5
         assert abs(size - want) < 4 * se + 0.02, (rho, size, want)
+        # Ten flags expected: a monitor that never flags is not "near
+        # nominal", and the band above admits zero.
+        assert flags >= 2, (rho, flags)
 
 
 def test_the_power_is_at_least_the_papers():
@@ -317,3 +320,41 @@ def test_a_zero_weight_row_is_not_a_row_of_the_span():
 def test_a_bad_spec_is_refused_by_name(kw, message):
     with pytest.raises(ValueError, match=message):
         spec(**kw)
+
+
+# --- the units of the data ---------------------------------------------------
+
+
+def test_the_monitor_statistic_is_free_of_the_columns_units():
+    """A correlation is scale-free, so the monitor's statistic and its
+    critical value must not move when one column is rescaled. The
+    delta-method gradient carried ``σ_y²`` and ``σ_x²`` in the wrong
+    places, so on anything but unit-variance columns ``D̂`` -- and with it
+    ``Q`` -- depended on the data's units, and the paper's tables were
+    reproduced only where the defect vanished (review 2026-09-18, S3)."""
+    n = 300
+    df = pair(n, 0.4, seed=19)
+    scaled = df.with_columns(pl.col("x1") * 100.0)
+    a = run(df, span_rows=n, alpha_adjust="none")
+    b = run(scaled, span_rows=n, alpha_adjust="none")
+    assert a["stat"][n - 1] is not None, "the span did not close"
+    assert b["stat"][n - 1] == pytest.approx(a["stat"][n - 1], rel=1e-9)
+    assert b["crit"][n - 1] == a["crit"][n - 1]
+    assert b["flag"][n - 1] == a["flag"][n - 1]
+
+
+def test_the_size_is_near_nominal_on_columns_of_different_scale():
+    """The size test above, on ``(x, 100·y)``: the level a correlation test
+    claims cannot depend on the units the columns arrive in (S3)."""
+    n, reps, want = 500, 200, 0.05
+    flags = 0
+    for r in range(reps):
+        df = pair(n, 0.5, seed=3000 + r).with_columns(pl.col("x1") * 100.0)
+        out = run(df, span_rows=n, alpha_adjust="none")
+        flags += int(out["flag"][n - 1])
+    size = flags / reps
+    se = (want * (1 - want) / reps) ** 0.5
+    assert abs(size - want) < 4 * se + 0.02, (size, want)
+    # The wrong gradient inflated `D̂` by ~1e4 here, so `Q` never reached the
+    # critical value and the size read zero -- inside the band above.
+    assert flags >= 2, flags

@@ -383,10 +383,16 @@ impl CorrChange {
             return f64::NAN;
         }
         let (sx, sy) = (sx2.sqrt(), sy2.sqrt());
-        // `D₃` maps `(σ_x², σ_y², σ_xy)` to `ρ`.
+        // `D₃` maps `(σ_x², σ_y², σ_xy)` to `ρ = σ_xy·(σ_x²)^{-1/2}·(σ_y²)^{-1/2}`:
+        // `∂ρ/∂σ_x² = −½·σ_xy/(σ_x³·σ_y)`, `∂ρ/∂σ_y² = −½·σ_xy/(σ_x·σ_y³)`,
+        // `∂ρ/∂σ_xy = 1/(σ_x·σ_y)`. The first two carried `σ_y` and `σ_x` in
+        // the numerator instead of the denominator -- right at unit variance,
+        // where every test lived, and off by `σ_y²` and `σ_x²` anywhere else,
+        // so `D̂` and `Q` depended on the columns' units (review 2026-09-18,
+        // S3).
         let d3 = [
-            -0.5 * sxy * sy / (sx * sx * sx),
-            -0.5 * sxy * sx / (sy * sy * sy),
+            -0.5 * sxy / (sx * sx * sx * sy),
+            -0.5 * sxy / (sx * sy * sy * sy),
             1.0 / (sx * sy),
         ];
         // `f = D₃ D₂`, a 5-vector; `D̂² = f Σ̂ f'`.
@@ -820,6 +826,55 @@ mod tests {
         assert!(kolmogorov_quantile(0.0).is_nan() && kolmogorov_quantile(1.0).is_nan());
     }
 
+    /// A correlation is free of its columns' units, so `D̂` -- the delta
+    /// method's long-run standard deviation of `ρ̂` -- must be too: the same
+    /// rows with one column multiplied by 100, or the other by 0.01, give the
+    /// same number. The gradient carried the wrong powers of `σ_x` and `σ_y`,
+    /// which cancelled only at unit variance, so on any other scale `D̂` was
+    /// off by up to `σ²` and the monitor flagged nothing or everything
+    /// (review 2026-09-18, S3).
+    #[test]
+    fn the_long_run_sd_is_free_of_the_columns_units() {
+        let t = 80usize;
+        let mut n = Normals::new(17);
+        let rows: Vec<Vec<f64>> = (0..t).map(|_| n.pair(0.4)).collect();
+        let gamma = ((t as f64).ln().floor() as usize).max(1);
+        let base = CorrChange::long_run_sd(&rows, 0, 1, gamma);
+        assert!(base.is_finite() && base > 0.0, "{base}");
+        for (cx, cy) in [(1.0, 100.0), (0.01, 1.0), (3.0, 0.2)] {
+            let scaled: Vec<Vec<f64>> = rows.iter().map(|r| vec![cx * r[0], cy * r[1]]).collect();
+            let got = CorrChange::long_run_sd(&scaled, 0, 1, gamma);
+            assert!(
+                (got - base).abs() <= 1e-9 * base,
+                "x × {cx}, y × {cy}: {got} vs {base}"
+            );
+        }
+        // And against a central difference of `ρ` in each moment, which is
+        // what the gradient claims to be.
+        let rho = |sx2: f64, sy2: f64, sxy: f64| sxy / (sx2 * sy2).sqrt();
+        let (sx2, sy2, sxy): (f64, f64, f64) = (2.0, 0.5, 0.4);
+        let (sx, sy) = (sx2.sqrt(), sy2.sqrt());
+        let d3 = [
+            -0.5 * sxy / (sx * sx * sx * sy),
+            -0.5 * sxy / (sx * sy * sy * sy),
+            1.0 / (sx * sy),
+        ];
+        let h = 1e-6;
+        let fd = [
+            (rho(sx2 + h, sy2, sxy) - rho(sx2 - h, sy2, sxy)) / (2.0 * h),
+            (rho(sx2, sy2 + h, sxy) - rho(sx2, sy2 - h, sxy)) / (2.0 * h),
+            (rho(sx2, sy2, sxy + h) - rho(sx2, sy2, sxy - h)) / (2.0 * h),
+        ];
+        for i in 0..3 {
+            assert!(
+                (d3[i] - fd[i]).abs() < 1e-7,
+                "entry {i}: {} vs {}",
+                d3[i],
+                fd[i]
+            );
+        }
+    }
+
     /// `D̂` and `Q` against the same arithmetic written out.
     #[test]
     fn the_statistic_is_its_definition() {
@@ -862,8 +917,8 @@ mod tests {
         let sxy = mean[4] - mx * my;
         let (sx, sy) = (sx2.sqrt(), sy2.sqrt());
         let d3 = [
-            -0.5 * sxy * sy / sx.powi(3),
-            -0.5 * sxy * sx / sy.powi(3),
+            -0.5 * sxy / (sx.powi(3) * sy),
+            -0.5 * sxy / (sx * sy.powi(3)),
             1.0 / (sx * sy),
         ];
         let d2 = [

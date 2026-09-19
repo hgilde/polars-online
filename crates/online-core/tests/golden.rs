@@ -145,6 +145,56 @@ fn ew_ridge_standardized_golden() {
     check("ew_ridge_std", &signature(&mut m, 0), GOLDEN_EW_RIDGE_STD);
 }
 
+/// The through-origin fits move no number above (every signature there has
+/// an intercept), so the branches that only they take -- `ew_ridge`'s
+/// standardized solve through the origin, with the warm prior it dropped
+/// until the review of 2026-09-18 (B2, T1), `robust`'s raw-scaled one, and
+/// `kalman` without the standardizer -- are pinned here.
+#[test]
+fn ew_ridge_origin_standardized_golden() {
+    let mut c = ewridge_cfg(true, 0.05);
+    c.add_intercept = false;
+    c.coef_prior = Some(vec![vec![1.0, -0.5]]);
+    let mut m = EwRidge::new(c).unwrap();
+    check(
+        "ew_ridge_origin_std",
+        &signature(&mut m, 0),
+        GOLDEN_EW_RIDGE_ORIGIN_STD,
+    );
+}
+
+#[test]
+fn huber_origin_standardized_golden() {
+    let mut c = robust_cfg(RobustLoss::Huber { delta: 1.5 }, true);
+    c.add_intercept = false;
+    let mut m = Robust::new(c).unwrap();
+    check(
+        "huber_origin_std",
+        &signature(&mut m, 0),
+        GOLDEN_HUBER_ORIGIN_STD,
+    );
+}
+
+#[test]
+fn kalman_plain_golden() {
+    let mut m = Kalman::new(KalmanCfg {
+        n_features: 2,
+        n_targets: 1,
+        add_intercept: true,
+        decay: Decay::Halflife(50.0),
+        halflife: vec![f64::INFINITY, 30.0, 100.0],
+        q: None,
+        obs_var: None,
+        p0: 1.0,
+        share_p: false,
+        min_periods: 3.0,
+        revert_halflife: vec![f64::INFINITY],
+        standardize: false,
+    })
+    .unwrap();
+    check("kalman_plain", &signature(&mut m, 0), GOLDEN_KALMAN_PLAIN);
+}
+
 #[test]
 fn rls_golden() {
     let mut m = Rls::new(RlsCfg {
@@ -773,7 +823,11 @@ const GOLDEN_BOCPD: &[f64] = &[
     0.06001605700856869,
     0.043037423690500565,
 ];
-const GOLDEN_CORRCHANGE: &[f64] = &[0.8309362886202545, 0.7835655084137085, 0.7901008765733364];
+// Re-frozen 2026-09-19 for the review's S3: the delta-method gradient of `ρ`
+// carried the wrong powers of `σ_x` and `σ_y`, so `D̂` and every `Q` moved
+// where the two columns' variances differ, as this stream's do. The
+// finite-difference check in `corrchange.rs` is what the new numbers rest on.
+const GOLDEN_CORRCHANGE: &[f64] = &[0.8418929529846794, 0.7933802263147072, 0.787701333637405];
 // Re-frozen 2026-09-06: `hmm`'s `min_periods` used to withhold a row from
 // the *update* as well as from the report, so the first rows of this stream
 // (`min_periods = 3`) never reached the filter. It now gates the report
@@ -797,6 +851,23 @@ const GOLDEN_EW_RIDGE_STD: &[f64] = &[
     0.24074332641726603,
     2.1866449169182474,
     -0.06533729995816817,
+];
+// The three through-origin signatures, frozen 2026-09-19 (the review's T1)
+// on the build with B2 fixed: `ew_ridge_origin_std` reads the prior.
+const GOLDEN_EW_RIDGE_ORIGIN_STD: &[f64] = &[
+    -0.06496193224777927,
+    1.900894045241888,
+    -0.31464368574465446,
+];
+const GOLDEN_HUBER_ORIGIN_STD: &[f64] = &[
+    -0.06544791008639866,
+    1.924195894463372,
+    -0.31922560537078165,
+];
+const GOLDEN_KALMAN_PLAIN: &[f64] = &[
+    0.23992705127794417,
+    2.2050700607343474,
+    -0.06693544885449317,
 ];
 const GOLDEN_RLS: &[f64] = &[
     0.24355619170018697,
