@@ -1430,20 +1430,16 @@ pub struct Spec {
     pub max_dclock: Option<Num>,
     #[serde(default)]
     pub on_clock_reset: OnClockReset,
-    /// Two backwards clock jumps within a session closer than this, in clock
-    /// units, are out-of-order rows, not two boundaries: the chunk is refused
-    /// whatever `on_clock_reset` says, and the bank is untouched. Defaults to
-    /// the larger of `max_dclock` and the halflife (a `lam` read as one; off
-    /// when neither is finite); `0` disables. Needs `clock` (design note of
-    /// 2026-09-19).
+    /// A backwards clock jump smaller than this, in clock units, is refused
+    /// as out-of-order rows whatever `on_clock_reset` says, and the bank is
+    /// untouched: `max_dclock` is the most two adjacent rows can be apart and
+    /// a session is longer than that, so a jump back by less is a late row,
+    /// not a boundary. Defaults to `max_dclock`, and to `0` (off) under an
+    /// infinite `max_dclock`, which gives it nothing to compare against; `0`
+    /// disables; `inf` is no setting. Needs `clock` (design note of
+    /// 2026-09-19, reduced to this one rule 2026-09-20).
     #[serde(default)]
-    pub min_session_clock: Option<Num>,
-    /// A backwards jump no larger than this many typical forward steps (an EW
-    /// mean of the forward deltas within `max_dclock`: a gap over the cap is
-    /// not a step) is jitter, refused on its first occurrence whatever
-    /// `on_clock_reset` says. Default `1.0`; `0` disables. Needs `clock`.
-    #[serde(default)]
-    pub backwards_jitter_ratio: Option<Num>,
+    pub min_backwards_jump: Option<Num>,
     #[serde(default)]
     pub session: Option<String>,
     #[serde(default)]
@@ -1794,56 +1790,36 @@ impl Spec {
                 self.name
             ));
         }
-        // The two disorder checks: a value each must be finite and >= 0 (0
-        // disables; `inf` is no setting -- it would refuse every second jump
-        // or every jump). Their defaults are where "on by default" lives:
-        // the frequency rule at the larger of `max_dclock` and the halflife,
-        // off when neither is finite; the jitter rule at one typical step.
-        for (name, value) in [
-            ("min_session_clock", self.min_session_clock),
-            ("backwards_jitter_ratio", self.backwards_jitter_ratio),
-        ] {
-            if value.is_some_and(|v| !(v.0.is_finite() && v.0 >= 0.0)) {
-                return Err(format!(
-                    "spec {:?}: {name} must be finite and >= 0 (0 disables the check)",
-                    self.name
-                ));
-            }
+        // The disorder check: `min_backwards_jump` must be >= 0 (0 disables;
+        // NaN and `inf` are no setting -- `inf` would refuse every backwards
+        // jump, which `on_clock_reset = "error"` says directly). Its default
+        // is where "on by default" lives: `max_dclock`, the most two adjacent
+        // rows can be apart, so a jump back by less than it cannot be a
+        // session boundary. An infinite cap gives the check nothing to
+        // compare against, so there the default is 0, off.
+        if self
+            .min_backwards_jump
+            .is_some_and(|v| !(v.0.is_finite() && v.0 >= 0.0))
+        {
+            return Err(format!(
+                "spec {:?}: min_backwards_jump must be finite and >= 0 (0 disables the \
+                 check; to refuse every backwards jump set on_clock_reset = \"error\")",
+                self.name
+            ));
         }
         let max_dclock = self.max_dclock.map_or(f64::INFINITY, |m| m.0);
-        // The frequency rule's default: the largest finite scale the spec
-        // already chose. `max_dclock` alone -- "a session shorter than one
-        // adjacency gap is not a session" -- is a row-scale bound on a
-        // session-scale quantity. Measured against a query engine's block
-        // reordering of an ordered file (DuckDB, `preserve_insertion_order =
-        // false`), `max_dclock = 10` caught none of 2,965 backwards jumps
-        // whose spans ran from 71 to 2.5e6 clock units and the bank fitted the
-        // shuffled rows silently; the halflife refused at the seventh. A `lam`
-        // is the same scale under another name; the `ln` is compared here
-        // and never persisted. `inf` is no scale, and with none finite the
-        // rule is off. A `decays()` error is `validate`'s to report.
-        let halflife = self
-            .decays()
-            .ok()
-            .into_iter()
-            .flatten()
-            .map(|(_, d)| match d {
-                Decay::Halflife(h) => h,
-                Decay::Lam(l) => (0.5f64).ln() / l.ln(),
-            })
-            .filter(|h| h.is_finite())
-            .fold(0.0, f64::max);
-        let default_min_session = if max_dclock.is_finite() {
-            max_dclock.max(halflife)
-        } else {
-            halflife
-        };
         Ok(ClockCfg {
             max_dclock,
             on_clock_reset: self.on_clock_reset,
             session_gap,
-            min_session_clock: self.min_session_clock.map_or(default_min_session, |v| v.0),
-            backwards_jitter_ratio: self.backwards_jitter_ratio.map_or(1.0, |v| v.0),
+            min_backwards_jump: self.min_backwards_jump.map_or(
+                if max_dclock.is_finite() {
+                    max_dclock
+                } else {
+                    0.0
+                },
+                |v| v.0,
+            ),
         })
     }
 
@@ -2244,18 +2220,13 @@ impl Spec {
         if self.on_clock_reset != OnClockReset::default() && self.clock.is_none() {
             return Err(format!("spec {:?}: on_clock_reset needs clock", self.name));
         }
-        // The disorder checks read the clock; given without one they would be
+        // The disorder check reads the clock; given without one it would be
         // silently ignored, and a key that does nothing is refused here.
-        for (name, given) in [
-            ("min_session_clock", self.min_session_clock.is_some()),
-            (
-                "backwards_jitter_ratio",
-                self.backwards_jitter_ratio.is_some(),
-            ),
-        ] {
-            if given && self.clock.is_none() {
-                return Err(format!("spec {:?}: {name} needs clock", self.name));
-            }
+        if self.min_backwards_jump.is_some() && self.clock.is_none() {
+            return Err(format!(
+                "spec {:?}: min_backwards_jump needs clock",
+                self.name
+            ));
         }
         // A budget bounds a window's snapshots, so it needs a window, and a
         // budget of no bytes bounds nothing (review 2026-09-12, P4).

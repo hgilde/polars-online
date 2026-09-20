@@ -180,8 +180,7 @@ class TestClockSemantics:
             clock="t",
             max_dclock=4.0,
             min_periods=0.0,
-            backwards_jitter_ratio=0.0,
-            min_session_clock=0.0,
+            min_backwards_jump=0.0,
             **kw,
         )
 

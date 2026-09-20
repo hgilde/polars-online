@@ -18,7 +18,7 @@
   spec
   thread_pool_size
   unnest
-  schema_version = 11
+  schema_version = 12
 
 [common parameters]  # every constructor accepts these via **common
   targets
@@ -29,8 +29,7 @@
   lam = None
   max_dclock = None
   on_clock_reset = 'max'
-  min_session_clock = None
-  backwards_jitter_ratio = None
+  min_backwards_jump = None
   session = None
   session_gap = None
   weight = None

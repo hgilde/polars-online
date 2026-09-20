@@ -310,7 +310,9 @@ class TestTheStreamContract:
         n = 200
         clock = np.concatenate([np.arange(100.0), np.arange(100.0)])
         df = frame(n=n, seed=9).with_columns(t=pl.Series(clock))
-        s = spec(label_delay=10.0, on_clock_reset="reset_state")
+        # The jump back is what `reset_state` is being asked about, so the
+        # disorder check that would refuse it as a late row stands aside.
+        s = spec(label_delay=10.0, on_clock_reset="reset_state", min_backwards_jump=0.0)
         bank = po.ModelBank([s])
         bank.fit_predict(df)
         # After the reset the stream is the second half alone, minus the

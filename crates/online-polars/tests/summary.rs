@@ -38,27 +38,27 @@ fn specs() -> Vec<Spec> {
                 "targets": ["y"], "features": ["x0", "x1"], "clock": "t",
                 "session": "sess", "session_gap": "reset", "weight": "w",
                 "group": "g", "halflife": 10.0, "max_dclock": 30.0,
-                "backwards_jitter_ratio": 0, "min_session_clock": 0}"#,
+                "min_backwards_jump": 0}"#,
         ),
         spec(
             r#"{"name": "r", "model": {"type": "ew_ridge", "ridge": 1e-6},
                 "targets": ["y"], "features": ["x0", "x1"], "clock": "t",
                 "on_clock_reset": "reset_state", "group": "g",
                 "halflife": 10.0, "max_dclock": 30.0,
-                "backwards_jitter_ratio": 0, "min_session_clock": 0}"#,
+                "min_backwards_jump": 0}"#,
         ),
         spec(
             r#"{"name": "c", "model": {"type": "ew_cov"},
                 "targets": ["x0"], "features": ["x0", "x1", "y"], "clock": "t",
                 "group": "g", "halflife": 10.0, "max_dclock": 30.0,
-                "backwards_jitter_ratio": 0, "min_session_clock": 0}"#,
+                "min_backwards_jump": 0}"#,
         ),
         spec(
             r#"{"name": "k", "model": {"type": "ew_class", "classes": ["up", "down"],
                 "precision_prior": 1.0},
                 "targets": ["lbl"], "features": ["x0", "x1"], "clock": "t",
                 "group": "g", "halflife": 10.0, "max_dclock": 30.0,
-                "backwards_jitter_ratio": 0, "min_session_clock": 0}"#,
+                "min_backwards_jump": 0}"#,
         ),
         spec(
             r#"{"name": "n", "model": {"type": "ew_ridge", "ridge": 1e-6},
@@ -69,7 +69,7 @@ fn specs() -> Vec<Spec> {
             r#"{"name": "s", "model": {"type": "seqtest", "a": "m", "b": "r"},
                 "targets": ["y"], "features": [], "group": "g", "clock": "t",
                 "max_dclock": 30.0,
-                "backwards_jitter_ratio": 0, "min_session_clock": 0}"#,
+                "min_backwards_jump": 0}"#,
         ),
     ]
 }

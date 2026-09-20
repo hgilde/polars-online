@@ -764,11 +764,14 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    """The version a bank file names, held to the library's: 10 since the
-    second review of 2026-09-15, for `robust`'s per-target observation
-    weights (F1), after 9 the same day for `holt`'s weighted means and
-    `ftrl`'s proximal sum. Pre-1.0, an older file is refused by its version."""
-    assert po.schema_version() == 11
+    """The version a bank file names, held to the library's: 12 since
+    2026-09-20, when the clock state dropped the three fields the two 0.8.x
+    disorder rules kept; 11 for `robust`'s centred cross-moments (review of
+    2026-09-18, S2); 10 since the second review of 2026-09-15, for
+    `robust`'s per-target observation weights (F1), after 9 the same day for
+    `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
+    file is refused by its version."""
+    assert po.schema_version() == 12
     assert sys.version_info >= (3, 12)
 
 

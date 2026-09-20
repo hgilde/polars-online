@@ -36,8 +36,7 @@ SPEC = po.spec.ewridge(
     halflife=10.0,
     max_dclock=5.0,
     min_periods=1.0,
-    backwards_jitter_ratio=0.0,
-    min_session_clock=0.0,
+    min_backwards_jump=0.0,
 )
 
 

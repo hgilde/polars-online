@@ -1,12 +1,10 @@
-//! The resolved default of `min_session_clock`: the larger of `max_dclock`
-//! and the halflife, pinned as numbers rather than through a refusal.
-//!
-//! `max_dclock` alone is a row-scale bound on a session-scale quantity: at
-//! `max_dclock = 10` it caught none of the 2,965 backwards jumps a query
-//! engine's block reordering produced (spans of 71 .. 2.5e6 clock units),
-//! while the halflife refused at the seventh (2026-09-19). The Python tests
-//! cross that threshold; these pin the value the spec resolves to, including
-//! a `lam` read back as the halflife it is, and the `inf` cases.
+//! The resolved default of `min_backwards_jump`: `max_dclock`, pinned as a
+//! number rather than through a refusal. `max_dclock` is the most two
+//! adjacent rows can be apart and a session is longer than that, so a jump
+//! back by less cannot be a boundary (2026-09-20). An infinite cap gives the
+//! check nothing to compare against, so there the default is 0, off. Explicit
+//! values win and `0` is off; `inf` is refused as no setting (`spec_inf.rs`).
+//! The halflife plays no part: it is the model's memory, not a session.
 
 use online_polars::Spec;
 
@@ -17,70 +15,38 @@ fn resolved(top: &str) -> f64 {
     let spec: Spec = toml::from_str(&text).unwrap_or_else(|e| panic!("did not parse: {e}\n{text}"));
     spec.clock_cfg()
         .unwrap_or_else(|e| panic!("{e}"))
-        .min_session_clock
+        .min_backwards_jump
 }
 
 #[test]
-fn the_halflife_lifts_the_default_above_max_dclock() {
+fn the_default_is_max_dclock() {
     assert_eq!(
-        resolved("clock = \"t\"\nmax_dclock = 100.0\nhalflife = 1000.0"),
-        1000.0
-    );
-}
-
-#[test]
-fn max_dclock_stays_the_floor_where_the_halflife_is_smaller() {
-    assert_eq!(
-        resolved("clock = \"t\"\nmax_dclock = 100.0\nhalflife = 10.0"),
+        resolved("halflife = 10.0\nclock = \"t\"\nmax_dclock = 100.0"),
         100.0
     );
 }
 
 #[test]
-fn a_lam_is_read_as_the_halflife_it_is() {
-    let lam = 0.5f64.powf(1.0 / 1000.0);
-    let got = resolved(&format!(
-        "clock = \"t\"\nmax_dclock = 100.0\nlam = {lam:.17}"
-    ));
-    assert!((got - 1000.0).abs() < 1e-6, "{got}");
-}
-
-#[test]
-fn a_halflife_list_takes_its_longest_member() {
+fn the_halflife_plays_no_part() {
     assert_eq!(
-        resolved("clock = \"t\"\nmax_dclock = 100.0\nhalflife = [50.0, 2000.0, 300.0]"),
-        2000.0
-    );
-}
-
-#[test]
-fn max_dclock_inf_falls_to_the_halflife_rather_than_off() {
-    assert_eq!(
-        resolved("clock = \"t\"\nmax_dclock = inf\nhalflife = 1000.0"),
-        1000.0
-    );
-}
-
-#[test]
-fn halflife_inf_falls_to_max_dclock() {
-    assert_eq!(
-        resolved("clock = \"t\"\nmax_dclock = 100.0\nhalflife = inf"),
+        resolved("halflife = 100000.0\nclock = \"t\"\nmax_dclock = 100.0"),
         100.0
     );
 }
 
 #[test]
-fn neither_finite_is_off() {
+fn an_infinite_cap_defaults_to_off() {
     assert_eq!(
-        resolved("clock = \"t\"\nmax_dclock = inf\nhalflife = inf"),
+        resolved("halflife = 10.0\nclock = \"t\"\nmax_dclock = inf"),
         0.0
     );
 }
 
 #[test]
-fn an_explicit_value_wins() {
-    assert_eq!(
-        resolved("clock = \"t\"\nmax_dclock = 100.0\nhalflife = 1000.0\nmin_session_clock = 5.0"),
-        5.0
-    );
+fn an_explicit_value_wins_including_zero_and_under_an_infinite_cap() {
+    let base = "halflife = 10.0\nclock = \"t\"\nmax_dclock = 100.0\n";
+    assert_eq!(resolved(&format!("{base}min_backwards_jump = 5.0")), 5.0);
+    assert_eq!(resolved(&format!("{base}min_backwards_jump = 0.0")), 0.0);
+    let inf = "halflife = 10.0\nclock = \"t\"\nmax_dclock = inf\n";
+    assert_eq!(resolved(&format!("{inf}min_backwards_jump = 5.0")), 5.0);
 }

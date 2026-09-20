@@ -248,8 +248,7 @@ def test_events_zero_weights_sessions_and_backwards_clocks():
         session="sess",
         session_gap="reset",
         weight="w",
-        backwards_jitter_ratio=0.0,
-        min_session_clock=0.0,
+        min_backwards_jump=0.0,
     )
     reset_on_backwards = po.spec.ewridge(
         "rb",
@@ -259,8 +258,7 @@ def test_events_zero_weights_sessions_and_backwards_clocks():
         halflife=10.0,
         max_dclock=5.0,
         on_clock_reset="reset_state",
-        backwards_jitter_ratio=0.0,
-        min_session_clock=0.0,
+        min_backwards_jump=0.0,
     )
     bank = po.ModelBank([reset_on_session, reset_on_backwards])
     feed(bank, df, 3)

@@ -5,7 +5,41 @@ All notable changes to this project are documented here. The format follows
 [semantic versioning](https://semver.org/) — while pre-1.0, the minor version
 carries breaking changes, and any change to the numbers a model returns.
 
-## [0.8.1] — 2026-09-20
+## [Unreleased]
+
+### Changed
+
+- **One clock check instead of two, and it reads `max_dclock`.** A backwards
+  clock jump smaller than `min_backwards_jump` is refused as out-of-order
+  rows whatever `on_clock_reset` says, and the bank is untouched. It
+  defaults to `max_dclock`: adjacent rows are never further apart than that
+  and a session is longer, so a jump back by less is a late row, not a
+  boundary. A jump of at least that much takes the policy. `0` switches it
+  off, and it is off by default under an infinite `max_dclock`, which gives
+  it nothing to compare against. Measured on one-second ticks under a
+  five-minute cap: a row thirty seconds late and one four minutes late are
+  refused, where the old typical-step rule accepted both silently, and a
+  real day boundary is accepted. States saved by 0.8.x do not load (schema
+  12: the clock state no longer carries the removed rules' fields; the
+  pre-1.0 policy).
+
+### Removed
+
+- **`min_session_clock`** and the frequency rule behind it, which measured
+  the span between two backwards jumps against a "session length" that no
+  parameter carries. Its default of `max_dclock` caught nothing (0 of 2,965
+  jumps in a reordered file), and 0.8.1's default of the halflife refused
+  every intraday stream whose sessions were shorter than the model's
+  memory, which is the normal case. Session length was never the question;
+  only the size of the jump is.
+- **`backwards_jitter_ratio`** and the typical-step estimate behind it,
+  which compared a jump to an exponentially weighted mean of recent forward
+  steps. That mean never exceeds `max_dclock`, so the rule could not refuse
+  anything the cap does not, while costing two persisted fields, a decay
+  constant and a warmup during which it was silent. Set `min_backwards_jump`
+  instead, in clock units.
+
+## [0.8.1] — tagged 2026-09-20, never published
 
 ### Changed
 

@@ -204,11 +204,11 @@ class ModelBank:
         - the clock has a null or non-finite value;
         - a weight is negative (a null weight skips the row);
         - a spec is named like an input column, which the struct would replace;
-        - a group's clock runs backwards under ``on_clock_reset = "error"``, or is
-          obviously out of order under any policy -- a step back smaller than a
-          typical forward step, or a second backwards jump within
-          ``min_session_clock`` of the previous one (both checks on by default;
-          the error names the key that disables the one that fired).
+        - a group's clock runs backwards under ``on_clock_reset = "error"``, or by
+          less than ``min_backwards_jump`` (default ``max_dclock``) under any
+          policy: adjacent rows are never further apart than the cap and a
+          session is longer, so that is a late row, not a boundary. The error
+          names the key, and ``0`` switches the check off.
 
         A refused chunk leaves the bank exactly as it was, so the corrected chunk can
         be fed. The exception is a window past a refusing ``window_budget``

@@ -56,7 +56,7 @@ fn other_specs() -> Vec<Spec> {
         "model": {"type": "ew_cov"},
         "targets": ["x0"], "features": ["x0", "x1", "y"], "clock": "t",
         "halflife": 20.0, "max_dclock": 30.0,
-        "backwards_jitter_ratio": 0, "min_session_clock": 0
+        "min_backwards_jump": 0
     }"#;
     vec![
         serde_json::from_str(lasso).unwrap(),
@@ -253,9 +253,14 @@ fn predict_does_not_move_it_and_a_fresh_group_has_none() {
 
     // A group whose every row so far was skipped has a stream (it is listed
     // by `groups`) and no learned row: a row of nulls, `group` aside.
+    // Six rows of one group, so the fabricated group's clock is monotone:
+    // six consecutive rows interleave both groups' clocks and step back by
+    // less than `max_dclock`, which the disorder check refuses as a late
+    // row -- rightly, and beside the point here.
     let skipped = df
-        .slice(0, 6)
         .lazy()
+        .filter(col("g").eq(lit("g0")))
+        .slice(0, 6)
         .with_columns([
             lit("g9").alias("g"),
             lit(NULL).cast(DataType::Float64).alias("x0"),

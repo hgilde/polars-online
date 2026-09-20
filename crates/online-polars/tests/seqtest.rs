@@ -17,7 +17,7 @@ fn ridge(name: &str, halflife: f64, group: bool) -> Spec {
     let g = if group {
         r#""group": "g","#
     } else {
-        r#""backwards_jitter_ratio": 0, "min_session_clock": 0,"#
+        r#""min_backwards_jump": 0,"#
     };
     serde_json::from_str(&format!(
         r#"{{
@@ -40,7 +40,7 @@ fn compare(name: &str, a: &str, b: &str, group: bool) -> Spec {
     let g = if group {
         r#""group": "g","#
     } else {
-        r#""backwards_jitter_ratio": 0, "min_session_clock": 0,"#
+        r#""min_backwards_jump": 0,"#
     };
     serde_json::from_str(&format!(
         r#"{{

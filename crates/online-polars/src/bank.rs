@@ -958,34 +958,18 @@ fn backwards_clock(spec: &Spec, raw: f64, row: usize, why: Option<Disorder>) -> 
              define what a backwards clock means.",
             spec.name, column, -raw, row
         ),
-        Some(Disorder::Jitter {
+        Some(Disorder {
             back,
-            typical,
-            ratio,
+            min_backwards_jump,
         }) => polars_err!(ComputeError:
-            "spec {:?}: clock column {:?} steps back by {} at row {}, no more than \
-             {} typical forward step(s) of {} -- out-of-order rows, not a session \
-             boundary (a boundary jumps back by a session's span); the bank was \
-             not updated. Sort each group by the clock, or add a `session` \
-             column if these are real boundaries. To accept such steps set \
-             backwards_jitter_ratio = 0 (this rule) or on_clock_reset to define \
-             what a backwards clock means.",
-            spec.name, column, back, row, ratio, typical
-        ),
-        Some(Disorder::TooSoon {
-            back,
-            span,
-            min_session_clock,
-        }) => polars_err!(ComputeError:
-            "spec {:?}: clock column {:?} goes backwards by {} at row {}, only {} \
-             clock units after the previous backwards jump (min_session_clock = \
-             {}, which defaults to the larger of max_dclock and the halflife) -- two boundaries that close \
-             together are out-of-order rows, not sessions; the bank was not \
-             updated. Sort each group by the clock, or add a `session` column \
-             if these are real boundaries. To accept such jumps set \
-             min_session_clock = 0 (this rule) or lower it to the shortest \
-             session you expect.",
-            spec.name, column, back, row, span, min_session_clock
+            "spec {:?}: clock column {:?} goes backwards by {} at row {}, less than \
+             min_backwards_jump = {} (which defaults to max_dclock: adjacent rows are \
+             never further apart, and a session is longer) -- out-of-order rows, not \
+             a session boundary; the bank was not updated. Sort each group by the \
+             clock, or add a `session` column if these are real boundaries. To \
+             accept such jumps lower min_backwards_jump, set it to 0 to switch the \
+             check off, or set on_clock_reset to define what a backwards clock means.",
+            spec.name, column, back, row, min_backwards_jump
         ),
     }
 }

@@ -92,9 +92,7 @@ mod stats;
 mod window;
 
 pub use bocpd::{Bocpd, BocpdCfg, BocpdEmission};
-pub use clock::{
-    ClockAdvance, ClockCfg, ClockState, Decay, Disorder, OnClockReset, SessionGap, TYPICAL_LAM,
-};
+pub use clock::{ClockAdvance, ClockCfg, ClockState, Decay, Disorder, OnClockReset, SessionGap};
 pub use cluster::{
     ClusterSummary, FeatureMoments, KMeans, KMeansCfg, LINK_FACTOR, LINK_FLOOR, LINK_QUANTILE,
     Micro, MicroCfg, MicroCluster, SeedRule, SplitMix64, dist2, merged_radius2,
@@ -233,11 +231,16 @@ pub use window::{
 ///   `level²·ε` loss `ew_ridge` and `lasso` were cured of in 7 and 8, left
 ///   behind here (the review of 2026-09-18, S2). No loader for 10: see
 ///   [`MIN_SCHEMA_VERSION`].
-pub const SCHEMA_VERSION: u32 = 11;
+/// - 12: the clock state drops the three fields the two 0.8.x disorder rules
+///   kept -- the inferred session's start and the typical-step estimate with
+///   its weight -- now that one rule, `min_backwards_jump` against
+///   `max_dclock`, needs no state (2026-09-20). A field removed from a
+///   positional layout is a layout change; no loader for 11.
+pub const SCHEMA_VERSION: u32 = 12;
 
 /// Oldest state layout this build still loads.
 ///
-/// **11 since 2026-09-19**, on the same rule as the entries below: a
+/// **12 since 2026-09-20**, on the same rule as the entries below: a
 /// schema-10 `robust` state's raw cross-moments could be centred on load,
 /// but only by the subtraction the change exists to remove, and pre-1.0 no
 /// loader is written for one.
@@ -272,4 +275,4 @@ pub const SCHEMA_VERSION: u32 = 11;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 11;
+pub const MIN_SCHEMA_VERSION: u32 = 12;

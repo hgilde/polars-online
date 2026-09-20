@@ -75,8 +75,7 @@ input order; no allocation in the hot path after warmup (preallocate buffers in 
 | `lam` | float | per-row decay factor, alternative to `halflife` |
 | `max_dclock` | float | ceiling on clock delta (required if `clock` given); `0` disables decay, `inf` removes the ceiling |
 | `on_clock_reset` | `"max"` \| `"zero"` \| `"reset_state"` \| `"error"` | negative delta handling; default `"max"`. `"error"` refuses the whole chunk and leaves the bank untouched (IMPROVEMENTS C3) |
-| `min_session_clock` | float | two backwards jumps within a session closer than this (clock units) are out-of-order rows, not two boundaries: the chunk is refused whatever `on_clock_reset` says. Default: the larger of `max_dclock` and the halflife (a `lam` read as one); `0` disables. Needs `clock` |
-| `backwards_jitter_ratio` | float | a backwards jump no larger than this many typical forward steps (an EW mean of the forward deltas within `max_dclock`: a gap over the cap is not a step) is jitter, refused on its first occurrence. Default `1.0`; `0` disables. Needs `clock` |
+| `min_backwards_jump` | float | a backwards clock jump smaller than this (clock units) is out-of-order rows, not a boundary: adjacent rows are never further apart than `max_dclock` and a session is longer. The chunk is refused whatever `on_clock_reset` says. Default `max_dclock`, and `0` (off) under an infinite `max_dclock`; `0` disables. Needs `clock` |
 | `session` | str \| None | column; on change apply `session_gap` |
 | `session_gap` | float \| `"reset"` | clock units to apply at session change |
 | `weight` | str \| None | row weight column, default 1 |
@@ -89,16 +88,15 @@ Per-row decay: `λ_row = 0.5 ** (Δ / halflife)`; `n_eff` = EW count with the sa
 ### Clock semantics
 - Δ = clock − prev_clock, clipped to `[0, max_dclock]` (with `on_clock_reset="zero"`) or
   Δ<0 ⇒ `max_dclock` (`"max"`, default) or state reset (`"reset_state"`).
-- Δ<0 that is *obviously* out-of-order data is refused whatever the policy, and the
-  bank is untouched (design note of 2026-09-19): a step back no larger than
-  `backwards_jitter_ratio` typical forward steps (jitter: a row one tick late, two
-  sources never merged),
-  or a second backwards jump within `min_session_clock` of the previous one (a
-  "session" too short to be one). A single jump that then holds is a boundary and
-  takes the policy. Both on by default; the error names the rule and the key that
-  disables it. They guard what the bank *learns*: `predict` scores a row before the
-  last learned clock as the policy says, as it always did (re-scoring learned rows is
-  ordinary), and `"error"` refuses there as the user chose.
+- Δ<0 smaller than `min_backwards_jump` is refused whatever the policy, and the bank
+  is untouched (design note of 2026-09-19, reduced to this one rule 2026-09-20):
+  `max_dclock` is the most two adjacent rows can be apart and a session is longer
+  than that, so a jump back by less is a late row (one tick late, two sources never
+  merged), not a boundary. A jump of at least the minimum takes the policy. On by
+  default at `max_dclock`, off under an infinite cap; the error names the key, and
+  `0` switches it off. It guards what the bank *learns*: `predict` scores a row
+  before the last learned clock as the policy says, as it always did (re-scoring
+  learned rows is ordinary), and `"error"` refuses there as the user chose.
 - Session change ⇒ Δ := `session_gap` (or reset), regardless of the clock delta.
 - First row of a group ⇒ Δ = 0.
 - The clock is per group (the expression API gets the group's rows via `.over()`).

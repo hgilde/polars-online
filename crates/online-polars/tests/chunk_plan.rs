@@ -82,7 +82,7 @@ fn all_specs(group: &str) -> Vec<Spec> {
         None,
         "60.0",
         r#""session_gap": 10.0, "coef_every": 1,
-           "backwards_jitter_ratio": 0, "min_session_clock": 0,"#,
+           "min_backwards_jump": 0,"#,
     ));
     specs
 }

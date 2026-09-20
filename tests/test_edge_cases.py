@@ -229,7 +229,15 @@ class TestClockOrdering:
         # Documented behavior today: a backwards delta is routed through
         # on_clock_reset, whether it comes from real data or a mis-sorted chunk.
         a, b = self._frames()
-        spec = _spec(clock="t", max_dclock=4.0, halflife=1.0, on_clock_reset="max")
+        # The jump back is the point -- the policy's business -- so the disorder
+        # check that would refuse it as a late row stands aside.
+        spec = _spec(
+            clock="t",
+            max_dclock=4.0,
+            halflife=1.0,
+            on_clock_reset="max",
+            min_backwards_jump=0.0,
+        )
         bank = po.ModelBank([spec])
         out_a = bank.fit_predict(a)
         out_b = bank.fit_predict(b)
@@ -245,7 +253,10 @@ class TestClockOrdering:
 
     def test_reset_state_variant_restarts_the_stream(self):
         a, b = self._frames()
-        spec = _spec(clock="t", max_dclock=4.0, on_clock_reset="reset_state")
+        # As above: the backwards jump is what `reset_state` is being asked about.
+        spec = _spec(
+            clock="t", max_dclock=4.0, on_clock_reset="reset_state", min_backwards_jump=0.0
+        )
         bank = po.ModelBank([spec])
         bank.fit_predict(a)
         out_b = bank.fit_predict(b)
@@ -771,8 +782,7 @@ class TestStrictClock:
             max_dclock=10.0,
             halflife=5.0,
             on_clock_reset=policy,
-            backwards_jitter_ratio=0.0,
-            min_session_clock=0.0,
+            min_backwards_jump=0.0,
             min_periods=0.0,
             **kw,
         )

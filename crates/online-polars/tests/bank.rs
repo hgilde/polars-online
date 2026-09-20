@@ -22,8 +22,7 @@ fn spec_json(name: &str, group: bool) -> Spec {
             "clock": "t",
             "halflife": 60.0,
             "max_dclock": 30.0,
-            "backwards_jitter_ratio": 0,
-            "min_session_clock": 0,
+            "min_backwards_jump": 0,
             "weight": "w",
             {g}
             "min_periods": 5.0
@@ -50,7 +49,7 @@ fn an_ungrouped_view_of_interleaved_groups_is_refused_by_default() {
     .unwrap();
     let mut bank = Bank::new(vec![spec]).unwrap();
     let err = bank.fit_predict(&make_df(200)).unwrap_err().to_string();
-    assert!(err.contains("backwards_jitter_ratio"), "{err}");
+    assert!(err.contains("min_backwards_jump"), "{err}");
     assert!(err.contains("out-of-order rows"), "{err}");
     assert_eq!(bank.rows_seen(), 0, "the refused chunk taught nothing");
 }

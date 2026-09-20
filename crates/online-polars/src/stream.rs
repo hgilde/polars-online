@@ -2103,16 +2103,15 @@ impl Stream {
     ) -> Result<(), ClockRefusal> {
         // A row-count clock cannot go backwards, so this costs nothing there.
         // With a clock it can fail under the `error` policy or, whatever the
-        // policy, under either disorder rule (`min_session_clock`,
-        // `backwards_jitter_ratio` -- on by default from the spec), so the
-        // pass runs whenever one of those can refuse a row: that is what
-        // keeps the refusal chunk-level and the bank untouched.
+        // policy, under the disorder check (`min_backwards_jump`, on by
+        // default from the spec), so the pass runs whenever one of those can
+        // refuse a row: that is what keeps the refusal chunk-level and the
+        // bank untouched.
         let Some(clock) = clock else {
             return Ok(());
         };
         let can_refuse = matches!(cfg.on_clock_reset, online_core::OnClockReset::Error)
-            || cfg.min_session_clock > 0.0
-            || cfg.backwards_jitter_ratio > 0.0;
+            || cfg.min_backwards_jump > 0.0;
         if !can_refuse {
             return Ok(());
         }
@@ -2522,15 +2521,14 @@ impl Stream {
         // (class, position in it) of the last accepted row, which carries
         // the coefficients for the chunk.
         let mut last_accepted: Option<(usize, usize)> = None;
-        // Scoring learns nothing, so the clock's disorder checks -- which
-        // guard what the bank *learns* from out-of-order rows -- do not apply:
-        // a fresh frame scored against the bank as it stands may well sit a
-        // little before the last learned clock, and such a row is scored as
-        // the policy says, as it always was. The `error` policy still refuses
-        // it, that being the user's own choice.
+        // Scoring learns nothing, so the clock's disorder check -- which
+        // guards what the bank *learns* from out-of-order rows -- does not
+        // apply: a fresh frame scored against the bank as it stands may well
+        // sit a little before the last learned clock, and such a row is scored
+        // as the policy says, as it always was. The `error` policy still
+        // refuses it, that being the user's own choice.
         let cfg = &online_core::ClockCfg {
-            min_session_clock: 0.0,
-            backwards_jitter_ratio: 0.0,
+            min_backwards_jump: 0.0,
             ..*cfg
         };
         for (ri, &row) in rows.iter().enumerate() {
