@@ -1458,7 +1458,10 @@ pub struct Spec {
     /// against the shared `n_eff` otherwise; the emitted `n_eff` is the
     /// shared weight either way (review 2026-09-12, S2).
     pub min_periods: Option<FloatOrList>,
-    /// 0 = never; coefficients are also emitted on the last row of every chunk.
+    /// 0 = never; coefficients are also emitted on **each group's** last row
+    /// within every chunk -- one row per group per chunk, not one per chunk,
+    /// so `coef`'s emission schedule follows the chunking while every other
+    /// field is chunk-invariant.
     #[serde(default)]
     pub coef_every: u32,
     /// Emit `sigma_<slot>`: the EW standard deviation of this slot's

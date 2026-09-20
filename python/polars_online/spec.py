@@ -94,8 +94,11 @@ sees a stream* is the guide to them; this is the reference.
     others'. Units: ``n_eff`` units, not rows.
 ``coef_every``
     How often the ``coef`` field is filled, in learned rows. ``0``, the
-    default, fills it on the last row of every chunk only; any value fills it
-    there too. Refused on a model that reports no coefficients.
+    default, fills it on **each group's** last row within every chunk only --
+    one row per group per chunk, not one per chunk; any value fills it there
+    too. So ``coef``'s emission schedule follows the chunking, while every
+    other field is chunk-invariant: one chunk or a thousand gives the same
+    numbers. Refused on a model that reports no coefficients.
 ``label_delay``
     Why: a target that is a forward quantity over ``h`` clock units is not
     known at the row it sits on, and learning it there hands the model ``h``

@@ -55,7 +55,8 @@ pub trait OnlineModel {
 pub struct Step {
     pub pred: Vec<f64>,                  // per target; NaN when not ready
     pub n_eff: f64,                      // coefficients come from `coefficients()`, read by the
-                                         // stream layer on coef_every rows / last row of chunk
+                                         // stream layer on coef_every rows / each group's last
+                                         // row within a chunk
     pub extra: Option<Extra>,            // model-specific (lasso path, lam_selected, ...)
 }
 ```
@@ -80,7 +81,7 @@ input order; no allocation in the hot path after warmup (preallocate buffers in 
 | `session_gap` | float \| `"reset"` | clock units to apply at session change |
 | `weight` | str \| None | row weight column, default 1 |
 | `min_periods` | float | in `n_eff` units; outputs null until reached |
-| `coef_every` | int | 0 = never; also emitted on the last row of every chunk |
+| `coef_every` | int | 0 = never; also emitted on **each group's** last row within every chunk — one row of coefficients per group per chunk, not one per chunk, so the emission schedule of `coef` follows the chunking while every other field is chunk-invariant (hard rule 3 is about the numbers) |
 | `group` | str \| None | one state per key (the expression API uses `.over()` instead, §6) |
 
 Per-row decay: `λ_row = 0.5 ** (Δ / halflife)`; `n_eff` = EW count with the same decay.
