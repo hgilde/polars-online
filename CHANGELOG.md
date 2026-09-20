@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format follows
 [semantic versioning](https://semver.org/) — while pre-1.0, the minor version
 carries breaking changes, and any change to the numbers a model returns.
 
-## [Unreleased]
+## [0.8.1] — 2026-09-20
 
 ### Changed
 

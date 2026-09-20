@@ -54,7 +54,7 @@ from polars_online._polars_online import (
     thread_pool_size,
 )
 
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 
 __all__ = [
     "ArrowStruct",
