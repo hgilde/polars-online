@@ -1433,8 +1433,9 @@ pub struct Spec {
     /// Two backwards clock jumps within a session closer than this, in clock
     /// units, are out-of-order rows, not two boundaries: the chunk is refused
     /// whatever `on_clock_reset` says, and the bank is untouched. Defaults to
-    /// `max_dclock` (off when that is `inf`, which has no scale); `0`
-    /// disables. Needs `clock` (design note of 2026-09-19).
+    /// the larger of `max_dclock` and the halflife (a `lam` read as one; off
+    /// when neither is finite); `0` disables. Needs `clock` (design note of
+    /// 2026-09-19).
     #[serde(default)]
     pub min_session_clock: Option<Num>,
     /// A backwards jump no larger than this many typical forward steps (an EW
@@ -1796,9 +1797,8 @@ impl Spec {
         // The two disorder checks: a value each must be finite and >= 0 (0
         // disables; `inf` is no setting -- it would refuse every second jump
         // or every jump). Their defaults are where "on by default" lives:
-        // the frequency rule at `max_dclock`, the scale the user already
-        // chose, and off when that scale is `inf`; the jitter rule at one
-        // typical step.
+        // the frequency rule at the larger of `max_dclock` and the halflife,
+        // off when neither is finite; the jitter rule at one typical step.
         for (name, value) in [
             ("min_session_clock", self.min_session_clock),
             ("backwards_jitter_ratio", self.backwards_jitter_ratio),
@@ -1811,18 +1811,38 @@ impl Spec {
             }
         }
         let max_dclock = self.max_dclock.map_or(f64::INFINITY, |m| m.0);
+        // The frequency rule's default: the largest finite scale the spec
+        // already chose. `max_dclock` alone -- "a session shorter than one
+        // adjacency gap is not a session" -- is a row-scale bound on a
+        // session-scale quantity. Measured against a query engine's block
+        // reordering of an ordered file (DuckDB, `preserve_insertion_order =
+        // false`), `max_dclock = 10` caught none of 2,965 backwards jumps
+        // whose spans ran from 71 to 2.5e6 clock units and the bank fitted the
+        // shuffled rows silently; the halflife refused at the seventh. A `lam`
+        // is the same scale under another name; the `ln` is compared here
+        // and never persisted. `inf` is no scale, and with none finite the
+        // rule is off. A `decays()` error is `validate`'s to report.
+        let halflife = self
+            .decays()
+            .ok()
+            .into_iter()
+            .flatten()
+            .map(|(_, d)| match d {
+                Decay::Halflife(h) => h,
+                Decay::Lam(l) => (0.5f64).ln() / l.ln(),
+            })
+            .filter(|h| h.is_finite())
+            .fold(0.0, f64::max);
+        let default_min_session = if max_dclock.is_finite() {
+            max_dclock.max(halflife)
+        } else {
+            halflife
+        };
         Ok(ClockCfg {
             max_dclock,
             on_clock_reset: self.on_clock_reset,
             session_gap,
-            min_session_clock: self.min_session_clock.map_or(
-                if max_dclock.is_finite() {
-                    max_dclock
-                } else {
-                    0.0
-                },
-                |v| v.0,
-            ),
+            min_session_clock: self.min_session_clock.map_or(default_min_session, |v| v.0),
             backwards_jitter_ratio: self.backwards_jitter_ratio.map_or(1.0, |v| v.0),
         })
     }

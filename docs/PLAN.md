@@ -75,7 +75,7 @@ input order; no allocation in the hot path after warmup (preallocate buffers in 
 | `lam` | float | per-row decay factor, alternative to `halflife` |
 | `max_dclock` | float | ceiling on clock delta (required if `clock` given); `0` disables decay, `inf` removes the ceiling |
 | `on_clock_reset` | `"max"` \| `"zero"` \| `"reset_state"` \| `"error"` | negative delta handling; default `"max"`. `"error"` refuses the whole chunk and leaves the bank untouched (IMPROVEMENTS C3) |
-| `min_session_clock` | float | two backwards jumps within a session closer than this (clock units) are out-of-order rows, not two boundaries: the chunk is refused whatever `on_clock_reset` says. Default `max_dclock`; `0` disables. Needs `clock` |
+| `min_session_clock` | float | two backwards jumps within a session closer than this (clock units) are out-of-order rows, not two boundaries: the chunk is refused whatever `on_clock_reset` says. Default: the larger of `max_dclock` and the halflife (a `lam` read as one); `0` disables. Needs `clock` |
 | `backwards_jitter_ratio` | float | a backwards jump no larger than this many typical forward steps (an EW mean of the forward deltas within `max_dclock`: a gap over the cap is not a step) is jitter, refused on its first occurrence. Default `1.0`; `0` disables. Needs `clock` |
 | `session` | str \| None | column; on change apply `session_gap` |
 | `session_gap` | float \| `"reset"` | clock units to apply at session change |

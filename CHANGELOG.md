@@ -5,6 +5,24 @@ All notable changes to this project are documented here. The format follows
 [semantic versioning](https://semver.org/) — while pre-1.0, the minor version
 carries breaking changes, and any change to the numbers a model returns.
 
+## [Unreleased]
+
+### Changed
+
+- **`min_session_clock` now defaults to the larger of `max_dclock` and the
+  halflife** (a `lam` read as the halflife it is), where it defaulted to
+  `max_dclock` alone. That bound -- a session shorter than one adjacency gap
+  is not a session -- put a row-scale number on a session-scale quantity.
+  Measured against a query engine's block reordering of an ordered file
+  (DuckDB with `preserve_insertion_order = false`), `max_dclock = 10` caught
+  none of 2,965 backwards jumps whose spans ran from 71 to 2.5e6 clock
+  units, and the bank fitted the shuffled rows silently; the halflife
+  refused at the seventh. Never weaker than before, since `max_dclock` still
+  sets the floor, and now on for a `max_dclock = inf` spec with a finite
+  halflife, where it was off. A stream whose genuine sessions are shorter
+  than its halflife should declare them with a `session` column, which
+  clears the inferred session and is the intended way to state a boundary.
+
 ## [0.8.0] — 2026-09-19
 
 ### Added

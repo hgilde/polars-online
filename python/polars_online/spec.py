@@ -65,8 +65,9 @@ sees a stream* is the guide to them; this is the reference.
     pair, a row one tick late, two sources never merged -- and is refused the
     first time. A second
     backwards jump within ``min_session_clock`` clock units of the previous
-    one (default ``max_dclock``, the largest gap that still counts as
-    adjacency; off when that is ``inf``) is a session too short to be one. A
+    one (default: the larger of ``max_dclock`` and the halflife, a ``lam``
+    read as one; off when neither is finite) is a session too short to be
+    one. A
     single jump that then holds is a boundary and takes the policy. ``0``
     disables either check; the error says which key. Both need ``clock``.
     They guard learning: ``predict`` scores a row that sits before the last

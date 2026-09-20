@@ -85,7 +85,7 @@ def test_two_boundaries_closer_than_min_session_clock_are_refused():
     c = frame(10, seed=2, start=100.0)  # a second jump back, too soon
     with pytest.raises(ValueError, match="min_session_clock") as e:
         po.ModelBank([spec()]).fit_predict(pl.concat([a, b, c]))
-    assert "defaults to max_dclock" in str(e.value)
+    assert "defaults to the larger of max_dclock and the halflife" in str(e.value)
     # Give the middle session room and the second jump is a boundary too.
     b = frame(20, seed=1, start=500.0)  # 500 .. 690: a span of 190 >= 100
     out = po.ModelBank([spec()]).fit_predict(pl.concat([a, b, c]))
@@ -242,9 +242,10 @@ def test_a_first_delta_that_steps_back_is_a_boundary():
     assert po.ModelBank([spec()]).fit_predict(df).height == 21
 
 
-def test_the_frequency_rule_is_off_when_max_dclock_is_inf_unless_set():
-    """`inf` has no scale to default `min_session_clock` to, so the rule is
-    off unless given; the jitter rule needs no scale and stays on."""
+def test_with_max_dclock_inf_the_default_falls_to_the_halflife():
+    """`inf` is no scale, so the default is the halflife alone: 10 here, under
+    which a span of 30 is two boundaries; set explicitly, it refuses. The
+    jitter rule needs no scale and stays on."""
     a = frame(100, seed=0, start=0.0)
     b = frame(4, seed=1, start=500.0)
     c = frame(10, seed=2, start=100.0)
@@ -265,3 +266,30 @@ def test_a_gap_over_max_dclock_does_not_inflate_the_typical_step():
     c = frame(20, seed=2, start=999_690.0)  # 500 back: fifty steps, a boundary
     out = po.ModelBank([spec()]).fit_predict(pl.concat([a, b, c]))
     assert out.height == 140
+
+
+def test_the_frequency_rule_defaults_to_the_larger_of_max_dclock_and_the_halflife():
+    """A session shorter than one adjacency gap is not a session, and neither
+    is one shorter than the halflife: with a halflife of 1000 against a
+    `max_dclock` of 100, two boundaries 290 apart are out-of-order data. The
+    default is the larger of the two scales, so where the halflife is the
+    smaller one the floor holds and the same rows are two boundaries."""
+    a = frame(100, seed=0, start=0.0)  # 0 .. 990
+    b = frame(30, seed=1, start=500.0)  # 500 .. 790: a boundary, then a span of 290
+    c = frame(10, seed=2, start=100.0)  # a second jump back
+    df = pl.concat([a, b, c])
+    with pytest.raises(ValueError, match="min_session_clock") as e:
+        po.ModelBank([spec(halflife=1000.0)]).fit_predict(df)
+    assert "larger of max_dclock and the halflife" in str(e.value)
+    assert po.ModelBank([spec(halflife=10.0)]).fit_predict(df).height == 140
+
+
+def test_the_default_reads_lam_as_a_halflife_too():
+    """`lam` is the same scale under another name: 0.5 ** (1/1000) per clock
+    unit is a halflife of 1000, and the default follows it."""
+    a = frame(100, seed=0, start=0.0)
+    b = frame(30, seed=1, start=500.0)
+    c = frame(10, seed=2, start=100.0)
+    df = pl.concat([a, b, c])
+    with pytest.raises(ValueError, match="min_session_clock"):
+        po.ModelBank([spec(halflife=None, lam=0.5 ** (1 / 1000.0))]).fit_predict(df)

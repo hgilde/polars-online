@@ -979,7 +979,7 @@ fn backwards_clock(spec: &Spec, raw: f64, row: usize, why: Option<Disorder>) -> 
         }) => polars_err!(ComputeError:
             "spec {:?}: clock column {:?} goes backwards by {} at row {}, only {} \
              clock units after the previous backwards jump (min_session_clock = \
-             {}, which defaults to max_dclock) -- two boundaries that close \
+             {}, which defaults to the larger of max_dclock and the halflife) -- two boundaries that close \
              together are out-of-order rows, not sessions; the bank was not \
              updated. Sort each group by the clock, or add a `session` column \
              if these are real boundaries. To accept such jumps set \

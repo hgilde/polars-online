@@ -283,7 +283,8 @@ timed = po.spec.ewridge(
     on_clock_reset="max",      # a backwards clock: "max" (the step is max_dclock), "zero", "reset_state", or "error"
     # Obviously out-of-order rows are refused whatever the policy, and the bank is untouched:
     # a step back no larger than one typical forward step (backwards_jitter_ratio=1.0), or a
-    # second backwards jump within min_session_clock (default max_dclock) of the previous one.
+    # second backwards jump within min_session_clock (default: the larger of max_dclock and the
+    # halflife) of the previous one.
     # The error names the rule and the key that disables it (set it to 0).
     session="session",         # a column whose value changes at a session boundary ...
     session_gap=60.0,          # ... and the clock step to apply there, at most max_dclock; "reset" starts the model over

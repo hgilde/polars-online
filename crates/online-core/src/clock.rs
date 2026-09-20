@@ -86,9 +86,10 @@ pub struct ClockCfg {
     /// units, are out-of-order data, not two session boundaries: the second
     /// is refused as [`Disorder::TooSoon`] whatever `on_clock_reset` says. A
     /// single jump that then holds is a boundary and takes the policy. `0`
-    /// disables. The spec defaults it to `max_dclock`, the largest gap that
-    /// still counts as adjacency -- a "session" shorter than one such gap is
-    /// not a session -- so the scale comes from a value already chosen.
+    /// disables. The spec defaults it to the larger of `max_dclock` and the
+    /// halflife: a "session" shorter than one adjacency gap is not a session,
+    /// and nor is one shorter than the model's memory -- two scales already
+    /// chosen, so no new number.
     pub min_session_clock: f64,
     /// A backwards jump no larger than this multiple of the typical forward
     /// step (an EW mean of the forward deltas, [`TYPICAL_LAM`]) is jitter --
@@ -102,8 +103,9 @@ pub struct ClockCfg {
 
 impl Default for ClockCfg {
     /// Both disorder checks **off** here: this is the bare core default. The
-    /// spec layer is where "on by default" lives (`min_session_clock =
-    /// max_dclock`, `backwards_jitter_ratio = 1.0`), so a direct core caller
+    /// spec layer is where "on by default" lives (`min_session_clock` = the
+    /// larger of `max_dclock` and the halflife, `backwards_jitter_ratio =
+    /// 1.0`), so a direct core caller
     /// opts in explicitly and the core's own tests keep their literal meaning.
     fn default() -> Self {
         Self {
