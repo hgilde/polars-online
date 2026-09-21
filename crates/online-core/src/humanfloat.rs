@@ -133,6 +133,134 @@ pub mod vec_f64_or_tag {
     }
 }
 
+/// A `Vec<Vec<f64>>`, each inner vector as [`vec_f64_or_tag`] (a per-slot
+/// share per coefficient, say, where the intercept's is NaN by definition).
+pub mod vec_vec_f64_or_tag {
+    use super::*;
+
+    struct Inner<'a>(&'a [f64]);
+    impl Serialize for Inner<'_> {
+        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            vec_f64_or_tag::serialize(self.0, s)
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &[Vec<f64>], s: S) -> Result<S::Ok, S::Error> {
+        if !s.is_human_readable() {
+            return v.serialize(s);
+        }
+        use serde::ser::SerializeSeq;
+        let mut seq = s.serialize_seq(Some(v.len()))?;
+        for x in v {
+            seq.serialize_element(&Inner(x))?;
+        }
+        seq.end()
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Vec<f64>>, D::Error> {
+        struct Seq;
+        impl<'de> serde::de::Visitor<'de> for Seq {
+            type Value = Vec<Vec<f64>>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a sequence of sequences of numbers or tags")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut a: A,
+            ) -> Result<Vec<Vec<f64>>, A::Error> {
+                let mut out = Vec::with_capacity(a.size_hint().unwrap_or(0));
+                while let Some(x) = a.next_element_seed(One)? {
+                    out.push(x);
+                }
+                Ok(out)
+            }
+        }
+        struct One;
+        impl<'de> serde::de::DeserializeSeed<'de> for One {
+            type Value = Vec<f64>;
+            fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Vec<f64>, D::Error> {
+                vec_f64_or_tag::deserialize(d)
+            }
+        }
+        d.deserialize_seq(Seq)
+    }
+}
+
+/// A `Vec<Option<Vec<f64>>>`, `null` staying `null` and each present vector
+/// as [`vec_f64_or_tag`] (a row's `support_coef`, absent off the cadence).
+pub mod vec_opt_vec_f64_or_tag {
+    use super::*;
+
+    struct Inner<'a>(&'a Option<Vec<f64>>);
+    impl Serialize for Inner<'_> {
+        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            match self.0 {
+                Some(v) => vec_f64_or_tag::serialize(v, s),
+                None => s.serialize_none(),
+            }
+        }
+    }
+
+    pub fn serialize<S: Serializer>(v: &[Option<Vec<f64>>], s: S) -> Result<S::Ok, S::Error> {
+        if !s.is_human_readable() {
+            return v.serialize(s);
+        }
+        use serde::ser::SerializeSeq;
+        let mut seq = s.serialize_seq(Some(v.len()))?;
+        for x in v {
+            seq.serialize_element(&Inner(x))?;
+        }
+        seq.end()
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Option<Vec<f64>>>, D::Error> {
+        struct Seq;
+        impl<'de> serde::de::Visitor<'de> for Seq {
+            type Value = Vec<Option<Vec<f64>>>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a sequence of nulls or sequences of numbers or tags")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut a: A,
+            ) -> Result<Vec<Option<Vec<f64>>>, A::Error> {
+                let mut out = Vec::with_capacity(a.size_hint().unwrap_or(0));
+                while let Some(x) = a.next_element_seed(One)? {
+                    out.push(x);
+                }
+                Ok(out)
+            }
+        }
+        struct One;
+        impl<'de> serde::de::DeserializeSeed<'de> for One {
+            type Value = Option<Vec<f64>>;
+            fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Option<Vec<f64>>, D::Error> {
+                struct Opt;
+                impl<'de> serde::de::Visitor<'de> for Opt {
+                    type Value = Option<Vec<f64>>;
+                    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        f.write_str("null or a sequence of numbers or tags")
+                    }
+                    fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                        Ok(None)
+                    }
+                    fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                        Ok(None)
+                    }
+                    fn visit_some<D2: Deserializer<'de>>(
+                        self,
+                        d: D2,
+                    ) -> Result<Self::Value, D2::Error> {
+                        vec_f64_or_tag::deserialize(d).map(Some)
+                    }
+                }
+                d.deserialize_option(Opt)
+            }
+        }
+        d.deserialize_seq(Seq)
+    }
+}
+
 /// An `Option<f64>`: `null` stays `null`, and a non-finite value is tagged.
 pub mod opt_f64_or_tag {
     use super::*;

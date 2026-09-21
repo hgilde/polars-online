@@ -5,6 +5,7 @@
   ConsumedSourceWarning
   ModelBank
   OrderNotGuaranteedWarning
+  ReadinessWarning
   __version__
   corr
   eval
@@ -18,7 +19,7 @@
   spec
   thread_pool_size
   unnest
-  schema_version = 12
+  schema_version = 13
 
 [common parameters]  # every constructor accepts these via **common
   targets
@@ -34,6 +35,9 @@
   session_gap = None
   weight = None
   min_periods = None
+  min_settled_frac = None
+  max_error_inflation = None
+  emit_error_inflation = False
   coef_every = 0
   emit_sigma = False
   emit_resid_z = False
@@ -413,7 +417,10 @@
     pred_y
     resid_y
     n_eff
+    settled_frac
+    withheld_reason
     coef
+    support_coef
   ewridge full grid, every output:
     pred_y__a_r0.000001@h100
     resid_y__a_r0.000001@h100
@@ -528,7 +535,10 @@
     drift_z__b_r0.000001@h100
     drift_z__b_r0.5@h100
     n_eff@h100
+    settled_frac@h100
+    withheld_reason@h100
     coef@h100
+    support_coef@h100
     pred_y__a_r0.000001@h500
     resid_y__a_r0.000001@h500
     pred_y__a_r0.5@h500
@@ -642,7 +652,10 @@
     drift_z__b_r0.000001@h500
     drift_z__b_r0.5@h500
     n_eff@h500
+    settled_frac@h500
+    withheld_reason@h500
     coef@h500
+    support_coef@h500
     pred_y__selected
     selected_y
     pred_z__selected
@@ -655,25 +668,35 @@
     pred_y__r0.5@h100
     resid_y__r0.5@h100
     n_eff@h100
+    settled_frac@h100
+    withheld_reason@h100
     coef@h100
+    support_coef@h100
     pred_y__r1e-300@h1e9
     resid_y__r1e-300@h1e9
     pred_y__r0.5@h1e9
     resid_y__r0.5@h1e9
     n_eff@h1e9
+    settled_frac@h1e9
+    withheld_reason@h1e9
     coef@h1e9
+    support_coef@h1e9
   lasso path:
     pred_y__l0.1
     resid_y__l0.1
     pred_y__l0
     resid_y__l0
     n_eff
+    settled_frac
+    withheld_reason
     coef
     lam_selected_y
   rls minimal:
     pred_y
     resid_y
     n_eff
+    settled_frac
+    withheld_reason
     coef
   lasso minimal:
     pred_y__l0.1
@@ -681,42 +704,58 @@
     pred_y__l0
     resid_y__l0
     n_eff
+    settled_frac
+    withheld_reason
     coef
     lam_selected_y
   kalman minimal:
     pred_y
     resid_y
     n_eff
+    settled_frac
+    withheld_reason
     coef
   huber minimal:
     pred_y
     resid_y
     n_eff
+    settled_frac
+    withheld_reason
     coef
   quantile minimal:
     pred_y
     resid_y
     n_eff
+    settled_frac
+    withheld_reason
     coef
   sgd minimal:
     pred_y
     resid_y
     n_eff
+    settled_frac
+    withheld_reason
     coef
   pa minimal:
     pred_y
     resid_y
     n_eff
+    settled_frac
+    withheld_reason
     coef
   ftrl minimal:
     pred_y
     resid_y
     n_eff
+    settled_frac
+    withheld_reason
     coef
   holt minimal:
     pred_y
     resid_y
     n_eff
+    settled_frac
+    withheld_reason
     coef
   ew_cov minimal:
     mean_x0
@@ -728,6 +767,8 @@
     cov_x0_x1
     corr_x0_x1
     n_eff
+    settled_frac
+    withheld_reason
   ew_cov every score:
     pcorr_x0_x1
     mahal
@@ -744,11 +785,15 @@
     pc1_x1
     pc1_score
     n_eff
+    settled_frac
+    withheld_reason
   kmeans minimal:
     cluster
     dist
     dist2
     n_eff
+    settled_frac
+    withheld_reason
     coef
   micro minimal:
     cluster
@@ -758,12 +803,16 @@
     n_clusters
     n_micro
     n_eff
+    settled_frac
+    withheld_reason
     coef
   ew_class minimal:
     class
     p_a
     p_b
     n_eff
+    settled_frac
+    withheld_reason
     coef
   seqtest minimal:
     log_e_pos_y
@@ -775,12 +824,16 @@
     n_pos_z
     n_neg_z
     n_eff
+    settled_frac
+    withheld_reason
   seqtest comparing two specs:
     log_e_a_y
     log_e_b_y
     wins_a_y
     wins_b_y
     n_eff
+    settled_frac
+    withheld_reason
   marginal minimal:
     n_eff
   ew_cov with lags:
@@ -794,6 +847,8 @@
     lagcorr_x1_x0_l5
     lagcorr_x1_x1_l5
     n_eff
+    settled_frac
+    withheld_reason
   bocpd minimal:
     p_change
     run_mode
@@ -802,12 +857,16 @@
     pred_x1
     logscore
     n_eff
+    settled_frac
+    withheld_reason
   corrchange minimal:
     stat
     crit
     flag
     since_flag
     n_eff
+    settled_frac
+    withheld_reason
   hmm minimal:
     p_0
     p_1
@@ -818,6 +877,8 @@
     state
     loglik
     n_eff
+    settled_frac
+    withheld_reason
     coef
   rcov minimal:
     n_eff
@@ -826,6 +887,8 @@
     rho
     loglik
     n_eff
+    settled_frac
+    withheld_reason
     coef
   deco blocked:
     u_a
@@ -836,4 +899,6 @@
     rho_a_b
     loglik
     n_eff
+    settled_frac
+    withheld_reason
     coef

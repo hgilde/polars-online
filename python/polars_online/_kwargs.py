@@ -52,6 +52,9 @@ class ExprKwargs(TypedDict, total=False):
     session_gap: float | str | None
     weight: str | None
     min_periods: float | list[float] | None
+    min_settled_frac: float | None
+    max_error_inflation: float | None
+    emit_error_inflation: bool
     coef_every: int
     emit_sigma: bool
     emit_resid_z: bool

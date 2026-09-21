@@ -255,10 +255,12 @@ stats = []
         .unwrap()
         .fields_as_series();
     let names: Vec<&str> = fields.iter().map(|f| f.name().as_str()).collect();
+    // Every row carries the two readiness fields beside `n_eff`
+    // (docs/WARMUP-AND-CONVERGENCE.md §3); nothing else.
     assert_eq!(
         names,
-        ["n_eff"],
-        "an empty `stats` emits n_eff and nothing else"
+        ["n_eff", "settled_frac", "withheld_reason"],
+        "an empty `stats` emits n_eff and the readiness fields, nothing else"
     );
     let n_eff = fields[0].f64().unwrap();
     assert!(

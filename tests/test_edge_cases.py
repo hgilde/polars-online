@@ -273,7 +273,7 @@ class TestClockOrdering:
         many = pl.concat([bank.fit_predict(df.slice(i, 17)) for i in range(0, 200, 17)]).unnest("m")
         # coef is emitted on each chunk's last row, so it is chunk-dependent by
         # design (docs/PLAN.md section 3); everything else must match exactly.
-        keep = [c for c in one.columns if not c.startswith("coef")]
+        keep = [c for c in one.columns if not c.startswith(("coef", "support_coef"))]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
 
 
@@ -396,7 +396,7 @@ class TestMinimalShapes:
         interrupted = pl.concat(parts)
         a = straight.unnest("m")
         b = interrupted.unnest("m")
-        keep = [c for c in a.columns if not c.startswith("coef")]
+        keep = [c for c in a.columns if not c.startswith(("coef", "support_coef"))]
         assert a.select(keep).equals(b.select(keep), null_equal=True)
 
     def test_single_row_groups(self):
@@ -722,7 +722,7 @@ class TestPendingDeltaAcrossSaveLoad:
         joined = pl.concat([first, resumed]).unnest("m")
 
         a = straight.unnest("m")
-        keep = [c for c in a.columns if not c.startswith("coef")]
+        keep = [c for c in a.columns if not c.startswith(("coef", "support_coef"))]
         assert a.select(keep).equals(joined.select(keep), null_equal=True), (
             "the pending clock delta of a skipped row did not survive save/load"
         )

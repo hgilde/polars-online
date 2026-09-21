@@ -50,3 +50,48 @@ fn an_explicit_value_wins_including_zero_and_under_an_infinite_cap() {
     let inf = "halflife = 10.0\nclock = \"t\"\nmax_dclock = inf\n";
     assert_eq!(resolved(&format!("{inf}min_backwards_jump = 5.0")), 5.0);
 }
+
+/// The two readiness gates (docs/WARMUP-AND-CONVERGENCE.md §2), resolved:
+/// `min_settled_frac` is off, `max_error_inflation` is `sqrt(2)` -- the
+/// estimation variance equal to the noise -- and `ew_ridge`, which that gate
+/// serves, no longer takes the `k + 1` floor `min_periods` gave it, where
+/// every model without a noise statistic keeps its own default.
+fn parsed(top: &str, model: &str) -> Spec {
+    let text = format!(
+        "name = \"m\"\ntargets = [\"y\"]\nfeatures = [\"x0\", \"x1\"]\nhalflife = 10.0\n{top}\n[model]\n{model}\n"
+    );
+    toml::from_str(&text).unwrap_or_else(|e| panic!("did not parse: {e}\n{text}"))
+}
+
+#[test]
+fn the_settled_gate_is_off_and_the_noise_gate_is_root_two() {
+    let spec = parsed("", "type = \"ew_ridge\"");
+    assert_eq!(spec.min_settled_frac_or_default(), 0.0);
+    assert_eq!(spec.max_error_inflation_or_default(), 2f64.sqrt());
+    let spec = parsed(
+        "min_settled_frac = 0.5\nmax_error_inflation = 1.1",
+        "type = \"ew_ridge\"",
+    );
+    assert_eq!(spec.min_settled_frac_or_default(), 0.5);
+    assert_eq!(spec.max_error_inflation_or_default(), 1.1);
+}
+
+#[test]
+fn ew_ridge_drops_the_count_floor_and_the_others_keep_theirs() {
+    assert_eq!(
+        parsed("", "type = \"ew_ridge\"").min_periods_per_target(),
+        vec![0.0]
+    );
+    assert_eq!(
+        parsed("", "type = \"lasso\"\nlasso_path = [0.1]").min_periods_per_target(),
+        vec![3.0]
+    );
+    assert_eq!(
+        parsed("", "type = \"rls\"").min_periods_per_target(),
+        vec![3.0]
+    );
+    assert_eq!(
+        parsed("min_periods = 7.0", "type = \"ew_ridge\"").min_periods_per_target(),
+        vec![7.0]
+    );
+}

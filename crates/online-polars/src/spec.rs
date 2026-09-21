@@ -1458,6 +1458,38 @@ pub struct Spec {
     /// against the shared `n_eff` otherwise; the emitted `n_eff` is the
     /// shared weight either way (review 2026-09-12, S2).
     pub min_periods: Option<FloatOrList>,
+    /// Withhold predictions until the decay window has filled this far
+    /// toward steady state: `settled_frac = 1 − 2^(−T/h)`, `T` the decay
+    /// time the models have seen (docs/WARMUP-AND-CONVERGENCE.md §2). A
+    /// fraction in `[0, 1)`, so it cannot be set unreachably; `0`, the
+    /// default, is off. Off because under a stationary process the
+    /// mean-form fit is unbiased from its first row and its variance is
+    /// `max_error_inflation`'s to gate; what this guards is a history that
+    /// does not represent the process -- regimes or seasons the halflife
+    /// was chosen to average across -- which only the user can judge. Needs
+    /// a decay to settle toward.
+    #[serde(default)]
+    pub min_settled_frac: Option<Num>,
+    /// Withhold predictions while the estimation error is expected to
+    /// inflate the prediction error over the noise floor by more than this:
+    /// `error_inflation = sqrt(1 + edf / n_kish)`, the effective degrees of
+    /// freedom the last solve used over Kish's effective sample size behind
+    /// the fit (§2.1). Default `sqrt(2)`: the estimation variance no larger
+    /// than the noise being fitted. Tracks the model, so adding a feature
+    /// moves the gate with it, and reads Kish's `n` rather than the weight,
+    /// so uneven weights withhold for longer. A ratio above 1; `inf` is off.
+    /// Gates the models that have the statistic (`ew_ridge`); the others are
+    /// left to `min_periods`.
+    #[serde(default)]
+    pub max_error_inflation: Option<Num>,
+    /// Emit `error_inflation_<slot>`: the same ratio for *this* row's
+    /// features, `sqrt(1 + h(x))`, the row's leverage against the factor
+    /// its fit came from, so a row leaning on a direction the data never
+    /// showed reads large where the stream average cannot see it. One
+    /// triangular solve a row, `O(k²)`, and the model keeps its factors --
+    /// which is why it is opt-in. Needs a model that has it (`ew_ridge`).
+    #[serde(default)]
+    pub emit_error_inflation: bool,
     /// 0 = never; coefficients are also emitted on **each group's** last row
     /// within every chunk -- one row per group per chunk, not one per chunk,
     /// so `coef`'s emission schedule follows the chunking while every other
@@ -1857,6 +1889,12 @@ impl Spec {
             // one, so `P(r <= 1)` is 1 whatever the row: one row of
             // warm-up, and the prior is the gate after it.
             ModelKind::Bocpd { .. } => 1.0,
+            // The noise gate is this model's readiness gate
+            // (docs/WARMUP-AND-CONVERGENCE.md §2.1): `max_error_inflation`
+            // tracks the model where a count of weight cannot, and the
+            // `k + 1` rows its first solve needs are the model's own floor
+            // (`build_one`), not a setting. An explicit value still floors.
+            ModelKind::EwRidge { .. } => 0.0,
             // No intercept to count: `add_intercept` has nothing to act on in
             // these, and counted, it moved the first reported row (review
             // 2026-09-12, S22). `k + 1` is what the builders' default gave.
@@ -1876,6 +1914,38 @@ impl Spec {
         self.min_periods_per_target()
             .into_iter()
             .fold(f64::INFINITY, f64::min)
+    }
+
+    /// The settled-fraction gate, `0` (off) unless set
+    /// (docs/WARMUP-AND-CONVERGENCE.md §4.1.1).
+    pub fn min_settled_frac_or_default(&self) -> f64 {
+        self.min_settled_frac.map_or(0.0, |v| v.0)
+    }
+
+    /// The noise gate, `sqrt(2)` unless set: the estimation variance no
+    /// larger than the noise (§2).
+    pub fn max_error_inflation_or_default(&self) -> f64 {
+        self.max_error_inflation.map_or(2f64.sqrt(), |v| v.0)
+    }
+
+    /// Whether any of this spec's model instances forgets: a finite
+    /// halflife, or a `lam` below 1. What `settled_frac` needs to be a
+    /// fraction of.
+    pub fn has_decay(&self) -> bool {
+        self.decays().is_ok_and(|ds| {
+            ds.iter().any(|(_, d)| match d {
+                Decay::Halflife(h) => h.is_finite(),
+                Decay::Lam(l) => *l < 1.0,
+            })
+        })
+    }
+
+    /// Whether this spec's model reads the noise gate's statistic
+    /// ([`online_core::OnlineModel::error_inflation_into`]): the ridge
+    /// family with a Gram it factorizes. The others are left to
+    /// `min_periods`, and `emit_error_inflation` is refused for them.
+    pub fn has_error_inflation(&self) -> bool {
+        matches!(self.model, ModelKind::EwRidge { .. })
     }
 
     /// Default solve cadence: halflife/50 (docs/PLAN.md §4.1, [`Spec::validate`]).
@@ -2108,6 +2178,41 @@ impl Spec {
         }
         if mp.iter().any(|v| *v < 0.0 || v.is_nan()) {
             return Err(format!("spec {:?}: min_periods must be >= 0", self.name));
+        }
+        if let Some(Num(f)) = self.min_settled_frac {
+            if !(0.0..1.0).contains(&f) {
+                return Err(format!(
+                    "spec {:?}: min_settled_frac must be a finite fraction of steady state in [0, 1) \
+                     (0 is off; 0.5 is one halflife, 0.75 two), got {f}",
+                    self.name
+                ));
+            }
+            if f > 0.0 && !self.has_decay() {
+                return Err(format!(
+                    "spec {:?}: min_settled_frac needs a decay to settle toward (a finite \
+                     halflife, or lam < 1); without one every row is settled and the gate \
+                     would do nothing",
+                    self.name
+                ));
+            }
+        }
+        if let Some(Num(r)) = self.max_error_inflation {
+            if r.is_nan() || r <= 1.0 {
+                return Err(format!(
+                    "spec {:?}: max_error_inflation must be a ratio above 1 -- how much \
+                     estimation error may inflate a prediction's error over the noise floor \
+                     (sqrt(2) is the default; inf switches the gate off), got {r}",
+                    self.name
+                ));
+            }
+        }
+        if self.emit_error_inflation && !self.has_error_inflation() {
+            return Err(format!(
+                "spec {:?}: emit_error_inflation needs a model with a ridge system to read \
+                 the leverage from (ew_ridge); {} has none",
+                self.name,
+                self.model.kind_name()
+            ));
         }
         if let Some(a) = &self.drift_action {
             if !["flag", "reset"].contains(&a.as_str()) {

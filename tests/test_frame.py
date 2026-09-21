@@ -57,7 +57,11 @@ def _bank_loop(df: pl.DataFrame, chunk_rows: int, **kw) -> pl.DataFrame:
 def _no_coef(df: pl.DataFrame) -> pl.DataFrame:
     """`coef` is a reporting cadence -- snapshotted on each chunk's last row --
     and so the one field allowed to differ between chunkings."""
-    return df.with_columns(pl.col("ridge").struct.with_fields(pl.lit(None).alias("coef")))
+    return df.with_columns(
+        pl.col("ridge").struct.with_fields(
+            pl.lit(None).alias("coef"), pl.lit(None).alias("support_coef")
+        )
+    )
 
 
 @pytest.mark.parametrize("engine", ["streaming", "in-memory"])

@@ -312,7 +312,7 @@ class TestSessionShrink:
             .select("m")
             .unnest("m")
         )
-        keep = [c for c in one.columns if not c.startswith("coef")]
+        keep = [c for c in one.columns if not c.startswith(("coef", "support_coef"))]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
 
         a = po.ModelBank([spec])

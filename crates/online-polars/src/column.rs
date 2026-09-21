@@ -7,12 +7,13 @@
 //! array and nothing here touches polars (docs/PLAN.md task 86). The one
 //! hand-off to polars is in `assemble`, where the struct array is named.
 
+use polars::prelude::PlSmallStr;
 use polars_arrow::array::{
-    BooleanArray, Float64Array, Int32Array, Int64Array, MutableBinaryViewArray, PrimitiveArray,
-    Utf8ViewArray,
+    BooleanArray, DictionaryArray, Float64Array, Int32Array, Int64Array, MutableBinaryViewArray,
+    PrimitiveArray, Utf8ViewArray,
 };
 use polars_arrow::bitmap::{Bitmap, MutableBitmap};
-use polars_arrow::datatypes::ArrowDataType;
+use polars_arrow::datatypes::{ArrowDataType, DTYPE_ENUM_VALUES_NEW, IntegerType, Metadata};
 
 /// One output column under construction: a values buffer, NaN where no
 /// finite value has been set, and its validity bits. The finishers hand both
@@ -192,6 +193,58 @@ impl F64Column {
         }
         b.into()
     }
+}
+
+/// A column of small codes as a dictionary-encoded string array, `0` null:
+/// what `withheld_reason` is (docs/WARMUP-AND-CONVERGENCE.md §3). A
+/// dictionary array is a key a row plus the few names once, where a string
+/// column costs sixteen bytes a row even when every value is null. With
+/// [`enum_metadata`] on its field polars reads it as an `Enum` over exactly
+/// these names -- one dictionary for every batch, which the IPC writer
+/// requires and a per-chunk categorical does not give. The keys are `u32`,
+/// the width polars has always read a string dictionary in.
+pub(crate) fn code_array(codes: &[u8], names: &[&str]) -> DictionaryArray<u32> {
+    // A code with no name -- a bit flipped in a state file's last row -- is
+    // null, not a panic (`tests/summary.rs`, the bit-flip test).
+    let known = |c: u8| c != 0 && usize::from(c) <= names.len();
+    let validity: Bitmap =
+        MutableBitmap::from_trusted_len_iter(codes.iter().map(|&c| known(c))).into();
+    let keys: Vec<u32> = codes
+        .iter()
+        .map(|&c| if known(c) { u32::from(c - 1) } else { 0 })
+        .collect();
+    let keys = PrimitiveArray::new(
+        ArrowDataType::UInt32,
+        keys.into(),
+        (validity.unset_bits() > 0).then_some(validity),
+    );
+    let mut values = MutableBinaryViewArray::<str>::with_capacity(names.len());
+    for n in names {
+        values.push(Some(*n));
+    }
+    let values: Utf8ViewArray = values.into();
+    let dtype = ArrowDataType::Dictionary(
+        IntegerType::UInt32,
+        Box::new(ArrowDataType::Utf8View),
+        false,
+    );
+    DictionaryArray::try_new(dtype, keys, Box::new(values)).expect("every key is a name")
+}
+
+/// The field metadata that makes polars read a string dictionary as an
+/// `Enum` over `names`, in polars' own encoding: each name as its length, a
+/// semicolon and the name, concatenated (`DTYPE_ENUM_VALUES_NEW`).
+pub(crate) fn enum_metadata(names: &[&str]) -> Metadata {
+    let mut encoded = String::new();
+    for n in names {
+        encoded.push_str(&n.len().to_string());
+        encoded.push(';');
+        encoded.push_str(n);
+    }
+    Metadata::from([(
+        PlSmallStr::from_static(DTYPE_ENUM_VALUES_NEW),
+        PlSmallStr::from_string(encoded),
+    )])
 }
 
 impl F64Column {

@@ -134,6 +134,25 @@ impl AnyModel {
         dispatch!(self, m => m.target_n_eff_into(out))
     }
 
+    /// The noise gate's statistic per slot
+    /// ([`OnlineModel::error_inflation_into`]); `false` for a model
+    /// without one.
+    pub fn error_inflation_into(&self, out: &mut Vec<f64>) -> bool {
+        dispatch!(self, m => m.error_inflation_into(out))
+    }
+
+    /// The same for one row's features
+    /// ([`OnlineModel::row_error_inflation_into`]).
+    pub fn row_error_inflation_into(&self, x: &[f64], out: &mut Vec<f64>) -> bool {
+        dispatch!(self, m => m.row_error_inflation_into(x, out))
+    }
+
+    /// Each coefficient's data share ([`OnlineModel::support_coef`]), laid
+    /// out like [`Self::coefficients`].
+    pub fn support_coef(&self) -> Option<Vec<Vec<f64>>> {
+        dispatch!(self, m => m.support_coef())
+    }
+
     /// What went wrong in a model's solves, counted (docs/PLAN.md §7):
     /// `ew_ridge` and `robust` count their jittered or failed factorizations,
     /// `lasso` its coordinate descents that ran out of sweeps, `ew_class` the
@@ -392,7 +411,15 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 session_shrink: *session_shrink,
                 long_halflife: long_halflife.map(|n| n.0),
                 coef_prior: coef_prior.clone(),
-                min_periods: spec.min_periods_or_default(),
+                // The spec's default is 0, the noise gate being this model's
+                // (docs/WARMUP-AND-CONVERGENCE.md §2.1); the model's own
+                // floor -- its first solve, and its own gate -- is then a
+                // row per unknown, as the old default was. An explicit value
+                // is the user's, above or below that.
+                min_periods: match spec.min_periods {
+                    Some(_) => spec.min_periods_or_default(),
+                    None => (spec.k() + usize::from(spec.add_intercept)) as f64,
+                },
                 solve_every: solve_every.unwrap_or_else(|| spec.solve_every_default(decay)),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
                 gram_block_rows: gram_block_rows.unwrap_or(0),
@@ -400,7 +427,10 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 window: *window,
                 window_every: *window_every,
             };
-            Ok(AnyModel::EwRidge(Box::new(EwRidge::new(cfg)?)))
+            let mut m = EwRidge::new(cfg)?;
+            // The per-row leverage needs the factors kept (§2.1).
+            m.set_keep_factor(spec.emit_error_inflation);
+            Ok(AnyModel::EwRidge(Box::new(m)))
         }
         ModelKind::Rls { ridge, coef_prior } => {
             let cfg = RlsCfg {
@@ -1332,6 +1362,16 @@ pub struct StreamState {
     /// count that began partway would read as a count.
     #[serde(default)]
     pub summary: Option<DataSummary>,
+    /// Per model instance, the decay time it has seen: every `d_clock` the
+    /// models decayed by, a capped gap at the cap, which `settled_frac` is
+    /// a fraction of (docs/WARMUP-AND-CONVERGENCE.md §2). Zero in a file
+    /// written before it existed.
+    #[serde(default)]
+    pub decay_time: Vec<f64>,
+    /// Per model instance, which readiness notices it has raised (§3), so a
+    /// resumed stream does not raise them again.
+    #[serde(default)]
+    pub notified: Vec<Notified>,
     /// Rows accepted but not yet learned from (`label_delay`, E47). Skipped
     /// when empty, so a spec without a delay writes the same bytes it always
     /// did.
@@ -1361,6 +1401,58 @@ pub struct StreamState {
 /// `StreamState::score_pred` holds nothing worth writing.
 fn no_score_preds(v: &[Vec<Vec<f64>>]) -> bool {
     v.iter().all(Vec::is_empty)
+}
+
+/// Which readiness notices one model instance has raised
+/// (docs/WARMUP-AND-CONVERGENCE.md §3), each once per stream, and the
+/// messages raised since the bank last drained them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Notified {
+    /// A coefficient more ridge than data was named.
+    pub support: bool,
+    /// The noise gate was found unreachable at steady state.
+    pub unreachable: bool,
+    /// Raised and not yet drained; not state.
+    #[serde(skip)]
+    pub pending: Vec<String>,
+}
+
+/// How far the decay window has filled toward steady state after `t`
+/// clock units of decay: `1 − 2^(−t/h)`, or `1 − λ^t`; NaN where nothing
+/// decays, there being no steady state to settle toward
+/// (docs/WARMUP-AND-CONVERGENCE.md §1). Rate-independent by construction:
+/// it reads the clock the decay has covered, not a count of rows.
+pub fn settled_frac(decay: Decay, t: f64) -> f64 {
+    match decay {
+        Decay::Halflife(h) if h.is_finite() => 1.0 - (-(t / h)).exp2(),
+        Decay::Lam(l) if l < 1.0 => 1.0 - l.powf(t),
+        _ => f64::NAN,
+    }
+}
+
+/// The reasons a row's predictions are withheld, as `withheld_reason`
+/// spells them: the code the row buffer carries (0 for none) and the name
+/// the output shows. The order is the precedence when several apply.
+pub const WITHHELD_REASONS: [&str; 3] = [
+    "below_min_settled_frac",
+    "below_min_periods",
+    "above_max_error_inflation",
+];
+const REASON_SETTLED: u8 = 1;
+const REASON_MIN_PERIODS: u8 = 2;
+const REASON_INFLATION: u8 = 3;
+
+/// Where a stream stands on the readiness statistics
+/// (docs/WARMUP-AND-CONVERGENCE.md §3), as `Bank::summary` reports it: NaN
+/// where a statistic does not exist for the model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Readiness {
+    pub settled_frac: f64,
+    /// The largest over the instance's slots.
+    pub error_inflation: f64,
+    pub min_support_coef: f64,
+    pub min_support_coef_feature: Option<String>,
+    pub n_coef: u64,
 }
 
 /// `StreamState::resid_win` holds no ring.
@@ -1418,6 +1510,11 @@ pub struct Stream {
     /// (docs/PLAN.md task 35). `None` only for a stream restored from a file
     /// written before the summary existed.
     summary: Option<DataSummary>,
+    /// Per instance, the decay time seen; see [`StreamState::decay_time`].
+    decay_time: Vec<f64>,
+    /// Per instance, the readiness notices raised; see
+    /// [`StreamState::notified`].
+    notified: Vec<Notified>,
     /// The session value of the span this stream is in (E54); see
     /// [`StreamState::last_session`].
     pub last_session: Option<String>,
@@ -1442,6 +1539,56 @@ impl Stream {
     /// Summed over this stream's model instances (one per halflife).
     pub fn solve_failures(&self) -> u64 {
         self.models.iter().map(|(_, m)| m.solve_failures()).sum()
+    }
+
+    /// The readiness notices raised since the last drain, in instance
+    /// order (docs/WARMUP-AND-CONVERGENCE.md §3); each is raised once per
+    /// instance for the life of the stream.
+    pub fn take_notices(&mut self) -> Vec<String> {
+        self.notified
+            .iter_mut()
+            .flat_map(|n| std::mem::take(&mut n.pending))
+            .collect()
+    }
+
+    /// Where this stream stands (§3), for `Bank::summary`: read from its
+    /// first instance, as it stands after the last row.
+    pub fn readiness(&self, spec: &Spec) -> Readiness {
+        let decay = self.decays.first().copied();
+        let settled = decay.map_or(f64::NAN, |d| {
+            settled_frac(d, self.decay_time.first().copied().unwrap_or(0.0))
+        });
+        let model = self.models.first().map(|(_, m)| m);
+        let mut infl = Vec::new();
+        let error_inflation = match model {
+            Some(m) if m.error_inflation_into(&mut infl) => {
+                infl.iter().cloned().fold(f64::NAN, f64::max)
+            }
+            _ => f64::NAN,
+        };
+        let k_total = spec.k() + usize::from(spec.add_intercept);
+        let (mut min_support, mut feature) = (f64::NAN, None);
+        if let Some(s) = model.and_then(|m| m.support_coef()) {
+            let worst = s
+                .iter()
+                .flat_map(|slot| slot.iter().enumerate())
+                .filter(|(_, v)| v.is_finite())
+                .min_by(|a, b| a.1.total_cmp(b.1));
+            if let Some((i, &share)) = worst {
+                min_support = share;
+                feature = spec
+                    .features
+                    .get(i % k_total - usize::from(spec.add_intercept))
+                    .cloned();
+            }
+        }
+        Readiness {
+            settled_frac: settled,
+            error_inflation,
+            min_support_coef: min_support,
+            min_support_coef_feature: feature,
+            n_coef: k_total as u64,
+        }
     }
 
     /// Model instances in this stream (one per halflife).
@@ -1547,6 +1694,17 @@ pub struct ChunkOut {
     /// Emitted on a cadence rather than every row, so it stays boxed:
     /// `[model][row]`.
     pub coef: Vec<Vec<Option<Vec<f64>>>>,
+    /// `n_models * n_rows`: how settled the instance was before the row
+    /// (docs/WARMUP-AND-CONVERGENCE.md §3); NaN = null, where nothing decays.
+    pub settled: Vec<f64>,
+    /// `n_models * n_rows`: why the row's predictions were withheld, as an
+    /// index into [`WITHHELD_REASONS`] plus one; 0 = none (null).
+    pub reason: Vec<u8>,
+    /// `n_models * n_slots * n_rows` under `emit_error_inflation`, else
+    /// empty: the row's own error inflation per slot.
+    pub inflation: Vec<f64>,
+    /// Each coefficient's data share, on `coef`'s cadence: `[model][row]`.
+    pub support_coef: Vec<Vec<Option<Vec<f64>>>>,
     /// Slot counts this layout was built for.
     pub n_models: usize,
     pub n_slots: usize,
@@ -1595,6 +1753,8 @@ impl Buffers {
             + 3 * on(spec.conformal.is_some())
             + self.n_levels * per
             + n_models
+            + n_models
+            + on(spec.emit_error_inflation)
             + if self.is_lasso {
                 n_models * spec.m()
             } else {
@@ -1636,6 +1796,10 @@ impl ChunkOut {
                 }
             ],
             coef: vec![vec![None; n_rows]; n_models],
+            settled: vec![f64::NAN; n_models * n_rows],
+            reason: vec![0; n_models * n_rows],
+            inflation: vec![f64::NAN; on(spec.emit_error_inflation)],
+            support_coef: vec![vec![None; n_rows]; n_models],
             n_models,
             n_slots,
             n_levels,
@@ -1738,6 +1902,15 @@ pub struct LastRow {
     #[serde(with = "online_core::humanfloat::vec_f64_or_tag")]
     pub lam_selected: Vec<f64>,
     pub coef: Vec<Option<Vec<f64>>>,
+    #[serde(default, with = "online_core::humanfloat::vec_f64_or_tag")]
+    pub settled: Vec<f64>,
+    #[serde(default)]
+    pub reason: Vec<u8>,
+    #[serde(default, with = "online_core::humanfloat::vec_f64_or_tag")]
+    pub inflation: Vec<f64>,
+    /// The intercept's share is NaN by definition, so the export tags it.
+    #[serde(default, with = "online_core::humanfloat::vec_opt_vec_f64_or_tag")]
+    pub support_coef: Vec<Option<Vec<f64>>>,
 }
 
 /// Row `ri` of a buffer of `n_rows` rows: in every `ChunkOut` buffer the row
@@ -1767,6 +1940,12 @@ impl LastRow {
         take_row(&mut self.lam_selected, &out.lam_selected, n, ri);
         self.coef.clear();
         self.coef.extend(out.coef.iter().map(|c| c[ri].clone()));
+        take_row(&mut self.settled, &out.settled, n, ri);
+        take_row(&mut self.reason, &out.reason, n, ri);
+        take_row(&mut self.inflation, &out.inflation, n, ri);
+        self.support_coef.clear();
+        self.support_coef
+            .extend(out.support_coef.iter().map(|c| c[ri].clone()));
     }
 
     /// A one-row chunk at absolute row `row`, marked processed, for
@@ -1794,6 +1973,10 @@ impl LastRow {
             out.n_eff.len() == self.n_eff.len(),
             out.lam_selected.len() == self.lam_selected.len(),
             out.coef.len() == self.coef.len(),
+            out.settled.len() == self.settled.len(),
+            out.reason.len() == self.reason.len(),
+            out.inflation.len() == self.inflation.len(),
+            out.support_coef.len() == self.support_coef.len(),
         ];
         if same.contains(&false) {
             return Err(format!(
@@ -1815,6 +1998,12 @@ impl LastRow {
         out.n_eff.clone_from(&self.n_eff);
         out.lam_selected.clone_from(&self.lam_selected);
         for (dst, src) in out.coef.iter_mut().zip(&self.coef) {
+            dst[0].clone_from(src);
+        }
+        out.settled.clone_from(&self.settled);
+        out.reason.clone_from(&self.reason);
+        out.inflation.clone_from(&self.inflation);
+        for (dst, src) in out.support_coef.iter_mut().zip(&self.support_coef) {
             dst[0].clone_from(src);
         }
         Ok(out)
@@ -1880,6 +2069,8 @@ impl Stream {
             scratch: slots.iter().map(|_| Scratch::default()).collect(),
             last_row: None,
             summary: Some(DataSummary::new(spec)),
+            decay_time: vec![0.0; slots.len()],
+            notified: vec![Notified::default(); slots.len()],
             label_delay: spec.label_delay,
             pending: Vec::new(),
             score_pred: slots
@@ -1905,6 +2096,8 @@ impl Stream {
             conformal: self.conformal.clone(),
             last_row: self.last_row.clone(),
             summary: self.summary.clone(),
+            decay_time: self.decay_time.clone(),
+            notified: self.notified.clone(),
             pending: self.pending.clone(),
             score_pred: self
                 .score_pred
@@ -1950,6 +2143,15 @@ impl Stream {
         }
         stream.clock = saved.clock.clone();
         stream.rows_seen = saved.rows_seen;
+        // The decay time and the notices, per instance; a file written
+        // before either existed leaves the fresh zeros, so for such a file
+        // `settled_frac` counts from the load.
+        if saved.decay_time.len() == stream.decay_time.len() {
+            stream.decay_time = saved.decay_time.clone();
+        }
+        if saved.notified.len() == stream.notified.len() {
+            stream.notified = saved.notified.clone();
+        }
         // A saved per-instance, per-slot diagnostic is taken when it is
         // shaped as this spec's; one absent, or sized for another spec
         // (written before the field existed, or under a spec that has since
@@ -2236,6 +2438,10 @@ impl Stream {
         // Rewrites the plan list into (release, ..., score this row) order,
         // and hands the released rows' values out beside it. Release depends
         // on the clock alone, so chunking cannot move a single one.
+        // The clock the held rows have covered, read before the rewrite below
+        // moves rows in and out of the buffer: what `settled_frac` adds for a
+        // scored row (see `Instance::pending_clock`).
+        let pending_clock: f64 = self.pending.iter().map(|p| p.d_clock).sum();
         let released = self.apply_label_delay(&mut plans, features, targets);
 
         // ---- the data summary (docs/PLAN.md task 35) ----
@@ -2280,8 +2486,19 @@ impl Stream {
             conformal: &mut self.conformal,
             scratch: &mut self.scratch,
             score_pred: &mut self.score_pred,
+            decay_time: &mut self.decay_time,
+            notified: &mut self.notified,
         };
-        let mut insts = build_instances(spec, models, rings, &self.decays, diag, out, n_rows);
+        let mut insts = build_instances(
+            spec,
+            models,
+            rings,
+            &self.decays,
+            diag,
+            out,
+            n_rows,
+            pending_clock,
+        );
         if coupled && insts.len() > 1 {
             for pi in 0..plans.len() {
                 let mut seen = false;
@@ -2656,6 +2873,10 @@ impl Stream {
         // Scoring buffers nothing and replays nothing, so its queues stay empty.
         let mut score_pred: Vec<std::collections::VecDeque<Vec<f64>>> =
             (0..n).map(|_| std::collections::VecDeque::new()).collect();
+        // Scoring learns nothing, so the decay time does not move and no
+        // notice a scoring row might raise is kept.
+        let mut decay_time = self.decay_time.clone();
+        let mut notified = self.notified.clone();
         let diag = Diagnostics {
             resid_var: &mut resid_var,
             resid_w: &mut resid_w,
@@ -2666,13 +2887,25 @@ impl Stream {
             conformal: &mut conformal,
             scratch: &mut scratch,
             score_pred: &mut score_pred,
+            decay_time: &mut decay_time,
+            notified: &mut notified,
         };
         let models = models.iter().map(|(_, m)| ModelRef::Score(m));
         let rings = self
             .resid_win
             .iter()
             .map(|r| r.as_ref().map(SpreadRef::Score));
-        let mut insts = build_instances(spec, models, rings, &self.decays, diag, out, n_rows);
+        let pending_clock: f64 = self.pending.iter().map(|p| p.d_clock).sum();
+        let mut insts = build_instances(
+            spec,
+            models,
+            rings,
+            &self.decays,
+            diag,
+            out,
+            n_rows,
+            pending_clock,
+        );
         if insts.len() > 1 {
             use rayon::prelude::*;
             insts.par_iter_mut().for_each(|inst| {
@@ -2763,12 +2996,15 @@ struct Diagnostics<'a> {
     conformal: &'a mut [Vec<Conformal>],
     scratch: &'a mut [Scratch],
     score_pred: &'a mut [std::collections::VecDeque<Vec<f64>>],
+    decay_time: &'a mut [f64],
+    notified: &'a mut [Notified],
 }
 
 /// Split per-instance state and output into disjoint pieces, so instances
 /// can run concurrently. Every `ChunkOut` buffer is laid out model-major,
 /// which is what makes an instance's region one contiguous slice; the
 /// state vectors are already `[mi]`-indexed.
+#[allow(clippy::too_many_arguments)]
 fn build_instances<'a>(
     spec: &'a Spec,
     models: impl Iterator<Item = ModelRef<'a>>,
@@ -2777,6 +3013,7 @@ fn build_instances<'a>(
     diag: Diagnostics<'a>,
     out: &'a mut ChunkOut,
     n_rows: usize,
+    pending_clock: f64,
 ) -> Vec<Instance<'a>> {
     let n = decays.len();
     let block = out.n_slots * n_rows;
@@ -2803,6 +3040,10 @@ fn build_instances<'a>(
     let mut o_n_eff = out.n_eff.chunks_mut(n_rows.max(1));
     let mut o_lam = out.lam_selected.chunks_mut((n_targets * n_rows).max(1));
     let mut o_coef = out.coef.iter_mut();
+    let mut o_settled = out.settled.chunks_mut(n_rows.max(1));
+    let mut o_reason = out.reason.chunks_mut(n_rows.max(1));
+    let mut o_inflation = out.inflation.chunks_mut(block.max(1));
+    let mut o_support_coef = out.support_coef.iter_mut();
 
     let n_slots = out.n_slots;
     let mut decays = decays.iter();
@@ -2810,6 +3051,8 @@ fn build_instances<'a>(
     let mut resid_w = diag.resid_w.iter_mut();
     let mut scratch = diag.scratch.iter_mut();
     let mut score_pred = diag.score_pred.iter_mut();
+    let mut decay_time = diag.decay_time.iter_mut();
+    let mut notified = diag.notified.iter_mut();
 
     // Pulled in lockstep: each iterator yields disjoint `&mut`s, so every
     // Instance owns its own piece of everything.
@@ -2843,6 +3086,13 @@ fn build_instances<'a>(
             o_n_eff: o_n_eff.next().unwrap_or_default(),
             o_lam: o_lam.next().unwrap_or_default(),
             o_coef: o_coef.next().expect("one per instance"),
+            o_settled: o_settled.next().unwrap_or_default(),
+            o_reason: o_reason.next().unwrap_or_default(),
+            o_inflation: o_inflation.next().unwrap_or_default(),
+            o_support_coef: o_support_coef.next().expect("one per instance"),
+            decay_time: decay_time.next().expect("one per instance"),
+            notified: notified.next().expect("one per instance"),
+            pending_clock,
         })
         .collect()
 }
@@ -2904,6 +3154,10 @@ pub struct Scratch {
     /// Each target's own weight before the row, when the model keeps one
     /// (review 2026-09-12, S2).
     tn: Vec<f64>,
+    /// The noise gate's statistic per slot before the row, when the model
+    /// has one, and the row's own (docs/WARMUP-AND-CONVERGENCE.md §2.1).
+    infl: Vec<f64>,
+    row_infl: Vec<f64>,
 }
 
 /// One model instance's state and its disjoint slice of the chunk output.
@@ -2946,6 +3200,21 @@ struct Instance<'a> {
     o_n_eff: &'a mut [f64],
     o_lam: &'a mut [f64],
     o_coef: &'a mut Vec<Option<Vec<f64>>>,
+    o_settled: &'a mut [f64],
+    o_reason: &'a mut [u8],
+    o_inflation: &'a mut [f64],
+    o_support_coef: &'a mut Vec<Option<Vec<f64>>>,
+    /// The decay time this instance has seen (docs/WARMUP-AND-CONVERGENCE.md
+    /// §2), read before each row and advanced by the rows it learns from.
+    decay_time: &'a mut f64,
+    /// The readiness notices this instance has raised, and the ones pending.
+    notified: &'a mut Notified,
+    /// Clock the rows held under `label_delay` have covered and the models
+    /// have not yet decayed by: added as a row is buffered, taken back as it
+    /// is released. `settled_frac` counts it, so a scored row reads what the
+    /// doubled stream (E47's oracle) reads for it, where every held row has
+    /// already decayed the model as a weight-0 row (§8).
+    pending_clock: f64,
 }
 
 impl Instance<'_> {
@@ -2958,6 +3227,10 @@ impl Instance<'_> {
         *self.model.get_mut() = build_one(spec, self.decay).expect("spec was already validated");
         self.resid_var.iter_mut().for_each(|v| *v = 0.0);
         self.resid_w.iter_mut().for_each(|v| *v = 0.0);
+        // A rebuilt model has seen no decay: it settles from here. A reset
+        // drops the held rows too (E47).
+        *self.decay_time = 0.0;
+        self.pending_clock = 0.0;
         if let Some(ring) = self.resid_win.as_mut() {
             *ring.get_mut() = resid_window(spec)
                 .expect("spec was already validated")
@@ -3075,6 +3348,18 @@ fn run_instance(
         // present on, as `n_eff` is the rows the model saw (review 2026-09-12,
         // S2). `false` for a model that keeps only the shared one.
         let own_weights = inst.model.get().target_n_eff_into(&mut sc.tn);
+        // The readiness statistics, read before the row like everything
+        // else a row is gated on (docs/WARMUP-AND-CONVERGENCE.md §2): how
+        // settled the instance is, and the noise gate's ratio per slot where
+        // the model has one -- plus the row's own, when the field is asked
+        // for.
+        let settled = settled_frac(inst.decay, *inst.decay_time + inst.pending_clock);
+        let has_infl = inst.model.get().error_inflation_into(&mut sc.infl);
+        let has_row_infl = inst.spec.emit_error_inflation
+            && inst
+                .model
+                .get()
+                .row_error_inflation_into(xs, &mut sc.row_infl);
 
         let mut step = if learn {
             inst.model.get_mut().step(xs, &sc.ys, plan.d_clock, w)
@@ -3089,13 +3374,24 @@ fn run_instance(
         // a 230-slot `ew_cov` row (docs/PERFORMANCE.md §13).
         let nc = n_slots.checked_div(m_targets).unwrap_or(1).max(1);
 
-        // Per-target warmup (ENHANCEMENTS E7). The model itself predicts once
-        // the *smallest* threshold is met; a slot whose own target is not ready
-        // is withheld here, before it can reach the residual, sigma, resid_z,
-        // drift or selection -- ready by its own weight where the model keeps
-        // one, where it was the shared `n_eff` for every target (review
-        // 2026-09-12, S2). Warmup gates output, not learning -- the model has
-        // already updated from this row.
+        // The readiness gates (docs/WARMUP-AND-CONVERGENCE.md §2), each
+        // withholding a prediction before it can reach the residual, sigma,
+        // resid_z, drift or selection, and each gating output, not learning
+        // -- the model has already updated from this row. In precedence: the
+        // settled fraction, for the whole instance; the per-target
+        // `min_periods` (ENHANCEMENTS E7; the model itself predicts once the
+        // *smallest* threshold is met), by each target's own weight where the
+        // model keeps one, else the shared `n_eff` (review 2026-09-12, S2),
+        // which is the user's explicit floor and so is named before the
+        // noise gate, per slot, whose ratio is infinite until the model has
+        // solved. The reason recorded is the first gate that withheld
+        // anything.
+        let mut reason = 0u8;
+        let min_settled = inst.spec.min_settled_frac_or_default();
+        if min_settled > 0.0 && settled.is_finite() && settled < min_settled {
+            step.pred.fill(f64::NAN);
+            reason = REASON_SETTLED;
+        }
         for (tj, group) in step.pred.chunks_mut(nc).enumerate() {
             let weight = match sc.tn.get(tj) {
                 Some(&w) if own_weights => w,
@@ -3103,7 +3399,44 @@ fn run_instance(
             };
             if step_n_eff_below(weight, min_periods, tj) {
                 group.fill(f64::NAN);
+                if reason == 0 {
+                    reason = REASON_MIN_PERIODS;
+                }
             }
+        }
+        // At or above the ratio: at equality the estimation variance is the
+        // noise, and one observation's mean -- `edf = n_kish = 1`, exactly
+        // `sqrt(2)` -- must not pass. A clean design opens where `k + 1`
+        // did, the ridge keeping `edf` a hair under it.
+        // `inf` is off: an infinite ratio -- the model unsolved -- is then
+        // the model's own null, not this gate's.
+        let max_infl = inst.spec.max_error_inflation_or_default();
+        if has_infl && max_infl.is_finite() {
+            for (slot, p) in step.pred.iter_mut().enumerate() {
+                if sc.infl.get(slot).is_some_and(|&r| r >= max_infl) {
+                    *p = f64::NAN;
+                    if reason == 0 {
+                        reason = REASON_INFLATION;
+                    }
+                }
+            }
+        }
+        // The noise gate cannot be met: the stream has all but settled and
+        // the ratio is still above the threshold, so nothing will change
+        // it. Said once per instance, with the way out (§3).
+        if reason == REASON_INFLATION && !inst.notified.unreachable && settled >= 0.95 {
+            let worst = sc.infl.iter().cloned().fold(0.0, f64::max);
+            inst.notified.unreachable = true;
+            inst.notified.pending.push(format!(
+                "max_error_inflation = {max_infl:.3} cannot be met: the stream is {:.0}% \
+                 settled and error_inflation is still {worst:.3}, so every prediction is \
+                 withheld for good. Kish's effective sample size tops out near 2.9 \
+                 halflives of rows; raise the halflife so it can carry the {} coefficients, \
+                 or raise max_error_inflation to at least {worst:.3} to accept this much \
+                 estimation noise (docs/WARMUP-AND-CONVERGENCE.md).",
+                100.0 * settled,
+                inst.spec.k() + usize::from(inst.spec.add_intercept)
+            ));
         }
 
         // Under `label_delay` the residual diagnostics fold the prediction a
@@ -3302,11 +3635,30 @@ fn run_instance(
 
         if emit {
             inst.o_n_eff[ri] = step.n_eff;
+            inst.o_settled[ri] = settled;
+            inst.o_reason[ri] = reason;
+            if has_row_infl {
+                for (slot, r) in sc.row_infl.iter().enumerate().take(n_slots) {
+                    inst.o_inflation[slot * n_rows + ri] = *r;
+                }
+            }
             if let Some(online_core::Extra::Lasso { lam_selected }) = &step.extra {
                 for (t_i, l) in lam_selected.iter().enumerate() {
                     inst.o_lam[t_i * n_rows + ri] = *l;
                 }
             }
+        }
+        // The decay time advances with the rows the model learns from, by
+        // the delta it decayed by: a capped gap counts as the cap (§8). A
+        // row held under `label_delay` parks its delta until its release
+        // replays it.
+        if learn {
+            *inst.decay_time += plan.d_clock;
+        }
+        if plan.buffered {
+            inst.pending_clock += plan.d_clock;
+        } else if !plan.direct() {
+            inst.pending_clock -= plan.d_clock;
         }
         if plan.want_coef {
             // A model that has not solved yet has nothing to report, and
@@ -3319,6 +3671,38 @@ fn run_instance(
                 .get()
                 .coefficients()
                 .map(|c| c.into_iter().flatten().collect());
+            // Each coefficient's data share rides on the same cadence
+            // (§2.2), and a coefficient more ridge than data is named once
+            // per instance, here, where the shares are read anyway.
+            let support = inst.model.get().support_coef();
+            if let (Some(s), false) = (&support, inst.notified.support) {
+                let k_total = inst.spec.k() + usize::from(inst.spec.add_intercept);
+                let worst = s
+                    .iter()
+                    .flat_map(|slot| slot.iter().enumerate())
+                    .filter(|(_, v)| v.is_finite())
+                    .min_by(|a, b| a.1.total_cmp(b.1));
+                if let Some((i, &share)) = worst {
+                    if share < 0.5 {
+                        let feature = inst
+                            .spec
+                            .features
+                            .get(i % k_total - usize::from(inst.spec.add_intercept))
+                            .map_or("?", String::as_str);
+                        inst.notified.support = true;
+                        inst.notified.pending.push(format!(
+                            "the coefficient of {feature:?} is {share:.2} data and {:.2} \
+                             ridge (support_coef < 0.5): the design does not determine it \
+                             -- a duplicated or constant column, or a ridge as large as the \
+                             feature's variance. Predictions are unaffected in sample; the \
+                             split among such columns is arbitrary and moves the moment the \
+                             collinearity breaks (docs/WARMUP-AND-CONVERGENCE.md §2.2).",
+                            1.0 - share
+                        ));
+                    }
+                }
+            }
+            inst.o_support_coef[ri] = support.map(|s| s.into_iter().flatten().collect());
         }
         if reset_on_drift && row_drift {
             inst.reset();

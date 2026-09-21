@@ -463,7 +463,10 @@ def test_predict_scores_a_new_session_as_the_row_after_the_close():
     bank.fit_predict(df.head(20))
     scored = bank.predict(df.tail(10))["c"].struct.unnest()
     assert scored["n_eff"].to_list() == [0.0] * 10
-    stats = [c for c in scored.columns if c != "n_eff"]
+    # `withheld_reason` says why the rest is null, so it is not null itself,
+    # and a fresh stream's `settled_frac` is 0, a value.
+    readiness = ("n_eff", "settled_frac", "withheld_reason")
+    stats = [c for c in scored.columns if c not in readiness]
     assert all(scored[c].null_count() == 10 for c in stats), scored
     fresh = po.ModelBank([spec]).fit_predict(df)["c"].struct.unnest().tail(10)
     assert fresh["n_eff"][0] == 0.0, "fit_predict restarts at the change"
@@ -764,14 +767,17 @@ def test_from_row_refuses_a_row_with_no_accumulators():
 
 
 def test_schema_version_is_current():
-    """The version a bank file names, held to the library's: 12 since
-    2026-09-20, when the clock state dropped the three fields the two 0.8.x
-    disorder rules kept; 11 for `robust`'s centred cross-moments (review of
+    """The version a bank file names, held to the library's: 13 since
+    2026-09-21, for the readiness statistics -- `ew_ridge`'s per-slot
+    degrees of freedom and data shares, the stream's decay time and its
+    notices (docs/WARMUP-AND-CONVERGENCE.md); 12 since 2026-09-20, when the
+    clock state dropped the three fields the two 0.8.x disorder rules kept;
+    11 for `robust`'s centred cross-moments (review of
     2026-09-18, S2); 10 since the second review of 2026-09-15, for
     `robust`'s per-target observation weights (F1), after 9 the same day for
     `holt`'s weighted means and `ftrl`'s proximal sum. Pre-1.0, an older
     file is refused by its version."""
-    assert po.schema_version() == 12
+    assert po.schema_version() == 13
     assert sys.version_info >= (3, 12)
 
 

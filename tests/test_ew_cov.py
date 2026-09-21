@@ -62,6 +62,8 @@ class TestStatistics:
             "corr_x0_x2",
             "corr_x1_x2",
             "n_eff",
+            "settled_frac",
+            "withheld_reason",
         ]
 
     def test_correlation_is_bounded(self):
@@ -141,7 +143,16 @@ class TestPlumbing:
         df = _df(n=200)
         spec = _spec(halflife=[50.0, 500.0], stats=["corr"])
         fields = po.spec.output_fields(spec)
-        assert fields == ["corr_x0_x1@h50", "n_eff@h50", "corr_x0_x1@h500", "n_eff@h500"]
+        assert fields == [
+            "corr_x0_x1@h50",
+            "n_eff@h50",
+            "settled_frac@h50",
+            "withheld_reason@h50",
+            "corr_x0_x1@h500",
+            "n_eff@h500",
+            "settled_frac@h500",
+            "withheld_reason@h500",
+        ]
         out = po.ModelBank([spec]).fit_predict(df)
         assert out["c"].struct.field("corr_x0_x1@h50").null_count() < df.height
 
@@ -227,6 +238,8 @@ class TestPartialCorrelation:
             "pcorr_a_c",
             "pcorr_b_c",
             "n_eff",
+            "settled_frac",
+            "withheld_reason",
         ]
 
     def test_requires_a_precision_prior(self):
@@ -289,10 +302,13 @@ class TestAccumulateOnly:
     def test_emits_only_n_eff_and_keeps_the_same_state(self):
         df = _df(n=1200)
         bare, full = self._pair()
-        assert po.spec.output_fields(bare) == ["n_eff"]
+        assert po.spec.output_fields(bare) == ["n_eff", "settled_frac", "withheld_reason"]
         bank = po.ModelBank([bare, full])
         out = bank.fit_predict(df)
-        assert out.schema["c"] == pl.Struct({"n_eff": pl.Float64})
+        reasons = ["below_min_settled_frac", "below_min_periods", "above_max_error_inflation"]
+        assert out.schema["c"] == pl.Struct(
+            {"n_eff": pl.Float64, "settled_frac": pl.Float64, "withheld_reason": pl.Enum(reasons)}
+        )
         assert out["c"].struct.field("n_eff").to_list()[-1] == df.height - 1
         g, f = bank.gram("c")[0], bank.gram("f")[0]
         assert np.array_equal(g["comoments"], f["comoments"])
@@ -328,7 +344,7 @@ class TestAccumulateOnly:
         df = _df(n=600)
         spec = _spec(("x0", "x1", "x2"), stats=[], pca=1, pca_every=50)
         fields = po.spec.output_fields(spec)
-        assert fields[0] == "pc0_var" and fields[-1] == "n_eff" and "mean_x0" not in fields
+        assert fields[0] == "pc0_var" and fields[-3] == "n_eff" and "mean_x0" not in fields
         out = po.ModelBank([spec]).fit_predict(df)
         assert out["c"].struct.field("pc0_score").drop_nulls().len() > 0
         with pytest.raises(ValueError, match='needs "mahal"'):

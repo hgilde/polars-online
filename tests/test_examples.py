@@ -18,7 +18,7 @@ EXAMPLES = REPO / "examples"
 
 
 def _without_coef(out):
-    return out.select("ridge").unnest("ridge").drop("coef")
+    return out.select("ridge").unnest("ridge").drop("coef", "support_coef", strict=False)
 
 
 def _run(args, **kw):

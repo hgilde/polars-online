@@ -104,7 +104,12 @@ def assert_same_fit(plain: pl.DataFrame, blocked: pl.DataFrame, rel: float = 1e-
             for i, (p, q) in enumerate(zip(a.to_list(), b.to_list(), strict=True)):
                 assert (p is None) == (q is None), f"{col} at row {i}: one side unsolved"
                 if p is not None:
-                    assert np.allclose(p, q, rtol=rel, atol=rel), f"{col} at row {i}: {p} vs {q}"
+                    # `support_coef` carries a null in the intercept slot.
+                    pf = np.array(p, dtype=float)
+                    qf = np.array(q, dtype=float)
+                    assert np.allclose(pf, qf, rtol=rel, atol=rel, equal_nan=True), (
+                        f"{col} at row {i}: {p} vs {q}"
+                    )
         else:
             assert a.equals(b, null_equal=True), f"{col} differs"
 

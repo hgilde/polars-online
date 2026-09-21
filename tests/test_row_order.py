@@ -72,7 +72,11 @@ def test_no_decay_is_least_squares_in_any_row_order(decay):
         )
         last = streamed.filter(pl.col("g") == 0).tail(1)
         np.testing.assert_allclose(
-            last.select("^coef_.*$").row(0), expected[0], atol=1e-10, err_msg=f"{order}, plan"
+            # `coef_y_*`: `support_coef` is a list beside them.
+            last.select("^coef_y_.*$").row(0),
+            expected[0],
+            atol=1e-10,
+            err_msg=f"{order}, plan",
         )
 
 

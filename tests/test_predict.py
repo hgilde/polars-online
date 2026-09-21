@@ -41,7 +41,9 @@ def _same(a, b) -> bool:
     return a == b
 
 
-def assert_row_oracle(bank, specs, df: pl.DataFrame, *, skip=("drift", "coef")) -> None:
+def assert_row_oracle(
+    bank, specs, df: pl.DataFrame, *, skip=("drift", "coef", "support_coef")
+) -> None:
     """``predict(df)[i] == fresh_clone.fit_predict(df[i])[0]`` for every row
     and every field except the ones documented to differ (``drift`` never
     fires when scoring; ``coef`` is placed on the last accepted row rather
@@ -312,7 +314,7 @@ class TestInputs:
         # Rows alternate between the two groups.
         for f in _fields(fwd, "m"):
             a, b = fwd["m"].struct.field(f), rev["m"].struct.field(f)
-            if f == "coef":
+            if f in ("coef", "support_coef"):
                 assert a.is_null().to_list() == [i < 18 for i in range(20)]
                 assert b.is_null().to_list() == [i >= 2 for i in range(20)]
                 assert a.to_list()[18] == b.to_list()[0]  # group a
@@ -540,7 +542,7 @@ class TestRunner:
         # lands on more rows in the chunked run; every other field is equal.
         for f in _fields(got, "ridge"):
             a, b = got["ridge"].struct.field(f), want["ridge"].struct.field(f)
-            if f == "coef":
+            if f in ("coef", "support_coef"):
                 assert a.is_null().sum() == 1000 - 8 and b.is_null().sum() == 1000 - 2
                 assert set(map(tuple, a.drop_nulls().to_list())) == set(
                     map(tuple, b.drop_nulls().to_list())

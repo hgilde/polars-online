@@ -7,8 +7,47 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+### Added
+
+- **Not using a model before it is ready, stated as intent
+  (`docs/WARMUP-AND-CONVERGENCE.md`).** Two gates, neither a number that
+  needs a formula in the user's head. `min_settled_frac` withholds
+  predictions until the decay window has filled this far toward steady
+  state, `settled_frac = 1 − 2^(−T/h)` with `T` the decay time the models
+  have seen -- `0.5` is one halflife whatever the row rate. Off by default:
+  under a stationary process a mean-form fit is unbiased from its first
+  row, so what it guards is a history that does not represent the process,
+  which only the user can judge. `max_error_inflation` withholds while the
+  estimation error is expected to inflate a prediction's error over the
+  noise floor by more than this ratio, `sqrt(1 + edf / n_kish)` -- the
+  effective degrees of freedom the solve used over Kish's effective sample
+  size. Default `sqrt(2)`: the estimation variance no larger than the noise.
+  It tracks the model, so adding a feature moves the gate, and reads Kish's
+  `n` rather than the weight, so uneven weights withhold for longer. Every
+  row now says how settled its stream is (`settled_frac`) and why its
+  predictions are null (`withheld_reason`, a categorical), and on `coef`'s
+  rows `ewridge` reports each coefficient's data share (`support_coef`,
+  `1 − ridge·(S⁻¹)_jj`: a duplicated pair reads 0.5 each). Opt-in,
+  `emit_error_inflation` gives the same ratio for each row's own features,
+  the row's leverage against the factor its fit came from, so a row leaning
+  on a direction the data never showed reads large. `summary()` carries the
+  same statistics per group, and a `ReadinessWarning` is raised once per
+  (spec, group) for a coefficient more ridge than data, and for a noise gate
+  the stream has settled below, with the way out. Measured against the
+  identities the theory predicts: the gate's ratio tracks the observed
+  out-of-sample error within 2% down to `n_kish ≈ 2.3` coefficients; the
+  per-row form is conservative (10% high at 12, 54% high at 2.3 -- what an
+  exact `G₂` would buy).
+
 ### Changed
 
+- **`ewridge`'s `min_periods` defaults to 0**: the noise gate is its
+  readiness gate, and the `k + 1` rows its first solve needs are the
+  model's own floor, not a setting. An explicit `min_periods` still floors.
+  On unit weights `sqrt(2)` opens where `k + 1` did, so the first prediction
+  is on the same row; under a heavy row weight it opens later, as it should.
+  Every other model keeps `min_periods` and its default. States saved by
+  0.8.x do not load (schema 13).
 - **One clock check instead of two, and it reads `max_dclock`.** A backwards
   clock jump smaller than `min_backwards_jump` is refused as out-of-order
   rows whatever `on_clock_reset` says, and the bank is untouched. It

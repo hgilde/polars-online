@@ -49,8 +49,8 @@ class TestChunkInvariance:
         outs = [bank.fit_predict(df.slice(i, step)) for i in range(0, df.height, step)]
         many = pl.concat(outs)
         # coef legitimately differs (emitted on each chunk's last row)
-        a = one.unnest("m").drop("coef")
-        b = many.unnest("m").drop("coef")
+        a = one.unnest("m").drop("coef", "support_coef", strict=False)
+        b = many.unnest("m").drop("coef", "support_coef", strict=False)
         assert a.equals(b, null_equal=True)
 
     def test_save_load_mid_stream(self, tmp_path):
@@ -62,8 +62,8 @@ class TestChunkInvariance:
         p = tmp_path / "bank.state"
         b1.save(p)
         b2 = po.ModelBank.load(p, specs=[_spec()])
-        a = b1.fit_predict(second).unnest("m").drop("coef")
-        b = b2.fit_predict(second).unnest("m").drop("coef")
+        a = b1.fit_predict(second).unnest("m").drop("coef", "support_coef", strict=False)
+        b = b2.fit_predict(second).unnest("m").drop("coef", "support_coef", strict=False)
         assert a.equals(b, null_equal=True)
 
     def test_load_rejects_wrong_specs(self, tmp_path):

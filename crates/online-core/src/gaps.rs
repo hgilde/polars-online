@@ -639,6 +639,31 @@ impl Acc {
     /// without truncating a Gram or a cross-moment: the two numbers a row's
     /// `predict` and `n_eff` read, which built the O(k²) view every row
     /// (review 2026-09-12, P1). `None` where `window` is.
+    /// Kish's effective sample size inside the window, per Gram, as
+    /// [`crate::truncated`] would leave it -- `W_R = W − f·W_u` and
+    /// `Q_R = Q − f²·Q_u` against the ancestor snapshot -- without
+    /// truncating the moments themselves, for the readiness statistics a
+    /// row reads (docs/WARMUP-AND-CONVERGENCE.md §2.1). `None` where
+    /// [`Self::window`] is; an entry is `None` for a Gram with nothing left
+    /// in the window, or no Kish sum.
+    pub(crate) fn window_kish(&self, old: &AccSnap, f: f64) -> Option<Vec<Option<f64>>> {
+        if old.cross.w == 0.0 {
+            return None;
+        }
+        Some(
+            (0..self.grams.grams.len())
+                .map(|g| {
+                    let live = &self.grams.grams[g];
+                    let then = self.grams.ancestor(g, &old.grams.of, &old.grams.grams)?;
+                    let w = live.n_eff() - f * then.w;
+                    let q = live.q_sum()? - f * f * then.q?;
+                    (w > EMPTY_FRACTION * live.n_eff() && w.is_finite() && q > 0.0)
+                        .then(|| w * w / q)
+                })
+                .collect(),
+        )
+    }
+
     pub(crate) fn window_weights(&self, old: &AccSnap, f: f64) -> Option<(f64, Vec<f64>)> {
         if old.cross.w == 0.0 {
             return None;

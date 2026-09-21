@@ -593,7 +593,9 @@ class TestEdgeCases:
             many = unnested(
                 pl.concat([bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)])
             )
-            assert one.drop("coef").equals(many.drop("coef"), null_equal=True), size
+            assert one.drop("coef", "support_coef", strict=False).equals(
+                many.drop("coef", "support_coef", strict=False), null_equal=True
+            ), size
             has = one["coef"].is_not_null()
             assert one.filter(has)["coef"].equals(many.filter(has)["coef"]), size
 
@@ -627,12 +629,16 @@ class TestEdgeCases:
             "p_b@h50",
             "p_c@h50",
             "n_eff@h50",
+            "settled_frac@h50",
+            "withheld_reason@h50",
             "coef@h50",
             "class@h500",
             "p_a@h500",
             "p_b@h500",
             "p_c@h500",
             "n_eff@h500",
+            "settled_frac@h500",
+            "withheld_reason@h500",
             "coef@h500",
         ]
         out = unnested(po.ModelBank([s]).fit_predict(frame(X, lab)))
@@ -681,9 +687,19 @@ class TestEdgeCases:
 
     def test_output_index_declares_the_dtypes(self):
         idx = po.spec.output_index(spec())
-        assert idx["field"].to_list() == ["class", "p_a", "p_b", "p_c", "n_eff", "coef"]
-        assert idx["kind"].to_list() == ["class", "p", "p", "p", "n_eff", "coef"]
-        assert idx["dtype"].to_list() == ["str", "f64", "f64", "f64", "f64", "list[f64]"]
+        tail = ["n_eff", "settled_frac", "withheld_reason", "coef"]
+        assert idx["field"].to_list() == ["class", "p_a", "p_b", "p_c", *tail]
+        assert idx["kind"].to_list() == ["class", "p", "p", "p", *tail]
+        assert idx["dtype"].to_list() == [
+            "str",
+            "f64",
+            "f64",
+            "f64",
+            "f64",
+            "f64",
+            "enum",
+            "list[f64]",
+        ]
         assert idx["target"].to_list()[:4] == ["y"] * 4
         assert idx["columns"][0].to_list() == ["x0", "x1"]
 

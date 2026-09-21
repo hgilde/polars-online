@@ -494,11 +494,15 @@ class TestEdgeCases:
             "dist@h50",
             "dist2@h50",
             "n_eff@h50",
+            "settled_frac@h50",
+            "withheld_reason@h50",
             "coef@h50",
             "cluster@h500",
             "dist@h500",
             "dist2@h500",
             "n_eff@h500",
+            "settled_frac@h500",
+            "withheld_reason@h500",
             "coef@h500",
         ]
         out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
@@ -554,8 +558,9 @@ class TestEdgeCases:
 
     def test_output_index_declares_the_dtypes(self):
         idx = po.spec.output_index(spec())
-        assert idx["kind"].to_list() == ["cluster", "dist", "dist2", "n_eff", "coef"]
-        assert idx["dtype"].to_list() == ["i32", "f64", "f64", "f64", "list[f64]"]
+        tail = ["n_eff", "settled_frac", "withheld_reason", "coef"]
+        assert idx["kind"].to_list() == ["cluster", "dist", "dist2", *tail]
+        assert idx["dtype"].to_list() == ["i32", "f64", "f64", "f64", "f64", "enum", "list[f64]"]
         assert idx["columns"][0].to_list() == ["x0", "x1"]
 
     def test_lazy_path_equals_bank(self):

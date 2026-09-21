@@ -107,7 +107,7 @@ def run_chunked(df, spec, chunk):
 def drop_coef(out):
     # coef is a reporting cadence (emitted on every chunk's LAST row as well as
     # every coef_every rows), so it legitimately differs across chunkings.
-    return out.drop([c for c in out.columns if c.startswith("coef")])
+    return out.drop([c for c in out.columns if c.startswith(("coef", "support_coef"))])
 
 
 @pytest.fixture(scope="module")

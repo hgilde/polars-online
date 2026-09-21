@@ -660,6 +660,8 @@ class TestEdgeCases:
             "n_clusters@h50",
             "n_micro@h50",
             "n_eff@h50",
+            "settled_frac@h50",
+            "withheld_reason@h50",
             "coef@h50",
             "cluster@h500",
             "dist@h500",
@@ -668,6 +670,8 @@ class TestEdgeCases:
             "n_clusters@h500",
             "n_micro@h500",
             "n_eff@h500",
+            "settled_frac@h500",
+            "withheld_reason@h500",
             "coef@h500",
         ]
         out = unnested(po.ModelBank([s]).fit_predict(frame(X)))
@@ -711,6 +715,8 @@ class TestEdgeCases:
             "n_clusters",
             "n_micro",
             "n_eff",
+            "settled_frac",
+            "withheld_reason",
             "coef",
         ]
         assert idx["dtype"].to_list() == [
@@ -721,6 +727,8 @@ class TestEdgeCases:
             "i32",
             "i32",
             "f64",
+            "f64",
+            "enum",
             "list[f64]",
         ]
         assert idx["columns"][0].to_list() == ["x0", "x1"]

@@ -306,7 +306,9 @@ def test_chunk_invariance(size):
     got = pl.concat(parts)["d"].struct.unnest()
     # `coef` is reported on each chunk's last row, so its *cadence* is the
     # one thing chunking moves; the values are not.
-    assert want.drop("coef").equals(got.drop("coef"))
+    assert want.drop("coef", "support_coef", strict=False).equals(
+        got.drop("coef", "support_coef", strict=False)
+    )
     assert want["coef"][-1].to_list() == got["coef"][-1].to_list()
 
 

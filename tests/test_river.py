@@ -194,6 +194,10 @@ class TestEwStatistics:
             halflife=self.HALFLIFE,
             standardize=True,
             min_periods=1.0,
+            # The noise gate would withhold one observation's mean -- its
+            # estimation variance is the noise, exactly sqrt(2) -- and the
+            # convention pinned here is the mean from the first row.
+            max_error_inflation=float("inf"),
             max_rows_between_solves=1,
         )
         out = po.ModelBank([spec]).fit_predict(df)

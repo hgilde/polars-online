@@ -55,7 +55,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::gaps::{Acc, AccSnap, AccView, Cross, gram_parts};
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
-use crate::solve::{dot_aug, solve_spd};
+use crate::solve::{SpdFactor, dot_aug};
 use crate::{Decay, EwCov, GramPart, TargetGaps, TargetMoments};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -328,6 +328,17 @@ pub struct EwRidge {
     clock_since_solve: f64,
     rows_since_solve: u32,
     pub solve_failures: u64,
+    /// What the last solve left for the readiness statistics
+    /// (docs/WARMUP-AND-CONVERGENCE.md §2): the effective degrees of freedom
+    /// and each coefficient's data share per slot, and -- under
+    /// `keep_factor` -- the systems the per-row leverage is read against.
+    #[serde(default)]
+    ready: Readiness,
+    /// Keep each solve's system so the per-row leverage can be answered
+    /// ([`EwRidge::set_keep_factor`]). Configuration that travels with the
+    /// state, since the systems it keeps do.
+    #[serde(default)]
+    keep_factor: bool,
     /// The hard-cutoff window, when the spec asks for one (docs/PLAN.md §13).
     /// Absent otherwise, so an ordinary fit writes no ring.
     ///
@@ -341,6 +352,9 @@ pub struct EwRidge {
     // scratch buffers (serialized for simplicity; tiny)
     #[serde(skip)]
     zbuf: Vec<f64>,
+    /// The factors of `ready.systems`, rebuilt from them on load.
+    #[serde(skip)]
+    factors: Factors,
 }
 
 /// What a window needs beyond the accumulators: where the clock has got to,
@@ -409,6 +423,9 @@ impl EwRidge {
             solve_failures: 0,
             win,
             zbuf: vec![0.0; k_total],
+            ready: Readiness::default(),
+            keep_factor: false,
+            factors: Factors::default(),
             cfg,
         })
     }
@@ -634,6 +651,16 @@ impl EwRidge {
         let combos = self.cfg.combos();
         let nc = combos.len();
         let mut beta = vec![vec![0.0; k_total]; m * nc];
+        // The readiness statistics of the last solve, carried forward for a
+        // combo whose solve fails at every jitter (it keeps its previous
+        // coefficients, and so its previous shares), and resized on the
+        // first. Taken out first: the loop below borrows the accumulators.
+        let mut ready = std::mem::take(&mut self.ready);
+        ready.edf.resize(m * nc, f64::NAN);
+        ready.support.resize(m * nc, vec![f64::NAN; k_total]);
+        ready.system_of.resize(m * nc, usize::MAX);
+        let mut factors = std::mem::take(&mut self.factors).0;
+        let keep_factor = self.keep_factor;
         // With a `window`, the fit is solved from the truncated accumulators:
         // no row older than the window is in a Gram at all. Without one, and
         // before anything has aged out, these borrow the live state.
@@ -641,6 +668,8 @@ impl EwRidge {
         if view.as_ref().is_some_and(|v| v.acc.cross.w <= 0.0) {
             // An empty window has nothing to solve and no fit to report (C2).
             self.beta = Some(vec![vec![f64::NAN; k_total]; m * nc]);
+            self.ready = ready;
+            self.factors = Factors(factors);
             self.clock_since_solve = 0.0;
             self.rows_since_solve = 0;
             return;
@@ -650,6 +679,9 @@ impl EwRidge {
             Some(v) => (v.acc.grams.as_slice(), &v.acc.cross),
             None => (self.acc.grams.grams.as_slice(), &self.acc.cross),
         };
+        let n_systems = grams.len() * nc;
+        ready.systems.resize(n_systems, None);
+        factors.resize(n_systems, None);
         // With an intercept the slopes are solved on the centred system (see
         // the module docs). The rest read the raw normal equations and need
         // the uncentred cross-moments: `ridge_decay`, whose intercept is
@@ -680,7 +712,7 @@ impl EwRidge {
                 let zidx = self.combo_z_indices(fs_idx);
                 let kc = zidx.len();
 
-                let solved: Option<Vec<f64>> = if centred {
+                let solved: Option<Solved> = if centred {
                     self.solve_centred(cov, cross, &readers, &mut failures, &zidx, ridge)
                 } else {
                     // Gather the sub-block of S and the per-target rhs.
@@ -721,7 +753,10 @@ impl EwRidge {
                                 }
                             }
                         }
+                        // The system is on the sum scale, so a row form
+                        // against it is scaled back by `W` (see `System`).
                         Self::run_solve(&mut failures, &a, &b, kc, mr)
+                            .map(|(sol, factor)| Solved::raw(sol, factor, a, kc, ps * ridge, w))
                     } else if !self.cfg.standardize {
                         // Through the origin every slot is a slope, and every
                         // slot is penalized.
@@ -739,6 +774,7 @@ impl EwRidge {
                             }
                         }
                         Self::run_solve(&mut failures, &a, &b, kc, mr)
+                            .map(|(sol, factor)| Solved::raw(sol, factor, a, kc, ridge, 1.0))
                     } else {
                         Self::solve_scaled_through_origin(
                             cov,
@@ -752,11 +788,59 @@ impl EwRidge {
                     }
                 };
 
-                if let Some(sol) = solved {
+                if let Some(solved) = solved {
                     for (jj, &j) in readers.iter().enumerate() {
                         for (ai, &zi) in zidx.iter().enumerate() {
-                            beta[j * nc + ci][zi] = sol[jj * kc + ai];
+                            beta[j * nc + ci][zi] = solved.sol[jj * kc + ai];
                         }
+                    }
+                    // What the readiness statistics read from this system
+                    // (docs/WARMUP-AND-CONVERGENCE.md §2.2): each kept
+                    // column's data share `1 − λ (A⁻¹)_jj`, with `λ` the
+                    // penalty on the diagonal plus the jitter the factor
+                    // needed, since that is what it carries; a column the
+                    // standardiser dropped has share 0; the intercept is not
+                    // a share. The effective degrees of freedom are the
+                    // shares summed, plus one for an eliminated intercept,
+                    // which the data alone determines.
+                    let kk = solved.keep.len();
+                    let mut sup = vec![f64::NAN; k_total];
+                    let is_intercept = |pos: usize| self.cfg.add_intercept && pos == 0;
+                    for (pos, &zi) in zidx.iter().enumerate() {
+                        if !is_intercept(pos) {
+                            sup[zi] = 0.0;
+                        }
+                    }
+                    let mut edf = if solved.centred { 1.0 } else { 0.0 };
+                    if let Some(factor) = solved.factor.as_ref() {
+                        let inv = factor.inverse_diagonal(kk);
+                        let lam = solved.shift + factor.jitter();
+                        for (i2, &pos) in solved.keep.iter().enumerate() {
+                            let share = (1.0 - lam * inv[i2]).clamp(0.0, 1.0);
+                            edf += share;
+                            if !is_intercept(pos) {
+                                sup[zidx[pos]] = share;
+                            }
+                        }
+                    }
+                    let at = g * nc + ci;
+                    for &j in &readers {
+                        let slot = j * nc + ci;
+                        ready.edf[slot] = edf;
+                        ready.support[slot].clone_from(&sup);
+                        ready.system_of[slot] = at;
+                    }
+                    if keep_factor {
+                        ready.systems[at] = Some(System {
+                            a: solved.a,
+                            z: solved.keep.iter().map(|&p| zidx[p]).collect(),
+                            s: solved.s,
+                            mean: solved.mean,
+                            centred: solved.centred,
+                            scale: solved.scale,
+                            gram: g,
+                        });
+                        factors[at] = solved.factor;
                     }
                 } else if let Some(prev) = &self.beta {
                     // Total failure even with jitter: keep the previous
@@ -777,17 +861,33 @@ impl EwRidge {
                 }
             }
         }
+        if !keep_factor {
+            ready.systems.clear();
+            factors.clear();
+        }
         self.solve_failures += failures;
         self.beta = Some(beta);
+        self.ready = ready;
+        self.factors = Factors(factors);
         self.clock_since_solve = 0.0;
         self.rows_since_solve = 0;
     }
 
-    fn run_solve(failures: &mut u64, a: &[f64], b: &[f64], k: usize, m: usize) -> Option<Vec<f64>> {
-        match solve_spd(a, b, k, m) {
-            Some((x, jit)) => {
-                *failures += u64::from(jit);
-                Some(x)
+    /// Factorize and solve, counting the jitter it took; the factor comes
+    /// back with the solution so the readiness statistics can read it
+    /// (docs/WARMUP-AND-CONVERGENCE.md §2.1). The solution is
+    /// `crate::solve_spd`'s to the bit: both are the same factor's `solve`.
+    fn run_solve(
+        failures: &mut u64,
+        a: &[f64],
+        b: &[f64],
+        k: usize,
+        m: usize,
+    ) -> Option<(Vec<f64>, SpdFactor)> {
+        match SpdFactor::of(a, k) {
+            Some(f) => {
+                *failures += u64::from(f.attempts());
+                Some((f.solve(b, k, m), f))
             }
             None => {
                 *failures += 1;
@@ -816,7 +916,7 @@ impl EwRidge {
         readers: &[usize],
         coef_prior: Option<&[Vec<f64>]>,
         ridge: f64,
-    ) -> Option<Vec<f64>> {
+    ) -> Option<Solved> {
         let kc = zidx.len();
         let m = readers.len();
         let s: Vec<f64> = (0..kc)
@@ -827,7 +927,17 @@ impl EwRidge {
         let keep: Vec<usize> = (0..kc).filter(|&i| s[i] > 0.0).collect();
         let kk = keep.len();
         if kk == 0 {
-            return Some(vec![0.0; kc * m]);
+            return Some(Solved {
+                sol: vec![0.0; kc * m],
+                factor: None,
+                a: Vec::new(),
+                keep,
+                s: Vec::new(),
+                mean: Vec::new(),
+                centred: false,
+                shift: ridge,
+                scale: 1.0,
+            });
         }
         let mut asub = vec![0.0; kk * kk];
         for (i2, &i) in keep.iter().enumerate() {
@@ -845,14 +955,25 @@ impl EwRidge {
                 }
             }
         }
-        let sol = Self::run_solve(failures, &asub, &bsub, kk, m)?;
+        let (sol, factor) = Self::run_solve(failures, &asub, &bsub, kk, m)?;
         let mut out = vec![0.0; kc * m];
         for j in 0..m {
             for (i2, &i) in keep.iter().enumerate() {
                 out[j * kc + i] = sol[j * kk + i2] / s[i];
             }
         }
-        Some(out)
+        let s_kept = keep.iter().map(|&i| s[i]).collect();
+        Some(Solved {
+            sol: out,
+            factor: Some(factor),
+            a: asub,
+            keep,
+            s: s_kept,
+            mean: vec![0.0; kk],
+            centred: false,
+            shift: ridge,
+            scale: 1.0,
+        })
     }
 
     /// The two solves with an intercept, plain and standardized, on the
@@ -879,7 +1000,7 @@ impl EwRidge {
         failures: &mut u64,
         zidx: &[usize],
         ridge: f64,
-    ) -> Option<Vec<f64>> {
+    ) -> Option<Solved> {
         // Feature slots are 1..kc; slot 0 is the intercept.
         let kc = zidx.len();
         let kf = kc - 1;
@@ -906,6 +1027,7 @@ impl EwRidge {
         };
         let kk = keep.len();
         let mut out = vec![0.0; kc * mr];
+        let mut system = None;
         if kk > 0 {
             let mut asub = vec![0.0; kk * kk];
             for (i2, &i) in keep.iter().enumerate() {
@@ -926,12 +1048,13 @@ impl EwRidge {
                     }
                 }
             }
-            let sol = Self::run_solve(failures, &asub, &bsub, kk, mr)?;
+            let (sol, factor) = Self::run_solve(failures, &asub, &bsub, kk, mr)?;
             for jj in 0..mr {
                 for (i2, &i) in keep.iter().enumerate() {
                     out[jj * kc + i + 1] = sol[jj * kk + i2] / s[i];
                 }
             }
+            system = Some((asub, factor));
         }
         // `m_j` is the Gram's mean, which under `own_rows` is over exactly the
         // target's rows, plus the target's offset under `pairwise`, where the
@@ -949,7 +1072,209 @@ impl EwRidge {
             }
             out[jj * kc] = b0;
         }
-        Some(out)
+        // The kept columns as positions in `zidx`, the centred system's
+        // scale and the mean it subtracted, for the row form.
+        let (a, factor) = match system {
+            Some((a, f)) => (a, Some(f)),
+            None => (Vec::new(), None),
+        };
+        let mean = keep.iter().map(|&i| cov.mean(zidx[i + 1])).collect();
+        let s_kept = keep.iter().map(|&i| s[i]).collect();
+        Some(Solved {
+            sol: out,
+            factor,
+            a,
+            keep: keep.iter().map(|&i| i + 1).collect(),
+            s: s_kept,
+            mean,
+            centred: true,
+            shift: ridge,
+            scale: 1.0,
+        })
+    }
+
+    /// Make the per-row leverage answerable: keep each solve's system and
+    /// factor (docs/WARMUP-AND-CONVERGENCE.md §2.1). Configuration that
+    /// travels with the state, set by the stream when `emit_error_inflation`
+    /// asks for the field; a model without it keeps nothing and answers
+    /// [`OnlineModel::row_error_inflation_into`] with infinity.
+    pub fn set_keep_factor(&mut self, on: bool) {
+        self.keep_factor = on;
+        if !on {
+            self.ready.systems.clear();
+            self.factors.0.clear();
+        }
+    }
+
+    /// Rebuild the kept factors from the systems the state carries: the
+    /// factorization is deterministic, so a loaded model reads the same
+    /// leverage the saved one did.
+    fn refactor(&mut self) {
+        self.factors = Factors(
+            self.ready
+                .systems
+                .iter()
+                .map(|s| {
+                    s.as_ref().and_then(|s| {
+                        let kk = s.z.len();
+                        (s.a.len() == kk * kk)
+                            .then(|| SpdFactor::of(&s.a, kk))
+                            .flatten()
+                    })
+                })
+                .collect(),
+        );
+    }
+
+    /// Kish's effective sample size behind each Gram, as it stands before
+    /// the row: the window's where there is one, the live accumulator's
+    /// otherwise. `None` for a Gram with no weight, or with no Kish sum.
+    fn gram_kish(&self) -> Vec<Option<f64>> {
+        let windowed = self.win.as_ref().and_then(|win| {
+            let (u, old) = win.snaps.boundary()?;
+            let f = self.cfg.decay.factor(win.clock - u);
+            self.acc.window_kish(&old.acc, f)
+        });
+        windowed.unwrap_or_else(|| self.acc.grams.grams.iter().map(EwCov::n_kish).collect())
+    }
+
+    /// The `z` slot `zi` of a feature row, without the augmentation buffer:
+    /// the intercept's constant 1, else the feature.
+    #[inline]
+    fn z_at(&self, x: &[f64], zi: usize) -> f64 {
+        if self.cfg.add_intercept {
+            if zi == 0 { 1.0 } else { x[zi - 1] }
+        } else {
+            x[zi]
+        }
+    }
+}
+
+/// One combo's solve, and what the readiness statistics read from it
+/// (docs/WARMUP-AND-CONVERGENCE.md §2.1, §2.2).
+struct Solved {
+    /// Reader-major coefficients, `kc` slots each, in original units.
+    sol: Vec<f64>,
+    /// The factor of `a`; `None` when nothing was factorized (every column
+    /// dropped).
+    factor: Option<SpdFactor>,
+    /// The ridged, normalised system as factorized, row-major over the kept
+    /// columns, the jitter excluded (the factor knows it).
+    a: Vec<f64>,
+    /// Positions in the combo's `zidx` of the kept columns, in the system's
+    /// order.
+    keep: Vec<usize>,
+    /// The scale each kept column was divided by, and the mean subtracted
+    /// from it (1 and 0 where the system is raw).
+    s: Vec<f64>,
+    mean: Vec<f64>,
+    /// Centred, with the intercept eliminated.
+    centred: bool,
+    /// The penalty on the system's diagonal, before jitter.
+    shift: f64,
+    /// What a row form against `a` is scaled by to be in the mean-form
+    /// Gram's units: the Gram's weight under `ridge_decay`, else 1.
+    scale: f64,
+}
+
+impl Solved {
+    /// A raw, uncentred system over every column of the combo.
+    fn raw(
+        sol: Vec<f64>,
+        factor: SpdFactor,
+        a: Vec<f64>,
+        kc: usize,
+        shift: f64,
+        scale: f64,
+    ) -> Self {
+        Self {
+            sol,
+            factor: Some(factor),
+            a,
+            keep: (0..kc).collect(),
+            s: vec![1.0; kc],
+            mean: vec![0.0; kc],
+            centred: false,
+            shift,
+            scale,
+        }
+    }
+}
+
+/// One solved system, kept so a row's leverage can be read against the
+/// factor its fit came from (docs/WARMUP-AND-CONVERGENCE.md §2.1): the
+/// ridged, normalised sub-block the solve factorized, and how a feature row
+/// is mapped into its space.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct System {
+    /// Row-major `kk × kk`, the jitter excluded; the factor is rebuilt from
+    /// it on load.
+    a: Vec<f64>,
+    /// The accumulator index (`z` slot) of each kept column.
+    z: Vec<usize>,
+    /// The scale each kept column is divided by, and the mean subtracted.
+    s: Vec<f64>,
+    mean: Vec<f64>,
+    /// Centred, the intercept eliminated: its share of the leverage is then
+    /// the 1 of the mean.
+    centred: bool,
+    /// See [`Solved::scale`].
+    scale: f64,
+    /// The Gram this system was solved from.
+    gram: usize,
+}
+
+/// What the last solve left for the readiness statistics
+/// (docs/WARMUP-AND-CONVERGENCE.md §2): per output slot (target-major, then
+/// combo), the effective degrees of freedom the fit used and each
+/// coefficient's data share; and, under `keep_factor`, the systems the
+/// per-row leverage is read against.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct Readiness {
+    /// Per slot: an eliminated intercept counts 1, each kept slope its share.
+    #[serde(default, with = "crate::humanfloat::vec_f64_or_tag")]
+    edf: Vec<f64>,
+    /// Per slot, `k_total` long: NaN in the intercept slot and outside the
+    /// slot's feature set, 0 for a column the standardiser dropped. Tagged
+    /// in the human-readable export, since the intercept's NaN is the rule.
+    #[serde(default, with = "crate::humanfloat::vec_vec_f64_or_tag")]
+    support: Vec<Vec<f64>>,
+    /// Per `(gram, combo)`, `gram * n_combos + combo`; empty unless kept.
+    systems: Vec<Option<System>>,
+    /// Per slot, its index into `systems`.
+    system_of: Vec<usize>,
+}
+
+/// Two floats are the same value when their bits are: the intercept's share
+/// is NaN by definition, and `NaN != NaN` would make a model unequal to its
+/// own clone.
+fn same_bits(a: &[f64], b: &[f64]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+}
+
+impl PartialEq for Readiness {
+    fn eq(&self, other: &Self) -> bool {
+        same_bits(&self.edf, &other.edf)
+            && self.support.len() == other.support.len()
+            && self
+                .support
+                .iter()
+                .zip(&other.support)
+                .all(|(a, b)| same_bits(a, b))
+            && self.systems == other.systems
+            && self.system_of == other.system_of
+    }
+}
+
+/// The kept factors, one per entry of `Readiness::systems`. Not state: a
+/// deterministic function of the systems, rebuilt on load, and no part of
+/// what two models are compared on.
+#[derive(Debug, Clone, Default)]
+struct Factors(Vec<Option<SpdFactor>>);
+
+impl PartialEq for Factors {
+    fn eq(&self, _: &Self) -> bool {
+        true
     }
 }
 
@@ -970,6 +1295,101 @@ impl OnlineModel for EwRidge {
             None => out.extend_from_slice(&self.acc.wj),
         }
         true
+    }
+
+    /// `sqrt(1 + edf / n_kish)` per slot: the last solve's effective degrees
+    /// of freedom over Kish's sample size behind the Gram the target reads
+    /// now, as it stands before the row (docs/WARMUP-AND-CONVERGENCE.md
+    /// §2.1). Infinite before the first solve and where the Gram has no
+    /// weight.
+    fn error_inflation_into(&self, out: &mut Vec<f64>) -> bool {
+        let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
+        out.clear();
+        out.resize(m * nc, f64::INFINITY);
+        // Below the model's own floor -- fewer effective observations than
+        // its first solve needs -- the estimation variance is unbounded, and
+        // the solves the schedule ran before it read degenerate Grams: the
+        // ratio is infinite there, as `predict` withholds there.
+        if self.beta.is_none()
+            || self.ready.edf.len() != m * nc
+            || self.n_eff() < self.cfg.min_periods
+        {
+            return true;
+        }
+        let kish = self.gram_kish();
+        for j in 0..m {
+            let Some(n) = kish.get(self.acc.grams.of[j]).copied().flatten() else {
+                continue;
+            };
+            for c in 0..nc {
+                let slot = j * nc + c;
+                let edf = self.ready.edf[slot];
+                if n > 0.0 && edf.is_finite() {
+                    out[slot] = (1.0 + edf / n).sqrt();
+                }
+            }
+        }
+        true
+    }
+
+    /// `sqrt(1 + h(x))` per slot, `h(x)` the row's leverage against the
+    /// factor its fit came from over Kish's sample size: for a centred
+    /// system the mean's own `1` plus the centred, scaled row's quadratic
+    /// form; for a raw one the row's form alone, scaled back to the
+    /// mean-form Gram's units under `ridge_decay`. Infinite before the first
+    /// solve, and where no system was kept ([`EwRidge::set_keep_factor`]).
+    fn row_error_inflation_into(&self, x: &[f64], out: &mut Vec<f64>) -> bool {
+        let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
+        out.clear();
+        out.resize(m * nc, f64::INFINITY);
+        if self.beta.is_none()
+            || self.ready.system_of.len() != m * nc
+            || self.n_eff() < self.cfg.min_periods
+        {
+            return true;
+        }
+        let kish = self.gram_kish();
+        let mut v = Vec::new();
+        for j in 0..m {
+            let Some(n) = kish.get(self.acc.grams.of[j]).copied().flatten() else {
+                continue;
+            };
+            if n <= 0.0 {
+                continue;
+            }
+            for c in 0..nc {
+                let slot = j * nc + c;
+                let at = self.ready.system_of[slot];
+                let (Some(Some(sys)), Some(Some(factor))) =
+                    (self.ready.systems.get(at), self.factors.0.get(at))
+                else {
+                    continue;
+                };
+                let kk = sys.z.len();
+                v.clear();
+                v.extend(
+                    sys.z
+                        .iter()
+                        .zip(&sys.s)
+                        .zip(&sys.mean)
+                        .map(|((&zi, &s), &mu)| (self.z_at(x, zi) - mu) / s),
+                );
+                let q = if kk > 0 {
+                    factor.quad_forms(&v, kk, 1)[0] * sys.scale
+                } else {
+                    0.0
+                };
+                let h = (q + if sys.centred { 1.0 } else { 0.0 }) / n;
+                out[slot] = (1.0 + h).sqrt();
+            }
+        }
+        true
+    }
+
+    fn support_coef(&self) -> Option<Vec<Vec<f64>>> {
+        self.beta.as_ref()?;
+        let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
+        (self.ready.support.len() == m * nc).then(|| self.ready.support.clone())
     }
 
     fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
@@ -1089,6 +1509,7 @@ impl OnlineModel for EwRidge {
                     ));
                 }
                 m.zbuf = vec![0.0; k];
+                m.refactor();
                 Ok(m)
             }
             other => Err(StateError::WrongModel {

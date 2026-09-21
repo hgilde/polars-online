@@ -364,7 +364,13 @@ fn summary_and_describe_are_the_frame_s_numbers() {
                 "last_clock",
                 "session_changes",
                 "clock_backwards",
-                "resets"
+                "resets",
+                // The readiness statistics (docs/WARMUP-AND-CONVERGENCE.md §3).
+                "settled_frac",
+                "error_inflation",
+                "min_support_coef",
+                "min_support_coef_feature",
+                "n_coef"
             ]
         );
         assert_eq!(summary.height(), 2, "{}: one row per group", s.name);
@@ -676,7 +682,7 @@ fn predict_moves_nothing_and_an_unseen_group_or_empty_bank_is_empty() {
     let empty = Bank::new(specs).unwrap();
     let s = empty.summary(0, None).unwrap();
     assert_eq!(s.height(), 0);
-    assert_eq!(s.width(), 13);
+    assert_eq!(s.width(), 18);
     let d = empty.describe(0, None).unwrap();
     assert_eq!(d.height(), 0);
     assert_eq!(d.width(), 9);

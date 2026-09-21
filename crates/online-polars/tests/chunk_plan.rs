@@ -346,7 +346,7 @@ fn without_coef(df: &DataFrame, spec: &str) -> DataFrame {
         .unwrap()
         .fields_as_series()
         .into_iter()
-        .filter(|f| !f.name().starts_with("coef"))
+        .filter(|f| !(f.name().starts_with("coef") || f.name().starts_with("support_coef")))
         .collect();
     let s = StructChunked::from_series(spec.into(), col.len(), fields.iter())
         .unwrap()

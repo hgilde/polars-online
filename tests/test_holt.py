@@ -26,7 +26,14 @@ def _trending(n=500, slope=2.0, noise=0.5, step=1.0, seed=0):
 def test_needs_no_features():
     spec = _spec()
     assert spec["features"] == []
-    assert po.spec.output_fields(spec) == ["pred_y0", "resid_y0", "n_eff", "coef"]
+    assert po.spec.output_fields(spec) == [
+        "pred_y0",
+        "resid_y0",
+        "n_eff",
+        "settled_frac",
+        "withheld_reason",
+        "coef",
+    ]
 
 
 def test_recovers_a_linear_trend():

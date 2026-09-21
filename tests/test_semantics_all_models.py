@@ -239,7 +239,7 @@ class TestUniversalInvariants:
             .select("m")
             .unnest("m")
         )
-        keep = [c for c in one.columns if not c.startswith("coef")]
+        keep = [c for c in one.columns if not c.startswith(("coef", "support_coef"))]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
 
     def test_save_load_mid_stream(self, model, extra, tmp_path):
@@ -284,7 +284,8 @@ class TestUniversalInvariants:
         )
         out = run(model, extra, df)
         for f in out.schema["m"].fields:
-            if f.name.startswith("coef"):
+            # `coef` and `support_coef` are lists; `withheld_reason` an enum.
+            if f.name.startswith("coef") or not f.dtype.is_float():
                 continue
             vals = np.array(
                 [v for v in out["m"].struct.field(f.name).to_list() if v is not None],

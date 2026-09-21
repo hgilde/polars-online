@@ -148,6 +148,25 @@ writes, with ``<t>`` a target:
     filled (``coef_every``). :func:`coef_index` maps each position to its term
     and :func:`coef_fields` names the column each becomes when the struct is
     unnested.
+``settled_frac``
+    How far the decay window had filled toward steady state before this row:
+    ``1 - 2 ** (-T / halflife)`` with ``T`` the decay time the models have
+    seen, so ``0.5`` at one halflife, ``0.75`` at two, whatever the row rate.
+    Null where nothing decays. What ``min_settled_frac`` gates on
+    (`docs/WARMUP-AND-CONVERGENCE.md
+    <https://github.com/hgilde/polars-online/blob/main/docs/WARMUP-AND-CONVERGENCE.md>`_).
+``withheld_reason``
+    Why the row's predictions are null, as a categorical --
+    ``below_min_settled_frac``, ``above_max_error_inflation`` or
+    ``below_min_periods``, the first gate that withheld anything -- and null
+    where nothing was withheld. A categorical rather than a string because a
+    string column costs sixteen bytes a row even when every value is null.
+``support_coef``
+    On ``coef``'s rows, for ``ewridge``: each coefficient's data share,
+    ``1 - ridge * (S^-1)_jj`` in ``[0, 1]``, laid out like ``coef`` -- how
+    much of it the data determined rather than the ridge. A duplicated pair
+    reads ``0.5`` each, a clean design ``1``, a column the standardiser
+    dropped ``0``; the intercept is not a share and is null.
 
 A model that is not a regression writes fields of its own, which its builder
 describes. Per model, the fields of the plainest spec are listed in
@@ -192,6 +211,15 @@ The diagnostics add, per slot:
      - ``resid_z_<slot>``
      - ``resid / sigma``: how surprising the row was, in units of the
        model's own recent error.
+   * - ``emit_error_inflation``
+     - ``error_inflation_<slot>``
+     - ``sqrt(1 + h(x))`` for *this* row, ``h(x)`` its leverage against the
+       factor the fit came from over Kish's effective sample size: how much
+       estimation error is expected to inflate this prediction's error over
+       the noise floor. Large for a row leaning on a direction the data
+       never showed. ``ewridge`` only; one triangular solve a row, which is
+       why it is opt-in. The gate ``max_error_inflation`` reads the stream
+       average, which is free.
    * - ``emit_selected``
      - ``selected_<t>``, ``pred_<t>__selected``
      - The grid slot with the lowest EW out-of-sample squared error so

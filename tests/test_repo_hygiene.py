@@ -44,8 +44,10 @@ DATA_SUFFIXES = {
 TOOL_OUTPUT_DIRS = {"mutants.out", "mutants.out.old", "target", ".venv", "htmlcov", "dist"}
 
 #: The largest a source file has any business being, in bytes. The frozen v1
-#: state fixture is the biggest legitimate one, and it is a hex constant.
-MAX_SOURCE_BYTES = 200_000
+#: state fixture was the biggest legitimate one, a hex constant, until
+#: `crates/online-polars/src/bank.rs` passed 200 KB with the readiness fields
+#: (task 87, 2026-09-21); a data file would still be caught, only later.
+MAX_SOURCE_BYTES = 250_000
 
 #: Prose gets more room: `docs/PLAN.md` is the design log and passed 200 KB
 #: when tasks 45-56 were prepared (2026-09-05). A data file renamed `.md`

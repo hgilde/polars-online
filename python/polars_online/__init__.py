@@ -43,6 +43,7 @@ from polars_online._bank import ModelBank
 from polars_online._frame import (
     ConsumedSourceWarning,
     OrderNotGuaranteedWarning,
+    ReadinessWarning,
     fit_predict,
     predict,
     unnest,
@@ -61,6 +62,7 @@ __all__ = [
     "ConsumedSourceWarning",
     "ModelBank",
     "OrderNotGuaranteedWarning",
+    "ReadinessWarning",
     "__version__",
     "corr",
     "eval",

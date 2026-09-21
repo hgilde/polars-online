@@ -240,7 +240,9 @@ def test_fit_predict_batches_takes_a_plan_and_chunks_it():
         got = pl.concat(po.ModelBank([_one()]).fit_predict_batches(df.lazy(), chunk_rows=rows))
         # `coef` rides the chunk cadence; every other field is the same.
         drop = lambda f: f.with_columns(  # noqa: E731
-            pl.col("m").struct.with_fields(pl.lit(None).alias("coef"))
+            pl.col("m").struct.with_fields(
+                pl.lit(None).alias("coef"), pl.lit(None).alias("support_coef")
+            )
         )
         assert drop(got).equals(drop(want), null_equal=True), rows
     with pytest.raises(ValueError, match="chunk_rows must be at least 1"):

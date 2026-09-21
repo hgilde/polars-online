@@ -27,6 +27,19 @@ MEANING: dict[str, str] = {
     "resid_<t>": "`y - pred` for `<t>`; null where the target is null",
     "n_eff": "accumulated weight before this row's update and before its own decay",
     "coef": "the coefficients behind the fit, refreshed on the solve schedule",
+    "settled_frac": (
+        "how far the decay window had filled toward steady state before this row, "
+        "`1 - 2^(-T/halflife)`; null where nothing decays"
+    ),
+    "withheld_reason": (
+        "why the row's predictions are null -- `below_min_settled_frac`, "
+        "`below_min_periods` or `above_max_error_inflation` -- and null where nothing "
+        "was withheld"
+    ),
+    "support_coef": (
+        "on `coef`'s rows, each coefficient's data share `1 - ridge * (S^-1)_jj`, laid "
+        "out like `coef`; the intercept is not a share (null)"
+    ),
     "lam_selected_<t>": "the path point in force for `<t>`, by lowest EW out-of-sample error",
     "mean_<f>": "EW mean of `<f>`",
     "var_<f>": "EW variance of `<f>`",

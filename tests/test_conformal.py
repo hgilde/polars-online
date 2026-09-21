@@ -497,7 +497,10 @@ class TestFields:
             "hi_y0",
             "coverage_y0",
             "n_eff",
+            "settled_frac",
+            "withheld_reason",
             "coef",
+            "support_coef",
         ]
 
     def test_one_interval_per_slot_in_a_grid(self):

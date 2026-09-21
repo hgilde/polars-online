@@ -50,6 +50,7 @@ __all__ = [
     "DataFrameOnlineNamespace",
     "LazyFrameOnlineNamespace",
     "OrderNotGuaranteedWarning",
+    "ReadinessWarning",
     "fit_predict",
     "predict",
     "unnest",
@@ -215,6 +216,32 @@ class OrderNotGuaranteedWarning(UserWarning):
     all, so "no halflife" is not by itself a reason to expect order not to
     matter. A spec option the check does not recognise counts as unsafe, so a
     key added later cannot quietly become exempt.
+    """
+
+
+class ReadinessWarning(UserWarning):
+    """A model is not, or cannot become, ready in a way worth a word.
+
+    Raised once per (spec, group) by the learning calls -- :meth:`ModelBank.fit`,
+    :meth:`ModelBank.fit_predict`, :meth:`ModelBank.fit_predict_batches` and the
+    plan form -- never by ``predict``, for two findings
+    (`docs/WARMUP-AND-CONVERGENCE.md
+    <https://github.com/hgilde/polars-online/blob/main/docs/WARMUP-AND-CONVERGENCE.md>`_):
+
+    - **A coefficient the ridge determined more than the data did**
+      (``support_coef < 0.5``), named. The design does not determine it: a
+      duplicated or constant column, or a ridge as large as the feature's
+      variance. Predictions are unaffected in sample; the split among such
+      columns is arbitrary and moves the moment the collinearity breaks.
+    - **The noise gate cannot be met**: the stream has all but settled and
+      ``error_inflation`` is still above ``max_error_inflation``, so every
+      prediction is withheld for good. The message says how far, and the way
+      out -- a longer halflife, or a looser ratio.
+
+    Every row already carries the state (``withheld_reason``, ``settled_frac``,
+    ``support_coef``); the warning is the once-only pointer to it. For a spec
+    where the finding is intended,
+    ``warnings.simplefilter("ignore", polars_online.ReadinessWarning)``.
     """
 
 
@@ -462,6 +489,12 @@ _ORDER_FREE_ANY = frozenset(
         "features",
         "feature_sets",
         "min_periods",
+        # The readiness gates withhold output and change no number a fit
+        # produces, and the per-row field is read from the state; order-free
+        # where the fit is (docs/WARMUP-AND-CONVERGENCE.md).
+        "min_settled_frac",
+        "max_error_inflation",
+        "emit_error_inflation",
         "group",
         "clock",
         "max_dclock",
@@ -790,13 +823,19 @@ def _unnest_exprs(schema: pl.Schema, specs: list[dict[str, Any]]) -> list[pl.Exp
         lists = set(idx.filter(pl.col("kind") == "coef")["field"]) & set(coefs["field"])
         for field in fields:
             col = pl.col(column).struct.field(field)
-            if field not in lists:
+            # `support_coef` is laid out like `coef` -- one share per
+            # coefficient (docs/WARMUP-AND-CONVERGENCE.md §2.2) -- so it
+            # unnests the same way, `support_coef_<t>_<term>`.
+            support = field.startswith("support_coef")
+            base = "coef" + field.removeprefix("support_coef") if support else field
+            if base not in lists:
                 exprs.append(col)
                 continue
             for position, name in (
-                coefs.filter(pl.col("field") == field).select("position", "name").iter_rows()
+                coefs.filter(pl.col("field") == base).select("position", "name").iter_rows()
             ):
-                exprs.append(col.list.get(position, null_on_oob=False).alias(name))
+                out = "support_coef_" + name.removeprefix("coef_") if support else name
+                exprs.append(col.list.get(position, null_on_oob=False).alias(out))
     if by_name:
         msg = f"online.unnest: the frame has no column(s) {', '.join(map(repr, by_name))}"
         raise ValueError(msg)
@@ -931,7 +970,9 @@ class LazyFrameOnlineNamespace:
         ``coef`` list becomes one column per coefficient, named
         ``coef_{target}_{term}{combo}{instance}`` (``coef_y_intercept``,
         ``coef_y_x1__r0.5@h500``) as :func:`polars_online.spec.coef_fields` lists
-        them. The columns take the struct's place; the rest of the frame, and any spec
+        them, and ``support_coef`` -- one data share per coefficient, on the same
+        rows -- the same way, as ``support_coef_{target}_{term}...``. The columns
+        take the struct's place; the rest of the frame, and any spec
         column not named, are left as they are. ``specs`` is the spec dicts, a
         :class:`ModelBank` (its specs), or the path of a saved bank (which carries
         them). So a scored plan, or a parquet the CLI wrote, comes back flat:

@@ -1985,6 +1985,9 @@ pub struct Bank {
     /// 2026-09-12, P4). `fit_predict`, `predict` and `save_bytes` refuse;
     /// reading the state (`gram`, `summary`, `to_json`) does not.
     broken: Option<String>,
+    /// Readiness notices raised and not yet taken
+    /// ([`Self::take_notices`]); not state.
+    notices: Vec<String>,
 }
 
 /// Everything `assemble` needs that follows from the `Spec` alone.
@@ -2172,6 +2175,7 @@ impl Bank {
             pca_prev: HashMap::new(),
             key_integer,
             broken: None,
+            notices: Vec::new(),
         })
     }
 
@@ -2532,6 +2536,7 @@ impl Bank {
                     rows_processed: stream.rows_seen,
                     last_clock: stream.clock.last_clock(),
                     summary: stream.summary(),
+                    readiness: Some(stream.readiness(&self.specs[spec])),
                 }
             })
             .collect();
@@ -2609,6 +2614,15 @@ impl Bank {
 
     /// Refuse to go on from a chunk refused after some of it was learned
     /// (the `broken` field).
+    /// The readiness notices raised since the last call
+    /// (docs/WARMUP-AND-CONVERGENCE.md §3), each once per (spec, group,
+    /// instance) for the life of the stream: a coefficient more ridge than
+    /// data, named; the noise gate found unreachable at steady state, with
+    /// the way out. Learning raises them; scoring never does.
+    pub fn take_notices(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notices)
+    }
+
     fn refuse_if_broken(&self) -> PolarsResult<()> {
         match &self.broken {
             None => Ok(()),
@@ -2893,6 +2907,22 @@ impl Bank {
             self.high_water[si] = Some(max_key);
         }
         self.queue_closed(closed);
+        // The readiness notices the chunk raised (docs/WARMUP-AND-CONVERGENCE.md
+        // §3), each once per (spec, group, instance), named by both, for
+        // the caller to surface as it sees fit -- a warning in Python, a
+        // line on stderr from the runner.
+        for (si, hm) in self.states.iter_mut().enumerate() {
+            for (key, stream) in hm.iter_mut() {
+                for body in stream.take_notices() {
+                    let group = key
+                        .0
+                        .as_deref()
+                        .map_or(String::new(), |g| format!(" group {g:?}"));
+                    self.notices
+                        .push(format!("spec {:?}{group}: {body}", self.specs[si].name));
+                }
+            }
+        }
 
         if timing {
             let total = t0.elapsed();
@@ -3353,6 +3383,16 @@ enum Source {
     Autocorr(usize),
     NEff(usize),
     Coef(usize),
+    /// `settled_frac`, per instance, in the `settled` buffer
+    /// (docs/WARMUP-AND-CONVERGENCE.md §3).
+    Settled(usize),
+    /// `withheld_reason`, per instance: a code in the `reason` buffer,
+    /// materialized as a dictionary-encoded string (a categorical).
+    Reason(usize),
+    /// `error_inflation_<slot>`, per slot, in the `inflation` buffer.
+    Inflation(usize),
+    /// `support_coef`, per instance, laid out like `Coef`.
+    SupportCoef(usize),
     LamSelected(usize),
     SelPred(usize),
     SelName(usize),
@@ -3404,7 +3444,11 @@ impl FieldMeta {
         match self.src {
             Source::Drift(_) => DataType::Boolean,
             Source::SelName(_) => DataType::String,
-            Source::Coef(_) => DataType::List(Box::new(DataType::Float64)),
+            Source::Coef(_) | Source::SupportCoef(_) => DataType::List(Box::new(DataType::Float64)),
+            Source::Reason(_) => DataType::from_frozen_categories(
+                polars::prelude::FrozenCategories::new(crate::stream::WITHHELD_REASONS)
+                    .expect("three distinct names"),
+            ),
             Source::Cluster(_) => DataType::Int32,
             Source::Id(_) => DataType::Int64,
             Source::Flag(_) => DataType::Boolean,
@@ -3562,7 +3606,60 @@ pub fn output_fields(spec: &Spec) -> Vec<String> {
 }
 
 /// Every output field with its metadata, in struct order.
+///
+/// The readiness fields (docs/WARMUP-AND-CONVERGENCE.md §3) ride on every
+/// model that writes a row: `settled_frac` and `withheld_reason` follow
+/// each instance's `n_eff`, and `support_coef` follows `coef` where the
+/// model has one -- inserted here, once, rather than in each model's own
+/// layout. The state-only models (`marginal`, `rcov`) write no row and
+/// get none.
 pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
+    let base = output_index_base(spec);
+    if matches!(
+        spec.model,
+        crate::ModelKind::Marginal { .. } | crate::ModelKind::Rcov { .. }
+    ) {
+        return base;
+    }
+    let mut fields = Vec::with_capacity(base.len() + 3 * spec.decays().map_or(1, |d| d.len()));
+    for f in base {
+        // The instance the field belongs to, as its `n_eff` or `coef`
+        // carries it: the same suffix and the same decay (none, for a model
+        // that does not decay -- `seqtest`'s fields carry no halflife).
+        let (src, suffix, halflife, lam) = (f.src.clone(), f.field.clone(), f.halflife, f.lam);
+        fields.push(f);
+        let like = |mut m: FieldMeta| {
+            m.halflife = halflife;
+            m.lam = lam;
+            m
+        };
+        match src {
+            Source::NEff(mi) => {
+                let suffix = suffix.strip_prefix("n_eff").unwrap_or("");
+                fields.push(like(
+                    FieldMeta::new(format!("settled_frac{suffix}"), "settled_frac")
+                        .src(Source::Settled(mi)),
+                ));
+                fields.push(like(
+                    FieldMeta::new(format!("withheld_reason{suffix}"), "withheld_reason")
+                        .src(Source::Reason(mi)),
+                ));
+            }
+            Source::Coef(mi) if spec.has_error_inflation() => {
+                let suffix = suffix.strip_prefix("coef").unwrap_or("");
+                fields.push(like(
+                    FieldMeta::new(format!("support_coef{suffix}"), "support_coef")
+                        .src(Source::SupportCoef(mi)),
+                ));
+            }
+            _ => {}
+        }
+    }
+    fields
+}
+
+/// [`output_index`] before the readiness fields: each model's own layout.
+fn output_index_base(spec: &Spec) -> Vec<FieldMeta> {
     let decays = spec.decays().expect("validated");
     // deco is not a regression either: its slots are the row's own
     // equicorrelation estimate, the level before the row and the row's
@@ -4047,6 +4144,18 @@ pub fn output_index(spec: &Spec) -> Vec<FieldMeta> {
                 fields.push(mk("resid", t, c, Source::Resid(dst(t_i, c_i))));
             }
         }
+        if spec.emit_error_inflation {
+            for (t_i, t) in spec.targets.iter().enumerate() {
+                for (c_i, c) in combos.iter().enumerate() {
+                    fields.push(mk(
+                        "error_inflation",
+                        t,
+                        c,
+                        Source::Inflation(dst(t_i, c_i)),
+                    ));
+                }
+            }
+        }
         if spec.emit_sigma {
             for (t_i, t) in spec.targets.iter().enumerate() {
                 for (c_i, c) in combos.iter().enumerate() {
@@ -4524,6 +4633,42 @@ fn assemble(
                 .finish_array_boxed(),
                 Source::NEff(mi) => scatter(n, chunks, true, |ch, nr| &ch.n_eff[mi * nr..][..nr])
                     .finish_array_boxed(),
+                Source::Settled(mi) => {
+                    scatter(n, chunks, false, |ch, nr| &ch.settled[mi * nr..][..nr])
+                        .finish_array_boxed()
+                }
+                Source::Inflation(i) => scatter(n, chunks, false, |ch, nr| {
+                    &ch.inflation[at(ch, nr, i)..][..nr]
+                })
+                .finish_array_boxed(),
+                Source::Reason(mi) => {
+                    let mut codes = vec![0u8; n];
+                    for ch in chunks {
+                        let nr = ch.rows.len();
+                        for (ri, &row) in ch.rows.iter().enumerate() {
+                            if ch.processed[ri] {
+                                codes[row] = ch.reason[mi * nr + ri];
+                            }
+                        }
+                    }
+                    Box::new(crate::column::code_array(
+                        &codes,
+                        &crate::stream::WITHHELD_REASONS,
+                    ))
+                }
+                Source::SupportCoef(mi) => {
+                    let mut support: Vec<Option<&Vec<f64>>> = vec![None; n];
+                    for ch in chunks {
+                        for (ri, &row) in ch.rows.iter().enumerate() {
+                            if ch.processed[ri] {
+                                if let Some(c) = &ch.support_coef[mi][ri] {
+                                    support[row] = Some(c);
+                                }
+                            }
+                        }
+                    }
+                    coef_list_array(&support)
+                }
                 Source::LamSelected(i) => {
                     scatter(n, chunks, false, |ch, nr| &ch.lam_selected[i * nr..][..nr])
                         .finish_array_boxed()
@@ -4567,7 +4712,18 @@ fn assemble(
     let arrow_fields: Vec<ArrowField> = schema
         .iter()
         .zip(&arrays)
-        .map(|(f, a)| ArrowField::new(f.field.as_str().into(), a.dtype().clone(), true))
+        .map(|(f, a)| {
+            let field = ArrowField::new(f.field.as_str().into(), a.dtype().clone(), true);
+            // The reason is an `Enum` over its three names: the metadata is
+            // what tells polars so (`column::enum_metadata`).
+            if matches!(f.src, Source::Reason(_)) {
+                field.with_metadata(crate::column::enum_metadata(
+                    &crate::stream::WITHHELD_REASONS,
+                ))
+            } else {
+                field
+            }
+        })
         .collect();
     Ok(StructArray::new(
         ArrowDataType::Struct(arrow_fields),

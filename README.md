@@ -108,7 +108,7 @@ betas = (
     pl.scan_parquet("ticks/*.parquet")
     .online.fit_predict([local])
     .online.unnest([local])                           # coef_ret_intercept, coef_ret_signal_a, coef_ret_signal_b
-    .select("ts", "stock_id", "^coef_.*$")
+    .select("ts", "stock_id", "^coef_.*$")            # support_coef_ret_* sits beside them: each one's data share
     .collect()
 )
 # One row per input row: each stock's exposure to each signal, as it stood before that row.
@@ -393,16 +393,51 @@ hold a row back](#nulls-and-three-ways-to-hold-a-row-back) says when weight
 
 ### Warm-up
 
-`min_periods` lets a model report only once it has seen enough data to
-have converged, so it never reports a number it is not yet informed
-enough to give.
+A model should not report a number it is not yet informed enough to give.
+Two settings say what "informed enough" means, each as the intent rather
+than as a number that needs a formula in your head
+([docs/WARMUP-AND-CONVERGENCE.md](docs/WARMUP-AND-CONVERGENCE.md)):
 
 ```python
 warm = po.spec.ewridge(
     "warm", targets=["y"], features=["x0", "x1"], clock="t", halflife=600.0, max_dclock=300.0,
-    min_periods=50.0,          # in n_eff units, not rows: every output is null until n_eff reaches it
-)                              # a list gives one threshold per target; the model learns from every row either way
+    max_error_inflation=1.1,   # withhold while estimation error would inflate the prediction's
+                               # error more than 10% over the noise floor; default sqrt(2)
+    min_settled_frac=0.5,      # and until the decay window is half full: one halflife of history
+)                              # the model learns from every row either way
 ```
+
+- **`max_error_inflation`** (default `sqrt(2)`) is the noise gate:
+  `error_inflation = sqrt(1 + edf / n_kish)`, the effective degrees of
+  freedom the fit used over Kish's effective sample size behind it, is how
+  much estimation error is expected to inflate a prediction's error over the
+  noise floor; the default withholds while the estimation variance exceeds
+  the noise being fitted. It tracks the model -- add a feature and the gate
+  moves -- and reads Kish's `n`, so one row carrying a hundred times the
+  weight of the others counts as barely one. `ewridge` has the statistic;
+  the other models keep `min_periods` (below), which is what this replaced.
+- **`min_settled_frac`** (default `0`, off) is the warm-up gate:
+  `settled_frac = 1 - 2^(-T/halflife)`, `T` the decay time the model has
+  seen, is how far its window has filled toward steady state -- `0.5` at
+  one halflife, `0.75` at two, whatever the row rate. Off by default because
+  a mean-form fit is unbiased from its first row when the process is
+  stationary; set it when the halflife was chosen to average across regimes
+  or seasons a shorter history would not represent.
+
+Every row says where it stands: `settled_frac`, and `withheld_reason`
+(`below_min_settled_frac`, `above_max_error_inflation`, `below_min_periods`,
+or null) beside `pred`; on `coef`'s rows `ewridge` adds `support_coef`, each
+coefficient's data share (`1 - ridge * (S^-1)_jj`; a duplicated pair reads
+`0.5` each). `summary()` carries the same per group, and a
+`ReadinessWarning` names, once, a coefficient more ridge than data or a
+noise gate the stream has settled below. `emit_error_inflation=True` adds
+the ratio for each row's own features -- its leverage against the fit --
+which catches a row leaning on a direction the data never showed, at one
+triangular solve a row.
+
+`min_periods` is the older, absolute floor, in `n_eff` units: every output
+is null until `n_eff` reaches it, a list gives one threshold per target, and
+every model but `ewridge` still defaults it to one observation per unknown.
 
 `n_eff` is the *effective number of observations*: the total weight behind
 the state that produced *this row's* prediction, after forgetting, and
@@ -802,7 +837,7 @@ wide = betas.pivot("term", index=["group", "instance"], values="coef")
 # 2. From the output, as columns: the fit as it moved, one row per row.
 path = (
     lf.online.fit_predict([ols])
-    .online.unnest([ols])            # pred_y, resid_y, n_eff, coef_y_intercept, coef_y_x0, coef_y_x1
+    .online.unnest([ols])            # pred_y, resid_y, n_eff, coef_y_intercept, coef_y_x0, coef_y_x1, ...
     .select("t", "stock_id", "^coef_.*$")
     .collect()
 )

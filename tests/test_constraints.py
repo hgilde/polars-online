@@ -826,7 +826,9 @@ class TestEdgeCases:
                     [bank.fit_predict(df.slice(i, size)) for i in range(0, df.height, size)]
                 )
                 a, b = one.unnest("m"), many.unnest("m")
-                assert a.drop("coef").equals(b.drop("coef"), null_equal=True), size
+                assert a.drop("coef", "support_coef", strict=False).equals(
+                    b.drop("coef", "support_coef", strict=False), null_equal=True
+                ), size
                 has = a["coef"].is_not_null()
                 assert a.filter(has)["coef"].equals(b.filter(has)["coef"]), size
 
@@ -912,7 +914,14 @@ class TestEdgeCases:
     def test_output_index_is_unchanged_by_a_constraint(self):
         spec = po.spec.sgd("m", coef_min=0.0, coef_sum=1.0, **_base())
         idx = po.spec.output_index(spec)
-        assert idx["field"].to_list() == ["pred_y", "resid_y", "n_eff", "coef"]
+        assert idx["field"].to_list() == [
+            "pred_y",
+            "resid_y",
+            "n_eff",
+            "settled_frac",
+            "withheld_reason",
+            "coef",
+        ]
         assert po.spec.coef_fields(spec)["name"].to_list() == [
             "coef_y_intercept",
             "coef_y_x0",

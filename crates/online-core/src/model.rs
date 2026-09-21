@@ -260,6 +260,43 @@ pub trait OnlineModel: Sized {
         false
     }
 
+    /// Per output slot, how much estimation error is expected to inflate a
+    /// prediction's error over the noise floor, read from the state before
+    /// the row: `sqrt(1 + edf / n_kish)`, the effective degrees of freedom
+    /// the last solve used over Kish's effective sample size behind the
+    /// slot's Gram (docs/WARMUP-AND-CONVERGENCE.md §2.1). Infinite before
+    /// the first solve, and where the Gram has no weight. Clears and fills
+    /// `out`, an entry a slot, and says whether it did; a model with no
+    /// linear fit to read it from -- `sgd`, `pa`, `ftrl`, and every model
+    /// that is not a regression -- has none, hence the default, and the
+    /// stream's `max_error_inflation` gate leaves such a model alone.
+    fn error_inflation_into(&self, _out: &mut Vec<f64>) -> bool {
+        false
+    }
+
+    /// The same for *this* row's features: `sqrt(1 + h(x))` per slot with
+    /// `h(x) = x' Σ̂⁻¹ x / n_kish`, the leverage of the row against the
+    /// factor the fit came from, so a row whose `x` leans on a direction the
+    /// data never showed reads large where the stream average cannot see it.
+    /// One triangular solve per slot, `O(k²)`, which is why it rides on an
+    /// opt-in field (`emit_error_inflation`) and the model keeps the factor
+    /// only when asked to. `false` where [`Self::error_inflation_into`] is.
+    fn row_error_inflation_into(&self, _x: &[f64], _out: &mut Vec<f64>) -> bool {
+        false
+    }
+
+    /// Per output slot, each coefficient's data share
+    /// (docs/WARMUP-AND-CONVERGENCE.md §2.2): `1 − λ (Σ̂⁻¹)_jj`, the fraction
+    /// of the coefficient the data determined rather than the ridge, in
+    /// `[0, 1]`, laid out like the coefficients (`k_total` per slot). NaN in
+    /// the intercept slot, which is not a share, and for a coefficient
+    /// outside the slot's feature set; 0 for a column the standardiser
+    /// dropped. `None` before the first solve, and for a model with no
+    /// ridge system to read it from.
+    fn support_coef(&self) -> Option<Vec<Vec<f64>>> {
+        None
+    }
+
     fn state(&self) -> State;
     fn restore(s: &State) -> Result<Self, StateError>;
     fn n_targets(&self) -> usize;

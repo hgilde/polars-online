@@ -511,6 +511,8 @@ class TestStreamContract:
             "pc0_x1@h50",
             "pc0_score@h50",
             "n_eff@h50",
+            "settled_frac@h50",
+            "withheld_reason@h50",
             "mahal@h500",
             "mahal_q0.5@h500",
             "pc0_var@h500",
@@ -519,6 +521,8 @@ class TestStreamContract:
             "pc0_x1@h500",
             "pc0_score@h500",
             "n_eff@h500",
+            "settled_frac@h500",
+            "withheld_reason@h500",
         ]
         out = po.ModelBank([s]).fit_predict(self._df(k=2))
         assert field(out, "pc0_var@h50")[-1] != field(out, "pc0_var@h500")[-1]
@@ -583,6 +587,8 @@ class TestFields:
             "pc0_x2",
             "pc0_score",
             "n_eff",
+            "settled_frac",
+            "withheld_reason",
         ]
         idx = po.spec.output_index(s)
         rows = {r["field"]: r for r in idx.to_dicts()}
@@ -597,13 +603,15 @@ class TestFields:
         assert rows["pc0_x1"]["columns"] == ["x1"]
         assert rows["pc0_score"]["kind"] == "pc_score"
         assert rows["pc0_score"]["columns"] == ["x0", "x1", "x2"]
-        assert set(idx["dtype"].to_list()) == {"f64"}
+        assert set(idx["dtype"].to_list()) == {"f64", "enum"}
 
     def test_absent_by_default(self):
         assert po.spec.output_fields(spec(2, stats=["mean"], precision_prior=None)) == [
             "mean_x0",
             "mean_x1",
             "n_eff",
+            "settled_frac",
+            "withheld_reason",
         ]
 
     def test_the_builder_names_its_own_parameters(self):
@@ -658,7 +666,13 @@ class TestValidation:
 
     def test_pca_zero_is_off(self):
         s = spec(2, stats=["mean"], precision_prior=None, pca=0)
-        assert po.spec.output_fields(s) == ["mean_x0", "mean_x1", "n_eff"]
+        assert po.spec.output_fields(s) == [
+            "mean_x0",
+            "mean_x1",
+            "n_eff",
+            "settled_frac",
+            "withheld_reason",
+        ]
 
     def test_hand_edited_dicts_are_checked_at_the_bank(self):
         s = spec(2)

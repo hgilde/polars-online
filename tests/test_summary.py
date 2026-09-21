@@ -34,6 +34,12 @@ SUMMARY_SCHEMA = {
     "session_changes": pl.UInt64,
     "clock_backwards": pl.UInt64,
     "resets": pl.UInt64,
+    # The readiness statistics (docs/WARMUP-AND-CONVERGENCE.md §3).
+    "settled_frac": pl.Float64,
+    "error_inflation": pl.Float64,
+    "min_support_coef": pl.Float64,
+    "min_support_coef_feature": pl.String,
+    "n_coef": pl.UInt64,
 }
 DESCRIBE_SCHEMA = {
     "spec": pl.String,

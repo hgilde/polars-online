@@ -80,7 +80,10 @@ input order; no allocation in the hot path after warmup (preallocate buffers in 
 | `session` | str \| None | column; on change apply `session_gap` |
 | `session_gap` | float \| `"reset"` | clock units to apply at session change |
 | `weight` | str \| None | row weight column, default 1 |
-| `min_periods` | float | in `n_eff` units; outputs null until reached |
+| `min_periods` | float | in `n_eff` units; outputs null until reached. Default `k + add_intercept`, except `ew_ridge`, where it is `0`: the noise gate below is that model's readiness gate and the rows its first solve needs are its own floor (docs/WARMUP-AND-CONVERGENCE.md, 2026-09-21) |
+| `min_settled_frac` | float in `[0, 1)` | withhold predictions until the decay window has filled this far toward steady state, `settled_frac = 1 − 2^(−T/h)`, `T` the decay time seen; `0` (default) off. Off because a mean-form fit is unbiased from row one under stationarity; it guards a history that does not represent the process, which only the user can judge. Needs a decay |
+| `max_error_inflation` | float `> 1` | withhold while `error_inflation = sqrt(1 + edf / n_kish)` -- the estimation error's expected inflation of a prediction's error over the noise floor -- exceeds this. Default `sqrt(2)`; `inf` off. Tracks the model; reads Kish's `n`. `ew_ridge` only; the rest keep `min_periods` |
+| `emit_error_inflation` | bool | emit `error_inflation_<slot>`, the same ratio for the row's own features (its leverage against the fit's factor). `O(k²)` a row, hence opt-in; `ew_ridge` only |
 | `coef_every` | int | 0 = never; also emitted on **each group's** last row within every chunk — one row of coefficients per group per chunk, not one per chunk, so the emission schedule of `coef` follows the chunking while every other field is chunk-invariant (hard rule 3 is about the numbers) |
 | `group` | str \| None | one state per key (the expression API uses `.over()` instead, §6) |
 
@@ -112,8 +115,10 @@ Per-row decay: `λ_row = 0.5 ** (Δ / halflife)`; `n_eff` = EW count with the sa
 
 ### Output
 Struct per model, fields: `pred_<t>`, `resid_<t>` for each target `t`; `coef` (list of lists,
-null except on coef rows); `n_eff`; model-specific extras. ModelBank returns one struct column
-per spec, named by the user.
+null except on coef rows); `n_eff`; `settled_frac` and `withheld_reason` (a categorical:
+`below_min_settled_frac`, `above_max_error_inflation`, `below_min_periods`; null where nothing
+was withheld) on every model that writes a row; `support_coef` beside `coef` for `ew_ridge`;
+model-specific extras. ModelBank returns one struct column per spec, named by the user.
 
 ## 4. Models
 
@@ -3164,7 +3169,50 @@ note, not a task.
       too. Recorded in the comment above the `publish` job and in
       `docs/RELEASE-READINESS.md`, "The release gate".
 
+- [x] 87. **Not using a model before it is ready, 2026-09-21
+      (`docs/WARMUP-AND-CONVERGENCE.md`).** Two gates stated as intent, on
+      every entry point: `min_settled_frac`, a fraction of steady state the
+      decay window must have filled (`settled_frac = 1 − 2^(−T/h)`, `T` the
+      decay time seen -- rate-independent by construction), off by default;
+      and `max_error_inflation`, the ratio by which estimation error may
+      inflate a prediction's error over the noise floor,
+      `sqrt(1 + edf / n_kish)`, default `sqrt(2)`, which is `ew_ridge`'s
+      readiness gate now (its `min_periods` defaults to 0; the `k + 1` rows
+      its first solve needs are the model's own floor). Per row: `settled_frac`
+      and `withheld_reason` (a categorical, 1.4 B/row) on every model that
+      writes a row; `support_coef` beside `coef` for `ew_ridge`, each
+      coefficient's data share `1 − λ(Σ̂⁻¹)_jj`; opt-in
+      `error_inflation_<slot>`, the row's own leverage against the fit's
+      factor. `summary()` carries the same per group; a `ReadinessWarning`
+      names, once per (spec, group), a coefficient more ridge than data or a
+      noise gate the stream has settled below. Built for `ew_ridge` only:
+      `rls`, `lasso`, `kalman` and the scalar models keep `min_periods`
+      (the doc's §5.8 says what each would read). Held to identities rather
+      than tuned (`crates/online-core/tests/readiness.rs`): the gate within
+      2% of the observed error down to `n_kish ≈ 2.3 k_eff`; the per-row
+      form conservative by 10–54% at small `n`, which is what an exact `G₂`
+      would buy (doc §2.1). Schema 13. Released in 0.9.0.
+
 ## 11a. Decisions made while implementing
+
+**Readiness gates (task 87), 2026-09-21.** The user's standard: a setting
+rests on theory, not on a sweep, and states the intent rather than a number
+that needs a formula in the user's head. So the noise gate is
+`sqrt(1 + edf / n_kish)` -- the effective degrees of freedom the solve used
+over Kish's effective sample size, both read from state the model already
+keeps (`EwCov::n_kish`, and the diagonal of the ridged system's inverse on
+the solve schedule) -- and its default is the equal-parts point, estimation
+variance equal to the noise. `min_settled_frac` defaults *off* on a theory
+argument, not a scar: the mean-form fit is unbiased from its first row when
+the process is stationary, so the gate guards a representativeness bias only
+the user can size (doc §4.1.1). `full_rank` as a boolean with a tolerance
+was dropped for the exact, threshold-free `support_coef`; `G₂`, the
+squared-decay Gram, was dropped because the gate's average does not need it
+-- and the identity tests then measured exactly what it would buy (doc
+§2.1). `min_periods` stays for every model without the statistic rather
+than being aliased away: removing it would have gated `sgd` at row one.
+`withheld_reason` is a dictionary-encoded Arrow array (polars reads it as a
+categorical): a String column costs 16 B/row even when every value is null.
 
 **Building the clustering (tasks 23–24), 2026-09-04.** The user chose
 `kmeans` + `micro` (CLUSTERING §0's exposure), all of E36–E42, a branch

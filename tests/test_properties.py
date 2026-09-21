@@ -102,7 +102,9 @@ def binarize(df, model):
 
 
 def unnested(out):
-    keep = [c for c in out.select("m").unnest("m").columns if not c.startswith("coef")]
+    keep = [
+        c for c in out.select("m").unnest("m").columns if not c.startswith(("coef", "support_coef"))
+    ]
     return out.select("m").unnest("m").select(keep)
 
 
@@ -137,7 +139,8 @@ class TestUniversalProperties:
         df = binarize(df, model)
         out = po.ModelBank([build(model, extra)]).fit_predict(df)
         for f in out.schema["m"].fields:
-            if f.name.startswith("coef"):
+            # `coef`/`support_coef` are lists; `withheld_reason` is an enum.
+            if f.name.startswith(("coef", "support_coef")) or not f.dtype.is_float():
                 continue
             vals = np.array(
                 [v for v in out["m"].struct.field(f.name).to_list() if v is not None],

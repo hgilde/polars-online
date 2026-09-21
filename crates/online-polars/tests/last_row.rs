@@ -33,7 +33,9 @@ fn rich_spec() -> Spec {
             "conformal": 0.9,
             "resid_quantiles": [0.5],
             "emit_autocorr": true,
-            "emit_drift": true
+            "emit_drift": true,
+            "emit_error_inflation": true,
+            "min_settled_frac": 0.2
         }"#,
     )
     .unwrap()
@@ -204,7 +206,7 @@ fn last_row_is_the_output_s_last_learned_row_per_group() {
         let keep: Vec<String> = d
             .get_column_names()
             .iter()
-            .filter(|c| !c.starts_with("coef"))
+            .filter(|c| !(c.starts_with("coef") || c.starts_with("support_coef")))
             .map(|c| c.to_string())
             .collect();
         d.select(keep).unwrap()

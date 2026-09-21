@@ -135,13 +135,23 @@ fn field(df: &DataFrame, spec: &str, name: &str) -> Series {
 #[test]
 fn the_fields_and_their_dtypes() {
     let spec = column_mode("s", "y", false);
+    // The two readiness fields follow `n_eff` on every model that writes a
+    // row (docs/WARMUP-AND-CONVERGENCE.md §3), the reason as an enum.
     assert_eq!(
         output_fields(&spec),
-        ["log_e_pos_y", "log_e_neg_y", "n_pos_y", "n_neg_y", "n_eff"]
+        [
+            "log_e_pos_y",
+            "log_e_neg_y",
+            "n_pos_y",
+            "n_neg_y",
+            "n_eff",
+            "settled_frac",
+            "withheld_reason"
+        ]
     );
     let idx = output_index(&spec);
     let dtypes: Vec<&str> = idx.iter().map(|f| f.dtype.as_str()).collect();
-    assert_eq!(dtypes, ["f64", "f64", "i64", "i64", "f64"]);
+    assert_eq!(dtypes, ["f64", "f64", "i64", "i64", "f64", "f64", "enum"]);
     assert!(idx.iter().all(|f| f.halflife.is_none() && f.lam.is_none()));
     assert_eq!(idx[0].target.as_deref(), Some("y"));
     assert_eq!(idx[0].kind, "log_e_pos");
@@ -149,7 +159,15 @@ fn the_fields_and_their_dtypes() {
     let cmp = compare("c", "a", "b", false);
     assert_eq!(
         output_fields(&cmp),
-        ["log_e_a_y", "log_e_b_y", "wins_a_y", "wins_b_y", "n_eff"]
+        [
+            "log_e_a_y",
+            "log_e_b_y",
+            "wins_a_y",
+            "wins_b_y",
+            "n_eff",
+            "settled_frac",
+            "withheld_reason"
+        ]
     );
 }
 

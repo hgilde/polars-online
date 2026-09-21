@@ -220,7 +220,19 @@ class ModelBank:
         """
         self._check_frame(df, "fit_predict")
         outs = self._native.fit_predict(df)
+        self._warn_notices()
         return df.with_columns([pl.Series(s) for s in outs])
+
+    def _warn_notices(self) -> None:
+        """Raise each readiness notice the last chunk left as a
+        :class:`polars_online.ReadinessWarning`, once per (spec, group): a
+        coefficient the ridge determined more than the data did, or a
+        ``max_error_inflation`` the stream has settled below
+        (docs/WARMUP-AND-CONVERGENCE.md §3)."""
+        from polars_online._frame import ReadinessWarning, _user_stacklevel
+
+        for notice in self._native.take_notices():
+            warnings.warn(ReadinessWarning(notice), stacklevel=_user_stacklevel())
 
     def predict(self, df: pl.DataFrame) -> pl.DataFrame:
         """Score a frame against the bank as it stands, learning nothing.
@@ -295,7 +307,9 @@ class ModelBank:
         :meth:`fit_predict` raises for it.
         """
         self._check_frame(df, "fit_predict_arrow")
-        return self._native.fit_predict_arrow(df)
+        out = self._native.fit_predict_arrow(df)
+        self._warn_notices()
+        return out
 
     def predict_arrow(self, df: pl.DataFrame) -> list[ArrowStruct]:
         """:meth:`predict`, with the output handed back as Arrow.

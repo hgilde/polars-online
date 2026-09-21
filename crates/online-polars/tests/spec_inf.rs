@@ -24,7 +24,9 @@ fn spec(top: &str, model: &str) -> Spec {
 
 /// Where `inf` is a limit with a name: least squares, the whole history, no
 /// forgetting, a step nothing caps, the argmin.
-const MEANS_SOMETHING: [(&str, &str); 7] = [
+const MEANS_SOMETHING: [(&str, &str); 8] = [
+    // The noise gate at `inf` is off: no ratio is ever above it.
+    ("max_error_inflation = inf", "type = \"ew_ridge\""),
     ("", "type = \"huber\"\nhuber_delta = inf"),
     ("", "type = \"sgd\"\nloss = \"huber\"\nhuber_delta = inf"),
     (
@@ -44,7 +46,13 @@ const MEANS_SOMETHING: [(&str, &str); 7] = [
 ];
 
 /// Where it is no setting: a step, a penalty, a tube or a threshold at `inf`.
-const MEANS_NOTHING: [(&str, &str, &str); 12] = [
+const MEANS_NOTHING: [(&str, &str, &str); 13] = [
+    // A fraction of steady state has no infinite value; `>= 1` is refused.
+    (
+        "min_settled_frac = inf",
+        "type = \"ew_ridge\"",
+        "min_settled_frac",
+    ),
     // The disorder checks: `inf` would refuse every second jump, or every
     // jump; `0` is the way to switch one off (design note of 2026-09-19).
     (

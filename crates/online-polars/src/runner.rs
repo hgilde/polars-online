@@ -762,6 +762,13 @@ fn augment(bank: &mut Bank, chunk: DataFrame, predict: bool) -> PolarsResult<Dat
     } else {
         bank.fit_predict(&chunk)?
     };
+    // A readiness notice is a line on stderr, once per (spec, group,
+    // instance), as the Python layer warns once (docs/WARMUP-AND-CONVERGENCE.md
+    // §3): a coefficient more ridge than data, or a noise gate that cannot
+    // be met.
+    for notice in bank.take_notices() {
+        eprintln!("online: {notice}");
+    }
     let mut out = chunk;
     for c in cols {
         out.with_column(c)?;

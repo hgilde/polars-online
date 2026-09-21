@@ -344,6 +344,13 @@ impl PyModelBank {
         Ok((loader, (bytes,)))
     }
 
+    /// The readiness notices raised since the last call
+    /// (`Bank::take_notices`), for the Python layer to warn with.
+    fn take_notices(slf: &Bound<'_, Self>) -> PyResult<Vec<String>> {
+        let mut this = slf.try_borrow_mut().map_err(|_| busy("take_notices"))?;
+        Ok(this.inner.take_notices())
+    }
+
     /// Output struct field names per spec (in order), for schema inspection.
     fn output_fields(slf: &Bound<'_, Self>) -> PyResult<Vec<Vec<String>>> {
         let this = slf.try_borrow().map_err(|_| busy("output_fields"))?;

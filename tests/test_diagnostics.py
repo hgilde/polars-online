@@ -73,7 +73,10 @@ class TestFieldsAreOptional:
             "sigma_y0",
             "resid_z_y0",
             "n_eff",
+            "settled_frac",
+            "withheld_reason",
             "coef",
+            "support_coef",
         ]
 
     def test_each_flag_is_independent(self):
@@ -162,7 +165,7 @@ class TestAllModels:
             .select("m")
             .unnest("m")
         )
-        keep = [c for c in one.columns if not c.startswith("coef")]
+        keep = [c for c in one.columns if not c.startswith(("coef", "support_coef"))]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
 
     def test_survives_save_load(self, model, extra, tmp_path):
@@ -277,7 +280,7 @@ class TestOnlineSelection:
             .select("m")
             .unnest("m")
         )
-        keep = [c for c in one.columns if not c.startswith("coef")]
+        keep = [c for c in one.columns if not c.startswith(("coef", "support_coef"))]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
 
 
@@ -371,7 +374,7 @@ class TestDriftDetection:
             .select("m")
             .unnest("m")
         )
-        keep = [c for c in one.columns if not c.startswith("coef")]
+        keep = [c for c in one.columns if not c.startswith(("coef", "support_coef"))]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
 
     def test_survives_save_load(self, tmp_path):
@@ -583,7 +586,7 @@ class TestModelAveraging:
             .select("m")
             .unnest("m")
         )
-        keep = [c for c in one.columns if not c.startswith("coef")]
+        keep = [c for c in one.columns if not c.startswith(("coef", "support_coef"))]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
 
 
@@ -696,7 +699,7 @@ class TestResidualDistribution:
             .select("m")
             .unnest("m")
         )
-        keep = [c for c in one.columns if not c.startswith("coef")]
+        keep = [c for c in one.columns if not c.startswith(("coef", "support_coef"))]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
 
         a = po.ModelBank([spec])
@@ -820,7 +823,7 @@ class TestStreamingMetrics:
             .select("m")
             .unnest("m")
         )
-        keep = [c for c in one.columns if not c.startswith("coef")]
+        keep = [c for c in one.columns if not c.startswith(("coef", "support_coef"))]
         assert one.select(keep).equals(many.select(keep), null_equal=True)
 
         a = po.ModelBank([spec])

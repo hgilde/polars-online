@@ -155,7 +155,17 @@ def _got(v: Any) -> str:
 # parameters. tests/test_error_messages.py checks this table against the
 # Rust side.
 _INF_OK: dict[str, frozenset[str]] = {
-    "*": frozenset({"halflife", "min_periods", "max_dclock", "session_gap", "average_eta"}),
+    "*": frozenset(
+        {
+            "halflife",
+            "min_periods",
+            "max_dclock",
+            "session_gap",
+            "average_eta",
+            # The noise gate at `inf` is off: no ratio is above it.
+            "max_error_inflation",
+        }
+    ),
     "ewridge": frozenset({"long_halflife"}),
     "lasso": frozenset({"select_halflife"}),
     "kalman": frozenset({"coef_halflife", "revert_halflife"}),
@@ -276,6 +286,9 @@ def _common(
     session_gap: float | str | None = None,
     weight: str | None = None,
     min_periods: float | list[float] | None = None,
+    min_settled_frac: float | None = None,
+    max_error_inflation: float | None = None,
+    emit_error_inflation: bool = False,
     coef_every: int = 0,
     emit_sigma: bool = False,
     emit_resid_z: bool = False,
@@ -312,6 +325,9 @@ def _common(
         "session_gap": session_gap,
         "weight": weight,
         "min_periods": min_periods,
+        "min_settled_frac": min_settled_frac,
+        "max_error_inflation": max_error_inflation,
+        "emit_error_inflation": emit_error_inflation,
         "coef_every": coef_every,
         "emit_sigma": emit_sigma,
         "emit_resid_z": emit_resid_z,

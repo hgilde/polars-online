@@ -236,7 +236,15 @@ pub use window::{
 ///   its weight -- now that one rule, `min_backwards_jump` against
 ///   `max_dclock`, needs no state (2026-09-20). A field removed from a
 ///   positional layout is a layout change; no loader for 11.
-pub const SCHEMA_VERSION: u32 = 12;
+/// - 13: the readiness statistics (docs/WARMUP-AND-CONVERGENCE.md, 2026-09-21).
+///   `ew_ridge` keeps what its last solve left for them -- the effective
+///   degrees of freedom and each coefficient's data share per slot, and,
+///   when the per-row leverage is asked for, the systems it is read
+///   against -- and whether it keeps them, ahead of its window; the stream
+///   keeps the decay time each instance has seen (what `settled_frac` is
+///   read from) and which of its readiness notices it has raised. No loader
+///   for 12.
+pub const SCHEMA_VERSION: u32 = 13;
 
 /// Oldest state layout this build still loads.
 ///
@@ -275,4 +283,4 @@ pub const SCHEMA_VERSION: u32 = 12;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 12;
+pub const MIN_SCHEMA_VERSION: u32 = 13;

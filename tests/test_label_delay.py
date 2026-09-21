@@ -85,7 +85,12 @@ class TestItIsTheDoubledStream:
         oracle, _ = doubled(df, delay)
         a, b = native["m"].struct, oracle["m"].struct
         for field in po.spec.output_fields(spec(label_delay=delay)):
-            if field == "coef":
+            # The lists ride a cadence; the reason is an enum, not a number;
+            # and `settled_frac` reads the clock *before* the row, where the
+            # embargo frame puts a maturing row's learn copy at the same clock
+            # as, and ahead of, its predict copy -- so once releases begin the
+            # oracle counts the row's own delta and the stream does not.
+            if field in ("coef", "support_coef", "withheld_reason", "settled_frac"):
                 continue
             x, y = a.field(field).to_numpy(), b.field(field).to_numpy()
             assert (np.isnan(x) == np.isnan(y)).all(), field
@@ -124,7 +129,8 @@ class TestItIsTheDoubledStream:
         predicted = {"pred_y", "resid_y", "n_eff"}
         parted = []
         for field in po.spec.output_fields(spec(label_delay=7.0, **kw)):
-            if field == "coef":
+            # The lists ride a cadence; the reason is an enum, not a number.
+            if field in ("coef", "support_coef", "withheld_reason"):
                 continue
             x = a.field(field).cast(pl.Float64).to_numpy()
             y = b.field(field).cast(pl.Float64).to_numpy()
@@ -210,7 +216,7 @@ class TestTheStreamContract:
         # `coef` is emitted on each chunk's last row, so chunking moves the
         # cadence it is reported at; every value is compared.
         def fields(frame_):
-            return frame_.select("m").unnest("m").drop("coef")
+            return frame_.select("m").unnest("m").drop("coef", "support_coef")
 
         one = fields(po.ModelBank([s]).fit_predict(df))
         bank = po.ModelBank([s])
@@ -409,7 +415,7 @@ class TestTheSurfaces:
         # `coef` rides the chunk cadence, as everywhere; every value is
         # compared.
         def fields(frame_):
-            return frame_.select("m").unnest("m").drop("coef")
+            return frame_.select("m").unnest("m").drop("coef", "support_coef")
 
         want = fields(po.ModelBank([s]).fit_predict(df))
         assert fields(pl.read_parquet(out)).equals(want, null_equal=True)

@@ -18,6 +18,10 @@ from polars.testing import assert_frame_equal
 
 import polars_online as po
 
+#: `withheld_reason`, an enum over the three gates, on every model that
+#: writes a row (docs/WARMUP-AND-CONVERGENCE.md §3).
+REASON_DTYPE = pl.Enum(["below_min_settled_frac", "below_min_periods", "above_max_error_inflation"])
+
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -238,7 +242,10 @@ class TestOutputSchemaStability:
             "pred_y1__slow_r10@h100",
             "resid_y1__slow_r10@h100",
             "n_eff@h100",
+            "settled_frac@h100",
+            "withheld_reason@h100",
             "coef@h100",
+            "support_coef@h100",
             "pred_y0__fast_r0.000001@h500",
             "resid_y0__fast_r0.000001@h500",
             "pred_y0__fast_r0.1@h500",
@@ -264,7 +271,10 @@ class TestOutputSchemaStability:
             "pred_y1__slow_r10@h500",
             "resid_y1__slow_r10@h500",
             "n_eff@h500",
+            "settled_frac@h500",
+            "withheld_reason@h500",
             "coef@h500",
+            "support_coef@h500",
         ]
 
     def test_lasso_field_names(self):
@@ -283,6 +293,8 @@ class TestOutputSchemaStability:
             "pred_y0__l0",
             "resid_y0__l0",
             "n_eff",
+            "settled_frac",
+            "withheld_reason",
             "coef",
             "lam_selected_y0",
         ]
@@ -410,7 +422,12 @@ class TestOutputSchemaStability:
         out = po.ModelBank([spec]).fit_predict(_frame().drop("g"))
         assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
         idx = po.spec.output_index(spec)
-        names = {pl.Float64: "f64", pl.Int32: "i32", pl.List(pl.Float64): "list[f64]"}
+        names = {
+            REASON_DTYPE: "enum",
+            pl.Float64: "f64",
+            pl.Int32: "i32",
+            pl.List(pl.Float64): "list[f64]",
+        }
         for f in out.schema["m"].fields:
             declared = idx.filter(pl.col("field") == f.name)["dtype"].item()
             assert names[f.dtype] == declared, (f, declared)
@@ -433,6 +450,7 @@ class TestOutputSchemaStability:
         assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
         idx = po.spec.output_index(spec)
         names = {
+            REASON_DTYPE: "enum",
             pl.Float64: "f64",
             pl.Int32: "i32",
             pl.Int64: "i64",
@@ -443,7 +461,7 @@ class TestOutputSchemaStability:
             declared = idx.filter(pl.col("field") == f.name)["dtype"].item()
             assert names[f.dtype] == declared, (f, declared)
         per_instance = [pl.Int64, pl.Float64, pl.Int64, pl.Boolean, pl.Int32, pl.Int32]
-        per_instance += [pl.Float64, pl.List(pl.Float64)]
+        per_instance += [pl.Float64, pl.Float64, REASON_DTYPE, pl.List(pl.Float64)]
         n_instances = len(halflife) if isinstance(halflife, list) else 1
         assert [f.dtype for f in out.schema["m"].fields] == per_instance * n_instances
 
@@ -504,11 +522,17 @@ class TestOutputSchemaStability:
         out = po.ModelBank([spec]).fit_predict(df)
         assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
         idx = po.spec.output_index(spec)
-        names = {pl.Float64: "f64", pl.String: "str", pl.List(pl.Float64): "list[f64]"}
+        names = {
+            REASON_DTYPE: "enum",
+            pl.Float64: "f64",
+            pl.String: "str",
+            pl.List(pl.Float64): "list[f64]",
+        }
         for f in out.schema["m"].fields:
             declared = idx.filter(pl.col("field") == f.name)["dtype"].item()
             assert names[f.dtype] == declared, (f, declared)
-        per_instance = [pl.String, pl.Float64, pl.Float64, pl.Float64, pl.List(pl.Float64)]
+        per_instance = [pl.String, pl.Float64, pl.Float64, pl.Float64]
+        per_instance += [pl.Float64, REASON_DTYPE, pl.List(pl.Float64)]
         n_instances = len(halflife) if isinstance(halflife, list) else 1
         assert [f.dtype for f in out.schema["m"].fields] == per_instance * n_instances
 
@@ -530,13 +554,14 @@ class TestOutputSchemaStability:
         out = po.ModelBank([*sides, spec]).fit_predict(_frame().drop("g"))
         assert [f.name for f in out.schema["m"].fields] == po.spec.output_fields(spec)
         idx = po.spec.output_index(spec)
-        names = {pl.Float64: "f64", pl.Int64: "i64"}
+        names = {REASON_DTYPE: "enum", pl.Float64: "f64", pl.Int64: "i64"}
         for f in out.schema["m"].fields:
             declared = idx.filter(pl.col("field") == f.name)["dtype"].item()
             assert names[f.dtype] == declared, (f, declared)
         per_target = [pl.Float64, pl.Float64, pl.Int64, pl.Int64]
         n_targets = len(spec["targets"])
-        assert [f.dtype for f in out.schema["m"].fields] == per_target * n_targets + [pl.Float64]
+        tail = [pl.Float64, pl.Float64, REASON_DTYPE]  # n_eff, settled_frac, withheld_reason
+        assert [f.dtype for f in out.schema["m"].fields] == per_target * n_targets + tail
         assert "coef" not in po.spec.output_fields(spec)
 
 

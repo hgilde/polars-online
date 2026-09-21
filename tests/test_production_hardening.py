@@ -237,7 +237,8 @@ class TestParameterExtremes:
         kw.update(extra)
         out = po.ModelBank([getattr(po.spec, model)("m", **kw)]).fit_predict(df)
         for f in out.schema["m"].fields:
-            if f.name.startswith("coef"):
+            # `coef`/`support_coef` are lists; `withheld_reason` is an enum.
+            if f.name.startswith("coef") or not f.dtype.is_float():
                 continue
             for i, v in enumerate(out["m"].struct.field(f.name).to_list()):
                 assert v is None or np.isfinite(v), f"{f.name}[{i}] = {v}"

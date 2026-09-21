@@ -318,6 +318,10 @@ pub struct SummaryRow<'a> {
     pub rows_processed: u64,
     pub last_clock: Option<f64>,
     pub summary: Option<&'a DataSummary>,
+    /// Where the stream stands on the readiness statistics
+    /// (docs/WARMUP-AND-CONVERGENCE.md §3); `None` where a caller has no
+    /// stream to read them from.
+    pub readiness: Option<crate::stream::Readiness>,
 }
 
 /// The `summary` frame for these rows: `group`, `rows_fed`,
@@ -373,6 +377,58 @@ pub fn summary_frame(rows: &[SummaryRow<'_>]) -> PolarsResult<DataFrame> {
         Column::new("session_changes".into(), s(|d| d.session_changes)),
         Column::new("clock_backwards".into(), s(|d| d.clock_backwards)),
         Column::new("resets".into(), s(|d| d.resets)),
+        // The readiness statistics, NaN as null: a fraction that does not
+        // exist (no decay), a ratio the model has not got, a share before
+        // the first solve.
+        Column::new(
+            "settled_frac".into(),
+            rows.iter()
+                .map(|r| {
+                    r.readiness
+                        .as_ref()
+                        .map(|x| x.settled_frac)
+                        .filter(|v| v.is_finite())
+                })
+                .collect::<Vec<Option<f64>>>(),
+        ),
+        Column::new(
+            "error_inflation".into(),
+            rows.iter()
+                .map(|r| {
+                    r.readiness
+                        .as_ref()
+                        .map(|x| x.error_inflation)
+                        .filter(|v| v.is_finite())
+                })
+                .collect::<Vec<Option<f64>>>(),
+        ),
+        Column::new(
+            "min_support_coef".into(),
+            rows.iter()
+                .map(|r| {
+                    r.readiness
+                        .as_ref()
+                        .map(|x| x.min_support_coef)
+                        .filter(|v| v.is_finite())
+                })
+                .collect::<Vec<Option<f64>>>(),
+        ),
+        Column::new(
+            "min_support_coef_feature".into(),
+            rows.iter()
+                .map(|r| {
+                    r.readiness
+                        .as_ref()
+                        .and_then(|x| x.min_support_coef_feature.as_deref())
+                })
+                .collect::<Vec<Option<&str>>>(),
+        ),
+        Column::new(
+            "n_coef".into(),
+            rows.iter()
+                .map(|r| r.readiness.as_ref().map(|x| x.n_coef))
+                .collect::<Vec<Option<u64>>>(),
+        ),
     ];
     DataFrame::new(rows.len(), cols)
 }

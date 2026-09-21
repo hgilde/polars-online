@@ -82,7 +82,10 @@ def spec(name="m", targets=("d0",), **kw):
 
 
 def unnested(out, name="m"):
-    return out.select(name).unnest(name)
+    """The struct's fields, without the two readiness fields every model
+    carries (docs/WARMUP-AND-CONVERGENCE.md §3): an e-process neither decays
+    nor is gated, so both are null throughout."""
+    return out.select(name).unnest(name).drop("settled_frac", "withheld_reason")
 
 
 def as_ref(out, name="m", targets=("d0",)):
@@ -742,9 +745,10 @@ class TestEdgeCases:
         s = spec(targets=["d0", "d1"])
         idx = po.spec.output_index(s)
         assert idx["field"].to_list() == po.spec.output_fields(s)
-        assert idx["dtype"].to_list() == ["f64", "f64", "i64", "i64"] * 2 + ["f64"]
-        assert idx["kind"].to_list() == ["log_e_pos", "log_e_neg", "n_pos", "n_neg"] * 2 + ["n_eff"]
-        assert idx["target"].to_list() == ["d0"] * 4 + ["d1"] * 4 + [None]
+        tail = ["n_eff", "settled_frac", "withheld_reason"]
+        assert idx["dtype"].to_list() == ["f64", "f64", "i64", "i64"] * 2 + ["f64", "f64", "enum"]
+        assert idx["kind"].to_list() == ["log_e_pos", "log_e_neg", "n_pos", "n_neg"] * 2 + tail
+        assert idx["target"].to_list() == ["d0"] * 4 + ["d1"] * 4 + [None] * 3
         assert idx["halflife"].null_count() == idx.height  # nothing decays
         c = po.spec.seqtest("c", targets=["y"], a="p", b="q")
         assert po.spec.output_fields(c) == [
@@ -753,8 +757,18 @@ class TestEdgeCases:
             "wins_a_y",
             "wins_b_y",
             "n_eff",
+            "settled_frac",
+            "withheld_reason",
         ]
-        assert po.spec.output_index(c)["dtype"].to_list() == ["f64", "f64", "i64", "i64", "f64"]
+        assert po.spec.output_index(c)["dtype"].to_list() == [
+            "f64",
+            "f64",
+            "i64",
+            "i64",
+            "f64",
+            "f64",
+            "enum",
+        ]
         out = po.ModelBank([s]).fit_predict(frame(n=5, m=2))
         assert out.schema["m"] == pl.Struct(
             {
@@ -767,6 +781,10 @@ class TestEdgeCases:
                 "n_pos_d1": pl.Int64,
                 "n_neg_d1": pl.Int64,
                 "n_eff": pl.Float64,
+                "settled_frac": pl.Float64,
+                "withheld_reason": pl.Enum(
+                    ["below_min_settled_frac", "below_min_periods", "above_max_error_inflation"]
+                ),
             }
         )
         unnest = po.ModelBank([s]).fit_predict(frame(n=5, m=2)).online.unnest([s])

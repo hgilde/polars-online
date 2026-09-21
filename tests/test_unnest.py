@@ -153,9 +153,15 @@ class TestUnnest:
             "pred_y",
             "resid_y",
             "n_eff",
+            "settled_frac",
+            "withheld_reason",
             "coef_y_intercept",
             "coef_y_x0",
             "coef_y_x1",
+            # One share per coefficient, unnested the same way.
+            "support_coef_y_intercept",
+            "support_coef_y_x0",
+            "support_coef_y_x1",
             "grid",
         ]
         assert flat["grid"].dtype == nested["grid"].dtype
@@ -203,7 +209,7 @@ class TestUnnest:
         flat = (
             pl.scan_parquet(tmp_path / "out.parquet")
             .online.unnest([OLS])
-            .select("t", "g", "^coef_.*$")
+            .select("t", "g", "^coef_y_.*$")
             .collect()
         )
         assert flat.columns == ["t", "g", "coef_y_intercept", "coef_y_x0", "coef_y_x1"]

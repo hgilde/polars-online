@@ -131,7 +131,7 @@ fn drop_coef(df: &DataFrame) -> DataFrame {
     let keep: Vec<String> = df
         .get_column_names()
         .iter()
-        .filter(|c| !c.starts_with("coef"))
+        .filter(|c| !(c.starts_with("coef") || c.starts_with("support_coef")))
         .map(|c| c.to_string())
         .collect();
     df.select(keep).unwrap()
@@ -833,13 +833,14 @@ fn runs_through_a_wide_model_are_invisible() {
 fn coef_is_reported_at_the_chunk_s_end_across_runs() {
     // The last row of a *chunk* reports the coefficients, not the last row
     // of every run inside it: `process_chunk`'s `last` flag is what tells the
-    // two apart. A narrow `ew_ridge` gets runs of 87 376 rows (three values
-    // a row against a 2 MiB budget), so a chunk of twice that plus a hundred
-    // is three runs with two boundaries inside it, and exactly one `coef`.
+    // two apart. A narrow `ew_ridge` gets runs of 65 520 rows (four values
+    // a row -- pred, resid, n_eff, settled_frac -- against a 2 MiB budget),
+    // so a chunk of twice that plus a hundred is three runs with two
+    // boundaries inside it, and exactly one `coef`.
     let spec = ridge_spec(0);
     let stream = Stream::new(&spec).unwrap();
     let run_rows = ChunkOut::run_rows(&spec, stream.n_models(), stream.n_slots());
-    assert_eq!(run_rows, 87_376);
+    assert_eq!(run_rows, 65_520);
     let n = 2 * run_rows + 100;
     let df = make_wide_df(n, 2);
 
@@ -872,11 +873,14 @@ fn run_rows_is_an_odd_number_of_lines_within_the_budget() {
     // cache's set count; at least five lines; and, above that floor, the
     // run's buffers fit the 2 MiB budget with less than two lines to spare.
     let budget = 2usize << 20;
+    // Every row carries `settled_frac` beside `n_eff` now
+    // (docs/WARMUP-AND-CONVERGENCE.md §3); `withheld_reason` is a byte and
+    // does not count against the f64 budget.
     let cases: Vec<(Spec, usize)> = vec![
-        (ew_cov_spec(20), 231),     // 230 statistics + n_eff
-        (ew_cov_spec(2), 6),        // 5 statistics + n_eff
-        (ridge_spec(0), 3),         // pred + resid + n_eff
-        (ew_cov_spec(200), 20_301), // wider than the budget's floor allows
+        (ew_cov_spec(20), 232),     // 230 statistics + n_eff + settled_frac
+        (ew_cov_spec(2), 7),        // 5 statistics + n_eff + settled_frac
+        (ridge_spec(0), 4),         // pred + resid + n_eff + settled_frac
+        (ew_cov_spec(200), 20_302), // wider than the budget's floor allows
     ];
     for (spec, width) in cases {
         let stream = Stream::new(&spec).unwrap();
@@ -898,10 +902,11 @@ fn run_rows_is_an_odd_number_of_lines_within_the_budget() {
         }
     }
     assert_eq!(ChunkOut::run_rows(&ew_cov_spec(20), 1, 230), 1104);
-    assert_eq!(ChunkOut::run_rows(&ridge_spec(0), 1, 1), 87_376);
-    // A no-target model with one statistic and one instance writes two
-    // values a row and gets the widest run there is.
-    assert_eq!(ChunkOut::run_rows(&ew_cov_spec(2), 1, 1), 131_056);
+    assert_eq!(ChunkOut::run_rows(&ridge_spec(0), 1, 1), 65_520);
+    // A no-target model with one statistic and one instance writes three
+    // values a row -- the statistic, `n_eff`, `settled_frac` -- and gets
+    // the widest run there is.
+    assert_eq!(ChunkOut::run_rows(&ew_cov_spec(2), 1, 1), 87_376);
 }
 
 /// A blocked `ewridge` spec (docs/PLAN.md task 71): a block of 16 under a

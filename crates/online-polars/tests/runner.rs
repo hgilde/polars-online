@@ -215,7 +215,10 @@ fn every_output_format_carries_the_banks_columns() {
                         "ridge.pred_y",
                         "ridge.resid_y",
                         "ridge.n_eff",
-                        "ridge.coef"
+                        "ridge.settled_frac",
+                        "ridge.withheld_reason",
+                        "ridge.coef",
+                        "ridge.support_coef"
                     ]
                 );
                 let coef = got.column("ridge.coef").unwrap();

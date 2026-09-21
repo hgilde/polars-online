@@ -25,6 +25,8 @@ them, and the README's *Diagnostics* table has them.
 | `pred_x1` | the predictive mean for feature `<f>` under the fitted model |
 | `logscore` | log predictive density of the row under the run-length mixture |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 
 ## `corrchange`
 
@@ -35,6 +37,8 @@ them, and the README's *Diagnostics* table has them.
 | `flag` | true on the row where `stat` crossed `crit` |
 | `since_flag` | learned rows since the last flag |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 
 ## `deco`
 
@@ -44,6 +48,8 @@ them, and the README's *Diagnostics* table has them.
 | `rho` | the block's equicorrelation level, the smoothed value `u` is folded into |
 | `loglik` | log-likelihood of the row under the fitted model |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 | `coef` | the coefficients behind the fit, refreshed on the solve schedule |
 
 ## `ew_class`
@@ -54,6 +60,8 @@ them, and the README's *Diagnostics* table has them.
 | `p_a` | posterior probability of class `<label>` |
 | `p_b` | posterior probability of class `<label>` |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 | `coef` | the coefficients behind the fit, refreshed on the solve schedule |
 
 ## `ew_cov`
@@ -66,6 +74,8 @@ them, and the README's *Diagnostics* table has them.
 | `std_x1` | EW standard deviation of `<f>` |
 | `corr_x0_x1` | EW correlation of the pair |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 
 ## `ewridge`
 
@@ -74,7 +84,10 @@ them, and the README's *Diagnostics* table has them.
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y` | `y - pred` for `<t>`; null where the target is null |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 | `coef` | the coefficients behind the fit, refreshed on the solve schedule |
+| `support_coef` | on `coef`'s rows, each coefficient's data share `1 - ridge * (S^-1)_jj`, laid out like `coef`; the intercept is not a share (null) |
 
 ## `ftrl`
 
@@ -83,6 +96,8 @@ them, and the README's *Diagnostics* table has them.
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y` | `y - pred` for `<t>`; null where the target is null |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 | `coef` | the coefficients behind the fit, refreshed on the solve schedule |
 
 ## `hmm`
@@ -96,6 +111,8 @@ them, and the README's *Diagnostics* table has them.
 | `state` | the most likely state |
 | `loglik` | log-likelihood of the row under the fitted model |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 | `coef` | the coefficients behind the fit, refreshed on the solve schedule |
 
 ## `holt`
@@ -105,6 +122,8 @@ them, and the README's *Diagnostics* table has them.
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y` | `y - pred` for `<t>`; null where the target is null |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 | `coef` | the coefficients behind the fit, refreshed on the solve schedule |
 
 ## `huber`
@@ -114,6 +133,8 @@ them, and the README's *Diagnostics* table has them.
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y` | `y - pred` for `<t>`; null where the target is null |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 | `coef` | the coefficients behind the fit, refreshed on the solve schedule |
 
 ## `kalman`
@@ -123,6 +144,8 @@ them, and the README's *Diagnostics* table has them.
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y` | `y - pred` for `<t>`; null where the target is null |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 | `coef` | the coefficients behind the fit, refreshed on the solve schedule |
 
 ## `kmeans`
@@ -133,6 +156,8 @@ them, and the README's *Diagnostics* table has them.
 | `dist` | distance from the row to that cluster's centre |
 | `dist2` | distance to the second-nearest centre, so `dist2 - dist` is the margin |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 | `coef` | the coefficients behind the fit, refreshed on the solve schedule |
 
 ## `lasso`
@@ -144,6 +169,8 @@ them, and the README's *Diagnostics* table has them.
 | `pred_y__l0` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y__l0` | `y - pred` for `<t>`; null where the target is null |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 | `coef` | the coefficients behind the fit, refreshed on the solve schedule |
 | `lam_selected_y` | the path point in force for `<t>`, by lowest EW out-of-sample error |
 
@@ -166,6 +193,8 @@ Nothing per row but `n_eff` — its product is the state: read the pairs with `M
 | `n_clusters` | macro-clusters currently linked |
 | `n_micro` | live micro-clusters |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 | `coef` | the coefficients behind the fit, refreshed on the solve schedule |
 
 ## `pa`
@@ -175,6 +204,8 @@ Nothing per row but `n_eff` — its product is the state: read the pairs with `M
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y` | `y - pred` for `<t>`; null where the target is null |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 | `coef` | the coefficients behind the fit, refreshed on the solve schedule |
 
 ## `quantile`
@@ -184,6 +215,8 @@ Nothing per row but `n_eff` — its product is the state: read the pairs with `M
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y` | `y - pred` for `<t>`; null where the target is null |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 | `coef` | the coefficients behind the fit, refreshed on the solve schedule |
 
 ## `rcov`
@@ -201,6 +234,8 @@ Nothing per row but `n_eff` — its product is the closed block: read it from th
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y` | `y - pred` for `<t>`; null where the target is null |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 | `coef` | the coefficients behind the fit, refreshed on the solve schedule |
 
 ## `seqtest`
@@ -212,6 +247,8 @@ Nothing per row but `n_eff` — its product is the closed block: read it from th
 | `n_pos_y` | learned rows whose `<t>` was positive |
 | `n_neg_y` | learned rows whose `<t>` was negative |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 
 ## `sgd`
 
@@ -220,4 +257,6 @@ Nothing per row but `n_eff` — its product is the closed block: read it from th
 | `pred_y` | the prediction for `<t>`, computed from the state **before** this row |
 | `resid_y` | `y - pred` for `<t>`; null where the target is null |
 | `n_eff` | accumulated weight before this row's update and before its own decay |
+| `settled_frac` | how far the decay window had filled toward steady state before this row, `1 - 2^(-T/halflife)`; null where nothing decays |
+| `withheld_reason` | why the row's predictions are null -- `below_min_settled_frac`, `below_min_periods` or `above_max_error_inflation` -- and null where nothing was withheld |
 | `coef` | the coefficients behind the fit, refreshed on the solve schedule |

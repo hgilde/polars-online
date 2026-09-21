@@ -15,7 +15,7 @@ const JITTER: [f64; 5] = [0.0, 1e-12, 1e-9, 1e-6, 1e-3];
 /// `None` if every rung fails. It was written out twice, in [`solve_spd`] and
 /// [`SpdFactor::of`], identical and free to drift apart (review 2026-09-12,
 /// D2).
-fn factorize(a: &[f64], k: usize) -> Option<(Llt<f64>, u32)> {
+fn factorize(a: &[f64], k: usize) -> Option<(Llt<f64>, u32, f64)> {
     debug_assert_eq!(a.len(), k * k);
     let trace: f64 = (0..k).map(|i| a[i * k + i]).sum();
     let base = if trace > 0.0 { trace / k as f64 } else { 1.0 };
@@ -25,7 +25,7 @@ fn factorize(a: &[f64], k: usize) -> Option<(Llt<f64>, u32)> {
             a[i * k + j] + if i == j { jitter } else { 0.0 }
         });
         if let Ok(llt) = mat.llt(Side::Lower) {
-            return Some((llt, attempts as u32));
+            return Some((llt, attempts as u32, jitter));
         }
     }
     None
@@ -37,7 +37,7 @@ fn factorize(a: &[f64], k: usize) -> Option<(Llt<f64>, u32)> {
 /// `(solution, jitter_attempts)`. Returns `None` if even the largest jitter fails.
 pub fn solve_spd(a: &[f64], b: &[f64], k: usize, m: usize) -> Option<(Vec<f64>, u32)> {
     debug_assert_eq!(b.len(), k * m);
-    let (llt, attempts) = factorize(a, k)?;
+    let (llt, attempts, _) = factorize(a, k)?;
     let x = llt.solve(Mat::from_fn(k, m, |i, j| b[j * k + i]));
     let mut out = vec![0.0; k * m];
     for j in 0..m {
@@ -61,18 +61,20 @@ pub struct SpdFactor {
     llt: Llt<f64>,
     log_det: f64,
     attempts: u32,
+    jitter: f64,
 }
 
 impl SpdFactor {
     /// Factorize `A` (row-major `k*k`), or `None` if every jitter fails.
     pub fn of(a: &[f64], k: usize) -> Option<Self> {
-        let (llt, attempts) = factorize(a, k)?;
+        let (llt, attempts, jitter) = factorize(a, k)?;
         let l = llt.L();
         let log_det = 2.0 * (0..k).map(|i| l[(i, i)].ln()).sum::<f64>();
         Some(Self {
             llt,
             log_det,
             attempts,
+            jitter,
         })
     }
 
@@ -84,6 +86,39 @@ impl SpdFactor {
     /// Jitter attempts the factorization needed; 0 when `A` factorized as given.
     pub fn attempts(&self) -> u32 {
         self.attempts
+    }
+
+    /// The diagonal shift the factorization needed, in `A`'s units: 0 when
+    /// `A` factorized as given. A caller reading a penalty off the diagonal
+    /// -- the ridge behind a coefficient's data share -- adds this to it,
+    /// since it is what the factor actually carries.
+    pub fn jitter(&self) -> f64 {
+        self.jitter
+    }
+
+    /// Solve `A X = B` from the kept factor, `B` column-major `k x m`, the
+    /// answer laid out the same way: the numbers [`solve_spd`] gives, to the
+    /// bit, since both are this factor's `solve`.
+    pub fn solve(&self, b: &[f64], k: usize, m: usize) -> Vec<f64> {
+        debug_assert_eq!(b.len(), k * m);
+        let x = self.llt.solve(Mat::from_fn(k, m, |i, j| b[j * k + i]));
+        let mut out = vec![0.0; k * m];
+        for j in 0..m {
+            for i in 0..k {
+                out[j * k + i] = x[(i, j)];
+            }
+        }
+        out
+    }
+
+    /// The diagonal of `A⁻¹`: `k` solves against the identity, `O(k³)` --
+    /// the order of the factorization itself, so on a solve schedule and
+    /// never per row. What a coefficient's data share, `1 − λ (A⁻¹)_jj`,
+    /// and the effective degrees of freedom are read from
+    /// (docs/WARMUP-AND-CONVERGENCE.md §2.2).
+    pub fn inverse_diagonal(&self, k: usize) -> Vec<f64> {
+        let x = self.llt.solve(Mat::<f64>::identity(k, k));
+        (0..k).map(|i| x[(i, i)]).collect()
     }
 
     /// Quadratic forms `d_jᵀ A⁻¹ d_j` for the `m` column vectors of `d`

@@ -44,7 +44,7 @@ def test_the_filter_finds_the_states_and_the_chain():
     out = run(df, warm_rows=200)
     # `coef` is null except where the schedule reports it, so it is dropped
     # before asking which rows are live.
-    live = out.drop("coef").drop_nulls()
+    live = out.drop("coef", "withheld_reason").drop_nulls()
     assert live.height > 3000
     # The reported state tracks the blob, up to which state is which.
     state = out["state"].to_numpy()
@@ -381,7 +381,7 @@ def test_the_full_covariance_filter_recovers_states_at_four_features():
     phase 4)."""
     df = blobs(n=4000, run=200, sep=4.0, d=4, seed=3)
     out = run(df, features=["x0", "x1", "x2", "x3"], warm_rows=200, covariance="full")
-    live = out.drop("coef").drop_nulls()
+    live = out.drop("coef", "withheld_reason").drop_nulls()
     assert live.height > 3000
     state = out["state"].to_numpy()
     truth = df["g"].to_numpy()
