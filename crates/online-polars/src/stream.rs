@@ -3673,9 +3673,18 @@ fn run_instance(
                 .map(|c| c.into_iter().flatten().collect());
             // Each coefficient's data share rides on the same cadence
             // (§2.2), and a coefficient more ridge than data is named once
-            // per instance, here, where the shares are read anyway.
+            // per instance, here, where the shares are read anyway -- but
+            // only on a row whose prediction the gates let through
+            // (`reason == 0`). The first solve of any spec is
+            // under-determined by construction, one row against `k` slopes,
+            // and the warning cannot be retracted; judging a fit the model
+            // is itself withholding as noise made the message false by the
+            // row after it. Found verifying the shipped 0.9.0 wheel: an
+            // ordinary two-feature fit warned at `n_eff = 1.00` and read
+            // `support_coef = 1.00` from the next row to the end of the
+            // stream.
             let support = inst.model.get().support_coef();
-            if let (Some(s), false) = (&support, inst.notified.support) {
+            if let (Some(s), false, 0) = (&support, inst.notified.support, reason) {
                 let k_total = inst.spec.k() + usize::from(inst.spec.add_intercept);
                 let worst = s
                     .iter()

@@ -327,6 +327,21 @@ class TestSummaryAndWarnings:
         msg = str(got[0].message)
         assert "max_error_inflation" in msg and "halflife" in msg
 
+    def test_an_ordinary_spec_does_not_warn_while_the_gates_withhold(self):
+        """The first solve of any spec is under-determined by construction --
+        one row against `k` slopes -- and the warning cannot be retracted, so
+        it is raised only where the gates let the row's prediction through.
+        Found verifying the shipped 0.9.0 wheel: an ordinary two-feature fit
+        warned at `n_eff = 1.00` ("0.27 data and 0.73 ridge") and read
+        `support_coef = 1.00` from the next row to the end of the stream."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", po.ReadinessWarning)
+            po.ModelBank([spec(coef_every=1)]).fit_predict(frame(60))
+            # `min_periods = 0` puts the first solve at `n_eff = 0`, where the
+            # fit is entirely the ridge -- what `tests/test_window_budget.py`
+            # sets, and what made that file warn in CI.
+            po.ModelBank([spec(coef_every=1, min_periods=0.0)]).fit_predict(frame(60))
+
     def test_a_reachable_gate_does_not_warn(self):
         with warnings.catch_warnings():
             warnings.simplefilter("error", po.ReadinessWarning)

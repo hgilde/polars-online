@@ -227,10 +227,33 @@ summary. Same exclusions as `h`: intercept column out; `standardize` puts
 it in standardised coefficient space, where the per-coefficient meaning is
 unchanged. Removes a setting.
 
-**Open:** the once-per-group warning needs a cut. `0.5` — the prior
-outweighs the data — is the equal-parts point, like `h = 1`, and is not
-calibrated; but a user who chose a heavy ridge would hear it on every
-coefficient, once. Warn, or only report?
+**Settled (2026-09-21): warn, and only where the fit is in use.** The
+field is the instrument — exact, per coefficient, threshold-free — and the
+warning is only the pointer that makes a user who never thought to look
+learn the field exists. That is the whole of its job, which is why it is
+once per (spec, group) and suppressible by category, and why no gate was
+added: predictions are correct under rank deficiency (§5.7), so withholding
+them would take away correct output. Duplicate feature *names* are already
+refused at validate time, so what is left for a runtime signal is exactly
+the data-dependent case nothing static can see.
+
+The cut stays at `0.5`, the equal-parts point, with one maturity condition:
+the warning is raised only on a row whose prediction the gates let through
+(`reason == 0`). Without it the *first* solve of any spec fires it — one row
+against `k` slopes is under-determined by construction, and the warning
+cannot be retracted. Found verifying the shipped 0.9.0 wheel: an ordinary
+two-feature fit warned at `n_eff = 1.00` ("0.27 data and 0.73 ridge") and
+read `support_coef = 1.00` from the next row to the end of the stream. A
+user who chose a heavy ridge still hears it once, which is right — their
+coefficient really is mostly prior.
+
+The condition does not silence a true positive on a mature fit.
+`tests/test_window_budget.py`'s spec sets `min_periods = 0`, so it solves at
+one row, where the slope has no variance to read and is entirely the ridge,
+and `halflife = 1e9` leaves no cadence to refit: `pred_y` is one constant
+for all 300 rows, `coef` is `[4.100824, 0.0]`, and `support_coef` reads 0.00
+on every row. The warning names that correctly — the feature finding a
+degenerate spec in this repository's own tests.
 
 ---
 
@@ -632,16 +655,20 @@ reported 0.00 for String and must not be trusted for it.
    orthogonal design. `lasso`'s active-set `h` is not built, so not
    measured. `min_periods` was kept for every model but `ewridge` rather
    than aliased away (§8).
-5. **Enum emission from Rust** — is there a precedent in the arrow layer
-   (`ew_class`'s `class` field?), or new plumbing?
-6. **`support_coef` warning** — warn at `< 0.5`, or only report (§2.2)?
+5. **Enum emission from Rust** — answered by building it: new plumbing.
+   A `u32`-key dictionary array carrying polars' own `_PL_ENUM_VALUES2`
+   field metadata (`column::{code_array, enum_metadata}`), which polars
+   reads back as an `Enum` over exactly the three names. `ew_class`'s
+   `class` was no precedent: it is a plain string column.
+6. **`support_coef` warning** — settled 2026-09-21 (§2.2): warn at
+   `< 0.5`, and only on a row whose prediction the gates let through.
 7. **Standardisation.** `support_coef` and `h` live in the space the ridge
    acts in (standardised under `standardize`); the
    standardiser's own noisy first rows can make the flag flicker before it
    settles.
 8. **`n_eff_settled`** — from what settledness is the estimate
    (`n_eff / settled_frac`) reported? 0.9?
-9. **CLI** — one closing line counting groups not settled / not full rank?
+9. **CLI** — one closing line counting groups not settled / low support?
 10. **Names** (§9).
 
 ---

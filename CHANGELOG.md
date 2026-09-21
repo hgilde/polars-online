@@ -7,6 +7,26 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The `support_coef` warning no longer fires on a fit the model is itself
+  withholding.** It is raised only on a row whose prediction the gates let
+  through, so the first solve of a spec — one row against `k` slopes,
+  under-determined by construction, and a warning that cannot be retracted —
+  no longer produces a message the next row contradicts. Found on the
+  shipped 0.9.0 wheel: an ordinary two-feature fit warned at `n_eff = 1.00`
+  ("0.27 data and 0.73 ridge") and read `support_coef = 1.00` from row 2 to
+  the end of the stream. A genuinely undetermined design still warns, once,
+  as before — including a spec frozen on a one-row solve, where the warning
+  is correct.
+- **The two clock assertions in `tests/test_frame.py` accept either
+  exception.** py-polars 1.x wraps an exception raised inside a Python IO
+  source as its own `ComputeError`; 2.0.0rc2 — published hours after 0.9.0
+  was cut — lets it through unwrapped as the bank's `ValueError`. Both are
+  right for their version, so the tests assert the one the installed polars
+  has rather than pinning 1.x, which is what the advisory next-major leg
+  reported red on. No library code changed by this one.
+
 ## [0.9.0] — 2026-09-21
 
 ### Added

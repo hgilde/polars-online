@@ -278,6 +278,15 @@ def test_an_empty_plan_has_the_schema():
         assert out.schema == po.ModelBank([_spec()]).fit_predict(df).schema
 
 
+#: What a bank's refusal arrives as when a plan is collected. py-polars 1.x
+#: wraps an exception raised inside a Python IO source as its own
+#: `ComputeError`; 2.0.0rc2 lets it through unwrapped, so the bank's
+#: `ValueError` arrives as itself. Both carry the same message, and both are
+#: right for their version -- as with the R6 narrowing below, this asserts
+#: the one the installed polars has rather than pinning either.
+_REFUSAL = (pl.exceptions.ComputeError, ValueError)
+
+
 def test_errors_name_the_problem():
     df = _frame(n=100)
     # A spec naming a column the plan lacks, or one of the wrong dtype, is
@@ -288,10 +297,10 @@ def test_errors_name_the_problem():
     bad = df.with_columns(pl.col("x0").cast(pl.String))
     with pytest.raises(ValueError, match="must be numeric"):
         bad.lazy().online.fit_predict([_spec()])
-    # An error the rows raise surfaces as polars' ComputeError, carrying the
-    # bank's message: here a clock that runs backwards.
+    # An error the rows raise surfaces carrying the bank's message -- here a
+    # clock that runs backwards -- wrapped or not, by version (`_REFUSAL`).
     plan = df.reverse().lazy().online.fit_predict([_spec(on_clock_reset="error")])
-    with pytest.raises(pl.exceptions.ComputeError, match="clock"):
+    with pytest.raises(_REFUSAL, match="clock"):
         plan.collect()
 
 
@@ -403,7 +412,7 @@ def test_a_run_that_does_not_reach_the_end_writes_nothing(tmp_path):
         .lazy()
         .online.fit_predict([_spec(on_clock_reset="error")], save_state=state, chunk_rows=500)
     )
-    with pytest.raises(pl.exceptions.ComputeError, match="clock"):
+    with pytest.raises(_REFUSAL, match="clock"):
         plan.collect()
     assert not state.exists()
     # The known gap (R6): a node *after* the bank failing does not stop the
