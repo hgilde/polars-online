@@ -7,6 +7,8 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-09-21
+
 ### Fixed
 
 - **The `support_coef` warning no longer fires on a fit the model is itself
