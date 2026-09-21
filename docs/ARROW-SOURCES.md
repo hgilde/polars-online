@@ -5,7 +5,10 @@ let anything that produces Arrow chunks feed a bank, DuckDB first. §1–§3 are
 what the ecosystem actually offers, measured or quoted rather than recalled.
 §4 is the one decision that is not mine to take. §5 compares DuckDB's own
 statistics and learning extensions with this library, which is the question of
-whether this expansion is worth building at all.
+whether this expansion is worth building at all. **§7, added 2026-09-21,**
+surveys the wider field against two criteria — chunks over more data than
+fits in memory, and chunks in clock order — and is reasoned from each
+system's documented contract rather than measured.
 
 ---
 
@@ -312,3 +315,147 @@ the relation *inside* the loop, not outside it.
 Tier 0 delivers the user-visible capability. Everything after it is about
 removing the last private call from the boundary, which is worth doing and is
 not worth pretending is urgent.
+
+---
+
+## 7. The wider field: which producers stream, and which can promise order
+
+**Added 2026-09-21, and reasoned rather than measured.** §1–§3 earn their
+claims against a version (`duckdb 1.5.5`); this section does not. It is read
+off each system's own documented contract, and every row that becomes work
+needs that same treatment before it is believed.
+
+Two criteria, both the user's: a producer must hand over **Arrow chunks over
+more data than fits in memory**, and — for any pipeline that uses a clock —
+hand them over **in clock order**.
+
+**Order gates features, not the integration** (the user's correction,
+2026-09-21; an earlier draft of this section had it stopping the run
+outright). An unordered producer is usable. What it costs is every feature
+denominated in a clock. Three tiers, in the order to consider them:
+
+1. **No `clock` column at all — nothing can refuse.** The row count is the
+   clock: `ClockState::advance` returns `Some(1.0)` for every row after the
+   first, so Δ is never negative and the disorder branch is unreachable. All
+   three refusals are clock-gated — `on_clock_reset needs clock`,
+   `min_backwards_jump needs clock`, and `max_dclock is required when clock is
+   given`. What is given up is what a clock buys: the gap ceiling, sessions and
+   `session_gap`, `window`, `label_delay`, and a `halflife` that means elapsed
+   time rather than rows. Decay still works, per row.
+
+2. **`fit()` over an order-free spec — the state really is
+   order-independent.** `ew_ridge`, `rls`, `huber` or `lasso` with no decay
+   (`lam = 1.0`, no `halflife`) and every path-changing key at its neutral
+   value: no window, no session, no `label_delay`, no Gram blocking,
+   `drift_action = "flag"`, the diagnostics off (`_ORDER_FREE_ONLY_WHEN` in
+   `python/polars_online/_frame.py` is the full table). Then the sums commute
+   and the fit reaches the same state whatever order the rows arrived in —
+   measured 3.3e-16 over 200 rows. That table is conservative by construction
+   ("unknown means no"), so several entries are denied as *unproven* rather
+   than refuted — `weight` among them — while the refuted ones carry their
+   cost: `window` 8.3e-03, `gram_block_rows` 6.3e-04, `label_delay` 4.3e-04,
+   and `drift_action = "reset"` **8.9e-01**, the largest, and the one that read
+   as harmless until a fixture made drift actually fire.
+
+3. **Everything else — and every prediction.** Order-freeness is about
+   `fit()`, whose product is the state. It is never about a prediction: `pred`
+   is out-of-sample by construction, so row *i* is predicted from the rows
+   before it and reordering moves every one of them — **1.33** on the same
+   no-decay `ewridge` whose coefficients agreed to 3.3e-16. And *with* a clock
+   column, out-of-order rows are refused rather than absorbed (0.9.0), so there
+   the question does become whether the run completes.
+
+So the filter to apply to a producer below is not "can it promise order?" but
+"which tier is this pipeline in?". A producer that cannot promise one is still
+a source for tiers 1 and 2; only tier 3 needs the promise. The polars side has
+the same hazard and only a warning (`OrderNotGuaranteedWarning`), because a
+`LazyFrame` cannot be asked for a guarantee; a SQL source *can* be, with
+`ORDER BY`.
+
+### Query engines that can declare an ordering
+
+| producer | bounded memory | clock order | how it would connect |
+|---|---|---|---|
+| **DataFusion** | yes — streams `RecordBatch`es, spills large sorts | **yes, as a plan property**: output ordering is tracked through operators, and partitioned streams merge order-preserving | Rust, in process (the CLI is already a Rust binary), or its Python bindings as a capsule producer |
+| **DuckDB** | yes (§1) | yes, with an explicit `ORDER BY` (§5's caution) | already tier 0 |
+| **ClickHouse** | yes | yes — a table is stored physically in its `ORDER BY` key, so a time-keyed table scans in time order | Arrow output, over ADBC or HTTP |
+
+DataFusion is the one worth singling out: it is the only engine here whose
+ordering is a first-class property of the plan rather than something the query
+author must assert and the reader must trust.
+
+### Time-series stores, where clock order *is* the storage model
+
+| producer | bounded memory | clock order | how it would connect |
+|---|---|---|---|
+| **InfluxDB 3** | yes | yes — time is the organising dimension, and it is itself DataFusion + Arrow | Flight SQL, so: ADBC |
+| **QuestDB** | yes | yes — a designated timestamp, rows stored in it | ADBC / Postgres wire |
+| **TimescaleDB** | yes | yes with `ORDER BY` on the time column; hypertable chunking makes that scan cheap | ADBC Postgres driver |
+| **Lance / LanceDB** | yes | an ordered scan over a table (§2) | capsule export |
+
+This group is why **ADBC's rank in §2 understates it**: one driver manager is
+the door to three of those four. If exactly one thing after DuckDB gets built,
+the evidence points at ADBC rather than at PyArrow.
+
+### Lakes: order is a property of the layout, not of the format
+
+Parquet, Iceberg and Delta expose Arrow readers and stream happily, but none
+of them *creates* an order. Parquet records `sorting_columns`; Iceberg
+declares a sort order in table metadata — both describe what the writer did.
+If the data was written sorted by the clock a scan can preserve it, and if it
+was not, no reader can conjure it — and a clock-using spec will then refuse the
+result, while a clock-free one will accept it and mean something different by
+it. For a lake the integration note is therefore a **precondition on the
+writer**, not a capability of the source.
+
+### Stream processors with per-key state
+
+A different shape: not "a source the bank reads" but "a host the bank runs
+inside", one model per key.
+
+| host | fit | the ordering it actually guarantees |
+|---|---|---|
+| **Arroyo** | closest of the four — Rust, Arrow-based, event time with watermarks, unbounded by design | event time, per key |
+| **Bytewax** | Python dataflow on a Rust core; keyed stateful operators with snapshot recovery | per key within a partition |
+| **Quix Streams** | Kafka-native, per-key state | per *partition* — the real contract, and it maps onto one bank per group |
+| **Spark `transformWithState` / `applyInArrow`** | per-group state exists | **not ordered within a group without an explicit sort**, and its unit is a partition, which is §2's standing objection to Spark |
+
+`arrow-udf` is a mechanism rather than a target: it is how a Rust function over
+Arrow gets embedded in an engine that wants one.
+
+### Rejected on semantics, not on plumbing
+
+**Materialize and Feldera (DBSP).** Both maintain incremental views, and both
+deliver change as *retraction*: an update arrives as a negative multiplicity
+cancelling an earlier row. An online model cannot un-learn a row. Its only
+forgetting is decay, which is time-directed and applies to the whole state at
+once rather than being addressed to one row — and `support_coef`, `n_eff` and
+every co-moment would all have to be walked back for a retraction to mean
+anything. So this is not an awkward fit to be worked around: it is a different
+computational contract, and the mismatch is in the model, not the transport.
+**cuDF** stays out for §2's reason — device capsules are a different contract
+again.
+
+### What this changes about §6
+
+Three things, none of which reorders the list:
+
+1. **ADBC's case is stronger than §2 states** — it fronts not only the
+   warehouses but QuestDB, TimescaleDB and, through Flight SQL, InfluxDB 3:
+   the systems whose storage model already *is* clock order.
+2. **The order guidance (§6.3) should be split in two.** For a spec with a
+   clock it is a hard precondition — since 0.9.0 the bank refuses out-of-order
+   rows rather than absorbing them, so "sorted by the clock within each group"
+   is what makes the source work at all. For a spec without one it is a
+   statement about meaning rather than about completion: the run succeeds
+   either way, and what arrival order decides is what "recent" weighs and what
+   every out-of-sample prediction was scored against. Both belong beside the
+   `ORDER BY` note §5 already carries.
+3. **DataFusion deserves a spike, and it is not blocked on §4.** It would let
+   the Rust CLI read any DataFusion source in a declared order with no Python
+   in the path. It does bring `arrow-rs` — but into `online-cli`, a *separate
+   binary* that already links Rust `polars` and never touches py-polars, not
+   into the wheel. §4 and rule 12 are about two Arrow implementations inside
+   the published wheel; a CLI-only dependency does not incur that, which makes
+   this the cheapest way to find out what living with arrow-rs is actually
+   like before answering §4 at all.
