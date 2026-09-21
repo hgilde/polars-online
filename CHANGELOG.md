@@ -7,6 +7,8 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-09-21
+
 ### Added
 
 - **Not using a model before it is ready, stated as intent
