@@ -138,6 +138,52 @@ What remains true is the more useful fact, and it sits one level down: the
 silently, with no error from polars — measured, and now reported by
 `ConsumedSourceWarning`.
 
+### The dependency-free surface, and a trap when pyarrow is absent
+
+Measured on duckdb 1.5.5 with **no pyarrow installed**, each call on its own
+fresh relation:
+
+| call | without pyarrow |
+|---|---|
+| `rel.__arrow_c_stream__()` | works |
+| `pl.scan_arrow_c_stream(rel)` | works |
+| `pl.DataFrame(rel)` | works |
+| `rel.fetchall()`, `rel.df()` | works |
+| `rel.pl()`, `rel.arrow()` | `ModuleNotFoundError` |
+| `rel.to_arrow_table()`, `rel.to_arrow_reader()` | `ModuleNotFoundError` |
+| `rel.fetch_record_batch()` | `ModuleNotFoundError` |
+
+So **the capsule path is the only Arrow route out of DuckDB that carries no
+dependency**, which is why §1's recipe uses it and why this project can speak to
+DuckDB while refusing to depend on pyarrow. Note also that `fetch_arrow_table`,
+`fetch_arrow_reader` and `fetch_record_batch` are all **deprecated** in favour of
+`to_arrow_table` / `to_arrow_reader` — and every one of them routes through
+pyarrow anyway, so the rename changes nothing for us.
+
+**The trap: a call that fails for want of pyarrow leaves that relation broken.**
+A successful Arrow read does *not* spend a relation — `fetchall()` works twice,
+`__arrow_c_stream__()` works twice, and `fetchall()` still works after
+`__arrow_c_stream__`, after `pl.scan_arrow_c_stream`, and after `pl.DataFrame`.
+But once `rel.to_arrow_table()` or `rel.pl()` has failed on the missing pyarrow,
+**that same relation is finished**:
+
+- `fetchall()` raises `NotImplementedException: Can't 'FetchRaw' from ArrowQueryResult`
+- `df()` raises `InternalException: Failed to cast query result`
+- `__arrow_c_stream__()`, which would have worked a moment earlier, now raises
+  the pyarrow `ModuleNotFoundError` too
+
+The damage is **per relation, not per connection**: a new relation off the same
+connection is fine. Every one of those follow-on errors names the wrong cause,
+so this is easy to misread as a polars or capsule fault. **Build a new relation
+after any such failure rather than reusing one.**
+
+Recorded because I got it wrong first: an earlier probe reused a single relation
+across every call and I concluded from it that "a relation's Arrow calls consume
+its result". The isolating experiment refuted that — successful calls are
+harmless, failed ones are destructive. Not pinned by a test, deliberately: the
+behaviour only appears when pyarrow is *absent*, so a test for it would assert a
+fact about the environment rather than about this package.
+
 So on the export side we stand with the specification and against the installed
 base, without DuckDB beside us any more:
 
