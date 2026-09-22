@@ -1736,20 +1736,26 @@ note, not a task.
 
       - **The input direction from Python.** A frame still arrives as
         `PyDataFrame`, so the private interface is off half the boundary and
-        not all of it. The obstacle is ownership, not effort. The C data
-        interface makes the *consumer* take ownership by moving the struct out
-        and nulling the producer's `release` pointer -- and polars-arrow keeps
-        `ArrowArray`'s fields `pub(super)`, so from outside that module the
-        struct can be moved out but the original cannot be marked released.
-        The imported array's `Drop` and the producing library's capsule
-        destructor would then both be entitled to call `release`. Getting past
-        it means writing a zeroed struct through a raw pointer, which is
-        exactly the kind of thing to prototype and measure rather than reason
-        about. The pieces, when someone does: `import_array_from_c` takes the
-        struct by value and wants the dtype separately, from
-        `import_field_from_c`; `ArrowArrayStreamReader::try_new` is the
-        stream-shaped alternative and raises the same question; the consumer
-        side is `PyCapsuleMethods::pointer_checked(Some(c"arrow_array"))`.
+        not all of it. **Still unbuilt, but no longer blocked -- corrected
+        2026-09-22.** This bullet used to say the obstacle was ownership: the C
+        data interface makes the *consumer* take ownership by moving the struct
+        out and nulling the producer's `release` pointer, and polars-arrow keeps
+        `ArrowArray`'s fields `pub(super)`, so the original could not be marked
+        released. **That was wrong, and it had been recorded as a hard blocker
+        for a fortnight.** Nulling `release` needs no field access:
+        `ArrowArray::empty()` is `pub` and builds the struct with
+        `release: None`, so `std::ptr::replace(ptr, ArrowArray::empty())` moves
+        the producer's struct out and marks the original released in one public
+        call. polars' own `import_array_pycapsules`
+        (`crates/polars-python/src/series/import.rs`) is exactly this idiom, and
+        `crates/online-polars/tests/arrow_capsule_import.rs` proves it against
+        the pinned `polars-arrow =0.55.2` the wheel ships. The pieces are
+        otherwise as before: `import_array_from_c` takes the struct by value and
+        wants the dtype separately, from `import_field_from_c`;
+        `ArrowArrayStreamReader::try_new` is the stream-shaped alternative; the
+        consumer side is `PyCapsuleMethods::pointer_checked(Some(c"arrow_array"))`.
+        What remains is to build it. See `docs/ARROW-SOURCES.md` §4, which no
+        longer asks for a decision.
       - **The four accessor frame builders.** Judged after reading all four,
         not assumed: the rewrite is not worth it. `summary_frame` (13 columns)
         and `describe_frame` (9) are flat and would convert easily. But

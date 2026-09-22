@@ -104,10 +104,17 @@ the stream pointer directly and checking it has not been consumed. So
 **round-tripping a bank's output back into DuckDB is a supported path**, not a
 hope.
 
-But the README currently claims output can go "straight to pyarrow or duckdb"
-and **no test exercises it** (`grep duckdb tests/` is empty). That claim should
-be tested or softened; it is the same class of untested assertion the
-2026-09-17 review was written to catch.
+The README claimed output could go "straight to pyarrow or duckdb" and **no
+test exercised it**. Now measured (2026-09-22), and **the duckdb half was
+false**: on duckdb 1.5.5 an `ArrowStruct` is refused by `from_arrow`
+("not an accepted Arrow Object"), by `register`, and by a replacement scan
+("not suitable for replacement scans"). The reason is the dunder, not the
+data. DuckDB consumes the **stream** interface, `__arrow_c_stream__`, which
+`pl.Series` has and our struct does not; `duckdb.from_arrow(pl.Series(s))`
+works. So the route to DuckDB is through a `Series`, and the README now says
+that instead. The pyarrow half stays **unverified here**, because pyarrow is
+deliberately not a dependency of this project and must not become one to test
+a sentence. `tests/test_arrow_capsule.py` pins all of this.
 
 **A wrinkle worth knowing — and it no longer cuts our way.** DuckDB issue
 [#17084](https://github.com/duckdb/duckdb/issues/17084) reported that
@@ -141,52 +148,76 @@ what a user will have met everywhere else.
 
 ---
 
-## 4. The one decision that is not mine: a second Arrow implementation
+## 4. The import blocker that was not one
 
-A **native** capsule import needs a consumer obligation we cannot currently
-discharge. Quoting the specification:
+**Corrected 2026-09-22, and the decision this section used to ask for is
+withdrawn.** An earlier draft said a native capsule *import* needed a consumer
+obligation we could not discharge, and put three costly ways out to you. The
+premise was wrong. There is nothing to decide, nothing to add, and nothing to
+ask upstream.
+
+The obligation itself is real. Quoting the specification:
 
 > "If the capsule has been passed to a consumer, the consumer should have moved
 > the data and marked the release callback as null" — so there is not "a risk of
 > releasing data the consumer is using".
 
 Nulling `release` is **mandatory**, and the producer's destructor calls release
-only if it is not already null. polars-arrow keeps `ArrowArray`'s fields
+only if it is not already null. What was wrong was the claim that we cannot do
+it. The old reasoning ran: polars-arrow keeps `ArrowArray`'s fields
 `pub(super)`, so from outside that module we can move the struct out but cannot
-mark the original released. That is the blocker `docs/PLAN.md` task 86 recorded,
-and the spec confirms it is real rather than cautious.
+mark the original released. **Marking it released does not need field access.**
+`ArrowArray::empty()` is `pub`, is documented "creates an empty `ArrowArray`,
+which can be used to import data into", and builds the struct with
+`release: None` and every pointer null. So one public call both moves the
+producer's struct out and leaves a released struct behind:
 
-Three ways out, with their costs:
+```rust
+let owned = std::ptr::replace(ptr, ArrowArray::empty());
+let array = import_array_from_c(owned, dtype)?;
+```
 
-**A. Add `arrow-rs` + `pyo3-arrow`.** `pyo3-arrow` does exactly this import and
-discharges the obligation correctly. **But `arrow-rs` is not in the tree** —
-verified, `cargo tree` finds no `arrow`/`arrow-array`/`arrow-buffer` among 335
-crates. Adding it means a **second, complete Arrow implementation** statically
-linked beside polars-arrow, and every chunk converting between the two type
-systems. **CLAUDE.md rule 12 says I must raise this rather than decide it, and
-I am raising it.** My own recommendation is against: the wheel would carry two
-Arrow libraries to remove one private call, and §1 shows the speed argument is
-not there.
+`ArrowSchema::empty()` is public too, and `import_array_from_c` and
+`import_field_from_c` are public and take exactly those forms.
 
-**B. Write the release-nulling by hand against polars-arrow.** `ArrowArray` is
-`#[repr(C)]` with the C Data Interface layout, so `release` is at a known
-offset and can be zeroed through a raw pointer. Small, no new dependency, and
-genuinely fragile: it depends on a layout polars-arrow does not promise, in
-`unsafe` code, where the failure mode is a double free rather than a test
-failure. Viable only with a test that constructs a capsule, imports it, and
-asserts the source is marked released.
+**polars itself does this**, which is the reference to copy rather than invent:
+`crates/polars-python/src/series/import.rs`, `import_array_pycapsules`, is the
+two lines above with `capsule.pointer_checked(Some(c"arrow_array"))` supplying
+the pointer. Note it does *not* replace the schema: `import_field_from_c` takes
+it by reference and copies into a `Field`, so the schema capsule's own
+destructor releases it. The stream-shaped alternative is `open_stream_capsule`,
+which is the same idiom with `ArrowArrayStream::empty()` and
+`ArrowArrayStreamReader::try_new`.
 
-**C. Ask polars-arrow to expose it.** The clean fix is upstream: a safe
-`ArrowArray::mark_released()` or an import that takes a capsule pointer. This is
-a small, well-motivated patch. Note the standing constraints — polars work
-lives in `polars-patch/`, nothing is filed without your go, and an issue must be
-accepted before an AI-authored PR.
+**Verified by a compiling test, not by reading.** `crates/online-polars/tests/
+arrow_capsule_import.rs` exports an array to C, performs the replace-and-import
+round trip from *outside* polars-arrow, asserts the values survive and that the
+source's `release` is now null, and drops the emptied original with no double
+free. It runs against the pinned `polars-arrow =0.55.2` that the wheel actually
+ships, so this is a property of our build and not only of polars' main branch.
 
-**Proposed sequencing, pending your call on A:** build tier 0 now (it needs no
-decision), pursue C in parallel because it is the only option that leaves the
-codebase simpler, and hold B as the fallback if C stalls. A stays on the table
-but should be a deliberate "yes, two Arrow libraries is the right price", not a
-default.
+What this dissolves, so none of it is reopened by accident:
+
+- **A second Arrow implementation is not needed.** Adding `arrow-rs` +
+  `pyo3-arrow` would have put a complete second Arrow library in the wheel to
+  reach one call that turns out to be public. The CLAUDE.md rule 12 question
+  this section used to raise is **withdrawn**, not pending.
+- **No raw-pointer layout hack.** The old fallback zeroed `release` through a
+  raw pointer at a guessed offset, in `unsafe`, where the failure mode is a
+  double free. Unnecessary.
+- **No upstream ask.** There is no second polars patch to file. A duplicate
+  search, control-validated first, found nothing; and pola-rs/polars#28190 is
+  `accepted` but `P-low`, with a maintainer noting this FFI surface is "not
+  meant to be publicly used" — so an ergonomic `mark_released` request would
+  likely not have landed anyway.
+
+**The residual risk, which is real and small.** These items are public but carry
+no stability promise, exactly like the three interfaces in CLAUDE.md rule 13, so
+this is a fourth entry on that list rather than a departure from it. It adds no
+dependency: `crates/online-polars` already depends on polars-arrow directly and
+re-exports these `ffi` items. The test above is the canary — if a future
+polars-arrow drops `empty()`, it fails loudly at build time rather than silently
+at a double free.
 
 ---
 

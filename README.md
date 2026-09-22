@@ -600,17 +600,20 @@ threads.
 
 ```python
 structs = po.ModelBank([spec]).fit_predict_arrow(df)    # one per spec, as Arrow
-out = df.with_columns([pl.Series(s) for s in structs])  # or hand them straight to pyarrow or duckdb
+out = df.with_columns([pl.Series(s) for s in structs])  # or any reader of __arrow_c_array__
 ```
 
 Each struct is what that spec produced, exposing `__arrow_c_array__`. The
 values are `fit_predict`'s exactly — field for field, null for null — and only
 the way out differs. A Polars `Series` crosses on py-polars' private methods,
 which is why this package measures a Polars range rather than promising one;
-the capsule interface is an Arrow specification instead, so anything that
-speaks Arrow can read the result. Exporting hands the buffers to the consumer,
-so each struct is read once and says so if asked twice. `predict_arrow` is the
-same for `predict`.
+the capsule interface is an Arrow specification instead, so a consumer that
+reads `__arrow_c_array__` can take the result directly. A consumer that wants
+the *stream* interface takes it through a `Series` first. DuckDB is one: on
+duckdb 1.5.5 it refuses an `ArrowStruct` and accepts `pl.Series(s)`, because
+`__arrow_c_stream__` is the dunder it looks for. Exporting hands the buffers to
+the consumer, so each struct is read once and says so if asked twice.
+`predict_arrow` is the same for `predict`.
 
 ### Outside a live Python process
 
