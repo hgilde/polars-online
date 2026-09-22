@@ -108,11 +108,17 @@ The README claimed output could go "straight to pyarrow or duckdb" and **no
 test exercised it**. Now measured (2026-09-22), and **the duckdb half was
 false**: on duckdb 1.5.5 an `ArrowStruct` is refused by `from_arrow`
 ("not an accepted Arrow Object"), by `register`, and by a replacement scan
-("not suitable for replacement scans"). The reason is the dunder, not the
-data. DuckDB consumes the **stream** interface, `__arrow_c_stream__`, which
-`pl.Series` has and our struct does not; `duckdb.from_arrow(pl.Series(s))`
-works. So the route to DuckDB is through a `Series`, and the README now says
-that instead. The pyarrow half stays **unverified here**, because pyarrow is
+("not suitable for replacement scans"). DuckDB consumes the **stream**
+interface, `__arrow_c_stream__`, which `pl.Series` has and our struct does not,
+so the struct is rejected on type before its data is looked at.
+
+`duckdb.from_arrow(pl.Series(s))` works, and it is worth knowing *why*, because
+the dunder alone is not sufficient. DuckDB wants something **table-shaped**. A
+spec's output is a *struct* Series, so it presents as one column per field and
+arrives as a 7-column relation. A *flat* `Float64` Series carries the same
+dunder and is still refused, with "Provided table/dataframe must have at least
+one column" (measured 2026-09-22). So the route to DuckDB is through a struct
+`Series`, and the README now says that instead. The pyarrow half stays **unverified here**, because pyarrow is
 deliberately not a dependency of this project and must not become one to test
 a sentence. `tests/test_arrow_capsule.py` pins all of this.
 

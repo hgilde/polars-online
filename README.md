@@ -611,7 +611,9 @@ the capsule interface is an Arrow specification instead, so a consumer that
 reads `__arrow_c_array__` can take the result directly. A consumer that wants
 the *stream* interface takes it through a `Series` first. DuckDB is one: on
 duckdb 1.5.5 it refuses an `ArrowStruct` and accepts `pl.Series(s)`, because
-`__arrow_c_stream__` is the dunder it looks for. Exporting hands the buffers to
+`__arrow_c_stream__` is the dunder it looks for. The `Series` also has to be
+table-shaped, which a spec's output is: its struct fields arrive as one column
+each. Exporting hands the buffers to
 the consumer, so each struct is read once and says so if asked twice.
 `predict_arrow` is the same for `predict`.
 
