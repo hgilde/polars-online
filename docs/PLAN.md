@@ -3198,6 +3198,62 @@ note, not a task.
       2% of the observed error down to `n_kish ≈ 2.3 k_eff`; the per-row
       form conservative by 10–54% at small `n`, which is what an exact `G₂`
       would buy (doc §2.1). Schema 13. Released in 0.9.0.
+- [ ] 88. **Durations for a time clock: `timedelta` half-lives on a
+      `Datetime` clock, requested 2026-09-23.** A `Datetime` or `Date` clock
+      column is accepted when the spec's time parameters are given as
+      durations -- a Python `timedelta`, as asked -- so a halflife states its
+      own unit ("ten minutes") instead of being a number in the column's
+      storage unit. Today such a column is refused (the clock dtype decision
+      of 2026-08-30 below), because casting it to f64 exposes its internal
+      representation: the same 60 seconds reads as 60e3, 60e6 or 60e9 for
+      `Datetime(ms/us/ns)`, so `halflife = 600` on a microsecond column
+      silently meant 600 µs. That decision declined auto-converting to
+      seconds because a halflife's meaning would then depend on the input
+      dtype. **Durations dissolve that objection**: with both the clock and
+      the parameter carrying units, the meaning depends on neither, and the
+      library converts both to one internal scale. So this is the principled
+      form of the refusal, not a relaxation of it. Precedent, and the oracle:
+      pandas' `ewm(halflife=pd.Timedelta(...), times=...)`, which T-S9
+      already uses as the second opinion on the clock model.
+
+      *The rule, as two refusals.* A temporal clock with plain-number time
+      parameters is still refused, with today's error still pointing at
+      `dt.epoch`. A numeric clock with duration parameters is refused too.
+      Either mixture brings the ambiguity back. Numeric clocks with
+      plain-number parameters are unchanged.
+
+      *The surface is every parameter measured in clock units*, spec-level and
+      model-level -- for example `halflife` and its list form, `max_dclock`,
+      `session_gap`, `min_backwards_jump`, `label_delay`, `solve_every`,
+      `window`, and model halflives such as `kalman`'s `revert_halflife` and
+      `holt`'s `level_halflife`. That list is not the source of truth: a
+      completeness test walks every clock-unit field and fails on any that
+      lacks the duration form, so a parameter added later cannot be missed.
+
+      *Other surfaces.* The CLI's TOML has no duration type, so it needs a
+      string spelling; polars' own duration strings (`"10m"`, `"1h30m"`, as
+      in `rolling(period=)`) are the natural one. The Arrow import path (task
+      86's unbuilt half) receives a timestamp's unit in the Arrow type, so it
+      must read the clock's unit from the schema rather than cast blind.
+
+      *Tests.* The T-E10 trap as a pass: the same wall-clock data as
+      `Datetime(ms)`, `Datetime(us)`, `Datetime(ns)` and a `dt.epoch("s")`
+      float column, with `halflife = timedelta(minutes=10)` against
+      `halflife = 600`, gives identical output on every float field. Both
+      mixtures refused, each naming the column, the parameter and the fix. A
+      `Date` clock with day durations. The pandas oracle on an irregular
+      clock. A timezone-aware `Datetime` across a DST change: deltas are taken
+      on the UTC epoch, so the change must not stretch the clock. The
+      completeness test. A spec with durations saves and loads -- the spec's
+      serialised form changes, so `SCHEMA_VERSION` moves (pre-1.0: raise
+      `MIN_SCHEMA_VERSION`, no loader).
+
+      *Open, for the build to decide.* Whether Python also accepts the string
+      spelling beside `timedelta`, which would make a spec read the same in
+      Python and TOML. Whether a `Duration` column may be a clock; a `Time`
+      column stays refused, since time of day wraps at midnight and is not a
+      clock. Whether the spec keeps a parameter as the duration the user wrote,
+      so `summary()` can show "10m" rather than a converted number.
 
 ## 11a. Decisions made while implementing
 
@@ -6092,6 +6148,12 @@ consistent with the null-clock error and hard-rule bias toward loud failure.
 Auto-converting to seconds was considered and declined: it would make the
 meaning of `halflife` depend on the input dtype, which is the same class of
 implicitness that caused the problem.
+
+**Superseded in intent by task 88 (2026-09-23), not yet built.** A third option
+was not weighed here: give the time parameters units too, as durations. That
+removes the objection above, because a `timedelta` halflife states its own
+unit and so no longer depends on the column's. Until task 88 lands, this
+refusal stands exactly as written.
 
 **Tasks 15-17 (CLI, release CI, README), 2026-08-30.**
 
