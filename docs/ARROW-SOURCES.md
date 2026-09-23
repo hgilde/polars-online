@@ -107,10 +107,33 @@ output rather than a stand-in:
 | read | `pl.DataFrame(cur.fetch_arrow())` | works |
 | read | `cur.fetch_polars()` | works, but warns; see below |
 | read | `fetchall()`, `fetch_arrow_table()`, `fetch_record_batch()` | "This API requires PyArrow to be installed" |
+| read, streamed | `pl.scan_arrow_c_stream(cur.fetch_arrow())` | works: 1,024-row batches on SQLite |
+| read, streamed | `pl.read_database(..., iter_batches=True)` | "This API requires PyArrow to be installed" |
 
 So the capsule protocol itself needs no pyarrow on either side of ADBC. Even
 DB-API `fetchall` needs pyarrow in this driver manager, so reads go through
 `fetch_arrow()`.
+
+**Streaming into a bank needs no new code and no pyarrow.** `fetch_arrow()`
+returns an `ArrowArrayStreamHandle`, which carries `__arrow_c_stream__`, so the
+DuckDB recipe of §1 applies unchanged:
+
+```python
+cur.execute("SELECT t, x0, y FROM ticks ORDER BY t")
+for out in bank.fit_predict_batches(pl.scan_arrow_c_stream(cur.fetch_arrow()), chunk_rows=100_000):
+    ...
+```
+
+Measured on 100,000 rows: the stream arrives as 98 batches of 1,024 rows, far
+finer than DuckDB's fixed 1,000,000, and every float field of the bank's output
+equals an in-memory fit of the same rows. polars' own batched reader is the
+wrong spelling for this: `pl.read_database(..., iter_batches=True)` maps ADBC's
+batches to `fetch_record_batch`, which needs pyarrow, while its whole-result
+read uses `fetch_arrow` (from `adbc_driver_manager` 1.6.0 on, per polars'
+driver registry) and so does not -- but a whole result is materialised, which
+is the opposite of what a bank is for. Like any C stream, the handle is
+consumed once. **So there is no need for a direct path from ADBC into the
+bank**: polars' capsule import already is one, and it streams.
 
 **List columns are the driver's call, not the protocol's.** SQLite's driver
 refuses our output with `NOT_IMPLEMENTED: Column 5 has unsupported type
@@ -130,8 +153,9 @@ suggested ADBC ingest takes our output directly, where DuckDB refuses it. That
 probe used a stand-in with two flat float fields and ran with pyarrow
 installed. Lacking the list columns, it could not see the refusal; the real
 output can. On output, then, DuckDB needs a hop through a struct `Series` and
-ADBC needs flat columns, and neither is strictly ahead. On input, both work
-without pyarrow.
+ADBC needs flat columns, and neither is strictly ahead. On input, both stream
+into a bank through the capsule without pyarrow, and ADBC's batches are the
+finer of the two.
 
 ---
 
