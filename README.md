@@ -2537,6 +2537,17 @@ invariance means the engine's batching cannot change the numbers, and
 `save_bytes`/`load_bytes` let a pipeline checkpoint carry the model state.
 Pathway is not a dependency; the example imports it lazily.
 
+Databases compose the same way, through the Arrow PyCapsule interface.
+[examples/duckdb_cursors.py](examples/duckdb_cursors.py) and
+[examples/adbc_cursors.py](examples/adbc_cursors.py) sort a query by the
+clock and stream it into a bank, with no pyarrow. Each gives every lazy plan
+its own cursor. A connection holds one open result, so a second plan built on
+the same connection breaks the first. DuckDB reports that: the broken plan
+yields no rows and raises `ConsumedSourceWarning`. ADBC does not: the broken
+plan returns wrong rows with no warning at all. Both examples show the rule
+and the trap, and fail if either stops holding. DuckDB and ADBC are dev
+dependencies of this project, not dependencies of the package.
+
 ## Versioning and the Polars pin
 
 ### What is pinned
@@ -2666,7 +2677,8 @@ signature, every output field name — is a checked-in snapshot
 (`tests/api_surface.txt`), so a change is a reviewable diff. Every python
 block in this README runs, and so does every example in the API reference.
 Everything under `examples/` runs unmodified: the TOML through the real
-command line, the Pathway operator end to end. `docs/VALIDATION.md`, where
+command line, the Pathway operator end to end, and the cursor examples
+against real DuckDB and SQLite databases. `docs/VALIDATION.md`, where
 the defaults were chosen, is regenerated and compared, so the numbers
 behind them cannot silently stop being true. A data file, a large file or
 generated output that gets tracked fails a test.

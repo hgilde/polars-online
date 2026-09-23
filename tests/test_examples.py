@@ -8,6 +8,7 @@ README points people at, end to end and unmodified.
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import polars as pl
@@ -101,6 +102,47 @@ class TestPathwayExample:
         there rather than trusting the comment in the example."""
         pyproject = (REPO / "pyproject.toml").read_text(encoding="utf-8")
         assert "pathway" not in pyproject
+
+
+class TestDuckdbCursorsExample:
+    """Feeding a bank from DuckDB, sorted by the clock, one cursor per plan
+    (docs/ARROW-SOURCES.md §3). The example checks itself: it exits non-zero if
+    a streamed fit stops equalling an in-memory one, or if the trap it shows
+    stops reproducing on the installed DuckDB."""
+
+    def test_it_runs(self):
+        pytest.importorskip("duckdb")
+        res = _run([sys.executable, str(EXAMPLES / "duckdb_cursors.py")])
+        assert res.returncode == 0, res.stderr
+        assert "right way, first half" in res.stdout
+        assert "right way, second half" in res.stdout
+        assert "the first yielded 0 rows" in res.stdout
+
+
+class TestAdbcCursorsExample:
+    """The same for ADBC, where breaking the rule is silent: a re-executed
+    cursor corrupts a plan built on its earlier stream with no error and no
+    warning (docs/ARROW-SOURCES.md §2, "ADBC, measured")."""
+
+    def test_it_runs(self):
+        pytest.importorskip("adbc_driver_sqlite")
+        res = _run([sys.executable, str(EXAMPLES / "adbc_cursors.py")])
+        assert res.returncode == 0, res.stderr
+        assert "right way, first half" in res.stdout
+        assert "right way, second half" in res.stdout
+        assert "no error and no warning" in res.stdout
+
+
+def test_database_drivers_are_dev_dependencies_only():
+    """The two examples import DuckDB and ADBC; the package must not. Asserted
+    on the packaging, as the pathway separation is, rather than trusted to a
+    comment."""
+    meta = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    runtime = " ".join(meta["project"]["dependencies"]).lower()
+    dev = " ".join(meta["dependency-groups"]["dev"]).lower()
+    for name in ("duckdb", "adbc-driver-manager", "adbc-driver-sqlite"):
+        assert name not in runtime, f"{name} became a package dependency"
+        assert name in dev, f"{name} left the dev group, so its example would stop running"
 
 
 @pytest.fixture(scope="module")

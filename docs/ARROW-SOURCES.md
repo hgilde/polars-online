@@ -162,6 +162,8 @@ triggers `ConsumedSourceWarning`, which keys on a plan that yields nothing.
 **Give each plan its own cursor**, or collect a plan before re-executing its
 cursor; with one cursor per plan both came back exact. Measured on the SQLite
 driver only: another driver may refuse the second execute instead, untested.
+`examples/adbc_cursors.py` runs both the rule and the trap, and exits non-zero
+if either stops holding.
 
 Found by tripping over it. My first probe of the lazy chain built a plan, left
 it uncollected, re-executed the same cursor for the next check, and reported a
@@ -321,7 +323,8 @@ plan on the same connection empties the first, whichever is collected first:
 it yields 0 rows. Unlike ADBC's silent corruption, this one is reported, since
 a Python scan that yields nothing is exactly what `ConsumedSourceWarning` fires
 on, and it did. **Give each plan its own `con.cursor()`**; with one each, both
-came back exact and nothing warned.
+came back exact and nothing warned. `examples/duckdb_cursors.py` runs both the
+rule and the trap, and exits non-zero if either stops holding.
 
 So on the export side we stand with the specification and against the installed
 base, without DuckDB beside us any more:

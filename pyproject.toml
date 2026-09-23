@@ -111,6 +111,14 @@ dev = [
     # single `polars` dependency, and every duckdb test is `importorskip`ed,
     # so none of this is needed to run the suite.
     "duckdb>=1.5.5",
+    # examples/adbc_cursors.py: ADBC is one driver manager in front of most
+    # warehouses (docs/ARROW-SOURCES.md §2), and the one-cursor-per-plan rule
+    # the example shows fails *silently* when broken, so the example must run.
+    # The SQLite driver needs no server. The floors are the versions measured,
+    # and neither package pulls in pyarrow. Dev only, like duckdb: the package
+    # keeps its single `polars` dependency, and the test is `importorskip`ed.
+    "adbc-driver-manager>=1.12.0",
+    "adbc-driver-sqlite>=1.12.0",
 ]
 # The API reference: Sphinx over the docstrings, which are written in its
 # dialect (``:class:`` roles, ``::`` literal blocks). Its own group, so a
