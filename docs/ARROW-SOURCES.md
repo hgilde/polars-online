@@ -135,6 +135,39 @@ is the opposite of what a bank is for. Like any C stream, the handle is
 consumed once. **So there is no need for a direct path from ADBC into the
 bank**: polars' capsule import already is one, and it streams.
 
+**The lazy chain works too, ending in `collect` or a sink.** The plan form
+takes the same scan, so the pipeline stays lazy from the query to the output:
+
+```python
+cur.execute("SELECT t, x0, y FROM ticks ORDER BY t")
+plan = pl.scan_arrow_c_stream(cur.fetch_arrow()).online.fit_predict([spec])
+plan.sink_parquet("out.parquet")        # or .collect(), or .collect_batches()
+```
+
+Measured on 200,000 rows, no pyarrow: `collect()` under the default,
+`in-memory` and `streaming` engines, and `sink_parquet`, each equal an
+in-memory fit on every float field, and `collect_batches()` yields the output
+in 100,000-row batches. The input streams in every case, but `collect()`
+materialises the output, so a result larger than memory should be sunk or
+taken in batches. Collected a second time, the same plan gives 0 rows and
+raises `ConsumedSourceWarning`, so the spent-stream guard covers ADBC as it
+covers DuckDB.
+
+**One cursor, one open stream: a silent trap.** Build a plan on a cursor's
+stream, re-execute that cursor before collecting the plan, and **both** plans
+come back wrong, with no error and no warning. Measured on SQLite: the newer
+plan returned 198,976 of 200,000 rows and the stale one 201,024, out of order
+-- one 1,024-row batch's worth had moved from one to the other. Neither
+triggers `ConsumedSourceWarning`, which keys on a plan that yields nothing.
+**Give each plan its own cursor**, or collect a plan before re-executing its
+cursor; with one cursor per plan both came back exact. Measured on the SQLite
+driver only: another driver may refuse the second execute instead, untested.
+
+Found by tripping over it. My first probe of the lazy chain built a plan, left
+it uncollected, re-executed the same cursor for the next check, and reported a
+mismatch that looked like a defect in the plan form. Every engine agreed once
+each plan had its own stream.
+
 **List columns are the driver's call, not the protocol's.** SQLite's driver
 refuses our output with `NOT_IMPLEMENTED: Column 5 has unsupported type
 large_list`. Column 5 is `coef`, a `List(Float64)`, and `support_coef` is the
