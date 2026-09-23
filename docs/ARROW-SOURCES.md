@@ -93,6 +93,46 @@ first two are where the data actually lives; the second two are the cheapest
 way to keep the contract honest, because PyArrow is the reference and Pandas is
 the one most likely to hand us something surprising.
 
+### ADBC, measured
+
+Measured 2026-09-23 with `adbc_driver_manager` 1.12.0 and the SQLite driver,
+**no pyarrow installed**, against the released `polars-online` 0.9.1's real
+output rather than a stand-in:
+
+| direction | call | without pyarrow |
+|---|---|---|
+| write | `cur.adbc_ingest(name, pl.DataFrame)` | works |
+| write | `cur.adbc_ingest(name, ArrowStruct)` | refused on SQLite: list columns |
+| write | the same, `coef` and `support_coef` dropped | works |
+| read | `pl.DataFrame(cur.fetch_arrow())` | works |
+| read | `cur.fetch_polars()` | works, but warns; see below |
+| read | `fetchall()`, `fetch_arrow_table()`, `fetch_record_batch()` | "This API requires PyArrow to be installed" |
+
+So the capsule protocol itself needs no pyarrow on either side of ADBC. Even
+DB-API `fetchall` needs pyarrow in this driver manager, so reads go through
+`fetch_arrow()`.
+
+**List columns are the driver's call, not the protocol's.** SQLite's driver
+refuses our output with `NOT_IMPLEMENTED: Column 5 has unsupported type
+large_list`. Column 5 is `coef`, a `List(Float64)`, and `support_coef` is the
+same. With both dropped, ingest works. SQLite has no list type; Postgres has
+array types and may accept them, untested. So the portable route out through
+ADBC is a flat output, which those two fields are not.
+
+**Avoid `fetch_polars()`.** It works today, but it is
+`polars.from_arrow(self.fetch_arrow())`, and polars already warns that
+`from_arrow` on a stream-exportable will return a `Series` rather than a
+`DataFrame` in 2.0. `pl.DataFrame(cur.fetch_arrow())` is the spelling that
+survives.
+
+**Corrected, and recorded because I said it first.** An earlier probe
+suggested ADBC ingest takes our output directly, where DuckDB refuses it. That
+probe used a stand-in with two flat float fields and ran with pyarrow
+installed. Lacking the list columns, it could not see the refusal; the real
+output can. On output, then, DuckDB needs a hop through a struct `Series` and
+ADBC needs flat columns, and neither is strictly ahead. On input, both work
+without pyarrow.
+
 ---
 
 ## 3. What DuckDB specifically requires, and one wrinkle worth knowing
