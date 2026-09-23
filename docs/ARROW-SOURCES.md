@@ -281,6 +281,48 @@ harmless, failed ones are destructive. Not pinned by a test, deliberately: the
 behaviour only appears when pyarrow is *absent*, so a test for it would assert a
 fact about the environment rather than about this package.
 
+### Sorting by the clock, then streaming
+
+Measured 2026-09-23 on duckdb 1.5.5, no pyarrow. DuckDB can put rows in clock
+order and stream them straight into a bank, lazily, through to a sink:
+
+```python
+rel = con.sql("SELECT t, x0, y FROM ticks ORDER BY t")
+pl.scan_arrow_c_stream(rel).online.fit_predict([spec]).sink_parquet("out.parquet")
+```
+
+- **The order survives the stream.** A table stored in shuffled order came out
+  in clock order within every batch and across every batch seam, in DuckDB's
+  fixed 1,000,000-row batches. Read without the `ORDER BY`, the same table
+  streamed out of order, so the sort is doing the work.
+- **The fit is exact.** The lazy plan over the sorted stream equals an
+  in-memory fit of the sorted rows on every float field, and
+  `collect_batches()` or `fit_predict_batches` take it a chunk at a time.
+- **A sort larger than DuckDB's memory spills, and still streams in order.**
+  100,000,000 rows, 2.4 GB of values, sorted with `memory_limit = "200MB"` and
+  a `temp_directory`: 3.05 GB of temp files existed when the first batch
+  arrived and 4.25 GB at the peak, the first batch came after 2.7 s of 13.5 s,
+  and all 100 batches were in clock order.
+- **But memory was not flat.** Peak RSS rose 0.94 GB over that stream, against
+  0.26 GB for the same test on 20,000,000 rows (0.48 GB of values). So
+  `memory_limit` is not a cap on the process, and the working set grew with the
+  data. What holds it -- DuckDB outside its buffer manager, the Arrow export, or
+  polars -- is not attributed. Measure on the real data before promising a
+  bound.
+
+Sample temp files *during* the stream. DuckDB removes them when the query ends,
+so a check afterwards sees none; the first attempt at this measurement did
+exactly that and could not tell whether the sort had spilled.
+
+**One stream per connection: the loud twin of ADBC's trap.**
+`pl.scan_arrow_c_stream(rel)` opens the query's stream when the plan is
+*built*, and a DuckDB connection holds one open result. So building a second
+plan on the same connection empties the first, whichever is collected first:
+it yields 0 rows. Unlike ADBC's silent corruption, this one is reported, since
+a Python scan that yields nothing is exactly what `ConsumedSourceWarning` fires
+on, and it did. **Give each plan its own `con.cursor()`**; with one each, both
+came back exact and nothing warned.
+
 So on the export side we stand with the specification and against the installed
 base, without DuckDB beside us any more:
 
@@ -557,7 +599,7 @@ the same hazard and only a warning (`OrderNotGuaranteedWarning`), because a
 | producer | bounded memory | clock order | how it would connect |
 |---|---|---|---|
 | **DataFusion** | yes — streams `RecordBatch`es, spills large sorts | **yes, as a plan property**: output ordering is tracked through operators, and partitioned streams merge order-preserving | Rust, in process (the CLI is already a Rust binary), or its Python bindings as a capsule producer |
-| **DuckDB** | yes (§1) | yes, with an explicit `ORDER BY` (§5's caution) | already tier 0 |
+| **DuckDB** | yes (§1) | yes, with an explicit `ORDER BY` (§5's caution); **measured 2026-09-23, §3**: the order survives the stream, and a sort larger than memory spills | already tier 0 |
 | **ClickHouse** | yes | yes — a table is stored physically in its `ORDER BY` key, so a time-keyed table scans in time order | Arrow output, over ADBC or HTTP |
 
 DataFusion is the one worth singling out: it is the only engine here whose
