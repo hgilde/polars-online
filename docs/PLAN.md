@@ -3269,8 +3269,8 @@ note, not a task.
       | a `Time` column | refused: a time of day starts again at midnight |
       | `0` and `inf` | unit-free, so they may stay numbers beside durations |
       | a rate per clock unit | `lam` and `kalman`'s `q` have no duration form, so a temporal clock refuses them and names the halflife to give instead |
-      | the internal scale | seconds since 1970 UTC, as `f64`: the whole seconds exact and the rest rounded once, so one instant in ms, µs or ns is the same bits; a zone-aware column is read as its UTC instants |
-      | outputs in clock units | seconds: `holt`'s trend is per second, `summary()`'s clock range is epoch seconds, and `output_index`'s `halflife` is seconds; a grid's field names keep the text (`@h10m`) |
+      | the internal scale | seconds from the stream's first instant, as `f64`, the subtraction done in integer nanoseconds and only the remainder rounded, so one instant in ms, µs or ns is the same bits, and the double resolves one part in 2**52 of the time since the origin (under a nanosecond for six weeks, 4 ns at a year, 60 ns at a decade); the origin is kept in the state (`ClockOrigins`), set from the first chunk the bank accepts with the column, and added back wherever a clock value is reported; a zone-aware column is read as its UTC instants |
+      | outputs in clock units | seconds: `holt`'s trend is per second; `summary()`, `groups()` and `closed_groups()` give clock values as seconds since 1970, the origin added back; `output_index`'s `halflife` is seconds; a grid's field names keep the text (`@h10m`) |
 
       *Incompatible, and refused.* A temporal clock with a clock parameter
       as a plain number (naming the column, the parameter, the duration fix
@@ -3305,13 +3305,38 @@ note, not a task.
       give output identical to the bit to a float clock in seconds with the
       same parameters as numbers; a `Date` clock with `"5d"` matches a
       clock in days with `5`; a zone-aware clock across the March change
-      matches its UTC instants and differs from the wall clock. Against
-      pandas' `ewm(halflife=Timedelta, times=...)` on a nanosecond clock
-      the EW mean agrees to 1.2e-9. That is the clock's resolution: a
-      double at 1.7e9 seconds resolves 2**-22 s, 0.24 µs, where pandas
-      keeps integer nanoseconds. Reading the clock against the stream's
-      first instant, kept in the state, would restore nanoseconds; that
-      changes the chunk path and the state, so it is left for a need.
+      matches its UTC instants and differs from the wall clock. Ticks 1 to
+      5000 ns apart under a 1 µs halflife decay by their exact gaps to
+      1e-12, where the same instants as a float clock in epoch nanoseconds
+      (a double at 1.7e18 resolves 256 ns) drift by more than 1e-3. Started
+      a day, a year and a decade into the stream, the same ticks are read
+      to the double's resolution at that age, and the drift is at most that
+      resolution over the halflife: 3.9e-6, 9.6e-4 and 1.1e-2 against
+      bounds of 1.5e-5, 3.7e-3 and 6e-2, which a test pins.
+
+      *The origin (review of 2026-09-24).* The first build read the clock
+      as seconds since 1970, and the pandas oracle on a nanosecond clock
+      agreed only to 1.2e-9: a double at 1.7e9 seconds resolves 2**-22 s,
+      0.24 µs, so nanosecond ticks were being rounded. The user saw that a
+      nanosecond timestamp and `pl.duration` are both exact and asked why
+      the result was not. Now the bank keeps each temporal clock column's
+      first instant (`ClockOrigins`, in the state envelope, set from the
+      first chunk it accepts with the column, and not from a refused one)
+      and reads the column as seconds from it, the subtraction in integer
+      nanoseconds. Scoring a fresh bank reads from the frame's own first
+      instant and keeps nothing. Fed in chunks, the numbers are the
+      one-chunk run's, since only the first accepted chunk sets the origin.
+      The user then asked whether "seconds from the first instant" still
+      loses nanoseconds: it does, by the double's resolution at the
+      stream's age (the table above), and the README had said nothing was
+      lost; it now gives the resolution. A clock exact at any age would
+      keep an integer-nanosecond last instant per group beside each model's
+      float `last_clock`, re-based each chunk; that touches every model's
+      state and is not built, since a halflife of a millisecond or more
+      sees the rounding at 4e-6 after a year.
+      Against the exact nanosecond recursion the bank now agrees to
+      2.2e-16; pandas' own `ewm(times=)` is 1.8e-9 from it, so the pandas
+      oracle's tolerance is pandas', not ours.
 
       *Other surfaces.* The command line takes the same text in TOML,
       tested end to end on a parquet file with a `Datetime(ns)` clock. The

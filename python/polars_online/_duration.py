@@ -37,11 +37,14 @@ def duration_text(value: Any, who: str, key: str) -> Any:
         return format_duration(value // timedelta(microseconds=1) * 1_000)
     if isinstance(value, pl.Expr):
         return format_duration(_nanoseconds(value, who, key))
-    if isinstance(value, str) and value.lower() not in _WORDS:
-        try:
-            parse_duration(value)
-        except ValueError as e:
-            raise ValueError(f"{who}: {key} {e}") from None
+    if isinstance(value, str):
+        # The text names a grid's fields (`@h10m`), so no padding travels.
+        value = value.strip()
+        if value.lower() not in _WORDS:
+            try:
+                parse_duration(value)
+            except ValueError as e:
+                raise ValueError(f"{who}: {key} {e}") from None
     return value
 
 

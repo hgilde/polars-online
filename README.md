@@ -266,10 +266,17 @@ finer than the clock can act on, such as `max_dclock="12h"` on a `Date`
 clock, which moves in days. `0` and `inf` mean the same in every unit, so
 they may stay numbers.
 
-A temporal clock is read as seconds since 1970, so the same instants
-stored in milliseconds, microseconds or nanoseconds give the same numbers,
-and a time zone changes nothing. Where a clock quantity reaches an output,
-it is in seconds: `holt`'s trend is per second. A huge finite halflife is
+A temporal clock is read as seconds from the stream's first instant, so
+the same instants stored in milliseconds, microseconds or nanoseconds give
+the same numbers, and a time zone changes nothing. The subtraction is done
+in integer nanoseconds, and the double that holds the result resolves one
+part in 2<sup>52</sup> of the time since that first instant: under a
+nanosecond for the first six weeks of a stream, four nanoseconds after a
+year. A model reads only the gap between consecutive rows over the
+halflife, so that is the rounding it sees: 4e-9 after a year of stream
+under `halflife="1s"`. Where a clock quantity reaches an output, it is in
+seconds: `holt`'s trend is per second, and `summary()` gives the clock's
+range as seconds since 1970. A huge finite halflife is
 not `inf`: `halflife=1e12` still forgets, and the schedules keyed to the
 halflife scale with it. Say `inf` for no forgetting.
 

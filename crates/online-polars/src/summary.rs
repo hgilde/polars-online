@@ -318,6 +318,11 @@ pub struct SummaryRow<'a> {
     pub rows_processed: u64,
     pub last_clock: Option<f64>,
     pub summary: Option<&'a DataSummary>,
+    /// Seconds to add to every clock value reported: a temporal clock's
+    /// origin (`crate::arrow::ClockOrigins`), so the frame shows seconds
+    /// since 1970 where the stream keeps seconds from the origin; `0` on a
+    /// numeric clock.
+    pub clock_offset: f64,
     /// Where the stream stands on the readiness statistics
     /// (docs/WARMUP-AND-CONVERGENCE.md §3); `None` where a caller has no
     /// stream to read them from.
@@ -359,19 +364,27 @@ pub fn summary_frame(rows: &[SummaryRow<'_>]) -> PolarsResult<DataFrame> {
         Column::new(
             "clock_min".into(),
             rows.iter()
-                .map(|r| r.summary.and_then(|d| d.clock_min))
+                .map(|r| {
+                    r.summary
+                        .and_then(|d| d.clock_min)
+                        .map(|c| c + r.clock_offset)
+                })
                 .collect::<Vec<Option<f64>>>(),
         ),
         Column::new(
             "clock_max".into(),
             rows.iter()
-                .map(|r| r.summary.and_then(|d| d.clock_max))
+                .map(|r| {
+                    r.summary
+                        .and_then(|d| d.clock_max)
+                        .map(|c| c + r.clock_offset)
+                })
                 .collect::<Vec<Option<f64>>>(),
         ),
         Column::new(
             "last_clock".into(),
             rows.iter()
-                .map(|r| r.last_clock)
+                .map(|r| r.last_clock.map(|c| c + r.clock_offset))
                 .collect::<Vec<Option<f64>>>(),
         ),
         Column::new("session_changes".into(), s(|d| d.session_changes)),

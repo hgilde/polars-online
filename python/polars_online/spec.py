@@ -172,17 +172,24 @@ with a duration, and one spec that gives both. A rate per clock unit has no
 duration form, so a temporal clock refuses one too: ``lam``, and ``kalman``'s
 ``q``. Give the halflife the rate stands for as a duration instead.
 
-A temporal clock is read as seconds since 1970-01-01 UTC, and a duration in
-seconds, so the column's own unit never reaches the fit: the same instants as
-``Datetime("ms")``, ``Datetime("us")`` or ``Datetime("ns")`` give the same
-numbers. A time zone changes nothing, because a ``Datetime`` is stored in UTC,
-so a change of clocks for summer time neither stretches nor folds the clock.
-The seconds are held in double precision, which resolves about a quarter of a
-microsecond at today's dates; ticks closer together than that read as
-simultaneous. Where a clock quantity reaches an output, it is in seconds:
-``holt``'s trend is per second, and :meth:`polars_online.ModelBank.summary`
-gives the clock's range as seconds since 1970. A ``Time`` column is refused,
-because a time of day starts again at midnight.
+A temporal clock is read as seconds from the stream's first instant, and a
+duration in seconds, so the column's own unit never reaches the fit: the same
+instants as ``Datetime("ms")``, ``Datetime("us")`` or ``Datetime("ns")`` give
+the same numbers. The bank takes that first instant from the first chunk it
+accepts with the column and keeps it in its state. The subtraction is done in
+integer nanoseconds, and the double that holds the result resolves one part
+in 2**52 of the time since that first instant: under a nanosecond for the
+first six weeks of a stream, four nanoseconds after a year, sixty after a
+decade. A model reads only the gap between consecutive rows over the
+halflife, so that is the rounding it sees: 4e-9 after a year of stream under
+``halflife="1s"``. A time zone changes nothing, because a ``Datetime`` is stored in
+UTC, so a change of clocks for summer time neither stretches nor folds the
+clock. Where a clock quantity reaches an output, it is in seconds:
+``holt``'s trend is per second, and :meth:`polars_online.ModelBank.summary`,
+:meth:`polars_online.ModelBank.groups` and
+:meth:`polars_online.ModelBank.closed_groups` give clock values as seconds
+since 1970. A ``Time`` column is refused, because a time of day starts again
+at midnight.
 
 .. rubric:: What a spec writes
 

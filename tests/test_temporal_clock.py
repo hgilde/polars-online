@@ -188,11 +188,11 @@ class TestTheUnitNeverReachesTheFit:
 
     def test_the_mean_is_pandas_with_times_on_a_datetime_clock(self):
         """T-S9's irregular-clock oracle, on a nanosecond Datetime clock with a
-        ``timedelta`` halflife, which is the form pandas takes too. pandas
-        keeps the instants as integer nanoseconds; the bank reads them as
-        seconds since 1970 in a double, which resolves 2**-22 s (0.24 us)
-        at 2024's 1.7e9 s. Over a 25 s halflife that moves a weight by
-        about 1e-8 of itself, which is the 5e-9 (measured 1.2e-9)."""
+        ``timedelta`` halflife, which is the form pandas takes too. The bank
+        reads the clock as seconds from its first instant, so it agrees with
+        the EW mean recursed on the exact nanosecond gaps to 1e-12 (measured
+        2e-16). pandas is the looser side: its own arithmetic on ``times``
+        sits 1.8e-9 from that recursion, which is the 5e-9 below."""
         pd = pytest.importorskip("pandas")
         rng = np.random.default_rng(8)
         n = 300
@@ -209,13 +209,21 @@ class TestTheUnitNeverReachesTheFit:
             min_periods=0.0,
         )
         out = po.ModelBank([spec]).fit_predict(pl.DataFrame({"t": t, "x0": x}))
-        got = out["m"].struct.field("mean_x0").to_numpy().astype(float)[1:]
+        got = out["m"].struct.field("mean_x0").to_numpy().astype(float)
+        # The recursion on the exact gaps: the mean before each row.
+        exact, w, s = [], 0.0, 0.0
+        for i in range(n):
+            exact.append(s / w if w > 0 else np.nan)
+            lam = 2.0 ** (-(float(ns[i] - ns[i - 1]) if i else 0.0) / 25e9)
+            w, s = w * lam + 1.0, s * lam + x[i]
+        exact = np.array(exact)
+        live = np.isfinite(got) & np.isfinite(exact)
+        assert live.sum() > n - 10
+        assert np.max(np.abs(got[live] - exact[live])) <= 1e-12
         times = pd.to_datetime(ns, unit="ns")
         ref = pd.Series(x).ewm(halflife=pd.Timedelta(seconds=25), times=times).mean()
         ref = ref.to_numpy()[:-1]
-        live = np.isfinite(got)
-        assert live.sum() > n - 10
-        assert np.max(np.abs(got[live] - ref[live])) <= 5e-9
+        assert np.max(np.abs(got[1:][live[1:]] - ref[live[1:]])) <= 5e-9
 
 
 class TestHowADurationIsWritten:
@@ -298,13 +306,14 @@ class TestEachMixtureIsRefused:
                 q=[0.0, 0.1],
             )
         # And on a temporal clock without any duration, lam is the number refused.
-        with pytest.raises(ValueError, match="lam is a plain number"):
+        with pytest.raises(ValueError, match="lam is a rate per clock unit") as e:
             _fit(
                 _temporal(_frame()),
                 po.spec.ewridge(
                     "m", targets=["y"], features=["x0"], clock="t", lam=0.99, max_dclock="inf"
                 ),
             )
+        assert "give halflife as a duration" in str(e.value)
 
     def test_a_duration_needs_a_clock(self):
         with pytest.raises(ValueError, match="needs a clock column"):
@@ -572,3 +581,199 @@ class TestTheHelpersMeasureTheClockTheSameWay:
         seconds = got["window_start"].dt.epoch("s").cast(pl.Float64)
         assert seconds.equals(want["window_start"], check_names=False)
         assert got.drop("window_start").equals(want.drop("window_start"))
+
+
+class TestNanosecondsAreKept:
+    """A temporal clock is read as seconds from its first instant, kept in
+    the bank's state, so the double it becomes resolves about a nanosecond
+    over a year of stream. Read as seconds since 1970 it would resolve a
+    quarter of a microsecond at 2024's 1.7e9 seconds, and ticks closer than
+    that would read as simultaneous."""
+
+    def _ticks(self, n: int = 300, seed: int = 11) -> tuple[np.ndarray, np.ndarray]:
+        rng = np.random.default_rng(seed)
+        gaps = rng.integers(1, 5_000, n)  # nanoseconds apart
+        ns = START * 10**9 + np.cumsum(gaps)
+        return ns, gaps
+
+    def _n_eff(self, gaps: np.ndarray, halflife_ns: float) -> np.ndarray:
+        """The exact recursion: weights of 1, decayed by the exact gap."""
+        out, w = [], 0.0
+        for g in gaps:
+            out.append(w)
+            w = w * 2.0 ** (-float(g) / halflife_ns) + 1.0
+        return np.array(out)
+
+    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    def test_ticks_nanoseconds_apart_decay_by_their_exact_gaps(self):
+        ns, _ = self._ticks()
+        # n_eff at a row is the weight before that row's own decay, which
+        # is by the gap from the row before it: no gap ages row 0.
+        want = self._n_eff(np.concatenate([[0], np.diff(ns)]), 1_000.0)
+        rng = np.random.default_rng(1)
+        x = rng.normal(size=len(ns))
+        df = pl.DataFrame({"t": pl.Series(ns).cast(pl.Datetime("ns")), "x0": x, "y": x})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0"],
+            clock="t",
+            halflife="1us",
+            max_dclock="inf",
+            max_error_inflation=float("inf"),
+        )
+        got = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("n_eff").to_numpy()
+        assert np.max(np.abs(got - want)) < 1e-12 * np.max(want)
+        # The same instants as a float clock in epoch nanoseconds cannot
+        # say this: a double at 1.7e18 resolves 256 ns, so the gaps are
+        # rounded and the decay drifts from the exact recursion.
+        as_float = df.with_columns(t=pl.col("t").cast(pl.Int64).cast(pl.Float64))
+        loose = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0"],
+            clock="t",
+            halflife=1_000.0,
+            max_dclock=float("inf"),
+            max_error_inflation=float("inf"),
+        )
+        drift = po.ModelBank([loose]).fit_predict(as_float)["m"].struct.field("n_eff").to_numpy()
+        assert np.max(np.abs(drift - want)) > 1e-3 * np.max(want)
+
+    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.parametrize(
+        "age_s", [86_400, 31_557_600, 315_576_000], ids=["a day", "a year", "a decade"]
+    )
+    def test_the_rounding_is_the_clocks_resolution_at_the_streams_age(self, age_s):
+        """The double that holds seconds from the origin resolves one part in
+        2**52 of the time since it, so nanosecond ticks late in a stream are
+        read to that resolution, and the error a model sees is at most that
+        over the halflife. Measured under a 1 us halflife: 3.9e-6, 9.6e-4
+        and 1.1e-2 against bounds of 1.5e-5, 3.7e-3 and 6e-2."""
+        ns, _ = self._ticks()
+        ns = np.concatenate([[ns[0]], ns + age_s * 10**9])
+        rng = np.random.default_rng(3)
+        x = rng.normal(size=len(ns))
+        df = pl.DataFrame({"t": pl.Series(ns).cast(pl.Datetime("ns")), "x0": x, "y": x})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0"],
+            clock="t",
+            halflife="1us",
+            max_dclock="inf",
+            max_error_inflation=float("inf"),
+        )
+        got = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("n_eff").to_numpy()
+        want = self._n_eff(np.concatenate([[0], np.diff(ns)]), 1_000.0)
+        err = np.max(np.abs(got - want)) / np.max(want)
+        assert err <= np.spacing(float(age_s)) / 1e-6
+
+    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    def test_fed_in_chunks_the_origin_is_the_first_chunks_first_instant(self):
+        """Hard rule 3 on a temporal clock: only the first accepted chunk
+        sets the origin, and every later chunk is read from it, so the
+        nanosecond gaps across a chunk boundary are the one-chunk run's."""
+        ns, _ = self._ticks()
+        rng = np.random.default_rng(2)
+        x = rng.normal(size=len(ns))
+        df = pl.DataFrame({"t": pl.Series(ns).cast(pl.Datetime("ns")), "x0": x, "y": x})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0"],
+            clock="t",
+            halflife="1us",
+            max_dclock="inf",
+            max_error_inflation=float("inf"),
+        )
+        whole = po.ModelBank([spec]).fit_predict(df)["m"]
+        bank = po.ModelBank([spec])
+        chunked = pl.concat([bank.fit_predict(df.slice(i, 37))["m"] for i in range(0, len(df), 37)])
+        for field in ("pred_y", "n_eff"):
+            assert whole.struct.field(field).equals(chunked.struct.field(field), null_equal=True)
+
+    def test_a_refused_chunk_leaves_no_origin_behind(self):
+        df = _temporal(_frame())
+        # A minute apart throughout, so a row fed late is a jump back of
+        # less than max_dclock, which the disorder check refuses.
+        df = df.with_columns(
+            t_s=(START + 60.0 * pl.int_range(pl.len())).cast(pl.Float64)
+        ).with_columns(t=pl.from_epoch(pl.col("t_s").cast(pl.Int64), time_unit="s"))
+        spec = _ridge("t", halflife="10m", max_dclock="30m")
+        untouched = po.ModelBank([spec]).save_bytes()
+        bank = po.ModelBank([spec])
+        late = pl.concat([df.slice(0, 5), df.slice(6, 5), df.slice(5, 1)])
+        with pytest.raises(ValueError, match="backwards"):
+            bank.fit_predict(late)
+        assert bank.save_bytes() == untouched
+        # Accepted, the first row's instant is the origin, and the clock
+        # range comes back as seconds since 1970 all the same.
+        bank.fit_predict(df.slice(0, 50))
+        first = df["t_s"][0]
+        assert bank.summary()["clock_min"][0] == pytest.approx(first, abs=1e-6)
+        assert bank.summary()["clock_max"][0] == pytest.approx(df["t_s"][49], abs=1e-6)
+        assert bank.groups()["last_clock"][0] == pytest.approx(df["t_s"][49], abs=1e-6)
+
+    def test_scoring_first_then_learning_changes_nothing(self):
+        df = _temporal(_frame())
+        spec = _ridge("t", session="s", **DURATIONS["text"])
+        scored_first = po.ModelBank([spec])
+        assert scored_first.predict(df.slice(0, 20))["m"].struct.field("pred_y").is_null().all()
+        a = scored_first.fit_predict(df)
+        b = po.ModelBank([spec]).fit_predict(df)
+        assert a["m"].equals(b["m"], null_equal=True)
+
+    def test_the_query_form_agrees_with_the_bank(self):
+        df = _temporal(_frame())
+        spec = _ridge("t", session="s", **DURATIONS["pl.duration"])
+        plan = df.lazy().online.fit_predict([spec]).collect()
+        assert plan["m"].equals(po.ModelBank([spec]).fit_predict(df)["m"], null_equal=True)
+
+    def test_the_origin_survives_a_save_and_load(self, tmp_path):
+        """The origin is in the state: loaded, a bank keeps measuring from the
+        same instant, which the clock range reports as seconds since 1970."""
+        df = _temporal(_frame())
+        bank = po.ModelBank([_ridge("t", halflife="10m", max_dclock="30m")])
+        bank.fit_predict(df.slice(0, 100))
+        bank.save(tmp_path / "o.state")
+        loaded = po.ModelBank.load(tmp_path / "o.state")
+        loaded.fit_predict(df.slice(100))
+        assert loaded.summary()["clock_min"][0] == pytest.approx(df["t_s"][0], abs=1e-6)
+        assert loaded.summary()["clock_max"][0] == pytest.approx(df["t_s"][-1], abs=1e-6)
+
+
+class TestTheClockColumnInOtherRoles:
+    def test_a_temporal_column_may_be_the_clock_and_the_session(self):
+        df = _temporal(_frame()).with_columns(day=pl.col("t").dt.date())
+        df = df.with_columns(day_s=pl.col("day").cast(pl.Int32).cast(pl.Float64))
+        want = _fit(df, _ridge("t_s", session="day_s", **NUMBERS))
+        got = _fit(df, _ridge("t", session="day", **DURATIONS["text"]))
+        assert got.equals(want, null_equal=True)
+
+    def test_embargo_on_a_date_clock_moves_whole_days(self):
+        days = pl.date_range(date(2024, 1, 1), date(2024, 1, 20), eager=True)
+        rng = np.random.default_rng(6)
+        x = rng.normal(size=len(days))
+        df = pl.DataFrame({"d": days, "x0": x, "y": 2.0 * x + rng.normal(0.0, 0.1, len(days))})
+        doubled = po.prep.embargo(df.lazy(), clock="d", delay="2d").collect()
+        assert doubled["d"].dtype == pl.Date
+        learn = doubled.filter(pl.col("_online_role") == "learn")
+        assert (learn["d"] - df["d"]).unique().to_list() == [timedelta(days=2)]
+
+    def test_rolling_metrics_buckets_a_duration_clock(self):
+        df = _temporal(_frame()).with_columns(elapsed=pl.col("t") - pl.col("t").first())
+        spec = _ridge("elapsed", halflife="10m", max_dclock="30m")
+        out = df.hstack(_fit(df, spec).to_frame())
+        got = po.eval.rolling_metrics(out, "m", clock="elapsed", window="1h", min_obs=5)
+        assert got["window_start"].dtype == pl.Duration("us")
+        assert got.height > 3
+        starts = got["window_start"].dt.total_seconds().to_list()
+        assert all(s % 3_600 == 0 for s in starts)
+
+    def test_padding_and_spaces_in_duration_text(self):
+        spec = _ridge("t", halflife=[" 5m ", "1h"], max_dclock="inf")
+        assert spec["halflife"] == ["5m", "1h"]
+        assert any("@h5m" in f for f in po.spec.output_fields(spec))
+        with pytest.raises(ValueError, match="has a space in it"):
+            _ridge("t", halflife="1h 30m", max_dclock="inf")

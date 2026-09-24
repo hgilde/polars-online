@@ -58,6 +58,12 @@ pub fn parse_duration(text: &str) -> Result<i64, String> {
             "it is empty; write a number and a unit, as in \"10m\"".into()
         ));
     }
+    if body.chars().any(char::is_whitespace) {
+        return Err(bad(
+            "it has a space in it; write it as one word, as in \"1h30m\"".into(),
+        ));
+    }
+    let too_long = || bad("it is longer than 292 years, the most a clock can hold".into());
     let mut total: i128 = 0;
     let mut rest = body;
     while !rest.is_empty() {
@@ -115,13 +121,14 @@ pub fn parse_duration(text: &str) -> Result<i64, String> {
                 }
             },
         };
-        total += n * i128::from(per);
+        total = n
+            .checked_mul(i128::from(per))
+            .and_then(|part| total.checked_add(part))
+            .ok_or_else(too_long)?;
         if total > i128::from(i64::MAX) {
-            return Err(bad(
-                "it is longer than 292 years, the most a clock can hold".into(),
-            ));
+            return Err(too_long());
         }
-        rest = after.trim_start();
+        rest = after;
     }
     let ns = total as i64;
     Ok(if neg { -ns } else { ns })
@@ -158,9 +165,11 @@ pub struct Duration {
 }
 
 impl Duration {
+    /// The text is kept as written, less the whitespace around it, since it
+    /// names a grid's fields (`@h10m`).
     pub fn parse(text: &str) -> Result<Self, String> {
         Ok(Duration {
-            text: text.to_string(),
+            text: text.trim().to_string(),
             nanos: parse_duration(text)?,
         })
     }
@@ -333,7 +342,6 @@ mod tests {
         for (text, ns) in [
             ("10m", 600 * s),
             ("1h30m", 5_400 * s),
-            ("1h 30m", 5_400 * s),
             ("250ms", 250_000_000),
             ("1us500ns", 1_500),
             ("1µs", 1_000),
@@ -359,7 +367,12 @@ mod tests {
             ("3i", "counts rows"),
             ("5x", "unknown unit"),
             ("m", "whole number"),
+            ("1h 30m", "space"),
             ("99999999999w", "292 years"),
+            // A count that fits i128 but whose product with its unit does
+            // not: it once wrapped to about 218 years and passed.
+            ("10000000000000000000000000000000000000w", "292 years"),
+            ("9223372036854775807s9223372036854775807s", "292 years"),
         ] {
             let err = parse_duration(text).unwrap_err();
             assert!(
@@ -419,6 +432,9 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("has no unit"), "{err}");
+        // Padding is not part of the name a grid's field gets.
+        let padded: Span = serde_json::from_str("\" 5m \"").unwrap();
+        assert_eq!(padded.label(), "5m");
     }
 
     #[test]

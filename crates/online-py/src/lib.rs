@@ -273,8 +273,10 @@ impl PyModelBank {
         let arrays = slf
             .py()
             .detach(|| {
-                let chunk = chunk_from_frame(&df, bank.specs())?;
-                bank.fit_predict_arrow(&chunk)
+                let (chunk, fresh) = chunk_from_frame(&df, bank.specs(), bank.clock_origins())?;
+                let out = bank.fit_predict_arrow(&chunk)?;
+                bank.commit_clock_origins(fresh);
+                Ok::<_, polars::error::PolarsError>(out)
             })
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(wrap_arrow(bank.specs(), arrays))
@@ -289,7 +291,7 @@ impl PyModelBank {
         let arrays = slf
             .py()
             .detach(|| {
-                let chunk = chunk_from_frame(&df, bank.specs())?;
+                let (chunk, _) = chunk_from_frame(&df, bank.specs(), bank.clock_origins())?;
                 bank.predict_arrow(&chunk)
             })
             .map_err(|e| PyValueError::new_err(e.to_string()))?;

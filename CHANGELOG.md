@@ -16,9 +16,12 @@ carries breaking changes, and any change to the numbers a model returns.
   `window`, `solve_every` and own halflives -- is then a duration, written
   as `pl.duration(minutes=10)`, a `timedelta`, or polars' duration text
   `"10m"`. The spec keeps the text, which the command line's TOML takes
-  too. The clock is read as seconds since 1970, so the same instants stored
-  in milliseconds, microseconds or nanoseconds give a float clock's
-  numbers to the bit, and a zone-aware column is read as its UTC instants.
+  too. The clock is read as seconds from the stream's first instant, which
+  the bank keeps in its state, the subtraction done in integer nanoseconds,
+  so the same instants stored in milliseconds, microseconds or nanoseconds
+  give the same numbers to the bit; the double resolves under a nanosecond
+  for the first six weeks of a stream and four nanoseconds after a year,
+  and a zone-aware column is read as its UTC instants.
   A numeric clock is unchanged. `po.prep.embargo`'s `delay` and
   `po.eval.rolling_metrics`' `window` take durations the same way.
 

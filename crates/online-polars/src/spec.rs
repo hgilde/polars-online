@@ -1566,6 +1566,12 @@ impl Spec {
                  derives it",
                 self.name
             )),
+            (Some(d), Some(n)) if d == n => Err(format!(
+                "spec {:?}: {d} mixes durations and plain numbers, and a number says nothing \
+                 about its unit; give every value the same way -- durations for a Datetime, \
+                 Date or Duration clock, numbers for a numeric one",
+                self.name
+            )),
             (Some(d), Some(n)) => Err(format!(
                 "spec {:?}: {d} is a duration but {n} is a plain number, and a number says \
                  nothing about its unit; give every clock parameter the same way -- durations \

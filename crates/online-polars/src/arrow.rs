@@ -20,8 +20,19 @@ use polars_arrow::array::{Float64Array, Int64Array, StructArray, UInt64Array, Ut
 use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
 use polars_arrow::ffi::{ArrowArray, ArrowSchema, export_array_to_c, export_field_to_c};
 
-use crate::span::seconds_of;
+use std::collections::BTreeMap;
+
 use crate::spec::{ClockScale, ModelKind, Spec};
+
+/// Where each temporal clock column is measured from: its first instant, in
+/// nanoseconds since the Unix epoch, keyed by column name. A temporal clock
+/// is read as seconds *from that instant*, so a double holds it to about a
+/// nanosecond over a year of stream, where seconds since 1970 would give a
+/// quarter of a microsecond at today's dates (docs/PLAN.md task 88). The
+/// bank sets a column's origin from the first chunk it accepts with the
+/// column, keeps it for the bank's life and in its state, and adds it back
+/// wherever a clock value is reported.
+pub type ClockOrigins = BTreeMap<String, i64>;
 
 /// One column of an [`ArrowChunk`], in the form the bank reads it.
 #[derive(Clone, Debug)]
@@ -390,7 +401,16 @@ fn text_array(s: &Series, spec_name: &str, role: &str, name: &str) -> PolarsResu
 ///
 /// This is the polars adapter: every dtype decision the bank used to make is
 /// made here, so the bank itself sees numbers and text and nothing else.
-pub fn chunk_from_frame(df: &DataFrame, specs: &[Spec]) -> PolarsResult<ArrowChunk> {
+///
+/// `origins` is where each temporal clock is measured from. A temporal clock
+/// column with no origin yet gets one from its first instant in this frame,
+/// returned beside the chunk for the caller to keep once the chunk is
+/// accepted, so a refused chunk leaves the bank as it was.
+pub fn chunk_from_frame(
+    df: &DataFrame,
+    specs: &[Spec],
+    origins: &ClockOrigins,
+) -> PolarsResult<(ArrowChunk, ClockOrigins)> {
     let names: Vec<PlSmallStr> = df.get_column_names().iter().map(|n| (*n).clone()).collect();
     // `group_close = "monotone"` reads keys in the *column's* order -- an
     // integer column numerically, a text one bytewise -- so a dtype with
@@ -414,6 +434,7 @@ pub fn chunk_from_frame(df: &DataFrame, specs: &[Spec]) -> PolarsResult<ArrowChu
         }
     }
     check_clocks(df, specs)?;
+    let mut fresh = ClockOrigins::new();
     let mut cols: Vec<(PlSmallStr, ArrowCol)> = Vec::new();
     for (name, want) in wanted(specs) {
         // A column a scoring chunk may leave out is not an error here: the
@@ -427,8 +448,8 @@ pub fn chunk_from_frame(df: &DataFrame, specs: &[Spec]) -> PolarsResult<ArrowChu
             .map_or("", |s| s.name.as_str());
         let role = role_of(specs, name.as_str());
         let s = col.as_materialized_series();
-        // A temporal clock is read as seconds since the Unix epoch, the scale
-        // a duration is read on, whatever the column's own unit: casting it
+        // A temporal clock is read as seconds from its origin, the scale a
+        // duration is read on, whatever the column's own unit: casting it
         // instead would expose its *internal representation*, so the same 60
         // seconds would be 60_000 / 60_000_000 / 60_000_000_000 clock units
         // for Datetime(ms/us/ns) (docs/TESTING.md T-E10). `check_clocks` has
@@ -439,7 +460,22 @@ pub fn chunk_from_frame(df: &DataFrame, specs: &[Spec]) -> PolarsResult<ArrowChu
                 .iter()
                 .any(|sp| sp.clock.as_deref() == Some(name.as_str()))
         {
-            cols.push((name.clone(), ArrowCol::F64(temporal_seconds(s)?)));
+            let known = origins
+                .get(name.as_str())
+                .or_else(|| fresh.get(name.as_str()));
+            let origin = match known {
+                Some(o) => *o,
+                None => match first_instant_ns(s)? {
+                    Some(o) => {
+                        fresh.insert(name.to_string(), o);
+                        o
+                    }
+                    // Every value null: the clock check refuses the chunk,
+                    // and no origin is taken from it.
+                    None => 0,
+                },
+            };
+            cols.push((name.clone(), ArrowCol::F64(temporal_seconds(s, origin)?)));
             continue;
         }
         // One column read in two roles that cast to the same form -- a
@@ -458,7 +494,7 @@ pub fn chunk_from_frame(df: &DataFrame, specs: &[Spec]) -> PolarsResult<ArrowChu
         }
         cols.push((name.clone(), cast_to(s, want, spec, role, name.as_str())?));
     }
-    ArrowChunk::new(df.height(), cols, names)
+    Ok((ArrowChunk::new(df.height(), cols, names)?, fresh))
 }
 
 /// Each clock column against the specs that read it (docs/PLAN.md task 88).
@@ -487,6 +523,21 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
             );
         }
         if dtype.is_temporal() {
+            if let ClockScale::Numbers(param @ ("lam" | "q")) = scale {
+                let instead = if param == "lam" {
+                    "halflife"
+                } else {
+                    "coef_halflife"
+                };
+                polars_bail!(ComputeError:
+                    "spec {:?}: clock column {:?} has dtype {}, a temporal clock, but {} is a \
+                     rate per clock unit, which has no duration form; leave it out and give {} \
+                     as a duration, e.g. pl.duration(minutes=10), timedelta(minutes=10) or \
+                     \"10m\"; or cast the clock to the unit you mean, e.g. \
+                     pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64), and use that column.",
+                    spec.name, clock, dtype, param, instead, clock
+                );
+            }
             if let ClockScale::Numbers(param) = scale {
                 polars_bail!(ComputeError:
                     "spec {:?}: clock column {:?} has dtype {}, a temporal clock, but {} is a \
@@ -577,40 +628,81 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
     Ok(())
 }
 
-/// A temporal column as seconds since the Unix epoch (a `Duration` as
-/// seconds), null where it is null. Whole seconds are exact and the rest is
-/// rounded once, so one instant reads as the same `f64` whether it was
-/// stored in milliseconds, microseconds or nanoseconds. A timezone changes
-/// nothing: a `Datetime` is stored in UTC, so a change of clocks for summer
-/// time neither stretches nor folds the clock.
-fn temporal_seconds(s: &Series) -> PolarsResult<Float64Array> {
-    let per = |tu: &TimeUnit| match tu {
-        TimeUnit::Milliseconds => 1_000,
-        TimeUnit::Microseconds => 1_000_000,
-        TimeUnit::Nanoseconds => 1_000_000_000,
-    };
+/// Nanoseconds in one unit of a temporal column: a `Date` counts days.
+fn nanos_per_unit(dtype: &DataType) -> PolarsResult<i128> {
+    Ok(match dtype {
+        DataType::Datetime(TimeUnit::Milliseconds, _)
+        | DataType::Duration(TimeUnit::Milliseconds) => 1_000_000,
+        DataType::Datetime(TimeUnit::Microseconds, _)
+        | DataType::Duration(TimeUnit::Microseconds) => 1_000,
+        DataType::Datetime(TimeUnit::Nanoseconds, _)
+        | DataType::Duration(TimeUnit::Nanoseconds) => 1,
+        DataType::Date => 86_400 * 1_000_000_000,
+        dt => polars_bail!(ComputeError: "a {} column cannot be read as a clock", dt),
+    })
+}
+
+/// A temporal column's values in nanoseconds, null where it is null. A
+/// `Date` reaches further than nanoseconds in an `i64` do, so `i128`.
+fn instants_ns(s: &Series) -> PolarsResult<Vec<Option<i128>>> {
+    let per = nanos_per_unit(s.dtype())?;
     let phys = s.to_physical_repr();
-    let secs: Float64Chunked = match s.dtype() {
-        DataType::Datetime(tu, _) | DataType::Duration(tu) => {
-            let per = per(tu);
-            phys.i64()?
-                .iter()
-                .map(|v| v.map(|v| seconds_of(v, per)))
-                .collect()
-        }
+    Ok(match s.dtype() {
         DataType::Date => phys
             .i32()?
             .iter()
-            .map(|d| d.map(|d| f64::from(d) * 86_400.0))
+            .map(|d| d.map(|d| i128::from(d) * per))
             .collect(),
-        dt => polars_bail!(ComputeError: "a {} column cannot be read as a clock", dt),
+        _ => phys
+            .i64()?
+            .iter()
+            .map(|v| v.map(|v| i128::from(v) * per))
+            .collect(),
+    })
+}
+
+/// The origin a temporal clock column is measured from: its first instant,
+/// in nanoseconds since the Unix epoch, or `None` when every value is null.
+/// A stream's first row is the same row however the stream is chunked, so
+/// the origin is chunk-invariant.
+fn first_instant_ns(s: &Series) -> PolarsResult<Option<i64>> {
+    let Some(first) = instants_ns(s)?.into_iter().flatten().next() else {
+        return Ok(None);
     };
+    i64::try_from(first).map(Some).map_err(|_| {
+        polars_err!(ComputeError:
+            "clock column {:?} starts at an instant nanoseconds cannot hold (before 1677 or \
+             after 2262)",
+            s.name()
+        )
+    })
+}
+
+/// A temporal column as seconds from `origin_ns`, null where it is null.
+/// The subtraction is exact, in integers, and only the remainder is
+/// rounded, so one instant reads as the same `f64` whether it was stored in
+/// milliseconds, microseconds or nanoseconds, and two instants a nanosecond
+/// apart stay apart. A timezone changes nothing: a `Datetime` is stored in
+/// UTC, so a change of clocks for summer time neither stretches nor folds
+/// the clock.
+fn temporal_seconds(s: &Series, origin_ns: i64) -> PolarsResult<Float64Array> {
+    let origin = i128::from(origin_ns);
+    let secs: Float64Chunked = instants_ns(s)?
+        .into_iter()
+        .map(|v| v.map(|v| seconds_of_ns(v - origin)))
+        .collect();
     let secs = secs.rechunk();
     Ok(secs
         .downcast_iter()
         .next()
         .cloned()
         .unwrap_or_else(|| Float64Array::new_empty(ArrowDataType::Float64)))
+}
+
+/// Nanoseconds as seconds: the whole seconds exact, the rest rounded once.
+fn seconds_of_ns(ns: i128) -> f64 {
+    const PER: i128 = 1_000_000_000;
+    ns.div_euclid(PER) as f64 + ns.rem_euclid(PER) as f64 / 1e9
 }
 
 fn reads(s: &Spec, name: &str) -> bool {
