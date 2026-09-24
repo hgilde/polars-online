@@ -1,16 +1,6 @@
 # polars-online
 
-> **The documentation is on GitHub.** This page is also the PyPI project
-> description, and PyPI cannot follow links to files in the repository.
-> Read it on [GitHub](https://github.com/hgilde/polars-online) instead, where
-> every link works. The design notes are in
-> [`docs/`](https://github.com/hgilde/polars-online/tree/main/docs), and the
-> runnable examples are in
-> [`examples/`](https://github.com/hgilde/polars-online/tree/main/examples).
-> The [API reference](https://hgilde.github.io/polars-online/) documents
-> every function and model, and the
-> [changelog](https://github.com/hgilde/polars-online/blob/main/CHANGELOG.md)
-> records every release.
+> **GitHub project:** [github.com/hgilde/polars-online](https://github.com/hgilde/polars-online)
 
 Online model fitting for [Polars](https://pola.rs) — linear models,
 streaming moments, clustering and regime detection — for data that can
