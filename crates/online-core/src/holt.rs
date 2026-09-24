@@ -150,10 +150,19 @@ impl Holt {
     }
 
     /// Reported as `coef`: `[level, trend]` per target, which is the whole
-    /// state and the only thing worth inspecting.
+    /// state and the only thing worth inspecting. NaN, which the stream
+    /// writes as null, for a target not yet observed: it has no level to
+    /// report, and the `[0, 0]` it reported was a level no row had given
+    /// (docs/OUTPUTS.md; PLAN task 97).
     pub fn coefficients(&self) -> Vec<Vec<f64>> {
         (0..self.cfg.n_targets)
-            .map(|j| vec![self.level[j], self.trend[j]])
+            .map(|j| {
+                if self.seen[j] {
+                    vec![self.level[j], self.trend[j]]
+                } else {
+                    vec![f64::NAN, f64::NAN]
+                }
+            })
             .collect()
     }
 }
@@ -333,6 +342,41 @@ mod tests {
             trend_halflife: trend,
             min_periods: 0.0,
         }
+    }
+
+    /// PLAN task 97. Before a target's first observation there is no level
+    /// and no trend to report, and `coef` is null there, as docs/OUTPUTS.md
+    /// says it is "before the model has anything to report" (NaN here, which
+    /// the stream writes as null). It was `[0, 0]`, a level of zero that no
+    /// row had given. A null value or a row of weight 0 observes nothing,
+    /// and the first observation reports its own value as the level.
+    #[test]
+    fn a_target_not_yet_observed_reports_no_coefficients() {
+        let mut m = Holt::new(HoltCfg {
+            n_targets: 2,
+            ..cfg(10.0, 10.0)
+        })
+        .unwrap();
+        let unseen = |c: &[f64]| c.iter().all(|v| v.is_nan());
+        let coef = m.coefficients();
+        assert!(
+            unseen(&coef[0]) && unseen(&coef[1]),
+            "nothing yet: {coef:?}"
+        );
+        // Target 0 observed; target 1 null, then observed at weight 0.
+        m.step(&[], &[Some(4.0), None], 0.0, 1.0);
+        m.step(&[], &[Some(5.0), Some(9.0)], 1.0, 0.0);
+        let coef = m.coefficients();
+        assert_eq!(coef[0][0], 4.0, "the first observation is the level");
+        assert_eq!(coef[0][1], 0.0, "and no slope yet: one point has none");
+        assert!(
+            unseen(&coef[1]),
+            "a null and a weight of 0 observe nothing: {coef:?}"
+        );
+        m.step(&[], &[Some(6.0), Some(-2.0)], 1.0, 1.0);
+        let coef = m.coefficients();
+        assert_eq!(coef[1], vec![-2.0, 0.0], "its first observation");
+        assert!(coef[0].iter().all(|v| v.is_finite()));
     }
 
     fn run(cfg: HoltCfg, ys: &[f64], d: f64) -> (Vec<f64>, Holt) {

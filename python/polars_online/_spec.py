@@ -982,7 +982,10 @@ def lasso(
         over every row so far. ``lam_selected_<t>`` is reported as it stood before
         the row -- the point this row was scored with, not the one its own error
         then elected. A row of weight 0 adds no error and ages the errors so far,
-        so the selection moves only by what the ageing forgets.
+        so the selection moves only by what the ageing forgets. The errors are
+        the model's own predictions', from its first prediction for the target:
+        rows the target's own ``min_periods`` still withholds from the output
+        count, since a threshold gates the output and not the model.
     ``solve_every``, ``max_rows_between_solves``
         The solve schedule, as for :func:`ewridge`.
     ``max_cd_iters``, ``cd_tol``
@@ -2120,7 +2123,8 @@ def holt(
         The accumulated weight before the row, as everywhere.
     ``coef``
         ``[level, trend]`` per target, the whole state; :func:`coef_index` names
-        the two.
+        the two. Null for a target not yet observed, which has no level to
+        report.
 
     plus the fields of the diagnostics switched on, as :mod:`polars_online.spec`
     describes them. :meth:`polars_online.ModelBank.predict` extrapolates over the

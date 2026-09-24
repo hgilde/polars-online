@@ -2953,6 +2953,41 @@ mod tests {
         }
     }
 
+    /// PLAN task 94, for the ridge: a feature that held one value over every
+    /// row inside the window has no evidence there, so its slope is exactly
+    /// zero -- `(0 + ridge)·b = 0` -- where the window's subtraction left a
+    /// variance and a cross-moment that a small ridge divided one by the
+    /// other. At a level of 1e6 that was a slope on the order of the
+    /// remainder over the ridge. The feature moved until row 150 and holds
+    /// after it, so from row 161 on the window of 10 holds none of its
+    /// moves.
+    #[test]
+    fn a_feature_held_over_the_window_gets_no_slope() {
+        let mut c = cfg(2, 1);
+        c.decay = Decay::Halflife(20.0);
+        c.ridge = vec![1e-8];
+        c.min_periods = 0.0;
+        c.window = Some(10.0);
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 5u64;
+        let held = 1e6 + 0.37;
+        for i in 0..220 {
+            let x0 = lcg(&mut s);
+            let x1 = if i < 150 { 1e6 + lcg(&mut s) } else { held };
+            let y = 2.0 * x0 + 0.5 * (x1 - 1e6) + 0.1 * lcg(&mut s);
+            m.step(&[x0, x1], &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            if i >= 161 {
+                let coef = &m.coefficients().unwrap()[0];
+                assert_eq!(coef[2], 0.0, "row {i}: the held feature's slope");
+                assert!(
+                    (coef[1] - 2.0).abs() < 0.2,
+                    "row {i}: the moving one's, {}",
+                    coef[1]
+                );
+            }
+        }
+    }
+
     /// PLAN §13.4 (2): the guarantee, on the fit rather than a moment. A
     /// relationship that held before the window cannot bend the coefficients
     /// inside it.

@@ -261,6 +261,14 @@ impl Lasso {
         Some(&self.acc.tm)
     }
 
+    /// The decay the selection error ages by: `select_halflife`'s, or the
+    /// model's where it is not set.
+    fn select_decay(&self) -> Decay {
+        self.cfg
+            .select_halflife
+            .map_or(self.cfg.decay, Decay::Halflife)
+    }
+
     /// The accumulated weight over every row: under a `window`, the weight
     /// inside it.
     pub fn n_eff(&self) -> f64 {
@@ -293,15 +301,19 @@ impl Lasso {
         let (u, old) = win.snaps.boundary()?;
         let f = self.cfg.decay.factor(win.clock - u);
         let acc = self.acc.window(&old.acc, f)?;
+        let f_sel = self.select_decay().factor(win.clock - u);
         let mut sel_err = self.sel_err.clone();
         if acc.cross.w > 0.0 {
             for (j, err) in sel_err.iter_mut().enumerate() {
+                if old.sel_w[j] == 0.0 {
+                    continue;
+                }
                 if let Some((_w, e)) = crate::truncated_mean(
                     self.sel_w[j],
                     &self.sel_err[j],
                     old.sel_w[j],
                     &old.sel_err[j],
-                    f,
+                    f_sel,
                 ) {
                     *err = e.into_iter().map(|v| v.max(0.0)).collect();
                 }
@@ -321,11 +333,17 @@ impl Lasso {
         self.acc.window_weights(&old.acc, f)
     }
 
-    /// Target `j`'s selection errors as [`Self::view`] has them: inside the
-    /// window where one has truncated the accumulators, the live ones where it
-    /// has not, or where it is empty. One target's, without the Gram
-    /// truncation: the selection loop built the whole view once per target
-    /// per row (review 2026-09-12, P1).
+    /// Target `j`'s selection errors inside the window, as it stands at the
+    /// row just learned: the errors less the boundary snapshot's, aged by
+    /// the selection's own decay; the live ones where there is no window or
+    /// no error inside it. One target's, without the Gram truncation: the
+    /// selection loop built the whole view once per target per row (review
+    /// 2026-09-12, P1).
+    ///
+    /// The truncation ages the snapshot by `select_halflife`, the decay the
+    /// errors age by, where it used the model's (PLAN task 95). Whether the
+    /// window is empty is the errors' own question: it used to be the
+    /// Gram's, which the choice now reads before this row is learned.
     fn window_sel_err(&self, j: usize) -> Vec<f64> {
         let live = || self.sel_err[j].clone();
         let Some(win) = self.win.as_ref() else {
@@ -334,18 +352,20 @@ impl Lasso {
         let Some((u, old)) = win.snaps.boundary() else {
             return live();
         };
-        let f = self.cfg.decay.factor(win.clock - u);
-        match self.acc.window_weights(&old.acc, f) {
-            Some((w, _)) if w > 0.0 => crate::truncated_mean(
-                self.sel_w[j],
-                &self.sel_err[j],
-                old.sel_w[j],
-                &old.sel_err[j],
-                f,
-            )
-            .map_or_else(live, |(_w, e)| e.into_iter().map(|v| v.max(0.0)).collect()),
-            _ => live(),
+        if old.sel_w[j] == 0.0 {
+            // Nothing has aged out of the errors: the live ones, to the bit,
+            // rather than the same numbers through a subtraction of zero.
+            return live();
         }
+        let f = self.select_decay().factor(win.clock - u);
+        crate::truncated_mean(
+            self.sel_w[j],
+            &self.sel_err[j],
+            old.sel_w[j],
+            &old.sel_err[j],
+            f,
+        )
+        .map_or_else(live, |(_w, e)| e.into_iter().map(|v| v.max(0.0)).collect())
     }
 
     /// One Gram's statistics in correlation form, for the targets `readers`
@@ -596,40 +616,62 @@ impl OnlineModel for Lasso {
         let out = self.predict(x, d_clock);
         let pred = &out.pred;
 
+        // ---- the window moves to this row ----
+        // The snapshot is every accumulator before this row, decayed to this
+        // row's clock, so subtracting it later retains this row and after.
+        // The selection's part too: its errors and weights before this row's
+        // error is folded in, aged over the row by the selection's own decay.
+        // It was taken after, with the weight aged twice, and the choice
+        // below read the window as it stood a row earlier (PLAN task 95).
+        let sel_lam = self.select_decay().factor(d_clock);
+        if let Some(win) = self.win.as_mut() {
+            let t = win.clock + d_clock;
+            // Built inside the closure so the snapshot is only formed on the
+            // rows `offer` keeps, not on every row (review 2026-09-18, P1).
+            win.snaps.offer(t, || LassoMoments {
+                acc: self.acc.snapshot(lam_decay),
+                sel_w: self.sel_w.iter().map(|w| w * sel_lam).collect(),
+                sel_err: self.sel_err.clone(),
+            });
+            win.clock = t;
+            win.snaps.trim(t);
+        }
+
         // ---- lambda selection: EW mean squared OOS error, free from preds ----
-        let sel_lam = match self.cfg.select_halflife {
-            Some(h) => Decay::Halflife(h).factor(d_clock),
-            None => lam_decay,
-        };
         for j in 0..m {
-            let Some(yj) = y[j].filter(|_| pred[j * np].is_finite()) else {
-                self.sel_w[j] *= sel_lam;
-                continue;
-            };
             let aged = sel_lam * self.sel_w[j];
-            if weight > 0.0 {
-                let w_new = aged + weight;
-                let (a, b) = (aged / w_new, weight / w_new);
-                for li in 0..np {
-                    let e = yj - pred[j * np + li];
-                    self.sel_err[j][li] = a * self.sel_err[j][li] + b * e * e;
+            match y[j].filter(|_| pred[j * np].is_finite()) {
+                Some(yj) if weight > 0.0 => {
+                    let w_new = aged + weight;
+                    let (a, b) = (aged / w_new, weight / w_new);
+                    for li in 0..np {
+                        let e = yj - pred[j * np + li];
+                        self.sel_err[j][li] = a * self.sel_err[j][li] + b * e * e;
+                    }
+                    self.sel_w[j] = w_new;
                 }
-                self.sel_w[j] = w_new;
-            } else {
-                // A zero-weight row adds no error and ages the rest. In the
-                // mean form it is `0/0` before the first error, and the NaN it
-                // left in every `sel_err` never washed out: every comparison
-                // below false, the choice stuck at the heaviest penalty (hard
-                // rule 9; review 2026-09-12, C7).
-                self.sel_w[j] = aged;
-                if aged <= 0.0 {
-                    continue;
+                _ => {
+                    // No error to fold -- the target is null or not predicted,
+                    // or the row has no weight -- so the errors only age. A
+                    // zero-weight row folded in the mean form is `0/0` before
+                    // the first error, and the NaN it left in every `sel_err`
+                    // never washed out: every comparison below false, the
+                    // choice stuck at the heaviest penalty (hard rule 9;
+                    // review 2026-09-12, C7).
+                    self.sel_w[j] = aged;
+                    if aged <= 0.0 {
+                        continue;
+                    }
                 }
             }
             // Under a `window`, the path point is chosen on the error
-            // *inside* it. Selecting on the whole history while fitting on
+            // *inside* it: selecting on the whole history while fitting on
             // the window would pick a lambda for rows the coefficients no
-            // longer see.
+            // longer see. And it is chosen again on every row, scored or
+            // not, since the rows inside the window change on every row; a
+            // choice left standing from the last scored row read errors the
+            // window had since dropped (PLAN task 95). Without a window only
+            // the common age moved, and the choice is the one it was.
             let err = self.window_sel_err(j);
             let mut best = 0usize;
             for li in 1..np {
@@ -641,20 +683,6 @@ impl OnlineModel for Lasso {
         }
 
         // ---- update accumulators ----
-        // The snapshot is every accumulator before this row, decayed to this
-        // row's clock, so subtracting it later retains this row and after.
-        if let Some(win) = self.win.as_mut() {
-            let t = win.clock + d_clock;
-            // Built inside the closure so the snapshot is only formed on the
-            // rows `offer` keeps, not on every row (review 2026-09-18, P1).
-            win.snaps.offer(t, || LassoMoments {
-                acc: self.acc.snapshot(lam_decay),
-                sel_w: self.sel_w.iter().map(|w| w * lam_decay).collect(),
-                sel_err: self.sel_err.clone(),
-            });
-            win.clock = t;
-            win.snaps.trim(t);
-        }
         self.acc
             .learn(&self.zbuf, y, lam_decay, weight, self.cfg.target_gaps);
 
@@ -1069,6 +1097,110 @@ mod tests {
     /// O(k²) view (review 2026-09-12, P1), and must read what it had, to the
     /// bit: the weights, and each target's selection errors as the view
     /// carried them.
+    /// PLAN task 95. Under a `window`, `lam_selected` is the path point with
+    /// the least EW squared out-of-sample error over the rows inside the
+    /// window (the builder's docstring): each scored row at `w *
+    /// 0.5^(age / select_halflife)`, its age counted from the last row
+    /// learned, and the rows inside the window those at most `window`
+    /// older. Recomputed here from each row's own predictions, which `step`
+    /// reports, it is held on every row where it is decided: not a tie,
+    /// and not an empty window. Three departures moved it on 14 to 90 rows
+    /// of 277 in `tests/test_oracles_lasso_paths.py`: the snapshot took the
+    /// selection after the row's own error, with its weight aged twice; the
+    /// choice read the window as it stood a row earlier; and the truncation
+    /// aged by the model's halflife where `select_halflife` differs.
+    #[test]
+    fn lam_selected_under_a_window_is_the_argmin_inside_it() {
+        let path = vec![0.4, 0.1, 0.02, 0.0];
+        let np = path.len();
+        for (select, window) in [(Some(6.0), 12.0), (None, 12.0), (Some(40.0), 7.5)] {
+            // Two targets, the second first seen at row 25 and missing on
+            // its own rows after, so each target's errors are its own.
+            let mut c = cfg(2, 2, path.clone());
+            c.decay = Decay::Halflife(20.0);
+            c.select_halflife = select;
+            c.window = Some(window);
+            c.window_every = Some(1);
+            c.min_periods = 2.0;
+            let sel_h = select.unwrap_or(20.0);
+            let mut m = Lasso::new(c).unwrap();
+            let mut s = 11u64;
+            let (mut t, mut t_prev) = (0.0, 0.0);
+            // Per target, (clock, weight, squared error per path point) of
+            // each row that scored it.
+            let mut scored: Vec<Vec<(f64, f64, Vec<f64>)>> = vec![Vec::new(), Vec::new()];
+            let mut held = [0usize; 2];
+            for i in 0..300usize {
+                let x = [lcg(&mut s), lcg(&mut s)];
+                // A fit that moves, so the penalty chosen moves with it.
+                let slope = if (i / 60) % 2 == 0 { 1.0 } else { 0.1 };
+                let y0 = (i % 9 != 4).then_some(slope * x[0] - 0.3 * x[1] + 0.3 * lcg(&mut s));
+                let y1 = (i >= 25 && i % 7 != 3)
+                    .then_some(0.5 * x[1] - slope * x[0] + 0.2 * lcg(&mut s));
+                let y = [y0, y1];
+                let d = match i {
+                    0 => 0.0,
+                    150 => 30.0,
+                    _ => [0.25, 0.5, 1.0, 1.5][i % 4],
+                };
+                let w = if i % 13 == 6 {
+                    0.0
+                } else {
+                    0.5 + ((i * 37) % 10) as f64 / 10.0
+                };
+                t += d;
+                // The choice in force for this row: from the rows before it,
+                // inside the window as it stood at the last of them.
+                let mut want = [None; 2];
+                for (j, rows) in scored.iter().enumerate() {
+                    let mut sums = vec![0.0; np];
+                    let mut any = false;
+                    for (tj, wj, e2) in rows {
+                        if *tj >= t_prev - window {
+                            let om = wj * (-((t_prev - tj) / sel_h)).exp2();
+                            for (acc, e) in sums.iter_mut().zip(e2) {
+                                *acc += om * e;
+                            }
+                            any = true;
+                        }
+                    }
+                    let mut order: Vec<usize> = (0..np).collect();
+                    order.sort_by(|&a, &b| sums[a].total_cmp(&sums[b]));
+                    if any && sums[order[1]] - sums[order[0]] > 1e-9 * sums[order[0]] {
+                        want[j] = Some(path[order[0]]);
+                    }
+                }
+                let out = m.step(&x, &y, d, w);
+                let Some(Extra::Lasso { lam_selected }) = &out.extra else {
+                    panic!("a lasso reports its selection");
+                };
+                for j in 0..2 {
+                    if let Some(lam) = want[j] {
+                        assert_eq!(
+                            lam_selected[j], lam,
+                            "select {select:?}, window {window}: row {i}, target {j}"
+                        );
+                        held[j] += 1;
+                    }
+                    if let (Some(yv), true) = (y[j], out.pred[j * np].is_finite()) {
+                        if w > 0.0 {
+                            let e2 = out.pred[j * np..(j + 1) * np]
+                                .iter()
+                                .map(|p| (yv - p).powi(2))
+                                .collect();
+                            scored[j].push((t, w, e2));
+                        }
+                    }
+                }
+                t_prev = t;
+            }
+            assert!(
+                held.iter().all(|&h| h > 150),
+                "select {select:?}: held {held:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_window_weights_and_errors_are_the_views_to_the_bit() {
         let mut c = cfg(2, 2, vec![0.1, 0.0]);

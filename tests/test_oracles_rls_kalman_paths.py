@@ -10,11 +10,12 @@ learned for none, a decaying ``coef_prior``, and no intercept.
 
 ``kalman`` has held several targets and a null target to ``kalman_ref``, but
 never together; the cases below hold them together, with per-target and
-shared ``P`` and without an intercept. ``coef`` is not compared: the core
-reports the state in the scales *after* the row, so that ``coef`` applied to
-the next row's features is that row's ``pred`` (1e-16), while ``kalman_ref``
-unscales with the stats from *before* the row and centres with those after
-it -- a mix no fit has, off by up to 0.38 (reported, 2026-09-24).
+shared ``P`` and without an intercept, ``coef`` included. The core reports
+the state in the scales *after* the row, so that ``coef`` applied to the
+next row's features is that row's ``pred`` (1e-16). ``kalman_ref`` unscaled
+with the stats from *before* the row and centred with those after it, a mix
+no fit has, off by up to 0.38; it reads one moment now (docs/PLAN.md task
+97).
 
 The streams are ``tests/test_oracles_lasso_paths.py``'s for ``rls`` and
 ``tests/data.py::synthetic`` for ``kalman``, as ``TestKalmanOracle`` uses it.
@@ -153,6 +154,7 @@ class TestKalmanSeveralTargetsWithNulls:
             halflife=500.0,
             coef_halflife=100.0,
             min_periods=10.0,
+            coef_every=1,
             **kw,
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
@@ -162,3 +164,8 @@ class TestKalmanSeveralTargetsWithNulls:
             resid = out.struct.field(f"resid_{t}").to_numpy().astype(float)
             _close(resid, ref["resid"][:, j], TOL, f"resid_{t}")
         _close(out.struct.field("n_eff").to_numpy().astype(float), ref["n_eff"], TOL, "n_eff")
+        # coef, read with the stats after each row (task 97).
+        rows = out.struct.field("coef").to_list()
+        empty = [np.nan] * ref["coef"][0].size
+        coef = np.array([empty if r is None else r for r in rows], float)
+        _close(coef.reshape(ref["coef"].shape), ref["coef"], TOL, "coef")

@@ -621,11 +621,27 @@ impl Acc {
             }
         }
         Some(match self.cross.truncated(&old.cross, f, &per) {
-            Some(cross) => AccView {
-                grams: self.grams.truncated(&old.grams, f),
-                wj,
-                cross,
-            },
+            Some(mut cross) => {
+                let grams = self.grams.truncated(&old.grams, f);
+                // A slot with no spread in the window of the Gram a target
+                // reads has none over the target's rows inside it either, so
+                // no covariance with the target there (Cauchy-Schwarz): zero
+                // exactly, where the subtraction left a remainder that a
+                // ridge divides by its penalty. The Gram's zero is exact for
+                // a feature that held one value over the window (PLAN task
+                // 94, `crate::truncated`).
+                for (j, p) in per.iter().enumerate() {
+                    let (Some(_), Some(gram)) = (p, grams.get(self.grams.of[j])) else {
+                        continue;
+                    };
+                    for (i, c) in cross.c[j].iter_mut().enumerate() {
+                        if gram.var(i) == 0.0 {
+                            *c = 0.0;
+                        }
+                    }
+                }
+                AccView { grams, wj, cross }
+            }
             None => AccView {
                 grams: self.grams.grams.iter().map(empty).collect(),
                 wj: vec![0.0; m],

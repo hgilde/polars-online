@@ -308,9 +308,11 @@ class TestHolt:
         )
         out = po.ModelBank([spec]).fit_predict(df)["m"]
         ref = holt_ref(y, df["t"].to_numpy(), df["w"].to_numpy(), max_dclock=MAX_DCLOCK, **kw)
-        # Before a target's first observation the reference has no level and
-        # the core reports [0, 0]; nothing documents which, so from the
-        # first observation on.
-        _held(out, ref, y, coef_where=~np.isnan(ref["coef"]).any(axis=(1, 2)))
+        # On every row: before a target's first observation there is no
+        # level, and the core's coef is null there, as docs/OUTPUTS.md says
+        # (it was [0, 0]; docs/PLAN.md task 97).
+        _held(out, ref, y)
+        first = [int(np.argmax(~np.isnan(ref["coef"][:, j, 0]))) for j in range(len(TARGETS))]
+        assert max(first) > 0, "some target should start after the first row"
         if dup:
             assert np.isnan(ref["pred"][240:300, 1]).sum() > 10, "the gate should withhold"

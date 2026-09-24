@@ -3642,7 +3642,7 @@ note, not a task.
       `release.yml` before maturin in the `sdist` and every `build` job;
       the README in the repository keeps its relative links. A published
       description never changes, so 0.10.0's page stays as it was.
-- [ ] 94. **A windowed Gram's zero variance comes back as rounding noise.**
+- [x] 94. **A windowed Gram's zero variance comes back as rounding noise.**
       Found by the task 92 oracles. The drop rule is "variance exactly
       zero" (`variance_is_usable`, since T-E9), but a window's Gram is
       rebuilt by subtraction, so a feature constant over the window reads
@@ -3653,7 +3653,33 @@ note, not a task.
       sane, and `ewridge` is withheld by its noise gate. The fix is a
       noise-aware zero for a subtracted Gram, since T-E9 removed the
       relative threshold for good reasons.
-- [ ] 95. **The lasso's `lam_selected` under a `window` departs from its
+      **Done 2026-09-24, without a threshold.** Measured first: the
+      remainder a constant feature leaves is of the order of machine epsilon
+      times its level times the spread it had, and grows with the rows
+      since the boundary. At a level of 1e8 and a spread of 1e-3 it was
+      1.2e-5 of the terms that cancelled for one row, and 0.46 at 100,000
+      rows, so no threshold told it from a real spread; a spread of 1e-5 at
+      a level of 1e6 came back within a factor of 20. Instead every `EwCov`
+      keeps, per feature, the value it has held since it last changed and
+      the weight of those rows (schema 16). Where that weight is all the
+      window's, to `EMPTY_FRACTION` of the live weight, `truncated` sets the
+      feature's variance and covariances to exactly zero and its mean to
+      the value. `gaps` then zeroes that slot's cross-moment with each
+      target (Cauchy-Schwarz), so an unstandardized ridge gives a held
+      feature a slope of exactly 0, where it gave 0.0057 at a level of 1e6.
+      A row of weight 0 ends no run, a blend with the slow twin forgets the
+      runs, and a state from before schema 16 starts them at its next row.
+      The tests: `window::tests` over every level, spread, halflife and
+      window length measured, a window of a thousand halflives among them;
+      `the_runs_follow_the_rows_blocked_or_not`;
+      `a_feature_held_over_the_window_gets_no_slope`. The oracle
+      references drop a feature that holds one value on every row of its
+      Gram, and hold the windowed problems they had left out.
+      `TestWindow::test_a_window_down_to_one_row_of_a_target_fits_its_intercept_alone`
+      fails on 0.10.0. Under cargo-mutants, the changed lines of tasks
+      94-97 give 99 mutants: 4 unviable and the rest caught. The last
+      survivors needed tests with a second target and a third feature.
+- [x] 95. **The lasso's `lam_selected` under a `window` departs from its
       documentation** ("the selection error is truncated with the sums"):
       14 to 19 rows of ~277 at the default `select_halflife`, 88 to 90 at
       `select_halflife=10`. Three departures in `lasso.rs`, each moving rows
@@ -3662,19 +3688,41 @@ note, not a task.
       it stood at the previous row; and the truncation uses the model's
       halflife, not `select_halflife`. An emulation with the three corrected
       lands on the oracle on every row.
-- [ ] 96. **`lam_selected` under a `min_periods` list.** Each target's
+      **Done 2026-09-24,** and a Rust oracle found a fourth departure: on a
+      row that does not score the target the choice stood from the last
+      scored row, while the window moved on. Now the window moves to the
+      row first, its snapshot takes the selection before the row's own
+      error, aged once by the selection's decay, the truncation ages by the
+      same decay, and the choice is made again on every row. Where nothing
+      has aged out of the errors it reads the live ones, to the bit.
+      `lam_selected_under_a_window_is_the_argmin_inside_it` recomputes the
+      choice from each row's reported predictions. The oracle file holds
+      `lam_selected` under a window, with and without a halflife of its own,
+      and that fails on 0.10.0 at eight rows.
+- [x] 96. **`lam_selected` under a `min_periods` list.** Each target's
       selection error folds its predictions on rows that its own threshold
       still withholds, which is review S2's "a gate on the output, not on
       the model", but E7 says a target not yet ready is withheld "before it
       can reach … selection". The code and the two documents need one
       reading; the user's call.
-- [ ] 97. **Two conventions to settle.** `holt` reports `coef` as `[0, 0]`
+      **Done 2026-09-24: the code is kept,** the user's call. A target's
+      selection folds the model's own predictions for it from the model's
+      first prediction, whatever its own threshold withholds, as learning
+      does (S2). E7 and the lasso builder's `select_halflife` entry now say
+      so, and the oracle file holds `lam_selected` with a `min_periods` list.
+- [x] 97. **Two conventions to settle.** `holt` reports `coef` as `[0, 0]`
       before a target's first observation, where `docs/OUTPUTS.md` says
       `coef` is null "before the model has anything to report"; and the
       test reference `kalman_ref` builds its standardized `coef` from the
       scales before the row and the means after it (off by up to 0.38), so
       no test compares it, while the library's `coef` predicts the next row
       to 1e-16.
+      **Done 2026-09-24,** as recommended and the user asked. `holt`'s
+      `coef` is null for a target before its first observation (NaN from
+      `coefficients`, which the stream writes as null), and its oracle holds
+      `coef` on every row. `kalman_ref` reads its standardized `coef` with
+      the scales and means of one moment, after the row, and
+      `tests/test_oracles_rls_kalman_paths.py` compares kalman's `coef`.
 - [x] 98. **The Rust tests link no Python, 2026-09-24.** Task 91's matrix
       failed on its first push. The Linux legs for 3.13 and 3.14 could not
       start the CLI's tests: "libpython3.13.so.1.0: cannot open shared
@@ -3730,6 +3778,18 @@ note, not a task.
       which has an `.exe` there, and its TOML carried the path's
       backslashes as escapes (T-W3b's trap). It now takes the `online_cli`
       fixture and writes POSIX paths, so it runs on Windows too.
+- [ ] 101. **A feature that stops moving keeps a variance at the rounding
+      floor, outside a window too.** Measured writing task 94: a feature that
+      varied and then held one value for 200 halflives or more keeps a live
+      variance of about 200 times the square of its level's rounding step.
+      In exact arithmetic that variance is the history's spread, decayed to
+      2^-200 of itself. It is nothing, and it is not zero, so
+      `variance_is_usable` keeps the feature and a standardizing model
+      divides by its square root. The runs of task 94 would say it exactly:
+      a feature whose run holds all but `EMPTY_FRACTION` of the live weight
+      has no spread the library can resolve. Not built; the user's call,
+      since it changes the unwindowed fit of every standardizing model in
+      that case.
 
 ## 11a. Decisions made while implementing
 

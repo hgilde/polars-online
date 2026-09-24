@@ -151,6 +151,23 @@ pub struct EwCov {
     /// this makes the prior fade as data accumulates.
     #[serde(default, alias = "inv_scale")]
     precision_scale: f64,
+    /// Per feature, the value it has held on every row learned since it last
+    /// changed, and the weight of those rows, decayed as `w_sum` is. A window
+    /// reads a feature's spread by subtraction ([`crate::truncated`]), and a
+    /// feature that held one value over every row inside the window has none
+    /// there, which a subtraction cannot say: it leaves a remainder that
+    /// grows with the level and with the rows since the boundary (docs/PLAN.md
+    /// task 94). The run can: when its weight is all of the window's, the
+    /// spread is exactly zero. A row of weight 0 learns nothing, so it ends
+    /// no run and only ages it. Empty in a state written before schema 16,
+    /// which knew nothing of the runs: the next learned row starts them, and
+    /// until one covers a window the window reads that feature's spread from
+    /// the subtraction, as schema 15 did. Always written: only `pending`
+    /// may skip, last.
+    #[serde(default)]
+    run_x: Vec<f64>,
+    #[serde(default)]
+    run_w: Vec<f64>,
     /// Rows buffered for a blocked Gram update, and `w_sum` as it stood when
     /// the block opened (the merge needs the pre-block weight, and the
     /// scalars have moved on by then).
@@ -182,8 +199,55 @@ impl EwCov {
             dev: Scratch(Vec::with_capacity(k)),
             precision_prior: 0.0,
             precision_scale: 1.0,
+            run_x: vec![0.0; k],
+            run_w: vec![0.0; k],
             pending: Pending::default(),
         }
+    }
+
+    /// Each feature's run, as the fields' docs have it: a row of weight
+    /// `w > 0` carrying the run's value extends it, `W' = lam·W + w` as
+    /// `w_sum`; one carrying another value starts a run at its own weight; a
+    /// row of weight 0 ages every run by `lam` and changes no value. A state
+    /// written before the runs has none, and they start at this row.
+    fn track_runs(&mut self, x: &[f64], lam: f64, w: f64) {
+        if !self.runs_known() {
+            self.run_x = x.to_vec();
+            self.run_w = vec![w; self.k];
+            return;
+        }
+        if w > 0.0 {
+            for ((rx, rw), &xi) in self.run_x.iter_mut().zip(self.run_w.iter_mut()).zip(x) {
+                if *rx == xi {
+                    *rw = lam * *rw + w;
+                } else {
+                    *rx = xi;
+                    *rw = w;
+                }
+            }
+        } else {
+            self.age_runs(lam);
+        }
+    }
+
+    fn age_runs(&mut self, lam: f64) {
+        for rw in &mut self.run_w {
+            *rw *= lam;
+        }
+    }
+
+    /// The value feature `i` has held on every learned row carrying at least
+    /// `weight` of the accumulated weight, the newest rows first; `None`
+    /// where it moved inside that weight, or where the runs are unknown (a
+    /// state written before them).
+    pub fn held_over(&self, i: usize, weight: f64) -> Option<f64> {
+        (self.runs_known() && self.run_w[i] >= weight).then(|| self.run_x[i])
+    }
+
+    /// Both halves of every run are here: not a state written before them,
+    /// nor one that lost one of the two.
+    fn runs_known(&self) -> bool {
+        self.run_x.len() == self.k && self.run_w.len() == self.k
     }
 
     /// Same, with a prior for the precision matrix `(C + s·prior·I)⁻¹`, so
@@ -708,6 +772,7 @@ impl EwCov {
             w >= 0.0,
             "EwCov::update requires a non-negative weight, got {w}"
         );
+        self.track_runs(x, lam, w);
         if self.pending.block_rows > 0 {
             return self.buffer(x, lam, w);
         }
@@ -761,6 +826,11 @@ impl EwCov {
         self.c.copy_from_slice(centered);
         self.w_sum = w_sum;
         self.q_sum = q_sum;
+        // New moments stand for rows the runs never saw (a blend with the
+        // slow twin, say), so no run is known to cover any of them: each
+        // starts again from the next row. That can leave a window reading a
+        // held feature from its subtraction, never the reverse.
+        self.run_w.iter_mut().for_each(|w| *w = 0.0);
     }
 
     /// Age the accumulator without adding data (pure decay: means unchanged,
@@ -776,6 +846,7 @@ impl EwCov {
             *q *= lam * lam;
         }
         self.prior_scale *= lam;
+        self.age_runs(lam);
     }
 
     /// Age the accumulator over a row it does not learn: [`Self::decay`],
@@ -789,6 +860,7 @@ impl EwCov {
     /// is the answer.
     pub fn skip(&mut self, x: &[f64], lam: f64) {
         if self.pending.block_rows > 0 && lam * self.w_sum > 0.0 {
+            self.age_runs(lam);
             self.buffer(x, lam, 0.0);
         } else {
             self.decay(lam);
@@ -3359,6 +3431,10 @@ mod tests {
         assert_eq!(got.q_sum(), None);
         assert_eq!(got.n_kish(), None);
         want.q_sum = None;
+        // Nor runs, which schema 16 added: nothing is known of them, and
+        // they start at the next learned row (PLAN task 94).
+        want.run_x.clear();
+        want.run_w.clear();
         assert_eq!(got, want);
         assert!(got.has_precision_prior());
         assert_eq!(got.precision(), want.precision());
@@ -3424,6 +3500,112 @@ mod tests {
         b.decay(0.9);
         assert_eq!(a.q_sum(), b.q_sum());
         assert_eq!(a.n_eff(), b.n_eff());
+    }
+
+    /// The runs (PLAN task 94) are the rows' business, not the Gram's: a
+    /// blocked accumulator holds a row the Gram merges later, and a row it
+    /// skips as a zero-weight one, and its runs are the unblocked one's to
+    /// the bit whatever it holds. Each run's weight is the weight of the
+    /// rows since its value last changed, aged as `w_sum` is aged, so a run
+    /// that covers every learned row weighs `w_sum` itself.
+    #[test]
+    fn the_runs_follow_the_rows_blocked_or_not() {
+        let mut plain = EwCov::new(3);
+        let mut blocked = EwCov::new(3);
+        blocked.set_block_rows(4);
+        for i in 0..60 {
+            let x = [
+                f64::from(i % 3),
+                2.5,
+                if i < 40 { f64::from(i) } else { -1.0 },
+            ];
+            let lam = 0.8 + 0.01 * f64::from(i % 7);
+            match i % 6 {
+                1 => {
+                    plain.skip(&x, lam);
+                    blocked.skip(&x, lam);
+                }
+                4 => {
+                    plain.decay(lam);
+                    blocked.decay(lam);
+                }
+                5 => {
+                    plain.update(&[9.0, 9.0, 9.0], lam, 0.0);
+                    blocked.update(&[9.0, 9.0, 9.0], lam, 0.0);
+                }
+                _ => {
+                    let w = 0.5 + f64::from(i % 4);
+                    plain.update(&x, lam, w);
+                    blocked.update(&x, lam, w);
+                }
+            }
+            assert_eq!(plain.run_x, blocked.run_x, "row {i}: values");
+            assert_eq!(plain.run_w, blocked.run_w, "row {i}: weights");
+        }
+        // Feature 1 held 2.5 on every learned row: its run is all the weight.
+        assert_eq!(plain.held_over(1, plain.n_eff()), Some(2.5));
+        assert!((plain.run_w[1] - plain.n_eff()).abs() <= 1e-12 * plain.n_eff());
+        // Feature 0 cycles, so its run is the last learned row alone; the
+        // zero-weight rows of 9s ended nothing.
+        assert_eq!(plain.held_over(0, plain.n_eff()), None);
+        assert_ne!(plain.run_x[0], 9.0);
+        // Feature 2 has held -1 since row 40.
+        assert_eq!(plain.run_x[2], -1.0);
+        assert!(plain.run_w[2] < plain.n_eff());
+        assert_eq!(plain.held_over(2, plain.run_w[2]), Some(-1.0));
+        assert_eq!(plain.held_over(2, plain.run_w[2] * (1.0 + 1e-9)), None);
+    }
+
+    /// New moments stand for rows the runs never saw -- `gaps`' blend with
+    /// the slow twin -- so after `set_moments` no run covers any weight, and
+    /// the next learned row starts each again.
+    #[test]
+    fn new_moments_forget_the_runs() {
+        let mut ew = EwCov::new(2);
+        for _ in 0..10 {
+            ew.update(&[1.0, 2.0], 0.9, 1.0);
+        }
+        assert_eq!(ew.held_over(0, ew.n_eff() * 0.999), Some(1.0));
+        let (m, c) = (ew.means().to_vec(), ew.comoments().to_vec());
+        ew.set_moments(&m, &c, ew.n_eff(), ew.q_sum());
+        assert_eq!(ew.run_w, vec![0.0, 0.0]);
+        assert_eq!(ew.held_over(0, 1e-300), None);
+        ew.update(&[1.0, 3.0], 0.9, 2.0);
+        assert_eq!(ew.run_w, vec![2.0, 2.0], "one row's weight each");
+    }
+
+    /// A state written before schema 16 has no runs (the named encoding
+    /// defaults them to empty): no feature is held over anything, and the
+    /// next learned row starts every run at its own weight.
+    #[test]
+    fn a_state_without_runs_starts_them_at_its_next_row() {
+        let mut ew = EwCov::new(2);
+        for i in 0..20 {
+            ew.update(&[1.0, f64::from(i)], 0.9, 1.0);
+        }
+        let mut old = serde_json::to_value(&ew).unwrap();
+        let map = old.as_object_mut().unwrap();
+        assert!(map.remove("run_x").is_some() && map.remove("run_w").is_some());
+        let mut back: EwCov = serde_json::from_value(old).unwrap();
+        assert!(back.run_x.is_empty() && back.run_w.is_empty());
+        assert_eq!(back.held_over(0, 0.0), None, "nothing is known");
+        back.update(&[1.0, 5.0], 0.9, 0.75);
+        assert_eq!(back.run_x, vec![1.0, 5.0]);
+        assert_eq!(back.run_w, vec![0.75, 0.75]);
+        // A state with one of the two and not the other knows no more.
+        for key in ["run_x", "run_w"] {
+            let mut half = serde_json::to_value(&ew).unwrap();
+            half.as_object_mut().unwrap().remove(key);
+            let mut back: EwCov = serde_json::from_value(half).unwrap();
+            assert_eq!(
+                back.held_over(0, 0.0),
+                None,
+                "{key} missing: nothing is known"
+            );
+            back.update(&[1.0, 5.0], 0.9, 0.75);
+            assert_eq!(back.run_x, vec![1.0, 5.0], "{key} missing");
+            assert_eq!(back.run_w, vec![0.75, 0.75], "{key} missing");
+        }
     }
 
     #[test]

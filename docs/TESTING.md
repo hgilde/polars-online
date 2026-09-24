@@ -109,9 +109,9 @@ T-A4).
 | `rls` | `rls ≡ ewridge(ridge_decay, solve_every=1)` | <1e-9 | |
 | Kalman | `kalman_ref`, across every configuration | ~1e-15 | T-A1 |
 | the lasso | its KKT conditions, rather than a ported solver; and `lasso_ref`, a coordinate descent from zero on the documented schedule, for every row's *pred* | the conditions hold; pred ~1e-14 | T-A2 |
-| the lasso's targets, `target_gaps`, window, selection, no intercept | `reference_paths.lasso_paths_ref`: every statistic recomputed from the raw rows at each solve, so independent of the core's recursions (2026-09-24) | pred 4.5e-14 | |
+| the lasso's targets, `target_gaps`, window, selection, no intercept | `reference_paths.lasso_paths_ref`: every statistic recomputed from the raw rows at each solve, so independent of the core's recursions (2026-09-24); `lam_selected` under a window and with a `min_periods` list, and a window down to one row of a target, since tasks 94-96 | pred 4.5e-14 | |
 | `ewridge`'s grids, windows, sessions and `session_shrink`, schedule, no intercept | `reference_paths.ewridge_paths_ref`, the same way | pred 1.1e-14 | |
-| `rls` with several targets, `coef_prior`, no intercept; `kalman` with several targets and nulls | `rls_paths_ref`; `kalman_ref` | pred 5.8e-15; 4.9e-15 | |
+| `rls` with several targets, `coef_prior`, no intercept; `kalman` with several targets and nulls, `coef` included since task 97 | `rls_paths_ref`; `kalman_ref` | pred 5.8e-15; 4.9e-15 | |
 | `ftrl`'s targets and decay, `pa`, `sgd`, `holt` | `ftrl_ref`; the docstrings' update equations, written out (`pa_ref`, `sgd_ref`, `holt_ref`) | pred 8.2e-16 | |
 | the plain `sigma` and `resid_z` | the weighted EW root mean square of the residuals before the row | 8.1e-16 | |
 | Huber, quantile | `robust_ref` | ~1e-13 | T-A3 |
@@ -265,6 +265,10 @@ computed field is still bit-identical.
 | a `UnicodeEncodeError` in `examples/pathway_integration.py` | CI on Windows | [What is left](#what-is-left) |
 | two Windows gaps in `.vscode/settings.json` | writing `scripts/env.ps1` | T-W9 in [D](#d-windows-and-cross-platform) |
 | a String feature column was silently parsed back to f64 | the FFI audit | [FFI memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31) |
+| a feature constant inside a `window` read as the subtraction's remainder, which a windowed lasso at a zero penalty divided by itself (predictions of 1e55) | the oracles of 2026-09-24 | docs/PLAN.md task 94 |
+| the lasso's `lam_selected` under a `window` read errors outside it, four ways | the same oracles, then a Rust one | docs/PLAN.md task 95 |
+| `holt` reported `coef` as `[0, 0]` before a target's first observation | the same oracles | docs/PLAN.md task 97 |
+| a CLI test skipped on Windows for want of `online.exe`, and wrote Windows paths into a TOML basic string | reading the first Windows run's skips | docs/PLAN.md task 100 |
 
 ### Differences from river that are not bugs
 

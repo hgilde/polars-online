@@ -13,22 +13,24 @@ one present only where ``x0 > -0.5`` (gaps tied to a feature, so
 ``own_rows`` and ``pairwise`` part), and one with a block of nulls that the
 window outlives.
 
-Two things are left out on purpose, each a disagreement with the documented
-reading, reported rather than held (2026-09-24):
+``lam_selected`` is held everywhere, which it was not on 2026-09-24 when
+this file was written:
 
-- ``lam_selected`` under a ``window``. The core truncates the selection error
-  against a snapshot taken after the row's own error has been folded in and
-  its weight aged twice, reads the boundary and clock of the previous row,
-  and uses the model's decay factor where ``select_halflife`` differs. A
-  scratch emulation of that arithmetic reproduces the library on every row;
-  with the three corrected it lands on this reference on every row.
-- ``lam_selected`` with a ``min_periods`` list. The model is ready once
-  ``n_eff`` reaches the smallest threshold (docs/ENHANCEMENTS.md E7), and a
-  target's selection error then folds its own predictions on rows its own,
-  larger threshold still withholds. That matches review S2's "a gate on the
-  output, not on the model", but E7 also says a not-yet-ready target's slots
-  are withheld before they reach selection. The scalar case, where the two
-  readings agree, is held.
+- under a ``window`` (docs/PLAN.md task 95), where the core truncated the
+  selection error against a snapshot taken after the row's own error, with
+  its weight aged twice, chose on the window as it stood a row earlier and
+  not at all on a row it did not score, and aged the snapshot by the model's
+  halflife where ``select_halflife`` differs;
+- with a ``min_periods`` list (task 96). The model predicts once ``n_eff``
+  reaches the smallest threshold, and a target's selection error folds its
+  own predictions from then on, on rows its own larger threshold still
+  withholds: a gate on the output, not on the model (review S2). The user
+  kept that reading on 2026-09-24, and docs/ENHANCEMENTS.md E7, which said
+  otherwise, was corrected.
+
+A window that holds one row of a target drops every feature of that
+target's problem, which then fits its intercept alone (task 94); under a
+lowered gate those rows are scored, and held.
 """
 
 import numpy as np
@@ -133,10 +135,11 @@ def _fit(df: pl.DataFrame, **kw):
     return spec, out, ref
 
 
-def _held_to_the_reference(df, spec, out, ref, lam_selected=True):
+def _held_to_the_reference(df, spec, out, ref, lam_selected=True, min_selected=150):
     """Every path point's ``pred`` and ``resid`` for every target, ``n_eff``,
-    every held ``coef`` and, where asked, ``lam_selected``; then two probes
-    that the comparison can fail."""
+    every held ``coef`` and, where asked, ``lam_selected`` on at least
+    ``min_selected`` rows of each target; then two probes that the
+    comparison can fail."""
     n, kt = df.height, len(ref["coef"][0, 0, 0])
     index = po.spec.output_index(spec)
     y = df.select(TARGETS).to_numpy().astype(float)
@@ -155,7 +158,7 @@ def _held_to_the_reference(df, spec, out, ref, lam_selected=True):
         if lam_selected:
             sel = out.struct.field(f"lam_selected_{t}").to_numpy().astype(float)
             held = ~np.isnan(ref["lam_selected"][:, j])
-            assert held.sum() > 150, f"{t}: too few rows with a clear selection"
+            assert held.sum() > min_selected, f"{t}: too few rows with a clear selection"
             wrong = np.flatnonzero(held & (sel != ref["lam_selected"][:, j]))
             assert wrong.size == 0, f"lam_selected_{t} differs at rows {wrong[:8]}"
             assert len(set(sel[held])) > 1, f"lam_selected_{t} never moves"
@@ -202,8 +205,9 @@ class TestSeveralTargetsWithGaps:
         spec, out, ref = _fit(
             df, halflife=40.0, min_periods=[20.0, 12.0, 25.0], solve_every=2.5, l1_ratio=1.0
         )
-        # A list of thresholds: lam_selected is left out (the module docstring).
-        _held_to_the_reference(df, spec, out, ref, lam_selected=False)
+        # A list of thresholds: a target's selection folds the model's own
+        # predictions for it, whatever its own threshold withholds (task 96).
+        _held_to_the_reference(df, spec, out, ref)
         # Each target reports from its own weight, not the shared one: the
         # gappy target waits for its own rows to reach its threshold, after
         # the shared n_eff has.
@@ -260,7 +264,7 @@ class TestWindow:
     third target outlives the window, so that target empties and comes back
     while the others stay windowed."""
 
-    def _check(self, target_gaps):
+    def _check(self, target_gaps, **kw):
         df = _stream(35)
         spec, out, ref = _fit(
             df,
@@ -269,9 +273,11 @@ class TestWindow:
             solve_every=1.0,
             window=24.0,
             target_gaps=target_gaps,
+            **kw,
         )
-        # lam_selected under a window is left out (the module docstring).
-        _held_to_the_reference(df, spec, out, ref, lam_selected=False)
+        # The third target's block of nulls empties its window for a while,
+        # so it has fewer rows with a selection than an unwindowed one.
+        _held_to_the_reference(df, spec, out, ref, min_selected=100)
         # The window really cut: n_eff sits below the unwindowed weight.
         n_eff = out.struct.field("n_eff").to_numpy().astype(float)
         assert np.nanmax(n_eff) < 0.8 * (1.0 / (1.0 - 0.5 ** (1.0 / 40.0))), n_eff.max()
@@ -283,3 +289,56 @@ class TestWindow:
 
     def test_pairwise(self):
         self._check("pairwise")
+
+    def test_the_selection_inside_the_window_decays_at_its_own_halflife(self):
+        """Task 95's third departure: the window's selection aged its
+        boundary by the model's halflife, not ``select_halflife``."""
+        self._check("own_rows", select_halflife=10.0)
+
+    def test_a_window_down_to_one_row_of_a_target_fits_its_intercept_alone(self):
+        """Task 94. The third target is present on the first row of every
+        32 clock units, so the window of 24 holds at most one of its rows.
+        Every feature holds one value on that row, so every one is dropped
+        and the fit is the target's value, at every penalty. The core kept
+        each feature as the remainder its subtraction left and, at a penalty
+        of zero, predicted values like 8.6e33 and 2.8e55 where the fit was
+        -1.0. The third target's gate is lowered to half a row, so those
+        rows are scored; the others' stay at 10, and a solve on every row
+        keeps the reference's first-solve rule out of it."""
+        df = _stream(35)
+        # On the model's clock, whose steps ``max_dclock`` caps and a row
+        # skipped for a null feature folds into the next: 32 units a bucket,
+        # so no two of the target's rows are within 24 of each other.
+        dt = np.diff(df["t"].to_numpy(), prepend=0.0)
+        skipped = df.select(pl.any_horizontal(pl.col(FEATURES).is_null())).to_series().to_numpy()
+        clock, pending, last = np.zeros(df.height), 0.0, 0.0
+        for i in range(df.height):
+            if skipped[i]:
+                clock[i], pending = last, pending + dt[i]
+                continue
+            last = last + min(dt[i] + pending, MAX_DCLOCK) if i else 0.0
+            clock[i], pending = last, 0.0
+        bucket = np.floor(clock / 32.0)
+        first = np.r_[True, bucket[1:] != bucket[:-1]] & ~skipped
+        df = df.with_columns(
+            yc=pl.when(pl.Series(first)).then(-2.0 + 1.5 * pl.col("x3") - 0.4 * pl.col("x0"))
+        )
+        spec, out, ref = _fit(
+            df,
+            halflife=40.0,
+            min_periods=[10.0, 10.0, 0.5],
+            max_rows_between_solves=1,
+            window=24.0,
+        )
+        index = po.spec.output_index(spec)
+        for j, t in enumerate(TARGETS):
+            for p, lam in enumerate(PATH):
+                rows = index.filter(
+                    (pl.col("target") == t) & (pl.col("lambda") == lam) & (pl.col("kind") == "pred")
+                )
+                got = out.struct.field(rows["field"][0]).to_numpy().astype(float)
+                _close(got, ref["pred"][:, j, p], PRED_TOL, f"pred_{t} at {lam}")
+        _close(out.struct.field("n_eff").to_numpy().astype(float), ref["n_eff"], PRED_TOL, "n_eff")
+        scored = np.isfinite(ref["pred"][:, 2, -1])
+        assert scored.sum() >= 20, f"only {scored.sum()} rows scored from a window of one row"
+        assert (ref["w_target"][scored, 2] <= 1.5).all(), "one row of the target in the window"

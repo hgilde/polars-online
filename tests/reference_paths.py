@@ -37,6 +37,18 @@ def _weighted_mean(v: np.ndarray, om: np.ndarray) -> np.ndarray:
     return (om[:, None] * v).sum(axis=0) / om.sum()
 
 
+def _held(x: np.ndarray, om: np.ndarray) -> np.ndarray:
+    """The columns that hold one value on every row of positive weight: no
+    spread at all, which is what a variance of exactly zero means. Tested on
+    the values, not on a variance recomputed from them, where the weighted
+    mean of equal values can miss them by an ulp and leave a variance of
+    ulp squared (docs/PLAN.md task 94)."""
+    rows = x[om > 0.0]
+    if rows.shape[0] == 0:
+        return np.zeros(x.shape[1], dtype=bool)
+    return (rows == rows[0]).all(axis=0)
+
+
 def lasso_paths_ref(
     X: np.ndarray,
     Y: np.ndarray,
@@ -81,20 +93,22 @@ def lasso_paths_ref(
     features, ``c_i = cov(x_i, y) / s_i``, ``coef_i = b_i / s_i`` and the
     intercept is ``ybar - m . coef``; a feature whose variance is zero is
     dropped with coefficient 0 (the ``ewridge`` docstring; the ``1e-10``
-    threshold ``lasso_ref`` cites went with T-E9). Without one nothing is
-    centred: ``C = E[x x'] / (r r')``, ``c_i = E[x_i y] / r_i`` with ``r_i``
+    threshold ``lasso_ref`` cites went with T-E9), which is to say one that
+    holds a single value on every row of the Gram (``_held``). Without one
+    nothing is centred: ``C = E[x x'] / (r r')``, ``c_i = E[x_i y] / r_i`` with ``r_i``
     the root mean square, ``coef_i = b_i / r_i``, and a column that is all
     zero is dropped.
 
     A problem is held only where the smallest eigenvalue of ``C + l2 I`` is
     at least 1e-2, and a target with no weight has no problem to hold; either
     is NaN here, and a row scored with one raises (``lasso_ref``'s rule).
-    Under a ``window`` a problem that drops a feature is not held either. The
-    core rebuilds a window's Gram by subtracting the state at its boundary,
-    so a variance that is zero inside the window -- one row left, say -- comes
-    back as rounding noise of about 1e-14. The feature is then kept and the
-    zero-penalty slope is noise over noise, where the documented rule drops
-    it (found writing this reference, 2026-09-24; not held here, reported).
+    Under a ``window`` a feature can hold one value on every row inside it --
+    one row left, say -- and is dropped there. The core rebuilds a window's
+    Gram by subtracting the state at its boundary, which left such a
+    variance as rounding noise that it kept, so that the zero-penalty slope
+    was noise over noise; each feature's run of equal values now says the
+    variance is zero exactly (docs/PLAN.md task 94), and these problems are
+    held.
 
     **Scoring.** Row ``i`` is scored with the last solve before it, target
     ``j`` only once its own weight -- the rows it is present on, at their raw
@@ -171,7 +185,7 @@ def lasso_paths_ref(
             ybar = float(omo @ yo / omo.sum())
             cxy = ((omo * (yo - ybar))[:, None] * (xo - mo)).sum(axis=0) / omo.sum()
             var = np.diag(cov)
-            kept = np.flatnonzero(var > 0.0)
+            kept = np.flatnonzero((var > 0.0) & ~_held(xg, omg))
             s = np.sqrt(var[kept])
             C = cov[np.ix_(kept, kept)] / np.outer(s, s)
             c = cxy[kept] / s
@@ -183,8 +197,6 @@ def lasso_paths_ref(
             s = r[kept]
             C = raw[np.ix_(kept, kept)] / np.outer(s, s)
             c = rxy[kept] / s
-        if window is not None and kept.size < k:
-            return fit
         floor = np.linalg.eigvalsh(C)[0] if kept.size else np.inf
         off = 1 if add_intercept else 0
         for p, lam in enumerate(path):
@@ -306,7 +318,7 @@ def lasso_paths_ref(
     }
 
 
-def _ridge_fit(xg, omg, xo, yo, omo, ridge, standardize, add_intercept, windowed):
+def _ridge_fit(xg, omg, xo, yo, omo, ridge, standardize, add_intercept):
     """One ridge problem, from the Gram's rows ``xg`` at ``omg`` and the
     target's own rows ``xo``, ``yo`` at ``omo`` (the ``ewridge`` docstring).
 
@@ -319,11 +331,15 @@ def _ridge_fit(xg, omg, xo, yo, omo, ridge, standardize, add_intercept, windowed
     nothing is centred: ``(E[x x'] + ridge I) b = E[x y]``, and
     ``standardize`` scales by each column's root mean square instead.
 
+    A feature that holds one value on every row of the Gram (``_held``) has
+    a variance and a cross-moment of zero, so the ridge gives it a slope of
+    zero and ``standardize`` drops it; under a window that is one row left,
+    say (``lasso_paths_ref`` says why this is held now).
+
     Returns ``(intercept, slopes)``, or ``None`` where the reference does not
-    hold the problem: a target with no weight, a feature set whose features
-    are nearly collinear on these rows (the smallest eigenvalue of their
-    correlation matrix below 1e-3), or, under a window, a dropped feature
-    (``lasso_paths_ref`` says why)."""
+    hold the problem: a target with no weight, or a feature set whose
+    features are nearly collinear on these rows (the smallest eigenvalue of
+    their correlation matrix below 1e-3)."""
     if omo.sum() <= 0.0 or omg.sum() <= 0.0:
         return None
     if add_intercept:
@@ -332,13 +348,17 @@ def _ridge_fit(xg, omg, xo, yo, omo, ridge, standardize, add_intercept, windowed
         mo = _weighted_mean(xo, omo)
         ybar = float(omo @ yo / omo.sum())
         v = ((omo * (yo - ybar))[:, None] * (xo - mo)).sum(axis=0) / omo.sum()
+        # A feature holding one value on every row of the Gram has no spread
+        # and no covariance with anything there, the target's rows included.
+        held = _held(xg, omg)
+        M[held, :] = 0.0
+        M[:, held] = 0.0
+        v[held] = 0.0
     else:
         M = (omg[:, None, None] * np.einsum("ri,rj->rij", xg, xg)).sum(axis=0) / omg.sum()
         v = ((omo * yo)[:, None] * xo).sum(axis=0) / omo.sum()
     scale = np.sqrt(np.diag(M))
     kept = np.flatnonzero(scale > 0.0)
-    if windowed and kept.size < len(scale):
-        return None
     corr = M[np.ix_(kept, kept)] / np.outer(scale[kept], scale[kept])
     if kept.size and np.linalg.eigvalsh(corr)[0] < 1e-3:
         return None
@@ -453,7 +473,6 @@ def ewridge_paths_ref(
                     r,
                     standardize,
                     add_intercept,
-                    window is not None,
                 )
                 if got is None:
                     continue

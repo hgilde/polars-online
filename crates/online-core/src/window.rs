@@ -355,7 +355,7 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
     // ratio·g·d dᵀ` with `d = m_u - m`.
     let (ratio, g) = (w_old / w, w_now / w);
     let d: Vec<f64> = (0..k).map(|i| old.m[i] - cov.mean(i)).collect();
-    let mean: Vec<f64> = (0..k).map(|i| cov.mean(i) - ratio * d[i]).collect();
+    let mut mean: Vec<f64> = (0..k).map(|i| cov.mean(i) - ratio * d[i]).collect();
     let c_now = cov.comoments();
     let mut cen = vec![0.0; k * k];
     for i in 0..k {
@@ -366,6 +366,23 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
         // What is left to lose is a difference of positives; a variance it
         // takes a hair below zero is zero (review V3).
         cen[i * k + i] = cen[i * k + i].max(0.0);
+    }
+    // A feature that held one value over every row inside the window has no
+    // spread there, and the subtraction cannot say so: it leaves a remainder
+    // that grows with the level and with the rows since the boundary, up to
+    // half the terms that cancelled (docs/PLAN.md task 94). Its run can,
+    // when the run's weight is all of the window's. That comparison is of two
+    // weights equal in exact arithmetic when the run starts at the boundary
+    // row, so what the run may miss is what the window's own weight counts
+    // as nothing, `EMPTY_FRACTION` of the live weight.
+    for i in 0..k {
+        if let Some(value) = cov.held_over(i, w - EMPTY_FRACTION * w_now) {
+            mean[i] = value;
+            for j in 0..k {
+                cen[i * k + j] = 0.0;
+                cen[j * k + i] = 0.0;
+            }
+        }
     }
     let q = match (cov.q_sum(), old.q) {
         (Some(q_now), Some(q_then)) => Some((q_now - f * f * q_then).max(0.0)),
@@ -417,6 +434,7 @@ pub fn truncated_scalar(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Decay;
 
     /// Eight bytes a snapshot, for rings of counters.
     impl Footprint for usize {
@@ -532,6 +550,250 @@ mod tests {
             "and its value: {}",
             kept.mean(0)
         );
+    }
+
+    fn lcg(s: &mut u64) -> f64 {
+        *s = s
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((*s >> 11) as f64) / ((1u64 << 53) as f64) * 2.0 - 1.0
+    }
+
+    /// One row of [`windowed`]'s stream: what the accumulator is given.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Row {
+        /// Learned at this weight.
+        Learn(f64),
+        /// Not learned: aged over, as a Gram ages over a row none of its
+        /// targets has (`EwCov::skip`).
+        Skip,
+        /// Not learned: aged by `EwCov::decay`.
+        Decay,
+    }
+
+    /// PLAN task 94's stream, one row per clock unit, snapshotted every row:
+    /// features 0 and 2 move on every row, feature 1 moves until row `from`
+    /// and holds `c` from there on, except where `jumps` gives it another
+    /// value.
+    /// The accumulator truncated to the last `window` clock units, `c`, and
+    /// feature 1's values and weights on the rows inside the window.
+    #[allow(clippy::too_many_arguments)]
+    fn windowed(
+        n: usize,
+        window: f64,
+        h: f64,
+        level: f64,
+        scale: f64,
+        from: usize,
+        rows: &dyn Fn(usize) -> Row,
+        jumps: &[(usize, f64)],
+        seed: u64,
+    ) -> (EwCov, f64, Vec<(f64, f64)>) {
+        let mut s = 0x9e37_79b9_7f4a_7c15 ^ seed.wrapping_mul(7919);
+        let lam = if h.is_infinite() {
+            1.0
+        } else {
+            (-(1.0 / h)).exp2()
+        };
+        let mut cov = EwCov::new(3);
+        let mut snaps = Snapshots::new(window, 1).unwrap();
+        let c = level + scale * lcg(&mut s);
+        let mut inside = Vec::new();
+        for i in 0..n {
+            let t = i as f64;
+            let l = if i == 0 { 1.0 } else { lam };
+            snaps.offer(t, || Moments::of(&cov, l));
+            snaps.trim(t);
+            let moving = level + scale * lcg(&mut s);
+            let mut x1 = if i >= from { c } else { moving };
+            if let Some(&(_, v)) = jumps.iter().find(|&&(j, _)| j == i) {
+                x1 = v;
+            }
+            let x = [scale * lcg(&mut s), x1, level - scale * lcg(&mut s)];
+            let w = match rows(i) {
+                Row::Learn(w) => {
+                    cov.update(&x, l, w);
+                    w
+                }
+                Row::Skip => {
+                    cov.skip(&x, l);
+                    0.0
+                }
+                Row::Decay => {
+                    cov.decay(l);
+                    0.0
+                }
+            };
+            if t >= (n - 1) as f64 - window {
+                inside.push((x1, w * lam.powi((n - 1 - i) as i32)));
+            }
+        }
+        let t = (n - 1) as f64;
+        let (u, old) = snaps.boundary().unwrap();
+        let f = Decay::Halflife(h).factor(t - u);
+        let out = truncated(&cov, old, f).expect("the window holds rows");
+        (out, c, inside)
+    }
+
+    /// Weights that move, as a bank's `weight` column does.
+    fn weights(i: usize) -> Row {
+        Row::Learn(0.5 + ((i * 7919) % 101) as f64 / 100.0)
+    }
+
+    /// PLAN task 94. A feature that holds one value over every row inside a
+    /// window has no spread there, and the window's Gram says so exactly:
+    /// zero variance, zero covariance with every other feature, and that
+    /// value as its mean. It used to come back as whatever the subtraction
+    /// left, measured up to 4.6e-1 of the terms that cancelled at a level of
+    /// 1e8 and a spread of 1e-3, so the feature was kept and standardized by
+    /// noise: a windowed lasso at a zero penalty predicted 2.8e55 where the
+    /// fit is -1.0. No threshold separates that from a real spread, since the
+    /// leftover grows with the level and with the rows since the boundary;
+    /// the accumulator knows instead which features have held their value,
+    /// and on what weight. The run starts at the boundary row or before it,
+    /// across the levels, spreads, halflives and window lengths measured,
+    /// the last a window of a thousand halflives, where the history's
+    /// spread has decayed to its last ulp.
+    #[test]
+    fn a_feature_constant_inside_the_window_has_no_spread_there() {
+        let shapes = [
+            (0.0, 1.0),
+            (0.0, 1e-3),
+            (1e3, 1.0),
+            (1e6, 1.0),
+            (1e6, 1e-3),
+            (-1e8, 1.0),
+            (-1e8, 1e-3),
+        ];
+        // Half a clock unit is the last row alone.
+        let windows = [
+            (0.5, 1.0),
+            (0.5, 40.0),
+            (1.0, 3.0),
+            (9.0, 10.0),
+            (9.0, 30.0),
+            (199.0, 70.0),
+            (1999.0, 2.0),
+        ];
+        for &(level, scale) in &shapes {
+            for &(window, h) in &windows {
+                for before in [0usize, 3] {
+                    for seed in 0..3 {
+                        let n = 400 + window as usize;
+                        let from = n - 1 - window as usize - before;
+                        let (w, c, _) =
+                            windowed(n, window, h, level, scale, from, &weights, &[], seed);
+                        let case = format!(
+                            "level {level}, scale {scale}, window {window}, h {h}, from {before} before, seed {seed}"
+                        );
+                        assert_eq!(w.var(1), 0.0, "{case}: variance");
+                        for j in [0, 2] {
+                            assert_eq!(w.cov(j, 1), 0.0, "{case}: covariance with {j}");
+                            assert_eq!(w.cov(1, j), 0.0, "{case}: covariance with {j}, transposed");
+                        }
+                        assert_eq!(w.mean(1), c, "{case}: the value held is the mean");
+                        if window >= 1.0 {
+                            assert!(
+                                w.var(0) > 0.0,
+                                "{case}: the feature that moves keeps its spread"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The other side of the run: a feature whose value changes once inside
+    /// the window, or whose boundary row has another value, keeps its
+    /// spread, the variance of the rows inside it. Rows the accumulator does
+    /// not learn age the run as they age everything else, so a run that
+    /// skipped rows is not credited with weight it no longer carries.
+    #[test]
+    fn a_feature_that_moves_inside_the_window_keeps_its_spread() {
+        let learn_or_skip = |i: usize| match i % 5 {
+            1 => Row::Skip,
+            3 => Row::Decay,
+            _ => weights(i),
+        };
+        for (window, h, rows) in [
+            (9.0, 10.0, &weights as &dyn Fn(usize) -> Row),
+            (30.0, 8.0, &learn_or_skip),
+            (7.0, 2.0, &learn_or_skip),
+        ] {
+            let n = 300;
+            let boundary = n - 1 - window as usize;
+            assert!(
+                matches!(rows(boundary), Row::Learn(_)),
+                "the boundary row must be learned"
+            );
+            // The run starts one row after the boundary, whose row carries
+            // another value; then a run from the boundary with one jump.
+            for (from, jumps) in [
+                (boundary + 1, vec![(boundary, 5.0)]),
+                (boundary, vec![(n - 3, 7.0)]),
+            ] {
+                let (w, _, inside) = windowed(n, window, h, 0.0, 1.0, from, rows, &jumps, 1);
+                let total: f64 = inside.iter().map(|&(_, w)| w).sum();
+                let mean = inside.iter().map(|&(x, w)| w * x).sum::<f64>() / total;
+                let exact = inside
+                    .iter()
+                    .map(|&(x, w)| w * (x - mean).powi(2))
+                    .sum::<f64>()
+                    / total;
+                assert!(exact > 1e-6, "window {window}: the case needs a spread");
+                let got = w.var(1);
+                assert!(
+                    (got - exact).abs() <= 1e-9 * exact,
+                    "window {window}, h {h}, from {from}: {got} against {exact}"
+                );
+            }
+        }
+    }
+
+    /// A row of weight 0 is legal and learns nothing (CLAUDE.md hard rule
+    /// 9), so its value is none of the window's spread: a zero-weight row
+    /// carrying another value inside the window does not end the run.
+    #[test]
+    fn a_row_of_no_weight_does_not_end_a_run() {
+        let (window, n) = (9.0, 300);
+        let odd = n - 4;
+        let rows = |i: usize| {
+            if i == odd {
+                Row::Learn(0.0)
+            } else {
+                weights(i)
+            }
+        };
+        let (w, c, _) = windowed(n, window, 10.0, 1e3, 1.0, n - 20, &rows, &[(odd, -5.0)], 2);
+        assert_eq!(w.var(1), 0.0);
+        assert_eq!(w.mean(1), c);
+        // Nor does a row whose weight is nothing next to the window's: the
+        // boundary row, at a weight far below `EMPTY_FRACTION` of the live
+        // weight, carrying another value before the run begins. What the run
+        // misses of the window's weight is within what the window's own
+        // weight counts as nothing, so the feature has no spread there.
+        let boundary = n - 1 - window as usize;
+        let rows = |i: usize| {
+            if i == boundary {
+                Row::Learn(1e-12)
+            } else {
+                weights(i)
+            }
+        };
+        let (w, c, _) = windowed(
+            n,
+            window,
+            10.0,
+            1e3,
+            1.0,
+            boundary + 1,
+            &rows,
+            &[(boundary, -5.0)],
+            3,
+        );
+        assert_eq!(w.var(1), 0.0, "a boundary row of no account");
+        assert_eq!(w.mean(1), c);
     }
 
     /// The module doc's promise -- a coarse `every` discards more than

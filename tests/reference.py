@@ -491,6 +491,30 @@ def lasso_ref(
     return {"pred": pred, "n_eff": n_eff, "coef": coef, "solved": solved}
 
 
+def _kalman_scales(st: dict, kt: int, off: int, standardize: bool) -> np.ndarray:
+    """``kalman_ref``'s feature scales from its EW stats ``st`` as they stand:
+    all ones with ``standardize`` off, and 1 for the intercept slot and for a
+    feature whose variance is nearly zero."""
+    scales = np.ones(kt)
+    if not standardize:
+        return scales
+    if off == 0:
+        # No intercept: nothing to centre on, so each feature is scaled by
+        # its raw second moment and not shifted. Centring here put a hidden
+        # intercept into every prediction that `coef` had no slot for; the
+        # core stopped doing it (review 2026-09-12, C10) and this oracle,
+        # which had copied it, follows.
+        for j in range(kt):
+            raw = st["raw"][j, j]
+            scales[j] = np.sqrt(raw) if raw > 0.0 else 1.0
+        return scales
+    for j in range(off, kt):
+        var = st["raw"][j, j] - st["mean"][j] ** 2
+        raw = max(abs(st["raw"][j, j]), 1e-300)
+        scales[j] = np.sqrt(var) if var > 1e-10 * raw else 1.0
+    return scales
+
+
 def kalman_ref(
     X: np.ndarray,
     Y: np.ndarray,
@@ -528,7 +552,9 @@ def kalman_ref(
       only on rows where a prediction was emitted;
     - the EW stats update last, so this row's z used the prior stats.
 
-    Coefficients come back in the ORIGINAL feature units.
+    Coefficients come back in the ORIGINAL feature units, read with the
+    stats after the row: the means and scales the next row is standardized
+    with, as the core's ``coef`` is.
     """
     n, k = X.shape
     m = Y.shape[1]
@@ -586,23 +612,12 @@ def kalman_ref(
 
         # scales from the stats BEFORE this row (all ones, and no
         # centering, with `standardize` off: the state is the coefficient)
-        scales = np.ones(kt)
+        scales = _kalman_scales(st, kt, off, standardize)
         zs = z.copy()
         if standardize and off == 0:
-            # No intercept: nothing to centre on, so each feature is scaled by
-            # its raw second moment and not shifted. Centring here put a hidden
-            # intercept into every prediction that `coef` had no slot for; the
-            # core stopped doing it (review 2026-09-12, C10) and this oracle,
-            # which had copied it, follows.
             for j in range(kt):
-                raw = st["raw"][j, j]
-                scales[j] = np.sqrt(raw) if raw > 0.0 else 1.0
                 zs[j] = z[j] / scales[j]
         elif standardize:
-            for j in range(off, kt):
-                var = st["raw"][j, j] - st["mean"][j] ** 2
-                raw = max(abs(st["raw"][j, j]), 1e-300)
-                scales[j] = np.sqrt(var) if var > 1e-10 * raw else 1.0
             for j in range(off, kt):
                 zs[j] = (z[j] - st["mean"][j]) / scales[j]
 
@@ -663,13 +678,19 @@ def kalman_ref(
         st["raw"] = a * st["raw"] + b * np.outer(z, z)
         st["W"] = W_new
 
-        # coefficients back in original units
+        # Coefficients back in original units, read with the stats as they
+        # stand after the row: the scales and the means of one moment, the
+        # ones the next row is standardized with, so ``coef`` applied to the
+        # next row's features is its prediction. This unscaled with the
+        # scales from before the row and centred with the means after it, a
+        # mix no fit has, off by up to 0.38 (docs/PLAN.md task 97).
+        after = _kalman_scales(st, kt, off, standardize)
         for j in range(m):
             if not standardize:
                 coef[i, j] = st["beta"][j]
                 continue
             c = np.zeros(kt)
-            c[off:] = st["beta"][j][off:] / scales[off:]
+            c[off:] = st["beta"][j][off:] / after[off:]
             if add_intercept:
                 c[0] = st["beta"][j][0] - c[off:] @ st["mean"][off:]
             coef[i, j] = c

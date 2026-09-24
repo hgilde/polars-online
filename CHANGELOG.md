@@ -31,6 +31,21 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Fixed
 
+- **A windowed fit no longer standardizes a feature by rounding.** A
+  feature that holds one value over every row inside a `window` has no
+  spread there, and the fit now says so exactly: its variance, covariances
+  and covariance with the target are zero, so a lasso or a standardized
+  ridge drops it and a plain ridge gives it a slope of zero. The window's
+  subtraction left a remainder instead, which grows with the feature's
+  level and with the rows since the window's edge, and which a lasso at a
+  penalty of zero divided by itself: predictions of 1e55 where the fit was
+  -1.0.
+- **A lasso's `lam_selected` under a `window` is chosen on the errors
+  inside it.** Four things had it read others: the window's snapshot took
+  the selection after the row's own error, with its weight aged twice; the
+  choice read the window as it stood a row earlier; a row that did not
+  score the target left the choice from an older window standing; and the
+  window aged by the model's halflife where `select_halflife` differs.
 - **The PyPI page's links to other files work.** PyPI shows the README,
   where a relative link such as `docs/PLAN.md` resolved against pypi.org
   and was a 404; only in-page links worked. The release workflow now
@@ -64,9 +79,14 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Changed
 
-- **State schema 15.** A stream with a `label_delay` keeps, per model, the
-  clock its held rows cover. States saved by 0.10.0 (schema 14) still load:
-  their loader rebuilds that clock as 0.10.0 did at a chunk boundary.
+- **State schema 16.** A stream with a `label_delay` keeps, per model, the
+  clock its held rows cover (15), and every accumulator keeps, per feature,
+  the value it has held since it last changed and the weight of those rows
+  (16). States saved by 0.10.0 (schema 14) still load. The clock is rebuilt
+  as 0.10.0 did at a chunk boundary, and the runs start at the next row.
+- **`holt` reports null coefficients for a target not yet observed.** It
+  reported `[0, 0]`, a level no row had given, where every other model's
+  `coef` is null before it has anything to report.
 
 ## [0.10.0] — 2026-09-24
 

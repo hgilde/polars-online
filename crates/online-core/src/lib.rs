@@ -261,7 +261,13 @@ pub use window::{
 ///   ended, against hard rule 3 (a property test found it, 2026-09-24). A
 ///   schema-14 file loads: its loader rebuilds the value as 14 did at a chunk
 ///   boundary.
-pub const SCHEMA_VERSION: u32 = 15;
+/// - 16: every `EwCov` keeps, per feature, the value it has held since it
+///   last changed and the weight of those rows (`run_x`, `run_w`), so a
+///   window can say exactly that a feature held one value over it, where
+///   the subtraction left a remainder the lasso standardized by (docs/PLAN.md
+///   task 94, 2026-09-24). A schema-14 or 15 file loads: the named encoding
+///   defaults the two to empty, and the runs start at the next learned row.
+pub const SCHEMA_VERSION: u32 = 16;
 
 /// Oldest state layout this build still loads.
 ///
