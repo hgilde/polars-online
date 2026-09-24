@@ -6,6 +6,8 @@ use online_core::{ClockCfg, Decay, OnClockReset, SessionGap, TargetGaps};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+use crate::span::{Span, SpanList};
+
 fn default_true() -> bool {
     true
 }
@@ -226,8 +228,8 @@ fn check_ridge(name: &str, ridge: Option<f64>) -> Result<(), String> {
 
 /// `solve_every`: clock units between solves; zero solves every row. A
 /// negative value silently meant "every row" too, NaN meant "never".
-fn check_solve_every(name: &str, v: Option<f64>) -> Result<(), String> {
-    if v.is_some_and(|v| !non_negative(v) || !v.is_finite()) {
+fn check_solve_every(name: &str, v: Option<&Span>) -> Result<(), String> {
+    if v.is_some_and(|v| !non_negative(v.value()) || !v.value().is_finite()) {
         return Err(format!(
             "spec {name:?}: solve_every must be finite and >= 0 (0 solves every row)"
         ));
@@ -251,7 +253,7 @@ impl Serialize for Num {
 
 impl Num {
     /// The words accepted in place of a number for the non-finite values.
-    fn from_word(w: &str) -> Option<Num> {
+    pub(crate) fn from_word(w: &str) -> Option<Num> {
         match w.to_ascii_lowercase().as_str() {
             "inf" | "+inf" | "infinity" | "+infinity" => Some(Num(f64::INFINITY)),
             "-inf" | "-infinity" => Some(Num(f64::NEG_INFINITY)),
@@ -361,12 +363,13 @@ impl FloatOrList {
     }
 }
 
-/// `session_gap`: clock units, or "reset". The gap is a [`Num`] so that an
-/// infinite one ("never") survives JSON, which has no infinity literal.
+/// `session_gap`: clock units, a duration under a temporal clock, or
+/// "reset". The gap is a [`Span`], so an infinite one ("never") survives
+/// JSON, which has no infinity literal.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum SessionGapSpec {
-    Gap(Num),
+    Gap(Span),
     Word(String),
 }
 
@@ -378,29 +381,34 @@ impl<'de> Deserialize<'de> for SessionGapSpec {
             type Value = SessionGapSpec;
 
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("a gap in clock units (\"inf\" for never) or the word \"reset\"")
+                f.write_str(
+                    "a gap in clock units (\"inf\" for never), a duration such as \"10m\", \
+                     or the word \"reset\"",
+                )
             }
 
             fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<SessionGapSpec, E> {
-                Ok(SessionGapSpec::Gap(Num(v)))
+                Ok(SessionGapSpec::Gap(Span::Units(v)))
             }
 
             fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<SessionGapSpec, E> {
-                Ok(SessionGapSpec::Gap(Num(v as f64)))
+                Ok(SessionGapSpec::Gap(Span::Units(v as f64)))
             }
 
             fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<SessionGapSpec, E> {
-                Ok(SessionGapSpec::Gap(Num(v as f64)))
+                Ok(SessionGapSpec::Gap(Span::Units(v as f64)))
             }
 
             fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<SessionGapSpec, E> {
                 if v == "reset" {
-                    Ok(SessionGapSpec::Word(v.to_string()))
-                } else if let Some(n) = Num::from_word(v) {
-                    Ok(SessionGapSpec::Gap(n))
-                } else {
-                    Err(E::invalid_value(serde::de::Unexpected::Str(v), &self))
+                    return Ok(SessionGapSpec::Word(v.to_string()));
                 }
+                if let Some(n) = Num::from_word(v) {
+                    return Ok(SessionGapSpec::Gap(Span::Units(n.0)));
+                }
+                crate::span::Duration::parse(v)
+                    .map(|d| SessionGapSpec::Gap(Span::Duration(d)))
+                    .map_err(|e| E::custom(format!("{e}, or the word \"reset\"")))
             }
         }
 
@@ -450,9 +458,9 @@ pub enum ModelKind {
         /// Halflife of that twin; `"inf"` makes the long run the whole
         /// history (review 2026-09-12, S27).
         #[serde(default)]
-        long_halflife: Option<Num>,
+        long_halflife: Option<Span>,
         #[serde(default)]
-        solve_every: Option<f64>,
+        solve_every: Option<Span>,
         #[serde(default)]
         max_rows_between_solves: Option<u32>,
         /// Rows of the Gram update held back and merged as one block
@@ -476,7 +484,7 @@ pub enum ModelKind {
         /// window the weights are still exponential (docs/PLAN.md §13). A
         /// halflife grid is one instance per entry, each with its own ring.
         #[serde(default)]
-        window: Option<f64>,
+        window: Option<Span>,
         /// Learned rows between the snapshots the window is computed from.
         #[serde(default)]
         window_every: Option<usize>,
@@ -495,9 +503,9 @@ pub enum ModelKind {
         /// Halflife of the EW squared error used to select lambda; `"inf"`
         /// selects on the plain mean over every row so far.
         #[serde(default)]
-        select_halflife: Option<Num>,
+        select_halflife: Option<Span>,
         #[serde(default)]
-        solve_every: Option<f64>,
+        solve_every: Option<Span>,
         #[serde(default)]
         max_rows_between_solves: Option<u32>,
         #[serde(default)]
@@ -512,7 +520,7 @@ pub enum ModelKind {
         /// cutoff (docs/PLAN.md §13). The selection error follows the same
         /// window, so the chosen `lambda` fits the rows the model reports on.
         #[serde(default)]
-        window: Option<f64>,
+        window: Option<Span>,
         /// Learned rows between the window's snapshots.
         #[serde(default)]
         window_every: Option<usize>,
@@ -528,7 +536,7 @@ pub enum ModelKind {
         /// halflife; the spec-level `halflife` drives the standardization and
         /// residual-variance statistics. Beside a `q` it is unused: the
         /// process noise is `q`, and the derivation from this is skipped.
-        coef_halflife: FloatOrList,
+        coef_halflife: SpanList,
         /// The process noise per slot, given outright rather than derived from
         /// `coef_halflife`, which it then overrides -- as `_spec.py`'s
         /// `kalman` docstring says, and `Kalman::q_into` does (review
@@ -546,7 +554,7 @@ pub enum ModelKind {
         /// per row. `inf` (the default) is the random walk
         /// (docs/ENHANCEMENTS.md E41).
         #[serde(default)]
-        revert_halflife: Option<FloatOrList>,
+        revert_halflife: Option<SpanList>,
         /// Standardize features internally (default true). Off makes the filter
         /// a plain Bayesian linear regression on the features' own scale.
         #[serde(default = "default_true")]
@@ -563,7 +571,7 @@ pub enum ModelKind {
         #[serde(default)]
         standardize: bool,
         #[serde(default)]
-        solve_every: Option<f64>,
+        solve_every: Option<Span>,
         #[serde(default)]
         max_rows_between_solves: Option<u32>,
     },
@@ -575,7 +583,7 @@ pub enum ModelKind {
         #[serde(default)]
         standardize: bool,
         #[serde(default)]
-        solve_every: Option<f64>,
+        solve_every: Option<Span>,
         #[serde(default)]
         max_rows_between_solves: Option<u32>,
         /// Half-width of the band the fit takes its Newton step in, in units
@@ -644,7 +652,7 @@ pub enum ModelKind {
         /// window the weights are still exponential -- it is not a flat
         /// window (docs/PLAN.md §13).
         #[serde(default)]
-        window: Option<f64>,
+        window: Option<Span>,
         /// Learned rows between the snapshots the window is computed from;
         /// `1` (the default) is the tightest boundary, larger divides the
         /// memory by the same factor and shortens the effective window by at
@@ -734,12 +742,12 @@ pub enum ModelKind {
         /// Halflife of the level, in clock units. Defaults to the spec's own
         /// `halflife`, the same knob, `"inf"` included: no forgetting.
         #[serde(default)]
-        level_halflife: Option<Num>,
+        level_halflife: Option<Span>,
         /// Halflife of the trend; `"inf"` forgets no slope, so the trend is
         /// the whole history's drift. Defaults to four times the level
         /// halflife.
         #[serde(default)]
-        trend_halflife: Option<Num>,
+        trend_halflife: Option<Span>,
     },
     Rls {
         /// Prior strength: `A0 = ridge I`, i.e. `P0 = I / ridge`. Scalar only
@@ -842,7 +850,7 @@ pub enum ModelKind {
         /// the truncated covariance moves every row where a decayed one does
         /// not; the other shapes are unaffected.
         #[serde(default)]
-        window: Option<f64>,
+        window: Option<Span>,
         /// Learned rows between the window's snapshots.
         #[serde(default)]
         window_every: Option<usize>,
@@ -947,7 +955,7 @@ pub enum ModelKind {
         /// (docs/PLAN.md §13). Inside the window the weights are still
         /// exponential.
         #[serde(default)]
-        window: Option<f64>,
+        window: Option<Span>,
         /// Learned rows between the window's snapshots.
         #[serde(default)]
         window_every: Option<usize>,
@@ -1300,7 +1308,7 @@ impl ModelKind {
                 window,
                 window_budget,
                 ..
-            } => Some((*window, *window_budget)),
+            } => Some((window.as_ref().map(Span::value), *window_budget)),
             _ => None,
         }
     }
@@ -1333,7 +1341,7 @@ impl ModelKind {
                 window: Some(w),
                 window_every,
                 ..
-            } => Some((*w, window_every.unwrap_or(1))),
+            } => Some((w.value(), window_every.unwrap_or(1))),
             _ => None,
         }
     }
@@ -1398,6 +1406,184 @@ impl ModelKind {
     }
 }
 
+/// Every parameter measured in clock units, by where it sits: `"*"` for the
+/// spec's own, otherwise the model's `type`. Each is a [`Span`] or a
+/// [`SpanList`], so each takes a duration under a temporal clock
+/// (docs/PLAN.md task 88), and [`Spec::clock_spans`] reads them from here,
+/// so a field listed here is one the spec's consistency checks see.
+///
+/// `clock_fields_are_exactly_the_fields_that_take_a_duration` walks every
+/// field serde knows and holds this table to the types: a clock-unit field
+/// left off it, or a field on it that refuses a duration, fails the test.
+pub const CLOCK_FIELDS: &[(&str, &[&str])] = &[
+    (
+        "*",
+        &[
+            "halflife",
+            "max_dclock",
+            "min_backwards_jump",
+            "session_gap",
+            "label_delay",
+        ],
+    ),
+    ("ew_ridge", &["long_halflife", "solve_every", "window"]),
+    ("lasso", &["select_halflife", "solve_every", "window"]),
+    ("kalman", &["coef_halflife", "revert_halflife"]),
+    ("huber", &["solve_every"]),
+    ("quantile", &["solve_every"]),
+    ("ew_cov", &["window"]),
+    ("holt", &["level_halflife", "trend_halflife"]),
+    ("ew_class", &["window"]),
+    ("marginal", &["window"]),
+];
+
+/// The parameters that are a rate *per* clock unit: a decay factor per unit
+/// (`lam`) and a variance per unit (`kalman`'s `q`). A rate has no duration
+/// form, so a temporal clock refuses one; the halflife it stands in for
+/// takes a duration instead.
+pub const CLOCK_RATES: &[(&str, &[&str])] = &[("*", &["lam"]), ("kalman", &["q"])];
+
+/// What a spec's clock-unit parameters are written in, which decides the
+/// clock column it can read (docs/PLAN.md task 88).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClockScale {
+    /// No parameter is tied to a unit: each is `0`, `inf` or left out. A
+    /// numeric clock and a temporal one both read the spec.
+    Free,
+    /// Plain numbers of clock units, which only a numeric clock (or none)
+    /// can give a meaning. Names the first such parameter.
+    Numbers(&'static str),
+    /// Durations, which only a temporal clock can measure. Names the first.
+    Durations(&'static str),
+}
+
+impl Spec {
+    /// Every clock-unit value this spec sets, with its parameter's name, in
+    /// [`CLOCK_FIELDS`] order. A `halflife` grid gives one entry per value.
+    /// `every_clock_field_is_walked` holds this to the table.
+    pub fn clock_spans(&self) -> Vec<(&'static str, Span)> {
+        fn put(out: &mut Vec<(&'static str, Span)>, name: &'static str, s: Option<&Span>) {
+            out.extend(s.map(|s| (name, s.clone())));
+        }
+        fn put_list(out: &mut Vec<(&'static str, Span)>, name: &'static str, l: Option<&SpanList>) {
+            if let Some(l) = l {
+                out.extend(l.spans().iter().map(|s| (name, s.clone())));
+            }
+        }
+        let mut out = Vec::new();
+        put_list(&mut out, "halflife", self.halflife.as_ref());
+        put(&mut out, "max_dclock", self.max_dclock.as_ref());
+        put(
+            &mut out,
+            "min_backwards_jump",
+            self.min_backwards_jump.as_ref(),
+        );
+        if let Some(SessionGapSpec::Gap(g)) = &self.session_gap {
+            put(&mut out, "session_gap", Some(g));
+        }
+        put(&mut out, "label_delay", self.label_delay.as_ref());
+        match &self.model {
+            ModelKind::EwRidge {
+                long_halflife,
+                solve_every,
+                window,
+                ..
+            } => {
+                put(&mut out, "long_halflife", long_halflife.as_ref());
+                put(&mut out, "solve_every", solve_every.as_ref());
+                put(&mut out, "window", window.as_ref());
+            }
+            ModelKind::Lasso {
+                select_halflife,
+                solve_every,
+                window,
+                ..
+            } => {
+                put(&mut out, "select_halflife", select_halflife.as_ref());
+                put(&mut out, "solve_every", solve_every.as_ref());
+                put(&mut out, "window", window.as_ref());
+            }
+            ModelKind::Kalman {
+                coef_halflife,
+                revert_halflife,
+                ..
+            } => {
+                put_list(&mut out, "coef_halflife", Some(coef_halflife));
+                put_list(&mut out, "revert_halflife", revert_halflife.as_ref());
+            }
+            ModelKind::Huber { solve_every, .. } | ModelKind::Quantile { solve_every, .. } => {
+                put(&mut out, "solve_every", solve_every.as_ref());
+            }
+            ModelKind::EwCov { window, .. }
+            | ModelKind::EwClass { window, .. }
+            | ModelKind::Marginal { window, .. } => {
+                put(&mut out, "window", window.as_ref());
+            }
+            ModelKind::Holt {
+                level_halflife,
+                trend_halflife,
+            } => {
+                put(&mut out, "level_halflife", level_halflife.as_ref());
+                put(&mut out, "trend_halflife", trend_halflife.as_ref());
+            }
+            _ => {}
+        }
+        out
+    }
+
+    /// The first rate per clock unit the spec sets to something a unit
+    /// changes: `lam` other than 1, or a nonzero `q`.
+    fn clock_rate(&self) -> Option<&'static str> {
+        if self.lam.is_some_and(|l| l != 1.0) {
+            return Some("lam");
+        }
+        match &self.model {
+            ModelKind::Kalman { q: Some(q), .. } if q.iter().any(|v| v.0 != 0.0) => Some("q"),
+            _ => None,
+        }
+    }
+
+    /// Whether the spec's clock parameters are numbers, durations or neither,
+    /// refusing a spec that mixes the two: a halflife of `"10m"` beside a
+    /// `max_dclock` of `300` says nothing about what the `300` is in.
+    pub fn clock_scale(&self) -> Result<ClockScale, String> {
+        let spans = self.clock_spans();
+        let duration = spans.iter().find(|(_, s)| s.is_duration()).map(|(f, _)| *f);
+        let number = spans
+            .iter()
+            .find(|(_, s)| s.is_unit_bound_number())
+            .map(|(f, _)| *f)
+            .or_else(|| self.clock_rate());
+        match (duration, number) {
+            (Some(d), Some("lam")) => Err(format!(
+                "spec {:?}: {d} is a duration, and lam is a decay per clock unit, which has no \
+                 duration form; give halflife as a duration instead",
+                self.name
+            )),
+            (Some(d), Some("q")) => Err(format!(
+                "spec {:?}: {d} is a duration, and q is a variance per clock unit, which has no \
+                 duration form; leave q out and give coef_halflife as a duration, which \
+                 derives it",
+                self.name
+            )),
+            (Some(d), Some(n)) => Err(format!(
+                "spec {:?}: {d} is a duration but {n} is a plain number, and a number says \
+                 nothing about its unit; give every clock parameter the same way -- durations \
+                 for a Datetime, Date or Duration clock, numbers for a numeric one",
+                self.name
+            )),
+            (Some(d), None) if self.clock.is_none() => Err(format!(
+                "spec {:?}: {d} is a duration, which needs a clock column to measure it; with \
+                 no clock a row is one unit, so give it as a number of rows",
+                self.name
+            )),
+            (Some(d), None) => Ok(ClockScale::Durations(d)),
+            (None, Some(n)) => Ok(ClockScale::Numbers(n)),
+            (None, None) => Ok(ClockScale::Free),
+        }
+    }
+}
+
 /// One model spec: common parameters (docs/PLAN.md §3) + the model. An
 /// unknown key is refused, naming the keys there are (see [`ModelKind`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1418,7 +1604,7 @@ pub struct Spec {
     #[serde(default)]
     pub clock: Option<String>,
     #[serde(default)]
-    pub halflife: Option<FloatOrList>,
+    pub halflife: Option<SpanList>,
     #[serde(default)]
     pub lam: Option<f64>,
     /// Ceiling on the clock delta, in clock units; `"inf"` for none. It
@@ -1427,7 +1613,7 @@ pub struct Spec {
     /// 2026-09-12, S3); a step the ceiling cut also clears `ew_cov`'s and
     /// `marginal`'s lagged co-moments, adjacency being broken.
     #[serde(default)]
-    pub max_dclock: Option<Num>,
+    pub max_dclock: Option<Span>,
     #[serde(default)]
     pub on_clock_reset: OnClockReset,
     /// A backwards clock jump smaller than this, in clock units, is refused
@@ -1439,7 +1625,7 @@ pub struct Spec {
     /// disables; `inf` is no setting. Needs `clock` (design note of
     /// 2026-09-19, reduced to this one rule 2026-09-20).
     #[serde(default)]
-    pub min_backwards_jump: Option<Num>,
+    pub min_backwards_jump: Option<Span>,
     #[serde(default)]
     pub session: Option<String>,
     #[serde(default)]
@@ -1619,7 +1805,7 @@ pub struct Spec {
     /// (the state it would teach is gone); a session change releases it in
     /// order, since one session's clock does not measure time in the next.
     #[serde(default)]
-    pub label_delay: Option<f64>,
+    pub label_delay: Option<Span>,
     /// ModelBank/CLI only; one state per key. The expression API uses `.over()`.
     #[serde(default)]
     pub group: Option<String>,
@@ -1734,10 +1920,10 @@ impl Spec {
                     level_halflife: Some(h),
                     ..
                 } => {
-                    if !positive(h.0) {
+                    if !positive(h.value()) {
                         return Err(format!("spec {:?}: level_halflife must be > 0", self.name));
                     }
-                    Ok(vec![(String::new(), Decay::Halflife(h.0))])
+                    Ok(vec![(String::new(), Decay::Halflife(h.value()))])
                 }
                 _ => Err(format!(
                     "spec {:?}: one of halflife/lam is required",
@@ -1761,19 +1947,27 @@ impl Spec {
                     ));
                 }
                 if let Some(dup) = first_duplicate(&hs) {
+                    // "5m" and "300s" are one halflife written two ways.
+                    let label = h
+                        .spans()
+                        .iter()
+                        .rev()
+                        .find(|s| s.value().to_bits() == dup.to_bits())
+                        .map_or_else(|| num_label(dup), Span::label);
                     return Err(format!(
                         "spec {:?}: halflife lists {} more than once; each value is one \
-                         model instance and the two would produce the same field names",
-                        self.name,
-                        num_label(dup)
+                         model instance and the two would be the same model",
+                        self.name, label
                     ));
                 }
                 if hs.len() == 1 {
                     Ok(vec![(String::new(), Decay::Halflife(hs[0]))])
                 } else {
-                    Ok(hs
+                    // A grid names each instance by its halflife as written:
+                    // `@h600` for a number, `@h10m` for a duration.
+                    Ok(h.spans()
                         .iter()
-                        .map(|&h| (format!("@h{}", num_label(h)), Decay::Halflife(h)))
+                        .map(|s| (format!("@h{}", s.label()), Decay::Halflife(s.value())))
                         .collect())
                 }
             }
@@ -1791,7 +1985,11 @@ impl Spec {
         // (`n_eff` ran to 6e7 on 50 rows with `max_dclock = -5`); NaN poisons
         // the clock. Zero freezes it (a documented way to switch decay off)
         // and infinity removes the ceiling; both are legitimate.
-        if self.max_dclock.is_some_and(|m| !non_negative(m.0)) {
+        if self
+            .max_dclock
+            .as_ref()
+            .is_some_and(|m| !non_negative(m.value()))
+        {
             return Err(format!(
                 "spec {:?}: max_dclock must be >= 0 (0 disables decay, \"inf\" removes the ceiling)",
                 self.name
@@ -1799,17 +1997,17 @@ impl Spec {
         }
         let session_gap = match &self.session_gap {
             None => None,
-            Some(SessionGapSpec::Gap(g)) if !non_negative(g.0) => {
+            Some(SessionGapSpec::Gap(g)) if !non_negative(g.value()) => {
                 return Err(format!(
                     "spec {:?}: session_gap must be >= 0 or \"reset\"",
                     self.name
                 ));
             }
-            Some(SessionGapSpec::Gap(g)) => Some(SessionGap::Gap(g.0)),
+            Some(SessionGapSpec::Gap(g)) => Some(SessionGap::Gap(g.value())),
             Some(SessionGapSpec::Word(w)) if w == "reset" => Some(SessionGap::Reset),
             Some(SessionGapSpec::Word(w)) => {
                 return Err(format!(
-                    "spec {:?}: session_gap must be a number or \"reset\", got {w:?}",
+                    "spec {:?}: session_gap must be a number, a duration or \"reset\", got {w:?}",
                     self.name
                 ));
             }
@@ -1834,7 +2032,8 @@ impl Spec {
         // compare against, so there the default is 0, off.
         if self
             .min_backwards_jump
-            .is_some_and(|v| !(v.0.is_finite() && v.0 >= 0.0))
+            .as_ref()
+            .is_some_and(|v| !(v.value().is_finite() && v.value() >= 0.0))
         {
             return Err(format!(
                 "spec {:?}: min_backwards_jump must be finite and >= 0 (0 disables the \
@@ -1842,18 +2041,18 @@ impl Spec {
                 self.name
             ));
         }
-        let max_dclock = self.max_dclock.map_or(f64::INFINITY, |m| m.0);
+        let max_dclock = self.max_dclock.as_ref().map_or(f64::INFINITY, Span::value);
         Ok(ClockCfg {
             max_dclock,
             on_clock_reset: self.on_clock_reset,
             session_gap,
-            min_backwards_jump: self.min_backwards_jump.map_or(
+            min_backwards_jump: self.min_backwards_jump.as_ref().map_or(
                 if max_dclock.is_finite() {
                     max_dclock
                 } else {
                     0.0
                 },
-                |v| v.0,
+                Span::value,
             ),
         })
     }
@@ -1971,6 +2170,9 @@ impl Spec {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        // Clock parameters given as durations and as numbers at once, or
+        // durations with no clock to measure them (task 88).
+        self.clock_scale()?;
         // The bank's tables put `spec` and `group` columns beside a struct
         // named after the spec (`ModelBank.last_row`), and an empty name names
         // no struct at all (review 2026-09-12, S7).
@@ -2035,7 +2237,7 @@ impl Spec {
                 }
             }
         }
-        if let Some(d) = self.label_delay {
+        if let Some(d) = self.label_delay.as_ref().map(Span::value) {
             if d.is_nan() || !d.is_finite() || d <= 0.0 {
                 return Err(format!(
                     "spec {:?}: label_delay must be finite and > 0 (got {d}); 0 is no delay, \
@@ -2411,10 +2613,16 @@ impl Spec {
                         self.name
                     ));
                 }
-                if level_halflife.is_some_and(|h| h.0 <= 0.0 || h.0.is_nan()) {
+                if level_halflife
+                    .as_ref()
+                    .is_some_and(|h| h.value() <= 0.0 || h.value().is_nan())
+                {
                     return Err(format!("spec {:?}: level_halflife must be > 0", self.name));
                 }
-                if trend_halflife.is_some_and(|h| h.0 <= 0.0 || h.0.is_nan()) {
+                if trend_halflife
+                    .as_ref()
+                    .is_some_and(|h| h.value() <= 0.0 || h.value().is_nan())
+                {
                     return Err(format!(
                         "spec {:?}: trend_halflife must be > 0 (\"inf\" forgets no slope)",
                         self.name
@@ -2512,7 +2720,7 @@ impl Spec {
                 window_budget: _,
             } => {
                 if let Some(w) = window {
-                    if !w.is_finite() || *w <= 0.0 {
+                    if !w.value().is_finite() || w.value() <= 0.0 {
                         return Err(format!(
                             "spec {:?}: window must be finite and > 0 (got {w}); it is clock \
                              units of history to keep",
@@ -2715,7 +2923,7 @@ impl Spec {
                 window_budget: _,
             } => {
                 if let Some(w) = window {
-                    if !w.is_finite() || *w <= 0.0 {
+                    if !w.value().is_finite() || w.value() <= 0.0 {
                         return Err(format!(
                             "spec {:?}: window must be finite and > 0 (got {w})",
                             self.name
@@ -2910,7 +3118,7 @@ impl Spec {
                     ));
                 }
                 check_ridge(&self.name, *ridge)?;
-                check_solve_every(&self.name, *solve_every)?;
+                check_solve_every(&self.name, solve_every.as_ref())?;
             }
             ModelKind::Quantile {
                 quantile,
@@ -2931,7 +3139,7 @@ impl Spec {
                     ));
                 }
                 check_ridge(&self.name, *ridge)?;
-                check_solve_every(&self.name, *solve_every)?;
+                check_solve_every(&self.name, solve_every.as_ref())?;
             }
             ModelKind::Kalman {
                 coef_halflife,
@@ -3028,10 +3236,13 @@ impl Spec {
                 if l1_ratio.is_some_and(|r| !(0.0..=1.0).contains(&r)) {
                     return Err(format!("spec {:?}: l1_ratio must be in [0, 1]", self.name));
                 }
-                if select_halflife.is_some_and(|h| !positive(h.0)) {
+                if select_halflife
+                    .as_ref()
+                    .is_some_and(|h| !positive(h.value()))
+                {
                     return Err(format!("spec {:?}: select_halflife must be > 0", self.name));
                 }
-                check_solve_every(&self.name, *solve_every)?;
+                check_solve_every(&self.name, solve_every.as_ref())?;
                 if cd_tol.is_some_and(|t| !positive(t) || !t.is_finite()) {
                     return Err(format!(
                         "spec {:?}: cd_tol must be finite and > 0",
@@ -3086,8 +3297,8 @@ impl Spec {
                         ));
                     }
                 }
-                check_solve_every(&self.name, *solve_every)?;
-                if long_halflife.is_some_and(|h| !positive(h.0)) {
+                check_solve_every(&self.name, solve_every.as_ref())?;
+                if long_halflife.as_ref().is_some_and(|h| !positive(h.value())) {
                     return Err(format!("spec {:?}: long_halflife must be > 0", self.name));
                 }
                 if session_shrink.is_some_and(|f| !(0.0..=1.0).contains(&f)) {
@@ -3195,5 +3406,181 @@ impl Spec {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::{CLOCK_FIELDS, ClockScale, ModelKind, Spec};
+    use crate::span::Span;
+    use std::collections::BTreeSet;
+
+    /// The fields serde knows for one JSON object, read from its
+    /// unknown-field message: the one list of them outside the type.
+    fn fields_of<T: serde::de::DeserializeOwned>(json: &str) -> Vec<String> {
+        let err = match serde_json::from_str::<T>(json) {
+            Ok(_) => panic!("{json} has no unknown field"),
+            Err(e) => e.to_string(),
+        };
+        let expected = err.split("expected").nth(1).unwrap_or("");
+        expected
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Whether a field reads a duration as clock units: it takes `"10m"`
+    /// (at most another field is then missing) and refuses a word that is
+    /// no duration *as* no duration, which a plain text field would take.
+    fn takes_duration<T: serde::de::DeserializeOwned>(json: impl Fn(&str) -> String) -> bool {
+        let fits = match serde_json::from_str::<T>(&json("\"10m\"")) {
+            Ok(_) => true,
+            Err(e) => e.to_string().starts_with("missing field"),
+        };
+        let refuses = serde_json::from_str::<T>(&json("\"nonsense\""))
+            .err()
+            .is_some_and(|e| e.to_string().contains("is not a duration"));
+        fits && refuses
+    }
+
+    #[test]
+    fn clock_fields_are_exactly_the_fields_that_take_a_duration() {
+        let mut found: BTreeSet<(String, String)> = BTreeSet::new();
+        let base =
+            r#""name": "m", "model": {"type": "ew_ridge"}, "targets": ["y"], "features": ["x"]"#;
+        for f in fields_of::<Spec>(&format!("{{{base}, \"zzz\": 1}}")) {
+            if takes_duration::<Spec>(|v| format!("{{{base}, \"{f}\": {v}}}")) {
+                found.insert(("*".into(), f));
+            }
+        }
+        for kind in ModelKind::KINDS {
+            for f in fields_of::<ModelKind>(&format!(r#"{{"type": "{kind}", "zzz": 1}}"#)) {
+                if takes_duration::<ModelKind>(|v| format!(r#"{{"type": "{kind}", "{f}": {v}}}"#)) {
+                    found.insert((kind.to_string(), f));
+                }
+            }
+        }
+        let listed: BTreeSet<(String, String)> = CLOCK_FIELDS
+            .iter()
+            .flat_map(|(owner, fields)| fields.iter().map(|f| (owner.to_string(), f.to_string())))
+            .collect();
+        assert!(
+            found.len() > 15,
+            "the walk found too little to mean anything: {found:?}"
+        );
+        assert_eq!(
+            found, listed,
+            "CLOCK_FIELDS against the fields that take a duration"
+        );
+    }
+
+    /// A spec whose one clock parameter under test is a duration.
+    fn with_duration(owner: &str, field: &str) -> Spec {
+        let model = match owner {
+            "*" => r#"{"type": "ew_ridge"}"#.to_string(),
+            kind => {
+                let required = match kind {
+                    "lasso" => r#", "lasso_path": [0.1]"#,
+                    "kalman" if field != "coef_halflife" => r#", "coef_halflife": "1h""#,
+                    "quantile" => r#", "quantile": 0.5"#,
+                    "ew_class" => r#", "classes": ["a", "b"], "precision_prior": 1.0"#,
+                    _ => "",
+                };
+                format!(r#"{{"type": "{kind}", "{field}": "10m"{required}}}"#)
+            }
+        };
+        let own = if owner == "*" {
+            format!(r#", "{field}": "10m""#)
+        } else {
+            String::new()
+        };
+        serde_json::from_str(&format!(
+            r#"{{"name": "m", "model": {model}, "targets": ["y"], "features": ["x"],
+                "clock": "t"{own}}}"#
+        ))
+        .unwrap_or_else(|e| panic!("{owner}.{field}: {e}"))
+    }
+
+    #[test]
+    fn every_clock_field_is_walked() {
+        for (owner, fields) in CLOCK_FIELDS {
+            for &field in *fields {
+                let spec = with_duration(owner, field);
+                assert!(
+                    spec.clock_spans()
+                        .iter()
+                        .any(|(f, s)| *f == field && s.is_duration()),
+                    "{owner}.{field} is in CLOCK_FIELDS but clock_spans does not read it"
+                );
+            }
+        }
+    }
+
+    fn spec(extra: &str) -> Spec {
+        serde_json::from_str(&format!(
+            r#"{{"name": "m", "model": {{"type": "ew_ridge"}}, "targets": ["y"],
+                "features": ["x"]{extra}}}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_spec_is_numbers_durations_or_neither() {
+        let durations = spec(r#", "clock": "t", "halflife": "10m", "max_dclock": "5m""#);
+        assert_eq!(
+            durations.clock_scale(),
+            Ok(ClockScale::Durations("halflife"))
+        );
+        let numbers = spec(r#", "clock": "t", "halflife": 600, "max_dclock": 300"#);
+        assert_eq!(numbers.clock_scale(), Ok(ClockScale::Numbers("halflife")));
+        // 0 and inf mean the same in every unit, so they bind a spec to neither.
+        let free = spec(r#", "clock": "t", "halflife": "inf", "max_dclock": "inf""#);
+        assert_eq!(free.clock_scale(), Ok(ClockScale::Free));
+        let beside = spec(r#", "clock": "t", "halflife": "10m", "max_dclock": "inf""#);
+        assert_eq!(beside.clock_scale(), Ok(ClockScale::Durations("halflife")));
+        assert!(durations.validate().is_ok());
+    }
+
+    #[test]
+    fn a_mixture_is_refused_naming_both_parameters() {
+        let err = spec(r#", "clock": "t", "halflife": "10m", "max_dclock": 300"#)
+            .validate()
+            .unwrap_err();
+        assert!(
+            err.contains("halflife is a duration") && err.contains("max_dclock is a plain number"),
+            "{err}"
+        );
+        let err = spec(r#", "clock": "t", "lam": 0.99, "max_dclock": "5m""#)
+            .validate()
+            .unwrap_err();
+        assert!(err.contains("lam is a decay per clock unit"), "{err}");
+    }
+
+    #[test]
+    fn a_duration_needs_a_clock() {
+        let err = spec(r#", "halflife": "10m""#).validate().unwrap_err();
+        assert!(err.contains("needs a clock column"), "{err}");
+    }
+
+    #[test]
+    fn a_duration_is_read_in_seconds_and_names_a_grid_as_written() {
+        let s = spec(r#", "clock": "t", "halflife": ["5m", "1h"], "max_dclock": "inf""#);
+        let decays = s.decays().unwrap();
+        let labels: Vec<&str> = decays.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(labels, vec!["@h5m", "@h1h"]);
+        assert_eq!(
+            decays[0].1,
+            online_core::Decay::Halflife(300.0),
+            "a duration is read in seconds"
+        );
+        let dup = spec(r#", "clock": "t", "halflife": ["5m", "300s"], "max_dclock": "inf""#);
+        let err = dup.decays().unwrap_err();
+        assert!(err.contains("300s more than once"), "{err}");
+        assert!(matches!(
+            s.halflife.as_ref().unwrap().spans()[0],
+            Span::Duration(_)
+        ));
     }
 }

@@ -182,6 +182,19 @@ typing test, which did not exist when `holt` was added). `git show --stat
    row, and its output leaves the bank through `Bank::closed_groups` when the
    group closes. `Spec::validate` refuses it without the two columns, and
    `tests/test_closed_groups.py` is the file that covers the queue.
+
+   **A parameter measured in clock units** — a window, a solve cadence, a
+   halflife of the model's own — is a `Span` (or a `SpanList` for one value
+   per slot), not an `f64`, so a temporal clock can give it as a duration
+   (docs/PLAN.md task 88). It goes into **`CLOCK_FIELDS`** under the model's
+   `type`, and into the match in **`Spec::clock_spans`**, which the bank uses
+   to refuse a number on a temporal clock and a duration on a numeric one. A
+   rate *per* clock unit, such as `kalman`'s `q`, has no duration form: it
+   goes into `CLOCK_RATES` and `Spec::clock_rate` instead.
+   *Check*: `clock_fields_are_exactly_the_fields_that_take_a_duration` walks
+   every field serde knows and fails on a `Span` missing from the table, or
+   a table entry that refuses a duration; `every_clock_field_is_walked`
+   fails on one `clock_spans` does not read.
 7. **`src/stream.rs`**: an `AnyModel::<Model>(Box<...>)` variant and its arm
    in the `dispatch!` macro; arms in `solve_failures` (0 for a model that
    never factorizes) and `coefficients` (the per-target layout the `coef`
@@ -256,13 +269,17 @@ spec, and the plugin's `online_run` is the bank.
 9. **`_spec.py`**: `@_checked def <name>(name, *, targets, features, <own
    parameters>, **common: Unpack[CommonKwargs])` returning
    `_common(name, {"type": "<name>", ...}, ...)`, with the update equations in
-   the docstring; a `_INF_OK` entry for each parameter where `inf` means
+   the docstring; a clock-unit parameter annotated `float | Duration`, which is
+   what makes the builder write a duration as text; a `_INF_OK` entry for each
+   parameter where `inf` means
    something (Rust parses those as `Num`, and `validate` says `finite` of
    every other float); and the name in `__all__`. Then in **`spec.py`**,
    the import and `__all__`.
    *Check*: `test_model_registry::test_every_rust_kind_has_exactly_one_builder`
    fails while a kind has no builder; `test_minimal_names_every_builder` then
-   sends you to step 13. `test_error_messages::test_the_inf_table_matches
+   sends you to step 13. `test_temporal_clock::TestEveryClockParameterTakesADuration` holds the
+   annotations to `CLOCK_FIELDS`, and fits each clock parameter both ways on a
+   temporal clock. `test_error_messages::test_the_inf_table_matches
    _the_rust_side` holds `_INF_OK` to what Rust's parser and `validate`
    accept, and `crates/online-polars/tests/spec_inf.rs` holds `validate` to
    the same verdicts from TOML, where it is the only gate.

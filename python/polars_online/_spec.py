@@ -19,10 +19,12 @@ import numbers
 import types
 import typing
 from collections.abc import Callable
+from datetime import timedelta
 from typing import Any, Unpack
 
 import polars as pl
 
+from polars_online._duration import Duration, duration_text
 from polars_online._kwargs import CommonKwargs
 from polars_online._polars_online import (
     spec_coef_fields,
@@ -117,13 +119,23 @@ def _matches(v: Any, hint: Any) -> bool:
         return isinstance(v, numbers.Integral) and not isinstance(v, bool)
     if hint is str:
         return isinstance(v, str)
+    if hint in (timedelta, pl.Expr):
+        return isinstance(v, hint)
     return True  # an annotation this does not read; the Rust side still checks
 
 
 def _describe(hint: Any, plural: bool = False) -> str:
     origin = typing.get_origin(hint)
     if origin in (types.UnionType, typing.Union):
-        parts = [_describe(a, plural) for a in typing.get_args(hint) if a is not type(None)]
+        args = [a for a in typing.get_args(hint) if a is not type(None)]
+        # A clock parameter's three duration forms read as one word.
+        duration = set(typing.get_args(Duration))
+        if duration <= set(args):
+            args = [a for a in args if a not in duration]
+            parts = [_describe(a, plural) for a in args]
+            parts.insert(1, "durations" if plural else "a duration")
+        else:
+            parts = [_describe(a, plural) for a in args]
         return " or ".join(parts)
     if origin is list:
         (inner,) = typing.get_args(hint)
@@ -176,6 +188,14 @@ _INF_OK: dict[str, frozenset[str]] = {
 }
 
 
+def _takes_duration(hint: Any) -> bool:
+    """Whether a parameter's annotation admits a duration: the clock
+    parameters, and nothing else."""
+    if hint is timedelta:
+        return True
+    return any(_takes_duration(a) for a in typing.get_args(hint))
+
+
 def _finite(value: Any) -> bool:
     if isinstance(value, (list, tuple)):
         return all(_finite(x) for x in value)
@@ -207,6 +227,7 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     shared = typing.get_type_hints(_common)
     shared = {k: v for k, v in shared.items() if k not in {"return", "name", "model"}}
     inf_ok = _INF_OK["*"] | _INF_OK.get(fn.__name__, frozenset())
+    clock = frozenset(k for k, v in {**shared, **own}.items() if _takes_duration(v))
 
     @functools.wraps(fn)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
@@ -238,7 +259,13 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
                     raise ValueError(f"{who}: {key} must be >= {floor}, got {value}")
             if key not in inf_ok and not _finite(value):
                 raise ValueError(f"{who}: {key} must be finite, got {_got(value)}")
-        return fn(*args, **kwargs)
+        # A clock parameter's duration, however it was written, is kept as
+        # the text a TOML config writes and a state file stores (task 88).
+        written = {
+            key: duration_text(value, who, key) if key in clock else value
+            for key, value in kwargs.items()
+        }
+        return typing.cast(Callable[..., R], fn)(*args, **written)
 
     return wrapper
 
@@ -277,13 +304,13 @@ def _common(
     features: list[str],
     add_intercept: bool = True,
     clock: str | None = None,
-    halflife: float | list[float] | None = None,
+    halflife: float | Duration | list[float | Duration] | None = None,
     lam: float | None = None,
-    max_dclock: float | None = None,
+    max_dclock: float | Duration | None = None,
     on_clock_reset: str = "max",
-    min_backwards_jump: float | None = None,
+    min_backwards_jump: float | Duration | None = None,
     session: str | None = None,
-    session_gap: float | str | None = None,
+    session_gap: float | Duration | None = None,
     weight: str | None = None,
     min_periods: float | list[float] | None = None,
     min_settled_frac: float | None = None,
@@ -305,7 +332,7 @@ def _common(
     drift_delta: float | None = None,
     drift_threshold: float | None = None,
     drift_action: str = "flag",
-    label_delay: float | None = None,
+    label_delay: float | Duration | None = None,
     group: str | None = None,
     group_close: str | None = None,
 ) -> dict[str, Any]:
@@ -364,12 +391,12 @@ def ewridge(
     ridge_decay: bool = False,
     coef_prior: list[list[float]] | None = None,
     session_shrink: float | None = None,
-    long_halflife: float | None = None,
-    solve_every: float | None = None,
+    long_halflife: float | Duration | None = None,
+    solve_every: float | Duration | None = None,
     max_rows_between_solves: int | None = None,
     gram_block_rows: int | None = None,
     target_gaps: str = "own_rows",
-    window: float | None = None,
+    window: float | Duration | None = None,
     window_every: int | None = None,
     window_budget: dict[str, float] | None = None,
     **common: Unpack[CommonKwargs],
@@ -901,10 +928,10 @@ def lasso(
     features: list[str],
     lasso_path: list[float],
     l1_ratio: float | None = None,
-    select_halflife: float | None = None,
-    solve_every: float | None = None,
+    select_halflife: float | Duration | None = None,
+    solve_every: float | Duration | None = None,
     max_rows_between_solves: int | None = None,
-    window: float | None = None,
+    window: float | Duration | None = None,
     window_every: int | None = None,
     window_budget: dict[str, float] | None = None,
     max_cd_iters: int | None = None,
@@ -1038,12 +1065,12 @@ def kalman(
     *,
     targets: list[str],
     features: list[str],
-    coef_halflife: float | list[float],
+    coef_halflife: float | Duration | list[float | Duration],
     q: list[float] | None = None,
     obs_var: float | None = None,
     p0: float | None = None,
     share_p: bool = False,
-    revert_halflife: float | list[float] | None = None,
+    revert_halflife: float | Duration | list[float | Duration] | None = None,
     standardize: bool = True,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
@@ -1175,7 +1202,7 @@ def huber(
     huber_delta: float | None = None,
     ridge: float | None = None,
     standardize: bool = False,
-    solve_every: float | None = None,
+    solve_every: float | Duration | None = None,
     max_rows_between_solves: int | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
@@ -1278,7 +1305,7 @@ def quantile(
     quantile: float,
     ridge: float | None = None,
     standardize: bool = False,
-    solve_every: float | None = None,
+    solve_every: float | Duration | None = None,
     max_rows_between_solves: int | None = None,
     quantile_eps: float | None = None,
     **common: Unpack[CommonKwargs],
@@ -1529,7 +1556,7 @@ def ew_cov(
     pca: int | None = None,
     pca_every: int | None = None,
     lags: list[int] | None = None,
-    window: float | None = None,
+    window: float | Duration | None = None,
     window_every: int | None = None,
     window_budget: dict[str, float] | None = None,
     **common: Unpack[CommonKwargs],
@@ -2019,8 +2046,8 @@ def holt(
     name: str,
     *,
     targets: list[str],
-    level_halflife: float | None = None,
-    trend_halflife: float | None = None,
+    level_halflife: float | Duration | None = None,
+    trend_halflife: float | Duration | None = None,
     features: list[str] | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
@@ -2422,7 +2449,7 @@ def ew_class(
     classes: list[str],
     covariance: str | None = None,
     precision_prior: float,
-    window: float | None = None,
+    window: float | Duration | None = None,
     window_every: int | None = None,
     window_budget: dict[str, float] | None = None,
     **common: Unpack[CommonKwargs],
@@ -2699,7 +2726,7 @@ def marginal(
     bin_rule: str | None = None,
     bin_warm_rows: int | None = None,
     bin_edges: dict[str, list[float]] | list[list[float]] | None = None,
-    window: float | None = None,
+    window: float | Duration | None = None,
     window_every: int | None = None,
     window_budget: dict[str, float] | None = None,
     **common: Unpack[CommonKwargs],

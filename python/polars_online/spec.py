@@ -28,10 +28,13 @@ sees a stream* is the guide to them; this is the reference.
     through the origin is least squares through the origin.
 ``clock``
     Why: rows are not evenly spaced, and forgetting should follow the stream's
-    own time. What: a numeric column that never runs backwards within a group;
-    the row count when ``None``. It need not be a time. Sort by a feature and
-    clock on it, and ``halflife`` becomes a bandwidth in that feature's units,
-    which makes the fit a local regression in it.
+    own time. What: a column that never runs backwards within a group; the row
+    count when ``None``. A ``Datetime``, ``Date`` or ``Duration`` column is a
+    temporal clock, and the parameters measured in clock units are then
+    durations (*Clock units*, below). A numeric column is a clock in its own
+    units and need not be a time. Sort by a feature and clock on it, and
+    ``halflife`` becomes a bandwidth in that feature's units, which makes the
+    fit a local regression in it.
 ``halflife``, ``lam``
     Why: a stream drifts, so older rows should count less. What: the decay.
     ``halflife`` is the clock distance over which a row's weight halves;
@@ -125,6 +128,62 @@ the diagnostics
     ``drift_threshold`` and ``drift_action``. Each adds fields to the output,
     listed below; a model with no residual refuses them by name.
 
+.. rubric:: Clock units
+
+A parameter measured in clock units is written one of two ways, and the
+clock column decides which:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 34 36
+
+   * - the clock
+     - a clock parameter is
+     - for example
+   * - none
+     - a number of rows
+     - ``halflife=500``
+   * - a numeric column
+     - a number of the column's own units
+     - ``halflife=600`` on a clock in seconds
+   * - a ``Datetime``, ``Date`` or ``Duration`` column
+     - a duration
+     - ``halflife=pl.duration(minutes=10)``
+
+A duration is a polars expression that reads no column, such as
+``pl.duration(minutes=10)``; a :class:`datetime.timedelta`; or polars' duration
+text, such as ``"10m"`` or ``"1h30m"``: whole numbers of ``ns``, ``us``,
+``ms``, ``s``, ``m``, ``h``, ``d`` or ``w``, largest first. A month, a quarter
+and a year have no fixed length, so ``"1mo"``, ``"1q"`` and ``"1y"`` are
+refused. The spec keeps a duration as text, the form the command line's TOML
+takes, and a ``halflife`` grid names its instances by it (``@h10m``). ``0``
+and ``inf`` mean the same in every unit, so they may stay numbers beside
+durations.
+
+The clock parameters are ``halflife``, ``max_dclock``, ``min_backwards_jump``,
+``session_gap`` and ``label_delay`` above, and in the models ``window``,
+``solve_every`` and the model halflives: ``long_halflife``,
+``select_halflife``, ``coef_halflife``, ``revert_halflife``,
+``level_halflife`` and ``trend_halflife``.
+
+Each mixture is refused, naming the column, the parameter and the fix: a
+temporal clock with a clock parameter given as a plain number, a numeric clock
+with a duration, and one spec that gives both. A rate per clock unit has no
+duration form, so a temporal clock refuses one too: ``lam``, and ``kalman``'s
+``q``. Give the halflife the rate stands for as a duration instead.
+
+A temporal clock is read as seconds since 1970-01-01 UTC, and a duration in
+seconds, so the column's own unit never reaches the fit: the same instants as
+``Datetime("ms")``, ``Datetime("us")`` or ``Datetime("ns")`` give the same
+numbers. A time zone changes nothing, because a ``Datetime`` is stored in UTC,
+so a change of clocks for summer time neither stretches nor folds the clock.
+The seconds are held in double precision, which resolves about a quarter of a
+microsecond at today's dates; ticks closer together than that read as
+simultaneous. Where a clock quantity reaches an output, it is in seconds:
+``holt``'s trend is per second, and :meth:`polars_online.ModelBank.summary`
+gives the clock's range as seconds since 1970. A ``Time`` column is refused,
+because a time of day starts again at midnight.
+
 .. rubric:: What a spec writes
 
 A bank adds one struct column per spec, named after the spec. Every field is
@@ -157,9 +216,9 @@ writes, with ``<t>`` a target:
     <https://github.com/hgilde/polars-online/blob/main/docs/WARMUP-AND-CONVERGENCE.md>`_).
 ``withheld_reason``
     Why the row's predictions are null, as a categorical --
-    ``below_min_settled_frac``, ``above_max_error_inflation`` or
-    ``below_min_periods``, the first gate that withheld anything -- and null
-    where nothing was withheld. A categorical rather than a string because a
+    ``below_min_settled_frac``, ``below_min_periods`` or
+    ``above_max_error_inflation``, the first in that order that withheld
+    anything -- and null where nothing was withheld. A categorical rather than a string because a
     string column costs sixteen bytes a row even when every value is null.
 ``support_coef``
     On ``coef``'s rows, for ``ewridge``: each coefficient's data share,
@@ -184,7 +243,7 @@ halflives, a list of ``ridge`` values, ``feature_sets`` or a ``lasso_path``:
     sigma_{target}{combo}{instance}             | __{set}         feature sets, single ridge
     n_eff{instance}                             | __{set}_r{ridge}
     coef{instance}                     instance = ""             single halflife
-                                                | @h{halflife}    halflife grid
+                                                | @h{halflife}    halflife grid (@h600, @h10m)
 
 ``<slot>`` below is a target with its suffix. :func:`output_index` gives every
 field with the values its name encodes, so a field is reached without building

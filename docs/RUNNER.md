@@ -62,6 +62,28 @@ single quotes or forward slashes
 (`input = 'C:\data\in.parquet'`), since a backslash in a double-quoted string
 starts an escape sequence.
 
+A spec whose clock is a `Datetime`, `Date` or `Duration` column gives its
+clock parameters as durations, in the text polars writes them in:
+
+```toml
+[[specs]]
+name = "ridge"
+targets = ["y"]
+features = ["x0", "x1"]
+clock = "ts"           # a Datetime column
+halflife = "10m"       # a row's weight halves every ten minutes
+max_dclock = "5m"
+label_delay = "30s"
+[specs.model]
+type = "ew_ridge"
+```
+
+TOML has no duration type, so the text is the whole spelling, the same text
+a Python spec keeps for `pl.duration(minutes=10)` or `timedelta(minutes=10)`.
+A numeric clock takes plain numbers of its own units, and either mixture is
+refused, naming the column and the parameter
+([Time and decay](../README.md#time-and-decay)).
+
 From Rust, the same pipeline is `online_polars::run_config` for a
 `RunConfig`, `run_config_on` for a `LazyFrame` or batches the caller already
 has, and `run` with a callback instead of an output file.

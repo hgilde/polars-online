@@ -198,9 +198,12 @@ class ModelBank:
 
         - a column a spec reads (target, feature, clock, session, weight, group) is
           not in the frame;
-        - a target, feature, clock or weight column is not numeric -- a datetime clock
-          is refused rather than read as its epoch integer: cast it to the unit
-          ``halflife`` and ``max_dclock`` are in;
+        - a target, feature or weight column is not numeric;
+        - a clock is not a number, a ``Datetime``, a ``Date`` or a ``Duration`` (a
+          ``Time`` is refused: a time of day starts again at midnight), or its spec
+          gives it the other kind of clock parameter -- a plain number to a temporal
+          clock, a duration to a numeric one (*Clock units* in
+          :mod:`polars_online.spec`);
         - the clock has a null or non-finite value;
         - a weight is negative (a null weight skips the row);
         - a spec is named like an input column, which the struct would replace;

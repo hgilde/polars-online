@@ -659,6 +659,40 @@ fn native_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// A duration's length in nanoseconds, from polars' duration text
+/// (`"10m"`, `"1h30m"`); ValueError says what is wrong with the text.
+#[pyfunction]
+fn parse_duration(text: &str) -> PyResult<i64> {
+    online_polars::parse_duration(text).map_err(PyValueError::new_err)
+}
+
+/// The text a duration of `ns` nanoseconds is written as: `"10m"`.
+#[pyfunction]
+fn format_duration(ns: i64) -> String {
+    online_polars::format_duration(ns)
+}
+
+/// The parameters measured in clock units, which take a duration under a
+/// temporal clock, keyed `"*"` for the shared ones and by model `type` for
+/// the rest; and the rates per clock unit, which a temporal clock refuses
+/// (docs/PLAN.md task 88).
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+fn spec_clock_fields() -> (
+    Vec<(&'static str, Vec<&'static str>)>,
+    Vec<(&'static str, Vec<&'static str>)>,
+) {
+    let table = |t: &[(&'static str, &'static [&'static str])]| {
+        t.iter()
+            .map(|(owner, fields)| (*owner, fields.to_vec()))
+            .collect()
+    };
+    (
+        table(online_polars::CLOCK_FIELDS),
+        table(online_polars::CLOCK_RATES),
+    )
+}
+
 /// State-file schema version (see `online_core::SCHEMA_VERSION`).
 #[pyfunction]
 fn schema_version() -> u32 {
@@ -697,6 +731,9 @@ fn _polars_online(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(thread_pool_size, m)?)?;
     m.add_function(wrap_pyfunction!(model_kinds, m)?)?;
     m.add_function(wrap_pyfunction!(validate_spec, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_duration, m)?)?;
+    m.add_function(wrap_pyfunction!(format_duration, m)?)?;
+    m.add_function(wrap_pyfunction!(spec_clock_fields, m)?)?;
     m.add_function(wrap_pyfunction!(format_of_path, m)?)?;
     m.add_function(wrap_pyfunction!(default_chunk_rows, m)?)?;
     m.add_function(wrap_pyfunction!(spec_output_fields, m)?)?;

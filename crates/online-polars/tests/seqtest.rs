@@ -274,9 +274,9 @@ fn a_suffix_picks_the_grid_instance() {
     // is the comparison of a single-instance spec at halflife 20.
     let df = make_df(400);
     let mut grid = ridge("a", 20.0, true);
-    grid.halflife = Some(online_polars::FloatOrList::List(vec![
-        online_polars::Num(20.0),
-        online_polars::Num(200.0),
+    grid.halflife = Some(online_polars::SpanList::List(vec![
+        online_polars::Span::Units(20.0),
+        online_polars::Span::Units(200.0),
     ]));
     let picked: Spec = serde_json::from_str(
         r#"{"name": "c", "model": {"type": "seqtest", "a": "a", "b": "b",
@@ -467,9 +467,9 @@ fn the_refusals_name_the_problem() {
 
     // A grid's residual fields carry the suffix, and so must the target.
     let mut grid = ridge("a", 20.0, false);
-    grid.halflife = Some(online_polars::FloatOrList::List(vec![
-        online_polars::Num(20.0),
-        online_polars::Num(200.0),
+    grid.halflife = Some(online_polars::SpanList::List(vec![
+        online_polars::Span::Units(20.0),
+        online_polars::Span::Units(200.0),
     ]));
     let e = err(vec![
         grid.clone(),
@@ -532,7 +532,9 @@ fn the_refusals_name_the_problem() {
     let e = weighted.validate().unwrap_err();
     assert!(e.contains("weight does not apply to seqtest"), "{e}");
     let mut decayed = column_mode("s", "y", false);
-    decayed.halflife = Some(online_polars::FloatOrList::Float(online_polars::Num(50.0)));
+    decayed.halflife = Some(online_polars::SpanList::One(online_polars::Span::Units(
+        50.0,
+    )));
     let e = decayed.validate().unwrap_err();
     assert!(e.contains("halflife/lam do not apply to seqtest"), "{e}");
     let mut featured = column_mode("s", "y", false);

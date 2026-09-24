@@ -23,6 +23,9 @@ from collections.abc import Iterable, Sequence
 
 import polars as pl
 
+from polars_online._duration import Duration, clock_nanoseconds
+from polars_online._polars_online import format_duration
+
 __all__ = [
     "metrics",
     "rolling_metrics",
@@ -263,7 +266,7 @@ def rolling_metrics(
     spec_name: str,
     *,
     clock: str,
-    window: float,
+    window: float | Duration,
     by: Iterable[str] = (),
     targets: Sequence[str] | None = None,
     min_obs: int = 30,
@@ -273,25 +276,43 @@ def rolling_metrics(
 
     The columns are :func:`metrics`'s, per window, plus ``window_start``, the left
     edge of each bucket (``floor(clock / window) * window``); ``binary`` is
-    :func:`metrics`'s.
+    :func:`metrics`'s. ``window`` is measured the way a spec's clock parameters
+    are: a number for a numeric clock, and a duration for a ``Datetime``, ``Date``
+    or ``Duration`` one, when ``window_start`` is of the clock's own dtype.
 
     .. code-block:: python
 
         by_hour = po.eval.rolling_metrics(out, "ridge", clock="t", window=100.0)
+        # on a Datetime clock: window=pl.duration(hours=1), timedelta(hours=1) or "1h"
 
     Raises as :func:`unpack` does, ``ValueError`` for a ``window`` that is not
-    above 0, ``TypeError`` for a ``clock`` column that is not numeric, and polars'
+    above 0 or of the wrong kind for the clock, ``TypeError`` for a ``clock``
+    column that is neither numeric nor temporal, and polars'
     ``ColumnNotFoundError`` for a ``clock`` or ``by`` column the frame has not
     got.
     """
-    if not window > 0:
+    dtype = df.schema.get(clock)
+    ns = (
+        None
+        if dtype is None
+        else clock_nanoseconds(window, dtype, "rolling_metrics", "window", clock)
+    )
+    if ns is None and not window > 0:  # type: ignore[operator]
         msg = f"window must be > 0, got {window}"
         raise ValueError(msg)
-    if clock in df.schema and not df.schema[clock].is_numeric():
-        msg = f"clock column {clock!r} must be numeric, got {df.schema[clock]}"
+    if dtype is not None and not (dtype.is_numeric() or dtype.is_temporal()):
+        msg = f"clock column {clock!r} must be numeric or temporal, got {dtype}"
         raise TypeError(msg)
+    if ns is None:
+        start = (pl.col(clock) / window).floor() * window
+    elif isinstance(dtype, pl.Duration):
+        start = (
+            (pl.col(clock).dt.total_nanoseconds() // ns * ns).cast(pl.Duration("ns")).cast(dtype)
+        )
+    else:
+        start = pl.col(clock).dt.truncate(format_duration(ns))
     long = unpack(df, spec_name, targets=targets).drop_nulls(["pred", "y"])
-    long = long.with_columns(((pl.col(clock) / window).floor() * window).alias("window_start"))
+    long = long.with_columns(start.alias("window_start"))
     keys = ["slot", "target", *by, "window_start"]
     out = long.group_by(keys).agg(_metric_exprs(min_obs, binary=binary)).sort(keys)
     return out.filter(pl.col("enough")).drop("enough")

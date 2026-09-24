@@ -43,17 +43,23 @@ def _spec_dict(**kw) -> dict:
 SHAPES = [
     (po.spec.ewridge, dict(targets="y"), "targets must be a list of strs, got str 'y'"),
     (po.spec.ewridge, dict(features="x0"), "features must be a list of strs, got str 'x0'"),
+    # A string is a duration's shape now ("10m", task 88), so a wrong
+    # shape for a clock parameter is anything that is neither.
     (
         po.spec.ewridge,
-        dict(halflife="10"),
-        "halflife must be a number or a list of numbers, got str '10'",
+        dict(halflife=True),
+        "halflife must be a number or a duration or a list of numbers or durations, got bool",
     ),
     (
         po.spec.ewridge,
-        dict(halflife=[10, "x"]),
-        "halflife must be a number or a list of numbers, got list [10, 'x']",
+        dict(halflife=[10, None]),
+        "halflife must be a number or a duration or a list of numbers or durations, got list",
     ),
-    (po.spec.ewridge, dict(session_gap=[1]), "session_gap must be a number or a str, got list"),
+    (
+        po.spec.ewridge,
+        dict(session_gap=[1]),
+        "session_gap must be a number or a duration, got list",
+    ),
     (po.spec.ewridge, dict(coef_every=1.5), "coef_every must be an int, got float 1.5"),
     (po.spec.ewridge, dict(standardize=1), "standardize must be a bool, got int 1"),
     (po.spec.ewridge, dict(coef_prior=[1.0, 2.0]), "coef_prior must be a list of lists of numbers"),
@@ -392,11 +398,8 @@ def test_a_hand_built_dict_is_checked_by_path():
     base = dict(name="m", model={"type": "ew_ridge"}, targets=["y"], features=["x0"])
     for bad, msg in [
         (dict(targets="y"), '[0].targets: invalid type: string "y", expected a sequence'),
-        (
-            dict(halflife="10"),
-            '[0].halflife: invalid value: string "10", expected a number or a list of numbers',
-        ),
-        (dict(halflife=[10, "x"]), '[0].halflife[1]: invalid value: string "x"'),
+        (dict(halflife="10"), '[0].halflife: "10" is not a duration: 10 has no unit'),
+        (dict(halflife=[10, "x"]), '[0].halflife[1]: "x" is not a duration'),
         (
             dict(halflife=10, session_gap=[1]),
             "[0].session_gap: invalid type: sequence, expected a gap in clock units",

@@ -356,7 +356,9 @@ fn resume_rejects_mismatched_specs() {
 
     let mut other = config(&input, &out, 100_000);
     other.load_state = Some(state.clone());
-    other.specs[0].halflife = Some(online_polars::FloatOrList::Float(online_polars::Num(999.0)));
+    other.specs[0].halflife = Some(online_polars::SpanList::One(online_polars::Span::Units(
+        999.0,
+    )));
     let err = run_config(&other, |_| Ok(())).unwrap_err().to_string();
     assert!(err.contains("do not match"), "{err}");
 

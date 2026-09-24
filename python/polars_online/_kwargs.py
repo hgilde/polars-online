@@ -26,6 +26,8 @@ optional at runtime and the test below could not see the required ones.
 
 from typing import TypedDict
 
+from polars_online._duration import Duration
+
 __all__ = [
     "CommonKwargs",
     "ExprKwargs",
@@ -43,13 +45,13 @@ class ExprKwargs(TypedDict, total=False):
 
     add_intercept: bool
     clock: str | None
-    halflife: float | list[float] | None
+    halflife: float | Duration | list[float | Duration] | None
     lam: float | None
-    max_dclock: float | None
+    max_dclock: float | Duration | None
     on_clock_reset: str
-    min_backwards_jump: float | None
+    min_backwards_jump: float | Duration | None
     session: str | None
-    session_gap: float | str | None
+    session_gap: float | Duration | None
     weight: str | None
     min_periods: float | list[float] | None
     min_settled_frac: float | None
@@ -71,7 +73,7 @@ class ExprKwargs(TypedDict, total=False):
     drift_delta: float | None
     drift_threshold: float | None
     drift_action: str
-    label_delay: float | None
+    label_delay: float | Duration | None
 
 
 class CommonKwargs(ExprKwargs, total=False):

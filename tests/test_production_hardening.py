@@ -24,6 +24,7 @@ import os
 import pickle
 import subprocess
 import threading
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -674,7 +675,13 @@ def _readme_namespace(tmp_path: Path) -> dict[str, object]:
     df = pl.DataFrame(
         {
             "t": np.arange(float(n)),
-            "ts": np.arange(float(n)) * 60.0,
+            # A timestamp, a minute apart: the README's clock="ts" specs give durations.
+            "ts": pl.datetime_range(
+                datetime(2024, 1, 2, 9, 30),
+                datetime(2024, 1, 2, 9, 30) + timedelta(minutes=n - 1),
+                "1m",
+                eager=True,
+            ),
             "x0": rng.standard_normal(n),
             "x1": rng.standard_normal(n),
             "x2": rng.standard_normal(n),

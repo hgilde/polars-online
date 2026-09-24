@@ -26,6 +26,7 @@ import polars as pl
 from polars.io.plugins import register_io_source
 
 from polars_online import _polars_online as _native
+from polars_online._duration import Duration, clock_nanoseconds
 
 __all__ = ["embargo", "refresh_time"]
 
@@ -37,7 +38,7 @@ def embargo(
     lf: pl.LazyFrame | pl.DataFrame,
     *,
     clock: str,
-    delay: float,
+    delay: float | Duration,
     weight: str | None = None,
     role: str = ROLE,
 ) -> pl.LazyFrame:
@@ -82,19 +83,33 @@ def embargo(
     this when a delay has to be visible in the data (an oracle, a demonstration,
     or an engine that is not this one).
 
+    ``delay`` is measured the way a spec's clock parameters are: a number of the
+    clock's own units for a numeric clock, and a duration for a ``Datetime``,
+    ``Date`` or ``Duration`` one (``pl.duration(minutes=5)``, ``timedelta`` or
+    ``"5m"``). A duration must be a whole number of the column's own steps, since
+    the learn copy's clock is the column plus the delay: a ``Date`` clock takes
+    whole days, where ``"12h"`` would be cut to nothing.
+
     ``ValueError`` for a ``delay`` that is not finite and positive (``0`` would be
-    the undoubled stream, and negative a label from the past), for a ``clock`` or
-    ``weight`` column the frame has not got, and for a frame that already has a
-    column named ``role``.
+    the undoubled stream, and negative a label from the past), for a ``delay``
+    of the wrong kind for the clock, for a ``clock`` or ``weight`` column the
+    frame has not got, and for a frame that already has a column named ``role``.
     """
-    if not (delay > 0.0) or delay == float("inf"):
-        msg = f"embargo: delay must be finite and > 0, got {delay!r}"
-        raise ValueError(msg)
     lazy = lf.lazy()
     schema = lazy.collect_schema()
     if clock not in schema:
         msg = f"embargo: no clock column {clock!r} in the frame; it has {schema.names()}"
         raise ValueError(msg)
+    ns = clock_nanoseconds(delay, schema[clock], "embargo", "delay", clock)
+    if ns is None:
+        if not (delay > 0.0) or delay == float("inf"):  # type: ignore[operator]
+            msg = f"embargo: delay must be finite and > 0, got {delay!r}"
+            raise ValueError(msg)
+        later = pl.col(clock) + delay
+    else:
+        # Exact: the delay is whole steps of the column, so the cast back to
+        # its own dtype drops nothing.
+        later = (pl.col(clock) + pl.duration(nanoseconds=ns)).cast(schema[clock])
     if weight is not None and weight not in schema:
         msg = f"embargo: no weight column {weight!r} in the frame; it has {schema.names()}"
         raise ValueError(msg)
@@ -114,7 +129,7 @@ def embargo(
     learn = lazy.with_columns(
         pl.lit("learn").alias(role),
         (pl.col(weight) if weight is not None else pl.lit(1.0)).alias(wcol),
-        (pl.col(clock) + delay).alias(clock),
+        later.alias(clock),
         pl.lit(0, pl.UInt8).alias("__embargo_order"),
     )
     # One sort key, so the merge is by (clock, order): at a tie the lesson

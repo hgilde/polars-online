@@ -61,8 +61,25 @@ impl std::fmt::Display for GroupKey {
 
 /// Bank state-file layout version, independent of `online_core::SCHEMA_VERSION`
 /// (which versions the *model* state). Version 2 made group keys nullable;
-/// version 1 files still load (see [`GroupKey`]).
-const BANK_FORMAT_VERSION: u32 = 2;
+/// version 1 files still load (see [`GroupKey`]). Version 3 lets a spec
+/// carry a clock parameter as a duration (`"10m"`, docs/PLAN.md task 88),
+/// and is written only by a bank whose specs do: every other file is still
+/// version 2, byte for byte, so a build from before durations reads it,
+/// and refuses a file with a duration by its version rather than by a type
+/// error deep in a spec.
+const BANK_FORMAT_VERSION: u32 = 3;
+
+/// The version of the envelope a bank with these specs needs.
+fn format_version_for(specs: &[Spec]) -> u32 {
+    if specs
+        .iter()
+        .any(|s| s.clock_spans().iter().any(|(_, span)| span.is_duration()))
+    {
+        3
+    } else {
+        2
+    }
+}
 
 fn default_format_version() -> u32 {
     1
@@ -3122,7 +3139,7 @@ impl Bank {
     fn to_file(&self) -> BankFile {
         BankFile {
             magic: BANK_MAGIC.to_string(),
-            format_version: BANK_FORMAT_VERSION,
+            format_version: format_version_for(&self.specs),
             rows_fed: self.rows_fed,
             schema_version: online_core::SCHEMA_VERSION,
             package_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -4731,4 +4748,45 @@ fn assemble(
         arrays,
         None,
     ))
+}
+
+#[cfg(test)]
+mod envelope_tests {
+    use super::{BankHeader, format_version_for};
+    use crate::{Bank, Spec};
+
+    fn spec(extra: &str) -> Spec {
+        serde_json::from_str(&format!(
+            r#"{{"name": "m", "model": {{"type": "ew_ridge"}}, "targets": ["y"],
+                "features": ["x"]{extra}}}"#
+        ))
+        .unwrap()
+    }
+
+    /// A file is version 3 only when a spec carries a duration (task 88), so
+    /// every other file stays readable by a build from before durations.
+    #[test]
+    fn a_file_says_version_3_only_when_a_spec_carries_a_duration() {
+        for (extra, version) in [
+            (r#", "halflife": 50"#, 2),
+            (r#", "clock": "t", "halflife": 600, "max_dclock": 300"#, 2),
+            (
+                r#", "clock": "t", "halflife": "inf", "max_dclock": "inf""#,
+                2,
+            ),
+            (
+                r#", "clock": "t", "halflife": "10m", "max_dclock": "5m""#,
+                3,
+            ),
+        ] {
+            let specs = vec![spec(extra)];
+            assert_eq!(format_version_for(&specs), version, "{extra}");
+            let bytes = Bank::new(specs).unwrap().save_bytes().unwrap();
+            let header: BankHeader = rmp_serde::from_slice(&bytes).unwrap();
+            assert_eq!(header.format_version, version, "{extra}");
+            // And the file loads back, specs and all.
+            let back = Bank::load_bytes(&bytes, None).unwrap();
+            assert_eq!(back.specs()[0].halflife, spec(extra).halflife, "{extra}");
+        }
+    }
 }

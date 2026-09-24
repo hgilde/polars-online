@@ -47,6 +47,7 @@ mod refresh;
 mod resid_window;
 mod rows;
 mod runner;
+mod span;
 mod spec;
 mod stream;
 mod summary;
@@ -75,6 +76,10 @@ pub use runner::{
     DEFAULT_CHUNK_ROWS, Format, Input, Output, RunConfig, RunOptions, RunStats, run, run_config,
     run_config_on,
 };
-pub use spec::{Compare, FloatOrList, ModelKind, Num, SessionGapSpec, Spec};
+pub use span::{Span, SpanList, format_duration, parse_duration, seconds_of};
+pub use spec::{
+    CLOCK_FIELDS, CLOCK_RATES, ClockScale, Compare, FloatOrList, ModelKind, Num, SessionGapSpec,
+    Spec,
+};
 pub use stream::{AnyModel, ChunkOut, LastRow, Stream, StreamState, build_models, combo_labels};
 pub use summary::{ColumnStats, DataSummary, Role};

@@ -3198,7 +3198,7 @@ note, not a task.
       2% of the observed error down to `n_kish ≈ 2.3 k_eff`; the per-row
       form conservative by 10–54% at small `n`, which is what an exact `G₂`
       would buy (doc §2.1). Schema 13. Released in 0.9.0.
-- [ ] 88. **Durations for a time clock: `timedelta` half-lives on a
+- [x] 88. **Durations for a time clock: `timedelta` half-lives on a
       `Datetime` clock, requested 2026-09-23.** A `Datetime` or `Date` clock
       column is accepted when the spec's time parameters are given as
       durations -- a Python `timedelta`, as asked -- so a halflife states its
@@ -3254,6 +3254,69 @@ note, not a task.
       column stays refused, since time of day wraps at midnight and is not a
       clock. Whether the spec keeps a parameter as the duration the user wrote,
       so `summary()` can show "10m" rather than a converted number.
+
+      **Built 2026-09-23**, on the user's ask to express a temporal clock's
+      halflife, `max_dclock` and the other clock-scaled parameters "in
+      pl.duration", and to reject a duration that is incompatible with the
+      data. The open questions, as the build settled them:
+
+      | question | settled |
+      |---|---|
+      | the forms Python takes | three: a `pl.duration(...)` that reads no column (evaluated once, at the builder), a `timedelta`, and polars' duration text (`"10m"`, `"1h30m"`), so a spec reads the same in Python and TOML |
+      | what the spec keeps | the text: a `timedelta` or an expression is written by the Rust formatter (`timedelta(minutes=90)` is `"1h30m"`), and text is kept as written (`"90m"` stays `"90m"`), so `bank.specs` equals the dict that built it |
+      | units | whole numbers of `ns`, `us`, `ms`, `s`, `m`, `h`, `d`, `w`; `mo`, `q` and `y` are refused (no fixed length), and so is `i` (it counts rows) |
+      | a `Duration` column | a clock, like a `Datetime`: elapsed time is time |
+      | a `Time` column | refused: a time of day starts again at midnight |
+      | `0` and `inf` | unit-free, so they may stay numbers beside durations |
+      | a rate per clock unit | `lam` and `kalman`'s `q` have no duration form, so a temporal clock refuses them and names the halflife to give instead |
+      | the internal scale | seconds since 1970 UTC, as `f64`: the whole seconds exact and the rest rounded once, so one instant in ms, µs or ns is the same bits; a zone-aware column is read as its UTC instants |
+      | outputs in clock units | seconds: `holt`'s trend is per second, `summary()`'s clock range is epoch seconds, and `output_index`'s `halflife` is seconds; a grid's field names keep the text (`@h10m`) |
+
+      *Incompatible, and refused.* A temporal clock with a clock parameter
+      as a plain number (naming the column, the parameter, the duration fix
+      and `dt.epoch`); a numeric clock with a duration (naming the column,
+      the parameter and `pl.from_epoch`); one spec that gives both; a
+      duration with no clock column; a rate on a temporal clock; a `Time`
+      clock; a temporal clock column that another spec also reads as a
+      feature, target or weight, which in seconds would be a number nobody
+      asked for; and a duration the parameter's own rule refuses, such as a
+      zero halflife, which is checked on its seconds.
+
+      *The state.* The model layout, `SCHEMA_VERSION`, is unchanged, so the
+      plan's guess above was wrong: nothing to raise. The envelope,
+      `BANK_FORMAT_VERSION`, is 3, and a bank writes 3 only when a spec
+      carries a duration. Every other file is still version 2, byte for
+      byte, so an older build reads it, and refuses a file with a duration
+      by its version rather than by a type error inside a spec.
+
+      *Completeness, three ways.* `CLOCK_FIELDS` in `spec.rs` lists the
+      clock parameters, and a Rust test walks every field serde knows and
+      holds the table to the types; dropping `marginal`'s `window` from it
+      fails the test. `Spec::clock_spans` walks the fields directly, since
+      the chunk builder calls it on every chunk, and a second test ties it
+      to the table. In Python, `tests/test_temporal_clock.py` holds the
+      table to the builders' annotations and to their docstrings (12 of the
+      15 model parameters say "clock unit" in their own entry; `solve_every`
+      in `lasso`, `huber` and `quantile` defers to `ewridge`'s), and fits
+      every entry both ways on a temporal clock.
+
+      *Measured.* The same wall-clock data as `Datetime(ms)`, `(us)` and
+      `(ns)`, with the parameters as `pl.duration`, `timedelta` or text,
+      give output identical to the bit to a float clock in seconds with the
+      same parameters as numbers; a `Date` clock with `"5d"` matches a
+      clock in days with `5`; a zone-aware clock across the March change
+      matches its UTC instants and differs from the wall clock. Against
+      pandas' `ewm(halflife=Timedelta, times=...)` on a nanosecond clock
+      the EW mean agrees to 1.2e-9. That is the clock's resolution: a
+      double at 1.7e9 seconds resolves 2**-22 s, 0.24 µs, where pandas
+      keeps integer nanoseconds. Reading the clock against the stream's
+      first instant, kept in the state, would restore nanoseconds; that
+      changes the chunk path and the state, so it is left for a need.
+
+      *Other surfaces.* The command line takes the same text in TOML,
+      tested end to end on a parquet file with a `Datetime(ns)` clock. The
+      Arrow import path (task 86's unbuilt half) still has to read the
+      clock's unit from the Arrow type when it is built.
 - [x] 89. **README rewrite: ten sections in a hierarchy, requested 2026-09-23.**
       The user's brief: plan every section first; put similar concepts
       together, with a moderate number of large sections holding

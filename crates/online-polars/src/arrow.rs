@@ -20,7 +20,8 @@ use polars_arrow::array::{Float64Array, Int64Array, StructArray, UInt64Array, Ut
 use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
 use polars_arrow::ffi::{ArrowArray, ArrowSchema, export_array_to_c, export_field_to_c};
 
-use crate::spec::{ModelKind, Spec};
+use crate::span::seconds_of;
+use crate::spec::{ClockScale, ModelKind, Spec};
 
 /// One column of an [`ArrowChunk`], in the form the bank reads it.
 #[derive(Clone, Debug)]
@@ -412,6 +413,7 @@ pub fn chunk_from_frame(df: &DataFrame, specs: &[Spec]) -> PolarsResult<ArrowChu
             );
         }
     }
+    check_clocks(df, specs)?;
     let mut cols: Vec<(PlSmallStr, ArrowCol)> = Vec::new();
     for (name, want) in wanted(specs) {
         // A column a scoring chunk may leave out is not an error here: the
@@ -425,27 +427,20 @@ pub fn chunk_from_frame(df: &DataFrame, specs: &[Spec]) -> PolarsResult<ArrowChu
             .map_or("", |s| s.name.as_str());
         let role = role_of(specs, name.as_str());
         let s = col.as_materialized_series();
-        // A temporal clock column is refused rather than cast. Casting one to
-        // f64 exposes its *internal representation*, so the same 60 seconds
-        // becomes 60_000 / 60_000_000 / 60_000_000_000 clock units depending
-        // only on whether the column is Datetime(ms/us/ns), and a Date becomes
-        // 1 unit per day. `halflife`, `max_dclock` and `session_gap` all live
-        // in those units, so `halflife = 600` on a microsecond column silently
-        // means 600 microseconds (docs/TESTING.md T-E10).
-        if s.dtype().is_temporal() {
-            if let Some(owner) = specs
+        // A temporal clock is read as seconds since the Unix epoch, the scale
+        // a duration is read on, whatever the column's own unit: casting it
+        // instead would expose its *internal representation*, so the same 60
+        // seconds would be 60_000 / 60_000_000 / 60_000_000_000 clock units
+        // for Datetime(ms/us/ns) (docs/TESTING.md T-E10). `check_clocks` has
+        // already refused a spec that gives this clock plain numbers.
+        if want == Want::Number
+            && s.dtype().is_temporal()
+            && specs
                 .iter()
-                .find(|sp| sp.clock.as_deref() == Some(name.as_str()))
-            {
-                polars_bail!(ComputeError:
-                    "spec {:?}: clock column {:?} has dtype {}; a temporal clock would be \
-                     read as its internal representation (e.g. epoch microseconds), so \
-                     halflife/max_dclock/session_gap would silently be in those units. \
-                     Cast it to the scale you mean, e.g. \
-                     pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64), and use that column.",
-                    owner.name, name.as_str(), s.dtype(), name.as_str()
-                );
-            }
+                .any(|sp| sp.clock.as_deref() == Some(name.as_str()))
+        {
+            cols.push((name.clone(), ArrowCol::F64(temporal_seconds(s)?)));
+            continue;
         }
         // One column read in two roles that cast to the same form -- a
         // column that is a group key for one spec and a session for another,
@@ -464,6 +459,158 @@ pub fn chunk_from_frame(df: &DataFrame, specs: &[Spec]) -> PolarsResult<ArrowChu
         cols.push((name.clone(), cast_to(s, want, spec, role, name.as_str())?));
     }
     ArrowChunk::new(df.height(), cols, names)
+}
+
+/// Each clock column against the specs that read it (docs/PLAN.md task 88).
+/// A temporal clock measures durations and a numeric one plain numbers of
+/// its own units; a spec that gives a clock the other kind is refused,
+/// naming the column, the parameter and the fix, before anything is cast.
+fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
+    for spec in specs {
+        let Some(clock) = spec.clock.as_deref() else {
+            continue;
+        };
+        // A column the frame has not got is another check's error to name.
+        let Ok(col) = df.column(clock) else {
+            continue;
+        };
+        let dtype = col.dtype();
+        let scale = spec
+            .clock_scale()
+            .map_err(|e| polars_err!(ComputeError: "{}", e))?;
+        if matches!(dtype, DataType::Time) {
+            polars_bail!(ComputeError:
+                "spec {:?}: clock column {:?} is a time of day, which starts again at \
+                 midnight, so it cannot be a clock; combine it with its date into a \
+                 Datetime, e.g. pl.col(\"date\").dt.combine(pl.col({:?}))",
+                spec.name, clock, clock
+            );
+        }
+        if dtype.is_temporal() {
+            if let ClockScale::Numbers(param) = scale {
+                polars_bail!(ComputeError:
+                    "spec {:?}: clock column {:?} has dtype {}, a temporal clock, but {} is a \
+                     plain number, which it cannot read: a number has no unit, and the \
+                     column's own (e.g. epoch microseconds) would silently become it. Give {} \
+                     and the other clock parameters as durations, e.g. \
+                     pl.duration(minutes=10), timedelta(minutes=10) or \"10m\"; or cast the \
+                     clock to the unit you mean, e.g. \
+                     pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64), and use that column.",
+                    spec.name, clock, dtype, param, param, clock
+                );
+            }
+            // A cap or a disorder threshold finer than the clock's own step
+            // cannot act on the data: every step would be cut to the cap, so
+            // the clock would count rows, and no backwards jump could be
+            // smaller than the threshold, so the check would never fire.
+            let tick: f64 = match dtype {
+                DataType::Date => 86_400.0,
+                DataType::Datetime(tu, _) | DataType::Duration(tu) => match tu {
+                    TimeUnit::Milliseconds => 1e-3,
+                    TimeUnit::Microseconds => 1e-6,
+                    TimeUnit::Nanoseconds => 1e-9,
+                },
+                _ => 0.0,
+            };
+            let step = match dtype {
+                DataType::Date => "a day",
+                DataType::Datetime(TimeUnit::Milliseconds, _)
+                | DataType::Duration(TimeUnit::Milliseconds) => "a millisecond",
+                DataType::Datetime(TimeUnit::Microseconds, _)
+                | DataType::Duration(TimeUnit::Microseconds) => "a microsecond",
+                _ => "a nanosecond",
+            };
+            for (param, span) in spec.clock_spans() {
+                let v = span.value();
+                if !(span.is_duration() && v > 0.0 && v < tick) {
+                    continue;
+                }
+                let why = match param {
+                    "max_dclock" => {
+                        "every step would be capped to it, so the clock would count rows \
+                         rather than measure time"
+                    }
+                    "min_backwards_jump" => {
+                        "no backwards jump could be smaller, so the check would never fire \
+                         (0 switches it off)"
+                    }
+                    _ => continue,
+                };
+                polars_bail!(ComputeError:
+                    "spec {:?}: {} is {}, less than {}, the smallest step clock column {:?} \
+                     ({}) can take: {}",
+                    spec.name, param, span, step, clock, dtype, why
+                );
+            }
+            // Read in seconds, a temporal column would feed any other
+            // numeric role a number the spec never asked for.
+            for other in specs {
+                let role = if other.features.iter().any(|f| f == clock) {
+                    "a feature"
+                } else if other.weight.as_deref() == Some(clock) {
+                    "a weight"
+                } else if other.targets.iter().any(|t| t == clock)
+                    && other.model.compares().is_none()
+                    && !matches!(other.model, ModelKind::EwClass { .. })
+                {
+                    "a target"
+                } else {
+                    continue;
+                };
+                polars_bail!(ComputeError:
+                    "spec {:?}: column {:?} has dtype {}, and {} reads it as {}, which must be \
+                     numeric; a temporal column can only be a clock (cast it for the other \
+                     role, e.g. pl.col({:?}).dt.epoch(\"s\").cast(pl.Float64))",
+                    other.name, clock, dtype, other.name, role, clock
+                );
+            }
+        } else if let ClockScale::Durations(param) = scale {
+            polars_bail!(ComputeError:
+                "spec {:?}: {} is a duration, but clock column {:?} has dtype {}, which has no \
+                 unit to measure it in. Use a temporal clock -- a Datetime, Date or Duration \
+                 column, e.g. pl.from_epoch({:?}, time_unit=\"s\") -- or give {} as a number \
+                 of the clock's own units.",
+                spec.name, param, clock, dtype, clock, param
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A temporal column as seconds since the Unix epoch (a `Duration` as
+/// seconds), null where it is null. Whole seconds are exact and the rest is
+/// rounded once, so one instant reads as the same `f64` whether it was
+/// stored in milliseconds, microseconds or nanoseconds. A timezone changes
+/// nothing: a `Datetime` is stored in UTC, so a change of clocks for summer
+/// time neither stretches nor folds the clock.
+fn temporal_seconds(s: &Series) -> PolarsResult<Float64Array> {
+    let per = |tu: &TimeUnit| match tu {
+        TimeUnit::Milliseconds => 1_000,
+        TimeUnit::Microseconds => 1_000_000,
+        TimeUnit::Nanoseconds => 1_000_000_000,
+    };
+    let phys = s.to_physical_repr();
+    let secs: Float64Chunked = match s.dtype() {
+        DataType::Datetime(tu, _) | DataType::Duration(tu) => {
+            let per = per(tu);
+            phys.i64()?
+                .iter()
+                .map(|v| v.map(|v| seconds_of(v, per)))
+                .collect()
+        }
+        DataType::Date => phys
+            .i32()?
+            .iter()
+            .map(|d| d.map(|d| f64::from(d) * 86_400.0))
+            .collect(),
+        dt => polars_bail!(ComputeError: "a {} column cannot be read as a clock", dt),
+    };
+    let secs = secs.rechunk();
+    Ok(secs
+        .downcast_iter()
+        .next()
+        .cloned()
+        .unwrap_or_else(|| Float64Array::new_empty(ArrowDataType::Float64)))
 }
 
 fn reads(s: &Spec, name: &str) -> bool {

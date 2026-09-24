@@ -7,6 +7,37 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+### Added
+
+- **A temporal clock, with its parameters as durations (`docs/PLAN.md` task
+  88).** A `Datetime`, `Date` or `Duration` column can now be the clock, and
+  every parameter measured in clock units -- `halflife`, `max_dclock`,
+  `min_backwards_jump`, `session_gap`, `label_delay`, and a model's
+  `window`, `solve_every` and own halflives -- is then a duration, written
+  as `pl.duration(minutes=10)`, a `timedelta`, or polars' duration text
+  `"10m"`. The spec keeps the text, which the command line's TOML takes
+  too. The clock is read as seconds since 1970, so the same instants stored
+  in milliseconds, microseconds or nanoseconds give a float clock's
+  numbers to the bit, and a zone-aware column is read as its UTC instants.
+  A numeric clock is unchanged. `po.prep.embargo`'s `delay` and
+  `po.eval.rolling_metrics`' `window` take durations the same way.
+
+### Changed
+
+- **A clock parameter of the wrong kind is refused, naming the column, the
+  parameter and the fix.** A plain number on a temporal clock, which would
+  silently take the column's storage unit; a duration on a numeric clock; a
+  spec that mixes the two; a rate per clock unit (`lam`, `kalman`'s `q`) on
+  a temporal clock; a `Time` column as the clock; and a duration finer than
+  the clock can act on, such as `max_dclock="12h"` on a `Date` clock.
+  Before, every temporal clock was refused.
+- **A string given for a clock parameter is read as a duration**, so a bad
+  one is a `ValueError` naming what is wrong with it (`halflife "10" is not
+  a duration: 10 has no unit`) where it was a `TypeError` about its type.
+- **A state file whose specs carry a duration is envelope version 3.** Every
+  other file is still version 2, byte for byte, so a build from before
+  durations reads it, and refuses a file with a duration by its version.
+
 ## [0.9.1] — 2026-09-21
 
 ### Fixed

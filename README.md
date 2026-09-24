@@ -106,16 +106,18 @@ flat = scored.online.unnest([ols])   # pred_ret, resid_ret, n_eff, coef_ret_inte
 ```
 
 **One fit that follows the recent rows.** Give the same spec a clock and a
-`halflife`, and each row's weight halves every 600 seconds of `ts`. The fit
-is now *local*: it describes the recent past, and it moves from row to row.
-So the thing to read is the path the coefficients took, which `coef_every=1`
-writes on every row, rather than the state they ended on.
+`halflife`, and each row's weight halves every ten minutes of `ts`, a
+timestamp column. The fit is now *local*: it describes the recent past, and
+it moves from row to row. So the thing to read is the path the coefficients
+took, which `coef_every=1` writes on every row, rather than the state they
+ended on.
 
 ```python
 local = po.spec.ewridge(
     "local", targets=["ret"], features=["signal_a", "signal_b"],
-    clock="ts", halflife=600.0, max_dclock=300.0,     # a row's weight halves every 600 s of ts, and a gap
-                                                      # longer than 300 s decays as though it were 300 s
+    clock="ts",                                       # a Datetime column, so the clock's parameters are durations
+    halflife=pl.duration(minutes=10),                 # a row's weight halves every ten minutes of ts
+    max_dclock=pl.duration(minutes=5),                # and a gap longer than five minutes decays as though it were five
     group="stock_id",
     coef_every=1,                                     # write the coefficients on every row, not once a chunk
 )
@@ -135,7 +137,7 @@ path = betas.filter(pl.col("stock_id") == "b0").select("ts", "coef_ret_signal_a"
 
 The decay is the whole difference between the two. Without one, every row
 counts forever and the saved state is the model. With one, the state holds
-only the last few hundred seconds, so the path of the coefficients is the
+only the last few tens of minutes, so the path of the coefficients is the
 output, and serving from the final state predicts with the most recent fit
 alone.
 
@@ -190,13 +192,29 @@ arrive late](#labels-that-arrive-late).
 
 ### Time and decay
 
-A model forgets. Each row's weight halves every `halflife` units of a
-*clock*, a column that says how far apart two rows are: in seconds, in
-cumulative traded volume, in any number that only goes up. At each row, the
+A model forgets. Each row's weight halves every `halflife` along a
+*clock*, a column that says how far apart two rows are. At each row, the
 weight of everything learned so far is multiplied by
 `λ = 0.5 ** (Δclock / halflife)`, where `Δclock` is the clock's step from
-the previous row. With no clock column the row count is the clock, so at
-`halflife=100` a row 100 rows back counts half as much as the latest.
+the previous row.
+
+**The clock's type decides how every clock parameter is written.** A
+timestamp carries its own unit, so its parameters are durations. A number
+carries none, so its parameters are numbers of whatever it counts.
+
+| the clock | a clock parameter is | for example |
+|---|---|---|
+| a `Datetime`, `Date` or `Duration` column | a duration | `halflife=pl.duration(minutes=10)` |
+| a numeric column, such as seconds or cumulative traded volume | a number of the column's own units | `halflife=600.0` |
+| none | a number of rows | `halflife=100`: a row 100 rows back counts half as much as the latest |
+
+A duration is written three ways: `pl.duration(minutes=10)`,
+`timedelta(minutes=10)`, or polars' duration text `"10m"`. The clock
+parameters are `halflife`, `max_dclock`, `min_backwards_jump`,
+`session_gap` and `label_delay` below, and a model's `window`, `solve_every`
+and its own halflives. The
+[`polars_online.spec`](https://hgilde.github.io/polars-online/spec.html)
+reference lists every one.
 
 A stream from a market brings three more things, and the spec has a
 parameter for each:
@@ -210,27 +228,49 @@ parameter for each:
 ```python
 timed = po.spec.ewridge(
     "timed", targets=["y"], features=["x0", "x1"],
-    clock="t",                 # a numeric column that only goes up; None means the row count
-    halflife=600.0,            # a row's weight halves every 600 clock units (or lam=, the weight kept per unit)
-    max_dclock=300.0,          # the most the clock may step between two rows a model learns from; required with a clock
-    on_clock_reset="max",      # a backwards clock: "max" (the step is max_dclock), "zero", "reset_state", or "error"
+    clock="ts",                           # a Datetime column, so every clock parameter is a duration
+    halflife=pl.duration(minutes=10),     # a row's weight halves every ten minutes of ts
+    max_dclock=pl.duration(minutes=5),    # the most the clock may step between two rows a model learns from;
+                                          # required with a clock
+    on_clock_reset="max",                 # a backwards clock: "max" (the step is max_dclock), "zero",
+                                          # "reset_state", or "error"
     # A backwards jump smaller than min_backwards_jump (default max_dclock) is refused whatever
     # the policy, and the bank is untouched: adjacent rows are never further apart than the cap
     # and a session is longer, so that is a late row, not a boundary. 0 switches the check off.
-    session="session",         # a column whose value changes at a session boundary ...
-    session_gap=60.0,          # ... and the clock step to apply there, at most max_dclock; "reset" starts the model over
+    session="session",                    # a column whose value changes at a session boundary ...
+    session_gap=pl.duration(minutes=1),   # ... and the clock step to apply there, at most max_dclock;
+                                          # "reset" starts the model over
 )
-# halflife=inf (or lam=1.0) turns forgetting off. A list of halflives fits one model per value.
+# halflife=inf turns forgetting off. A list of halflives fits one model per value.
 # max_dclock=0 turns forgetting off; max_dclock=inf removes the cap. The cap also bounds the step
 # a run of skipped rows hands the row after them, however long the run.
 # ewridge only: session_shrink= and long_halflife= pull the fit partway back, at a session
 # boundary, toward a twin that forgets more slowly.
+
+counted = po.spec.ewridge(
+    "counted", targets=["y"], features=["x0", "x1"],
+    clock="t",                 # a numeric column, so every clock parameter is a number of its units
+    halflife=600.0,            # a row's weight halves every 600 units of t (or lam=, the weight kept per unit)
+    max_dclock=300.0,
+    session="session", session_gap=60.0,
+)
 ```
 
-Date and time columns are refused as the clock. Convert one first, with
-`pl.col("ts").dt.epoch("s")`, so that `halflife`, `max_dclock` and
-`session_gap` are in the units you chose. A huge finite halflife is not
-`inf`: `halflife=1e12` still forgets, and the schedules keyed to the
+**A clock parameter of the other kind is refused.** A plain number on a
+`Datetime` clock would silently take the column's storage unit, so
+`halflife=600` on a microsecond column would mean 600 microseconds. A
+duration on a numeric clock has nothing to measure it against. The bank
+refuses either before it reads a row, naming the column, the parameter and
+the fix. It also refuses a spec that mixes the two kinds, and a duration
+finer than the clock can act on, such as `max_dclock="12h"` on a `Date`
+clock, which moves in days. `0` and `inf` mean the same in every unit, so
+they may stay numbers.
+
+A temporal clock is read as seconds since 1970, so the same instants
+stored in milliseconds, microseconds or nanoseconds give the same numbers,
+and a time zone changes nothing. Where a clock quantity reaches an output,
+it is in seconds: `holt`'s trend is per second. A huge finite halflife is
+not `inf`: `halflife=1e12` still forgets, and the schedules keyed to the
 halflife scale with it. Say `inf` for no forgetting.
 
 ### A local fit along any feature
@@ -391,9 +431,9 @@ would really have arrived:
 
 ```python
 spec = po.spec.ewridge("fwd", targets=["ret_5m"], features=["x0", "x1"],
-                       clock="ts", max_dclock=3600.0, halflife=1800.0,
-                       label_delay=300.0)     # the return takes 5 minutes to be known
-# Each row is scored where it sits and learned from 300 clock units later. Everything
+                       clock="ts", max_dclock="1h", halflife="30m",
+                       label_delay="5m")      # the return takes five minutes to be known
+# Each row is scored where it sits and learned from five minutes later. Everything
 # downstream of the label moves with it -- the prediction, sigma, resid_z, the metrics,
 # break detection, the conformal interval, n_eff and min_periods all see only labels
 # that had really arrived.

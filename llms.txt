@@ -18,7 +18,8 @@ import polars_online as po
 spec = po.spec.ewridge(
     "ridge",
     targets=["ret"], features=["signal_a", "signal_b"],
-    clock="ts", halflife=600.0,   # decay in the clock column's own units
+    clock="ts",                    # a Datetime column, so the clock parameters are durations
+    halflife=pl.duration(minutes=10), max_dclock=pl.duration(minutes=5),
     group="stock_id",              # one independent state per stock
 )
 
@@ -44,9 +45,12 @@ bank.save("bank.state")
   and then score it; the library has already done the honest thing.
 - **Chunk invariance is a guarantee.** The same stream fed as one chunk or a thousand
   gives identical output, bit for bit, and a test enforces it.
-- **Decay runs on the clock, not on row count.** `halflife` is in the units of the
-  `clock` column, and `max_dclock`, `session` / `session_gap` and `on_clock_reset` say
-  what happens across a gap, a session boundary or a clock that goes backwards.
+- **Decay runs on the clock, not on row count.** A `Datetime`, `Date` or `Duration`
+  clock takes its clock parameters (`halflife`, `max_dclock`, `window`, ...) as
+  durations: `pl.duration(minutes=10)`, a `timedelta` or `"10m"`. A numeric clock takes
+  plain numbers in its own units. Either mixture is refused, naming the parameter.
+  `max_dclock`, `session` / `session_gap` and `on_clock_reset` say what happens across a
+  gap, a session boundary or a clock that goes backwards.
 - **The clock need not be a time.** Sort by a feature, clock on it, and the halflife is
   a bandwidth in that feature's units: the fit is a local regression in it (LOESS with a
   one-sided exponential kernel), and `ew_cov` clocked the same way gives local moments.

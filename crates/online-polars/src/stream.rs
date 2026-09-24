@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::resid_window::ResidWindow;
 use crate::rows::FeatureRows;
+use crate::span::{Span, SpanList};
 use crate::spec::{FloatOrList, ModelKind, Spec};
 use crate::summary::DataSummary;
 
@@ -409,7 +410,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 standardize: *standardize,
                 ridge_decay: *ridge_decay,
                 session_shrink: *session_shrink,
-                long_halflife: long_halflife.map(|n| n.0),
+                long_halflife: long_halflife.as_ref().map(Span::value),
                 coef_prior: coef_prior.clone(),
                 // The spec's default is 0, the noise gate being this model's
                 // (docs/WARMUP-AND-CONVERGENCE.md §2.1); the model's own
@@ -420,11 +421,13 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     Some(_) => spec.min_periods_or_default(),
                     None => (spec.k() + usize::from(spec.add_intercept)) as f64,
                 },
-                solve_every: solve_every.unwrap_or_else(|| spec.solve_every_default(decay)),
+                solve_every: solve_every
+                    .as_ref()
+                    .map_or_else(|| spec.solve_every_default(decay), Span::value),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
                 gram_block_rows: gram_block_rows.unwrap_or(0),
                 target_gaps: *target_gaps,
-                window: *window,
+                window: window.as_ref().map(Span::value),
                 window_every: *window_every,
             };
             let mut m = EwRidge::new(cfg)?;
@@ -464,11 +467,13 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 decay,
                 lasso_path: lasso_path.clone(),
                 l1_ratio: l1_ratio.unwrap_or(1.0),
-                select_halflife: select_halflife.map(|n| n.0),
+                select_halflife: select_halflife.as_ref().map(Span::value),
                 min_periods: spec.min_periods_or_default(),
-                solve_every: solve_every.unwrap_or_else(|| spec.solve_every_default(decay)),
+                solve_every: solve_every
+                    .as_ref()
+                    .map_or_else(|| spec.solve_every_default(decay), Span::value),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
-                window: *window,
+                window: window.as_ref().map(Span::value),
                 window_every: *window_every,
                 max_cd_iters: max_cd_iters.unwrap_or(100),
                 cd_tol: cd_tol.unwrap_or(1e-10),
@@ -498,7 +503,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 min_periods: spec.min_periods_or_default(),
                 revert_halflife: revert_halflife
                     .as_ref()
-                    .map_or_else(|| vec![f64::INFINITY], FloatOrList::to_vec),
+                    .map_or_else(|| vec![f64::INFINITY], SpanList::to_vec),
                 standardize: *standardize,
             };
             Ok(AnyModel::Kalman(Box::new(Kalman::new(cfg)?)))
@@ -521,7 +526,9 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 ridge: ridge.unwrap_or(1e-6),
                 standardize: *standardize,
                 min_periods: spec.min_periods_or_default(),
-                solve_every: solve_every.unwrap_or_else(|| spec.solve_every_default(decay)),
+                solve_every: solve_every
+                    .as_ref()
+                    .map_or_else(|| spec.solve_every_default(decay), Span::value),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
                 quantile_eps: 1e-3,
             };
@@ -544,7 +551,9 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 ridge: ridge.unwrap_or(1e-6),
                 standardize: *standardize,
                 min_periods: spec.min_periods_or_default(),
-                solve_every: solve_every.unwrap_or_else(|| spec.solve_every_default(decay)),
+                solve_every: solve_every
+                    .as_ref()
+                    .map_or_else(|| spec.solve_every_default(decay), Span::value),
                 max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
                 quantile_eps: quantile_eps.unwrap_or(0.2),
             };
@@ -624,7 +633,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 pca: pca.unwrap_or(0),
                 pca_every: pca_every.map_or(1, |e| e as usize),
                 lags: lags.clone().unwrap_or_default(),
-                window: *window,
+                window: window.as_ref().map(Span::value),
                 window_every: *window_every,
             };
             Ok(AnyModel::EwCov(Box::new(EwCovModel::new(cfg)?)))
@@ -718,7 +727,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             // Default the level to the spec's own halflife, so `halflife` means
             // the same thing here as it does for every other model.
             let level = match level_halflife {
-                Some(n) => n.0,
+                Some(n) => n.value(),
                 None => match decay {
                     Decay::Halflife(h) => h,
                     // `lam = 1` forgets nothing, as for every other model; its
@@ -731,7 +740,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             let cfg = HoltCfg {
                 n_targets: spec.m(),
                 level_halflife: level,
-                trend_halflife: trend_halflife.map_or(level * 4.0, |n| n.0),
+                trend_halflife: trend_halflife.as_ref().map_or(level * 4.0, Span::value),
                 min_periods: spec.min_periods_or_default(),
             };
             Ok(AnyModel::Holt(Box::new(Holt::new(cfg)?)))
@@ -813,7 +822,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                     None => Covariance::Full,
                 },
                 precision_prior: *precision_prior,
-                window: *window,
+                window: window.as_ref().map(Span::value),
                 window_every: *window_every,
             };
             Ok(AnyModel::EwClass(Box::new(EwClass::new(cfg)?)))
@@ -874,7 +883,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                         warm_rows: bin_warm_rows.unwrap_or(DEFAULT_BIN_WARM_ROWS),
                     })),
                 },
-                window: *window,
+                window: window.as_ref().map(Span::value),
                 window_every: *window_every,
             };
             Ok(AnyModel::Marginal(Box::new(Marginal::new(cfg)?)))
@@ -2071,7 +2080,7 @@ impl Stream {
             summary: Some(DataSummary::new(spec)),
             decay_time: vec![0.0; slots.len()],
             notified: vec![Notified::default(); slots.len()],
-            label_delay: spec.label_delay,
+            label_delay: spec.label_delay.as_ref().map(Span::value),
             pending: Vec::new(),
             score_pred: slots
                 .iter()
