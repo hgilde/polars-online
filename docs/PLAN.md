@@ -3331,6 +3331,19 @@ note, not a task.
       for `lf.online.fit_predict` had been lost, and now sits under *As a
       query*.
 
+      **Follow-up, 2026-09-23: the approach is now the rule.** The user's
+      verdict on the result: "This is an improvement rewrite the writing and
+      phrasing doc so that future writing is more like this". So
+      `docs/WRITING.md` is rewritten in the style it describes, keeping
+      §0–§6 where other files cite them: §2 plans the map before any
+      sentence; §4 checks a fact against the code and lets a rewrite drop
+      words but never add facts; §5 aims near 20 words a sentence; §6 is the
+      pass as eight checked steps, with the counting traps this pass hit;
+      §7 gives the table shapes that replaced bullet lists; §8 shows this
+      rewrite's before and after. `docs/PHRASING.md` logs both messages
+      verbatim, its first entry that confirms an approach rather than names
+      a fault.
+
 ## 11a. Decisions made while implementing
 
 **Readiness gates (task 87), 2026-09-21.** The user's standard: a setting

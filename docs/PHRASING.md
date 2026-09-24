@@ -4,6 +4,9 @@ A running list of specific phrasing problems in the shipped docs — the
 README, docstrings, `docs/*.md` guides — collected as they are found, for
 the eventual rewrite pass (`docs/PLAN.md` task 68, the README clarity pass,
 generalizes to every doc once this list is long enough to show the pattern).
+It also keeps the rare report that confirms an approach worked, since a rule
+drawn from what succeeded needs its evidence as much as one drawn from a
+fault.
 
 This is not a style guide; the standard is already stated: one idea per
 sentence, a sweep belongs in a table, name the mechanism rather than
@@ -838,3 +841,40 @@ step of 100 under `session_gap=inf`, exactly as with no session column at
 all. "Never applies it" had nothing behind it. The sentence also hid the
 limit itself, which matters to anyone choosing a gap larger than
 `max_dclock`.
+
+### README.md (the whole document; the task 89 rewrite of 2026-09-23)
+
+**Reported:** Rewrite the readme following the repo writing style. First
+plan every section, organize the sections to put similar concepts together
+with a hierarchical organization so that the table of contents contains a
+moderate number of larger sections containing subsections in a. Grouping
+and order that will make the most sense. Then iterate through each section
+ensuring clarity and succinctness, preferring code and comment examples
+wheee possible and tight and clear text where the comments would grow
+unwieldy or where formatting or math text is needed. Prefer tables to long
+lists of bullet points and follow all the repo writing style guides.
+
+And, on the result: This is an improvement rewrite the writing and
+phrasing doc so that future writing is more like this
+
+**Status:** fixed (`b73ab46`); the rules it produced are `docs/WRITING.md`
+§2 (plan the map first), §4 (check a fact against the code; a rewrite may
+drop words, never add facts), §5 (near 20 words a sentence; a rule leads in
+bold), §6 (the pass as a sequence of checked steps), §7 (tables, not bullet
+lists) and §8 (the rewrite's own examples).
+
+**Note:** the first entry in this log that confirms an approach rather
+than naming a fault, so the rules drawn from it come from what worked.
+Measured on paragraph boundaries, the same count before and after: prose
+words 13,496 → 11,590; sentences of 45+ words 44 → 2, both of them two
+sentences the count merges; sentences of 35+ words 100 → 33; the mean
+sentence 23.4 → 19.9 words; cost words 16 → 0; rendered tables 15 → 37;
+all 59 python blocks kept and running. Three things did most of the work.
+The map came first: seventeen top-level sections became ten, each holding
+subsections, and the twenty models moved one level down under four
+families. Bullet lists that compared things became tables whose columns
+name the comparison. And every claim was checked rather than carried
+forward: the pass found the withheld reasons listed out of their declared
+order, a sentence about row order that was false of three kinds of model,
+and a lost API link. It also caught two claims its own new tables had
+invented, in cells the prose never filled, before either was committed.
