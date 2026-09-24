@@ -15,14 +15,11 @@ verified against the numpy oracles in `tests/reference.py` (agreement ~1e-13
 for every model) -- the same bargain `golden.rs` makes. Regenerate only after
 confirming a change is intended:
 
-    PRINT_GOLDEN=1 uv run pytest tests/test_golden_pipeline.py -s -k print
+    uv run python tests/test_golden_pipeline.py
 """
-
-import os
 
 import numpy as np
 import polars as pl
-import pytest
 
 import polars_online as po
 
@@ -304,7 +301,7 @@ def signature() -> dict[str, float | str | None]:
     return sig
 
 
-#: Produced by `PRINT_GOLDEN=1 uv run pytest tests/test_golden_pipeline.py -s -k print`.
+#: Produced by `uv run python tests/test_golden_pipeline.py`.
 GOLDEN: dict[str, float | str | None] = {
     "ridge.pred_y0__r0.000001@25": -4.684371132566456,
     "ridge.pred_y0__r0.000001@60": -0.2556320797220242,
@@ -811,15 +808,8 @@ GOLDEN: dict[str, float | str | None] = {
 }
 
 
-@pytest.mark.skipif(not os.environ.get("PRINT_GOLDEN"), reason="regeneration only")
-def test_print_golden():
-    print("\nGOLDEN = {")
-    for k, v in signature().items():
-        print(f"    {k!r}: {v!r},")
-    print("}")
-
-
-@pytest.mark.skipif(not GOLDEN, reason="golden values not generated yet")
+# An emptied table fails here as a changed schema: a skip would have turned
+# the cross-platform check off without a word.
 def test_the_pipeline_produces_the_same_numbers_everywhere():
     got = signature()
     assert set(got) == set(GOLDEN), (
@@ -854,3 +844,12 @@ def test_the_stream_exercises_what_it_claims_to():
     gaps = df["t"].diff().drop_nulls()
     assert gaps.max() > 6.0, "no gap beyond max_dclock"
     assert gaps.min() > 0.0, "the clock must be strictly increasing"
+
+
+if __name__ == "__main__":
+    # Regeneration, run as a script rather than a test that skips unless
+    # asked: prints the table to paste over `GOLDEN` above.
+    print("GOLDEN = {")
+    for key, value in signature().items():
+        print(f"    {key!r}: {value!r},")
+    print("}")

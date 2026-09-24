@@ -74,21 +74,27 @@ def run(model, extra, df, **kw):
     return po.ModelBank([build(model, extra, **kw)]).fit_predict(df)
 
 
+#: The sweep less ``holt``, which takes no features to null: generated
+#: without it rather than skipped.
+WITH_FEATURES = [(m, e) for m, e in SWEEP if m != "holt"]
+WITH_FEATURES_IDS = [i for (m, _), i in zip(SWEEP, IDS, strict=True) if m != "holt"]
+
+
+@pytest.mark.parametrize(("model", "extra"), WITH_FEATURES, ids=WITH_FEATURES_IDS)
+def test_feature_null_skips_the_row_entirely(model, extra):
+    df = frame(binary=model == "ftrl")
+    x = df["x0"].to_list()
+    x[10] = None
+    df = df.with_columns(x0=pl.Series(x, dtype=pl.Float64))
+    out = run(model, extra, df)
+    assert slot(out, "n_eff", model)[10] is None
+    assert slot(out, "pred_", model)[10] is None
+    # ...and the clock still advanced: the next row is not treated as first
+    assert slot(out, "n_eff", model)[11] is not None
+
+
 @pytest.mark.parametrize(("model", "extra"), SWEEP, ids=IDS)
 class TestNullPolicy:
-    def test_feature_null_skips_the_row_entirely(self, model, extra):
-        if model == "holt":
-            pytest.skip("holt has no features")
-        df = frame(binary=model == "ftrl")
-        x = df["x0"].to_list()
-        x[10] = None
-        df = df.with_columns(x0=pl.Series(x, dtype=pl.Float64))
-        out = run(model, extra, df)
-        assert slot(out, "n_eff", model)[10] is None
-        assert slot(out, "pred_", model)[10] is None
-        # ...and the clock still advanced: the next row is not treated as first
-        assert slot(out, "n_eff", model)[11] is not None
-
     def test_target_null_is_predict_only(self, model, extra):
         df = frame(binary=model == "ftrl")
         y = df["y0"].to_list()
