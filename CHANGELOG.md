@@ -7,6 +7,14 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+### Added
+
+- **Python 3.14 is declared, and CI tests every supported version on
+  purpose.** The package metadata lists 3.12, 3.13 and 3.14; one `abi3`
+  wheel per platform already installed on all three. CI runs the suite on
+  each version on Linux, and on the oldest and newest on macOS and Windows,
+  choosing the interpreter where it used to take whatever the runner had.
+
 ## [0.10.0] — 2026-09-24
 
 ### Added

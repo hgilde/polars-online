@@ -3553,6 +3553,31 @@ note, not a task.
       comments citing the wrong P-ID or section; and C1 and C2 swapped in
       `tests/test_frame.py`. A new test holds `RUNNER.md`'s example config
       to the file its shell blocks run against.
+- [x] 91. **Every significant Python, to the newest, requested 2026-09-24.**
+      The user's words: "We want to support all significant python versions
+      up to the latest." Significant is read as SPEC 0 reads it, the
+      versions released in the last three years: today 3.12, 3.13 and 3.14,
+      which is the floor this package already had. One `abi3-py312` wheel
+      per platform installs on all three. But CI never asked for a version:
+      each runner's `uv sync` took whatever interpreter it had, so the macOS
+      leg ran 3.14 by accident while the classifiers stopped at 3.13, and a
+      test that parsed docstrings by their 3.12 indentation failed there
+      alone (`c2462f6`). Now `pyproject.toml` declares 3.12 to 3.14, and CI
+      picks each leg's interpreter with `UV_PYTHON`. It runs every declared
+      version on Linux, and the floor and the newest on macOS and Windows,
+      since a Python version rarely behaves differently by OS, or an OS by
+      Python version. The API reference is built on one leg, since its
+      Pages artifact can be uploaded once a run.
+      `tests/test_ci_cost_policy.py::TestPythonVersions` holds the matrix to
+      the classifiers, so a declared version cannot go untested; six faults
+      injected into the workflow and the metadata each fail it. The whole
+      suite passed locally on CPython 3.13.15 (3,055 tests) and 3.14.6
+      (3,059, the new policy tests among them). Not done,
+      each a decision for later: a floor below 3.12 (3.11 needs
+      `abi3-py311`, a new wheel tag and a syntax pass under ruff's py311
+      target; 3.10 also `typing_extensions` for `Unpack`); an advisory leg
+      on the next pre-release (3.15, due October 2026); and free-threaded
+      builds, which an `abi3` wheel cannot serve.
 
 ## 11a. Decisions made while implementing
 

@@ -28,6 +28,14 @@ name: CI
 # has the same failure in the mergeable direction -- a doc-only pull request
 # would never run it and so could never merge. Minutes are free here now, so
 # every push and every pull request runs.
+#
+# PYTHON. Every version pyproject.toml declares, from `requires-python`'s floor
+# to the newest classifier, runs on Linux; macOS and Windows run the floor and
+# the newest, since a Python version rarely behaves differently by OS, or an OS
+# by Python version. `UV_PYTHON` picks each leg's interpreter. Before it,
+# `uv sync` took whatever the runner had, so macOS tested 3.14 by accident
+# while the classifiers stopped at 3.13 (2026-09-24).
+# tests/test_ci_cost_policy.py holds the matrix to the classifiers.
 on:
   push:
     branches: [main]
@@ -53,7 +61,8 @@ env:
 
 # `cargo` is invoked through `uv run` everywhere: online-py is built with pyo3's
 # abi3-py312, which needs an interpreter >= 3.12 at build time. `uv run` puts the
-# project's 3.12 venv on VIRTUAL_ENV, which is what pyo3's build script picks up.
+# project's venv on VIRTUAL_ENV, which is what pyo3's build script picks up; in
+# the test job, that venv is the leg's `UV_PYTHON`.
 jobs:
   # Linux only, public or not. `cargo fmt`, `clippy` and `ruff` inspect source,
   # not platform behaviour, so the other two runners were re-checking a result
@@ -123,7 +132,7 @@ jobs:
   # 21 GB (9.3 -> 30 GB free) and the build passes. `lld` stays because it also
   # links large Rust binaries faster and in less RSS, but it was not the fix.
   test:
-    name: test (${{ matrix.os }})
+    name: test (${{ matrix.os }}, Python ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -142,6 +151,14 @@ jobs:
            || github.event_name == 'schedule'
               && fromJSON('["ubuntu-latest", "windows-latest"]')
            || fromJSON('["ubuntu-latest"]') }}
+        # PYTHON, at the top: the floor and the newest everywhere, and every
+        # version between on Linux. Quoted, since YAML reads 3.10 as 3.1.
+        python: ["3.12", "3.14"]
+        include:
+          - os: ubuntu-latest
+            python: "3.13"
+    env:
+      UV_PYTHON: ${{ matrix.python }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@stable
@@ -210,17 +227,19 @@ jobs:
       # The API reference (docs/reference): Sphinx over the docstrings, -W so
       # a docstring that is not valid reStructuredText fails the job. It
       # imports the package, hence here, after the extension is built, and
-      # once, on Linux. The HTML is the artifact the `docs` job publishes.
+      # once, on Linux at the floor Python: the Pages artifact can be
+      # uploaded only once a run. The HTML is what the `docs` job publishes.
       - name: sphinx (warnings are errors)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.python == '3.12'
         run: uv run --group docs sphinx-build -W docs/reference docs/_build/html
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.python == '3.12'
         with:
           path: docs/_build/html
 
-      # Reported, never gating (docs/TESTING.md T-D4).
+      # Reported, never gating (docs/TESTING.md T-D4); once per OS.
       - name: coverage (python)
+        if: matrix.python == '3.12'
         run: uv run pytest --cov=polars_online --cov-report=term -q
         continue-on-error: true
 

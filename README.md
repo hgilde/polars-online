@@ -57,7 +57,7 @@ pip install polars-online      # or: uv add polars-online
 
 | need | detail |
 |---|---|
-| Python | 3.12 or newer |
+| Python | 3.12 or newer. One wheel per platform covers every CPython from 3.12 on, and CI runs the suite on each of 3.12, 3.13 and 3.14 |
 | Polars | `polars>=1.34.0,<3`. The range is measured, not guaranteed: a weekly job and every release run the whole suite on the newest Polars ([Versioning and the Polars pin](#versioning-and-the-polars-pin)) |
 | wheels | macOS (arm64, x86_64), Windows x64, and Linux (x64 glibc and musl, aarch64 glibc), on PyPI and on each GitHub release beside the command-line binaries |
 | size | about 19 MB to download and 59 MB installed. The wheel carries its own copy of Polars' Rust half, so nothing beyond `polars` is needed at run time |

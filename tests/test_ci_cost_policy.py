@@ -19,6 +19,7 @@ timeout without meaning to.
 """
 
 import pathlib
+import tomllib
 
 import pytest
 import yaml
@@ -173,3 +174,60 @@ class TestDocOnlyPushesAreFree:
         on = ALL["benchmark.yml"]["on"]
         assert "pull_request" not in on, "a fork's runner is not a comparable number"
         assert "paths-ignore" in on["push"]
+
+
+class TestPythonVersions:
+    """Every Python the package declares is one CI runs (2026-09-24). Until
+    then CI never asked for a version: each runner's `uv sync` took whatever
+    interpreter it had, so macOS ran 3.14 while the classifiers stopped at
+    3.13, and a change 3.13 made to docstrings surfaced on that leg alone."""
+
+    @staticmethod
+    def _declared() -> tuple[str, list[str]]:
+        root = pathlib.Path(__file__).resolve().parents[1]
+        meta = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+        floor = meta["requires-python"]
+        assert floor.startswith(">=") and "," not in floor, floor
+        prefix = "Programming Language :: Python :: 3."
+        minors = sorted(
+            int(c[len(prefix) :])
+            for c in meta["classifiers"]
+            if c.startswith(prefix) and c[len(prefix) :].isdigit()
+        )
+        return floor[2:], [f"3.{m}" for m in minors]
+
+    @staticmethod
+    def _matrix() -> dict:
+        return CI["jobs"]["test"]["strategy"]["matrix"]
+
+    def test_the_classifiers_run_from_the_floor_without_a_gap(self):
+        floor, declared = self._declared()
+        assert declared[0] == floor, (floor, declared)
+        minors = [int(v.split(".")[1]) for v in declared]
+        assert minors == list(range(minors[0], minors[-1] + 1)), declared
+
+    def test_linux_runs_every_version_and_the_others_run_both_ends(self):
+        floor, declared = self._declared()
+        matrix = self._matrix()
+        # Strings: a bare 3.10 in YAML is the float 3.1.
+        assert all(isinstance(v, str) for v in matrix["python"]), matrix["python"]
+        assert matrix["python"] == [floor, declared[-1]], matrix["python"]
+        extra = [e["python"] for e in matrix.get("include", [])]
+        assert all(e.get("os") == "ubuntu-latest" for e in matrix.get("include", []))
+        assert sorted(matrix["python"] + extra, key=lambda v: int(v.split(".")[1])) == declared
+
+    def test_each_leg_runs_the_python_it_is_named_for(self):
+        job = CI["jobs"]["test"]
+        assert job.get("env", {}).get("UV_PYTHON") == "${{ matrix.python }}"
+        assert "matrix.python" in job["name"]
+
+    def test_the_reference_is_built_and_published_once(self):
+        """The Pages artifact can be uploaded only once a run; one Linux leg
+        builds it, the one at the floor."""
+        floor, _ = self._declared()
+        for step in CI["jobs"]["test"]["steps"]:
+            label = f"{step.get('name', '')} {step.get('uses', '')}"
+            if "sphinx" in label or "upload-pages-artifact" in label:
+                cond = step.get("if", "")
+                assert "runner.os == 'Linux'" in cond, (label, cond)
+                assert f"matrix.python == '{floor}'" in cond, (label, cond)
