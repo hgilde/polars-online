@@ -3778,18 +3778,37 @@ note, not a task.
       which has an `.exe` there, and its TOML carried the path's
       backslashes as escapes (T-W3b's trap). It now takes the `online_cli`
       fixture and writes POSIX paths, so it runs on Windows too.
-- [ ] 101. **A feature that stops moving keeps a variance at the rounding
-      floor, outside a window too.** Measured writing task 94: a feature that
-      varied and then held one value for 200 halflives or more keeps a live
-      variance of about 200 times the square of its level's rounding step.
-      In exact arithmetic that variance is the history's spread, decayed to
-      2^-200 of itself. It is nothing, and it is not zero, so
-      `variance_is_usable` keeps the feature and a standardizing model
-      divides by its square root. The runs of task 94 would say it exactly:
-      a feature whose run holds all but `EMPTY_FRACTION` of the live weight
-      has no spread the library can resolve. Not built; the user's call,
-      since it changes the unwindowed fit of every standardizing model in
-      that case.
+- [ ] 101. **A feature that stops moving leaves a rounding artifact outside a
+      window, and the standardizing models read it.** Measured 2026-09-24:
+      one feature of three holds one value after 300 rows, halflife 20 rows.
+      Its running mean approaches the held value until the step rounds to
+      nothing, and stops short. From then the variance and the cross-moment
+      with the target settle on that leftover gap instead of decaying
+      together. The lasso's coefficient on the feature keeps its learned
+      slope, about 0.47 where the truth is 0.5, until the stall, and
+      degenerates after it. At a level of 1000 that is -79 at 50 halflives
+      and -6.4e9 at 100; at 1e8 it starts at about 30 halflives, at 0.5 at
+      about 55. Predictions follow once the coefficient is large enough to
+      lose digits against the intercept: an error of 0.043 to 0.048 after 60
+      halflives, against 0.036. `ewridge` and `huber` with `standardize` do
+      the same. The plain ridge's predictions do not move. `kalman` and `sgd`
+      keep a separate diagonal accumulator with the same recursion.
+      **The fix: snap a stalled mean.** When a row carries the value a
+      feature has held, and the mean's step toward it rounds to nothing,
+      set the mean to that value. The accumulator then follows the exact
+      recursion: the variance and the cross-moment decay together, the
+      standardized value is zero, and the coefficient keeps its learned
+      slope. Prototyped in the Gram's means and the cross-moments' means,
+      nothing changed until the stall: 20.8 halflives at 1e8, 37.8 at
+      1000, 47.8 at 0.5. After it the lasso's coefficient stayed between
+      0.47 and 0.50 to 150 halflives at every level, and the error after
+      60 halflives was 0.036. No state layout change. Rejected: zeroing a
+      feature once its run holds all but `EMPTY_FRACTION` of the weight,
+      which fires at 40 halflives whatever the level (at 1e8 the
+      coefficient had reached 6,085 by then) and reports a slope of 0 where
+      the fit's is 0.5. Still to do: the same change in the diagonal
+      accumulator for `kalman` and `sgd`, and tests at each level. The
+      user's call.
 
 ## 11a. Decisions made while implementing
 
