@@ -239,7 +239,7 @@ PER_MODEL_FILE = {"huber": "robust", "quantile": "robust"}
 
 def test_every_builder_has_a_per_model_test_file():
     """`tests/test_<model>.py` is where a model's *arithmetic* is held to an
-    oracle (docs/EXTENDING.md step 13); the sweeps hold every model to the
+    oracle (docs/EXTENDING.md step 11); the sweeps hold every model to the
     shared invariants and cannot see a wrong coefficient. The file has to
     build the model itself -- a file that only imports it proves nothing.
     Before this check, `ewridge` and `rls` had theirs inside `test_bank.py`,

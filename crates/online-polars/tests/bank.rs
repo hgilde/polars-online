@@ -572,7 +572,7 @@ fn coef_fields_name_every_slot_of_every_list() {
 #[test]
 fn integer_group_keys_match_the_string_cast() {
     // `group_indices` buckets an integer key on its value rather than on the
-    // text polars' String cast would give it (docs/PERFORMANCE.md P8). The
+    // text polars' String cast would give it (docs/PERFORMANCE.md P11). The
     // two must be the same partition with the same key text, whatever the
     // width and sign, at the extremes, and with nulls -- and the output must
     // be bit-identical to feeding the cast column.

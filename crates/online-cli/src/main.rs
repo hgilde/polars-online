@@ -42,11 +42,11 @@ struct Cli {
     #[arg(long, conflicts_with = "no_output")]
     output: Option<PathBuf>,
 
-    /// Write no per-row output: the run's product is the state it saves
-    /// (docs/ENHANCEMENTS.md E50). Needs `save_state`, in the config or with
-    /// `--save-state`. An accumulator-only spec emits `n_eff` a row and
-    /// nothing else, which over a billion rows is 8 GB of file written so it
-    /// can be deleted.
+    /// Write no per-row output: the run's product is the state it saves, or
+    /// the closed groups it writes (docs/ENHANCEMENTS.md E50). Needs
+    /// `save_state` or `closed_groups`, in the config or as a flag. An
+    /// accumulator-only spec emits `n_eff` a row and nothing else, which over
+    /// a billion rows is 8 GB of file written so it can be deleted.
     #[arg(long)]
     no_output: bool,
 

@@ -3407,6 +3407,106 @@ note, not a task.
       verbatim, its first entry that confirms an approach rather than names
       a fault.
 
+- [x] 90. **Every user document rewritten to `docs/WRITING.md`, requested
+      2026-09-23.** The user's ask: "rewrite every user document that is not
+      a work list, plan or history using the latest writing guide".
+
+      *Which documents.* `docs/README.md` divides `docs/` into guides and
+      records, so the guides are rewritten and the records are not, with the
+      top-level documents a user reads beside them:
+
+      | rewritten | not rewritten, and why |
+      |---|---|
+      | `docs/PERFORMANCE.md`, `docs/RELEASE-READINESS.md`, `docs/TESTING.md`, `docs/EXTENDING.md`, `docs/STATE-WORKFLOW.md`, `docs/RUNNER.md`, `docs/REGIMES.md`, `docs/OUTPUTS.md` (through `scripts/outputs_doc.py`, which writes it), `docs/README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `llms.txt` | the records: `PLAN.md`, `ENHANCEMENTS.md`, `CLUSTERING.md`, `ANSWERS-E54-E64.md`, the reviews, `IMPROVEMENTS.md`, `SIMPLIFICATION.md`, `BEYOND-O-STATE.md`, `BOOSTED-TREES.md`, `MARGINAL-LAGS-AND-BINS.md`, `WARMUP-AND-CONVERGENCE.md` and `ARROW-SOURCES.md` (the last three a design, a design and a plan); `CHANGELOG.md`, history; `PHRASING.md`, a running log kept verbatim; `VALIDATION.md`, generated and never edited by hand; `CODE_OF_CONDUCT.md`, the Contributor Covenant as adopted; `README.md` and `WRITING.md`, rewritten to the guide in task 89 |
+
+      *How.* One agent per document or pair, each first returning a map and
+      the claims it found false or stale, with evidence from the code; the
+      maps are recorded here before any prose changes (WRITING.md §6 step
+      2). Each rewrite keeps every number, name, link, ID and code block, or
+      says where it went; keeps every section number, step number, ID and
+      heading text another file cites; corrects a stale claim only with the
+      code's evidence; and is measured before and after.
+
+      *The maps.*
+
+      | document | reader | new structure ← what moves |
+      |---|---|---|
+      | `PERFORMANCE.md` | someone who hit a slower run or a bigger process, or a contributor measuring a hot-path change | the 21 numbered sections stay H2 with their numbers; a new *Reading this document* opens it (a contents table with a "read it when" column ← the "where to look" paragraph; *How the numbers are made* ← the machine and regenerate paragraph; *The headline* ← the status block, as a table; *Words this document uses*); §3's P1–P11 become a status table and one H3 each, their `<details>` plans kept; §5 gains an index of the rejections recorded in later sections; long sentences in §10–§13 and §19 become tables of their figures |
+      | `RELEASE-READINESS.md` | whoever cuts a release, or asks which Polars versions are promised | five sections replace two parts of 22 H2s: *Cutting a release* (← the release gate and the rehearsal), *Which Polars versions are promised* (← the pin, 2.0.0rc1 measured, raising the ceiling, whose numbered steps stay), *Keeping the API stable* (← Part 2's API sections), *CI cost while the repo was private* (← the quota and cost sections), *Going public, as recorded* (← R1–R6 and the open-source preparation); cited headings keep their text |
+      | `STATE-WORKFLOW.md` | a user about to rely on a state file across runs; second, whoever re-checks a guarantee on a new Polars | a guide section first, *The workflow in four steps* (← the four bold paragraphs, as a table, and a table of R1–R7 with the F and C evidence for each), then the research record of 2026-09-03 with §0–§9 one level down, numbers and headings unchanged |
+      | `RUNNER.md` | someone running a bank with no live Python | four sections replace six: *Running it* (a first run; saving, resuming and scoring; a run whose product is its state; closed groups), *The configuration file* (a flag and key table; files; specs in TOML; clocks that are times), *Memory, threads and chunk size*, *From Rust, and the Polars it needs*; every executed `sh` line unchanged, since the tests run them |
+      | `REGIMES.md` | someone about to trust `hmm`, `corrchange` or `bocpd` | §0–§7 keep their numbers; §0's six findings become bold-led paragraphs; each section states its conditions before its table; §7 becomes one commented code block and an experiment-to-section table |
+      | `OUTPUTS.md` | someone who has found a model's record column and wants each field's meaning | a contents table by family; *Reading this reference* (the field-name parts; the four fields most models write, stated once; what is not listed; how the page is made); the 21 model sections and their anchors unchanged |
+      | `docs/README.md` | someone looking for the one document that answers a question, or following a citation | *Guides* and *Records* as tables with family rows; the ten documents neither table listed get rows; the top-level documents get a table |
+      | `TESTING.md` | someone deciding whether to trust the library, or choosing what to test next; or following a `T-` ID | five sections replace five unrelated ones: *What the suite proves* (← the scorecard and the backlog's hardening rows, as tables), *What it has found* (an index of every defect, linked to its entry), *Where it is thin, and what is left*, *How the suite looks for defects* (← the oracle rule, the mutation run, the FFI audit), *The entries, by ID* (the lettered tables A–E, each ID once, the backlog rows merged in); every T-ID and section letter kept |
+      | `EXTENDING.md` | a contributor adding a model kind, following the steps in order | a checklist table up front (step, file, what you add, the check that fails if you skip it); the 16 steps as `### Step N` headings under their layer, numbers and subjects unchanged; long sentences in steps 1, 6 and 8 become tables of what each kind of model needs |
+      | `CONTRIBUTING.md`, `SECURITY.md` | a developer who wants a change merged; someone reporting a vulnerability | same sections; the gate's steps become a numbered list, long sentences split, cited sentences verbatim |
+      | `llms.txt` | a coding agent reading it in one pass | the llmstxt.org order: summary, details (the rules as bold-led bullets, a surface table), then file lists, one link per item |
+
+      *Decisions taken on the maps.* Stale measurements are replaced by a
+      fresh run of the repository's own script, the old figures kept as a
+      dated note: `REGIMES.md` §2–§4, whose `corrchange` numbers the S3 fix
+      of 2026-09-19 moved (a t5 size of .075 is now .045, and the power
+      finding flips), and §1, which says what its streams really contain
+      (one regime, so no switch was ever tested). A record keeps its date
+      and gains a dated note rather than a silent edit. Figures credited to
+      a surface that did not produce them go: `RUNNER.md`'s 0.95 and 1.41
+      GB were the removed `po.run`'s. `scripts/regime_experiments.py`'s
+      `epps` step, which stops `all` since a rename on 2026-09-07, is
+      fixed, since `REGIMES.md` §7 tells the reader to run it.
+
+      One mapping found a test gone rather than a sentence wrong: `kalman`
+      held to river's `BayesianLinearRegression` (`TESTING.md` T-R2, and
+      E19) was deleted in `509c6cf` with nothing in its message, and nothing
+      has checked the match since. It passes unchanged today, so it is
+      restored to `tests/test_river.py` as `23671a8` wrote it, and the
+      claim is true again rather than rewritten.
+
+      *Follow-up, not in this task.* `REGIMES.md` §1's `hmm` recovery ran on
+      streams that never switch regime; rerun it on streams that do.
+
+      **Done 2026-09-24, to the maps above.** Measured the same way as task
+      89, with the splitter that also ends a sentence inside bold; every file
+      checked independently for lost numbers, names, links and IDs, table
+      cell counts, in-page links and wrapped code spans:
+
+      | document | 45+-word sentences | 35+-word sentences | mean sentence |
+      |---|---:|---:|---:|
+      | `PERFORMANCE.md` | 107 → 0 | 193 → 0 | 27.3 → 16.6 |
+      | `RELEASE-READINESS.md` | 17 → 0 | 45 → 2, both merges | 19.9 → 15.4 |
+      | `TESTING.md` | 9 → 0 | 16 → 0 | 21.2 → 13.5 |
+      | `EXTENDING.md` | 20 → 1, task 88's paragraph kept whole | 39 → 1 | 28.1 → 14.8 |
+      | `STATE-WORKFLOW.md` | 11 → 0 | 23 → 0 | 22.3 → 16.1 |
+      | `RUNNER.md` | 0 → 0 | 5 → 0 | 22.3 → 16.7 |
+      | `REGIMES.md` | 3 → 0 | 15 → 0 | 21.3 → 17.1 |
+      | `OUTPUTS.md` | 0 → 0 | 1 → 0 | 21.1 → 15.9 |
+      | `docs/README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `llms.txt` | 2 → 0 | 4 → 0 | 13–22 → 11–13 |
+
+      Every in-page link in the twelve resolves, no code span is wrapped,
+      and every table row has its header's cell count. What the loss check
+      reports gone is either a correction (`covariance="diag"`, `__hl`,
+      `[save_state]`, `online_run`, `finish_label`, `tests/test_lasso.py`,
+      the two `po.run` figures, `REGIMES.md` as the home of three defaults,
+      `deco` and `rcov` as measured there) or a fragment of an old wrapped
+      span; every command and name it lists besides moved into a code block
+      or a link. The means sit below the guide's aim of about 20. Bold
+      labels, counted as sentences, pull them down, but even without them
+      the prose runs near 15 to 16 words, a little choppier than the
+      README's 19.8: the long sentences were split and not merged back.
+
+      Found on the way and fixed outside the twelve: the `hmm` docstring and
+      `tests/test_corrchange.py`'s notes, which carried the old REGIMES
+      numbers; the experiment script's printed conclusions; the README's
+      save-and-load paragraph (a bank object has `save`/`load`), its `coef`
+      cadence, its "four hundred" chunks (the test runs 7 and 100) and its
+      chunk-size figure (`PERFORMANCE.md` §20's); the API reference's front
+      page, which still offered the removed expression form; the CLI's
+      `--no-output` help; the release and canary workflows' comments, still
+      on `<2`; `MIN_SCHEMA_VERSION`'s missing entry for 13; four code
+      comments citing the wrong P-ID or section; and C1 and C2 swapped in
+      `tests/test_frame.py`. A new test holds `RUNNER.md`'s example config
+      to the file its shell blocks run against.
+
 ## 11a. Decisions made while implementing
 
 **Readiness gates (task 87), 2026-09-21.** The user's standard: a setting
@@ -6558,7 +6658,7 @@ Each of §11b–§11h below summarises one document under `docs/` and says what
 became of it. Four more carry no section of their own:
 
 - `docs/ENHANCEMENTS.md` — every model and feature after the first seven
-  (E1–E64): proposed, measured, built or declined.
+  (E1–E69): proposed, measured, built or declined.
 - `docs/TESTING.md` — coverage scorecard against §9, the defects the suite
   found, and the oracle/river cross-checks.
 - `docs/STATE-WORKFLOW.md` — research (2026-09-03) on carrying state out of a
@@ -6579,7 +6679,7 @@ became of it. Four more carry no section of their own:
 integration layer cost 3–5× the model arithmetic and capped thread scaling at
 3.2× on ten cores. Removing per-row allocation, flattening the rayon fan-out to
 (spec × group × instance), extracting columns as `f64`-with-NaN instead of
-`Option<f64>`, and pipelining the runner took it to **2.0–2.8× throughput and
+`Option<f64>`, and pipelining the runner took it to **2.0–2.4× throughput and
 6.2× scaling**, with every golden number unchanged. Three of the eight items
 were closed by measuring and *rejecting* the change; §5 there records why.
 P9–P11 (2026-09-04, §12 there) then made the phases around the per-group

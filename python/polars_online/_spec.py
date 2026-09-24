@@ -3443,13 +3443,16 @@ def hmm(
     and the mixture is left short one state. A larger ``precision_prior``, given
     states (``learn = False``) or cleaning upstream are the mitigations. And a
     regime that lives only in the covariance needs the covariances to start from.
-    The default seeding is k-means over the rows, and two zero-mean states differ
-    in nothing k-means can see, so it splits them by direction and the filter
-    never recovers: 56% accuracy on a two-state stream, against 98% for the same
-    filter given ``covs``. Pass ``means`` and ``covs``, or a feature in which the
-    regime is a shift in location. And keep ``precision_prior`` small against the
-    data's scale: a ridge of 1.0 on a covariance whose entries are about 1.0
-    halves every correlation.
+    The default seeding is k-means over the rows, and zero-mean states differ in
+    nothing k-means can see, so it splits the rows by direction and the filter
+    never recovers. On streams that stay in one of two zero-mean states, it puts
+    57% of the rows in the true state, about half of those after seeding, against
+    98% for the same filter given ``covs`` (`docs/REGIMES.md
+    <https://github.com/hgilde/polars-online/blob/main/docs/REGIMES.md>`_ §1).
+    Pass ``means`` and ``covs``, or a feature in which the regime is a shift in
+    location. And keep ``precision_prior`` small against the data's scale: with
+    states given and not learned, a ridge of 1.0 on data whose variance is about
+    1.0 halves every correlation.
 
     .. rubric:: Parameters
 

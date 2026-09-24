@@ -326,7 +326,7 @@ def _bank_after(df: pl.DataFrame, **kw) -> bytes:
 
 
 def test_save_state_is_the_banks_state_after_the_stream(tmp_path):
-    """C1: the plan writes, when it ends, the state a bank fed the same rows
+    """C2: the plan writes, when it ends, the state a bank fed the same rows
     saves -- byte for byte, whatever the chunking, through either engine; so
     do the eager and typed forms. Building the plan writes nothing."""
     df = _frame(n=4000)
@@ -352,7 +352,7 @@ def test_save_state_is_the_banks_state_after_the_stream(tmp_path):
 
 
 def test_save_state_follows_head(tmp_path):
-    """C2, R4: `head(n)` feeds the bank the first `n` rows and no more, so the
+    """C1, R4: `head(n)` feeds the bank the first `n` rows and no more, so the
     state written is the state after `n` rows -- the rows the caller got --
     and not after the chunk they ended in. A `head` polars cannot push into
     the source (after a `sort`) runs the whole stream, and writes its state."""

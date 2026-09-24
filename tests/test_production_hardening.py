@@ -859,6 +859,22 @@ class TestReadmeExamples:
             )
             assert res.returncode == 0, f"{command}\n{res.stderr}"
 
+    def test_the_config_the_guide_shows_is_the_one_its_blocks_run(self, tmp_path):
+        """The runner guide shows the `bank.toml` its shell blocks run against,
+        and the fixture writes that file itself. Parsed, the two must be one
+        configuration, or the guide would show a config its examples never ran."""
+        import tomllib
+
+        shown = [
+            code
+            for _, _, code in _doc_blocks("docs/RUNNER.md", "toml")
+            if 'input = "ticks.parquet"' in code
+        ]
+        assert len(shown) == 1, shown
+        _readme_namespace(tmp_path)
+        written = (tmp_path / "bank.toml").read_text(encoding="utf-8")
+        assert tomllib.loads(shown[0]) == tomllib.loads(written)
+
     def test_there_are_docstring_blocks_to_check(self):
         assert len(DOCSTRING_BLOCKS) >= 10, DOCSTRING_BLOCKS
 

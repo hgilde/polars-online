@@ -493,7 +493,8 @@ throughput.
 - **Chunk invariance.** One chunk or a thousand, with or without a save and
   resume in the middle, gives bit-identical output. The one exception is
   `coef`, which is a reporting cadence: it is written every `coef_every`
-  rows and on each chunk's last row, so smaller chunks report it more often.
+  rows and on each group's last row in every chunk, so smaller chunks
+  report it more often.
 
 Both rest on something the caller supplies: a fixed row order. A model
 learns in row order, so a query whose row order Polars does not guarantee
@@ -679,10 +680,11 @@ the grid up.
 ## Saving, loading and serving
 
 What a bank has learned, the running sums of every (spec, group), can be
-saved to one file, written whole or not at all, and loaded back.
-`save_state` and `load_state` work the same from a bank object, from a
-query and from the command line, and the bytes are the same whichever wrote
-them. [docs/STATE-WORKFLOW.md](docs/STATE-WORKFLOW.md) walks the whole
+saved to one file, written whole or not at all, and loaded back. A bank
+object saves with `bank.save(path)` and loads with `po.ModelBank.load`, a
+query takes `save_state=` and `load_state=`, and the command line takes
+`--save-state` and `--resume`. The file is the same whichever wrote it, to
+the byte. [docs/STATE-WORKFLOW.md](docs/STATE-WORKFLOW.md) walks the whole
 workflow, fit, save, serve and learn on, with what each step guarantees.
 
 ### Save and load
@@ -809,7 +811,7 @@ Two ways, and they agree row for row:
 ```python
 ols = po.spec.ewridge("ols", targets=["y"], features=["x0", "x1"], clock="t",
                       halflife=600.0, max_dclock=300.0, group="stock_id",
-                      coef_every=1)         # write coef on every row (default 0: on each chunk's last row only)
+                      coef_every=1)         # write coef on every row (default 0: each group's last row in a chunk)
 
 # 1. From a bank -- live, or loaded from a state file with no data at hand.
 bank = po.ModelBank([ols])
@@ -1132,8 +1134,8 @@ rows, truth = out["rows"], out["truth_blocks"]
 
 `durations` makes each state last exactly as long as it says, and
 `design="smooth"` interpolates the matrix across a boundary instead of
-stepping. What each detector finds on such streams, and what it misses, is
-measured in [docs/REGIMES.md](docs/REGIMES.md).
+stepping. What `hmm`, `corrchange` and `bocpd` find on such streams, and
+what they miss, is measured in [docs/REGIMES.md](docs/REGIMES.md).
 
 ## Models
 
@@ -2402,9 +2404,9 @@ on its last row of every chunk. It does change the speed and the memory.
 Each chunk carries a fixed overhead, of handing the frame across from
 Polars, gathering the columns and assembling the output, so tall chunks
 spread it thinner. On wide frames that hand-off is about 8 ms per call at
-10,000 columns, and chunks of 20,000 rows run 2.4× faster than chunks of
-2,000. Three chunks are in flight at once, so `chunk_rows` also sizes the
-middle one.
+10,000 columns: 4 µs of every row at 2,000 rows per call, and 0.4 µs at
+20,000 ([docs/PERFORMANCE.md](docs/PERFORMANCE.md) §20). Three chunks are
+in flight at once, so `chunk_rows` also sizes the middle one.
 
 ### Parallelism
 
@@ -2707,8 +2709,8 @@ new major are in [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md).
 #### This package's own versioning
 
 Semantic versioning. While pre-1.0, the **minor** version carries breaking
-changes and any change to the numbers a model returns, so pin `~=0.7.0` if
-you need stability. Widening the Polars range is a minor release, and
+changes and any change to the numbers a model returns, so pin the minor
+version, `~=0.9.0` for the 0.9 series, if you need stability. Widening the Polars range is a minor release, and
 narrowing it is a breaking one. Output field names are part of the API
 ([Output field names](#output-field-names)). See
 [CHANGELOG.md](CHANGELOG.md).
@@ -2740,7 +2742,7 @@ line too where they apply:
 
 | invariant | checked as |
 |---|---|
-| chunk invariance | one chunk, seven, four hundred, one row at a time, and with a save and load in the middle |
+| chunk invariance | one chunk, seven, a hundred, one row at a time, and with a save and load in the middle |
 | thread invariance | 1 thread against 8 |
 | group independence | a group's numbers do not depend on what else is in the bank |
 | the paths agree | runner ≡ bank for every input source and format; the Arrow output ≡ the Polars one, field for field and null for null |

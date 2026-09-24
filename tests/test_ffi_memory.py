@@ -9,10 +9,11 @@ a leak or a hard crash, neither of which any other test in the suite would
 notice.
 
 **Why the assertion is "plateaus" and not "does not grow."** Allocators do not
-return pages eagerly, rayon spawns worker threads lazily, and Polars caches the
-loaded plugin. Measured here, `.over()` costs a one-time ~6 MB and is then flat
-forever, while a real leak grows without bound. So the primitive compares the
-*later* blocks against each other: a step is fine, a slope is not.
+return pages eagerly, and rayon spawns worker threads lazily. Measured before
+the expression plugin was removed (task 85), `.over()` took a one-time ~6 MB
+and was then flat forever, while a real leak grows without bound. So the
+primitive compares the *later* blocks against each other: a step is fine, a
+slope is not.
 """
 
 import gc

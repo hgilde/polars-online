@@ -76,15 +76,12 @@ def test_the_size_is_near_nominal_on_gaussian_pairs():
 
     That is the property to hold here, and it is not quite the paper's
     table. WKD's Table 1 is for "i.i.d. bivariate `t_5` innovations" and
-    reads `.040 / .035 / .041` at `T = 500` for `rho = -0.5 / 0 / 0.5`. At
-    `rho = 0` every distribution agrees with it. At `rho = 0.5` the phrase
-    does not pin the distribution down, and the two readings straddle their
-    number: a shared-scale multivariate `t_5` (tail-dependent) over-rejects
-    at about `.07`, independent `t_5` marginals under-reject at about
-    `.025`, and Gaussian pairs land near nominal. `docs/REGIMES.md` §2
-    measures all three at 2000 replications; the table cannot be matched to
-    a decimal without the paper's exact DGP, so what is pinned here is the
-    level the test claims for itself.
+    reads `.040 / .035 / .041` at `T = 500` for `rho = -0.5 / 0 / 0.5`. The
+    phrase does not pin the distribution down, but both readings of it, a
+    shared-scale multivariate `t_5` and independent `t_5` marginals, land
+    within 0.011 of that table, and neither is liberal. `docs/REGIMES.md` §2
+    measures both, and Gaussian pairs, at 2000 replications. What is pinned
+    here is the level the test claims for itself.
 
     **`|rho| <= 0.5` only**: the test over-rejects at `|rho| = 0.9` for
     `T <= 500` (`.142` in their own table), which is the paper's finding,
@@ -109,9 +106,9 @@ def test_the_power_is_at_least_the_papers():
     time at `T = 500`.
 
     One-sided, and on Gaussian pairs, where this implementation is well
-    above their figure (`.82` at 2000 replications). Under a shared-scale
-    `t_5` it is below it (`.43` size-adjusted) -- the same DGP ambiguity as
-    the size test above, measured in `docs/REGIMES.md` §3.
+    above their figure (`.830` at 1000 replications). Under either reading
+    of their `t_5` it is within 0.034 of it, `.582` size-adjusted for the
+    shared-scale draw, measured in `docs/REGIMES.md` §3.
     """
     n, reps, want = 500, 120, 0.587
     flags = 0

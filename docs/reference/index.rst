@@ -1,18 +1,17 @@
 polars-online
 =============
 
-Streaming / online regression models for `Polars <https://pola.rs>`_: a
-Rust core exposed as a chunk-fed ``ModelBank``, as a ``LazyFrame`` plan
-that streams (``lf.online.fit_predict(specs)``), as a command line for
-files, and as an expression for a frame in memory. Predictions are
-out-of-sample by construction and the numbers are identical however the
-model is called.
+Online model fitting for `Polars <https://pola.rs>`_: linear models,
+streaming moments, clustering and regime detection, for data too large to
+hold in memory at once. The Rust core runs three ways: inside a Polars
+query (``lf.online.fit_predict(specs)``), fed chunks by a ``ModelBank``,
+and from the ``online`` command line. Every row is predicted before it is
+learned from, and the numbers are the same whichever way the bank runs.
 
 This is the API reference, built from the docstrings. The `README
-<https://github.com/hgilde/polars-online#readme>`_ is the guide: what
-streams and what does not, the models and their update equations, the
-state-file workflow, and performance. Install with ``pip install
-polars-online``.
+<https://github.com/hgilde/polars-online#readme>`_ is the guide: the
+models and their update equations, which calls stream, the state-file
+workflow, and performance. Install with ``pip install polars-online``.
 
 .. toctree::
    :maxdepth: 2

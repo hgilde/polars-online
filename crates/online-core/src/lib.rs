@@ -248,6 +248,11 @@ pub const SCHEMA_VERSION: u32 = 13;
 
 /// Oldest state layout this build still loads.
 ///
+/// **13 since 2026-09-21** (task 87): a schema-12 state holds none of the
+/// readiness statistics -- the decay time each instance has seen, and what
+/// `ew_ridge`'s last solve left for them -- and pre-1.0 no loader is written
+/// for one.
+///
 /// **12 since 2026-09-20**, on the same rule as the entries below: a
 /// schema-10 `robust` state's raw cross-moments could be centred on load,
 /// but only by the subtraction the change exists to remove, and pre-1.0 no

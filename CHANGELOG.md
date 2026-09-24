@@ -38,6 +38,39 @@ carries breaking changes, and any change to the numbers a model returns.
   other file is still version 2, byte for byte, so a build from before
   durations reads it, and refuses a file with a duration by its version.
 
+### Fixed
+
+- **The guides are rewritten to `docs/WRITING.md`, and the false claims the
+  rewrite found are corrected against the code (`docs/PLAN.md` task 90).**
+  Twelve documents: the eight guides under `docs/`, the documents index,
+  `CONTRIBUTING.md`, `SECURITY.md` and `llms.txt`. Each keeps every number,
+  name, link, ID and section number another file cites. The corrections
+  that change what a reader would do:
+  - `docs/REGIMES.md`'s `corrchange` tables predated the S3 fix of
+    2026-09-19, and are measured again: a shared-scale t5's size of .075 is
+    now .045, and both readings of the paper's distribution land within
+    0.011 of its table. Its `hmm` recovery ran on streams that never
+    switched regime, and now says so.
+  - `docs/RUNNER.md` credited the command line with 0.95 and 1.41 GB of
+    memory, which were the removed `po.run`'s.
+  - `docs/STATE-WORKFLOW.md` said `load_state` accepts a `ModelBank`, which
+    raises a `TypeError`.
+  - `docs/OUTPUTS.md` named a halflife grid's suffix `__hl` where it is
+    `@h`.
+  - `docs/PERFORMANCE.md`'s headline read 2.8× where its own table gives
+    2.4×, and it showed `hmm` with `covariance="diag"`, which is refused.
+  - The README's chunk-size figure is now the one `docs/PERFORMANCE.md` §20
+    measured, and it says `coef` lands on each group's last row in a chunk.
+- **`kalman` is held to river's `BayesianLinearRegression` again.** The test
+  was deleted in `509c6cf` with nothing in its message, while
+  `docs/TESTING.md`'s T-R2 went on citing it. It passes unchanged, and is
+  restored.
+- **`scripts/regime_experiments.py all` runs to the end again.** Its `epps`
+  step had stopped the run since a rename on 2026-09-07, and its printed
+  conclusions now match the measured document.
+- **The command line's `--no-output` help** says a run needs `save_state`
+  or `closed_groups`, which is what the runner checks.
+
 ## [0.9.1] — 2026-09-21
 
 ### Fixed

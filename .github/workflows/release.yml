@@ -226,7 +226,7 @@ jobs:
       matrix:
         include:
           # Blocking. The top of the range the wheel actually declares --
-          # newest stable, `<2` still honoured.
+          # newest stable, `<3` still honoured.
           - leg: the newest in-range
             unpin: false
             prerelease: ""
@@ -251,7 +251,7 @@ jobs:
     # them is a promise we made:
     #
     # - *The newest in-range* blocks the publish (`release` needs this job).
-    #   `<2` admits every 1.x, so a resolver can hand a user a Polars newer
+    #   `<3` admits every 1.x and 2.x, so a resolver can hand a user a Polars newer
     #   than the one this wheel was built against, the day after it ships.
     #   That is inside what we declared, so it has to be green before the
     #   wheel goes out -- red means cap the range or fix the code (README,
@@ -260,10 +260,10 @@ jobs:
     #   prereleases, so it is the early warning the canary gives weekly,
     #   taken again at the tag. A 3.0 beta that breaks us is worth knowing
     #   about and is not a reason to withhold a patch release for a range
-    #   that ends at 2.
+    #   that ends below 3.
     #
     # The split also keeps the blocking leg honest across a major bump: an
-    # unpinned blocking job would resolve to 2.0 the day it ships and block
+    # unpinned blocking job would resolve to 3.0 the day it ships and block
     # every release on a major nobody had adopted yet.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -285,7 +285,7 @@ jobs:
 
       # Advisory leg only: the same unpin the canary does, dropping the range
       # rather than widening it so a new major is tested the week it appears
-      # rather than silently excluded by the `<2` in pyproject.toml. The
+      # rather than silently excluded by the `<3` in pyproject.toml. The
       # blocking leg skips this on purpose -- it tests the range as declared.
       - name: unpin py-polars
         if: matrix.unpin

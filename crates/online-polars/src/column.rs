@@ -74,8 +74,8 @@ impl F64Column {
     /// byte flag per row, then the flags packed eight at a time by the
     /// multiply that gathers the low bit of each byte into one byte -- rather
     /// than one pass that shifts each flag into place, which it compiles a
-    /// lane at a time: 0.5 ns a value against 0.3 in isolation
-    /// (docs/PERFORMANCE.md §13). The partial bytes at each end go bit by bit.
+    /// lane at a time: 0.5 ns a value against 0.3, measured in isolation.
+    /// The partial bytes at each end go bit by bit.
     pub(crate) fn run(&mut self, base: usize, vals: &[f64], processed: &[bool]) {
         let n = vals.len();
         let dst = &mut self.values[base..base + n];
