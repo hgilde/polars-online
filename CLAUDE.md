@@ -161,5 +161,11 @@ dependencies; `crate-type` is the publisher's choice).
 
 - Rust: `cargo fmt`, `cargo clippy -D warnings`. Small files, one model per file.
 - Python: `ruff` (format + lint), `mypy` clean (`uv run mypy`), type hints, no pandas
-  in the package (tests may use it as an oracle).
+  in the package.
+- **Tests may use libraries the package does not depend on**, when a test needs
+  one: an oracle, a second opinion, or interop with that library (the user,
+  2026-09-24). Declare it in the dev group by name and import it plainly, with
+  no `importorskip`. Never add it to the package's dependencies, which stay
+  `polars`. `docs/TESTING.md`, "Libraries the package does not depend on", has
+  the rules, and `tests/test_dependency_policy.py` checks them.
 - Docstrings state the math (update equations) for every model.

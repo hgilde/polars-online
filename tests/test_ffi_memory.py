@@ -25,11 +25,11 @@ import textwrap
 
 import numpy as np
 import polars as pl
+import psutil
 import pytest
 
 import polars_online as po
 
-psutil = pytest.importorskip("psutil")
 PROC = psutil.Process(os.getpid())
 
 

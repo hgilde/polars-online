@@ -139,10 +139,11 @@ fn busy(what: &str) -> PyErr {
 /// One spec's output struct, handed to Python over the Arrow PyCapsule
 /// interface instead of as a pyo3-polars `PySeries`.
 ///
-/// A consumer -- `pl.Series`, pyarrow, duckdb -- calls `__arrow_c_array__`
-/// and takes ownership of the two C structs it returns. Exporting consumes
-/// the array, so a second call raises rather than hand out buffers that have
-/// already been given away.
+/// A consumer -- `pl.Series`, pyarrow's `pa.array` -- calls
+/// `__arrow_c_array__` and takes ownership of the two C structs it returns.
+/// duckdb reads only `__arrow_c_stream__`, so it goes through `pl.Series`.
+/// Exporting consumes the array, so a second call raises rather than hand
+/// out buffers that have already been given away.
 #[pyclass(name = "ArrowStruct", module = "polars_online._polars_online")]
 struct PyArrowStruct {
     name: String,

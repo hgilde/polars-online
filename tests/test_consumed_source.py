@@ -299,7 +299,8 @@ def _duck_rel(duckdb, n: int = 8):
 def test_the_hazard_reproduces_on_a_real_duckdb_relation():
     """Not a synthetic stand-in: the plan gives its rows once and nothing
     after, which is the bug this guard exists for."""
-    duckdb = pytest.importorskip("duckdb")
+    import duckdb
+
     con, rel = _duck_rel(duckdb)
     lf = pl.scan_arrow_c_stream(rel)
     assert lf.collect().height == 8
@@ -308,7 +309,8 @@ def test_the_hazard_reproduces_on_a_real_duckdb_relation():
 
 
 def test_a_bank_over_a_reused_duckdb_plan_warns():
-    duckdb = pytest.importorskip("duckdb")
+    import duckdb
+
     con, rel = _duck_rel(duckdb)
     lf = pl.scan_arrow_c_stream(rel)
     bank = _bank()
@@ -322,7 +324,8 @@ def test_a_bank_over_a_reused_duckdb_plan_warns():
 
 def test_rebuilding_the_plan_per_run_is_the_documented_fix():
     """What the warning tells the caller to do, checked as advertised."""
-    duckdb = pytest.importorskip("duckdb")
+    import duckdb
+
     con, _ = _duck_rel(duckdb)
     bank = _bank()
     with warnings.catch_warnings():
@@ -342,7 +345,8 @@ def test_a_duckdb_relation_itself_is_reusable_on_this_version():
     relation, and if this test ever fails the claim in
     ``docs/ARROW-SOURCES.md`` §3 needs rewriting again.
     """
-    duckdb = pytest.importorskip("duckdb")
+    import duckdb
+
     con, rel = _duck_rel(duckdb)
     rel.__arrow_c_stream__(None)
     rel.__arrow_c_stream__(None)
@@ -352,7 +356,8 @@ def test_a_duckdb_relation_itself_is_reusable_on_this_version():
 def test_the_pyarrow_free_path_is_the_one_the_docs_recommend():
     """``scan_arrow_c_stream`` rides the capsule interface; the reader APIs
     need pyarrow, which this project does not depend on."""
-    duckdb = pytest.importorskip("duckdb")
+    import duckdb
+
     con, rel = _duck_rel(duckdb)
     assert pl.scan_arrow_c_stream(rel).collect().height == 8
     assert not hasattr(rel, "record_batch"), (

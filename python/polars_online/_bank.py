@@ -288,8 +288,10 @@ class ModelBank:
         field for field and null for null; what differs is the way out. A polars
         ``Series`` crosses on py-polars' private ``_export``/``_import``, which is
         why this package carries a polars floor and why that interface promises no
-        stability. The capsule interface is public and standardised, so any Arrow
-        consumer reads it: ``pl.Series``, pyarrow, duckdb.
+        stability. The capsule interface is public and standardised, so a consumer
+        of it reads the struct directly: ``pl.Series``, and pyarrow's ``pa.array``
+        and ``pa.table``. duckdb reads the stream interface instead, so it takes the
+        struct through ``pl.Series(s)``.
 
         Use this to hand a bank's output to something that is not polars, or to
         avoid a second copy of polars in the process. When you want a frame back,

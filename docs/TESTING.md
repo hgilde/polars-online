@@ -24,7 +24,7 @@ were written before the repo had CI and are kept as the record.
 | [What the suite proves](#what-the-suite-proves) | [the eight test classes](#the-eight-test-classes) · [against reference implementations](#against-reference-implementations) · [beyond the eight classes](#beyond-the-eight-classes) |
 | [What it has found](#what-it-has-found) | [defects, and where each is told](#defects-and-where-each-is-told) · [differences from river that are not bugs](#differences-from-river-that-are-not-bugs) |
 | [Where it is thin, and what is left](#where-it-is-thin-and-what-is-left) | [measured coverage](#measured-coverage) · [open entries](#open-entries) · [mutation survivors](#mutation-survivors) · [what is left](#what-is-left), which is current |
-| [How the suite looks for defects](#how-the-suite-looks-for-defects) | [an oracle, not a golden number](#an-oracle-not-a-golden-number) · [what the mutation run actually found](#what-the-mutation-run-actually-found) · [FFI memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31), the crash-safety audit |
+| [How the suite looks for defects](#how-the-suite-looks-for-defects) | [an oracle, not a golden number](#an-oracle-not-a-golden-number) · [libraries the package does not depend on](#libraries-the-package-does-not-depend-on) · [what the mutation run actually found](#what-the-mutation-run-actually-found) · [FFI memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31), the crash-safety audit |
 | [The entries, by ID](#the-entries-by-id) | [A. our own oracles](#a-close-the-oracle-gaps-our-own-references) · [B. river](#b-cross-checks-against-river) · [C. edge cases](#c-edge-case-matrix) · [D. Windows](#d-windows-and-cross-platform) · [E. infrastructure](#e-infrastructure) |
 
 The words this ledger uses:
@@ -134,6 +134,7 @@ T-A4).
 | [hard rule 1](#hard-rule-1-is-enforced-not-remembered) | `tests/test_repo_hygiene.py` | no data file, large file or generated output is tracked |
 | [the examples](#examples-are-executed) | `tests/test_examples.py` | everything under `examples/` runs unmodified |
 | [memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31) | `tests/test_ffi_memory.py`, `scripts/leakcheck.sh` | no leak and no crash across the FFI |
+| Arrow with pyarrow (2026-09-24) | `tests/test_pyarrow_interop.py` | pyarrow 25.0.1 reads the Arrow output through `pa.array`, `pa.chunked_array`, `pa.record_batch` and `pa.table` with `fit_predict`'s values and dtypes; a reader streams into a bank with the whole frame's numbers. pyarrow is a test-only dependency: `tests/conftest.py` makes it unimportable in the rest of the suite, which so runs as a user without it does |
 
 #### Production hardening round 3 (vs river's own battery)
 
@@ -296,7 +297,7 @@ integration tests through `run_config`. `online-core/src/robust.rs` is at
 
 None, since 2026-09-24. The last three closed that day: T-A2's numpy
 `lasso_ref` for the pred path, T-W3's paths on a Windows runner (its
-Windows-only test runs on the Windows CI leg), and T-D4's mutation testing
+Windows-only test passed on both Windows legs of its first run), and T-D4's mutation testing
 in CI. What is still thin is below: the mutation survivors, and `robust.rs`'s
 coverage.
 
@@ -398,6 +399,56 @@ number. An oracle took one of four forms:
 | an equivalent model configured a different way | the slow twin against a standalone model at `long_halflife`; the standardized solve against the plain one at zero penalty |
 | the optimality conditions of the problem being solved | the lasso's KKT conditions |
 | the definition of the statistic | `read` against a recomputation from the raw rows |
+
+
+### Libraries the package does not depend on
+
+**A test may use any library the package does not depend on, when the test
+needs it.** The user settled this on 2026-09-24: "packages that we do not
+want to depend on are fine if needed to test with other libraries", and the
+test plan must allow it from here on. The package depends on polars alone,
+with numpy as an extra, and that does not change. What a test needs is a
+separate question, and three kinds of need have come up:
+
+| need | libraries | example |
+|---|---|---|
+| an oracle, computed independently of this library | numpy, pandas, scipy | pandas' `ewm(times=)` against the temporal clock |
+| a second opinion from another implementation | river, statsmodels, filterpy, bayesian-changepoint-detection | `river.optim.FTRLProximal`, row for row (T-R1) |
+| interop, the other library reading a bank's output or feeding one | pyarrow, duckdb, the ADBC SQLite driver | `pa.table(s)` on `fit_predict_arrow`'s output |
+
+Four rules keep such a library from costing the package anything:
+
+1. **Declare it in the dev group, by name.** It must not arrive through
+   another package's dependencies. pandas and scipy came in through
+   statsmodels until 2026-09-24, so dropping statsmodels would have broken
+   tests that never mention it. A library that must not be in every
+   contributor's environment, for its licence or its platforms, gets a
+   group of its own and a CI job of its own.
+2. **Import it plainly.** The dev group is installed wherever the suite
+   runs, so `pytest.importorskip` could only turn a broken environment into
+   a skip. A missing library fails the test.
+3. **Keep it out of the package's reach when its presence changes other
+   libraries.** pyarrow is the case: pandas and duckdb take other paths when
+   it is importable, and a use of it inside the package would pass the
+   suite. `tests/conftest.py` makes it unimportable, and
+   `tests/test_pyarrow_interop.py` runs it in child interpreters.
+4. **Never add it to the package's own dependencies.** Those stay `polars`.
+
+`tests/test_dependency_policy.py` checks rules 1, 2 and 4. Every library a
+test imports must be declared in the dev group, no test may call
+`importorskip`, and the package must depend on polars alone. Rule 3 is
+checked where it applies, by `test_this_session_runs_without_pyarrow`.
+
+Two candidates the rule now admits are not yet taken:
+
+- **scikit-learn.** `tests/test_sgd.py` could compare with `SGDRegressor`
+  live, where it now quotes sklearn's R² from
+  `scripts/sklearn_comparison.py`.
+- **Pathway.** It would run the Pathway half of
+  `examples/pathway_integration.py`. Pathway is BSL-licensed, so under
+  rule 1 it would need a group of its own, and
+  `test_pathway_is_not_a_dependency` keeps it out of `pyproject.toml`
+  until the user decides (`docs/ENHANCEMENTS.md` E26).
 
 ### What the mutation run actually found
 
@@ -685,9 +736,10 @@ target; `lasso` slot naming; `ftrl` probabilities). It found two defects.
 
 ### B. Cross-checks against river
 
-`tests/test_river.py` holds these, with river as a dev-dependency. The module
-skips cleanly when river is not installed, the same pattern as the offline
-skip. There are two tiers: **exact**, at a tolerance of ~1e-12 with the
+`tests/test_river.py` holds these, with river as a dev-dependency. It
+imports river plainly, so a missing river fails the module rather than
+skipping it ([Libraries the package does not depend on](#libraries-the-package-does-not-depend-on)).
+There are two tiers: **exact**, at a tolerance of ~1e-12 with the
 configuration pinned so the algorithms coincide, and **statistical**, tail
 agreement after warmup with the tolerance stated per test.
 
@@ -883,7 +935,7 @@ first ran on Windows, as [What is left](#what-is-left) records it.
 |---|---|---|---|
 | T-W1 | ~~P1~~ **done** | **Run `ci.yml` on `windows-latest` at all** | runs on every push since 2026-08-31 |
 | T-W2 | **P1** | **Cross-OS state hand-off** (`release.yml`: write on macOS, load on Windows/Linux) | executed on Windows CI; the hand-off has run for every release since 0.1.0 |
-| T-W3 | ~~P1 (partly)~~ **written 2026-09-24, pending its first Windows CI run** | **Path handling through the CLI**: escaped Windows-style paths and paths with spaces | drive letters and the `\\?\` extended-length form run on the Windows CI leg |
+| T-W3 | ~~P1 (partly)~~ **done 2026-09-24** | **Path handling through the CLI**: escaped Windows-style paths and paths with spaces | drive letters and the `\\?\` extended-length form pass on both Windows CI legs, Python 3.12 and 3.14 |
 | T-W3b | ~~P1~~ **found a real bug, fixed** | TOML path escaping in the CLI tests | executed on Windows CI |
 | T-W3b (original) | P1 | **Path handling through the CLI**, as first written: backslash separators, drive letters, UNC paths, and spaces in paths, in both the TOML `input`/`output`/`load_state`/`save_state` fields and the `--input`/`--output` overrides | |
 | T-W4 | ~~P2~~ **mitigated + tested locally** | **CRLF line endings in the TOML config** | |
@@ -928,7 +980,8 @@ the same run with the UNC-style `\\?\C:\...` spelling, in the config's
 `--save-state` and `--resume` flags; polars strips the prefix
 (`normalize_windows_path` in polars-utils). A network share,
 `\\server\share\...`, is out of a runner's reach and stays untested. The
-Windows-only test has not run yet: it runs on the first push after 2026-09-24.
+Windows-only test first ran on the push of `7d9a1c0` (2026-09-24), and passed
+on both Windows legs, Python 3.12 and 3.14.
 
 **T-W3b.** The first Windows CI run ever attempted failed exactly here. Three
 `online-cli` tests died on `toml::de::Error`, "too few unicode value digits",

@@ -8,7 +8,6 @@ against ``gram()`` bit for bit, and the schedule against the two rules
 every chunking.
 """
 
-import os
 import struct
 import subprocess
 import sys
@@ -574,10 +573,12 @@ def test_the_high_water_mark_and_the_queue_survive_a_save_and_load(tmp_path):
 
 
 def toml_config(tmp_path, **kw):
+    """Paths written POSIX-style, as `run_online` writes them: a Windows path's
+    backslashes are escapes in a TOML basic string (docs/TESTING.md T-W3b)."""
     lines = [
-        f'input = "{tmp_path / "in.parquet"}"',
-        f'output = "{tmp_path / "out.parquet"}"',
-        *[f'{k} = "{v}"' for k, v in kw.items()],
+        f'input = "{(tmp_path / "in.parquet").as_posix()}"',
+        f'output = "{(tmp_path / "out.parquet").as_posix()}"',
+        *[f'{k} = "{v.as_posix() if hasattr(v, "as_posix") else v}"' for k, v in kw.items()],
         "[[specs]]",
         'name = "c"',
         'features = ["x0", "x1"]',
@@ -724,13 +725,13 @@ def test_closed_groups_is_refused_where_nothing_closes_and_with_predict(tmp_path
     assert res.returncode != 0 and "no group ever closes" in res.stderr, res.stderr
 
 
-def test_the_cli_writes_the_sidecar(tmp_path):
+def test_the_cli_writes_the_sidecar(tmp_path, online_cli):
     frame(["a", "b", "c"], n_per=6).write_parquet(tmp_path / "in.parquet")
     cfg = toml_config(tmp_path)
     side = tmp_path / "closed.parquet"
     r = subprocess.run(
         [
-            *_cli(),
+            str(online_cli),
             "--config",
             str(cfg),
             "--closed-groups",
@@ -743,17 +744,6 @@ def test_the_cli_writes_the_sidecar(tmp_path):
     assert r.returncode == 0, r.stderr
     assert "wrote closed groups to" in r.stdout
     assert pl.read_parquet(side)["group"].to_list() == ["a", "b"]
-
-
-def _cli():
-    """The `online` binary, built by the gate; skip if it is not there."""
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    for profile in ("release", "debug"):
-        p = os.path.join(root, "target", profile, "online")
-        if os.path.exists(p):
-            return [p]
-    pytest.skip("the online CLI is not built")
-    return []  # pragma: no cover
 
 
 def test_from_row_refuses_a_row_with_no_accumulators():

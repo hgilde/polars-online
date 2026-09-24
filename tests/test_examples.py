@@ -111,7 +111,6 @@ class TestDuckdbCursorsExample:
     stops reproducing on the installed DuckDB."""
 
     def test_it_runs(self):
-        pytest.importorskip("duckdb")
         res = _run([sys.executable, str(EXAMPLES / "duckdb_cursors.py")])
         assert res.returncode == 0, res.stderr
         assert "right way, first half" in res.stdout
@@ -125,7 +124,6 @@ class TestAdbcCursorsExample:
     warning (docs/ARROW-SOURCES.md §2, "ADBC, measured")."""
 
     def test_it_runs(self):
-        pytest.importorskip("adbc_driver_sqlite")
         res = _run([sys.executable, str(EXAMPLES / "adbc_cursors.py")])
         assert res.returncode == 0, res.stderr
         assert "right way, first half" in res.stdout

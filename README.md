@@ -700,8 +700,10 @@ values are `fit_predict`'s field for field and null for null; only the way
 out differs. A Polars `Series` crosses on py-polars' private methods, which
 is why this package measures a Polars range rather than promising one. The
 capsule interface is an Arrow specification instead, so a consumer that
-reads `__arrow_c_array__` takes the result directly. A consumer that wants
-the *stream* interface takes it through a `Series` first. DuckDB is one: on
+reads `__arrow_c_array__` takes the result directly. pyarrow is one: on
+pyarrow 25.0.1, `pa.array(s)` and `pa.table(s)` each take a struct as it
+is, values and types unchanged. A consumer that wants the *stream*
+interface takes it through a `Series` first. DuckDB is one: on
 duckdb 1.5.5 it refuses an `ArrowStruct` and accepts `pl.Series(s)`,
 because `__arrow_c_stream__` is the dunder it looks for, and a spec's
 output arrives table-shaped, one column per field. Exporting hands the

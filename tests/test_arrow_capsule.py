@@ -171,7 +171,8 @@ def test_duckdb_refuses_the_struct_directly() -> None:
     """Measured on duckdb 1.5.5. "Hand them straight to duckdb" was wrong, and
     this is the refusal that says so. If DuckDB ever grows array-interface
     support this fails, and the README can promise the direct path again."""
-    duckdb = pytest.importorskip("duckdb")
+    import duckdb
+
     out = po.ModelBank([SPEC]).fit_predict_arrow(frame(20))[0]
     with pytest.raises(duckdb.InvalidInputException, match="not an accepted Arrow Object"):
         duckdb.from_arrow(out)
@@ -180,7 +181,8 @@ def test_duckdb_refuses_the_struct_directly() -> None:
 def test_duckdb_takes_the_same_values_through_a_series() -> None:
     """The route the README now gives. A ``Series`` carries the stream dunder,
     so DuckDB accepts it, and the values that arrive are the bank's own."""
-    duckdb = pytest.importorskip("duckdb")
+    import duckdb
+
     df = frame(60)
     want = po.ModelBank([SPEC]).fit_predict(df)["m"].struct.unnest()
     got = pl.Series(po.ModelBank([SPEC]).fit_predict_arrow(df)[0])
@@ -196,7 +198,6 @@ def test_a_struct_handed_to_duckdb_is_still_spent() -> None:
     """The export-once contract is the capsule's, not polars'. Reading through a
     ``Series`` on the way to DuckDB consumes the struct exactly as any other
     consumer would, so a second read refuses rather than double-free."""
-    pytest.importorskip("duckdb")
     out = po.ModelBank([SPEC]).fit_predict_arrow(frame(20))[0]
     pl.Series(out)
     with pytest.raises(ValueError, match="already been exported"):

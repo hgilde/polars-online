@@ -78,6 +78,11 @@ python-source = "python"
 features = ["pyo3/extension-module"]
 
 [dependency-groups]
+# The package depends on polars alone. A test may use any other library it
+# needs -- an oracle, a second opinion, or interop with that library -- and
+# declares it here by name, never in `dependencies` above. docs/TESTING.md,
+# "Libraries the package does not depend on", has the rules, and
+# tests/test_dependency_policy.py checks them.
 dev = [
     "hypothesis>=6.167.0",
     "maturin>=1.15,<2.0",
@@ -96,12 +101,16 @@ dev = [
     # statsmodels for Holt / exponential smoothing, the autocorrelation and
     # the HAC variance; filterpy for the Kalman filter; and
     # bayesian-changepoint-detection for Adams & MacKay's run-length
-    # recursion. Every test that uses one imports it with
-    # `pytest.importorskip`, so none is needed to run the rest. statsmodels
-    # brings pandas with it; the tests do not use pandas themselves.
+    # recursion.
     "statsmodels>=0.15",
     "filterpy>=1.4.5",
     "bayesian-changepoint-detection>=0.2.dev1",
+    # Oracles the tests import themselves, so declared by name rather than
+    # reached through statsmodels: pandas' `ewm(times=)` for the temporal
+    # clock, and scipy's distributions for the Gaussian classes and the
+    # Mahalanobis distance. The floors are the versions measured.
+    "pandas>=3.0.5",
+    "scipy>=1.18.1",
     "ruff>=0.14",
     # The package is typed (py.typed, the pyo3 stub, PEP 692 kwargs); mypy in
     # the gate is what keeps that true. Pure Python, seconds to run.
@@ -109,17 +118,23 @@ dev = [
     # tests/test_consumed_source.py reproduces the spent-stream hazard on a
     # real relation rather than a stand-in, and pins what DuckDB issue #17084
     # actually does on the installed version. Dev only: the package keeps its
-    # single `polars` dependency, and every duckdb test is `importorskip`ed,
-    # so none of this is needed to run the suite.
+    # single `polars` dependency.
     "duckdb>=1.5.5",
     # examples/adbc_cursors.py: ADBC is one driver manager in front of most
     # warehouses (docs/ARROW-SOURCES.md §2), and the one-cursor-per-plan rule
     # the example shows fails *silently* when broken, so the example must run.
     # The SQLite driver needs no server. The floors are the versions measured,
     # and neither package pulls in pyarrow. Dev only, like duckdb: the package
-    # keeps its single `polars` dependency, and the test is `importorskip`ed.
+    # keeps its single `polars` dependency.
     "adbc-driver-manager>=1.12.0",
     "adbc-driver-sqlite>=1.12.0",
+    # tests/test_pyarrow_interop.py: pyarrow, the reference Arrow
+    # implementation, reading a bank's Arrow output and streaming into a bank
+    # through a reader, which the README and the docstrings say it does. Test
+    # only: the package keeps its single `polars` dependency, and
+    # tests/conftest.py makes pyarrow unimportable in the rest of the suite,
+    # which so runs as a user without it does. The floor is the version measured.
+    "pyarrow>=25.0.1",
 ]
 # The API reference: Sphinx over the docstrings, which are written in its
 # dialect (``:class:`` roles, ``::`` literal blocks). Its own group, so a

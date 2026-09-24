@@ -196,7 +196,8 @@ class TestTheUnitNeverReachesTheFit:
         recursed on the exact nanosecond gaps to 1e-12 (measured 2e-16).
         pandas is the looser side: its own arithmetic on ``times`` sits
         1.8e-9 from that recursion, which is the 5e-9 below."""
-        pd = pytest.importorskip("pandas")
+        import pandas as pd
+
         rng = np.random.default_rng(8)
         n = 300
         ns = (np.cumsum(rng.uniform(0.2, 3.0, n)) * 1e9).astype(np.int64) + START * 10**9

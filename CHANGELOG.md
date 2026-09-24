@@ -22,6 +22,12 @@ carries breaking changes, and any change to the numbers a model returns.
 - **`scripts/compare_release.py` compares every output with a release's,
   bit for bit**: the new first step of a release
   (docs/RELEASE-READINESS.md), and a report on every CI push.
+- **pyarrow is tested as a reader of the Arrow output, and as a source.**
+  On pyarrow 25.0.1, `pa.array`, `pa.chunked_array`, `pa.record_batch` and
+  `pa.table` each take a struct from `fit_predict_arrow`, with
+  `fit_predict`'s values. A `RecordBatchReader` streams into a bank with
+  the whole frame's numbers. pyarrow is a test-only dependency: the
+  package still depends on polars alone.
 
 ### Fixed
 
@@ -51,6 +57,10 @@ carries breaking changes, and any change to the numbers a model returns.
 - **`sgd`'s docstring gave the intercept an `l2` it does not get.** The
   update equations and the `l2` entry now say the ridge is on the slopes
   only, as the code has always done.
+- **The Arrow output's docs no longer say duckdb reads it directly.**
+  `fit_predict_arrow`'s docstring and the type stub named duckdb among
+  its direct readers. duckdb 1.5.5 refuses the struct and takes it
+  through `pl.Series(s)`, as the README already said.
 
 ### Changed
 

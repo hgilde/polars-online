@@ -277,6 +277,15 @@ hit rate over configurable clock windows; one `group_by` to compare specs. Used 
 - `public_intraday()`: downloads a small free intraday dataset (choose one with a stable URL;
   crypto minute rows are the pragmatic option), cached under `.cache/`, `pytest.skip` when offline.
 
+**Rule: a test may use any library the package does not depend on, when the test needs it**
+(the user, 2026-09-24: "packages that we do not want to depend on are fine if needed to test
+with other libraries"; "be sure that the future test plan allows non dependent libs for
+testing"). The need is an oracle, a second opinion from another implementation, or interop
+with that library. The package still depends on polars alone. The library is declared in the
+dev group by name, imported plainly rather than `importorskip`ed, and kept out of the package's
+reach where its presence changes other libraries, as pyarrow is. `docs/TESTING.md`, "Libraries
+the package does not depend on", has the rules, and `tests/test_dependency_policy.py` checks them.
+
 Test classes:
 1. **Oracle**: on synthetic data, EW-ridge / RLS / Kalman / lasso match `tests/reference.py`
    to 1e-9 (RLS vs EW-ridge with `solve_every` = 1 row must agree to float precision).
@@ -3681,6 +3690,46 @@ note, not a task.
       `tests/test_ci_cost_policy.py::TestTheRustTestsLinkNoPython` holds
       every workflow and the gate to it, and asks cargo whether pyo3-ffi is
       in that graph.
+- [x] 99. **pyarrow, tested as a reader and as a source, 2026-09-24.** The
+      user: "packages that we do not want to depend on are fine if needed
+      to test with other libraries." The README, CLAUDE.md, a docstring, the
+      type stub and a Rust doc comment said pyarrow reads a bank's Arrow
+      output. `docs/ARROW-SOURCES.md` said that half stayed unverified,
+      since pyarrow "must not become [a dependency] to test a sentence".
+      pyarrow 25.0.1 is now in the dev group, and
+      `tests/test_pyarrow_interop.py` measures it. `pa.array`,
+      `pa.chunked_array`, `pa.record_batch` and `pa.table` each take an
+      `ArrowStruct` as it is, with `fit_predict`'s values and dtypes, and a
+      struct pyarrow has read is spent. A `RecordBatchReader` streams into
+      both streaming paths with the whole frame's numbers, and a reused
+      reader plan warns. The package keeps its single dependency:
+      `tests/conftest.py` makes pyarrow unimportable in the rest of the
+      suite, which so runs as a user without it does, and the interop tests
+      run pyarrow in child interpreters. The same check corrected three
+      places that said duckdb reads the struct directly. duckdb 1.5.5
+      refuses it and takes it through `pl.Series`, as the README said.
+- [x] 100. **Libraries the package does not depend on, allowed in tests,
+      2026-09-24.** The user: "Be sure that the future test plan allows non
+      dependent libs for testing." §9's test plan now says so, and
+      `docs/TESTING.md`, "Libraries the package does not depend on", gives
+      four rules. Declare the library in the dev group by name, and import
+      it plainly. Keep it out of the package's reach when its presence
+      changes other libraries, as pyarrow's does. Never add it to the
+      package's dependencies. `CLAUDE.md` points there.
+      `tests/test_dependency_policy.py` checks the first, second and fourth
+      rules from the tests' own imports. Two faults injected each fail it:
+      pandas taken out of the dev group, and an `importorskip` put back. It
+      found pandas and scipy reaching the tests only through statsmodels,
+      and both are declared now. The 34 `importorskip` calls became plain
+      imports: they never skipped where the suite runs, and could only have
+      hidden a broken environment. Not taken: scikit-learn in
+      `tests/test_sgd.py`, and Pathway, whose licence keeps it out of
+      `pyproject.toml` until the user decides. Reading the first Windows
+      run's skips found one more that was not a platform guard:
+      `test_the_cli_writes_the_sidecar` looked for `target/<profile>/online`,
+      which has an `.exe` there, and its TOML carried the path's
+      backslashes as escapes (T-W3b's trap). It now takes the `online_cli`
+      fixture and writes POSIX paths, so it runs on Windows too.
 
 ## 11a. Decisions made while implementing
 

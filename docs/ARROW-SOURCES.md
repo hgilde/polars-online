@@ -73,7 +73,7 @@ supporting it supports everything below at once.
 | producer | how it exposes Arrow | tier 0 today | notes |
 |---|---|---|---|
 | **DuckDB** | `DuckDBPyRelation.__arrow_c_stream__`; also consumes capsules | yes | the driving case; see §3 for a real wrinkle |
-| **PyArrow** | `Table`, `RecordBatchReader` | yes | the reference implementation |
+| **PyArrow** | `Table`, `RecordBatchReader` | yes | the reference implementation; a reader streams into a bank with the whole frame's numbers, and a reused one warns (`tests/test_pyarrow_interop.py`, pyarrow 25.0.1) |
 | **Pandas** ≥2.2 | export via the interface | yes | `ArrowDtype` frames are zero-copy; object columns are not |
 | **Polars** | native | yes | the existing path |
 | **ibis** | capsule export | yes | a front end to many engines; supporting it is indirect breadth |
@@ -217,9 +217,21 @@ spec's output is a *struct* Series, so it presents as one column per field and
 arrives as a 7-column relation. A *flat* `Float64` Series carries the same
 dunder and is still refused, with "Provided table/dataframe must have at least
 one column" (measured 2026-09-22). So the route to DuckDB is through a struct
-`Series`, and the README now says that instead. The pyarrow half stays **unverified here**, because pyarrow is
-deliberately not a dependency of this project and must not become one to test
-a sentence. `tests/test_arrow_capsule.py` pins all of this.
+`Series`, and the README now says that instead.
+
+**The pyarrow half is measured too (2026-09-24, pyarrow 25.0.1), and it
+holds.** `pa.array`, `pa.chunked_array`, `pa.record_batch` and `pa.table`
+each take an `ArrowStruct` as it is. The values are `fit_predict`'s, the
+Enum and the nested `coef` list included, and read back into polars the
+dtypes match. A struct pyarrow has read is spent. This section used to leave
+that half unverified, on the ground that pyarrow must not become a
+dependency to test a sentence. It is a test-only dependency now, in the dev
+group, as the user allowed for testing with other libraries. The package
+still depends on polars alone, and `tests/conftest.py` makes pyarrow
+unimportable everywhere but `tests/test_pyarrow_interop.py`, whose tests run
+it in child interpreters. The rest of the suite so runs as a user without
+pyarrow does. `tests/test_arrow_capsule.py` and `tests/test_pyarrow_interop.py`
+pin all of this.
 
 **A wrinkle worth knowing — and it no longer cuts our way.** DuckDB issue
 [#17084](https://github.com/duckdb/duckdb/issues/17084) reported that

@@ -12,17 +12,17 @@ Two tiers:
   exact vs stochastic optimization), where the assertion is convergence or a
   shared qualitative property, and the difference itself is documented.
 
-Skipped cleanly when river is not installed.
+river is in the dev group and imported plainly, so a missing river fails
+these tests rather than skipping them (docs/TESTING.md, "Libraries the
+package does not depend on").
 """
 
 import numpy as np
 import polars as pl
 import pytest
+from river import linear_model, optim, stats
 
 import polars_online as po
-
-river = pytest.importorskip("river", reason="river is not installed")
-from river import linear_model, optim, stats  # noqa: E402
 
 
 def _sigmoid(v):

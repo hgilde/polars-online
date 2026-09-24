@@ -792,7 +792,8 @@ class TestAZeroWeightRowIsNotSeen:
             assert a.equals(b, null_equal=True), col
 
     def test_the_drift_column_is_rivers_page_hinkley_without_it(self):
-        river_drift = pytest.importorskip("river.drift")
+        import river.drift as river_drift
+
         out, _, w = self._run(100.0)
         resid = out["resid_y"].to_numpy()
         sigma = out["sigma_y"].to_numpy()
@@ -858,7 +859,7 @@ class TestLabelDelayFoldsWhatWasScored:
         )
 
     def test_the_predictions_are_rivers_delayed_mean_and_sigma_is_their_residuals(self):
-        river = pytest.importorskip("river")
+        import river
         from river import dummy, evaluate, metrics, stats
 
         y = self._rows()
@@ -1248,7 +1249,8 @@ class TestHoltAcrossAMissingObservation:
         return 3.0 + 0.4 * np.arange(n) + np.cumsum(rng.normal(0.0, 0.5, n))
 
     def test_the_recursion_is_statsmodels_holt(self):
-        holtwinters = pytest.importorskip("statsmodels.tsa.holtwinters")
+        import statsmodels.tsa.holtwinters as holtwinters
+
         y = self.series(self.SETTLED + 200)
         pred, level, trend = _holt(y, self.H_LEVEL, self.H_TREND)
         res = holtwinters.Holt(
@@ -1267,7 +1269,8 @@ class TestHoltAcrossAMissingObservation:
         assert trend == pytest.approx(res.trend[-1], rel=1e-12)
 
     def test_the_row_after_a_missing_one_forecasts_two_trend_steps(self):
-        es = pytest.importorskip("statsmodels.tsa.statespace.exponential_smoothing")
+        import statsmodels.tsa.statespace.exponential_smoothing as es
+
         y = self.series(self.SETTLED + 200)
         alpha = 1.0 - 0.5 ** (1.0 / self.H_LEVEL)
         beta = 1.0 - 0.5 ** (1.0 / self.H_TREND)
@@ -1350,7 +1353,8 @@ class TestBocpdAtALevel:
 
     @pytest.mark.parametrize("offset", [0.0, 1e6, 1e8])
     def test_the_run_length_posterior_is_the_packages(self, offset):
-        bcd = pytest.importorskip("bayesian_changepoint_detection.online_changepoint_detection")
+        import bayesian_changepoint_detection.online_changepoint_detection as bcd
+
         rng = np.random.default_rng(23)
         n, hazard = 120, 40.0
         nu0, psi0, kappa0 = 2.0, 1.0, 1.0
@@ -1438,7 +1442,8 @@ class TestKalmanZeroWeightRow:
 
     @pytest.mark.parametrize("how", ["null", "zero weight"])
     def test_the_filter_is_filterpy_with_sigma_decayed_on_every_row(self, how):
-        kalman = pytest.importorskip("filterpy.kalman")
+        import filterpy.kalman as kalman
+
         rng = np.random.default_rng(41)
         n, halflife, coef_hl = 300, 30.0, 50.0
         x = rng.normal(0.0, 1.0, (n, 2))
@@ -1492,7 +1497,8 @@ class TestAHopelessSerialFactorSaysSo:
 
     @pytest.mark.parametrize("phi_y", [0.8, -0.8])
     def test_the_count_is_nan_where_the_factor_is_not_positive(self, phi_y):
-        stattools = pytest.importorskip("statsmodels.tsa.stattools")
+        import statsmodels.tsa.stattools as stattools
+
         rng = np.random.default_rng(13)
         n = 5000
 
@@ -1653,7 +1659,8 @@ class TestATargetWithGaps:
         """Without decay the pairwise moments are pandas' pairwise-complete
         covariance, which divides each pair by its own count less one; the
         model's moments are means, so each pair is rescaled by its count."""
-        pd = pytest.importorskip("pandas")
+        import pandas as pd
+
         n = 500
         x, y = _gappy(n, 11, 0.0)
         spec = po.spec.ewridge(
@@ -1768,7 +1775,8 @@ class TestATargetWithGaps:
         """The same fit from a second library: ``statsmodels``' ``WLS`` on the
         rows the target is present on, each at the weight the decay gives
         it, with the target at a level."""
-        sm = pytest.importorskip("statsmodels.api")
+        import statsmodels.api as sm
+
         n, h, level = 500, 30.0, 40.0
         x, y = _gappy(n, 23, level)
         spec = po.spec.ewridge(
@@ -1797,7 +1805,8 @@ class TestATargetWithGaps:
         with ``alpha = ridge``: on the features' own scale, or on their
         standard deviations with ``standardize``. No decay, so the target's
         rows weigh the same, and ``n`` is their count."""
-        sm = pytest.importorskip("statsmodels.api")
+        import statsmodels.api as sm
+
         n, ridge = 400, 0.3
         x, y = _gappy(n, 29, 10.0)
         spec = po.spec.ewridge(
@@ -1832,7 +1841,8 @@ class TestATargetWithGaps:
         path's penalty and ``L1_wt`` its ``l1_ratio``. A third feature is
         noise, so the penalty zeroes a coefficient as well as shrinking the
         others. No decay, and both coordinate descents run to convergence."""
-        sm = pytest.importorskip("statsmodels.api")
+        import statsmodels.api as sm
+
         rng = np.random.default_rng(31)
         n, lam = 500, 0.1
         x = rng.normal(0.0, 1.0, (n, 3))
@@ -1910,7 +1920,6 @@ class TestPassiveAggressiveIsRivers:
 
     @pytest.mark.parametrize(("mode", "river_mode"), [("pa", 0), ("pa1", 1), ("pa2", 2)])
     def test_every_row_is_rivers_without_an_intercept(self, mode, river_mode):
-        pytest.importorskip("river")
         rng = np.random.default_rng(11)
         n, c, eps = 500, 0.3, 0.1
         x = rng.normal(0.0, 1.0, (n, 2))
@@ -1945,7 +1954,6 @@ class TestPassiveAggressiveIsRivers:
         column of ``z``, so ``‖z‖²`` counts its 1 and a plain step lands on the
         tube's edge, ``y − eps``; river adds the same ``tau`` to its bias
         outside the norm, and overshoots by ``ℓ/‖x‖²``."""
-        pytest.importorskip("river")
         x, y, eps = {"x0": 1.0, "x1": 0.5}, 2.0, 0.1
         frame = pl.DataFrame({"x0": [1.0, 1.0], "x1": [0.5, 0.5], "y": [y, y]})
         spec = po.spec.pa(
@@ -1982,7 +1990,8 @@ class TestTheEwMomentsArePandas:
 
     @pytest.mark.parametrize("offset", [0.0, 1e8])
     def test_ew_cov_is_pandas_ewm(self, offset):
-        pd = pytest.importorskip("pandas")
+        import pandas as pd
+
         rng = np.random.default_rng(7)
         n = 400
         x = offset + rng.normal(0.0, 1.0, (n, 2))
@@ -2016,7 +2025,8 @@ class TestTheEwMomentsArePandas:
         clock units under the ``adjust=True`` it forces, as ours is. pandas
         takes ``times`` for ``mean()`` alone, and rounds them to nanoseconds,
         which is the ``1e-10`` (measured ``8e-12``)."""
-        pd = pytest.importorskip("pandas")
+        import pandas as pd
+
         rng = np.random.default_rng(8)
         n = 300
         t = np.cumsum(rng.uniform(0.2, 3.0, n))
@@ -2042,7 +2052,8 @@ class TestTheEwMomentsArePandas:
     def test_the_target_moments_and_a_marginal_pair_are_pandas_too(self):
         """The same call on ``y`` alone is the target moments a Gram carries,
         and on ``[x, y]`` it is ``marginal``'s pair, at the end of the stream."""
-        pd = pytest.importorskip("pandas")
+        import pandas as pd
+
         rng = np.random.default_rng(9)
         n = 600
         x = rng.normal(0.0, 1.0, n)
@@ -2074,7 +2085,8 @@ class TestSgdQuantileIsQuantReg:
 
     @pytest.mark.parametrize("tau", [0.5, 0.9])
     def test_sgd_quantile_settles_on_quantreg(self, tau):
-        sm = pytest.importorskip("statsmodels.api")
+        import statsmodels.api as sm
+
         rng = np.random.default_rng(3)
         n = 100_000
         x = rng.normal(0.0, 1.0, (n, 2))
@@ -2134,7 +2146,8 @@ class TestQuantileIsQuantReg:
 
     @pytest.mark.parametrize(("tau", "tol"), [(0.5, 0.05), (0.9, 0.08)])
     def test_the_fit_is_quantregs(self, tau, tol):
-        sm = pytest.importorskip("statsmodels.api")
+        import statsmodels.api as sm
+
         x, y = self._rows(20_000)
         got = self._fit(x, y, tau, halflife=float("inf"))
         z = sm.add_constant(x)
@@ -2169,7 +2182,8 @@ class TestQuantileIsQuantReg:
         fits those rows were scored by: 600 rows after a jump of 3 -- three
         halflives -- it had covered 1.5 of it, where the quantile regression
         of the rows then in the window had moved the whole way."""
-        sm = pytest.importorskip("statsmodels.api")
+        import statsmodels.api as sm
+
         x, y = self._rows(10_000)
         y[5000:] += 3.0
         stop, window = 5600, 600

@@ -262,7 +262,8 @@ class TestAGramWithGaps:
         target's rows under `"own_rows"`, pandas' pairwise-complete
         covariance under `"pairwise"`. No decay, so the shards share a
         weighting."""
-        pd = pytest.importorskip("pandas")
+        import pandas as pd
+
         df = gappy_stream(n=3000, seed=11)
         grams = []
         for part in (df.head(1700), df.tail(1300)):
@@ -640,7 +641,8 @@ class TestCoefStats:
         `coef_stats` on its Gram are statsmodels' OLS on those rows: the
         coefficients, their standard errors and R^2 (docs/PLAN.md task 81).
         No decay and unit weights, so Kish's `n` is the row count."""
-        sm = pytest.importorskip("statsmodels.api")
+        import statsmodels.api as sm
+
         df = gappy_stream(n=2000, seed=8)
         bank = fit(df, targets=["ya", "yb"], ridge=1e-12, max_rows_between_solves=1)
         g = next(g for g in bank.gram("m") if g["targets"] == ["yb"])

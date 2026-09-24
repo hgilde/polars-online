@@ -23,9 +23,10 @@ class RefreshTime:
 class ArrowStruct:
     """One spec's output struct, over the Arrow PyCapsule interface.
 
-    Handed back by ``ModelBank.fit_predict_arrow``. Any Arrow consumer reads
-    it -- ``pl.Series(obj)``, pyarrow, duckdb -- and exporting consumes it,
-    so it can be read once.
+    Handed back by ``ModelBank.fit_predict_arrow``. A reader of
+    ``__arrow_c_array__`` takes it directly -- ``pl.Series(obj)``,
+    ``pa.array(obj)`` -- and duckdb, which reads streams, through
+    ``pl.Series(obj)``. Exporting consumes it, so it can be read once.
     """
 
     @property

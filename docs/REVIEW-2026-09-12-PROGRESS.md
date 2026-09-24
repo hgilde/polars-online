@@ -18,7 +18,11 @@ and `bayesian-changepoint-detection` 0.2.dev1, added on the user's go (all
 in the `dev` group; a test imports each of the three with
 `pytest.importorskip`). `sklearn` must not become a dependency (a standing
 project rule), so where the review names it the test uses the `numpy` or
-`scipy` computation that gives the same number exactly. `pandas` may be
+`scipy` computation that gives the same number exactly. **Superseded
+2026-09-24**: the user allowed any library in a test that needs one, and
+tests now import such libraries plainly (`docs/TESTING.md`, "Libraries the
+package does not depend on"). The numpy and scipy equivalents above still
+give sklearn's numbers exactly, so they stand. `pandas` may be
 used in tests (the user, 2026-09-13: "no pandas" is a style rule for the
 package); `statsmodels` brings it, and the N3 tests use its
 `DataFrame.cov`.
