@@ -317,8 +317,11 @@ spec, and the plugin's `online_run` is the bank.
 
 ## 5. Docs
 
-15. **`README.md`**: a `### \`<name>\` — ...` heading under `## Models`, with
-    the equations, the parameters and when to reach for it.
+15. **`README.md`**: a `#### \`<name>\` — ...` heading under its family's
+    `###` heading in `## Models` (linear models; moments and correlation;
+    clustering and classification; sequential tests and regimes), with the
+    equations, the parameters and when to reach for it, and a row under the
+    same family in the model table.
     *Check*: `test_model_registry::test_the_readme_documents_every_model`
     (`huber` / `quantile` share a heading; the regex knows).
 16. **`CHANGELOG.md`**, and the design note wherever the model was proposed —

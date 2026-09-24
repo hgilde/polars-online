@@ -80,18 +80,19 @@ def test_the_model_table_links_every_builder_to_its_page():
 
 
 def test_every_model_section_links_its_builder_and_its_source():
-    """Each `### \\`model\\`` section opens with the API line task 58 added."""
+    """Each `#### \\`model\\`` section, under its family's `###` heading, opens
+    with the API line task 58 added."""
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     models = readme.split("\n## Models\n", 1)[1].split("\n## ", 1)[0]
-    sections = re.split(r"\n### ", models)[1:]
+    sections = re.split(r"\n#### ", models)[1:]
     for section in sections:
         head, body = section.split("\n", 1)
         api = re.search(
             r"\*API:\* \[`po\.spec\.([a-z_]+)`\]\(https://hgilde\.github\.io/[^)]+\)", body
         )
-        assert api, f"the section '### {head}' has no *API:* link"
+        assert api, f"the section '#### {head}' has no *API:* link"
         assert re.search(r"\*Rust:\* \[`[\w/.]+`\]\(crates/online-core/src/[\w/]+\.rs\)", body), (
-            f"the section '### {head}' has no *Rust:* source link"
+            f"the section '#### {head}' has no *Rust:* source link"
         )
         assert (
             ROOT / re.search(r"\((crates/online-core/src/[\w/]+\.rs)\)", body).group(1)

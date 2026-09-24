@@ -419,7 +419,7 @@ def regression(n, seed, groups=None, null_every=0):
 
 def two_sides(halflife_a=20.0, halflife_b=400.0, **kw):
     # `coef_every=1`: by default `coef` is reported on each chunk's last row
-    # (README, "Two guarantees"), so whole frames compare across chunkings
+    # (README, "Row order and the two guarantees"), so whole frames compare across chunkings
     # only when it is reported on every row.
     common = dict(targets=["y"], features=["x0", "x1"], min_periods=5.0, coef_every=1, **kw)
     return [

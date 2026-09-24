@@ -264,11 +264,11 @@ def test_the_core_golden_file_pins_every_model():
 
 
 def test_the_readme_documents_every_model():
-    """Every builder gets a `### \\`name\\`` heading under "## Models"; the
-    heading text is what the section index links to."""
+    """Every builder gets a `#### \\`name\\`` heading under its family in
+    "## Models"; the heading text is what the model table links to."""
     text = README.read_text(encoding="utf-8")
     models = text.split("\n## Models\n", 1)[1].split("\n## ", 1)[0]
-    documented = set(re.findall(r"^### `([a-z_]+)`", models, flags=re.MULTILINE))
-    # `huber` and `quantile` share a heading: "### `huber` / `quantile` -- ...".
-    documented |= set(re.findall(r"^### `[a-z_]+` / `([a-z_]+)`", models, flags=re.MULTILINE))
+    documented = set(re.findall(r"^#### `([a-z_]+)`", models, flags=re.MULTILINE))
+    # `huber` and `quantile` share a heading: "#### `huber` / `quantile` -- ...".
+    documented |= set(re.findall(r"^#### `[a-z_]+` / `([a-z_]+)`", models, flags=re.MULTILINE))
     assert documented == set(MINIMAL)

@@ -3254,6 +3254,82 @@ note, not a task.
       column stays refused, since time of day wraps at midnight and is not a
       clock. Whether the spec keeps a parameter as the duration the user wrote,
       so `summary()` can show "10m" rather than a converted number.
+- [x] 89. **README rewrite: ten sections in a hierarchy, requested 2026-09-23.**
+      The user's brief: plan every section first; put similar concepts
+      together, with a moderate number of large sections holding
+      subsections, in the order that reads best; then take each section for
+      clarity and brevity, preferring code with comments and keeping prose
+      for what a comment cannot hold (a reason, a warning, a trade-off,
+      math); tables over long bullet lists; every rule in `docs/WRITING.md`.
+
+      *Measured before* (prose outside code and tables): 2,735 lines,
+      13,941 words, 82 of 447 sentences at 45+ words, 17 cost words
+      (`costs|pays|buys|for free|the price|the point`), 59 python blocks.
+
+      *The map.* Seventeen top-level sections become ten, each holding the
+      subsections listed; `←` says where moved content comes from.
+
+      | section | subsections |
+      |---|---|
+      | Introduction | The idea · Four words · Install (← Install, and the Polars-version note from the top) · A first fit (the two examples) · What you can rely on (← Two guarantees, Mistakes are named, And the rest, as a table) |
+      | How a bank sees a stream | What a spec names · Time and decay · A local fit along any feature · Convergence without a decay · Groups · Weights · Warm-up · Labels that arrive late (← Preparing a stream: a spec parameter every model shares) · Nulls, and three ways to hold a row back · Row order and the two guarantees |
+      | Running a bank | As a query · In a loop · Output as Arrow (← a paragraph inside In a loop) · Outside a live Python process · Series that tick at their own times (← Preparing a stream) |
+      | Saving, loading and serving | Save and load · Serving without learning · What a state file holds · Reading a state without this library |
+      | Reading the fit | Coefficients · Output field names · The running sums behind a fit · One row per finished group · Reading a correlation matrix |
+      | Diagnostics, selection and evaluation | Per-row diagnostics · Conformal intervals · Evaluating an output frame · Evaluating a stream too large to hold · Data whose truth is known |
+      | Models | the model table, grouped by family · Linear models (`ewridge`, `rls`, `lasso`, `kalman`, `huber`/`quantile`, `sgd`, `pa`, `ftrl`, `holt`) · Moments and correlation (`ew_cov`, `marginal`, `deco`, `rcov`) · Clustering and classification (`kmeans`, `micro`, `ew_class`) · Sequential tests and regimes (`seqtest`, `corrchange`, `hmm`, `bocpd`); each model one level below its family |
+      | Performance | Throughput · Memory: which calls stream · Tuning memory with Polars' own settings · Chunk size (← a paragraph inside Tuning memory) · Parallelism · Against scikit-learn (← its own top-level section) |
+      | Scope and integrations | What this is not (its bullets → a table) · Pathway · Databases: DuckDB and ADBC |
+      | Versions, testing and development | Versioning and the Polars pin (its four parts one level down) · Testing · Development · License |
+
+      The Contents line becomes a table: one row per section, its
+      subsections linked beside it.
+
+      *Constraints held.* Every anchor `llms.txt` and `docs/RUNNER.md` link
+      to keeps its heading text, since an anchor is the text and not the
+      level. The model table keeps its header and one link per builder.
+      Each model keeps its *API:* and *Rust:* lines. Every python block still
+      runs in the namespace `tests/test_production_hardening.py` gives it.
+      The models move one heading level down, under their family, so
+      `test_api_links` and `test_model_registry` read them there, and
+      `docs/EXTENDING.md` step 15 says so.
+
+      *Rules applied to every section.* A parameter, a structure's fields or
+      a call sequence becomes a code block with comments; prose stays only
+      for a reason, a warning, a trade-off or math. A sweep of six or more
+      becomes a table, and so does a bullet list that compares things. One
+      idea per sentence. A term is defined before it is used. Nothing is
+      said about "the bank" that is true of only some models. Detail cut
+      from the README moves to the deep document that owns it, and never
+      simply disappears.
+
+      **Done 2026-09-23, to the map above.** Measured on paragraph
+      boundaries, the fair count: a count that collapses whitespace merges
+      text across headings, tables and code blocks, and reported 82 → 50
+      long sentences, most of them artefacts.
+
+      | measure | before | after |
+      |---|---:|---:|
+      | prose words | 13,496 | 11,590 |
+      | sentences of 45+ words | 44 | 2, both two sentences the count merges |
+      | sentences of 35+ words | 100 | 33 |
+      | mean sentence, in words | 23.4 | 19.9 |
+      | cost words | 16 | 0 |
+      | tables, as rendered | 15 | 37 |
+      | top-level sections | 17 | 10 |
+      | python blocks, all running | 59 | 59 |
+
+      Checked mechanically rather than by reading: every in-page link lands
+      on a heading (107 written, resolved against the rendered ids); every
+      anchor `llms.txt` and `docs/RUNNER.md` use survives; every table row
+      has its header's cell count; and the only numbers that left the README
+      are the command line's memory figures, which `docs/RUNNER.md` holds.
+      Found and fixed on the way: the withheld reasons are now listed in the
+      order `WITHHELD_REASONS` declares, which is their precedence; "row
+      order matters only when a model forgets" was false of the models that
+      step, filter or test; the introduction's link into the API reference
+      for `lf.online.fit_predict` had been lost, and now sits under *As a
+      query*.
 
 ## 11a. Decisions made while implementing
 

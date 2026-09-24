@@ -6,7 +6,7 @@ every row it has seen, in whatever order the rows came -- one stream per
 group, the groups interleaved however the file has them. A finite halflife
 without a clock discounts by position in the stream instead; and a huge
 *finite* halflife is not ``inf``, because the solve cadence it inherits
-(``halflife/50``) never comes due. The README's "Any row order" section
+(``halflife/50``) never comes due. The README's "Convergence without a decay" section
 states all three; this file keeps it honest.
 """
 
@@ -110,7 +110,7 @@ def test_a_huge_finite_halflife_is_not_inf():
     solves once (at ``min_periods``) and never again -- the prediction is the
     stale fit -- while ``halflife=inf`` re-solves every row and ``solve_every``
     makes the finite case do the same. If this test starts failing because
-    the schedule changed, update the README's "Any row order" section and the
+    the schedule changed, update the README's "Convergence without a decay" section and the
     solve-schedule paragraph in docs/PLAN.md (2026-09-03) as well."""
     df = _frame(n=2000).drop("g")
     ols = _ols(df)

@@ -364,7 +364,7 @@ def _batch_local_linear(x, y, halflife, ridge, min_periods):
 
 @pytest.mark.parametrize(("halflife", "ridge"), [(0.25, 1e-9), (0.3, 1e-4), (1.0, 1e-2)])
 def test_a_feature_as_the_clock_is_a_local_linear_regression(halflife, ridge):
-    """The README's "A clock that is not time": sorted by a feature and
+    """The README's "A local fit along any feature": sorted by a feature and
     clocked on it, the decay is a kernel in that feature and the fit is a
     local linear regression -- LOESS with a one-sided exponential kernel,
     out of a state that does not grow. The oracle here is the batch fit that
