@@ -78,6 +78,31 @@ def test_past_the_budget_a_refusal_stops_the_run_naming_the_way_out():
             call()
 
 
+def test_a_broken_bank_names_itself_before_a_bad_column():
+    """docs/REVIEW-2026-09-17.md S3 moved the broken-bank refusal ahead of
+    the frame's columns in both polars entry points, and left the order
+    untested. A frame that is itself bad -- here missing the feature --
+    still gets the bank's refusal, which is the one that says what to do;
+    the column error would send the reader to a frame that is not the
+    problem.
+
+    The bad column is a text feature because the frame adapter refuses it
+    while casting, which is what the old order ran first. A missing column
+    would not tell the orders apart: the adapter leaves that to the bank."""
+    df = _frame()
+    bank = po.ModelBank([_spec(window_budget={"refuse": TINY})])
+    bank.fit_predict(df.head(1))
+    with pytest.raises(ValueError, match="window_budget"):
+        bank.fit_predict(df.slice(1))
+    bad = df.head(1).with_columns(pl.col("x0").cast(pl.String))
+    # The frame is bad on its own: a healthy bank refuses it for the column.
+    with pytest.raises(ValueError, match='"x0" has dtype str; it must be numeric'):
+        po.ModelBank([_spec()]).fit_predict(bad)
+    for call in (bank.fit_predict, bank.predict):
+        with pytest.raises(ValueError, match="cannot go on.*window_budget"):
+            call(bad)
+
+
 def test_a_budget_the_ring_stays_under_changes_nothing():
     df = _frame()
     plain = po.ModelBank([_spec()]).fit_predict(df)

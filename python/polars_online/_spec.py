@@ -951,8 +951,9 @@ def lasso(
     .. rubric:: The fit
 
     For each penalty ``l`` in ``lasso_path``, with ``C`` the feature correlation
-    matrix and ``c`` the feature-target correlations, until no coefficient moves
-    by more than ``cd_tol``:
+    matrix and ``c_i = cov(x_i, y) / s_i``, each feature's covariance with the
+    target over the feature's standard deviation, until no coefficient moves by
+    more than ``cd_tol``:
 
     .. code-block:: text
 
@@ -960,8 +961,12 @@ def lasso(
         b_i   = soft(rho_i, l * l1_ratio) / (C_ii + l * (1 - l1_ratio))
         soft(v, t) = sign(v) * max(|v| - t, 0)
 
-    then unscaled, with the intercept recovered as ``ybar - m . beta``. ``l1_ratio
-    < 1`` is an elastic net.
+    then unscaled, with the intercept recovered as ``ybar - m . beta``. The target
+    is centred but not scaled, so the threshold ``l * l1_ratio`` is in the
+    target's units, while the ridge part ``l * (1 - l1_ratio)`` is added to a
+    correlation and has none. So for a pure lasso, ``y`` and ``l`` scaled by 10
+    scale the predictions by 10 and zero the same coefficients; for an elastic
+    net they do not. ``l1_ratio < 1`` is an elastic net.
 
     .. rubric:: Parameters
 

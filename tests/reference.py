@@ -4,7 +4,8 @@ These define the semantics the Rust core must match to ~1e-9 (see docs/PLAN.md
 section 9). Conventions, shared with the core:
 
 - ``pred`` is out-of-sample: computed from the state *before* the current row's
-  update, using the last solved coefficients (references solve every row).
+  update, using the last solved coefficients (references solve every row,
+  except ``lasso_ref``, which keeps the documented solve schedule).
 - Feature null => the row is skipped: all outputs NaN, no update, but the clock
   still advances (its decay is folded into the next accepted row's delta).
 - Target-j null => ``pred_j`` emitted, no update of ``r_j`` / ``sigma2_j``;
@@ -313,6 +314,178 @@ def rls_ref(
         coef[i] = st["beta"].T
 
     return {"pred": pred, "resid": resid, "n_eff": n_eff, "coef": coef}
+
+
+def _enet_descent(
+    C: np.ndarray, c: np.ndarray, l1: float, l2: float, tol: float, max_sweeps: int = 10_000
+) -> np.ndarray:
+    """Minimise ``1/2 b'Cb - c'b + l1 |b|_1 + l2/2 |b|^2`` by cyclic coordinate
+    descent (Friedman, Hastie & Tibshirani 2010), from zero, until no
+    coefficient moves by ``tol``.
+
+    Coordinate ``i`` with the rest held has the minimiser
+    ``soft(c_i - sum_{j != i} C_ij b_j, l1) / (C_ii + l2)``, with
+    ``soft(v, t) = sign(v) * max(|v| - t, 0)``. The caller has checked that
+    the problem is well conditioned, so a descent that has not settled is a
+    failure.
+    """
+    b = np.zeros(len(c))
+    for _ in range(max_sweeps):
+        moved = 0.0
+        for i in range(len(c)):
+            rho = c[i] - C[i] @ b + C[i, i] * b[i]
+            new = np.sign(rho) * max(abs(rho) - l1, 0.0) / (C[i, i] + l2)
+            moved = max(moved, abs(new - b[i]))
+            b[i] = new
+        if moved < tol:
+            return b
+    raise RuntimeError(f"coordinate descent did not settle to {tol} in {max_sweeps} sweeps")
+
+
+def lasso_ref(
+    X: np.ndarray,
+    y: np.ndarray,
+    dclock: np.ndarray,
+    w: np.ndarray,
+    lasso_path: list[float],
+    l1_ratio: float = 1.0,
+    halflife: float = np.inf,
+    min_periods: float | None = None,
+    solve_every: float | None = None,
+    max_rows_between_solves: int | None = None,
+    max_dclock: float = np.inf,
+    tol: float = 1e-14,
+) -> dict[str, np.ndarray]:
+    """Lasso / elastic-net path oracle (docs/PLAN.md section 4.3), one target
+    with no nulls, written from the objective rather than ported.
+
+    Each solve fits every path point ``l`` to the EW statistics of the rows
+    learned so far. In standardized form it minimises::
+
+        1/2 b'Cb - c'b + l1 |b|_1 + l2/2 |b|^2      l1 = l * l1_ratio, l2 = l * (1 - l1_ratio)
+
+    ``C`` is the EW correlation matrix of the features and
+    ``c_i = (E[x_i y] - m_i ybar) / s_i``: the target is centred but not
+    scaled. ``s_i`` is the EW standard deviation of feature ``i``. Then
+    ``coef_i = b_i / s_i`` and the intercept is ``ybar - m . coef``. ``l = 0``
+    is the unpenalized EW least squares, with no ridge. A feature whose
+    centred variance is at most 1e-10 of its raw second moment is dropped with
+    coefficient 0, as ``standardize`` drops it (docs/PLAN.md, tasks 4-5).
+
+    :func:`_enet_descent` solves each problem from zero to ``tol``. So the
+    library's warm start, along the path and from one solve to the next,
+    cannot change the answer it is held to. A problem is held only where the
+    smallest eigenvalue ``mu`` of ``C + l2 I`` is at least 1e-2. Below that
+    it has no unique minimiser (fewer rows than features), or barely one, and
+    a descent from zero takes about ``13 / mu`` sweeps to settle (measured).
+    Such problems are the first solves of a stream, before ``min_periods``
+    lets a row be scored. Their coefficients are NaN here, and a row scored
+    with one raises.
+
+    The schedule is ``ewridge``'s, which ``lasso`` takes:
+
+    - a row is scored with the coefficients of the last solve before it, and
+      only once ``n_eff``, the weight before the row, reaches ``min_periods``.
+      Before the first solve nothing is scored;
+    - after the row is learned, a solve runs when the clock since the last one
+      has reached ``solve_every`` (the capped step counts, so a gap of at
+      least ``solve_every`` forces one). One also runs when
+      ``max_rows_between_solves`` rows have gone by since it (a zero-weight
+      row is a row), or when there has been none yet and the weight has
+      reached ``min_periods``;
+    - ``solve_every`` defaults to ``halflife / 50``, which is every row for an
+      infinite halflife; ``max_rows_between_solves`` is off by default.
+
+    Feature null => the row is skipped. Nothing is scored or learned and it
+    is not a row for the schedule. Its clock step folds into the next accepted
+    row's, which is capped at ``max_dclock``.
+
+    Returns ``pred`` (n, P) and ``n_eff`` (n,). ``coef`` (n, P, k+1) holds
+    each row's last-solve coefficients. It is NaN before the first solve, on a
+    skipped row, and for a problem the reference does not hold. ``solved``
+    (n,) marks the rows a solve ran after.
+    """
+    n, k = X.shape
+    kt = k + 1
+    npath = len(lasso_path)
+    if np.isnan(y).any():
+        raise ValueError("lasso_ref takes a target with no nulls")
+    if min_periods is None:
+        min_periods = float(kt)
+    if solve_every is None:
+        solve_every = halflife / 50.0 if np.isfinite(halflife) else 0.0
+    max_rows = np.inf if max_rows_between_solves is None else max_rows_between_solves
+
+    pred = np.full((n, npath), np.nan)
+    n_eff = np.full(n, np.nan)
+    coef = np.full((n, npath, kt), np.nan)
+    solved = np.zeros(n, dtype=bool)
+
+    def solve(mean: np.ndarray, raw: np.ndarray, ry: np.ndarray) -> np.ndarray:
+        cov = raw[1:, 1:] - np.outer(mean[1:], mean[1:])
+        cxy = ry[1:] - mean[1:] * ry[0]
+        var = np.diag(cov)
+        kept = np.flatnonzero(var > 1e-10 * np.abs(np.diag(raw)[1:]))
+        s = np.sqrt(var[kept])
+        C = cov[np.ix_(kept, kept)] / np.outer(s, s)
+        c = cxy[kept] / s
+        floor = np.linalg.eigvalsh(C)[0] if kept.size else np.inf
+        fit = np.zeros((npath, kt))
+        for p, lam in enumerate(lasso_path):
+            l1, l2 = lam * l1_ratio, lam * (1.0 - l1_ratio)
+            if floor + l2 < 1e-2:
+                fit[p] = np.nan
+                continue
+            fit[p, 1 + kept] = _enet_descent(C, c, l1, l2, tol) / s
+            fit[p, 0] = ry[0] - mean[1:] @ fit[p, 1:]
+        return fit
+
+    # EW means of z = [1, x]: `mean`, `raw` = E[z z'], `ry` = E[z y].
+    w_sum = 0.0
+    mean, raw, ry = np.zeros(kt), np.zeros((kt, kt)), np.zeros(kt)
+    fit = None
+    since_clock, since_rows, pending = 0.0, 0, 0.0
+    for i in range(n):
+        if np.isnan(X[i]).any():
+            pending += dclock[i]
+            continue
+        z = np.concatenate(([1.0], X[i]))
+        d = min(dclock[i] + pending, max_dclock)
+        pending = 0.0
+        lam = 0.5 ** (d / halflife)
+
+        # ---- score, from the state before the row ----
+        n_eff[i] = w_sum
+        if fit is not None and w_sum >= min_periods:
+            if np.isnan(fit).any():
+                raise ValueError(f"row {i} is scored with a fit the reference does not hold")
+            pred[i] = fit @ z
+
+        # ---- learn ----
+        w_new = lam * w_sum + w[i]
+        if w_new > 0.0:  # a zero-weight first row is 0/0 (hard rule 9)
+            a, b = lam * w_sum / w_new, w[i] / w_new
+            mean = a * mean + b * z
+            raw = a * raw + b * np.outer(z, z)
+            ry = a * ry + b * z * y[i]
+        w_sum = w_new
+
+        # ---- solve, on the schedule ----
+        since_clock += d
+        since_rows += 1
+        if (
+            solve_every <= 0.0
+            or since_clock >= solve_every
+            or since_rows >= max_rows
+            or (fit is None and w_sum >= min_periods)
+        ):
+            fit = solve(mean, raw, ry)
+            solved[i] = True
+            since_clock, since_rows = 0.0, 0
+        if fit is not None:
+            coef[i] = fit
+
+    return {"pred": pred, "n_eff": n_eff, "coef": coef, "solved": solved}
 
 
 def kalman_ref(

@@ -736,11 +736,13 @@ co-moments on `ew_cov`. In API terms:
   rule 13): `ModelBank` and the IO plugin. Nothing in this batch changes
   that, and it adds no new polars API dependency beyond
   `LazyFrame.collect_batches`, which is already the floor.
-- **What is still unpinned: the closed-group frame's *column* names**
+- **The closed-group frame's *column* names are pinned since 2026-09-24**
   (`spec`, `group`, `session`, `rcov`, `bandwidth_used`, …). They are as
-  much API as an output field is, and only `test_closed_groups.py` reads
-  them by name. They belong in the snapshot the next time it is regenerated
-  by hand.
+  much API as an output field is, and until then only
+  `test_closed_groups.py` read them by name. `tests/api_surface.txt` now
+  records them in order, as `[closed_groups columns]`: the shared columns,
+  and each kind's full list, with `ew_cov`'s PCA block and `marginal`'s lag
+  and bin blocks switched on.
 
 ## CI cost while the repo was private
 

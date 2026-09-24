@@ -902,3 +902,211 @@
     settled_frac
     withheld_reason
     coef
+
+[closed_groups columns]  # in order: a column renamed, moved or added is a diff here
+  shared:
+    spec
+    group
+    instance
+    session
+    n_eff
+    n_kish
+    rows_fed
+    rows_learned
+    clock_min
+    clock_max
+    coef
+  bocpd: the shared columns only
+  corrchange: the shared columns only
+  deco: the shared columns only
+  ew_class: the shared columns only
+  ew_cov:
+    spec
+    group
+    instance
+    session
+    n_eff
+    n_kish
+    rows_fed
+    rows_learned
+    clock_min
+    clock_max
+    columns
+    means
+    comoments
+    targets
+    target_means
+    target_vars
+    target_weights
+    target_n_kish
+    cross_moments
+    means_by_target
+    cross_centred
+    coef
+  ewridge:
+    spec
+    group
+    instance
+    session
+    n_eff
+    n_kish
+    rows_fed
+    rows_learned
+    clock_min
+    clock_max
+    columns
+    means
+    comoments
+    targets
+    target_means
+    target_vars
+    target_weights
+    target_n_kish
+    cross_moments
+    means_by_target
+    cross_centred
+    coef
+  ftrl: the shared columns only
+  hmm: the shared columns only
+  holt: the shared columns only
+  huber: the shared columns only
+  kalman: the shared columns only
+  kmeans: the shared columns only
+  lasso:
+    spec
+    group
+    instance
+    session
+    n_eff
+    n_kish
+    rows_fed
+    rows_learned
+    clock_min
+    clock_max
+    columns
+    means
+    comoments
+    targets
+    target_means
+    target_vars
+    target_weights
+    target_n_kish
+    cross_moments
+    means_by_target
+    cross_centred
+    coef
+  marginal:
+    spec
+    group
+    instance
+    session
+    n_eff
+    n_kish
+    rows_fed
+    rows_learned
+    clock_min
+    clock_max
+    coef
+    pair_feature
+    pair_target
+    pair_n_eff
+    pair_n_kish
+    pair_mean_x
+    pair_var_x
+    pair_mean_y
+    pair_var_y
+    pair_cov
+    pair_corr
+    pair_beta
+    pair_t
+  micro: the shared columns only
+  pa: the shared columns only
+  quantile: the shared columns only
+  rcov:
+    spec
+    group
+    instance
+    session
+    n_eff
+    n_kish
+    rows_fed
+    rows_learned
+    clock_min
+    clock_max
+    coef
+    rcov
+    rcorr
+    rcov_n
+    rcov_kind
+    bandwidth_used
+    omega2
+    iv_sparse
+    iq
+    psd_repaired
+  rls: the shared columns only
+  seqtest: the shared columns only
+  sgd: the shared columns only
+  ew_cov with pca:
+    spec
+    group
+    instance
+    session
+    n_eff
+    n_kish
+    rows_fed
+    rows_learned
+    clock_min
+    clock_max
+    columns
+    means
+    comoments
+    targets
+    target_means
+    target_vars
+    target_weights
+    target_n_kish
+    cross_moments
+    means_by_target
+    cross_centred
+    coef
+    eig_vals
+    eig_vecs
+  marginal with lags and bins:
+    spec
+    group
+    instance
+    session
+    n_eff
+    n_kish
+    rows_fed
+    rows_learned
+    clock_min
+    clock_max
+    coef
+    pair_feature
+    pair_target
+    pair_n_eff
+    pair_n_kish
+    pair_mean_x
+    pair_var_x
+    pair_mean_y
+    pair_var_y
+    pair_cov
+    pair_corr
+    pair_beta
+    pair_t
+    pair_lagcorr_xx
+    pair_lagcorr_yy
+    pair_lagcorr_xy
+    pair_lagcorr_yx
+    pair_n_serial
+    pair_t_serial
+    pair_phi_x
+    pair_phi_y
+    pair_bin_edges
+    pair_bin_n
+    pair_bin_mean_y
+    pair_bin_var_y
+    pair_split_gain
+    pair_split_at
+    pair_split_gain_t

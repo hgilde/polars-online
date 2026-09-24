@@ -3,7 +3,9 @@
 //! Two diagnostics that complement `EwCov`'s moments and answer questions a
 //! standard deviation cannot:
 //!
-//! - [`P2Quantile`] — the P² algorithm (Jain & Chambanis, 1985). Tracks a
+//! - [`P2Quantile`] — the P² algorithm (Jain & Chlamtac, 1985: "The P²
+//!   algorithm for dynamic calculation of quantiles and histograms without
+//!   storing observations", CACM 28(10), 1076-1085). Tracks a
 //!   quantile in **five numbers**, no window and no sorting, which makes
 //!   distribution-free intervals affordable on a stream. A residual
 //!   distribution with fat tails has a 99th percentile far above `2.33·σ`, and
@@ -553,6 +555,251 @@ mod tests {
         ac.update(4.0, 1.0);
         assert!(ac.get().is_some(), "none after the fourth observation");
     }
+
+    /// The P² algorithm as Jain & Chlamtac (1985) give it in their Box 1,
+    /// written from the paper with its 1-based markers and its names, not
+    /// from [`P2Quantile`]: the oracle the mutation pass's survivors asked
+    /// for (docs/TESTING.md, "Mutation survivors"). A non-finite observation
+    /// is skipped, which is `P2Quantile`'s contract, not the paper's.
+    struct PaperP2 {
+        /// Marker heights `q_1..q_5`, positions `n_i`, desired positions
+        /// `n'_i` and their increments `dn'_i`; index 0 is unused.
+        q: [f64; 6],
+        n: [f64; 6],
+        nd: [f64; 6],
+        dn: [f64; 6],
+        first: Vec<f64>,
+    }
+
+    impl PaperP2 {
+        fn new(p: f64) -> Self {
+            Self {
+                q: [0.0; 6],
+                n: [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+                nd: [0.0, 1.0, 1.0 + 2.0 * p, 1.0 + 4.0 * p, 3.0 + 2.0 * p, 5.0],
+                dn: [0.0, 0.0, p / 2.0, p, (1.0 + p) / 2.0, 1.0],
+                first: Vec::new(),
+            }
+        }
+
+        fn seen(&self) -> usize {
+            self.first.len() + (self.n[5] - 5.0) as usize
+        }
+
+        fn observe(&mut self, x: f64) {
+            if !x.is_finite() {
+                return;
+            }
+            // Initialization: the first five observations, sorted.
+            if self.first.len() < 5 {
+                self.first.push(x);
+                if self.first.len() == 5 {
+                    let mut s = self.first.clone();
+                    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    self.q[1..=5].copy_from_slice(&s);
+                }
+                return;
+            }
+            // B1: the cell k with q_k <= x < q_(k+1), stretching an extreme.
+            let k = if x < self.q[1] {
+                self.q[1] = x;
+                1
+            } else if x < self.q[2] {
+                1
+            } else if x < self.q[3] {
+                2
+            } else if x < self.q[4] {
+                3
+            } else if x <= self.q[5] {
+                4
+            } else {
+                self.q[5] = x;
+                4
+            };
+            // B2: shift the markers above the cell, and every desired position.
+            for i in k + 1..=5 {
+                self.n[i] += 1.0;
+            }
+            for i in 1..=5 {
+                self.nd[i] += self.dn[i];
+            }
+            // B3: move markers 2..4 one position toward where they belong,
+            // parabolically unless that would break their order.
+            for i in 2..=4 {
+                let d = self.nd[i] - self.n[i];
+                if (d >= 1.0 && self.n[i + 1] - self.n[i] > 1.0)
+                    || (d <= -1.0 && self.n[i - 1] - self.n[i] < -1.0)
+                {
+                    let d = d.signum();
+                    let (q, n) = (self.q, self.n);
+                    let parabolic = q[i]
+                        + d / (n[i + 1] - n[i - 1])
+                            * ((n[i] - n[i - 1] + d) * (q[i + 1] - q[i]) / (n[i + 1] - n[i])
+                                + (n[i + 1] - n[i] - d) * (q[i] - q[i - 1]) / (n[i] - n[i - 1]));
+                    self.q[i] = if q[i - 1] < parabolic && parabolic < q[i + 1] {
+                        parabolic
+                    } else {
+                        let j = if d > 0.0 { i + 1 } else { i - 1 };
+                        q[i] + d * (q[j] - q[i]) / (n[j] - n[i])
+                    };
+                    self.n[i] += d;
+                }
+            }
+        }
+    }
+
+    /// Marker by marker against the paper, after every observation, on
+    /// streams built to reach every branch: ties at the extreme and interior
+    /// markers (a tie at `q_(k+1)` belongs to cell `k+1`), values past both
+    /// extremes, and non-finite values, which must change nothing.
+    #[test]
+    fn p2_follows_the_paper_marker_by_marker() {
+        for p in [0.1, 0.5, 0.9] {
+            let mut est = P2Quantile::new(p).unwrap();
+            let mut paper = PaperP2::new(p);
+            let mut s = 29u64;
+            for t in 0..3000usize {
+                let x = match t % 17 {
+                    _ if t < 5 => lcg(&mut s) * 10.0,
+                    3 => est.q[2],
+                    5 => est.q[1],
+                    7 => est.q[0],
+                    9 => est.q[4],
+                    11 => -100.0 - lcg(&mut s),
+                    13 => 100.0 + lcg(&mut s),
+                    15 => [f64::NAN, f64::INFINITY, f64::NEG_INFINITY][t % 3],
+                    _ => lcg(&mut s) * 10.0,
+                };
+                est.update(x);
+                paper.observe(x);
+                assert_eq!(est.count(), paper.seen(), "p={p}, t={t}");
+                if paper.first.len() == 5 {
+                    assert_eq!(est.q[..], paper.q[1..], "heights, p={p}, t={t}, x={x}");
+                    assert_eq!(est.n[..], paper.n[1..], "positions, p={p}, t={t}");
+                    assert_eq!(est.np[..], paper.nd[1..], "desired, p={p}, t={t}");
+                    assert_eq!(est.get(), Some(paper.q[3]), "p={p}, t={t}");
+                } else {
+                    assert_eq!(est.get(), None, "p={p}, t={t}");
+                }
+            }
+        }
+    }
+
+    /// The same, on discrete data: values in {0, 1, 2, 3}, so markers tie
+    /// with each other as well as with the data. The first five repeat the
+    /// minimum, so the two lowest markers start equal, and an observation at
+    /// that value belongs to the second cell, not the first (`q_1 <= x <
+    /// q_2` fails when `x = q_2`).
+    #[test]
+    fn p2_follows_the_paper_on_discrete_data() {
+        for p in [0.25, 0.5, 0.75] {
+            let mut est = P2Quantile::new(p).unwrap();
+            let mut paper = PaperP2::new(p);
+            let mut s = 41u64;
+            for (t, x) in [0.0, 0.0, 2.0, 1.0, 3.0]
+                .into_iter()
+                .chain((0..2000).map(|_| (lcg(&mut s) * 4.0).floor()))
+                .enumerate()
+            {
+                est.update(x);
+                paper.observe(x);
+                if paper.first.len() == 5 {
+                    assert_eq!(est.q[..], paper.q[1..], "heights, p={p}, t={t}, x={x}");
+                    assert_eq!(est.n[..], paper.n[1..], "positions, p={p}, t={t}, x={x}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn autocorr_of_a_constant_series_is_none() {
+        // Every pair exists, but a constant has no variance to divide by.
+        let mut ac = EwAutoCorr::new(1).unwrap();
+        for _ in 0..10 {
+            ac.update(5.0, 0.9);
+        }
+        assert_eq!(ac.get(), None);
+    }
+
+    #[test]
+    fn same_shape_takes_a_full_buffer_and_refuses_an_overfull_one() {
+        let mut full = EwAutoCorr::new(2).unwrap();
+        for x in [1.0, 2.0, 3.0, 4.0] {
+            full.update(x, 0.9);
+        }
+        assert_eq!(full.buf.len(), 3);
+        let fresh = EwAutoCorr::new(2).unwrap();
+        assert!(full.same_shape(&fresh) && fresh.same_shape(&full));
+        let mut over = full.clone();
+        over.buf.push(5.0);
+        assert!(
+            !over.same_shape(&fresh),
+            "a buffer lag 2 cannot have filled"
+        );
+        assert!(
+            !full.same_shape(&EwAutoCorr::new(3).unwrap()),
+            "another lag"
+        );
+    }
+
+    #[test]
+    fn autocorr_forgets_an_old_regime() {
+        // phi = +0.9, then -0.9: a halflife of ~69 rows must have forgotten
+        // the first 3000 rows by the end of the next 3000. A stationary
+        // series cannot tell decay from none; this can.
+        let mut ac = EwAutoCorr::new(1).unwrap();
+        let mut s = 17u64;
+        let mut prev = 0.0;
+        for t in 0..6000 {
+            let phi = if t < 3000 { 0.9 } else { -0.9 };
+            prev = phi * prev + (lcg(&mut s) - 0.5);
+            ac.update(prev, 0.99);
+        }
+        let got = ac.get().unwrap();
+        assert!(got < -0.8, "the new regime's -0.9 should show, got {got}");
+    }
+
+    #[test]
+    fn autocorr_has_no_cross_moment_before_its_first_pair() {
+        // At lag 3 the first three observations have no partner: the
+        // co-moment is a sum over pairs, and there are none yet.
+        let mut ac = EwAutoCorr::new(3).unwrap();
+        for x in [1.0, 5.0, 2.0] {
+            ac.update(x, 0.9);
+            assert_eq!(ac.cross, 0.0);
+        }
+        ac.update(7.0, 0.9);
+        assert_ne!(ac.cross, 0.0, "the first pair, (7, 1), is a co-moment");
+    }
+
+    #[test]
+    fn autocorr_is_unchanged_by_a_shift_or_a_scale_of_the_series() {
+        // A correlation, so the series' level and units cannot reach it; at
+        // lag 2, so the pairs that wait for a partner are in play too.
+        let mut s = 23u64;
+        let mut prev = 0.0;
+        let xs: Vec<f64> = (0..3000)
+            .map(|_| {
+                prev = 0.7 * prev + (lcg(&mut s) - 0.5);
+                prev
+            })
+            .collect();
+        let at = |f: &dyn Fn(f64) -> f64| {
+            let mut ac = EwAutoCorr::new(2).unwrap();
+            for &x in &xs {
+                ac.update(f(x), 0.995);
+            }
+            ac.get().unwrap()
+        };
+        let base = at(&|x| x);
+        assert!(
+            base > 0.3,
+            "an AR(1) at 0.7 has a lag-2 near 0.49, got {base}"
+        );
+        for (name, got) in [("shift", at(&|x| x + 100.0)), ("scale", at(&|x| 3.0 * x))] {
+            assert!((got - base).abs() < 1e-9, "{name}: {got} vs {base}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -730,6 +977,42 @@ mod metric_tests {
     fn nothing_is_reported_before_any_row() {
         let m = SlotMetrics::new();
         assert!(m.ic().is_none() && m.r2().is_none() && m.hit_rate().is_none());
+    }
+
+    #[test]
+    fn n_eff_is_the_ew_count_of_scored_rows() {
+        // By its definition: each scored row adds its weight, and every row,
+        // scored or not, decays what came before.
+        let mut m = SlotMetrics::new();
+        let mut want = 0.0;
+        let mut s = 31u64;
+        for t in 0..200 {
+            let (lam, w) = (0.95, 0.5 + lcg(&mut s).abs());
+            let pred = if t % 7 == 3 { f64::NAN } else { lcg(&mut s) };
+            let scored = pred.is_finite();
+            m.update(pred, lcg(&mut s), lam, w, false);
+            want = lam * want + if scored { w } else { 0.0 };
+            assert!(
+                (m.n_eff() - want).abs() < 1e-12 * want,
+                "t={t}: {} vs {want}",
+                m.n_eff()
+            );
+        }
+    }
+
+    #[test]
+    fn the_binary_threshold_is_strict_at_one_half() {
+        // `(pred > 0.5) == (y > 0.5)`, as the struct docs state it: exactly
+        // 0.5 is the lower class, for the prediction and the label alike.
+        let hit = |pred: f64, y: f64| {
+            let mut m = SlotMetrics::new();
+            m.update(pred, y, 1.0, 1.0, true);
+            m.hit_rate().unwrap()
+        };
+        assert_eq!(hit(0.5, 0.0), 1.0, "0.5 predicts the lower class");
+        assert_eq!(hit(0.5, 1.0), 0.0);
+        assert_eq!(hit(0.9, 0.5), 0.0, "a label of 0.5 is the lower class");
+        assert_eq!(hit(0.1, 0.5), 1.0);
     }
 
     // `binary = true`: the classifier reading (docs/PLAN.md task 76). Every

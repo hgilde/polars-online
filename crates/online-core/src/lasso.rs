@@ -10,14 +10,17 @@
 //! the coordinate update for feature `i` at penalty `l` is
 //!
 //! ```text
-//! rho_i = c_i - sum_{j != i} C_ij b_j          (C = correlation matrix, c = corr(x, y))
+//! rho_i = c_i - sum_{j != i} C_ij b_j          (C = correlation matrix, c = cov(x, y) / s_x)
 //! b_i   = soft(rho_i, l * l1_ratio) / (C_ii + l * (1 - l1_ratio))
 //! ```
 //!
 //! with `soft(v, t) = sign(v) * max(|v| - t, 0)`; `l1_ratio = 1` is pure lasso,
 //! `< 1` is elastic net. `C` is the correlation matrix of the target's Gram
-//! and `c` its cross-correlations centred at the means over the target's own
-//! rows, from the centred cross-moments `ewridge` keeps since the code
+//! and `c` each feature's covariance with the target over the feature's
+//! standard deviation -- the target is centred but not scaled, so the
+//! threshold `l * l1_ratio` is in the target's units while the ridge part
+//! `l * (1 - l1_ratio)`, added to a correlation, has none -- centred at the
+//! means over the target's own rows, from the centred cross-moments `ewridge` keeps since the code
 //! review's N1. This kept them raw and centred them by subtraction, which lost
 //! the fit at a level (N2). Coefficients are unscaled afterwards and the
 //! intercept recovered as `ȳ − m_j · beta`, `m_j` the column means over the

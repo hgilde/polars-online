@@ -6874,6 +6874,19 @@ online contract (E36–E42).
   — a fix would set `w_sum = 0` and let the next row's `a = 0` start over,
   which changes shipped output for that row and needs its own test and
   decision. Not blocking task 71.
+
+  *Re-derived 2026-09-24: the trigger is the underflow, not the cap.* The
+  refusal happens when the decay factor `2^(-gap/h)` is exactly 0, which is
+  from 1075 halflives on, capped or not. An uncapped zero-weight row after
+  1075 halflives keeps the history too. One after 1074 halflives (factor
+  `2^-1074 > 0`) ages it to nothing, and so does a gap capped at 1000
+  halflives. "A gap one unit under the cap wipes it" holds only when that
+  gap is under 1075 halflives. So a cap under about 1075 halflives never
+  meets this, and `max_dclock = inf` is where it lives. `ewridge` and
+  `ew_cov` agree. The test now exists:
+  `tests/test_edge_cases.py::TestWeights::test_a_zero_weight_row_keeps_the_history_when_its_decay_underflows`
+  pins the current behaviour, and the decision on the fix is still the
+  user's.
 ## 13. `window`: an EW accumulator with a hard cutoff (2026-09-06)
 
 An exponentially weighted mean never forgets. A halflife of `h` leaves

@@ -653,6 +653,65 @@ class TestConfigParsing:
         assert res.returncode == 0, f"{escape} form rejected:\n{res.stdout}{res.stderr}"
         assert out.exists()
 
+    def _run_with_paths(self, tmp_path, where: str, spell) -> None:
+        """A run whose input, output and state paths are written by
+        ``spell``, in the config's fields or as flags, then resumed from the
+        state it saved."""
+        src = tmp_path / "in.parquet"
+        pl.DataFrame({"x0": [1.0, 2.0, 3.0], "y": [1.0, 2.0, 3.0]}).write_parquet(src)
+        out, state, again = (tmp_path / n for n in ("out.parquet", "bank.state", "again.parquet"))
+        spec = (
+            "\n[[specs]]\n"
+            'name = "m"\n'
+            'targets = ["y"]\n'
+            'features = ["x0"]\n'
+            "halflife = 100.0\n"
+            "min_periods = 1.0\n"
+            "\n[specs.model]\n"
+            'type = "ew_ridge"\n'
+            "ridge = 1e-6\n"
+        )
+        cfg = tmp_path / "paths.toml"
+        if where == "config":
+            # TOML literal strings: every backslash as written.
+            cfg.write_text(
+                f"input = '{spell(src)}'\noutput = '{spell(out)}'\n"
+                f"save_state = '{spell(state)}'\n" + spec
+            )
+            args = ["--config", str(cfg)]
+        else:
+            cfg.write_text("input = 'unused.parquet'\noutput = 'unused.parquet'\n" + spec)
+            args = ["--config", str(cfg), "--input", spell(src), "--output", spell(out)]
+            args += ["--save-state", spell(state)]
+        res = self._cli(args)
+        assert res.returncode == 0, f"{where}:\n{res.stdout}{res.stderr}"
+        assert pl.read_parquet(out).height == 3
+        assert state.exists()
+        # The state reads back through the same spelling.
+        resume = ["--config", str(cfg), "--input", spell(src), "--output", spell(again)]
+        res = self._cli([*resume, "--resume", spell(state)])
+        assert res.returncode == 0, f"{where}, resumed:\n{res.stdout}{res.stderr}"
+        assert pl.read_parquet(again).height == 3
+
+    @pytest.mark.parametrize("where", ["config", "flags"])
+    def test_absolute_paths_in_every_field_and_flag(self, tmp_path, where):
+        """The run the Windows test below repeats, with the paths as the OS
+        writes them: on the Windows CI leg these are drive-letter paths."""
+        self._run_with_paths(tmp_path, where, lambda p: str(p.resolve()))
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="the \\\\?\\ prefix is a Windows spelling")
+    @pytest.mark.parametrize("where", ["config", "flags"])
+    def test_an_extended_length_path_resolves_on_windows(self, tmp_path, where):
+        """T-W3's last piece, run by the Windows CI leg. Drive letters are
+        resolved there already, by the run above and by the three forms of
+        `test_each_documented_windows_path_form_parses`. This is the
+        UNC-style extended-length spelling, `\\\\?\\C:\\...`, which Windows
+        gives a path past 260 characters: polars strips the prefix
+        (`normalize_windows_path` in polars-utils), and the state file goes
+        to the OS as written. A network share is out of a runner's reach, so
+        `\\\\server\\share\\...` stays untested."""
+        self._run_with_paths(tmp_path, where, lambda p: "\\\\?\\" + str(p.resolve()))
+
     @pytest.mark.parametrize("newline", ["\n", "\r\n"])
     def test_config_parses_with_either_line_ending(self, tmp_path, newline):
         toml = newline.join(

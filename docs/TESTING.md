@@ -51,7 +51,7 @@ parts after it test what those classes do not name.
 
 | class | status | what holds it |
 |---|---|---|
-| 1. Oracle agreement | **Mostly done.** | each model against a reference it cannot share a bug with, in the [table below](#against-reference-implementations). Open: a numpy `lasso_ref` for the lasso's *pred* path (T-A2) |
+| 1. Oracle agreement | **Done.** | each model against a reference it cannot share a bug with, in the [table below](#against-reference-implementations); the last open one, a numpy `lasso_ref` for the lasso's *pred* path (T-A2), landed 2026-09-24 |
 | 2. Chunk invariance | Done | bitwise at the bank (1/7/100 chunks) and CLI (`chunk_rows` sweep) levels; save/load mid-stream identical. The `coef` field is correctly excluded: it is chunk-dependent by design |
 | 3. Out-of-sample by construction | Done | IC ≈ 0 on pure-noise targets asserted for ewridge, kalman, huber, ftrl; lasso selection prefers the all-zero penalty on noise; robust reweighting proven to use the *prior* residual |
 | 4. Clock semantics | Done | cap, negative-delta (`max`/`zero`/`reset_state`), session gap and reset, first row, row-count clock, skipped-row decay folding, per-group independence |
@@ -108,7 +108,7 @@ T-A4).
 | `ewridge`, `rls` | `tests/reference.py`, incl. multi-target, standardize, `lam` decay, row-count clock | 1e-9 | |
 | `rls` | `rls ≡ ewridge(ridge_decay, solve_every=1)` | <1e-9 | |
 | Kalman | `kalman_ref`, across every configuration | ~1e-15 | T-A1 |
-| the lasso | its KKT conditions, rather than a ported solver | the conditions hold | T-A2 |
+| the lasso | its KKT conditions, rather than a ported solver; and `lasso_ref`, a coordinate descent from zero on the documented schedule, for every row's *pred* | the conditions hold; pred ~1e-14 | T-A2 |
 | Huber, quantile | `robust_ref` | ~1e-13 | T-A3 |
 | FTRL | `ftrl_ref` | ~1e-16 | T-A4 |
 | FTRL | `river.optim.FTRLProximal`, row for row | 1e-12 | T-R1 |
@@ -293,18 +293,30 @@ What the entries themselves still call open:
 
 | entry | still open | why it matters |
 |---|---|---|
-| T-A2 | a numpy CD `lasso_ref` for the lasso's *pred* path | it would catch schedule and warm-start bugs the KKT check cannot see |
-| T-W3 | path resolution on a real Windows runner | escaped Windows-style paths and paths with spaces are tested through the CLI on any OS; the entry is marked only partly done |
 | T-D4 | making the mutation pass periodic in CI | no workflow under `.github/workflows/` runs `scripts/mutants.sh` |
 
 ### Mutation survivors
 
 Run 3 of the mutation pass left **217 missed** in `online-core`: 8.3%
 surviving, down from 31% at the first-ever pass. Most are in `lasso.rs` (50),
-`stats.rs` (45) and `ewridge.rs` (42). The 45 in `stats.rs` are in
-`P2Quantile` and `SlotMetrics`, loops whose mutations spin, and they are the
-obvious next batch. [Where the 217 stand now](#where-the-217-stand-now) has
-the count by file.
+`stats.rs` (45) and `ewridge.rs` (42). [Where the 217 stand now](#where-the-217-stand-now)
+has the count by file.
+
+**`stats.rs`, closed 2026-09-24.** Rerun on its own, it left 48 of 285
+missed: 30 in `P2Quantile`, 12 in `EwAutoCorr` and 6 in `SlotMetrics`, with
+no timeouts. Oracle tests closed them. `P2Quantile` is held marker by marker
+to the algorithm box of Jain & Chlamtac (1985), written from the paper, on
+a continuous stream and a discrete one, where markers tie. `EwAutoCorr` is
+held to a regime switch, to invariance under a shift and a scale, to a zero
+co-moment before the first pair, and to `same_shape`'s bounds. `SlotMetrics`
+is held to `n_eff`'s definition and the strict 0.5 threshold. After them, 5
+of 285 were missed, and the discrete stream catches one of those, the tie
+at the minimum. The other four are equivalent mutants, which no test can
+catch: `d_sign > 0` against `>=` where `d_sign` is only ever ±1; `denom > 0`
+against `>=` where a scored row's `w > 0` keeps `denom` positive; and the
+two `<` of the parabolic order check against `<=`, which differ only when
+the prediction lands exactly on a neighbour, where the fallback usually
+gives the same height. `lasso.rs` (50) and `ewridge.rs` (42) are next.
 
 ### What is left
 
@@ -592,7 +604,7 @@ entry whose detail does not fit a cell.
 | # | P | improvement | what it found or still lacks |
 |---|---|---|---|
 | T-A1 | ~~P1~~ **done** | **`kalman_ref` in `tests/reference.py`**: agreement to 1e-9 (observed max 1.1e-15) | three load-bearing subtleties |
-| T-A2 | ~~P1~~ **done** | **Lasso KKT verification**, `tests/test_oracles.py::TestLassoOptimality` | still lacks a numpy CD `lasso_ref` for the *pred* path |
+| T-A2 | ~~P1~~ **done** | **Lasso KKT verification**, `tests/test_oracles.py::TestLassoOptimality`, and the *pred* path, `TestLassoPredPath` | both, since 2026-09-24 |
 | T-A3 | ~~P2~~ **done** | **`robust_ref`** covers both Huber and quantile; agreement ~1e-13 | two load-bearing details |
 | T-A4 | ~~P2~~ **done** | **`ftrl_ref`**; agreement ~1e-16 | when the decay is applied |
 | T-A5 | ~~P2~~ **done** | null policy, warmup, clock semantics and the universal invariants over all ten regression models, `tests/test_semantics_all_models.py` | **found the robust `n_eff` defect**, and `sgd`/`pa`'s |
@@ -613,7 +625,25 @@ model's own standardized statistics rather than a ported solver.
 `g_i = c_i − (Cb)_i − l2·b_i` must equal `l1·sign(b_i)` where `b_i ≠ 0`, and
 satisfy `|g_i| ≤ l1` where it is zero. It runs across λ ∈ {0, 0.01, 0.1} ×
 `l1_ratio` ∈ {1.0, 0.5}, plus sparsity monotonicity along the path and the
-intercept identity. A numpy CD `lasso_ref` for the *pred* path is still open.
+intercept identity. It sees one snapshot, the last solve's, so since
+2026-09-24 `tests/test_oracles.py::TestLassoPredPath` also holds every row
+to `reference.lasso_ref`. That is a cyclic coordinate descent written from
+the objective (Friedman, Hastie & Tibshirani 2010), run from zero to 1e-14 so
+no warm start can change its answer, on the documented schedule:
+`solve_every` and its `halflife / 50` default, `max_rows_between_solves`,
+the forced first solve at `min_periods`, the decay, a capped gap, skipped
+and zero-weight rows. It compares every path point's `pred` and `resid`,
+`n_eff`, every `coef` row, where `coef` is null, and which coefficients the
+L1 zeroed. Measured: pred 1.7e-14, coef 1.2e-12, `n_eff` exact; at the
+library's own `cd_tol` and `max_cd_iters`, pred 1.7e-10. Each tolerance is
+100 times that. Seeded bugs in the reference each fail it: a solve a row late
+(pred moves 0.17-0.57), an in-sample pred, no cap, `>` for `>=` at the
+cadence, zero-weight rows not counted as rows, skipped rows counted, no
+forced first solve. It also found the docstring calling `c` the
+feature-target correlations; it is `cov(x_i, y) / s_i`, so the L1 threshold
+is in the target's units, and the docstring now says so. Not covered: null
+targets, several targets, `target_gaps`, `window`, `add_intercept=False`,
+`lam_selected`.
 It would catch schedule and warm-start bugs the KKT check cannot see.
 
 **T-A3.** `robust_ref` is in `tests/reference.py`. It agrees to ~1e-13
@@ -848,7 +878,7 @@ first ran on Windows, as [What is left](#what-is-left) records it.
 |---|---|---|---|
 | T-W1 | ~~P1~~ **done** | **Run `ci.yml` on `windows-latest` at all** | runs on every push since 2026-08-31 |
 | T-W2 | **P1** | **Cross-OS state hand-off** (`release.yml`: write on macOS, load on Windows/Linux) | executed on Windows CI; the hand-off has run for every release since 0.1.0 |
-| T-W3 | P1 (partly) | **Path handling through the CLI**: escaped Windows-style paths and paths with spaces | |
+| T-W3 | ~~P1 (partly)~~ **written 2026-09-24, pending its first Windows CI run** | **Path handling through the CLI**: escaped Windows-style paths and paths with spaces | drive letters and the `\\?\` extended-length form run on the Windows CI leg |
 | T-W3b | ~~P1~~ **found a real bug, fixed** | TOML path escaping in the CLI tests | executed on Windows CI |
 | T-W3b (original) | P1 | **Path handling through the CLI**, as first written: backslash separators, drive letters, UNC paths, and spaces in paths, in both the TOML `input`/`output`/`load_state`/`save_state` fields and the `--input`/`--output` overrides | |
 | T-W4 | ~~P2~~ **mitigated + tested locally** | **CRLF line endings in the TOML config** | |
@@ -881,9 +911,19 @@ result worth recording.
 payload has no host-dependent parts *by construction*, and `save_bytes` is
 asserted deterministic locally, but that is an argument, not a test.
 
-**T-W3.** Escaped Windows-style paths and paths with spaces are now tested
-through the CLI on any OS, and round-trip. Actual resolution on Windows still
-needs a runner.
+**T-W3.** Escaped Windows-style paths and paths with spaces are tested
+through the CLI on any OS, and round-trip. Resolution on Windows runs on the
+Windows CI leg, which every push has had since 2026-08-31. There, the three
+path forms of `test_each_documented_windows_path_form_parses` and
+`test_absolute_paths_in_every_field_and_flag` write the runner's real
+`C:\...` temporary paths, so drive letters resolve on a real Windows host.
+`test_an_extended_length_path_resolves_on_windows` (Windows only) repeats
+the same run with the UNC-style `\\?\C:\...` spelling, in the config's
+`input`, `output` and `save_state` and in the `--input`, `--output`,
+`--save-state` and `--resume` flags; polars strips the prefix
+(`normalize_windows_path` in polars-utils). A network share,
+`\\server\share\...`, is out of a runner's reach and stays untested. The
+Windows-only test has not run yet: it runs on the first push after 2026-09-24.
 
 **T-W3b.** The first Windows CI run ever attempted failed exactly here. Three
 `online-cli` tests died on `toml::de::Error`, "too few unicode value digits",

@@ -1,11 +1,14 @@
 """Oracle agreement for the models PLAN section 9 class 1 promised but that
 were only property-tested: Kalman against a numpy reference (T-A1), and the
-lasso against its own optimality conditions (T-A2).
+lasso against its own optimality conditions and a numpy reference (T-A2).
 
-The lasso check is deliberately *not* a second copy of coordinate descent: it
-verifies the KKT conditions of the penalized objective, which any correct
-solver must satisfy, so it cannot agree with a bug the way a ported
-implementation could.
+The lasso's KKT check is deliberately *not* a second copy of coordinate
+descent: it verifies the KKT conditions of the penalized objective, which any
+correct solver must satisfy, so it cannot agree with a bug the way a ported
+implementation could. It sees only the last solve, so the pred path is held to
+`reference.lasso_ref` as well. That is a descent written from the objective,
+run from zero to a tolerance at which the start cannot matter, on the
+documented solve schedule.
 """
 
 import numpy as np
@@ -14,7 +17,7 @@ import pytest
 
 import polars_online as po
 from data import synthetic
-from reference import ftrl_ref, kalman_ref, robust_ref
+from reference import ftrl_ref, kalman_ref, lasso_ref, robust_ref
 
 MAXD = 50.0
 
@@ -300,6 +303,195 @@ def test_intercept_matches_the_weighted_means():
     for row in flat:
         expected = ry[0] - mean[1:] @ row[1:]
         assert abs(row[0] - expected) < 1e-8, f"intercept {row[0]} != {expected}"
+
+
+class TestLassoPredPath:
+    """T-A2, the pred path: every row's ``pred`` and ``resid`` per path point,
+    ``n_eff`` and every emitted ``coef``, against
+    ``tests/reference.py::lasso_ref``.
+
+    The KKT check above sees one snapshot, the last solve's. This sees every
+    solve through the predictions it made. It checks when each solve ran:
+    ``solve_every``, its default, ``max_rows_between_solves`` and the forced
+    first solve. It checks what each was fitted from: the decay, a capped gap,
+    and skipped and zero-weight rows. And it checks that each reached the
+    optimum, not wherever a warm start left the descent. The reference
+    descends from zero to 1e-14, so no warm start can change the answer it
+    holds the library to.
+    """
+
+    FEATURES = ["x0", "x1", "x2", "x3"]
+    PATH = [0.2, 0.05, 0.0]
+    MAX_DCLOCK = 6.0
+    # Measured over the cases below as `_close` reads an error,
+    # |got - expected| / (1 + |expected|): pred 1.7e-14, resid 3.3e-14, coef
+    # 1.2e-12, n_eff exact. Each tolerance is 100x the largest it covers,
+    # rounded up to a power of ten.
+    PRED_TOL = 1e-11
+    COEF_TOL = 1e-9
+    # At the library's own `cd_tol` (1e-10) and `max_cd_iters` (100) each
+    # descent stops short of the optimum: pred and resid measured 1.7e-10
+    # from the reference, and the tolerance is set the same way.
+    DEFAULT_DESCENT_TOL = 1e-7
+
+    @staticmethod
+    def _stream(seed, n=300):
+        """Four features and one target. ``x2`` is out of the model but
+        correlated with ``x0``, and ``x3`` is small enough for the larger
+        penalties to zero. ``x1`` sits at a level of 2, which only the
+        centring and the intercept can absorb.
+
+        The clock steps are dyadic, so the clock since a solve sums exactly,
+        and a solve that falls due exactly on ``solve_every`` is decided by
+        the schedule's ``>=`` rather than by rounding. Two gaps of 40 exceed
+        ``max_dclock``. A twentieth of the rows weigh 0, the first row among
+        them. Five rows have a null feature and are skipped."""
+        rng = np.random.default_rng(seed)
+        dt = rng.choice([0.25, 0.5, 0.75, 1.0, 1.5, 2.0], size=n)
+        dt[0] = 0.0
+        dt[[90, 200]] = 40.0
+        x0 = rng.standard_normal(n)
+        x1 = 2.0 + rng.standard_normal(n)
+        x2 = 0.6 * x0 + 0.8 * rng.standard_normal(n)
+        x3 = -1.0 + 0.7 * rng.standard_normal(n)
+        y = 0.3 + x0 - 0.6 * x1 + 0.25 * x3 + 0.5 * rng.standard_normal(n)
+        w = rng.uniform(0.5, 1.5, n)
+        w[0] = 0.0
+        w[rng.choice(np.arange(1, n), size=n // 20 - 1, replace=False)] = 0.0
+        x1[[40, 41, 42, 95, 150]] = np.nan
+        frame = {"t": np.cumsum(dt), "x0": x0, "x1": x1, "x2": x2, "x3": x3, "y": y, "w": w}
+        return pl.DataFrame(frame).with_columns(pl.col("x1").fill_nan(None))
+
+    def _compare(self, df, default_descent=False, **kw):
+        """Fit ``df`` with a spec that ``kw`` completes, and hold the output to
+        the reference given the same ``kw``. ``default_descent`` leaves
+        ``cd_tol`` and ``max_cd_iters`` at the library's defaults."""
+        descent = {} if default_descent else {"cd_tol": 1e-14, "max_cd_iters": 100_000}
+        spec = po.spec.lasso(
+            "m",
+            targets=["y"],
+            features=self.FEATURES,
+            lasso_path=self.PATH,
+            clock="t",
+            max_dclock=self.MAX_DCLOCK,
+            weight="w",
+            coef_every=1,
+            **descent,
+            **kw,
+        )
+        out = po.ModelBank([spec]).fit_predict(df)["m"]
+        n, npath, kt = df.height, len(self.PATH), len(self.FEATURES) + 1
+        x = df.select(self.FEATURES).to_numpy()
+        y = df["y"].to_numpy()
+        dc = np.zeros(n)
+        dc[1:] = np.diff(df["t"].to_numpy())
+        ref = lasso_ref(x, y, dc, df["w"].to_numpy(), self.PATH, max_dclock=self.MAX_DCLOCK, **kw)
+        assert ref["solved"].sum() >= 5, "the stream should span several solves"
+
+        # One pred and one resid field per path point, in path order.
+        index = po.spec.output_index(spec)
+        assert index.filter(pl.col("kind") == "pred")["lambda"].to_list() == self.PATH
+        fields = {
+            k: index.filter(pl.col("kind") == k)["field"].to_list() for k in ("pred", "resid")
+        }
+        tol = self.DEFAULT_DESCENT_TOL if default_descent else self.PRED_TOL
+        got = np.column_stack(
+            [out.struct.field(f).to_numpy().astype(float) for f in fields["pred"]]
+        )
+        for p, lam in enumerate(self.PATH):
+            _close(got[:, p], ref["pred"][:, p], tol=tol, what=f"pred at lambda {lam}")
+            resid = out.struct.field(fields["resid"][p]).to_numpy().astype(float)
+            _close(resid, y - ref["pred"][:, p], tol=tol, what=f"resid at lambda {lam}")
+        n_eff = out.struct.field("n_eff").to_numpy().astype(float)
+        _close(n_eff, ref["n_eff"], tol=self.PRED_TOL, what="n_eff")
+
+        # The comparison can fail. The same reference read in sample (each
+        # row scored with its own update, which hard rule 2 forbids), or with
+        # every solve reaching the predictions a row late, is far outside it.
+        z = np.column_stack([np.ones(n), x])
+        in_sample = np.einsum("ipk,ik->ip", ref["coef"], z)
+        late = np.full_like(in_sample, np.nan)
+        late[2:] = np.einsum("ipk,ik->ip", ref["coef"][:-2], z[2:])
+        for what, probe in (("in sample", in_sample), ("a row late", late)):
+            assert np.nanmax(np.abs(got - probe)) > 1e-3, f"pred cannot tell {what} apart"
+
+        if default_descent:
+            # A descent here may stop at 100 sweeps on an early, badly
+            # conditioned solve (counted in `solve_failures`), which leaves
+            # `coef` short of the optimum before any row is scored with it.
+            return
+        rows = out.struct.field("coef").to_list()
+        # `coef` is each row's last solve, and `min_periods` does not gate it:
+        # it is null only before the first solve and on a skipped row.
+        before_first = np.arange(n) < np.argmax(ref["solved"])
+        expect_null = before_first | np.isnan(ref["n_eff"])
+        wrong = np.flatnonzero(np.array([r is None for r in rows]) != expect_null)
+        assert wrong.size == 0, f"coef is null on the wrong rows, first {wrong[0]}"
+        empty = [np.nan] * (npath * kt)
+        coef = np.array([empty if r is None else r for r in rows]).reshape(n, npath, kt)
+        # The stream's first solves are NaN in the reference: from about as
+        # few rows as features, their minimiser is not unique or barely is,
+        # so there is nothing to hold the library to, and no row is scored
+        # with one (`lasso_ref` raises if one is).
+        held = ~np.isnan(ref["coef"])
+        _close(coef[held], ref["coef"][held], tol=self.COEF_TOL, what="coef")
+        # The soft threshold zeroed a coefficient of a fit the stream was
+        # scored with, and zeroed exactly what the reference zeroed.
+        zero, zero_ref, slopes = coef[..., 1:] == 0, ref["coef"][..., 1:] == 0, held[..., 1:]
+        assert zero_ref[~np.isnan(ref["pred"][:, 0])].any(), "the L1 should zero something"
+        assert (zero == zero_ref)[slopes].all(), "the L1 zeroed other coefficients"
+
+    def test_a_solve_falls_due_on_the_clock_and_on_a_capped_gap(self):
+        """``solve_every`` in clock units. Some steps land on it exactly, and
+        a solve is then due (``>=``). Each gap past ``max_dclock`` forces a
+        solve with its capped step. The halflife is finite, so the decay and
+        the cap both reach the fit."""
+        self._compare(
+            self._stream(31), l1_ratio=1.0, halflife=40.0, min_periods=20.0, solve_every=2.5
+        )
+
+    def test_an_elastic_net_solves_on_a_row_cap_beside_the_clock(self):
+        """``max_rows_between_solves`` beside ``solve_every``. A zero-weight
+        row counts as a row; a skipped row does not. The capped gap equals
+        ``solve_every``, so each gap forces a solve."""
+        self._compare(
+            self._stream(32),
+            l1_ratio=0.5,
+            halflife=40.0,
+            min_periods=20.0,
+            solve_every=6.0,
+            max_rows_between_solves=5,
+        )
+
+    def test_the_default_cadence_is_a_fiftieth_of_the_halflife(self):
+        """No ``solve_every``: a solve every ``halflife / 50`` = 2 clock
+        units, which the dyadic steps meet exactly."""
+        self._compare(self._stream(33), l1_ratio=1.0, halflife=100.0, min_periods=20.0)
+
+    def test_the_first_solve_is_forced_when_min_periods_is_reached(self):
+        """The clock cadence is out of reach and the row cap is 40. So the
+        first solve is the forced one at ``min_periods``, and every row up to
+        the next solve is scored with it."""
+        self._compare(
+            self._stream(34),
+            l1_ratio=1.0,
+            halflife=40.0,
+            min_periods=25.0,
+            solve_every=1e9,
+            max_rows_between_solves=40,
+        )
+
+    def test_an_infinite_halflife_solves_after_every_row(self):
+        """The default cadence without decay is a solve after every row."""
+        self._compare(self._stream(35), l1_ratio=0.5, halflife=float("inf"), min_periods=20.0)
+
+    def test_the_default_descent_reaches_the_same_predictions(self):
+        """``cd_tol`` and ``max_cd_iters`` left at the library's defaults, the
+        settings a user runs. Every scored row still agrees to within the
+        descent's own tolerance."""
+        self._compare(
+            self._stream(33), default_descent=True, l1_ratio=1.0, halflife=100.0, min_periods=20.0
+        )
 
 
 def test_pl_is_importable():

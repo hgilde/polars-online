@@ -119,6 +119,62 @@ class TestWeights:
         # Three rows of warmup are lost to the zero weights, and no more.
         assert len(good) == len(finite(none)) - 3, f"{model}: {len(good)} vs {len(finite(none))}"
 
+    # A fit a thousand halflives stale has no data behind it, which is the
+    # point here, and the readiness notice says so.
+    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.parametrize("model", ["ewridge", "ew_cov"])
+    def test_a_zero_weight_row_keeps_the_history_when_its_decay_underflows(self, model):
+        """docs/PLAN.md §12, recorded and awaiting the user's decision: this
+        pins what the code does now, not what it should do.
+
+        A zero-weight row advances the clock and learns nothing (hard rule 9),
+        so the history should age by the row's gap. When the decay factor
+        ``2^(-gap/h)`` underflows to exactly 0 -- from 1075 halflives on,
+        capped or not -- the mean-form update is 0/0 (``lam*W + w = 0``), the
+        guard refuses it, and the history is kept un-aged, so the next row
+        sees the old count. At 1074 halflives the factor is 2^-1074 > 0 and
+        the history ages to nothing; a cap under 1075 halflives never lets
+        the factor reach 0. The fix §12 names (set the weight to 0, so the
+        next row starts over) changes that row's output and would flip the
+        ``kept`` assertions below."""
+        n0 = 40
+
+        def n_eff_after(gap: float, w: float, cap: float = float("inf")) -> tuple[float, float]:
+            """``n_eff`` at the zero-weight (or weighted) row and at the row after it."""
+            t = [*np.arange(float(n0)), n0 - 1 + gap, n0 + gap]
+            rng = np.random.default_rng(0)
+            x = rng.normal(size=(n0 + 2, 2))
+            df = pl.DataFrame(
+                {
+                    "t": t,
+                    "x0": x[:, 0],
+                    "x1": x[:, 1],
+                    "y0": 2 * x[:, 0],
+                    "w": [1.0] * n0 + [w, 1.0],
+                }
+            )
+            kw = dict(features=["x0", "x1"], clock="t", weight="w", halflife=1.0, max_dclock=cap)
+            spec = (
+                po.spec.ewridge("m", targets=["y0"], max_error_inflation=float("inf"), **kw)
+                if model == "ewridge"
+                else po.spec.ew_cov("m", **kw)
+            )
+            n_eff = _f(_run(df, spec), "n_eff")
+            return n_eff[n0], n_eff[n0 + 1]
+
+        # Aged: the factor is positive, however small.
+        at, after = n_eff_after(1074.0, 0.0)
+        assert 1.9 < at < 2.0 and after < 1e-300, (at, after)
+        _, after = n_eff_after(5000.0, 0.0, cap=1000.0)
+        assert after < 1e-300, after
+        # Kept: the factor is 0, uncapped or capped past 1075 halflives.
+        for gap, cap in [(1075.0, float("inf")), (5000.0, float("inf")), (5000.0, 2000.0)]:
+            at, after = n_eff_after(gap, 0.0, cap)
+            assert after == at, (gap, cap, at, after)
+        # A weighted row on the same gap starts over.
+        _, after = n_eff_after(5000.0, 1.0, cap=2000.0)
+        assert after == 1.0, after
+
     def test_null_weight_skips_the_row(self):
         df = pl.DataFrame({"x0": [1.0, 2.0, 3.0], "y0": [1.0, 2.0, 3.0], "w": [1.0, None, 1.0]})
         out = _run(df, _spec(weight="w"))

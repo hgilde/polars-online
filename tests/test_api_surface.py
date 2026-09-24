@@ -214,6 +214,41 @@ def describe_api() -> str:
         w(f"  {model}{'' if ' ' in model else ' minimal'}:")
         for f in po.spec.output_fields(s):
             w(f"    {f}")
+    w("")
+
+    # The frame `closed_groups` drains is as much API as an output field
+    # (docs/RELEASE-READINESS.md). One schema per bank, whatever has closed,
+    # so a fresh bank already has every column. Each kind as the registry
+    # builds it, closing on a key, plus the three blocks only an option
+    # turns on: `ew_cov`'s PCA, and `marginal`'s lags and bins.
+    w("[closed_groups columns]  # in order: a column renamed, moved or added is a diff here")
+    from test_model_registry import MINIMAL  # it imports this module
+
+    variants = [(name, dict(MINIMAL[name])) for name in sorted(MINIMAL)] + [
+        ("ew_cov with pca", {**MINIMAL["ew_cov"], "pca": 2}),
+        ("marginal with lags and bins", {**MINIMAL["marginal"], "lags": [1], "bins": 4}),
+    ]
+    frames: list[tuple[str, list[str]]] = []
+    for label, extra in variants:
+        kw: dict[str, object] = {"targets": ["y"], "features": ["x0", "x1"], "halflife": 50.0}
+        kw.update(extra)
+        kw.setdefault("group", "g")
+        kw.setdefault("group_close", "monotone")
+        s = getattr(po.spec, label.split(" ")[0])(
+            "m", **{k: v for k, v in kw.items() if v is not None}
+        )
+        frames.append((label, po.ModelBank([s]).closed_groups().columns))
+    shared = [c for c in frames[0][1] if all(c in cols for _, cols in frames)]
+    w("  shared:")
+    for c in shared:
+        w(f"    {c}")
+    for label, cols in frames:
+        if cols == shared:
+            w(f"  {label}: the shared columns only")
+            continue
+        w(f"  {label}:")
+        for c in cols:
+            w(f"    {c}")
     return "\n".join(out) + "\n"
 
 
