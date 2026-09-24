@@ -1813,7 +1813,8 @@ def sgd(
          - ``sigmoid(eta)``
          - ``p - y``
 
-    then ``g_i = d * z_i * w + l2 * b_i`` and ``b_i -= lr_i * g_i``.
+    then ``g_i = d * z_i * w + l2 * b_i`` for a slope, and ``g_0 = d * w`` for
+    the intercept, which is not penalised; then ``b_i -= lr_i * g_i``.
 
     .. rubric:: Parameters
 
@@ -1836,7 +1837,8 @@ def sgd(
         gradients and ``n_eff`` both decay on the model's clock, so an annealed or
         adapted rate opens up again after a long gap instead of staying frozen.
     ``l2``
-        A ridge on every step. Default 0.0.
+        A ridge on every step, on the slopes only: the intercept is not
+        penalised. Default 0.0.
     ``clip_gradient``
         A cap on the gradient's magnitude. Default ``1e3``, not off, because
         ``poisson`` needs it: ``p = exp(eta)``, so a row that pushes ``eta`` up

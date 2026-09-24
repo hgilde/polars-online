@@ -368,9 +368,12 @@ def lasso_ref(
     ``c_i = (E[x_i y] - m_i ybar) / s_i``: the target is centred but not
     scaled. ``s_i`` is the EW standard deviation of feature ``i``. Then
     ``coef_i = b_i / s_i`` and the intercept is ``ybar - m . coef``. ``l = 0``
-    is the unpenalized EW least squares, with no ridge. A feature whose
-    centred variance is at most 1e-10 of its raw second moment is dropped with
-    coefficient 0, as ``standardize`` drops it (docs/PLAN.md, tasks 4-5).
+    is the unpenalized EW least squares, with no ridge. The library drops a
+    feature whose centred variance is exactly zero (``variance_is_usable``,
+    since T-E9), from centred accumulators. This reference takes the variance
+    from raw moments, where an exactly constant feature leaves rounding noise,
+    so it drops one at 1e-10 of its raw second moment, which no feature in the
+    tests comes near.
 
     :func:`_enet_descent` solves each problem from zero to ``tol``. So the
     library's warm start, along the path and from one solve to the next,

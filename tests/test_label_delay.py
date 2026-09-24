@@ -245,14 +245,17 @@ class TestTheStreamContract:
         """The stream's `pending` is skipped when empty, so a spec without a
         delay writes what it always did. (The clock has a `pending` of its
         own -- the time of skipped rows -- so the two are told apart by
-        counting, not by the name appearing at all.)"""
+        counting, not by the name appearing at all. Since schema 15 a delayed
+        stream also keeps `pending_clock`, the clock its held rows cover.)"""
         df = frame(n=100)
         plain = po.ModelBank([spec()])
         plain.fit_predict(df)
         delayed = po.ModelBank([spec(label_delay=5.0)])
         delayed.fit_predict(df)
         assert plain.save_bytes().count(b"pending") == 1, "the clock's, and no other"
-        assert delayed.save_bytes().count(b"pending") == 2, "the clock's and the stream's"
+        assert delayed.save_bytes().count(b"pending") == 3, (
+            "the clock's, the stream's, and the held rows' clock"
+        )
         assert len(delayed.save_bytes()) > len(plain.save_bytes())
 
     def test_rows_still_waiting_are_never_learned_from(self):

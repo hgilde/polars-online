@@ -3578,6 +3578,94 @@ note, not a task.
       target; 3.10 also `typing_extensions` for `Unpack`); an advisory leg
       on the next pre-release (3.15, due October 2026); and free-threaded
       builds, which an `abi3` wheel cannot serve.
+- [x] 92. **Mutation testing in CI, a release comparison, property tests
+      and oracles, requested 2026-09-24.** The user asked whether more
+      mutation testing would catch subtle bugs. The analysis found that this
+      session's subtle bugs came from oracles, review, experiment and a CI
+      leg's Python, while mutation testing found weak tests (48 survivors in
+      `stats.rs`) and no bugs. The user asked for all three recommendations,
+      and for the README's row-order section to say how a bank detects rows
+      out of order.
+      - *Mutation testing* (`.github/workflows/mutants.yml`). The changed
+        lines of every push and pull request, failing on a survivor that
+        `scripts/mutants_equivalent.toml` does not name; all of
+        `online-core` weekly in sixteen shards of up to two hours, reported
+        through `scripts/mutants_report.py`, on its schedule only while the
+        repo is public. The scope, `online-core` and `span.rs`, was
+        measured: `span.rs`'s own Rust tests caught 55 of 60 viable mutants,
+        and its 4 real survivors now have tests; a one-in-ten sample of
+        `spec.rs` left 16 of 39 viable mutants, pytest's ground, out of
+        scope. The equivalents list matches by file, function, mutation and
+        code on the line, so an entry follows its line and lapses when the
+        line changes.
+      - *The release comparison* (`scripts/compare_release.py`,
+        `scripts/release_probe.py`): every output of 30 specs over 400 rows
+        against a PyPI release, bit for bit. The first step of a release
+        (docs/RELEASE-READINESS.md, which now lists the steps), and a report
+        on every CI push. Measured: identical to 0.10.0 and 0.9.1; 112
+        fields differ from 0.8.0, all from 0.9.0's declared gates.
+      - *Property tests* (`tests/test_properties_temporal.py`, 11 properties)
+        on duration text and temporal clocks. They found four bugs, all
+        fixed with the tests pinning them: a space after the sign
+        (`"+ 5m"`) was accepted and named a grid's field; a `pl.duration`
+        past 292 years wrapped (585 years stored as `384ns`), because
+        `dt.total_nanoseconds()` wraps; a `timedelta` that long was an
+        unnamed `OverflowError`; and `label_delay` broke hard rule 3, since
+        the held rows' clock was a running sum within a chunk and a fresh
+        sum at each chunk's start, which round differently, so
+        `settled_frac` depended on the chunking. The stream now keeps that
+        clock per instance, in the state: schema 15, and a schema-14 file
+        loads with it rebuilt as 14 did. Single-chunk outputs did not move
+        (identical to 0.10.0, bit for bit).
+      - *Oracles* for 40 model paths no independent reference held
+        (`tests/reference_paths.py` and five `test_oracles_*` files, 59
+        tests): the lasso's targets, gaps, windows, selection and
+        intercept; `ewridge`'s grids, windows, sessions and schedule;
+        `rls` and `kalman` with several targets; `ftrl`, `pa`, `sgd`,
+        `holt`; the plain sigma. Each is written from the objective or the
+        docstring's equations, with seeded bugs failing it. They found four
+        disagreements, left open as tasks 94 to 97, and `sgd`'s docstring
+        giving the intercept an `l2` it does not get, now corrected.
+- [x] 93. **The PyPI page's links to other files, reported 2026-09-24.** PyPI
+      shows the README, where a relative link resolves against pypi.org and
+      is a 404; in-page links worked. `scripts/pypi_readme.py` rewrites the
+      76 relative links to GitHub at the release's tag, run by
+      `release.yml` before maturin in the `sdist` and every `build` job;
+      the README in the repository keeps its relative links. A published
+      description never changes, so 0.10.0's page stays as it was.
+- [ ] 94. **A windowed Gram's zero variance comes back as rounding noise.**
+      Found by the task 92 oracles. The drop rule is "variance exactly
+      zero" (`variance_is_usable`, since T-E9), but a window's Gram is
+      rebuilt by subtraction, so a feature constant over the window reads
+      about 1e-14 and is kept. A windowed lasso at λ = 0 whose window holds
+      one row of a sparse target then divides noise by noise: predictions
+      of 8.6e33 and 2.8e55 where the fit is −1.0. It takes a lowered gate
+      (`min_periods=0.5`); at the default the rows are withheld, λ = 0.1 is
+      sane, and `ewridge` is withheld by its noise gate. The fix is a
+      noise-aware zero for a subtracted Gram, since T-E9 removed the
+      relative threshold for good reasons.
+- [ ] 95. **The lasso's `lam_selected` under a `window` departs from its
+      documentation** ("the selection error is truncated with the sums"):
+      14 to 19 rows of ~277 at the default `select_halflife`, 88 to 90 at
+      `select_halflife=10`. Three departures in `lasso.rs`, each moving rows
+      on its own: the snapshot's selection part is taken after the row's own
+      error and its weight is aged twice; `window_sel_err` reads the ring as
+      it stood at the previous row; and the truncation uses the model's
+      halflife, not `select_halflife`. An emulation with the three corrected
+      lands on the oracle on every row.
+- [ ] 96. **`lam_selected` under a `min_periods` list.** Each target's
+      selection error folds its predictions on rows that its own threshold
+      still withholds, which is review S2's "a gate on the output, not on
+      the model", but E7 says a target not yet ready is withheld "before it
+      can reach … selection". The code and the two documents need one
+      reading; the user's call.
+- [ ] 97. **Two conventions to settle.** `holt` reports `coef` as `[0, 0]`
+      before a target's first observation, where `docs/OUTPUTS.md` says
+      `coef` is null "before the model has anything to report"; and the
+      test reference `kalman_ref` builds its standardized `coef` from the
+      scales before the row and the means after it (off by up to 0.38), so
+      no test compares it, while the library's `coef` predicts the next row
+      to 1e-16.
 
 ## 11a. Decisions made while implementing
 

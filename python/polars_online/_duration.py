@@ -34,9 +34,9 @@ def duration_text(value: Any, who: str, key: str) -> Any:
     if isinstance(value, (list, tuple)):
         return [duration_text(v, who, key) for v in value]
     if isinstance(value, timedelta):
-        return format_duration(value // timedelta(microseconds=1) * 1_000)
+        return format_duration(_fits(value // timedelta(microseconds=1) * 1_000, who, key))
     if isinstance(value, pl.Expr):
-        return format_duration(_nanoseconds(value, who, key))
+        return format_duration(_fits(_nanoseconds(value, who, key), who, key))
     if isinstance(value, str):
         # The text names a grid's fields (`@h10m`), so no padding travels.
         value = value.strip()
@@ -63,10 +63,26 @@ def _nanoseconds(expr: pl.Expr, who: str, key: str) -> int:
             f"{who}: {key} must be one duration, such as {example}; the expression "
             f"gives {s.len()} value(s) of dtype {s.dtype}"
         )
-    ns = s.dt.total_nanoseconds().item()
-    if ns is None:
+    # The stored integer in the column's own unit, scaled in Python's exact
+    # integers: `dt.total_nanoseconds()` wraps past 292 years, so 585 years
+    # read as 384 ns (a property test found it, 2026-09-24).
+    stored = s.cast(pl.Int64).item()
+    if stored is None:
         raise ValueError(f"{who}: {key} is a null duration")
-    return int(ns)
+    per = {"ns": 1, "us": 1_000, "ms": 1_000_000}[s.dtype.time_unit]
+    return int(stored) * per
+
+
+#: The longest duration a clock holds: nanoseconds in an i64.
+_MAX_NS = 2**63 - 1
+
+
+def _fits(ns: int, who: str, key: str) -> int:
+    """``ns`` if a clock can hold it, else a refusal that names the parameter,
+    in the words the text form's refusal uses."""
+    if abs(ns) > _MAX_NS:
+        raise ValueError(f"{who}: {key} is longer than 292 years, the most a clock can hold")
+    return ns
 
 
 def _tick_ns(dtype: pl.DataType) -> int:

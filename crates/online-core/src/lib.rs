@@ -254,7 +254,14 @@ pub use window::{
 ///   double of seconds from a per-column origin the bank kept beside the
 ///   streams, which resolved 2^-52 of the time since it; the origin is gone
 ///   with it. No loader for 13.
-pub const SCHEMA_VERSION: u32 = 14;
+/// - 15: each stream keeps, per model instance, the clock its rows held under
+///   `label_delay` have covered (`StreamState::pending_clock` in
+///   online-polars), where 14 rebuilt it at every chunk as a fresh sum. The
+///   two round differently, so `settled_frac` depended on where a chunk
+///   ended, against hard rule 3 (a property test found it, 2026-09-24). A
+///   schema-14 file loads: its loader rebuilds the value as 14 did at a chunk
+///   boundary.
+pub const SCHEMA_VERSION: u32 = 15;
 
 /// Oldest state layout this build still loads.
 ///

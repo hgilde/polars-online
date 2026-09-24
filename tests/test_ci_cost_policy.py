@@ -221,6 +221,18 @@ class TestPythonVersions:
         assert job.get("env", {}).get("UV_PYTHON") == "${{ matrix.python }}"
         assert "matrix.python" in job["name"]
 
+    def test_the_release_comparison_reports_once_and_never_gates(self):
+        """scripts/compare_release.py on one leg: it installs the newest
+        release from PyPI, and a difference between releases may be intended."""
+        steps = [
+            s for s in CI["jobs"]["test"]["steps"] if "compare_release.py" in str(s.get("run", ""))
+        ]
+        assert len(steps) == 1, steps
+        step = steps[0]
+        assert "--report" in step["run"] and step.get("continue-on-error") is True
+        floor, _ = self._declared()
+        assert f"matrix.python == '{floor}'" in step["if"] and "runner.os == 'Linux'" in step["if"]
+
     def test_the_reference_is_built_and_published_once(self):
         """The Pages artifact can be uploaded only once a run; one Linux leg
         builds it, the one at the floor."""
@@ -231,3 +243,40 @@ class TestPythonVersions:
                 cond = step.get("if", "")
                 assert "runner.os == 'Linux'" in cond, (label, cond)
                 assert f"matrix.python == '{floor}'" in cond, (label, cond)
+
+
+class TestMutationTesting:
+    """mutants.yml (docs/TESTING.md T-D4): the changed lines on every push
+    and pull request, gating; all of online-core weekly, reporting."""
+
+    MUT = ALL["mutants.yml"]
+
+    @staticmethod
+    def _runs(job: dict) -> str:
+        return " ".join(str(step.get("run", "")) for step in job["steps"])
+
+    def test_the_changed_lines_run_on_every_push_and_pull_request_and_gate(self):
+        assert {"push", "pull_request"} <= set(self.MUT["on"])
+        run = self._runs(self.MUT["jobs"]["changed"])
+        assert "--in-diff" in run and "mutants_report.py" in run and "--fail-on-missed" in run
+
+    def test_the_weekly_pass_runs_while_public_or_by_hand(self):
+        """COST POLICY: sixteen shards of up to two hours is not for a
+        private repo's metered minutes."""
+        cond = " ".join(self.MUT["jobs"]["weekly"]["if"].split())
+        assert "github.event_name == 'schedule' && github.event.repository.private == false" in cond
+        assert "workflow_dispatch" in cond
+
+    def test_the_weekly_pass_reports_and_never_gates(self):
+        run = self._runs(self.MUT["jobs"]["weekly-report"])
+        assert "mutants_report.py" in run and "--fail-on-missed" not in run
+
+    def test_every_shard_runs(self):
+        shards = self.MUT["jobs"]["weekly"]["strategy"]["matrix"]["shard"]
+        assert shards == list(range(len(shards)))
+        assert f"--shard ${{{{ matrix.shard }}}}/{len(shards)}" in self._runs(
+            self.MUT["jobs"]["weekly"]
+        )
+
+    def test_a_push_cannot_cancel_the_weekly_pass(self):
+        assert "github.event_name" in self.MUT["concurrency"]["group"]

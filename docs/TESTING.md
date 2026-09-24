@@ -109,6 +109,11 @@ T-A4).
 | `rls` | `rls ≡ ewridge(ridge_decay, solve_every=1)` | <1e-9 | |
 | Kalman | `kalman_ref`, across every configuration | ~1e-15 | T-A1 |
 | the lasso | its KKT conditions, rather than a ported solver; and `lasso_ref`, a coordinate descent from zero on the documented schedule, for every row's *pred* | the conditions hold; pred ~1e-14 | T-A2 |
+| the lasso's targets, `target_gaps`, window, selection, no intercept | `reference_paths.lasso_paths_ref`: every statistic recomputed from the raw rows at each solve, so independent of the core's recursions (2026-09-24) | pred 4.5e-14 | |
+| `ewridge`'s grids, windows, sessions and `session_shrink`, schedule, no intercept | `reference_paths.ewridge_paths_ref`, the same way | pred 1.1e-14 | |
+| `rls` with several targets, `coef_prior`, no intercept; `kalman` with several targets and nulls | `rls_paths_ref`; `kalman_ref` | pred 5.8e-15; 4.9e-15 | |
+| `ftrl`'s targets and decay, `pa`, `sgd`, `holt` | `ftrl_ref`; the docstrings' update equations, written out (`pa_ref`, `sgd_ref`, `holt_ref`) | pred 8.2e-16 | |
+| the plain `sigma` and `resid_z` | the weighted EW root mean square of the residuals before the row | 8.1e-16 | |
 | Huber, quantile | `robust_ref` | ~1e-13 | T-A3 |
 | FTRL | `ftrl_ref` | ~1e-16 | T-A4 |
 | FTRL | `river.optim.FTRLProximal`, row for row | 1e-12 | T-R1 |
@@ -289,11 +294,11 @@ integration tests through `run_config`. `online-core/src/robust.rs` is at
 
 ### Open entries
 
-What the entries themselves still call open:
-
-| entry | still open | why it matters |
-|---|---|---|
-| T-D4 | making the mutation pass periodic in CI | no workflow under `.github/workflows/` runs `scripts/mutants.sh` |
+None, since 2026-09-24. The last three closed that day: T-A2's numpy
+`lasso_ref` for the pred path, T-W3's paths on a Windows runner (its
+Windows-only test runs on the Windows CI leg), and T-D4's mutation testing
+in CI. What is still thin is below: the mutation survivors, and `robust.rs`'s
+coverage.
 
 ### Mutation survivors
 
@@ -1014,7 +1019,7 @@ platforms.
 | T-D1 | ~~P1~~ **done** (2026-08-31) | **Actually run the workflows once.** | the workflows have run; [What is left](#what-is-left) has the results |
 | T-D2 | ~~P2~~ **done** | **Property-based testing** (hypothesis) | `tests/test_properties.py` |
 | T-D3 | ~~P2~~ **done** | Determinism across parallelism | `tests/test_portability.py` |
-| T-D4 | ~~P3~~ **done** | Coverage, and **mutation testing** | reported, not gating; making the mutation pass periodic in CI is still open |
+| T-D4 | ~~P3~~ **done** | Coverage, and **mutation testing** | coverage reported, not gating; mutation testing in CI since 2026-09-24 (`mutants.yml`) |
 | T-D5 | | Mutation re-run | **done, three passes** |
 
 **T-D1.** Until the workflows ran, T-W1/T-W2 and the wheel builds were
@@ -1025,6 +1030,15 @@ installed, so `git push` could not authenticate. The unblock was any of
 scope**, since this push added `.github/workflows/`. The repo has been pushed
 since 2026-08-31, and CI runs on Windows on every push; the Windows results
 are in [What is left](#what-is-left).
+
+**T-D2, extended 2026-09-24.** `tests/test_properties_temporal.py` adds 11
+properties on duration text (round trip over the whole i64 range, polars'
+own parser as the oracle, overflow, padding and inner spaces, the three
+forms) and on temporal clocks (chunk invariance, save and load at any row,
+nanosecond exactness years into a stream, a delayed label). They found four
+bugs, all fixed: a space after the sign accepted, a `pl.duration` past 292
+years wrapping, a `timedelta` that long refused without a name, and
+`label_delay` breaking chunk invariance in `settled_frac`'s last bit.
 
 **T-D2.** `tests/test_properties.py` uses hypothesis to generate adversarial
 streams: mixed nulls, duplicate/long-gap clocks, ±1e8 values, zero weights,
@@ -1056,8 +1070,31 @@ any mutation. Measured on the worst file, **`robust.rs` went from 162 missed
 / 77 caught to 42 / 197**, a 74% reduction from one test. The residue is
 mostly accessors (`n_features -> 0`) and validation-branch comparisons, which
 are low value. Re-running the full pass for a new headline number is done
-(T-D5). Making it periodic in CI is still open: no workflow under
-`.github/workflows/` runs it.
+(T-D5).
+
+**In CI since 2026-09-24** (`.github/workflows/mutants.yml`). Every push and
+pull request runs cargo-mutants over the lines it changed, and fails on a
+survivor that `scripts/mutants_equivalent.toml` does not list: new code
+should come with a test that would notice it breaking. The whole of
+`online-core`, 9,079 mutants, runs weekly in sixteen shards that each fit
+the two-hour job limit, reported through `scripts/mutants_report.py` and
+never gating. The weekly pass runs on its schedule only while the repository
+is public, and by hand.
+
+The changed-lines scope is `online-core` and `online-polars/src/span.rs`,
+chosen by measurement. cargo-mutants runs `cargo test` only, and the pytest
+suite, which covers most of `online-polars` through the extension, is
+invisible to it. On `span.rs`, whose duration parser its own Rust tests pin,
+55 of the 60 viable mutants were caught. Of the 5 survivors, 4 were real
+gaps, now closed by Rust tests (the longest duration that parses, a span's
+`Display`, and the two deserialisers' messages), and 1 is equivalent. On a
+one-in-ten sample of `spec.rs`, 16 of 39 viable mutants survived, nearly all
+of them validation that pytest covers, so it stays out of scope.
+
+`scripts/mutants_equivalent.toml` names each mutant no test can catch by
+file, function, mutation and code on its line. So an entry follows its line
+when code above it moves, and lapses when the line changes;
+`tests/test_mutants_report.py` checks every entry still finds its line.
 
 **2026-09-02:** `golden.rs` had signatures for seven of the eleven kinds.
 `sgd`, `pa`, `holt` and `ew_cov`, the four with longhand-recursion oracles in

@@ -114,6 +114,54 @@ whatever the toolchain emits, and nothing checks it. The wheels are
 `manylinux_2_17`. A deployment on an older glibc builds the CLI from a
 checkout, or the release job grows a container step for it.
 
+### Compare with the last release, bit for bit (2026-09-24)
+
+**Before a release, every output is compared with the last release's, bit
+for bit.** A test with a tolerance lets a small numeric change through,
+and a change to the numbers a model returns makes a release a minor.
+`uv run python scripts/compare_release.py` installs the newest release
+from PyPI into a cached venv under `.cache/release-compare/`. It runs the
+workload in `scripts/release_probe.py` under both builds: 30 specs, every
+model among them, over 400 rows with groups, sessions, gaps, nulls and
+zero weights. It then compares every output field, and the frame
+`closed_groups` drains, bit by bit. It prints each field that differs,
+with the first row where it does, and exits 1. Each run reports which
+package it imported, so the comparison cannot compare a build with itself.
+A spec the old release refuses is listed as not comparable, not as a
+difference. `--against 0.9.1` names another release, and `--report`
+prints without failing.
+
+**A difference is declared or it is a regression.** A declared one is in
+the CHANGELOG, and makes the release a minor. An undeclared one is a
+regression: find its cause, and add a test that pins it, before the
+release goes out. CI runs the same comparison on every push, report only,
+so a change shows at the commit that made it.
+
+Measured when it was written: this build against 0.10.0 and against
+0.9.1, all 291 fields identical. Against 0.8.0, 112 fields differ, all
+from 0.9.0's declared readiness gates, which is the evidence it can fail.
+
+The steps of a release, in order:
+
+| step | how |
+|---|---|
+| 1. compare | `uv run python scripts/compare_release.py`; every difference declared in the CHANGELOG, or its cause pinned by a test |
+| 2. rehearse | dispatch `release.yml` on `main`, which builds every wheel and publishes nothing ([Rehearse before tagging](#rehearse-before-tagging)) |
+| 3. version | the version in six places: `pyproject.toml`, `Cargo.toml` three times, `python/polars_online/__init__.py`, and `docs/VALIDATION.md`, regenerated with `uv run python scripts/validate.py > docs/VALIDATION.md`; then `Cargo.lock` and `uv.lock` refreshed |
+| 4. changelog | `[Unreleased]` promoted to `## [X.Y.Z] — <date>` |
+| 5. gate | `bash scripts/gate.sh`, unpiped, until its last line says PASS |
+| 6. commit | on `main` itself, not on a branch |
+| 7. push and tag | `git push`, then `git tag -a vX.Y.Z -F <message> <sha>` on the gated sha, never a bare `HEAD`, and `git push origin vX.Y.Z` |
+| 8. approve | the `publish to PyPI` job, in the `Pypi` environment ([The release gate](#the-release-gate-2026-09-06)) |
+| 9. verify | install from PyPI into a clean venv outside the repository, and check `po.__file__`, the three versions and a fit |
+
+The workflow itself rewrites the README's links for PyPI. PyPI shows the
+README as the project page, where a relative link to another file resolves
+against pypi.org and is a 404. So both jobs that build a package first run
+`scripts/pypi_readme.py --ref <the tag>`, which points each such link at the
+file on GitHub as it was at the tag. The README in the repository keeps its
+relative links.
+
 ## Which Polars versions are promised
 
 **The declared range, `polars>=1.34.0,<3`, is measured, and Polars does not

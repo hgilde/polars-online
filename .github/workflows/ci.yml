@@ -237,6 +237,15 @@ jobs:
         with:
           path: docs/_build/html
 
+      # Every output against the newest release's, bit for bit: a commit that
+      # moves a number shows it here, not first at release time. Reported,
+      # never gating: a change between releases may be intended, and the
+      # release step decides (docs/RELEASE-READINESS.md, "Cutting a release").
+      - name: outputs against the newest release (report only)
+        if: runner.os == 'Linux' && matrix.python == '3.12'
+        continue-on-error: true
+        run: uv run python scripts/compare_release.py --report
+
       # Reported, never gating (docs/TESTING.md T-D4); once per OS.
       - name: coverage (python)
         if: matrix.python == '3.12'

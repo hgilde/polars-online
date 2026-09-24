@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # Mutation testing on online-core (docs/TESTING.md T-D4).
 #
-#   ./scripts/mutants.sh                      # the whole crate (slow: ~2600 mutants)
+#   ./scripts/mutants.sh                      # the whole crate (9,079 mutants, ~8 h at 4 jobs)
 #   ./scripts/mutants.sh crates/online-core/src/clock.rs   # one file (~1 min)
 #   ./scripts/mutants.sh --iterate            # only what the last run did not catch
 #   ./scripts/mutants.sh --in-diff <(git diff main...)     # only code a diff touches
+#   python3 scripts/mutants_report.py mutants.out          # the survivors, less the equivalents
 #
 # Prefer the last two for follow-ups. A full pass is only worth it after a batch
 # of feature work; `--iterate` answers "did the survivors close?" for a tenth of
-# the cost, and `--in-diff` answers "is this branch covered?".
+# the cost, and `--in-diff` answers "is this branch covered?". CI runs both
+# kinds itself (.github/workflows/mutants.yml): the changed lines on every push,
+# failing on a survivor, and the whole crate weekly in sixteen shards, reported.
+# scripts/mutants_equivalent.toml lists the mutants no test can catch.
 #
 # What it does: makes one small change to the source (flip an operator, replace
 # a function body with a constant), rebuilds, and reruns the tests. A mutant

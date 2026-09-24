@@ -520,6 +520,69 @@ such step its guarantee:
 A query with such a step raises `OrderNotGuaranteedWarning` when it is
 handed to a bank, naming the step.
 
+#### How a bank detects rows out of order
+
+A bank checks the order it is given in three places. The query check
+warns. The other two refuse a chunk before any of its rows is learned.
+
+| check | what it reads | when it finds disorder |
+|---|---|---|
+| the query | the plan handed to the bank: a `join`, `group_by` or `unique` whose order Polars does not guarantee, unless a `sort` sits above it | raises `OrderNotGuaranteedWarning`, naming the step and its fix; the run goes on |
+| the clock | each group's clock, row by row, for every spec with a `clock` | refuses the chunk on a backwards step the settings below do not allow |
+| the group keys | with `group_close="monotone"`, the keys in the column's own order | refuses the chunk on a key below one already closed, since a closed group cannot reopen |
+
+**The clock is checked group by group.** Each spec keeps one clock per
+group, so groups may interleave freely. Only the rows of one group need to
+be in clock order. Equal clock values are a gap of zero. A row with a null
+feature is skipped, but its clock is still checked. On a temporal clock the
+comparison is exact, in integer nanoseconds.
+
+**The size of a backwards step decides what it means:**
+
+| a step back of | is read as | and the bank |
+|---|---|---|
+| less than `min_backwards_jump` | rows out of order: adjacent rows are never further apart than `max_dclock`, and a session is longer | refuses the chunk, whatever `on_clock_reset` says |
+| at least `min_backwards_jump` | a boundary, such as a clock that restarts | follows `on_clock_reset`: `"max"`, the default, takes a gap of `max_dclock`, `"zero"` a gap of 0, `"reset_state"` restarts the model, and `"error"` refuses the chunk |
+| any size, on a row whose `session` value changes | a new session, not a step | applies `session_gap`, or restarts the model under `session_gap="reset"` |
+
+`min_backwards_jump` defaults to `max_dclock`. Under an infinite
+`max_dclock` it defaults to 0, which switches the check off, since no step
+is then too large for two adjacent rows. Set it to 0 to switch it off
+yourself.
+
+**A refused chunk leaves the bank as it was.** The bank runs the clock of
+every group of every spec over the chunk before it learns any row. So one
+late row in one group changes nothing, and the corrected chunk can be fed
+again. The error names the spec, the clock column, the row and the size of
+the step. It also says which setting refused the step, and how to change it:
+
+```text
+spec "m": clock column "t" goes backwards by 30 at row 6, less than min_backwards_jump = 60
+(which defaults to max_dclock: adjacent rows are never further apart, and a session is longer)
+-- out-of-order rows, not a session boundary; the bank was not updated. Sort each group by the
+clock, or add a `session` column if these are real boundaries. ...
+```
+
+**Scoring does not refuse a late row.** `predict` learns nothing, so a
+frame scored against a bank may start a little before the last clock the
+bank learned. Only `on_clock_reset="error"` refuses a backwards step there.
+
+**The summary counts what a policy absorbed.** `bank.summary()` reports
+`clock_backwards`, the rows whose clock fell below the previous row's
+within a session, and `resets`, the rows where a stream restarted. A
+nonzero `clock_backwards` under `"max"` or `"zero"` is disorder the
+settings let through.
+
+**The query check is best-effort.** It reads the plan's `explain` text,
+and walks the plan only when that names a join, an aggregation or a
+`unique`. A step under a `sort` counts as ordered. A join with
+`maintain_order="left"` is followed on its left side only. A plan Polars
+cannot serialize passes without a warning, and the check never fails a run.
+`ModelBank.fit` does not warn when every spec is an accumulator with no
+decay, since those sums reach the same state in any order. For a plan
+whose order you know, silence the warning with
+`warnings.simplefilter("ignore", po.OrderNotGuaranteedWarning)`.
+
 ## Running a bank
 
 A bank runs three ways, and each gives the same numbers: inside a Polars

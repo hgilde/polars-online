@@ -32,6 +32,14 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      # PyPI shows README.md as the project page, where a relative link to
+      # another file resolves against pypi.org and is a 404. Rewritten to the
+      # repository at this ref before maturin reads the file into the package
+      # metadata; the README on GitHub keeps its relative links
+      # (scripts/pypi_readme.py). `--no-project`: no sync, no extension build.
+      - name: the README's links point at GitHub, at this ref
+        run: uv run --no-project --python 3.12 python scripts/pypi_readme.py --ref "${{ github.ref_name }}"
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           command: sdist
@@ -112,6 +120,15 @@ jobs:
       # maturin-action brings its own Python, and the CLI has no pyo3 in its
       # tree (`cargo tree -p online-cli` finds none). That was 26 minutes of
       # the Intel macOS job in the first rehearsal.
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      # PyPI shows README.md as the project page, where a relative link to
+      # another file resolves against pypi.org and is a 404. Rewritten to the
+      # repository at this ref before maturin reads the file into the package
+      # metadata; the README on GitHub keeps its relative links
+      # (scripts/pypi_readme.py). `--no-project`: no sync, no extension build.
+      - name: the README's links point at GitHub, at this ref
+        run: uv run --no-project --python 3.12 python scripts/pypi_readme.py --ref "${{ github.ref_name }}"
 
       # maturin-action supplies the manylinux/musllinux container and the
       # cross-compilation toolchain; on macOS and Windows it is a thin wrapper

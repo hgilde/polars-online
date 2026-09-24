@@ -16,7 +16,8 @@
 //! | `Poisson` | log | `exp(eta)` | `p − y` |
 //! | `Logistic` | sigmoid | `sigmoid(eta)` | `p − y` |
 //!
-//! then `g_i = d · z_i · w + l2 · b_i` and `b_i -= lr_i · g_i`.
+//! then `g_i = d · z_i · w + l2 · b_i` for a slope and `g_0 = d · w` for the
+//! intercept, which is not penalised; then `b_i -= lr_i · g_i`.
 //!
 //! Learning rates ([`LearningRate`]): a constant, an inverse-scaling schedule
 //! that anneals with `n_eff`, or AdaGrad's per-coordinate `lr / (sqrt(G_i) + eps)`.

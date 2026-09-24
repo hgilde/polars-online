@@ -1,0 +1,153 @@
+name: Mutants
+
+# Mutation testing (docs/TESTING.md T-D4). cargo-mutants makes one small change
+# at a time -- an operator flipped, a body replaced by a constant -- rebuilds,
+# and reruns `cargo test`. A mutant no test catches is a place where a bug
+# would pass the whole suite.
+#
+# Two jobs. `changed` runs on every push and pull request, over the lines the
+# change touched, and fails on a survivor that scripts/mutants_equivalent.toml
+# does not name: new code should come with a test that would notice it
+# breaking. `weekly` runs all of online-core, split into shards that each fit
+# the two-hour job limit, and reports without failing.
+#
+# Scope: online-core, and online-polars' span.rs, whose duration parser its own
+# Rust tests pin. cargo-mutants runs `cargo test` only, so the rest of
+# online-polars and online-py, which the pytest suite covers through the
+# extension, would report most mutants as survivors when they are not.
+#
+# COST POLICY (ci.yml): the weekly pass is sixteen shards of up to two hours,
+# so it runs on its schedule only while the repo is public, and by hand.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "41 3 * * 0"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  # The event is in the group, so a push cannot cancel the weekly pass.
+  group: mutants-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  changed:
+    name: mutants on the changed lines
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: the diff this run examines
+        env:
+          # A pull request's base, or the commit a push moved the branch from.
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            BASE=HEAD~1
+          fi
+          git diff "$BASE" HEAD -- crates/ > changed.diff
+          echo "$(grep -c '^+[^+]' changed.diff || true) added lines under crates/ since $BASE"
+      # online-polars pulls in Polars, whose build does not fit the runner's
+      # disk as it comes: the same step, in the same place, as ci.yml's test
+      # job (before the cache restore and before anything compiles).
+      - name: free disk and use a leaner linker
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost /usr/local/.ghcup || true
+          sudo apt-get install -y --no-install-recommends lld
+          mkdir -p .cargo
+          printf '[target.x86_64-unknown-linux-gnu]\nrustflags = ["-C", "link-arg=-fuse-ld=lld"]\n' \
+            >> .cargo/config.toml
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: mutants-changed
+          cache-on-failure: true
+      - name: install cargo-mutants
+        run: cargo install --locked cargo-mutants --version 27.1.0
+      - name: cargo mutants on the diff
+        run: |
+          set +e
+          cargo mutants --in-diff changed.diff \
+            --package online-core --package online-polars \
+            --file 'crates/online-core/src/**' --file crates/online-polars/src/span.rs \
+            -j 2 --minimum-test-timeout 30 --output mutants-out
+          code=$?
+          # 0: every mutant caught, 2: survivors, 3: timeouts. The report
+          # decides on those; anything else means the run itself failed.
+          case "$code" in 0|2|3) exit 0 ;; *) exit "$code" ;; esac
+      - name: report, failing on a survivor the equivalents list does not name
+        run: python3 scripts/mutants_report.py mutants-out/mutants.out --fail-on-missed
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: mutants-changed
+          path: mutants-out/mutants.out
+          if-no-files-found: ignore
+
+  weekly:
+    name: mutants, online-core, shard ${{ matrix.shard }} of 16
+    if: >-
+      (github.event_name == 'schedule' && github.event.repository.private == false)
+      || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: mutants-weekly
+          cache-on-failure: true
+      - name: install cargo-mutants
+        run: cargo install --locked cargo-mutants --version 27.1.0
+      - name: cargo mutants, this shard
+        run: |
+          set +e
+          cargo mutants --package online-core --shard ${{ matrix.shard }}/16 \
+            -j 4 --minimum-test-timeout 10 --output shard
+          code=$?
+          case "$code" in 0|2|3) exit 0 ;; *) exit "$code" ;; esac
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: mutants-shard-${{ matrix.shard }}
+          path: shard/mutants.out
+          if-no-files-found: ignore
+
+  weekly-report:
+    name: mutants, online-core, the week's report
+    needs: weekly
+    if: always() && needs.weekly.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: mutants-shard-*
+          path: shards
+      # Reported, never gating: the week's survivors are the next batch of
+      # tests to write (docs/TESTING.md, "Mutation survivors").
+      - name: report
+        run: python3 scripts/mutants_report.py shards/*

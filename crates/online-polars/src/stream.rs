@@ -1378,6 +1378,17 @@ pub struct StreamState {
     /// written before it existed.
     #[serde(default)]
     pub decay_time: Vec<f64>,
+    /// Per model instance, the clock the rows held under `label_delay` have
+    /// covered and the model has not decayed by yet, which `settled_frac`
+    /// adds (`Instance::pending_clock`). Kept, not rebuilt at each chunk:
+    /// a running `+=`/`-=` and a fresh sum of the held rows round
+    /// differently, so rebuilding it made `settled_frac` depend on where a
+    /// chunk ended (hard rule 3; found by a property test, 2026-09-24).
+    /// Written only by a stream with a `label_delay`, so a spec without one
+    /// writes what it always did. Empty in a schema-14 file, whose loader
+    /// rebuilds it the way 0.10.0 did at a chunk boundary.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_clock: Vec<f64>,
     /// Per model instance, which readiness notices it has raised (§3), so a
     /// resumed stream does not raise them again.
     #[serde(default)]
@@ -1522,6 +1533,8 @@ pub struct Stream {
     summary: Option<DataSummary>,
     /// Per instance, the decay time seen; see [`StreamState::decay_time`].
     decay_time: Vec<f64>,
+    /// Per instance, the held rows' clock; see [`StreamState::pending_clock`].
+    pending_clock: Vec<f64>,
     /// Per instance, the readiness notices raised; see
     /// [`StreamState::notified`].
     notified: Vec<Notified>,
@@ -2081,6 +2094,7 @@ impl Stream {
             last_row: None,
             summary: Some(DataSummary::new(spec)),
             decay_time: vec![0.0; slots.len()],
+            pending_clock: vec![0.0; slots.len()],
             notified: vec![Notified::default(); slots.len()],
             label_delay: spec.label_delay.as_ref().map(Span::value),
             pending: Vec::new(),
@@ -2108,6 +2122,13 @@ impl Stream {
             last_row: self.last_row.clone(),
             summary: self.summary.clone(),
             decay_time: self.decay_time.clone(),
+            // Only a delay ever holds rows; without one this stays empty
+            // and is not written.
+            pending_clock: if self.label_delay.is_some() {
+                self.pending_clock.clone()
+            } else {
+                Vec::new()
+            },
             notified: self.notified.clone(),
             pending: self.pending.clone(),
             score_pred: self
@@ -2265,6 +2286,15 @@ impl Stream {
             return Err("saved state's pending rows do not fit this spec".into());
         }
         stream.pending = saved.pending.clone();
+        // The held rows' clock per instance. A schema-14 file has none, and
+        // its loader rebuilds it as 0.10.0 did at every chunk boundary: the
+        // sum over the rows still held.
+        stream.pending_clock = if saved.pending_clock.len() == stream.decay_time.len() {
+            saved.pending_clock.clone()
+        } else {
+            let held: f64 = stream.pending.iter().map(|p| p.d_clock).sum();
+            vec![held; stream.decay_time.len()]
+        };
         // The score-time predictions ride with the waiting rows (C21). A file
         // written before they were kept has none: each of its waiting rows
         // gets an empty record, at the front where those rows sit, so every
@@ -2450,10 +2480,6 @@ impl Stream {
         // Rewrites the plan list into (release, ..., score this row) order,
         // and hands the released rows' values out beside it. Release depends
         // on the clock alone, so chunking cannot move a single one.
-        // The clock the held rows have covered, read before the rewrite below
-        // moves rows in and out of the buffer: what `settled_frac` adds for a
-        // scored row (see `Instance::pending_clock`).
-        let pending_clock: f64 = self.pending.iter().map(|p| p.d_clock).sum();
         let released = self.apply_label_delay(&mut plans, features, targets);
 
         // ---- the data summary (docs/PLAN.md task 35) ----
@@ -2499,18 +2525,10 @@ impl Stream {
             scratch: &mut self.scratch,
             score_pred: &mut self.score_pred,
             decay_time: &mut self.decay_time,
+            pending_clock: &mut self.pending_clock,
             notified: &mut self.notified,
         };
-        let mut insts = build_instances(
-            spec,
-            models,
-            rings,
-            &self.decays,
-            diag,
-            out,
-            n_rows,
-            pending_clock,
-        );
+        let mut insts = build_instances(spec, models, rings, &self.decays, diag, out, n_rows);
         if coupled && insts.len() > 1 {
             for pi in 0..plans.len() {
                 let mut seen = false;
@@ -2890,6 +2908,7 @@ impl Stream {
         // Scoring learns nothing, so the decay time does not move and no
         // notice a scoring row might raise is kept.
         let mut decay_time = self.decay_time.clone();
+        let mut pending_clock = self.pending_clock.clone();
         let mut notified = self.notified.clone();
         let diag = Diagnostics {
             resid_var: &mut resid_var,
@@ -2902,6 +2921,7 @@ impl Stream {
             scratch: &mut scratch,
             score_pred: &mut score_pred,
             decay_time: &mut decay_time,
+            pending_clock: &mut pending_clock,
             notified: &mut notified,
         };
         let models = models.iter().map(|(_, m)| ModelRef::Score(m));
@@ -2909,17 +2929,7 @@ impl Stream {
             .resid_win
             .iter()
             .map(|r| r.as_ref().map(SpreadRef::Score));
-        let pending_clock: f64 = self.pending.iter().map(|p| p.d_clock).sum();
-        let mut insts = build_instances(
-            spec,
-            models,
-            rings,
-            &self.decays,
-            diag,
-            out,
-            n_rows,
-            pending_clock,
-        );
+        let mut insts = build_instances(spec, models, rings, &self.decays, diag, out, n_rows);
         if insts.len() > 1 {
             use rayon::prelude::*;
             insts.par_iter_mut().for_each(|inst| {
@@ -3011,6 +3021,7 @@ struct Diagnostics<'a> {
     scratch: &'a mut [Scratch],
     score_pred: &'a mut [std::collections::VecDeque<Vec<f64>>],
     decay_time: &'a mut [f64],
+    pending_clock: &'a mut [f64],
     notified: &'a mut [Notified],
 }
 
@@ -3027,7 +3038,6 @@ fn build_instances<'a>(
     diag: Diagnostics<'a>,
     out: &'a mut ChunkOut,
     n_rows: usize,
-    pending_clock: f64,
 ) -> Vec<Instance<'a>> {
     let n = decays.len();
     let block = out.n_slots * n_rows;
@@ -3066,6 +3076,7 @@ fn build_instances<'a>(
     let mut scratch = diag.scratch.iter_mut();
     let mut score_pred = diag.score_pred.iter_mut();
     let mut decay_time = diag.decay_time.iter_mut();
+    let mut pending_clock = diag.pending_clock.iter_mut();
     let mut notified = diag.notified.iter_mut();
 
     // Pulled in lockstep: each iterator yields disjoint `&mut`s, so every
@@ -3106,7 +3117,7 @@ fn build_instances<'a>(
             o_support_coef: o_support_coef.next().expect("one per instance"),
             decay_time: decay_time.next().expect("one per instance"),
             notified: notified.next().expect("one per instance"),
-            pending_clock,
+            pending_clock: pending_clock.next().expect("one per instance"),
         })
         .collect()
 }
@@ -3227,8 +3238,9 @@ struct Instance<'a> {
     /// have not yet decayed by: added as a row is buffered, taken back as it
     /// is released. `settled_frac` counts it, so a scored row reads what the
     /// doubled stream (E47's oracle) reads for it, where every held row has
-    /// already decayed the model as a weight-0 row (§8).
-    pending_clock: f64,
+    /// already decayed the model as a weight-0 row (§8). The stream keeps
+    /// it across chunks ([`StreamState::pending_clock`]).
+    pending_clock: &'a mut f64,
 }
 
 impl Instance<'_> {
@@ -3244,7 +3256,7 @@ impl Instance<'_> {
         // A rebuilt model has seen no decay: it settles from here. A reset
         // drops the held rows too (E47).
         *self.decay_time = 0.0;
-        self.pending_clock = 0.0;
+        *self.pending_clock = 0.0;
         if let Some(ring) = self.resid_win.as_mut() {
             *ring.get_mut() = resid_window(spec)
                 .expect("spec was already validated")
@@ -3367,7 +3379,7 @@ fn run_instance(
         // settled the instance is, and the noise gate's ratio per slot where
         // the model has one -- plus the row's own, when the field is asked
         // for.
-        let settled = settled_frac(inst.decay, *inst.decay_time + inst.pending_clock);
+        let settled = settled_frac(inst.decay, *inst.decay_time + *inst.pending_clock);
         let has_infl = inst.model.get().error_inflation_into(&mut sc.infl);
         let has_row_infl = inst.spec.emit_error_inflation
             && inst
@@ -3670,9 +3682,9 @@ fn run_instance(
             *inst.decay_time += plan.d_clock;
         }
         if plan.buffered {
-            inst.pending_clock += plan.d_clock;
+            *inst.pending_clock += plan.d_clock;
         } else if !plan.direct() {
-            inst.pending_clock -= plan.d_clock;
+            *inst.pending_clock -= plan.d_clock;
         }
         if plan.want_coef {
             // A model that has not solved yet has nothing to report, and

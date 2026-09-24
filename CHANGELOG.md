@@ -14,6 +14,49 @@ carries breaking changes, and any change to the numbers a model returns.
   wheel per platform already installed on all three. CI runs the suite on
   each version on Linux, and on the oldest and newest on macOS and Windows,
   choosing the interpreter where it used to take whatever the runner had.
+- **The README says how a bank detects rows out of order**, in "Row order
+  and the two guarantees": the query check and what it can miss, the clock
+  checked group by group, what a backwards step of each size means, why a
+  refused chunk leaves the bank as it was, what scoring and the summary do,
+  and the group-key check under `group_close="monotone"`.
+- **`scripts/compare_release.py` compares every output with a release's,
+  bit for bit**: the new first step of a release
+  (docs/RELEASE-READINESS.md), and a report on every CI push.
+
+### Fixed
+
+- **The PyPI page's links to other files work.** PyPI shows the README,
+  where a relative link such as `docs/PLAN.md` resolved against pypi.org
+  and was a 404; only in-page links worked. The release workflow now
+  rewrites the README's 76 relative links to GitHub at the release's tag
+  before it builds the packages (`scripts/pypi_readme.py`), and the README
+  in the repository keeps its relative links. PyPI never changes a
+  published description, so 0.10.0's page stays as it was; the fix shows
+  from the next release.
+- **`label_delay` keeps chunk invariance (hard rule 3).** The clock a
+  stream's held rows cover was a running sum within a chunk and a fresh sum
+  at each chunk's start, which round differently, so `settled_frac` could
+  differ in its last bit between one chunk and several, and a
+  `min_settled_frac` at that value could withhold a prediction in one
+  chunking and not the other. The stream now keeps that clock per model in
+  its state. A single-chunk run's numbers do not change; a run fed in
+  chunks now gives them too.
+- **A duration past 292 years is refused, naming the parameter.** A
+  `pl.duration` that long wrapped silently, so 585 years was kept as
+  `384ns`, and a `timedelta` that long raised an `OverflowError` that
+  named nothing. Both now read `spec "m": halflife is longer than 292
+  years, the most a clock can hold`, as the text form always did.
+- **A space after a duration's sign is refused.** `"+ 5m"` was accepted,
+  and named a grid's field `@h+ 5m`; polars refuses it too.
+- **`sgd`'s docstring gave the intercept an `l2` it does not get.** The
+  update equations and the `l2` entry now say the ridge is on the slopes
+  only, as the code has always done.
+
+### Changed
+
+- **State schema 15.** A stream with a `label_delay` keeps, per model, the
+  clock its held rows cover. States saved by 0.10.0 (schema 14) still load:
+  their loader rebuilds that clock as 0.10.0 did at a chunk boundary.
 
 ## [0.10.0] — 2026-09-24
 

@@ -49,9 +49,11 @@ pub fn seconds_of(v: i64, per: i64) -> f64 {
 pub fn parse_duration(text: &str) -> Result<i64, String> {
     let bad = |why: String| format!("{text:?} is not a duration: {why}");
     let t = text.trim();
+    // No trim after the sign: `"- 5m"` has a space in it, as polars says, and
+    // would otherwise name a grid's field `@h- 5m` (a property test found it).
     let (neg, body) = match t.strip_prefix('-') {
-        Some(rest) => (true, rest.trim_start()),
-        None => (false, t.strip_prefix('+').unwrap_or(t).trim_start()),
+        Some(rest) => (true, rest),
+        None => (false, t.strip_prefix('+').unwrap_or(t)),
     };
     if body.is_empty() {
         return Err(bad(
@@ -455,5 +457,37 @@ mod tests {
         assert!(!Span::Units(f64::INFINITY).is_unit_bound_number());
         assert!(Span::Units(600.0).is_unit_bound_number());
         assert!(!Span::Duration(Duration::parse("10m").unwrap()).is_unit_bound_number());
+    }
+
+    /// The longest duration a clock holds is exactly `i64::MAX` nanoseconds:
+    /// it parses, and one nanosecond more is refused by name.
+    #[test]
+    fn the_longest_duration_parses_and_one_more_nanosecond_does_not() {
+        assert_eq!(parse_duration("9223372036854775807ns"), Ok(i64::MAX));
+        let err = parse_duration("9223372036854775808ns").unwrap_err();
+        assert!(err.contains("longer than 292 years"), "{err}");
+    }
+
+    /// A span prints as its label, which is what an error message and a
+    /// grid's field name show.
+    #[test]
+    fn a_span_displays_its_label() {
+        let d = Span::Duration(Duration::parse("1h30m").unwrap());
+        assert_eq!(d.to_string(), "1h30m");
+        let u = Span::Units(600.0);
+        assert_eq!(u.to_string(), u.label());
+    }
+
+    /// Something that is not a span is refused with what one looks like.
+    #[test]
+    fn a_value_that_is_no_span_is_refused_saying_what_one_is() {
+        let err = serde_json::from_str::<Span>("true")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("a duration such as \"10m\""), "{err}");
+        let err = serde_json::from_str::<SpanList>("true")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("or a list of them"), "{err}");
     }
 }

@@ -1,0 +1,41 @@
+# Mutants no test can catch: on every input the code can receive, the mutated
+# line computes what the original does. scripts/mutants_report.py leaves them
+# out of the survivors it reports and fails on.
+#
+# Each entry names the file, the function, the mutation as cargo-mutants
+# spells it, and code the mutated line must contain. So an entry follows its
+# line when code above it moves, and lapses when the line itself changes;
+# tests/test_mutants_report.py checks that every entry still finds its line.
+# Add one only with the reason no input can tell the two apart
+# (docs/TESTING.md, "Mutation survivors").
+
+[[equivalent]]
+file = "crates/online-core/src/stats.rs"
+function = "P2Quantile::adjust"
+mutation = "replace > with >="
+line_has = "} else if d_sign > 0.0 {"
+why = "d_sign is +1 or -1 by construction, so > 0 and >= 0 agree on every value it takes"
+
+[[equivalent]]
+file = "crates/online-core/src/stats.rs"
+function = "P2Quantile::adjust"
+mutation = "replace < with <="
+line_has = "self.q[i] = if qm < parabolic && parabolic < qp {"
+why = """the two differ only when the parabolic prediction lands exactly on a \
+neighbouring marker. When that marker is one position away, the linear \
+fallback then gives the same height; otherwise it takes an exact \
+floating-point coincidence, which no input can be built to reach"""
+
+[[equivalent]]
+file = "crates/online-core/src/stats.rs"
+function = "SlotMetrics::update"
+mutation = "replace > with >="
+line_has = "if denom > 0.0 {"
+why = "a scored row has w > 0, so denom = lam * W + w is positive and the branch is always taken"
+
+[[equivalent]]
+file = "crates/online-polars/src/span.rs"
+function = "format_duration"
+mutation = "replace < with <="
+line_has = "    if ns < 0 {"
+why = "ns == 0 returns \"0s\" two lines earlier, so ns < 0 and ns <= 0 agree wherever the line runs"
