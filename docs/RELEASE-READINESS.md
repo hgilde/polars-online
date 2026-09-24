@@ -673,7 +673,7 @@ CHANGELOG entry saying what moved and by how much.
 
 **Pre-1.0, the minor version carries breaking changes**, so a user who
 wants stability pins the current minor. This line recorded `~=0.7.0` as that
-pin; the current release is 0.9.1 (`pyproject.toml`).
+pin; the current release is the version `pyproject.toml` names.
 
 ### What not to do
 

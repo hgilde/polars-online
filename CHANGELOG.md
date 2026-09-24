@@ -7,6 +7,8 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-09-24
+
 ### Added
 
 - **A temporal clock, with its parameters as durations (`docs/PLAN.md` task
