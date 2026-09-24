@@ -716,7 +716,7 @@ build of the time when this document was written, and both are fixed.
 | T-E7 | ~~P2~~ **done** | Minimal shapes | empty chunks, single-row groups and a one-feature/one-target spec all behave |
 | T-E8 | ~~P2~~ **done** | Non-string group and session columns, null session values | a null session value **is** its own session |
 | T-E9 | ~~P2~~ **done; found a defect, then removed the limit** | **Large-offset cancellation** | slope-recovery error at a 1e6 offset **2.0e-03 → 6.8e-10** |
-| T-E10 | ~~P2~~ **done, decision taken** | Datetime-typed clock columns | read as seconds since 1970, with clock parameters as durations |
+| T-E10 | ~~P2~~ **done, decision taken** | Datetime-typed clock columns | read in their own nanoseconds, with clock parameters as durations; every duration unit, in each form, against every column unit |
 | T-E11 | ~~P3~~ **done** | Long-stream soak: 10⁷ rows through one state | `n_eff` bounded, the fit accurate, the state under 4KB; opt-in |
 | T-E12 | ~~P3~~ **done** | Pending-delta across a save/load boundary; session change on a group's first row | both targeted |
 | T-E13 | ~~P2~~ **done** (2026-09-04) | The chunk plan's group layout, per-field assembly and parallel extract (P9–P11) | the layout is invisible; no defect found |
@@ -792,12 +792,19 @@ internal representation: the same 60 seconds is 60e3 / 60e6 / 60e9 units for
 microsecond column silently meant 600 µs, decaying every row to nothing and
 producing plausible-looking garbage with no error. **Decision: reject
 (2026-08-30), then durations (task 88, 2026-09-23).** A temporal clock is
-read as seconds since 1970, and takes its clock parameters as durations. A
-plain number on it is refused, naming the column, the parameter and both
-fixes (a duration, or `dt.epoch`). `tests/test_temporal_clock.py` is the trap
-turned into a pass: the same instants as `Datetime(ms/us/ns)` give a float
-clock's numbers to the bit. Numeric clocks (int and float) are unchanged, and
-are asserted to agree with each other.
+read in its own integer nanoseconds and takes its clock parameters as
+durations; the gap between two rows is taken in integers before it becomes
+seconds, so a nanosecond timestamp keeps its nanoseconds whatever the
+stream's age (2026-09-24). A plain number on it is refused, naming the column,
+the parameter and both fixes (a duration, or `dt.epoch`).
+`tests/test_temporal_clock.py` is the trap turned into a pass: the same
+instants as `Datetime(ms/us/ns)` give a float clock's numbers to the bit, and
+`TestEveryUnitAgainstEveryColumn` holds every duration unit, in each form
+that can write it (text, `pl.duration`, `timedelta`), against every temporal
+column kind and unit, a zone-aware one among them: 192 cases, none skipped --
+the exact recursion where the column can express the unit, a refusal by name
+where a cap or a threshold is finer than the column's step. Numeric clocks (int and float) are unchanged, and are
+asserted to agree with each other.
 
 **T-E11.** 10M rows go through one state in ~6.5s. `n_eff` stays bounded and
 does not drift between the start and end of the stream, the coefficients are

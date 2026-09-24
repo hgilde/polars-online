@@ -52,7 +52,7 @@ mod spec;
 mod stream;
 mod summary;
 
-pub use arrow::{ArrowChunk, ArrowCol, ClockOrigins, chunk_from_frame, export_struct_to_c};
+pub use arrow::{ArrowChunk, ArrowCol, ClockArray, ClockCol, chunk_from_frame, export_struct_to_c};
 // The Arrow types an `ArrowChunk` is built from and a `fit_predict_arrow`
 // result is read as, plus the C Data Interface export a binding layer hands
 // to a consumer. Re-exported so that feeding the bank as Arrow needs no

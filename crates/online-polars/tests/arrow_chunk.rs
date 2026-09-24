@@ -154,10 +154,9 @@ fn the_frame_path_is_the_arrow_path_behind_the_adapter() {
     let mut direct = Bank::new(vec![spec()]).unwrap();
     let mut adapted = Bank::new(vec![spec()]).unwrap();
     let want = direct.fit_predict(&df).unwrap();
-    // A numeric clock has no origin, so the adapter hands none back.
-    let (chunk, origins) = chunk_from_frame(&df, &specs, &Default::default()).unwrap();
-    assert!(origins.is_empty());
-    let got = adapted.fit_predict_arrow(&chunk).unwrap();
+    let got = adapted
+        .fit_predict_arrow(&chunk_from_frame(&df, &specs).unwrap())
+        .unwrap();
     same(&want, got);
 }
 

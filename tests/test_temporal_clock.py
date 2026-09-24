@@ -3,8 +3,10 @@
 A clock column that is a ``Datetime``, ``Date`` or ``Duration`` carries its
 own unit, so the parameters measured against it are durations:
 ``halflife=pl.duration(minutes=10)``, ``timedelta(minutes=10)`` or ``"10m"``.
-The bank reads such a clock in seconds since the Unix epoch, and every
-duration in seconds, so the column's own unit never reaches the fit. A
+The bank reads such a clock in its own integer nanoseconds, takes the gap
+between two rows in integers, and reads every duration in seconds, so the
+column's own unit never reaches the fit and a nanosecond timestamp keeps its
+nanoseconds whatever the stream's age. A
 numeric clock keeps plain numbers of its own units. Either mixture is
 refused, naming the column, the parameter and the fix.
 
@@ -189,10 +191,10 @@ class TestTheUnitNeverReachesTheFit:
     def test_the_mean_is_pandas_with_times_on_a_datetime_clock(self):
         """T-S9's irregular-clock oracle, on a nanosecond Datetime clock with a
         ``timedelta`` halflife, which is the form pandas takes too. The bank
-        reads the clock as seconds from its first instant, so it agrees with
-        the EW mean recursed on the exact nanosecond gaps to 1e-12 (measured
-        2e-16). pandas is the looser side: its own arithmetic on ``times``
-        sits 1.8e-9 from that recursion, which is the 5e-9 below."""
+        takes the gaps in integer nanoseconds, so it agrees with the EW mean
+        recursed on the exact nanosecond gaps to 1e-12 (measured 2e-16).
+        pandas is the looser side: its own arithmetic on ``times`` sits
+        1.8e-9 from that recursion, which is the 5e-9 below."""
         pd = pytest.importorskip("pandas")
         rng = np.random.default_rng(8)
         n = 300
@@ -584,11 +586,12 @@ class TestTheHelpersMeasureTheClockTheSameWay:
 
 
 class TestNanosecondsAreKept:
-    """A temporal clock is read as seconds from its first instant, kept in
-    the bank's state, so the double it becomes resolves about a nanosecond
-    over a year of stream. Read as seconds since 1970 it would resolve a
-    quarter of a microsecond at 2024's 1.7e9 seconds, and ticks closer than
-    that would read as simultaneous."""
+    """A temporal clock is read in its own integer nanoseconds, and the gap
+    between two rows is taken in integers before it becomes seconds, so the
+    decay uses the exact gap whatever the stream's age. Read as a double of
+    seconds -- since 1970, or from the stream's first instant -- a clock
+    resolves 2**-52 of the time since that origin, and ticks closer than
+    that read as simultaneous."""
 
     def _ticks(self, n: int = 300, seed: int = 11) -> tuple[np.ndarray, np.ndarray]:
         rng = np.random.default_rng(seed)
@@ -644,12 +647,12 @@ class TestNanosecondsAreKept:
     @pytest.mark.parametrize(
         "age_s", [86_400, 31_557_600, 315_576_000], ids=["a day", "a year", "a decade"]
     )
-    def test_the_rounding_is_the_clocks_resolution_at_the_streams_age(self, age_s):
-        """The double that holds seconds from the origin resolves one part in
-        2**52 of the time since it, so nanosecond ticks late in a stream are
-        read to that resolution, and the error a model sees is at most that
-        over the halflife. Measured under a 1 us halflife: 3.9e-6, 9.6e-4
-        and 1.1e-2 against bounds of 1.5e-5, 3.7e-3 and 6e-2."""
+    def test_the_gaps_are_exact_at_any_age_of_the_stream(self, age_s):
+        """The gap is taken in integer nanoseconds, so ticks a decade into a
+        stream decay by their exact gaps as they do at its start. Read as a
+        double of seconds from the first instant, they drifted by the
+        double's resolution at that age over the halflife: 3.9e-6 at a day,
+        9.6e-4 at a year and 1.1e-2 at a decade under this 1 us halflife."""
         ns, _ = self._ticks()
         ns = np.concatenate([[ns[0]], ns + age_s * 10**9])
         rng = np.random.default_rng(3)
@@ -666,14 +669,13 @@ class TestNanosecondsAreKept:
         )
         got = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("n_eff").to_numpy()
         want = self._n_eff(np.concatenate([[0], np.diff(ns)]), 1_000.0)
-        err = np.max(np.abs(got - want)) / np.max(want)
-        assert err <= np.spacing(float(age_s)) / 1e-6
+        assert np.max(np.abs(got - want)) < 1e-12 * np.max(want)
 
     @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
-    def test_fed_in_chunks_the_origin_is_the_first_chunks_first_instant(self):
-        """Hard rule 3 on a temporal clock: only the first accepted chunk
-        sets the origin, and every later chunk is read from it, so the
-        nanosecond gaps across a chunk boundary are the one-chunk run's."""
+    def test_fed_in_chunks_the_gaps_are_the_one_chunk_runs(self):
+        """Hard rule 3 on a temporal clock: the previous row's instant
+        crosses a chunk boundary in the state, so the nanosecond gaps across
+        it are the one-chunk run's."""
         ns, _ = self._ticks()
         rng = np.random.default_rng(2)
         x = rng.normal(size=len(ns))
@@ -693,7 +695,7 @@ class TestNanosecondsAreKept:
         for field in ("pred_y", "n_eff"):
             assert whole.struct.field(field).equals(chunked.struct.field(field), null_equal=True)
 
-    def test_a_refused_chunk_leaves_no_origin_behind(self):
+    def test_a_refused_chunk_leaves_the_state_untouched(self):
         df = _temporal(_frame())
         # A minute apart throughout, so a row fed late is a jump back of
         # less than max_dclock, which the disorder check refuses.
@@ -707,8 +709,8 @@ class TestNanosecondsAreKept:
         with pytest.raises(ValueError, match="backwards"):
             bank.fit_predict(late)
         assert bank.save_bytes() == untouched
-        # Accepted, the first row's instant is the origin, and the clock
-        # range comes back as seconds since 1970 all the same.
+        # Accepted, the clock range and the last clock come back as seconds
+        # since 1970.
         bank.fit_predict(df.slice(0, 50))
         first = df["t_s"][0]
         assert bank.summary()["clock_min"][0] == pytest.approx(first, abs=1e-6)
@@ -730,17 +732,41 @@ class TestNanosecondsAreKept:
         plan = df.lazy().online.fit_predict([spec]).collect()
         assert plan["m"].equals(po.ModelBank([spec]).fit_predict(df)["m"], null_equal=True)
 
-    def test_the_origin_survives_a_save_and_load(self, tmp_path):
-        """The origin is in the state: loaded, a bank keeps measuring from the
-        same instant, which the clock range reports as seconds since 1970."""
+    def test_the_previous_instant_survives_a_save_and_load(self, tmp_path):
+        """The previous row's instant is in the state, so a loaded bank takes
+        the next row's gap from it exactly: the numbers go on as the
+        unbroken run's, and the clock range reports seconds since 1970."""
         df = _temporal(_frame())
-        bank = po.ModelBank([_ridge("t", halflife="10m", max_dclock="30m")])
+        spec = _ridge("t", halflife="10m", max_dclock="30m")
+        whole = po.ModelBank([spec]).fit_predict(df)["m"]
+        bank = po.ModelBank([spec])
         bank.fit_predict(df.slice(0, 100))
         bank.save(tmp_path / "o.state")
         loaded = po.ModelBank.load(tmp_path / "o.state")
-        loaded.fit_predict(df.slice(100))
+        tail = loaded.fit_predict(df.slice(100))["m"]
+        for field in ("pred_y", "n_eff"):
+            assert (
+                whole.struct.field(field)
+                .slice(100)
+                .equals(tail.struct.field(field), null_equal=True)
+            )
         assert loaded.summary()["clock_min"][0] == pytest.approx(df["t_s"][0], abs=1e-6)
         assert loaded.summary()["clock_max"][0] == pytest.approx(df["t_s"][-1], abs=1e-6)
+
+    @pytest.mark.parametrize("dtype", [pl.Datetime("ms"), pl.Date], ids=["Datetime(ms)", "Date"])
+    def test_an_instant_past_2262_is_refused_by_row(self, dtype):
+        """A coarse temporal column reaches further than nanoseconds in an
+        i64 do; a value past that is refused, naming its row, rather than
+        wrapped."""
+        df = _temporal(_frame(20)).with_columns(t=pl.col("t").cast(dtype))
+        far = pl.datetime(2300, 1, 1).cast(dtype)
+        late = df.with_columns(
+            t=pl.when(pl.int_range(pl.len()) == 7).then(far).otherwise(pl.col("t"))
+        )
+        step = "2d" if dtype == pl.Date else "10m"
+        spec = _ridge("t", halflife=step, max_dclock=step)
+        with pytest.raises(ValueError, match="row 7.*nanoseconds cannot hold"):
+            po.ModelBank([spec]).fit_predict(late)
 
 
 class TestTheClockColumnInOtherRoles:
@@ -777,3 +803,173 @@ class TestTheClockColumnInOtherRoles:
         assert any("@h5m" in f for f in po.spec.output_fields(spec))
         with pytest.raises(ValueError, match="has a space in it"):
             _ridge("t", halflife="1h 30m", max_dclock="inf")
+
+
+UNIT_NS = {
+    "ns": 1,
+    "us": 1_000,
+    "µs": 1_000,
+    "ms": 1_000_000,
+    "s": 10**9,
+    "m": 60 * 10**9,
+    "h": 3_600 * 10**9,
+    "d": 86_400 * 10**9,
+    "w": 7 * 86_400 * 10**9,
+}
+#: The keyword ``pl.duration`` and ``timedelta`` take for each unit.
+UNIT_KEYWORD = {
+    "ns": "nanoseconds",
+    "us": "microseconds",
+    "ms": "milliseconds",
+    "s": "seconds",
+    "m": "minutes",
+    "h": "hours",
+    "d": "days",
+    "w": "weeks",
+}
+FORMS = ["text", "pl.duration", "timedelta"]
+COLUMNS = {
+    "Datetime(ms)": (pl.Datetime("ms"), 1_000_000),
+    "Datetime(us)": (pl.Datetime("us"), 1_000),
+    "Datetime(ns)": (pl.Datetime("ns"), 1),
+    "Datetime(us, New York)": (pl.Datetime("us", "America/New_York"), 1_000),
+    "Date": (pl.Date, 86_400 * 10**9),
+    "Duration(ms)": (pl.Duration("ms"), 1_000_000),
+    "Duration(us)": (pl.Duration("us"), 1_000),
+    "Duration(ns)": (pl.Duration("ns"), 1),
+}
+
+
+def _exact_n_eff(gaps_ns: np.ndarray, halflife_ns: float) -> np.ndarray:
+    """The exact recursion: weights of 1, each decayed by its exact gap."""
+    out, w = [], 0.0
+    for g in gaps_ns:
+        out.append(w)
+        w = w * 2.0 ** (-float(g) / halflife_ns) + 1.0
+    return np.array(out)
+
+
+def _column(dtype, ns: np.ndarray) -> pl.Series:
+    """Instants given in nanoseconds, as a column of ``dtype`` in its own
+    unit; a zone-aware column holds the same UTC instants."""
+    if dtype == pl.Date:
+        return pl.Series(ns // UNIT_NS["d"]).cast(pl.Int32).cast(pl.Date)
+    if isinstance(dtype, pl.Datetime):
+        s = pl.Series(ns).cast(pl.Datetime("ns"))
+        if dtype.time_zone is not None:
+            s = s.dt.replace_time_zone("UTC").dt.convert_time_zone(dtype.time_zone)
+        return s.dt.cast_time_unit(dtype.time_unit)
+    return pl.Series(ns).cast(pl.Duration("ns")).cast(dtype)
+
+
+def _writes(form: str, unit: str) -> bool:
+    """Whether ``form`` can write ``unit``. Text writes all nine spellings;
+    ``µs`` is text's other spelling of ``us``, which the two keyword forms
+    write as ``microseconds``; and a ``timedelta`` holds nothing finer than
+    a microsecond, so it cannot write nanoseconds."""
+    if form == "text":
+        return True
+    return unit != "µs" and not (form == "timedelta" and unit == "ns")
+
+
+def _spell(form: str, n: int, unit: str):
+    """``n`` of ``unit``, written in ``form``."""
+    if form == "text":
+        return f"{n}{unit}"
+    if form == "pl.duration":
+        return pl.duration(**{UNIT_KEYWORD[unit]: n})
+    return timedelta(**{UNIT_KEYWORD[unit]: n})
+
+
+def _cases(finer: bool) -> list:
+    """Every ``(column, unit, form)`` the form can write, with the unit
+    finer than the column's step or not. The two lists partition the
+    matrix, so each case runs in exactly one of the two tests below."""
+    return [
+        pytest.param(column, unit, form, id=f"{column}-{unit}-{form}")
+        for column, (_, step) in COLUMNS.items()
+        for unit, u in UNIT_NS.items()
+        if (u < step) == finer
+        for form in FORMS
+        if _writes(form, unit)
+    ]
+
+
+class TestEveryUnitAgainstEveryColumn:
+    """Every duration unit -- ``ns``, ``us``/``µs``, ``ms``, ``s``, ``m``,
+    ``h``, ``d``, ``w`` -- in each form a duration is written in (polars'
+    text, ``pl.duration(...)`` with that unit's keyword, and ``timedelta``),
+    against every temporal column a clock can be, in each of its units, a
+    zone-aware one among them. A unit the column can express gives the
+    exact recursion on gaps of that unit; a unit finer than the column's
+    step is refused by name as a cap or a disorder threshold, and a
+    halflife in it is read at its own scale all the same."""
+
+    def test_the_two_tests_cover_the_matrix_once(self):
+        """Every unit each form can write, against every column, in exactly
+        one of the two tests: text writes nine, ``pl.duration`` eight and
+        ``timedelta`` seven, so 24 against each of the eight columns."""
+        coarse = {c.id for c in _cases(finer=False)}
+        fine = {c.id for c in _cases(finer=True)}
+        assert not coarse & fine
+        writable = [(f, u) for f in FORMS for u in UNIT_NS if _writes(f, u)]
+        assert len(writable) == 9 + 8 + 7
+        assert len(coarse | fine) == len(COLUMNS) * len(writable) == 192
+
+    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.parametrize(("column", "unit", "form"), _cases(finer=False))
+    def test_a_unit_the_column_can_express_gives_the_exact_recursion(self, column, unit, form):
+        dtype, step = COLUMNS[column]
+        u = UNIT_NS[unit]
+        halflife, cap = _spell(form, 7, unit), _spell(form, 20, unit)
+        rng = np.random.default_rng(7)
+        gaps = rng.integers(1, 4, 200) * u  # one to three units apart
+        ns = START * 10**9 + np.cumsum(gaps)
+        x = rng.normal(size=len(ns))
+        df = pl.DataFrame({"t": _column(dtype, ns), "x0": x, "y": x})
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0"],
+            clock="t",
+            halflife=halflife,
+            max_dclock=cap,
+            max_error_inflation=float("inf"),
+        )
+        got = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("n_eff").to_numpy()
+        want = _exact_n_eff(np.concatenate([[0], np.diff(ns)]), 7.0 * u)
+        assert np.max(np.abs(got - want)) < 1e-12 * np.max(want)
+        # The decay is real at this scale, so a unit read at another scale
+        # could not have passed: no row's weight is trivially 1 or the sum.
+        assert 1.5 < want[-1] < len(ns) - 1
+
+    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.parametrize(("column", "unit", "form"), _cases(finer=True))
+    def test_a_unit_finer_than_the_columns_step_cannot_cap_it(self, column, unit, form):
+        dtype, step = COLUMNS[column]
+        u = UNIT_NS[unit]
+        seven = _spell(form, 7, unit)
+        ns = START * 10**9 + np.arange(20) * 3 * step
+        x = np.arange(20, dtype=float)
+        df = pl.DataFrame({"t": _column(dtype, ns), "x0": x, "y": x})
+        coarse = {"halflife": seven, "max_dclock": "3w", "min_backwards_jump": "3w"}
+        for param in ("max_dclock", "min_backwards_jump"):
+            spec = po.spec.ewridge(
+                "m", targets=["y"], features=["x0"], clock="t", **{**coarse, param: seven}
+            )
+            with pytest.raises(ValueError, match=f"{param} is 7{unit}, less than .*smallest step"):
+                po.ModelBank([spec]).fit_predict(df)
+        # A halflife finer than the step is a setting, not a contradiction:
+        # every gap is many halflives, so each row is fitted on itself, as
+        # the exact recursion says.
+        spec = po.spec.ewridge(
+            "m",
+            targets=["y"],
+            features=["x0"],
+            clock="t",
+            max_error_inflation=float("inf"),
+            **coarse,
+        )
+        got = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("n_eff").to_numpy()
+        want = _exact_n_eff(np.concatenate([[0], np.diff(ns)]), 7.0 * u)
+        assert np.array_equal(got, want)

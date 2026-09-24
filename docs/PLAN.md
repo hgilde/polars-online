@@ -3269,8 +3269,8 @@ note, not a task.
       | a `Time` column | refused: a time of day starts again at midnight |
       | `0` and `inf` | unit-free, so they may stay numbers beside durations |
       | a rate per clock unit | `lam` and `kalman`'s `q` have no duration form, so a temporal clock refuses them and names the halflife to give instead |
-      | the internal scale | seconds from the stream's first instant, as `f64`, the subtraction done in integer nanoseconds and only the remainder rounded, so one instant in ms, µs or ns is the same bits, and the double resolves one part in 2**52 of the time since the origin (under a nanosecond for six weeks, 4 ns at a year, 60 ns at a decade); the origin is kept in the state (`ClockOrigins`), set from the first chunk the bank accepts with the column, and added back wherever a clock value is reported; a zone-aware column is read as its UTC instants |
-      | outputs in clock units | seconds: `holt`'s trend is per second; `summary()`, `groups()` and `closed_groups()` give clock values as seconds since 1970, the origin added back; `output_index`'s `halflife` is seconds; a grid's field names keep the text (`@h10m`) |
+      | the internal scale | the column's own integer nanoseconds (`ArrowCol::Nanos`), and the gap between two rows taken in integers before it becomes seconds (`ClockValue`), so one instant in ms, µs or ns is the same value and a nanosecond gap is exact whatever the stream's age; the previous row's instant is the clock state; a value past what nanoseconds in an `i64` hold (the years 1677 to 2262) is refused by row; a zone-aware column is read as its UTC instants |
+      | outputs in clock units | seconds: `holt`'s trend is per second; `summary()`, `groups()` and `closed_groups()` give clock values as seconds since 1970 (`ClockValue::seconds`); `output_index`'s `halflife` is seconds; a grid's field names keep the text (`@h10m`) |
 
       *Incompatible, and refused.* A temporal clock with a clock parameter
       as a plain number (naming the column, the parameter, the duration fix
@@ -3319,24 +3319,46 @@ note, not a task.
       agreed only to 1.2e-9: a double at 1.7e9 seconds resolves 2**-22 s,
       0.24 µs, so nanosecond ticks were being rounded. The user saw that a
       nanosecond timestamp and `pl.duration` are both exact and asked why
-      the result was not. Now the bank keeps each temporal clock column's
-      first instant (`ClockOrigins`, in the state envelope, set from the
-      first chunk it accepts with the column, and not from a refused one)
-      and reads the column as seconds from it, the subtraction in integer
-      nanoseconds. Scoring a fresh bank reads from the frame's own first
-      instant and keeps nothing. Fed in chunks, the numbers are the
-      one-chunk run's, since only the first accepted chunk sets the origin.
-      The user then asked whether "seconds from the first instant" still
-      loses nanoseconds: it does, by the double's resolution at the
-      stream's age (the table above), and the README had said nothing was
-      lost; it now gives the resolution. A clock exact at any age would
-      keep an integer-nanosecond last instant per group beside each model's
-      float `last_clock`, re-based each chunk; that touches every model's
-      state and is not built, since a halflife of a millisecond or more
-      sees the rounding at 4e-6 after a year.
-      Against the exact nanosecond recursion the bank now agrees to
-      2.2e-16; pandas' own `ewm(times=)` is 1.8e-9 from it, so the pandas
-      oracle's tolerance is pandas', not ours.
+      the result was not. The second build kept each temporal clock
+      column's first instant in the state (`ClockOrigins`) and read the
+      column as seconds from it, which moved the rounding from 0.24 µs to
+      the double's resolution at the stream's age (the table above); the
+      README said nothing was lost, and the user asked whether that was so.
+      Against the exact nanosecond recursion that build agreed to 2.2e-16
+      at the origin; pandas' own `ewm(times=)` is 1.8e-9 from it, so the
+      pandas oracle's tolerance is pandas', not ours.
+
+      *Exact gaps (2026-09-24, later the same day).* The user asked whether
+      perfect precision was possible, and it was cheaper than the origin:
+      the models never see a clock position, only `d_clock`
+      (`OnlineModel::step`), and the one subtraction of two positions is in
+      `ClockState::advance`. So the clock crosses the chunk as the column's
+      own nanoseconds (`ArrowCol::Nanos`; a `Datetime("ns")` column is
+      taken as it is, with no pass over it), `ClockState` keeps its
+      previous row's value as a `ClockValue` -- `F64` for a numeric clock,
+      `Ns` for a temporal one -- and takes the gap between two `Ns` values
+      in integers before it becomes seconds. A numeric clock's arithmetic
+      is untouched, so every numeric-clock test pins bit-identity. The
+      origin, its state field, the summary's offset and the frame's
+      `predict` special case are gone; `summary()`, `groups()` and
+      `closed_groups()` report a temporal clock as `ClockValue::seconds`,
+      seconds since 1970. Schema 14 (`MIN_SCHEMA_VERSION` 14, the pre-1.0
+      rule). Memory: a clock column is 8 bytes a row in either form, and
+      an `Option<ClockValue>` is the 16 bytes an `Option<f64>` was. Time,
+      2M rows of `ewridge` with four features, best of three on a quiet
+      machine: a `Datetime("ns")` clock 0.365 s before and 0.367 s after;
+      the float clock, whose code did not change, 0.322 s and 0.336 s in
+      the same runs, so the change is inside the run-to-run noise. Tests:
+      `TestEveryUnitAgainstEveryColumn` holds every duration unit (`ns`,
+      `us`/`µs`, `ms`, `s`, `m`, `h`, `d`, `w`), in each form that can
+      write it (text; `pl.duration` with the unit's keyword; `timedelta`,
+      which has no nanoseconds), against every temporal column kind and
+      unit (`Datetime` ms/us/ns and a zone-aware one, `Date`, `Duration`
+      ms/us/ns): 192 cases, each in exactly one of two tests and none
+      skipped. Where the column can express the unit, the exact recursion
+      on gaps of that unit; where a cap or a disorder threshold is finer
+      than the column's step, a refusal naming the parameter, the value and
+      the step; and a halflife finer than the step read at its own scale.
 
       *Other surfaces.* The command line takes the same text in TOML,
       tested end to end on a parquet file with a `Datetime(ns)` clock. The

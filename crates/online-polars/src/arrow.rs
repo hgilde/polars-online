@@ -20,19 +20,9 @@ use polars_arrow::array::{Float64Array, Int64Array, StructArray, UInt64Array, Ut
 use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
 use polars_arrow::ffi::{ArrowArray, ArrowSchema, export_array_to_c, export_field_to_c};
 
-use std::collections::BTreeMap;
+use online_core::ClockValue;
 
 use crate::spec::{ClockScale, ModelKind, Spec};
-
-/// Where each temporal clock column is measured from: its first instant, in
-/// nanoseconds since the Unix epoch, keyed by column name. A temporal clock
-/// is read as seconds *from that instant*, so a double holds it to about a
-/// nanosecond over a year of stream, where seconds since 1970 would give a
-/// quarter of a microsecond at today's dates (docs/PLAN.md task 88). The
-/// bank sets a column's origin from the first chunk it accepts with the
-/// column, keeps it for the bank's life and in its state, and adds it back
-/// wherever a clock value is reported.
-pub type ClockOrigins = BTreeMap<String, i64>;
 
 /// One column of an [`ArrowChunk`], in the form the bank reads it.
 #[derive(Clone, Debug)]
@@ -48,6 +38,13 @@ pub enum ArrowCol {
     I64(Int64Array),
     /// The same, unsigned, for a `u64` key whose values do not fit an `i64`.
     U64(UInt64Array),
+    /// A temporal clock, as nanoseconds since the Unix epoch whatever the
+    /// source column's unit. Kept as an integer so the gap between two rows
+    /// is taken in integers and a nanosecond timestamp's gaps stay exact
+    /// for the stream's life ([`online_core::ClockValue`], docs/PLAN.md
+    /// task 88). Read only as a clock: a temporal column in any other role
+    /// is refused before the chunk is built.
+    Nanos(Int64Array),
 }
 
 impl ArrowCol {
@@ -57,6 +54,7 @@ impl ArrowCol {
             Self::Str(a) => a.len(),
             Self::I64(a) => a.len(),
             Self::U64(a) => a.len(),
+            Self::Nanos(a) => a.len(),
         }
     }
 
@@ -76,6 +74,34 @@ impl ArrowCol {
             Self::F64(_) => "a number",
             Self::Str(_) => "text",
             Self::I64(_) | Self::U64(_) => "an integer key",
+            Self::Nanos(_) => "a temporal clock",
+        }
+    }
+}
+
+/// A chunk's clock column in the form the source had it: a numeric clock's
+/// numbers, or a temporal clock's nanoseconds since the Unix epoch.
+#[derive(Clone, Copy, Debug)]
+pub enum ClockArray<'a> {
+    F64(&'a Float64Array),
+    Nanos(&'a Int64Array),
+}
+
+/// A stream's clock column as the bank hands it to a stream: a
+/// [`ClockArray`] read in the stream's row order, with no nulls left in it.
+#[derive(Clone, Debug)]
+pub enum ClockCol {
+    F64(Vec<f64>),
+    Ns(Vec<i64>),
+}
+
+impl ClockCol {
+    /// Row `i`'s value, in the form the source had it.
+    #[inline]
+    pub fn at(&self, i: usize) -> ClockValue {
+        match self {
+            Self::F64(v) => ClockValue::F64(v[i]),
+            Self::Ns(v) => ClockValue::Ns(v[i]),
         }
     }
 }
@@ -168,6 +194,17 @@ impl ArrowChunk {
         }
     }
 
+    /// The clock column in the form the source had it -- a temporal clock's
+    /// nanoseconds where the adapter read one, else the numeric form -- or
+    /// the error naming the spec.
+    pub fn clock(&self, spec: &Spec, name: &str) -> PolarsResult<ClockArray<'_>> {
+        match self.find(name, |c| matches!(c, ArrowCol::Nanos(_) | ArrowCol::F64(_))) {
+            Some(ArrowCol::Nanos(a)) => Ok(ClockArray::Nanos(a)),
+            Some(ArrowCol::F64(a)) => Ok(ClockArray::F64(a)),
+            _ => Err(self.missing(spec, "clock", name, "a number or a temporal clock")),
+        }
+    }
+
     /// The text form of a column, or the error naming the spec and role.
     pub fn str(&self, spec: &Spec, role: &str, name: &str) -> PolarsResult<&Utf8ViewArray> {
         match self.find(name, |c| matches!(c, ArrowCol::Str(_))) {
@@ -186,7 +223,11 @@ impl ArrowChunk {
         // 2026-09-18, V12). The integer form is the one `monotone` reads as a
         // number.
         self.find(name, |c| matches!(c, ArrowCol::I64(_) | ArrowCol::U64(_)))
-            .or_else(|| self.find(name, |c| !matches!(c, ArrowCol::F64(_))))
+            .or_else(|| {
+                self.find(name, |c| {
+                    !matches!(c, ArrowCol::F64(_) | ArrowCol::Nanos(_))
+                })
+            })
             .ok_or_else(|| self.missing(spec, role, name, "text or an integer key"))
     }
 
@@ -402,15 +443,7 @@ fn text_array(s: &Series, spec_name: &str, role: &str, name: &str) -> PolarsResu
 /// This is the polars adapter: every dtype decision the bank used to make is
 /// made here, so the bank itself sees numbers and text and nothing else.
 ///
-/// `origins` is where each temporal clock is measured from. A temporal clock
-/// column with no origin yet gets one from its first instant in this frame,
-/// returned beside the chunk for the caller to keep once the chunk is
-/// accepted, so a refused chunk leaves the bank as it was.
-pub fn chunk_from_frame(
-    df: &DataFrame,
-    specs: &[Spec],
-    origins: &ClockOrigins,
-) -> PolarsResult<(ArrowChunk, ClockOrigins)> {
+pub fn chunk_from_frame(df: &DataFrame, specs: &[Spec]) -> PolarsResult<ArrowChunk> {
     let names: Vec<PlSmallStr> = df.get_column_names().iter().map(|n| (*n).clone()).collect();
     // `group_close = "monotone"` reads keys in the *column's* order -- an
     // integer column numerically, a text one bytewise -- so a dtype with
@@ -434,7 +467,6 @@ pub fn chunk_from_frame(
         }
     }
     check_clocks(df, specs)?;
-    let mut fresh = ClockOrigins::new();
     let mut cols: Vec<(PlSmallStr, ArrowCol)> = Vec::new();
     for (name, want) in wanted(specs) {
         // A column a scoring chunk may leave out is not an error here: the
@@ -448,9 +480,11 @@ pub fn chunk_from_frame(
             .map_or("", |s| s.name.as_str());
         let role = role_of(specs, name.as_str());
         let s = col.as_materialized_series();
-        // A temporal clock is read as seconds from its origin, the scale a
-        // duration is read on, whatever the column's own unit: casting it
-        // instead would expose its *internal representation*, so the same 60
+        // A temporal clock is read in its own nanoseconds whatever the
+        // column's unit, so the gap between two rows is taken in integers
+        // and a nanosecond timestamp's gaps stay exact for the stream's
+        // life (`online_core::ClockValue`). Casting it to a number instead
+        // would expose its *internal representation*, so the same 60
         // seconds would be 60_000 / 60_000_000 / 60_000_000_000 clock units
         // for Datetime(ms/us/ns) (docs/TESTING.md T-E10). `check_clocks` has
         // already refused a spec that gives this clock plain numbers.
@@ -460,22 +494,7 @@ pub fn chunk_from_frame(
                 .iter()
                 .any(|sp| sp.clock.as_deref() == Some(name.as_str()))
         {
-            let known = origins
-                .get(name.as_str())
-                .or_else(|| fresh.get(name.as_str()));
-            let origin = match known {
-                Some(o) => *o,
-                None => match first_instant_ns(s)? {
-                    Some(o) => {
-                        fresh.insert(name.to_string(), o);
-                        o
-                    }
-                    // Every value null: the clock check refuses the chunk,
-                    // and no origin is taken from it.
-                    None => 0,
-                },
-            };
-            cols.push((name.clone(), ArrowCol::F64(temporal_seconds(s, origin)?)));
+            cols.push((name.clone(), ArrowCol::Nanos(nanos_array(s)?)));
             continue;
         }
         // One column read in two roles that cast to the same form -- a
@@ -494,7 +513,7 @@ pub fn chunk_from_frame(
         }
         cols.push((name.clone(), cast_to(s, want, spec, role, name.as_str())?));
     }
-    Ok((ArrowChunk::new(df.height(), cols, names)?, fresh))
+    ArrowChunk::new(df.height(), cols, names)
 }
 
 /// Each clock column against the specs that read it (docs/PLAN.md task 88).
@@ -629,7 +648,7 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
 }
 
 /// Nanoseconds in one unit of a temporal column: a `Date` counts days.
-fn nanos_per_unit(dtype: &DataType) -> PolarsResult<i128> {
+fn nanos_per_unit(dtype: &DataType) -> PolarsResult<i64> {
     Ok(match dtype {
         DataType::Datetime(TimeUnit::Milliseconds, _)
         | DataType::Duration(TimeUnit::Milliseconds) => 1_000_000,
@@ -642,67 +661,46 @@ fn nanos_per_unit(dtype: &DataType) -> PolarsResult<i128> {
     })
 }
 
-/// A temporal column's values in nanoseconds, null where it is null. A
-/// `Date` reaches further than nanoseconds in an `i64` do, so `i128`.
-fn instants_ns(s: &Series) -> PolarsResult<Vec<Option<i128>>> {
+/// A temporal column as nanoseconds since the Unix epoch, null where it is
+/// null. The unit is scaled away in integers, so one instant is the same
+/// value whether it was stored in milliseconds, microseconds or
+/// nanoseconds, and a timezone changes nothing: a `Datetime` is stored in
+/// UTC, so a change of clocks for summer time neither stretches nor folds
+/// the clock. A `Date` or a coarse `Datetime` can reach past what
+/// nanoseconds in an `i64` hold, and such a value is refused by row. A
+/// nanosecond column is taken as it is, without a pass over it.
+fn nanos_array(s: &Series) -> PolarsResult<Int64Array> {
     let per = nanos_per_unit(s.dtype())?;
     let phys = s.to_physical_repr();
-    Ok(match s.dtype() {
+    let too_far = |i: usize| {
+        polars_err!(ComputeError:
+            "clock column {:?} has an instant at row {} that nanoseconds cannot hold (before \
+             1677 or after 2262)",
+            s.name(), i
+        )
+    };
+    let scaled = |i: usize, v: i64| v.checked_mul(per).ok_or_else(|| too_far(i));
+    let ns: Int64Chunked = match s.dtype() {
         DataType::Date => phys
             .i32()?
             .iter()
-            .map(|d| d.map(|d| i128::from(d) * per))
-            .collect(),
+            .enumerate()
+            .map(|(i, d)| d.map(|d| scaled(i, i64::from(d))).transpose())
+            .collect::<PolarsResult<_>>()?,
+        _ if per == 1 => phys.i64()?.clone(),
         _ => phys
             .i64()?
             .iter()
-            .map(|v| v.map(|v| i128::from(v) * per))
-            .collect(),
-    })
-}
-
-/// The origin a temporal clock column is measured from: its first instant,
-/// in nanoseconds since the Unix epoch, or `None` when every value is null.
-/// A stream's first row is the same row however the stream is chunked, so
-/// the origin is chunk-invariant.
-fn first_instant_ns(s: &Series) -> PolarsResult<Option<i64>> {
-    let Some(first) = instants_ns(s)?.into_iter().flatten().next() else {
-        return Ok(None);
+            .enumerate()
+            .map(|(i, v)| v.map(|v| scaled(i, v)).transpose())
+            .collect::<PolarsResult<_>>()?,
     };
-    i64::try_from(first).map(Some).map_err(|_| {
-        polars_err!(ComputeError:
-            "clock column {:?} starts at an instant nanoseconds cannot hold (before 1677 or \
-             after 2262)",
-            s.name()
-        )
-    })
-}
-
-/// A temporal column as seconds from `origin_ns`, null where it is null.
-/// The subtraction is exact, in integers, and only the remainder is
-/// rounded, so one instant reads as the same `f64` whether it was stored in
-/// milliseconds, microseconds or nanoseconds, and two instants a nanosecond
-/// apart stay apart. A timezone changes nothing: a `Datetime` is stored in
-/// UTC, so a change of clocks for summer time neither stretches nor folds
-/// the clock.
-fn temporal_seconds(s: &Series, origin_ns: i64) -> PolarsResult<Float64Array> {
-    let origin = i128::from(origin_ns);
-    let secs: Float64Chunked = instants_ns(s)?
-        .into_iter()
-        .map(|v| v.map(|v| seconds_of_ns(v - origin)))
-        .collect();
-    let secs = secs.rechunk();
-    Ok(secs
+    let ns = ns.rechunk();
+    Ok(ns
         .downcast_iter()
         .next()
         .cloned()
-        .unwrap_or_else(|| Float64Array::new_empty(ArrowDataType::Float64)))
-}
-
-/// Nanoseconds as seconds: the whole seconds exact, the rest rounded once.
-fn seconds_of_ns(ns: i128) -> f64 {
-    const PER: i128 = 1_000_000_000;
-    ns.div_euclid(PER) as f64 + ns.rem_euclid(PER) as f64 / 1e9
+        .unwrap_or_else(|| Int64Array::new_empty(ArrowDataType::Int64)))
 }
 
 fn reads(s: &Spec, name: &str) -> bool {

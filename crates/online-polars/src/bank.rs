@@ -3,7 +3,7 @@
 //! msgpack save/load.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use online_core::{ClockCfg, Disorder};
@@ -20,7 +20,7 @@ use polars_utils::aliases::PlHashMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::arrow::{ArrowChunk, ArrowCol, ClockOrigins, chunk_from_frame, f64_values};
+use crate::arrow::{ArrowChunk, ArrowCol, ClockArray, ClockCol, chunk_from_frame, f64_values};
 use crate::column::F64Column;
 use crate::rows::FeatureRows;
 use crate::spec::{ModelKind, Spec};
@@ -70,12 +70,11 @@ impl std::fmt::Display for GroupKey {
 const BANK_FORMAT_VERSION: u32 = 3;
 
 /// The version of the envelope a bank with these specs needs: 3 with a
-/// duration in a spec, or a temporal clock's origin to keep.
-fn format_version_for(specs: &[Spec], origins: &ClockOrigins) -> u32 {
-    if !origins.is_empty()
-        || specs
-            .iter()
-            .any(|s| s.clock_spans().iter().any(|(_, span)| span.is_duration()))
+/// duration in a spec.
+fn format_version_for(specs: &[Spec]) -> u32 {
+    if specs
+        .iter()
+        .any(|s| s.clock_spans().iter().any(|(_, span)| span.is_duration()))
     {
         3
     } else {
@@ -133,7 +132,7 @@ fn session_hash(v: Option<&str>) -> u64 {
 struct SpecColumns {
     features: FeatureRows,
     targets: Vec<Vec<f64>>,
-    clock: Option<Vec<f64>>,
+    clock: Option<ClockCol>,
     session: Option<Vec<u64>>,
     weight: Option<Vec<f64>>,
     /// The session column's *values*, in the chunk's own row order, for a
@@ -414,27 +413,48 @@ fn extract(
             }
         })
     };
-    let clock = || -> PolarsResult<Option<Vec<f64>>> {
-        match &spec.clock {
-            Some(c) => {
-                // A temporal clock column is refused where the chunk is built
-                // rather than here: whether the source column was a Datetime
-                // is a question about the source, and by this point it is an
-                // `f64` array either way (`crate::arrow`, docs/TESTING.md
-                // T-E10).
-                let v = f64_column(chunk, spec, "clock", c, layout)?;
-                // Nulls arrive as NaN, which this rejects along with inf: a clock
-                // with no value has no defined delta either way.
+    let clock = || -> PolarsResult<Option<ClockCol>> {
+        let Some(c) = &spec.clock else {
+            return Ok(None);
+        };
+        // A temporal clock arrives as nanoseconds and a numeric one as
+        // numbers: which, is a question about the source column, settled
+        // where the chunk is built (`crate::arrow`, docs/TESTING.md T-E10).
+        // A clock with no value has no defined delta either way, so a null
+        // -- a NaN in the numeric form, with inf -- is refused by row.
+        let bad = |j: usize| {
+            polars_err!(ComputeError:
+                "spec {:?}: clock column {:?} has a null/non-finite value at row {}",
+                spec.name, c, source_row(layout, j)
+            )
+        };
+        Ok(Some(match chunk.clock(spec, c)? {
+            ClockArray::F64(a) => {
+                let values = f64_values(a);
+                let v: Vec<f64> = match layout {
+                    Some(perm) => perm.iter().map(|&i| values[i]).collect(),
+                    None => values.into_owned(),
+                };
                 if let Some(j) = v.iter().position(|f| !f.is_finite()) {
-                    polars_bail!(ComputeError:
-                        "spec {:?}: clock column {:?} has a null/non-finite value at row {}",
-                        spec.name, c, source_row(layout, j)
-                    );
+                    return Err(bad(j));
                 }
-                Ok(Some(v))
+                ClockCol::F64(v)
             }
-            None => Ok(None),
-        }
+            ClockArray::Nanos(a) => {
+                let values = a.values().as_slice();
+                if let Some(validity) = a.validity().filter(|v| v.unset_bits() > 0) {
+                    let n = layout.map_or(values.len(), <[usize]>::len);
+                    let source = |j: usize| layout.map_or(j, |perm| perm[j]);
+                    if let Some(j) = (0..n).find(|&j| !validity.get_bit(source(j))) {
+                        return Err(bad(j));
+                    }
+                }
+                ClockCol::Ns(match layout {
+                    Some(perm) => perm.iter().map(|&i| values[i]).collect(),
+                    None => values.to_vec(),
+                })
+            }
+        }))
     };
     let session = || -> PolarsResult<(Option<Vec<u64>>, Option<Utf8ViewArray>)> {
         match &spec.session {
@@ -796,7 +816,7 @@ fn process(
                         &cfgs[si],
                         &sc.features,
                         &sc.targets,
-                        sc.clock.as_deref(),
+                        sc.clock.as_ref(),
                         sc.session.as_deref(),
                         sc.weight.as_deref(),
                         run,
@@ -856,7 +876,7 @@ fn score(
                         &cfgs[si],
                         &sc.features,
                         &sc.targets,
-                        sc.clock.as_deref(),
+                        sc.clock.as_ref(),
                         sc.session.as_deref(),
                         idx,
                         base,
@@ -1039,8 +1059,10 @@ fn group_indices(chunk: &ArrowChunk, spec: &Spec) -> PolarsResult<Vec<(GroupKey,
                     }
                     Ok(order)
                 }
-                // `ArrowChunk::key` never returns the numeric form.
-                ArrowCol::F64(_) => unreachable!("a group key is never read as a number"),
+                // `ArrowChunk::key` never returns the numeric form or a clock.
+                ArrowCol::F64(_) | ArrowCol::Nanos(_) => {
+                    unreachable!("a group key is never read as a number or a clock")
+                }
             }
         }
     }
@@ -1534,9 +1556,7 @@ fn spec_bins(s: &Spec) -> bool {
 /// One schema per bank, not per call: a driver concatenating a run's drains
 /// needs every frame to have the same columns, whatever happened to close in
 /// that chunk.
-/// `offsets[si]` is added to spec `si`'s clock values: a temporal clock's
-/// origin in seconds (`Bank::clock_offset`), `0` on a numeric clock.
-fn closed_frame(specs: &[Spec], rows: &[ClosedRow], offsets: &[f64]) -> PolarsResult<DataFrame> {
+fn closed_frame(specs: &[Spec], rows: &[ClosedRow]) -> PolarsResult<DataFrame> {
     let closing: Vec<&Spec> = specs.iter().filter(|s| s.group_close.is_some()).collect();
     let any = |f: fn(&Spec) -> bool| closing.iter().any(|s| f(s));
     let has_gram = any(|s| {
@@ -1598,13 +1618,13 @@ fn closed_frame(specs: &[Spec], rows: &[ClosedRow], offsets: &[f64]) -> PolarsRe
         Column::new(
             "clock_min".into(),
             rows.iter()
-                .map(|r| r.clock_min.and_then(opt).map(|c| c + offsets[r.spec]))
+                .map(|r| r.clock_min.and_then(opt))
                 .collect::<Vec<_>>(),
         ),
         Column::new(
             "clock_max".into(),
             rows.iter()
-                .map(|r| r.clock_max.and_then(opt).map(|c| c + offsets[r.spec]))
+                .map(|r| r.clock_max.and_then(opt))
                 .collect::<Vec<_>>(),
         ),
     ];
@@ -1965,12 +1985,6 @@ struct BankFile {
     /// where the flag is simply unknown.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     key_integer: Vec<(usize, bool)>,
-    /// Where each temporal clock column is measured from, in nanoseconds
-    /// since the Unix epoch ([`ClockOrigins`], docs/PLAN.md task 88). Skipped
-    /// when empty, so a bank with no temporal clock writes the bytes it
-    /// always did.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    clock_origins: ClockOrigins,
 }
 
 pub struct Bank {
@@ -2005,10 +2019,6 @@ pub struct Bank {
     /// high-water mark cannot be read under the wrong ordering
     /// (docs/REVIEW-E54-E64.md G1).
     key_integer: Vec<Option<bool>>,
-    /// Where each temporal clock column is measured from, set from the first
-    /// accepted chunk that carries the column and kept in the state
-    /// ([`ClockOrigins`]).
-    clock_origins: ClockOrigins,
     /// Why the bank refuses to go on, once a chunk was refused after some
     /// of its rows had been learned. A window past a refusing
     /// `window_budget` is found as the rows go in, not before, so by then
@@ -2205,32 +2215,9 @@ impl Bank {
             high_water,
             pca_prev: HashMap::new(),
             key_integer,
-            clock_origins: ClockOrigins::new(),
             broken: None,
             notices: Vec::new(),
         })
-    }
-
-    /// Where each temporal clock column is measured from ([`ClockOrigins`]):
-    /// what [`chunk_from_frame`] reads a frame against.
-    pub fn clock_origins(&self) -> &ClockOrigins {
-        &self.clock_origins
-    }
-
-    /// Keep the origins a [`chunk_from_frame`] call returned beside a chunk
-    /// the bank has since accepted. A refused chunk's are dropped instead.
-    pub fn commit_clock_origins(&mut self, fresh: ClockOrigins) {
-        self.clock_origins.extend(fresh);
-    }
-
-    /// Seconds to add to a clock value of spec `si` before reporting it: the
-    /// spec's clock origin, or `0` on a numeric clock.
-    fn clock_offset(&self, si: usize) -> f64 {
-        self.specs[si]
-            .clock
-            .as_deref()
-            .and_then(|c| self.clock_origins.get(c))
-            .map_or(0.0, |&ns| ns as f64 / 1e9)
     }
 
     pub fn specs(&self) -> &[Spec] {
@@ -2242,20 +2229,19 @@ impl Bank {
     /// null policy did not skip -- the count the stream's own `coef_every`
     /// cadence runs on. A group's state lives until [`Self::drop_groups`]
     /// removes it, so this is how a long-running bank finds the ones that have
-    /// gone quiet (docs/IMPROVEMENTS.md U3).
+    /// gone quiet (docs/IMPROVEMENTS.md U3). A temporal clock's value is
+    /// seconds since the Unix epoch ([`online_core::ClockValue::seconds`]).
     pub fn groups(&self) -> Vec<Vec<(GroupKey, u64, Option<f64>)>> {
         self.states
             .iter()
-            .enumerate()
-            .map(|(si, hm)| {
-                let off = self.clock_offset(si);
+            .map(|hm| {
                 let mut v: Vec<_> = hm
                     .iter()
                     .map(|(k, s)| {
                         (
                             k.clone(),
                             s.rows_seen,
-                            s.clock.last_clock().map(|c| c + off),
+                            s.clock.last_clock().map(online_core::ClockValue::seconds),
                         )
                     })
                     .collect();
@@ -2596,10 +2582,12 @@ impl Bank {
                 SummaryRow {
                     group: k.as_str(),
                     rows_processed: stream.rows_seen,
-                    last_clock: stream.clock.last_clock(),
+                    last_clock: stream
+                        .clock
+                        .last_clock()
+                        .map(online_core::ClockValue::seconds),
                     summary: stream.summary(),
                     readiness: Some(stream.readiness(&self.specs[spec])),
-                    clock_offset: self.clock_offset(spec),
                 }
             })
             .collect();
@@ -2724,9 +2712,8 @@ impl Bank {
         // is in it, and a column error would otherwise hide that and the cast
         // would be work thrown away (review 2026-09-17, second pass).
         self.refuse_if_broken()?;
-        let (chunk, fresh) = chunk_from_frame(df, &self.specs, &self.clock_origins)?;
+        let chunk = chunk_from_frame(df, &self.specs)?;
         let arrays = self.fit_predict_arrow(&chunk)?;
-        self.commit_clock_origins(fresh);
         named_columns(&self.specs, arrays)
     }
 
@@ -2863,7 +2850,7 @@ impl Bank {
             stream
                 .check_clock(
                     &cfgs[*si],
-                    sc.clock.as_deref(),
+                    sc.clock.as_ref(),
                     sc.session.as_deref(),
                     idx,
                     *base,
@@ -3026,9 +3013,7 @@ impl Bank {
     /// As [`Self::fit_predict`]'s, less a missing target, which is not one.
     pub fn predict(&self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
         self.refuse_if_broken()?;
-        // A column with no origin yet reads from its own first instant; the
-        // origin is not kept, since scoring teaches the bank nothing.
-        let (chunk, _) = chunk_from_frame(df, &self.specs, &self.clock_origins)?;
+        let chunk = chunk_from_frame(df, &self.specs)?;
         let arrays = self.predict_arrow(&chunk)?;
         named_columns(&self.specs, arrays)
     }
@@ -3175,10 +3160,7 @@ impl Bank {
                 .cloned()
                 .collect()
         };
-        let offsets: Vec<f64> = (0..self.specs.len())
-            .map(|si| self.clock_offset(si))
-            .collect();
-        closed_frame(&self.specs, &taken, &offsets).map_err(|e| e.to_string())
+        closed_frame(&self.specs, &taken).map_err(|e| e.to_string())
     }
 
     /// The bank as versioned msgpack: the specs, every group's state and the
@@ -3191,8 +3173,7 @@ impl Bank {
     fn to_file(&self) -> BankFile {
         BankFile {
             magic: BANK_MAGIC.to_string(),
-            format_version: format_version_for(&self.specs, &self.clock_origins),
-            clock_origins: self.clock_origins.clone(),
+            format_version: format_version_for(&self.specs),
             rows_fed: self.rows_fed,
             schema_version: online_core::SCHEMA_VERSION,
             package_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -3347,7 +3328,6 @@ impl Bank {
             bank.pca_prev
                 .insert((*si, Some(group.clone()), inst.clone()), pca.clone());
         }
-        bank.clock_origins = file.clock_origins.clone();
         for (si, integer) in &file.key_integer {
             if let Some(slot) = bank.key_integer.get_mut(*si) {
                 *slot = Some(*integer);
@@ -4834,11 +4814,7 @@ mod envelope_tests {
             ),
         ] {
             let specs = vec![spec(extra)];
-            assert_eq!(
-                format_version_for(&specs, &Default::default()),
-                version,
-                "{extra}"
-            );
+            assert_eq!(format_version_for(&specs), version, "{extra}");
             let bytes = Bank::new(specs).unwrap().save_bytes().unwrap();
             let header: BankHeader = rmp_serde::from_slice(&bytes).unwrap();
             assert_eq!(header.format_version, version, "{extra}");

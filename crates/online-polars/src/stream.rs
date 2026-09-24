@@ -13,6 +13,7 @@ use online_core::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::arrow::ClockCol;
 use crate::resid_window::ResidWindow;
 use crate::rows::FeatureRows;
 use crate::span::{Span, SpanList};
@@ -2308,7 +2309,7 @@ impl Stream {
     pub fn check_clock(
         &self,
         cfg: &online_core::ClockCfg,
-        clock: Option<&[f64]>,
+        clock: Option<&ClockCol>,
         session: Option<&[u64]>,
         rows: &[usize],
         base: usize,
@@ -2332,7 +2333,7 @@ impl Stream {
             let at = base + ri;
             // `accept` only routes the delta into `pending`; whether the row
             // is refused depends on the clock and session alone.
-            let adv = state.advance(cfg, Some(clock[at]), session.map(|s| s[at]), true);
+            let adv = state.advance(cfg, Some(clock.at(at)), session.map(|s| s[at]), true);
             if let Some(raw) = adv.backwards {
                 return Err((raw, row, adv.disorder));
             }
@@ -2379,7 +2380,7 @@ impl Stream {
         cfg: &online_core::ClockCfg,
         features: &FeatureRows,
         targets: &[Vec<f64>],
-        clock: Option<&[f64]>,
+        clock: Option<&ClockCol>,
         session: Option<&[u64]>,
         weight: Option<&[f64]>,
         rows: &[usize],
@@ -2402,10 +2403,11 @@ impl Stream {
             // null, NaN, infinity and the bound.
             let w = weight.map(|w| w[i]);
             let accept = all_usable(features.row(i)) && w.map(usable).unwrap_or(true);
-            let c = clock.map(|c| c[i]);
+            let c = clock.map(|c| c.at(i));
             // A clock below the previous row's, before the schedule decides
             // what to do about it; the summary counts them (task 35).
-            let below = matches!((c, clock_state.last_clock()), (Some(c), Some(p)) if c < p);
+            let below =
+                matches!((c, clock_state.last_clock()), (Some(c), Some(p)) if c.is_before(p));
             let adv = clock_state.advance(cfg, c, session.map(|s| s[i]), accept);
             // `on_clock_reset = "error"`, or a disorder rule: hand the
             // offending delta (and the rule) back so the caller can name the
@@ -2464,7 +2466,7 @@ impl Stream {
                     features.row(i),
                     targets,
                     weight.map(|w| w[i]),
-                    clock.map(|c| c[i]),
+                    clock.map(|c| c.at(i).seconds()),
                     i,
                 );
                 summary.events(plan.session_changed, plan.backwards, plan.reset);
@@ -2733,7 +2735,7 @@ impl Stream {
         cfg: &online_core::ClockCfg,
         features: &FeatureRows,
         targets: &[Vec<f64>],
-        clock: Option<&[f64]>,
+        clock: Option<&ClockCol>,
         session: Option<&[u64]>,
         rows: &[usize],
         base: usize,
@@ -2762,10 +2764,12 @@ impl Stream {
             let i = base + ri;
             let accept = all_usable(features.row(i));
             // Every row is the first after the last learned one.
-            let adv =
-                self.clock
-                    .clone()
-                    .advance(cfg, clock.map(|c| c[i]), session.map(|s| s[i]), true);
+            let adv = self.clock.clone().advance(
+                cfg,
+                clock.map(|c| c.at(i)),
+                session.map(|s| s[i]),
+                true,
+            );
             if let Some(raw) = adv.backwards {
                 return Err((raw, row, adv.disorder));
             }

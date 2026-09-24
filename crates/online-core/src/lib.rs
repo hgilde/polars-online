@@ -92,7 +92,10 @@ mod stats;
 mod window;
 
 pub use bocpd::{Bocpd, BocpdCfg, BocpdEmission};
-pub use clock::{ClockAdvance, ClockCfg, ClockState, Decay, Disorder, OnClockReset, SessionGap};
+pub use clock::{
+    ClockAdvance, ClockCfg, ClockState, ClockValue, Decay, Disorder, OnClockReset, SessionGap,
+    seconds_of_ns,
+};
 pub use cluster::{
     ClusterSummary, FeatureMoments, KMeans, KMeansCfg, LINK_FACTOR, LINK_FLOOR, LINK_QUANTILE,
     Micro, MicroCfg, MicroCluster, SeedRule, SplitMix64, dist2, merged_radius2,
@@ -244,9 +247,19 @@ pub use window::{
 ///   keeps the decay time each instance has seen (what `settled_frac` is
 ///   read from) and which of its readiness notices it has raised. No loader
 ///   for 12.
-pub const SCHEMA_VERSION: u32 = 13;
+/// - 14: the clock state keeps its previous row's value in the form the
+///   source had it -- a number, or a temporal clock's nanoseconds -- so the
+///   gap between two instants is taken in integers and is exact whatever
+///   the stream's age ([`ClockValue`], 2026-09-24). A temporal clock was a
+///   double of seconds from a per-column origin the bank kept beside the
+///   streams, which resolved 2^-52 of the time since it; the origin is gone
+///   with it. No loader for 13.
+pub const SCHEMA_VERSION: u32 = 14;
 
 /// Oldest state layout this build still loads.
+///
+/// **14 since 2026-09-24**: a schema-13 clock state holds a double where the
+/// nanoseconds now are, and pre-1.0 no loader is written for one.
 ///
 /// **13 since 2026-09-21** (task 87): a schema-12 state holds none of the
 /// readiness statistics -- the decay time each instance has seen, and what
@@ -288,4 +301,4 @@ pub const SCHEMA_VERSION: u32 = 13;
 /// because getting the names right was judged worth more than the
 /// compatibility. Schema 7's conversions were held to schema-6 fixtures
 /// until 8 raised the minimum again.
-pub const MIN_SCHEMA_VERSION: u32 = 13;
+pub const MIN_SCHEMA_VERSION: u32 = 14;

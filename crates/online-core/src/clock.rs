@@ -154,10 +154,72 @@ pub struct ClockAdvance {
     pub capped: bool,
 }
 
+/// One row's clock value, in the form the source had it: a number, or a
+/// temporal clock's nanoseconds since the Unix epoch. A stream keeps its
+/// previous row's value in that form, and the delta between two `Ns` values
+/// is taken in integers before it becomes seconds, so a nanosecond
+/// timestamp's gaps are exact whatever the stream's age. Read as a double
+/// of seconds from any origin, a clock resolves only 2^-52 of the time
+/// since that origin: under a nanosecond for six weeks, four nanoseconds
+/// after a year (docs/PLAN.md task 88).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum ClockValue {
+    /// A numeric clock, in the column's own units.
+    F64(f64),
+    /// A temporal clock, in nanoseconds since the Unix epoch.
+    Ns(i64),
+}
+
+impl ClockValue {
+    /// The value as a number a caller can report: a numeric clock as it
+    /// is, a temporal one as seconds since the Unix epoch, which a double
+    /// resolves to about a quarter of a microsecond at today's dates. For
+    /// reporting; the delta a model sees never goes through this.
+    pub fn seconds(self) -> f64 {
+        match self {
+            Self::F64(v) => v,
+            Self::Ns(ns) => seconds_of_ns(i128::from(ns)),
+        }
+    }
+
+    /// `self` minus `prev`, in clock units: for two temporal values, the
+    /// seconds between them, taken in integer nanoseconds and rounded once.
+    fn delta(self, prev: Self) -> f64 {
+        match (self, prev) {
+            (Self::Ns(c), Self::Ns(p)) => seconds_of_ns(i128::from(c) - i128::from(p)),
+            (Self::F64(c), Self::F64(p)) => c - p,
+            // A stream's clock keeps one form for its life -- the bank
+            // refuses a chunk in the other form -- so this arm is a direct
+            // caller's, and it reads both as the numbers they report.
+            (c, p) => c.seconds() - p.seconds(),
+        }
+    }
+
+    /// Whether `self` is before `prev`: exact between two temporal values.
+    pub fn is_before(self, prev: Self) -> bool {
+        match (self, prev) {
+            (Self::Ns(c), Self::Ns(p)) => c < p,
+            (c, p) => c.seconds() < p.seconds(),
+        }
+    }
+}
+
+impl From<f64> for ClockValue {
+    fn from(v: f64) -> Self {
+        Self::F64(v)
+    }
+}
+
+/// Nanoseconds as seconds: the whole seconds exact, the rest rounded once.
+pub fn seconds_of_ns(ns: i128) -> f64 {
+    const PER: i128 = 1_000_000_000;
+    ns.div_euclid(PER) as f64 + ns.rem_euclid(PER) as f64 / 1e9
+}
+
 /// Per-stream clock state. Serialized as part of a stream's saved state.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ClockState {
-    prev_clock: Option<f64>,
+    prev_clock: Option<ClockValue>,
     prev_session: Option<u64>,
     /// Deltas of skipped rows, folded into the next accepted row.
     pending: f64,
@@ -172,8 +234,8 @@ impl ClockState {
 
     /// The last clock value seen, `None` before the first row or on a
     /// row-count clock. What a caller uses to tell a stale group from a live
-    /// one.
-    pub fn last_clock(&self) -> Option<f64> {
+    /// one; [`ClockValue::seconds`] is the number to report.
+    pub fn last_clock(&self) -> Option<ClockValue> {
         self.prev_clock
     }
 
@@ -192,20 +254,20 @@ impl ClockState {
     /// into `pending` instead of being returned.
     ///
     /// ```
-    /// use online_core::{ClockCfg, ClockState, OnClockReset};
+    /// use online_core::{ClockCfg, ClockState, ClockValue, OnClockReset};
     ///
     /// let cfg = ClockCfg { max_dclock: 60.0, on_clock_reset: OnClockReset::Max, ..ClockCfg::default() };
     /// let mut clock = ClockState::new();
     /// // The first row of a stream has nothing to be a delta from.
-    /// assert_eq!(clock.advance(&cfg, Some(1000.0), None, true).d_clock, 0.0);
-    /// assert_eq!(clock.advance(&cfg, Some(1010.0), None, true).d_clock, 10.0);
+    /// assert_eq!(clock.advance(&cfg, Some(ClockValue::F64(1000.0)), None, true).d_clock, 0.0);
+    /// assert_eq!(clock.advance(&cfg, Some(ClockValue::F64(1010.0)), None, true).d_clock, 10.0);
     /// // A skipped row still moves the clock: its 5 units are carried into
     /// // the next accepted row's delta.
-    /// assert!(!clock.advance(&cfg, Some(1015.0), None, false).accepted);
-    /// assert_eq!(clock.advance(&cfg, Some(1020.0), None, true).d_clock, 10.0);
+    /// assert!(!clock.advance(&cfg, Some(ClockValue::F64(1015.0)), None, false).accepted);
+    /// assert_eq!(clock.advance(&cfg, Some(ClockValue::F64(1020.0)), None, true).d_clock, 10.0);
     /// // A gap is capped at `max_dclock`, so a weekend does not decay the
     /// // state to nothing.
-    /// assert_eq!(clock.advance(&cfg, Some(1e6), None, true).d_clock, 60.0);
+    /// assert_eq!(clock.advance(&cfg, Some(ClockValue::F64(1e6)), None, true).d_clock, 60.0);
     /// ```
     ///
     /// `on_clock_reset` handles a *backwards* delta, and only within a
@@ -223,12 +285,12 @@ impl ClockState {
     pub fn advance(
         &mut self,
         cfg: &ClockCfg,
-        clock: Option<f64>,
+        clock: Option<ClockValue>,
         session: Option<u64>,
         accept: bool,
     ) -> ClockAdvance {
         let raw = match (clock, self.prev_clock) {
-            (Some(c), Some(p)) => Some(c - p),
+            (Some(c), Some(p)) => Some(c.delta(p)),
             (Some(_), None) => None, // first row of the stream
             (None, _) => {
                 if self.started {
@@ -367,6 +429,72 @@ mod tests {
         }
     }
 
+    /// The gap between two temporal values is taken in integer nanoseconds,
+    /// so a nanosecond tick four decades into a stream is the delta it is
+    /// at the start. As doubles of seconds the two instants round to the
+    /// double's resolution at that age -- 60 ns at a decade -- and the
+    /// tick is lost.
+    #[test]
+    fn a_temporal_gap_is_exact_at_any_age() {
+        let cfg = ClockCfg::default();
+        let decade: i64 = 315_576_000 * 1_000_000_000;
+        for start in [0, decade, 4 * decade] {
+            let mut c = ClockState::new();
+            c.advance(&cfg, Some(ClockValue::Ns(start)), None, true);
+            let one = c.advance(&cfg, Some(ClockValue::Ns(start + 1)), None, true);
+            assert_eq!(one.d_clock, 1e-9);
+            let half = c.advance(
+                &cfg,
+                Some(ClockValue::Ns(start + 1_500_000_001)),
+                None,
+                true,
+            );
+            assert_eq!(half.d_clock, 1.5);
+            let odd = c.advance(
+                &cfg,
+                Some(ClockValue::Ns(start + 3_500_000_002)),
+                None,
+                true,
+            );
+            assert!((odd.d_clock - 2.000000001).abs() < 1e-15);
+        }
+        let mut c = ClockState::new();
+        c.advance(&cfg, Some(ClockValue::F64(decade as f64 / 1e9)), None, true);
+        let lost = c.advance(
+            &cfg,
+            Some(ClockValue::F64((decade + 1) as f64 / 1e9)),
+            None,
+            true,
+        );
+        assert_eq!(lost.d_clock, 0.0);
+    }
+
+    /// `is_before` compares two temporal values exactly, where their
+    /// seconds since the epoch are the same double.
+    #[test]
+    fn before_is_exact_between_temporal_values() {
+        let t = ClockValue::Ns(1_704_187_800 * 1_000_000_000);
+        let later = ClockValue::Ns(1_704_187_800 * 1_000_000_000 + 1);
+        assert!(t.is_before(later));
+        assert!(!later.is_before(t));
+        assert!(!t.is_before(t));
+        assert_eq!(t.seconds(), later.seconds());
+        assert_eq!(t.seconds(), 1_704_187_800.0);
+        assert!(ClockValue::F64(1.0).is_before(ClockValue::F64(2.0)));
+    }
+
+    /// A stream's clock keeps one form for its life; a direct caller that
+    /// mixes the two gets the difference of the numbers they report.
+    #[test]
+    fn mixed_forms_read_as_their_numbers() {
+        let cfg = ClockCfg::default();
+        let mut c = ClockState::new();
+        c.advance(&cfg, Some(ClockValue::F64(10.0)), None, true);
+        let adv = c.advance(&cfg, Some(ClockValue::Ns(12_000_000_000)), None, true);
+        assert_eq!(adv.d_clock, 2.0);
+        assert_eq!(c.last_clock(), Some(ClockValue::Ns(12_000_000_000)));
+    }
+
     /// Task 47: `capped` says "this jump was bigger than the model is
     /// allowed to see", which is the signal anything lagged by *rows* needs.
     #[test]
@@ -374,20 +502,35 @@ mod tests {
         let cfg = cfg(60.0);
         let mut c = ClockState::new();
         // The first row has no delta at all.
-        assert!(!c.advance(&cfg, Some(0.0), None, true).capped);
-        assert!(!c.advance(&cfg, Some(10.0), None, true).capped);
+        assert!(
+            !c.advance(&cfg, Some(ClockValue::F64(0.0)), None, true)
+                .capped
+        );
+        assert!(
+            !c.advance(&cfg, Some(ClockValue::F64(10.0)), None, true)
+                .capped
+        );
         // Exactly at the ceiling is not over it.
-        assert!(!c.advance(&cfg, Some(70.0), None, true).capped);
-        let over = c.advance(&cfg, Some(1e6), None, true);
+        assert!(
+            !c.advance(&cfg, Some(ClockValue::F64(70.0)), None, true)
+                .capped
+        );
+        let over = c.advance(&cfg, Some(ClockValue::F64(1e6)), None, true);
         assert!(over.capped && over.d_clock == 60.0);
         // A skipped row's gap breaks adjacency too, so the flag is set
         // whether or not the row is accepted.
-        assert!(c.advance(&cfg, Some(2e6), None, false).capped);
+        assert!(
+            c.advance(&cfg, Some(ClockValue::F64(2e6)), None, false)
+                .capped
+        );
         // An infinite ceiling never caps.
         let mut c = ClockState::new();
         let none = ClockCfg::default();
-        c.advance(&none, Some(0.0), None, true);
-        assert!(!c.advance(&none, Some(1e300), None, true).capped);
+        c.advance(&none, Some(ClockValue::F64(0.0)), None, true);
+        assert!(
+            !c.advance(&none, Some(ClockValue::F64(1e300)), None, true)
+                .capped
+        );
         // A row-count clock cannot jump.
         let mut c = ClockState::new();
         c.advance(&cfg, None, None, true);
@@ -410,9 +553,10 @@ mod tests {
                 ..Default::default()
             };
             let mut c = ClockState::new();
-            c.advance(&cfg, Some(100.0), None, true);
+            c.advance(&cfg, Some(ClockValue::F64(100.0)), None, true);
             assert_eq!(
-                c.advance(&cfg, Some(10.0), None, true).capped,
+                c.advance(&cfg, Some(ClockValue::F64(10.0)), None, true)
+                    .capped,
                 want,
                 "{policy:?}"
             );
@@ -430,8 +574,8 @@ mod tests {
         for (gap, want) in [(30.0, false), (600.0, true)] {
             let cfg = with_gap(gap);
             let mut c = ClockState::new();
-            c.advance(&cfg, Some(0.0), Some(1), true);
-            let adv = c.advance(&cfg, Some(1.0), Some(2), true);
+            c.advance(&cfg, Some(ClockValue::F64(0.0)), Some(1), true);
+            let adv = c.advance(&cfg, Some(ClockValue::F64(1.0)), Some(2), true);
             assert!(adv.session_changed);
             assert_eq!(adv.capped, want, "gap {gap}");
         }
@@ -443,8 +587,8 @@ mod tests {
             ..Default::default()
         };
         let mut c = ClockState::new();
-        c.advance(&cfg, Some(0.0), Some(1), true);
-        let adv = c.advance(&cfg, Some(1e6), Some(2), true);
+        c.advance(&cfg, Some(ClockValue::F64(0.0)), Some(1), true);
+        let adv = c.advance(&cfg, Some(ClockValue::F64(1e6)), Some(2), true);
         assert!(adv.reset && !adv.capped);
     }
 
@@ -465,7 +609,10 @@ mod tests {
         let cfg = cfg(50.0);
         let got: Vec<f64> = t
             .iter()
-            .map(|&ti| c.advance(&cfg, Some(ti), None, true).d_clock)
+            .map(|&ti| {
+                c.advance(&cfg, Some(ClockValue::F64(ti)), None, true)
+                    .d_clock
+            })
             .collect();
         assert_eq!(got, vec![0.0, 10.0, 50.0, 1.0, 50.0]);
 
@@ -474,18 +621,22 @@ mod tests {
             on_clock_reset: OnClockReset::Zero,
             ..cfg
         };
-        c.advance(&zero, Some(0.0), None, true);
-        c.advance(&zero, Some(10.0), None, true);
-        assert_eq!(c.advance(&zero, Some(5.0), None, true).d_clock, 0.0);
+        c.advance(&zero, Some(ClockValue::F64(0.0)), None, true);
+        c.advance(&zero, Some(ClockValue::F64(10.0)), None, true);
+        assert_eq!(
+            c.advance(&zero, Some(ClockValue::F64(5.0)), None, true)
+                .d_clock,
+            0.0
+        );
 
         let mut c = ClockState::new();
         let rst = ClockCfg {
             on_clock_reset: OnClockReset::ResetState,
             ..cfg
         };
-        c.advance(&rst, Some(0.0), None, true);
-        c.advance(&rst, Some(10.0), None, true);
-        let a = c.advance(&rst, Some(5.0), None, true);
+        c.advance(&rst, Some(ClockValue::F64(0.0)), None, true);
+        c.advance(&rst, Some(ClockValue::F64(10.0)), None, true);
+        let a = c.advance(&rst, Some(ClockValue::F64(5.0)), None, true);
         assert!(a.reset && a.d_clock == 0.0);
     }
 
@@ -507,8 +658,12 @@ mod tests {
                 on_clock_reset: policy,
                 ..Default::default()
             };
-            assert_eq!(c.advance(&cfg, Some(5.0), None, true).d_clock, 0.0);
-            let a = c.advance(&cfg, Some(5.0), None, true);
+            assert_eq!(
+                c.advance(&cfg, Some(ClockValue::F64(5.0)), None, true)
+                    .d_clock,
+                0.0
+            );
+            let a = c.advance(&cfg, Some(ClockValue::F64(5.0)), None, true);
             assert_eq!(
                 a.d_clock, 0.0,
                 "{policy:?}: repeated clock must give delta 0"
@@ -518,7 +673,7 @@ mod tests {
                 "{policy:?}: a repeated clock must not reset state"
             );
             // and a genuinely backwards clock still is handled by the policy
-            let b = c.advance(&cfg, Some(4.0), None, true);
+            let b = c.advance(&cfg, Some(ClockValue::F64(4.0)), None, true);
             match policy {
                 OnClockReset::Max => assert_eq!(b.d_clock, 10.0),
                 OnClockReset::Zero => assert_eq!(b.d_clock, 0.0),
@@ -536,11 +691,23 @@ mod tests {
             on_clock_reset: OnClockReset::Error,
             ..Default::default()
         };
-        assert!(c.advance(&cfg, Some(0.0), None, true).backwards.is_none());
-        assert!(c.advance(&cfg, Some(10.0), None, true).backwards.is_none());
+        assert!(
+            c.advance(&cfg, Some(ClockValue::F64(0.0)), None, true)
+                .backwards
+                .is_none()
+        );
+        assert!(
+            c.advance(&cfg, Some(ClockValue::F64(10.0)), None, true)
+                .backwards
+                .is_none()
+        );
         // a repeated value is a zero delta, not backwards
-        assert!(c.advance(&cfg, Some(10.0), None, true).backwards.is_none());
-        let a = c.advance(&cfg, Some(4.0), None, true);
+        assert!(
+            c.advance(&cfg, Some(ClockValue::F64(10.0)), None, true)
+                .backwards
+                .is_none()
+        );
+        let a = c.advance(&cfg, Some(ClockValue::F64(4.0)), None, true);
         assert_eq!(a.backwards, Some(-6.0));
         assert!(!a.reset, "the error policy must not silently reset");
     }
@@ -553,9 +720,15 @@ mod tests {
             session_gap: Some(SessionGap::Gap(5.0)),
             ..Default::default()
         };
-        assert!(!c.advance(&cfg, Some(0.0), Some(1), true).session_changed);
-        assert!(!c.advance(&cfg, Some(1.0), Some(1), true).session_changed);
-        let a = c.advance(&cfg, Some(2.0), Some(2), true);
+        assert!(
+            !c.advance(&cfg, Some(ClockValue::F64(0.0)), Some(1), true)
+                .session_changed
+        );
+        assert!(
+            !c.advance(&cfg, Some(ClockValue::F64(1.0)), Some(1), true)
+                .session_changed
+        );
+        let a = c.advance(&cfg, Some(ClockValue::F64(2.0)), Some(2), true);
         assert!(a.session_changed, "a new session id should be reported");
         assert!(!a.reset, "a gap is not a reset");
     }
@@ -568,10 +741,10 @@ mod tests {
             session_gap: Some(SessionGap::Gap(7.5)),
             ..Default::default()
         };
-        c.advance(&cfg, Some(0.0), Some(0), true);
-        c.advance(&cfg, Some(10.0), Some(0), true);
+        c.advance(&cfg, Some(ClockValue::F64(0.0)), Some(0), true);
+        c.advance(&cfg, Some(ClockValue::F64(10.0)), Some(0), true);
         // negative raw delta AND session change: session gap wins
-        let a = c.advance(&cfg, Some(5.0), Some(1), true);
+        let a = c.advance(&cfg, Some(ClockValue::F64(5.0)), Some(1), true);
         assert_eq!(a.d_clock, 7.5);
 
         let mut c = ClockState::new();
@@ -580,8 +753,8 @@ mod tests {
             session_gap: Some(SessionGap::Reset),
             ..Default::default()
         };
-        c.advance(&cfg, Some(0.0), Some(0), true);
-        let a = c.advance(&cfg, Some(10.0), Some(1), true);
+        c.advance(&cfg, Some(ClockValue::F64(0.0)), Some(0), true);
+        let a = c.advance(&cfg, Some(ClockValue::F64(10.0)), Some(1), true);
         assert!(a.reset);
     }
 
@@ -598,9 +771,13 @@ mod tests {
         };
         let mut c = ClockState::new();
         for t in [0.0, 10.0, 20.0] {
-            assert!(c.advance(&cfg, Some(t), None, true).backwards.is_none());
+            assert!(
+                c.advance(&cfg, Some(ClockValue::F64(t)), None, true)
+                    .backwards
+                    .is_none()
+            );
         }
-        let a = c.advance(&cfg, Some(17.0), None, true);
+        let a = c.advance(&cfg, Some(ClockValue::F64(17.0)), None, true);
         assert_eq!(a.backwards, Some(-3.0));
         assert_eq!(
             a.disorder,
@@ -613,9 +790,9 @@ mod tests {
         // Equal to the minimum: a boundary, absorbed by the `max` policy.
         let mut c = ClockState::new();
         for t in [0.0, 10.0, 200.0] {
-            c.advance(&cfg, Some(t), None, true);
+            c.advance(&cfg, Some(ClockValue::F64(t)), None, true);
         }
-        let b = c.advance(&cfg, Some(100.0), None, true);
+        let b = c.advance(&cfg, Some(ClockValue::F64(100.0)), None, true);
         assert!(b.backwards.is_none() && b.disorder.is_none() && b.capped);
         assert_eq!(b.d_clock, 100.0);
     }
@@ -630,11 +807,19 @@ mod tests {
             ..Default::default()
         };
         let mut c = ClockState::new();
-        c.advance(&cfg, Some(5.0), None, true);
-        assert!(c.advance(&cfg, Some(0.0), None, true).disorder.is_some());
+        c.advance(&cfg, Some(ClockValue::F64(5.0)), None, true);
+        assert!(
+            c.advance(&cfg, Some(ClockValue::F64(0.0)), None, true)
+                .disorder
+                .is_some()
+        );
         let mut c = ClockState::new();
-        c.advance(&cfg, Some(100.0), None, true);
-        assert!(c.advance(&cfg, Some(0.0), None, true).disorder.is_none());
+        c.advance(&cfg, Some(ClockValue::F64(100.0)), None, true);
+        assert!(
+            c.advance(&cfg, Some(ClockValue::F64(0.0)), None, true)
+                .disorder
+                .is_none()
+        );
     }
 
     /// At 0 -- the core default -- every backwards jump takes the policy as
@@ -647,10 +832,18 @@ mod tests {
         };
         let mut c = ClockState::new();
         for t in [0.0, 10.0, 20.0] {
-            c.advance(&cfg, Some(t), None, true);
+            c.advance(&cfg, Some(ClockValue::F64(t)), None, true);
         }
-        assert!(c.advance(&cfg, Some(19.0), None, true).backwards.is_none());
-        assert!(c.advance(&cfg, Some(18.0), None, true).backwards.is_none());
+        assert!(
+            c.advance(&cfg, Some(ClockValue::F64(19.0)), None, true)
+                .backwards
+                .is_none()
+        );
+        assert!(
+            c.advance(&cfg, Some(ClockValue::F64(18.0)), None, true)
+                .backwards
+                .is_none()
+        );
     }
 
     /// The `error` policy refuses every backwards jump already and keeps its
@@ -664,8 +857,8 @@ mod tests {
             ..Default::default()
         };
         let mut c = ClockState::new();
-        c.advance(&cfg, Some(10.0), None, true);
-        let a = c.advance(&cfg, Some(7.0), None, true);
+        c.advance(&cfg, Some(ClockValue::F64(10.0)), None, true);
+        let a = c.advance(&cfg, Some(ClockValue::F64(7.0)), None, true);
         assert_eq!(a.backwards, Some(-3.0));
         assert!(a.disorder.is_none());
     }
@@ -674,10 +867,10 @@ mod tests {
     fn skipped_rows_fold_into_pending() {
         let mut c = ClockState::new();
         let cfg = cfg(f64::INFINITY);
-        c.advance(&cfg, Some(0.0), None, true);
-        let s = c.advance(&cfg, Some(3.0), None, false);
+        c.advance(&cfg, Some(ClockValue::F64(0.0)), None, true);
+        let s = c.advance(&cfg, Some(ClockValue::F64(3.0)), None, false);
         assert!(!s.accepted);
-        let a = c.advance(&cfg, Some(5.0), None, true);
+        let a = c.advance(&cfg, Some(ClockValue::F64(5.0)), None, true);
         assert_eq!(a.d_clock, 5.0); // 3 (pending) + 2
     }
 
@@ -689,12 +882,17 @@ mod tests {
     fn a_skipped_run_hands_the_next_row_at_most_the_cap() {
         let mut c = ClockState::new();
         let cfg = cfg(60.0);
-        c.advance(&cfg, Some(0.0), None, true);
+        c.advance(&cfg, Some(ClockValue::F64(0.0)), None, true);
         for i in 1..=10 {
-            let s = c.advance(&cfg, Some(100.0 * f64::from(i)), None, false);
+            let s = c.advance(
+                &cfg,
+                Some(ClockValue::F64(100.0 * f64::from(i))),
+                None,
+                false,
+            );
             assert!(!s.accepted);
         }
-        let a = c.advance(&cfg, Some(1100.0), None, true);
+        let a = c.advance(&cfg, Some(ClockValue::F64(1100.0)), None, true);
         assert_eq!(a.d_clock, 60.0);
         assert!(a.capped, "a folded total past the cap is a capped gap");
     }

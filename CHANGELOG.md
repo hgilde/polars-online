@@ -16,12 +16,12 @@ carries breaking changes, and any change to the numbers a model returns.
   `window`, `solve_every` and own halflives -- is then a duration, written
   as `pl.duration(minutes=10)`, a `timedelta`, or polars' duration text
   `"10m"`. The spec keeps the text, which the command line's TOML takes
-  too. The clock is read as seconds from the stream's first instant, which
-  the bank keeps in its state, the subtraction done in integer nanoseconds,
-  so the same instants stored in milliseconds, microseconds or nanoseconds
-  give the same numbers to the bit; the double resolves under a nanosecond
-  for the first six weeks of a stream and four nanoseconds after a year,
-  and a zone-aware column is read as its UTC instants.
+  too. The clock is read in its own integer nanoseconds, and the gap
+  between rows is taken in integers before it becomes seconds, so the same
+  instants stored in milliseconds, microseconds or nanoseconds give the
+  same numbers to the bit, a nanosecond timestamp keeps its nanoseconds
+  whatever the stream's age, and a zone-aware column is read as its UTC
+  instants. A clock must lie between the years 1677 and 2262.
   A numeric clock is unchanged. `po.prep.embargo`'s `delay` and
   `po.eval.rolling_metrics`' `window` take durations the same way.
 
@@ -40,6 +40,10 @@ carries breaking changes, and any change to the numbers a model returns.
 - **A state file whose specs carry a duration is envelope version 3.** Every
   other file is still version 2, byte for byte, so a build from before
   durations reads it, and refuses a file with a duration by its version.
+- **State schema 14.** The clock state keeps its previous row's value in the
+  form the source had it, a number or a temporal clock's nanoseconds, so the
+  gap between two instants is taken in integers. States saved by 0.9.x do
+  not load (`MIN_SCHEMA_VERSION` is 14, the pre-1.0 policy).
 
 ### Fixed
 
