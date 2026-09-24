@@ -18,6 +18,7 @@ as plain numbers.
 
 from __future__ import annotations
 
+import inspect
 import re
 from datetime import date, datetime, timedelta
 
@@ -402,11 +403,17 @@ class TestEveryClockParameterTakesADuration:
             # The docstrings are the second opinion: a parameter documented
             # in clock units, or named as a halflife, takes a duration or
             # is a rate.
-            doc = fn.__doc__ or ""
+            # Python 3.13 strips a docstring's common indentation when it
+            # compiles it, and 3.12 does not, so the text is cleaned to one
+            # form first: headers at column 0, their entries indented under
+            # them. Read raw on 3.14, a four-space header pattern matched an
+            # indented line inside another entry and read that entry's text
+            # (the v0.10.0 macOS CI leg, CPython 3.14.7).
+            doc = inspect.cleandoc(fn.__doc__ or "")
             for name in hints:
                 # A parameter's own entry: from its header to the next one.
-                head = f"\n    ``{name}``"
-                entry = doc.split(head, 1)[1].split("\n    ``", 1)[0] if head in doc else ""
+                head = f"\n``{name}``"
+                entry = doc.split(head, 1)[1].split("\n``", 1)[0] if head in doc else ""
                 # "counted in learned rows, not clock units" is not one.
                 clocky = name.endswith("halflife") or bool(
                     re.search(r"(?<!not )(?<!not in )\bclock units?\b", entry)
