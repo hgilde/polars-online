@@ -19,6 +19,7 @@ timeout without meaning to.
 """
 
 import pathlib
+import subprocess
 import tomllib
 
 import pytest
@@ -280,3 +281,60 @@ class TestMutationTesting:
 
     def test_a_push_cannot_cancel_the_weekly_pass(self):
         assert "github.event_name" in self.MUT["concurrency"]["group"]
+
+
+class TestTheRustTestsLinkNoPython:
+    """`cargo test --workspace` leaves online-py out, in every workflow and in
+    the gate (2026-09-24). With it in the build, pyo3-polars turns on
+    polars-error's `python` feature, and every test binary that links polars
+    links libpython too. uv's own interpreters keep libpython off the Linux
+    loader's path, so on the 3.13 and 3.14 legs the CLI's tests could not
+    start. online-py has no Rust tests to lose; pytest covers it."""
+
+    EXCLUDE = "--exclude online-py"
+    ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+    def test_every_workflow_leaves_the_extension_out(self):
+        found = [
+            (f"{name}:{job_name}", str(step.get("run", "")))
+            for name, wf in ALL.items()
+            for job_name, job in wf.get("jobs", {}).items()
+            for step in job.get("steps", [])
+            if "cargo test --workspace" in str(step.get("run", ""))
+        ]
+        assert {where.split(":")[0] for where, _ in found} >= {"ci.yml", "polars-canary.yml"}
+        for where, run in found:
+            assert self.EXCLUDE in run, where
+
+    def test_the_gate_leaves_it_out_too(self):
+        gate = (self.ROOT / "scripts/gate.sh").read_text(encoding="utf-8")
+        runs = [
+            line
+            for line in gate.splitlines()
+            if "cargo test --workspace" in line and not line.lstrip().startswith("#")
+        ]
+        assert runs and all(self.EXCLUDE in line for line in runs), runs
+
+    def _packages(self, *selection: str) -> set[str]:
+        """Every package cargo would build for `selection`, dev and build
+        dependencies included, from this checkout's lock. `--locked`, not
+        `--frozen`: release.yml runs pytest where only the extension has
+        been built, so cargo may have crates to fetch, as the CLI fixture does."""
+        cmd = ["cargo", "tree", *selection, "--locked", "--prefix", "none", "--format", "{p}"]
+        try:
+            res = subprocess.run(
+                cmd, capture_output=True, text=True, encoding="utf-8", cwd=self.ROOT, check=False
+            )
+        except FileNotFoundError:
+            pytest.fail("cargo is not on PATH; `source scripts/env.sh` first")
+        assert res.returncode == 0, res.stderr
+        return {line.split()[0] for line in res.stdout.splitlines() if line.strip()}
+
+    def test_without_it_nothing_in_the_build_links_python(self):
+        """The mechanism, asked of cargo: pyo3-ffi is the package whose build
+        script links libpython. The control shows the check can fail: with
+        online-py in, it is there."""
+        assert "pyo3-ffi" in self._packages("--workspace")
+        left = self._packages("--workspace", *self.EXCLUDE.split())
+        assert "online-cli" in left and "online-polars" in left
+        assert not {"pyo3", "pyo3-ffi"} & left, sorted({"pyo3", "pyo3-ffi"} & left)

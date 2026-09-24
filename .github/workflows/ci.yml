@@ -211,8 +211,18 @@ jobs:
 
       - run: uv sync
 
+      # Every package but online-py. With it in the build, pyo3-polars turns
+      # on polars-error's `python` feature, so every test binary that links
+      # polars links libpython as well. On Linux a system Python's libpython
+      # is on the loader's path and a uv-managed one's is not, so the legs for
+      # 3.13 and 3.14 could not start the CLI's tests: "libpython3.13.so.1.0:
+      # cannot open shared object file", exit code 127 (2026-09-24). No test
+      # is lost. online-py has no Rust tests, and pytest tests it below,
+      # through the extension. The CLI is also tested as it ships, since
+      # `cargo build -p online-cli` has no Python in it either.
+      # tests/test_ci_cost_policy.py holds every workflow and the gate to this.
       - name: cargo test
-        run: uv run cargo test --workspace
+        run: uv run cargo test --workspace --exclude online-py
 
       - name: disk after the build
         if: always() && runner.os == 'Linux'

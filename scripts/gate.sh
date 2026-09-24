@@ -30,7 +30,9 @@ $(echo "$out" | tail -25 | sed 's/^/    /')"
 
 step "cargo fmt"   cargo fmt --all -- --check
 step "cargo clippy" cargo clippy --workspace --all-targets -- -D warnings
-step "cargo test"   cargo test --workspace
+# online-py is left out: it has no Rust tests, and with it in the build every
+# test binary links libpython (.github/workflows/ci.yml says why that fails).
+step "cargo test"   cargo test --workspace --exclude online-py
 step "ruff format"  uv run ruff format --check .
 step "ruff check"   uv run ruff check .
 step "mypy"         uv run mypy

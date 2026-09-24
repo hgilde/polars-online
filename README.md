@@ -2869,7 +2869,7 @@ are cached under `.cache/` and skipped when offline.
 ```sh
 uv sync                                                # Python env (CPython 3.12)
 ./scripts/gate.sh                                      # everything CI checks
-uv run cargo test --workspace                          # Rust tests
+uv run cargo test --workspace --exclude online-py      # Rust tests
 uv run maturin develop --release -m crates/online-py/Cargo.toml
 uv run pytest                                          # Python tests
 uv run --group docs sphinx-build -W docs/reference docs/_build/html   # API reference

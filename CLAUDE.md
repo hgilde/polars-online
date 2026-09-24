@@ -39,7 +39,7 @@ docs/EXTENDING.md      every place a new model touches, with the test that catch
 
 ```
 uv sync                                  # Python env
-cargo test --workspace                   # Rust unit tests
+cargo test --workspace --exclude online-py   # Rust tests (online-py has none; see ci.yml)
 maturin develop --release -m crates/online-py/Cargo.toml
 uv run pytest -x                         # Python tests (downloads/generates data on first run)
 uv run --group docs sphinx-build -W docs/reference docs/_build/html   # API reference (gate + CI)

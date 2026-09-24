@@ -102,7 +102,8 @@ jobs:
           uv run python -c "import polars; print('py-polars', polars.__version__)"
           cargo tree -p polars --depth 0 || true
 
-      - run: uv run cargo test --workspace
+      # online-py is left out, as in ci.yml's test job, which says why.
+      - run: uv run cargo test --workspace --exclude online-py
       - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
       # `-m` replaces the `-m 'not soak'` in pyproject's addopts rather than
       # adding to it, so both go here. `pins` marks the three tests that assert

@@ -21,7 +21,8 @@ these steps, in this order:
 
 1. `cargo fmt --check`
 2. `cargo clippy -D warnings`
-3. `cargo test --workspace`
+3. `cargo test --workspace --exclude online-py`, since online-py has no Rust
+   tests and would link libpython into every test binary
 4. `ruff format --check`
 5. `ruff check`
 6. `mypy`

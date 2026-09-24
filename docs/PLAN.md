@@ -3666,6 +3666,21 @@ note, not a task.
       scales before the row and the means after it (off by up to 0.38), so
       no test compares it, while the library's `coef` predicts the next row
       to 1e-16.
+- [x] 98. **The Rust tests link no Python, 2026-09-24.** Task 91's matrix
+      failed on its first push. The Linux legs for 3.13 and 3.14 could not
+      start the CLI's tests: "libpython3.13.so.1.0: cannot open shared
+      object file", exit code 127. `cargo test --workspace` built online-py
+      into the same graph, where pyo3-polars turns on polars-error's
+      `python` feature, so every test binary that links polars linked
+      libpython too. The runner's own 3.12 keeps its libpython on the
+      loader's path, and uv's 3.13 and 3.14 do not. macOS passed because its
+      libpython has an absolute install name. `cargo test` now leaves
+      online-py out in CI, the canary, the gate and the docs that give the
+      command. It has no Rust tests, pytest covers it through the extension,
+      and the CLI's tests now run the CLI as it ships, with no Python in it.
+      `tests/test_ci_cost_policy.py::TestTheRustTestsLinkNoPython` holds
+      every workflow and the gate to it, and asks cargo whether pyo3-ffi is
+      in that graph.
 
 ## 11a. Decisions made while implementing
 
