@@ -17,6 +17,15 @@
 //! moments `Uₜ = (x², y², x, y, xy)` centred at their span means, their
 //! Bartlett long-run covariance `Σ̂` at bandwidth `γ_T = ⌊ln T⌋`, mapped to
 //! `(σ_x², σ_y², σ_xy)` by `D₂` and to `ρ` by `D₃`, so `D̂² = D₃D₂Σ̂D₂'D₃'`.
+//! It is computed on the span centred at its means and scaled by its
+//! standard deviations, which leaves `ρ̂` and `D̂` where they were (the
+//! shifted moments are an affine image of the raw ones, and the Jacobians
+//! cancel) and puts the arithmetic at the spread's scale rather than the
+//! level's: there `m_x = m_y = 0` and both variances are 1, so `D₃D₂ =
+//! (−ρ̂/2, −ρ̂/2, 0, 0, 1)` and `D̂²` is the Bartlett long-run variance of
+//! the one series `ξₜ = x̃ₜỹₜ − (ρ̂/2)(x̃ₜ² + ỹₜ²)`. Formed from the raw
+//! moments, `σ_x² = E[x²] − E[x]²` lost the level's digits: 1.2e-5 of `D̂`
+//! at a level of 1e5, and NaN at 1e8 (docs/PLAN.md task 103).
 //!
 //! Under the null `Q →_d sup|B|`, a Brownian bridge, whose quantiles are
 //! the Kolmogorov distribution -- computed from the series here rather than
@@ -321,90 +330,76 @@ impl CorrChange {
     }
 
     /// `D̂`, the delta-method long-run standard deviation of `ρ̂` over the
-    /// span, for the pair `(a, b)`. See the module docs.
+    /// span, for the pair `(a, b)`: the Bartlett long-run standard deviation
+    /// of `ξ_t = x̃_t ỹ_t − (ρ̂/2)(x̃_t² + ỹ_t²)`, the rows centred at the
+    /// span's means and scaled by its standard deviations (the module docs
+    /// derive it from the five raw moments).
     fn long_run_sd(rows: &[Vec<f64>], a: usize, b: usize, gamma: usize) -> f64 {
         let t = rows.len();
         if t < 4 {
             return f64::NAN;
         }
         let tf = t as f64;
-        // The five raw moments, centred at their span means.
-        let mut u = vec![0.0; 5 * t];
-        for (i, r) in rows.iter().enumerate() {
-            let (x, y) = (r[a], r[b]);
-            u[i * 5] = x * x;
-            u[i * 5 + 1] = y * y;
-            u[i * 5 + 2] = x;
-            u[i * 5 + 3] = y;
-            u[i * 5 + 4] = x * y;
+        // The span's means as pairs (`crate::comp`): a second pass over the
+        // exact differences from the first pass's mean picks up what its
+        // division rounded away, a shift of the whole span that a first-order
+        // term in `ξ` would otherwise carry (1e-10 of `D̂` at a level of 1e8).
+        let (mut mx, mut my) = (0.0, 0.0);
+        for r in rows {
+            mx += r[a];
+            my += r[b];
         }
-        let mut mean = [0.0; 5];
-        for i in 0..t {
-            for (j, m) in mean.iter_mut().enumerate() {
-                *m += u[i * 5 + j];
-            }
+        let (mx, my) = (mx / tf, my / tf);
+        let (mut mx_lo, mut my_lo) = (0.0, 0.0);
+        for r in rows {
+            mx_lo += r[a] - mx;
+            my_lo += r[b] - my;
         }
-        mean.iter_mut().for_each(|m| *m /= tf);
-        for i in 0..t {
-            for j in 0..5 {
-                u[i * 5 + j] -= mean[j];
-            }
+        let (mx_lo, my_lo) = (mx_lo / tf, my_lo / tf);
+        let dev = |r: &Vec<f64>| {
+            (
+                crate::comp::dev(r[a], mx, mx_lo),
+                crate::comp::dev(r[b], my, my_lo),
+            )
+        };
+        // Its moments about them.
+        let (mut sx2, mut sy2, mut sxy) = (0.0, 0.0, 0.0);
+        for r in rows {
+            let (dx, dy) = dev(r);
+            sx2 += dx * dx;
+            sy2 += dy * dy;
+            sxy += dx * dy;
         }
-        // The Bartlett long-run covariance of the centred moments.
-        let mut sigma = [[0.0f64; 5]; 5];
+        let (sx2, sy2, sxy) = (sx2 / tf, sy2 / tf, sxy / tf);
+        if !(sx2 > 0.0 && sy2 > 0.0) {
+            return f64::NAN;
+        }
+        let (sx, sy) = (sx2.sqrt(), sy2.sqrt());
+        let rho = sxy / (sx * sy);
+        // `ξ`, whose span mean is 0 to rounding by construction: `E[x̃ỹ] =
+        // ρ̂` and `E[x̃²] = E[ỹ²] = 1` over the same rows, so there is
+        // nothing to centre.
+        let xi: Vec<f64> = rows
+            .iter()
+            .map(|r| {
+                let (dx, dy) = dev(r);
+                let (u, v) = (dx / sx, dy / sy);
+                u * v - 0.5 * rho * (u * u + v * v)
+            })
+            .collect();
+        // Its Bartlett long-run variance: the lag-0 term once, each other
+        // lag's autocovariance twice.
+        let mut v = 0.0;
         for lag in 0..t.min(gamma + 1) {
             let w = bartlett(lag as f64 / (gamma as f64 + 1.0));
             if w == 0.0 {
                 continue;
             }
+            let mut acf = 0.0;
             for s in lag..t {
-                for i in 0..5 {
-                    for j in 0..5 {
-                        let v = u[s * 5 + i] * u[(s - lag) * 5 + j];
-                        sigma[i][j] += w * v / tf;
-                        if lag > 0 {
-                            sigma[j][i] += w * v / tf;
-                        }
-                    }
-                }
+                acf += xi[s] * xi[s - lag];
             }
-        }
-        // `D₂` maps the five moments to `(σ_x², σ_y², σ_xy)`.
-        let (mx, my) = (mean[2], mean[3]);
-        let d2 = [
-            [1.0, 0.0, -2.0 * mx, 0.0, 0.0],
-            [0.0, 1.0, 0.0, -2.0 * my, 0.0],
-            [0.0, 0.0, -my, -mx, 1.0],
-        ];
-        let sx2 = mean[0] - mx * mx;
-        let sy2 = mean[1] - my * my;
-        let sxy = mean[4] - mx * my;
-        if !(sx2 > 0.0 && sy2 > 0.0) {
-            return f64::NAN;
-        }
-        let (sx, sy) = (sx2.sqrt(), sy2.sqrt());
-        // `D₃` maps `(σ_x², σ_y², σ_xy)` to `ρ = σ_xy·(σ_x²)^{-1/2}·(σ_y²)^{-1/2}`:
-        // `∂ρ/∂σ_x² = −½·σ_xy/(σ_x³·σ_y)`, `∂ρ/∂σ_y² = −½·σ_xy/(σ_x·σ_y³)`,
-        // `∂ρ/∂σ_xy = 1/(σ_x·σ_y)`. The first two carried `σ_y` and `σ_x` in
-        // the numerator instead of the denominator -- right at unit variance,
-        // where every test lived, and off by `σ_y²` and `σ_x²` anywhere else,
-        // so `D̂` and `Q` depended on the columns' units (review 2026-09-18,
-        // S3).
-        let d3 = [
-            -0.5 * sxy / (sx * sx * sx * sy),
-            -0.5 * sxy / (sx * sy * sy * sy),
-            1.0 / (sx * sy),
-        ];
-        // `f = D₃ D₂`, a 5-vector; `D̂² = f Σ̂ f'`.
-        let mut f = [0.0; 5];
-        for (j, fj) in f.iter_mut().enumerate() {
-            *fj = (0..3).map(|i| d3[i] * d2[i][j]).sum();
-        }
-        let mut v = 0.0;
-        for i in 0..5 {
-            for j in 0..5 {
-                v += f[i] * sigma[i][j] * f[j];
-            }
+            v += w * acf / tf * if lag > 0 { 2.0 } else { 1.0 };
         }
         if v > 0.0 { v.sqrt() } else { f64::NAN }
     }
@@ -901,6 +896,78 @@ mod tests {
                 fd[i]
             );
         }
+    }
+
+    /// `D̂` does not depend on the level the columns sit at: `ρ̂` is
+    /// shift-invariant and so is the delta-method variance of it (the
+    /// shifted moments are an affine image of the raw ones, and the
+    /// Jacobians cancel). The deviations are multiples of 2⁻²⁰, so adding
+    /// a level up to 1e8 (whose step is 2⁻²⁶) is exact and every level sees
+    /// the same rows. Formed from `E[x²] − E[x]²` this failed at every
+    /// level (docs/PLAN.md task 103). The span is 79 rows, a prime, so that
+    /// neither mean's division lands on the level's grid by chance (one in
+    /// five did at 80, and the x side's second pass went untested), and
+    /// the pair is taken both ways round, so each column is `x` once.
+    #[test]
+    fn the_long_run_sd_is_free_of_the_columns_level() {
+        let t = 79usize;
+        let mut n = Normals::new(17);
+        let grid = (1u64 << 20) as f64;
+        let rows: Vec<Vec<f64>> = (0..t)
+            .map(|_| {
+                n.pair(0.4)
+                    .iter()
+                    .map(|v| (v * grid).round() / grid)
+                    .collect()
+            })
+            .collect();
+        let gamma = ((t as f64).ln().floor() as usize).max(1);
+        let base = CorrChange::long_run_sd(&rows, 0, 1, gamma);
+        assert!(base.is_finite() && base > 0.0, "{base}");
+        let mut off = Vec::new();
+        for level in [1e3, 1e5, 1e8] {
+            let shifted: Vec<Vec<f64>> = rows
+                .iter()
+                .map(|r| vec![level + r[0], level + r[1]])
+                .collect();
+            for (s, r) in shifted.iter().zip(&rows) {
+                assert_eq!(s[0] - level, r[0], "the shift is exact");
+                assert_eq!(s[1] - level, r[1], "the shift is exact");
+            }
+            for (a, b) in [(0, 1), (1, 0)] {
+                let got = CorrChange::long_run_sd(&shifted, a, b, gamma);
+                let off_by = (got - base).abs();
+                if off_by.is_nan() || off_by > 1e-12 * base {
+                    off.push(format!(
+                        "at {level:e}, pair ({a}, {b}): {got} against {base} ({:e} of it)",
+                        (got - base).abs() / base
+                    ));
+                }
+            }
+        }
+        assert!(off.is_empty(), "{}", off.join("; "));
+    }
+
+    /// A column without spread has no correlation to test: `D̂` is NaN, and
+    /// so is the statistic, which the bank reads as "no verdict".
+    #[test]
+    fn a_constant_column_has_no_long_run_sd() {
+        let t = 40usize;
+        let mut n = Normals::new(5);
+        let mut rows: Vec<Vec<f64>> = (0..t).map(|_| n.pair(0.3)).collect();
+        let gamma = ((t as f64).ln().floor() as usize).max(1);
+        assert!(CorrChange::long_run_sd(&rows, 0, 1, gamma).is_finite());
+        for r in &mut rows {
+            r[0] = 2.5;
+        }
+        assert!(CorrChange::long_run_sd(&rows, 0, 1, gamma).is_nan());
+        assert!(CorrChange::long_run_sd(&rows, 1, 0, gamma).is_nan());
+        let m = CorrChange::new(CorrChangeCfg {
+            span_rows: t,
+            ..cfg(2, CorrChangeKind::Monitor)
+        })
+        .unwrap();
+        assert!(m.monitor_stat(&rows, 0, 1).is_nan());
     }
 
     /// `D̂` and `Q` against the same arithmetic written out.

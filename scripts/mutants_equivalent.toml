@@ -65,3 +65,20 @@ mutation = "replace > with >="
 line_has = "if b > 0.0 {"
 why = """at b = 0 the offset takes 0·(z − m) away, which is 0 for every \
 finite z, and features reach the accumulator bounded (INPUT_BOUND)"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::long_run_sd"
+mutation = "replace > with >="
+line_has = "if !(sx2 > 0.0 && sy2 > 0.0) {"
+why = """the guard returns NaN for a column without spread; let through, a \
+zero variance divides 0 by 0 in `ρ̂` and the result is NaN by the same \
+route (`a_constant_column_has_no_long_run_sd` holds either way)"""
+
+[[equivalent]]
+file = "crates/online-core/src/corrchange.rs"
+function = "CorrChange::long_run_sd"
+mutation = "replace && with ||"
+line_has = "if !(sx2 > 0.0 && sy2 > 0.0) {"
+why = """as above: with one column without spread the guard no longer \
+fires, and the zero standard deviation makes `ρ̂` and every `ξ` NaN"""

@@ -31,6 +31,13 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Fixed
 
+- **`corrchange`'s constancy test works at any level of the columns.** The
+  long-run standard deviation its statistic divides by was formed from raw
+  moments, so `E[x²] − E[x]²` lost the columns' level digits: off by 1.2e-5
+  of itself at a level of 1e5 and NaN at 1e8, where the test then flagged
+  nothing. It is now computed on the span centred at its means and scaled
+  by its standard deviations, which is the same number in exact arithmetic
+  (the paper's own `ξ_t` form) and holds to 1e-12 at levels up to 1e8.
 - **A feature or target that stops moving keeps the fit it had.** A
   running mean given one value row after row stopped a few rounding steps
   short of it, once its step rounded to nothing. Every variance and

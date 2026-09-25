@@ -272,6 +272,7 @@ computed field is still bit-identical.
 | a CLI test skipped on Windows for want of `online.exe`, and wrote Windows paths into a TOML basic string | reading the first Windows run's skips | docs/PLAN.md task 100 |
 | a feature or target that stops moving: its running mean stopped `1/(2b)` rounding steps short, and every variance and slope centred on it read that gap (a lasso slope of -4.7e3 at a level of 1e8) | measuring task 94's case outside a window | docs/PLAN.md task 101 |
 | a windowed `marginal` pair kept task 94's remainder for a slot held over the window, and `beta` divided it by itself | the sweep of every running mean for task 101 | docs/PLAN.md task 101 |
+| `corrchange`'s long-run standard deviation took a span's variance as `E[x²] − E[x]²`: 1.2e-5 of itself off at a level of 1e5, NaN at 1e8, so the monitor flagged nothing there | the same sweep; a level-invariance test on deviations that are exact multiples of 2⁻²⁰ | docs/PLAN.md task 103 |
 
 ### Differences from river that are not bugs
 

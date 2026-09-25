@@ -3867,30 +3867,83 @@ note, not a task.
       weights made the block mean correctly rounded, and a variance read
       through `var`, whose `max(0)` takes a NaN for 0.
 - [ ] 102. **A stopped feature in the clusters' metric.** Found by task
-      101's sweep, not built. `kmeans` and `micro` standardize distances by
-      `1/var` from `FeatureMoments` (`cluster/summary.rs`), refreshed every
-      row, with `standardize` on by default. A feature that moves and then
-      holds stalls there too: its variance settles near the mean's gap
-      squared, so its weight is `1/g²`. A row's term against its own centre,
-      which has its own gap, becomes `(g_c/g_m)²`: anywhere from 1 to 10³.
-      `kmeans` then treats its own rows as far, and `micro` opens a
-      duplicate summary. In exact arithmetic the same metric degenerates
-      differently: the variance decays, the weight grows without bound, the
-      centre that takes the rows follows the value faster, and every other
-      centre becomes infinitely far. Carrying `FeatureMoments`' means as
-      pairs alone makes it worse (the weight grows, the centre's gap stays),
-      so the centres (`ClusterSummary`: `merge_plain`, `absorb`,
-      `merge_welford`) would need pairs too. Which metric a feature without
-      spread should have is a design decision before it is a rounding one.
-      The user's call.
-- [ ] 103. **`corrchange` takes a span's variance as `E[x²] − E[x]²`.**
-      Found by task 101's sweep, not measured. `long_run_sd`, the
-      delta-method standard deviation of a span's correlation, forms
-      `σ_x² = E[x²] − E[x]²` from raw moments, and outside `scalar` the span
-      holds the raw rows. At a level of 1e8, `E[x²]` is 1e16, whose rounding
-      step is 2, so a unit variance cancels to noise. Measure it first, then
-      centre it: `corr_of` already takes the same span's moments about its
-      mean.
+      101's sweep. `kmeans` and `micro` standardize distances by `1/var`
+      from `FeatureMoments` (`cluster/summary.rs`), refreshed every row,
+      with `standardize` on by default. A feature that moves and then holds
+      stalls there too: its variance settles near the mean's gap squared,
+      `g_m²`, and a row's term against its own centre, which has its own gap
+      `g_c`, becomes `(g_c/g_m)²`. The entry first put that anywhere from 1
+      to 10³; it is `(n_c/N)²`, at most 1 and `1/k²` for equal clusters,
+      since each gap is a rounding step over that mean's own step size `b`.
+      **The problem is the metric's before it is rounding's.** `1/var` is
+      unbounded as the recent variance goes to zero, and under decay it does
+      so within ten halflives of any feature going quiet -- a flag that
+      stops firing, a sensor at rest, a market closed -- not only of one
+      that stops for good. A centre that receives rows follows the held
+      value at the rate the variance decays, so its own term fades; a centre
+      that receives none is infinitely far for good; and on the row where
+      the feature moves again every centre is infinitely far: the argmin
+      cancels what every centre shares, but the radius does not, and a
+      structural move or an admission test that reads it goes wrong. The
+      `else 1` at exactly zero variance is a discontinuity: raw units on one
+      row, `1/ε` on the next. **Measured 2026-09-24** on the prototype
+      (`scripts/clustering_experiments.py`'s streams, 20 000 rows, k = 5, p
+      = 4), with the metric's variance floored at a fraction of the
+      feature's long-run (undecayed) variance, `v_i = max(var_i, scale_floor
+      · var_i^∞)`: at 0.01 and 0.1 the floor binds on no row of the static,
+      drifting, feature-scaled-by-100, noise-grows-tenfold or feature-stops
+      streams, so every number there is unchanged; on a feature quiet for
+      twenty halflives (rows 8 000-14 000 at halflife 300) it binds on 3
+      600-4 600 rows, and after the feature moves again `kmeans` split-merge
+      recovers to ARI 0.731 in place of 0.220 (purity 0.804 for 0.487),
+      `micro` to 0.797 (0.1) and 0.786 (0.01) for 0.786, plain `kmeans`
+      1.000 either way. At 1 the floor is a different metric, binding on
+      half the rows of every stream: 0.626 for 0.665 on the scaled stream's
+      first quarter and the same elsewhere. **A feature that stops for good
+      costs `kmeans` 0.24 ARI for a halflife after the stop at every floor**
+      (0.756 against 0.999 with the feature dropped): the stale spread keeps
+      penalizing every centre the held value is far from, until the centres
+      and the variance have followed it, which is the model's memory at
+      work, the same lag as a level shift, and not something a metric floor
+      reaches. **Design, from the measurement:** `scale_floor`, default 0.1,
+      0 for the metric as it was, on `kmeans` and `micro`; `FeatureMoments`
+      keeps the undecayed Welford moments beside the EW ones (three more
+      doubles a feature) and its means become pairs under task 101's rule.
+      The centres stay plain: with the floor, a plain centre's gap costs
+      `g_c²/(scale_floor · var^∞)` in a distance, 1e-9 at a level of 1e8 and
+      0.04 at 1e12 with unit spread. `tests/reference_cluster.py`, the
+      bit-exact oracle, follows; the prototype, CLUSTERING.md §6.1 and §10
+      and the docs say why.
+- [x] 103. **`corrchange` takes a span's variance as `E[x²] − E[x]²`.**
+      Found by task 101's sweep. `long_run_sd`, the delta-method standard
+      deviation of a span's correlation, forms `σ_x² = E[x²] − E[x]²` from
+      raw moments, and its centred series `x² − E[x²]` cancels against
+      `2·m_x·(x − m_x)` through `D₂`; both lose the level's digits. At a
+      level of 1e8, `x²` is 1e16 with a rounding step of 2, so a unit
+      variance is noise. **Measured 2026-09-24**, on eighty rows whose
+      deviations are multiples of 2⁻²⁰ so that adding a level is exact: `D̂`
+      is off by 5e-10 of itself at a level of 1e3, by 1.2e-5 at 1e5, and NaN
+      at 1e8, where the variance cancels to a non-positive number and the
+      monitor flags nothing. **Design: centre and scale the span first.**
+      `ρ̂` is shift-invariant and so is the delta-method variance of it: the
+      shifted moments are an affine image of the raw ones and the Jacobians
+      cancel, so the same number comes out of better-conditioned inputs.
+      With the span centred at its means and scaled by its standard
+      deviations, `m_x = m_y = 0` and both variances are 1, so `f = D₃D₂ =
+      (−ρ̂/2, −ρ̂/2, 0, 0, 1)` and `D̂²` is the Bartlett long-run variance
+      of the one series `ξ_t = x̃_t ỹ_t − (ρ̂/2)(x̃_t² + ỹ_t²)`: Wied,
+      Krämer & Dehling's own form, at 1/25 of the 5×5 kernel's cost.
+      `corr_of` already centres. **Built 2026-09-24.** The span's means are
+      pairs (`crate::comp`): a second pass over the exact differences from
+      the first pass's mean picks up what its division rounded away, since
+      that rounding is a shift of the whole span, which `ρ̂` cancels to
+      second order but a first-order term in `ξ` carries, 1e-10 of `D̂` at a
+      level of 1e8. The kernel loop is one series, not five squared.
+      **Tests**: level invariance to 1e-12 at 1e3, 1e5 and 1e8 on deviations
+      that are multiples of 2⁻²⁰, so the shift is exact (it measured the raw
+      form first); the units test and the paper's null, size and power as
+      they were; the definition test's longhand stays the five-moment form,
+      so it now checks the identity between the two to 1e-12.
 
 ## 11a. Decisions made while implementing
 
