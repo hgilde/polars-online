@@ -36,10 +36,11 @@ out-of-date one, its row here says what became of it.
 |---|---|
 | **The plan** | |
 | [PLAN.md](PLAN.md) | the design and the task list — the source of truth. §1–§10 are the original design. §11 is the task list, ticked as each task lands, and §11a holds the decisions taken while building. §11b–§11h hold one summary per follow-on document below, §12 the questions the design left open and their answers, and §13 `window`, an EW accumulator with a hard cutoff |
-| [ENHANCEMENTS.md](ENHANCEMENTS.md) | every model and feature after the first seven (E1–E69): what was proposed, what was measured, what was built and what was declined |
+| [ENHANCEMENTS.md](ENHANCEMENTS.md) | every model and feature after the first seven (E1–E74): what was proposed, what was measured, what was built and what was declined |
 | **Designs, as built** | |
 | [ANSWERS-E54-E64.md](ANSWERS-E54-E64.md) | the formulae and constants for the correlation and regime models, read from the papers before they were built |
 | [MARGINAL-LAGS-AND-BINS.md](MARGINAL-LAGS-AND-BINS.md) | two extensions to `marginal`, E66 and E67: lagged pair moments for an honest sample size, and binned target moments for a single-split gain. Both shipped, as tasks 65 and 66, and were revised under task 67 |
+| [MARGINAL-AT-WIDTH.md](MARGINAL-AT-WIDTH.md) | five asks against `marginal`'s cost per row at 10⁴ features × 50 targets, E70–E74, from the same caller: the measured cost and its scaling with the target count, then cross-lag terms on request, binning once per row, feature moments shared across targets, sharding a wide spec across the pool, and running a chunk pair-major. Open: examined 2026-09-25, `PLAN.md` tasks 122–127 |
 | [WARMUP-AND-CONVERGENCE.md](WARMUP-AND-CONVERGENCE.md) | the settings that keep a model from being used before it has warmed up: the design as built for `ewridge` in 0.9.0, its evidence, what was tried and dropped, and §7, still open |
 | **Surveys and prototypes** | |
 | [BEYOND-O-STATE.md](BEYOND-O-STATE.md) | what relaxing the O(state) rule to O(window) would unlock — a survey; three of its six candidates were since built inside the rule (conformal intervals, `ew_cov` lags, `label_delay`) |

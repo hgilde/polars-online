@@ -4464,6 +4464,80 @@ decision it needs, with a recommendation where there is one.
         every dev-group library's metadata names an open-source licence, so
         a licensed one is refused rather than remembered.
 
+**Requests of 2026-09-25 for `marginal` at width** (E70–E74,
+`docs/MARGINAL-AT-WIDTH.md`, from the same caller as E66–E67; the user:
+"examine its feature requests and integrate them into the current
+planning cycle"). Examined against the code, and against a benchmark of
+the model alone at `p = 10,000` (a scratch crate outside the repository):
+the per-target cost is the model's — `3.3·T` ns per feature per row for
+the moments, `19.8·T` with six lags and sixteen bins, against the caller's
+`3.2·T` and `19.1·T` — and the caller's fixed 14–17 ns per feature per row
+is not, since the model alone has `0.0` and `3.5` there.
+
+- [ ] 122. **E71: bin each feature once per row.** S; no API, no state,
+      bit-identical. Verified: `update_target` runs `bin_of(&self.edges[j],
+      x[j])` once per present target (margbins.rs:253-261), and the edges
+      are the feature's. Form the row's `p` indices once, before the target
+      loop, and the same on the warm-up replay. Tests as the request lists,
+      and `marg_bench`'s shape at `T = 1` and `T = 9`. First: the smallest,
+      and exact.
+
+- [ ] 123. **E70: `marginal(cross_lags=...)`.** S–M. Verified: `n_serial`
+      reads the autocorrelations alone (`serial_factor`, marginal.rs:368-420,
+      from `lagcorr_xx` and `lagcorr_yy`), and `cxy`/`cyx` feed only
+      `lagcorr_xy`/`lagcorr_yx`. The default, `None`, keeps every lag as
+      today, and the kept moments are bit-identical. A state field with a
+      serde default is still a layout change under hard rule 5: it rides
+      schema 16 if it lands before 0.11.0, 17 after.
+
+- [ ] 124. **The stream's fixed cost per feature per row at width** (from
+      E74's measurement). S–M, and it helps every wide model. The caller's
+      14–17 ns per feature per row that does not grow with `T` is outside
+      the model (above). Profile the bank's path at `p = 10,000` — the
+      cast, the tiled transpose (`feature_rows`, bank.rs:169), the per-row
+      validity check, the data summary, the output — and fix what
+      dominates; at `T = 1` it is four fifths of the row.
+
+- [ ] 125. **E72: `feature_moments="shared"` — a decision first.** M–L. The
+      request says only `var_x` changes where a target is absent; not so.
+      The batch identity it cites holds, but `sxy` is kept by a recursion
+      centred on the feature's pre-row mean over the target's rows, and
+      stepping it from the shared mean gives another `cov` wherever a target
+      is absent on some learned rows: 1.8e-3 relative with a random tenth
+      absent at `lam = 0.99` (a simulation of both recursions,
+      2026-09-25), bit-identical only where every target is on every
+      learned row. Under `"shared"`, `cov`, `var_x`, `corr`, `beta`, `t` and
+      `n_serial` then all differ there: a different estimator, sound where
+      the absence is not informative, which the docs would have to say.
+      *Decision: build it as that estimator; build it only where it is
+      exact (every target on every learned row, else per-target moments);
+      or decline.* Either way the shared means are pairs (task 101), the
+      runs go per feature (task 94's windowed read), and a `window` needs
+      its own answer.
+
+- [ ] 126. **E73: a wide `marginal` sharded across the pool (`shards`).**
+      M–L. Sound: each pair touches only its own cells and the row's
+      per-target scalars, so shards are bit-identical and `shards` stays
+      out of the state. It need not wait for a chunk-major loop: at
+      `p = 10,000` a row is about 2 ms of work at `T = 9`, so a fork-join
+      per row costs under a percent. `online-core` keeps no threads: it
+      would expose stepping a range of features once the per-target
+      scalars have advanced, and the stream would run the ranges on the
+      pool. The caller shards by hand meanwhile; after 122–124.
+
+- [ ] 127. **E74: a chunk run pair-major — not as specified.** Its reason
+      is the intercept, which is not the model's (task 124); the bank
+      already hands the model one contiguous row (`feature_rows`), so
+      there is no per-row gather to remove; and its lag, `x_j[r − ℓ]`, is
+      not the model's: the ring holds only rows that taught something
+      (weight above 0, every feature finite, marginal.rs:1030-1040), and
+      the caller's weight is 0 on its warm-up and purge rows. What may
+      remain is the state traffic behind the slope, `p·T` pairs' state in
+      and out of cache on every row: measure it after 122, 123 and 125,
+      before designing a loop order that every clock event, reset, window
+      snapshot, group close and `label_delay` replay would have to split.
+      *Recommended: wait for that measurement.*
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
