@@ -1699,7 +1699,7 @@ note, not a task.
 - [ ] 86. **The bank on Arrow, with Polars as an adapter -- the bank is done,
       two pieces deliberately are not, 2026-09-17. Parked by the user on
       2026-09-25** with everything that integrates Arrow or a new library
-      (the plan of 2026-09-25, after task 119); the import is not blocked
+      (the plan of 2026-09-25, its parking note); the import is not blocked
       (2026-09-22, below), it waits by choice. Goal: the model bank takes
       and returns Arrow, so Polars becomes the most convenient way to use the
       library rather than the only one, and the boundary stops riding on
@@ -2147,8 +2147,9 @@ note, not a task.
       the same shape for a session change and a capped gap on a skipped row,
       with a lag feature to show the ring is not refilled across the break.
       Changes numbers only for a stream with `label_delay` and an event on a
-      skipped row; a patch, with a CHANGELOG line. Before 78b (now task 106), which extends
-      the same release rule to a backward clock.
+      skipped row; a patch, with a CHANGELOG line. Before 78b (task 106,
+      discarded by the user on 2026-09-25), which would have extended the
+      same release rule to a backward clock.
       **Done 2026-09-13** as the code review's C5, fixed with C21 in
       `cb6c57c` (task 80): a reset on a skipped row now clears the buffer,
       and a session change or capped gap on one releases it.
@@ -2156,7 +2157,8 @@ note, not a task.
 - [ ] 78. **E69, windowed EWMAs in both directions, as a column utility —
       recorded 2026-09-11, designed the same day, not built.** Split
       2026-09-25 (the user: "several unrelated changes under one heading"):
-      the rename of `po.prep` is task 105, the backward-clock rule 106,
+      the rename of `po.prep` is task 105, the backward-clock rule 106
+      (discarded the same day),
       windows as regression targets 104, relative targets 107. This entry
       keeps the windows themselves and the record of the design day; the
       moved passages are in those tasks, word for word. **Its rules at a
@@ -2450,9 +2452,13 @@ note, not a task.
 
       #### A clock that goes back
 
-      What a backward step means for every model is task 106 (**needs extra
-      review**, the user, 2026-09-25). The column form's own two rules at a
-      clock that goes back, which that task's rule makes match the model:
+      **A backward clock is not a session change** (the user, 2026-09-25;
+      task 106, which said it was, is discarded). A step back smaller than
+      `min_backwards_jump` refuses the chunk, and a larger one takes
+      `on_clock_reset`; the column form must end, keep or discard a window
+      exactly as the model does under each, so its two rules below, written
+      for the discarded rule, are to be rewritten against them (**needs extra
+      review**, task 120):
 
       - **The column form closes windows on the stream's clock the same
         way**: a row whose clock is below the previous row's — any group —
@@ -2487,7 +2493,8 @@ note, not a task.
             queues its own; `split`, `unlisted`, `total` and the `{split}`
             name field; the clock-policy keywords and `like=spec`.
       - 78a, 78b, 78e and 78f moved: the rename is task 105, the backward
-        clock 106, descriptions as spec targets 104, relative targets 107.
+        clock 106 (discarded), descriptions as spec targets 104, relative
+        targets 107.
 
       #### Tests
 
@@ -2516,8 +2523,8 @@ note, not a task.
         8.5e-14 against brute force, empty windows matching exactly — the
         oracle for the column form.
       - Parity with the model per clock event: task 104; a backward step
-        as a session change for every model: task 106; relative targets:
-        task 107.
+        as a session change: task 106, discarded; relative targets: task
+        107.
       - Chunk invariance at 1, 7, 64 and 1000 rows a chunk; groups and
         sessions kept apart; a halflife short enough that the late factors
         underflow; a constant column giving that constant; every `partial`
@@ -3831,9 +3838,12 @@ note, not a task.
       on every row the model learns from, the target it learned, to the
       bit. **Touches clock events** (a capped gap, a session change, a
       reset and a backward step end or discard a window): **needs extra
-      review** with task 106. Depends on 78 for the window core, and on
-      106 for parity at a backward clock. The passages below moved from
-      task 78 word for word.
+      review** (task 120). Depends on 78 for the window core. Its parity
+      design assumed task 106's rule at a clock that goes back; that rule is
+      discarded (the user, 2026-09-25), so the parity requirement's clock
+      events are to be rewritten against `min_backwards_jump` and
+      `on_clock_reset` as they are. The passages below moved from task 78
+      word for word.
 
       #### A description as a spec target
 
@@ -3927,9 +3937,11 @@ note, not a task.
 
       #### Sub-tasks
 
-      - [ ] 104a. (was 78e) **Descriptions as spec targets**, in the stream layer, on the
-            `label_delay` buffer. `SCHEMA_VERSION` bump with a loader for 6,
-            shared with 78b's if they ship together.
+      - [ ] 104a. (was 78e) **Descriptions as spec targets**, in the stream
+            layer, on the `label_delay` buffer. `SCHEMA_VERSION` bump with a
+            loader for 6, shared with 78b's if they ship together. (No
+            loader: pre-1.0 state compatibility was waived on 2026-09-14;
+            78b is discarded.)
       #### Tests
 
       - Task 78's interleaved trades and market data, the three VWAPs as
@@ -3994,25 +4006,20 @@ note, not a task.
 
       #### Sub-tasks
 
-      - [ ] 105a. (was 78a) **The rename**, alone, first: `po.prep` → `po.stream`,
-            `time=` → `clock=` and `by=` → `group=` in `refresh_time`, its
-            tests, the reference page, the README, `llms.txt`, and the API
-            surface file. No behaviour change, so every existing test passes
-            with only its spelling changed.
+      - [ ] 105a. (was 78a) **The rename**, alone, first: `po.prep` →
+            `po.stream`, `time=` → `clock=` and `by=` → `group=` in
+            `refresh_time`, its tests, the reference page, the README,
+            `llms.txt`, and the API surface file. No behaviour change, so
+            every existing test passes with only its spelling changed.
 
-- [ ] 106. **A backward clock is a session change — split from task 78 on
-      2026-09-25, not built. Needs extra review before it is built (the
-      user, 2026-09-25): it changes what every model does at a clock that
-      goes back, and moves numbers.** Designed on 2026-09-11, before
-      `min_backwards_jump` existed: today a backwards jump smaller than
-      `min_backwards_jump` (default `max_dclock`) refuses the chunk under
-      every policy, and only a larger jump reaches `on_clock_reset`. The
-      rule below would then govern only those larger jumps, which the docs
-      already treat as possible session boundaries; how the two fit is the
-      first thing to settle. The loaders the design planned for the
-      removed policy words are obsolete: pre-1.0 state compatibility was
-      waived on 2026-09-14. The passages below moved from task 78 word for
-      word.
+- [x] 106. **Discarded by the user on 2026-09-25: a backward clock is not a
+      session change.** "We no longer want to assume that a backward clock
+      is a session change, this is an old idea that should be discarded."
+      Not to be built or revived: `on_clock_reset` keeps its four policies,
+      `session_gap` still needs a `session` column, and a step back stays
+      what `min_backwards_jump` and `on_clock_reset` make it. The design
+      below is kept as the record of the idea, split from task 78 on the
+      same day, word for word.
 
       **A backwards clock is a session break.** The user's rules,
       2026-09-11: "When a forward window encounters a backward clock, we
@@ -4076,15 +4083,15 @@ note, not a task.
         with the list above as its first CHANGELOG lines.
       #### Sub-tasks
 
-      - [ ] 106a. (was 78b) **A backward clock is a session change**, in
-            `ClockState::advance`, before any window is built: every model's
-            decay, `label_delay`, lag rings, `session_shrink` and
-            `group_close` follow from it; `on_clock_reset` becomes
-            `"session"` / `"error"`; `session_gap` allowed without `session`,
-            defaulting to `max_dclock`; the README's clock section, the
-            reference docstrings and every test that names a removed policy.
-            Its own commit, its own CHANGELOG lines, since it changes numbers
-            the windows do not depend on.
+      - [x] 106a. (was 78b, discarded) **A backward clock is a session
+            change**, in `ClockState::advance`, before any window is built:
+            every model's decay, `label_delay`, lag rings, `session_shrink`
+            and `group_close` follow from it; `on_clock_reset` becomes
+            `"session"` / `"error"`; `session_gap` allowed without
+            `session`, defaulting to `max_dclock`; the README's clock
+            section, the reference docstrings and every test that names a
+            removed policy. Its own commit, its own CHANGELOG lines, since
+            it changes numbers the windows do not depend on.
       #### Tests
 
       - A backward step and a session change at the same row, for every
@@ -4169,11 +4176,11 @@ note, not a task.
 
       #### Sub-tasks
 
-      - [ ] 107a. (was 78f) **Relative targets**: `relative_to` / `relative` on
-            `po.target` and on both window descriptions, in the stream layer
-            (plain columns) and the window core (windows); the TOML table
-            form. The plain-column half depends on nothing else here and can
-            ship with 78a; the window half lands with 78d and 78e.
+      - [ ] 107a. (was 78f) **Relative targets**: `relative_to` / `relative`
+            on `po.target` and on both window descriptions, in the stream
+            layer (plain columns) and the window core (windows); the TOML
+            table form. The plain-column half depends on nothing else here
+            and can ship with 78a; the window half lands with 78d and 78e.
 
       #### Tests
 
@@ -4191,9 +4198,12 @@ GitHub). The user's call on the result: everything that integrates a new
 library or Arrow is parked (below the tasks); everything else is on this
 plan to be reviewed and, the user expects, done now; and any work on rows
 out of order or a clock that goes back **needs extra review before it is
-built**: task 120 (what an audit of that area found), 106 and 104, the
-clock rules of 78 and the clock of 105's `refresh_time`, and the items
-marked so below. Each task says its
+built**: task 120 (what an audit of that area found), 104, the clock rules
+of 78 and the clock of 105's `refresh_time`, and the items marked so below.
+Task 106, the idea that a backward clock is a session change, was discarded
+by the user the same day. In tests, any library under an open-source licence
+may be used (task 121), and only licensed ones -- source-available or
+commercial terms -- are parked (the user, the same day). Each task says its
 size (S under a day, M days, L a week or more), what it waits on, and the
 decision it needs, with a recommendation where there is one.
 
@@ -4398,11 +4408,9 @@ decision it needs, with a recommendation where there is one.
         `Datetime(ns)` a step back of under 256 ns can round to a tie.
 
       **The planned work that touches this area**, all designed before
-      `min_backwards_jump` existed (2026-09-20), none of which mentions it:
-      task 106 (its premise, "we can't tell which, so we assume a session
-      break", is now settled for small steps; the check must run before the
-      conversion; it inherits the infinite-cap finding, since its default
-      `session_gap` would be the cap); task 78's column form (it closes
+      `min_backwards_jump` existed (2026-09-20), none of which mentions it
+      (task 106, which would have made a backward clock a session change,
+      is discarded): task 78's column form (it closes
       every window at a step back in any group, where the bank checks each
       group; `advance` records the new clock even when it refuses, so the
       window core must work on a copy and commit it; an IO source that
@@ -4413,35 +4421,52 @@ decision it needs, with a recommendation where there is one.
       and a saved last time per group, checked on resume, which no sub-task
       owns).
 
-      **Questions to settle before building**, each with its trade-off:
-      1. Does task 106 keep refusing jumps smaller than `min_backwards_jump`
-         and make only larger ones session changes? That keeps 0.9.0's loud
-         refusal and narrows the rule of 2026-09-11.
-      2. What does `clock_backwards` count after 106? Keeping it needs a flag
-         of its own; folding it into `session_changes` loses the "disorder
-         the settings let through" signal the README promises.
-      3. Does `predict` treat a row behind the last learned clock as a
-         session change? It would match `fit_predict`, but under
-         `group_close="session"` rows the bank has learned would score null.
-      4. What step does a backward clock take under an infinite cap: a
+      **Questions to settle before building**, each with its trade-off (the
+      four that only task 106 raised went with it):
+      1. What step does a backward clock take under an infinite cap: a
          reset, a refusal, or a finite default? A refusal breaks a
          documented setting; today it poisons `holt` and `kalman`.
-      5. May `group_close="session"` close twice inside one session value?
-         That writes two closed rows for one (group, session).
-      6. Does the column form apply the disorder rule per group, per stream,
+      2. Does the column form apply the disorder rule per group, per stream,
          or not at all? Per stream refuses feeds slightly out of order across
          groups; not at all gives silent partial windows.
-      7. A minimum equal to the clock's step: refuse the setting, or document
+      3. A minimum equal to the clock's step: refuse the setting, or document
          that the check cannot fire? Refusing breaks a setup the tests use.
-      8. Is switching the check off under `max_dclock=0` intended?
-      9. Does resuming refuse a first row more than the cap behind the saved
+      4. Is switching the check off under `max_dclock=0` intended?
+      5. Does resuming refuse a first row more than the cap behind the saved
          clock, or do the docs only warn? A real restart and an accidental
          rerun look the same to the bank.
-      10. For 106 and 104: the planned loaders for old states are obsolete
-          (the pre-1.0 waiver of 2026-09-14): confirm.
+      6. `min_backwards_jump`'s docs justify its default by session
+         boundaries ("a jump back ... which cannot be a session boundary";
+         a larger one "takes the policy"): with a backward clock no longer a
+         session change, is that the wording wanted?
+      7. For 104: the planned loaders for old states are obsolete (the
+         pre-1.0 waiver of 2026-09-14): confirm.
 
-**Parked by the user on 2026-09-25: integration with new libraries, and
-Arrow.** Nothing here is to be built until the user lifts it:
+- [ ] 121. **Test libraries under an open-source licence.** S–M. The user,
+      2026-09-25: "we do want to enable every unlicensed library in tests
+      and park using licensed libraries" -- read as: a library under an
+      OSI-approved open-source licence (BSD, MIT, Apache, MPL, ...), which
+      asks for nothing to be bought or accepted, may be used in tests; one
+      under source-available or commercial terms (the Business Source
+      License, the SSPL, a commercial licence) is parked. Already in the dev
+      group and open source: numpy, pandas, statsmodels, river, hypothesis,
+      pyarrow, duckdb, the ADBC drivers.
+      - scikit-learn as a live oracle: the T-S second opinions (T-S4's
+        `HuberRegressor`, T-S12, T-S5 in full), TESTING's scikit-learn
+        comparison, and the PERFORMANCE measurements that needed it
+        installed by hand (`scripts/sklearn_comparison.py`).
+      - Rust `proptest` for T-D2, property tests in `online-core` beside the
+        Hypothesis ones. A dev-dependency links statically into the test
+        binaries only, never the package: raised here under hard rule 12 for
+        the user's go.
+      - The rule where it lives (TESTING, "Libraries the package does not
+        depend on") and a check in `tests/test_dependency_policy.py` that
+        every dev-group library's metadata names an open-source licence, so
+        a licensed one is refused rather than remembered.
+
+**Parked by the user on 2026-09-25: integration with new libraries, Arrow,
+and licensed libraries in tests.** Nothing here is to be built until the
+user lifts it:
 - Task 86's Arrow import (`fit_predict_capsule`, `Bank::fit_predict_stream`)
   — unblocked since 2026-09-22, waiting by choice, not on a blocker.
 - The Arrow tests still open: capsules dropped unread in the leak check,
@@ -4449,9 +4474,8 @@ Arrow.** Nothing here is to be built until the user lifts it:
 - ARROW-SOURCES' follow-ups: pandas conformance, the SQL order guidance,
   ADBC on Postgres, DuckDB's memory growth, the unmeasured producers, and
   the DataFusion spike for the CLI.
-- New libraries in tests: scikit-learn as a live oracle (T-S4 and the rest
-  of the second opinions, the measurements that need it), Pathway (BSL),
-  Rust proptest (T-D2).
+- Licensed libraries in tests: Pathway, under the Business Source License
+  (open-source test libraries are task 121).
 - C8's mimalloc option (a new statically linked library, rule 12).
 - Reports to other projects, which wait on the user in any case: pyarrow
   25.0.1's cast bug (pinned by a test), river's `EpsilonInsensitiveHinge`,
