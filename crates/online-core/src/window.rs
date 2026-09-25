@@ -284,6 +284,12 @@ pub struct Moments {
     pub w: f64,
     pub m: Vec<f64>,
     pub c: Vec<f64>,
+    /// The accumulator's count of learned rows when the snapshot was taken:
+    /// the first learned row inside the window is the next one, which a
+    /// held slot's run must have started at or before (`crate::Runs`).
+    /// `None` in a snapshot written before it, which then holds nothing.
+    #[serde(default)]
+    pub rows: Option<u64>,
     /// The Kish sum, where the accumulator keeps one. Last, and the only
     /// skipped field: the compact encoding is positional, and a snapshot
     /// without it decoded `m` into this slot (review 2026-09-18, B7; no
@@ -304,6 +310,7 @@ impl Moments {
             q: cov.q_sum().map(|q| q * lam * lam),
             m: cov.means().to_vec(),
             c: cov.comoments().to_vec(),
+            rows: Some(cov.rows_learned()),
         }
     }
 }
@@ -371,16 +378,18 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
     // spread there, and the subtraction cannot say so: it leaves a remainder
     // that grows with the level and with the rows since the boundary, up to
     // half the terms that cancelled (docs/PLAN.md task 94). Its run can,
-    // when the run's weight is all of the window's. That comparison is of two
-    // weights equal in exact arithmetic when the run starts at the boundary
-    // row, so what the run may miss is what the window's own weight counts
-    // as nothing, `EMPTY_FRACTION` of the live weight.
-    for i in 0..k {
-        if let Some(value) = cov.held_over(i, w - EMPTY_FRACTION * w_now) {
-            mean[i] = value;
-            for j in 0..k {
-                cen[i * k + j] = 0.0;
-                cen[j * k + i] = 0.0;
+    // when it started at or before the first learned row inside the window,
+    // the one after the snapshot's count. (The run's decayed weight against
+    // the window's, equal in exact arithmetic, drifted past a tolerance of
+    // 1e-12 under a long window and a long halflife: review 2026-09-25.)
+    if let Some(rows) = old.rows {
+        for i in 0..k {
+            if let Some(value) = cov.held_from(i, rows + 1) {
+                mean[i] = value;
+                for j in 0..k {
+                    cen[i * k + j] = 0.0;
+                    cen[j * k + i] = 0.0;
+                }
             }
         }
     }
@@ -654,6 +663,36 @@ mod tests {
     /// across the levels, spreads, halflives and window lengths measured,
     /// the last a window of a thousand halflives, where the history's
     /// spread has decayed to its last ulp.
+    /// The run's weight and the window's are equal in exact arithmetic;
+    /// in doubles the window's is `w_now − f·old.w` with `f` one `exp2` over
+    /// the window's clock and the run's a product of per-row factors, and
+    /// the two drift apart by about the rows in the window times a rounding
+    /// step, scaled by the history's weight. A long window under a long
+    /// halflife -- a regime dummy held over a day of second bars under a
+    /// month's halflife -- is where that drift is largest (review
+    /// 2026-09-25, tasks 94-97, finding 1): fifty thousand rows of history,
+    /// a window of as many, halflives up to 1e7, unit and random weights.
+    #[test]
+    fn a_long_window_under_a_long_halflife_still_reads_a_held_feature() {
+        for (h, window, seed) in [
+            (1e6, 49_999.0, 0),
+            (1e6, 49_999.0, 1),
+            (3e5, 99_999.0, 2),
+            (1e7, 199_999.0, 3),
+        ] {
+            let n = 50_000 + window as usize + 1;
+            let from = n - 1 - window as usize;
+            let ones = |_: usize| Row::Learn(1.0);
+            for rows in [&ones as &dyn Fn(usize) -> Row, &weights] {
+                let (w, c, _) = windowed(n, window, h, 0.0, 1.0, from, rows, &[], seed);
+                let case = format!("h {h}, window {window}, seed {seed}");
+                assert_eq!(w.var(1), 0.0, "{case}: variance");
+                assert_eq!(w.cov(0, 1), 0.0, "{case}: covariance");
+                assert_eq!(w.mean(1), c, "{case}: the value held is the mean");
+            }
+        }
+    }
+
     #[test]
     fn a_feature_constant_inside_the_window_has_no_spread_there() {
         let shapes = [

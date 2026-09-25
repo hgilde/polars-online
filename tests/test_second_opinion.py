@@ -859,7 +859,6 @@ class TestLabelDelayFoldsWhatWasScored:
         )
 
     def test_the_predictions_are_rivers_delayed_mean_and_sigma_is_their_residuals(self):
-        import river
         from river import dummy, evaluate, metrics, stats
 
         y = self._rows()
@@ -889,7 +888,6 @@ class TestLabelDelayFoldsWhatWasScored:
             matured = resid[: t - self.DELAY + 1]
             matured = matured[np.isfinite(matured)]
             assert sigma[t] ** 2 == pytest.approx(np.mean(matured**2), rel=1e-9), t
-        assert river is not None
 
     def test_the_record_survives_a_save_in_the_middle(self):
         y = self._rows()

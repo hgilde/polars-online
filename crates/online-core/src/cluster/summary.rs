@@ -181,8 +181,28 @@ impl ClusterSummary {
     }
 }
 
+/// The metric's floor references each feature's long-run scale, tracked at
+/// this many model halflives (docs/PLAN.md task 102).
+pub const LONG_HALFLIVES: f64 = 8.0;
+/// The reference clips a squared deviation at this multiple of its own
+/// variance (ten standard deviations), and the mean's step at the root.
+pub const CLIP: f64 = 100.0;
+/// A feature's reference starts from the medians of this many of its rows.
+pub const START_ROWS: usize = 5;
+
 /// Diagonal EW moments of the features, for the metric: the same Welford
-/// recursion as `ewcov.rs` without the co-moments (O(p) a row).
+/// recursion as `ewcov.rs` without the co-moments (O(p) a row), with the
+/// means as pairs (`crate::comp`, docs/PLAN.md task 101), and beside them,
+/// a feature at a time, the reference the metric's floor is a fraction of
+/// (task 102): the same moments at [`LONG_HALFLIVES`] times the halflife,
+/// each row's weight clipped at the reference's own and its squared
+/// deviation at [`CLIP`] times the reference's variance, started from the
+/// medians of the feature's first [`START_ROWS`] learned rows and started
+/// over by a first move from no spread. A row at the input bound moves the
+/// reference by a factor of `1 + CLIP / 4` at most, which a few of its
+/// halflives undo, where the EW variance takes a thousand to forget such a
+/// row; a reference that took rows as they came never forgot one, and the
+/// metric was lost for good (`model_contract`'s recovery).
 ///
 /// ```text
 /// W' = lam W + w,  a = lam W / W',  b = w / W'
@@ -194,6 +214,28 @@ pub struct FeatureMoments {
     pub w: f64,
     pub mean: Vec<f64>,
     pub var: Vec<f64>,
+    /// What `mean` leaves out: the low parts of the pairs. Empty in a state
+    /// written before them, and sized at the next row.
+    #[serde(default)]
+    pub mean_lo: Vec<f64>,
+    /// The reference, a feature at a time: its weight, its means as pairs
+    /// and its variances, and the rows each starts from -- [`START_ROWS`]
+    /// values and weights a feature, `n_start` of them kept. Empty in a
+    /// state written before it, and started from the next rows.
+    #[serde(default)]
+    pub w_long: Vec<f64>,
+    #[serde(default)]
+    pub mean_long: Vec<f64>,
+    #[serde(default)]
+    pub mean_long_lo: Vec<f64>,
+    #[serde(default)]
+    pub var_long: Vec<f64>,
+    #[serde(default)]
+    pub start: Vec<f64>,
+    #[serde(default)]
+    pub start_w: Vec<f64>,
+    #[serde(default)]
+    pub n_start: Vec<u32>,
 }
 
 impl FeatureMoments {
@@ -202,6 +244,14 @@ impl FeatureMoments {
             w: 0.0,
             mean: vec![0.0; p],
             var: vec![0.0; p],
+            mean_lo: vec![0.0; p],
+            w_long: vec![0.0; p],
+            mean_long: vec![0.0; p],
+            mean_long_lo: vec![0.0; p],
+            var_long: vec![0.0; p],
+            start: vec![0.0; p * START_ROWS],
+            start_w: vec![0.0; p * START_ROWS],
+            n_start: vec![0; p],
         }
     }
 
@@ -211,34 +261,146 @@ impl FeatureMoments {
         self.mean.len() == p && self.var.len() == p
     }
 
-    /// The clock passes: `W *= lam`.
+    /// The clock passes: `W *= lam`, and each reference's weight by
+    /// `lam_long`, the same decay over `d_clock / LONG_HALFLIVES`.
     #[inline]
-    pub fn decay(&mut self, lam: f64) {
+    pub fn decay(&mut self, lam: f64, lam_long: f64) {
         self.w *= lam;
+        for wl in &mut self.w_long {
+            *wl *= lam_long;
+        }
     }
 
-    /// Learn one row of weight `w > 0` (after [`decay`](Self::decay)).
+    /// Learn one row of weight `w > 0` (after [`decay`](Self::decay)): the
+    /// EW moments, then each feature's reference. A row of weight 0 takes
+    /// no step in either (`crate::comp::add` says why for the pairs).
     pub fn absorb(&mut self, x: &[f64], w: f64) {
         let w_new = self.w + w;
         if w_new <= 0.0 {
             return;
         }
+        self.size();
         let (a, b) = (self.w / w_new, w / w_new);
-        for ((m, v), &xi) in self.mean.iter_mut().zip(&mut self.var).zip(x) {
-            let d = xi - *m;
-            *m += b * d;
+        for (((m, l), v), &xi) in self
+            .mean
+            .iter_mut()
+            .zip(self.mean_lo.iter_mut())
+            .zip(self.var.iter_mut())
+            .zip(x)
+        {
+            let d = crate::comp::dev(xi, *m, *l);
             *v = a * *v + a * b * d * d;
+            if b > 0.0 {
+                crate::comp::add(m, l, b * d);
+            }
         }
         self.w = w_new;
+        if w > 0.0 {
+            for (i, &xi) in x.iter().enumerate() {
+                self.step_long(i, xi, w);
+            }
+        }
     }
 
-    /// The metric weights: `1 / var_i` where the variance is positive and its
-    /// reciprocal finite, else `1` (raw units); all ones when not
-    /// standardizing. A feature that is constant so far — or whose variance
-    /// has gone subnormal — is measured in its own units rather than
-    /// magnified without bound.
-    pub fn metric(&self, standardize: bool, out: &mut [f64]) {
-        for (o, &v) in out.iter_mut().zip(&self.var) {
+    /// Feature `i`'s reference takes one row of weight `w > 0`. Its first
+    /// [`START_ROWS`] rows are kept, and the reference starts from their
+    /// medians -- of the values, of the squared deviations from that
+    /// median, and for its weight [`START_ROWS`] times the median of the
+    /// rows' weights -- which up to two rows at the input bound among them
+    /// do not move, and which scale with the weights as every other moment
+    /// does. From there, the Welford step at a weight clipped at the
+    /// reference's own (a row takes at most half of it) and a deviation
+    /// clipped at [`CLIP`] times its variance. A feature without spread has
+    /// no scale to clip against, so its first move starts its reference
+    /// over, that row the first of the next five; a reference whose weight
+    /// has decayed to nothing takes the row whole and, having no spread
+    /// then, starts over on the next.
+    fn step_long(&mut self, i: usize, xi: f64, w: f64) {
+        let s = START_ROWS;
+        let kept = self.n_start[i] as usize;
+        if kept < s {
+            self.start[i * s + kept] = xi;
+            self.start_w[i * s + kept] = w;
+            self.n_start[i] += 1;
+            if kept + 1 < s {
+                return;
+            }
+            let mut col = self.start[i * s..(i + 1) * s].to_vec();
+            let m = median(&mut col);
+            let mut sq: Vec<f64> = col.iter().map(|v| (v - m) * (v - m)).collect();
+            let mut ws = self.start_w[i * s..(i + 1) * s].to_vec();
+            self.mean_long[i] = m;
+            self.mean_long_lo[i] = 0.0;
+            self.var_long[i] = median(&mut sq);
+            self.w_long[i] = s as f64 * median(&mut ws);
+            return;
+        }
+        let d = crate::comp::dev(xi, self.mean_long[i], self.mean_long_lo[i]);
+        if self.var_long[i] == 0.0 && d != 0.0 {
+            self.n_start[i] = 0;
+            self.w_long[i] = 0.0;
+            self.step_long(i, xi, w);
+            return;
+        }
+        let wl = self.w_long[i];
+        let w = if wl > 0.0 { w.min(wl) } else { w };
+        let wl_new = wl + w;
+        let (a, b) = (wl / wl_new, w / wl_new);
+        let cap = CLIP * self.var_long[i];
+        let d = if cap > 0.0 && d * d > cap {
+            cap.sqrt().copysign(d)
+        } else {
+            d
+        };
+        self.var_long[i] = a * self.var_long[i] + a * b * d * d;
+        crate::comp::add(&mut self.mean_long[i], &mut self.mean_long_lo[i], b * d);
+        self.w_long[i] = wl_new;
+    }
+
+    /// The low parts and the references are as wide as the means. A state
+    /// written before them starts them here: the low parts at 0, the
+    /// references from the next rows.
+    fn size(&mut self) {
+        let p = self.mean.len();
+        if self.mean_lo.len() != p {
+            self.mean_lo = vec![0.0; p];
+        }
+        let s = START_ROWS;
+        if self.w_long.len() != p
+            || self.mean_long.len() != p
+            || self.mean_long_lo.len() != p
+            || self.var_long.len() != p
+            || self.start.len() != p * s
+            || self.start_w.len() != p * s
+            || self.n_start.len() != p
+            || self.n_start.iter().any(|&n| n as usize > s)
+        {
+            self.w_long = vec![0.0; p];
+            self.mean_long = vec![0.0; p];
+            self.mean_long_lo = vec![0.0; p];
+            self.var_long = vec![0.0; p];
+            self.start = vec![0.0; p * s];
+            self.start_w = vec![0.0; p * s];
+            self.n_start = vec![0; p];
+        }
+    }
+
+    /// The metric weights: `1 / v_i`, with `v_i` the EW variance floored at
+    /// `scale_floor` times the reference's variance, where that is positive
+    /// and its reciprocal finite, else `1` (raw units); all ones when not
+    /// standardizing. The floor slows what a feature that has gone quiet can
+    /// come to count for: `1 / var` alone grows as `2^Q` over `Q` halflives
+    /// of quiet, a million at twenty, and the row on which the feature moves
+    /// again is then infinitely far from every centre, which the argmin
+    /// cancels but a radius does not; floored, the weight grows as
+    /// `2^(Q / LONG_HALFLIVES) / scale_floor`, 58 at twenty (docs/PLAN.md
+    /// task 102). A feature that is constant so far -- or whose variance has
+    /// gone subnormal -- is measured in its own units rather than magnified
+    /// without bound.
+    pub fn metric(&self, standardize: bool, scale_floor: f64, out: &mut [f64]) {
+        for (i, (o, &v)) in out.iter_mut().zip(&self.var).enumerate() {
+            let floor = scale_floor * self.var_long.get(i).copied().unwrap_or(0.0);
+            let v = if floor > v { floor } else { v };
             let inv = 1.0 / v;
             *o = if standardize && v > 0.0 && inv.is_finite() {
                 inv
@@ -247,6 +409,12 @@ impl FeatureMoments {
             };
         }
     }
+}
+
+/// The middle value of an odd number of values, all finite here.
+fn median(v: &mut [f64]) -> f64 {
+    v.sort_by(f64::total_cmp);
+    v[v.len() / 2]
 }
 
 /// splitmix64 (Steele, Lea & Flood 2014): the generator behind the
@@ -422,37 +590,427 @@ mod tests {
         let xs = [[1.0, 10.0], [3.0, 10.0], [2.0, 10.0], [6.0, 10.0]];
         let mut m = FeatureMoments::new(2);
         for x in &xs {
-            m.decay(0.9);
+            m.decay(0.9, 0.9f64.powf(1.0 / LONG_HALFLIVES));
             m.absorb(x, 1.0);
         }
-        // Longhand.
-        let (mut w, mut mean, mut var) = (0.0, [0.0; 2], [0.0; 2]);
+        // Longhand, the means as pairs.
+        let (mut w, mut mean, mut lo, mut var) = (0.0, [0.0; 2], [0.0; 2], [0.0; 2]);
         for x in &xs {
             let w_new = 0.9 * w + 1.0;
             let (a, b) = (0.9 * w / w_new, 1.0 / w_new);
             for i in 0..2 {
-                let d = x[i] - mean[i];
-                mean[i] += b * d;
+                let d = crate::comp::dev(x[i], mean[i], lo[i]);
                 var[i] = a * var[i] + a * b * d * d;
+                crate::comp::add(&mut mean[i], &mut lo[i], b * d);
             }
             w = w_new;
         }
         assert_eq!(m.w, w);
         assert_eq!(m.mean, mean);
+        assert_eq!(m.mean_lo, lo);
         assert_eq!(m.var, var);
         assert_eq!(
             m.var[1], 0.0,
             "a constant feature has exactly zero variance"
         );
         let mut mw = [0.0; 2];
-        m.metric(true, &mut mw);
+        m.metric(true, 0.0, &mut mw);
         assert_eq!(mw, [1.0 / var[0], 1.0]);
-        m.metric(false, &mut mw);
+        m.metric(false, 0.0, &mut mw);
         assert_eq!(mw, [1.0, 1.0]);
         let mut tiny = FeatureMoments::new(1);
         tiny.var[0] = 1e-320;
-        tiny.metric(true, &mut mw[..1]);
+        tiny.metric(true, 0.0, &mut mw[..1]);
         assert_eq!(mw[0], 1.0, "a subnormal variance is not standardized by");
+    }
+
+    fn lam_long(lam: f64) -> f64 {
+        lam.powf(1.0 / LONG_HALFLIVES)
+    }
+
+    /// The metric's floor (docs/PLAN.md task 102), on two features of which
+    /// one goes quiet: its EW variance decays without bound and the floor
+    /// holds its weight at `1 / (scale_floor · var_long)`, the reference
+    /// decaying at an eighth of the rate; the feature that keeps moving
+    /// reads its EW variance at every floor; and a floor of 0 is the
+    /// reciprocal as it was.
+    #[test]
+    fn the_metric_is_floored_at_a_fraction_of_the_long_run_variance() {
+        let lam = 0.5;
+        let mut m = FeatureMoments::new(2);
+        for i in 0..40 {
+            m.decay(lam, lam_long(lam));
+            m.absorb(&[(i % 5) as f64, (i % 3) as f64], 1.0);
+        }
+        let reference = m.var_long[0];
+        assert!(reference > 0.5 && reference < 4.0, "{reference}");
+        for i in 0..60 {
+            m.decay(lam, lam_long(lam));
+            m.absorb(&[2.0, (i % 3) as f64], 1.0);
+        }
+        assert!(m.var[0] >= 0.0 && m.var[0] < 1e-12, "{}", m.var[0]);
+        // Sixty rows at halflife 1 are 7.5 of the reference's halflives.
+        let decayed = m.var_long[0] / reference;
+        assert!(decayed > 0.002 && decayed < 0.02, "{decayed}");
+        assert!(
+            m.var[1] > 0.1 * m.var_long[1],
+            "the moving feature is above its floor"
+        );
+        let mut mw = [0.0; 2];
+        m.metric(true, 0.0, &mut mw);
+        assert_eq!(mw, [1.0 / m.var[0], 1.0 / m.var[1]]);
+        m.metric(true, 0.1, &mut mw);
+        assert_eq!(mw, [1.0 / (0.1 * m.var_long[0]), 1.0 / m.var[1]]);
+        m.metric(false, 0.1, &mut mw);
+        assert_eq!(mw, [1.0, 1.0]);
+    }
+
+    /// The reference starts from the medians of the feature's first five
+    /// rows, and not before: nothing of it is set while the rows are still
+    /// being kept. A row at the input bound among them does not move the
+    /// medians, nor a weight at the bound: the values' median, the squared
+    /// deviations' median, and five times the weights' median. The EW
+    /// moments take that row, and forget it in a thousand halflives; the
+    /// reference never has it, and the floor sits far below the EW variance
+    /// until then.
+    #[test]
+    fn the_reference_starts_from_the_medians_of_the_first_five_rows() {
+        let mut m = FeatureMoments::new(1);
+        for (v, w) in [
+            (crate::INPUT_BOUND, 1.0),
+            (1.0, crate::INPUT_BOUND),
+            (2.0, 1.0),
+            (3.0, 1.0),
+            (4.0, 1.0),
+        ] {
+            m.decay(0.9, 0.99);
+            m.absorb(&[v], w);
+            assert_eq!(m.var_long.len(), 1);
+            if m.n_start[0] < START_ROWS as u32 {
+                assert_eq!(
+                    (m.mean_long[0], m.var_long[0], m.w_long[0]),
+                    (0.0, 0.0, 0.0),
+                    "not started before its fifth row"
+                );
+            }
+        }
+        assert_eq!(
+            (m.mean_long[0], m.var_long[0], m.w_long[0]),
+            (3.0, 1.0, 5.0)
+        );
+        assert_eq!(m.n_start[0], START_ROWS as u32);
+        assert!(
+            m.var[0] > 1e90,
+            "the EW variance took the rows: {}",
+            m.var[0]
+        );
+        let mut mw = [0.0; 1];
+        m.metric(true, 0.1, &mut mw);
+        assert_eq!(mw[0], 1.0 / m.var[0]);
+    }
+
+    /// A feature that starts its reference over reads its own rows' weights,
+    /// not the weights of the rows another feature started on: feature 1 is
+    /// constant while feature 0 moves at weight 2, then moves at weight 1,
+    /// and its reference's weight is five times 1.
+    #[test]
+    fn a_restarted_reference_reads_its_own_rows_weights() {
+        let mut m = FeatureMoments::new(2);
+        let mut g = SplitMix64::new(6);
+        for _ in 0..START_ROWS {
+            m.absorb(&[g.uniform(), 7.0], 2.0);
+        }
+        assert_eq!(m.w_long, vec![10.0, 10.0]);
+        for _ in 0..START_ROWS {
+            m.absorb(&[g.uniform(), 7.0 + g.uniform()], 1.0);
+        }
+        assert_eq!(m.n_start, vec![5, 5]);
+        assert_eq!(m.w_long[1], 5.0, "five rows at weight 1");
+        assert!(m.w_long[0] > 10.0, "feature 0 went on: {}", m.w_long[0]);
+    }
+
+    /// A row at the input bound, at a weight at the bound, moves the
+    /// reference by a bounded factor -- `1 + CLIP / 4` in the variance (a
+    /// row takes at most half of it, so `(1 − b)(1 + CLIP·b)` peaks at
+    /// `b = 1/2`), half the root of `CLIP` standard deviations in the
+    /// mean, twice in the weight -- and its halflives undo it: the
+    /// reference is within a factor of two of its old value eleven of them
+    /// later, with and without decay.
+    #[test]
+    fn a_row_at_the_bound_moves_the_reference_by_a_bounded_factor() {
+        for lam in [0.9, 1.0] {
+            let mut m = FeatureMoments::new(1);
+            let mut g = SplitMix64::new(3);
+            for _ in 0..200 {
+                m.decay(lam, lam_long(lam));
+                m.absorb(&[g.uniform()], 1.0);
+            }
+            let (mean, var, weight) = (m.mean_long[0], m.var_long[0], m.w_long[0]);
+            m.decay(lam, lam_long(lam));
+            m.absorb(&[crate::INPUT_BOUND], crate::INPUT_BOUND);
+            assert!(
+                m.var_long[0] <= (1.0 + 0.25 * CLIP) * var,
+                "lam {lam}: {} from {var}",
+                m.var_long[0]
+            );
+            assert!(
+                (m.mean_long[0] - mean).abs() <= 0.5 * (CLIP * var).sqrt() + 1e-12,
+                "lam {lam}: {} from {mean}",
+                m.mean_long[0]
+            );
+            assert!(
+                m.w_long[0] <= 2.0 * weight,
+                "lam {lam}: {} from {weight}",
+                m.w_long[0]
+            );
+            assert!(
+                m.var[0] > 1e100,
+                "the EW variance took the row: {}",
+                m.var[0]
+            );
+            if lam < 1.0 {
+                // Six hundred rows at halflife 6.6 are eleven of the
+                // reference's halflives; 2.8 times its old value after six.
+                for _ in 0..600 {
+                    m.decay(lam, lam_long(lam));
+                    m.absorb(&[g.uniform()], 1.0);
+                }
+                let back = m.var_long[0] / var;
+                assert!(back > 0.5 && back < 2.0, "{back}");
+            }
+        }
+    }
+
+    /// A feature without spread has no scale to clip against, so its first
+    /// move starts its reference over: five rows of one value, then a row a
+    /// million away, then rows of unit spread. Taken as it came, the row put
+    /// 1e11 into the reference and the floor held the feature under-weighted
+    /// a millionfold for two hundred halflives; started over, the reference
+    /// is the medians of that row and the next four, at the unit spread.
+    #[test]
+    fn a_feature_without_spread_starts_its_reference_over_on_its_first_move() {
+        let lam = 0.9;
+        let mut m = FeatureMoments::new(1);
+        for _ in 0..START_ROWS {
+            m.decay(lam, lam_long(lam));
+            m.absorb(&[7.0], 1.0);
+        }
+        assert_eq!((m.var_long[0], m.w_long[0]), (0.0, 5.0));
+        m.decay(lam, lam_long(lam));
+        m.absorb(&[1e6], 1.0);
+        assert_eq!(m.n_start[0], 1, "started over on the move");
+        for v in [7.4, 6.5, 7.9, 6.2] {
+            m.decay(lam, lam_long(lam));
+            m.absorb(&[v], 1.0);
+        }
+        assert_eq!(m.n_start[0], START_ROWS as u32);
+        assert!(
+            m.var_long[0] > 0.01 && m.var_long[0] < 10.0,
+            "{}",
+            m.var_long[0]
+        );
+        assert!(
+            m.mean_long[0] > 6.0 && m.mean_long[0] < 8.0,
+            "{}",
+            m.mean_long[0]
+        );
+    }
+
+    /// The reference scales with the rows' weights as every other moment
+    /// does, its start included: the same stream at weights 1 and 1e-3
+    /// reads the same floored metric, through a quiet spell.
+    #[test]
+    fn the_reference_scales_with_the_weights() {
+        let lam = 0.5;
+        let run = |scale: f64| {
+            let mut m = FeatureMoments::new(2);
+            let mut g = SplitMix64::new(9);
+            let mut mws = Vec::new();
+            for i in 0..120 {
+                m.decay(lam, lam_long(lam));
+                let x0 = if i < 40 { g.uniform() } else { 0.5 };
+                m.absorb(&[x0, g.uniform()], scale * (0.5 + g.uniform()));
+                let mut mw = [0.0; 2];
+                m.metric(true, 0.1, &mut mw);
+                mws.push(mw);
+            }
+            mws
+        };
+        let (a, b) = (run(1.0), run(1e-3));
+        for (i, (x, y)) in a.iter().zip(&b).enumerate() {
+            for j in 0..2 {
+                assert!(
+                    (x[j] - y[j]).abs() <= 1e-9 * x[j],
+                    "row {i}, feature {j}: {} at weights 1 against {} at 1e-3",
+                    x[j],
+                    y[j]
+                );
+            }
+        }
+    }
+
+    /// A row of weight 0 takes no step in the moments' pairs nor in the
+    /// reference: the rows 0.7 and 5.292162135665459 leave a low part of a
+    /// whole step, where a step of 0 would round `hi` up
+    /// (`crate::comp::add`).
+    #[test]
+    fn a_row_of_no_weight_takes_no_step_in_the_moments() {
+        let mut m = FeatureMoments::new(1);
+        m.absorb(&[0.7], 1.0);
+        m.absorb(&[5.292162135665459], 1.0);
+        let before = m.clone();
+        assert_eq!(
+            (m.mean[0], m.mean_lo[0]),
+            (2.996081067832729, 4.440892098500626e-16)
+        );
+        m.absorb(&[9.0], 0.0);
+        assert_eq!(m, before);
+    }
+
+    /// A reference whose weight has decayed to nothing -- a gap of
+    /// thousands of its halflives -- takes the next row whole and starts
+    /// over on the one after, with no NaN on the way.
+    #[test]
+    fn a_gap_past_the_references_weight_starts_it_over() {
+        let mut m = FeatureMoments::new(1);
+        let mut g = SplitMix64::new(4);
+        for _ in 0..20 {
+            m.decay(0.9, lam_long(0.9));
+            m.absorb(&[g.uniform()], 1.0);
+        }
+        m.decay(0.0, 0.0);
+        assert_eq!(m.w_long[0], 0.0);
+        m.absorb(&[0.3], 1.0);
+        assert_eq!((m.var_long[0], m.w_long[0], m.n_start[0]), (0.0, 1.0, 5));
+        for v in [0.6, 0.2, 0.8, 0.4, 0.5] {
+            m.decay(0.9, lam_long(0.9));
+            m.absorb(&[v], 1.0);
+        }
+        assert_eq!(m.n_start[0], START_ROWS as u32);
+        assert!(
+            m.var_long[0] > 0.0 && m.var_long[0].is_finite(),
+            "{}",
+            m.var_long[0]
+        );
+        let mut mw = [0.0; 1];
+        m.metric(true, 0.1, &mut mw);
+        assert!(mw[0].is_finite() && mw[0] > 0.0);
+    }
+
+    /// A state saved between the second and third rows of a feature's start
+    /// resumes to the bit: two rows, a round trip, three rows are five rows
+    /// straight through.
+    #[test]
+    fn a_state_saved_mid_start_resumes_to_the_bit() {
+        let rows = [
+            [1.0, 5.0],
+            [2.0, 4.0],
+            [1.5, 6.0],
+            [0.5, 4.5],
+            [2.5, 5.5],
+            [1.2, 5.1],
+        ];
+        let mut straight = FeatureMoments::new(2);
+        let mut cut = FeatureMoments::new(2);
+        for (i, x) in rows.iter().enumerate() {
+            straight.decay(0.9, lam_long(0.9));
+            straight.absorb(x, 1.0);
+            if i == 2 {
+                let bytes = rmp_serde::to_vec_named(&cut).unwrap();
+                cut = rmp_serde::from_slice(&bytes).unwrap();
+                let bytes = rmp_serde::to_vec(&cut).unwrap();
+                cut = rmp_serde::from_slice(&bytes).unwrap();
+            }
+            cut.decay(0.9, lam_long(0.9));
+            cut.absorb(x, 1.0);
+        }
+        assert_eq!(cut, straight);
+        assert_eq!(cut.n_start, vec![5, 5]);
+    }
+
+    /// A state that lost one field of the reference -- any one, or has a
+    /// start of the wrong width -- starts the whole reference over at the
+    /// next rows, as one that lost them all does: the parts are sized
+    /// together or not at all.
+    #[test]
+    fn a_state_missing_one_reference_field_starts_it_over() {
+        let mut m = FeatureMoments::new(2);
+        for i in 0..8 {
+            m.absorb(&[i as f64, 1.0 - i as f64], 1.0);
+        }
+        for key in [
+            "w_long",
+            "mean_long",
+            "mean_long_lo",
+            "var_long",
+            "start",
+            "start_w",
+            "n_start",
+        ] {
+            let mut old = serde_json::to_value(&m).unwrap();
+            if key == "start" {
+                old["start"] = serde_json::json!([1.0, 2.0, 3.0]);
+            } else {
+                assert!(old.as_object_mut().unwrap().remove(key).is_some(), "{key}");
+            }
+            let mut back: FeatureMoments = serde_json::from_value(old).unwrap();
+            for i in 0..START_ROWS {
+                back.absorb(&[10.0 + i as f64, 2.0], 1.0);
+            }
+            assert_eq!(back.n_start, vec![5, 5], "without {key}");
+            assert_eq!(
+                back.mean_long,
+                vec![12.0, 2.0],
+                "without {key}: the medians of the next five rows"
+            );
+            assert_eq!(back.w_long, vec![5.0, 5.0], "without {key}");
+        }
+    }
+
+    /// A state written before the low parts and the reference loads, reads
+    /// its metric without a floor, and starts them at the next rows, as
+    /// wide as the means.
+    #[test]
+    fn a_state_without_the_reference_starts_it() {
+        let mut m = FeatureMoments::new(2);
+        for i in 0..6 {
+            m.absorb(&[i as f64, 2.0 * i as f64], 1.0);
+        }
+        let mut old = serde_json::to_value(&m).unwrap();
+        for key in [
+            "mean_lo",
+            "w_long",
+            "mean_long",
+            "mean_long_lo",
+            "var_long",
+            "start",
+            "start_w",
+            "n_start",
+        ] {
+            assert!(old.as_object_mut().unwrap().remove(key).is_some(), "{key}");
+        }
+        let mut back: FeatureMoments = serde_json::from_value(old).unwrap();
+        assert!(back.mean_lo.is_empty() && back.var_long.is_empty() && back.n_start.is_empty());
+        assert!(back.has_shape(2));
+        let mut mw = [0.0; 2];
+        back.metric(true, 0.1, &mut mw);
+        assert_eq!(
+            mw,
+            [1.0 / back.var[0], 1.0 / back.var[1]],
+            "no reference: no floor"
+        );
+        for i in 0..START_ROWS {
+            back.absorb(&[10.0 + i as f64, 1.0], 1.0);
+        }
+        assert_eq!(
+            (back.mean_lo.len(), back.var_long.len(), back.n_start),
+            (2, 2, vec![5, 5])
+        );
+        assert_eq!(
+            back.mean_long,
+            vec![12.0, 1.0],
+            "the medians of the next five rows"
+        );
     }
 
     #[test]

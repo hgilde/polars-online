@@ -5,7 +5,6 @@ claim the reader trusts. These are the only tests that exercise the files the
 README points people at, end to end and unmodified.
 """
 
-import os
 import subprocess
 import sys
 import tomllib
@@ -13,6 +12,8 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+
+import child
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
@@ -31,7 +32,7 @@ def _run(args, **kw):
     # both ends of the pipe agree.
     # Ours wins over both the ambient environment and the caller's: every
     # caller here decodes as UTF-8, so the guarantee is unconditional.
-    env = {**os.environ, **kw.pop("env", {}), "PYTHONIOENCODING": "utf-8"}
+    env = child.env(**kw.pop("env", {}))
     return subprocess.run(
         args,
         capture_output=True,

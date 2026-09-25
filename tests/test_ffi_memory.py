@@ -28,6 +28,7 @@ import polars as pl
 import psutil
 import pytest
 
+import child
 import polars_online as po
 
 PROC = psutil.Process(os.getpid())
@@ -207,7 +208,7 @@ def run_isolated(body: str, timeout=180):
         capture_output=True,
         text=True,
         encoding="utf-8",
-        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        env=child.env(),
         timeout=timeout,
     )
     assert r.returncode == 0, (

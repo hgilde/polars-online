@@ -94,8 +94,9 @@ jobs:
       # --no-install-project skips building the extension, which lint never
       # imports; that build is the single most expensive step in the job (18
       # min on Linux, 39 on Windows). UV_NO_SYNC then stops `uv run` from
-      # silently reinstalling it.
-      - run: uv sync --no-install-project
+      # silently reinstalling it. --locked fails where uv.lock no longer
+      # matches pyproject.toml, where a plain sync would rewrite it.
+      - run: uv sync --locked --no-install-project
 
       - name: cargo fmt
         run: cargo fmt --all -- --check

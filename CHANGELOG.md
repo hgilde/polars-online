@@ -29,15 +29,40 @@ carries breaking changes, and any change to the numbers a model returns.
   the whole frame's numbers. pyarrow is a test-only dependency: the
   package still depends on polars alone.
 
+- **`kmeans` and `micro` take `scale_floor`**, default 0.1: the metric's
+  variance is floored at that fraction of the feature's long-run variance.
+  `1 / var` alone grew as `2^Q` over `Q` halflives of a flag that stops
+  firing or a sensor at rest, a million at twenty, and the row on which the
+  feature moved again was infinitely far from every centre: `kmeans`'s
+  split–merge move ended at ARI 0.22 after such a spell and now recovers to
+  0.73; floored, the weight grows as `2^(Q/8) / scale_floor`, 58 at
+  twenty. `0` is the metric as it was, and what a state saved before the
+  floor loads with. On a static, drifting, rescaled or growing-noise stream
+  the floor binds on no row. The long-run variance is tracked at eight times
+  the halflife, a feature at a time, each row's weight and deviation clipped
+  against it, its start the medians of the feature's first five rows, and
+  started over by a first move from no spread, so a row at the input bound
+  moves it by a factor of 26 at most, which a few of its halflives undo.
+
 ### Fixed
 
+- **A feature that stops moving leaves no rounding artefact in the
+  clusters' metric.** The feature moments' means are pairs, as every other
+  running mean now is, and `kmeans` and `micro` give a stream at a level of
+  1e8 the labels they give it at 0.
 - **`corrchange`'s constancy test works at any level of the columns.** The
   long-run standard deviation its statistic divides by was formed from raw
   moments, so `E[x²] − E[x]²` lost the columns' level digits: off by 1.2e-5
   of itself at a level of 1e5 and NaN at 1e8, where the test then flagged
   nothing. It is now computed on the span centred at its means and scaled
   by its standard deviations, which is the same number in exact arithmetic
-  (the paper's own `ξ_t` form) and holds to 1e-12 at levels up to 1e8.
+  (the paper's own `ξ_t` form) and is the same double at levels up to 1e12.
+  Two verdicts change with it. A pair within rounding of `|ρ| = 1` -- a
+  derived or duplicated column -- has no long-run standard deviation and no
+  verdict, where the old form's rounding stood in for one; and a span with
+  one far outlier gets the verdict the formula gives, a flag, where the old
+  form cancelled to nothing (docs/REGIMES.md §4 on the delta method's heavy
+  tails).
 - **A feature or target that stops moving keeps the fit it had.** A
   running mean given one value row after row stopped a few rounding steps
   short of it, once its step rounded to nothing. Every variance and
@@ -49,8 +74,8 @@ carries breaking changes, and any change to the numbers a model returns.
   gave a held target a correlation of -0.06 with a moving feature, where it
   goes to zero, and its bins' split gain read 0.45. Every running mean is
   now carried as two doubles, so no part of a step is rounded off, and the
-  fits follow exact arithmetic: they keep their slopes for 150 halflives at
-  levels from 0 to 1e12, and with no decay. This covers `ew_cov`,
+  fits stay within a rounding step of the level of the fit at 0.5: they keep
+  their slopes for 150 halflives at levels from 0 to 1e12, and with no decay. This covers `ew_cov`,
   `ew_ridge`, `lasso`, `robust`, `kalman`, `sgd`, `marginal` (pairs, lags
   and bins), `deco`, `bocpd`, `ew_class`, `hmm` and `emit_autocorr`.
 - **A windowed fit no longer standardizes a feature by rounding.** A
@@ -61,7 +86,10 @@ carries breaking changes, and any change to the numbers a model returns.
   subtraction left a remainder instead, which grows with the feature's
   level and with the rows since the window's edge, and which a lasso at a
   penalty of zero divided by itself: predictions of 1e55 where the fit was
-  -1.0.
+  -1.0. A feature counts as held when every row inside the window carried
+  its value, under any window and halflife. `ew_cov`'s and `ew_class`'s own
+  windows read it the same way: a held feature has a variance of 0 and a
+  null correlation there, where it read noise.
 - **A windowed `marginal` pair reports a feature or target held over the
   window as having no spread.** Its variance and covariance are zero, its
   mean is the value, its correlation is null, and a held target has a
@@ -72,7 +100,8 @@ carries breaking changes, and any change to the numbers a model returns.
   the selection after the row's own error, with its weight aged twice; the
   choice read the window as it stood a row earlier; a row that did not
   score the target left the choice from an older window standing; and the
-  window aged by the model's halflife where `select_halflife` differs.
+  window aged by the model's halflife where `select_halflife` differs. A
+  window with no scored row of the target leaves the last choice standing.
 - **The PyPI page's links to other files work.** PyPI shows the README,
   where a relative link such as `docs/PLAN.md` resolved against pypi.org
   and was a 404; only in-page links worked. The release workflow now
@@ -96,6 +125,12 @@ carries breaking changes, and any change to the numbers a model returns.
   years, the most a clock can hold`, as the text form always did.
 - **A space after a duration's sign is refused.** `"+ 5m"` was accepted,
   and named a grid's field `@h+ 5m`; polars refuses it too.
+- **`lasso`'s docstring says what its coordinate descent reads.** `c_i` is
+  each feature's covariance with the target over the feature's standard
+  deviation, not a correlation; an elastic net's predictions do not scale
+  with the target, since its ridge part is added to a correlation; and the
+  selection's errors count the rows the target's `min_periods` still
+  withholds from the output.
 - **`sgd`'s docstring gave the intercept an `l2` it does not get.** The
   update equations and the `l2` entry now say the ridge is on the slopes
   only, as the code has always done.
@@ -107,15 +142,20 @@ carries breaking changes, and any change to the numbers a model returns.
 ### Changed
 
 - **Outputs differ from 0.10.0 in their last bits** wherever a running
-  mean is taken, since the means are carried as pairs now (the first fix
-  above). On the release comparison that is 19 of its 30 specs, by a
-  median of 3e-16 of the value and at most 1.4e-14. `sgd` steps about 16%
-  slower at 16 features; `ew_ridge` and `ew_cov` are unchanged.
+  mean is taken, since the means are carried as pairs now (see "A feature
+  or target that stops moving keeps the fit it had", above). On the release
+  comparison that is 19 of its 30 specs, by a median of 3e-16 of the value
+  and at most 1.4e-14. The diagonal accumulator behind `sgd`, `kalman`,
+  `deco` and `corrchange` takes 6.0, 10.7 and 24 ns a row at 4, 16 and 64
+  slots where it took 5.2, 6.3 and 15.5, so `sgd` steps about 16% slower at
+  16 features; `ew_ridge` and `ew_cov` are unchanged.
 - **State schema 16.** A stream with a `label_delay` keeps, per model, the
   clock its held rows cover (15). Every covariance accumulator and every
   `marginal` keeps, per slot, the value it has held since it last changed
-  and the weight of those rows, for a window to read, and every running
-  mean keeps what its double leaves out (16). States saved by 0.10.0
+  and the learned row that started that run, for a window to read; every
+  running mean keeps what its double leaves out; and `kmeans` and `micro`
+  keep each feature's long-run reference for the metric's floor (16).
+  States saved by 0.10.0
   (schema 14) still load. The clock is rebuilt as 0.10.0 did at a chunk
   boundary, the runs start at the next row, and a mean starts as the
   double it was saved as.

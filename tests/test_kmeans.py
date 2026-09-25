@@ -359,6 +359,47 @@ class TestLargeData:
         assert (m.n_merges, m.n_dead) == (0, 0)
 
 
+class TestScaleFloor:
+    """``scale_floor`` (docs/PLAN.md task 102): a feature quiet for thirty
+    halflives, then moving again. The bank is the oracle bit for bit at
+    every floor, and the floor binds only in the quiet spell."""
+
+    @staticmethod
+    def stream():
+        X, _ = blobs(n=6000, k=3, p=3, seed=3)
+        X = X.copy()
+        X[2000:5000, 2] = X[2000, 2]
+        return X
+
+    @staticmethod
+    def spec_at(floor):
+        return spec(
+            features=("x0", "x1", "x2"), k=3, halflife=100.0, warm_rows=50, scale_floor=floor
+        )
+
+    @pytest.mark.parametrize("floor", [0.0, 0.1, 1.0])
+    def test_the_bank_is_the_oracle_at_every_floor(self, floor):
+        X = self.stream()
+        got = unnested(po.ModelBank([self.spec_at(floor)]).fit_predict(frame(X)))
+        want = ref.kmeans_ref(
+            X.tolist(), k=3, halflife=100.0, min_periods=5.0, warm_rows=50, scale_floor=floor
+        )
+        _same(got, want, f"floor {floor}")
+
+    def test_the_floor_binds_only_in_the_quiet_spell(self):
+        X = self.stream()
+        dist = {
+            floor: unnested(po.ModelBank([self.spec_at(floor)]).fit_predict(frame(X)))["dist"]
+            .fill_null(-1.0)
+            .to_numpy()
+            for floor in (0.0, 0.1)
+        }
+        # The EW variance of the held feature falls below a tenth of its
+        # long-run one some 3.3 halflives into the spell, not before.
+        assert np.array_equal(dist[0.0][:2200], dist[0.1][:2200])
+        assert not np.array_equal(dist[0.0][2500:5000], dist[0.1][2500:5000])
+
+
 def stranded(seed, n=20_000, sd=0.6, radius=6.0, born=(9.0, 9.0)):
     """Four blobs on a circle; from n/2 on, blob 3 is replaced by a fifth
     blob at `born`, far from every centre. Labels are the generating blob."""
@@ -712,6 +753,7 @@ class TestRefusals:
             ({"split_merge_every": 0}, "split_merge_every must be >= 1"),
             ({"split_merge": -1.0}, "split_merge must be finite and >= 0"),
             ({"dead_frac": -0.1}, "dead_frac must be finite and >= 0"),
+            ({"scale_floor": -0.5}, "scale_floor must be finite and >= 0"),
             ({"features": ["x0", "x0"]}, "more than once"),
         ],
         ids=lambda v: next(iter(v)) if isinstance(v, dict) else v,

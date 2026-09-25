@@ -370,7 +370,7 @@ impl Deco {
         for (i, xi) in x.iter().enumerate() {
             let v = self.diag.var(i);
             out.push(if v > 0.0 {
-                (xi - self.diag.mean(i)) / v.sqrt()
+                self.diag.deviation(i, *xi) / v.sqrt()
             } else {
                 f64::NAN
             });
@@ -562,6 +562,17 @@ mod tests {
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         ((*state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    }
+
+    /// A feature without variance yet -- the first row, or one constant so
+    /// far -- has no standardized value: NaN, not a division by a zero
+    /// variance (which would be infinite for any row off the mean).
+    #[test]
+    fn a_feature_without_variance_has_no_standardized_value() {
+        let m = Deco::new(cfg(2)).unwrap();
+        let mut out = Vec::new();
+        m.standardise(&[3.0, -2.0], &mut out);
+        assert!(out.iter().all(|v| v.is_nan()), "{out:?}");
     }
 
     fn cfg(n: usize) -> DecoCfg {

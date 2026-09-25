@@ -214,6 +214,7 @@
     split_merge_every = None
     dead_frac = None
     standardize = None
+    scale_floor = None
     common
   lasso:
     name
@@ -254,6 +255,7 @@
     prune_every = None
     macro_link = None
     standardize = None
+    scale_floor = None
     common
   output_fields:
     spec

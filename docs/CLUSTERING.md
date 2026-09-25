@@ -579,6 +579,43 @@ against outliers.
 storing `z = (x − m)/s` — slides every stored centre out from under itself as
 the moments move, and measures **worse than not standardising at all** (§10).
 
+**The metric's variance is floored at `scale_floor` (default 0.1) of the
+feature's long-run variance** (PLAN task 102): per feature, the same Welford
+variance at eight times the halflife, each row's weight clipped at the
+reference's own and its deviation at ten standard deviations, started from the
+medians of the feature's first five rows (its weight from the median of their
+weights, so it scales as every other moment does) and started over by a first
+move from no spread. A row at the input bound moves that reference by a factor
+of 26 at most, which a few of its halflives undo; an undecayed reference never
+forgot such a row, and the metric was lost for good (the recovery contract in
+`model_contract.rs` caught it). The floor slows the growth of a quiet
+feature's weight rather than bounding it: over `Q` halflives of quiet the
+reference decays too, so the weight grows as `2^(Q/8)/scale_floor`, 58 at
+twenty, where `1/var` alone gave `2^Q`. A level shift in a feature is
+followed at five standard deviations a row: at halflife 100 the floor binds on
+no row after a shift of 10 or 30 standard deviations, and on a third of the
+rows after 100, where the shift itself takes `kmeans` to ARI 0.21 with the
+floor or without. `1/v` alone grows without bound as the recent variance
+decays, and it does within ten halflives of any feature going quiet — a flag
+that stops firing, a sensor at rest — not only of one that stops for good; the
+row on which the feature moves again is then infinitely far from every centre,
+which the argmin cancels but a radius does not, so a structural move or an
+admission test reads it wrong. Measured on the streams of §7: at 0.01 and 0.1
+the floor binds on no row of the static, drifting, scaled, growing-noise or
+feature-stops streams, so nothing there changes; on a feature quiet for twenty
+halflives it binds on a quarter of the rows, and once the feature moves again
+the split–merge model recovers to ARI 0.731 for 0.220 (0.583 at a floor of
+0.01), `micro` unchanged at 0.786. A row at the input bound in the middle of a
+stream breaks every model for the rest of a 20 000-row stream at halflife
+3 000, floor or no floor: that is the EW variance's own thousand halflives. A feature that stops for good costs `kmeans` 0.24 ARI for a halflife
+after the stop at any floor (0.756 against 0.999 with the feature dropped): the
+stale spread keeps penalizing every centre the held value is far from until the
+centres and the variance have followed it, which is the model's memory, the
+same lag as a level shift, and not something a floor reaches. The means in the
+moments are pairs (PLAN task 101); the centres stay plain, since with the floor
+a plain centre's rounding gap costs `g_c²/(scale_floor·var^∞)` in a distance,
+1e-9 at a level of 1e8 with unit spread.
+
 ### 6.2 `kmeans`: fixed `k`, the recommendation
 
 **Scope first: this is the right model when the clusters are blob-shaped**, and
@@ -1351,6 +1388,12 @@ Effort: `kmeans` alone is about the size of `holt`; the plumbing is a day by the
 12. **The SOM as a clusterer.** Purity 0.986 with ARI 0.266 on two moons: a 3×3
     grid quantises two clusters into nine pure cells. It is a quantiser, and
     would need a macro step over the grid to be a clusterer.
+13. **The long-run variance alone as the metric.** A floor of 1 — the larger
+    of the recent and the undecayed variance — binds on half the rows of every
+    stream, since the EW variance sits below the all-time one as often as
+    above it: 0.626 for 0.665 on the scaled stream's first quarter, and a
+    permanent drop in a feature's scale is never followed. A fraction (0.1)
+    binds where it is needed and nowhere else (§6.1).
 
 ---
 

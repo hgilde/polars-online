@@ -41,7 +41,10 @@ pub fn dev(x: f64, hi: f64, lo: f64) -> f64 {
 ///
 /// Kahan's step does not keep `lo` under half a rounding step of `hi`, so
 /// adding zero can round the pair afresh: the same number, with `hi` a step
-/// off. A caller therefore does not take the step of a row of weight 0
+/// off; `lo` exceeds half a step only after a step larger than the mean
+/// itself, where Fast2Sum's `|s + lo| <= |hi|` fails, which is common on a
+/// feature centred near zero and rare at a level (review 2026-09-25). A
+/// caller therefore does not take the step of a row of weight 0
 /// (CLAUDE.md hard rule 9) -- `tests/test_label_delay.py` holds a stream
 /// with a zero-weight copy of every row to the one without, to the bit --
 /// and that is one test a row, where a test here, a step at a time, stopped

@@ -135,7 +135,7 @@ T-A4).
 | [the examples](#examples-are-executed) | `tests/test_examples.py` | everything under `examples/` runs unmodified |
 | [memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31) | `tests/test_ffi_memory.py`, `scripts/leakcheck.sh` | no leak and no crash across the FFI |
 | a stopped feature or target (2026-09-24) | `crates/online-core/tests/held_values.rs` | every model that centres a feature or target keeps what exact arithmetic gives for 150 halflives after it stops, at levels from 0 to 1e12 and with no decay: the slope it learned, a spread that keeps decaying, and fits that do not depend on the level. Twelve of its fourteen tests fail with the means plain (docs/PLAN.md task 101); the other two are contracts any design must keep: a row of weight 0 changes nothing, and a state saved part-way resumes to the bit |
-| Arrow with pyarrow (2026-09-24) | `tests/test_pyarrow_interop.py` | pyarrow 25.0.1 reads the Arrow output through `pa.array`, `pa.chunked_array`, `pa.record_batch` and `pa.table` with `fit_predict`'s values and dtypes; a reader streams into a bank with the whole frame's numbers. pyarrow is a test-only dependency: `tests/conftest.py` makes it unimportable in the rest of the suite, which so runs as a user without it does |
+| Arrow with pyarrow (2026-09-24) | `tests/test_pyarrow_interop.py` | pyarrow 25.0.1 reads the Arrow output through `pa.array`, `pa.chunked_array`, `pa.record_batch` and `pa.table` with `fit_predict`'s values and dtypes; a reader streams into a bank with the whole frame's numbers; the export validates in full, zero rows and an all-null field cross, two specs are two exports, and a requested schema other than the struct's own raises inside pyarrow 25.0.1's cast path (its bug, `array.pxi:321`) rather than coming back silently cast. pyarrow is a test-only dependency: `tests/conftest.py` makes it unimportable in the rest of the suite, and `tests/child.py` in the child interpreters the tests spawn, which so run as a user without it does |
 
 #### Production hardening round 3 (vs river's own battery)
 
@@ -272,6 +272,10 @@ computed field is still bit-identical.
 | a CLI test skipped on Windows for want of `online.exe`, and wrote Windows paths into a TOML basic string | reading the first Windows run's skips | docs/PLAN.md task 100 |
 | a feature or target that stops moving: its running mean stopped `1/(2b)` rounding steps short, and every variance and slope centred on it read that gap (a lasso slope of -4.7e3 at a level of 1e8) | measuring task 94's case outside a window | docs/PLAN.md task 101 |
 | a windowed `marginal` pair kept task 94's remainder for a slot held over the window, and `beta` divided it by itself | the sweep of every running mean for task 101 | docs/PLAN.md task 101 |
+| the clusters' metric weight `1 / var` grew without bound as a quiet feature's variance decayed, and a feature that stopped left a rounding artefact in it | the sweep for task 101, then the prototype's streams | docs/PLAN.md task 102 |
+| the window's held-feature rule compared the run's decayed weight with the window's to 1e-12, and the two drifted past it under a long window and a long halflife (1.6e-12 at a halflife of 1e6, fifty thousand rows of each) | review 2026-09-25 of tasks 94-97; a simulation, then `a_long_window_under_a_long_halflife_still_reads_a_held_feature` on the old rule | docs/PLAN.md task 94 |
+| the lasso's windowed selection fell back on whole-history errors through an empty window | the same review | docs/PLAN.md task 95 |
+| `corrchange`'s accurate `D̂` reached its true 0 on a collinear pair, and the numerator's rounding divided by it flagged every span of a derived column | review 2026-09-25 of task 103; `a_collinear_pair_has_no_verdict` | docs/PLAN.md task 103 |
 | `corrchange`'s long-run standard deviation took a span's variance as `E[x²] − E[x]²`: 1.2e-5 of itself off at a level of 1e5, NaN at 1e8, so the monitor flagged nothing there | the same sweep; a level-invariance test on deviations that are exact multiples of 2⁻²⁰ | docs/PLAN.md task 103 |
 
 ### Differences from river that are not bugs
@@ -444,8 +448,14 @@ Four rules keep such a library from costing the package anything:
 
 `tests/test_dependency_policy.py` checks rules 1, 2 and 4. Every library a
 test imports must be declared in the dev group, no test may call
-`importorskip`, and the package must depend on polars alone. Rule 3 is
-checked where it applies, by `test_this_session_runs_without_pyarrow`.
+`importorskip` (nor skip behind `except ImportError`), and the package must
+depend on polars alone, extras included. Rule 3 is checked in this process by
+`test_this_session_runs_without_pyarrow` and in the child interpreters the
+tests spawn by `test_child_interpreters_run_without_pyarrow_too`:
+`tests/child.py` puts `tests/_site/sitecustomize.py`, which installs the same
+finder, on their path; only `tests/test_pyarrow_interop.py`'s children see
+pyarrow (review 2026-09-25, which found the examples' "nothing needs pyarrow"
+running with it importable). The gate checks the lock with `uv lock --check`.
 
 Two candidates the rule now admits are not yet taken:
 

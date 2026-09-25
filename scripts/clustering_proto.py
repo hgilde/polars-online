@@ -62,6 +62,11 @@ import numpy as np
 NONE = -1  # "no cluster" label (before seeding / min_periods, or a null row)
 
 
+LONG_HALFLIVES = 8.0  # the reference's halflife, as a multiple of the model's (task 102)
+CLIP = 100.0  # the reference clips a squared deviation at this multiple of itself
+START_ROWS = 5  # the reference starts from the medians of this many rows
+
+
 def decay_factor(d_clock: float, halflife: float) -> float:
     return 1.0 if math.isinf(halflife) else 0.5 ** (d_clock / halflife)
 
@@ -156,11 +161,29 @@ class Stream:
                 out.append(np.array([v]))
         return out
 
-    def __init__(self, p: int, halflife: float, min_periods: float, standardize: bool):
+    def __init__(
+        self,
+        p: int,
+        halflife: float,
+        min_periods: float,
+        standardize: bool,
+        scale_floor: float = 0.1,
+    ):
         self.p = p
         self.halflife = halflife
         self.min_periods = min_periods
         self.standardize = standardize
+        self.scale_floor = scale_floor  # the metric's floor, a fraction of the reference
+        # The reference (docs/PLAN.md task 102), a feature at a time: the
+        # moments at LONG_HALFLIVES times the halflife, weight and deviation
+        # clipped against it, started from the medians of START_ROWS rows and
+        # started over by a first move from no spread.
+        self.N_long = np.zeros(p)
+        self.m_long = np.zeros(p)
+        self.v_long = np.zeros(p)
+        self.start = np.zeros((START_ROWS, p))
+        self.start_w = np.zeros((START_ROWS, p))
+        self.n_start = np.zeros(p, dtype=int)
         self.N = 0.0  # n_eff: EW sum of learned weights
         self.L = 0.0  # cumulative log-decay
         self.n_rows = 0
@@ -184,7 +207,8 @@ class Stream:
 
     def _set_metric(self) -> None:
         if self.standardize:
-            self.mw = np.where(self.v > 0.0, 1.0 / np.where(self.v > 0.0, self.v, 1.0), 1.0)
+            v = np.maximum(self.v, self.scale_floor * self.v_long)
+            self.mw = np.where(v > 0.0, 1.0 / np.where(v > 0.0, v, 1.0), 1.0)
 
     def _begin(self, x, d_clock: float, w: float) -> tuple[float, np.ndarray, bool, bool, float]:
         """Per-row bookkeeping shared by every model: decay, moments, n_eff.
@@ -203,6 +227,7 @@ class Stream:
         learn = w > 0.0 and valid
         self._set_metric()  # from the moments *before* this row
         z = self._scale(x)
+        self.N_long *= decay_factor(d_clock / LONG_HALFLIVES, self.halflife)
         if learn:
             N_new = lam * self.N + w
             a, b = lam * self.N / N_new, w / N_new
@@ -211,9 +236,51 @@ class Stream:
             self.v = a * self.v + a * b * delta * delta
             self.N = N_new
             self.n_learned += 1
+            self._absorb_long(x, w)
         else:
             self.N = lam * self.N
         return lam, z, valid, learn, n_before
+
+    def _absorb_long(self, x: np.ndarray, w: float) -> None:
+        """Each feature's reference takes the row: the medians of its first
+        START_ROWS rows start it (the weight at START_ROWS times the median
+        weight); then a Welford step at a weight clipped at the reference's
+        own and a deviation clipped at CLIP times its variance; a first move
+        from no spread starts it over."""
+        for i in range(self.p):
+            self._step_long(i, float(x[i]), w)
+
+    def _step_long(self, i: int, xi: float, w: float) -> None:
+        s = START_ROWS
+        kept = int(self.n_start[i])
+        if kept < s:
+            self.start[kept, i] = xi
+            self.start_w[kept, i] = w
+            self.n_start[i] += 1
+            if kept + 1 < s:
+                return
+            col = self.start[:, i]
+            m = float(np.median(col))
+            self.m_long[i] = m
+            self.v_long[i] = float(np.median((col - m) ** 2))
+            self.N_long[i] = s * float(np.median(self.start_w[:, i]))
+            return
+        d = xi - self.m_long[i]
+        if self.v_long[i] == 0.0 and d != 0.0:
+            self.n_start[i] = 0
+            self.N_long[i] = 0.0
+            self._step_long(i, xi, w)
+            return
+        wl = self.N_long[i]
+        w = min(w, wl) if wl > 0.0 else w
+        wl_new = wl + w
+        a, b = wl / wl_new, w / wl_new
+        cap = CLIP * self.v_long[i]
+        if cap > 0.0 and d * d > cap:
+            d = math.copysign(math.sqrt(cap), d)
+        self.v_long[i] = a * self.v_long[i] + a * b * d * d
+        self.m_long[i] = self.m_long[i] + b * d
+        self.N_long[i] = wl_new
 
     def replay_weights(self) -> np.ndarray:
         """Weights of the buffered rows as of now: each has decayed since its row."""
@@ -275,6 +342,7 @@ class KMeansCfg:
         100  # learned rows between split-merge attempts (its own, slower clock)
     )
     standardize: bool = False
+    scale_floor: float = 0.1  # the metric's variance floor, as a fraction of the long-run one
 
 
 class EWKMeans(Stream):
@@ -290,7 +358,7 @@ class EWKMeans(Stream):
     """
 
     def __init__(self, cfg: KMeansCfg, p: int):
-        super().__init__(p, cfg.halflife, cfg.min_periods, cfg.standardize)
+        super().__init__(p, cfg.halflife, cfg.min_periods, cfg.standardize, cfg.scale_floor)
         self.cfg = cfg
         k = cfg.k
         self.C: np.ndarray | None = None
@@ -826,6 +894,7 @@ class MicroCfg:
         2.0  # p-MCs with centres within macro_link * eps share a macro label (0: none)
     )
     standardize: bool = False
+    scale_floor: float = 0.1
 
 
 class MicroClusters(Stream):
@@ -852,7 +921,7 @@ class MicroClusters(Stream):
     """
 
     def __init__(self, cfg: MicroCfg, p: int):
-        super().__init__(p, cfg.halflife, cfg.min_periods, cfg.standardize)
+        super().__init__(p, cfg.halflife, cfg.min_periods, cfg.standardize, cfg.scale_floor)
         self.cfg = cfg
         self.ids: list[int] = []
         self.C = np.zeros((0, p))

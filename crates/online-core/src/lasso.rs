@@ -343,9 +343,12 @@ impl Lasso {
     /// The truncation ages the snapshot by `select_halflife`, the decay the
     /// errors age by, where it used the model's (PLAN task 95). Whether the
     /// window is empty is the errors' own question: it used to be the
-    /// Gram's, which the choice now reads before this row is learned.
-    fn window_sel_err(&self, j: usize) -> Vec<f64> {
-        let live = || self.sel_err[j].clone();
+    /// Gram's, which the choice now reads before this row is learned. An
+    /// empty window -- no scored row of this target inside it -- is `None`,
+    /// and the choice stands: the whole-history errors it used to fall back
+    /// on are the rows the window has dropped (review 2026-09-25).
+    fn window_sel_err(&self, j: usize) -> Option<Vec<f64>> {
+        let live = || Some(self.sel_err[j].clone());
         let Some(win) = self.win.as_ref() else {
             return live();
         };
@@ -365,7 +368,7 @@ impl Lasso {
             &old.sel_err[j],
             f,
         )
-        .map_or_else(live, |(_w, e)| e.into_iter().map(|v| v.max(0.0)).collect())
+        .map(|(_w, e)| e.into_iter().map(|v| v.max(0.0)).collect())
     }
 
     /// One Gram's statistics in correlation form, for the targets `readers`
@@ -672,14 +675,15 @@ impl OnlineModel for Lasso {
             // choice left standing from the last scored row read errors the
             // window had since dropped (PLAN task 95). Without a window only
             // the common age moved, and the choice is the one it was.
-            let err = self.window_sel_err(j);
-            let mut best = 0usize;
-            for li in 1..np {
-                if err[li] < err[best] {
-                    best = li;
+            if let Some(err) = self.window_sel_err(j) {
+                let mut best = 0usize;
+                for li in 1..np {
+                    if err[li] < err[best] {
+                        best = li;
+                    }
                 }
+                self.sel_idx[j] = best;
             }
-            self.sel_idx[j] = best;
         }
 
         // ---- update accumulators ----
@@ -1233,9 +1237,46 @@ mod tests {
                 let want = errs
                     .as_ref()
                     .map_or_else(|| m.sel_err[j].clone(), |e| e[j].clone());
-                assert_eq!(m.window_sel_err(j), want, "row {i} target {j}");
+                if let Some(got) = m.window_sel_err(j) {
+                    assert_eq!(got, want, "row {i} target {j}");
+                }
             }
         }
+    }
+
+    /// A window with no scored row of a target keeps the lambda that target
+    /// last chose: the whole-history errors the choice used to fall back on
+    /// are the rows the window has dropped (review 2026-09-25, tasks 94-97,
+    /// finding 2). Scored to clock 50, then absent for 60 units of a
+    /// 24-unit window at halflife 40.
+    #[test]
+    fn an_empty_selection_window_keeps_the_choice() {
+        let mut c = cfg(2, 1, vec![0.3, 0.03, 0.003]);
+        c.decay = Decay::Halflife(40.0);
+        c.window = Some(24.0);
+        c.window_every = Some(1);
+        c.min_periods = 3.0;
+        let mut m = Lasso::new(c).unwrap();
+        let mut s = 11u64;
+        let mut chosen = None;
+        let mut empty_rows = 0;
+        for i in 0..120 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = (i <= 50).then_some(0.7 * x[0] + 0.1 * lcg(&mut s));
+            m.step(&x, &[y], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            if i == 50 {
+                chosen = Some(m.sel_idx[0]);
+            }
+            if i > 50 + 24 + 2 {
+                assert!(
+                    m.window_sel_err(0).is_none(),
+                    "row {i}: the window has no scored row"
+                );
+                assert_eq!(Some(m.sel_idx[0]), chosen, "row {i}: the choice stands");
+                empty_rows += 1;
+            }
+        }
+        assert!(empty_rows > 30, "{empty_rows}");
     }
 
     #[test]

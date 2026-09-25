@@ -376,6 +376,16 @@ impl CorrChange {
         }
         let (sx, sy) = (sx2.sqrt(), sy2.sqrt());
         let rho = sxy / (sx * sy);
+        // A pair within rounding of `|ρ̂| = 1` has no long-run standard
+        // deviation to divide by: the delta method's variance is
+        // `(1 − ρ²)²·(…)`, 0 on a collinear pair, and this `D̂` reaches that
+        // 0 where the raw-moment form's own noise stood in for it, so the
+        // numerator's rounding divided by it flagged every span of `y = 2x +
+        // 3` (review 2026-09-25). NaN is no verdict, as for a constant
+        // column.
+        if 1.0 - rho * rho <= 64.0 * f64::EPSILON {
+            return f64::NAN;
+        }
         // `ξ`, whose span mean is 0 to rounding by construction: `E[x̃ỹ] =
         // ρ̂` and `E[x̃²] = E[ỹ²] = 1` over the same rows, so there is
         // nothing to centre.
@@ -390,11 +400,8 @@ impl CorrChange {
         // Its Bartlett long-run variance: the lag-0 term once, each other
         // lag's autocovariance twice.
         let mut v = 0.0;
-        for lag in 0..t.min(gamma + 1) {
+        for lag in 0..t.min(gamma.saturating_add(1)) {
             let w = bartlett(lag as f64 / (gamma as f64 + 1.0));
-            if w == 0.0 {
-                continue;
-            }
             let mut acf = 0.0;
             for s in lag..t {
                 acf += xi[s] * xi[s - lag];
@@ -423,11 +430,8 @@ impl CorrChange {
             .bandwidth
             .unwrap_or_else(|| ((tf).ln().floor() as usize).max(1));
         let mut var = 0.0;
-        for lag in 0..t.min(gamma + 1) {
+        for lag in 0..t.min(gamma.saturating_add(1)) {
             let w = bartlett(lag as f64 / (gamma as f64 + 1.0));
-            if w == 0.0 {
-                continue;
-            }
             for s in lag..t {
                 let term = w * v[s] * v[s - lag] / tf;
                 var += term;
@@ -493,7 +497,7 @@ impl CorrChange {
             if v.is_nan() || v <= 0.0 {
                 return f64::NAN;
             }
-            let r = (xi - self.diag.mean(i)) / v.sqrt();
+            let r = self.diag.deviation(i, *xi) / v.sqrt();
             s1 += r;
             s2 += r * r;
         }
@@ -901,17 +905,58 @@ mod tests {
     /// `D̂` does not depend on the level the columns sit at: `ρ̂` is
     /// shift-invariant and so is the delta-method variance of it (the
     /// shifted moments are an affine image of the raw ones, and the
-    /// Jacobians cancel). The deviations are multiples of 2⁻²⁰, so adding
-    /// a level up to 1e8 (whose step is 2⁻²⁶) is exact and every level sees
-    /// the same rows. Formed from `E[x²] − E[x]²` this failed at every
-    /// level (docs/PLAN.md task 103). The span is 79 rows, a prime, so that
-    /// neither mean's division lands on the level's grid by chance (one in
-    /// five did at 80, and the x side's second pass went untested), and
-    /// the pair is taken both ways round, so each column is `x` once.
+    /// Jacobians cancel). The deviations are put on a grid so that adding a
+    /// level is exact and every level sees the same rows: 2⁻²⁰ is exact
+    /// below 2³³ (8.6e9), 2⁻¹² below 2⁴¹. Formed from `E[x²] − E[x]²` this
+    /// failed at every level (docs/PLAN.md task 103); computed on the span
+    /// centred at a compensated mean it is the same double at every level,
+    /// held here to 1e-14. The span is 79 rows, a prime, so that neither
+    /// mean's division lands on the level's grid by chance (one in five did
+    /// at 80, and the x side's second pass went untested), and the pair is
+    /// taken both ways round, so each column is `x` once.
     #[test]
     fn the_long_run_sd_is_free_of_the_columns_level() {
         let t = 79usize;
         let mut n = Normals::new(17);
+        let raw: Vec<Vec<f64>> = (0..t).map(|_| n.pair(0.4)).collect();
+        let gamma = ((t as f64).ln().floor() as usize).max(1);
+        let mut off = Vec::new();
+        for (level, bits) in [(1e3, 20), (1e5, 20), (1e8, 20), (4e9, 20), (1e12, 12)] {
+            let grid = (1u64 << bits) as f64;
+            let rows: Vec<Vec<f64>> = raw
+                .iter()
+                .map(|r| r.iter().map(|v| (v * grid).round() / grid).collect())
+                .collect();
+            let base = CorrChange::long_run_sd(&rows, 0, 1, gamma);
+            assert!(base.is_finite() && base > 0.0, "{base}");
+            let shifted: Vec<Vec<f64>> = rows
+                .iter()
+                .map(|r| vec![level + r[0], level + r[1]])
+                .collect();
+            for (s, r) in shifted.iter().zip(&rows) {
+                assert_eq!(s[0] - level, r[0], "the shift is exact at {level:e}");
+                assert_eq!(s[1] - level, r[1], "the shift is exact at {level:e}");
+            }
+            for (a, b) in [(0, 1), (1, 0)] {
+                let got = CorrChange::long_run_sd(&shifted, a, b, gamma);
+                let off_by = (got - base).abs();
+                if off_by.is_nan() || off_by > 1e-14 * base {
+                    off.push(format!(
+                        "at {level:e}, pair ({a}, {b}): {got} against {base} ({:e} of it)",
+                        off_by / base
+                    ));
+                }
+            }
+        }
+        assert!(off.is_empty(), "{}", off.join("; "));
+    }
+
+    /// The statistic itself at a level: `Q` reads `corr_of` too, whose
+    /// one-pass mean is second order in the level's rounding.
+    #[test]
+    fn the_statistic_is_free_of_the_columns_level() {
+        let t = 60usize;
+        let mut n = Normals::new(11);
         let grid = (1u64 << 20) as f64;
         let rows: Vec<Vec<f64>> = (0..t)
             .map(|_| {
@@ -921,53 +966,217 @@ mod tests {
                     .collect()
             })
             .collect();
-        let gamma = ((t as f64).ln().floor() as usize).max(1);
-        let base = CorrChange::long_run_sd(&rows, 0, 1, gamma);
-        assert!(base.is_finite() && base > 0.0, "{base}");
-        let mut off = Vec::new();
-        for level in [1e3, 1e5, 1e8] {
-            let shifted: Vec<Vec<f64>> = rows
-                .iter()
-                .map(|r| vec![level + r[0], level + r[1]])
-                .collect();
-            for (s, r) in shifted.iter().zip(&rows) {
-                assert_eq!(s[0] - level, r[0], "the shift is exact");
-                assert_eq!(s[1] - level, r[1], "the shift is exact");
-            }
-            for (a, b) in [(0, 1), (1, 0)] {
-                let got = CorrChange::long_run_sd(&shifted, a, b, gamma);
-                let off_by = (got - base).abs();
-                if off_by.is_nan() || off_by > 1e-12 * base {
-                    off.push(format!(
-                        "at {level:e}, pair ({a}, {b}): {got} against {base} ({:e} of it)",
-                        (got - base).abs() / base
-                    ));
-                }
-            }
-        }
-        assert!(off.is_empty(), "{}", off.join("; "));
-    }
-
-    /// A column without spread has no correlation to test: `D̂` is NaN, and
-    /// so is the statistic, which the bank reads as "no verdict".
-    #[test]
-    fn a_constant_column_has_no_long_run_sd() {
-        let t = 40usize;
-        let mut n = Normals::new(5);
-        let mut rows: Vec<Vec<f64>> = (0..t).map(|_| n.pair(0.3)).collect();
-        let gamma = ((t as f64).ln().floor() as usize).max(1);
-        assert!(CorrChange::long_run_sd(&rows, 0, 1, gamma).is_finite());
-        for r in &mut rows {
-            r[0] = 2.5;
-        }
-        assert!(CorrChange::long_run_sd(&rows, 0, 1, gamma).is_nan());
-        assert!(CorrChange::long_run_sd(&rows, 1, 0, gamma).is_nan());
         let m = CorrChange::new(CorrChangeCfg {
             span_rows: t,
             ..cfg(2, CorrChangeKind::Monitor)
         })
         .unwrap();
-        assert!(m.monitor_stat(&rows, 0, 1).is_nan());
+        let base = m.monitor_stat(&rows, 0, 1);
+        assert!(base.is_finite() && base > 0.0, "{base}");
+        for level in [1e5, 1e8] {
+            let shifted: Vec<Vec<f64>> = rows
+                .iter()
+                .map(|r| vec![level + r[0], level + r[1]])
+                .collect();
+            let got = m.monitor_stat(&shifted, 0, 1);
+            assert!(
+                (got - base).abs() <= 1e-10 * base,
+                "at {level:e}: {got} against {base}"
+            );
+        }
+    }
+
+    /// Too few rows for a long-run variance: three give none, four give one.
+    #[test]
+    fn a_span_of_four_rows_is_the_first_with_a_long_run_sd() {
+        let mut n = Normals::new(5);
+        let rows: Vec<Vec<f64>> = (0..4).map(|_| n.pair(0.3)).collect();
+        assert!(CorrChange::long_run_sd(&rows[..3], 0, 1, 1).is_nan());
+        let four = CorrChange::long_run_sd(&rows, 0, 1, 1);
+        assert!(four.is_finite() && four > 0.0, "{four}");
+    }
+
+    /// `bandwidth` overrides `⌊ln T⌋`: the statistic is the one `long_run_sd`
+    /// gives at that bandwidth, and two bandwidths give two statistics.
+    #[test]
+    fn the_bandwidth_override_reaches_the_kernel() {
+        let t = 60usize;
+        let mut n = Normals::new(11);
+        let rows: Vec<Vec<f64>> = (0..t).map(|_| n.pair(0.4)).collect();
+        let stat_at = |bandwidth: usize| {
+            let m = CorrChange::new(CorrChangeCfg {
+                span_rows: t,
+                bandwidth: Some(bandwidth),
+                ..cfg(2, CorrChangeKind::Monitor)
+            })
+            .unwrap();
+            m.monitor_stat(&rows, 0, 1)
+        };
+        let longhand = |gamma: usize| {
+            let sd = CorrChange::long_run_sd(&rows, 0, 1, gamma);
+            let rho_t = CorrChange::corr_of(&rows, t, 0, 1);
+            (2..=t)
+                .map(|j| {
+                    (j as f64 / (t as f64).sqrt())
+                        * (CorrChange::corr_of(&rows, j, 0, 1) - rho_t).abs()
+                        / sd
+                })
+                .fold(0.0f64, f64::max)
+        };
+        assert_eq!(stat_at(1), longhand(1));
+        assert_eq!(stat_at(20), longhand(20));
+        assert_ne!(stat_at(1), stat_at(20));
+        // A bandwidth past the span weights every lag at nearly 1, which is
+        // the kernel's answer, not an overflow (`gamma.saturating_add(1)`).
+        assert_eq!(stat_at(usize::MAX), longhand(usize::MAX));
+    }
+
+    /// A pair within rounding of `|ρ̂| = 1` has no verdict: the delta
+    /// method's variance is 0 on a collinear pair, and this `D̂` reaches it,
+    /// where dividing the numerator's rounding by it flagged every span of a
+    /// derived column (review 2026-09-25). A pair off collinear by 1e-6 of
+    /// the spread still has its verdict.
+    #[test]
+    fn a_collinear_pair_has_no_verdict() {
+        let t = 79usize;
+        let mut n = Normals::new(23);
+        let x: Vec<f64> = (0..t).map(|_| n.pair(0.0)[0]).collect();
+        let m = CorrChange::new(CorrChangeCfg {
+            span_rows: t,
+            ..cfg(2, CorrChangeKind::Monitor)
+        })
+        .unwrap();
+        let gamma = ((t as f64).ln().floor() as usize).max(1);
+        for (slope, offset) in [
+            (2.0, 3.0),
+            (1.8, 32.0),
+            (-2.5, 1e3),
+            (1.0, 0.0),
+            (-1.0, 0.0),
+        ] {
+            let rows: Vec<Vec<f64>> = x.iter().map(|&v| vec![v, slope * v + offset]).collect();
+            for (a, b) in [(0, 1), (1, 0)] {
+                assert!(
+                    CorrChange::long_run_sd(&rows, a, b, gamma).is_nan(),
+                    "y = {slope}x + {offset}, pair ({a}, {b})"
+                );
+            }
+            assert!(
+                m.monitor_stat(&rows, 0, 1).is_nan(),
+                "y = {slope}x + {offset}"
+            );
+        }
+        let mut z = Normals::new(29);
+        let rows: Vec<Vec<f64>> = x
+            .iter()
+            .map(|&v| vec![v, v + 1e-6 * z.pair(0.0)[0]])
+            .collect();
+        let q = m.monitor_stat(&rows, 0, 1);
+        assert!(
+            q.is_finite() && q < 3.0,
+            "a verdict off collinear by 1e-6: {q}"
+        );
+    }
+
+    /// A column without spread has no correlation to test: `D̂` is NaN, and
+    /// so is the statistic, which the bank reads as "no verdict". The
+    /// constant is held at values whose mean the first pass rounds (1/3, a
+    /// level of 1e8), where the raw-moment form gave a finite `D̂` from the
+    /// rounding alone; centred at the compensated mean every deviation is
+    /// exactly 0.
+    #[test]
+    fn a_constant_column_has_no_long_run_sd() {
+        let t = 40usize;
+        let mut n = Normals::new(5);
+        let rows: Vec<Vec<f64>> = (0..t).map(|_| n.pair(0.3)).collect();
+        let gamma = ((t as f64).ln().floor() as usize).max(1);
+        assert!(CorrChange::long_run_sd(&rows, 0, 1, gamma).is_finite());
+        for c in [2.5, 1.0 / 3.0, 1e8 + 0.1] {
+            let mut held = rows.clone();
+            for r in &mut held {
+                r[0] = c;
+            }
+            assert!(CorrChange::long_run_sd(&held, 0, 1, gamma).is_nan(), "{c}");
+            assert!(CorrChange::long_run_sd(&held, 1, 0, gamma).is_nan(), "{c}");
+            let m = CorrChange::new(CorrChangeCfg {
+                span_rows: t,
+                ..cfg(2, CorrChangeKind::Monitor)
+            })
+            .unwrap();
+            assert!(m.monitor_stat(&held, 0, 1).is_nan(), "{c}");
+        }
+    }
+
+    /// `scalar = true`'s statistic against its definition written out: the
+    /// Bartlett long-run variance of the one column, the lag-0 term once and
+    /// every other lag twice at weight `1 − l/(γ+1)`, then the CUSUM of its
+    /// running mean; at a bandwidth given and at the default `⌊ln T⌋`.
+    #[test]
+    fn the_scalar_statistic_is_its_definition() {
+        let t = 60usize;
+        let mut n = Normals::new(13);
+        let rows: Vec<Vec<f64>> = (0..t).map(|_| n.pair(0.0)).collect();
+        for bandwidth in [Some(3), None] {
+            let m = CorrChange::new(CorrChangeCfg {
+                span_rows: t,
+                scalar: true,
+                bandwidth,
+                ..cfg(2, CorrChangeKind::Monitor)
+            })
+            .unwrap();
+            let gamma = bandwidth.unwrap_or(((t as f64).ln().floor() as usize).max(1));
+            let tf = t as f64;
+            let u: Vec<f64> = rows.iter().map(|r| r[0]).collect();
+            let mean = u.iter().sum::<f64>() / tf;
+            let v: Vec<f64> = u.iter().map(|x| x - mean).collect();
+            let mut var = 0.0;
+            for lag in 0..=gamma.min(t - 1) {
+                let w = 1.0 - lag as f64 / (gamma as f64 + 1.0);
+                let mut acf = 0.0;
+                for s in lag..t {
+                    acf += w * v[s] * v[s - lag] / tf;
+                }
+                var += if lag == 0 { acf } else { 2.0 * acf };
+            }
+            let sd = var.sqrt();
+            let mut want = 0.0f64;
+            for j in 1..=t {
+                let mean_j = u[..j].iter().sum::<f64>() / j as f64;
+                want = want.max((j as f64 / tf.sqrt()) * (mean_j - mean).abs() / sd);
+            }
+            let got = m.scalar_stat(&rows);
+            assert!(
+                (got - want).abs() <= 1e-12 * (1.0 + want),
+                "bandwidth {bandwidth:?}: {got} against {want}"
+            );
+        }
+    }
+
+    /// `scalarise` against its definition: each feature standardized by the
+    /// diag's pair and standard deviation, then the equicorrelation
+    /// `(s1² − s2) / ((n − 1) s2)` of the standardized row.
+    #[test]
+    fn the_scalar_row_is_its_definition() {
+        let mut m = CorrChange::new(CorrChangeCfg {
+            span_rows: 20,
+            scalar: true,
+            ..cfg(3, CorrChangeKind::Monitor)
+        })
+        .unwrap();
+        let mut n = Normals::new(7);
+        for _ in 0..30 {
+            let (a, b) = (n.pair(0.5)[0], n.pair(0.5)[1]);
+            crate::OnlineModel::step(&mut m, &[a, b, a - b], &[], 1.0, 1.0);
+        }
+        let x = [0.4, -1.1, 0.7];
+        let (mut s1, mut s2) = (0.0, 0.0);
+        for (i, &xi) in x.iter().enumerate() {
+            let r = m.diag.deviation(i, xi) / m.diag.var(i).sqrt();
+            s1 += r;
+            s2 += r * r;
+        }
+        let want = (s1 * s1 - s2) / (2.0 * s2);
+        assert_eq!(m.scalarise(&x), want);
     }
 
     /// `D̂` and `Q` against the same arithmetic written out.

@@ -1,117 +1,99 @@
-//! Which slots have held one value, and over how much weight (docs/PLAN.md
-//! task 94).
+//! Which slots have held one value, and since which of their learned rows
+//! (docs/PLAN.md task 94; by row since the review of 2026-09-25).
 //!
 //! A window reads a slot's spread by subtraction ([`crate::truncated`]),
 //! and a slot that held one value over every row inside the window has no
 //! spread there, which a subtraction cannot say: it leaves a remainder that
 //! grows with the level and with the rows since the window's edge. A run
 //! can. Per slot it keeps the value the slot's learned rows have carried
-//! since it last changed, and the weight of those rows, decayed as the
-//! accumulator's own weight is; when that weight is all of the window's,
-//! the spread is exactly zero. A row of weight 0 learns nothing, so it ends
-//! no run: it only ages them.
+//! since it last changed, and the index, among those rows, of the one that
+//! started the run; the slot is held over the window when the run started
+//! at or before the first learned row inside it. The rule used to compare
+//! the run's decayed weight with the window's: two numbers equal in exact
+//! arithmetic, which drift apart by about the rows in the window times a
+//! rounding step, past the tolerance under a long window and a long
+//! halflife (fifty thousand rows of each at a halflife of a million), where
+//! the held feature then read as moving. Row indices do not drift. A row of
+//! weight 0 learns nothing, so it neither starts nor ends a run, and the
+//! caller does not offer it; nor does the caller offer a row whose weight is
+//! nothing next to the accumulator's (`crate::window::EMPTY_FRACTION` of
+//! it), the window's own notion of nothing.
 
 use serde::{Deserialize, Serialize};
 
 /// Per slot, the value its learned rows have carried since it last changed,
-/// and the weight of those rows (the module docs). Empty in a state written
-/// before the runs, which knew nothing of them: the next learned row starts
-/// every one.
+/// and the learned-row index that started the run, `u64::MAX` before its
+/// first learned row (the module docs). Empty in a state written before the
+/// runs, which knew nothing of them: the next learned row starts every one.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Runs {
     #[serde(default)]
     x: Vec<f64>,
     #[serde(default)]
-    w: Vec<f64>,
+    start: Vec<u64>,
 }
 
 impl Runs {
     pub fn new(k: usize) -> Self {
         Self {
             x: vec![0.0; k],
-            w: vec![0.0; k],
+            start: vec![u64::MAX; k],
         }
     }
 
     /// Both halves of every one of `k` runs are here: not a state written
     /// before them, nor one that lost a half.
     pub fn is_known(&self, k: usize) -> bool {
-        self.x.len() == k && self.w.len() == k
+        self.x.len() == k && self.start.len() == k
     }
 
-    /// A row carrying every slot, at weight `w` after a decay of `lam`: a
-    /// value the run holds extends it, `W' = lam·W + w`; another value starts
-    /// a run at the row's own weight; a row of weight 0 changes no value and
-    /// ages every run. Runs that are not known start here.
-    pub fn track(&mut self, x: &[f64], lam: f64, w: f64) {
+    /// A learned row carrying every slot, the `row`-th learned row, counted
+    /// from 1 by the caller: a value the run holds extends it; another
+    /// value, or a slot's first learned row, starts a run at this row. Runs
+    /// that are not known start here.
+    pub fn track(&mut self, x: &[f64], row: u64) {
         if !self.is_known(x.len()) {
-            self.x = x.to_vec();
-            self.w = vec![w; x.len()];
-            return;
+            *self = Self::new(x.len());
         }
-        if w > 0.0 {
-            for ((rx, rw), &xi) in self.x.iter_mut().zip(self.w.iter_mut()).zip(x) {
-                if *rx == xi {
-                    *rw = lam * *rw + w;
-                } else {
-                    (*rx, *rw) = (xi, w);
-                }
+        for ((rx, rs), &xi) in self.x.iter_mut().zip(self.start.iter_mut()).zip(x) {
+            if *rs == u64::MAX || *rx != xi {
+                (*rx, *rs) = (xi, row);
             }
-        } else {
-            self.age(lam);
         }
     }
 
-    /// [`Self::track`] for slot `i` of `k` alone: a stream whose slots are
-    /// present on rows of their own, as each target of a regression is.
-    pub fn track_one(&mut self, k: usize, i: usize, x: f64, lam: f64, w: f64) {
+    /// [`Self::track`] for slot `i` of `k` alone, at that slot's own count
+    /// of learned rows: a stream whose slots are present on rows of their
+    /// own, as each target of a regression is.
+    pub fn track_one(&mut self, k: usize, i: usize, x: f64, row: u64) {
         if !self.is_known(k) {
             *self = Self::new(k);
         }
-        if w > 0.0 {
-            if self.x[i] == x {
-                self.w[i] = lam * self.w[i] + w;
-            } else {
-                (self.x[i], self.w[i]) = (x, w);
-            }
-        } else {
-            self.w[i] *= lam;
+        if self.start[i] == u64::MAX || self.x[i] != x {
+            (self.x[i], self.start[i]) = (x, row);
         }
     }
 
-    /// Every run ages by `lam`, as the accumulator's weight does over a row
-    /// it does not learn.
-    pub fn age(&mut self, lam: f64) {
-        for rw in &mut self.w {
-            *rw *= lam;
-        }
-    }
-
-    /// Slot `i`'s run ages by `lam`: a row that does not carry the slot.
-    pub fn age_one(&mut self, i: usize, lam: f64) {
-        if let Some(rw) = self.w.get_mut(i) {
-            *rw *= lam;
-        }
-    }
-
-    /// No run covers any weight any more, and each starts again from its
-    /// next learned row: for moments that now stand for rows the runs never
-    /// saw (a blend with the slow twin, say). It can leave a window reading
-    /// a held slot from its subtraction, never the reverse.
+    /// No run stands any more, and each starts again from its next learned
+    /// row: for moments that now stand for rows the runs never saw (a blend
+    /// with the slow twin, say). It can leave a window reading a held slot
+    /// from its subtraction, never the reverse.
     pub fn forget(&mut self) {
-        self.w.iter_mut().for_each(|w| *w = 0.0);
+        self.x.clear();
+        self.start.clear();
     }
 
-    /// The value slot `i` of `k` has held on learned rows carrying at least
-    /// `weight`, the newest first; `None` where it moved inside that weight,
-    /// or where the runs are not known.
-    pub fn held_over(&self, k: usize, i: usize, weight: f64) -> Option<f64> {
-        (self.is_known(k) && self.w[i] >= weight).then(|| self.x[i])
+    /// The value slot `i` of `k` has held on every learned row from the
+    /// `row`-th on: `Some` when its run started at or before that row,
+    /// `None` where it moved since, has no learned row yet, or the runs are
+    /// not known.
+    pub fn started_by(&self, k: usize, i: usize, row: u64) -> Option<f64> {
+        (self.is_known(k) && self.start[i] != u64::MAX && self.start[i] <= row).then(|| self.x[i])
     }
 
-    /// Slot `i`'s value and run weight, where the runs are known.
-    pub fn get(&self, i: usize) -> Option<(f64, f64)> {
-        Some((*self.x.get(i)?, *self.w.get(i)?))
+    /// Slot `i`'s value and start row, where the runs are known.
+    pub fn get(&self, i: usize) -> Option<(f64, u64)> {
+        Some((*self.x.get(i)?, *self.start.get(i)?))
     }
 }
 
@@ -119,58 +101,75 @@ impl Runs {
 mod tests {
     use super::*;
 
-    /// Runs extend on a repeated value at weight, restart on another value,
-    /// and only age on a row of weight 0, whatever it carries.
+    /// Runs extend on a repeated value and restart on another, at the row
+    /// that changed it; a forgotten run starts again at the next learned
+    /// row whatever its value.
     #[test]
-    fn runs_follow_the_values_and_their_weights() {
+    fn runs_follow_the_values_and_their_start_rows() {
         let mut r = Runs::new(2);
-        r.track(&[1.0, 5.0], 0.5, 2.0);
-        assert_eq!(r.get(0), Some((1.0, 2.0)));
-        r.track(&[1.0, 6.0], 0.5, 1.0);
-        assert_eq!(r.get(0), Some((1.0, 2.0)), "0.5 * 2 + 1");
-        assert_eq!(r.get(1), Some((6.0, 1.0)), "another value starts a run");
-        r.track(&[9.0, 9.0], 0.5, 0.0);
-        assert_eq!(r.get(0), Some((1.0, 1.0)), "a row of no weight only ages");
-        assert_eq!(r.get(1), Some((6.0, 0.5)));
-        r.age(0.5);
-        r.age_one(1, 0.5);
-        assert_eq!(r.get(1), Some((6.0, 0.125)));
-        r.track_one(2, 1, 6.0, 1.0, 1.0);
-        assert_eq!(r.get(1), Some((6.0, 1.125)));
-        r.track_one(2, 1, 7.0, 1.0, 1.0);
-        assert_eq!(r.get(1), Some((7.0, 1.0)));
-        r.track_one(2, 0, 3.0, 0.5, 0.0);
-        assert_eq!(r.get(0), Some((1.0, 0.25)), "weight 0 on one slot: it ages");
-        assert_eq!(r.held_over(2, 0, 0.25), Some(1.0));
-        assert_eq!(r.held_over(2, 0, 0.3), None);
-        r.forget();
-        assert!(r.held_over(2, 0, 1e-300).is_none() && r.held_over(2, 1, 1e-300).is_none());
         assert_eq!(
-            r.held_over(2, 1, 0.0),
-            Some(7.0),
-            "a forgotten run covers nothing more"
+            r.get(0),
+            Some((0.0, u64::MAX)),
+            "no run before a learned row"
+        );
+        r.track(&[1.0, 5.0], 1);
+        assert_eq!((r.get(0), r.get(1)), (Some((1.0, 1)), Some((5.0, 1))));
+        r.track(&[1.0, 6.0], 2);
+        assert_eq!(r.get(0), Some((1.0, 1)), "the same value extends the run");
+        assert_eq!(r.get(1), Some((6.0, 2)), "another value starts one");
+        assert_eq!(r.started_by(2, 0, 1), Some(1.0));
+        assert_eq!(
+            r.started_by(2, 1, 1),
+            None,
+            "started after the row asked about"
+        );
+        assert_eq!(r.started_by(2, 1, 2), Some(6.0));
+        r.track_one(2, 1, 6.0, 3);
+        assert_eq!(r.get(1), Some((6.0, 2)));
+        r.track_one(2, 1, 7.0, 4);
+        assert_eq!(r.get(1), Some((7.0, 4)));
+        r.forget();
+        assert!(!r.is_known(2));
+        assert_eq!(
+            r.started_by(2, 0, u64::MAX),
+            None,
+            "forgotten runs cover nothing"
+        );
+        r.track(&[1.0, 7.0], 5);
+        assert_eq!(
+            (r.get(0), r.get(1)),
+            (Some((1.0, 5)), Some((7.0, 5))),
+            "started again, the values the same or not"
         );
     }
 
     /// Runs that are not known -- a state written before them, or one that
-    /// lost a half -- start at the next row, as a run of that row alone.
+    /// lost a half -- start at the next learned row, and a slot no learned
+    /// row has carried yet starts on its first, whatever the value.
     #[test]
     fn unknown_runs_start_at_the_next_row() {
         for mut r in [
             Runs::default(),
             Runs {
                 x: vec![1.0],
-                w: vec![],
+                start: vec![],
             },
         ] {
-            assert!(!r.is_known(2) && r.held_over(2, 0, 0.0).is_none());
-            r.track(&[1.0, 2.0], 0.9, 0.75);
-            assert_eq!((r.get(0), r.get(1)), (Some((1.0, 0.75)), Some((2.0, 0.75))));
+            assert!(!r.is_known(2) && r.started_by(2, 0, u64::MAX).is_none());
+            r.track(&[1.0, 2.0], 9);
+            assert_eq!((r.get(0), r.get(1)), (Some((1.0, 9)), Some((2.0, 9))));
         }
         let mut r = Runs::default();
-        r.track_one(3, 2, 4.0, 0.9, 1.5);
+        r.track_one(3, 2, 4.0, 1);
         assert!(r.is_known(3));
-        assert_eq!(r.get(2), Some((4.0, 1.5)));
-        assert_eq!(r.get(0), Some((0.0, 0.0)));
+        assert_eq!(r.get(2), Some((4.0, 1)));
+        assert_eq!(r.get(0), Some((0.0, u64::MAX)));
+        assert_eq!(r.started_by(3, 0, u64::MAX), None, "no learned row yet");
+        r.track_one(3, 0, 0.0, 1);
+        assert_eq!(
+            r.get(0),
+            Some((0.0, 1)),
+            "its first row starts its run, whatever the value"
+        );
     }
 }

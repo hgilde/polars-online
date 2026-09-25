@@ -494,7 +494,9 @@ def lasso_ref(
 def _kalman_scales(st: dict, kt: int, off: int, standardize: bool) -> np.ndarray:
     """``kalman_ref``'s feature scales from its EW stats ``st`` as they stand:
     all ones with ``standardize`` off, and 1 for the intercept slot and for a
-    feature whose variance is nearly zero."""
+    feature whose variance is not positive -- the core's ``variance_is_usable``
+    is exactly that since T-E9, not a fraction of the raw moment (review
+    2026-09-25)."""
     scales = np.ones(kt)
     if not standardize:
         return scales
@@ -510,8 +512,7 @@ def _kalman_scales(st: dict, kt: int, off: int, standardize: bool) -> np.ndarray
         return scales
     for j in range(off, kt):
         var = st["raw"][j, j] - st["mean"][j] ** 2
-        raw = max(abs(st["raw"][j, j]), 1e-300)
-        scales[j] = np.sqrt(var) if var > 1e-10 * raw else 1.0
+        scales[j] = np.sqrt(var) if var > 0.0 and np.isfinite(var) else 1.0
     return scales
 
 

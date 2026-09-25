@@ -149,6 +149,7 @@ fn a_snapshot_without_a_kish_sum_round_trips_compactly() {
         q: None,
         m: vec![1.0, -2.0],
         c: vec![4.0, 0.5, 0.5, 9.0],
+        rows: Some(7),
     };
     roundtrip(&snap, "Moments without q");
 }

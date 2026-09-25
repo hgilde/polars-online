@@ -220,6 +220,11 @@ impl MarginalLags {
             let back = depth - lag;
             let x_lag = &self.ring_x[back];
             let y_lag = self.ring_y[back][t];
+            debug_assert_eq!(
+                mx.len(),
+                mx_lo.len(),
+                "the means' low parts are sized first"
+            );
             for (j, ((&xj, &mxj), &lo)) in x.iter().zip(mx).zip(mx_lo).enumerate() {
                 let i = row + j;
                 let dx_now = dev(xj, mxj, lo);

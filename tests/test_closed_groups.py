@@ -739,6 +739,7 @@ def test_the_cli_writes_the_sidecar(tmp_path, online_cli):
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     assert r.returncode == 0, r.stderr

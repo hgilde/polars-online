@@ -81,7 +81,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::summary::{ClusterSummary, FeatureMoments, dist2, merged_radius2};
+use super::summary::{ClusterSummary, FeatureMoments, LONG_HALFLIVES, dist2, merged_radius2};
 use crate::clock::Decay;
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
 
@@ -105,6 +105,14 @@ pub struct MicroCfg {
     pub macro_link: Option<f64>,
     /// Measure distances in units of each feature's EW standard deviation.
     pub standardize: bool,
+    /// Floor the metric's variance at this fraction of the feature's
+    /// long-run variance (`FeatureMoments`' reference), so that a feature
+    /// quiet for `Q` halflives comes to count `2^(Q/8) / scale_floor` times
+    /// what its history says, where `1 / var` alone gave `2^Q`; `0` is the
+    /// EW variance alone, and what a state written before the floor loads
+    /// with (docs/PLAN.md task 102).
+    #[serde(default)]
+    pub scale_floor: f64,
 }
 
 impl MicroCfg {
@@ -131,6 +139,9 @@ impl MicroCfg {
             if !l.is_finite() || l < 0.0 {
                 return Err("micro: macro_link must be finite and >= 0".into());
             }
+        }
+        if !self.scale_floor.is_finite() || self.scale_floor < 0.0 {
+            return Err("micro: scale_floor must be finite and >= 0".into());
         }
         Ok(())
     }
@@ -573,7 +584,8 @@ impl OnlineModel for Micro {
         let learn = weight > 0.0 && weight.is_finite() && valid;
 
         // The clock passes for everything the model holds.
-        self.moments.decay(lam);
+        self.moments
+            .decay(lam, self.cfg.decay.factor(d_clock / LONG_HALFLIVES));
         for m in &mut self.mc {
             m.s.decay(lam);
             m.age += d_clock;
@@ -587,7 +599,8 @@ impl OnlineModel for Micro {
             self.moments.absorb(x, weight);
             self.learn_row(x, weight, &dec);
         }
-        self.moments.metric(self.cfg.standardize, &mut self.mw);
+        self.moments
+            .metric(self.cfg.standardize, self.cfg.scale_floor, &mut self.mw);
 
         Step {
             pred,
@@ -698,6 +711,7 @@ mod tests {
             prune_every: 50,
             macro_link: None,
             standardize: false,
+            scale_floor: 0.0,
         }
     }
 
@@ -1116,6 +1130,123 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A feature that moves and then holds, at a level of 1e8 (docs/PLAN.md
+    /// task 102): every output is what the same stream gives at a level of
+    /// 0, the distances to 1e-6. `kmeans` has the same test.
+    #[test]
+    fn a_stopped_feature_at_a_level_leaves_the_summaries_alone() {
+        let run = |level: f64| -> Vec<Vec<f64>> {
+            let mut m = Micro::new(MicroCfg {
+                n_features: 3,
+                decay: Decay::Halflife(20.0),
+                eps: 0.4,
+                standardize: true,
+                scale_floor: 0.1,
+                ..cfg()
+            })
+            .unwrap();
+            let mut g = crate::SplitMix64::new(11);
+            (0..1200)
+                .map(|i| {
+                    let c = if i % 2 == 0 { 0.0 } else { 10.0 };
+                    let (u, v) = (g.uniform() - 0.5, g.uniform() - 0.5);
+                    let third = if i < 300 {
+                        level + g.uniform()
+                    } else {
+                        level + 0.37
+                    };
+                    crate::OnlineModel::step(&mut m, &[c + u, c + v, third], &[], 1.0, 1.0).pred
+                })
+                .collect()
+        };
+        let (base, high) = (run(0.0), run(1e8));
+        assert!(
+            base.iter().skip(300).any(|p| !p[0].is_nan()),
+            "a summary is established"
+        );
+        for (i, (b, h)) in base.iter().zip(&high).enumerate() {
+            for j in [0, 2, 3, 4, 5] {
+                assert!(
+                    b[j] == h[j] || (b[j].is_nan() && h[j].is_nan()),
+                    "row {i}, slot {j}: {} at 1e8 against {} at 0",
+                    h[j],
+                    b[j]
+                );
+            }
+            if !b[1].is_nan() {
+                assert!(
+                    (b[1] - h[1]).abs() <= 1e-6 * (1.0 + b[1]),
+                    "row {i}: distance {} at 1e8 against {} at 0",
+                    h[1],
+                    b[1]
+                );
+            }
+        }
+    }
+
+    /// `scale_floor` is refused by name in the core too, negative and NaN.
+    #[test]
+    fn a_bad_scale_floor_is_refused_by_name() {
+        for bad in [-0.5, f64::NAN, f64::INFINITY] {
+            let err = Micro::new(MicroCfg {
+                scale_floor: bad,
+                ..cfg()
+            })
+            .expect_err("refused");
+            assert!(err.contains("scale_floor"), "{err}");
+        }
+    }
+
+    /// The reference decays at `LONG_HALFLIVES` times the halflife: over a
+    /// clock of 2 a row, the model's moments carry what a `FeatureMoments`
+    /// given `decay.factor(2 / 8)` carries, to the bit.
+    #[test]
+    fn the_reference_decays_at_eight_halflives() {
+        let decay = Decay::Halflife(20.0);
+        let mut m = Micro::new(MicroCfg { decay, ..cfg() }).unwrap();
+        let mut by_hand = FeatureMoments::new(2);
+        let mut g = crate::SplitMix64::new(5);
+        for i in 0..80 {
+            let x = [g.uniform(), 10.0 * g.uniform()];
+            let d_clock = if i == 0 { 0.0 } else { 2.0 };
+            crate::OnlineModel::step(&mut m, &x, &[], d_clock, 1.0);
+            by_hand.decay(
+                decay.factor(d_clock),
+                decay.factor(d_clock / LONG_HALFLIVES),
+            );
+            by_hand.absorb(&x, 1.0);
+        }
+        assert_eq!(m.moments().w_long, by_hand.w_long);
+        assert_eq!(m.moments().var_long, by_hand.var_long);
+        assert!(m.moments().w_long[0] > 5.0);
+    }
+
+    /// A state written before `scale_floor` loads, with the floor at 0: the
+    /// metric it had (review 2026-09-25, hard rule 5).
+    #[test]
+    fn a_state_without_scale_floor_loads_with_the_metric_it_had() {
+        let mut m = Micro::new(MicroCfg {
+            scale_floor: 0.1,
+            ..cfg()
+        })
+        .unwrap();
+        let mut g = crate::SplitMix64::new(2);
+        for _ in 0..20 {
+            crate::OnlineModel::step(&mut m, &[g.uniform(), g.uniform()], &[], 1.0, 1.0);
+        }
+        let mut old = serde_json::to_value(&m).unwrap();
+        assert!(
+            old["cfg"]
+                .as_object_mut()
+                .unwrap()
+                .remove("scale_floor")
+                .is_some()
+        );
+        let back: Micro = serde_json::from_value(old).unwrap();
+        assert_eq!(back.cfg.scale_floor, 0.0);
+        assert_eq!(back.moments(), m.moments());
     }
 
     #[test]

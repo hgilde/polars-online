@@ -793,6 +793,11 @@ pub enum ModelKind {
         /// deviation. Default true.
         #[serde(default)]
         standardize: Option<bool>,
+        /// Floor the metric's variance at this fraction of the feature's
+        /// long-run (undecayed) variance. Default 0.1; `0` is the EW
+        /// variance alone.
+        #[serde(default)]
+        scale_floor: Option<f64>,
     },
     /// DenStream-style micro-clusters with a linkage macro step
     /// (docs/CLUSTERING.md §6.5; PLAN §11a, task 24). No targets: the
@@ -826,6 +831,11 @@ pub enum ModelKind {
         /// deviation. Default true.
         #[serde(default)]
         standardize: Option<bool>,
+        /// Floor the metric's variance at this fraction of the feature's
+        /// long-run (undecayed) variance. Default 0.1; `0` is the EW
+        /// variance alone.
+        #[serde(default)]
+        scale_floor: Option<f64>,
     },
     /// Class-conditional Gaussian classifier on exponentially weighted
     /// class moments (docs/ENHANCEMENTS.md E39; PLAN §11a, task 27). The
@@ -2850,6 +2860,7 @@ impl Spec {
                 split_merge,
                 split_merge_every,
                 dead_frac,
+                scale_floor,
                 ..
             } => {
                 if *k == 0 {
@@ -2886,6 +2897,12 @@ impl Spec {
                         self.name
                     ));
                 }
+                if scale_floor.is_some_and(|v| v < 0.0 || !v.is_finite()) {
+                    return Err(format!(
+                        "spec {:?}: scale_floor must be finite and >= 0 (0 is the EW variance alone)",
+                        self.name
+                    ));
+                }
             }
             ModelKind::Micro {
                 eps,
@@ -2893,6 +2910,7 @@ impl Spec {
                 max_clusters,
                 prune_every,
                 macro_link,
+                scale_floor,
                 ..
             } => {
                 if !(eps.is_finite() && *eps > 0.0) {
@@ -2916,6 +2934,12 @@ impl Spec {
                 if macro_link.is_some_and(|v| v < 0.0 || !v.is_finite()) {
                     return Err(format!(
                         "spec {:?}: macro_link must be finite and >= 0 (0 links nothing)",
+                        self.name
+                    ));
+                }
+                if scale_floor.is_some_and(|v| v < 0.0 || !v.is_finite()) {
+                    return Err(format!(
+                        "spec {:?}: scale_floor must be finite and >= 0 (0 is the EW variance alone)",
                         self.name
                     ));
                 }

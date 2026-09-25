@@ -229,7 +229,8 @@ dependency to test a sentence. It is a test-only dependency now, in the dev
 group, as the user allowed for testing with other libraries. The package
 still depends on polars alone, and `tests/conftest.py` makes pyarrow
 unimportable everywhere but `tests/test_pyarrow_interop.py`, whose tests run
-it in child interpreters. The rest of the suite so runs as a user without
+it in child interpreters of their own; the child interpreters the other tests
+spawn get the same block through `tests/child.py`. The rest of the suite so runs as a user without
 pyarrow does. `tests/test_arrow_capsule.py` and `tests/test_pyarrow_interop.py`
 pin all of this.
 

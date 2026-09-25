@@ -33,6 +33,9 @@ step "cargo clippy" cargo clippy --workspace --all-targets -- -D warnings
 # online-py is left out: it has no Rust tests, and with it in the build every
 # test binary links libpython (.github/workflows/ci.yml says why that fails).
 step "cargo test"   cargo test --workspace --exclude online-py
+# Before the first `uv run`, which re-locks by default and would rewrite a
+# stale uv.lock before the check could see it.
+step "uv lock"      uv lock --check
 step "ruff format"  uv run ruff format --check .
 step "ruff check"   uv run ruff check .
 step "mypy"         uv run mypy

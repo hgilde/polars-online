@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import child
+
 REPO = Path(__file__).resolve().parent.parent
 DOC = REPO / "docs" / "OUTPUTS.md"
 SCRIPT = REPO / "scripts" / "outputs_doc.py"
@@ -20,7 +22,13 @@ SCRIPT = REPO / "scripts" / "outputs_doc.py"
 
 def test_the_document_is_what_the_generator_writes():
     got = subprocess.run(
-        [sys.executable, str(SCRIPT)], capture_output=True, text=True, check=True, cwd=REPO
+        [sys.executable, str(SCRIPT)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        cwd=REPO,
+        env=child.env(),
     ).stdout
     want = DOC.read_text(encoding="utf-8")
     if got != want:

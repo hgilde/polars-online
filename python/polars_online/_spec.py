@@ -2168,6 +2168,7 @@ def kmeans(
     split_merge_every: int | None = None,
     dead_frac: float | None = None,
     standardize: bool | None = None,
+    scale_floor: float | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Exponentially weighted k-means over the feature columns.
@@ -2231,6 +2232,19 @@ def kmeans(
         Measure distances in units of each feature's EW standard deviation,
         tracked alongside the centres; the coordinates themselves are never
         rescaled, so the centres stay in the features' units. Default ``True``.
+    ``scale_floor``
+        The metric's variance is floored at this fraction of the feature's
+        long-run variance. ``1 / var`` alone grows as ``2^Q`` over ``Q``
+        halflives of a feature going quiet -- a flag that stops firing, a
+        sensor at rest -- a million at twenty, and the row on which the
+        feature moves again is then infinitely far from every centre; floored,
+        the weight grows as ``2^(Q/8) / scale_floor``, 58 at twenty. The
+        long-run variance is tracked at eight times the halflife, a feature at
+        a time, with each row's weight and deviation clipped against it and
+        its start the medians of the feature's first five rows, so a row at
+        the input bound moves it by a factor of 26 at most, which a few of its
+        halflives undo. Default ``0.1``; ``0`` is the EW variance alone, and
+        what a state saved before the floor loads with.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``halflife``, ``max_dclock``, ``min_periods``, ``group`` and the
@@ -2287,6 +2301,7 @@ def kmeans(
         "split_merge_every": split_merge_every,
         "dead_frac": dead_frac,
         "standardize": standardize,
+        "scale_floor": scale_floor,
     }
     if "targets" in common:
         msg = (
@@ -2309,6 +2324,7 @@ def micro(
     prune_every: int | None = None,
     macro_link: float | None = None,
     standardize: bool | None = None,
+    scale_floor: float | None = None,
     **common: Unpack[CommonKwargs],
 ) -> dict[str, Any]:
     """Density-based clustering over the feature columns: DenStream-style
@@ -2379,6 +2395,19 @@ def micro(
     ``standardize``
         Measure in units of each feature's EW standard deviation. Default
         ``True``.
+    ``scale_floor``
+        The metric's variance is floored at this fraction of the feature's
+        long-run variance. ``1 / var`` alone grows as ``2^Q`` over ``Q``
+        halflives of a feature going quiet -- a flag that stops firing, a
+        sensor at rest -- a million at twenty, and the row on which the
+        feature moves again is then infinitely far from every centre; floored,
+        the weight grows as ``2^(Q/8) / scale_floor``, 58 at twenty. The
+        long-run variance is tracked at eight times the halflife, a feature at
+        a time, with each row's weight and deviation clipped against it and
+        its start the medians of the feature's first five rows, so a row at
+        the input bound moves it by a factor of 26 at most, which a few of its
+        halflives undo. Default ``0.1``; ``0`` is the EW variance alone, and
+        what a state saved before the floor loads with.
 
     The stream parameters every builder takes are in :mod:`polars_online.spec`:
     ``clock``, ``halflife``, ``max_dclock``, ``min_periods``, ``group`` and the
@@ -2442,6 +2471,7 @@ def micro(
         "prune_every": prune_every,
         "macro_link": macro_link,
         "standardize": standardize,
+        "scale_floor": scale_floor,
     }
     if "targets" in common:
         msg = (
@@ -3274,7 +3304,11 @@ def corrchange(
     the delta-method long-run standard deviation of ``rho``: the five raw moments
     ``(x², y², x, y, xy)`` centred at their span means, their Bartlett long-run
     covariance at bandwidth ``floor(ln T)``, mapped to ``(var_x, var_y, cov)`` and
-    then to ``rho``. Under the null ``Q`` converges to ``sup|B|``, a Brownian
+    then to ``rho`` -- computed on the span centred at its means and scaled by
+    its standard deviations, as the paper's ``xi`` series, so the columns'
+    level does not enter. A pair within rounding of ``|rho| = 1`` has no ``D``
+    and no verdict, as a constant column has none. Under the null ``Q``
+    converges to ``sup|B|``, a Brownian
     bridge, so the critical value is the Kolmogorov quantile -- computed from the
     series, not pinned, and it reproduces the published 1.3581 at 5%. Over the
     pairs the statistic is the maximum and the level is ``alpha / npairs``. The

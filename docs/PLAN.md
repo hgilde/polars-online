@@ -3679,6 +3679,29 @@ note, not a task.
       fails on 0.10.0. Under cargo-mutants, the changed lines of tasks
       94-97 give 99 mutants: 4 unviable and the rest caught. The last
       survivors needed tests with a second target and a third feature.
+      **Review 2026-09-25.** The run's weight against the window's, two
+      numbers equal in exact arithmetic, drifted apart under a long window
+      and a long halflife -- the window's `w_now − f·old.w` takes one `exp2`
+      over the window's clock where the run's weight is a product of per-row
+      factors -- by 1.6e-12 of the live weight at a halflife of 1e6 with
+      fifty thousand rows of history and a window of as many, past the
+      1e-12 the rule allowed, and the held feature read as moving again
+      (`a_long_window_under_a_long_halflife_still_reads_a_held_feature`
+      failed on the old rule). Runs now keep the learned-row index that
+      started each run, `EwCov` and `marginal` count learned rows, the
+      window's snapshot records the count, and a slot is held over the
+      window when its run started at or before the first learned row inside
+      it: row indices do not drift. A row whose weight is nothing next to
+      the accumulator's (`EMPTY_FRACTION` of it, the window's own notion of
+      nothing) is neither counted nor tracked, which keeps the boundary
+      cases of no account as they were. The runs' ageing went with the
+      weights. Also found: the zero reaches `ew_cov`'s and `ewclass`'s own
+      windows (a held feature reads variance 0 and a null correlation, where
+      it read noise; `ew_covs_window_reads_a_held_feature_as_no_spread`),
+      and an unstandardized solve with no ridge meets an exactly singular
+      Gram on a held feature, which the solver's jitter takes with the
+      feature's slope exactly 0
+      (`a_held_feature_under_a_window_leaves_an_unregularized_solve_finite`).
 - [x] 95. **The lasso's `lam_selected` under a `window` departs from its
       documentation** ("the selection error is truncated with the sums"):
       14 to 19 rows of ~277 at the default `select_halflife`, 88 to 90 at
@@ -3699,6 +3722,13 @@ note, not a task.
       choice from each row's reported predictions. The oracle file holds
       `lam_selected` under a window, with and without a halflife of its own,
       and that fails on 0.10.0 at eight rows.
+      **Review 2026-09-25.** A window with no scored row of a target fell
+      back on the whole-history errors and chose from them every row, which
+      the docstring said it would not; the choice now stands until the
+      window has a scored row again (`an_empty_selection_window_keeps_the_choice`).
+      A state saved by 0.10.0 mid-window carries selection snapshots in the
+      old meaning (after the fold, aged twice) and is off for one window
+      after resuming; pre-1.0 compatibility is waived.
 - [x] 96. **`lam_selected` under a `min_periods` list.** Each target's
       selection error folds its predictions on rows that its own threshold
       still withholds, which is review S2's "a gate on the output, not on
@@ -3866,7 +3896,21 @@ note, not a task.
       and three did not kill it until rewritten: a residue test whose unit
       weights made the block mean correctly rounded, and a variance read
       through `var`, whose `max(0)` takes a NaN for 0.
-- [ ] 102. **A stopped feature in the clusters' metric.** Found by task
+      **Review 2026-09-25.** The pair is the right fix and every site steps
+      and reads it; three deviations still read `hi` alone (`deco`'s and
+      `corrchange`'s standardized residuals, `ew_cov`'s PCA score) and now
+      read the pair; the window's subtraction `m_u − m` reads `hi` alone,
+      bounded at `ratio·g·ulp(level)/σ` of the windowed variance (2e-5 at
+      1e12 with unit spread over three halflives), and the held slot is the
+      runs' job, so it is left. Schema 16 changed twice before release
+      (`runs`, the `*_lo` fields) without a bump: pre-1.0 compatibility is
+      waived, a bank file from the intermediate build loads with its runs
+      restarted. Pinned since: `EwDiag`'s own skip on the fixture, a
+      windowed hold (the slope stands while the window has spread, then the
+      feature is dropped as one without spread), a hold that ends, a blocked
+      ridge at 1e12 with rows of no weight carrying another value. Left:
+      the classifiers and `no_weight` for `bocpd`, `deco`, `hmm`.
+- [x] 102. **A stopped feature in the clusters' metric.** Found by task
       101's sweep. `kmeans` and `micro` standardize distances by `1/var`
       from `FeatureMoments` (`cluster/summary.rs`), refreshed every row,
       with `standardize` on by default. A feature that moves and then holds
@@ -3895,25 +3939,95 @@ note, not a task.
       streams, so every number there is unchanged; on a feature quiet for
       twenty halflives (rows 8 000-14 000 at halflife 300) it binds on 3
       600-4 600 rows, and after the feature moves again `kmeans` split-merge
-      recovers to ARI 0.731 in place of 0.220 (purity 0.804 for 0.487),
-      `micro` to 0.797 (0.1) and 0.786 (0.01) for 0.786, plain `kmeans`
-      1.000 either way. At 1 the floor is a different metric, binding on
-      half the rows of every stream: 0.626 for 0.665 on the scaled stream's
-      first quarter and the same elsewhere. **A feature that stops for good
-      costs `kmeans` 0.24 ARI for a halflife after the stop at every floor**
+      recovers to ARI 0.731 in place of 0.220 (purity 0.804 for 0.487; 0.583
+      at a floor of 0.01), `micro` unchanged at 0.786, plain `kmeans` 1.000
+      either way. At 1 the floor is a different metric, binding on half the
+      rows of every stream: 0.626 for 0.665 on the scaled stream's first
+      quarter and the same elsewhere. **A feature that stops for good costs
+      `kmeans` 0.24 ARI for a halflife after the stop at every floor**
       (0.756 against 0.999 with the feature dropped): the stale spread keeps
       penalizing every centre the held value is far from, until the centres
       and the variance have followed it, which is the model's memory at
       work, the same lag as a level shift, and not something a metric floor
       reaches. **Design, from the measurement:** `scale_floor`, default 0.1,
       0 for the metric as it was, on `kmeans` and `micro`; `FeatureMoments`
-      keeps the undecayed Welford moments beside the EW ones (three more
-      doubles a feature) and its means become pairs under task 101's rule.
-      The centres stay plain: with the floor, a plain centre's gap costs
-      `g_c²/(scale_floor · var^∞)` in a distance, 1e-9 at a level of 1e8 and
-      0.04 at 1e12 with unit spread. `tests/reference_cluster.py`, the
-      bit-exact oracle, follows; the prototype, CLUSTERING.md §6.1 and §10
-      and the docs say why.
+      keeps a reference beside the EW moments, and its means become pairs
+      under task 101's rule. The centres stay plain: with the floor, a plain
+      centre's gap costs `g_c²/(scale_floor · var_long)` in a distance, 1e-9
+      at a level of 1e8 and 0.04 at 1e12 with unit spread. **The reference
+      is not the undecayed variance.** That was built first, and
+      `model_contract`'s recovery caught it: a row at the input bound put
+      1e200 into a reference that never forgets, and the metric was lost for
+      good, where the EW variance takes a thousand halflives to forget such
+      a row and the contract gives it fifteen hundred. No reference that
+      decays slowly enough to hold through a quiet spell forgets an extreme
+      in time, so the reference must never take one: it is the same Welford
+      variance at eight times the halflife, each row's weight clipped at the
+      reference's own (a row takes at most half of it) and its deviation at
+      ten standard deviations, started from the medians of the first five
+      learned rows, which up to two rows at the bound among them do not
+      move. A row at the bound then moves it by a factor of twenty-six at
+      most, which a few of its halflives undo. The cost of the slow
+      reference is that a hundredfold drop in a feature's variance (tenfold
+      in its spread) is under-weighted by up to tenfold for some
+      twenty-seven halflives, a hundredfold drop in spread by up to two
+      hundredfold for eighty; the cost of the clip is that a feature without
+      spread has no scale to clip against and takes its first move as it
+      comes. **Built 2026-09-25.** `scale_floor` on `kmeans` and `micro`
+      (default 0.1; 0 is the metric as it was), validated finite and ≥ 0 in
+      the cfgs and the spec; `FeatureMoments` keeps `w_long`, `mean_long`,
+      `var_long` and the start rows beside the EW moments, both means as
+      pairs, `decay` takes the reference's factor (`decay.factor(d_clock /
+      LONG_HALFLIVES)`), and `metric` takes the floor; a state without them
+      loads and starts the reference at the next rows. The Python reference
+      mirrors it bit for bit at every floor, the prototype carries it, and
+      CLUSTERING.md §6.1 and §10 record the measurement, re-run on the final
+      reference. **Tests**:
+      `summary::tests::the_metric_is_floored_at_a_fraction_of_the_long_run_variance`,
+      `the_reference_starts_from_the_medians_of_the_first_five_rows`,
+      `a_row_at_the_bound_moves_the_reference_by_a_bounded_factor` and
+      `a_state_without_the_reference_starts_it`; `kmeans` and `micro` each
+      give a stream whose third feature moves and then holds at a level of
+      1e8 the labels and distances (to 1e-6) they give it at a level of 0
+      (`a_stopped_feature_at_a_level_leaves_the_assignments_alone`,
+      `..._summaries_alone`); `model_contract`'s recovery from the bound,
+      which the first design failed; `tests/test_kmeans.py::TestScaleFloor`
+      holds the bank to the oracle at floors 0, 0.1 and 1 on a feature quiet
+      for thirty halflives and shows the floor binding only in the spell; a
+      negative floor is refused by name in both builders. **Review
+      2026-09-25.** Four findings, all confirmed and fixed. The cfg's
+      `scale_floor` had no serde default, so every earlier `kmeans` or
+      `micro` state file was refused on load (hard rule 5); it has one, 0,
+      the metric the state had, and a whole-state test strips the key and
+      restores. The docs claimed a bound the mechanism does not give: the
+      reference decays through a quiet spell, so the weight grows as
+      `2^(Q/8)/scale_floor` over `Q` halflives of quiet, 58 at twenty, where
+      `1/var` alone gave `2^Q`; every doc now says so. The reference's start
+      weight was a row count, which broke the weight-scale invariance every
+      other moment has (the same stream at weights 1 and 1e-3 read metrics
+      2× apart through a quiet spell); it is five times the median of the
+      start rows' weights, and `the_reference_scales_with_the_weights` holds
+      the two streams to 1e-9. A feature without spread took its first move
+      as it came, and a first move a million away put 1e11 into its
+      reference for two hundred halflives; the reference is now per feature
+      and a first move from no spread starts it over, that row the first of
+      the next five
+      (`a_feature_without_spread_starts_its_reference_over_on_its_first_move`).
+      Measured, the cost the review predicted for a level shift in a
+      feature: at halflife 100 with ten thousand rows after the shift, the
+      floor binds on no row for a shift of 10 or 30 standard deviations (the
+      clipped mean step follows a shift at five a row) and on a third of the
+      rows for 100, where the shift itself takes `kmeans` to ARI 0.21 with
+      the floor or without. Nits taken: the bound row's factor is `1 +
+      CLIP/4` = 26, not fifty; `total_cmp` for the medians; a reference
+      whose weight has decayed to nothing takes the next row whole and
+      starts over on the one after
+      (`a_gap_past_the_references_weight_starts_it_over`); a state saved
+      mid-start resumes to the bit; a state missing any one field of the
+      reference starts it over; the core cfgs refuse a bad floor by name;
+      the reference's decay factor at the call sites is pinned against a
+      `FeatureMoments` driven by hand
+      (`the_reference_decays_at_eight_halflives`).
 - [x] 103. **`corrchange` takes a span's variance as `E[x²] − E[x]²`.**
       Found by task 101's sweep. `long_run_sd`, the delta-method standard
       deviation of a span's correlation, forms `σ_x² = E[x²] − E[x]²` from
@@ -3943,7 +4057,24 @@ note, not a task.
       that are multiples of 2⁻²⁰, so the shift is exact (it measured the raw
       form first); the units test and the paper's null, size and power as
       they were; the definition test's longhand stays the five-moment form,
-      so it now checks the identity between the two to 1e-12.
+      so it now checks the identity between the two to 1e-12. **Review
+      2026-09-25.** The accurate `D̂` reaches its true 0 on a collinear pair
+      (`y = 2x + 3`), where the raw-moment form's noise stood in for it, and
+      the numerator's rounding divided by it flagged every span (29 of 30
+      seeds in the reviewer's replica; a derived or duplicated column in a
+      bank would flag every span); a pair within 64 ε of `|ρ̂| = 1` now has
+      no verdict, as a constant column has none
+      (`a_collinear_pair_has_no_verdict`, which fails on the guard removed).
+      Pinned since: T = 3 and 4, the bandwidth override, a constant column
+      with an inexact mean, levels 4e9 and 1e12 (deviations on a 2⁻¹² grid),
+      the level test to 1e-14 and the statistic itself at a level;
+      `bandwidth` at `usize::MAX` no longer overflows. A span with one far
+      outlier now gets the verdict the formula gives, a flag, where the old
+      form cancelled to nothing (docs/REGIMES.md §4). Left: the kernel
+      weights lag `l` by `1 − l/(γ+1)` (Newey–West) where
+      docs/ANSWERS-E54-E64.md transcribes the paper as `k((t−u)/γ)`, `1 −
+      l/γ`; O(1/γ), inside the size and power bands; to check against the
+      paper once.
 
 ## 11a. Decisions made while implementing
 

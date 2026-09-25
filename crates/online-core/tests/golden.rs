@@ -722,6 +722,7 @@ fn kmeans_cfg(rule: SeedRule) -> KMeansCfg {
         split_merge_every: 10,
         dead_frac: 0.05,
         standardize: true,
+        scale_floor: 0.0,
     }
 }
 
@@ -758,6 +759,7 @@ fn micro_cfg() -> MicroCfg {
         prune_every: 7,
         macro_link: None,
         standardize: true,
+        scale_floor: 0.0,
     }
 }
 

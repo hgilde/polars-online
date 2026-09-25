@@ -82,3 +82,47 @@ mutation = "replace && with ||"
 line_has = "if !(sx2 > 0.0 && sy2 > 0.0) {"
 why = """as above: with one column without spread the guard no longer \
 fires, and the zero standard deviation makes `ρ̂` and every `ξ` NaN"""
+
+[[equivalent]]
+file = "crates/online-core/src/lasso.rs"
+function = "<impl OnlineModel for Lasso>::step"
+mutation = "replace < with <="
+line_has = "if err[li] < err[best] {"
+why = """a strict or a loose minimum over the path's errors differ only on an exact tie, two points of the path with the same error to the bit, which outside identical fits has no measure; the oracles score every stream with distinct errors"""
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/summary.rs"
+function = "FeatureMoments::step_long"
+mutation = "replace > with >="
+line_has = "let d = if cap > 0.0 && d * d > cap {"
+why = """the first `>`: `cap` is 0 only where the reference's variance is 0, \
+and a deviation from a reference without spread starts it over before this \
+line, so here `cap = 0` comes with `d = 0`, which no clip changes; the \
+second: at `d² = cap` exactly both branches give `±√(d²)`, and `√(fl(d²)) = \
+|d|` for every double that neither overflows nor underflows"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "EwCov::update"
+mutation = "replace > with >="
+line_has = "if w > 0.0 && w > crate::window::EMPTY_FRACTION * (lam * self.w_sum) {"
+why = """the first `>`: a row of weight 0 passes `w >= 0` and fails the \
+fraction test after it (`0 > EMPTY_FRACTION · lam · w_sum` for any weight), \
+so it is not counted either way; the second `>` is caught (the row at the \
+fraction exactly)"""
+
+[[equivalent]]
+file = "crates/online-core/src/marginal.rs"
+function = "Marginal::learn"
+mutation = "replace > with >="
+line_has = "if w > 0.0 && w > crate::window::EMPTY_FRACTION * (lam * self.wt[t]) {"
+why = """as `EwCov::update`'s: a row of weight 0 fails the fraction test \
+after `w >= 0`, so it is not counted either way; the second `>` is caught"""
+
+[[equivalent]]
+file = "crates/online-core/src/cluster/summary.rs"
+function = "FeatureMoments::metric"
+mutation = "replace > with >="
+line_has = "let v = if floor > v { floor } else { v };"
+why = """at `floor = v` both branches are the same double; neither is NaN \
+(`scale_floor` is refused unless finite, and both variances are finite)"""

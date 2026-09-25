@@ -309,6 +309,10 @@ pub struct Marginal {
     x_runs: crate::Runs,
     #[serde(default)]
     y_runs: crate::Runs,
+    /// Per target, its learned rows so far: what its runs' start rows count
+    /// in, and what the window's snapshot records. Ahead of `win`.
+    #[serde(default)]
+    rows_t: Vec<u64>,
     /// The hard-cutoff window, when the spec asks for one. Last, for the
     /// reason `MarginalCfg::window` gives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -332,6 +336,11 @@ struct MarginalMoments {
     mx: Vec<f64>,
     sxx: Vec<f64>,
     sxy: Vec<f64>,
+    /// Each target's count of learned rows when the snapshot was taken
+    /// (`crate::window::Moments::rows`); `None` in a snapshot written before
+    /// it, which then holds nothing.
+    #[serde(default)]
+    rows: Option<Vec<u64>>,
 }
 
 impl crate::Footprint for MarginalMoments {
@@ -532,6 +541,7 @@ impl Marginal {
             my_lo: vec![0.0; t],
             x_runs: crate::Runs::new(p * t),
             y_runs: crate::Runs::new(t),
+            rows_t: vec![0; t],
             win,
         })
     }
@@ -691,17 +701,19 @@ impl Marginal {
                             (mx, my, sxx.max(0.0), syy.max(0.0), sxy);
                         // A slot that held one value over every row inside
                         // the window has no spread there, and the subtraction
-                        // cannot say so; its run can, when the run's weight
-                        // is all of the window's but what the window's own
-                        // weight counts as nothing (`crate::truncated`,
-                        // docs/PLAN.md task 94).
-                        let covers = w - crate::window::EMPTY_FRACTION * self.wt[t];
+                        // cannot say so; its run can, when it started at or
+                        // before the first of the target's learned rows
+                        // inside the window (`crate::truncated`, docs/PLAN.md
+                        // task 94).
                         let (p, n) = (self.cfg.n_features, self.cfg.n_targets);
-                        if let Some(value) = self.x_runs.held_over(n * p, i, covers) {
-                            (mx, sxx, sxy) = (value, 0.0, 0.0);
-                        }
-                        if let Some(value) = self.y_runs.held_over(n, t, covers) {
-                            (my, syy, sxy) = (value, 0.0, 0.0);
+                        let first = old.rows.as_ref().and_then(|r| r.get(t)).map(|r| r + 1);
+                        if let Some(first) = first {
+                            if let Some(value) = self.x_runs.started_by(n * p, i, first) {
+                                (mx, sxx, sxy) = (value, 0.0, 0.0);
+                            }
+                            if let Some(value) = self.y_runs.started_by(n, t, first) {
+                                (my, syy, sxy) = (value, 0.0, 0.0);
+                            }
                         }
                         (w, w * w / q, mx, my, sxx, syy, sxy)
                     }
@@ -895,15 +907,8 @@ impl Marginal {
         if self.my_lo.len() != self.my.len() {
             self.my_lo = vec![0.0; self.my.len()];
         }
-    }
-
-    /// Target `t`'s run, and its pairs', age by `lam` over a row that does
-    /// not learn the target.
-    fn age_runs(&mut self, t: usize, lam: f64) {
-        let p = self.cfg.n_features;
-        self.y_runs.age_one(t, lam);
-        for i in t * p..(t + 1) * p {
-            self.x_runs.age_one(i, lam);
+        if self.rows_t.len() != self.cfg.n_targets {
+            self.rows_t = vec![0; self.cfg.n_targets];
         }
     }
 
@@ -926,7 +931,6 @@ impl Marginal {
                 // target.
                 self.wt[t] *= lam;
                 self.qt[t] *= lam * lam;
-                self.age_runs(t, lam);
                 continue;
             };
             let w_new = lam * self.wt[t] + w;
@@ -939,15 +943,20 @@ impl Marginal {
                 // outlive the gap while the model's does not.
                 self.wt[t] = 0.0;
                 self.qt[t] = 0.0;
-                self.age_runs(t, lam);
                 continue;
             }
             let a = lam * self.wt[t] / w_new;
             let b = w / w_new;
             let n_targets = self.cfg.n_targets;
-            self.y_runs.track_one(n_targets, t, yt, lam, w);
-            for (i, &xj) in x.iter().enumerate() {
-                self.x_runs.track_one(n_targets * p, t * p + i, xj, lam, w);
+            // A row counts for the runs when its weight is something next to
+            // the target's (`EwCov::update`, `crate::Runs`).
+            if w > 0.0 && w > crate::window::EMPTY_FRACTION * (lam * self.wt[t]) {
+                self.rows_t[t] += 1;
+                self.y_runs.track_one(n_targets, t, yt, self.rows_t[t]);
+                for (i, &xj) in x.iter().enumerate() {
+                    self.x_runs
+                        .track_one(n_targets * p, t * p + i, xj, self.rows_t[t]);
+                }
             }
             use crate::comp::{add, dev};
             let dy = dev(yt, self.my[t], self.my_lo[t]);
@@ -1006,6 +1015,7 @@ impl OnlineModel for Marginal {
                 mx: self.mx.clone(),
                 sxx: self.sxx.clone(),
                 sxy: self.sxy.clone(),
+                rows: Some(self.rows_t.clone()),
             });
             win.clock = t;
             win.snaps.trim(t);
@@ -1598,6 +1608,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Each target counts its own learned rows, and a row of weight 0 or of
+    /// no account counts for none (`EwCov::update`).
+    #[test]
+    fn each_target_counts_its_learned_rows() {
+        let mut m = Marginal::new(cfg(1, 2)).unwrap();
+        for i in 0..20 {
+            let y0 = (i % 2 == 0).then_some(1.0);
+            let w = if i % 5 == 4 { 0.0 } else { 1.0 };
+            m.step(&[0.5], &[y0, Some(2.0)], if i == 0 { 0.0 } else { 1.0 }, w);
+        }
+        assert_eq!(m.rows_t, vec![8, 16]);
+        // A row at exactly the fraction of target 0's decayed weight is
+        // nothing to it, and below the fraction of target 1's, heavier.
+        let lam = m.cfg.decay.factor(1.0);
+        let nothing = crate::window::EMPTY_FRACTION * (lam * m.wt[0]);
+        m.step(&[0.5], &[Some(1.0), Some(2.0)], 1.0, nothing);
+        assert_eq!(m.rows_t, vec![8, 16], "a row at the fraction is nothing");
+        // Just above it, the row counts for target 0 alone.
+        m.step(&[0.5], &[Some(1.0), Some(2.0)], 1.0, nothing * (1.0 + 1e-6));
+        assert_eq!(
+            m.rows_t,
+            vec![9, 16],
+            "a row just above the fraction counts"
+        );
+        m.step(&[0.5], &[Some(1.0), Some(2.0)], 1.0, 1.0);
+        assert_eq!(m.rows_t, vec![10, 17]);
     }
 
     /// A standard normal from the module's LCG, by Box-Muller.

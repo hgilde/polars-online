@@ -24,6 +24,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+#: `FeatureMoments`' reference (docs/PLAN.md task 102): its halflife as a
+#: multiple of the model's, the clip on a squared deviation as a multiple of
+#: its variance, and the rows its medians start from.
+LONG_HALFLIVES = 8.0
+CLIP = 100.0
+START_ROWS = 5
+
 MASK64 = (1 << 64) - 1
 INPUT_BOUND = 1e100
 BUF_CAP = 1000
@@ -147,16 +154,38 @@ class Summary:
 
 @dataclass
 class Moments:
+    """`FeatureMoments`: the EW moments with the means as pairs (task 101),
+    and, a feature at a time, the reference the metric's floor is a fraction
+    of (task 102): the same moments at ``LONG_HALFLIVES`` times the halflife,
+    a row's weight clipped at the reference's own and its deviation at
+    ``CLIP`` times the reference's variance, started from the medians of the
+    feature's first ``START_ROWS`` rows and started over by a first move from
+    no spread."""
+
     w: float
     mean: list[float]
     var: list[float]
+    mean_lo: list[float]
+    w_long: list[float]
+    mean_long: list[float]
+    mean_long_lo: list[float]
+    var_long: list[float]
+    start: list[float]
+    start_w: list[float]
+    n_start: list[int]
 
     @staticmethod
     def new(p: int) -> Moments:
-        return Moments(0.0, [0.0] * p, [0.0] * p)
+        z = [0.0] * p
+        s = [0.0] * (p * START_ROWS)
+        return Moments(
+            0.0, list(z), list(z), list(z), list(z), list(z), list(z), list(z), s, list(s), [0] * p
+        )
 
-    def decay(self, lam: float) -> None:
+    def decay(self, lam: float, lam_long: float) -> None:
         self.w *= lam
+        for i in range(len(self.w_long)):
+            self.w_long[i] *= lam_long
 
     def absorb(self, x: list[float], w: float) -> None:
         w_new = self.w + w
@@ -164,17 +193,72 @@ class Moments:
             return
         a, b = self.w / w_new, w / w_new
         for i in range(len(self.mean)):
-            d = x[i] - self.mean[i]
-            self.mean[i] += b * d
+            d = _dev(x[i], self.mean[i], self.mean_lo[i])
             self.var[i] = a * self.var[i] + a * b * d * d
+            if b > 0.0:
+                self.mean[i], self.mean_lo[i] = _add(self.mean[i], self.mean_lo[i], b * d)
         self.w = w_new
+        if w > 0.0:
+            for i in range(len(self.mean)):
+                self._step_long(i, x[i], w)
 
-    def metric(self, standardize: bool) -> list[float]:
+    def _step_long(self, i: int, xi: float, w: float) -> None:
+        s = START_ROWS
+        kept = self.n_start[i]
+        if kept < s:
+            self.start[i * s + kept] = xi
+            self.start_w[i * s + kept] = w
+            self.n_start[i] += 1
+            if kept + 1 < s:
+                return
+            col = sorted(self.start[i * s : (i + 1) * s])
+            m = col[s // 2]
+            sq = sorted((v - m) * (v - m) for v in col)
+            ws = sorted(self.start_w[i * s : (i + 1) * s])
+            self.mean_long[i] = m
+            self.mean_long_lo[i] = 0.0
+            self.var_long[i] = sq[s // 2]
+            self.w_long[i] = s * ws[s // 2]
+            return
+        d = _dev(xi, self.mean_long[i], self.mean_long_lo[i])
+        if self.var_long[i] == 0.0 and d != 0.0:
+            self.n_start[i] = 0
+            self.w_long[i] = 0.0
+            self._step_long(i, xi, w)
+            return
+        wl = self.w_long[i]
+        w = min(w, wl) if wl > 0.0 else w
+        wl_new = wl + w
+        a, b = wl / wl_new, w / wl_new
+        cap = CLIP * self.var_long[i]
+        if cap > 0.0 and d * d > cap:
+            d = math.copysign(math.sqrt(cap), d)
+        self.var_long[i] = a * self.var_long[i] + a * b * d * d
+        self.mean_long[i], self.mean_long_lo[i] = _add(
+            self.mean_long[i], self.mean_long_lo[i], b * d
+        )
+        self.w_long[i] = wl_new
+
+    def metric(self, standardize: bool, scale_floor: float) -> list[float]:
         out = []
-        for v in self.var:
+        for v, va in zip(self.var, self.var_long, strict=True):
+            floor = scale_floor * va
+            v = floor if floor > v else v
             inv = 1.0 / v if v != 0.0 else math.inf
             out.append(inv if standardize and v > 0.0 and math.isfinite(inv) else 1.0)
         return out
+
+
+def _dev(x: float, hi: float, lo: float) -> float:
+    """`comp::dev`: the deviation from a pair."""
+    return (x - hi) - lo
+
+
+def _add(hi: float, lo: float, s: float) -> tuple[float, float]:
+    """`comp::add`: Kahan's compensated step into a pair."""
+    y = s + lo
+    t = hi + y
+    return t, y - (t - hi)
 
 
 def _shrink(dd: list[float], buf: list[list[float]], c: list[float], mw: list[float]) -> None:
@@ -307,6 +391,7 @@ class KMeansRef:
     split_merge_every: int = 100
     dead_frac: float = 0.05
     standardize: bool = True
+    scale_floor: float = 0.1
     moments: Moments = field(init=False)
     mw: list[float] = field(init=False)
     clusters: list[Summary] = field(default_factory=list)
@@ -559,7 +644,7 @@ class KMeansRef:
         n_before = self.moments.w
         valid = all(math.isfinite(v) for v in x)
         learn = w > 0.0 and math.isfinite(w) and valid
-        self.moments.decay(lam)
+        self.moments.decay(lam, self.factor(d / LONG_HALFLIVES))
         for c in self.clusters:
             c.decay(lam)
         for b in self.batch:
@@ -578,7 +663,7 @@ class KMeansRef:
                 self.buf.append(list(x))
                 self.buf_w.append(w)
                 self.try_seed()
-        self.mw = self.moments.metric(self.standardize)
+        self.mw = self.moments.metric(self.standardize, self.scale_floor)
         return pred, n_before
 
     def predict(self, x: list[float]) -> tuple[list[float], float]:
@@ -684,6 +769,7 @@ class MicroRef:
     prune_every: int = 100
     macro_link: float | None = None
     standardize: bool = True
+    scale_floor: float = 0.1
     moments: Moments = field(init=False)
     mw: list[float] = field(init=False)
     eps2: float = field(init=False)
@@ -891,7 +977,7 @@ class MicroRef:
         n_before = self.moments.w
         valid = all(math.isfinite(v) for v in x)
         learn = w > 0.0 and math.isfinite(w) and valid
-        self.moments.decay(lam)
+        self.moments.decay(lam, self.factor(d / LONG_HALFLIVES))
         for m in self.mc:
             m.s.decay(lam)
             m.age += d
@@ -900,7 +986,7 @@ class MicroRef:
         if learn and dec is not None:
             self.moments.absorb(x, w)
             self.learn_row(x, w, dec)
-        self.mw = self.moments.metric(self.standardize)
+        self.mw = self.moments.metric(self.standardize, self.scale_floor)
         return pred, n_before
 
     def predict(self, x: list[float], d: float = 0.0) -> tuple[list[float], float]:

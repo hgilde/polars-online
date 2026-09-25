@@ -15,7 +15,6 @@ that class of bug loud:
 * parameter ranges at their edges rather than their comfortable middles.
 """
 
-import os
 import re
 import subprocess
 import sys
@@ -25,6 +24,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+import child
 import polars_online as po
 from conftest import run_online
 
@@ -175,7 +175,7 @@ class TestKitchenSinkAtScale:
                 # Inherit the environment and override only the thread count.
                 # A hardcoded POSIX PATH left the child with no resolvable
                 # interpreter on Windows.
-                env={**os.environ, "POLARS_ONLINE_MAX_THREADS": threads},
+                env=child.env(POLARS_ONLINE_MAX_THREADS=threads),
                 cwd=str(REPO),
                 check=True,
             )

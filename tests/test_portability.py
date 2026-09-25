@@ -16,6 +16,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
+import child
 import polars_online as po
 
 #: `withheld_reason`, an enum over the three gates, on every model that
@@ -108,7 +109,7 @@ print(po.thread_pool_size())
     ]
 
     def _run_with_threads(self, tmp_path, tag, n_threads, n, groups):
-        env = dict(os.environ, POLARS_ONLINE_MAX_THREADS=str(n_threads), POLARS_MAX_THREADS="1")
+        env = child.env(POLARS_ONLINE_MAX_THREADS=str(n_threads), POLARS_MAX_THREADS="1")
         path = tmp_path / f"{tag}.arrow"
         code = self.SNIPPET.format(tests=str(REPO / "tests"), n=n, groups=groups, path=str(path))
         res = subprocess.run(
@@ -152,7 +153,7 @@ class TestThreadPoolKnob:
             capture_output=True,
             text=True,
             encoding="utf-8",
-            env={**os.environ, **env},
+            env=child.env(**env),
             cwd=str(REPO),
             check=False,
         )

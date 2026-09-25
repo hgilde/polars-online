@@ -396,6 +396,27 @@ mod tests {
         assert_eq!((d.mean(0), d.c[0]), (2.0, 0.0));
     }
 
+    /// `EwDiag`'s own skip (review 2026-09-25): the rows 0.7 and
+    /// 5.292162135665459 at unit weight leave the pair with a low part of a
+    /// whole step, where a step of 0 would round `hi` up; a row of weight 0
+    /// leaves both parts to the bit. Every other test of this compares it
+    /// with `EwCov`, which skips too.
+    #[test]
+    fn a_row_of_no_weight_takes_no_step_in_the_pair() {
+        let mut d = EwDiag::new(1);
+        d.update(&[0.7], 1.0, 1.0);
+        d.update(&[5.292162135665459], 1.0, 1.0);
+        assert_eq!(
+            (d.m[0], d.m_lo[0]),
+            (2.996081067832729, 4.440892098500626e-16)
+        );
+        d.update(&[9.0], 1.0, 0.0);
+        assert_eq!(
+            (d.m[0], d.m_lo[0]),
+            (2.996081067832729, 4.440892098500626e-16)
+        );
+    }
+
     #[test]
     fn diagonal_of_takes_the_diagonal() {
         let mut full = EwCov::with_precision_prior(3, 0.5).unwrap();

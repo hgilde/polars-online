@@ -1957,7 +1957,9 @@ km = po.spec.kmeans(
     split_merge_every=200,       # sum of their radii -- two centres in one blob -- one is freed and placed on the rows
                                  # far from every centre. 0: plain sequential k-means
     dead_frac=0.05,              # a centre whose blob vanished fades; under this share of an equal share it is re-placed.
-)                                # that takes log2(1/dead_frac) halflives: 4.3 at 0.05, 2 at 0.25
+                                 # that takes log2(1/dead_frac) halflives: 4.3 at 0.05, 2 at 0.25
+    scale_floor=0.1,             # the metric's variance is floored at this fraction of each feature's long-run variance
+)
 out = po.ModelBank([km]).fit_predict(df).unnest("km")
 # cluster   the nearest centre's label, before the row is learned from
 # dist      the distance to it;  dist2  the distance to the second-nearest
@@ -1971,7 +1973,11 @@ for the split–merge move. Raise `dead_frac` when regimes change faster than
 the fade allows; a cluster lighter than `dead_frac/k` of the stream then
 loses its centre whenever any row is far. The move cannot see one centre
 owning two blobs, whose rows are all within its own radius, and seeding
-with `lloyd` is what prevents that.
+with `lloyd` is what prevents that. The metric's variance is floored at a
+tenth of each feature's long-run variance (`scale_floor`), tracked at eight
+times the halflife: a feature quiet for twenty halflives then counts 58
+times what its history says, where `1/var` alone counted a million, and the
+row on which it moves again is not infinitely far from every centre.
 
 #### `micro` — density-based clustering, any shape
 
@@ -2012,6 +2018,11 @@ out.select("cluster", "outlier", "n_clusters", "n_micro").tail(3)
 # n_clusters, n_micro  how many of each the state holds
 # coef                 the established summaries, one [id, label, n, radius, c_1 .. c_p] row each
 ```
+
+The metric's variance is floored as `kmeans`'s is (`scale_floor`, a tenth
+of each feature's long-run variance): a feature quiet for twenty halflives
+counts 58 times what its history says rather than a million, so the next row
+that moves it is not an outlier by that alone.
 
 Every output is read before the row is learned from. A label is the
 smallest id in its chain, so it outlives everything but that summary. Both

@@ -226,6 +226,124 @@ fn a_blocked_ridge_keeps_the_slope_it_learned() {
     );
 }
 
+/// Under a window (review 2026-09-25): while the window still holds rows
+/// on which the feature moved, the slope is the one learned; once every row
+/// inside it is held, the run reads the feature as having no spread there
+/// and the standardized solve drops it, at every level alike. The
+/// predictions at a level are those at 0.5 throughout.
+#[test]
+fn a_windowed_ridge_keeps_the_slope_while_the_window_has_spread() {
+    let make = || {
+        let mut c = ridge(true);
+        c.window = Some(3.0 * H);
+        EwRidge::new(c).unwrap()
+    };
+    let slope = |m: &EwRidge| m.coefficients().map_or(f64::NAN, |c| c[0][3]);
+    let (base, _) = run(make(), 0.5, slope);
+    let covered = MOVING + 4 * H as usize;
+    for level in LEVELS {
+        let (pred, coef) = run(make(), level, slope);
+        for (i, &c) in coef.iter().enumerate().skip(MOVING) {
+            if i < MOVING + 2 * H as usize {
+                assert!(
+                    c.is_nan() || (0.2..0.8).contains(&c),
+                    "level {level}, row {i}: slope {c} while the window still has spread"
+                );
+            } else if i >= covered {
+                assert!(
+                    c.is_nan() || c == 0.0,
+                    "level {level}, row {i}: slope {c} on a feature without spread in the window"
+                );
+            }
+        }
+        let worst = (MOVING..pred.len())
+            .filter(|&i| base[i].is_finite())
+            .map(|i| (pred[i] - base[i]).abs() / (1.0 + base[i].abs()))
+            .fold(0.0, f64::max);
+        let tol = steps_of(level);
+        assert!(
+            worst <= tol,
+            "level {level}: predictions {worst:.3e} from those at 0.5, past {tol:.1e}"
+        );
+    }
+}
+
+/// A hold that ends (review 2026-09-25): the feature moves again after
+/// fifty halflives, and within five more the slope is back where it was and
+/// the fit at a level predicts what the fit at 0.5 does.
+#[test]
+fn a_feature_that_moves_again_gets_its_slope_back() {
+    let resumes = |level: f64| -> Vec<([f64; 3], f64)> {
+        let mut s = 7u64;
+        let held = 50 * H as usize;
+        (0..MOVING + held + 10 * H as usize)
+            .map(|i| {
+                let (x0, x1) = (lcg(&mut s), lcg(&mut s));
+                let u = if (MOVING..MOVING + held).contains(&i) {
+                    0.37
+                } else {
+                    lcg(&mut s)
+                };
+                let y = 1.0 + 2.0 * x0 - x1 + 0.5 * u + 0.3 * lcg(&mut s);
+                ([x0, x1, level + u], y)
+            })
+            .collect()
+    };
+    let slope = |m: &EwRidge| m.coefficients().map_or(f64::NAN, |c| c[0][3]);
+    let (base, _) = run_on(EwRidge::new(ridge(true)).unwrap(), &resumes(0.5), slope);
+    let back = MOVING + 55 * H as usize;
+    for level in LEVELS {
+        let (pred, coef) = run_on(EwRidge::new(ridge(true)).unwrap(), &resumes(level), slope);
+        for (i, &c) in coef.iter().enumerate().skip(back) {
+            assert!(
+                (0.2..0.8).contains(&c),
+                "level {level}, row {i}: slope {c} after the feature moved again"
+            );
+        }
+        let worst = (back..pred.len())
+            .map(|i| (pred[i] - base[i]).abs() / (1.0 + base[i].abs()))
+            .fold(0.0, f64::max);
+        let tol = steps_of(level);
+        assert!(
+            worst <= tol,
+            "level {level}: predictions {worst:.3e} from those at 0.5, past {tol:.1e}"
+        );
+    }
+}
+
+/// The blocked Gram at 1e12 with a row of no weight every seventh, carrying
+/// another value of the stopped feature (review 2026-09-25): the block's
+/// residue and the zero-weight rule together, where the earlier blocked
+/// case had unit weights at 1e8. The slope stays learned, and the pair
+/// reaches the held value in the moments.
+#[test]
+fn a_blocked_ridge_keeps_its_slope_through_rows_of_no_weight() {
+    let level = 1e12;
+    let rows: Vec<([f64; 3], f64, f64)> = stream(level)
+        .into_iter()
+        .enumerate()
+        .map(|(i, (mut x, y))| {
+            let w = if i > 0 && i % 7 == 0 { 0.0 } else { 1.0 };
+            if w == 0.0 && i >= MOVING {
+                x[2] = level + 5.0;
+            }
+            (x, y, w)
+        })
+        .collect();
+    let mut c = ridge(true);
+    c.gram_block_rows = 16;
+    c.solve_every = 16.0;
+    c.max_rows_between_solves = 16;
+    let mut m = EwRidge::new(c).unwrap();
+    for (i, (x, y, w)) in rows.iter().enumerate() {
+        m.step(x, &[Some(*y)], d(i), *w);
+        if i >= MOVING + 10 * H as usize {
+            let c = m.coefficients().map_or(f64::NAN, |c| c[0][3]);
+            assert!(c.is_nan() || (0.2..0.8).contains(&c), "row {i}: slope {c}");
+        }
+    }
+}
+
 #[test]
 fn a_standardized_huber_keeps_the_slope_it_learned() {
     let cfg = RobustCfg {

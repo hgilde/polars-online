@@ -787,6 +787,7 @@ class TestRefusals:
             ({"max_clusters": 0}, "max_clusters must be >= 1"),
             ({"prune_every": 0}, "prune_every must be >= 1"),
             ({"macro_link": -1.0}, "macro_link must be finite and >= 0"),
+            ({"scale_floor": -0.5}, "scale_floor must be finite and >= 0"),
             ({"features": ["x0", "x0"]}, "more than once"),
         ],
         ids=lambda v: next(iter(v)) if isinstance(v, dict) else v,

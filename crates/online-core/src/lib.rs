@@ -265,16 +265,22 @@ pub use window::{
 ///   schema-14 file loads: its loader rebuilds the value as 14 did at a chunk
 ///   boundary.
 /// - 16: every `EwCov`, and `marginal` for each of its pairs, keeps per slot
-///   the value it has held since it last changed and the weight of those
-///   rows ([`Runs`]), so a window can say exactly that a slot held one value
-///   over it, where the subtraction left a remainder the lasso standardized
-///   by (docs/PLAN.md task 94). And every running mean keeps what its double
-///   leaves out (`m_lo`, `mean_lo` and their kin): the mean is a pair whose
-///   steps no rounding drops, where a plain mean stopped short of a value
-///   held and left every variance centred on it on the gap (task 101,
-///   2026-09-24). A schema-14 or 15 file loads: the named encoding defaults
-///   both to empty, the runs start at the next learned row, and a mean
-///   starts as the double it was saved as.
+///   the value it has held since it last changed and the learned row that
+///   started that run ([`Runs`]), counting its learned rows, and a window's
+///   snapshot records the count, so a window can say exactly that a slot
+///   held one value over it, where the subtraction left a remainder the
+///   lasso standardized by (docs/PLAN.md task 94; by row index since the
+///   review of 2026-09-25, where a decayed weight drifted). Every running
+///   mean keeps what its double leaves out (`m_lo`, `mean_lo` and their
+///   kin): the mean is a pair whose steps no rounding drops, where a plain
+///   mean stopped short of a value held and left every variance centred on
+///   it on the gap (task 101, 2026-09-24). And `kmeans` and `micro` keep,
+///   in `FeatureMoments`, each feature's long-run reference for the
+///   metric's floor, and `scale_floor` in their cfgs (task 102). A schema-14
+///   or 15 file loads: the named encoding defaults all of it to empty or
+///   zero, the runs start at the next learned row, a mean starts as the
+///   double it was saved as, the references start at the next five rows,
+///   and `scale_floor` is 0, the metric the state had.
 pub const SCHEMA_VERSION: u32 = 16;
 
 /// Oldest state layout this build still loads.

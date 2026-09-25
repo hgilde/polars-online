@@ -2690,6 +2690,41 @@ mod tests {
         }
     }
 
+    /// A feature held over the window has no spread there (task 94), so an
+    /// unstandardized solve with no ridge meets an exactly singular Gram
+    /// where it met one singular up to rounding: the solver's jitter takes
+    /// it, the feature's slope is exactly 0 (its right-hand side is zeroed
+    /// too), and every prediction stays finite (review 2026-09-25).
+    #[test]
+    fn a_held_feature_under_a_window_leaves_an_unregularized_solve_finite() {
+        let mut c = cfg(2, 1);
+        c.decay = Decay::Halflife(20.0);
+        c.window = Some(30.0);
+        c.standardize = false;
+        c.ridge = vec![0.0];
+        c.min_periods = 5.0;
+        let mut m = EwRidge::new(c).unwrap();
+        let mut s = 3u64;
+        for i in 0..200 {
+            let x0 = lcg(&mut s);
+            let x1 = if i < 100 { lcg(&mut s) } else { 0.37 };
+            let y = 1.0 + 2.0 * x0 - x1;
+            let out = m.step(&[x0, x1], &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            assert!(
+                out.pred[0].is_finite() || i < 10,
+                "row {i}: {}",
+                out.pred[0]
+            );
+            if i >= 150 {
+                let slope = m.coefficients().map_or(f64::NAN, |c| c[0][2]);
+                assert!(
+                    slope.abs() < 1e-9,
+                    "row {i}: slope {slope} on a feature without spread"
+                );
+            }
+        }
+    }
+
     /// A row of weight 0 takes no step in any mean, to the bit: the Gram's,
     /// the cross-moments' feature and target means, and the target moments'
     /// (`crate::comp::add` says why a zero step would move a pair). The rows

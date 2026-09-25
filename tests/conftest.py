@@ -11,30 +11,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 REPO = Path(__file__).resolve().parent.parent
 
 
-class _WithoutPyarrow:
-    """pyarrow is unimportable in this session, as it is for a user of the
-    package, whose one dependency is polars.
+# pyarrow is unimportable in this session, as it is for a user of the
+# package, whose one dependency is polars; the finder and its reasons are in
+# tests/_site/without_pyarrow.py, which the child interpreters the tests
+# spawn share through tests/child.py.
+sys.path.insert(0, str(REPO / "tests" / "_site"))
+import without_pyarrow  # noqa: E402
 
-    pyarrow is installed with the dev group for tests/test_pyarrow_interop.py,
-    which runs its pyarrow half in fresh interpreters that this finder does
-    not reach. Without it, every other test would run with pyarrow present.
-    pandas and duckdb behave differently when it is, and a use of pyarrow that
-    crept into the package would pass the suite and fail for its users.
-
-    Raising here makes pyarrow read as absent both to `import pyarrow` and to
-    `importlib.util.find_spec`, which is how polars probes for it. A `None` in
-    `sys.modules` would not do: polars reads any entry there as loaded.
-    """
-
-    @staticmethod
-    def find_spec(name, path=None, target=None):
-        if name == "pyarrow" or name.startswith("pyarrow."):
-            raise ModuleNotFoundError(f"No module named {name!r} (tests/conftest.py)", name=name)
-        return None
-
-
-assert "pyarrow" not in sys.modules, "pyarrow was imported before tests/conftest.py could block it"
-sys.meta_path.insert(0, _WithoutPyarrow)
+without_pyarrow.install()
 
 
 @pytest.fixture(scope="session")

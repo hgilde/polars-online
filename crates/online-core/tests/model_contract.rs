@@ -520,6 +520,7 @@ fn kmeans_cfg() -> KMeansCfg {
         split_merge_every: 50,
         dead_frac: 0.05,
         standardize: true,
+        scale_floor: 0.1,
     }
 }
 
@@ -554,6 +555,7 @@ fn micro_cfg() -> MicroCfg {
         prune_every: 10,
         macro_link: None,
         standardize: true,
+        scale_floor: 0.1,
     }
 }
 

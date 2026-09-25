@@ -162,6 +162,10 @@ pub struct EwCov {
     /// `pending` may skip, last.
     #[serde(default)]
     runs: Runs,
+    /// Learned rows so far: what the runs' start rows count in, and what a
+    /// window's snapshot records. Ahead of `pending`.
+    #[serde(default)]
+    rows_learned: u64,
     /// What each mean in `m` leaves out: the mean is `m[i] + m_lo[i]`, a pair
     /// no step is rounded off ([`crate::comp`]; docs/PLAN.md task 101). A
     /// plain mean given one value row after row stopped a few rounding steps
@@ -201,6 +205,7 @@ impl EwCov {
             precision_prior: 0.0,
             precision_scale: 1.0,
             runs: Runs::new(k),
+            rows_learned: 0,
             m_lo: vec![0.0; k],
             pending: Pending::default(),
         }
@@ -230,8 +235,14 @@ impl EwCov {
     /// `weight` of the accumulated weight, the newest rows first; `None`
     /// where it moved inside that weight, or where the runs are unknown (a
     /// state written before them).
-    pub fn held_over(&self, i: usize, weight: f64) -> Option<f64> {
-        self.runs.held_over(self.k, i, weight)
+    pub fn held_from(&self, i: usize, row: u64) -> Option<f64> {
+        self.runs.started_by(self.k, i, row)
+    }
+
+    /// Learned rows so far: the count a window's snapshot records, in which
+    /// the runs' start rows are indices.
+    pub fn rows_learned(&self) -> u64 {
+        self.rows_learned
     }
 
     /// Same, with a prior for the precision matrix `(C + s·prior·I)⁻¹`, so
@@ -764,7 +775,14 @@ impl EwCov {
             w >= 0.0,
             "EwCov::update requires a non-negative weight, got {w}"
         );
-        self.runs.track(x, lam, w);
+        // A row counts for the runs when its weight is something next to the
+        // accumulator's: `EMPTY_FRACTION` of the live weight is the window's
+        // own notion of nothing, and a row below it neither starts nor ends
+        // a run (`crate::Runs`).
+        if w > 0.0 && w > crate::window::EMPTY_FRACTION * (lam * self.w_sum) {
+            self.rows_learned += 1;
+            self.runs.track(x, self.rows_learned);
+        }
         if self.pending.block_rows > 0 {
             return self.buffer(x, lam, w);
         }
@@ -853,7 +871,6 @@ impl EwCov {
             *q *= lam * lam;
         }
         self.prior_scale *= lam;
-        self.runs.age(lam);
     }
 
     /// Age the accumulator over a row it does not learn: [`Self::decay`],
@@ -867,7 +884,6 @@ impl EwCov {
     /// is the answer.
     pub fn skip(&mut self, x: &[f64], lam: f64) {
         if self.pending.block_rows > 0 && lam * self.w_sum > 0.0 {
-            self.runs.age(lam);
             self.buffer(x, lam, 0.0);
         } else {
             self.decay(lam);
@@ -1742,8 +1758,8 @@ impl EwCovModel {
                         let score = v
                             .iter()
                             .zip(x)
-                            .zip(cov.means())
-                            .fold(0.0, |acc, ((vi, xi), mi)| acc + vi * (xi - mi));
+                            .enumerate()
+                            .fold(0.0, |acc, (i, (vi, xi))| acc + vi * cov.deviation(i, *xi));
                         out.push(score);
                     }
                 }
@@ -3467,6 +3483,7 @@ mod tests {
         // Nor runs, which schema 16 added: nothing is known of them, and
         // they start at the next learned row (PLAN task 94).
         want.runs = Runs::default();
+        want.rows_learned = 0;
         // Nor the means' low parts (PLAN task 101): the means are the
         // doubles the state holds.
         want.m_lo.clear();
@@ -3576,19 +3593,22 @@ mod tests {
             }
             assert_eq!(plain.runs, blocked.runs, "row {i}");
         }
-        // Feature 1 held 2.5 on every learned row: its run is all the weight.
-        assert_eq!(plain.held_over(1, plain.n_eff()), Some(2.5));
+        // Feature 1 held 2.5 on every learned row: its run started at the
+        // first.
+        assert_eq!(plain.held_from(1, 1), Some(2.5));
         let run = |i: usize| plain.runs.get(i).unwrap();
-        assert!((run(1).1 - plain.n_eff()).abs() <= 1e-12 * plain.n_eff());
+        assert_eq!(run(1).1, 1);
         // Feature 0 cycles, so its run is the last learned row alone; the
-        // zero-weight rows of 9s ended nothing.
-        assert_eq!(plain.held_over(0, plain.n_eff()), None);
+        // zero-weight rows of 9s ended nothing and counted for nothing.
+        let last = plain.rows_learned();
+        assert_eq!(plain.held_from(0, last - 1), None);
+        assert_eq!(plain.held_from(0, last), Some(run(0).0));
         assert_ne!(run(0).0, 9.0);
-        // Feature 2 has held -1 since row 40.
+        // Feature 2 has held -1 since row 40, a learned row in the middle.
         assert_eq!(run(2).0, -1.0);
-        assert!(run(2).1 < plain.n_eff());
-        assert_eq!(plain.held_over(2, run(2).1), Some(-1.0));
-        assert_eq!(plain.held_over(2, run(2).1 * (1.0 + 1e-9)), None);
+        assert!(run(2).1 > 1 && run(2).1 < last);
+        assert_eq!(plain.held_from(2, run(2).1), Some(-1.0));
+        assert_eq!(plain.held_from(2, run(2).1 - 1), None);
     }
 
     /// New moments stand for rows the runs never saw -- `gaps`' blend with
@@ -3699,25 +3719,94 @@ mod tests {
         assert_eq!(flushed, 10, "every block flushed");
     }
 
+    /// Task 94's zero reaches `ew_cov`'s own window (review 2026-09-25):
+    /// a feature held over the window has no spread there, so its variance
+    /// is exactly 0 and its covariances with the others exactly 0, where the
+    /// subtraction left a remainder that read as a correlation.
+    #[test]
+    fn ew_covs_window_reads_a_held_feature_as_no_spread() {
+        let mut m = EwCovModel::new(EwCovCfg {
+            n_features: 2,
+            decay: crate::Decay::Halflife(10.0),
+            stats: vec![EwCovStat::Var, EwCovStat::Corr],
+            min_periods: 0.0,
+            precision_prior: None,
+            mahal_quantiles: Vec::new(),
+            pca: 0,
+            pca_every: 0,
+            lags: Vec::new(),
+            window: Some(30.0),
+            window_every: None,
+        })
+        .unwrap();
+        let mut s = 9u64;
+        for i in 0..120 {
+            let x1 = if i < 60 {
+                1e6 + lcg(&mut s)
+            } else {
+                1e6 + 0.37
+            };
+            crate::OnlineModel::step(
+                &mut m,
+                &[lcg(&mut s), x1],
+                &[],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let w = m.windowed_cov();
+        assert_eq!(w.var(1), 0.0);
+        assert_eq!(w.cov(0, 1), 0.0);
+        assert!(w.var(0) > 0.0);
+    }
+
+    /// Every learned row counts for the runs, a row of weight 0 does not,
+    /// and nor does a row whose weight is `EMPTY_FRACTION` of the live
+    /// weight or less, the window's own notion of nothing: it neither
+    /// counts nor ends a run, so a held feature stays held across it.
+    #[test]
+    fn learned_rows_count_for_the_runs_and_rows_of_no_account_do_not() {
+        let mut ew = EwCov::new(1);
+        for i in 0..20 {
+            ew.update(&[5.0], 0.9, if i % 5 == 4 { 0.0 } else { 1.0 });
+        }
+        assert_eq!(ew.rows_learned(), 16);
+        let mut ew = EwCov::new(1);
+        ew.update(&[5.0], 1.0, 1.0);
+        ew.update(&[7.0], 1.0, crate::window::EMPTY_FRACTION);
+        ew.update(&[5.0], 1.0, 1.0);
+        assert_eq!(
+            ew.rows_learned(),
+            2,
+            "the row at the fraction exactly is nothing"
+        );
+        assert_eq!(
+            ew.held_from(0, 2),
+            Some(5.0),
+            "the run was not broken by it"
+        );
+        // The live weight is 2 now, so twice the fraction is nothing still.
+        ew.update(&[7.0], 1.0, 3.0 * crate::window::EMPTY_FRACTION);
+        assert_eq!(ew.rows_learned(), 3, "a row above the fraction counts");
+        assert_eq!(ew.held_from(0, 2), None, "and it broke the run");
+    }
+
     #[test]
     fn new_moments_forget_the_runs() {
         let mut ew = EwCov::new(2);
         for _ in 0..10 {
             ew.update(&[1.0, 2.0], 0.9, 1.0);
         }
-        assert_eq!(ew.held_over(0, ew.n_eff() * 0.999), Some(1.0));
+        assert_eq!(ew.held_from(0, 1), Some(1.0));
         let (m, c) = (ew.means().to_vec(), ew.comoments().to_vec());
         ew.set_moments(&m, &c, ew.n_eff(), ew.q_sum());
-        assert_eq!(
-            (ew.runs.get(0), ew.runs.get(1)),
-            (Some((1.0, 0.0)), Some((2.0, 0.0)))
-        );
-        assert_eq!(ew.held_over(0, 1e-300), None);
+        assert!(!ew.runs.is_known(2), "forgotten");
+        assert_eq!(ew.held_from(0, u64::MAX), None);
         ew.update(&[1.0, 3.0], 0.9, 2.0);
         assert_eq!(
             (ew.runs.get(0), ew.runs.get(1)),
-            (Some((1.0, 2.0)), Some((3.0, 2.0))),
-            "one row's weight each"
+            (Some((1.0, 11)), Some((3.0, 11))),
+            "started again at the eleventh learned row, the value the same or not"
         );
     }
 
@@ -3735,24 +3824,25 @@ mod tests {
         assert!(map.remove("runs").is_some());
         let mut back: EwCov = serde_json::from_value(old).unwrap();
         assert!(!back.runs.is_known(2));
-        assert_eq!(back.held_over(0, 0.0), None, "nothing is known");
+        assert_eq!(back.held_from(0, u64::MAX), None, "nothing is known");
         back.update(&[1.0, 5.0], 0.9, 0.75);
         assert_eq!(
             (back.runs.get(0), back.runs.get(1)),
-            (Some((1.0, 0.75)), Some((5.0, 0.75)))
+            (Some((1.0, 21)), Some((5.0, 21))),
+            "the twenty-first learned row starts each"
         );
         // A state with one half of the runs and not the other knows no more.
-        for key in ["x", "w"] {
+        for key in ["x", "start"] {
             let mut half = serde_json::to_value(&ew).unwrap();
             half["runs"].as_object_mut().unwrap().remove(key);
             let mut back: EwCov = serde_json::from_value(half).unwrap();
             assert_eq!(
-                back.held_over(0, 0.0),
+                back.held_from(0, u64::MAX),
                 None,
                 "{key} missing: nothing is known"
             );
             back.update(&[1.0, 5.0], 0.9, 0.75);
-            assert_eq!(back.runs.get(1), Some((5.0, 0.75)), "{key} missing");
+            assert_eq!(back.runs.get(1), Some((5.0, 21)), "{key} missing");
         }
     }
 

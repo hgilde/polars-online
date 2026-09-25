@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+import child
 from data import VALIDATION_DATES, public_intraday_or_skip
 
 REPO = Path(__file__).resolve().parent.parent
@@ -42,6 +43,7 @@ def regenerated():
         capture_output=True,
         text=True,
         encoding="utf-8",
+        env=child.env(),
         cwd=str(REPO),
         check=False,
     )

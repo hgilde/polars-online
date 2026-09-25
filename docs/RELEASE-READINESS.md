@@ -652,8 +652,9 @@ to schema 3 at task 40.
 
 **Pre-1.0, the loader rule is suspended, and the fixtures are gone.** They
 went in the naming pass of 2026-09-07 (`6124d0b`), after which no older
-state could be read. Today `SCHEMA_VERSION` and `MIN_SCHEMA_VERSION` are both
-13, so a state written in an older layout is refused on its version. The
+state could be read. Today `SCHEMA_VERSION` is 16 and `MIN_SCHEMA_VERSION`
+14, so a state older than 14 is refused on its version, and 14 and 15 load
+through the named encoding's defaults. The
 exception to hard rule 5, and the reason for each raise of the minimum, are
 recorded beside `MIN_SCHEMA_VERSION` in `crates/online-core/src/lib.rs`.
 

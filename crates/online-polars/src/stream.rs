@@ -756,6 +756,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             split_merge_every,
             dead_frac,
             standardize,
+            scale_floor,
         } => {
             let seed_rule = match seed_rule.as_deref() {
                 None | Some("lloyd") => SeedRule::Lloyd,
@@ -781,6 +782,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 split_merge_every: split_merge_every.unwrap_or(100),
                 dead_frac: dead_frac.unwrap_or(0.05),
                 standardize: standardize.unwrap_or(true),
+                scale_floor: scale_floor.unwrap_or(0.1),
             };
             Ok(AnyModel::KMeans(Box::new(KMeans::new(cfg)?)))
         }
@@ -791,6 +793,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             prune_every,
             macro_link,
             standardize,
+            scale_floor,
         } => {
             let cfg = MicroCfg {
                 n_features: spec.k(),
@@ -802,6 +805,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 prune_every: prune_every.unwrap_or(100),
                 macro_link: *macro_link,
                 standardize: standardize.unwrap_or(true),
+                scale_floor: scale_floor.unwrap_or(0.1),
             };
             Ok(AnyModel::Micro(Box::new(Micro::new(cfg)?)))
         }
