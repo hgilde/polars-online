@@ -1,7 +1,9 @@
 # polars-online — design and plan
 
-Status as of 2026-09-06: design frozen 2026-08-29; **tasks 1–58 done**,
-released as 0.2.0. Items marked
+Status as of 2026-09-25: design frozen 2026-08-29; released through
+**0.10.0**, and 0.11.0 is task 109. Open: tasks 78, 86 (parked), 104, 105,
+107 (its window half), 109–120 and 125–127; task 106 was discarded; every
+other task is done. Items marked
 **[validate]** were defaults chosen without data; task 12 checked them on
 public data, and `docs/VALIDATION.md` is the regenerated record.
 
@@ -71,7 +73,7 @@ input order; no allocation in the hot path after warmup (preallocate buffers in 
 | `targets` | list[str] | ≥1; shared X'X, per-target X'y / coefficients |
 | `features` | list[str] | f64 columns |
 | `add_intercept` | bool | default true |
-| `clock` | str \| None | monotone f64 column (seconds or cumulative volume). None ⇒ row count |
+| `clock` | str \| None | a column that does not run backwards within a group: numeric (seconds, cumulative volume, any units), or `Datetime`, `Date` or `Duration`, which make it a temporal clock whose parameters are durations (task 88). None ⇒ row count |
 | `halflife` | float \| list[float] | clock units; mutually exclusive with `lam` |
 | `lam` | float | per-row decay factor, alternative to `halflife` |
 | `max_dclock` | float | ceiling on clock delta (required if `clock` given); `0` disables decay, `inf` removes the ceiling |
@@ -80,18 +82,19 @@ input order; no allocation in the hot path after warmup (preallocate buffers in 
 | `session` | str \| None | column; on change apply `session_gap` |
 | `session_gap` | float \| `"reset"` | clock units to apply at session change |
 | `weight` | str \| None | row weight column, default 1 |
-| `min_periods` | float | in `n_eff` units; outputs null until reached. Default `k + add_intercept`, except `ew_ridge`, where it is `0`: the noise gate below is that model's readiness gate and the rows its first solve needs are its own floor (docs/WARMUP-AND-CONVERGENCE.md, 2026-09-21) |
+| `min_periods` | float | in `n_eff` units; outputs null until reached. The default depends on the model (`Spec::default_min_periods`): `k + add_intercept` for `lasso`, `kalman`, `huber`, `quantile`, `rls`, `sgd`, `pa` and `ftrl`; `k + 1` for `ew_cov`, `ew_class`, `kmeans`, `micro` and `holt`; 3 for `marginal` and `deco`; 1 for `bocpd`; and 0 for `seqtest`, `rcov`, `hmm` and `corrchange`, each gated otherwise, and for `ew_ridge`, where the noise gate below is the readiness gate and the rows its first solve needs are its own floor (docs/WARMUP-AND-CONVERGENCE.md, 2026-09-21) |
 | `min_settled_frac` | float in `[0, 1)` | withhold predictions until the decay window has filled this far toward steady state, `settled_frac = 1 − 2^(−T/h)`, `T` the decay time seen; `0` (default) off. Off because a mean-form fit is unbiased from row one under stationarity; it guards a history that does not represent the process, which only the user can judge. Needs a decay |
 | `max_error_inflation` | float `> 1` | withhold while `error_inflation = sqrt(1 + edf / n_kish)` -- the estimation error's expected inflation of a prediction's error over the noise floor -- exceeds this. Default `sqrt(2)`; `inf` off. Tracks the model; reads Kish's `n`. `ew_ridge` only; the rest keep `min_periods` |
 | `emit_error_inflation` | bool | emit `error_inflation_<slot>`, the same ratio for the row's own features (its leverage against the fit's factor). `O(k²)` a row, hence opt-in; `ew_ridge` only |
 | `coef_every` | int | 0 = never; also emitted on **each group's** last row within every chunk — one row of coefficients per group per chunk, not one per chunk, so the emission schedule of `coef` follows the chunking while every other field is chunk-invariant (hard rule 3 is about the numbers) |
-| `group` | str \| None | one state per key (the expression API uses `.over()` instead, §6) |
+| `group` | str \| None | one state per key |
 
 Per-row decay: `λ_row = 0.5 ** (Δ / halflife)`; `n_eff` = EW count with the same decay.
 
 ### Clock semantics
 - Δ = clock − prev_clock, clipped to `[0, max_dclock]` (with `on_clock_reset="zero"`) or
-  Δ<0 ⇒ `max_dclock` (`"max"`, default) or state reset (`"reset_state"`).
+  Δ<0 ⇒ `max_dclock` (`"max"`, default) or state reset (`"reset_state"`), or the
+  chunk is refused, naming the row, and the bank is untouched (`"error"`).
 - Δ<0 smaller than `min_backwards_jump` is refused whatever the policy, and the bank
   is untouched (design note of 2026-09-19, reduced to this one rule 2026-09-20):
   `max_dclock` is the most two adjacent rows can be apart and a session is longer
@@ -103,7 +106,7 @@ Per-row decay: `λ_row = 0.5 ** (Δ / halflife)`; `n_eff` = EW count with the sa
   learned rows is ordinary), and `"error"` refuses there as the user chose.
 - Session change ⇒ Δ := `session_gap` (or reset), regardless of the clock delta.
 - First row of a group ⇒ Δ = 0.
-- The clock is per group (the expression API gets the group's rows via `.over()`).
+- The clock is per group.
 
 ### Null policy
 - Null in any feature ⇒ row skipped entirely: outputs null, no update, clock still advances.
@@ -293,11 +296,12 @@ Test classes:
    save/load mid-stream.
 3. **Out-of-sample by construction**: a target that is pure noise must give IC ≈ 0; leaking the
    current row makes this test fail.
-4. **Clock semantics**: gap cap, reset (`"max"`/`"zero"`/`"reset_state"`), session gap, first
-   row, per-group independence.
+4. **Clock semantics**: gap cap, the backwards policies (`"max"`, `"zero"`, `"reset_state"`,
+   `"error"`) and `min_backwards_jump`, session gap, first row, per-group independence.
 5. **Null policy** and **warmup** exactly as in §3.
-6. **Expression ≡ bank**: same spec through `.over()` and through `fit_predict` gives identical
-   output.
+6. **Query ≡ bank**: the same spec through `lf.online.fit_predict` and through
+   `ModelBank.fit_predict` gives identical output (the expression form this compared
+   was removed in task 85).
 7. **Cross-platform state**: a state written on CI macOS loads on CI Windows (artifact hand-off).
 8. **Benchmark** (not a test): rows/sec for k ∈ {5, 20, 50}, 1 vs 10 targets, 1 vs 5 halflives.
 
@@ -1705,8 +1709,9 @@ note, not a task.
       library rather than the only one, and the boundary stops riding on
       private py-polars methods. The first holds outright. The second holds on
       the way *out* and not on the way *in*, which is why this stays open
-      rather than ticked -- see "not done" below, where the reason is an
-      ownership question in the C interface and not remaining effort.
+      rather than ticked. The input direction is unbuilt, not blocked
+      (corrected 2026-09-22: see "not done" below), and waits by the user's
+      choice, parked on 2026-09-25.
       **Not a batch:** four increments, each landed and proven on its own
       against the golden streams rather than as one change nothing can judge.
       Released in 0.7.0.
@@ -2917,7 +2922,8 @@ note, not a task.
       the old prose had wrong were found. `po.run` and the CLI moved to
       `docs/RUNNER.md`, whose blocks the same test now runs. Four things a
       reader would have needed to know in advance were found by that test
-      and not by reading — the point of the rule that every block runs. **The leak test's statistic, 2026-09-06.** `assert_plateaus` compared
+      and not by reading — the point of the rule that every block runs.
+- [x] 61. **The leak test's statistic, 2026-09-06.** `assert_plateaus` compared
       the first and last of its post-warm-up marks, which cannot distinguish a
       late allocator step from a slope — the distinction its own docstring
       claims. It failed `main` on a tree whose previous run was green. It now
@@ -4218,7 +4224,24 @@ commercial terms -- are parked (the user, the same day). Each task says its
 size (S under a day, M days, L a week or more), what it waits on, and the
 decision it needs, with a recommendation where there is one.
 
-- [ ] 108. **The docs say what the code does.** S–M, no code, no decision.
+- [x] 108. **The docs say what the code does.** S–M, no code, no decision.
+      **Done 2026-09-25:** a survey checked each item against the code,
+      and 107 edits followed, each an exact match of the stale text: the
+      removed surfaces marked as removed where they read as live (a note
+      heads ENHANCEMENTS and IMPROVEMENTS for the done rows that name
+      them, and code comments drop them); the Arrow import corrected to
+      unbuilt and parked in ARROW-SOURCES, task 86's head and the two
+      reviews; clustering and B2 recorded as built; the counts recounted
+      (976 Rust tests, 3,265 pytest cases), the schema 16 and the tested
+      Polars versions dated; the README's `min_periods` sentence replaced
+      by a table of the defaults `Spec::default_min_periods` gives;
+      WARMUP-AND-CONVERGENCE held to what was built for `ewridge`;
+      REVIEW-2026-09-18's six "candidate" statuses closed with batch 3's
+      commit and tests, and the 2026-09-12 review's open V entries struck
+      with their closures; ANSWERS' D̂₃ corrected to the code's gradient;
+      IMPROVEMENTS P3 noted as done by PERFORMANCE P11; TESTING's T-W rows
+      marked, with T-W8's case-insensitivity the one open entry; and this
+      plan's status line, task 61 split from task 68, §3 and §9.
       The audits found text the code has left behind: the removed expression
       plugin (task 85) and `po.run` (task 83) described as live in
       ENHANCEMENTS, IMPROVEMENTS, PERFORMANCE, CLUSTERING, STATE-WORKFLOW and
@@ -7785,7 +7808,7 @@ Each of §11b–§11h below summarises one document under `docs/` and says what
 became of it. Four more carry no section of their own:
 
 - `docs/ENHANCEMENTS.md` — every model and feature after the first seven
-  (E1–E69): proposed, measured, built or declined.
+  (E1–E74): proposed, measured, built or declined.
 - `docs/TESTING.md` — coverage scorecard against §9, the defects the suite
   found, and the oracle/river cross-checks.
 - `docs/STATE-WORKFLOW.md` — research (2026-09-03) on carrying state out of a
@@ -7795,8 +7818,8 @@ became of it. Four more carry no section of their own:
 - `docs/ARROW-SOURCES.md` — research and a proposal (2026-09-17, nothing
   built) on feeding a bank from any Arrow producer: which libraries implement
   the PyCapsule interface, the tier that already works through polars with no
-  new dependency, what a *native* import would cost (a second Arrow
-  implementation beside polars-arrow — raised under rule 12, not decided),
+  new dependency, and a native import, which needs no second Arrow
+  implementation (§4, corrected 2026-09-22; parked by the user on 2026-09-25),
   and a comparison with DuckDB's own statistics and learning extensions,
   which are broad but batch-first and keep no state between queries.
 
@@ -7841,7 +7864,8 @@ change becomes a reviewable diff. Proposed, not implemented.
 unlock, checked against crates.io so "nobody has built this" is evidence rather than
 assumption. Three strong candidates (adaptive conformal prediction, frequent-directions
 sketching, rolling-window regression), three weak, and Hoeffding trees left to MOA on
-purpose. Survey only — nothing proposed. The one condition attached: a relaxed bound
+purpose. A survey, and since then B1 was built as E36 and B2 as `window`
+(task 63); B3 and B4 wait in task 118. The one condition attached: a relaxed bound
 would have to become a *stated, tested* property, not a habit.
 
 ## 11f. Pre-release improvements review
@@ -7925,8 +7949,8 @@ where every k-means and GMM scores 0.000 on the rings, with the threshold rule
 measured and derivable at the checkpoint — it is the design worth the build
 decision, for the seven reasons in §0 and ENHANCEMENTS §4. §8 settles the spec
 and the static output schema, §9 costs a Rust build, §10 lists what failed.
-Investigation only — nothing in the crates; the build decision is the user's
-(task 22). ENHANCEMENTS §5.1 is the follow-on inventory of what else fits the
+Two designs were built on the user's decision: `kmeans` (task 23) and
+`micro` (task 24). ENHANCEMENTS §5.1 is the follow-on inventory of what else fits the
 online contract (E36–E42).
 
 ## 12. Open questions (not blocking)

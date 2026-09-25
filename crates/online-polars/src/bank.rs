@@ -298,7 +298,7 @@ pub const PAR_MIN_ROWS: usize = 4096;
 /// The same threshold in feature values, for a chunk that is wide rather
 /// than tall: at `k = 10,000` a chunk of a few hundred rows is tens of
 /// megabytes to cast and transpose, well worth a dispatch, and half a
-/// megabyte of features is not the `.over()` case above. The block itself
+/// megabyte of features is not the many-small-chunks case above. The block itself
 /// is allocated on the calling thread either way.
 const PAR_MIN_CELLS: usize = 1 << 16;
 

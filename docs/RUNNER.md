@@ -254,8 +254,8 @@ caller already has, and `run` with a callback instead of an output file.
 The command line needs no Python, so the Polars floor applies only to the
 Python calls this guide names. The floor is `LazyFrame.collect_batches`,
 which `lf.online.fit_predict` and `ModelBank.fit_predict_batches` read
-with, and which py-polars added in 1.34.0. The whole suite passes on
-1.34.0, 1.38.1, 1.44.1 and the 2.0 release candidate with identical
-numbers. The README's
+with, and which py-polars added in 1.34.0. The suite passed on 1.34.0,
+1.38.1 and 1.44.1 on 2026-09-02 and on 2.0.0-rc.1 on 2026-09-18, with
+identical numbers, and passes on 1.44.2, the pin, at every change. The README's
 [Versioning and the Polars pin](../README.md#versioning-and-the-polars-pin)
 has the full matrix and which interfaces carry a promise.

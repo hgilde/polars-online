@@ -1,17 +1,23 @@
 # Suggested enhancements
 
-Status as of 2026-09-06: **everything through E64 is built, declined or
-noted, and every task in `docs/PLAN.md` §11 is done**, released as 0.2.0.
-The exceptions are recorded decisions, not gaps: E28/E29 (declined), E63 (a
-note); E51 and E52 were the two P3 rows left open, and both closed on
-2026-09-08 (E51 built as task 71, E52 superseded by E54). Twenty-one models — the ten regressions and smoothers (`ewridge`,
+Status as of 2026-09-25: **E1 to E68, E70 and E71 are built, declined or
+noted**; E69 (PLAN tasks 78, 104, 105 and 107) and E72 to E74 (tasks 125 to
+127) are open. The latest release is 0.10.0. The exceptions among the done
+rows are recorded decisions, not gaps: E28/E29 (declined), E63 (a note); E51
+and E52 closed on 2026-09-08 (E51 built as task 71, E52 superseded by E54). Twenty-one models — the ten regressions and smoothers (`ewridge`,
 `rls`, `lasso`, `kalman`, `huber`, `quantile`, `sgd`, `pa`, `ftrl`, `holt`),
 the moment and monitor family (`ew_cov`, `ew_class`, `marginal`, `seqtest`),
 the two clusterers (`kmeans`, `micro`) and the regime detectors of §10
-(`deco`, `rcov`, `hmm`, `corrchange`, `bocpd`) — reached through three entry points
-with identical numerics (the expression plugin, the original one, is the
-in-memory form and warns on every use since 2026-09-03 — PLAN §6 and E34
-below). Chunk invariance and out-of-sample-ness are enforced by tests,
+(`deco`, `rcov`, `hmm`, `corrchange`, `bocpd`) — reached three ways with
+identical numerics: inside a Polars query (`lf.online.fit_predict`), in your
+own loop (`ModelBank`), and from the `online` command line. The expression
+plugin, the original entry point, was removed in task 85 (2026-09-17), and
+`po.run` in task 83.
+
+*Read since 2026-09-17:* rows that name `po.run` or the expression plugin
+(E1, E8, E31–E35, E42–E44, E50, E53, E57 among them) describe what was built
+then. For `po.run`, read the `online` command line for files and
+`ModelBank.fit(lf)` in Python; for the plugin, `lf.online.fit_predict`. Chunk invariance and out-of-sample-ness are enforced by tests,
 release CI runs on three OSes, and the defaults are validated on public data.
 
 This document lists what *followed from* those goals: first the gaps against our
@@ -23,7 +29,7 @@ implemented and tested. Read it as a record: §1–§3 are the first round
 (E1–E27), §4 is the standing list of what we will *not* build (two entries of
 which were reopened — clustering became `kmeans` and `micro`, tasks 23–24;
 trees stay open at prototype level), §5 holds the river audit's undecided
-candidates and §5.1 the inventory of what else fits the online contract
+candidates, both declined on 2026-09-08, and §5.1 the inventory of what else fits the online contract
 (E36–E42, all built), §6 the accessor the accumulators were missing, §9 the
 wide and many-block work (E43–E53) and §10 the asynchronous-correlation work
 (E54–E64). The closing section says what was verified against river and
@@ -146,8 +152,8 @@ them down, which is the failure this section exists to prevent.
   state, determinism, chunk invariance and the damped window are all met — nine
   designs are prototyped and measured. "Not regression" stays true and the bank
   already ships one unsupervised model (`ew_cov`); the real cost is a second
-  family plus a label whose stability is a user-visible API property. The
-  decision is open.* **The design worth the decision is `micro`, DenStream-style
+  family plus a label whose stability is a user-visible API property. Built
+  since as `kmeans` and `micro` (PLAN tasks 23 and 24).* **The design worth the decision was `micro`, DenStream-style
   micro-clusters with a linkage macro step, and the reasons are all measured
   (`CLUSTERING.md` §0, §3, §7.8, §12):* (1) it reaches the batch ceiling on the
   shapes that define the problem — 0.998 on two moons, 0.999 on three
@@ -186,7 +192,8 @@ them down, which is the failure this section exists to prevent.
   design inside the bar, batch DBSCAN over a deterministically retained sample,
   is unmeasured because the library's convention reads retained rows as
   `O(data)` (`CLUSTERING.md` §12). Costed in §9: `micro` is about the size of
-  `holt` again, on the shared summary `kmeans` needs. **Build decision: open.**
+  `holt` again, on the shared summary `kmeans` needs. **Built as `kmeans` and
+  `micro` (tasks 23 and 24).**
 - **Bandit-based model selection** (`model_selection.*`): E13/E14 cover the
   need deterministically; bandits add randomness to the prediction path.
 - **Pipelines / feature extraction** (`compose.*`, `feature_extraction.*`,
@@ -231,8 +238,8 @@ them down, which is the failure this section exists to prevent.
 - **Automatic feature selection** (`feature_selection.SelectKBest`,
   `VarianceThreshold`, `PoissonInclusion`): E13 selects among feature sets the
   caller *names*, which keeps the output schema fixed and declarable. Selection
-  that changes the feature set per row cannot have a static schema, which the
-  expression plugin requires.
+  that changes the feature set per row cannot have a static schema, which every
+  surface requires: a query's output schema is fixed when the plan is built.
 - **Non-linear anomaly detectors** (`anomaly.HalfSpaceTrees`, `LODA`,
   `LocalOutlierFactor`, `OneClassSVM`): not the linear family, and the tree and
   window-based ones carry the memory problem too. `GaussianScorer` is covered by
@@ -253,7 +260,7 @@ them down, which is the failure this section exists to prevent.
 
 Everything numbered E1–E27 is implemented. These two are the only things the
 audit of river 0.26.1 turned up that are arguably *in* scope rather than
-excluded, and neither has been built or decided on.
+excluded. Both were declined on 2026-09-08 (below).
 
 PLAN §4.6 scopes classification to **binary**, and `ftrl` covers the logistic
 case. river has three more binary linear classifiers, and two of them would be
@@ -305,7 +312,7 @@ upstream: random Fourier features (`cos(x·ω + b)` with `ω, b` drawn once and
 written into the query as constants), splines or polynomial terms as Polars
 expressions into `ewridge` — kernel ridge in `O(D²)` state for `D` features.
 The seed lives in the expression, fixed per query and not per row, so it is
-chunk-invariant and not code X; the plan and the plugin both accept it today.
+chunk-invariant and not code X; the bank and the query form both accept it today.
 Seasonality is E25's recorded answer: a `group_by` on the phase, not a seasonal
 term in `holt`.
 
@@ -314,9 +321,8 @@ an interval with a guarantee), E37 with E38 second (no new state; `ew_cov`
 becomes anomaly detection and factor structure), then the two
 investigations — trees (still open) and clustering (built as `kmeans` and
 `micro`, tasks 23–24), the largest jumps and the largest costs
-— then E39 (built, task 27), then B2 rolling-window regression once
-the retained-rows convention (`CLUSTERING.md` §12, DBSCAN over a retained
-sample) is settled. E40 (built, task 28) was the portfolio-weights ask;
+— then E39 (built, task 27), then B2, rolling-window regression, which was
+built as `window` (task 63, PLAN §13). E40 (built, task 28) was the portfolio-weights ask;
 E41 (built, task 29) the bursty-regressor one; E42 (built, task 30) the "is the new spec better, with a number I can defend" one, and, as a column test, a sign test on anything.
 
 ## 6. Reaching the accumulators directly
@@ -366,7 +372,7 @@ alongside `G` lets the caller choose without a second call.
 | # | P | Enhancement | Where it comes from |
 |---|---|---|---|
 | E33 | ~~P1~~ **done** | **The bank as a polars source: `lf.online.fit_predict(specs)`.** A `LazyFrame` in, a `LazyFrame` out, whose execution — `collect()`, `collect_batches()`, `sink_parquet()`, anything — streams the plan's rows through a fresh `ModelBank` in `chunk_rows` chunks, so a query with the bank in it is O(chunk) in memory where the expression plugin in the same position is O(data) in either engine (`docs/PERFORMANCE.md` §11). Done with polars' **IO-plugin** interface (`polars.io.plugins.register_io_source`): the bank is registered as a *source* node, the kind the engine pulls batches from; the source runs `collect_batches` over the input plan and `fit_predict` per chunk. Polars pushes a projection, a predicate and a slice into a Python source and does **not** re-apply any of them afterwards, so the source honours all three — the predicate *after* the bank (a downstream filter never changes what the bank learns from; filter before to do that), the projection read from the input (a wide scan reads only the specs' columns and the query's), and `n_rows` counted *before* the predicate, because slice pushdown runs before predicate pushdown in polars' optimizer and a slice is pushed into a Python scan only while the scan has no predicate yet, so both present means the plan sliced first (`slice_pushdown_lp.rs`; polars' own `pl.defer` orders them the other way and returns 100 rows for `head(100).filter(..)`). The plan is pure: every execution starts from the same state — the specs', or `load_state` — so collecting twice is the same frame and nothing is saved (`po.run(save_state=)` or a bank of one's own for the state after; a `bank=` that the plan mutates was considered and declined, since `head(n)` would then learn a chunk-dependent prefix). `lf.online.predict(bank)` scores against a bank or a state file, learning nothing; `df.online.fit_predict` / `df.online.predict` are the eager twins, and `po.fit_predict(frame, ..)` / `po.predict(frame, bank)` the forms a type checker can see. A spec naming a missing or non-numeric column is refused while the plan is built (the output schema comes from the bank run on no rows), and an error the rows raise surfaces as polars' `ComputeError` carrying the bank's message. Measured (§11): bit-identical to `po.run`'s output on 12M rows in 2.8 s (`po.run` 2.9 s, the plugin 14.4 s) at 0.78 GB live, 0.37 GB with the prefetch at 1, flat from 3M to 12M. Not possible on the Rust side the same way: polars-stream 0.55.2 lowers `AnonymousScan` to `todo!()`; the Rust twin remains `run(.., Output::Batches)`. **Found on the way:** `po.run` over a path or a plan, and this, read with `LazyFrame.collect_batches`, which py-polars added in **1.34.0** — so E32 had already moved the floor and the canary (latest only) could not see it; the declared floor is now `polars>=1.34.0,<2`, with the whole suite run on 1.34.0, 1.38.1 and 1.44.1 (`docs/RELEASE-READINESS.md`). Tests: `tests/test_frame.py` — both engines equal the bank loop and, up to `coef`'s cadence, the whole-frame bank; chunk invariance; purity; every pushdown in both orders against the collected frame; input read in chunks and torn down with the plan; projection reaching a UDF column; `sink_parquet` ≡ `po.run` and a group-by after the bank in the streaming engine; `load_state`; `predict` from a bank and a path with the bank unmoved; empty plans; the errors. | The user's observation: "adding a query causes the whole data set to be collected — very surprising to a user who expects online processing; can it be fixed?" The plugin cannot be (polars' contract for a user expression is the whole column), so the fix is an API that is query-shaped *and* streams, and documenting the expression form as the in-memory surface. |
-| E34 | ~~P1~~ **done** | **The expression form warns that it runs in memory.** Every `pl.col("y").online.<model>(...)` call issues `polars_online.InMemoryExpressionWarning` — a `UserWarning`, shown by default from anywhere (a `DeprecationWarning` is hidden outside `__main__`, i.e. in the pipeline module where it matters) — saying that polars hands it the whole column, that `lf.online.fit_predict([spec])` is O(chunk) for the same model, and how to silence it for a frame in memory on purpose. The README shows the two forms side by side in a closing note with the numbers (7.3 GB against 1.35 GB at 12M rows). The plugin ships, `pl.Expr.online` is registered on import, `po.online` is exported, and the tests run in every build. | E33 fixed the query-shaped trap by adding the streaming form, which left two forms with one set of numbers and two memory profiles, and users read the expression as the natural one. The cause is polars' contract for a stateful user expression (whole column, either engine), which no plugin can change. The first cut removed the expression form (an off-by-default cargo feature, out of the wheel): a user who then wrote it got polars' bare `AttributeError` with no rationale, the in-memory use and the one polars-guaranteed interface (CLAUDE.md rule 13) left the wheel, and the plugin's runtime tests stopped running in CI. Reverted the same day for the warning, which teaches at the call site. Not "deprecated": PLAN §6 has the condition under which it becomes a streaming form too — a polars node that runs a user expression per morsel, in order, with state. |
+| E34 | ~~P1~~ **done, then removed** (task 85, 2026-09-17: the plugin, `pl.Expr.online`, `po.online` and `InMemoryExpressionWarning` are gone) | **The expression form warns that it runs in memory.** Every `pl.col("y").online.<model>(...)` call issues `polars_online.InMemoryExpressionWarning` — a `UserWarning`, shown by default from anywhere (a `DeprecationWarning` is hidden outside `__main__`, i.e. in the pipeline module where it matters) — saying that polars hands it the whole column, that `lf.online.fit_predict([spec])` is O(chunk) for the same model, and how to silence it for a frame in memory on purpose. The README shows the two forms side by side in a closing note with the numbers (7.3 GB against 1.35 GB at 12M rows). The plugin ships, `pl.Expr.online` is registered on import, `po.online` is exported, and the tests run in every build. | E33 fixed the query-shaped trap by adding the streaming form, which left two forms with one set of numbers and two memory profiles, and users read the expression as the natural one. The cause is polars' contract for a stateful user expression (whole column, either engine), which no plugin can change. The first cut removed the expression form (an off-by-default cargo feature, out of the wheel): a user who then wrote it got polars' bare `AttributeError` with no rationale, the in-memory use and the one polars-guaranteed interface (CLAUDE.md rule 13) left the wheel, and the plugin's runtime tests stopped running in CI. Reverted the same day for the warning, which teaches at the call site. Not "deprecated": PLAN §6 has the condition under which it becomes a streaming form too — a polars node that runs a user expression per morsel, in order, with state. |
 | E35 | ~~P1~~ **done** | **The state out of a streamed plan: `lf.online.fit_predict(specs, load_state=, save_state=)`.** The runner's two keywords on the plan, so the state workflow — fit online in bounded memory, export the state, load it and predict without updating, load it and learn on — is written the same way on every surface. The plan stays pure: `load_state` (and `predict(path)`) is read when the plan is built and the plan carries the bytes, so collecting twice gives the same frame; `save_state` is written, atomically, when the source has fed the bank its last row — the stream's end or the rows of a pushed `head(n)`, which the source now applies to the input so the bank learns exactly those rows — never by a run the caller abandoned or the bank ended with an error. A plan used twice in one query runs twice, concurrently, and writes the same bytes twice; two writers of one path in one process used to share one temporary in `atomic.rs` (named by pid alone) — fixed at the root with a process-wide counter, which also covers `ModelBank.save` from two threads and `po.run`'s output file. Documented gap: a node after the bank failing does not stop the bank (polars drains a Python source before it raises), so the state is written although the query failed; `po.run` saves only after its output is committed, and a dated `save_state` per batch keeps a rerun from learning it twice. The memory side (a plan mutating a `ModelBank`, `load_state=bank`) is declined. | The four-step workflow asked for on 2026-09-03; `docs/STATE-WORKFLOW.md` has the measurements (polars 1.34.0/1.38.1/1.44.1: one source run per use of a plan in a query, concurrent, no CSE; a downstream failure drains the source first; an abandoned run is closed whenever polars drops it), the candidates, the rules R1–R7 and the decisions. `tests/test_frame.py`'s E35 tests hold the state byte-for-byte to a bank's and to `po.run`'s. |
 
 ## 9. Wide, many-target, many-block work (2026-09-05)

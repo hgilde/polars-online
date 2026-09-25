@@ -3,7 +3,8 @@
 **Status: research and a proposal, 2026-09-17. Nothing built.** The goal is to
 let anything that produces Arrow chunks feed a bank, DuckDB first. §1–§3 are
 what the ecosystem actually offers, measured or quoted rather than recalled.
-§4 is the one decision that is not mine to take. §5 compares DuckDB's own
+§4, corrected on 2026-09-22, finds no blocker and asks for no decision; the
+native import it clears is parked by the user (2026-09-25, PLAN task 86). §5 compares DuckDB's own
 statistics and learning extensions with this library, which is the question of
 whether this expansion is worth building at all. **§7, added 2026-09-21,**
 surveys the wider field against two criteria — chunks over more data than
@@ -537,18 +538,21 @@ the relation *inside* the loop, not outside it.
    **Started 2026-09-17:** `duckdb` is in the `dev` group, and
    `tests/test_consumed_source.py` covers DuckDB → bank over an ordered
    relation, the pyarrow-free path, and what `#17084` actually does on the
-   installed version. Still to do: `pyarrow` and `adbc-driver-manager`, the
-   README's untested "straight to duckdb" claim, and the user-facing section.
+   installed version. `pyarrow` and `adbc-driver-manager` have since joined
+   the dev group, and the README's "straight to duckdb" claim was measured on
+   2026-09-22 and corrected: duckdb takes the struct through `pl.Series`.
+   Still to do: the user-facing section.
 2. ~~**Document the single-use contract** beside the DuckDB precedent (§3).~~
    **Done — and the premise changed.** There is no DuckDB precedent any more
    (§3, measured on 1.5.5), so the contract is documented as *ours*. The
    related hazard one level down — a captured *stream* being spent while the
    relation is not — is documented and now guarded by `ConsumedSourceWarning`.
 3. **Order guidance** for SQL sources (§5's caution).
-4. **Decide §4.** My recommendation: pursue C upstream, hold B, decline A.
-5. **Only then**, if §4 resolves, the native import: `ModelBank.fit_predict_capsule(obj)`
-   taking anything with `__arrow_c_stream__`, and a `Bank::fit_predict_stream`
-   under it.
+4. ~~**Decide §4.**~~ Nothing to decide: §4, corrected on 2026-09-22, finds
+   no blocker.
+5. **The native import**: `ModelBank.fit_predict_capsule(obj)` taking
+   anything with `__arrow_c_stream__`, and a `Bank::fit_predict_stream` under
+   it. Unblocked, and parked by the user on 2026-09-25 (PLAN task 86).
 
 Tier 0 delivers the user-visible capability. Everything after it is about
 removing the last private call from the boundary, which is worth doing and is
@@ -689,11 +693,10 @@ Three things, none of which reorders the list:
    either way, and what arrival order decides is what "recent" weighs and what
    every out-of-sample prediction was scored against. Both belong beside the
    `ORDER BY` note §5 already carries.
-3. **DataFusion deserves a spike, and it is not blocked on §4.** It would let
-   the Rust CLI read any DataFusion source in a declared order with no Python
-   in the path. It does bring `arrow-rs` — but into `online-cli`, a *separate
-   binary* that already links Rust `polars` and never touches py-polars, not
-   into the wheel. §4 and rule 12 are about two Arrow implementations inside
-   the published wheel; a CLI-only dependency does not incur that, which makes
-   this the cheapest way to find out what living with arrow-rs is actually
-   like before answering §4 at all.
+3. **DataFusion deserves a spike.** It would let the Rust CLI read any
+   DataFusion source in a declared order with no Python in the path. It does
+   bring `arrow-rs` — but into `online-cli`, a *separate binary* that already
+   links Rust `polars` and never touches py-polars, not into the wheel. That
+   makes it the cheapest way to find out what living with arrow-rs is
+   actually like. Parked with the other Arrow work on 2026-09-25 (PLAN,
+   "Parked by the user").

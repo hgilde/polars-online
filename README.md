@@ -150,7 +150,7 @@ alone.
 | **any thread count** | each (spec, group) pair is fitted on its own thread, and the count changes only the speed: with 64 groups, 14 threads process 8× the rows per second of one ([Parallelism](#parallelism)) |
 | **bounded memory** | memory is proportional to the models' state, not to the number of rows that have passed ([Memory](#memory-which-calls-stream)) |
 | **named mistakes** | every keyword is checked against its type, and a missing column is reported with the spec that wanted it and the role it had there |
-| **a tested claim** | about 650 Rust tests and 2,200 Python cases, against numpy and an independent implementation and on adversarial streams, run on macOS, Windows and Linux at every push ([Testing](#testing)) |
+| **a tested claim** | 976 Rust tests and 3,265 Python cases (counted on 2026-09-25), against numpy and an independent implementation and on adversarial streams, run on macOS, Windows and Linux at every push ([Testing](#testing)) |
 
 A bank runs three ways, with the same numbers from each: inside a Polars
 query as above, in your own Python loop, or from a standalone command line
@@ -434,8 +434,15 @@ below.
 
 `min_periods` is the older, absolute floor, in `n_eff` units: every output
 is null until `n_eff` reaches it. A list gives one threshold per target.
-Every model but `ewridge` still defaults it to one observation per
-unknown.
+Its default depends on the model:
+
+| default | models |
+|---|---|
+| one per unknown: the features, and the intercept when there is one | `lasso`, `kalman`, `huber`, `quantile`, `rls`, `sgd`, `pa`, `ftrl` |
+| the feature count plus one | `ew_cov`, `ew_class`, `kmeans`, `micro`, and `holt`, where it is 1 |
+| 3 | `marginal`, `deco` |
+| 1 | `bocpd` |
+| 0, each having a gate of its own | `ewridge`, `seqtest`, `rcov`, `hmm`, `corrchange` |
 
 `n_eff` is the *effective number of observations*: the total weight behind
 the state that produced this row's prediction, after forgetting and before
@@ -2762,14 +2769,15 @@ the package.
 
 | py-polars | rust polars | pyo3-polars | pyo3 | Python |
 |---|---|---|---|---|
-| **>= 1.34.0, < 3** (built and tested against 1.44.1) | 0.55.2 | 0.28 | 0.29 | ≥ 3.12 (`abi3-py312`) |
+| **>= 1.34.0, < 3** (built and tested against 1.44.2) | 0.55.2 | 0.28 | 0.29 | ≥ 3.12 (`abi3-py312`) |
 
 The Rust `polars` is pinned exactly and built into the wheel. The runtime
 requirement is a range, because the two copies never meet. The floor is
-`LazyFrame.collect_batches`, which `lf.online.fit_predict` and the
-file-to-file runner read with, and which py-polars added in 1.34.0. The
-whole suite passes on 1.34.0, 1.38.1, 1.44.1 and the 2.0 release candidate
-with identical numbers, and `ModelBank` alone works from 1.28.1. A test
+`LazyFrame.collect_batches`, which `lf.online.fit_predict` and
+`ModelBank.fit_predict_batches` read with, and which py-polars added in
+1.34.0. The suite passed on 1.34.0, 1.38.1 and 1.44.1 on 2026-09-02 and on
+2.0.0-rc.1 on 2026-09-18, with identical numbers, and passes on 1.44.2, the
+pin, at every change. `ModelBank` alone works from 1.28.1. A test
 asserts the pins, and the matrix is in
 [docs/RELEASE-READINESS.md](docs/RELEASE-READINESS.md).
 
@@ -2827,7 +2835,7 @@ narrowing it is a breaking one. Output field names are part of the API
 
 The guarantees above are only worth what checks them, so the suite is built
 around oracles and invariants rather than expected values typed in by
-hand: about 650 Rust tests and 2,200 pytest cases, all green on three
+hand: 976 Rust tests and 3,265 pytest cases (counted on 2026-09-25), all green on three
 operating systems. [docs/TESTING.md](docs/TESTING.md) is the ledger of what
 each part proves.
 

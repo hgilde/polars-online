@@ -769,7 +769,7 @@ co-moments on `ew_cov`. In API terms:
   with an undrained closed row, an `ew_cov` with a partly filled lag ring,
   and one of each new model mid-stream. `state_schema4.rs` still loaded,
   continued to the bit and re-saved as 5, which was hard rule 5 discharged.
-  Both fixtures have since gone, and the schema is 13
+  Both fixtures have since gone, and the schema is 16
   ([What the API actually is](#what-the-api-actually-is)).
 - **Every new output field name is pinned** by `tests/api_surface.txt`,
   which then gained a `[helper modules]` section, and by
@@ -1012,8 +1012,8 @@ and an outward-facing README. So were `release.yml`, with wheels for six
 platforms plus an sdist and PyPI trusted publishing, and the name
 `polars-online`, verified free. The test suite is the repo's strongest
 argument, with golden and hardening layers: ~640 Rust + ~2,200 pytest,
-counted on 2026-09-06. The README gives about 650 Rust tests and 2,200
-pytest cases today.
+counted on 2026-09-06; 976 Rust tests and 3,265 pytest cases on 2026-09-25
+(docs/TESTING.md).
 
 | ID | item | status |
 |---|---|---|

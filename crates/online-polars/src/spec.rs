@@ -1832,7 +1832,7 @@ pub struct Spec {
     /// order, since one session's clock does not measure time in the next.
     #[serde(default)]
     pub label_delay: Option<Span>,
-    /// ModelBank/CLI only; one state per key. The expression API uses `.over()`.
+    /// One state per key.
     #[serde(default)]
     pub group: Option<String>,
     /// Emit a group's accumulators when the stream can prove no further row
@@ -2863,8 +2863,8 @@ impl Spec {
                     ));
                 }
                 if let Some(lags) = lags {
-                    // The list's own rules are the accumulator's, so the CLI,
-                    // the bank and the plugin all get one message.
+                    // The list's own rules are the accumulator's, so the CLI
+                    // and the bank get one message.
                     online_core::EwLagCov::new(self.k().max(1), lags.clone())
                         .map_err(|e| format!("spec {:?}: ew_cov {e}", self.name))?;
                 }
@@ -3083,7 +3083,7 @@ impl Spec {
                 }
             }
             // Every parameter check is `DecoCfg::validate`'s, so that the
-            // CLI, the bank and the plugin all get the same messages; only
+            // CLI and the bank get the same messages; only
             // the block *names* are resolved here, where the feature list is.
             ModelKind::Bocpd { hazard_col, .. } => {
                 // The model reads `targets[0]` as the hazard whatever the name

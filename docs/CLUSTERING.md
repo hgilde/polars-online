@@ -71,7 +71,7 @@ material stays out of the repo.
   buffer + Lloyd with the split–merge move as the recovery mechanism.
 - **`n_eff`, `min_periods`, zero weight, null rows, the irregular clock and the
   damped window all carry over unchanged.** The one place clustering needs a new
-  contract rule is the **output schema**: the plugin needs a static schema known
+  contract rule is the **output schema**: the bank needs a static schema known
   from the spec alone, so `k` must be a spec parameter for the fixed-`k` models,
   and the variable-`k` models emit a monotone integer id plus a count, never a
   column per cluster (§8).
@@ -1293,7 +1293,7 @@ therefore a ragged list — which the `coef` field already is.
 
 **`k` is a spec parameter** for the fixed-`k` models, which is what makes the
 schema static. There is no "choose `k` from the data" mode, and there cannot be
-one behind the plugin.
+one behind a static schema.
 
 **Parameters**, mapped onto names the library already uses:
 `halflife`, `min_periods`, the per-model `standardize` flag (`spec.rs:358` and
@@ -1323,7 +1323,7 @@ final centroids; the true silhouette needs all pairwise distances and is out.
   of magnitude *smaller* than `ewridge` with the same `p`.
 - Plumbing: every place in `docs/EXTENDING.md` — `ModelKind::KINDS`, `KINDS`,
   `AnyModel` / `dispatch!` / `build_one` / `combos`, `bank.rs`'s output index
-  and coef fields, `_spec.py`, `_kwargs.py`, `_expr.py`, `api_surface.txt`, the
+  and coef fields, `_spec.py`, `_kwargs.py`, `api_surface.txt`, the
   sweep lists, `test_model_registry`, the golden bank, the README list and the
   CHANGELOG. The registry tests name each omission.
 - Tests: `model_contract.rs` for `n_eff` and zero-weight rows (the contract
@@ -1422,13 +1422,12 @@ it was re-checked.
 
 ## 12. Open questions
 
-- **Whether to build any of it.** Nothing here presumes it. §9 costs the
-  narrowest build (`kmeans` with the split–merge move and the seeding buffer).
+- **Whether to build any of it.** Built: `kmeans` (PLAN task 23) and `micro`
+  (task 24). §9 costed the narrowest build.
 - **Which family to expose, given that none dominates.** §7.8 shows the choice
-  is the user's shape assumption, not ours. Either ship one model and document
-  what it cannot see, or ship two (`kmeans` for blobs, `micro` for shapes) and
-  make the trade explicit. Shipping only `kmeans` and calling it "clustering"
-  would be the misleading option.
+  is the user's shape assumption, not ours. Both shipped: `kmeans` for blobs,
+  `micro` for shapes, with the trade explicit. The items below are PLAN task
+  118 now.
 - **DBSCAN over a retained sample is the one DBSCAN-faithful design inside
   the bar, and it is unmeasured.** A fixed sample of `m` rows (`m·p` doubles,
   constant in `n`, so it passes §2's bar the way a sliding window does) with
@@ -1448,7 +1447,7 @@ it was re-checked.
   intraday data `tests/data.py` already downloads — clusters of minutes by
   their return/volume/spread profile, scored by stability rather than by a
   ground truth that does not exist.
-- **`k`-selection is out of scope behind the plugin** (a static schema needs a
+- **`k`-selection is out of scope behind a static schema** (it needs a
   fixed `k`), but the bank could run several `k` at once and expose an EW SSQ
   per model — an elbow computed by the user rather than by us.
 - **Whether to spend a second pass** (§2.1), and if so on initialisation only

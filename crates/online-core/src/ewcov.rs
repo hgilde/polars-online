@@ -1223,8 +1223,8 @@ impl EwCovCfg {
             );
         }
         if !self.lags.is_empty() {
-            // The list's own rules live with the accumulator, so the CLI, the
-            // bank and the plugin all get one message.
+            // The list's own rules live with the accumulator, so the CLI and
+            // the bank get one message.
             crate::EwLagCov::new(self.n_features, self.lags.clone())
                 .map(|_| ())
                 .map_err(|e| format!("ew_cov: {e}"))?;

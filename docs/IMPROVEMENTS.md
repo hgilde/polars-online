@@ -6,6 +6,10 @@ that CLAUDE.md rule 12 reserves for the maintainer (an allocator for the
 CLI is a new static link). This is the record of a pre-release pass
 (2026-09-01 to 2026-09-02); items are cited from the code by their letters.
 
+*Read since 2026-09-17:* `po.run` was removed in task 83 and the expression
+plugin in task 85. C1, C7, C8, P1, U4 and X1 name them as they stood when
+each was done.
+
 A pre-release pass over the code with one question per axis: what would a
 user hit in the first week, what is slower than it needs to be, what is
 harder to extend than it needs to be, and what is untested. Every finding
@@ -42,8 +46,8 @@ checks the declaration against the realized column and refuses. Nothing in
 Fix: the dtype is part of the output descriptor. `FieldMeta` (the S1 index
 that already carries kind/target/halflife/...) gains a `dtype`, the plugin
 reads it, and `assemble` is checked against the same table — one source of
-truth instead of a name heuristic. `tests/test_expr.py` runs every emit flag
-through `.over()` and compares with the bank (T3).
+truth instead of a name heuristic. `tests/test_expr.py` ran every emit flag
+through `.over()` and compared with the bank (T3), until task 85 removed it.
 
 ### C2 — one absurd row can kill a model for good — *done*
 
@@ -285,12 +289,10 @@ panic. Fixed with one call, `out.align_chunks_par()` before `write_batch`,
 which rechunks only when the chunks disagree and is a no-op otherwise; no
 measurable cost on the aligned path, and the misaligned path was a crash.
 
-Tests: `test_runner::test_row_groups_need_not_align_with_chunk_rows` (the
-reproduction through `po.run`, output held equal to `ModelBank.fit_predict`
-of the whole frame) and `row_groups_need_not_align_with_chunk_rows` in
-`crates/online-cli/tests/run.rs`, which is the same file in `cargo test`,
-where the debug assertion fires instead of the arrow panic. Both fail with
-the alignment removed.
+Tests: `row_groups_need_not_align_with_chunk_rows` in
+`crates/online-cli/tests/run.rs`, which fails with the alignment removed: the
+debug assertion fires instead of the arrow panic. Its Python twin, a
+reproduction through `po.run`, went with task 83.
 
 ### C8 — the CLI's NDJSON output is pathological on the system allocator — *proposed*
 
@@ -336,17 +338,17 @@ than made:
    `online-core` or `online-polars`. It is a C library statically linked
    through a `-sys` crate (`mimalloc` is the one that builds on both
    targets), which is exactly what rule 12 says to raise first. It would
-   also close the 15% bank gap between the CLI and `po.run` measured in
-   docs/PERFORMANCE.md §10.
+   also have closed the 15% bank gap between the CLI and `po.run` measured
+   in docs/PERFORMANCE.md §10, before task 83 removed `po.run`.
 2. **Serialize NDJSON on one thread in the CLI** (`Ndjson` through polars'
    `BatchedWriter` as the other formats are): steady 4.1 s, no new link, and
-   the CLI's NDJSON stays 4× slower than `po.run`'s. Making that a
-   per-caller switch is another special case; making it the only path
-   costs `po.run` the same 4×.
+   the CLI's NDJSON stays 4× slower than it was measured under jemalloc
+   through `po.run`.
 
 Until one is chosen the CLI's `.ndjson` output is correct but can take ten
-times longer than the same run through `po.run` on macOS; parquet, ipc and
-csv are unaffected, and `po.run` is unaffected in every format.
+times longer on macOS than the same serializer under jemalloc: 1.04 s,
+measured through `po.run` before task 83 removed it. Parquet, ipc and csv
+are unaffected.
 
 ## 2. Performance
 
@@ -360,7 +362,7 @@ gave the same throughput as 14 threads, and polars-expr's source shows why:
 walks the groups in a plain `for` loop, while `apply_single_group_aware`
 (one input) runs them through rayon.
 
-The plugin now receives every input column packed into **one struct**
+The plugin then received every input column packed into **one struct**
 (`pl.struct([target, *features, clock, session, weight])`, fields named
 positionally so a column in two roles cannot collide), and unpacks it on
 the Rust side. Measured, 2M rows:
@@ -386,11 +388,14 @@ against a 95 ns non-solve step (15%), or ~4% at the default solve cadence
 `OnlineModel` trait for every model to write into a caller buffer. Not worth
 it at 4%; the stale claim is corrected in PERFORMANCE.md and the code comment.
 
-### P3 — group-key extraction casts every key to a string — *rejected*
+### P3 — group-key extraction casts every key to a string — *rejected 2026-09-02, then done as PERFORMANCE P11 on 2026-09-04*
 
 `group_indices` hashes group values after a `String` cast. Measured on 2M
 rows / 1000 groups: int keys 167 ms, string keys 146 ms, categorical 176 ms,
-end to end. The cast is not where the time goes; nothing to do.
+end to end. The cast is not where the time goes; nothing to do, it read
+then. PERFORMANCE P11 did it two days later: integer keys are bucketed by
+value (`integer_groups` in `bank.rs`), and `group` went from 8.6 to 1.6 ms
+ on the 64-group chunk.
 
 ### P4 — the published throughput table was two changes stale — *done*
 
@@ -540,13 +545,14 @@ editor showed nothing and a typo was a runtime error. Now:
   `group=` on the expression form. A TypedDict is a copy of a signature and
   copies drift, so `tests/test_kwargs_typing.py` pins every one to its
   builder: same keys, same annotations, same required set.
-- **`po.online(expr)`**. A registered namespace is attached at runtime, so
+- **`po.online(expr)`** (removed with the plugin in task 85). A registered namespace is attached at runtime, so
   `pl.col("y").online` is `"Expr" has no attribute "online"` to every type
   checker -- a polars limitation no annotation here can fix. `po.online(
   pl.col("y"))` returns the same namespace object, visibly typed; the two
   forms build identical expressions and a test says so.
 - **`group=` on the expression form is refused** with `use .over(...)`.
   The Rust side set `spec.group = None`, so it had been silently ignored.
+  (The expression form went with the plugin in task 85.)
 - **The pyo3 stub was stale** (`_polars_online.pyi` had no `gram` and no
   `spec_output_index`), which mypy found the moment it ran; it is now
   complete and a test compares it with what the built module exports.
@@ -647,8 +653,9 @@ measure — 17.6 MB → 18.9 MB, +7.4%. That is the price of not aborting on a
 column the user did not name.
 
 `tests/test_error_messages.py` holds the table: every dtype, unused and as a
-feature, plus a cast-equivalence check; `tests/test_runner.py` reads a
-`Decimal` parquet through the CLI's own path.
+feature, plus a cast-equivalence check. `tests/test_runner.py` read a
+`Decimal` parquet through the CLI's own path; that test went with task 83,
+and PLAN task 112 (U5) restores it.
 
 ## 4. Extensibility
 
@@ -656,7 +663,7 @@ feature, plus a cast-equivalence check; `tests/test_runner.py` reads a
 
 Adding an output kind used to mean a name-prefix rule in the plugin *and* a
 branch in `assemble`. With `dtype` on `FieldMeta` both read the same
-descriptor.
+descriptor; `assemble` does still, and the plugin did until task 85.
 
 ### X2 — adding a model touches eighteen places — *done*
 

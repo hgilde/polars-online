@@ -1101,7 +1101,7 @@ pub fn hmm_cfg(spec: &Spec) -> Result<HmmCfg, String> {
 }
 
 /// An `rcov` spec's [`RcovCfg`]. Every parameter check is the model's, so
-/// `Spec::validate`, the CLI and the plugin get one set of messages.
+/// `Spec::validate` and the CLI get one set of messages.
 pub fn rcov_cfg(spec: &Spec) -> Result<RcovCfg, String> {
     let ModelKind::Rcov {
         kind,

@@ -5,7 +5,7 @@
 | **status** | decided and implemented on 2026-09-03 (PLAN task 20); the decisions are in §7 |
 | **the syntax** | `lf.online.fit_predict(.., save_state=)`, proposed in §4 under the rules R1–R7 |
 | **checked by** | §5's checks, which are `tests/test_frame.py`'s E35 tests |
-| **measured on** | polars 1.34.0 (the floor), 1.38.1 and 1.44.1 (the pin), by `scripts/io_source_semantics.py` (§2) |
+| **measured on** | polars 1.34.0 (the floor), 1.38.1 and 1.44.1 (the pin then), by `scripts/io_source_semantics.py` (§2) |
 | **declined** | the memory side: a query that updates a `ModelBank` object, or takes one as `load_state`. The file is the state's one form in a query, and a bank object stays the tool of your own Python loop over chunks (§1, §3 B/E) |
 
 **Read with two changes since.** Task 83 (2026-09-17) removed `po.run`,

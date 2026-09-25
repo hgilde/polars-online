@@ -7,8 +7,8 @@
 //!
 //! 1. a reader thread hands over frames in stream order: polars' streaming
 //!    engine reading a plan in `chunk_rows` rows (`sink_batches`), or an
-//!    iterator of frames the caller already has ([`Input::Batches`] -- the
-//!    Python API reads with py-polars and feeds the frames in here);
+//!    iterator of frames the caller already has ([`Input::Batches`], for a
+//!    Rust caller; the Python runner that fed it was removed in task 83);
 //! 2. this thread feeds each frame to the [`Bank`] and appends the outputs;
 //! 3. a writer thread encodes and writes the augmented frame in the output
 //!    format, through a temporary that is renamed into place at the end.
@@ -37,9 +37,8 @@ use crate::spec::Spec;
 /// Writing the output through a temporary is filesystem work, and polars'
 /// error type is what the runner returns: its `IO` variant, kind intact, so
 /// a caller can tell a file that could not be written or read from a run
-/// that was refused (the Python `run` raises `OSError` -- the subclass the
-/// kind names -- for the one and `ValueError` for the other). `what` and
-/// `path` say which file: the `io::Error` alone does not.
+/// that was refused. `what` and `path` say which file: the `io::Error`
+/// alone does not.
 fn io_err(what: &str, path: &Path, e: std::io::Error) -> PolarsError {
     let msg = format!("{what} {}: {e}", path.display());
     PolarsError::IO {

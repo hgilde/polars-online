@@ -3,7 +3,8 @@
 Status as of 2026-09-06: **about 650 Rust tests and 1,250 pytest functions**
 (some 2,200 cases, plus 2 opt-in soak tests), all green, run in CI on three
 OSes on every push. Counted again on 2026-09-24: **831 Rust tests and
-1,564 pytest functions** (2,838 cases), plus the same 2 opt-in soak tests.
+1,564 pytest functions** (2,838 cases), plus the same 2 opt-in soak tests;
+and on 2026-09-25: **976 Rust tests and 3,265 pytest cases**.
 `cargo test --workspace -- --list` and `pytest --collect-only` did the
 counting. The coverage figures below are from the 2026-08-30 run.
 
@@ -307,7 +308,9 @@ integration tests through `run_config`. `online-core/src/robust.rs` is at
 
 ### Open entries
 
-None, since 2026-09-24. The last three closed that day: T-A2's numpy
+One, since 2026-09-25: T-W8's case-insensitivity, the one part of it no
+test covers (file locking and long paths are). The last three closed on
+2026-09-24: T-A2's numpy
 `lasso_ref` for the pred path, T-W3's paths on a Windows runner (its
 Windows-only test passed on both Windows legs of its first run), and T-D4's mutation testing
 in CI. What is still thin is below: the mutation survivors, and `robust.rs`'s
@@ -962,15 +965,15 @@ first ran on Windows, as [What is left](#what-is-left) records it.
 | # | P | case | since CI ran on Windows |
 |---|---|---|---|
 | T-W1 | ~~P1~~ **done** | **Run `ci.yml` on `windows-latest` at all** | runs on every push since 2026-08-31 |
-| T-W2 | **P1** | **Cross-OS state hand-off** (`release.yml`: write on macOS, load on Windows/Linux) | executed on Windows CI; the hand-off has run for every release since 0.1.0 |
+| T-W2 | ~~P1~~ **done** | **Cross-OS state hand-off** (`release.yml`: write on macOS, load on Windows/Linux) | executed on Windows CI; the hand-off has run for every release since 0.1.0 |
 | T-W3 | ~~P1 (partly)~~ **done 2026-09-24** | **Path handling through the CLI**: escaped Windows-style paths and paths with spaces | drive letters and the `\\?\` extended-length form pass on both Windows CI legs, Python 3.12 and 3.14 |
 | T-W3b | ~~P1~~ **found a real bug, fixed** | TOML path escaping in the CLI tests | executed on Windows CI |
-| T-W3b (original) | P1 | **Path handling through the CLI**, as first written: backslash separators, drive letters, UNC paths, and spaces in paths, in both the TOML `input`/`output`/`load_state`/`save_state` fields and the `--input`/`--output` overrides | |
+| T-W3b (original) | superseded by T-W3 (done 2026-09-24); UNC share paths stay untested | **Path handling through the CLI**, as first written: backslash separators, drive letters, UNC paths, and spaces in paths, in both the TOML `input`/`output`/`load_state`/`save_state` fields and the `--input`/`--output` overrides | |
 | T-W4 | ~~P2~~ **mitigated + tested locally** | **CRLF line endings in the TOML config** | |
 | T-W5 | ~~P2~~ **tested locally** | **Binary/artifact naming**: `online.exe` vs `online` | executed on Windows CI |
 | T-W6 | ~~P2~~ **pinned locally** | **Float formatting in output field names** | |
-| T-W7 | P2 (**mechanism built**) | **Numeric reproducibility across OS/CPU** | compared at 1e-12 on Windows |
-| T-W8 | P3 | **Filesystem behavior**: case-insensitivity, `MAX_PATH`, file locking on rewrite | executed on Windows CI |
+| T-W7 | ~~P2~~ **done** | **Numeric reproducibility across OS/CPU** | compared at 1e-12 on Windows |
+| T-W8 | P3, **partly done**: file locking (C6's atomic rewrite) and long paths (`\\?\`) are tested; case-insensitivity is not | **Filesystem behavior**: case-insensitivity, `MAX_PATH`, file locking on rewrite | executed on Windows CI |
 | T-W9 | ~~P3~~ **done** | **`scripts/env.sh` has no Windows equivalent** | |
 
 **T-W1.** Written when `cargo test --workspace`, `maturin develop` and the

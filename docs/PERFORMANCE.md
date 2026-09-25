@@ -611,7 +611,8 @@ the wide cases are cheaper, which is what auto-vectorized loops look like.
 ~~**Chasing polars' `.over()` overhead (P5's target).**~~ Reopened and
 closed by docs/IMPROVEMENTS.md P1. The "flat from ten groups on" curve was
 the signature of serial per-group evaluation, and one packed struct input
-puts the plugin on polars' parallel path. See P5 in §3.
+put the plugin on polars' parallel path, until task 85 removed the plugin.
+See P5 in §3.
 
 ### Rejected later, where each was measured
 

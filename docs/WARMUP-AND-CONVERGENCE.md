@@ -1,4 +1,4 @@
-# Warmup and convergence: not using a model before it is ready — a design to iterate on
+# Warmup and convergence: not using a model before it is ready
 
 **Status: built for `ewridge` in 0.9.0 (2026-09-21).** Sections 1–4 are the
 design as built; §8 says what was built and for which models; §7.4 records
@@ -27,8 +27,9 @@ Two constraints on the shape of any setting, both the user's:
   user-friendly way to track the goal.** Concepts are welcome; calibration
   is not.
 
-Today the only such setting is `min_periods`: an absolute floor on `n_eff`
-(the decayed effective sample), defaulting to one observation per unknown.
+Before 0.9.0 the only such setting was `min_periods`: an absolute floor on
+`n_eff` (the decayed effective sample), which most models default to one
+observation per unknown.
 It is hard to use for three separate reasons (§5.1): its unit is weight, not
 rows; under decay it tops out at a ceiling nobody can compute in their head,
 and with a clock column nobody can compute at all in advance; and when it is
@@ -46,7 +47,7 @@ different quantities, and one number cannot serve two of them (§5.3).
 |---|---|---|---|
 | **Warmed up?** Has the decay window filled toward steady state? | `settled_frac` = `1 − 2^(−T/h)`, `T` = decay time elapsed | continuous, 0 → 1 | `min_settled_frac` — the gate the goal asked for; off by default, set by the user who knows the process has regimes (§4.1.1) |
 | **Identified?** How much of each coefficient did the data determine, and how much the ridge? | `support_coef_j = (G_raw·G⁻¹)_jj`, the shrinkage matrix's diagonal (§2.2) | continuous, `[0, 1]` per coefficient | none — a **diagnostic**, not a gate (§5.7); no tolerance to set |
-| **Noise?** Would estimation error swamp *this* prediction? | `error_inflation` = `√(1 + h(x))`, `h = edf/n_Kish` for the stream (free), `h(x) = x'Σ̂⁻¹x / n_Kish` per row (opt-in) — the estimation variance over the noise (§2.1) | continuous, ≥ 1 | `max_error_inflation` — replaces `min_n_eff`/`min_periods` (§2.1, §5.8) |
+| **Noise?** Would estimation error swamp *this* prediction? | `error_inflation` = `√(1 + h(x))`, `h = edf/n_Kish` for the stream (free), `h(x) = x'Σ̂⁻¹x / n_Kish` per row (opt-in) — the estimation variance over the noise (§2.1) | continuous, ≥ 1 | `max_error_inflation` — `ewridge`'s gate; `min_periods` stays on every model (§2.1, §5.8) |
 
 **Convergence** in the goal's sense — the estimate has stopped moving — is
 `settled_frac` for a stationary target: after `k` halflives the effective
@@ -58,12 +59,12 @@ signal beyond this is **open** (§7.1).
 
 ---
 
-## 2. The settings (current proposal)
+## 2. The settings (as built for `ewridge`)
 
 | setting | unit | default | meaning |
 |---|---|---|---|
 | `min_settled_frac` | fraction of steady state, `[0, 1)` | `0` (off, §4.1.1) | withhold predictions until the decay window has filled this far. Bounded, so it cannot be set unreachably; `>= 1` is refused. Off by default because under a stationary process the mean-form fit is unbiased from row one and its variance is the noise gate's; **set it (`0.5` = one halflife) when the process has regimes or seasons the halflife was chosen to average across.** |
-| `max_error_inflation` (replaces `min_periods`) | ratio, `> 1` | `√2 ≈ 1.41`, i.e. `h = 1`: withhold while the estimation variance of the prediction exceeds the noise it is fitting (≈ today's one-per-unknown on average, §5.8) | withhold predictions while the stream's expected `error_inflation = √(1 + edf/n_Kish)` is above this (§2.1); `O(1)` per row. Tracks the model, so adding a feature moves the gate with it; nothing to maintain. The per-row `error_inflation` field (opt-in) gives the same quantity for each prediction. `1.1` says rough is not acceptable, `2` says it is. Refused `<= 1`. |
+| `max_error_inflation` (`ewridge`'s gate; `min_periods` stays) | ratio, `> 1` | `√2 ≈ 1.41`, i.e. `h = 1`: withhold while the estimation variance of the prediction exceeds the noise it is fitting (≈ today's one-per-unknown on average, §5.8) | withhold predictions while the stream's expected `error_inflation = √(1 + edf/n_Kish)` is above this (§2.1); `O(1)` per row. Tracks the model, so adding a feature moves the gate with it; nothing to maintain. The per-row `error_inflation` field (opt-in) gives the same quantity for each prediction. `1.1` says rough is not acceptable, `2` says it is. Refused `<= 1`. |
 
 Two settings; a user who sets anything sets `min_settled_frac`. (A third,
 `full_rank_halflives`, was a tolerance on a boolean and is gone — §2.2.)
@@ -176,11 +177,12 @@ State either way: one `f64` (`s₂`). Nothing per solve.
 **Limits, stated.** Homoskedastic noise independent of `x`; under
 heteroskedasticity the ratio is approximate, not wrong. A moving target
 adds staleness bias that no variance sees — drift detection's job.
-`lasso` is post-selection: `h` on the active-set Gram is the theory-backed
-approximation (its degrees of freedom are the active count, Zou–Hastie–
-Tibshirani 2007), labelled approximate. Where theory gives nothing, the
-field is null and this setting does not gate: `sgd`, `pa`, `ftrl` have no
-linear fit; `min_settled_frac` is their gate.
+Only `ewridge` computes `h`. For `lasso`, which is post-selection, `h` on
+the active-set Gram would be the theory-backed approximation (its degrees
+of freedom are the active count, Zou–Hastie–Tibshirani 2007); it is not
+built (PLAN task 116). Elsewhere `emit_error_inflation` is refused, and
+`min_settled_frac` is the gate of `sgd`, `pa` and `ftrl`, which have no
+linear fit.
 
 **The options, for the record:**
 
@@ -191,8 +193,8 @@ linear fit; `min_settled_frac` is their gate.
 | **C. exact `h(x)`** | `√(1 + h(x)) <= max_error_inflation` | **chosen.** Exact for the linear-fit family, per prediction, no noise estimate, one `O(k²)` per row. |
 | **D. empirical** out/in residual variance | measured overfitting | needs its own warmup, circular; noisy. Not proposed. |
 
-`max_error_inflation` replaces `min_periods` rather than sitting beside it:
-one setting, one question. The unreachable case stays reported (§3): under
+`max_error_inflation` is `ewridge`'s gate, and `min_periods` stays on
+every model: on `ewridge` it defaults to 0 and floors only when set. The unreachable case stays reported (§3): under
 a short halflife `h` never falls below the threshold, which is the right
 answer said out loud.
 
@@ -264,25 +266,26 @@ Per row, inside each spec's struct beside `n_eff`, on by default:
 | field | type | bytes/row (§5.9) | meaning |
 |---|---|---|---|
 | `settled_frac` | Float64 | 8 | progress toward steady state; **null when the spec has no decay** (no steady state to settle toward) |
-| `support_coef` | Float64 × k, on the `coef` schedule | ~0 per row (only on `coef` rows) | share of each coefficient determined by the data rather than the ridge (§2.2); null for models with no Gram |
-| `error_inflation` (**opt-in**: costs `k²/2` per row, §2.1) | Float64 | 8 | `√(1 + h(x))`: how much this row's estimation variance inflates its expected error over the noise floor; the linear-fit family, approximate for `lasso`, null for `sgd`/`pa`/`ftrl`. The gate uses the stream average, which is free; the summary reports it |
-| `withheld_reason` | Enum | 1.41 | why `pred_*` is null this row: `below_min_settled_frac`, `above_max_error_inflation`; **null once the row is real**. Never a String (16 B/row even when every value is null, §5.9). |
+| `support_coef` | Float64 × k, on the `coef` schedule | ~0 per row (only on `coef` rows) | share of each coefficient determined by the data rather than the ridge (§2.2); `ewridge` only |
+| `error_inflation_<slot>` (**opt-in**: costs `k²/2` per row, §2.1) | Float64 | 8 | `√(1 + h(x))`: how much this row's estimation variance inflates its expected error over the noise floor; `ewridge` only, refused elsewhere. The gate uses the stream average, which is free; the summary reports it |
+| `withheld_reason` | Enum | 1.41 | why `pred_*` is null this row: `below_min_settled_frac`, `below_min_periods`, `above_max_error_inflation`; **null once the row is real**. Never a String (16 B/row even when every value is null, §5.9). |
 
 Per group in `summary()`: `settled_frac`, `error_inflation`,
-`min_support_coef` and the feature it belongs to, `n_eff_settled` (the
-effective sample once settled; null before settledness is high enough to
-estimate it), and `n_coef`.
+`min_support_coef` and the feature it belongs to
+(`min_support_coef_feature`), and `n_coef`. `n_eff_settled`, the effective
+sample once settled, is not built (§7.8, PLAN task 116).
 
-Warnings, raised from the Python layer by inspecting the returned fields
-after each chunk (as `ConsumedSourceWarning` already does; there is no
-Rust→Python warning channel), **once per (spec, group)**:
+Warnings, queued in Rust as notices (`Bank::take_notices`), raised in
+Python as `ReadinessWarning` and printed on stderr by the command line,
+**once per (spec, group)**:
 
 - **a coefficient more ridge than data** (`support_coef < 0.5`, if the
   open point in §2.2 lands on warning), naming the feature(s);
 - **`max_error_inflation` unreachable**: the stream has settled and
   `error_inflation` is still above the ceiling, so output will never appear
-  — with the fix in the message (raise the halflife to at least *h* rows,
-  or raise `max_error_inflation` to at least the settled value).
+  — with the fix in the message: raise the halflife, or raise
+  `max_error_inflation` to at least the settled value. The message gives no
+  halflife figure yet (PLAN task 116).
 
 Only report, never warn, when output appears but is degraded (a user who
 raised `max_error_inflation` asked for it): a short halflife can be
@@ -636,7 +639,8 @@ reported 0.00 for String and must not be trusted for it.
    stationarity; the gate guards a representativeness bias only the user
    can size). Reopens only if a statistic for that bias is found.
 3. **Is `withheld_reason` needed** given `settled_frac` and `n_eff` are
-   emitted? The user wants it ("more obvious"); Enum keeps it cheap.
+   emitted? Answered: built, on every model that writes a row (the user
+   wanted it "more obvious"); an Enum keeps it cheap.
 4. **Verifying `h(x)` — identities, not calibration (done, 2026-09-21;
    `crates/online-core/tests/readiness.rs`).** The tests hold the
    implementation to what the theory predicts, and each fails loudly if
@@ -700,13 +704,12 @@ reported 0.00 for String and must not be trusted for it.
   (derived) must be
   identical under any chunking. Only `coef` may follow the chunking (it is
   emitted on each *group's* last row in each chunk).
-- **Model applicability:** `support_coef` and `h` exist for the
-  Gram-factorising family
-  (`ewridge`, `lasso`, `ew_cov`, the robust models); `rls`/`kalman` track an
-  inverse (a different, arguably better signal — out of scope); the
-  gradient models (`sgd`, `pa`, `ftrl`) have no second moment. Field null,
-  no warning, where it does not exist. `settled_frac` exists for every
-  decayed model.
+- **Model applicability:** `support_coef` and `h` exist for `ewridge`
+  only; the rest of the Gram-factorising family (`lasso`, `ew_cov`, the
+  robust models) is PLAN task 116. `rls`/`kalman` track an inverse (a
+  different, arguably better signal — out of scope); the gradient models
+  (`sgd`, `pa`, `ftrl`) have no second moment. The fields are absent where
+  they do not exist. `settled_frac` exists for every decayed model.
 - **`error_inflation`:** `s₂ = Σλ²ⁱwᵢ²` (one `f64`, decay `λ²`, weight
   `w²`, the same capped `d_clock` as the Gram) persisted beside `n_eff`
   and reset with it; `h(x) = x'Σ̂⁻¹x / n_Kish` per row from the Cholesky
@@ -740,14 +743,14 @@ by default (`settled_frac`, `withheld_reason`), +8 with the opt-in field; parque
 `settled_frac` and `withheld_reason` to little, `error_inflation` like any
 float. Precedent (`emit_drift`, the residual quantiles) is that
 diagnostic *fields* are opt-in while the behaviour they diagnose is not:
-the gates can always run and the two floats be emitted on request — a
-default to decide (§7). Exact shortcut for large `k`: `h(x) ≤
+the gates can always run and the two floats be emitted on request.
+Decided: `settled_frac` and `withheld_reason` are on by default. Exact shortcut for large `k`: `h(x) ≤
 ‖x‖²·λ_max(M)` is `O(k)`, and when the bound clears the gate the exact
 value is needed only if the field is being emitted.
 
 ---
 
-## 9. Names (current; open)
+## 9. Names (as shipped)
 
 Three roots — `settled`, `error_inflation`, `support_coef` — and two
 rules: a field is its setting minus the prefix (`min_settled_frac` →

@@ -27,8 +27,12 @@ with `⌊ln T⌋` as its default so the choice is visible.
 
 ### `D̂` exactly
 
-**Verified.** `D̂ = (F̂₁D̂₃,₁ + F̂₂D̂₃,₂ + F̂₃D̂₃,₃)^{−1/2}` where
-`D̂₃ = (−½ σ̂_xy σ̂_y σ̂_x^{−3}, −½ σ̂_xy σ̂_x σ̂_y^{−3}, 1/(σ̂_xσ̂_y))` is
+**Wrong in the first two entries of `D̂₃` as first written; corrected
+2026-09-19 (REVIEW-2026-09-18, S3).** They had `σ̂_y` where `σ̂_y^{−1}`
+belongs, and the reverse, so the statistic moved with the data's units. As
+the code computes it (`corrchange.rs`): `D̂ = (F̂₁D̂₃,₁ + F̂₂D̂₃,₂ +
+F̂₃D̂₃,₃)^{−1/2}` where
+`D̂₃ = (−½ σ̂_xy σ̂_x^{−3} σ̂_y^{−1}, −½ σ̂_xy σ̂_x^{−1} σ̂_y^{−3}, 1/(σ̂_xσ̂_y))` is
 the gradient of `ρ = σ_xy/(σ_xσ_y)` in `(σ_x², σ_y², σ_xy)`,
 `Ê = D₂ D̂₁ D₂′` maps the five raw moments to those three
 (`D₂` rows: `(1, 0, −2μ_x, 0, 0)`, `(0, 1, 0, −2μ_y, 0)`,
