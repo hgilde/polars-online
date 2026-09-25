@@ -3065,9 +3065,19 @@ Blocks of 32 rows by 64 columns took 113–123 ms. Row by row stays. Its
 cost is the arithmetic and the two tests per value, which a layout
 change would not remove.
 
-**The covariance accumulator keeps runs without a window too.** `EwCov`
-tracks every slot's run on every learned row, for the window readers
+**The covariance accumulator kept runs without a window too.** `EwCov`
+tracked every slot's run on every learned row, for the window readers
 alone (`crate::truncated`). There the cost is linear in the width against
 a quadratic update, but it is not small at small width: `core_bench`'s
 `ewridge` ran 18–20% faster at 5 and 20 features with the tracking
-removed, 4% at 50. That is PLAN task 128.
+removed, 4% at 50. PLAN task 128 turned it off for every owner without a
+window, which keeps a flag that is read as on in an older state. Best of
+three interleaved rounds:
+
+| `core_bench`, `ewridge` | before | after |
+|---|---:|---:|
+| 5 features | 13.67M rows/s | 15.72M rows/s |
+| 20 features | 6.17M rows/s | 7.22M rows/s |
+| 50 features | 2.28M rows/s | 2.37M rows/s |
+| 20 features, 10 targets | 2.85M rows/s | 3.05M rows/s |
+| 20 features, a solve every 25 rows | 3.21M rows/s | 3.53M rows/s |

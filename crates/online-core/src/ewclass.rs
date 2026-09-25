@@ -260,8 +260,13 @@ impl crate::Footprint for ClassMoments {
 impl EwClass {
     pub fn new(cfg: EwClassCfg) -> Result<Self, String> {
         cfg.validate()?;
+        // Runs are a window's (docs/PLAN.md task 128).
+        let windowed = cfg.window.is_some();
         let classes = (0..cfg.n_classes)
-            .map(|_| EwCov::with_precision_prior(cfg.n_features, cfg.precision_prior))
+            .map(|_| {
+                EwCov::with_precision_prior(cfg.n_features, cfg.precision_prior)
+                    .map(|c| if windowed { c } else { c.without_runs() })
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let win = match cfg.window {
             Some(w) => Some(Windowed {
@@ -1339,5 +1344,22 @@ mod tests {
             EwClass::labels(&["a".into(), "b".into()]),
             vec!["class", "p_a", "p_b"]
         );
+    }
+
+    /// Runs are a window's (docs/PLAN.md task 128): every class keeps them
+    /// under a window alone.
+    #[test]
+    fn only_a_windowed_classifier_keeps_runs() {
+        for window in [None, Some(40.0)] {
+            let mut c = cfg(2, 2, Covariance::Full);
+            c.window = window;
+            let m = EwClass::new(c).unwrap();
+            assert!(
+                m.classes
+                    .iter()
+                    .all(|cov| cov.keeps_runs() == window.is_some()),
+                "window {window:?}"
+            );
+        }
     }
 }

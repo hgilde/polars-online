@@ -259,7 +259,8 @@ impl Default for SlotMetrics {
 impl SlotMetrics {
     pub fn new() -> Self {
         Self {
-            joint: crate::EwCov::new(2),
+            // A diagnostic, never windowed: no runs (docs/PLAN.md task 128).
+            joint: crate::EwCov::new(2).without_runs(),
             mse: 0.0,
             hits: 0.0,
             hit_w: 0.0,
@@ -1123,5 +1124,12 @@ mod metric_tests {
             Some(0.0),
             "class 0, called class 1"
         );
+    }
+
+    /// A slot's metrics are never windowed, so they keep no runs
+    /// (docs/PLAN.md task 128).
+    #[test]
+    fn the_metrics_keep_no_runs() {
+        assert!(!SlotMetrics::new().joint.keeps_runs());
     }
 }

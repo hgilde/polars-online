@@ -4572,8 +4572,16 @@ is not, since the model alone has `0.0` and `3.5` there.
       snapshot, group close and `label_delay` replay would have to split.
       *Recommended: wait for that measurement.*
 
-- [ ] 128. **`EwCov` keeps its runs without a window** (found by task 124,
+- [x] 128. **`EwCov` keeps its runs without a window** (found by task 124,
       PERFORMANCE §24). S–M, a confirmed regression of task 94, unreleased.
+      **Done 2026-09-25:** `Runs::off`, a state flag read as on where a
+      state lacks it, and `EwCov::without_runs`, taken by every owner
+      without a window (`ew_cov`, `ewridge`, `lasso` and `ew_class` without
+      one; `huber`, `quantile` and the slot metrics always); `marginal`
+      builds its runs off too, so a wide one without a window no longer
+      allocates 16 bytes a pair for them. A test per owner pins the choice.
+      `core_bench`'s `ewridge`: +15% at 5 features, +17% at 20, +4% at 50,
+      +10% solving every 25 rows; the goldens are unchanged.
       Every covariance accumulator tracks each slot's run on every learned
       row, and only a window reads them (`crate::truncated`); `core_bench`'s
       `ewridge` is 18–20% faster at 5 and 20 features without the tracking,

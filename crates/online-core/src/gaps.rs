@@ -320,8 +320,15 @@ pub(crate) struct Grams {
 }
 
 impl Grams {
-    pub(crate) fn new(n_targets: usize, k: usize, block_rows: usize) -> Self {
-        let mut g = EwCov::new(k);
+    /// `windowed` says whether the owner has a window, the one reader of
+    /// the Grams' runs (docs/PLAN.md task 128). A Gram split off under
+    /// `own_rows` is a clone, so it keeps the choice.
+    pub(crate) fn new(n_targets: usize, k: usize, block_rows: usize, windowed: bool) -> Self {
+        let mut g = if windowed {
+            EwCov::new(k)
+        } else {
+            EwCov::new(k).without_runs()
+        };
         g.set_block_rows(block_rows);
         Self {
             grams: vec![g],
@@ -562,9 +569,9 @@ pub(crate) struct Acc {
 }
 
 impl Acc {
-    pub(crate) fn new(n_targets: usize, k: usize, block_rows: usize) -> Self {
+    pub(crate) fn new(n_targets: usize, k: usize, block_rows: usize, windowed: bool) -> Self {
         Self {
-            grams: Grams::new(n_targets, k, block_rows),
+            grams: Grams::new(n_targets, k, block_rows, windowed),
             wj: vec![0.0; n_targets],
             cross: Cross::new(n_targets, k),
             tm: TargetMoments::new(n_targets),

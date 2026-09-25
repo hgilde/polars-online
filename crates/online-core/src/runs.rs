@@ -31,6 +31,11 @@ pub struct Runs {
     x: Vec<f64>,
     #[serde(default)]
     start: Vec<u64>,
+    /// No run is kept ([`Self::off`]). `false` in a state written before
+    /// it, which so keeps tracking: the side that is always right. Last,
+    /// and not skipped, so both encodings read a state without it.
+    #[serde(default)]
+    off: bool,
 }
 
 impl Runs {
@@ -38,7 +43,25 @@ impl Runs {
         Self {
             x: vec![0.0; k],
             start: vec![u64::MAX; k],
+            off: false,
         }
+    }
+
+    /// Runs that keep nothing, for an owner without a window: only a
+    /// window reads them ([`crate::truncated`]), and a window is fixed when
+    /// the owner is built. Tracking them anyway cost `ewridge` a fifth of
+    /// its row at five features (docs/PLAN.md task 128).
+    pub fn off() -> Self {
+        Self {
+            x: Vec::new(),
+            start: Vec::new(),
+            off: true,
+        }
+    }
+
+    /// Whether these runs keep nothing ([`Self::off`]).
+    pub fn is_off(&self) -> bool {
+        self.off
     }
 
     /// Both halves of every one of `k` runs are here: not a state written
@@ -52,6 +75,9 @@ impl Runs {
     /// value, or a slot's first learned row, starts a run at this row. Runs
     /// that are not known start here.
     pub fn track(&mut self, x: &[f64], row: u64) {
+        if self.off {
+            return;
+        }
         if !self.is_known(x.len()) {
             *self = Self::new(x.len());
         }
@@ -66,6 +92,9 @@ impl Runs {
     /// of learned rows: a stream whose slots are present on rows of their
     /// own, as each target of a regression is.
     pub fn track_one(&mut self, k: usize, i: usize, x: f64, row: u64) {
+        if self.off {
+            return;
+        }
         if !self.is_known(k) {
             *self = Self::new(k);
         }
@@ -143,6 +172,24 @@ mod tests {
         );
     }
 
+    /// Runs that are off keep nothing, whatever they are offered, and read
+    /// as no run; forgetting leaves them off. A state written before the
+    /// flag reads as on, and tracks (docs/PLAN.md task 128).
+    #[test]
+    fn runs_that_are_off_keep_nothing() {
+        let mut r = Runs::off();
+        r.track(&[1.0, 2.0], 1);
+        r.track_one(2, 1, 3.0, 2);
+        assert!(r.is_off() && !r.is_known(2));
+        assert_eq!(r.started_by(2, 0, u64::MAX), None);
+        r.forget();
+        assert!(r.is_off());
+        let old: Runs =
+            serde_json::from_value(serde_json::json!({"x": [1.0], "start": [4]})).unwrap();
+        assert!(!old.is_off());
+        assert_eq!(old.started_by(1, 0, 4), Some(1.0));
+    }
+
     /// Runs that are not known -- a state written before them, or one that
     /// lost a half -- start at the next learned row, and a slot no learned
     /// row has carried yet starts on its first, whatever the value.
@@ -153,6 +200,7 @@ mod tests {
             Runs {
                 x: vec![1.0],
                 start: vec![],
+                off: false,
             },
         ] {
             assert!(!r.is_known(2) && r.started_by(2, 0, u64::MAX).is_none());

@@ -214,7 +214,8 @@ impl Robust {
         let k = cfg.k_total();
         let m = cfg.n_targets;
         Ok(Self {
-            cov: vec![EwCov::new(k); m],
+            // No window here, so no runs (docs/PLAN.md task 128).
+            cov: vec![EwCov::new(k).without_runs(); m],
             wj: vec![0.0; m],
             wobs: vec![0.0; m],
             cross: vec![vec![0.0; k]; m],
@@ -1386,5 +1387,13 @@ mod tests {
     fn new_surfaces_the_validation_error() {
         let e = Robust::new(cfg(1, 1, RobustLoss::Quantile { tau: 0.0 })).unwrap_err();
         assert!(e.contains("quantile must be in"), "{e}");
+    }
+
+    /// A robust fit has no window, so it keeps no runs (docs/PLAN.md task
+    /// 128).
+    #[test]
+    fn a_robust_fit_keeps_no_runs() {
+        let m = Robust::new(cfg(2, 1, RobustLoss::Huber { delta: 1.0 })).unwrap();
+        assert!(m.cov.iter().all(|c| !c.keeps_runs()));
     }
 }

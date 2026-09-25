@@ -211,6 +211,19 @@ impl EwCov {
         }
     }
 
+    /// This accumulator with no runs kept ([`Runs::off`]): for an owner
+    /// without a window, the one reader of them (docs/PLAN.md task 128).
+    #[must_use]
+    pub fn without_runs(mut self) -> Self {
+        self.runs = Runs::off();
+        self
+    }
+
+    /// Whether this accumulator keeps runs for a window to read.
+    pub fn keeps_runs(&self) -> bool {
+        !self.runs.is_off()
+    }
+
     /// What mean `i`'s double leaves out ([`crate::comp`]).
     #[inline]
     pub(crate) fn mean_lo(&self, i: usize) -> f64 {
@@ -1399,6 +1412,12 @@ impl EwCovModel {
         let cov = match cfg.precision_prior {
             Some(p) => EwCov::with_precision_prior(cfg.n_features, p)?,
             None => EwCov::new(cfg.n_features),
+        };
+        // Runs are a window's (docs/PLAN.md task 128).
+        let cov = if cfg.window.is_some() {
+            cov
+        } else {
+            cov.without_runs()
         };
         let mahal_q = cfg
             .mahal_quantiles
@@ -3914,6 +3933,28 @@ mod tests {
         // `Q` too: a union of the two row sets would report the blend as
         // twice as informative as the state it blended with itself.
         assert!((tm.q()[0] - want.q()[0]).abs() < 1e-12);
+    }
+
+    /// Runs are a window's (docs/PLAN.md task 128): `ew_cov` keeps them under
+    /// a window alone, and an accumulator built `without_runs` keeps none,
+    /// whatever it learns.
+    #[test]
+    fn only_a_windowed_ew_cov_keeps_runs() {
+        let mut cfg = model_cfg(2, vec![EwCovStat::Mean]);
+        let plain = EwCovModel::new(cfg.clone()).unwrap();
+        cfg.window = Some(10.0);
+        let windowed = EwCovModel::new(cfg).unwrap();
+        assert!(!plain.cov.keeps_runs());
+        assert!(windowed.cov.keeps_runs());
+        let mut c = EwCov::new(2).without_runs();
+        for _ in 0..3 {
+            c.update(&[1.0, 2.0], 0.9, 1.0);
+        }
+        assert!(!c.keeps_runs());
+        assert_eq!(c.held_from(0, 1), None, "no run is kept, so none is read");
+        let mut on = EwCov::new(2);
+        on.update(&[1.0, 2.0], 0.9, 1.0);
+        assert_eq!(on.held_from(0, 1), Some(1.0));
     }
 }
 

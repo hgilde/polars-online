@@ -403,7 +403,8 @@ impl EwRidge {
         // ones: its update is the same cost, and its matrices are read only at
         // a blend.
         let block = cfg.gram_block_rows;
-        let acc = move || Acc::new(m, k_total, block);
+        let windowed = cfg.window.is_some();
+        let acc = move || Acc::new(m, k_total, block, windowed);
         let slow = cfg.session_shrink.map(|_| Box::new(acc()));
         let win = match cfg.window {
             Some(w) => Some(Windowed {
@@ -3837,5 +3838,21 @@ mod tests {
         assert_eq!(m.solve_failures, warm, "the empty Gram was solved");
         assert!(m.coefficients().unwrap()[1].iter().all(|&b| b == 0.0));
         assert!(m.predict(&[0.1, 0.2], 1.0).pred[1].is_nan());
+    }
+
+    /// Runs are a window's (docs/PLAN.md task 128): the Grams keep them
+    /// under a window alone.
+    #[test]
+    fn only_a_windowed_ridge_keeps_runs() {
+        for window in [None, Some(40.0)] {
+            let mut c = cfg(2, 1);
+            c.window = window;
+            let m = EwRidge::new(c).unwrap();
+            assert_eq!(
+                m.gram(0).keeps_runs(),
+                window.is_some(),
+                "window {window:?}"
+            );
+        }
     }
 }

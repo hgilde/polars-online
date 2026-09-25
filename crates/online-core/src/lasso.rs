@@ -190,7 +190,7 @@ impl Lasso {
             None => None,
         };
         Ok(Self {
-            acc: Acc::new(m, k_total, 0),
+            acc: Acc::new(m, k_total, 0, cfg.window.is_some()),
             beta: None,
             sel_err: vec![vec![0.0; np]; m],
             sel_w: vec![0.0; m],
@@ -1457,6 +1457,21 @@ mod tests {
                     "target {j}: {b:?} vs {want:?}"
                 );
             }
+        }
+    }
+
+    /// Runs are a window's (docs/PLAN.md task 128).
+    #[test]
+    fn only_a_windowed_lasso_keeps_runs() {
+        for window in [None, Some(40.0)] {
+            let mut c = cfg(2, 1, vec![0.1]);
+            c.window = window;
+            let m = Lasso::new(c).unwrap();
+            assert_eq!(
+                m.acc.grams.grams[0].keeps_runs(),
+                window.is_some(),
+                "window {window:?}"
+            );
         }
     }
 }

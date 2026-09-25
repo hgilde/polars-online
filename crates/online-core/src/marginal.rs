@@ -521,6 +521,7 @@ impl Marginal {
                 cfg.cross_lags.clone(),
             )?))
         };
+        let windowed = cfg.window.is_some();
         let win = match cfg.window {
             Some(w) => Some(Windowed {
                 clock: 0.0,
@@ -556,8 +557,19 @@ impl Marginal {
             bins,
             mx_lo: vec![0.0; p * t],
             my_lo: vec![0.0; t],
-            x_runs: crate::Runs::new(p * t),
-            y_runs: crate::Runs::new(t),
+            // Runs are a window's (docs/PLAN.md tasks 124 and 128): without
+            // one they are not even allocated, where at `p·T` slots they
+            // were 16 bytes a pair in memory and in every state file.
+            x_runs: if windowed {
+                crate::Runs::new(p * t)
+            } else {
+                crate::Runs::off()
+            },
+            y_runs: if windowed {
+                crate::Runs::new(t)
+            } else {
+                crate::Runs::off()
+            },
             rows_t: vec![0; t],
             win,
         })
@@ -1898,6 +1910,9 @@ mod tests {
                 m.step(&x, &[Some(lcg(&mut s)), Some(1.0)], step_clock(i), 1.0);
             }
             assert_eq!(m.rows_t, vec![10, 10], "the counts are kept either way");
+            // Not even allocated without one (docs/PLAN.md task 128).
+            assert_eq!(m.x_runs.is_off(), window.is_none());
+            assert_eq!(m.y_runs.is_off(), window.is_none());
             let started = |r: &crate::Runs, k: usize| {
                 (0..k)
                     .filter(|&i| r.started_by(k, i, u64::MAX).is_some())

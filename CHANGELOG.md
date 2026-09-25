@@ -171,10 +171,10 @@ carries breaking changes, and any change to the numbers a model returns.
   slots where it took 5.2, 6.3 and 15.5, so `sgd` steps about 16% slower at
   16 features; `ew_ridge` and `ew_cov` are unchanged.
 - **State schema 16.** A stream with a `label_delay` keeps, per model, the
-  clock its held rows cover (15). Every covariance accumulator, and every
-  `marginal` with a window, keeps, per slot, the value it has held since it
-  last changed and the learned row that started that run, for a window to
-  read; every
+  clock its held rows cover (15). A model with a window keeps, per slot of
+  its accumulators, the value the slot has held since it last changed and
+  the learned row that started that run, for the window to read; a model
+  without one keeps a flag saying it keeps none; every
   running mean keeps what its double leaves out; and `kmeans` and `micro`
   keep each feature's long-run reference for the metric's floor; and
   `marginal` keeps its `cross_lags` (16). States saved by 0.10.0
