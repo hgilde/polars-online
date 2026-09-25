@@ -174,6 +174,20 @@ impl<S: Footprint> Snapshots<S> {
         }
     }
 
+    /// Whether [`Self::offer`] at `clock` would take a snapshot: for a
+    /// caller that holds work back and must finish it before a snapshot
+    /// copies the state (`Marginal::step_sharded`).
+    pub fn takes(&self, clock: f64) -> bool {
+        if self.limit.over.is_some() {
+            return false;
+        }
+        let stale = self
+            .ring
+            .back()
+            .is_none_or(|&(t, _)| t < clock - self.window);
+        self.since.saturating_add(1) >= self.every || stale
+    }
+
     /// Offer a snapshot of the state *as it stands before* the row at
     /// `clock`, already decayed to that row. Taken when the cadence is due,
     /// and whatever the cadence when the newest snapshot is older than the

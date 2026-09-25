@@ -4595,15 +4595,27 @@ is not, since the model alone has `0.0` and `3.5` there.
       runs go per feature (task 94's windowed read), and a `window` needs
       its own answer.
 
-- [ ] 126. **E73: a wide `marginal` sharded across the pool (`shards`).**
-      M–L. Sound: each pair touches only its own cells and the row's
-      per-target scalars, so shards are bit-identical and `shards` stays
-      out of the state. It need not wait for a chunk-major loop: at
-      `p = 10,000` a row is about 2 ms of work at `T = 9`, so a fork-join
-      per row costs under a percent. `online-core` keeps no threads: it
-      would expose stepping a range of features once the per-target
-      scalars have advanced, and the stream would run the ranges on the
-      pool. The caller shards by hand meanwhile; after 122–124.
+- [x] 126. **E73: a wide `marginal` sharded across the pool (`shards`).**
+      **Done 2026-09-25**, as a batch of rows per fork-join, not one per
+      row (§11a has why). `marginal(shards=)` takes a count or `"auto"`,
+      off by default; it is a setting, not state. `Marginal::step_sharded`
+      advances every target's own numbers as the row arrives and holds
+      each pair's share of it; a flush steps the pairs through the held
+      rows in order, one `MarginalShard` per range of features, which the
+      stream runs on the bank's pool. `online-core` keeps no threads: the
+      caller passes the runner. Flushed when 256 rows (or 8 MB of features)
+      are held, before a window snapshot, before the bins fold their scale,
+      and at the end of each run of rows. The pair update, the lag updates
+      and the bins' cell update became slice kernels shared by both paths,
+      and the unsplit row got 7–50% faster with every checksum equal. Tests:
+      `a_sharded_step_is_the_unsplit_step_to_the_bit` and four more in
+      `marginal.rs`, `a_sharded_marginal_reads_the_unsplit_pairs` through
+      the bank, and `tests/test_marginal_shards.py` (every count, chunked,
+      saved and resumed, `fit(lf)`, the CLI). Measured (PERFORMANCE §25):
+      at 10,000 features the model alone ran 1.8× at one target, 4.6× at
+      nine and 5.4× with lags and bins; through the bank, 1.2×, 2.0× and
+      4.9×, where the bank's own row work does not split. Not split: the
+      bins' warm-up replay, once per group.
 
 - [ ] 127. **E74: a chunk run pair-major — not as specified.** Its reason
       is the intercept, which is not the model's (task 124, which took it
@@ -4658,6 +4670,26 @@ user lifts it:
   the Polars patch and its report (parked since 2026-09-22).
 
 ## 11a. Decisions made while implementing
+
+**A wide `marginal`'s shards take a batch of rows, not one (task 126),
+2026-09-25.** The plan's design forked and joined the pool once per row,
+on the estimate that a row at `p = 10,000` and nine targets was 2 ms of
+work. Task 124 had taken that row to about 100 µs, and a rayon fork-join
+costs about 10 µs here, since idle threads sleep between rows. A stand-in
+for the pair loop ran at best 0.6× and 1.7× split per row, at one and nine
+targets, and 3.9× and 6.5× split once per 64 rows (PERFORMANCE §25). So
+the split holds rows back: every target's own numbers advance as the row
+arrives, since nothing a row reports reads a pair, and each pair's share
+of the row is kept until a flush steps the pairs through the held rows in
+order. That is what the E73 ask itself described (`MARGINAL-AT-WIDTH.md`,
+"over the chunk's rows in order"). It costs a copy of each held row's
+features, 1.6 µs at 10,000, which bounds the split of the moments alone.
+Borrowing the caller's rows instead would remove it, at the price of an
+API that names rows by index across `online-core`'s boundary; not taken.
+`"auto"` sizes from a cost model fitted to eleven shapes, up to twice the
+pool's threads (ten fast cores and four slow ones here), and `shards`
+stays off by default: with more groups than threads the pool is already
+full. Whether `"auto"` should become the default is the user's call.
 
 **Readiness gates (task 87), 2026-09-21.** The user's standard: a setting
 rests on theory, not on a sweep, and states the intent rather than a number

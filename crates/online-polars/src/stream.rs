@@ -17,7 +17,7 @@ use crate::arrow::ClockCol;
 use crate::resid_window::ResidWindow;
 use crate::rows::FeatureRows;
 use crate::span::{Span, SpanList};
-use crate::spec::{FloatOrList, ModelKind, Spec};
+use crate::spec::{FloatOrList, ModelKind, ShardSpec, Spec};
 use crate::summary::DataSummary;
 
 /// A refused backwards clock: the raw delta, the absolute row it happened at,
@@ -48,6 +48,18 @@ pub enum AnyModel {
     Hmm(Box<Hmm>),
     CorrChange(Box<CorrChange>),
     Bocpd(Box<Bocpd>),
+}
+
+/// A flush's shards, run on whichever pool the caller is in: the bank's
+/// own (pool.rs), since every learning path runs inside it.
+fn on_the_pool(count: usize) -> online_core::Shards<'static> {
+    fn run(shards: &mut [online_core::MarginalShard<'_>]) {
+        use rayon::prelude::*;
+        shards
+            .par_iter_mut()
+            .for_each(online_core::MarginalShard::run);
+    }
+    online_core::Shards { count, run: &run }
 }
 
 /// Bind the boxed model of whichever variant `$self` is, then run `$body`.
@@ -102,6 +114,35 @@ impl AnyModel {
         weight: f64,
     ) -> online_core::Step {
         dispatch!(self, m => m.step(x, y, d_clock, weight))
+    }
+
+    /// [`Self::step`], with a `marginal`'s pair work split into `shards`
+    /// ranges of features and run on the pool a batch of rows at a time
+    /// ([`online_core::Marginal::step_sharded`], docs/PLAN.md task 126).
+    /// Every other model, and one shard, steps as `step` does. The rows a
+    /// sharded step holds are learned by [`Self::flush`], which every run
+    /// of rows ends with; the numbers are `step`'s to the bit.
+    pub fn step_sharded(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        shards: usize,
+    ) -> online_core::Step {
+        match self {
+            AnyModel::Marginal(m) if shards > 1 => {
+                m.step_sharded(x, y, d_clock, weight, &on_the_pool(shards))
+            }
+            _ => self.step(x, y, d_clock, weight),
+        }
+    }
+
+    /// Learn every row a sharded step holds ([`Self::step_sharded`]).
+    pub fn flush(&mut self, shards: usize) {
+        if let AnyModel::Marginal(m) = self {
+            m.flush(&on_the_pool(shards));
+        }
     }
 
     /// The step's answer without the step
@@ -851,6 +892,8 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             bin_rule,
             bin_warm_rows,
             bin_edges,
+            // How the pairs are run, not what they are (`marginal_shards`).
+            shards: _,
         } => {
             // The per-target thresholds go to the model whole: it is the
             // reader of its own state, so it gates each target's pairs
@@ -3090,6 +3133,7 @@ fn build_instances<'a>(
     models
         .map(|model| Instance {
             spec,
+            shards: marginal_shards(spec, model.get()),
             model,
             resid_win: rings.next().expect("one per instance"),
             decay: *decays.next().expect("one per instance"),
@@ -3126,6 +3170,32 @@ fn build_instances<'a>(
             pending_clock: pending_clock.next().expect("one per instance"),
         })
         .collect()
+}
+
+/// The ranges of features a `marginal` splits its pair work into
+/// (docs/PLAN.md task 126): its spec's `shards` count as given, or under
+/// `"auto"` as many as the model's width keeps busy on the pool the caller
+/// is in ([`online_core::MarginalCfg::auto_shards`]); one for any other
+/// model. Read afresh for each run, so a bank loaded on another machine
+/// sizes itself to that machine's pool.
+pub fn marginal_shards(spec: &Spec, model: &AnyModel) -> usize {
+    match (&spec.model, model) {
+        (
+            ModelKind::Marginal {
+                shards: Some(ShardSpec::Count(n)),
+                ..
+            },
+            _,
+        ) => *n,
+        (
+            ModelKind::Marginal {
+                shards: Some(ShardSpec::Auto),
+                ..
+            },
+            AnyModel::Marginal(m),
+        ) => m.cfg().auto_shards(rayon::current_num_threads()),
+        _ => 1,
+    }
 }
 
 /// What pass 1 decided about one row, so pass 2 can replay it per instance
@@ -3238,6 +3308,9 @@ struct Instance<'a> {
     /// The decay time this instance has seen (docs/WARMUP-AND-CONVERGENCE.md
     /// §2), read before each row and advanced by the rows it learns from.
     decay_time: &'a mut f64,
+    /// Ranges of features a `marginal` splits its pair work into
+    /// ([`marginal_shards`]); one for every other model.
+    shards: usize,
     /// The readiness notices this instance has raised, and the ones pending.
     notified: &'a mut Notified,
     /// Clock the rows held under `label_delay` have covered and the models
@@ -3394,7 +3467,9 @@ fn run_instance(
                 .row_error_inflation_into(xs, &mut sc.row_infl);
 
         let mut step = if learn {
-            inst.model.get_mut().step(xs, &sc.ys, plan.d_clock, w)
+            inst.model
+                .get_mut()
+                .step_sharded(xs, &sc.ys, plan.d_clock, w, inst.shards)
         } else {
             inst.model.get().predict(xs, &sc.ys, plan.d_clock)
         };
@@ -3748,6 +3823,11 @@ fn run_instance(
         if reset_on_drift && row_drift {
             inst.reset();
         }
+    }
+    // Rows a sharded `marginal` held are learned before the run ends:
+    // nothing outside a run reads a model with rows held.
+    if matches!(inst.model, ModelRef::Learn(_)) {
+        inst.model.get_mut().flush(inst.shards);
     }
     drift_seen
 }

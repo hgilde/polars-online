@@ -69,7 +69,7 @@ use serde::{Deserialize, Serialize};
 const RENORM_AT: f64 = 1e-150;
 
 /// A feature whose value falls in no bin on this row (it is not finite).
-const NO_BIN: usize = usize::MAX;
+pub(crate) const NO_BIN: usize = usize::MAX;
 
 /// Where each feature's value fell on the row being learned, as a cell
 /// offset within one target's block ([`MarginalBins::update_row`]). A
@@ -288,58 +288,14 @@ impl MarginalBins {
         }
     }
 
-    /// Add one row's contribution for every target it carries: `y[t]` is
-    /// target `t`'s value, `None` where the row does not carry it.
-    ///
-    /// Each feature's bin is found **once per row**, before the targets are
-    /// visited: the edges are the feature's, the same for every target, so
-    /// a search per (feature, target) found the same bin `T` times (E71,
-    /// docs/PLAN.md task 122). The cells are then updated target by target
-    /// and feature by feature, the order [`Self::update_target`] takes, so
-    /// the histogram is the same to the bit. A row that carries no target
-    /// forms no indices.
-    pub fn update_row(&mut self, x: &[f64], y: &[Option<f64>], w: f64) {
-        if !w.is_finite() || w <= 0.0 {
-            return;
-        }
-        let present = |v: &Option<f64>| v.is_some_and(f64::is_finite);
-        if !y.iter().take(self.n_targets).any(present) {
-            return;
-        }
-        let u = w / self.scale;
-        let mut row = std::mem::take(&mut self.row.0);
-        row.clear();
-        row.extend(
-            self.edges
-                .iter()
-                .zip(&self.off)
-                .zip(x)
-                .map(|((e, &o), &xj)| Self::bin_of(e, xj).map_or(NO_BIN, |b| o + b)),
-        );
-        let width = self.off[self.p];
-        for (t, yt) in y.iter().enumerate().take(self.n_targets) {
-            let Some(v) = yt.filter(|v| v.is_finite()) else {
-                continue;
-            };
-            let block = t * width;
-            for &o in &row {
-                if o != NO_BIN {
-                    self.update_cell(block + o, u, v);
-                }
-            }
-        }
-        self.row.0 = row;
-    }
-
-    /// One row of undecayed weight `u` and target value `y` into cell `i`.
-    #[inline]
+    /// One row of undecayed weight `u` and target value `y` into cell `i`:
+    /// the cell update as it was written before [`update_cells`] took
+    /// slices, kept for the tests as that kernel's oracle.
+    #[cfg(test)]
     fn update_cell(&mut self, i: usize, u: f64, y: f64) {
         let cells = self.w.len();
         self.empty = false;
         if self.w[i] <= 0.0 {
-            // The bin's first row, or its first after a wipe: the mean it
-            // holds is nobody's, and `mean + (y − mean)` is not `y` to the
-            // bit when the old mean is far away.
             self.w[i] = u;
             self.mean[i] = y;
             self.m2[i] = 0.0;
@@ -354,6 +310,183 @@ impl MarginalBins {
         self.w[i] = wb;
     }
 
+    /// Add one row's contribution for every target it carries: `y[t]` is
+    /// target `t`'s value, `None` where the row does not carry it.
+    ///
+    /// Each feature's bin is found **once per row**, before the targets are
+    /// visited: the edges are the feature's, the same for every target, so
+    /// a search per (feature, target) found the same bin `T` times (E71,
+    /// docs/PLAN.md task 122). The cells are then updated target by target
+    /// and feature by feature, the order [`Self::update_target`] takes, so
+    /// the histogram is the same to the bit. A row that carries no target
+    /// forms no indices.
+    pub fn update_row(&mut self, x: &[f64], y: &[Option<f64>], w: f64) {
+        let Some(u) = self.row_weight(y, w) else {
+            return;
+        };
+        let mut row = std::mem::take(&mut self.row.0);
+        self.bin_offsets(0, x, &mut row);
+        let (cells, width) = (self.w.len(), self.off[self.p]);
+        // What each mean leaves out, at the length of the cells, which a
+        // state written before it does not carry: sized where the row writes
+        // a cell, as the cell update sized it before it took slices.
+        if self.mean_lo.len() != cells && row.iter().any(|&o| o != NO_BIN) {
+            self.mean_lo = vec![0.0; cells];
+        }
+        for (t, yt) in y.iter().enumerate().take(self.n_targets) {
+            let Some(v) = yt.filter(|v| v.is_finite()) else {
+                continue;
+            };
+            let r = t * width..(t + 1) * width;
+            if update_cells(
+                u,
+                v,
+                &row,
+                &mut self.w[r.clone()],
+                &mut self.mean[r.clone()],
+                &mut self.m2[r.clone()],
+                &mut self.mean_lo[r],
+            ) {
+                self.empty = false;
+            }
+        }
+        self.row.0 = row;
+    }
+
+    /// The undecayed weight a row of weight `w` adds to each cell it
+    /// writes, or `None` where it writes none: a weight that is not a
+    /// positive number, or no target present.
+    pub(crate) fn row_weight(&self, y: &[Option<f64>], w: f64) -> Option<f64> {
+        if !w.is_finite() || w <= 0.0 {
+            return None;
+        }
+        let present = |v: &Option<f64>| v.is_some_and(f64::is_finite);
+        y.iter()
+            .take(self.n_targets)
+            .any(present)
+            .then(|| w / self.scale)
+    }
+
+    /// Where each value of `x`, the row's features from `j0` on, falls: its
+    /// bin as an offset into one target's cells counted from feature `j0`'s
+    /// first, or [`NO_BIN`]. Each feature's edges are searched once a row,
+    /// whatever the number of targets (E71).
+    pub(crate) fn bin_offsets(&self, j0: usize, x: &[f64], out: &mut Vec<usize>) {
+        bin_offsets_in(&self.edges, &self.off, j0, x, out);
+    }
+
+    /// Whether ageing by `lam` would fold the scale into every cell
+    /// ([`Self::decay`]): what a caller holding rows for later must apply
+    /// first, since they were weighed against the scale before the fold.
+    pub(crate) fn folds_at(&self, lam: f64) -> bool {
+        !self.empty && lam.is_finite() && lam >= 0.0 && self.scale * lam < RENORM_AT
+    }
+
+    /// No bin holds weight ([`Self::decay`] is then a no-op).
+    pub(crate) fn is_empty(&self) -> bool {
+        self.empty
+    }
+
+    /// A row's cells are about to be written by a caller holding them for
+    /// later: from here the histogram is not empty, as the cell update
+    /// itself would have said.
+    pub(crate) fn mark_written(&mut self) {
+        self.empty = false;
+    }
+
+    /// The cells and what finds them, split so a caller can hand disjoint
+    /// ranges of the cells to several writers ([`crate::Marginal`]'s
+    /// shards), with `mean_lo` at the cells' length.
+    pub(crate) fn cell_parts(&mut self) -> CellParts<'_> {
+        let cells = self.w.len();
+        if self.mean_lo.len() != cells {
+            self.mean_lo = vec![0.0; cells];
+        }
+        CellParts {
+            w: &mut self.w,
+            mean: &mut self.mean,
+            m2: &mut self.m2,
+            mean_lo: &mut self.mean_lo,
+            edges: &self.edges,
+            off: &self.off,
+        }
+    }
+}
+
+/// [`MarginalBins::cell_parts`]: the four cell vectors, laid out
+/// `[t·off[p] + off[j] + bin]`, and the edges and feature offsets that
+/// find a value's cell ([`bin_offsets_in`]).
+pub(crate) struct CellParts<'a> {
+    pub w: &'a mut [f64],
+    pub mean: &'a mut [f64],
+    pub m2: &'a mut [f64],
+    pub mean_lo: &'a mut [f64],
+    pub edges: &'a [Vec<f64>],
+    pub off: &'a [usize],
+}
+
+/// [`MarginalBins::bin_offsets`] from the edges and offsets alone, for a
+/// caller that holds the cells apart from them.
+pub(crate) fn bin_offsets_in(
+    edges: &[Vec<f64>],
+    off: &[usize],
+    j0: usize,
+    x: &[f64],
+    out: &mut Vec<usize>,
+) {
+    let base = off[j0];
+    out.clear();
+    out.extend(
+        edges[j0..]
+            .iter()
+            .zip(&off[j0..])
+            .zip(x)
+            .map(|((e, &o), &xj)| MarginalBins::bin_of(e, xj).map_or(NO_BIN, |b| o - base + b)),
+    );
+}
+
+/// One target's cells for a range of features: each offset in `at` (from
+/// [`MarginalBins::bin_offsets`]) names the cell, within the four slices,
+/// that takes the value `y` at undecayed weight `u`; [`NO_BIN`] takes
+/// nothing. Whether any cell was written. West's weighted recurrence, the
+/// module doc's, with the mean a compensated pair ([`crate::comp`]).
+#[inline]
+pub(crate) fn update_cells(
+    u: f64,
+    y: f64,
+    at: &[usize],
+    w: &mut [f64],
+    mean: &mut [f64],
+    m2: &mut [f64],
+    mean_lo: &mut [f64],
+) -> bool {
+    let mut wrote = false;
+    for &o in at {
+        if o == NO_BIN {
+            continue;
+        }
+        wrote = true;
+        let (wi, mi, lo) = (&mut w[o], &mut mean[o], &mut mean_lo[o]);
+        if *wi <= 0.0 {
+            // The bin's first row, or its first after a wipe: the mean it
+            // holds is nobody's, and `mean + (y − mean)` is not `y` to the
+            // bit when the old mean is far away.
+            *wi = u;
+            *mi = y;
+            m2[o] = 0.0;
+            *lo = 0.0;
+            continue;
+        }
+        let wb = *wi + u;
+        let delta = crate::comp::dev(y, *mi, *lo);
+        crate::comp::add(mi, lo, delta * (u / wb));
+        m2[o] += u * delta * crate::comp::dev(y, *mi, *lo);
+        *wi = wb;
+    }
+    wrote
+}
+
+impl MarginalBins {
     /// The response curve for one pair: the target's moments in each bin.
     pub fn bins(&self, t: usize, j: usize) -> Vec<Bin> {
         self.at(t, j)

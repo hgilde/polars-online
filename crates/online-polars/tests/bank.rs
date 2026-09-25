@@ -1038,3 +1038,92 @@ fn every_bank_reader_survives_a_held_block() {
         "the load moved the block"
     );
 }
+
+/// A wide `marginal` with its pairs split across the pool (docs/PLAN.md task
+/// 126) reads every pair the unsplit one reads, to the bit, fed whole or in
+/// chunks, for a count and for `"auto"` -- and the counts are the ones the
+/// stream runs with, so the comparison is of a split model.
+#[test]
+fn a_sharded_marginal_reads_the_unsplit_pairs() {
+    let p = 1_500;
+    let n = 400;
+    let mut s = 77u64;
+    let mut lcg = move || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    };
+    let mut cols: Vec<Column> = Vec::new();
+    let mut level = vec![0.0; p];
+    let mut xs: Vec<Vec<f64>> = (0..p).map(|_| Vec::with_capacity(n)).collect();
+    let (mut y0, mut y1, mut t, mut w) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for i in 0..n {
+        for (j, v) in level.iter_mut().enumerate() {
+            *v = 0.8 * *v + lcg();
+            xs[j].push(*v);
+        }
+        y0.push(level[0] - level[1] + 0.2 * lcg());
+        y1.push((i % 4 != 1).then(|| level[2].abs() + lcg()));
+        t.push(i as f64 + if i >= 250 { 1e4 } else { 0.0 });
+        w.push(if i % 9 == 4 { 0.0 } else { 1.0 + 0.5 * lcg() });
+    }
+    for (j, x) in xs.into_iter().enumerate() {
+        cols.push(Column::new(format!("x{j}").into(), x));
+    }
+    cols.push(Column::new("y0".into(), y0));
+    cols.push(Column::new("y1".into(), y1));
+    cols.push(Column::new("t".into(), t));
+    cols.push(Column::new("w".into(), w));
+    let df = DataFrame::new(n, cols).unwrap();
+    let features: Vec<String> = (0..p).map(|j| format!("\"x{j}\"")).collect();
+    let spec = |shards: &str| -> Spec {
+        serde_json::from_str(&format!(
+            r#"{{"name": "m", "model": {{"type": "marginal", "lags": [1, 4], "cross_lags": [1],
+                "bins": 5, "bin_warm_rows": 60 {shards}}},
+                "targets": ["y0", "y1"], "features": [{}], "clock": "t",
+                "halflife": 80.0, "max_dclock": 20.0, "weight": "w"}}"#,
+            features.join(", ")
+        ))
+        .unwrap()
+    };
+    let read = |spec: Spec, chunks: usize| -> DataFrame {
+        let mut bank = Bank::new(vec![spec]).unwrap();
+        let step = n.div_ceil(chunks);
+        for start in (0..n).step_by(step) {
+            bank.fit_predict(&df.slice(start as i64, step.min(n - start)))
+                .unwrap();
+        }
+        bank.marginal(0, None).unwrap()
+    };
+    // The count each spec's stream steps with.
+    let count = |spec: &Spec| -> usize {
+        let models = online_polars::build_models(spec).unwrap();
+        let (_, model) = &models[0];
+        online_polars::pool()
+            .unwrap()
+            .install(|| online_polars::marginal_shards(spec, model))
+    };
+    let unsplit = spec("");
+    assert_eq!(count(&unsplit), 1);
+    let want = read(unsplit, 1);
+    assert_eq!(want.height(), 2 * p);
+    for (shards, expect) in [
+        (r#", "shards": 6"#, Some(6)),
+        (r#", "shards": "auto""#, None),
+    ] {
+        let split = spec(shards);
+        let resolved = count(&split);
+        match expect {
+            Some(c) => assert_eq!(resolved, c),
+            None => assert!(
+                resolved > 1,
+                "auto splits lags and bins at 1,500 features: {resolved}"
+            ),
+        }
+        for chunks in [1, 3] {
+            let got = read(split.clone(), chunks);
+            assert!(got.equals_missing(&want), "{shards}, {chunks} chunks");
+        }
+    }
+}

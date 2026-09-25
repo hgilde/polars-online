@@ -332,6 +332,11 @@ pub struct Marginal {
     /// reason `MarginalCfg::window` gives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     win: Option<Windowed>,
+    /// Rows whose pair work waits for a sharded flush
+    /// ([`Self::step_sharded`]). Not state: serde skips it, and every reader
+    /// of the pairs flushes first.
+    #[serde(skip)]
+    defer: Deferred,
 }
 /// The window's clock and the snapshots it subtracts.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -367,6 +372,74 @@ impl crate::Footprint for MarginalMoments {
             .iter()
             .map(|v| crate::window::floats(v))
             .sum::<usize>()
+    }
+}
+
+/// Where a held row's lag reads the row `lag` learned rows back.
+#[derive(Debug, Clone, Copy)]
+enum Src {
+    /// The `i`-th row of the ring as it stood when the batch began: the
+    /// ring is not touched while rows are held, since a held row may still
+    /// read a row a push would drop.
+    Ring(usize),
+    /// The `r`-th held row.
+    Row(usize),
+}
+
+/// Rows whose pair work waits for a flush ([`Marginal::step_sharded`],
+/// docs/PLAN.md task 126). Everything a pair needs from a row is fixed when
+/// the row arrives -- the row's features and targets, each target's mix,
+/// where each lag's row back is, the bins' weight -- and none of it depends
+/// on another pair, so the pairs can be stepped later, row by row in
+/// order, split by feature.
+#[derive(Debug, Clone, Default)]
+struct Deferred {
+    /// Rows held.
+    n: usize,
+    /// Their features, `p` a row.
+    xs: Vec<f64>,
+    /// Their targets, `T` a row: what a later row's lag reads back.
+    ys: Vec<Option<f64>>,
+    /// Per row and target, the mix its pairs take; `None` where they do not
+    /// move.
+    mixes: Vec<Option<TargetMix>>,
+    /// Per row, the weight its cells take in the bins, `None` where it
+    /// writes none.
+    u: Vec<Option<f64>>,
+    /// Per row and lag, where the row that far back is; `None` where the
+    /// ring does not reach it yet, and the lag waits.
+    backs: Vec<Option<Src>>,
+    /// Per row, target and lag, the target's value that far back against
+    /// its mean before this row; `None` where it was absent then.
+    dy_lag: Vec<Option<f64>>,
+    /// The rows a lag can reach, oldest first, as the ring would hold them
+    /// had each held row been pushed.
+    ring: std::collections::VecDeque<Src>,
+}
+
+/// Held rows are never equal to anything: two models compare equal only
+/// once both have flushed, which is when their pairs say what they are.
+impl PartialEq for Deferred {
+    fn eq(&self, other: &Self) -> bool {
+        self.n == 0 && other.n == 0
+    }
+}
+
+impl Deferred {
+    /// Hold nothing, keeping the buffers for the next batch when `keep`.
+    fn clear(&mut self, keep: bool) {
+        if !keep {
+            *self = Self::default();
+            return;
+        }
+        self.n = 0;
+        self.xs.clear();
+        self.ys.clear();
+        self.mixes.clear();
+        self.u.clear();
+        self.backs.clear();
+        self.dy_lag.clear();
+        self.ring.clear();
     }
 }
 
@@ -572,6 +645,7 @@ impl Marginal {
             },
             rows_t: vec![0; t],
             win,
+            defer: Deferred::default(),
         })
     }
 
@@ -680,6 +754,10 @@ impl Marginal {
     /// reported at any weight; `corr`, `beta` and `t` wait for
     /// `min_periods`.
     pub fn pair(&self, t: usize, j: usize) -> Pair {
+        debug_assert_eq!(
+            self.defer.n, 0,
+            "marginal: rows held for a sharded flush are flushed before a pair is read"
+        );
         let i = t * self.cfg.n_features + j;
         // With a `window`, every moment this pair is built from is truncated
         // to it first: the weight, the two means, and the three centred
@@ -946,95 +1024,38 @@ impl Marginal {
         if w < 0.0 {
             return;
         }
-        let p = self.cfg.n_features;
+        let (p, n_targets) = (self.cfg.n_features, self.cfg.n_targets);
         self.size_lo();
         // The model-level weight: every row, present targets or not. A
         // zero-weight first row leaves it at zero, which is legal (rule 9).
         self.w_sum = lam * self.w_sum + w;
-        for (t, yt) in y.iter().enumerate() {
-            let Some(yt) = *yt else {
-                // Time passes for a target that is not there: its weight
-                // ages, its moments hold, as `ew_ridge` treats a missing
-                // target.
-                self.wt[t] *= lam;
-                self.qt[t] *= lam * lam;
+        for (t, &yt) in y.iter().enumerate() {
+            let Some(mix) = self.advance_target(t, yt, lam, w) else {
                 continue;
             };
-            let w_new = lam * self.wt[t] + w;
-            if w_new <= 0.0 {
-                // No weight in the history and none on this row: nothing to
-                // average, and `a`/`b` would be 0/0 (CLAUDE.md rule 9). The
-                // weights still take the row's decay -- `lam = 0` with a
-                // zero-weight row is a clock gap past `max_dclock` on a row
-                // that teaches nothing, and the target's `n_eff` must not
-                // outlive the gap while the model's does not.
-                self.wt[t] = 0.0;
-                self.qt[t] = 0.0;
-                continue;
-            }
-            let a = lam * self.wt[t] / w_new;
-            let b = w / w_new;
-            let n_targets = self.cfg.n_targets;
-            // A row counts for the runs when its weight is something next to
-            // the target's (`EwCov::update`, `crate::Runs`).
-            if w > 0.0 && w > crate::window::EMPTY_FRACTION * (lam * self.wt[t]) {
-                self.rows_t[t] += 1;
-                // The runs are read by a window's truncated pair alone, and a
-                // window is fixed when the model is built: without one they
-                // were kept for nothing, and at `p·T` slots that was half the
-                // model's time at width (docs/PERFORMANCE.md §24).
-                if self.win.is_some() {
-                    self.y_runs.track_one(n_targets, t, yt, self.rows_t[t]);
-                    for (i, &xj) in x.iter().enumerate() {
-                        self.x_runs
-                            .track_one(n_targets * p, t * p + i, xj, self.rows_t[t]);
-                    }
+            let r = t * p..(t + 1) * p;
+            if let Some(row) = mix.runs_row {
+                if let Some((values, start)) = self.x_runs.slots_mut(n_targets * p) {
+                    crate::runs::track_slots(&mut values[r.clone()], &mut start[r.clone()], x, row);
                 }
             }
-            use crate::comp::{add, dev};
-            let dy = dev(yt, self.my[t], self.my_lo[t]);
-            // Co-moments from the deviations against the OLD means, then the
-            // means advance -- `EwCov::update`'s order, operation for
-            // operation, so the pair agrees with `ew_cov` to the bit.
-            self.syy[t] = a * self.syy[t] + a * b * dy * dy;
-            let row = t * p;
-            // A row of weight 0 takes no step (`crate::comp::add` says why).
-            let step = b > 0.0;
-            for (i, &xj) in (row..row + p).zip(x) {
-                let dx = dev(xj, self.mx[i], self.mx_lo[i]);
-                self.sxx[i] = a * self.sxx[i] + a * b * dx * dx;
-                self.sxy[i] = a * self.sxy[i] + a * b * dx * dy;
-                if step {
-                    add(&mut self.mx[i], &mut self.mx_lo[i], b * dx);
-                }
-            }
-            if step {
-                add(&mut self.my[t], &mut self.my_lo[t], b * dy);
-            }
-            self.wt[t] = w_new;
-            self.qt[t] = lam * lam * self.qt[t] + w * w;
-        }
-    }
-}
-
-impl OnlineModel for Marginal {
-    fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
-        if let Some(win) = self.win.as_mut() {
-            win.snaps.set_budget(budget);
+            pair_kernel(
+                mix,
+                x,
+                &mut self.mx[r.clone()],
+                &mut self.mx_lo[r.clone()],
+                &mut self.sxx[r.clone()],
+                &mut self.sxy[r],
+            );
         }
     }
 
-    fn window_over_budget(&self) -> Option<(usize, usize)> {
-        self.win.as_ref().and_then(|win| win.snaps.over_budget())
-    }
-
-    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
-        let out = self.predict(x, d_clock);
-        let lam = self.cfg.decay.factor(d_clock);
-        // The snapshot is every accumulator as it stands *before* this row,
-        // decayed to this row's clock, so subtracting it later retains this
-        // row and everything after. Keyed by a clock the model accumulates
-        // itself, so the boundary cannot depend on the chunking.
+    /// The window's snapshot, when the row is one it keeps: every
+    /// accumulator as it stands *before* this row, decayed to this row's
+    /// clock, so subtracting it later retains this row and everything
+    /// after. Keyed by a clock the model accumulates itself, so the boundary
+    /// cannot depend on the chunking.
+    fn offer_snapshot(&mut self, d_clock: f64, lam: f64) {
         if let Some(win) = self.win.as_mut() {
             let t = win.clock + d_clock;
             // Built inside the closure so the snapshot is only formed on the
@@ -1053,6 +1074,709 @@ impl OnlineModel for Marginal {
             win.clock = t;
             win.snaps.trim(t);
         }
+    }
+
+    /// [`OnlineModel::step`], with the row's pair work held back and done
+    /// by `shards` a batch of rows at a time (docs/PLAN.md task 126).
+    ///
+    /// Every target's own statistics, the model's weight and what the row
+    /// reports are advanced now, as `step` advances them; none of them reads
+    /// a pair. What each pair takes from the row -- the features, each
+    /// target's mix, where each lag's row back is, the bins' weight -- is
+    /// fixed now and held. A flush then steps each pair through the held
+    /// rows in order, the pairs split into `shards.count` ranges of
+    /// features and run by `shards.run`. A pair touches only its own cells,
+    /// so every number is the one `step` gives, to the bit, whatever the
+    /// count and whichever threads run the ranges.
+    ///
+    /// Held rows are flushed when the batch is full, before a window
+    /// snapshot (which copies the pairs) and before the bins fold their
+    /// scale into every cell. Everything that reads a pair needs the
+    /// caller's [`Self::flush`] first: `pair`, `state`, a comparison. A
+    /// plain [`OnlineModel::step`] flushes on its own, on this thread.
+    ///
+    /// Why a batch and not a row: a fork-join costs about ten
+    /// microseconds, idle threads being woken for it, and at `p = 10,000` a
+    /// row of the moments alone is about six. At one and nine targets, one
+    /// fork-join per row ran at best 0.6 and 1.7 times as fast as no split;
+    /// one per 64 rows, 3.9 and 6.5 times (docs/PERFORMANCE.md §25).
+    pub fn step_sharded(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        shards: &Shards<'_>,
+    ) -> Step {
+        if shards.count <= 1 {
+            self.flush(shards);
+            return OnlineModel::step(self, x, y, d_clock, weight);
+        }
+        let out = self.predict(x, d_clock);
+        let lam = self.cfg.decay.factor(d_clock);
+        // The snapshot copies the pairs as they stand before this row.
+        if self
+            .win
+            .as_ref()
+            .is_some_and(|w| w.snaps.takes(w.clock + d_clock))
+        {
+            self.flush_rows(shards, true);
+        }
+        self.offer_snapshot(d_clock, lam);
+        self.defer_row(x, y, lam, weight, shards);
+        out
+    }
+
+    /// Learn every row [`Self::step_sharded`] holds, split and run as
+    /// `shards` says, and let go of the buffers that held them. A no-op
+    /// when nothing is held.
+    pub fn flush(&mut self, shards: &Shards<'_>) {
+        self.flush_rows(shards, false);
+    }
+
+    /// Rows held for a flush.
+    pub fn held_rows(&self) -> usize {
+        self.defer.n
+    }
+
+    /// One row into the batch: `learn_lags`, `feed_bins` and `learn` with
+    /// every pair's part held back.
+    fn defer_row(&mut self, x: &[f64], y: &[Option<f64>], lam: f64, w: f64, shards: &Shards<'_>) {
+        debug_assert_eq!(x.len(), self.cfg.n_features);
+        debug_assert_eq!(y.len(), self.cfg.n_targets);
+        debug_assert!(w >= 0.0, "marginal requires a non-negative weight, got {w}");
+        let (p, n_targets) = (self.cfg.n_features, self.cfg.n_targets);
+        // The bins before the pairs, as `step` feeds them.
+        let u = self.defer_bins(x, y, lam, w, shards);
+        if w < 0.0 {
+            return;
+        }
+        self.size_lo();
+        let n_lags = self.lag.as_ref().map_or(0, |l| l.lags().len());
+        if self.defer.n == 0 {
+            // A batch begins with the ring as it stands.
+            let depth = self.lag.as_ref().map_or(0, |l| l.depth());
+            self.defer.ring.extend((0..depth).map(Src::Ring));
+        }
+        let r = self.defer.n;
+        self.w_sum = lam * self.w_sum + w;
+        if let Some(lag) = self.lag.as_ref() {
+            let depth = self.defer.ring.len();
+            for &l in lag.lags() {
+                let back = (l <= depth).then(|| self.defer.ring[depth - l]);
+                self.defer.backs.push(back);
+            }
+        }
+        for (t, &yt) in y.iter().enumerate() {
+            let mix = self.advance_target(t, yt, lam, w);
+            self.defer.mixes.push(mix);
+            let Some(lag) = self.lag.as_deref_mut() else {
+                continue;
+            };
+            let d = &mut self.defer;
+            for li in 0..n_lags {
+                // The target that far back, against its mean before this
+                // row, as `MarginalLags::update_target` takes it; its own
+                // lagged moment moves now, with the target's scalars.
+                let dy_lag = match (mix, d.backs[r * n_lags + li]) {
+                    (Some(m), Some(src)) => {
+                        let back = match src {
+                            Src::Ring(i) => lag.ring_row(i).1[t],
+                            Src::Row(q) => d.ys[q * n_targets + t],
+                        };
+                        back.map(|v| crate::comp::dev(v, m.my, m.my_lo))
+                    }
+                    _ => None,
+                };
+                if let Some(m) = mix {
+                    let c = lag.cyy_mut(li, t);
+                    *c = crate::marglag::step_cyy(m.a, m.b, m.dy, dy_lag, *c);
+                }
+                d.dy_lag.push(dy_lag);
+            }
+        }
+        self.defer.xs.extend_from_slice(x);
+        self.defer.ys.extend_from_slice(y);
+        self.defer.u.push(u);
+        self.defer.n += 1;
+        // The ring holds rows that taught something, as `step` pushes them.
+        if let Some(lag) = self.lag.as_ref() {
+            if w > 0.0 && w.is_finite() && x.iter().all(|v| v.is_finite()) {
+                self.defer.ring.push_back(Src::Row(r));
+                if self.defer.ring.len() > lag.max_lag() {
+                    self.defer.ring.pop_front();
+                }
+            }
+        }
+        if self.defer.n >= batch_rows(p) {
+            self.flush_rows(shards, true);
+        }
+    }
+
+    /// The bins' side of a held row: [`Self::feed_bins`] with the cell
+    /// writes held back. The histogram ages by the row -- the held rows
+    /// learned first where the ageing folds the scale into every cell, since
+    /// they were weighed against the scale before it -- or, before the edges
+    /// exist, the row is held for them as `feed_bins` holds it. The weight
+    /// the row's cells take, `None` where it writes none.
+    fn defer_bins(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        lam: f64,
+        w: f64,
+        shards: &Shards<'_>,
+    ) -> Option<f64> {
+        let hist = self.bins.as_ref().and_then(|b| b.hist.as_ref());
+        let Some(folds) = hist.map(|h| h.folds_at(lam)) else {
+            // No bins, or the warm-up: no cell is written until the edges
+            // exist, and the replay that writes the held rows then is the
+            // model's own.
+            if self.bins.is_some() {
+                self.feed_bins(x, y, lam, w);
+            }
+            return None;
+        };
+        if folds {
+            self.flush_rows(shards, true);
+        }
+        let hist = self
+            .bins
+            .as_mut()
+            .and_then(|b| b.hist.as_mut())
+            .expect("the histogram exists: checked above");
+        hist.decay(lam);
+        let u = hist.row_weight(y, w)?;
+        // A row that writes a cell makes the histogram not empty now, as the
+        // write itself would, so the next row's ageing is not skipped.
+        if hist.is_empty() && x.iter().any(|v| v.is_finite()) {
+            hist.mark_written();
+        }
+        Some(u)
+    }
+
+    /// Learn the held rows' pairs: every pair vector cut into
+    /// `shards.count` ranges of features, one [`MarginalShard`] each, run by
+    /// `shards.run`; then the ring is the one those rows leave. `keep` keeps
+    /// the buffers for another batch.
+    fn flush_rows(&mut self, shards: &Shards<'_>, keep: bool) {
+        if self.defer.n == 0 {
+            self.defer.clear(keep);
+            return;
+        }
+        let d = std::mem::take(&mut self.defer);
+        let (p, n_targets) = (self.cfg.n_features, self.cfg.n_targets);
+        let count = shards.count.clamp(1, p.max(1));
+        let cuts: Vec<usize> = (0..=count).map(|k| k * p / count).collect();
+        let cross_of = self.lag.as_ref().map(|l| l.cross_of()).unwrap_or_default();
+        let tracks_runs = d
+            .mixes
+            .iter()
+            .any(|m| m.is_some_and(|m| m.runs_row.is_some()));
+        let writes_cells = d.u.iter().any(Option::is_some);
+        if p > 0 {
+            let Marginal {
+                mx,
+                mx_lo,
+                sxx,
+                sxy,
+                lag,
+                bins,
+                x_runs,
+                ..
+            } = self;
+            let (moments, ring_x) = match lag.as_deref_mut() {
+                Some(l) => {
+                    let crate::marglag::LagParts {
+                        cxx,
+                        cxy,
+                        cyx,
+                        ring_x,
+                    } = l.parts();
+                    (Some([cxx, cxy, cyx]), Some(ring_x))
+                }
+                None => (None, None),
+            };
+            let cells = bins
+                .as_deref_mut()
+                .and_then(|b| b.hist.as_mut())
+                .filter(|_| writes_cells)
+                .map(|h| h.cell_parts());
+            let job = Job {
+                p,
+                n_targets,
+                d: &d,
+                ring_x,
+                cross_of: &cross_of,
+                bins: cells.as_ref().map(|c| (c.edges, c.off)),
+            };
+            let mut parts: Vec<MarginalShard<'_>> = cuts
+                .windows(2)
+                .map(|c| MarginalShard::new(c[0]..c[1], &job))
+                .collect();
+            deal(mx, p, &cuts, |k, v| parts[k].mx.push(v));
+            deal(mx_lo, p, &cuts, |k, v| parts[k].mx_lo.push(v));
+            deal(sxx, p, &cuts, |k, v| parts[k].sxx.push(v));
+            deal(sxy, p, &cuts, |k, v| parts[k].sxy.push(v));
+            if tracks_runs {
+                if let Some((values, start)) = x_runs.slots_mut(n_targets * p) {
+                    deal(values, p, &cuts, |k, v| parts[k].runs.push(v));
+                    deal(start, p, &cuts, |k, v| parts[k].runs_start.push(v));
+                }
+            }
+            if let Some([cxx, cxy, cyx]) = moments {
+                for v in cxx.iter_mut() {
+                    deal(v, p, &cuts, |k, v| parts[k].cxx.push(v));
+                }
+                for v in cxy.iter_mut() {
+                    deal(v, p, &cuts, |k, v| parts[k].cxy.push(v));
+                }
+                for v in cyx.iter_mut() {
+                    deal(v, p, &cuts, |k, v| parts[k].cyx.push(v));
+                }
+            }
+            if let Some(c) = cells {
+                let at: Vec<usize> = cuts.iter().map(|&j| c.off[j]).collect();
+                let width = c.off[p];
+                deal(c.w, width, &at, |k, v| parts[k].w.push(v));
+                deal(c.mean, width, &at, |k, v| parts[k].mean.push(v));
+                deal(c.m2, width, &at, |k, v| parts[k].m2.push(v));
+                deal(c.mean_lo, width, &at, |k, v| parts[k].mean_lo.push(v));
+            }
+            (shards.run)(&mut parts);
+            debug_assert!(
+                parts.iter().all(|s| !s.wrote)
+                    || bins
+                        .as_ref()
+                        .and_then(|b| b.hist.as_ref())
+                        .is_none_or(|h| !h.is_empty()),
+                "a written cell was marked when its row was held"
+            );
+        }
+        // The ring those rows leave: the rows a lag can reach, oldest first.
+        if let Some(lag) = self.lag.as_deref_mut() {
+            let rows = d
+                .ring
+                .iter()
+                .map(|src| match *src {
+                    Src::Ring(i) => {
+                        let (x, y) = lag.ring_row(i);
+                        (x.to_vec(), y.to_vec())
+                    }
+                    Src::Row(r) => (
+                        d.xs[r * p..(r + 1) * p].to_vec(),
+                        d.ys[r * n_targets..(r + 1) * n_targets].to_vec(),
+                    ),
+                })
+                .collect();
+            lag.set_ring(rows);
+        }
+        self.defer = d;
+        self.defer.clear(keep);
+    }
+
+    /// Target `t`'s own side of a row: its weight, squared weight, mean and
+    /// centred second moment stepped, and under a window its learned rows
+    /// and run; and the mix its pairs take, from the target's state before
+    /// the row. `None` where its pairs do not move: the target is absent,
+    /// or there is no weight behind the row or on it.
+    ///
+    /// Nothing here reads a pair, and a pair reads nothing here but the mix,
+    /// which is what lets [`Self::step_sharded`] advance every target now
+    /// and do the pairs later, split by feature.
+    fn advance_target(&mut self, t: usize, yt: Option<f64>, lam: f64, w: f64) -> Option<TargetMix> {
+        let Some(yt) = yt else {
+            // Time passes for a target that is not there: its weight ages,
+            // its moments hold, as `ew_ridge` treats a missing target.
+            self.wt[t] *= lam;
+            self.qt[t] *= lam * lam;
+            return None;
+        };
+        let w_new = lam * self.wt[t] + w;
+        if w_new <= 0.0 {
+            // No weight in the history and none on this row: nothing to
+            // average, and `a`/`b` would be 0/0 (CLAUDE.md rule 9). The
+            // weights still take the row's decay -- `lam = 0` with a
+            // zero-weight row is a clock gap past `max_dclock` on a row that
+            // teaches nothing, and the target's `n_eff` must not outlive the
+            // gap while the model's does not.
+            self.wt[t] = 0.0;
+            self.qt[t] = 0.0;
+            return None;
+        }
+        let a = lam * self.wt[t] / w_new;
+        let b = w / w_new;
+        let mut runs_row = None;
+        // A row counts for the runs when its weight is something next to the
+        // target's (`EwCov::update`, `crate::Runs`).
+        if w > 0.0 && w > crate::window::EMPTY_FRACTION * (lam * self.wt[t]) {
+            self.rows_t[t] += 1;
+            // The runs are read by a window's truncated pair alone, and a
+            // window is fixed when the model is built: without one they were
+            // kept for nothing, and at `p·T` slots that was half the model's
+            // time at width (docs/PERFORMANCE.md §24).
+            if self.win.is_some() {
+                self.y_runs
+                    .track_one(self.cfg.n_targets, t, yt, self.rows_t[t]);
+                runs_row = Some(self.rows_t[t]);
+            }
+        }
+        use crate::comp::{add, dev};
+        let (my, my_lo) = (self.my[t], self.my_lo[t]);
+        let dy = dev(yt, my, my_lo);
+        // Co-moments from the deviations against the OLD means, then the
+        // means advance -- `EwCov::update`'s order, operation for operation,
+        // so the pair agrees with `ew_cov` to the bit.
+        self.syy[t] = a * self.syy[t] + a * b * dy * dy;
+        // A row of weight 0 takes no step (`crate::comp::add` says why).
+        if b > 0.0 {
+            add(&mut self.my[t], &mut self.my_lo[t], b * dy);
+        }
+        self.wt[t] = w_new;
+        self.qt[t] = lam * lam * self.qt[t] + w * w;
+        Some(TargetMix {
+            a,
+            b,
+            dy,
+            my,
+            my_lo,
+            runs_row,
+        })
+    }
+}
+
+/// What a target's pairs take from a row ([`Marginal::advance_target`]):
+/// the mix `a = lam·W/W'` and `b = w/W'`, the target's deviation from its
+/// mean before the row, that mean itself (the lags centre on it), and the
+/// learned row the target's runs start from when the row counts for them.
+#[derive(Debug, Clone, Copy)]
+struct TargetMix {
+    a: f64,
+    b: f64,
+    dy: f64,
+    my: f64,
+    my_lo: f64,
+    runs_row: Option<u64>,
+}
+
+/// One target's pair moments over a range of features, the module doc's
+/// recursion on slices of one length: `x` the row's features, and the
+/// target's means, their low parts and the two co-moments for the same
+/// features. The only copy of the pair update: an unsplit row runs it over
+/// every feature, a shard over its own ([`MarginalShard`]).
+#[inline]
+fn pair_kernel(
+    mix: TargetMix,
+    x: &[f64],
+    mx: &mut [f64],
+    mx_lo: &mut [f64],
+    sxx: &mut [f64],
+    sxy: &mut [f64],
+) {
+    use crate::comp::{add, dev};
+    let (a, b, dy) = (mix.a, mix.b, mix.dy);
+    // A row of weight 0 takes no step (`crate::comp::add` says why).
+    let step = b > 0.0;
+    let means = mx.iter_mut().zip(mx_lo.iter_mut());
+    let moments = sxx.iter_mut().zip(sxy.iter_mut());
+    for ((&xj, (m, lo)), (s, c)) in x.iter().zip(means).zip(moments) {
+        let dx = dev(xj, *m, *lo);
+        *s = a * *s + a * b * dx * dx;
+        *c = a * *c + a * b * dx * dy;
+        if step {
+            add(m, lo, b * dx);
+        }
+    }
+}
+
+/// The most rows a batch holds, and the bytes of features it may hold:
+/// enough rows that a fork-join is a small part of a flush (one per 64 rows
+/// ran within 6% of one per 256, docs/PERFORMANCE.md §25), few enough that
+/// a group's batch stays small beside its model.
+const BATCH_ROWS: usize = 256;
+const BATCH_BYTES: usize = 8 << 20;
+
+/// Rows a batch of `p` features holds before it is flushed.
+fn batch_rows(p: usize) -> usize {
+    (BATCH_BYTES / (8 * p.max(1))).clamp(1, BATCH_ROWS)
+}
+
+/// A pair's moments on one row, in nanoseconds on one thread, and what
+/// each part a spec adds costs beside them in units of that: a lagged
+/// moment (a lag's autocovariance, or one of a cross lag's two terms) and
+/// the bins' cell. Fitted to `marg_shard_bench` on an M4 Pro, within a
+/// fifth on the eleven shapes of docs/PERFORMANCE.md §25; only their order
+/// of magnitude matters to what they decide.
+const PAIR_NS: f64 = 0.6;
+const LAG_UNITS: f64 = 0.4;
+const BIN_UNITS: f64 = 9.0;
+
+/// The pair work a shard of a flush must have for the fork-join to be a
+/// small part of it, in nanoseconds (docs/PERFORMANCE.md §25).
+const SHARD_NS: f64 = 100_000.0;
+
+impl MarginalCfg {
+    /// `"auto"`'s shard count on a pool of `threads` (docs/PLAN.md task
+    /// 126): as many as a flush's pair work keeps busy at a tenth of a
+    /// millisecond each, and up to twice the threads, since more ranges
+    /// than threads lets the fast cores take the slow ones' share. A row
+    /// with too little work for two shards is not split. The flush's work
+    /// is its rows times the row's pairs times each pair's cost, from the
+    /// moments, the lagged moments and the bins.
+    pub fn auto_shards(&self, threads: usize) -> usize {
+        let (p, t) = (self.n_features, self.n_targets);
+        let lags = self.lags.len();
+        let cross = self.cross_lags.as_ref().map_or(lags, Vec::len);
+        let bins = if self.bins.is_some() { BIN_UNITS } else { 0.0 };
+        let per_pair = PAIR_NS * (1.0 + LAG_UNITS * (lags + 2 * cross) as f64 + bins);
+        let flush = batch_rows(p) as f64 * (p * t) as f64 * per_pair;
+        let fits = (flush / SHARD_NS).floor() as usize;
+        let most = if threads <= 1 { 1 } else { 2 * threads };
+        if fits < 2 { 1 } else { fits.min(most) }
+    }
+}
+
+/// What runs a flush's shards: every one of them, in any order and on any
+/// threads ([`Shards::run`]).
+pub type ShardRunner = dyn Fn(&mut [MarginalShard<'_>]) + Sync;
+
+/// How [`Marginal::step_sharded`] splits the pair work, and what runs the
+/// parts.
+#[derive(Clone, Copy)]
+pub struct Shards<'r> {
+    /// Ranges of features to split the pairs into, each a [`MarginalShard`];
+    /// one or fewer steps the pairs row by row, unsplit.
+    pub count: usize,
+    /// Runs every shard of a flush, in any order and on any threads: each
+    /// writes its own features' cells and nothing else, so the order cannot
+    /// change a number.
+    pub run: &'r ShardRunner,
+}
+
+impl Shards<'static> {
+    /// One shard, run on this thread: what [`OnlineModel::step`] uses to
+    /// learn rows a sharded step left held.
+    pub fn inline() -> Self {
+        Self {
+            count: 1,
+            run: &run_in_order,
+        }
+    }
+}
+
+/// Run each shard in turn, on this thread.
+pub fn run_in_order(shards: &mut [MarginalShard<'_>]) {
+    shards.iter_mut().for_each(MarginalShard::run);
+}
+
+/// What every shard of a flush reads: the held rows, the ring as it stood
+/// when they began, and how the lags and the bins are laid out.
+struct Job<'a> {
+    p: usize,
+    n_targets: usize,
+    d: &'a Deferred,
+    ring_x: Option<&'a std::collections::VecDeque<Vec<f64>>>,
+    /// Per lag, its place among the cross lags, `None` where it keeps none.
+    cross_of: &'a [Option<usize>],
+    /// The bins' edges and feature offsets, where a held row writes a cell.
+    bins: Option<(&'a [Vec<f64>], &'a [usize])>,
+}
+
+impl Job<'_> {
+    /// The features of the row `src` names.
+    fn row_x(&self, src: Src) -> &[f64] {
+        match src {
+            Src::Ring(i) => &self
+                .ring_x
+                .expect("a ring row is read only where there are lags")[i],
+            Src::Row(r) => &self.d.xs[r * self.p..(r + 1) * self.p],
+        }
+    }
+}
+
+/// One part of a flush ([`Marginal::step_sharded`]): a range of features,
+/// with every target's cells for them in every per-pair vector, stepped
+/// through every held row in order by [`Self::run`].
+pub struct MarginalShard<'a> {
+    j: std::ops::Range<usize>,
+    job: &'a Job<'a>,
+    /// Per target, this range of its means, their low parts and its two
+    /// co-moments.
+    mx: Vec<&'a mut [f64]>,
+    mx_lo: Vec<&'a mut [f64]>,
+    sxx: Vec<&'a mut [f64]>,
+    sxy: Vec<&'a mut [f64]>,
+    /// Per target, this range of its runs, where a window keeps them.
+    runs: Vec<&'a mut [f64]>,
+    runs_start: Vec<&'a mut [u64]>,
+    /// `[lag · T + t]` and `[cross lag · T + t]`: this range of each lagged
+    /// moment.
+    cxx: Vec<&'a mut [f64]>,
+    cxy: Vec<&'a mut [f64]>,
+    cyx: Vec<&'a mut [f64]>,
+    /// Per target, this range's cells in the bins.
+    w: Vec<&'a mut [f64]>,
+    mean: Vec<&'a mut [f64]>,
+    m2: Vec<&'a mut [f64]>,
+    mean_lo: Vec<&'a mut [f64]>,
+    /// Whether a cell was written.
+    wrote: bool,
+}
+
+impl<'a> MarginalShard<'a> {
+    fn new(j: std::ops::Range<usize>, job: &'a Job<'a>) -> Self {
+        Self {
+            j,
+            job,
+            mx: Vec::new(),
+            mx_lo: Vec::new(),
+            sxx: Vec::new(),
+            sxy: Vec::new(),
+            runs: Vec::new(),
+            runs_start: Vec::new(),
+            cxx: Vec::new(),
+            cxy: Vec::new(),
+            cyx: Vec::new(),
+            w: Vec::new(),
+            mean: Vec::new(),
+            m2: Vec::new(),
+            mean_lo: Vec::new(),
+            wrote: false,
+        }
+    }
+
+    /// The features this shard steps.
+    pub fn features(&self) -> std::ops::Range<usize> {
+        self.j.clone()
+    }
+
+    /// Step this range's pairs through every held row, in order: per row,
+    /// the lags against the means before it, then the bins, then the runs
+    /// and the pair moments -- `step`'s order, so the same numbers.
+    pub fn run(&mut self) {
+        use crate::marglag::{Lagged, step_all, step_xx, wait};
+        let job = self.job;
+        let d = job.d;
+        let (p, n_targets, n_lags) = (job.p, job.n_targets, job.cross_of.len());
+        let (j0, j1) = (self.j.start, self.j.end);
+        let mut at = Vec::new();
+        for r in 0..d.n {
+            let x = &d.xs[r * p + j0..r * p + j1];
+            let mixes = &d.mixes[r * n_targets..(r + 1) * n_targets];
+            if n_lags > 0 {
+                let backs = &d.backs[r * n_lags..(r + 1) * n_lags];
+                for (t, mix) in mixes.iter().enumerate() {
+                    let Some(m) = *mix else {
+                        continue;
+                    };
+                    for (li, (&back, &ci)) in backs.iter().zip(job.cross_of).enumerate() {
+                        let xx = li * n_targets + t;
+                        let Some(src) = back else {
+                            // Nothing that far back yet: the moments age
+                            // and wait.
+                            wait(m.a, self.cxx[xx]);
+                            if let Some(ci) = ci {
+                                wait(m.a, self.cxy[ci * n_targets + t]);
+                                wait(m.a, self.cyx[ci * n_targets + t]);
+                            }
+                            continue;
+                        };
+                        let lagged = Lagged {
+                            a: m.a,
+                            b: m.b,
+                            dy_now: m.dy,
+                            dy_lag: d.dy_lag[(r * n_targets + t) * n_lags + li],
+                            x,
+                            x_lag: &job.row_x(src)[j0..j1],
+                            mx: self.mx[t],
+                            mx_lo: self.mx_lo[t],
+                        };
+                        match ci {
+                            Some(ci) => step_all(
+                                lagged,
+                                self.cxx[xx],
+                                self.cxy[ci * n_targets + t],
+                                self.cyx[ci * n_targets + t],
+                            ),
+                            None => step_xx(lagged, self.cxx[xx]),
+                        }
+                    }
+                }
+            }
+            if let (Some(u), Some((edges, off))) = (d.u[r], job.bins) {
+                // Each feature's bin once a row, then every target's cells.
+                crate::margbins::bin_offsets_in(edges, off, j0, x, &mut at);
+                for t in 0..n_targets {
+                    let Some(v) = d.ys[r * n_targets + t].filter(|v| v.is_finite()) else {
+                        continue;
+                    };
+                    self.wrote |= crate::margbins::update_cells(
+                        u,
+                        v,
+                        &at,
+                        self.w[t],
+                        self.mean[t],
+                        self.m2[t],
+                        self.mean_lo[t],
+                    );
+                }
+            }
+            for (t, mix) in mixes.iter().enumerate() {
+                let Some(m) = *mix else {
+                    continue;
+                };
+                if let (Some(row), Some(values)) = (m.runs_row, self.runs.get_mut(t)) {
+                    crate::runs::track_slots(values, self.runs_start[t], x, row);
+                }
+                pair_kernel(m, x, self.mx[t], self.mx_lo[t], self.sxx[t], self.sxy[t]);
+            }
+        }
+    }
+}
+
+/// Deal `v`, laid out `[t · width + i]`, into shards: shard `k` takes
+/// `v[t·width + at[k] .. t·width + at[k+1]]` of every block `t`, in block
+/// order. `at` runs from 0 to `width`.
+fn deal<'a, E>(
+    v: &'a mut [E],
+    width: usize,
+    at: &[usize],
+    mut take: impl FnMut(usize, &'a mut [E]),
+) {
+    debug_assert!(at.first() == Some(&0) && at.last() == Some(&width));
+    if width == 0 {
+        return;
+    }
+    for block in v.chunks_exact_mut(width) {
+        let mut rest = block;
+        for (k, c) in at.windows(2).enumerate() {
+            let (piece, tail) = std::mem::take(&mut rest).split_at_mut(c[1] - c[0]);
+            take(k, piece);
+            rest = tail;
+        }
+    }
+}
+
+impl OnlineModel for Marginal {
+    fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.set_budget(budget);
+        }
+    }
+
+    fn window_over_budget(&self) -> Option<(usize, usize)> {
+        self.win.as_ref().and_then(|win| win.snaps.over_budget())
+    }
+
+    fn step(&mut self, x: &[f64], y: &[Option<f64>], d_clock: f64, weight: f64) -> Step {
+        // Rows held for a sharded flush were learned first: this row
+        // follows them (`Marginal::step_sharded`).
+        if self.defer.n > 0 {
+            self.flush(&Shards::inline());
+        }
+        let out = self.predict(x, d_clock);
+        let lam = self.cfg.decay.factor(d_clock);
+        self.offer_snapshot(d_clock, lam);
         if self.lag.is_some() {
             self.learn_lags(x, y, lam, weight);
         }
@@ -1096,12 +1820,22 @@ impl OnlineModel for Marginal {
     /// either depends on rows being adjacent: a gap does not make the values
     /// a feature took any less representative of the values it takes.
     fn clear_lags(&mut self) {
+        // Rows held for a sharded flush may still read the ring as it
+        // stands: only the ring those rows will leave empties.
+        if self.defer.n > 0 {
+            self.defer.ring.clear();
+            return;
+        }
         if let Some(lag) = self.lag.as_mut() {
             lag.clear();
         }
     }
 
     fn state(&self) -> State {
+        debug_assert_eq!(
+            self.defer.n, 0,
+            "marginal: rows held for a sharded flush are flushed before the state is read"
+        );
         State::new(crate::ModelState::Marginal(Box::new(self.clone())))
     }
 
@@ -3219,5 +3953,423 @@ mod tests {
         // The same target is a perfect line in `x`, and `t` agrees.
         assert_eq!(p.corr, 1.0);
         assert_eq!(p.t, f64::INFINITY);
+    }
+
+    // -----------------------------------------------------------------
+    // Sharded steps (docs/PLAN.md task 126).
+    // -----------------------------------------------------------------
+
+    /// One row of a stream that exercises everything a held row carries:
+    /// three targets, two of them often absent, weights of zero, clock gaps
+    /// long enough to fold the bins' scale and one that empties everything,
+    /// and the lags' ring cleared now and then.
+    struct ShardRow {
+        x: Vec<f64>,
+        y: Vec<Option<f64>>,
+        d: f64,
+        w: f64,
+        clear: bool,
+    }
+
+    fn shard_stream(n: usize, p: usize) -> Vec<ShardRow> {
+        let mut seed = 2026u64;
+        let mut level = vec![0.0_f64; p];
+        (0..n)
+            .map(|i| {
+                for (j, v) in level.iter_mut().enumerate() {
+                    *v = 0.9 * *v + lcg(&mut seed) + if j == 2 { 1e6 } else { 0.0 } * 1e-6;
+                }
+                // Feature 2 sits at a level, feature 4 holds one value for
+                // long runs: the cases the compensated means and the runs are
+                // for.
+                let mut x = level.clone();
+                x[2] += 1e6;
+                if p > 4 {
+                    x[4] = if (i / 40) % 2 == 0 { 3.0 } else { x[4] };
+                }
+                let y0 = x[0] - 0.5 * x[1] + 0.3 * lcg(&mut seed);
+                let y = vec![
+                    Some(y0),
+                    (lcg(&mut seed) > -0.4).then(|| 2.0 * x[1] + lcg(&mut seed)),
+                    (lcg(&mut seed) > 0.0).then(|| (x[0] * x[3]).abs() + 0.1 * lcg(&mut seed)),
+                ];
+                let d = match i {
+                    0 => 0.0,
+                    _ if i % 211 == 7 => 1e6,
+                    _ if i % 53 == 11 => 300.0,
+                    _ => 1.0,
+                };
+                let w = if i % 13 == 5 {
+                    0.0
+                } else {
+                    0.5 + (lcg(&mut seed) + 1.0) / 2.0
+                };
+                ShardRow {
+                    x,
+                    y,
+                    d,
+                    w,
+                    clear: i % 97 == 50,
+                }
+            })
+            .collect()
+    }
+
+    /// Every configuration a held row must carry exactly.
+    fn shard_cfgs(p: usize) -> Vec<(&'static str, MarginalCfg)> {
+        let base = || {
+            let mut c = cfg(p, 3);
+            c.decay = Decay::Halflife(15.0);
+            c.min_periods = vec![3.0; 3];
+            c
+        };
+        let with = |f: &dyn Fn(&mut MarginalCfg)| {
+            let mut c = base();
+            f(&mut c);
+            c
+        };
+        let learned = |c: &mut MarginalCfg| {
+            c.bins = Some(Box::new(crate::BinCfg {
+                n_bins: 4,
+                edges: None,
+                rule: crate::BinRule::Quantile,
+                warm_rows: 40,
+            }))
+        };
+        vec![
+            ("moments", base()),
+            (
+                "lags",
+                with(&|c| {
+                    c.lags = vec![1, 3, 8];
+                    c.serial_rule = Some(SerialRule::Geometric);
+                }),
+            ),
+            (
+                "cross lags",
+                with(&|c| {
+                    c.lags = vec![1, 3, 8];
+                    c.cross_lags = Some(vec![3]);
+                }),
+            ),
+            (
+                "no cross lags",
+                with(&|c| {
+                    c.lags = vec![1, 2];
+                    c.cross_lags = Some(vec![]);
+                }),
+            ),
+            ("learned bins", with(&learned)),
+            (
+                "given bins",
+                with(&|c| {
+                    c.bins = Some(Box::new(crate::BinCfg {
+                        n_bins: 3,
+                        edges: Some((0..p).map(|j| vec![-0.5 + j as f64 * 0.1, 0.5]).collect()),
+                        rule: crate::BinRule::Quantile,
+                        warm_rows: 2,
+                    }))
+                }),
+            ),
+            // A window takes neither lags nor bins (`MarginalCfg::validate`).
+            ("window", with(&|c| c.window = Some(40.0))),
+            (
+                "window every 3",
+                with(&|c| {
+                    c.window = Some(25.0);
+                    c.window_every = Some(3);
+                }),
+            ),
+        ]
+    }
+
+    fn state_bytes(m: &Marginal) -> Vec<u8> {
+        rmp_serde::to_vec(&m.state()).unwrap()
+    }
+
+    /// Each shard on a thread of its own.
+    fn threaded(shards: &mut [MarginalShard<'_>]) {
+        std::thread::scope(|s| {
+            for sh in shards.iter_mut() {
+                s.spawn(move || sh.run());
+            }
+        });
+    }
+
+    /// The last shard first: the order a pool runs them in is its own.
+    fn reversed(shards: &mut [MarginalShard<'_>]) {
+        shards.iter_mut().rev().for_each(MarginalShard::run);
+    }
+
+    /// The whole point of the split (docs/PLAN.md task 126): whatever the
+    /// shard count, whichever threads run the shards and in what order, and
+    /// wherever the held rows are flushed, a sharded model is the unsplit
+    /// one to the bit -- every row's `n_eff`, and every byte of the state,
+    /// which holds every pair, lag, bin, run and window snapshot. Past a
+    /// batch (256 rows), across window snapshots, bin folds, a gap that
+    /// empties everything and a cleared ring.
+    #[test]
+    fn a_sharded_step_is_the_unsplit_step_to_the_bit() {
+        let p = 7;
+        let rows = shard_stream(700, p);
+        let runners: [(&str, &ShardRunner); 3] = [
+            ("in order", &run_in_order),
+            ("threads", &threaded),
+            ("reversed", &reversed),
+        ];
+        for (name, c) in shard_cfgs(p) {
+            let mut plain = Marginal::new(c.clone()).unwrap();
+            let steps: Vec<Step> = rows
+                .iter()
+                .map(|r| {
+                    if r.clear {
+                        OnlineModel::clear_lags(&mut plain);
+                    }
+                    OnlineModel::step(&mut plain, &r.x, &r.y, r.d, r.w)
+                })
+                .collect();
+            let want = state_bytes(&plain);
+            for count in [2, 3, p, 50] {
+                for (how, run) in runners {
+                    let shards = Shards { count, run };
+                    let mut m = Marginal::new(c.clone()).unwrap();
+                    let mut held = 0;
+                    for (i, r) in rows.iter().enumerate() {
+                        if r.clear {
+                            OnlineModel::clear_lags(&mut m);
+                        }
+                        let got = m.step_sharded(&r.x, &r.y, r.d, r.w, &shards);
+                        assert_eq!(
+                            got.n_eff.to_bits(),
+                            steps[i].n_eff.to_bits(),
+                            "{name}, {count} shards {how}: n_eff at row {i}"
+                        );
+                        held = held.max(m.held_rows());
+                        // A flush wherever the caller likes, and the state
+                        // there is the unsplit one's there.
+                        if i == 333 {
+                            m.flush(&shards);
+                            let mut part = Marginal::new(c.clone()).unwrap();
+                            for r in &rows[..=i] {
+                                if r.clear {
+                                    OnlineModel::clear_lags(&mut part);
+                                }
+                                OnlineModel::step(&mut part, &r.x, &r.y, r.d, r.w);
+                            }
+                            assert!(
+                                state_bytes(&m) == state_bytes(&part),
+                                "{name}, {count} shards {how}: the state at row {i} differs"
+                            );
+                        }
+                    }
+                    // A window snapshot every row flushes every row.
+                    let most = if name == "window" { 1 } else { 2 };
+                    assert!(held >= most, "{name}: rows were held ({held})");
+                    m.flush(&shards);
+                    assert_eq!(m.held_rows(), 0);
+                    assert!(
+                        state_bytes(&m) == want,
+                        "{name}, {count} shards {how}: the state differs"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The stream above reaches what it is meant to: rows held past a
+    /// batch, window snapshots taken while rows were held, bins that fold
+    /// and empty, a ring cleared with rows held -- each counted, since a
+    /// comparison of two models that never met a case says nothing about
+    /// it.
+    #[test]
+    fn the_sharded_stream_reaches_every_case() {
+        let p = 7;
+        let rows = shard_stream(700, p);
+        let shards = Shards {
+            count: 3,
+            run: &run_in_order,
+        };
+        let cfgs = shard_cfgs(p);
+        let find = |name: &str| cfgs.iter().find(|(n, _)| *n == name).unwrap().1.clone();
+        for name in ["window", "window every 3"] {
+            let mut m = Marginal::new(find(name)).unwrap();
+            let mut snapshots_while_held = 0;
+            for r in &rows {
+                let win = m.win.as_ref().unwrap();
+                if m.held_rows() > 0 && win.snaps.takes(win.clock + r.d) {
+                    snapshots_while_held += 1;
+                }
+                m.step_sharded(&r.x, &r.y, r.d, r.w, &shards);
+            }
+            assert!(
+                snapshots_while_held > 100,
+                "{name}: snapshots with rows held: {snapshots_while_held}"
+            );
+        }
+        let mut m = Marginal::new(find("learned bins")).unwrap();
+        let (mut folds, mut empties, mut folds_while_held) = (0, 0, 0);
+        for r in &rows {
+            let lam = m.cfg.decay.factor(r.d);
+            if let Some(h) = m.bins.as_ref().and_then(|b| b.hist.as_ref()) {
+                if h.folds_at(lam) {
+                    folds += 1;
+                    empties += usize::from(lam == 0.0);
+                    folds_while_held += usize::from(m.held_rows() > 0);
+                }
+            }
+            m.step_sharded(&r.x, &r.y, r.d, r.w, &shards);
+        }
+        assert!(
+            m.bins.as_ref().unwrap().hist.is_some(),
+            "the edges were learned"
+        );
+        assert!(
+            folds > 2 && empties > 1 && folds_while_held == folds,
+            "folds {folds}, of them empties {empties}, with rows held {folds_while_held}"
+        );
+        // Without a window, the batch fills, and a clear meets held rows.
+        let mut lagged = Marginal::new(find("lags")).unwrap();
+        let (mut most_held, mut cleared_while_held) = (0, 0);
+        for r in &rows {
+            if r.clear && lagged.held_rows() > 0 {
+                cleared_while_held += 1;
+            }
+            if r.clear {
+                OnlineModel::clear_lags(&mut lagged);
+            }
+            lagged.step_sharded(&r.x, &r.y, r.d, r.w, &shards);
+            most_held = most_held.max(lagged.held_rows());
+        }
+        assert_eq!(most_held, batch_rows(p) - 1, "a full batch is flushed");
+        assert!(
+            cleared_while_held > 2,
+            "clears with rows held: {cleared_while_held}"
+        );
+    }
+
+    /// A plain step after sharded ones learns the held rows first, and a
+    /// state saved after a flush under one count continues under another,
+    /// or none: the count is not in the state.
+    #[test]
+    fn the_shard_count_is_not_in_the_state() {
+        let p = 7;
+        let rows = shard_stream(500, p);
+        let cfgs = shard_cfgs(p);
+        let c = &cfgs.iter().find(|(n, _)| *n == "lags").unwrap().1;
+        let mut plain = Marginal::new(c.clone()).unwrap();
+        for r in &rows {
+            if r.clear {
+                OnlineModel::clear_lags(&mut plain);
+            }
+            OnlineModel::step(&mut plain, &r.x, &r.y, r.d, r.w);
+        }
+        let five = Shards {
+            count: 5,
+            run: &run_in_order,
+        };
+        let two = Shards {
+            count: 2,
+            run: &threaded,
+        };
+        let mut m = Marginal::new(c.clone()).unwrap();
+        for (i, r) in rows.iter().enumerate() {
+            if r.clear {
+                OnlineModel::clear_lags(&mut m);
+            }
+            match i {
+                // Rows held, then a plain step: it learns them first.
+                0..150 => {
+                    m.step_sharded(&r.x, &r.y, r.d, r.w, &five);
+                }
+                150..160 => {
+                    OnlineModel::step(&mut m, &r.x, &r.y, r.d, r.w);
+                }
+                // Saved and restored with rows flushed, then another count.
+                160 => {
+                    m.flush(&five);
+                    let bytes = rmp_serde::to_vec(&m.state()).unwrap();
+                    m = Marginal::restore(&rmp_serde::from_slice(&bytes).unwrap()).unwrap();
+                    m.step_sharded(&r.x, &r.y, r.d, r.w, &two);
+                }
+                _ => {
+                    m.step_sharded(&r.x, &r.y, r.d, r.w, &two);
+                }
+            }
+        }
+        m.flush(&two);
+        assert!(state_bytes(&m) == state_bytes(&plain));
+    }
+
+    /// One shard or fewer is the unsplit step, row by row: nothing is held.
+    #[test]
+    fn one_shard_holds_nothing() {
+        let rows = shard_stream(50, 7);
+        let mut m = Marginal::new(cfg(7, 3)).unwrap();
+        for r in &rows {
+            for count in [0, 1] {
+                let shards = Shards {
+                    count,
+                    run: &run_in_order,
+                };
+                m.step_sharded(&r.x, &r.y, r.d, r.w, &shards);
+                assert_eq!(m.held_rows(), 0);
+            }
+        }
+    }
+
+    /// Reading a pair with rows held is a caller's bug, and says so in a
+    /// debug build rather than reporting pairs that miss those rows.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "flushed before a pair is read")]
+    fn a_pair_read_with_rows_held_is_refused() {
+        let mut m = Marginal::new(cfg(4, 1)).unwrap();
+        let shards = Shards {
+            count: 2,
+            run: &run_in_order,
+        };
+        m.step_sharded(&[1.0, 2.0, 3.0, 4.0], &[Some(1.0)], 0.0, 1.0, &shards);
+        let _ = m.pair(0, 0);
+    }
+
+    /// `"auto"` splits a row only when a flush has work for two shards,
+    /// never into more than twice the threads, and lags, cross terms and
+    /// bins add to the work (docs/PERFORMANCE.md §25).
+    #[test]
+    fn auto_splits_only_what_fills_two_shards() {
+        let shape =
+            |p: usize, t: usize, lags: Vec<usize>, cross: Option<Vec<usize>>, bins: bool| {
+                let mut c = cfg(p, t);
+                c.lags = lags;
+                c.cross_lags = cross;
+                c.bins = bins.then(|| bins_cfg(16, 1_000));
+                c
+            };
+        let moments = |p, t| shape(p, t, vec![], None, false);
+        // Measured not to pay: split, 1,000 features ran 1.15 times as
+        // fast at best and slower past two shards.
+        assert_eq!(moments(1_000, 1).auto_shards(14), 1);
+        assert_eq!(moments(4_000, 1).auto_shards(14), 6);
+        assert_eq!(moments(10_000, 9).auto_shards(14), 28, "twice the threads");
+        assert_eq!(moments(10_000, 9).auto_shards(1), 1, "one thread, no split");
+        assert_eq!(moments(10_000, 9).auto_shards(0), 1);
+        let lags = |cross| shape(1_000, 1, vec![1, 2, 5, 10, 20, 50], cross, false);
+        assert!(lags(Some(vec![1])).auto_shards(14) > 1);
+        assert!(lags(None).auto_shards(14) > lags(Some(vec![1])).auto_shards(14));
+        assert!(
+            shape(300, 1, vec![], None, true).auto_shards(14) > 1,
+            "bins are work"
+        );
+        // The batch holds fewer rows of a wider row: the work per flush is
+        // what counts.
+        assert_eq!(batch_rows(10_000), 104);
+        assert_eq!(batch_rows(1_000), BATCH_ROWS);
+    }
+
+    /// A shard is sent to a pool's threads.
+    #[test]
+    fn a_shard_can_be_sent() {
+        fn send<T: Send>() {}
+        send::<MarginalShard<'_>>();
     }
 }

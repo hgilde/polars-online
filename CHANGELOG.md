@@ -57,6 +57,15 @@ carries breaking changes, and any change to the numbers a model returns.
   target's own row, so nothing looks ahead, and a value either side cannot
   use makes the target null on that row. In the CLI's TOML the target is a
   table. A spec with plain targets writes the bytes it always did.
+- **A wide `marginal` can use every thread: `marginal(shards=...)`.** The
+  bank runs groups and specs in parallel, so one wide spec on one group
+  was one thread's work. `shards` splits its pairs into ranges of features,
+  each run on a thread of its own a batch of rows at a time; `"auto"` sizes
+  the split to the width and the pool. Every number is the same to the bit
+  whatever the count, and a saved bank resumes under any count. At 10,000
+  features through the bank: 1.2 times as fast at one target, 2.0 at
+  nine, 4.9 with lags and bins on 14 threads (docs/PERFORMANCE.md §25).
+  Off by default: with more groups than threads the pool is already full.
 - **scikit-learn is a second opinion in the tests, and the Rust models are
   property-tested.** `huber` is held to `LinearRegression` and
   `HuberRegressor`, `marginal`'s split to a decision stump, and `sgd` to
@@ -172,6 +181,11 @@ carries breaking changes, and any change to the numbers a model returns.
   number.** Seven lookups by column name scanned every column. At 10,000
   features they took about 480 ms of an 800 ms call, and now take none
   that shows (docs/PERFORMANCE.md §24).
+- **`marginal`'s row takes 7–50% less time, every number the same to the
+  bit.** Its pair, lag and bin updates are each one loop over slices now,
+  shared with the sharded path. With six lags at nine targets a row takes
+  48% less time, and with the moments alone 38% less (docs/PERFORMANCE.md
+  §25).
 - **`marginal`'s bins cost 2.6 times less at nine targets.** Each
   feature's bin is found once per row rather than once per target, and
   every number is the same to the bit. One target's bins cost a fifth

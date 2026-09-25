@@ -75,17 +75,23 @@ impl Runs {
     /// value, or a slot's first learned row, starts a run at this row. Runs
     /// that are not known start here.
     pub fn track(&mut self, x: &[f64], row: u64) {
+        if let Some((rx, rs)) = self.slots_mut(x.len()) {
+            track_slots(rx, rs, x, row);
+        }
+    }
+
+    /// Every slot's value and start row, `k` of each, for a caller that
+    /// tracks a range of them with [`track_slots`]: runs that are not known
+    /// start here, as [`Self::track`] starts them. `None` when the runs are
+    /// off.
+    pub fn slots_mut(&mut self, k: usize) -> Option<(&mut [f64], &mut [u64])> {
         if self.off {
-            return;
+            return None;
         }
-        if !self.is_known(x.len()) {
-            *self = Self::new(x.len());
+        if !self.is_known(k) {
+            *self = Self::new(k);
         }
-        for ((rx, rs), &xi) in self.x.iter_mut().zip(self.start.iter_mut()).zip(x) {
-            if *rs == u64::MAX || *rx != xi {
-                (*rx, *rs) = (xi, row);
-            }
-        }
+        Some((&mut self.x, &mut self.start))
     }
 
     /// [`Self::track`] for slot `i` of `k` alone, at that slot's own count
@@ -123,6 +129,18 @@ impl Runs {
     /// Slot `i`'s value and start row, where the runs are known.
     pub fn get(&self, i: usize) -> Option<(f64, u64)> {
         Some((*self.x.get(i)?, *self.start.get(i)?))
+    }
+}
+
+/// [`Runs::track`] over a range of slots, given as the slices of
+/// [`Runs::slots_mut`] that hold them: each slot's value `x[i]`, the
+/// `row`-th learned row of every one of them.
+#[inline]
+pub fn track_slots(values: &mut [f64], start: &mut [u64], x: &[f64], row: u64) {
+    for ((rx, rs), &xi) in values.iter_mut().zip(start.iter_mut()).zip(x) {
+        if *rs == u64::MAX || *rx != xi {
+            (*rx, *rs) = (xi, row);
+        }
     }
 }
 

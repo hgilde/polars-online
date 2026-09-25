@@ -245,6 +245,7 @@
     bin_rule = None
     bin_warm_rows = None
     bin_edges = None
+    shards = None
     window = None
     window_every = None
     window_budget = None

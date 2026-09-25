@@ -80,8 +80,10 @@ pub use runner::{
 pub use span::{Span, SpanList, format_duration, parse_duration, seconds_of};
 pub use spec::{
     CLOCK_FIELDS, CLOCK_RATES, ClockScale, Compare, FloatOrList, ModelKind, Num, SessionGapSpec,
-    Spec,
+    ShardSpec, Spec,
 };
-pub use stream::{AnyModel, ChunkOut, LastRow, Stream, StreamState, build_models, combo_labels};
+pub use stream::{
+    AnyModel, ChunkOut, LastRow, Stream, StreamState, build_models, combo_labels, marginal_shards,
+};
 pub use summary::{ColumnStats, DataSummary, Role};
 pub use targets::{Relative, TargetDef, Targets};

@@ -3082,3 +3082,136 @@ three interleaved rounds:
 | 50 features | 2.28M rows/s | 2.37M rows/s |
 | 20 features, 10 targets | 2.85M rows/s | 3.05M rows/s |
 | 20 features, a solve every 25 rows | 3.21M rows/s | 3.53M rows/s |
+
+## 25. A wide `marginal` split across the pool (E73, task 126, 2026-09-25)
+
+The pool's unit of work is a stream, one spec on one group. A
+10,000-feature `marginal` on one group was one thread's work while the
+rest of the machine waited. `marginal(shards=)` cuts its pairs into
+ranges of features, each run on a thread of its own. A pair touches only
+its own cells and the row's per-target numbers, so every number is the
+unsplit model's to the bit, whatever the count. `a_sharded_step_is_the_unsplit_step_to_the_bit`
+holds the state's bytes to that across lags, cross lags, learned and given
+bins, windows, absent targets, zero weights, total gaps and cleared rings,
+at 2, 3, 7 and 50 shards run in order, in reverse and on threads.
+
+### A fork-join per row does not pay
+
+The plan split each row: advance every target's own numbers, then run the
+pair loop's feature ranges on the pool. It assumed a row of about 2 ms at
+`p = 10,000` and nine targets. Task 124 had since brought that row to
+about 100 µs, and a rayon fork-join costs about 10 µs on this machine: the
+pool's idle threads sleep between rows, and each must be woken. A stand-in
+for the pair loop (four vectors per pair and the compensated mean) on a
+14-thread pool, the best multiple over one thread among 2 to 28 shards:
+
+| rows per fork-join | 10,000 features, 1 target | 10,000 features, 9 targets |
+|---:|---:|---:|
+| 1 | 0.6× | 1.7× |
+| 16 | 2.4× | 4.7× |
+| 64 | 3.9× | 6.5× |
+| 256 | 5.5× | 6.9× |
+
+So the split runs a batch of rows at a time, which is what the E73 ask
+described (`docs/MARGINAL-AT-WIDTH.md`). `Marginal::step_sharded`
+advances each target's weight, mean, variance, runs and lagged
+autocovariance at once, as `step` does, and holds what each pair takes
+from the row: the features, each target's mix, where each lag's row back
+is, and the bins' weight. `n_eff` and everything else a row reports read
+none of the pairs, so they come out as the row arrives. A flush steps
+every pair through the held rows in order, one shard per range of
+features. It runs when the batch is full (256 rows, or 8 MB of features),
+before a window snapshot copies the pairs, before the bins fold their
+scale into every cell, and at the end of each run of rows the bank
+processes. The lags' ring is held as it was when the batch began, and each
+held row names the rows its lags read, so a row the ring would have
+dropped is still there to read.
+
+### The unsplit row got faster first
+
+To share one copy of the arithmetic, the pair update, the three lag
+updates and the bins' cell update each became a function over slices,
+called by the unsplit row over every feature and by a shard over its own.
+The unsplit row runs them in the order it ran its loops. It got faster in
+every shape, by up to half; why was not profiled, and the assembly was not
+read. `marg_bench`, the build before (`af32f0f`) and this one interleaved,
+three rounds, best of each, one million rows unless stated:
+
+| shape | before | after | checksum |
+|---|---:|---:|---|
+| 8 features, 1 target | 20.0 ms | 15.4 ms | equal |
+| 8 features, 9 targets | 102.6 ms | 63.5 ms | equal |
+| 16 bins, 1 target | 48.7 ms | 45.2 ms | equal |
+| 16 bins, 9 targets | 228.8 ms | 169.0 ms | equal |
+| 16 bins, 9 targets, 8 absent on a third of rows | 194.0 ms | 153.6 ms | equal |
+| 6 lags, 9 targets | 822.7 ms | 426.7 ms | equal |
+| 6 lags, 1 cross lag, 9 targets | 598.3 ms | 349.2 ms | equal |
+| 2,000 features, 3 targets, 20,000 rows | 141.9 ms | 71.6 ms | equal |
+| 10,000 features, 2 lags, 16 bins, 3,000 rows | 533.5 ms | 465.5 ms | equal |
+
+### What the split buys
+
+`marg_shard_bench` steps the model alone on a 14-thread pool, best of
+three, microseconds per row. The checksum of every pair was the same at
+every count in every shape.
+
+| shape | unsplit | best | at |
+|---|---:|---:|---:|
+| 1,000 features | 0.55 | 1.15× | 2 |
+| 4,000 features | 2.28 | 1.97× | 10 |
+| 10,000 features | 6.01 | 1.83× | 10 |
+| 10,000 features, 9 targets | 53.3 | 4.58× | 10 |
+| 1,000 features, 16 bins | 6.93 | 4.88× | 10 |
+| 300 features, 16 bins | 1.98 | 3.51× | 3 |
+| 1,000 features, 6 lags | 4.46 | 2.56× | 4 |
+| 10,000 features, 9 targets, 6 lags (1 cross), 16 bins | 851 | 5.36× | 28 |
+
+**The moments alone are held back by the copy of each row.** With no
+shard running at all, a held row still costs 1.6 µs at 10,000 features:
+the features are copied into the batch, 80 KB a row, since the caller's
+row does not outlive the step. Against a 6 µs row that caps the split
+near 3.8×, and it measured 1.8×. Nine targets share one copy, and the
+heavy shape above does not notice it.
+
+**More shards than threads helps the heavy shapes.** This machine has ten
+fast cores and four slow ones. With one range per thread the slow ranges
+finish last and the row waits for them. At 28 ranges the fast threads
+take more of them: the heavy shape ran 3.72× at 14 shards and 5.36× at 28.
+The light shapes lose a little past ten.
+
+**The bins' warm-up is not split.** Learned edges hold the first
+`bin_warm_rows` rows and replay them on one thread when the edges are
+fixed. Over a short run that replay dominates: 300 rows with 200 of
+warm-up measured 1.9× where 400 rows with 20 measured 5.4×. It happens
+once per group, so over a stream of any length it is nothing.
+
+Through the bank, `ModelBank.fit_predict`, one spec and one group, best of
+three, the pairs equal to the bit each time:
+
+| 10,000 features | unsplit | `"auto"` | 10 | 28 |
+|---|---:|---:|---:|---:|
+| moments, 1 target, 3,000 rows | 87 ms | 1.21× | 1.19× | 1.23× |
+| moments, 9 targets, 1,000 rows | 83 ms | 1.95× | 2.01× | 1.95× |
+| 6 lags (1 cross), 16 given bins, 9 targets, 300 rows | 227 ms | 4.89× | 2.77× | 4.75× |
+
+The bank's own work per row does not split: the transpose of each chunk
+into rows and the data summary's per-column statistics (§24). At one
+target that is most of the call.
+
+### `"auto"`
+
+`MarginalCfg::auto_shards` estimates a flush's pair work: the batch's
+rows, times the row's pairs, times each pair's cost. The cost is 0.6 ns
+for the moments, plus 0.4 of that for each lagged moment and 9 for the
+bins, fitted to the shapes above within a fifth. It splits into as many
+ranges as hold 0.1 ms of that work each, up to twice the pool's threads,
+and not at all below two. On this machine that leaves 1,000 features
+unsplit (0.15 ms a flush), splits 4,000 in six and the heavy shape in 28.
+`shards` is off by default: a bank with more groups than threads already
+fills the pool, and holding rows only adds their copy.
+
+**What the held rows cost in memory.** A sharded model holds at most
+8 MB of features, 104 rows at 10,000 features, while the bank runs its
+rows, and lets go of them when the run ends. Only the models being run at
+that moment hold any: about one per thread, so on 14 threads about
+112 MB.

@@ -27,6 +27,14 @@ bit-identical where the request said it would be. `PERFORMANCE.md` §22 and
 where the request expected no change; E70's single cross lag took 30% off
 the lags' cost, where the moment count suggested 56%.*
 
+*E73 was built the same day as task 126, over a batch of held rows as its
+Mechanics below describe, after a fork-join per row measured at best 0.6×
+at one target. `marginal(shards=)` takes a count or `"auto"`, bit for bit
+at any count. At 10,000 features, nine targets, six lags and sixteen bins
+the model alone ran 5.4× on 14 threads and the bank 4.9×; the moments of
+one target, 1.8× and 1.2×, where each held row's copy and the bank's own
+row work do not split (`PERFORMANCE.md` §25).*
+
 ---
 
 ## The caller's shape, and what it reads

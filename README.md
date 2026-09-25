@@ -1869,6 +1869,18 @@ variance. Both views ride into `bank.closed_groups()` as `pair_*` columns:
 `pair_split_gain` as a list over the pairs, and `pair_lagcorr_xx` and
 `pair_bin_n` as lists of lists.
 
+**`shards`: one wide spec on every thread.** The bank runs groups and
+specs in parallel ([Parallelism](#parallelism)), so a wide `marginal` on
+one group is one thread's work. `shards=10` splits its pairs into ten
+ranges of features, each run on a thread of its own, a batch of rows at a
+time; `shards="auto"` sizes the split to the width and the pool, and
+leaves a narrow spec whole. The numbers are the same to the bit at any
+count, so a saved bank resumes under any count. At 10,000 features,
+nine targets, lags and bins, `"auto"` ran the bank 4.9 times as fast on
+14 threads; with the moments of one target alone, 1.2 times, since the
+bank's own work on each row does not split
+([PERFORMANCE §25](docs/PERFORMANCE.md#25-a-wide-marginal-split-across-the-pool-e73-task-126-2026-09-25)).
+
 #### `deco` — one correlation for the whole matrix
 
 *API:* [`po.spec.deco`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.deco) — *Rust:* [`deco.rs`](crates/online-core/src/deco.rs) — *Outputs:* [fields](docs/OUTPUTS.md#deco)
@@ -2534,7 +2546,9 @@ rows go one at a time, because each row's update depends on the last,
 which is what makes the numbers independent of how the work is split. It
 also means a bank with one spec and one group is one thread's work per
 chunk, while Polars' own reading and writing still run in parallel around
-it. So a bank fills the pool with groups, with specs, or with both.
+it. So a bank fills the pool with groups, with specs, or with both. The
+one exception is a wide `marginal`, whose pairs `shards` splits across the
+pool within a group ([`marginal`](#marginal--every-pairs-moments-kept-in-the-state)).
 
 A search over factor sets is a list of specs, one per set. Each spec is its
 own set of running sums, with its own standardization and its own grid

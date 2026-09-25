@@ -211,6 +211,7 @@ def _finite(value: Any) -> bool:
 #: The int parameters whose Rust floor is 1, not 0 (review 2026-09-12, D8).
 _AT_LEAST_ONE = frozenset(
     {
+        "shards",
         "window_every",
         "pca_every",
         "update_every",
@@ -2867,6 +2868,7 @@ def marginal(
     bin_rule: str | None = None,
     bin_warm_rows: int | None = None,
     bin_edges: dict[str, list[float]] | list[list[float]] | None = None,
+    shards: int | str | None = None,
     window: float | Duration | None = None,
     window_every: int | None = None,
     window_budget: dict[str, float] | None = None,
@@ -2986,6 +2988,23 @@ def marginal(
         feature gets two bins whatever ``bins`` says, and a constant one a single
         bin and no split. Decay reaches the histogram as it reaches the pair
         moments, so a clock gap past ``max_dclock`` empties it along with them.
+    ``shards``
+        Split the pair work across the bank's threads: a count of ranges of
+        features, or ``"auto"`` for as many as the width keeps busy. The pool
+        runs a bank's groups and specs in parallel already, so one wide spec on
+        one group is one thread's work while the rest wait; with ``shards`` its
+        pairs are cut into ranges of features and each range runs on a thread of
+        its own, a batch of rows at a time. Every number is the same to the bit
+        whatever the count, so it is a setting and not part of the state: a
+        saved bank resumes under any count, and ``"auto"`` sizes itself to the
+        machine it runs on. ``"auto"`` estimates a batch's pair work from the
+        width, the lags and the bins, and splits it into as many ranges as hold
+        a tenth of a millisecond each, up to twice the pool's threads; the
+        moments alone of fewer than about 1,300 pairs stay whole. By default
+        the pairs run row by row on the group's thread. Through the bank at
+        10,000 features on 14 threads, ``"auto"`` ran 1.2 times as fast at one
+        target and 4.9 times with nine targets, lags and bins; the bank's own
+        work on each row does not split (``docs/PERFORMANCE.md`` §25).
     ``window``, ``window_every``, ``window_budget``
         A hard cutoff on the history the pairs are computed from, in clock units,
         as for :func:`ewridge`: a row older than ``window`` contributes nothing,
@@ -3041,7 +3060,8 @@ def marginal(
 
     As every builder does (:mod:`polars_online.spec`), and ``ValueError`` naming
     the problem for ``bin_edges`` that miss or add a feature, for ``bins`` beside
-    ``bin_edges``, and for ``lags`` or ``bins`` beside ``window``.
+    ``bin_edges``, for ``lags`` or ``bins`` beside ``window``, and for ``shards``
+    below 1 or a string other than ``"auto"``.
     """
     edges: list[list[float]] | None
     if isinstance(bin_edges, dict):
@@ -3064,6 +3084,11 @@ def marginal(
             )
     else:
         edges = None
+    if isinstance(shards, str) and shards != "auto":
+        raise ValueError(
+            f"marginal {name!r}: shards must be a number of shards of at least 1 or "
+            f'"auto", got {shards!r}'
+        )
     model: dict[str, Any] = {
         "type": "marginal",
         "lags": lags,
@@ -3073,6 +3098,7 @@ def marginal(
         "bin_rule": bin_rule,
         "bin_warm_rows": bin_warm_rows,
         "bin_edges": edges,
+        "shards": shards,
         "window": window,
         "window_every": window_every,
         "window_budget": window_budget,

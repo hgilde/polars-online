@@ -271,49 +271,41 @@ impl MarginalLags {
         use crate::comp::dev;
         let depth = self.ring_x.len();
         let dy_now = dev(yt, my, my_lo);
+        let r = t * self.p..(t + 1) * self.p;
+        debug_assert_eq!(
+            mx.len(),
+            mx_lo.len(),
+            "the means' low parts are sized first"
+        );
         for (li, &lag) in self.lags.iter().enumerate() {
-            let row = t * self.p;
             if lag > depth {
                 // Nothing that far back yet: the moments age and wait.
                 self.cyy[li][t] *= a;
-                for i in row..row + self.p {
-                    self.cxx[li][i] *= a;
-                    self.cxy[li][i] *= a;
-                    self.cyx[li][i] *= a;
-                }
+                wait(a, &mut self.cxx[li][r.clone()]);
+                wait(a, &mut self.cxy[li][r.clone()]);
+                wait(a, &mut self.cyx[li][r.clone()]);
                 continue;
             }
             let back = depth - lag;
-            let x_lag = &self.ring_x[back];
-            let y_lag = self.ring_y[back][t];
-            debug_assert_eq!(
-                mx.len(),
-                mx_lo.len(),
-                "the means' low parts are sized first"
+            // The target `lag` rows ago, against its mean now: a row where
+            // it was absent contributes nothing but the decay.
+            let dy_lag = self.ring_y[back][t].map(|v| dev(v, my, my_lo));
+            step_all(
+                Lagged {
+                    a,
+                    b,
+                    dy_now,
+                    dy_lag,
+                    x,
+                    x_lag: &self.ring_x[back],
+                    mx,
+                    mx_lo,
+                },
+                &mut self.cxx[li][r.clone()],
+                &mut self.cxy[li][r.clone()],
+                &mut self.cyx[li][r.clone()],
             );
-            for (j, ((&xj, &mxj), &lo)) in x.iter().zip(mx).zip(mx_lo).enumerate() {
-                let i = row + j;
-                let dx_now = dev(xj, mxj, lo);
-                let dx_lag = dev(x_lag[j], mxj, lo);
-                self.cxx[li][i] = a * self.cxx[li][i] + a * b * dx_now * dx_lag;
-                self.cyx[li][i] = a * self.cyx[li][i] + a * b * dy_now * dx_lag;
-                // The two that need the target `lag` rows ago: a row where it
-                // was absent contributes nothing but the decay.
-                match y_lag {
-                    Some(v) => {
-                        let dy_lag = dev(v, my, my_lo);
-                        self.cxy[li][i] = a * self.cxy[li][i] + a * b * dx_now * dy_lag;
-                    }
-                    None => self.cxy[li][i] *= a,
-                }
-            }
-            match y_lag {
-                Some(v) => {
-                    let dy_lag = dev(v, my, my_lo);
-                    self.cyy[li][t] = a * self.cyy[li][t] + a * b * dy_now * dy_lag;
-                }
-                None => self.cyy[li][t] *= a,
-            }
+            self.cyy[li][t] = step_cyy(a, b, dy_now, dy_lag, self.cyy[li][t]);
         }
     }
 
@@ -334,7 +326,12 @@ impl MarginalLags {
         use crate::comp::dev;
         let depth = self.ring_x.len();
         let dy_now = dev(yt, my, my_lo);
-        let row = t * self.p;
+        let r = t * self.p..(t + 1) * self.p;
+        debug_assert_eq!(
+            mx.len(),
+            mx_lo.len(),
+            "the means' low parts are sized first"
+        );
         // The next cross lag to meet, walking `lags` in order: `cross_lags`
         // is a subsequence of it.
         let cross = self.cross_lags.as_deref().unwrap_or(&[]);
@@ -347,68 +344,37 @@ impl MarginalLags {
             if lag > depth {
                 // Nothing that far back yet: the moments age and wait.
                 self.cyy[li][t] *= a;
-                for i in row..row + self.p {
-                    self.cxx[li][i] *= a;
-                }
+                wait(a, &mut self.cxx[li][r.clone()]);
                 if let Some(ci) = ci {
-                    for i in row..row + self.p {
-                        self.cxy[ci][i] *= a;
-                        self.cyx[ci][i] *= a;
-                    }
+                    wait(a, &mut self.cxy[ci][r.clone()]);
+                    wait(a, &mut self.cyx[ci][r.clone()]);
                 }
                 continue;
             }
             let back = depth - lag;
-            let x_lag = &self.ring_x[back];
-            let y_lag = self.ring_y[back][t];
-            debug_assert_eq!(
-                mx.len(),
-                mx_lo.len(),
-                "the means' low parts are sized first"
-            );
-            let means = x.iter().zip(mx).zip(mx_lo).enumerate();
-            // The target `lag` rows ago, against its mean now: the two
-            // moments that need it take a row where it was absent as decay
-            // alone.
-            let dy_lag = y_lag.map(|v| dev(v, my, my_lo));
-            match (ci, dy_lag) {
-                (Some(ci), Some(dy_lag)) => {
-                    for (j, ((&xj, &mxj), &lo)) in means {
-                        let i = row + j;
-                        let dx_now = dev(xj, mxj, lo);
-                        let dx_lag = dev(x_lag[j], mxj, lo);
-                        self.cxx[li][i] = a * self.cxx[li][i] + a * b * dx_now * dx_lag;
-                        self.cyx[ci][i] = a * self.cyx[ci][i] + a * b * dy_now * dx_lag;
-                        self.cxy[ci][i] = a * self.cxy[ci][i] + a * b * dx_now * dy_lag;
-                    }
-                }
-                (Some(ci), None) => {
-                    for (j, ((&xj, &mxj), &lo)) in means {
-                        let i = row + j;
-                        let dx_now = dev(xj, mxj, lo);
-                        let dx_lag = dev(x_lag[j], mxj, lo);
-                        self.cxx[li][i] = a * self.cxx[li][i] + a * b * dx_now * dx_lag;
-                        self.cyx[ci][i] = a * self.cyx[ci][i] + a * b * dy_now * dx_lag;
-                        self.cxy[ci][i] *= a;
-                    }
-                }
+            let dy_lag = self.ring_y[back][t].map(|v| dev(v, my, my_lo));
+            let lagged = Lagged {
+                a,
+                b,
+                dy_now,
+                dy_lag,
+                x,
+                x_lag: &self.ring_x[back],
+                mx,
+                mx_lo,
+            };
+            match ci {
+                Some(ci) => step_all(
+                    lagged,
+                    &mut self.cxx[li][r.clone()],
+                    &mut self.cxy[ci][r.clone()],
+                    &mut self.cyx[ci][r.clone()],
+                ),
                 // No cross terms at this lag: the feature's autocovariance
                 // alone.
-                (None, _) => {
-                    for (j, ((&xj, &mxj), &lo)) in means {
-                        let i = row + j;
-                        let dx_now = dev(xj, mxj, lo);
-                        let dx_lag = dev(x_lag[j], mxj, lo);
-                        self.cxx[li][i] = a * self.cxx[li][i] + a * b * dx_now * dx_lag;
-                    }
-                }
+                None => step_xx(lagged, &mut self.cxx[li][r.clone()]),
             }
-            match dy_lag {
-                Some(dy_lag) => {
-                    self.cyy[li][t] = a * self.cyy[li][t] + a * b * dy_now * dy_lag;
-                }
-                None => self.cyy[li][t] *= a,
-            }
+            self.cyy[li][t] = step_cyy(a, b, dy_now, dy_lag, self.cyy[li][t]);
         }
     }
 
@@ -432,6 +398,155 @@ impl MarginalLags {
         self.ring_x.push_back(bx);
         self.ring_y.push_back(by);
         debug_assert_eq!(self.ring_x.len(), self.ring_y.len());
+    }
+
+    /// The learned rows the ring holds.
+    pub(crate) fn depth(&self) -> usize {
+        self.ring_x.len()
+    }
+
+    /// The deepest lag, which is how many rows the ring keeps.
+    pub(crate) fn max_lag(&self) -> usize {
+        *self.lags.last().expect("lags is non-empty")
+    }
+
+    /// The ring's `i`-th row, oldest first: its features and targets.
+    pub(crate) fn ring_row(&self, i: usize) -> (&[f64], &[Option<f64>]) {
+        (&self.ring_x[i], &self.ring_y[i])
+    }
+
+    /// Replace the ring with `rows`, oldest first, as a caller that held
+    /// its rows back has since learned them ([`crate::Marginal`]'s shards).
+    pub(crate) fn set_ring(&mut self, rows: Vec<(Vec<f64>, Vec<Option<f64>>)>) {
+        debug_assert!(rows.len() <= self.max_lag());
+        self.ring_x.clear();
+        self.ring_y.clear();
+        for (x, y) in rows {
+            self.ring_x.push_back(x);
+            self.ring_y.push_back(y);
+        }
+    }
+
+    /// Target `t`'s own lagged moment at the `li`-th lag, which moves with
+    /// the target alone and so is advanced where the target's scalars are.
+    pub(crate) fn cyy_mut(&mut self, li: usize, t: usize) -> &mut f64 {
+        &mut self.cyy[li][t]
+    }
+
+    /// Per lag, the position of its cross moments in `cxy` and `cyx`, or
+    /// `None` where it keeps none.
+    pub(crate) fn cross_of(&self) -> Vec<Option<usize>> {
+        let cross = self.cross_lags();
+        let mut next = 0;
+        self.lags
+            .iter()
+            .map(|lag| {
+                (cross.get(next) == Some(lag)).then(|| {
+                    next += 1;
+                    next - 1
+                })
+            })
+            .collect()
+    }
+
+    /// The three per-pair moment families, `[lag][t·p + j]`, for a caller
+    /// that hands disjoint ranges of them to several writers, and the ring
+    /// they read back from.
+    pub(crate) fn parts(&mut self) -> LagParts<'_> {
+        LagParts {
+            cxx: &mut self.cxx,
+            cxy: &mut self.cxy,
+            cyx: &mut self.cyx,
+            ring_x: &self.ring_x,
+        }
+    }
+}
+
+/// [`MarginalLags::parts`].
+pub(crate) struct LagParts<'a> {
+    pub cxx: &'a mut [Vec<f64>],
+    pub cxy: &'a mut [Vec<f64>],
+    pub cyx: &'a mut [Vec<f64>],
+    pub ring_x: &'a VecDeque<Vec<f64>>,
+}
+
+/// What one target's lagged step reads over a range of features: its mix
+/// (`a`, `b`), its deviation now and `lag` rows back (`None` where it was
+/// absent then), and the features now and `lag` rows back with their means
+/// before the row, all against the same old means ([`PairMix`]).
+#[derive(Clone, Copy)]
+pub(crate) struct Lagged<'a> {
+    pub a: f64,
+    pub b: f64,
+    pub dy_now: f64,
+    pub dy_lag: Option<f64>,
+    pub x: &'a [f64],
+    pub x_lag: &'a [f64],
+    pub mx: &'a [f64],
+    pub mx_lo: &'a [f64],
+}
+
+/// Nothing `lag` rows back yet: the moments age and wait.
+#[inline]
+pub(crate) fn wait(a: f64, c: &mut [f64]) {
+    for v in c {
+        *v *= a;
+    }
+}
+
+/// The feature's autocovariance alone, where a lag keeps no cross terms.
+#[inline]
+pub(crate) fn step_xx(l: Lagged<'_>, cxx: &mut [f64]) {
+    use crate::comp::dev;
+    let (a, b) = (l.a, l.b);
+    let means = l.mx.iter().zip(l.mx_lo);
+    for (((&xj, &xl), (&m, &lo)), c) in l.x.iter().zip(l.x_lag).zip(means).zip(cxx) {
+        let dx_now = dev(xj, m, lo);
+        let dx_lag = dev(xl, m, lo);
+        *c = a * *c + a * b * dx_now * dx_lag;
+    }
+}
+
+/// All three moments at a lag: the feature's autocovariance, the target
+/// now against the feature back (`cyx`), and the feature now against the
+/// target back (`cxy`), which a row where the target was absent then ages
+/// alone.
+#[inline]
+pub(crate) fn step_all(l: Lagged<'_>, cxx: &mut [f64], cxy: &mut [f64], cyx: &mut [f64]) {
+    use crate::comp::dev;
+    let (a, b, dy_now) = (l.a, l.b, l.dy_now);
+    let means = l.mx.iter().zip(l.mx_lo);
+    let cells = cxx.iter_mut().zip(cxy.iter_mut()).zip(cyx.iter_mut());
+    let each = l.x.iter().zip(l.x_lag).zip(means).zip(cells);
+    match l.dy_lag {
+        Some(dy_lag) => {
+            for (((&xj, &xl), (&m, &lo)), ((xx, xy), yx)) in each {
+                let dx_now = dev(xj, m, lo);
+                let dx_lag = dev(xl, m, lo);
+                *xx = a * *xx + a * b * dx_now * dx_lag;
+                *yx = a * *yx + a * b * dy_now * dx_lag;
+                *xy = a * *xy + a * b * dx_now * dy_lag;
+            }
+        }
+        None => {
+            for (((&xj, &xl), (&m, &lo)), ((xx, xy), yx)) in each {
+                let dx_now = dev(xj, m, lo);
+                let dx_lag = dev(xl, m, lo);
+                *xx = a * *xx + a * b * dx_now * dx_lag;
+                *yx = a * *yx + a * b * dy_now * dx_lag;
+                *xy *= a;
+            }
+        }
+    }
+}
+
+/// The target's own lagged moment `c`, stepped: `dy_lag` is its deviation
+/// `lag` rows back, `None` where it was absent then, which ages it alone.
+#[inline]
+pub(crate) fn step_cyy(a: f64, b: f64, dy_now: f64, dy_lag: Option<f64>, c: f64) -> f64 {
+    match dy_lag {
+        Some(d) => a * c + a * b * dy_now * d,
+        None => c * a,
     }
 }
 

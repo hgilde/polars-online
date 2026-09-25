@@ -417,6 +417,62 @@ impl<'de> Deserialize<'de> for SessionGapSpec {
     }
 }
 
+/// How many ranges of features a `marginal` splits its pair work into
+/// (docs/PLAN.md task 126): a count of at least one, or `"auto"`, which the
+/// bank sizes from the model's width and its own pool. A setting, not state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShardSpec {
+    Count(usize),
+    Auto,
+}
+
+impl Serialize for ShardSpec {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            ShardSpec::Count(n) => s.serialize_u64(*n as u64),
+            ShardSpec::Auto => s.serialize_str("auto"),
+        }
+    }
+}
+
+/// A count or `"auto"`, each read by its own rule, so a wrong value is
+/// named as what it is.
+impl<'de> Deserialize<'de> for ShardSpec {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = ShardSpec;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a number of shards of at least 1, or \"auto\"")
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<ShardSpec, E> {
+                usize::try_from(v)
+                    .ok()
+                    .filter(|n| *n >= 1)
+                    .map(ShardSpec::Count)
+                    .ok_or_else(|| E::invalid_value(serde::de::Unexpected::Unsigned(v), &self))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<ShardSpec, E> {
+                match u64::try_from(v) {
+                    Ok(v) => self.visit_u64(v),
+                    Err(_) => Err(E::invalid_value(serde::de::Unexpected::Signed(v), &self)),
+                }
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<ShardSpec, E> {
+                match v {
+                    "auto" => Ok(ShardSpec::Auto),
+                    _ => Err(E::invalid_value(serde::de::Unexpected::Str(v), &self)),
+                }
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
 /// Model choice + model-specific params (docs/PLAN.md §4).
 ///
 /// A key no variant has is an error, not ignored: a spec is typed by hand in
@@ -968,6 +1024,14 @@ pub enum ModelKind {
         /// learned kind's and refused beside it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bin_edges: Option<Vec<Vec<f64>>>,
+        /// Ranges of features to split the pair work into, run on the bank's
+        /// pool a batch of rows at a time (docs/PLAN.md task 126): a count,
+        /// or `"auto"` for as many as the width can keep busy. The numbers
+        /// are the same to the bit whatever it says, so it is a setting,
+        /// not state. Absent is one, the pairs row by row on the group's
+        /// own thread. Skipped when absent, as `lags` is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shards: Option<ShardSpec>,
         /// Clock units of history the pairs are computed from, with a
         /// **hard** cutoff: a row older than this contributes nothing
         /// (docs/PLAN.md §13). Inside the window the weights are still

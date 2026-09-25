@@ -124,7 +124,10 @@ pub use kalman::{Kalman, KalmanCfg};
 pub use lasso::{Lasso, LassoCfg};
 pub use margbins::{BinCfg, BinRule};
 pub(crate) use margbins::{MarginalBins, edges_from};
-pub use marginal::{Marginal, MarginalCfg, Pair as MarginalPair, SerialRule};
+pub use marginal::{
+    Marginal, MarginalCfg, MarginalShard, Pair as MarginalPair, SerialRule, ShardRunner, Shards,
+    run_in_order,
+};
 pub(crate) use marglag::{MarginalLags, PairMix};
 pub use model::{
     Extra, INPUT_BOUND, ModelState, OnlineModel, State, StateError, Step, check_schema,
