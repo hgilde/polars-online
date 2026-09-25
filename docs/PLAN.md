@@ -1697,7 +1697,10 @@ note, not a task.
       and passes unchanged, since none of them named `binary=True`.
 
 - [ ] 86. **The bank on Arrow, with Polars as an adapter -- the bank is done,
-      two pieces deliberately are not, 2026-09-17.** Goal: the model bank takes
+      two pieces deliberately are not, 2026-09-17. Parked by the user on
+      2026-09-25** with everything that integrates Arrow or a new library
+      (the plan of 2026-09-25, after task 119); the import is not blocked
+      (2026-09-22, below), it waits by choice. Goal: the model bank takes
       and returns Arrow, so Polars becomes the most convenient way to use the
       library rather than the only one, and the boundary stops riding on
       private py-polars methods. The first holds outright. The second holds on
@@ -2144,14 +2147,20 @@ note, not a task.
       the same shape for a session change and a capped gap on a skipped row,
       with a lag feature to show the ring is not refilled across the break.
       Changes numbers only for a stream with `label_delay` and an event on a
-      skipped row; a patch, with a CHANGELOG line. Before 78b, which extends
+      skipped row; a patch, with a CHANGELOG line. Before 78b (now task 106), which extends
       the same release rule to a backward clock.
       **Done 2026-09-13** as the code review's C5, fixed with C21 in
       `cb6c57c` (task 80): a reset on a skipped row now clears the buffer,
       and a session change or capped gap on one releases it.
 
-- [ ] 78. **E69, windowed EWMAs in both directions, and `po.prep` renamed
-      `po.stream` — recorded 2026-09-11, designed the same day, not built.**
+- [ ] 78. **E69, windowed EWMAs in both directions, as a column utility —
+      recorded 2026-09-11, designed the same day, not built.** Split
+      2026-09-25 (the user: "several unrelated changes under one heading"):
+      the rename of `po.prep` is task 105, the backward-clock rule 106,
+      windows as regression targets 104, relative targets 107. This entry
+      keeps the windows themselves and the record of the design day; the
+      moved passages are in those tasks, word for word. **Its rules at a
+      clock that goes back need extra review** (task 120).
       The user's ask: "Is it possible to have a look ahead that generates a
       reverse ewma on the forward pass? For example a target of a regression
       may be not the forward price but the reverse ewma of rows starting with
@@ -2237,11 +2246,8 @@ note, not a task.
 
       #### The API
 
-      **`po.prep` becomes `po.stream`**: the namespace for streaming
-      transforms of a plan — `LazyFrame` in, `LazyFrame` out, O(state)
-      memory, before or beside a bank. "Stream" is already a defined word in
-      the README's glossary. `embargo` and `refresh_time` move; nothing
-      stays behind under `po.prep`.
+      **The namespace, `po.stream`, and the five rules every function in it
+      follows are task 105's**; this utility is built on them.
 
       **Windows are described, then run together** — the shape a bank and
       its specs already have. `po.window.ewm(...)` and
@@ -2256,39 +2262,6 @@ note, not a task.
       spelling. `po.target(column, ...)` exists for the other kind of
       target — a plain column — only so that it can take the options every
       target has (*Relative targets*).
-
-      Every function in `po.stream` follows five rules — what "the way it
-      should be done" means here:
-
-      1. **Frame first, the same kind back** — `LazyFrame` in gives a
-         `LazyFrame`, `DataFrame` gives a `DataFrame`, as `po.fit_predict`
-         does. Chaining is Polars' own `lf.pipe(po.stream.windows, [...])`;
-         nothing is added to `lf.online` for these.
-      2. **One vocabulary, the specs'**: `clock`, `max_dclock`,
-         `on_clock_reset`, `session`, `session_gap`, `group`, `halflife`,
-         `weight` — the same names, defaults and meanings as on a spec, run
-         by the same Rust clock code. `refresh_time`'s `time=` becomes
-         `clock=` and `by=` becomes `group=`. With no `clock`, one unit is
-         one row.
-      3. **What the rows share goes on the call; what a window decides goes
-         on the window.** The call takes the clock and its policy — `clock`,
-         `max_dclock`, `on_clock_reset`, `session`, `session_gap`, `group` —
-         and the state;
-         a window takes its columns, weight, halflife, horizon, `partial`,
-         `same_clock` and names. Within one window, `columns`, `halflife`
-         and `horizon` may each be a sequence, and the window means every
-         combination.
-      4. **Output names by template**: `name=` is a format string over
-         `{column}`, `{halflife}`, `{horizon}` and `{split}` (`""` for the
-         total, `"_buy"` for a category, so one template names both); the
-         default contains only
-         the fields that vary within the window (`"{column}_ewm"`,
-         `"{column}_ewm_{halflife}"`, ...; `rewm` for the forward form). Two
-         outputs with one name, across all the windows of a call, are refused
-         while the plan is built.
-      5. **Stateful transforms resume** with `load_state` / `save_state`;
-         `chunk_rows` as everywhere. `embargo` is a pure Polars plan
-         (`merge_sorted`) with nothing to save and takes neither.
 
       ```python
       lf = po.stream.windows(
@@ -2394,105 +2367,17 @@ note, not a task.
         without it they are emitted unresolved, null. The saved state is one window's worth of rows per
         group — the longest window of the call — plus each window's running
         sums.
-      - **As a spec target**, a description is accepted as written, so the
-        one built for the column form works unchanged. `partial="null"` and
-        `"drop"` both mean the row is not learned from — a null target never
-        is — and `"keep"` learns from the partial window; the default,
-        `"null"`, is therefore valid (a first draft allowed only `"drop"` /
-        `"keep"`, which would have refused the default a caller never set).
-        `complete` is refused: the bank does not emit its target, and it
-        names a column that would not exist. The backward `ewm` is refused:
-        it is not a label but a feature, and belongs upstream in
-        `po.stream`. The clock and its policy are the spec's — a description
-        never carries one, in either place, because every window over a
-        buffer shares its clock.
-      - **A split description as a spec target is several targets**, one per
-        listed category plus the total unless `total=False`, in the one
-        spec — so they share one `X'X` (E9) and a buy-side, sell-side and
-        all-trades VWAP are fitted for the cost of one. They share a
-        horizon, so they share one delay.
+      - **As a spec target, and parity with this form**: task 104.
 
       #### Relative targets
 
-      The user, 2026-09-11: "every target should have the option to be
-      relative". A level — a price, a VWAP — is rarely what a regression
-      should predict; where it goes from *now* is. So every target, a plain
-      column as much as a window, takes:
-
-      - **`relative_to=`**, a column read **at the target's own row** *t*
-        — the mid, the last trade — and
-      - **`relative=`**, how the target is taken against it:
-        `"difference"` (default, `y − r`), `"ratio"` (`y / r`) or
-        `"log_ratio"` (`ln(y / r)`).
-
-      `r` at row *t* is known when row *t* arrives, so a relative target is
-      exactly as honest as the target it is built from; it adds no look-
-      ahead. A null `r`, or for the two ratios a non-positive `y` or `r`,
-      makes the target null on that row: not learned from, never a NaN in
-      the state (the guard hard rule 9 asks for).
-
-      - **Where `r` lives.** For a plain column the relative value is
-        computed as the row arrives and buffered already relative. For a
-        window target, `r` is stored on the waiting row (`PendingRow` gains
-        it, beside the target's value and weight) and applied when the
-        window closes. The column form computes the same thing the same way,
-        so parity holds for relative targets exactly as for levels.
-      - **Everything downstream is on the relative scale**: `pred`,
-        `resid`, `sigma`, the metrics and the conformal interval. That makes
-        `hit_rate`'s sign agreement mean "the direction of the move", which
-        is usually the question. A level prediction is `pred + r` (or
-        `pred · r`), and `r` is on the row; the output does not add it
-        back, since what `sigma` and the interval describe is the relative
-        quantity.
-      - **`split=`** takes one `relative_to` for all its outputs: the
-        buy-side, sell-side and all-trades VWAPs are each relative to the
-        same mid.
-      - **In TOML** (the CLI), a target is a string or a table:
-        `targets = ["ret_5m", { column = "price_5m", relative_to = "mid" }]`,
-        and a window target a table with the window's keys — the same
-        vocabulary on every surface (`docs/STATE-WORKFLOW.md`).
-      - **The backward `ewm` takes it too**, as a feature: the price
-        against its own trailing VWAP is one window.
-
-      **`"log_ratio"` is offered; its only cost is to our own fixtures.**
-      A first draft made this a decision, on §11a's B4 rule — "putting a
-      libm result into the state costs cross-platform reproducibility" —
-      and suggested a caller could avoid it by passing a log-price column
-      computed in Polars. The user asked what exact object was the worry,
-      and the answer undoes both: nothing special is stored, just an `f64`
-      in `ewridge`'s `r`, `tm`, `sig2` and `beta` like any target's. The
-      only fact is that `ln` can differ in its last bit between glibc and
-      Apple's libm, so the same rows can leave last-bit-different numbers in
-      the saved file on the two. And a Polars log column comes from the same
-      libm, so it moves the `ln` without removing it. The consequence is
-      test hygiene, not a user-facing choice: the docstring says a
-      log-ratio target is reproducible across OSes to the last few bits, as
-      any log is, and no `"log_ratio"` spec goes into a byte-identical
-      cross-platform fixture (`state_schema*.rs`, the release workflow's
-      write-on-macOS / read-elsewhere job). B4 itself stands as it was
-      written for `bocpd`: our own fixtures must not depend on a libm last
-      bit.
+      Task 107: every target, a window as much as a plain column, can be
+      taken relative to a column read at its own row.
 
       #### How rows move
 
-      - **A description as a spec target** rides on the `label_delay` FIFO
-        (`apply_label_delay`, `crates/online-polars/src/stream.rs`). When
-        row *t* is released, the rows still waiting behind it are exactly its
-        window — those after it, less than `horizon` later on the model's
-        clock — so the target is computed at release from rows the bank
-        already holds; `PendingRow` gains the target's value, weight and
-        split category, and a row that contributes nothing to the target
-        costs the queue nothing, as in the column form.
-        Each row is still scored and emitted as it arrives (`learn: false`
-        on the arriving row, `emit: false` on the replay): the rest of the
-        plan never sees the buffer. One state file. The window is open at
-        `t + horizon`, because the buffer releases *t* before pushing the
-        row that reaches it. A session change or a capped gap already
-        releases the buffer early — those are its partial windows.
-        `label_delay` is implied by the horizon; an explicit one is refused.
-        `SCHEMA_VERSION` bumps (rule 5). One delay per spec, so several
-        look-ahead targets of different horizons in one spec are learned at
-        the longest — honest, late.
+      - **A description as a spec target** rides on the `label_delay` FIFO:
+        task 104.
       - **Only contributing rows enter a window.** Each window — each
         category of a split, and its total — keeps a queue of the rows whose
         value is present and whose weight is non-zero, and nothing else. A
@@ -2557,115 +2442,18 @@ note, not a task.
         model it is meant to match. The clock keywords stay for a column
         with no model behind it; `like=` with any of them is refused.
 
-      #### Parity: the column shows the target the model used
+      #### Parity: task 104
 
-      The user's requirement, 2026-09-11: "the same window spec passed to
-      windows shows the target that the model used". Stated precisely, for
-      `po.stream.windows(lf, [w], like=spec)` against `spec` with `w` as a
-      target: **on every row the model learns from, the column equals the
-      target it learned, to the bit; on every other row the column is
-      null.** Checked against the code (`apply_label_delay`,
-      `run_instance`, `ClockState::advance`), four things in the first
-      design did not give that, and each is now part of the design:
+      The column form must reproduce, to the bit, the target a model learned
+      on every row it learned from; the requirement and the four things it
+      settled are task 104's.
 
-      1. **The window sees every contributing row, not only the rows the
-         spec accepts.** The `label_delay` buffer holds accepted rows only
-         — a row with a null feature or an unusable weight never enters it
-         (`apply_label_delay`, the `!plan.accept` branch) — so a window
-         built from that buffer would silently omit trades on rows whose
-         features happen to be null, which interleaved data makes common.
-         The target depends on the price and quantity ahead, not on whether
-         the model could use a row's features. So a look-ahead target keeps
-         its own window queue beside the learning FIFO: every row with a
-         present value and a non-zero weight enters the window; only
-         accepted rows enter the FIFO to be learned. The column form, which
-         never knew the features, already works this way.
-      2. **Clock events on skipped rows count.** A reset, a session change
-         or a capped gap that lands on a skipped row is acted on by the
-         model but ignored by the `label_delay` buffer — an existing bug,
-         task 79, which this depends on. The windows take every row's event.
-      3. **Rows the model never learns from are null in the column**:
-         rows discarded by a reset, rows unresolved at the end of the input,
-         and rows the spec skips (their own target is never learned, though
-         they sit inside other rows' windows). The first two the column form
-         knows from the clock. The third it knows only from the spec, which
-         is what `like=spec` is for: it carries the spec's acceptance rule
-         — features and weight usable — along with its clock policy. A
-         first draft said "filtering on `complete` is exactly the set the
-         model learned from"; wrong under `partial="keep"`, where a window
-         cut by a session change is incomplete *and* learned from.
-         `complete` marks a cut window; null marks a row the model did not
-         use.
-      4. **`group_close` is refused with a look-ahead target**, as it
-         already is with `label_delay` (`spec.rs`: a closed group cannot
-         release the rows it still holds), so there is no group-close case
-         to match.
+      #### A clock that goes back
 
-      Test: the parity test below, with `like=spec`, asserting the
-      statement above row by row on streams containing skipped trade rows,
-      each clock event on a skipped row and on an accepted one, a reset, and
-      an end of input inside a horizon.
+      What a backward step means for every model is task 106 (**needs extra
+      review**, the user, 2026-09-25). The column form's own two rules at a
+      clock that goes back, which that task's rule makes match the model:
 
-      **A backwards clock is a session break.** The user's rules,
-      2026-09-11: "When a forward window encounters a backward clock, we
-      want the same effect as if there were a large clock gap where the
-      window just runs out", and then "If a clock moves backward it must be
-      a session break or a problem in the input data and we can't tell
-      which so we assume session break." And then, for the decay too: "the
-      decay should take the session gap as well since that would be needed
-      anyway to completely recreate the target used by the model." Read against
-      `ClockState::advance` (`crates/online-core/src/clock.rs`) and
-      `apply_label_delay`, per `on_clock_reset`:
-
-      | policy (today) | a waiting row today | as a session break |
-      |---|---|---|
-      | `"max"` | `capped = true` — the buffer releases, the window ends | unchanged |
-      | `"reset_state"` | the buffer is discarded; the model starts over | unchanged — a reset, as `session_gap="reset"` is at a session change |
-      | `"zero"` | a zero step, not capped: the buffer keeps waiting, and a window would run on across the jump, counting the rows after it as the row's own clock | **the buffer releases and every window ends** |
-      | `"error"` | the run stops | unchanged |
-
-      - **In both forms, a backward step on a group's clock does to the
-        waiting rows what a session change does**: every open forward
-        window of the group ends — no row at or after the jump enters,
-        the value is over the rows before it, under `partial` — and the
-        `label_delay` buffer releases in order. One line in
-        `apply_label_delay`: `plan.backwards` joins `session_changed` and
-        `capped` in the release condition.
-      - **The decay takes it too: a backward step is a session change,
-        everywhere.** `ClockState::advance` treats a raw step below zero as
-        it treats a change of session value: `session_changed` is set, the
-        step is `session_gap` (limited to `max_dclock`), and
-        `session_gap="reset"` starts the model over. So everything that
-        follows a session change follows a backward step — the decay, the
-        `label_delay` release, the lag rings cleared, `session_shrink`'s
-        blend, `group_close="session"` closing the group, and the windows
-        ending. One code path, which is what lets the column form recreate
-        the target the model learns from exactly.
-      - **`on_clock_reset` shrinks to `"session"` (the default) and
-        `"error"`.** The three policies it loses are each a `session_gap`:
-        `"max"` is `session_gap = max_dclock`, `"zero"` is `session_gap = 0`,
-        `"reset_state"` is `session_gap = "reset"`. Nothing is lost except
-        choosing a different step for a backward clock than for a session
-        change — which the rule says cannot be told apart anyway. `"error"`
-        stays, for input where a backward clock can only be a bug.
-      - **`session_gap` without a `session` column**, now meaningful: it is
-        the step at a backward clock. With no `session` column it defaults
-        to `max_dclock` — today's default decay step at a backward clock
-        (`"max"`), so a stream with no session column and no `session_gap`
-        decays exactly as before. With a `session` column it stays required,
-        as now.
-      - **What moves.** Pre-1.0, so no compatibility spelling: the three
-        policy words are refused with a message naming the `session_gap`
-        that replaces each. Numbers move for a stream with a backward clock
-        under `"zero"` or `"reset_state"` (now session changes: a released
-        buffer, cleared lag rings), under `"max"` where a `session` column
-        gave a different `session_gap`, and for any spec with
-        `session_shrink` or `group_close="session"`, which now also fire at
-        a backward step. `SCHEMA_VERSION` bumps (the clock config's layout
-        changes), shared with 78e's bump if they ship together, with a
-        loader that maps a saved `"max"` / `"zero"` / `"reset_state"` to the
-        equivalent `session_gap` when the file has none. A minor release,
-        with the list above as its first CHANGELOG lines.
       - **The column form closes windows on the stream's clock the same
         way**: a row whose clock is below the previous row's — any group —
         closes every open window in every group, exactly as passing the
@@ -2685,20 +2473,6 @@ note, not a task.
 
       #### Sub-tasks
 
-      - [ ] 78a. **The rename**, alone, first: `po.prep` → `po.stream`,
-            `time=` → `clock=` and `by=` → `group=` in `refresh_time`, its
-            tests, the reference page, the README, `llms.txt`, and the API
-            surface file. No behaviour change, so every existing test passes
-            with only its spelling changed.
-      - [ ] 78b. **A backward clock is a session change**, in
-            `ClockState::advance`, before any window is built: every model's
-            decay, `label_delay`, lag rings, `session_shrink` and
-            `group_close` follow from it; `on_clock_reset` becomes
-            `"session"` / `"error"`; `session_gap` allowed without `session`,
-            defaulting to `max_dclock`; the README's clock section, the
-            reference docstrings and every test that names a removed policy.
-            Its own commit, its own CHANGELOG lines, since it changes numbers
-            the windows do not depend on.
       - [ ] 78c. **The window core** in `online-polars`: the anchored
             segment monoid and the two-stack queue, both directions, per
             group, with a per-row weight; queues that admit only
@@ -2712,14 +2486,8 @@ note, not a task.
             chunks and sliced out when their windows close, each window's
             queues its own; `split`, `unlisted`, `total` and the `{split}`
             name field; the clock-policy keywords and `like=spec`.
-      - [ ] 78e. **Descriptions as spec targets**, in the stream layer, on the
-            `label_delay` buffer. `SCHEMA_VERSION` bump with a loader for 6,
-            shared with 78b's if they ship together.
-      - [ ] 78f. **Relative targets**: `relative_to` / `relative` on
-            `po.target` and on both window descriptions, in the stream layer
-            (plain columns) and the window core (windows); the TOML table
-            form. The plain-column half depends on nothing else here and can
-            ship with 78a; the window half lands with 78d and 78e.
+      - 78a, 78b, 78e and 78f moved: the rename is task 105, the backward
+        clock 106, descriptions as spec targets 104, relative targets 107.
 
       #### Tests
 
@@ -2747,31 +2515,9 @@ note, not a task.
         2026-09-11, 3,000 rows, 30% trades: buy side 1.1e-13 and sell side
         8.5e-14 against brute force, empty windows matching exactly — the
         oracle for the column form.
-      - **Parity with the model, per clock event**: a spec with a
-        look-ahead target against the same spec given the column form's
-        output — computed with `like=spec` — as an ordinary target
-        with `label_delay = horizon`, identical `pred` on every row, on
-        streams built to contain each event: a gap over `max_dclock`, a
-        session change with a finite `session_gap`, `session_gap="reset"`,
-        a backward step with a finite `session_gap` and with `"reset"`, several
-        groups whose clocks restart together, and rows at one clock value.
-        **A backward step equals a session change at the same row, for
-        every model**: one stream with a backward clock and no `session`
-        column against the same stream with a `session` column that changes
-        exactly there and the clock made monotone, identical output field by
-        field — decay, `label_delay`, lag features, `session_shrink`,
-        `group_close="session"`. Each removed policy word refused with the
-        `session_gap` that replaces it; a v6 state saved under each loading
-        with the equivalent gap. For `"reset_state"` and
-        `session_gap="reset"`, the rows with `complete` false are exactly
-        the rows the model never learned from.
-      - **Relative targets**: `po.target("p", relative_to="r")` against the
-        same spec given `p − r` as a plain column, identical output field by
-        field, for each of `"difference"`, `"ratio"` and (if built)
-        `"log_ratio"`; a null `r` and a non-positive value giving a null
-        target that is not learned; a relative window target in both forms,
-        to the bit; `split=` with one `relative_to`; the TOML table form
-        loading to the same spec as the Python one.
+      - Parity with the model per clock event: task 104; a backward step
+        as a session change for every model: task 106; relative targets:
+        task 107.
       - Chunk invariance at 1, 7, 64 and 1000 rows a chunk; groups and
         sessions kept apart; a halflife short enough that the late factors
         underflow; a constant column giving that constant; every `partial`
@@ -4075,6 +3821,641 @@ note, not a task.
       docs/ANSWERS-E54-E64.md transcribes the paper as `k((t−u)/γ)`, `1 −
       l/γ`; O(1/γ), inside the size and power bands; to check against the
       paper once.
+
+- [ ] 104. **Windows as regression targets, and parity with the column
+      form — split from task 78 on 2026-09-25, not built.** A window
+      description from task 78 is accepted as a spec target: the forward
+      `lookahead_rewm` is a label, learned with `label_delay = horizon`
+      on the `label_delay` FIFO, and a split description is several
+      targets in one spec. `po.stream.windows(..., like=spec)` then shows,
+      on every row the model learns from, the target it learned, to the
+      bit. **Touches clock events** (a capped gap, a session change, a
+      reset and a backward step end or discard a window): **needs extra
+      review** with task 106. Depends on 78 for the window core, and on
+      106 for parity at a backward clock. The passages below moved from
+      task 78 word for word.
+
+      #### A description as a spec target
+
+      - **As a spec target**, a description is accepted as written, so the
+        one built for the column form works unchanged. `partial="null"` and
+        `"drop"` both mean the row is not learned from — a null target never
+        is — and `"keep"` learns from the partial window; the default,
+        `"null"`, is therefore valid (a first draft allowed only `"drop"` /
+        `"keep"`, which would have refused the default a caller never set).
+        `complete` is refused: the bank does not emit its target, and it
+        names a column that would not exist. The backward `ewm` is refused:
+        it is not a label but a feature, and belongs upstream in
+        `po.stream`. The clock and its policy are the spec's — a description
+        never carries one, in either place, because every window over a
+        buffer shares its clock.
+      - **A split description as a spec target is several targets**, one per
+        listed category plus the total unless `total=False`, in the one
+        spec — so they share one `X'X` (E9) and a buy-side, sell-side and
+        all-trades VWAP are fitted for the cost of one. They share a
+        horizon, so they share one delay.
+
+      #### How its rows move
+
+      - **A description as a spec target** rides on the `label_delay` FIFO
+        (`apply_label_delay`, `crates/online-polars/src/stream.rs`). When
+        row *t* is released, the rows still waiting behind it are exactly its
+        window — those after it, less than `horizon` later on the model's
+        clock — so the target is computed at release from rows the bank
+        already holds; `PendingRow` gains the target's value, weight and
+        split category, and a row that contributes nothing to the target
+        costs the queue nothing, as in the column form.
+        Each row is still scored and emitted as it arrives (`learn: false`
+        on the arriving row, `emit: false` on the replay): the rest of the
+        plan never sees the buffer. One state file. The window is open at
+        `t + horizon`, because the buffer releases *t* before pushing the
+        row that reaches it. A session change or a capped gap already
+        releases the buffer early — those are its partial windows.
+        `label_delay` is implied by the horizon; an explicit one is refused.
+        `SCHEMA_VERSION` bumps (rule 5). One delay per spec, so several
+        look-ahead targets of different horizons in one spec are learned at
+        the longest — honest, late.
+
+      #### Parity: the column shows the target the model used
+
+      The user's requirement, 2026-09-11: "the same window spec passed to
+      windows shows the target that the model used". Stated precisely, for
+      `po.stream.windows(lf, [w], like=spec)` against `spec` with `w` as a
+      target: **on every row the model learns from, the column equals the
+      target it learned, to the bit; on every other row the column is
+      null.** Checked against the code (`apply_label_delay`,
+      `run_instance`, `ClockState::advance`), four things in the first
+      design did not give that, and each is now part of the design:
+
+      1. **The window sees every contributing row, not only the rows the
+         spec accepts.** The `label_delay` buffer holds accepted rows only
+         — a row with a null feature or an unusable weight never enters it
+         (`apply_label_delay`, the `!plan.accept` branch) — so a window
+         built from that buffer would silently omit trades on rows whose
+         features happen to be null, which interleaved data makes common.
+         The target depends on the price and quantity ahead, not on whether
+         the model could use a row's features. So a look-ahead target keeps
+         its own window queue beside the learning FIFO: every row with a
+         present value and a non-zero weight enters the window; only
+         accepted rows enter the FIFO to be learned. The column form, which
+         never knew the features, already works this way.
+      2. **Clock events on skipped rows count.** A reset, a session change
+         or a capped gap that lands on a skipped row is acted on by the
+         model but ignored by the `label_delay` buffer — an existing bug,
+         task 79, which this depends on. The windows take every row's event.
+      3. **Rows the model never learns from are null in the column**:
+         rows discarded by a reset, rows unresolved at the end of the input,
+         and rows the spec skips (their own target is never learned, though
+         they sit inside other rows' windows). The first two the column form
+         knows from the clock. The third it knows only from the spec, which
+         is what `like=spec` is for: it carries the spec's acceptance rule
+         — features and weight usable — along with its clock policy. A
+         first draft said "filtering on `complete` is exactly the set the
+         model learned from"; wrong under `partial="keep"`, where a window
+         cut by a session change is incomplete *and* learned from.
+         `complete` marks a cut window; null marks a row the model did not
+         use.
+      4. **`group_close` is refused with a look-ahead target**, as it
+         already is with `label_delay` (`spec.rs`: a closed group cannot
+         release the rows it still holds), so there is no group-close case
+         to match.
+
+      Test: the parity test below, with `like=spec`, asserting the
+      statement above row by row on streams containing skipped trade rows,
+      each clock event on a skipped row and on an accepted one, a reset, and
+      an end of input inside a horizon.
+
+      #### Sub-tasks
+
+      - [ ] 104a. (was 78e) **Descriptions as spec targets**, in the stream layer, on the
+            `label_delay` buffer. `SCHEMA_VERSION` bump with a loader for 6,
+            shared with 78b's if they ship together.
+      #### Tests
+
+      - Task 78's interleaved trades and market data, the three VWAPs as
+        spec targets, equal to the column form fed back through
+        `label_delay`; a backward `ewm` refused as a spec target.
+      - **Parity with the model, per clock event**: a spec with a
+        look-ahead target against the same spec given the column form's
+        output — computed with `like=spec` — as an ordinary target
+        with `label_delay = horizon`, identical `pred` on every row, on
+        streams built to contain each event: a gap over `max_dclock`, a
+        session change with a finite `session_gap`, `session_gap="reset"`,
+        a backward step with a finite `session_gap` and with `"reset"`, several
+        groups whose clocks restart together, and rows at one clock value.
+
+- [ ] 105. **`po.prep` renamed `po.stream`, and the rules every function in
+      it follows — split from task 78 on 2026-09-25, not built.** The user,
+      2026-09-11: `po.prep` is to be renamed and its API defined "the way
+      it should be done" — pre-1.0, so no aliases and no compatibility. No
+      behaviour change; the one breaking change queued, so it belongs in a
+      minor release. **The clock of `refresh_time` under the one vocabulary
+      needs extra review** (task 120). The passages below moved from task 78
+      word for word.
+
+      **`po.prep` becomes `po.stream`**: the namespace for streaming
+      transforms of a plan — `LazyFrame` in, `LazyFrame` out, O(state)
+      memory, before or beside a bank. "Stream" is already a defined word in
+      the README's glossary. `embargo` and `refresh_time` move; nothing
+      stays behind under `po.prep`.
+
+      Every function in `po.stream` follows five rules — what "the way it
+      should be done" means here:
+
+      1. **Frame first, the same kind back** — `LazyFrame` in gives a
+         `LazyFrame`, `DataFrame` gives a `DataFrame`, as `po.fit_predict`
+         does. Chaining is Polars' own `lf.pipe(po.stream.windows, [...])`;
+         nothing is added to `lf.online` for these.
+      2. **One vocabulary, the specs'**: `clock`, `max_dclock`,
+         `on_clock_reset`, `session`, `session_gap`, `group`, `halflife`,
+         `weight` — the same names, defaults and meanings as on a spec, run
+         by the same Rust clock code. `refresh_time`'s `time=` becomes
+         `clock=` and `by=` becomes `group=`. With no `clock`, one unit is
+         one row.
+      3. **What the rows share goes on the call; what a window decides goes
+         on the window.** The call takes the clock and its policy — `clock`,
+         `max_dclock`, `on_clock_reset`, `session`, `session_gap`, `group` —
+         and the state;
+         a window takes its columns, weight, halflife, horizon, `partial`,
+         `same_clock` and names. Within one window, `columns`, `halflife`
+         and `horizon` may each be a sequence, and the window means every
+         combination.
+      4. **Output names by template**: `name=` is a format string over
+         `{column}`, `{halflife}`, `{horizon}` and `{split}` (`""` for the
+         total, `"_buy"` for a category, so one template names both); the
+         default contains only
+         the fields that vary within the window (`"{column}_ewm"`,
+         `"{column}_ewm_{halflife}"`, ...; `rewm` for the forward form). Two
+         outputs with one name, across all the windows of a call, are refused
+         while the plan is built.
+      5. **Stateful transforms resume** with `load_state` / `save_state`;
+         `chunk_rows` as everywhere. `embargo` is a pure Polars plan
+         (`merge_sorted`) with nothing to save and takes neither.
+
+      #### Sub-tasks
+
+      - [ ] 105a. (was 78a) **The rename**, alone, first: `po.prep` → `po.stream`,
+            `time=` → `clock=` and `by=` → `group=` in `refresh_time`, its
+            tests, the reference page, the README, `llms.txt`, and the API
+            surface file. No behaviour change, so every existing test passes
+            with only its spelling changed.
+
+- [ ] 106. **A backward clock is a session change — split from task 78 on
+      2026-09-25, not built. Needs extra review before it is built (the
+      user, 2026-09-25): it changes what every model does at a clock that
+      goes back, and moves numbers.** Designed on 2026-09-11, before
+      `min_backwards_jump` existed: today a backwards jump smaller than
+      `min_backwards_jump` (default `max_dclock`) refuses the chunk under
+      every policy, and only a larger jump reaches `on_clock_reset`. The
+      rule below would then govern only those larger jumps, which the docs
+      already treat as possible session boundaries; how the two fit is the
+      first thing to settle. The loaders the design planned for the
+      removed policy words are obsolete: pre-1.0 state compatibility was
+      waived on 2026-09-14. The passages below moved from task 78 word for
+      word.
+
+      **A backwards clock is a session break.** The user's rules,
+      2026-09-11: "When a forward window encounters a backward clock, we
+      want the same effect as if there were a large clock gap where the
+      window just runs out", and then "If a clock moves backward it must be
+      a session break or a problem in the input data and we can't tell
+      which so we assume session break." And then, for the decay too: "the
+      decay should take the session gap as well since that would be needed
+      anyway to completely recreate the target used by the model." Read against
+      `ClockState::advance` (`crates/online-core/src/clock.rs`) and
+      `apply_label_delay`, per `on_clock_reset`:
+
+      | policy (today) | a waiting row today | as a session break |
+      |---|---|---|
+      | `"max"` | `capped = true` — the buffer releases, the window ends | unchanged |
+      | `"reset_state"` | the buffer is discarded; the model starts over | unchanged — a reset, as `session_gap="reset"` is at a session change |
+      | `"zero"` | a zero step, not capped: the buffer keeps waiting, and a window would run on across the jump, counting the rows after it as the row's own clock | **the buffer releases and every window ends** |
+      | `"error"` | the run stops | unchanged |
+
+      - **In both forms, a backward step on a group's clock does to the
+        waiting rows what a session change does**: every open forward
+        window of the group ends — no row at or after the jump enters,
+        the value is over the rows before it, under `partial` — and the
+        `label_delay` buffer releases in order. One line in
+        `apply_label_delay`: `plan.backwards` joins `session_changed` and
+        `capped` in the release condition.
+      - **The decay takes it too: a backward step is a session change,
+        everywhere.** `ClockState::advance` treats a raw step below zero as
+        it treats a change of session value: `session_changed` is set, the
+        step is `session_gap` (limited to `max_dclock`), and
+        `session_gap="reset"` starts the model over. So everything that
+        follows a session change follows a backward step — the decay, the
+        `label_delay` release, the lag rings cleared, `session_shrink`'s
+        blend, `group_close="session"` closing the group, and the windows
+        ending. One code path, which is what lets the column form recreate
+        the target the model learns from exactly.
+      - **`on_clock_reset` shrinks to `"session"` (the default) and
+        `"error"`.** The three policies it loses are each a `session_gap`:
+        `"max"` is `session_gap = max_dclock`, `"zero"` is `session_gap = 0`,
+        `"reset_state"` is `session_gap = "reset"`. Nothing is lost except
+        choosing a different step for a backward clock than for a session
+        change — which the rule says cannot be told apart anyway. `"error"`
+        stays, for input where a backward clock can only be a bug.
+      - **`session_gap` without a `session` column**, now meaningful: it is
+        the step at a backward clock. With no `session` column it defaults
+        to `max_dclock` — today's default decay step at a backward clock
+        (`"max"`), so a stream with no session column and no `session_gap`
+        decays exactly as before. With a `session` column it stays required,
+        as now.
+      - **What moves.** Pre-1.0, so no compatibility spelling: the three
+        policy words are refused with a message naming the `session_gap`
+        that replaces each. Numbers move for a stream with a backward clock
+        under `"zero"` or `"reset_state"` (now session changes: a released
+        buffer, cleared lag rings), under `"max"` where a `session` column
+        gave a different `session_gap`, and for any spec with
+        `session_shrink` or `group_close="session"`, which now also fire at
+        a backward step. `SCHEMA_VERSION` bumps (the clock config's layout
+        changes), shared with 78e's bump if they ship together, with a
+        loader that maps a saved `"max"` / `"zero"` / `"reset_state"` to the
+        equivalent `session_gap` when the file has none. A minor release,
+        with the list above as its first CHANGELOG lines.
+      #### Sub-tasks
+
+      - [ ] 106a. (was 78b) **A backward clock is a session change**, in
+            `ClockState::advance`, before any window is built: every model's
+            decay, `label_delay`, lag rings, `session_shrink` and
+            `group_close` follow from it; `on_clock_reset` becomes
+            `"session"` / `"error"`; `session_gap` allowed without `session`,
+            defaulting to `max_dclock`; the README's clock section, the
+            reference docstrings and every test that names a removed policy.
+            Its own commit, its own CHANGELOG lines, since it changes numbers
+            the windows do not depend on.
+      #### Tests
+
+      - A backward step and a session change at the same row, for every
+        model (moved from task 78's parity test):
+        **A backward step equals a session change at the same row, for
+        every model**: one stream with a backward clock and no `session`
+        column against the same stream with a `session` column that changes
+        exactly there and the clock made monotone, identical output field by
+        field — decay, `label_delay`, lag features, `session_shrink`,
+        `group_close="session"`. Each removed policy word refused with the
+        `session_gap` that replaces it; a v6 state saved under each loading
+        with the equivalent gap. For `"reset_state"` and
+        `session_gap="reset"`, the rows with `complete` false are exactly
+        the rows the model never learned from.
+
+- [ ] 107. **Relative targets — split from task 78 on 2026-09-25, not
+      built.** The user, 2026-09-11: "every target should have the option
+      to be relative". The plain-column half depends on nothing and can
+      ship on its own; the window half needs tasks 78 and 104. The
+      passages below moved from task 78 word for word.
+
+      #### Relative targets
+
+      The user, 2026-09-11: "every target should have the option to be
+      relative". A level — a price, a VWAP — is rarely what a regression
+      should predict; where it goes from *now* is. So every target, a plain
+      column as much as a window, takes:
+
+      - **`relative_to=`**, a column read **at the target's own row** *t*
+        — the mid, the last trade — and
+      - **`relative=`**, how the target is taken against it:
+        `"difference"` (default, `y − r`), `"ratio"` (`y / r`) or
+        `"log_ratio"` (`ln(y / r)`).
+
+      `r` at row *t* is known when row *t* arrives, so a relative target is
+      exactly as honest as the target it is built from; it adds no look-
+      ahead. A null `r`, or for the two ratios a non-positive `y` or `r`,
+      makes the target null on that row: not learned from, never a NaN in
+      the state (the guard hard rule 9 asks for).
+
+      - **Where `r` lives.** For a plain column the relative value is
+        computed as the row arrives and buffered already relative. For a
+        window target, `r` is stored on the waiting row (`PendingRow` gains
+        it, beside the target's value and weight) and applied when the
+        window closes. The column form computes the same thing the same way,
+        so parity holds for relative targets exactly as for levels.
+      - **Everything downstream is on the relative scale**: `pred`,
+        `resid`, `sigma`, the metrics and the conformal interval. That makes
+        `hit_rate`'s sign agreement mean "the direction of the move", which
+        is usually the question. A level prediction is `pred + r` (or
+        `pred · r`), and `r` is on the row; the output does not add it
+        back, since what `sigma` and the interval describe is the relative
+        quantity.
+      - **`split=`** takes one `relative_to` for all its outputs: the
+        buy-side, sell-side and all-trades VWAPs are each relative to the
+        same mid.
+      - **In TOML** (the CLI), a target is a string or a table:
+        `targets = ["ret_5m", { column = "price_5m", relative_to = "mid" }]`,
+        and a window target a table with the window's keys — the same
+        vocabulary on every surface (`docs/STATE-WORKFLOW.md`).
+      - **The backward `ewm` takes it too**, as a feature: the price
+        against its own trailing VWAP is one window.
+
+      **`"log_ratio"` is offered; its only cost is to our own fixtures.**
+      A first draft made this a decision, on §11a's B4 rule — "putting a
+      libm result into the state costs cross-platform reproducibility" —
+      and suggested a caller could avoid it by passing a log-price column
+      computed in Polars. The user asked what exact object was the worry,
+      and the answer undoes both: nothing special is stored, just an `f64`
+      in `ewridge`'s `r`, `tm`, `sig2` and `beta` like any target's. The
+      only fact is that `ln` can differ in its last bit between glibc and
+      Apple's libm, so the same rows can leave last-bit-different numbers in
+      the saved file on the two. And a Polars log column comes from the same
+      libm, so it moves the `ln` without removing it. The consequence is
+      test hygiene, not a user-facing choice: the docstring says a
+      log-ratio target is reproducible across OSes to the last few bits, as
+      any log is, and no `"log_ratio"` spec goes into a byte-identical
+      cross-platform fixture (`state_schema*.rs`, the release workflow's
+      write-on-macOS / read-elsewhere job). B4 itself stands as it was
+      written for `bocpd`: our own fixtures must not depend on a libm last
+      bit.
+
+      #### Sub-tasks
+
+      - [ ] 107a. (was 78f) **Relative targets**: `relative_to` / `relative` on
+            `po.target` and on both window descriptions, in the stream layer
+            (plain columns) and the window core (windows); the TOML table
+            form. The plain-column half depends on nothing else here and can
+            ship with 78a; the window half lands with 78d and 78e.
+
+      #### Tests
+
+      - **Relative targets**: `po.target("p", relative_to="r")` against the
+        same spec given `p − r` as a plain column, identical output field by
+        field, for each of `"difference"`, `"ratio"` and (if built)
+        `"log_ratio"`; a null `r` and a non-positive value giving a null
+        target that is not learned; a relative window target in both forms,
+        to the bit; `split=` with one `relative_to`; the TOML table form
+        loading to the same spec as the Python one.
+
+**The plan of 2026-09-25.** Three audits compared every open list with the
+code (`docs/PLAN.md`, the other design docs, the release checklist, CI and
+GitHub). The user's call on the result: everything that integrates a new
+library or Arrow is parked (below the tasks); everything else is on this
+plan to be reviewed and, the user expects, done now; and any work on rows
+out of order or a clock that goes back **needs extra review before it is
+built**: task 120 (what an audit of that area found), 106 and 104, the
+clock rules of 78 and the clock of 105's `refresh_time`, and the items
+marked so below. Each task says its
+size (S under a day, M days, L a week or more), what it waits on, and the
+decision it needs, with a recommendation where there is one.
+
+- [ ] 108. **The docs say what the code does.** S–M, no code, no decision.
+      The audits found text the code has left behind: the removed expression
+      plugin (task 85) and `po.run` (task 83) described as live in
+      ENHANCEMENTS, IMPROVEMENTS, PERFORMANCE, CLUSTERING, STATE-WORKFLOW and
+      `runner.rs`'s comments; the Arrow import called blocked (ARROW-SOURCES
+      §4 and the head of task 86, both retracted 2026-09-22), and the two
+      reviews that repeat it; clustering and B2 (built as `window`) recorded
+      as undecided (ENHANCEMENTS, CLUSTERING §12, BEYOND-O-STATE, PLAN §11h);
+      stale counts ("650 Rust tests and 2,200 Python cases"), schema numbers
+      and the tested Polars version; the README's rule that every model but
+      `ewridge` defaults `min_periods` to one per unknown, which is wrong for
+      seven models; WARMUP-AND-CONVERGENCE's stale passages; the statuses of
+      REVIEW-2026-09-18 (B1, S1, D1, P1, S4, D2 still "candidate") and of the
+      2026-09-12 review's V-list; ANSWERS-E54-E64's D̂₃ marked "Verified";
+      IMPROVEMENTS P3 "rejected" where PERFORMANCE P11 is done; TESTING's
+      "Open entries: None" beside unmarked T-W rows; this plan's own status
+      line ("tasks 1–58 done, released as 0.2.0"), task 61 fused onto task
+      68, and the §3 table and §9 item 4 listing the clock policies.
+
+- [ ] 109. **Release 0.11.0.** S each; the push, tag and upload are the
+      user's. Before the tag:
+      - Refuse `max_error_inflation` by name on a model that ignores it:
+        today it is range-checked and dropped on every model but `ewridge`,
+        where `emit_error_inflation` is refused (spec.rs:2417-2433).
+        *Decision: refuse (recommended) or document it as ignored.*
+      - `EwDiag::update`: drop the zero-weight loop, a no-op (`a = 1`,
+        `b = 0`), which also removes an equivalent-mutant entry whose line
+        matches the other branch too, where a real survivor would hide.
+      - The window test oracles keep `age < window` where the models keep
+        `≤` (test_window.py:219, ewcov.rs, ewridge.rs, marginal.rs tests).
+      - `po.sim` in the API snapshot; FTRL's `zz < 0` equivalent mutant
+        recorded.
+      - The suite at the Polars floor, 1.34.0 (last run 2026-09-02); the
+        Linux CLI binaries' glibc floor before GitHub's Ubuntu 26 runners
+        (2026-10-19).
+      - The release comparison against 0.10.0 again (the CHANGELOG's figure
+        predates tasks 102 and 103); the version (RELEASE-READINESS.md:150's
+        places, both locks); the CHANGELOG promoted; the README's pin.
+      - *Decision, the schema:* keep the loaders for 14 and 15 that the
+        CHANGELOG promises (recommended, with a test that loads a state
+        written by the released 0.10.0 wheel), or raise the minimum to 16.
+      - *Optional:* S6, the stream's persisted fields as one sub-struct,
+        cheapest while schema 16 is unreleased.
+      - *Recommended:* task 105 in this release, the one breaking change
+        queued, so the API breaks once.
+      - Then the user's: fast-forward `main` and push (the first CI on
+        Linux 3.13/3.14, macOS 3.14 and Windows; the Mutants job will likely
+        time out on a 3,700-line diff and does not gate a release), the
+        rehearsal, the tag, the upload's approval; then a clean-venv install.
+
+- [ ] 110. **This week's review leftovers, as tests.** S. Held-value tests
+      for `ew_class` and `hmm`; weight-0 rows for `bocpd`, `deco` and `hmm`;
+      each model's state saved before the low parts, loaded; `ew_class`'s
+      window reading a held feature; two targets under pairwise gaps with a
+      held feature (task 101's review).
+
+- [ ] 111. **The model contract, checked where it is only listed.** S–M.
+      EXTENDING's checklist misses four places a test checks (`BUILDERS`,
+      the OUTPUTS meanings, llms.txt's count, the README's API lines);
+      `ewridge`, `sgd` and `kalman` lack a wrong-shape refusal test; the
+      bit-flip fuzz covers one spec; the save/load and realized-struct
+      sweeps cover the regressions only; lists kept by hand stand in for
+      checks (test_bank.py:330, test_coef.py:114-141).
+
+- [ ] 112. **Older review items that need no decision.** S each. C16's raw
+      oracles; C21's r2 and coverage under a delay; S23's docs; D9, the dead
+      `LassoCfg::combo_labels`; REVIEW-2026-09-18 §6 (a constant column in
+      `deco`, `bocpd`'s 1e5-row truncation and its gaussian at d ≥ 3); T2's
+      roll call on real states (4 of 20 kinds); U5, a Decimal parquet
+      through the CLI (its test went with task 83); REGIMES: `hmm` through a
+      regime switch, `deco` and `rcov` experiments, WKD's size at t5, the
+      Epps sweep that ends at its best point; PERFORMANCE: the measurements
+      owed (prefetch limits, §19's state sizes, §21's trivial scan, task
+      101's cost) and a re-run of its timings.
+
+- [ ] 113. **CI and tooling.** S–M. S7, one composite action for the Linux
+      prep step (five copies now); a coverage run, and whether Rust coverage
+      joins CI; a fresh mutation baseline and its triage (the weekly job
+      starts 2026-09-27; `lasso` and `ewridge` first); WRITING's step-5
+      structure checks as a script.
+
+- [ ] 114. **Four formulas checked against their papers.** S–M; needs the
+      papers (none is in `.cache/research/papers`). WKD 2012's Bartlett
+      kernel (`corrchange` weights lag `l` by `1 − l/(γ+1)`; the transcription
+      reads `1 − l/γ`; a change moves `corrchange`'s goldens); CKP 2010 §3's
+      exponent for `rcov`'s `psd` window; ABK 2023's robust posterior for
+      `bocpd` (*decision if `robust`'s numbers move, or it becomes a new
+      name*); Wied & Galeano 2013's sequential detector (paywalled; *a new
+      `corrchange` kind, a decision*).
+
+- [ ] 115. **Decisions on behaviour that is built.** Each is S–M once
+      decided; the evidence goes with it. (a) `share_p`: VALIDATION §4 shows
+      sharing better on both targets, and this plan keeps `False` because it
+      hurt one — re-measure, then decide. (b) The solve cadence by
+      accumulated weight: `halflife=1e12` solves once (a state field; the
+      next schema bump). (c) §12: a weight-0 row after the decay underflows
+      keeps the history, where `decay(0)` forgets it (recommended: forget)
+      — *a clock gap: reviewed with task 120*. (d) Task 80's raised calls: the
+      256 MiB window budget; a budget-refused bank refusing every later
+      call; C24 part 2, `ftrl`'s penalties under a halflife; S30, `holt`
+      with no level-only mode; S31, `n_eff` counting rows with a null target
+      in `ftrl`, `pa` and `sgd` (hard rule 8). (e) The 2026-09-12 review's
+      sign-offs (P4's calls; decisions 1, 3, 4 and 5; D1's caveat to rule
+      5) and REVIEW-2026-09-18's unrecorded S1, D2 and B7. (f) S18, Bartlett
+      weights for `serial_rule`; S19, windowed target moments; C18, a
+      windowed lag ring — record as tasks or decline. (g) C8, the CLI's
+      NDJSON on the system allocator: write it from one thread (the
+      mimalloc option is parked with the new libraries).
+
+- [ ] 116. **Readiness beyond `ewridge`** (WARMUP-AND-CONVERGENCE §7). M–L;
+      defaults move, so *the scope is the user's*. A readiness statistic for
+      `rls`, `kalman`, `lasso` and the scalar EW models; `support_coef` for
+      `lasso`, `ew_cov` and the robust models; `n_eff_settled` in the
+      summary; a warning where `min_periods` can never be met; the
+      inflation notice's halflife figure; §7.1's coefficient standard errors
+      and CUSUM, with drift fed `|w_t|/σ̂`; §7.7's flicker; §7.9's CLI
+      closing count.
+
+- [ ] 117. **Python versions.** S–L. A 3.15 CI leg when it ships (October;
+      recommended); free-threaded builds (non-`abi3` wheels; not yet); a
+      floor below 3.12 (no).
+
+- [ ] 118. **Ideas waiting on a need** — kept so they are not lost; none is
+      to be built without one, *each the user's call*: `log_loss` in
+      `eval.sums`; the data summary stored column-wise, and an opt-out;
+      `gram_block_rows` on `lasso`; an O(k) simplex projection; square-root-
+      free Givens for `rls`; `sgd`'s iterate average; cohesion-gated
+      re-placement in `kmeans`; boosted trees (after the real-data trial of
+      BOOSTED-TREES §8); in clustering a second pass, DBSCAN over a retained
+      sample, k chosen by EW SSQ, clusterwise regression, the prototyped
+      clusterers; BEYOND-O-STATE's B3 (frequent directions), B4 (a
+      fixed-lag smoother), B5 (multi-lag residual checks) and a stated
+      memory bound (`label_delay`'s buffer is uncapped); state as data and
+      `save_state=callable`; E63's `weight_from`; a docstring pass under
+      WRITING (L).
+
+- [ ] 119. **Housekeeping.** S; *the user's call*. The 13 remote branches
+      merged into `origin/main` (three point at release tags) and about 40
+      local branches, all merged.
+
+- [ ] 120. **Rows out of order and clocks that go back: what an audit of
+      2026-09-25 found. Needs extra review before any of it is built (the
+      user, 2026-09-25).** One read-only audit traced every mechanism that
+      detects or absorbs disorder — `on_clock_reset` in `ClockState::advance`,
+      `min_backwards_jump`'s chunk pre-check, sessions, the query check, the
+      per-group clock, `group_close="monotone"`'s key check, `label_delay`'s
+      release, the summary's `clock_backwards`, `refresh_time` and `embargo`
+      — and the two findings marked *reproduced* were run on the build
+      (scripts in the session's scratchpad, not in the repository).
+      - **An infinite cap turns a clock step back into an infinite step —
+        CONFIRMED, reproduced.** Under `max_dclock=inf` the order check is
+        off by default, and `"max"` hands the models a step of `+inf`
+        (clock.rs:356-362, 398). `holt` predicts null on every row after
+        the step, for good (0·inf in its level and trend, holt.rs:208-235);
+        `kalman`, `ewridge` with or without `label_delay` keep a non-finite
+        value in their state, which the JSON export refuses (`decay_time`
+        and `settled_frac`, stream.rs:3686; `pending_clock` inf − inf,
+        3689-3691); the readiness warning then claims every prediction is
+        withheld for good while later rows still predict. `session_gap=inf`
+        under an infinite cap does the same. REVIEW-2026-09-18 V2 raised it
+        and closed it because `max_dclock` is required — which `inf` meets.
+        Input: `clock="t"`, `max_dclock=inf`, t = 0, 1, 2, 3, 1, 2, 3, 4.
+        test_clock_order.py:152-155 accepts this pattern for `ewridge` and
+        checks only the row count.
+      - **A minimum equal to the clock's smallest step never fires —
+        CONFIRMED, reproduced.** The comparison is strict (clock.rs:346)
+        and the "would never fire" refusal tests `v < tick` (arrow.rs:595):
+        a `Date` clock with `max_dclock="1d"` absorbs the days 1, 3, 2
+        silently, where `"2d"` refuses the same stream. Its refusal message
+        reports the step in seconds (`86400`), not as a duration.
+      - `max_dclock=0` turns the check off by default too (spec.rs:2065-2071);
+        the README names only `inf` (CONFIRMED).
+      - V14's test was never written: nothing steps the clock back at a
+        session change with `session_gap` unset (clock.rs:325-328) (moved
+        here from task 112).
+      - Chunk invariance with a step back that a policy absorbs is untested:
+        the property generators make forward clocks only, though
+        test_properties.py:4 says otherwise; one chunk boundary is tested,
+        and a refusal whose earlier row sits in the previous chunk only
+        under `"error"`.
+      - Docs and comments that contradict the code: PLAN:202-203 and
+        ENHANCEMENTS:41 ("errors loudly"); bank.rs:528, 2698-2700, 2842-2847
+        and stream.rs:2334, 2393, which call the pre-check `"error"`-only;
+        ARROW-SOURCES:601-604, 684-686 (out-of-order rows refused — only
+        small steps are); README:2703; WARMUP:582; "jitter check" in test
+        comments.
+      - An error's row number counts from the start of the chunk in the plan
+        form, the CLI and `refresh_time` (_frame.py:648-651, runner.rs:763,
+        refresh.rs:247), where the README implies the input row.
+      - Resuming onto input that overlaps the saved state learns it twice:
+        the rerun's first row is at least `max_dclock` behind, and `"max"`
+        absorbs the step silently; STATE-WORKFLOW says nothing of it.
+      - PLAUSIBLE: the query check takes any `Sort` as fixing the order
+        (_frame.py:325-326), but `sort` without `maintain_order` leaves ties
+        unordered and equal clocks pass the clock check; `embargo` merges
+        by clock alone, so it needs the global clock order where a stream
+        needs each group's, and its docstring says "as a stream must be";
+        `refresh_time` casts the clock to f64 (refresh.rs:228), so on a
+        `Datetime(ns)` a step back of under 256 ns can round to a tie.
+
+      **The planned work that touches this area**, all designed before
+      `min_backwards_jump` existed (2026-09-20), none of which mentions it:
+      task 106 (its premise, "we can't tell which, so we assume a session
+      break", is now settled for small steps; the check must run before the
+      conversion; it inherits the infinite-cap finding, since its default
+      `session_gap` would be the cap); task 78's column form (it closes
+      every window at a step back in any group, where the bank checks each
+      group; `advance` records the new clock even when it refuses, so the
+      window core must work on a copy and commit it; an IO source that
+      refuses mid-stream has already emitted rows); task 104's parity tests
+      (their streams must step back by at least the cap or switch the check
+      off); task 105 (one vocabulary run by the same clock code, and
+      `load_state` on `refresh_time`, imply an exact temporal clock there
+      and a saved last time per group, checked on resume, which no sub-task
+      owns).
+
+      **Questions to settle before building**, each with its trade-off:
+      1. Does task 106 keep refusing jumps smaller than `min_backwards_jump`
+         and make only larger ones session changes? That keeps 0.9.0's loud
+         refusal and narrows the rule of 2026-09-11.
+      2. What does `clock_backwards` count after 106? Keeping it needs a flag
+         of its own; folding it into `session_changes` loses the "disorder
+         the settings let through" signal the README promises.
+      3. Does `predict` treat a row behind the last learned clock as a
+         session change? It would match `fit_predict`, but under
+         `group_close="session"` rows the bank has learned would score null.
+      4. What step does a backward clock take under an infinite cap: a
+         reset, a refusal, or a finite default? A refusal breaks a
+         documented setting; today it poisons `holt` and `kalman`.
+      5. May `group_close="session"` close twice inside one session value?
+         That writes two closed rows for one (group, session).
+      6. Does the column form apply the disorder rule per group, per stream,
+         or not at all? Per stream refuses feeds slightly out of order across
+         groups; not at all gives silent partial windows.
+      7. A minimum equal to the clock's step: refuse the setting, or document
+         that the check cannot fire? Refusing breaks a setup the tests use.
+      8. Is switching the check off under `max_dclock=0` intended?
+      9. Does resuming refuse a first row more than the cap behind the saved
+         clock, or do the docs only warn? A real restart and an accidental
+         rerun look the same to the bank.
+      10. For 106 and 104: the planned loaders for old states are obsolete
+          (the pre-1.0 waiver of 2026-09-14): confirm.
+
+**Parked by the user on 2026-09-25: integration with new libraries, and
+Arrow.** Nothing here is to be built until the user lifts it:
+- Task 86's Arrow import (`fit_predict_capsule`, `Bank::fit_predict_stream`)
+  — unblocked since 2026-09-22, waiting by choice, not on a blocker.
+- The Arrow tests still open: capsules dropped unread in the leak check,
+  counting batches to show a reader streams, input in several chunks.
+- ARROW-SOURCES' follow-ups: pandas conformance, the SQL order guidance,
+  ADBC on Postgres, DuckDB's memory growth, the unmeasured producers, and
+  the DataFusion spike for the CLI.
+- New libraries in tests: scikit-learn as a live oracle (T-S4 and the rest
+  of the second opinions, the measurements that need it), Pathway (BSL),
+  Rust proptest (T-D2).
+- C8's mimalloc option (a new statically linked library, rule 12).
+- Reports to other projects, which wait on the user in any case: pyarrow
+  25.0.1's cast bug (pinned by a test), river's `EpsilonInsensitiveHinge`,
+  the Polars patch and its report (parked since 2026-09-22).
 
 ## 11a. Decisions made while implementing
 
