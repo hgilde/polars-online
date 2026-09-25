@@ -2690,6 +2690,54 @@ mod tests {
         }
     }
 
+    /// A row of weight 0 takes no step in any mean, to the bit: the Gram's,
+    /// the cross-moments' feature and target means, and the target moments'
+    /// (`crate::comp::add` says why a zero step would move a pair). The rows
+    /// 0.7 and 5.292162135665459 at unit weight and no decay leave each mean
+    /// with a low part of a whole rounding step, where adding zero would
+    /// round the double up.
+    #[test]
+    fn a_row_of_no_weight_leaves_every_mean_as_it_was() {
+        let mut c = cfg(1, 1);
+        c.decay = Decay::Halflife(f64::INFINITY);
+        c.min_periods = 1.0;
+        let mut m = EwRidge::new(c).unwrap();
+        for v in [0.7, 5.292162135665459] {
+            m.step(&[v], &[Some(v)], 1.0, 1.0);
+        }
+        let cross = &m.acc.cross;
+        assert_eq!(cross.m[1], 2.996081067832729, "the fixture");
+        assert_eq!(
+            cross.m_lo[1], 4.440892098500626e-16,
+            "a whole step below the double"
+        );
+        let before = (
+            cross.m.clone(),
+            cross.my.clone(),
+            m.acc.tm.means().to_vec(),
+            m.acc
+                .grams
+                .grams
+                .iter()
+                .map(|g| g.means().to_vec())
+                .collect::<Vec<_>>(),
+        );
+        m.step(&[1.0], &[Some(1.0)], 1.0, 0.0);
+        let cross = &m.acc.cross;
+        let after = (
+            cross.m.clone(),
+            cross.my.clone(),
+            m.acc.tm.means().to_vec(),
+            m.acc
+                .grams
+                .grams
+                .iter()
+                .map(|g| g.means().to_vec())
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(after, before);
+    }
+
     #[test]
     fn blend_before_any_data_is_a_no_op() {
         // The other half of the doc comment's promise: a no-op when the twin

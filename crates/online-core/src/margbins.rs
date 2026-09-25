@@ -99,6 +99,13 @@ pub struct MarginalBins {
     /// every weight to zero. Decay is a no-op while this holds (see
     /// [`Self::decay`]), so `scale` is `1` whenever it is set.
     empty: bool,
+    /// What each bin's `mean` leaves out: a pair no step is rounded off
+    /// ([`crate::comp`]; docs/PLAN.md task 101). A plain mean given one
+    /// target value row after row stopped short of it, and left `m2` fed the
+    /// gap and the split gain on a ratio of rounding artefacts. Empty in a
+    /// state written before it.
+    #[serde(default)]
+    mean_lo: Vec<f64>,
 }
 
 /// One bin's target moments, decayed to now.
@@ -160,6 +167,7 @@ impl MarginalBins {
             m2: vec![0.0; cells],
             scale: 1.0,
             empty: true,
+            mean_lo: vec![0.0; cells],
         })
     }
 
@@ -248,6 +256,7 @@ impl MarginalBins {
         }
         let u = w / self.scale;
         let block = t * self.off[self.p];
+        let cells = self.w.len();
         for (j, xj) in x.iter().enumerate().take(self.p) {
             let Some(b) = Self::bin_of(&self.edges[j], *xj) else {
                 continue;
@@ -261,13 +270,14 @@ impl MarginalBins {
                 self.w[i] = u;
                 self.mean[i] = y;
                 self.m2[i] = 0.0;
+                *crate::comp::lo_slot(&mut self.mean_lo, cells, i) = 0.0;
                 continue;
             }
             let wb = self.w[i] + u;
-            let delta = y - self.mean[i];
-            let mean = self.mean[i] + delta * (u / wb);
-            self.m2[i] += u * delta * (y - mean);
-            self.mean[i] = mean;
+            let lo = crate::comp::lo_slot(&mut self.mean_lo, cells, i);
+            let delta = crate::comp::dev(y, self.mean[i], *lo);
+            crate::comp::add(&mut self.mean[i], lo, delta * (u / wb));
+            self.m2[i] += u * delta * crate::comp::dev(y, self.mean[i], *lo);
             self.w[i] = wb;
         }
     }

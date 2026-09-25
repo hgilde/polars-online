@@ -450,8 +450,8 @@ impl EwClass {
                         continue;
                     }
                     let cov = &classes[c];
-                    for (d, (xi, mi)) in delta.iter_mut().zip(x.iter().zip(cov.means())) {
-                        *d = xi - mi;
+                    for (i, (d, &xi)) in delta.iter_mut().zip(x).enumerate() {
+                        *d = cov.deviation(i, xi);
                     }
                     let fresh;
                     let factor = match factors.as_deref_mut() {
@@ -493,8 +493,8 @@ impl EwClass {
                 }
                 let mut deltas = vec![0.0; k * seen.len()];
                 for (j, &c) in seen.iter().enumerate() {
-                    for (i, (xi, mi)) in x.iter().zip(classes[c].means()).enumerate() {
-                        deltas[j * k + i] = xi - mi;
+                    for (i, &xi) in x.iter().enumerate() {
+                        deltas[j * k + i] = classes[c].deviation(i, xi);
                     }
                 }
                 match quad_forms_logdet(&m, &deltas, k, seen.len()) {
@@ -520,7 +520,7 @@ impl EwClass {
                     let mut q = 0.0;
                     for (i, xi) in x.iter().enumerate() {
                         let v = cov.var(i) + ridge;
-                        let d = xi - cov.mean(i);
+                        let d = cov.deviation(i, *xi);
                         log_det += v.ln();
                         q += d * d / v;
                     }

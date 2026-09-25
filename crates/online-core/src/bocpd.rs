@@ -310,6 +310,13 @@ struct Run {
     /// The weighted scatter `Σ w·(x − x̄)(x − x̄)'`: `d*d` for `gaussian`, the
     /// diagonal (`d`) otherwise.
     m2: Vec<f64>,
+    /// What each `mean` leaves out: the mean is a pair no step is rounded
+    /// off ([`crate::comp`]; docs/PLAN.md task 101). A run's mean steps by
+    /// `w/n`, with no decay, and a plain one given one value row after row
+    /// stopped a gap short of it that grows with the run, feeding the scatter
+    /// that gap's square on every row. Empty in a state written before it.
+    #[serde(default)]
+    mean_lo: Vec<f64>,
 }
 
 impl Run {
@@ -319,6 +326,7 @@ impl Run {
             n: 0.0,
             mean: vec![0.0; d],
             m2: vec![0.0; if full { d * d } else { d }],
+            mean_lo: vec![0.0; d],
         }
     }
 
@@ -335,14 +343,20 @@ impl Run {
             return;
         }
         let (b, c) = (w / n_new, w * self.n / n_new);
+        if self.mean_lo.len() != d {
+            self.mean_lo = vec![0.0; d];
+        }
+        // Deviations from the means as the pairs they are.
+        let (mean, lo) = (&self.mean, &self.mean_lo);
+        let dev = |i: usize| crate::comp::dev(x[i], mean[i], lo[i]);
         if full {
             // The upper triangle, mirrored, so the scatter stays symmetric
             // to the bit.
-            let (mean, m2) = (&self.mean, &mut self.m2);
-            for (i, (xi, mi)) in x.iter().zip(mean).enumerate() {
-                let ci = c * (xi - mi);
-                for (j, (xj, mj)) in x.iter().zip(mean).enumerate().skip(i) {
-                    let v = ci * (xj - mj);
+            let m2 = &mut self.m2;
+            for i in 0..d {
+                let ci = c * dev(i);
+                for j in i..d {
+                    let v = ci * dev(j);
                     m2[i * d + j] += v;
                     if j != i {
                         m2[j * d + i] += v;
@@ -350,13 +364,14 @@ impl Run {
                 }
             }
         } else {
-            for ((s, m), xi) in self.m2.iter_mut().zip(&self.mean).zip(x) {
-                let di = xi - m;
+            for (i, s) in self.m2.iter_mut().enumerate() {
+                let di = dev(i);
                 *s += c * di * di;
             }
         }
-        for (m, xi) in self.mean.iter_mut().zip(x) {
-            *m += b * (xi - *m);
+        for ((m, lo), &xi) in self.mean.iter_mut().zip(self.mean_lo.iter_mut()).zip(x) {
+            let di = crate::comp::dev(xi, *m, *lo);
+            crate::comp::add(m, lo, b * di);
         }
         self.n = n_new;
     }
@@ -844,6 +859,40 @@ mod tests {
         }
     }
     use crate::OnlineModel;
+
+    /// A run's mean steps by `w/n` with no decay, and a plain one given one
+    /// value row after row stops where its step rounds to nothing: at a
+    /// level of 1e12, hundreds of rounding steps short of the exact mean
+    /// after 5,300 rows (docs/PLAN.md task 101). As a pair it stays within
+    /// two. Dyadic values make the exact mean's numerator an integer.
+    #[test]
+    fn a_run_given_one_value_follows_exact_arithmetic() {
+        let level = 1e12;
+        let mut run = Run::new(1, false);
+        let (mut plain, mut n, mut eighths) = (0.0, 0.0, 0u64);
+        for i in 0..5_300u64 {
+            let e = if i < 300 { (i * 7919) % 8 } else { 3 };
+            let x = level + e as f64 / 8.0;
+            eighths += e;
+            run.add(&[x], 1.0, false);
+            n += 1.0;
+            plain += (x - plain) / n;
+        }
+        let want = level + eighths as f64 / (8.0 * n);
+        let step = f64::from_bits(want.to_bits() + 1) - want;
+        let steps = |m: f64| (m - want).abs() / step;
+        assert!(
+            steps(plain) > 100.0,
+            "the plain mean is close; no case: {} steps",
+            steps(plain)
+        );
+        assert!(
+            steps(run.mean[0]) <= 2.0,
+            "{} against {want}: {} steps",
+            run.mean[0],
+            steps(run.mean[0])
+        );
+    }
 
     fn cfg(d: usize) -> BocpdCfg {
         BocpdCfg {

@@ -91,6 +91,13 @@ pub(crate) struct Cross {
     pub(crate) d: Vec<Vec<f64>>,
     pub(crate) my: Vec<f64>,
     pub(crate) c: Vec<Vec<f64>>,
+    /// What `m` and `my` leave out: each mean is a pair no step is rounded
+    /// off ([`crate::comp`]; docs/PLAN.md task 101), as a Gram's means are.
+    /// Empty in a state written before them.
+    #[serde(default)]
+    pub(crate) m_lo: Vec<f64>,
+    #[serde(default)]
+    pub(crate) my_lo: Vec<f64>,
 }
 
 impl Cross {
@@ -101,6 +108,8 @@ impl Cross {
             d: vec![vec![0.0; k]; n_targets],
             my: vec![0.0; n_targets],
             c: vec![vec![0.0; k]; n_targets],
+            m_lo: vec![0.0; k],
+            my_lo: vec![0.0; n_targets],
         }
     }
 
@@ -125,15 +134,27 @@ impl Cross {
     /// both exactly. The deviations are from the means before the row, so
     /// this comes before [`Cross::advance`].
     pub(crate) fn learn(&mut self, j: usize, z: &[f64], y: f64, aj: f64, bj: f64, b: f64) {
-        let dy = y - self.my[j];
+        use crate::comp::{add, dev, lo_of, lo_slot};
+        let dy = dev(y, self.my[j], lo_of(&self.my_lo, j));
         let ab_dy = aj * bj * dy;
         let (d, c) = (&mut self.d[j], &mut self.c[j]);
-        for (((dji, cji), &zi), &mi) in d.iter_mut().zip(c.iter_mut()).zip(z).zip(&self.m) {
-            let u = zi - mi;
+        let m_lo = &self.m_lo;
+        for (i, (((dji, cji), &zi), &mi)) in d
+            .iter_mut()
+            .zip(c.iter_mut())
+            .zip(z)
+            .zip(&self.m)
+            .enumerate()
+        {
+            let u = dev(zi, mi, lo_of(m_lo, i));
             *cji = aj * *cji + ab_dy * (u - *dji);
             *dji = (1.0 - bj) * *dji + (bj - b) * u;
         }
-        self.my[j] += bj * dy;
+        let n = self.my.len();
+        // A row of weight 0 takes no step (`crate::comp::add` says why).
+        if bj > 0.0 {
+            add(&mut self.my[j], lo_slot(&mut self.my_lo, n, j), bj * dy);
+        }
     }
 
     /// Target `j` absent from a row -- null, or nothing to learn from -- that
@@ -141,8 +162,9 @@ impl Cross {
     /// takes the step back.
     pub(crate) fn miss(&mut self, j: usize, z: &[f64], b: f64) {
         if b > 0.0 {
-            for ((dji, &zi), &mi) in self.d[j].iter_mut().zip(z).zip(&self.m) {
-                *dji -= b * (zi - mi);
+            let m_lo = &self.m_lo;
+            for (i, ((dji, &zi), &mi)) in self.d[j].iter_mut().zip(z).zip(&self.m).enumerate() {
+                *dji -= b * crate::comp::dev(zi, mi, crate::comp::lo_of(m_lo, i));
             }
         }
     }
@@ -152,8 +174,11 @@ impl Cross {
     /// of a row that would leave no weight at all.
     pub(crate) fn advance(&mut self, z: &[f64], lam: f64, w: f64, b: f64) {
         if b > 0.0 {
-            for (mi, &zi) in self.m.iter_mut().zip(z) {
-                *mi += b * (zi - *mi);
+            use crate::comp::{add, dev, lo_of, lo_slot};
+            let k = self.m.len();
+            for (i, (mi, &zi)) in self.m.iter_mut().zip(z).enumerate() {
+                let u = dev(zi, *mi, lo_of(&self.m_lo, i));
+                add(mi, lo_slot(&mut self.m_lo, k, i), b * u);
             }
         }
         let w_new = lam * self.w + w;
@@ -202,10 +227,14 @@ impl Cross {
                 *d = aj * *d + bj * od + (bj - b) * dmi;
             }
             self.my[j] = aj * self.my[j] + bj * other.my[j];
+            let n = self.my.len();
+            *crate::comp::lo_slot(&mut self.my_lo, n, j) = 0.0;
         }
         for (m, om) in self.m.iter_mut().zip(&other.m) {
             *m = a * *m + b * om;
         }
+        // The mixed means are doubles, with nothing left out of them.
+        self.m_lo = vec![0.0; self.m.len()];
         self.w = w_new;
     }
 

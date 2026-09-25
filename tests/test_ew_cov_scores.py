@@ -51,15 +51,19 @@ def replay(X, lam, w, *, prior, accepted=None):
     """Replay `EwCov::update` row by row and return, per row, the state
     *before* the row: (means, centred co-moments, precision_scale, w_sum).
 
-    The Welford form, in the crate's operation order:
+    The Welford form, in the crate's operation order, with each mean the
+    pair `m + lo` whose steps no rounding drops (docs/PLAN.md task 101):
         w_new = lam*w_sum + w;  a = lam*w_sum/w_new;  b = w/w_new
-        c_ij  = a*c_ij + a*b*d_i*d_j        (d = x - m, the OLD mean)
-        m    += b*(x - m)
+        d     = (x - m) - lo                 (the deviation from the OLD pair)
+        c_ij  = a*c_ij + a*b*d_i*d_j
+        y = b*d + lo;  t = m + y;  lo = y - (t - m);  m = t
         precision_scale = 1 if a <= 0 else precision_scale*a
-    A skipped row (`accepted` false) leaves the state alone.
+    A skipped row (`accepted` false) leaves the state alone. The means
+    returned are the pairs' doubles, `m`, as the crate reports them.
     """
     n, k = X.shape
     m = np.zeros(k)
+    lo = np.zeros(k)
     c = np.zeros((k, k))
     w_sum = 0.0
     scale = 1.0
@@ -74,11 +78,14 @@ def replay(X, lam, w, *, prior, accepted=None):
             continue
         a = lam[i] * w_sum / w_new
         b = w[i] / w_new
-        d = X[i] - m
+        d = (X[i] - m) - lo
         for r in range(k):
             for s in range(k):
                 c[r, s] = a * c[r, s] + a * b * d[r] * d[s]
-        m = m + b * (X[i] - m)
+        y = b * d + lo
+        t = m + y
+        lo = y - (t - m)
+        m = t
         scale = 1.0 if a <= 0.0 else scale * a
         w_sum = w_new
     return states

@@ -134,6 +134,7 @@ T-A4).
 | [hard rule 1](#hard-rule-1-is-enforced-not-remembered) | `tests/test_repo_hygiene.py` | no data file, large file or generated output is tracked |
 | [the examples](#examples-are-executed) | `tests/test_examples.py` | everything under `examples/` runs unmodified |
 | [memory and crash safety](#ffi-memory-and-crash-safety-2026-08-31) | `tests/test_ffi_memory.py`, `scripts/leakcheck.sh` | no leak and no crash across the FFI |
+| a stopped feature or target (2026-09-24) | `crates/online-core/tests/held_values.rs` | every model that centres a feature or target keeps what exact arithmetic gives for 150 halflives after it stops, at levels from 0 to 1e12 and with no decay: the slope it learned, a spread that keeps decaying, and fits that do not depend on the level. Twelve of its fourteen tests fail with the means plain (docs/PLAN.md task 101); the other two are contracts any design must keep: a row of weight 0 changes nothing, and a state saved part-way resumes to the bit |
 | Arrow with pyarrow (2026-09-24) | `tests/test_pyarrow_interop.py` | pyarrow 25.0.1 reads the Arrow output through `pa.array`, `pa.chunked_array`, `pa.record_batch` and `pa.table` with `fit_predict`'s values and dtypes; a reader streams into a bank with the whole frame's numbers. pyarrow is a test-only dependency: `tests/conftest.py` makes it unimportable in the rest of the suite, which so runs as a user without it does |
 
 #### Production hardening round 3 (vs river's own battery)
@@ -269,6 +270,8 @@ computed field is still bit-identical.
 | the lasso's `lam_selected` under a `window` read errors outside it, four ways | the same oracles, then a Rust one | docs/PLAN.md task 95 |
 | `holt` reported `coef` as `[0, 0]` before a target's first observation | the same oracles | docs/PLAN.md task 97 |
 | a CLI test skipped on Windows for want of `online.exe`, and wrote Windows paths into a TOML basic string | reading the first Windows run's skips | docs/PLAN.md task 100 |
+| a feature or target that stops moving: its running mean stopped `1/(2b)` rounding steps short, and every variance and slope centred on it read that gap (a lasso slope of -4.7e3 at a level of 1e8) | measuring task 94's case outside a window | docs/PLAN.md task 101 |
+| a windowed `marginal` pair kept task 94's remainder for a slot held over the window, and `beta` divided it by itself | the sweep of every running mean for task 101 | docs/PLAN.md task 101 |
 
 ### Differences from river that are not bugs
 

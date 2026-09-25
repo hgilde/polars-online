@@ -133,6 +133,12 @@ pub struct EwAutoCorr {
     /// EW second moments of (x_t, x_{t-lag}) around their shared mean.
     var: f64,
     cross: f64,
+    /// What `mean` leaves out: the mean is a pair no step is rounded off
+    /// ([`crate::comp`]; docs/PLAN.md task 101). A plain mean given one value
+    /// row after row stopped short of it, fed `var` and `cross` the gap's
+    /// square, and took their ratio to 1.
+    #[serde(default)]
+    mean_lo: f64,
 }
 
 impl EwAutoCorr {
@@ -147,6 +153,7 @@ impl EwAutoCorr {
             mean: 0.0,
             var: 0.0,
             cross: 0.0,
+            mean_lo: 0.0,
         })
     }
 
@@ -182,15 +189,16 @@ impl EwAutoCorr {
 
         let w_new = lam * self.w + 1.0;
         let (a, b) = (lam * self.w / w_new, 1.0 / w_new);
-        let d = x - self.mean;
+        let d = crate::comp::dev(x, self.mean, self.mean_lo);
         self.var = a * self.var + a * b * d * d;
         if self.buf.len() == self.lag + 1 {
             let lagged = self.buf[0];
-            self.cross = a * self.cross + a * b * d * (lagged - self.mean);
+            self.cross =
+                a * self.cross + a * b * d * crate::comp::dev(lagged, self.mean, self.mean_lo);
         } else {
             self.cross *= a;
         }
-        self.mean += b * d;
+        crate::comp::add(&mut self.mean, &mut self.mean_lo, b * d);
         self.w = w_new;
     }
 }
@@ -525,6 +533,34 @@ mod tests {
             got > 0.6,
             "AR(1) phi=0.8 should show strong lag-1, got {got}"
         );
+    }
+
+    /// A series that stops moving: its mean is a pair ([`crate::comp`];
+    /// docs/PLAN.md task 101), so `var` and `cross` decay with their history
+    /// and their ratio stays where the hold's first halflives left it -- the
+    /// held value's offset from the mean reads as persistence for those, in
+    /// exact arithmetic too. A plain mean stopped short fed both the gap's
+    /// square, and the ratio went to 1. Read at 5 halflives, before the
+    /// stall at every level here, and at 150.
+    #[test]
+    fn a_held_series_keeps_its_autocorrelation() {
+        for level in [0.5, 1e8, -1e8, 1e12] {
+            let mut ac = EwAutoCorr::new(1).unwrap();
+            let lam = 0.5f64.powf(1.0 / 20.0);
+            let (mut s, mut u, mut early) = (17u64, 0.0, f64::NAN);
+            for i in 0..3300 {
+                u = 0.5 * u + (lcg(&mut s) - 0.5);
+                ac.update(if i < 300 { level + u } else { level + 0.37 }, lam);
+                if i == 300 + 5 * 20 {
+                    early = ac.get().unwrap();
+                }
+            }
+            let end = ac.get().unwrap();
+            assert!(
+                (end - early).abs() < 0.01,
+                "level {level}: {early} after 5 halflives, {end} after 150"
+            );
+        }
     }
 
     #[test]

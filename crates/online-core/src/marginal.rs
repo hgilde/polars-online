@@ -292,6 +292,23 @@ pub struct Marginal {
     /// reason it gives.
     #[serde(default)]
     bins: Option<Box<Binned>>,
+    /// What each mean in `mx` and `my` leaves out: each is a pair no step
+    /// is rounded off, as `ew_cov`'s are, so the pairs still agree with it to
+    /// the bit ([`crate::comp`]; docs/PLAN.md task 101). Empty in a state
+    /// written before them. Ahead of `win`, which skips and must stay last.
+    #[serde(default)]
+    mx_lo: Vec<f64>,
+    #[serde(default)]
+    my_lo: Vec<f64>,
+    /// Per (target, feature) pair and per target, the value it has held on
+    /// the target's rows since it last changed, and the weight of those rows
+    /// ([`crate::Runs`]): what lets a window say that a slot held one value
+    /// over it, which its subtraction cannot (docs/PLAN.md task 94). Empty in
+    /// a state written before them. Ahead of `win`.
+    #[serde(default)]
+    x_runs: crate::Runs,
+    #[serde(default)]
+    y_runs: crate::Runs,
     /// The hard-cutoff window, when the spec asks for one. Last, for the
     /// reason `MarginalCfg::window` gives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -511,6 +528,10 @@ impl Marginal {
             sxy: vec![0.0; p * t],
             lag,
             bins,
+            mx_lo: vec![0.0; p * t],
+            my_lo: vec![0.0; t],
+            x_runs: crate::Runs::new(p * t),
+            y_runs: crate::Runs::new(t),
             win,
         })
     }
@@ -666,7 +687,23 @@ impl Marginal {
                 ) {
                     (Some((w, mx, _, sxx)), Some((_, my, _, syy)), Some((_, _, _, sxy))) => {
                         let q = (self.qt[t] - f * f * old.qt[t]).max(0.0);
-                        (w, w * w / q, mx, my, sxx.max(0.0), syy.max(0.0), sxy)
+                        let (mut mx, mut my, mut sxx, mut syy, mut sxy) =
+                            (mx, my, sxx.max(0.0), syy.max(0.0), sxy);
+                        // A slot that held one value over every row inside
+                        // the window has no spread there, and the subtraction
+                        // cannot say so; its run can, when the run's weight
+                        // is all of the window's but what the window's own
+                        // weight counts as nothing (`crate::truncated`,
+                        // docs/PLAN.md task 94).
+                        let covers = w - crate::window::EMPTY_FRACTION * self.wt[t];
+                        let (p, n) = (self.cfg.n_features, self.cfg.n_targets);
+                        if let Some(value) = self.x_runs.held_over(n * p, i, covers) {
+                            (mx, sxx, sxy) = (value, 0.0, 0.0);
+                        }
+                        if let Some(value) = self.y_runs.held_over(n, t, covers) {
+                            (my, syy, sxy) = (value, 0.0, 0.0);
+                        }
+                        (w, w * w / q, mx, my, sxx, syy, sxy)
                     }
                     // Nothing inside the window: report nothing, not stale
                     // moments (hard rule 9).
@@ -813,6 +850,7 @@ impl Marginal {
         if w < 0.0 {
             return;
         }
+        self.size_lo();
         let p = self.cfg.n_features;
         let Some(lag) = self.lag.as_mut() else {
             return;
@@ -836,11 +874,36 @@ impl Marginal {
                 yt,
                 crate::PairMix {
                     mx: &self.mx[row..row + p],
+                    mx_lo: &self.mx_lo[row..row + p],
                     my: self.my[t],
+                    my_lo: self.my_lo[t],
                     a: lam * self.wt[t] / w_new,
                     b: w / w_new,
                 },
             );
+        }
+    }
+
+    /// The means' low parts at the means' own lengths, which a state written
+    /// before them does not carry: they start at zero. Here, not per element
+    /// inside the pair loop, whose vectorizing a possible reallocation would
+    /// stop (see `learn_lags`).
+    fn size_lo(&mut self) {
+        if self.mx_lo.len() != self.mx.len() {
+            self.mx_lo = vec![0.0; self.mx.len()];
+        }
+        if self.my_lo.len() != self.my.len() {
+            self.my_lo = vec![0.0; self.my.len()];
+        }
+    }
+
+    /// Target `t`'s run, and its pairs', age by `lam` over a row that does
+    /// not learn the target.
+    fn age_runs(&mut self, t: usize, lam: f64) {
+        let p = self.cfg.n_features;
+        self.y_runs.age_one(t, lam);
+        for i in t * p..(t + 1) * p {
+            self.x_runs.age_one(i, lam);
         }
     }
 
@@ -852,6 +915,7 @@ impl Marginal {
             return;
         }
         let p = self.cfg.n_features;
+        self.size_lo();
         // The model-level weight: every row, present targets or not. A
         // zero-weight first row leaves it at zero, which is legal (rule 9).
         self.w_sum = lam * self.w_sum + w;
@@ -862,6 +926,7 @@ impl Marginal {
                 // target.
                 self.wt[t] *= lam;
                 self.qt[t] *= lam * lam;
+                self.age_runs(t, lam);
                 continue;
             };
             let w_new = lam * self.wt[t] + w;
@@ -874,25 +939,36 @@ impl Marginal {
                 // outlive the gap while the model's does not.
                 self.wt[t] = 0.0;
                 self.qt[t] = 0.0;
+                self.age_runs(t, lam);
                 continue;
             }
             let a = lam * self.wt[t] / w_new;
             let b = w / w_new;
-            let dy = yt - self.my[t];
+            let n_targets = self.cfg.n_targets;
+            self.y_runs.track_one(n_targets, t, yt, lam, w);
+            for (i, &xj) in x.iter().enumerate() {
+                self.x_runs.track_one(n_targets * p, t * p + i, xj, lam, w);
+            }
+            use crate::comp::{add, dev};
+            let dy = dev(yt, self.my[t], self.my_lo[t]);
             // Co-moments from the deviations against the OLD means, then the
             // means advance -- `EwCov::update`'s order, operation for
             // operation, so the pair agrees with `ew_cov` to the bit.
             self.syy[t] = a * self.syy[t] + a * b * dy * dy;
             let row = t * p;
-            for (i, xj) in (row..row + p).zip(x) {
-                let dx = xj - self.mx[i];
+            // A row of weight 0 takes no step (`crate::comp::add` says why).
+            let step = b > 0.0;
+            for (i, &xj) in (row..row + p).zip(x) {
+                let dx = dev(xj, self.mx[i], self.mx_lo[i]);
                 self.sxx[i] = a * self.sxx[i] + a * b * dx * dx;
                 self.sxy[i] = a * self.sxy[i] + a * b * dx * dy;
+                if step {
+                    add(&mut self.mx[i], &mut self.mx_lo[i], b * dx);
+                }
             }
-            for (mi, xj) in self.mx[row..row + p].iter_mut().zip(x) {
-                *mi += b * (xj - *mi);
+            if step {
+                add(&mut self.my[t], &mut self.my_lo[t], b * dy);
             }
-            self.my[t] += b * dy;
             self.wt[t] = w_new;
             self.qt[t] = lam * lam * self.qt[t] + w * w;
         }
@@ -1082,6 +1158,315 @@ mod tests {
         }
     }
 
+    /// A windowed marginal over one stream: feature 0 moves; feature 1 and
+    /// the target are what `x1` and `y` give row `i`; `weight` and `present`
+    /// say how each row is learned.
+    fn windowed_pairs(
+        window: f64,
+        h: f64,
+        n: usize,
+        x1: impl Fn(usize, f64) -> f64,
+        y: impl Fn(usize, f64, f64) -> Option<f64>,
+        weight: impl Fn(usize) -> f64,
+    ) -> Marginal {
+        let mut c = cfg(2, 1);
+        c.decay = Decay::Halflife(h);
+        c.window = Some(window);
+        let mut m = Marginal::new(c).unwrap();
+        let mut s = 11u64;
+        for i in 0..n {
+            let (a, b) = (lcg(&mut s), lcg(&mut s));
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            m.step(&[b, x1(i, a)], &[y(i, a, b)], d, weight(i));
+        }
+        m
+    }
+
+    /// PLAN task 94, for the pairs. A feature, or a target, that holds one
+    /// value over every row inside a window has no spread there, and the
+    /// windowed pair says so exactly: zero variance and covariance, the value
+    /// as its mean, no correlation, and a slope of zero on a target that
+    /// holds. The subtraction left a remainder that grows with the level and
+    /// the rows since the boundary, and `beta` divided it by itself. Found by
+    /// the sweep of every running mean for task 101. The slot that moves
+    /// keeps its spread.
+    #[test]
+    fn a_slot_held_over_the_window_has_no_spread_there() {
+        for level in [0.0, 1e3, 1e6, -1e8] {
+            for (window, h) in [(0.5, 10.0), (9.0, 10.0), (30.0, 8.0), (199.0, 70.0)] {
+                for before in [0usize, 3] {
+                    for held_feature in [true, false] {
+                        let n = 400 + window as usize;
+                        let from = n - 1 - window as usize - before;
+                        let m = windowed_pairs(
+                            window,
+                            h,
+                            n,
+                            |i, a| {
+                                if held_feature && i >= from {
+                                    level + 0.37
+                                } else {
+                                    level + 1e-3 * a
+                                }
+                            },
+                            |i, a, b| {
+                                Some(if !held_feature && i >= from {
+                                    level + 0.25
+                                } else {
+                                    level + 1.0 + 0.5 * a + b
+                                })
+                            },
+                            |_| 1.0,
+                        );
+                        let case = format!(
+                            "level {level}, window {window}, h {h}, from {before} before, \
+                             held feature {held_feature}"
+                        );
+                        let pair = m.pair(0, 1);
+                        assert_eq!(pair.cov, 0.0, "{case}: covariance");
+                        assert!(pair.corr.is_nan(), "{case}: correlation {}", pair.corr);
+                        if held_feature {
+                            assert_eq!(pair.var_x, 0.0, "{case}: variance");
+                            assert_eq!(pair.mean_x, level + 0.37, "{case}: mean");
+                            assert!(pair.beta.is_nan(), "{case}: slope {}", pair.beta);
+                        } else {
+                            assert_eq!(pair.var_y, 0.0, "{case}: variance");
+                            assert_eq!(pair.mean_y, level + 0.25, "{case}: mean");
+                            if window >= 1.0 {
+                                assert_eq!(pair.beta, 0.0, "{case}: slope");
+                            }
+                        }
+                        if window >= 1.0 {
+                            let moving = m.pair(0, 0);
+                            assert!(moving.var_x > 0.0, "{case}: the moving feature's spread");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The window's own weight counts `EMPTY_FRACTION` of the live weight as
+    /// nothing, and so may a run: a boundary row at a weight of 1e-12,
+    /// carrying another value before the run begins, leaves the held
+    /// feature with no spread inside the window.
+    #[test]
+    fn a_boundary_row_of_no_account_does_not_end_a_run() {
+        let (window, n) = (9.0, 300);
+        let boundary = n - 1 - window as usize;
+        let m = windowed_pairs(
+            window,
+            10.0,
+            n,
+            |i, a| match i {
+                _ if i == boundary => 1e3 - 5.0,
+                _ if i > boundary => 1e3 + 0.37,
+                _ => 1e3 + 1e-3 * a,
+            },
+            |_, a, b| Some(1.0 + 0.5 * a + b),
+            |i| if i == boundary { 1e-12 } else { 1.0 },
+        );
+        let pair = m.pair(0, 1);
+        assert_eq!(pair.var_x, 0.0, "a boundary row of no account");
+        assert_eq!(pair.mean_x, 1e3 + 0.37);
+    }
+
+    /// A row without the target ages its runs as it ages its weight, so a run
+    /// that began inside the window is not credited with weight it no longer
+    /// carries: a feature that moved inside the window keeps its spread there
+    /// when the target is present on every other row.
+    #[test]
+    fn a_row_without_the_target_ages_its_runs() {
+        let (window, n) = (30.0, 400);
+        let m = windowed_pairs(
+            window,
+            3.0,
+            n,
+            |i, a| if i >= n - 20 { 1e3 + 0.37 } else { 1e3 + a },
+            |i, a, b| (i % 2 == 0).then_some(1.0 + 0.5 * a + b),
+            |_| 1.0,
+        );
+        let pair = m.pair(0, 1);
+        assert!(
+            pair.var_x > 0.0,
+            "the feature moved inside the window: {}",
+            pair.var_x
+        );
+        assert!(pair.cov != 0.0);
+    }
+
+    /// A window that holds all but 2^-60 of the weight reads what no window
+    /// reads, field for field, to the rounding of the subtraction: the
+    /// weight, Kish's size, the means and the three second moments.
+    #[test]
+    fn a_window_holding_the_weight_reads_what_no_window_does() {
+        let n = 400;
+        let windowed = windowed_pairs(60.0, 1.0, n, |_, a| 3.0 + a, |_, a, b| Some(a - b), |_| 1.0);
+        let mut c = cfg(2, 1);
+        c.decay = Decay::Halflife(1.0);
+        let mut plain = Marginal::new(c).unwrap();
+        let mut s = 11u64;
+        for i in 0..n {
+            let (a, b) = (lcg(&mut s), lcg(&mut s));
+            plain.step(
+                &[b, 3.0 + a],
+                &[Some(a - b)],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        for j in 0..2 {
+            let (w, p) = (windowed.pair(0, j), plain.pair(0, j));
+            for (what, got, want) in [
+                ("n_eff", w.n_eff, p.n_eff),
+                ("n_kish", w.n_kish, p.n_kish),
+                ("mean_x", w.mean_x, p.mean_x),
+                ("mean_y", w.mean_y, p.mean_y),
+                ("var_x", w.var_x, p.var_x),
+                ("var_y", w.var_y, p.var_y),
+                ("cov", w.cov, p.cov),
+            ] {
+                assert!(
+                    (got - want).abs() <= 1e-12 * want.abs().max(1e-300),
+                    "feature {j}: {what} {got} windowed, {want} without"
+                );
+            }
+        }
+    }
+
+    /// A row of weight 0 takes no step in a pair's means, to the bit: the
+    /// rows 0.7 and 5.292162135665459 at unit weight and no decay leave each
+    /// mean with a low part of a whole rounding step, where a zero step would
+    /// round the double up (`crate::comp::add`).
+    #[test]
+    fn a_row_of_no_weight_leaves_the_means_as_they_were() {
+        let mut c = cfg(1, 1);
+        c.decay = Decay::Halflife(f64::INFINITY);
+        let mut m = Marginal::new(c).unwrap();
+        for v in [0.7, 5.292162135665459] {
+            m.step(&[v], &[Some(v)], 1.0, 1.0);
+        }
+        assert_eq!(
+            (m.mx[0], m.my[0]),
+            (2.996081067832729, 2.996081067832729),
+            "the fixture"
+        );
+        assert_eq!(
+            m.mx_lo[0], 4.440892098500626e-16,
+            "a whole step below the double"
+        );
+        m.step(&[1.0], &[Some(1.0)], 1.0, 0.0);
+        assert_eq!((m.mx[0], m.my[0]), (2.996081067832729, 2.996081067832729));
+        assert_eq!(
+            (m.mx_lo[0], m.my_lo[0]),
+            (4.440892098500626e-16, 4.440892098500626e-16)
+        );
+    }
+
+    /// A row without a target ages that target's runs and no other's, over
+    /// its own slots and no other's: two features held over a window, and
+    /// two targets each present on half the rows, so that every pair reads
+    /// its feature as held. A run aged on the wrong rows, or the wrong
+    /// slots, falls short of the window's weight.
+    #[test]
+    fn a_row_without_a_target_ages_that_targets_runs_alone() {
+        let (window, n) = (30.0, 400);
+        let mut c = cfg(2, 2);
+        c.decay = Decay::Halflife(3.0);
+        c.window = Some(window);
+        let mut m = Marginal::new(c).unwrap();
+        let mut s = 13u64;
+        let from = n - 1 - window as usize - 3;
+        for i in 0..n {
+            let (a, b) = (lcg(&mut s), lcg(&mut s));
+            let x = if i >= from {
+                [1e3 + 0.37, 1e3 + 0.25]
+            } else {
+                [1e3 + a, 1e3 + b]
+            };
+            let y = [(i % 2 == 1).then_some(a - b), (i % 2 == 0).then_some(a + b)];
+            m.step(&x, &y, if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        for t in 0..2 {
+            for (j, held) in [1e3 + 0.37, 1e3 + 0.25].into_iter().enumerate() {
+                let pair = m.pair(t, j);
+                assert_eq!(pair.var_x, 0.0, "target {t}, feature {j}: variance");
+                assert_eq!(pair.mean_x, held, "target {t}, feature {j}: mean");
+            }
+        }
+    }
+
+    /// A state written before the means' low parts, and before the runs,
+    /// loads and steps: each starts at the size of what it belongs to.
+    #[test]
+    fn a_state_without_the_low_parts_loads_and_steps() {
+        let mut c = cfg(2, 1);
+        c.window = Some(9.0);
+        let mut m = Marginal::new(c).unwrap();
+        let mut s = 3u64;
+        for i in 0..40 {
+            m.step(
+                &[lcg(&mut s), lcg(&mut s)],
+                &[Some(lcg(&mut s))],
+                if i == 0 { 0.0 } else { 1.0 },
+                1.0,
+            );
+        }
+        let mut old = serde_json::to_value(&m).unwrap();
+        for key in ["mx_lo", "my_lo", "x_runs", "y_runs"] {
+            assert!(old.as_object_mut().unwrap().remove(key).is_some(), "{key}");
+        }
+        let mut back: Marginal = serde_json::from_value(old).unwrap();
+        assert!(back.mx_lo.is_empty() && back.my_lo.is_empty());
+        for i in 0..40 {
+            back.step(&[lcg(&mut s), lcg(&mut s)], &[Some(lcg(&mut s))], 1.0, 1.0);
+            let p = back.pair(0, i % 2);
+            assert!(p.mean_x.is_finite() && p.var_x.is_finite(), "row {i}");
+        }
+        assert_eq!((back.mx_lo.len(), back.my_lo.len()), (2, 1));
+    }
+
+    /// Under a window, Kish's size is `ew_cov`'s over the same rows: the
+    /// same weights, the same `Sum w²`, and the same boundary, so the same
+    /// subtraction.
+    #[test]
+    fn the_windowed_kish_size_is_ew_covs() {
+        let (window, h) = (30.0, 10.0);
+        let mut c = cfg(1, 1);
+        c.decay = Decay::Halflife(h);
+        c.window = Some(window);
+        let mut m = Marginal::new(c).unwrap();
+        let mut ec = EwCovModel::new(EwCovCfg {
+            n_features: 2,
+            decay: Decay::Halflife(h),
+            stats: vec![EwCovStat::Mean],
+            min_periods: 0.0,
+            precision_prior: None,
+            mahal_quantiles: Vec::new(),
+            pca: 0,
+            pca_every: 0,
+            lags: Vec::new(),
+            window: Some(window),
+            window_every: None,
+        })
+        .unwrap();
+        let mut s = 5u64;
+        for i in 0..200 {
+            let (x, y) = (lcg(&mut s), lcg(&mut s));
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            crate::OnlineModel::step(&mut m, &[x], &[Some(y)], d, 1.0);
+            crate::OnlineModel::step(&mut ec, &[x, y], &[], d, 1.0);
+            if i >= 100 {
+                let want = ec.windowed_cov().n_kish().unwrap();
+                let got = m.pair(0, 0).n_kish;
+                assert!(
+                    (got - want).abs() <= 1e-12 * want,
+                    "row {i}: {got} against ew_cov's {want}"
+                );
+            }
+        }
+    }
+
     /// E66 test 1: the lagged moments are `ew_cov(lags=)`'s, to the bit. Both
     /// centre each leg at the pre-row mean and mix with the same `a`/`b`, so
     /// there is no room for them to differ -- and if the two ever drift, one
@@ -1148,6 +1533,71 @@ mod tests {
             );
         }
         assert_eq!(pair.lagcorr_xx.len(), lags.len());
+    }
+
+    /// The identity above for every feature of every target: two of each,
+    /// so a slot read as `t·p + j` is one of four, and `ew_cov` over the
+    /// four columns `[x0, x1, y0, y1]` has each lagged co-moment by index.
+    #[test]
+    fn lagged_pair_moments_are_ew_covs_for_every_feature_and_target() {
+        let lags = vec![1usize, 3];
+        let (p, nt) = (2usize, 2usize);
+        let mut c = cfg(p, nt);
+        c.decay = Decay::Halflife(30.0);
+        c.lags = lags.clone();
+        let mut m = Marginal::new(c).unwrap();
+        let mut ec = EwCovModel::new(EwCovCfg {
+            n_features: p + nt,
+            decay: Decay::Halflife(30.0),
+            stats: vec![EwCovStat::Mean],
+            min_periods: 0.0,
+            precision_prior: None,
+            mahal_quantiles: Vec::new(),
+            pca: 0,
+            pca_every: 0,
+            lags: lags.clone(),
+            window: None,
+            window_every: None,
+        })
+        .unwrap();
+        let mut seed = 23u64;
+        for i in 0..80 {
+            let x0 = lcg(&mut seed) * 2.0;
+            let x1 = lcg(&mut seed) + 0.3 * x0;
+            let y0 = 0.6 * x0 + lcg(&mut seed);
+            let y1 = -0.4 * x1 + lcg(&mut seed);
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            crate::OnlineModel::step(&mut m, &[x0, x1], &[Some(y0), Some(y1)], d, 1.0);
+            crate::OnlineModel::step(&mut ec, &[x0, x1, y0, y1], &[], d, 1.0);
+        }
+        let lag = m.lag.as_ref().unwrap();
+        let want = ec.lag().expect("ew_cov has lags");
+        for li in 0..lags.len() {
+            for t in 0..nt {
+                assert_eq!(
+                    lag.cyy(li, t).to_bits(),
+                    want.get(li, p + t, p + t).to_bits(),
+                    "lag {li}, target {t}: the target's own"
+                );
+                for j in 0..p {
+                    assert_eq!(
+                        lag.cxx(li, t, j).to_bits(),
+                        want.get(li, j, j).to_bits(),
+                        "lag {li}, target {t}, feature {j}: the feature's own"
+                    );
+                    assert_eq!(
+                        lag.cxy(li, t, j).to_bits(),
+                        want.get(li, j, p + t).to_bits(),
+                        "lag {li}, target {t}, feature {j}: x now against y back"
+                    );
+                    assert_eq!(
+                        lag.cyx(li, t, j).to_bits(),
+                        want.get(li, p + t, j).to_bits(),
+                        "lag {li}, target {t}, feature {j}: y now against x back"
+                    );
+                }
+            }
+        }
     }
 
     /// A standard normal from the module's LCG, by Box-Muller.

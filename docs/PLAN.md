@@ -3778,37 +3778,119 @@ note, not a task.
       which has an `.exe` there, and its TOML carried the path's
       backslashes as escapes (T-W3b's trap). It now takes the `online_cli`
       fixture and writes POSIX paths, so it runs on Windows too.
-- [ ] 101. **A feature that stops moving leaves a rounding artifact outside a
+- [x] 101. **A feature that stops moving leaves a rounding artifact outside a
       window, and the standardizing models read it.** Measured 2026-09-24:
       one feature of three holds one value after 300 rows, halflife 20 rows.
       Its running mean approaches the held value until the step rounds to
-      nothing, and stops short. From then the variance and the cross-moment
-      with the target settle on that leftover gap instead of decaying
-      together. The lasso's coefficient on the feature keeps its learned
-      slope, about 0.47 where the truth is 0.5, until the stall, and
-      degenerates after it. At a level of 1000 that is -79 at 50 halflives
-      and -6.4e9 at 100; at 1e8 it starts at about 30 halflives, at 0.5 at
-      about 55. Predictions follow once the coefficient is large enough to
-      lose digits against the intercept: an error of 0.043 to 0.048 after 60
-      halflives, against 0.036. `ewridge` and `huber` with `standardize` do
-      the same. The plain ridge's predictions do not move. `kalman` and `sgd`
-      keep a separate diagonal accumulator with the same recursion.
-      **The fix: snap a stalled mean.** When a row carries the value a
-      feature has held, and the mean's step toward it rounds to nothing,
-      set the mean to that value. The accumulator then follows the exact
-      recursion: the variance and the cross-moment decay together, the
-      standardized value is zero, and the coefficient keeps its learned
-      slope. Prototyped in the Gram's means and the cross-moments' means,
-      nothing changed until the stall: 20.8 halflives at 1e8, 37.8 at
-      1000, 47.8 at 0.5. After it the lasso's coefficient stayed between
-      0.47 and 0.50 to 150 halflives at every level, and the error after
-      60 halflives was 0.036. No state layout change. Rejected: zeroing a
-      feature once its run holds all but `EMPTY_FRACTION` of the weight,
-      which fires at 40 halflives whatever the level (at 1e8 the
-      coefficient had reached 6,085 by then) and reports a slope of 0 where
-      the fit's is 0.5. Still to do: the same change in the diagonal
-      accumulator for `kalman` and `sgd`, and tests at each level. The
-      user's call.
+      nothing, and stops `1/(2b)` rounding steps short. The variance and the
+      cross-moment with the target then settle on that gap instead of
+      decaying together. The lasso's slope on the feature keeps the 0.47 it
+      learned until the stall and degenerates after it: -79 at 50 halflives
+      at a level of 1000, -6.4e9 at 100, and -4.7e3 at 40 at 1e8. `ewridge`
+      and `huber` with `standardize` do the same, and `kalman` and `sgd`
+      predict differently at each level, by up to 0.12. A held target does
+      it too: slopes stuck at 2e-8 at 1e8, a target variance on the gap's
+      square, `marginal`'s correlation at -0.06 where it goes to zero, and
+      its bins' split gain at 0.45.
+      **Built: every running mean is a pair, 2026-09-24**
+      (`crates/online-core/src/comp.rs`). A mean is `hi + lo`, `hi` the
+      double and `lo` what it leaves out. A row's deviation is
+      `(x − hi) − lo`, and the step `b·d` goes into the pair by Kahan's
+      compensated sum, so no part of it is dropped. Where a plain step would
+      round to nothing, `lo` keeps it; the deviation keeps its precision as
+      it shrinks, and the mean follows exact arithmetic to the value. Nothing
+      needs to know that a value is held. The pairs are in `EwCov` and its
+      blocked flush, `EwDiag` and its `including` view (which now hands back
+      the deviation), `TargetMoments`, the gaps accumulator's feature and
+      target means, `robust`'s target means, `marginal`'s pairs, lags and
+      bins, `EwAutoCorr`, `deco`'s level and `bocpd`'s runs. `EwLagCov`,
+      `ewclass` and `hmm` take their deviations from the pairs. A row of
+      weight 0 takes no step: Kahan's sum does not keep `lo` under half a
+      rounding step of `hi`, so adding zero could round the pair afresh, and
+      `label_delay`'s doubled-stream oracle caught it.
+      **Two designs were built first and replaced.** Snapping the mean to
+      the held value at the stall, the fix this entry first proposed, jumped
+      where exact arithmetic still carries the gap. With no decay that gap
+      closes only as `1/n`, and the snap moved `sgd` 8.2e-3 at 1e8 and
+      6.9e-2 at 1e12. Stepping the gap itself toward a value detected as
+      held, `g' = (1 − b)·g`, followed exact arithmetic but needed every mean
+      to know which values were held, and a rule wherever a mean moves by
+      other means. A row of weight 0 found a slot held while carrying another
+      value, and moved the mean to that value less the gap: the ridge then
+      predicted -0.02 where it predicts 2.41. Blends, `robust`'s score steps
+      and the `including` view each needed a rule of their own, and a blocked
+      Gram's slope on a held feature still wandered from -0.45 to 1.71 at a
+      halflife of 5 rows. The user asked whether the idea was as solid as it
+      seemed. The pair was prototyped against it and measured better on
+      every count below.
+      **Measured**, as the worst relative prediction difference between the
+      fit at a level and the same fit at 0.5, pair against the gap design:
+      `sgd` 1.7e-9 at 1e8 and 3.2e-6 at 1e12 from the stop (2.3e-5 and
+      1.7e-3). The regressions stay within one rounding step of the level.
+      With no decay at 1e12, `sgd` falls to 4.5e-10 by row 300,000, where
+      the gap design grew to 1.7e-3, and the ridge's slope stays 0.50–0.52
+      where a plain mean took it to 0.04. A blocked Gram's slope stays inside
+      the row-by-row range at every block size, 0.33–0.65 at a halflife of
+      5 rows in blocks of 16. A held target's slopes decay to 1.35e-45 at
+      every level, 2^-150 of 2.
+      **Cost.** Outputs change in their last bits: 19 of the release
+      comparison's 30 specs, by a median of 3e-16 of the value and at most
+      1.4e-14 (0.11.0 declares it). Seven Python oracles that replayed the
+      plain recursion to the bit replay the pair. Interleaved with HEAD,
+      `EwCov::update` is unchanged at 64 slots; `EwDiag::update` takes 6.0,
+      10.7 and 24 ns a row at 4, 16 and 64 slots, against 5.2, 6.3 and 15.5;
+      and `sgd`'s step 57 ns at 16 features, against 49. `ewridge`'s step is
+      unchanged, its solve dominating.
+      **Found by the sweep of every running mean, and fixed here:** a
+      windowed `marginal` pair did not get task 94's zero spread for a slot
+      held over the window, and `beta` divided a remainder by itself.
+      `marginal` now keeps runs for its window, in the `Runs` that `EwCov`'s
+      task-94 runs moved into. **Found and left:** Page-Hinkley's mean feeds
+      only a sum that `delta` swamps; `holt` centres nothing; the uncentred
+      EW means of squared residuals have no gap to settle on; `ColumnStats`
+      in the data summary is report-only. The clusters are task 102, and
+      `corrchange`'s span variance task 103.
+      **Tests.** `tests/held_values.rs` holds every centring model for 150
+      halflives after a feature or target stops, at levels from 0 to 1e12
+      and with no decay. Twelve of its fourteen tests fail with the means
+      plain; the other two are contracts that hold of any design: a row of
+      weight 0 changes nothing, and a state saved mid-hold resumes to the
+      bit (which fails with the low parts left out of the state).
+      `comp::tests` pins the pair, and each accumulator has a test beside it.
+      `cargo mutants` over the change: 402 mutants, 393 caught, 6 unviable,
+      3 equivalent (`scripts/mutants_equivalent.toml`: a term that is 0
+      either way on a row of weight 0, a product against 0 that a quotient
+      matches, and a guard at exactly 0 that takes 0 away), none missed;
+      the 20 that timed out beside a running gate were re-tested alone and
+      caught. Each survivor's test was applied to the mutant by hand first,
+      and three did not kill it until rewritten: a residue test whose unit
+      weights made the block mean correctly rounded, and a variance read
+      through `var`, whose `max(0)` takes a NaN for 0.
+- [ ] 102. **A stopped feature in the clusters' metric.** Found by task
+      101's sweep, not built. `kmeans` and `micro` standardize distances by
+      `1/var` from `FeatureMoments` (`cluster/summary.rs`), refreshed every
+      row, with `standardize` on by default. A feature that moves and then
+      holds stalls there too: its variance settles near the mean's gap
+      squared, so its weight is `1/g²`. A row's term against its own centre,
+      which has its own gap, becomes `(g_c/g_m)²`: anywhere from 1 to 10³.
+      `kmeans` then treats its own rows as far, and `micro` opens a
+      duplicate summary. In exact arithmetic the same metric degenerates
+      differently: the variance decays, the weight grows without bound, the
+      centre that takes the rows follows the value faster, and every other
+      centre becomes infinitely far. Carrying `FeatureMoments`' means as
+      pairs alone makes it worse (the weight grows, the centre's gap stays),
+      so the centres (`ClusterSummary`: `merge_plain`, `absorb`,
+      `merge_welford`) would need pairs too. Which metric a feature without
+      spread should have is a design decision before it is a rounding one.
+      The user's call.
+- [ ] 103. **`corrchange` takes a span's variance as `E[x²] − E[x]²`.**
+      Found by task 101's sweep, not measured. `long_run_sd`, the
+      delta-method standard deviation of a span's correlation, forms
+      `σ_x² = E[x²] − E[x]²` from raw moments, and outside `scalar` the span
+      holds the raw rows. At a level of 1e8, `E[x²]` is 1e16, whose rounding
+      step is 2, so a unit variance cancels to noise. Measure it first, then
+      centre it: `corr_of` already takes the same span's moments about its
+      mean.
 
 ## 11a. Decisions made while implementing
 

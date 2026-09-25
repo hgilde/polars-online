@@ -137,6 +137,23 @@ model that regresses its targets: that is what makes `predict` out of sample.
 `a_value_in_the_targets_slot_reaches_predict` feeds a column that varies and
 counts the rows where ignoring it would change the answer.
 
+#### When the model keeps a running mean
+
+A mean that anything is centred on, whether a variance, a co-moment or a
+standardized value, is a pair: `hi`, the double, and `lo`, what it leaves
+out (`crate::comp`). Take each deviation as `comp::dev(x, hi, lo)` and each
+step as `comp::add(hi, lo, b·d)`. Take no step on a row of weight 0, where
+adding zero could round the pair afresh. A plain `m += b·(x − m)` stops a
+few rounding steps short of a value the stream holds, and whatever is
+centred on it then settles on that gap (docs/PLAN.md task 101). A window
+read by subtraction also keeps a `Runs` beside its moments, and zeroes a
+slot held over the window (task 94).
+
+| if the model … | the check |
+|---|---|
+| standardizes by, divides by or reports a spread | `crates/online-core/tests/held_values.rs`, to which it is added |
+| has a `window` over such moments | a held-slot test beside it, as `window.rs` and `marginal.rs` have |
+
 #### Restoring
 
 `restore` checks the state's shape against its cfg before returning it. Every

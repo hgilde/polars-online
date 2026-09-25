@@ -31,6 +31,21 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Fixed
 
+- **A feature or target that stops moving keeps the fit it had.** A
+  running mean given one value row after row stopped a few rounding steps
+  short of it, once its step rounded to nothing. Every variance and
+  covariance centred on that mean then settled on the gap instead of
+  decaying, and a model that divides one by the other read two rounding
+  artefacts. A lasso's slope on a feature held at a level of 1e8 went from
+  0.5 to -4.7e3 within 40 halflives. `sgd` and `kalman` predicted
+  differently at each level the feature sat at, by up to 0.12. `marginal`
+  gave a held target a correlation of -0.06 with a moving feature, where it
+  goes to zero, and its bins' split gain read 0.45. Every running mean is
+  now carried as two doubles, so no part of a step is rounded off, and the
+  fits follow exact arithmetic: they keep their slopes for 150 halflives at
+  levels from 0 to 1e12, and with no decay. This covers `ew_cov`,
+  `ew_ridge`, `lasso`, `robust`, `kalman`, `sgd`, `marginal` (pairs, lags
+  and bins), `deco`, `bocpd`, `ew_class`, `hmm` and `emit_autocorr`.
 - **A windowed fit no longer standardizes a feature by rounding.** A
   feature that holds one value over every row inside a `window` has no
   spread there, and the fit now says so exactly: its variance, covariances
@@ -40,6 +55,11 @@ carries breaking changes, and any change to the numbers a model returns.
   level and with the rows since the window's edge, and which a lasso at a
   penalty of zero divided by itself: predictions of 1e55 where the fit was
   -1.0.
+- **A windowed `marginal` pair reports a feature or target held over the
+  window as having no spread.** Its variance and covariance are zero, its
+  mean is the value, its correlation is null, and a held target has a
+  slope of zero. The window's subtraction left a remainder, which `beta`
+  divided by itself.
 - **A lasso's `lam_selected` under a `window` is chosen on the errors
   inside it.** Four things had it read others: the window's snapshot took
   the selection after the row's own error, with its weight aged twice; the
@@ -79,11 +99,19 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Changed
 
+- **Outputs differ from 0.10.0 in their last bits** wherever a running
+  mean is taken, since the means are carried as pairs now (the first fix
+  above). On the release comparison that is 19 of its 30 specs, by a
+  median of 3e-16 of the value and at most 1.4e-14. `sgd` steps about 16%
+  slower at 16 features; `ew_ridge` and `ew_cov` are unchanged.
 - **State schema 16.** A stream with a `label_delay` keeps, per model, the
-  clock its held rows cover (15), and every accumulator keeps, per feature,
-  the value it has held since it last changed and the weight of those rows
-  (16). States saved by 0.10.0 (schema 14) still load. The clock is rebuilt
-  as 0.10.0 did at a chunk boundary, and the runs start at the next row.
+  clock its held rows cover (15). Every covariance accumulator and every
+  `marginal` keeps, per slot, the value it has held since it last changed
+  and the weight of those rows, for a window to read, and every running
+  mean keeps what its double leaves out (16). States saved by 0.10.0
+  (schema 14) still load. The clock is rebuilt as 0.10.0 did at a chunk
+  boundary, the runs start at the next row, and a mean starts as the
+  double it was saved as.
 - **`holt` reports null coefficients for a target not yet observed.** It
   reported `[0, 0]`, a level no row had given, where every other model's
   `coef` is null before it has anything to report.

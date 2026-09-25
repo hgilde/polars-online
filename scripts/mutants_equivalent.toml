@@ -39,3 +39,29 @@ function = "format_duration"
 mutation = "replace < with <="
 line_has = "    if ns < 0 {"
 why = "ns == 0 returns \"0s\" two lines earlier, so ns < 0 and ns <= 0 agree wherever the line runs"
+
+[[equivalent]]
+file = "crates/online-core/src/ewdiag.rs"
+function = "EwDiag::update"
+mutation = "replace + with -"
+line_has = "*ci = a * *ci + a * b * d * d;"
+why = """this is the branch a row of weight 0 takes, where b is 0: the term is \
+0 for every finite deviation, and the inputs are bounded, so a·c + 0 and \
+a·c − 0 are the same double"""
+
+[[equivalent]]
+file = "crates/online-core/src/ewcov.rs"
+function = "EwCov::skip"
+mutation = "replace * with /"
+line_has = "if self.pending.block_rows > 0 && lam * self.w_sum > 0.0 {"
+why = """lam / w_sum > 0 and lam * w_sum > 0 agree wherever w_sum > 0; at \
+w_sum = 0 the buffer refuses a row that leaves no weight and the decay has \
+nothing to age, the same empty state either way"""
+
+[[equivalent]]
+file = "crates/online-core/src/gaps.rs"
+function = "Cross::miss"
+mutation = "replace > with >="
+line_has = "if b > 0.0 {"
+why = """at b = 0 the offset takes 0·(z − m) away, which is 0 for every \
+finite z, and features reach the accumulator bounded (INPUT_BOUND)"""

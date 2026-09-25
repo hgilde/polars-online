@@ -135,9 +135,12 @@ impl EwLagCov {
     /// `lam` and `w` are [`EwCov::update`]'s, and the guards are the same: a
     /// negative weight is a caller's bug, and a row that leaves the total
     /// weight at zero changes nothing (hard rule 9).
-    pub fn update(&mut self, x: &[f64], m: &[f64], w_sum: f64, lam: f64, w: f64) {
+    pub fn update(&mut self, x: &[f64], (m, m_lo): (&[f64], &[f64]), w_sum: f64, lam: f64, w: f64) {
         debug_assert_eq!(x.len(), self.k);
         debug_assert_eq!(m.len(), self.k);
+        // Deviations from the means as pairs ([`crate::comp`]; docs/PLAN.md
+        // task 101), as the accumulator beside this one takes them.
+        let dev = |i: usize, v: f64| crate::comp::dev(v, m[i], crate::comp::lo_of(m_lo, i));
         if w < 0.0 {
             return;
         }
@@ -153,10 +156,10 @@ impl EwLagCov {
             match self.ring.len().checked_sub(lag).map(|i| &self.ring[i]) {
                 Some(past) => {
                     for i in 0..k {
-                        let ab_di = a * b * (x[i] - m[i]);
+                        let ab_di = a * b * dev(i, x[i]);
                         let row = &mut block[i * k..(i + 1) * k];
-                        for (cj, (&pj, &mj)) in row.iter_mut().zip(past.iter().zip(m)) {
-                            *cj = a * *cj + ab_di * (pj - mj);
+                        for (j, (cj, &pj)) in row.iter_mut().zip(past.iter()).enumerate() {
+                            *cj = a * *cj + ab_di * dev(j, pj);
                         }
                     }
                 }
@@ -201,39 +204,58 @@ mod tests {
             .collect()
     }
 
+    /// `rows` at a level: where a mean's low part is a real part of the
+    /// deviation (1e8 puts it at a rounding step of 1.5e-8).
+    fn rows_at(n: usize, k: usize, seed: u64, level: f64) -> Vec<Vec<f64>> {
+        rows(n, k, seed)
+            .into_iter()
+            .map(|r| r.into_iter().map(|v| v + level).collect())
+            .collect()
+    }
+
     /// Lag 0 -- the row paired with itself -- reproduces `EwCov`'s own
     /// co-moments **to the bit**. That is the guard on "both legs against
     /// the pre-row mean": any other centring gives a different matrix here.
     ///
     /// `new` refuses lag 0, so the ring is primed with the current row and
-    /// lag 1 reads it back, which is the same arithmetic.
+    /// lag 1 reads it back, which is the same arithmetic. At a level of 1e8
+    /// the means' low parts are part of every deviation, so the identity
+    /// holds only with both halves of each mean.
     #[test]
     fn lag_zero_is_the_contemporaneous_comoments() {
-        let k = 3;
-        let mut cov = EwCov::new(k);
-        let mut lag = EwLagCov::new(k, vec![1]).unwrap();
-        for (i, x) in rows(200, k, 5).iter().enumerate() {
-            let (lam, w) = (
-                0.97,
-                if i % 7 == 0 {
-                    0.0
-                } else {
-                    1.0 + (i % 3) as f64
-                },
-            );
-            lag.ring.clear();
-            lag.ring.push_back(x.clone());
-            lag.update(x, cov.means(), cov.n_eff(), lam, w);
-            cov.update(x, lam, w);
+        for level in [0.0, 1e8] {
+            let k = 3;
+            let mut cov = EwCov::new(k);
+            let mut lag = EwLagCov::new(k, vec![1]).unwrap();
+            for (i, x) in rows_at(200, k, 5, level).iter().enumerate() {
+                let (lam, w) = (
+                    0.97,
+                    if i % 7 == 0 {
+                        0.0
+                    } else {
+                        1.0 + (i % 3) as f64
+                    },
+                );
+                lag.ring.clear();
+                lag.ring.push_back(x.clone());
+                lag.update(x, (cov.means(), cov.means_lo()), cov.n_eff(), lam, w);
+                cov.update(x, lam, w);
+            }
+            assert_eq!(lag.comoments(), cov.comoments(), "at a level of {level}");
         }
-        assert_eq!(lag.comoments(), cov.comoments());
     }
 
     /// The recursion against a direct computation with explicit weights.
     #[test]
     fn the_recursion_is_the_weighted_lagged_cross_moment() {
+        for level in [0.0, 1e8] {
+            the_recursion_is_the_weighted_lagged_cross_moment_at(level);
+        }
+    }
+
+    fn the_recursion_is_the_weighted_lagged_cross_moment_at(level: f64) {
         let (k, n, lag) = (2usize, 120usize, 3usize);
-        let xs = rows(n, k, 11);
+        let xs = rows_at(n, k, 11, level);
         let lam = 0.95;
         let mut cov = EwCov::new(k);
         let mut lc = EwLagCov::new(k, vec![lag]).unwrap();
@@ -241,23 +263,24 @@ mod tests {
         let mut direct = vec![0.0; k * k];
         for (t, x) in xs.iter().enumerate() {
             let w = 1.0;
-            let (w_sum, m) = (cov.n_eff(), cov.means().to_vec());
+            let (w_sum, m, lo) = (cov.n_eff(), cov.means().to_vec(), cov.means_lo().to_vec());
             let w_new = lam * w_sum + w;
             let (a, b) = (lam * w_sum / w_new, w / w_new);
             if t >= lag {
+                // Deviations from the means as the pairs they are.
                 for i in 0..k {
                     for j in 0..k {
-                        direct[i * k + j] =
-                            a * direct[i * k + j] + a * b * (x[i] - m[i]) * (xs[t - lag][j] - m[j]);
+                        direct[i * k + j] = a * direct[i * k + j]
+                            + a * b * cov.deviation(i, x[i]) * cov.deviation(j, xs[t - lag][j]);
                     }
                 }
             } else {
                 direct.iter_mut().for_each(|c| *c *= a);
             }
-            lc.update(x, &m, w_sum, lam, w);
+            lc.update(x, (&m, &lo), w_sum, lam, w);
             cov.update(x, lam, w);
         }
-        assert_eq!(lc.comoments(), &direct[..]);
+        assert_eq!(lc.comoments(), &direct[..], "at a level of {level}");
     }
 
     #[test]
@@ -266,7 +289,7 @@ mod tests {
         let mut cov = EwCov::new(k);
         let mut lc = EwLagCov::new(k, vec![1, 2]).unwrap();
         for x in rows(40, k, 3) {
-            lc.update(&x, cov.means(), cov.n_eff(), 0.98, 1.0);
+            lc.update(&x, (cov.means(), cov.means_lo()), cov.n_eff(), 0.98, 1.0);
             cov.update(&x, 0.98, 1.0);
         }
         let before = lc.comoments().to_vec();
@@ -283,12 +306,18 @@ mod tests {
         let mut lc = EwLagCov::new(k, vec![1]).unwrap();
         let xs = rows(5, k, 9);
         for x in &xs[..3] {
-            lc.update(x, cov.means(), cov.n_eff(), 0.9, 1.0);
+            lc.update(x, (cov.means(), cov.means_lo()), cov.n_eff(), 0.9, 1.0);
             cov.update(x, 0.9, 1.0);
         }
         let depth = lc.depth();
         let before = lc.comoments().to_vec();
-        lc.update(&[1e6, -1e6], cov.means(), cov.n_eff(), 0.9, 0.0);
+        lc.update(
+            &[1e6, -1e6],
+            (cov.means(), cov.means_lo()),
+            cov.n_eff(),
+            0.9,
+            0.0,
+        );
         cov.update(&[1e6, -1e6], 0.9, 0.0);
         assert_eq!(lc.depth(), depth, "a zero-weight row is not a lagged row");
         // `a = 1` at `w = 0` in mean form, so nothing moves either.
@@ -298,7 +327,7 @@ mod tests {
     #[test]
     fn a_zero_weight_first_row_is_legal() {
         let mut lc = EwLagCov::new(2, vec![1]).unwrap();
-        lc.update(&[1.0, 2.0], &[0.0, 0.0], 0.0, 0.9, 0.0);
+        lc.update(&[1.0, 2.0], (&[0.0, 0.0], &[]), 0.0, 0.9, 0.0);
         assert_eq!(lc.depth(), 0);
         assert!(lc.comoments().iter().all(|c| *c == 0.0));
     }
@@ -308,7 +337,7 @@ mod tests {
         let mut lc = EwLagCov::new(2, vec![1, 4]).unwrap();
         let mut cov = EwCov::new(2);
         for x in rows(50, 2, 1) {
-            lc.update(&x, cov.means(), cov.n_eff(), 0.99, 1.0);
+            lc.update(&x, (cov.means(), cov.means_lo()), cov.n_eff(), 0.99, 1.0);
             cov.update(&x, 0.99, 1.0);
             assert!(lc.depth() <= 4);
         }
@@ -326,7 +355,7 @@ mod tests {
         for cut in 0..=5usize {
             let (mut lc, mut cov) = (EwLagCov::new(2, vec![1, 3]).unwrap(), EwCov::new(2));
             for x in &all[..cut] {
-                lc.update(x, cov.means(), cov.n_eff(), 0.99, 1.0);
+                lc.update(x, (cov.means(), cov.means_lo()), cov.n_eff(), 0.99, 1.0);
                 cov.update(x, 0.99, 1.0);
             }
             // Both a plain clone and a msgpack round-trip: `state()` goes
@@ -336,9 +365,9 @@ mod tests {
                 let (mut copy, mut ccov) = (copy, cov.clone());
                 let (mut lc, mut cov) = (lc.clone(), cov.clone());
                 for x in &all[cut..] {
-                    copy.update(x, ccov.means(), ccov.n_eff(), 0.99, 1.0);
+                    copy.update(x, (ccov.means(), ccov.means_lo()), ccov.n_eff(), 0.99, 1.0);
                     ccov.update(x, 0.99, 1.0);
-                    lc.update(x, cov.means(), cov.n_eff(), 0.99, 1.0);
+                    lc.update(x, (cov.means(), cov.means_lo()), cov.n_eff(), 0.99, 1.0);
                     cov.update(x, 0.99, 1.0);
                 }
                 assert_eq!(copy.depth(), 3, "cut {cut}: the copy's ring stayed short");

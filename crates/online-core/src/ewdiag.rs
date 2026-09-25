@@ -37,6 +37,10 @@ pub struct EwDiag {
     m: Vec<f64>,
     /// EW **centered** second moments, length `k`: `EwCov`'s `c[i*k+i]`.
     c: Vec<f64>,
+    /// What each mean leaves out: the mean is `m[i] + m_lo[i]`, as
+    /// `EwCov`'s is ([`crate::comp`]; docs/PLAN.md task 101). Empty in a
+    /// state written before it.
+    m_lo: Vec<f64>,
 }
 
 /// The wire layout, checked on the way in. `deny_unknown_fields` is load-
@@ -52,6 +56,8 @@ struct EwDiagWire {
     w_sum: f64,
     m: Vec<f64>,
     c: Vec<f64>,
+    #[serde(default)]
+    m_lo: Vec<f64>,
 }
 
 impl TryFrom<EwDiagWire> for EwDiag {
@@ -71,6 +77,7 @@ impl TryFrom<EwDiagWire> for EwDiag {
             w_sum: w.w_sum,
             m: w.m,
             c: w.c,
+            m_lo: w.m_lo,
         })
     }
 }
@@ -82,6 +89,7 @@ impl EwDiag {
             w_sum: 0.0,
             m: vec![0.0; k],
             c: vec![0.0; k],
+            m_lo: vec![0.0; k],
         }
     }
 
@@ -95,6 +103,7 @@ impl EwDiag {
             w_sum: cov.n_eff(),
             m: cov.means().to_vec(),
             c: (0..k).map(|i| cov.cov(i, i)).collect(),
+            m_lo: (0..k).map(|i| cov.mean_lo(i)).collect(),
         }
     }
 
@@ -116,6 +125,12 @@ impl EwDiag {
     /// The EW mean vector, length `k`.
     pub fn means(&self) -> &[f64] {
         &self.m
+    }
+
+    /// `x`'s deviation from mean `i`, the pair's ([`crate::comp::dev`]).
+    #[inline]
+    pub fn deviation(&self, i: usize, x: f64) -> f64 {
+        crate::comp::dev(x, self.m[i], crate::comp::lo_of(&self.m_lo, i))
     }
 
     /// Raw (uncentered) second moment `E_w[x_i²]`, reconstructed from the
@@ -173,10 +188,28 @@ impl EwDiag {
         // Weighted Welford, as `EwCov::update` writes its diagonal: the
         // deviation is against the OLD mean, and the expression
         // `a * c + a * b * d * d` is kept in that order so the bits agree.
-        for ((ci, mi), xi) in self.c.iter_mut().zip(self.m.iter_mut()).zip(x) {
-            let d = xi - *mi;
-            *ci = a * *ci + a * b * d * d;
-            *mi += b * d;
+        if self.m_lo.len() != self.k {
+            self.m_lo = vec![0.0; self.k];
+        }
+        let slots = self
+            .c
+            .iter_mut()
+            .zip(self.m.iter_mut())
+            .zip(self.m_lo.iter_mut());
+        if b > 0.0 {
+            for (((ci, mi), lo), &xi) in slots.zip(x) {
+                let d = crate::comp::dev(xi, *mi, *lo);
+                *ci = a * *ci + a * b * d * d;
+                crate::comp::add(mi, lo, b * d);
+            }
+        } else {
+            // A row of weight 0 takes no step (`crate::comp::add` says why).
+            // The loop is chosen once, not the step tested in it: a test in
+            // the loop kept `sgd`'s standardizing from vectorizing.
+            for (((ci, mi), lo), &xi) in slots.zip(x) {
+                let d = crate::comp::dev(xi, *mi, *lo);
+                *ci = a * *ci + a * b * d * d;
+            }
         }
         self.w_sum = w_new;
     }
@@ -194,13 +227,19 @@ pub struct Including<'a> {
 }
 
 impl Including<'_> {
-    /// `(mean, var)` of slot `i` with `x` admitted: `update`'s recursion for
-    /// the slot, the variance floored at zero as [`EwDiag::var`] floors it.
+    /// `(mean, var, dev)` of slot `i` with `x` admitted: `update`'s recursion
+    /// for the slot, the variance floored at zero as [`EwDiag::var`] floors
+    /// it, and `x`'s deviation from the mean it leaves, the pair's
+    /// ([`crate::comp::dev`]; docs/PLAN.md task 101) -- which `x − mean`
+    /// would round.
     #[inline]
-    pub fn moments(&self, i: usize, x: f64) -> (f64, f64) {
-        let d = x - self.sc.m[i];
+    pub fn moments(&self, i: usize, x: f64) -> (f64, f64, f64) {
+        let lo = crate::comp::lo_of(&self.sc.m_lo, i);
+        let d = crate::comp::dev(x, self.sc.m[i], lo);
         let c = self.a * self.sc.c[i] + self.a * self.b * d * d;
-        (self.sc.m[i] + self.b * d, c.max(0.0))
+        let (mut hi, mut lo) = (self.sc.m[i], lo);
+        crate::comp::add(&mut hi, &mut lo, self.b * d);
+        (hi, c.max(0.0), crate::comp::dev(x, hi, lo))
     }
 }
 
@@ -218,7 +257,10 @@ mod tests {
     /// A stream with offsets and scales that differ by orders of magnitude,
     /// zero-weight rows (including the first), varying decay and a pure
     /// zero-weight run — everything `kalman` and `sgd` can feed it.
-    fn stream(k: usize, n: usize, seed: u64) -> Vec<(Vec<f64>, f64, f64)> {
+    /// Rows of `(x, lam, w)`.
+    type Rows = Vec<(Vec<f64>, f64, f64)>;
+
+    fn stream(k: usize, n: usize, seed: u64) -> Rows {
         let mut s = seed;
         (0..n)
             .map(|r| {
@@ -241,22 +283,54 @@ mod tests {
             .collect()
     }
 
+    /// `stream`, with slot 0 at a level of 1e8 and held there from row 100:
+    /// long enough for its mean's step to fall below its rounding, where the
+    /// low part carries it (docs/PLAN.md task 101). Its rows of weight 0
+    /// carry another value, which moves no mean.
+    fn held_stream(k: usize, n: usize, seed: u64) -> Rows {
+        let mut rows = stream(k, n, seed);
+        for (r, (x, _, w)) in rows.iter_mut().enumerate() {
+            x[0] = 1e8
+                + match (r < 100, *w > 0.0) {
+                    (true, _) => x[0],
+                    (false, true) => 0.37,
+                    (false, false) => 5.0,
+                };
+        }
+        rows
+    }
+
+    /// Both streams: the plain one, and the held one, on which slot 0's mean
+    /// is also checked to reach the value it holds, which a plain mean does
+    /// not (`held`).
+    fn streams(k: usize, seed: u64) -> [(Rows, bool); 2] {
+        [
+            (stream(k, 300, seed), false),
+            (held_stream(k, 1500, seed), true),
+        ]
+    }
+
     #[test]
     fn is_the_diagonal_of_ewcov_bit_for_bit() {
         for k in [1, 2, 5] {
-            let mut full = EwCov::new(k);
-            let mut diag = EwDiag::new(k);
-            for (x, lam, w) in stream(k, 300, 7 + k as u64) {
-                full.update(&x, lam, w);
-                diag.update(&x, lam, w);
-                assert_eq!(diag.n_eff().to_bits(), full.n_eff().to_bits());
-                for i in 0..k {
-                    assert_eq!(diag.mean(i).to_bits(), full.mean(i).to_bits(), "mean {i}");
-                    assert_eq!(diag.var(i).to_bits(), full.var(i).to_bits(), "var {i}");
-                    assert_eq!(diag.raw(i).to_bits(), full.raw(i, i).to_bits(), "raw {i}");
+            for (rows, held) in streams(k, 7 + k as u64) {
+                let mut full = EwCov::new(k);
+                let mut diag = EwDiag::new(k);
+                for (x, lam, w) in rows {
+                    full.update(&x, lam, w);
+                    diag.update(&x, lam, w);
+                    assert_eq!(diag.n_eff().to_bits(), full.n_eff().to_bits());
+                    for i in 0..k {
+                        assert_eq!(diag.mean(i).to_bits(), full.mean(i).to_bits(), "mean {i}");
+                        assert_eq!(diag.var(i).to_bits(), full.var(i).to_bits(), "var {i}");
+                        assert_eq!(diag.raw(i).to_bits(), full.raw(i, i).to_bits(), "raw {i}");
+                    }
+                    assert_eq!(diag.means(), full.means());
+                    assert_eq!(diag, EwDiag::diagonal_of(&full));
                 }
-                assert_eq!(diag.means(), full.means());
-                assert_eq!(diag, EwDiag::diagonal_of(&full));
+                if held {
+                    assert_eq!(diag.mean(0), 1e8 + 0.37, "k {k}");
+                }
             }
         }
     }
@@ -267,28 +341,31 @@ mod tests {
     #[test]
     fn including_reads_what_a_unit_row_would_leave() {
         for k in [1, 3] {
-            let mut d = EwDiag::new(k);
-            for (x, lam, w) in stream(k, 200, 11 + k as u64) {
-                let before = d.clone();
-                let inc = d.including(lam);
-                let read: Vec<(f64, f64)> = (0..k).map(|i| inc.moments(i, x[i])).collect();
-                let mut unit = d.clone();
-                unit.update(&x, lam, 1.0);
-                for (i, &(m, v)) in read.iter().enumerate() {
-                    assert_eq!(m.to_bits(), unit.mean(i).to_bits(), "mean {i}");
-                    assert_eq!(v.to_bits(), unit.var(i).to_bits(), "var {i}");
+            for (rows, _) in streams(k, 11 + k as u64) {
+                let mut d = EwDiag::new(k);
+                for (x, lam, w) in rows {
+                    let before = d.clone();
+                    let inc = d.including(lam);
+                    let read: Vec<(f64, f64, f64)> = (0..k).map(|i| inc.moments(i, x[i])).collect();
+                    let mut unit = d.clone();
+                    unit.update(&x, lam, 1.0);
+                    for (i, &(m, v, dev)) in read.iter().enumerate() {
+                        assert_eq!(m.to_bits(), unit.mean(i).to_bits(), "mean {i}");
+                        assert_eq!(v.to_bits(), unit.var(i).to_bits(), "var {i}");
+                        assert_eq!(dev.to_bits(), unit.deviation(i, x[i]).to_bits(), "dev {i}");
+                    }
+                    assert_eq!(d, before, "reading moved the accumulator");
+                    // The stream's own weight, which may be 0 or 2.5, is what
+                    // the accumulator actually takes.
+                    d.update(&x, lam, w);
                 }
-                assert_eq!(d, before, "reading moved the accumulator");
-                // The stream's own weight, which may be 0 or 2.5, is what the
-                // accumulator actually takes.
-                d.update(&x, lam, w);
             }
         }
         // Empty: the row is the whole history.
         let inc = EwDiag::new(2);
         let inc = inc.including(0.9);
-        assert_eq!(inc.moments(0, 1e6), (1e6, 0.0));
-        assert_eq!(inc.moments(1, -3.0), (-3.0, 0.0));
+        assert_eq!(inc.moments(0, 1e6), (1e6, 0.0, 0.0));
+        assert_eq!(inc.moments(1, -3.0), (-3.0, 0.0, 0.0));
     }
 
     #[test]
@@ -306,6 +383,17 @@ mod tests {
         assert_eq!(d.mean(0), 1.0);
         assert_eq!(d.var(1), 0.0);
         assert_eq!(d.raw(1), 4.0);
+    }
+
+    /// A row of weight 0 carrying the mean itself: the variance term is
+    /// `a·b·d·d` with `b` and `d` both zero, and stays zero, not NaN. Read
+    /// from the accumulator: `var` clamps with `max`, which reads a NaN as 0.
+    #[test]
+    fn a_row_of_no_weight_carrying_the_mean_changes_nothing() {
+        let mut d = EwDiag::new(1);
+        d.update(&[2.0], 0.9, 1.0);
+        d.update(&[2.0], 0.9, 0.0);
+        assert_eq!((d.mean(0), d.c[0]), (2.0, 0.0));
     }
 
     #[test]

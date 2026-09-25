@@ -103,8 +103,9 @@ class Oracle:
     """`EwClass` operation for operation: per class an EW weight, mean,
     centered co-moment matrix and prior scale, updated by the weighted
     Welford recursion of `EwCov::update` in the same order of operations,
-    the other classes decayed by the same factor. The posteriors are the
-    same equations through numpy."""
+    with each mean the pair `m + lo` whose steps no rounding drops, and the
+    other classes decayed by the same factor. The posteriors are the same
+    equations through numpy, on deviations from the pairs."""
 
     def __init__(self, k, n_classes, halflife, min_periods, covariance, prior):
         self.k = k
@@ -115,6 +116,9 @@ class Oracle:
         self.prior = prior
         self.n = [0.0] * n_classes
         self.m = [[0.0] * k for _ in range(n_classes)]
+        # Each mean is the pair `m + lo`, whose steps no rounding drops
+        # (docs/PLAN.md task 101); `m` is what the crate reports.
+        self.lo = [[0.0] * k for _ in range(n_classes)]
         self.c = [[[0.0] * k for _ in range(k)] for _ in range(n_classes)]
         self.ps = [1.0] * n_classes
         self.n_eff = 0.0
@@ -130,15 +134,17 @@ class Oracle:
             return
         a = lam * self.n[cls] / w_new
         b = w / w_new
-        m, c = self.m[cls], self.c[cls]
+        m, lo, c = self.m[cls], self.lo[cls], self.c[cls]
+        d = [(x[i] - m[i]) - lo[i] for i in range(self.k)]
         for i in range(self.k):
-            di = x[i] - m[i]
             for j in range(self.k):
-                dj = x[j] - m[j]
-                c[i][j] = a * c[i][j] + a * b * di * dj
+                c[i][j] = a * c[i][j] + a * b * d[i] * d[j]
         self.ps[cls] = 1.0 if a <= 0.0 else self.ps[cls] * a
         for i in range(self.k):
-            m[i] += b * (x[i] - m[i])
+            y = b * d[i] + lo[i]
+            t = m[i] + y
+            lo[i] = y - (t - m[i])
+            m[i] = t
         self.n[cls] = w_new
 
     def score(self, x):
@@ -157,14 +163,14 @@ class Oracle:
                 M += pi * (np.array(self.c[c]) + self.prior * self.ps[c] * np.eye(self.k))
             logdet = np.linalg.slogdet(M)[1]
             for c in seen:
-                d = x - np.array(self.m[c])
+                d = (x - np.array(self.m[c])) - np.array(self.lo[c])
                 ell[c] = (
                     math.log(self.n[c] / total) - 0.5 * logdet - 0.5 * (d @ np.linalg.solve(M, d))
                 )
         else:
             for c in seen:
                 ridge = self.prior * self.ps[c]
-                d = x - np.array(self.m[c])
+                d = (x - np.array(self.m[c])) - np.array(self.lo[c])
                 if self.covariance == "full":
                     M = np.array(self.c[c]) + ridge * np.eye(self.k)
                     logdet = np.linalg.slogdet(M)[1]

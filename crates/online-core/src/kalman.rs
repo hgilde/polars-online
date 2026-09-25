@@ -453,7 +453,7 @@ impl Kalman {
                     // No intercept to absorb a shift: scale only (C10).
                     raw / s[i]
                 } else {
-                    (raw - self.stats.mean(i)) / s[i]
+                    self.stats.deviation(i, raw) / s[i]
                 }
             })
             .collect()
@@ -544,7 +544,7 @@ impl OnlineModel for Kalman {
                 // `pred` by it (review 2026-09-12, C10).
                 self.zbuf[i] / s[i]
             } else {
-                (self.zbuf[i] - self.stats.mean(i)) / s[i]
+                self.stats.deviation(i, self.zbuf[i]) / s[i]
             };
         }
         self.sbuf = s;

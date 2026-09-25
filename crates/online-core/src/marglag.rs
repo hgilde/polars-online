@@ -104,12 +104,16 @@ pub struct MarginalLags {
 
 /// What a lagged update must borrow from the pair update it accompanies, so
 /// the two centre and mix identically: the target's feature means `mx` and
-/// target mean `my` as they stand *before* this row, and the mixing weights
-/// `a` and `b` the pair update is about to use.
+/// target mean `my` as they stand *before* this row, each with what its
+/// double leaves out (`mx_lo`, `my_lo`: the means are pairs,
+/// [`crate::comp`]), and the mixing weights `a` and `b` the pair update is
+/// about to use.
 #[derive(Debug, Clone, Copy)]
 pub struct PairMix<'a> {
     pub mx: &'a [f64],
+    pub mx_lo: &'a [f64],
     pub my: f64,
+    pub my_lo: f64,
     pub a: f64,
     pub b: f64,
 }
@@ -190,9 +194,17 @@ impl MarginalLags {
 
     /// One target's lagged moments, before its pair moments advance.
     pub fn update_target(&mut self, t: usize, x: &[f64], yt: f64, mix: PairMix<'_>) {
-        let PairMix { mx, my, a, b } = mix;
+        let PairMix {
+            mx,
+            mx_lo,
+            my,
+            my_lo,
+            a,
+            b,
+        } = mix;
+        use crate::comp::dev;
         let depth = self.ring_x.len();
-        let dy_now = yt - my;
+        let dy_now = dev(yt, my, my_lo);
         for (li, &lag) in self.lags.iter().enumerate() {
             let row = t * self.p;
             if lag > depth {
@@ -208,17 +220,17 @@ impl MarginalLags {
             let back = depth - lag;
             let x_lag = &self.ring_x[back];
             let y_lag = self.ring_y[back][t];
-            for (j, (xj, mxj)) in x.iter().zip(mx).enumerate() {
+            for (j, ((&xj, &mxj), &lo)) in x.iter().zip(mx).zip(mx_lo).enumerate() {
                 let i = row + j;
-                let dx_now = xj - mxj;
-                let dx_lag = x_lag[j] - mxj;
+                let dx_now = dev(xj, mxj, lo);
+                let dx_lag = dev(x_lag[j], mxj, lo);
                 self.cxx[li][i] = a * self.cxx[li][i] + a * b * dx_now * dx_lag;
                 self.cyx[li][i] = a * self.cyx[li][i] + a * b * dy_now * dx_lag;
                 // The two that need the target `lag` rows ago: a row where it
                 // was absent contributes nothing but the decay.
                 match y_lag {
                     Some(v) => {
-                        let dy_lag = v - my;
+                        let dy_lag = dev(v, my, my_lo);
                         self.cxy[li][i] = a * self.cxy[li][i] + a * b * dx_now * dy_lag;
                     }
                     None => self.cxy[li][i] *= a,
@@ -226,7 +238,7 @@ impl MarginalLags {
             }
             match y_lag {
                 Some(v) => {
-                    let dy_lag = v - my;
+                    let dy_lag = dev(v, my, my_lo);
                     self.cyy[li][t] = a * self.cyy[li][t] + a * b * dy_now * dy_lag;
                 }
                 None => self.cyy[li][t] *= a,

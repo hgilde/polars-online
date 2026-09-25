@@ -444,7 +444,7 @@ fn standardized<'a>(
 ) -> impl Iterator<Item = f64> + 'a {
     let inc = sc.including(lam);
     x.iter().enumerate().map(move |(i, &xi)| {
-        let (mean, v) = inc.moments(off + i, xi);
+        let (mean, v, dev) = inc.moments(off + i, xi);
         if off == 0 {
             // No intercept to absorb a shift: scale by the raw second moment
             // and do not centre. Centring gave every prediction a hidden
@@ -459,7 +459,7 @@ fn standardized<'a>(
         } else {
             1.0
         };
-        (xi - mean) / scale
+        dev / scale
     })
 }
 

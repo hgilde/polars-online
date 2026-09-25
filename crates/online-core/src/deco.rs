@@ -201,6 +201,12 @@ pub struct Deco {
     /// Accumulated weight behind `rho_bar`. Not the diag's: a row whose `u`
     /// is not finite teaches the level nothing, and must not decay it.
     rho_w: f64,
+    /// What each `rho_bar` leaves out: the level is a pair no step is
+    /// rounded off, as an `ew_cov`'s mean is ([`crate::comp`]; docs/PLAN.md
+    /// task 101), so the identity `Deco::advance` states holds. Empty in a
+    /// state written before it.
+    #[serde(default)]
+    rho_bar_lo: Vec<f64>,
 }
 
 impl Deco {
@@ -216,6 +222,7 @@ impl Deco {
             rho: vec![f64::NAN; m],
             rho_bar: vec![f64::NAN; m],
             rho_w: 0.0,
+            rho_bar_lo: vec![0.0; m],
         })
     }
 
@@ -481,8 +488,9 @@ impl crate::OnlineModel for Deco {
 impl Deco {
     /// Move the level by one row's estimate.
     ///
-    /// Written as `EwCov::update` writes its mean -- `ρ + b·(u − ρ)`, not the
-    /// algebraically equal `a·ρ + b·u` -- so that `rho` under `"ew"` is
+    /// Written as `EwCov::update` writes its mean -- `ρ + b·(u − ρ)` as a
+    /// pair ([`crate::comp`]), not the algebraically equal `a·ρ + b·u` -- so
+    /// that `rho` under `"ew"` is
     /// **bit-identical** to an `ew_cov(stats = ["mean"])` over the same `u`
     /// sequence at the same halflife. The two forms differ in the last bit,
     /// and a test pins this one.
@@ -494,13 +502,20 @@ impl Deco {
             return;
         }
         let b = w / w_new;
+        let n = self.rho_bar.len();
         for (m, &um) in u.iter().enumerate() {
             let bar = &mut self.rho_bar[m];
-            *bar = if bar.is_finite() {
-                *bar + b * (um - *bar)
+            let lo = crate::comp::lo_slot(&mut self.rho_bar_lo, n, m);
+            if bar.is_finite() {
+                // A row of weight 0 takes no step (`crate::comp::add` says
+                // why).
+                if b > 0.0 {
+                    let d = crate::comp::dev(um, *bar, *lo);
+                    crate::comp::add(bar, lo, b * d);
+                }
             } else {
-                um
-            };
+                (*bar, *lo) = (um, 0.0);
+            }
             self.rho[m] = match self.cfg.dynamics {
                 DecoDynamics::Ew => *bar,
                 DecoDynamics::Linear => {
@@ -559,6 +574,42 @@ mod tests {
             blocks: Vec::new(),
             min_periods: 0.0,
         }
+    }
+
+    /// The level is an `ew_cov`'s mean of `u`, to the bit, through a value
+    /// `u` repeats: both take their steps as pairs ([`crate::comp`];
+    /// docs/PLAN.md task 101), so neither stops short of the value, and the
+    /// level reaches it. Rows of weight 0 among them move nothing.
+    #[test]
+    fn the_level_is_ew_covs_mean_through_a_value_u_repeats() {
+        let mut d = Deco::new(cfg(2)).unwrap();
+        let mut cov = crate::EwCov::new(1);
+        let lam = Decay::Halflife(20.0).factor(1.0);
+        let mut s = 5u64;
+        for row in 0..3000 {
+            let u = if row < 300 { 0.3 * lcg(&mut s) } else { 0.8 };
+            let w = if row % 7 == 3 { 0.0 } else { 1.0 };
+            d.advance(&[u], lam, w);
+            cov.update(&[u], lam, w);
+            assert_eq!(d.rho_bar[0].to_bits(), cov.mean(0).to_bits(), "row {row}");
+        }
+        assert_eq!(d.rho_bar[0], 0.8, "the level reaches the value u holds");
+    }
+
+    /// A row of weight 0 takes no step in the level, to the bit: the rows
+    /// 0.7 and 5.292162135665459 leave its pair with a low part of a whole
+    /// rounding step, where a zero step would round the double up
+    /// (`crate::comp::add`).
+    #[test]
+    fn a_row_of_no_weight_leaves_the_level_as_it_was() {
+        let mut d = Deco::new(cfg(2)).unwrap();
+        d.advance(&[0.7], 1.0, 1.0);
+        d.advance(&[5.292162135665459], 1.0, 1.0);
+        assert_eq!(d.rho_bar[0], 2.996081067832729, "the fixture");
+        assert_eq!(d.rho_bar_lo[0], 4.440892098500626e-16);
+        d.advance(&[1.0], 1.0, 0.0);
+        assert_eq!(d.rho_bar[0], 2.996081067832729);
+        assert_eq!(d.rho_bar_lo[0], 4.440892098500626e-16);
     }
 
     /// A correlated stream: one common factor plus idiosyncratic noise, so

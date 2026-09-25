@@ -199,6 +199,11 @@ pub struct Robust {
     clock_since_solve: f64,
     rows_since_solve: u32,
     pub solve_failures: u64,
+    /// What each `ybar` leaves out: the mean is `ybar[j] + ybar_lo[j]`
+    /// ([`crate::comp`]; docs/PLAN.md task 101). Empty in a state written
+    /// before it. Before `zbuf`, which is skipped and so must stay last.
+    #[serde(default)]
+    ybar_lo: Vec<f64>,
     #[serde(skip)]
     zbuf: Vec<f64>,
 }
@@ -221,6 +226,7 @@ impl Robust {
             clock_since_solve: 0.0,
             rows_since_solve: 0,
             solve_failures: 0,
+            ybar_lo: vec![0.0; m],
             zbuf: vec![0.0; k],
             cfg,
         })
@@ -509,13 +515,21 @@ impl OnlineModel for Robust {
                     let wj_new = aged + w;
                     let a = aged / wj_new;
                     let bb = w / wj_new;
-                    let dy = target - self.ybar[j];
+                    let dy = crate::comp::dev(
+                        target,
+                        self.ybar[j],
+                        crate::comp::lo_of(&self.ybar_lo, j),
+                    );
                     let ab_dy = a * bb * dy;
                     let cov = &self.cov[j];
-                    for (i, (ci, zi)) in self.cross[j].iter_mut().zip(&self.zbuf).enumerate() {
-                        *ci = a * *ci + ab_dy * (zi - cov.mean(i));
+                    for (i, (ci, &zi)) in self.cross[j].iter_mut().zip(&self.zbuf).enumerate() {
+                        *ci = a * *ci + ab_dy * cov.deviation(i, zi);
                     }
-                    self.ybar[j] += bb * dy;
+                    crate::comp::add(
+                        &mut self.ybar[j],
+                        crate::comp::lo_slot(&mut self.ybar_lo, m, j),
+                        bb * dy,
+                    );
                     self.cov[j].update(&self.zbuf, lam, w);
                     self.wj[j] = wj_new;
                 }
@@ -530,10 +544,18 @@ impl OnlineModel for Robust {
                     if nudge.is_finite() && aged > 0.0 {
                         let step = nudge / aged;
                         let cov = &self.cov[j];
-                        for (i, (ci, zi)) in self.cross[j].iter_mut().zip(&self.zbuf).enumerate() {
-                            *ci += step * (zi - cov.mean(i));
+                        for (i, (ci, &zi)) in self.cross[j].iter_mut().zip(&self.zbuf).enumerate() {
+                            *ci += step * cov.deviation(i, zi);
                         }
-                        self.ybar[j] += step;
+                        // A step of nothing is not taken (`crate::comp::add`
+                        // says why): a nudge from a row of weight 0.
+                        if step != 0.0 {
+                            crate::comp::add(
+                                &mut self.ybar[j],
+                                crate::comp::lo_slot(&mut self.ybar_lo, m, j),
+                                step,
+                            );
+                        }
                     }
                 }
             }

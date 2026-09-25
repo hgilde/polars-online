@@ -23,6 +23,7 @@
 //! raw moment as `C_ij + m_i m_j` for the callers that genuinely need it (the
 //! uncentered normal equations).
 
+use crate::Runs;
 use serde::{Deserialize, Serialize};
 
 /// Is a centered variance large enough to standardize by, given the raw second
@@ -152,22 +153,22 @@ pub struct EwCov {
     #[serde(default, alias = "inv_scale")]
     precision_scale: f64,
     /// Per feature, the value it has held on every row learned since it last
-    /// changed, and the weight of those rows, decayed as `w_sum` is. A window
-    /// reads a feature's spread by subtraction ([`crate::truncated`]), and a
-    /// feature that held one value over every row inside the window has none
-    /// there, which a subtraction cannot say: it leaves a remainder that
-    /// grows with the level and with the rows since the boundary (docs/PLAN.md
-    /// task 94). The run can: when its weight is all of the window's, the
-    /// spread is exactly zero. A row of weight 0 learns nothing, so it ends
-    /// no run and only ages it. Empty in a state written before schema 16,
-    /// which knew nothing of the runs: the next learned row starts them, and
-    /// until one covers a window the window reads that feature's spread from
-    /// the subtraction, as schema 15 did. Always written: only `pending`
-    /// may skip, last.
+    /// changed, and the weight of those rows, decayed as `w_sum` is
+    /// ([`crate::Runs`]): what lets a window say that a feature held one
+    /// value over it, which its subtraction cannot (docs/PLAN.md task 94).
+    /// Empty in a state written before schema 16: the next learned row starts
+    /// them, and until one covers a window the window reads that feature's
+    /// spread from the subtraction, as schema 15 did. Always written: only
+    /// `pending` may skip, last.
     #[serde(default)]
-    run_x: Vec<f64>,
+    runs: Runs,
+    /// What each mean in `m` leaves out: the mean is `m[i] + m_lo[i]`, a pair
+    /// no step is rounded off ([`crate::comp`]; docs/PLAN.md task 101). A
+    /// plain mean given one value row after row stopped a few rounding steps
+    /// short of it, and left the co-moments on that gap. Empty in a state
+    /// written before it: the means are then the doubles they were saved as.
     #[serde(default)]
-    run_w: Vec<f64>,
+    m_lo: Vec<f64>,
     /// Rows buffered for a blocked Gram update, and `w_sum` as it stood when
     /// the block opened (the merge needs the pre-block weight, and the
     /// scalars have moved on by then).
@@ -199,41 +200,30 @@ impl EwCov {
             dev: Scratch(Vec::with_capacity(k)),
             precision_prior: 0.0,
             precision_scale: 1.0,
-            run_x: vec![0.0; k],
-            run_w: vec![0.0; k],
+            runs: Runs::new(k),
+            m_lo: vec![0.0; k],
             pending: Pending::default(),
         }
     }
 
-    /// Each feature's run, as the fields' docs have it: a row of weight
-    /// `w > 0` carrying the run's value extends it, `W' = lam·W + w` as
-    /// `w_sum`; one carrying another value starts a run at its own weight; a
-    /// row of weight 0 ages every run by `lam` and changes no value. A state
-    /// written before the runs has none, and they start at this row.
-    fn track_runs(&mut self, x: &[f64], lam: f64, w: f64) {
-        if !self.runs_known() {
-            self.run_x = x.to_vec();
-            self.run_w = vec![w; self.k];
-            return;
-        }
-        if w > 0.0 {
-            for ((rx, rw), &xi) in self.run_x.iter_mut().zip(self.run_w.iter_mut()).zip(x) {
-                if *rx == xi {
-                    *rw = lam * *rw + w;
-                } else {
-                    *rx = xi;
-                    *rw = w;
-                }
-            }
-        } else {
-            self.age_runs(lam);
-        }
+    /// What mean `i`'s double leaves out ([`crate::comp`]).
+    #[inline]
+    pub(crate) fn mean_lo(&self, i: usize) -> f64 {
+        crate::comp::lo_of(&self.m_lo, i)
     }
 
-    fn age_runs(&mut self, lam: f64) {
-        for rw in &mut self.run_w {
-            *rw *= lam;
-        }
+    /// What each mean's double leaves out; empty in a state written before
+    /// it ([`crate::comp::lo_of`] reads it either way).
+    pub(crate) fn means_lo(&self) -> &[f64] {
+        &self.m_lo
+    }
+
+    /// `x`'s deviation from mean `i`, the pair's ([`crate::comp::dev`]): good to
+    /// a rounding of itself where `x` is near the mean, as a deviation from
+    /// the double [`Self::mean`] is not.
+    #[inline]
+    pub fn deviation(&self, i: usize, x: f64) -> f64 {
+        crate::comp::dev(x, self.m[i], crate::comp::lo_of(&self.m_lo, i))
     }
 
     /// The value feature `i` has held on every learned row carrying at least
@@ -241,13 +231,7 @@ impl EwCov {
     /// where it moved inside that weight, or where the runs are unknown (a
     /// state written before them).
     pub fn held_over(&self, i: usize, weight: f64) -> Option<f64> {
-        (self.runs_known() && self.run_w[i] >= weight).then(|| self.run_x[i])
-    }
-
-    /// Both halves of every run are here: not a state written before them,
-    /// nor one that lost one of the two.
-    fn runs_known(&self) -> bool {
-        self.run_x.len() == self.k && self.run_w.len() == self.k
+        self.runs.held_over(self.k, i, weight)
     }
 
     /// Same, with a prior for the precision matrix `(C + s·prior·I)⁻¹`, so
@@ -707,13 +691,15 @@ impl EwCov {
         for d in delta.iter_mut() {
             *d /= u_sum;
         }
-        // Δ = m_B − m_A, with the residue folded in.
-        let big: Vec<f64> = m_b
-            .iter()
-            .zip(self.m.iter())
-            .zip(delta.iter())
-            .map(|((mb, ma), d)| (mb - ma) + d)
+        // Δ = m_B − m_A, with the residue folded in; m_A is the pair. The
+        // covariance takes Δ as one double. The mean takes its two pieces
+        // in turn: for a first block, or one far from the accumulator's
+        // level, `(m_B − m_A) + δ` rounds δ away, and the pair would start
+        // a rounding step off the block's mean.
+        let d_hi: Vec<f64> = (0..k)
+            .map(|i| crate::comp::dev(m_b[i], self.m[i], crate::comp::lo_of(&self.m_lo, i)))
             .collect();
+        let big: Vec<f64> = d_hi.iter().zip(&delta).map(|(h, d)| h + d).collect();
 
         // C' on the lower triangle: scale the history, add the product,
         // then the two rank-1 corrections, then mirror.
@@ -750,8 +736,14 @@ impl EwCov {
             }
         }
         let share = u_sum / w_new;
-        for (mi, &bi) in self.m.iter_mut().zip(big.iter()) {
-            *mi += share * bi;
+        for (i, mi) in self.m.iter_mut().enumerate() {
+            let lo = crate::comp::lo_slot(&mut self.m_lo, k, i);
+            crate::comp::add(mi, lo, share * d_hi[i]);
+            // A block of one row, or of one value, has no residue, and a
+            // step of 0 could round the pair afresh (`crate::comp::add`).
+            if delta[i] != 0.0 {
+                crate::comp::add(mi, lo, share * delta[i]);
+            }
         }
         self.pending.clear_rows();
     }
@@ -772,7 +764,7 @@ impl EwCov {
             w >= 0.0,
             "EwCov::update requires a non-negative weight, got {w}"
         );
-        self.track_runs(x, lam, w);
+        self.runs.track(x, lam, w);
         if self.pending.block_rows > 0 {
             return self.buffer(x, lam, w);
         }
@@ -791,9 +783,18 @@ impl EwCov {
         // every golden value is unchanged; 14% off at `k = 4`, 65% at
         // `k = 16`, 45% at `k = 64` and 24% from there up.
         let k = self.k;
+        if self.m_lo.len() != k {
+            // A state written before the means kept their low parts.
+            self.m_lo = vec![0.0; k];
+        }
         let d = &mut self.dev.0;
         d.clear();
-        d.extend(x.iter().zip(self.m.iter()).map(|(xi, mi)| xi - mi));
+        d.extend(
+            x.iter()
+                .zip(&self.m)
+                .zip(&self.m_lo)
+                .map(|((&xi, &mi), &li)| crate::comp::dev(xi, mi, li)),
+        );
         for i in 0..k {
             let ab_di = a * b * d[i];
             let row = &mut self.c[i * k..(i + 1) * k];
@@ -804,8 +805,13 @@ impl EwCov {
         // The precision prior decays with the co-moments. `a == 0` only on
         // the very first observation, when the whole history is discarded and
         // the centered co-moments are exactly zero: the prior starts over.
-        for (mi, &di) in self.m.iter_mut().zip(d.iter()) {
-            *mi += b * di;
+        // Each mean takes its step as a pair, so no part of it is rounded off
+        // (docs/PLAN.md task 101); a row of weight 0 takes none
+        // (`crate::comp::add` says why).
+        if b > 0.0 {
+            for ((mi, lo), &di) in self.m.iter_mut().zip(self.m_lo.iter_mut()).zip(d.iter()) {
+                crate::comp::add(mi, lo, b * di);
+            }
         }
         self.commit_scalars(lam, w, a, w_new);
     }
@@ -823,6 +829,7 @@ impl EwCov {
         debug_assert_eq!(mean.len(), self.k);
         debug_assert_eq!(centered.len(), self.k * self.k);
         self.m.copy_from_slice(mean);
+        self.m_lo = vec![0.0; self.k];
         self.c.copy_from_slice(centered);
         self.w_sum = w_sum;
         self.q_sum = q_sum;
@@ -830,7 +837,7 @@ impl EwCov {
         // slow twin, say), so no run is known to cover any of them: each
         // starts again from the next row. That can leave a window reading a
         // held feature from its subtraction, never the reverse.
-        self.run_w.iter_mut().for_each(|w| *w = 0.0);
+        self.runs.forget();
     }
 
     /// Age the accumulator without adding data (pure decay: means unchanged,
@@ -846,7 +853,7 @@ impl EwCov {
             *q *= lam * lam;
         }
         self.prior_scale *= lam;
-        self.age_runs(lam);
+        self.runs.age(lam);
     }
 
     /// Age the accumulator over a row it does not learn: [`Self::decay`],
@@ -860,7 +867,7 @@ impl EwCov {
     /// is the answer.
     pub fn skip(&mut self, x: &[f64], lam: f64) {
         if self.pending.block_rows > 0 && lam * self.w_sum > 0.0 {
-            self.age_runs(lam);
+            self.runs.age(lam);
             self.buffer(x, lam, 0.0);
         } else {
             self.decay(lam);
@@ -935,6 +942,11 @@ pub struct TargetMoments {
     var: Vec<f64>,
     /// `Sum w^2` under `lam^2` decay, per target.
     q: Vec<f64>,
+    /// What each mean leaves out: the mean is `mean[t] + mean_lo[t]`
+    /// ([`crate::comp`]; docs/PLAN.md task 101). Empty in a state written
+    /// before it.
+    #[serde(default)]
+    mean_lo: Vec<f64>,
 }
 
 impl TargetMoments {
@@ -943,6 +955,7 @@ impl TargetMoments {
             mean: vec![0.0; n_targets],
             var: vec![0.0; n_targets],
             q: vec![0.0; n_targets],
+            mean_lo: vec![0.0; n_targets],
         }
     }
 
@@ -974,9 +987,17 @@ impl TargetMoments {
     /// step, so the variance matches an `ew_cov` over the column to the bit.
     #[inline]
     pub fn learn(&mut self, t: usize, y: f64, a: f64, b: f64, lam: f64, w: f64) {
-        let d = y - self.mean[t];
+        let n = self.mean.len();
+        let d = crate::comp::dev(y, self.mean[t], crate::comp::lo_of(&self.mean_lo, t));
         self.var[t] = a * self.var[t] + a * b * d * d;
-        self.mean[t] += b * d;
+        // A row of weight 0 takes no step (`crate::comp::add` says why).
+        if b > 0.0 {
+            crate::comp::add(
+                &mut self.mean[t],
+                crate::comp::lo_slot(&mut self.mean_lo, n, t),
+                b * d,
+            );
+        }
         self.q[t] = lam * lam * self.q[t] + w * w;
     }
 
@@ -1000,6 +1021,8 @@ impl TargetMoments {
         let d = self.mean[t] - other.mean[t];
         self.var[t] = a * self.var[t] + b * other.var[t] + a * b * d * d;
         self.mean[t] = a * self.mean[t] + b * other.mean[t];
+        let n = self.mean.len();
+        *crate::comp::lo_slot(&mut self.mean_lo, n, t) = 0.0;
         // `Q` is mixed by the same coefficients as the moments, not summed as
         // a union of two row sets would be: the twins see the *same* rows
         // under two halflives, so a union would count every row twice and
@@ -1456,7 +1479,11 @@ impl EwCovModel {
             return f64::NAN;
         }
         let k = cov.k();
-        let delta: Vec<f64> = x.iter().zip(cov.means()).map(|(xi, mi)| xi - mi).collect();
+        let delta: Vec<f64> = x
+            .iter()
+            .enumerate()
+            .map(|(i, &xi)| cov.deviation(i, xi))
+            .collect();
         let mut m = cov.comoments().to_vec();
         let ridge = cov.precision_prior * cov.precision_scale;
         for i in 0..k {
@@ -1768,7 +1795,13 @@ impl crate::OnlineModel for EwCovModel {
         // pre-row weight and mean `EwCov::update` is about to consume, which
         // is what makes `l = 0` its co-moments to the bit.
         if let Some(lag) = self.lag.as_mut() {
-            lag.update(x, self.cov.means(), self.cov.n_eff(), lam, weight);
+            lag.update(
+                x,
+                (self.cov.means(), self.cov.means_lo()),
+                self.cov.n_eff(),
+                lam,
+                weight,
+            );
         }
         // The snapshot is the state *before* this row, decayed to this row's
         // clock, so subtracting it later retains this row and everything
@@ -3433,8 +3466,10 @@ mod tests {
         want.q_sum = None;
         // Nor runs, which schema 16 added: nothing is known of them, and
         // they start at the next learned row (PLAN task 94).
-        want.run_x.clear();
-        want.run_w.clear();
+        want.runs = Runs::default();
+        // Nor the means' low parts (PLAN task 101): the means are the
+        // doubles the state holds.
+        want.m_lo.clear();
         assert_eq!(got, want);
         assert!(got.has_precision_prior());
         assert_eq!(got.precision(), want.precision());
@@ -3539,26 +3574,131 @@ mod tests {
                     blocked.update(&x, lam, w);
                 }
             }
-            assert_eq!(plain.run_x, blocked.run_x, "row {i}: values");
-            assert_eq!(plain.run_w, blocked.run_w, "row {i}: weights");
+            assert_eq!(plain.runs, blocked.runs, "row {i}");
         }
         // Feature 1 held 2.5 on every learned row: its run is all the weight.
         assert_eq!(plain.held_over(1, plain.n_eff()), Some(2.5));
-        assert!((plain.run_w[1] - plain.n_eff()).abs() <= 1e-12 * plain.n_eff());
+        let run = |i: usize| plain.runs.get(i).unwrap();
+        assert!((run(1).1 - plain.n_eff()).abs() <= 1e-12 * plain.n_eff());
         // Feature 0 cycles, so its run is the last learned row alone; the
         // zero-weight rows of 9s ended nothing.
         assert_eq!(plain.held_over(0, plain.n_eff()), None);
-        assert_ne!(plain.run_x[0], 9.0);
+        assert_ne!(run(0).0, 9.0);
         // Feature 2 has held -1 since row 40.
-        assert_eq!(plain.run_x[2], -1.0);
-        assert!(plain.run_w[2] < plain.n_eff());
-        assert_eq!(plain.held_over(2, plain.run_w[2]), Some(-1.0));
-        assert_eq!(plain.held_over(2, plain.run_w[2] * (1.0 + 1e-9)), None);
+        assert_eq!(run(2).0, -1.0);
+        assert!(run(2).1 < plain.n_eff());
+        assert_eq!(plain.held_over(2, run(2).1), Some(-1.0));
+        assert_eq!(plain.held_over(2, run(2).1 * (1.0 + 1e-9)), None);
     }
 
     /// New moments stand for rows the runs never saw -- `gaps`' blend with
     /// the slow twin -- so after `set_moments` no run covers any weight, and
     /// the next learned row starts each again.
+    /// A feature that moves and then holds, at a level of 1e8, per row and
+    /// in blocks of every size: its mean, a pair ([`crate::comp`]), reaches
+    /// the value exactly, and its variance and its covariance with a feature
+    /// that moves decay with the history, as exact arithmetic has them
+    /// (docs/PLAN.md task 101). A plain mean over the same rows stops a few
+    /// rounding steps short, and left both on the gap.
+    #[test]
+    fn a_held_slot_reaches_its_value_per_row_and_in_blocks() {
+        for block in [0, 1, 4, 16] {
+            let mut cov = EwCov::new(2);
+            cov.set_block_rows(block);
+            let (level, held) = (1e8, 1e8 + 0.37);
+            let lam = 0.5f64.powf(1.0 / 20.0);
+            let mut s = 3u64;
+            let (mut at_stop, mut plain, mut w_sum) = (0.0, 0.0, 0.0);
+            for i in 0..3300 {
+                let x = [
+                    lcg(&mut s),
+                    if i < 300 { level + lcg(&mut s) } else { held },
+                ];
+                cov.update(&x, lam, 1.0);
+                w_sum = lam * w_sum + 1.0;
+                plain += (x[1] - plain) / w_sum;
+                if i == 299 {
+                    cov.flush();
+                    at_stop = cov.var(1);
+                }
+            }
+            cov.flush();
+            assert_ne!(plain, held, "the plain mean reaches it; no case");
+            assert_eq!(cov.mean(1), held, "block {block}");
+            assert!(
+                cov.var(1) <= 1e-30 * at_stop,
+                "block {block}: {:e}",
+                cov.var(1)
+            );
+            let corr = cov.cov(0, 1) / (cov.var(0) * cov.var(1)).sqrt();
+            assert!(
+                corr.is_nan() || corr.abs() <= 1e-10,
+                "block {block}: correlation {corr}"
+            );
+        }
+    }
+
+    /// A skipped row under a capped gap (`lam = 0`) empties a blocked
+    /// accumulator as it empties a plain one: nothing is buffered where
+    /// there is no weight to hold it against, and `decay` is the answer.
+    #[test]
+    fn a_capped_gap_on_a_skipped_row_empties_a_blocked_accumulator() {
+        let mut ew = EwCov::new(2);
+        ew.set_block_rows(4);
+        for i in 0..3 {
+            ew.update(&[f64::from(i), 1.0], 0.9, 1.0);
+        }
+        assert!(ew.n_eff() > 0.0);
+        ew.skip(&[7.0, 7.0], 0.0);
+        assert_eq!(ew.n_eff(), 0.0, "a gap past the cap forgets everything");
+        assert!(!ew.has_pending());
+    }
+
+    /// The residue of a block's mean is folded in with its sign, and into
+    /// the pair on its own. At a level of 1e8 and a spread of 1, the block
+    /// mean pass one computes rounds to the level's step, 1.5e-8, and the
+    /// residue is that rounding, taken exactly (each `x − m_B` is exact,
+    /// the two being within a factor of two). Read the wrong way, or added
+    /// to a first block's `m_B − 0` before the pair sees it, it leaves the
+    /// merged pair a step off exact arithmetic, where the per-row pair is
+    /// within 1e-12 of it.
+    #[test]
+    fn the_residue_corrects_the_block_mean() {
+        let (k, block, level) = (2usize, 8usize, 1e8);
+        let mut per_row = EwCov::new(k);
+        let mut blocked = EwCov::new(k);
+        blocked.set_block_rows(block);
+        let mut s = 7u64;
+        let mut flushed = 0;
+        for i in 0..10 * block {
+            let x: Vec<f64> = (0..k).map(|_| level + lcg(&mut s)).collect();
+            let w = 1.0 + (i % 3) as f64 / 2.0;
+            per_row.update(&x, 0.9, w);
+            blocked.update(&x, 0.9, w);
+            if blocked.has_pending() {
+                continue;
+            }
+            flushed += 1;
+            for j in 0..k {
+                let gap = crate::comp::dev(per_row.mean(j), blocked.mean(j), blocked.mean_lo(j))
+                    + per_row.mean_lo(j);
+                assert!(
+                    gap.abs() <= 1e-12,
+                    "row {i}, slot {j}: the blocked pair is {gap:e} from the per-row pair"
+                );
+            }
+            // The residue enters the co-moments' corrections too, where a
+            // wrong sign is 1e-9 of them.
+            for (b, p) in blocked.comoments().iter().zip(per_row.comoments()) {
+                assert!(
+                    (b - p).abs() <= 1e-12 * (1.0 + p.abs()),
+                    "row {i}: co-moment {b} against the per-row {p}"
+                );
+            }
+        }
+        assert_eq!(flushed, 10, "every block flushed");
+    }
+
     #[test]
     fn new_moments_forget_the_runs() {
         let mut ew = EwCov::new(2);
@@ -3568,10 +3708,17 @@ mod tests {
         assert_eq!(ew.held_over(0, ew.n_eff() * 0.999), Some(1.0));
         let (m, c) = (ew.means().to_vec(), ew.comoments().to_vec());
         ew.set_moments(&m, &c, ew.n_eff(), ew.q_sum());
-        assert_eq!(ew.run_w, vec![0.0, 0.0]);
+        assert_eq!(
+            (ew.runs.get(0), ew.runs.get(1)),
+            (Some((1.0, 0.0)), Some((2.0, 0.0)))
+        );
         assert_eq!(ew.held_over(0, 1e-300), None);
         ew.update(&[1.0, 3.0], 0.9, 2.0);
-        assert_eq!(ew.run_w, vec![2.0, 2.0], "one row's weight each");
+        assert_eq!(
+            (ew.runs.get(0), ew.runs.get(1)),
+            (Some((1.0, 2.0)), Some((3.0, 2.0))),
+            "one row's weight each"
+        );
     }
 
     /// A state written before schema 16 has no runs (the named encoding
@@ -3585,17 +3732,19 @@ mod tests {
         }
         let mut old = serde_json::to_value(&ew).unwrap();
         let map = old.as_object_mut().unwrap();
-        assert!(map.remove("run_x").is_some() && map.remove("run_w").is_some());
+        assert!(map.remove("runs").is_some());
         let mut back: EwCov = serde_json::from_value(old).unwrap();
-        assert!(back.run_x.is_empty() && back.run_w.is_empty());
+        assert!(!back.runs.is_known(2));
         assert_eq!(back.held_over(0, 0.0), None, "nothing is known");
         back.update(&[1.0, 5.0], 0.9, 0.75);
-        assert_eq!(back.run_x, vec![1.0, 5.0]);
-        assert_eq!(back.run_w, vec![0.75, 0.75]);
-        // A state with one of the two and not the other knows no more.
-        for key in ["run_x", "run_w"] {
+        assert_eq!(
+            (back.runs.get(0), back.runs.get(1)),
+            (Some((1.0, 0.75)), Some((5.0, 0.75)))
+        );
+        // A state with one half of the runs and not the other knows no more.
+        for key in ["x", "w"] {
             let mut half = serde_json::to_value(&ew).unwrap();
-            half.as_object_mut().unwrap().remove(key);
+            half["runs"].as_object_mut().unwrap().remove(key);
             let mut back: EwCov = serde_json::from_value(half).unwrap();
             assert_eq!(
                 back.held_over(0, 0.0),
@@ -3603,8 +3752,7 @@ mod tests {
                 "{key} missing: nothing is known"
             );
             back.update(&[1.0, 5.0], 0.9, 0.75);
-            assert_eq!(back.run_x, vec![1.0, 5.0], "{key} missing");
-            assert_eq!(back.run_w, vec![0.75, 0.75], "{key} missing");
+            assert_eq!(back.runs.get(1), Some((5.0, 0.75)), "{key} missing");
         }
     }
 

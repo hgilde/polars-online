@@ -1,0 +1,968 @@
+//! A feature that stops moving (docs/PLAN.md task 101).
+//!
+//! A running mean steps toward each value it is given, and toward one value
+//! given row after row it converges until the step rounds to nothing, a few
+//! rounding steps short of it. Everything the mean centred was then off by
+//! that gap: a variance settled on its square instead of decaying with the
+//! history, a co-moment on the gap times the other side's noise, and a model
+//! that divides one by the other read the ratio of two rounding artefacts.
+//! The feature's level decides when, since the gap is counted in its
+//! rounding steps: measured, a lasso's slope on a feature at 1e8 went from
+//! the 0.5 it had learned to -4.7e3 within 40 halflives of it stopping.
+//!
+//! Every running mean is now a pair, `hi + lo`, whose steps no rounding
+//! drops (`crates/online-core/src/comp.rs`). These hold every
+//! model that centres a feature to what exact arithmetic gives, for 150
+//! halflives after it stops, at levels from 0 to 1e12: the slope learned
+//! while it moved, a spread that keeps decaying, and fits that do not
+//! depend on the level the feature sits at; and the same of a target that
+//! stops. Each fails with the means plain.
+
+use online_core::*;
+
+const H: f64 = 20.0;
+const MOVING: usize = 300;
+const HELD_HALFLIVES: usize = 150;
+/// The levels a stopped feature sits at: `-0.37` holds it at exactly zero,
+/// which a mean reaches by decaying geometrically, and stalls on only among
+/// the subnormals.
+const LEVELS: [f64; 6] = [0.5, -0.37, 1e3, 1e8, -1e8, 1e12];
+
+fn lcg(s: &mut u64) -> f64 {
+    *s = s
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    ((*s >> 11) as f64) / ((1u64 << 53) as f64) * 2.0 - 1.0
+}
+
+/// One row per clock unit. `x0` and `x1` move on every row; `x2` moves around
+/// `level` for 300 rows and then holds `level + 0.37`. The target is `1 + 2 x0
+/// - x1 + 0.5 (x2 - level)` and noise, the same numbers at every level.
+fn stream(level: f64) -> Vec<([f64; 3], f64)> {
+    stream_of(level, HELD_HALFLIVES * H as usize)
+}
+
+/// [`stream`] with `held` rows after the feature stops.
+fn stream_of(level: f64, held: usize) -> Vec<([f64; 3], f64)> {
+    let mut s = 7u64;
+    (0..MOVING + held)
+        .map(|i| {
+            let (x0, x1) = (lcg(&mut s), lcg(&mut s));
+            let u = if i < MOVING { lcg(&mut s) } else { 0.37 };
+            let y = 1.0 + 2.0 * x0 - x1 + 0.5 * u + 0.3 * lcg(&mut s);
+            ([x0, x1, level + u], y)
+        })
+        .collect()
+}
+
+fn d(i: usize) -> f64 {
+    if i == 0 { 0.0 } else { 1.0 }
+}
+
+/// A model's predictions over the stream, and its slope on `x2` after each
+/// row where it has one (NaN where it has none).
+fn run<M: OnlineModel>(m: M, level: f64, slope: impl Fn(&M) -> f64) -> (Vec<f64>, Vec<f64>) {
+    run_on(m, &stream(level), slope)
+}
+
+fn run_on<M: OnlineModel>(
+    mut m: M,
+    rows: &[([f64; 3], f64)],
+    slope: impl Fn(&M) -> f64,
+) -> (Vec<f64>, Vec<f64>) {
+    let (mut pred, mut coef) = (Vec::new(), Vec::new());
+    for (i, (x, y)) in rows.iter().enumerate() {
+        let out = m.step(x, &[Some(*y)], d(i), 1.0);
+        pred.push(out.pred[out.pred.len() - 1]);
+        coef.push(slope(&m));
+    }
+    (pred, coef)
+}
+
+fn decay() -> Decay {
+    Decay::Halflife(H)
+}
+
+/// What a fit at each level is held to: its predictions against the same
+/// fit at 0.5, as a share of `1 + |pred|`, from `from` halflives after the
+/// stop, to `tol(level)`.
+struct Invariance {
+    from: usize,
+    tol: fn(f64) -> f64,
+}
+
+/// A hundred rounding steps of the level. The features at a level carry its
+/// rounding in every row they moved on, so a fit on them differs from the
+/// fit at 0.5 by that much from the start: under one step, measured for the
+/// lasso, both ridges and `huber` at 1e3, 1e8 and 1e12, and under a
+/// hundredth of one for `sgd`. The stall took
+/// each of them 4e-2 to 2e-1 from the fit at 0.5, at every level; at 1e12,
+/// where a step is 2.2e-4, that is 2.4 times this bound, and the slope is
+/// what catches it first.
+fn steps_of(level: f64) -> f64 {
+    1e2 * (level.abs() * f64::EPSILON).max(f64::EPSILON)
+}
+
+/// The slope on the stopped feature stays near the one learned while it
+/// moved, on every row after it stops and at every level, and the fit at
+/// each level predicts what the fit at 0.5 does (`inv`).
+///
+/// "Near" is 0.5 ± 0.3. Exact arithmetic moves the slope a little as the
+/// feature's history decays to the scale of its last few rows, by about
+/// `sqrt(b)` of it. Measured over the levels and five seeds, the slope
+/// ranged over 0.41 to 0.61, all of it within 10 halflives of the stop, and
+/// within the same range in blocks of 4 to 64 rows. With the means plain it
+/// went to -79 at 50 halflives, -4.7e3 at 40, 1e10.
+fn holds<M: OnlineModel>(
+    name: &str,
+    make: impl Fn() -> M,
+    slope: impl Fn(&M) -> f64,
+    inv: Invariance,
+) {
+    let (base, _) = run(make(), 0.5, &slope);
+    for level in LEVELS {
+        let (pred, coef) = run(make(), level, &slope);
+        for (i, &c) in coef.iter().enumerate().skip(MOVING) {
+            assert!(
+                c.is_nan() || (0.2..0.8).contains(&c),
+                "{name} at level {level}: slope {c} on the stopped feature, {:.1} halflives after it stopped",
+                (i - MOVING) as f64 / H
+            );
+        }
+        let from = MOVING + inv.from * H as usize;
+        let worst = (from..pred.len())
+            .filter(|&i| base[i].is_finite())
+            .map(|i| (pred[i] - base[i]).abs() / (1.0 + base[i].abs()))
+            .fold(0.0, f64::max);
+        let tol = (inv.tol)(level);
+        assert!(
+            worst <= tol,
+            "{name} at level {level}: predictions {worst:.3e} from those at 0.5, past {tol:.1e}"
+        );
+    }
+}
+
+/// The lasso, both ridges, `huber` and `sgd`: from the stop on.
+const FROM_THE_STOP: Invariance = Invariance {
+    from: 0,
+    tol: steps_of,
+};
+
+#[test]
+fn the_lasso_keeps_the_slope_it_learned() {
+    let cfg = LassoCfg {
+        n_features: 3,
+        n_targets: 1,
+        add_intercept: true,
+        decay: decay(),
+        lasso_path: vec![0.05, 0.0],
+        l1_ratio: 1.0,
+        select_halflife: None,
+        min_periods: 10.0,
+        solve_every: 0.0,
+        max_rows_between_solves: 1,
+        max_cd_iters: 1000,
+        cd_tol: 1e-12,
+        target_gaps: TargetGaps::OwnRows,
+        window: None,
+        window_every: None,
+    };
+    holds(
+        "lasso",
+        || Lasso::new(cfg.clone()).unwrap(),
+        |m: &Lasso| m.coefficients().map_or(f64::NAN, |c| c[0][1][3]),
+        FROM_THE_STOP,
+    );
+}
+
+fn ridge(standardize: bool) -> EwRidgeCfg {
+    EwRidgeCfg {
+        n_features: 3,
+        n_targets: 1,
+        add_intercept: true,
+        decay: decay(),
+        ridge: vec![1e-6],
+        feature_sets: vec![],
+        standardize,
+        ridge_decay: false,
+        coef_prior: None,
+        session_shrink: None,
+        long_halflife: None,
+        min_periods: 10.0,
+        solve_every: 0.0,
+        max_rows_between_solves: 1,
+        gram_block_rows: 0,
+        target_gaps: TargetGaps::OwnRows,
+        window: None,
+        window_every: None,
+    }
+}
+
+#[test]
+fn a_standardized_ridge_keeps_the_slope_it_learned() {
+    holds(
+        "ewridge",
+        || EwRidge::new(ridge(true)).unwrap(),
+        |m: &EwRidge| m.coefficients().map_or(f64::NAN, |c| c[0][3]),
+        FROM_THE_STOP,
+    );
+}
+
+/// The blocked Gram update merges rows a block at a time, and its merged
+/// step is a pair's too.
+#[test]
+fn a_blocked_ridge_keeps_the_slope_it_learned() {
+    holds(
+        "ewridge, blocked",
+        || {
+            let mut c = ridge(true);
+            c.gram_block_rows = 16;
+            c.solve_every = 16.0;
+            c.max_rows_between_solves = 16;
+            EwRidge::new(c).unwrap()
+        },
+        |m: &EwRidge| m.coefficients().map_or(f64::NAN, |c| c[0][3]),
+        FROM_THE_STOP,
+    );
+}
+
+#[test]
+fn a_standardized_huber_keeps_the_slope_it_learned() {
+    let cfg = RobustCfg {
+        n_features: 3,
+        n_targets: 1,
+        add_intercept: true,
+        decay: decay(),
+        loss: RobustLoss::Huber { delta: 1.345 },
+        ridge: 1e-6,
+        standardize: true,
+        min_periods: 10.0,
+        solve_every: 0.0,
+        max_rows_between_solves: 1,
+        quantile_eps: 0.05,
+    };
+    holds(
+        "huber",
+        || Robust::new(cfg.clone()).unwrap(),
+        |m: &Robust| m.coefficients().map_or(f64::NAN, |c| c[0][3]),
+        FROM_THE_STOP,
+    );
+}
+
+/// `kalman` reports its coefficients through scales that shrink with a
+/// stopped feature's spread, in exact arithmetic too, so its slope is not
+/// held here; what it predicts is. Its scaler starts from a mean of zero, so
+/// its first rows see the level itself and the fit at a level differs from
+/// the fit at 0.5 by a warm-up that decays with the coefficient halflife:
+/// 7.3e-2 at the stop, 4.9e-4 at every level from 100 halflives. The stall
+/// grew it back to 6.9e-2 there.
+#[test]
+fn kalman_predicts_the_same_at_every_level() {
+    let cfg = KalmanCfg {
+        n_features: 3,
+        n_targets: 1,
+        add_intercept: true,
+        decay: decay(),
+        halflife: vec![200.0],
+        q: None,
+        obs_var: None,
+        p0: 1.0,
+        share_p: false,
+        min_periods: 10.0,
+        revert_halflife: vec![f64::INFINITY],
+        standardize: true,
+    };
+    holds(
+        "kalman",
+        || Kalman::new(cfg.clone()).unwrap(),
+        |_: &Kalman| f64::NAN,
+        Invariance {
+            from: 100,
+            tol: |_| 5e-3,
+        },
+    );
+}
+
+/// `sgd` standardizes each row with the moments that include it, so it reads
+/// the stopped feature's deviation against a spread that decays with it --
+/// the deviation from the pair, which keeps every bit as it shrinks.
+/// Measured from the stop: 3.7e-15 at 1e3, 1.7e-9 at 1e8, 3.2e-6 at 1e12.
+/// The stall left 6.4e-2 at 40 halflives and 0.12 at 100.
+#[test]
+fn sgd_predicts_the_same_at_every_level() {
+    let cfg = SgdCfg {
+        n_features: 3,
+        n_targets: 1,
+        add_intercept: true,
+        decay: decay(),
+        loss: SgdLoss::Squared,
+        learning_rate: 0.01,
+        schedule: LearningRate::Constant,
+        l2: 0.0,
+        min_periods: 10.0,
+        scale_features: true,
+        clip_gradient: f64::INFINITY,
+        constraint: None,
+    };
+    holds(
+        "sgd",
+        || Sgd::new(cfg.clone()).unwrap(),
+        |_: &Sgd| f64::NAN,
+        FROM_THE_STOP,
+    );
+}
+
+/// What `ew_cov` reports of a stopped feature: its spread keeps decaying
+/// with its history, as a weighted variance of rows that no longer move
+/// must, and its correlation with a feature that moves goes to zero with it.
+/// Each settled on a rounding artefact instead.
+#[test]
+fn ew_cov_reports_a_stopped_feature_as_it_is() {
+    for level in LEVELS {
+        let mut m = EwCovModel::new(EwCovCfg {
+            n_features: 3,
+            decay: decay(),
+            stats: vec![EwCovStat::Var, EwCovStat::Corr],
+            min_periods: 0.0,
+            precision_prior: None,
+            mahal_quantiles: vec![],
+            pca: 0,
+            pca_every: 0,
+            lags: vec![],
+            window: None,
+            window_every: None,
+        })
+        .unwrap();
+        let mut at_stop = 0.0;
+        for (i, (x, _)) in stream(level).iter().enumerate() {
+            m.step(x, &[], d(i), 1.0);
+            if i == MOVING - 1 {
+                at_stop = m.cov().var(2);
+            }
+        }
+        let (var, cov) = (m.cov().var(2), m.cov());
+        // 150 halflives take 2^-150 of it, about 7e-46; rounding may keep a
+        // little more, never a floor.
+        assert!(
+            var <= 1e-30 * at_stop,
+            "level {level}: variance {var:e} of {at_stop:e}"
+        );
+        let corr = cov.cov(0, 2) / (cov.var(0) * var).sqrt();
+        assert!(
+            corr.is_nan() || corr.abs() <= 1e-10,
+            "level {level}: correlation {corr}"
+        );
+    }
+}
+
+/// The same for `marginal`'s pairs: the stopped feature's correlation with
+/// the target decays with its spread.
+#[test]
+fn marginal_reports_a_stopped_feature_as_it_is() {
+    for level in LEVELS {
+        let mut m = Marginal::new(MarginalCfg {
+            n_features: 3,
+            n_targets: 1,
+            decay: decay(),
+            min_periods: vec![0.0],
+            lags: vec![],
+            serial_rule: None,
+            bins: None,
+            window: None,
+            window_every: None,
+        })
+        .unwrap();
+        let mut at_stop = 0.0;
+        for (i, (x, y)) in stream(level).iter().enumerate() {
+            m.step(x, &[Some(*y)], d(i), 1.0);
+            if i == MOVING - 1 {
+                at_stop = m.pair(0, 2).var_x;
+            }
+        }
+        let p = m.pair(0, 2);
+        assert!(
+            p.var_x <= 1e-30 * at_stop,
+            "level {level}: variance {:e} of {at_stop:e}",
+            p.var_x
+        );
+        let corr = p.cov / (p.var_x * p.var_y).sqrt();
+        assert!(
+            corr.is_nan() || corr.abs() <= 1e-10,
+            "level {level}: correlation {corr}"
+        );
+    }
+}
+
+/// One row per clock unit. The three features move on every row; the target
+/// is `level + 1 + 2 x0 - x1 + 0.5 x2` and noise for 300 rows, and then holds
+/// `level + 0.37`.
+fn held_target(level: f64) -> Vec<([f64; 3], f64)> {
+    let mut s = 7u64;
+    (0..MOVING + HELD_HALFLIVES * H as usize)
+        .map(|i| {
+            let x = [lcg(&mut s), lcg(&mut s), lcg(&mut s)];
+            let noise = 0.3 * lcg(&mut s);
+            let y = if i < MOVING {
+                level + 1.0 + 2.0 * x[0] - x[1] + 0.5 * x[2] + noise
+            } else {
+                level + 0.37
+            };
+            (x, y)
+        })
+        .collect()
+}
+
+/// A target that stops moving: its mean is a pair as a feature's is, so the
+/// cross-moments with the features that still move decay with the history,
+/// as exact arithmetic has them, and the slopes with them -- to 2^-150 of
+/// the 2 learned on `x0`, 150 halflives on: measured, 1.35e-45 at every
+/// level (1.26e-45 for `huber`). A mean stopped short of the target fed each
+/// cross-moment that gap times the features' motion, and the slopes stayed
+/// on it: -1.5e-16 at a level of 0.5, -2e-8 at 1e8, -1.6e-4 at 1e12 (the
+/// bound is 1e-30).
+fn slopes_decay<M: OnlineModel>(name: &str, make: impl Fn() -> M, slope: impl Fn(&M) -> f64) {
+    for level in LEVELS {
+        let mut m = make();
+        let mut at_stop = f64::NAN;
+        for (i, (x, y)) in held_target(level).iter().enumerate() {
+            m.step(x, &[Some(*y)], d(i), 1.0);
+            if i == MOVING - 1 {
+                at_stop = slope(&m);
+            }
+        }
+        let end = slope(&m);
+        assert!(
+            at_stop > 1.5,
+            "{name} at level {level}: the case needs a slope, {at_stop}"
+        );
+        assert!(
+            end.abs() <= 1e-30,
+            "{name} at level {level}: slope {end:e} on x0, 150 halflives after the target stopped"
+        );
+    }
+}
+
+#[test]
+fn a_held_target_leaves_no_slope_on_a_moving_feature() {
+    slopes_decay(
+        "ewridge",
+        || EwRidge::new(ridge(true)).unwrap(),
+        |m: &EwRidge| m.coefficients().map_or(f64::NAN, |c| c[0][1]),
+    );
+    slopes_decay(
+        "ewridge, unstandardized",
+        || EwRidge::new(ridge(false)).unwrap(),
+        |m: &EwRidge| m.coefficients().map_or(f64::NAN, |c| c[0][1]),
+    );
+    slopes_decay(
+        "ewridge, blocked",
+        || {
+            let mut c = ridge(true);
+            c.gram_block_rows = 16;
+            c.solve_every = 16.0;
+            c.max_rows_between_solves = 16;
+            EwRidge::new(c).unwrap()
+        },
+        |m: &EwRidge| m.coefficients().map_or(f64::NAN, |c| c[0][1]),
+    );
+    let lasso = LassoCfg {
+        n_features: 3,
+        n_targets: 1,
+        add_intercept: true,
+        decay: decay(),
+        lasso_path: vec![0.0],
+        l1_ratio: 1.0,
+        select_halflife: None,
+        min_periods: 10.0,
+        solve_every: 0.0,
+        max_rows_between_solves: 1,
+        max_cd_iters: 1000,
+        cd_tol: 1e-30,
+        target_gaps: TargetGaps::OwnRows,
+        window: None,
+        window_every: None,
+    };
+    slopes_decay(
+        "lasso",
+        || Lasso::new(lasso.clone()).unwrap(),
+        |m: &Lasso| m.coefficients().map_or(f64::NAN, |c| c[0][0][1]),
+    );
+    let huber = RobustCfg {
+        n_features: 3,
+        n_targets: 1,
+        add_intercept: true,
+        decay: decay(),
+        loss: RobustLoss::Huber { delta: 1.345 },
+        ridge: 1e-6,
+        standardize: true,
+        min_periods: 10.0,
+        solve_every: 0.0,
+        max_rows_between_solves: 1,
+        quantile_eps: 0.05,
+    };
+    slopes_decay(
+        "huber",
+        || Robust::new(huber.clone()).unwrap(),
+        |m: &Robust| m.coefficients().map_or(f64::NAN, |c| c[0][1]),
+    );
+}
+
+/// What the models report of a held target: its variance decays with its
+/// history, in `ewridge`'s target moments (the half of a saved Gram that
+/// `R²` and the standard errors read) and in `marginal`'s pairs, where its
+/// correlation with a moving feature goes to zero with it: 1.9e-23 at every
+/// level, where exact arithmetic has 2^-75 of it. Each settled on a rounding
+/// artefact instead: a variance of 4.2e-14 at 1e8, and a correlation of
+/// -6.05e-2 at every level.
+#[test]
+fn a_held_target_is_reported_as_it_is() {
+    for level in LEVELS {
+        let mut ridge = EwRidge::new(ridge(true)).unwrap();
+        let mut pairs = Marginal::new(MarginalCfg {
+            n_features: 3,
+            n_targets: 1,
+            decay: decay(),
+            min_periods: vec![0.0],
+            lags: vec![],
+            serial_rule: None,
+            bins: None,
+            window: None,
+            window_every: None,
+        })
+        .unwrap();
+        let (mut ridge_at_stop, mut pair_at_stop) = (0.0, 0.0);
+        for (i, (x, y)) in held_target(level).iter().enumerate() {
+            ridge.step(x, &[Some(*y)], d(i), 1.0);
+            pairs.step(x, &[Some(*y)], d(i), 1.0);
+            if i == MOVING - 1 {
+                ridge_at_stop = ridge.target_moments().unwrap().vars()[0];
+                pair_at_stop = pairs.pair(0, 0).var_y;
+            }
+        }
+        let var = ridge.target_moments().unwrap().vars()[0];
+        assert!(
+            var <= 1e-30 * ridge_at_stop,
+            "level {level}: ewridge's target variance {var:e} of {ridge_at_stop:e}"
+        );
+        let p = pairs.pair(0, 0);
+        assert!(
+            p.var_y <= 1e-30 * pair_at_stop,
+            "level {level}: marginal's target variance {:e} of {pair_at_stop:e}",
+            p.var_y
+        );
+        assert!(
+            p.corr.is_nan() || p.corr.abs() <= 1e-10,
+            "level {level}: correlation {}",
+            p.corr
+        );
+    }
+}
+
+/// Without decay a mean steps by `1/n`, and a plain one stops `n/2` rounding
+/// steps short of a held value at row `n`, a gap exact arithmetic closes
+/// only as `1/n`. At 1e12, where a rounding step is 1.2e-4, the variance of
+/// a feature stopped after 300 rows settled on the gap's square by row
+/// 20,000, and the standardized ridge's slope went from the 0.5 it learned
+/// to 0.04 by row 300,000; with the means as pairs it stays at 0.50 to 0.52.
+/// `sgd`'s predictions, which the stall took 2.2e-2 from the fit at 0.5,
+/// stay within 7e-7 of it from the stop. Setting the mean to the value at
+/// the stall, the first fix built for this, moved them by 6.9e-2 at once;
+/// stepping a gap to it, the second, by 3.5e-3. At 1e8 a plain mean stalls
+/// at row 120,000.
+#[test]
+fn without_decay_a_stopped_feature_keeps_its_slope() {
+    let held = 100_000;
+    let no_decay = |mut c: EwRidgeCfg| {
+        c.decay = Decay::Halflife(f64::INFINITY);
+        c
+    };
+    let slope = |m: &EwRidge| m.coefficients().map_or(f64::NAN, |c| c[0][3]);
+    let (_, coef) = run_on(
+        EwRidge::new(no_decay(ridge(true))).unwrap(),
+        &stream_of(1e12, held),
+        slope,
+    );
+    let (lo, hi) = coef[MOVING..]
+        .iter()
+        .filter(|c| c.is_finite())
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &c| {
+            (a.min(c), b.max(c))
+        });
+    assert!(
+        (0.2..0.8).contains(&lo) && (0.2..0.8).contains(&hi),
+        "slope from {lo} to {hi} on the stopped feature"
+    );
+    let cfg = SgdCfg {
+        n_features: 3,
+        n_targets: 1,
+        add_intercept: true,
+        decay: Decay::Halflife(f64::INFINITY),
+        loss: SgdLoss::Squared,
+        learning_rate: 0.01,
+        schedule: LearningRate::Constant,
+        l2: 0.0,
+        min_periods: 10.0,
+        scale_features: true,
+        clip_gradient: f64::INFINITY,
+        constraint: None,
+    };
+    let (base, _) = run_on(
+        Sgd::new(cfg.clone()).unwrap(),
+        &stream_of(0.5, held),
+        |_: &Sgd| f64::NAN,
+    );
+    let (pred, _) = run_on(Sgd::new(cfg).unwrap(), &stream_of(1e12, held), |_: &Sgd| {
+        f64::NAN
+    });
+    let worst = (MOVING..pred.len())
+        .map(|i| (pred[i] - base[i]).abs() / (1.0 + base[i].abs()))
+        .fold(0.0, f64::max);
+    assert!(
+        worst <= 1e-5,
+        "sgd: predictions {worst:.3e} from those at 0.5"
+    );
+}
+
+/// A state saved while a feature holds a value carries its means' low
+/// parts, and the model restored from it goes on as the one that never
+/// stopped, to the bit. Saved every 5 halflives from 10 to 55 after the
+/// feature stops at a level of 1e8, which spans the row a plain mean would
+/// stall on (near 30 halflives), through named msgpack as the bank writes a
+/// state file. With the low parts left out of the state it fails.
+fn resumes<M: OnlineModel>(name: &str, make: impl Fn() -> M) {
+    let rows = stream(1e8);
+    let step = |m: &mut M, i: usize| {
+        let (x, y) = &rows[i];
+        m.step(x, &[Some(*y)], d(i), 1.0).pred
+    };
+    let mut whole = make();
+    let want: Vec<Vec<f64>> = (0..rows.len()).map(|i| step(&mut whole, i)).collect();
+    for hl in (10..60).step_by(5) {
+        let split = MOVING + hl * H as usize;
+        let mut first = make();
+        for i in 0..split {
+            step(&mut first, i);
+        }
+        let bytes = rmp_serde::to_vec_named(&first.state()).unwrap();
+        let mut resumed = M::restore(&rmp_serde::from_slice(&bytes).unwrap()).unwrap();
+        for (i, want) in want.iter().enumerate().skip(split) {
+            let got = step(&mut resumed, i);
+            let same = got.len() == want.len()
+                && got
+                    .iter()
+                    .zip(want)
+                    .all(|(a, b)| a.to_bits() == b.to_bits());
+            assert!(
+                same,
+                "{name}, saved {hl} halflives in: row {i}, {got:?} against {want:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_state_saved_mid_hold_resumes_to_the_bit() {
+    resumes("ewridge", || EwRidge::new(ridge(true)).unwrap());
+    resumes("ewridge, blocked", || {
+        let mut c = ridge(true);
+        c.gram_block_rows = 16;
+        c.solve_every = 16.0;
+        c.max_rows_between_solves = 16;
+        EwRidge::new(c).unwrap()
+    });
+    resumes("lasso", || {
+        Lasso::new(LassoCfg {
+            n_features: 3,
+            n_targets: 1,
+            add_intercept: true,
+            decay: decay(),
+            lasso_path: vec![0.05, 0.0],
+            l1_ratio: 1.0,
+            select_halflife: None,
+            min_periods: 10.0,
+            solve_every: 0.0,
+            max_rows_between_solves: 1,
+            max_cd_iters: 1000,
+            cd_tol: 1e-12,
+            target_gaps: TargetGaps::OwnRows,
+            window: None,
+            window_every: None,
+        })
+        .unwrap()
+    });
+    resumes("huber", || {
+        Robust::new(RobustCfg {
+            n_features: 3,
+            n_targets: 1,
+            add_intercept: true,
+            decay: decay(),
+            loss: RobustLoss::Huber { delta: 1.345 },
+            ridge: 1e-6,
+            standardize: true,
+            min_periods: 10.0,
+            solve_every: 0.0,
+            max_rows_between_solves: 1,
+            quantile_eps: 0.05,
+        })
+        .unwrap()
+    });
+    resumes("kalman", || {
+        Kalman::new(KalmanCfg {
+            n_features: 3,
+            n_targets: 1,
+            add_intercept: true,
+            decay: decay(),
+            halflife: vec![200.0],
+            q: None,
+            obs_var: None,
+            p0: 1.0,
+            share_p: false,
+            min_periods: 10.0,
+            revert_halflife: vec![f64::INFINITY],
+            standardize: true,
+        })
+        .unwrap()
+    });
+    resumes("sgd", || {
+        Sgd::new(SgdCfg {
+            n_features: 3,
+            n_targets: 1,
+            add_intercept: true,
+            decay: decay(),
+            loss: SgdLoss::Squared,
+            learning_rate: 0.01,
+            schedule: LearningRate::Constant,
+            l2: 0.0,
+            min_periods: 10.0,
+            scale_features: true,
+            clip_gradient: f64::INFINITY,
+            constraint: None,
+        })
+        .unwrap()
+    });
+    resumes("marginal", || {
+        Marginal::new(MarginalCfg {
+            n_features: 3,
+            n_targets: 1,
+            decay: decay(),
+            min_periods: vec![0.0],
+            lags: vec![],
+            serial_rule: None,
+            bins: None,
+            window: None,
+            window_every: None,
+        })
+        .unwrap()
+    });
+}
+
+/// `marginal`'s bins over a target that stops: each bin's mean is a pair, as
+/// the pairs' means are, so each bin's variance decays with its history,
+/// and the split gain -- the between-bin share of the target's variance --
+/// goes to zero with it. Measured: a gain of 0.52 at the stop, and 0 at every
+/// level 150 halflives on (3.4e-46 where the target holds zero), with the
+/// bins' variances at 4.7e-45. A bin's mean that stopped short left its `m2`
+/// fed that gap: the variances settled on 4.9e-32 at 0.5 and 6.0e-8 at
+/// 1e12, and the gain on a ratio of rounding artefacts, 0.45 with a `t` of
+/// 6.7 at every level.
+#[test]
+fn a_held_target_leaves_no_split_in_the_bins() {
+    for level in LEVELS {
+        let mut m = Marginal::new(MarginalCfg {
+            n_features: 3,
+            n_targets: 1,
+            decay: decay(),
+            min_periods: vec![0.0],
+            lags: vec![],
+            serial_rule: None,
+            bins: Some(Box::new(BinCfg {
+                n_bins: 4,
+                edges: None,
+                rule: BinRule::Quantile,
+                warm_rows: 100,
+            })),
+            window: None,
+            window_every: None,
+        })
+        .unwrap();
+        let (mut gain_at_stop, mut var_at_stop) = (0.0, 0.0);
+        for (i, (x, y)) in held_target(level).iter().enumerate() {
+            m.step(x, &[Some(*y)], d(i), 1.0);
+            if i == MOVING - 1 {
+                let p = m.pair(0, 0);
+                gain_at_stop = p.split_gain;
+                var_at_stop = p.bin_var_y.iter().copied().fold(0.0, f64::max);
+            }
+        }
+        let p = m.pair(0, 0);
+        assert!(
+            gain_at_stop > 0.1,
+            "level {level}: the case needs a split, {gain_at_stop}"
+        );
+        assert!(
+            p.split_gain <= 1e-10,
+            "level {level}: split gain {:e}, 150 halflives after the target stopped",
+            p.split_gain
+        );
+        for (b, v) in p.bin_var_y.iter().enumerate() {
+            assert!(
+                *v <= 1e-30 * var_at_stop,
+                "level {level}: bin {b}'s variance {v:e} of {var_at_stop:e}"
+            );
+        }
+    }
+}
+
+/// A row of weight 0 learns nothing (CLAUDE.md hard rule 9), so the values
+/// it carries change nothing. Every model runs a hold twice: once with its
+/// rows of no weight carrying the held feature's value and the stream's
+/// target, and once carrying 5 more and 99 more. Its predictions on every
+/// other row agree to the bit. The second fix built for task 101, which
+/// stepped a gap toward a value it detected as held, broke this: a row of
+/// no weight ended no run, so it found the slot held while carrying another
+/// value, and moved the mean to that value less the gap for the next row to
+/// read.
+fn no_weight_moves_nothing<M: OnlineModel>(name: &str, make: impl Fn() -> M) {
+    let zero = |i: usize| i >= MOVING && i % 7 == 3;
+    for level in [1e3, 1e8, 1e12] {
+        for (what, rows) in [("feature", stream(level)), ("target", held_target(level))] {
+            let run = |far: bool| -> Vec<Vec<f64>> {
+                let mut m = make();
+                let rows = rows.iter().enumerate();
+                rows.map(|(i, (x, y))| {
+                    let (mut x, mut y) = (*x, *y);
+                    if far && zero(i) {
+                        (x[2], y) = (x[2] + 5.0, y + 99.0);
+                    }
+                    let w = if zero(i) { 0.0 } else { 1.0 };
+                    m.step(&x, &[Some(y)], d(i), w).pred
+                })
+                .collect()
+            };
+            let (near, far) = (run(false), run(true));
+            for i in (0..rows.len()).filter(|&i| !zero(i)) {
+                let same = near[i]
+                    .iter()
+                    .zip(&far[i])
+                    .all(|(a, b)| a.to_bits() == b.to_bits());
+                assert!(
+                    same,
+                    "{name}, held {what}, level {level}: row {i}, {:?} against {:?}",
+                    far[i], near[i]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_row_of_no_weight_moves_no_mean() {
+    no_weight_moves_nothing("ewridge", || EwRidge::new(ridge(true)).unwrap());
+    no_weight_moves_nothing("ewridge, blocked", || {
+        let mut c = ridge(true);
+        c.gram_block_rows = 16;
+        c.solve_every = 16.0;
+        c.max_rows_between_solves = 16;
+        EwRidge::new(c).unwrap()
+    });
+    no_weight_moves_nothing("lasso", || {
+        Lasso::new(LassoCfg {
+            n_features: 3,
+            n_targets: 1,
+            add_intercept: true,
+            decay: decay(),
+            lasso_path: vec![0.05, 0.0],
+            l1_ratio: 1.0,
+            select_halflife: None,
+            min_periods: 10.0,
+            solve_every: 0.0,
+            max_rows_between_solves: 1,
+            max_cd_iters: 1000,
+            cd_tol: 1e-12,
+            target_gaps: TargetGaps::OwnRows,
+            window: None,
+            window_every: None,
+        })
+        .unwrap()
+    });
+    no_weight_moves_nothing("huber", || {
+        Robust::new(RobustCfg {
+            n_features: 3,
+            n_targets: 1,
+            add_intercept: true,
+            decay: decay(),
+            loss: RobustLoss::Huber { delta: 1.345 },
+            ridge: 1e-6,
+            standardize: true,
+            min_periods: 10.0,
+            solve_every: 0.0,
+            max_rows_between_solves: 1,
+            quantile_eps: 0.05,
+        })
+        .unwrap()
+    });
+    no_weight_moves_nothing("kalman", || {
+        Kalman::new(KalmanCfg {
+            n_features: 3,
+            n_targets: 1,
+            add_intercept: true,
+            decay: decay(),
+            halflife: vec![200.0],
+            q: None,
+            obs_var: None,
+            p0: 1.0,
+            share_p: false,
+            min_periods: 10.0,
+            revert_halflife: vec![f64::INFINITY],
+            standardize: true,
+        })
+        .unwrap()
+    });
+    no_weight_moves_nothing("sgd", || {
+        Sgd::new(SgdCfg {
+            n_features: 3,
+            n_targets: 1,
+            add_intercept: true,
+            decay: decay(),
+            loss: SgdLoss::Squared,
+            learning_rate: 0.01,
+            schedule: LearningRate::Constant,
+            l2: 0.0,
+            min_periods: 10.0,
+            scale_features: true,
+            clip_gradient: f64::INFINITY,
+            constraint: None,
+        })
+        .unwrap()
+    });
+    no_weight_moves_nothing("marginal", || {
+        Marginal::new(MarginalCfg {
+            n_features: 3,
+            n_targets: 1,
+            decay: decay(),
+            min_periods: vec![0.0],
+            lags: vec![],
+            serial_rule: None,
+            bins: None,
+            window: None,
+            window_every: None,
+        })
+        .unwrap()
+    });
+    no_weight_moves_nothing("ew_cov", || {
+        EwCovModel::new(EwCovCfg {
+            n_features: 3,
+            decay: decay(),
+            stats: vec![EwCovStat::Mean, EwCovStat::Var, EwCovStat::Corr],
+            min_periods: 0.0,
+            precision_prior: None,
+            mahal_quantiles: vec![],
+            pca: 0,
+            pca_every: 0,
+            lags: vec![],
+            window: None,
+            window_every: None,
+        })
+        .unwrap()
+    });
+}

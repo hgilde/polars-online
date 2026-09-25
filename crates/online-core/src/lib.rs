@@ -60,6 +60,7 @@
 mod bocpd;
 mod clock;
 mod cluster;
+mod comp;
 mod conformal;
 mod constraint;
 mod corrchange;
@@ -85,6 +86,7 @@ mod pa;
 mod rcov;
 mod rls;
 mod robust;
+mod runs;
 mod seqtest;
 mod sgd;
 mod solve;
@@ -134,6 +136,7 @@ pub use rcov::{
 };
 pub use rls::{Rls, RlsCfg};
 pub use robust::{Robust, RobustCfg, RobustLoss};
+pub use runs::Runs;
 pub use seqtest::{SLOTS as SEQTEST_SLOTS, SeqTest, SeqTestCfg};
 pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
 pub use solve::{SpdFactor, quad_forms_logdet, solve_spd};
@@ -261,12 +264,17 @@ pub use window::{
 ///   ended, against hard rule 3 (a property test found it, 2026-09-24). A
 ///   schema-14 file loads: its loader rebuilds the value as 14 did at a chunk
 ///   boundary.
-/// - 16: every `EwCov` keeps, per feature, the value it has held since it
-///   last changed and the weight of those rows (`run_x`, `run_w`), so a
-///   window can say exactly that a feature held one value over it, where
-///   the subtraction left a remainder the lasso standardized by (docs/PLAN.md
-///   task 94, 2026-09-24). A schema-14 or 15 file loads: the named encoding
-///   defaults the two to empty, and the runs start at the next learned row.
+/// - 16: every `EwCov`, and `marginal` for each of its pairs, keeps per slot
+///   the value it has held since it last changed and the weight of those
+///   rows ([`Runs`]), so a window can say exactly that a slot held one value
+///   over it, where the subtraction left a remainder the lasso standardized
+///   by (docs/PLAN.md task 94). And every running mean keeps what its double
+///   leaves out (`m_lo`, `mean_lo` and their kin): the mean is a pair whose
+///   steps no rounding drops, where a plain mean stopped short of a value
+///   held and left every variance centred on it on the gap (task 101,
+///   2026-09-24). A schema-14 or 15 file loads: the named encoding defaults
+///   both to empty, the runs start at the next learned row, and a mean
+///   starts as the double it was saved as.
 pub const SCHEMA_VERSION: u32 = 16;
 
 /// Oldest state layout this build still loads.

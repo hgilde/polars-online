@@ -413,7 +413,7 @@ impl Hmm {
                     let (mut log_det, mut q) = (0.0, 0.0);
                     for (i, xi) in x.iter().enumerate() {
                         let v = cov.var(i) + r;
-                        let dv = xi - cov.mean(i);
+                        let dv = cov.deviation(i, *xi);
                         log_det += v.ln();
                         q += dv * dv / v;
                     }
@@ -441,8 +441,8 @@ impl Hmm {
                 }
                 let mut deltas = vec![0.0; d * k];
                 for (s, state) in self.states.iter().enumerate() {
-                    for (i, (xi, mi)) in x.iter().zip(state.means()).enumerate() {
-                        deltas[s * d + i] = xi - mi;
+                    for (i, &xi) in x.iter().enumerate() {
+                        deltas[s * d + i] = state.deviation(i, xi);
                     }
                 }
                 let (q, log_det, _) = quad_forms_logdet(&m, &deltas, d, k)?;
@@ -454,8 +454,8 @@ impl Hmm {
                 let mut delta = vec![0.0; d];
                 for (s, o) in out.iter_mut().enumerate() {
                     let cov = &self.states[s];
-                    for (dv, (xi, mi)) in delta.iter_mut().zip(x.iter().zip(cov.means())) {
-                        *dv = xi - mi;
+                    for (i, (dv, &xi)) in delta.iter_mut().zip(x).enumerate() {
+                        *dv = cov.deviation(i, xi);
                     }
                     // The cached factor when `ensure_factors` has built it
                     // (the same `SpdFactor::of` on the same matrix, so the
@@ -922,6 +922,76 @@ mod tests {
     }
 
     /// A longhand Hamilton filter at fixed parameters.
+    /// Each state's log density is the Gaussian of its own moments, under
+    /// every covariance kind, written out with explicit indices for two
+    /// features and two states: the deviation from the pair, the ridge added
+    /// to each variance, and the quadratic form through a 2x2 inverse.
+    #[test]
+    fn log_densities_are_the_gaussians_of_each_state() {
+        let (d, k) = (2usize, 2usize);
+        let x = [0.3, -0.2];
+        for covariance in [Covariance::Full, Covariance::Shared, Covariance::Diagonal] {
+            let m = Hmm::new(HmmCfg {
+                learn: false,
+                covariance,
+                means: Some(vec![-3.0, -2.0, 3.0, 2.5]),
+                covs: Some(vec![1.0, 0.3, 0.3, 2.0, 1.5, -0.2, -0.2, 0.8]),
+                ..cfg(d, k)
+            })
+            .unwrap();
+            let got = m.log_densities(&x).unwrap();
+            let base = -0.5 * d as f64 * std::f64::consts::TAU.ln();
+            let quad = |mat: &[f64], dv: &[f64]| {
+                let det = mat[0] * mat[3] - mat[1] * mat[2];
+                let q = (mat[3] * dv[0] * dv[0] - (mat[1] + mat[2]) * dv[0] * dv[1]
+                    + mat[0] * dv[1] * dv[1])
+                    / det;
+                (det.ln(), q)
+            };
+            let total: f64 = m.states.iter().map(EwCov::n_eff).sum();
+            let mut shared = vec![0.0; 4];
+            for (s, state) in m.states.iter().enumerate() {
+                let pi = if total > 0.0 {
+                    state.n_eff() / total
+                } else {
+                    0.5
+                };
+                for (j, c) in state.comoments().iter().enumerate() {
+                    shared[j] += pi * c;
+                }
+                shared[0] += pi * m.ridge(s);
+                shared[3] += pi * m.ridge(s);
+            }
+            for (s, state) in m.states.iter().enumerate() {
+                let dv = [state.deviation(0, x[0]), state.deviation(1, x[1])];
+                let r = m.ridge(s);
+                let want = match covariance {
+                    Covariance::Diagonal => {
+                        let (v0, v1) = (state.var(0) + r, state.var(1) + r);
+                        base - 0.5 * (v0.ln() + v1.ln())
+                            - 0.5 * (dv[0] * dv[0] / v0 + dv[1] * dv[1] / v1)
+                    }
+                    Covariance::Shared => {
+                        let (log_det, q) = quad(&shared, &dv);
+                        base - 0.5 * log_det - 0.5 * q
+                    }
+                    Covariance::Full => {
+                        let mut mat = state.comoments().to_vec();
+                        mat[0] += r;
+                        mat[3] += r;
+                        let (log_det, q) = quad(&mat, &dv);
+                        base - 0.5 * log_det - 0.5 * q
+                    }
+                };
+                assert!(
+                    (got[s] - want).abs() <= 1e-9 * want.abs() + 1e-12,
+                    "{covariance:?}, state {s}: {} against {want}",
+                    got[s]
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_filter_is_the_longhand_recursion() {
         let (d, k) = (2usize, 2usize);
