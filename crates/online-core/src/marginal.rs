@@ -967,10 +967,16 @@ impl Marginal {
             // the target's (`EwCov::update`, `crate::Runs`).
             if w > 0.0 && w > crate::window::EMPTY_FRACTION * (lam * self.wt[t]) {
                 self.rows_t[t] += 1;
-                self.y_runs.track_one(n_targets, t, yt, self.rows_t[t]);
-                for (i, &xj) in x.iter().enumerate() {
-                    self.x_runs
-                        .track_one(n_targets * p, t * p + i, xj, self.rows_t[t]);
+                // The runs are read by a window's truncated pair alone, and a
+                // window is fixed when the model is built: without one they
+                // were kept for nothing, and at `p·T` slots that was half the
+                // model's time at width (docs/PERFORMANCE.md §24).
+                if self.win.is_some() {
+                    self.y_runs.track_one(n_targets, t, yt, self.rows_t[t]);
+                    for (i, &xj) in x.iter().enumerate() {
+                        self.x_runs
+                            .track_one(n_targets * p, t * p + i, xj, self.rows_t[t]);
+                    }
                 }
             }
             use crate::comp::{add, dev};
@@ -1873,6 +1879,36 @@ mod tests {
                         "lag {li}, target {t}, feature {j}: y now against x back"
                     );
                 }
+            }
+        }
+    }
+
+    /// The runs are a window's, and a model without one keeps none: every
+    /// slot's run stays unstarted, where under a window each slot's run
+    /// starts at its first learned row (docs/PERFORMANCE.md §24).
+    #[test]
+    fn only_a_window_keeps_the_runs() {
+        for window in [None, Some(50.0)] {
+            let mut c = cfg(2, 2);
+            c.window = window;
+            let mut m = Marginal::new(c).unwrap();
+            let mut s = 9u64;
+            for i in 0..10 {
+                let x = [lcg(&mut s), 0.25];
+                m.step(&x, &[Some(lcg(&mut s)), Some(1.0)], step_clock(i), 1.0);
+            }
+            assert_eq!(m.rows_t, vec![10, 10], "the counts are kept either way");
+            let started = |r: &crate::Runs, k: usize| {
+                (0..k)
+                    .filter(|&i| r.started_by(k, i, u64::MAX).is_some())
+                    .count()
+            };
+            let (xs, ys) = (started(&m.x_runs, 4), started(&m.y_runs, 2));
+            if window.is_some() {
+                assert_eq!((xs, ys), (4, 2), "every slot has a run under a window");
+                assert_eq!(m.x_runs.started_by(4, 1, 1), Some(0.25), "the held feature");
+            } else {
+                assert_eq!((xs, ys), (0, 0), "no run without one");
             }
         }
     }

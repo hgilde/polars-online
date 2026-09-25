@@ -34,6 +34,7 @@ are.
 | [21. What inspecting the plan costs `fit(lf)`](#21-what-inspecting-the-plan-costs-fitlf-2026-09-18) | `fit(lf)` seems slow on a small input | [the bisect](#the-bisect) · [what it is](#what-it-actually-is) · [the fix](#the-fix) · [the case the user has](#measure-the-case-the-user-has) |
 | [22. `marginal`'s bins at several targets](#22-marginals-bins-at-several-targets-e71-task-122-2026-09-25) | you bin `marginal`'s features against several targets | |
 | [23. `marginal`'s cross terms on request](#23-marginals-cross-terms-on-request-e70-task-123-2026-09-25) | you use `marginal`'s lags at width, or set `cross_lags` | |
+| [24. A wide `marginal` through the bank](#24-a-wide-marginal-through-the-bank-the-cost-that-was-not-the-models-task-124-2026-09-25) | a wide spec's call costs far more than its model | |
 
 ## Reading this document
 
@@ -87,7 +88,7 @@ ONLINE_TIMING=1 uv run python scripts/benchmark.py
 ```
 
 The sections name the rest where they use them: `scripts/scaling_bench.py`
-(§8), `marg_bench` (§17, §22, §23), `scripts/sklearn_comparison.py` (§19), and
+(§8), `marg_bench` (§17, §22–§24), `scripts/sklearn_comparison.py` (§19), and
 `sgd_bench` and `sgd_signature` (§20).
 
 `ONLINE_TIMING=1` prints two kinds of line to stderr:
@@ -106,7 +107,7 @@ says how to measure a change against these numbers.
 **Every golden number was unchanged throughout: that was the contract.**
 Status as of 2026-09-06: P1–P11 all done, the numbers refreshed in §8, the
 chunk plan revisited in §12, the new families surveyed in §13, and the
-correlation families of tasks 45–56 in §15. The later sections, §16–§23,
+correlation families of tasks 45–56 in §15. The later sections, §16–§24,
 are each dated in their headings.
 
 Against the baseline in §1:
@@ -3005,3 +3006,68 @@ present and with eight targets absent on a third of the rows. Naming every
 lag in `cross_lags` runs the other loop and gives the same checksum, which
 `cross_lags_keep_the_default_cross_terms_at_their_lags` also checks
 accumulator by accumulator.
+
+## 24. A wide `marginal` through the bank: the cost that was not the model's (task 124, 2026-09-25)
+
+The E70–E74 caller measured a cost of 14–17 ns per feature per row that
+did not grow with the number of targets. The model alone has almost none
+of it (§23's intercept), so it had to be in the bank's path. One thread,
+10,000 features, 5,000 rows, `lam = 1` and a unit weight, best of three
+through `ModelBank.fit_predict`, with `ONLINE_TIMING=1` for the sections:
+
+| stage, 1 target, moments only | before |
+|---|---:|
+| the whole call | 798 ms |
+| the bank's own sections: extract, then process | 163 + 217 ms |
+| outside them: the frame made into a chunk | about 416 ms |
+| the model alone (`marg_bench`) | 168 ms |
+
+A profile (the recipe in §13) put 62% of the samples on the CPU in
+lookups by column name, 36% in the string comparisons alone. **Seven
+lookups scanned every column,** each quadratic in the width: `wanted`'s
+deduplication, the spec and role each column's cast names in its errors,
+the check for a column already cast, `ArrowChunk::new`'s check that every
+column is listed, `ArrowChunk`'s own lookup, once per feature, and its
+`has`, on the scoring path. At 10,000 columns each is about 10⁸
+comparisons per chunk. Each is now a hash: `ArrowChunk` keeps an
+index from a name to its columns, and the adapter keeps sets and one map
+from a column to its first reader. `the_first_reader_is_the_one_the_scans_found`
+holds the map to the scans it replaced.
+
+**The marginal model tracked every pair's run on every row, for a window
+it did not have.** Task 94 keeps each slot's run so that a window can say
+a slot held one value over it. Only a window reads them, and a window is
+fixed when the model is built, but the runs were kept without one: at
+`p·T` slots, as many as the moments themselves. They are now kept under a
+window alone, and `only_a_window_keeps_the_runs` pins it. The model alone
+at 10,000 features went from 158 to 56 ms at one target and from 1,425 to
+495 ms at nine, the same checksum; at eight features, from 32.1 to 18 ms.
+
+The whole call, before and after, the same sitting and harness:
+
+| shape, 10,000 features, one thread | before | after |
+|---|---:|---:|
+| moments, 1 target | 818.7 ms | 192.2 ms |
+| moments, 9 targets | 2,141.5 ms | 617.7 ms |
+| 6 lags and 16 bins, 1 target | 1,743.9 ms | 1,120.3 ms |
+| 6 lags and 16 bins, 9 targets | 8,705.0 ms | 7,014.0 ms |
+
+Per feature and row, the moments' line through one and nine targets is
+now `2.8 + 1.1·T` ns, where it was `13.1 + 3.3·T`. What is left of the
+intercept is the transpose into rows, 38% of the samples after the fix,
+and the data summary's per-column statistics, about a quarter.
+
+**Tiling the data summary did not pay, measured twice.** It updates six
+statistics per column per row, 480 KB at 10,000 features. Walking all
+the chunk's rows per block of 64 columns took `process` from 103 to
+180 ms: each row is 80 KB, so every block read a new page per row.
+Blocks of 32 rows by 64 columns took 113–123 ms. Row by row stays. Its
+cost is the arithmetic and the two tests per value, which a layout
+change would not remove.
+
+**The covariance accumulator keeps runs without a window too.** `EwCov`
+tracks every slot's run on every learned row, for the window readers
+alone (`crate::truncated`). There the cost is linear in the width against
+a quadratic update, but it is not small at small width: `core_bench`'s
+`ewridge` ran 18–20% faster at 5 and 20 features with the tracking
+removed, 4% at 50. That is PLAN task 128.

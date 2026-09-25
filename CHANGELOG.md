@@ -154,6 +154,10 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Changed
 
+- **Finding a spec's columns no longer takes time quadratic in their
+  number.** Seven lookups by column name scanned every column. At 10,000
+  features they took about 480 ms of an 800 ms call, and now take none
+  that shows (docs/PERFORMANCE.md §24).
 - **`marginal`'s bins cost 2.6 times less at nine targets.** Each
   feature's bin is found once per row rather than once per target, and
   every number is the same to the bit. One target's bins cost a fifth
@@ -167,9 +171,10 @@ carries breaking changes, and any change to the numbers a model returns.
   slots where it took 5.2, 6.3 and 15.5, so `sgd` steps about 16% slower at
   16 features; `ew_ridge` and `ew_cov` are unchanged.
 - **State schema 16.** A stream with a `label_delay` keeps, per model, the
-  clock its held rows cover (15). Every covariance accumulator and every
-  `marginal` keeps, per slot, the value it has held since it last changed
-  and the learned row that started that run, for a window to read; every
+  clock its held rows cover (15). Every covariance accumulator, and every
+  `marginal` with a window, keeps, per slot, the value it has held since it
+  last changed and the learned row that started that run, for a window to
+  read; every
   running mean keeps what its double leaves out; and `kmeans` and `micro`
   keep each feature's long-run reference for the metric's floor; and
   `marginal` keeps its `cross_lags` (16). States saved by 0.10.0

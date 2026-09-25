@@ -200,6 +200,21 @@ fn a_column_given_but_unlisted_is_refused() {
     assert!(err.to_string().contains("not listed in `names`"), "{err}");
 }
 
+/// `has` answers for every column the source listed, read or not, and for
+/// no other: it is what decides that a column a scoring call may leave out
+/// is absent (docs/PERFORMANCE.md §24 made it a lookup).
+#[test]
+fn has_knows_every_listed_column_and_no_other() {
+    let cols = vec![("y", ArrowCol::F64(nums(&[1.0, 2.0])))];
+    let chunk = ArrowChunk::new(2, cols, vec!["y", "unread"]).unwrap();
+    assert!(chunk.has("y"));
+    assert!(
+        chunk.has("unread"),
+        "listed, though no array was given for it"
+    );
+    assert!(!chunk.has("absent"));
+}
+
 /// The same name twice in the same form is a caller's mistake, and the first
 /// winning silently is the worst outcome of it (review 2026-09-17, B2).
 #[test]

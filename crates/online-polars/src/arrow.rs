@@ -21,6 +21,7 @@ use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
 use polars_arrow::ffi::{ArrowArray, ArrowSchema, export_array_to_c, export_field_to_c};
 
 use online_core::ClockValue;
+use polars_utils::aliases::{PlHashMap, PlHashSet};
 
 use crate::spec::{ClockScale, ModelKind, Spec};
 
@@ -118,6 +119,13 @@ pub struct ArrowChunk {
     /// Every column name the source had, for the "not found" message and for
     /// the spec-name clash check -- including the ones no spec reads.
     names: Vec<PlSmallStr>,
+    /// Where each name's columns sit in `cols`, in `cols` order: one form,
+    /// or two when one spec's feature is another's group key. A lookup is a
+    /// hash, not a scan of every column: at 10,000 features the scans were
+    /// most of a call (docs/PERFORMANCE.md §24).
+    index: PlHashMap<PlSmallStr, Vec<usize>>,
+    /// `names` as a set, for [`Self::has`].
+    name_set: PlHashSet<PlSmallStr>,
 }
 
 impl ArrowChunk {
@@ -150,7 +158,8 @@ impl ArrowChunk {
                 name.as_str(), col.len(), height
             );
         }
-        if let Some((name, _)) = cols.iter().find(|(n, _)| !names.iter().any(|m| m == n)) {
+        let name_set: PlHashSet<PlSmallStr> = names.iter().cloned().collect();
+        if let Some((name, _)) = cols.iter().find(|(n, _)| !name_set.contains(n)) {
             polars_bail!(ColumnNotFound:
                 "column {:?} is given but not listed in `names`; every column given must be \
                  listed, since `names` decides whether a column a scoring call may leave out \
@@ -167,10 +176,16 @@ impl ArrowChunk {
                 );
             }
         }
+        let mut index: PlHashMap<PlSmallStr, Vec<usize>> = PlHashMap::default();
+        for (i, (name, _)) in cols.iter().enumerate() {
+            index.entry(name.clone()).or_default().push(i);
+        }
         Ok(Self {
             height,
             cols,
             names,
+            index,
+            name_set,
         })
     }
 
@@ -183,7 +198,7 @@ impl ArrowChunk {
     }
 
     pub fn has(&self, name: &str) -> bool {
-        self.names.iter().any(|n| n == name)
+        self.name_set.contains(name)
     }
 
     /// The numeric form of a column, or the error naming the spec and role.
@@ -231,11 +246,13 @@ impl ArrowChunk {
             .ok_or_else(|| self.missing(spec, role, name, "text or an integer key"))
     }
 
+    /// The first column named `name`, in `cols` order, that `want` accepts.
     fn find(&self, name: &str, want: impl Fn(&ArrowCol) -> bool) -> Option<&ArrowCol> {
-        self.cols
+        self.index
+            .get(name)?
             .iter()
-            .find(|(n, c)| n == name && want(c))
-            .map(|(_, c)| c)
+            .map(|&i| &self.cols[i].1)
+            .find(|c| want(c))
     }
 
     /// A column lookup that says which spec asked and what it asked for.
@@ -306,7 +323,7 @@ pub fn export_struct_to_c(name: &str, st: StructArray) -> (ArrowSchema, ArrowArr
 }
 
 /// What role a spec reads a column in, which decides the form it is cast to.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Want {
     Number,
     Text,
@@ -317,9 +334,12 @@ enum Want {
 /// Every column the specs read, in the form each reads it.
 fn wanted(specs: &[Spec]) -> Vec<(PlSmallStr, Want)> {
     let mut out: Vec<(PlSmallStr, Want)> = Vec::new();
+    // First-seen order in `out`, membership in `seen`: a scan of `out` per
+    // column was quadratic in the columns (docs/PERFORMANCE.md §24).
+    let mut seen: PlHashSet<(PlSmallStr, Want)> = PlHashSet::default();
     let mut push = |name: &str, want: Want| {
         let key: PlSmallStr = name.into();
-        if !out.iter().any(|(n, w)| *n == key && *w == want) {
+        if seen.insert((key.clone(), want)) {
             out.push((key, want));
         }
     };
@@ -467,18 +487,19 @@ pub fn chunk_from_frame(df: &DataFrame, specs: &[Spec]) -> PolarsResult<ArrowChu
         }
     }
     check_clocks(df, specs)?;
+    let readers = first_readers(specs);
     let mut cols: Vec<(PlSmallStr, ArrowCol)> = Vec::new();
+    let mut have: PlHashSet<(PlSmallStr, &'static str)> = PlHashSet::default();
     for (name, want) in wanted(specs) {
         // A column a scoring chunk may leave out is not an error here: the
         // bank decides, because whether it is optional depends on the call.
         let Some(col) = df.column(name.as_str()).ok() else {
             continue;
         };
-        let spec = specs
-            .iter()
-            .find(|s| reads(s, name.as_str()))
-            .map_or("", |s| s.name.as_str());
-        let role = role_of(specs, name.as_str());
+        let (spec, role) = readers
+            .get(name.as_str())
+            .copied()
+            .unwrap_or(("", "column"));
         let s = col.as_materialized_series();
         // A temporal clock is read in its own nanoseconds whatever the
         // column's unit, so the gap between two rows is taken in integers
@@ -494,7 +515,9 @@ pub fn chunk_from_frame(df: &DataFrame, specs: &[Spec]) -> PolarsResult<ArrowChu
                 .iter()
                 .any(|sp| sp.clock.as_deref() == Some(name.as_str()))
         {
-            cols.push((name.clone(), ArrowCol::Nanos(nanos_array(s)?)));
+            let col = ArrowCol::Nanos(nanos_array(s)?);
+            have.insert((name.clone(), col.form()));
+            cols.push((name.clone(), col));
             continue;
         }
         // One column read in two roles that cast to the same form -- a
@@ -505,15 +528,43 @@ pub fn chunk_from_frame(df: &DataFrame, specs: &[Spec]) -> PolarsResult<ArrowChu
         // the second role is skipped -- before its cast, since the form is
         // known from the role and the dtype. A key and a feature on the same
         // column cast to *different* forms and both stay.
-        if cols
-            .iter()
-            .any(|(n, c)| n == &name && c.form() == form_of(want, s.dtype()))
-        {
+        if have.contains(&(name.clone(), form_of(want, s.dtype()))) {
             continue;
         }
-        cols.push((name.clone(), cast_to(s, want, spec, role, name.as_str())?));
+        let col = cast_to(s, want, spec, role, name.as_str())?;
+        have.insert((name.clone(), col.form()));
+        cols.push((name.clone(), col));
     }
     ArrowChunk::new(df.height(), cols, names)
+}
+
+/// Each column's first reader, for the errors a cast can raise: the first
+/// spec, in bank order, that reads the column in any role, and the first of
+/// its roles in the order features, targets, clock, weight, session, group.
+/// Built once, where a scan of every spec's lists per column was quadratic
+/// in the columns (docs/PERFORMANCE.md §24).
+fn first_readers(specs: &[Spec]) -> PlHashMap<&str, (&str, &'static str)> {
+    let mut out: PlHashMap<&str, (&str, &'static str)> = PlHashMap::default();
+    for s in specs {
+        let name = s.name.as_str();
+        let target_role = match &s.model {
+            ModelKind::EwClass { .. } => "label",
+            _ => "target",
+        };
+        let roles = s
+            .features
+            .iter()
+            .map(|c| (c.as_str(), "feature"))
+            .chain(s.targets.iter().map(|c| (c.as_str(), target_role)))
+            .chain(s.clock.as_deref().map(|c| (c, "clock")))
+            .chain(s.weight.as_deref().map(|c| (c, "weight")))
+            .chain(s.session.as_deref().map(|c| (c, "session")))
+            .chain(s.group.as_deref().map(|c| (c, "group")));
+        for (column, role) in roles {
+            out.entry(column).or_insert((name, role));
+        }
+    }
+    out
 }
 
 /// Each clock column against the specs that read it (docs/PLAN.md task 88).
@@ -703,6 +754,8 @@ fn nanos_array(s: &Series) -> PolarsResult<Int64Array> {
         .unwrap_or_else(|| Int64Array::new_empty(ArrowDataType::Int64)))
 }
 
+/// The scans [`first_readers`] replaced, kept as its oracle.
+#[cfg(test)]
 fn reads(s: &Spec, name: &str) -> bool {
     s.features.iter().any(|f| f == name)
         || s.targets.iter().any(|t| t == name)
@@ -713,6 +766,7 @@ fn reads(s: &Spec, name: &str) -> bool {
 }
 
 /// The role to name in an error, from the first spec that reads the column.
+#[cfg(test)]
 fn role_of(specs: &[Spec], name: &str) -> &'static str {
     for s in specs {
         if s.features.iter().any(|f| f == name) {
@@ -738,4 +792,55 @@ fn role_of(specs: &[Spec], name: &str) -> &'static str {
         }
     }
     "column"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec(json: &str) -> Spec {
+        serde_json::from_str(json).unwrap()
+    }
+
+    /// `first_readers` names, for every column, the spec and the role the
+    /// two scans it replaced named: the first spec in bank order that reads
+    /// the column, and the first of that spec's roles. Specs that share
+    /// columns across roles, a label, and a column no spec reads.
+    #[test]
+    fn the_first_reader_is_the_one_the_scans_found() {
+        let specs = vec![
+            spec(
+                r#"{"name": "a", "model": {"type": "ew_ridge"}, "targets": ["y", "g"],
+                    "features": ["x0", "x1"], "clock": "t", "weight": "w", "group": "g"}"#,
+            ),
+            spec(
+                r#"{"name": "b", "model": {"type": "ew_class", "classes": ["u", "v"],
+                    "precision_prior": 1.0},
+                    "targets": ["lab"], "features": ["x1", "t", "s"], "session": "s"}"#,
+            ),
+            spec(
+                r#"{"name": "c", "model": {"type": "ew_ridge"}, "targets": ["x0"],
+                    "features": ["w", "lab"], "group": "k"}"#,
+            ),
+        ];
+        let readers = first_readers(&specs);
+        let columns = ["x0", "x1", "y", "g", "t", "w", "lab", "s", "k", "absent"];
+        for name in columns {
+            let want_spec = specs
+                .iter()
+                .find(|s| reads(s, name))
+                .map_or("", |s| s.name.as_str());
+            let want = (want_spec, role_of(&specs, name));
+            let got = readers.get(name).copied().unwrap_or(("", "column"));
+            assert_eq!(got, want, "column {name}");
+        }
+        assert_eq!(
+            readers.get("g"),
+            Some(&("a", "target")),
+            "a target before a group"
+        );
+        assert_eq!(readers.get("lab"), Some(&("b", "label")));
+        assert_eq!(readers.get("k"), Some(&("c", "group")));
+        assert!(!readers.contains_key("absent"));
+    }
 }

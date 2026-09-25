@@ -4515,8 +4515,16 @@ is not, since the model alone has `0.0` and `3.5` there.
       serde default is still a layout change under hard rule 5: it rides
       schema 16 if it lands before 0.11.0, 17 after.
 
-- [ ] 124. **The stream's fixed cost per feature per row at width** (from
-      E74's measurement). S–M, and it helps every wide model. The caller's
+- [x] 124. **The stream's fixed cost per feature per row at width** (from
+      E74's measurement). S–M, and it helps every wide model. **Done
+      2026-09-25** (PERFORMANCE §24): it was not the cast or the transpose
+      first, but seven lookups by column name that scanned every column,
+      quadratic in the width, and the marginal model keeping every pair's
+      run for a window it did not have. At 10,000 features on one thread
+      the moments-only call went from 818.7 to 192.2 ms at one target and
+      from 2,141.5 to 617.7 ms at nine; the fixed part is `2.8` ns per
+      feature per row where it was `13.1`, the transpose and the data
+      summary. Tiling the summary was measured slower and left out. The caller's
       14–17 ns per feature per row that does not grow with `T` is outside
       the model (above). Profile the bank's path at `p = 10,000` — the
       cast, the tiled transpose (`feature_rows`, bank.rs:169), the per-row
@@ -4551,7 +4559,8 @@ is not, since the model alone has `0.0` and `3.5` there.
       pool. The caller shards by hand meanwhile; after 122–124.
 
 - [ ] 127. **E74: a chunk run pair-major — not as specified.** Its reason
-      is the intercept, which is not the model's (task 124); the bank
+      is the intercept, which is not the model's (task 124, which took it
+      from 13.1 to 2.8 ns per feature per row); the bank
       already hands the model one contiguous row (`feature_rows`), so
       there is no per-row gather to remove; and its lag, `x_j[r − ℓ]`, is
       not the model's: the ring holds only rows that taught something
@@ -4562,6 +4571,19 @@ is not, since the model alone has `0.0` and `3.5` there.
       before designing a loop order that every clock event, reset, window
       snapshot, group close and `label_delay` replay would have to split.
       *Recommended: wait for that measurement.*
+
+- [ ] 128. **`EwCov` keeps its runs without a window** (found by task 124,
+      PERFORMANCE §24). S–M, a confirmed regression of task 94, unreleased.
+      Every covariance accumulator tracks each slot's run on every learned
+      row, and only a window reads them (`crate::truncated`); `core_bench`'s
+      `ewridge` is 18–20% faster at 5 and 20 features without the tracking,
+      4% at 50. The owner knows whether it has a window, the accumulator
+      does not: a state flag with a default of *on* (so an old state keeps
+      tracking, the safe side), set off at construction by every owner
+      without a window, kept through resets and the blend's rebuild
+      (`gaps.rs`'s `empty`), ahead of `pending`, which must stay last. Rides
+      schema 16. Tests: a model without a window keeps no runs, one with a
+      window reads a held slot as today, and the numbers are bit-identical.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
