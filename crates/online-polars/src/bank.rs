@@ -1536,6 +1536,16 @@ fn spec_lags(s: &Spec) -> bool {
     matches!(&s.model, ModelKind::Marginal { lags: Some(l), .. } if !l.is_empty())
 }
 
+/// Whether a `marginal` spec with lags keeps a cross term at any of them:
+/// every lag unless `cross_lags` names fewer, and none under `[]` (E70).
+fn spec_cross_lags(s: &Spec) -> bool {
+    spec_lags(s)
+        && !matches!(
+            &s.model,
+            ModelKind::Marginal { cross_lags: Some(c), .. } if c.is_empty()
+        )
+}
+
 /// Whether a `marginal` spec asked for the binned block (E67), learned or
 /// given.
 fn spec_bins(s: &Spec) -> bool {
@@ -1568,6 +1578,7 @@ fn closed_frame(specs: &[Spec], rows: &[ClosedRow]) -> PolarsResult<DataFrame> {
     let has_pca = any(|s| matches!(s.model, ModelKind::EwCov { pca: Some(_), .. }));
     let has_pairs = any(|s| matches!(s.model, ModelKind::Marginal { .. }));
     let has_lags = any(spec_lags);
+    let has_cross_lags = any(spec_cross_lags);
     let has_bins = any(spec_bins);
     let has_rcov = any(|s| matches!(s.model, ModelKind::Rcov { .. }));
     let opt = |v: f64| v.is_finite().then_some(v);
@@ -1735,13 +1746,28 @@ fn closed_frame(specs: &[Spec], rows: &[ClosedRow]) -> PolarsResult<DataFrame> {
                     (|p: &PairRow| p.lagcorr_xx.as_slice()) as fn(&PairRow) -> &[f64],
                 ),
                 ("pair_lagcorr_yy", |p| p.lagcorr_yy.as_slice()),
-                ("pair_lagcorr_xy", |p| p.lagcorr_xy.as_slice()),
-                ("pair_lagcorr_yx", |p| p.lagcorr_yx.as_slice()),
             ] {
                 cols.push(list_list_f64(name, rows, move |r| {
                     asked(r, spec_lags).then(|| r.pairs.iter().map(f).collect())
                 })?);
             }
+        }
+        // The cross pair under its own rule: absent when no closing spec
+        // keeps a cross term (`cross_lags = []`), as `marginal()` leaves it.
+        if has_cross_lags {
+            for (name, f) in [
+                (
+                    "pair_lagcorr_xy",
+                    (|p: &PairRow| p.lagcorr_xy.as_slice()) as fn(&PairRow) -> &[f64],
+                ),
+                ("pair_lagcorr_yx", |p| p.lagcorr_yx.as_slice()),
+            ] {
+                cols.push(list_list_f64(name, rows, move |r| {
+                    asked(r, spec_cross_lags).then(|| r.pairs.iter().map(f).collect())
+                })?);
+            }
+        }
+        if has_lags {
             for (name, f) in [
                 (
                     "pair_n_serial",
@@ -2438,8 +2464,11 @@ impl Bank {
         if spec_lags(s) {
             cols.push(lists(|p| &p.lagcorr_xx).with_name("lagcorr_xx".into()));
             cols.push(lists(|p| &p.lagcorr_yy).with_name("lagcorr_yy".into()));
-            cols.push(lists(|p| &p.lagcorr_xy).with_name("lagcorr_xy".into()));
-            cols.push(lists(|p| &p.lagcorr_yx).with_name("lagcorr_yx".into()));
+            // Over `cross_lags`; absent under `cross_lags = []` (E70).
+            if spec_cross_lags(s) {
+                cols.push(lists(|p| &p.lagcorr_xy).with_name("lagcorr_xy".into()));
+                cols.push(lists(|p| &p.lagcorr_yx).with_name("lagcorr_yx".into()));
+            }
             cols.push(Column::new("n_serial".into(), num(|p| p.n_serial)));
             cols.push(Column::new("t_serial".into(), num(|p| p.t_serial)));
             cols.push(Column::new("phi_x".into(), num(|p| p.phi_x)));

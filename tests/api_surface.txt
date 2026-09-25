@@ -237,6 +237,7 @@
     targets
     features
     lags = None
+    cross_lags = None
     serial_rule = None
     bins = None
     bin_rule = None
@@ -413,6 +414,8 @@
   prep:
     embargo
     refresh_time
+  sim:
+    regimes
 
 [output field grammar]  # the strings users index the output struct by
   ewridge minimal:

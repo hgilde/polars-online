@@ -2014,6 +2014,7 @@ mod tests {
 
     /// A windowed weighted mean and covariance, written from the definition:
     /// every row inside the window, weighted by `lam^age`, and nothing else.
+    /// The boundary is inclusive: a row exactly `window` old is inside.
     /// `t` are absolute clocks; the report at row `n` is referenced at the
     /// clock of row `n-1`, as every statistic in this library is.
     fn direct_window(
@@ -2029,7 +2030,7 @@ mod tests {
         let mut m = vec![0.0; k];
         let mut raw = vec![0.0; k * k];
         for i in 0..upto {
-            if now - t[i] >= window {
+            if now - t[i] > window {
                 continue;
             }
             let w = 0.5_f64.powf((now - t[i]) / halflife);
@@ -2065,19 +2066,27 @@ mod tests {
             let mut m = EwCovModel::new(cfg).unwrap();
 
             let (mut xs, mut t, mut clock) = (Vec::new(), Vec::new(), 0.0);
+            let mut on_the_boundary = 0;
             let mut seed = 12345u64;
             let mut rnd = || {
                 seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
                 ((seed >> 33) as f64) / (u32::MAX as f64)
             };
             for i in 0..120 {
-                let d = if i == 0 { 0.0 } else { 1.0 + 6.0 * rnd() };
+                // Quarter units, exact in a double, so some rows land
+                // exactly one window old (the boundary is inclusive).
+                let d = if i == 0 {
+                    0.0
+                } else {
+                    0.25 * (4.0 + (rnd() * 24.0).floor())
+                };
                 clock += d;
                 let x = vec![rnd() * 4.0 - 2.0, rnd() * 10.0 + 100.0];
                 if i > 0 {
                     // The report is referenced at the previous row's clock.
                     let got = crate::OnlineModel::predict(&m, &x, d);
                     let (w, mean, cen) = direct_window(&xs, &t, halflife, window, i);
+                    on_the_boundary += t.iter().filter(|&&tj| t[i - 1] - tj == window).count();
                     assert!(
                         (got.n_eff - w).abs() < 1e-9 * w.max(1.0),
                         "window {window} row {i}: n_eff {} vs {w}",
@@ -2108,6 +2117,11 @@ mod tests {
                 xs.push(x);
                 t.push(clock);
             }
+            // The boundary was exercised, not only the rows either side of it.
+            assert!(
+                on_the_boundary >= 5,
+                "window {window}: {on_the_boundary} reports had a row exactly one window old"
+            );
         }
     }
 
@@ -2131,13 +2145,20 @@ mod tests {
             let mut m = EwCovModel::new(cfg).unwrap();
 
             let (mut xs, mut t, mut clock) = (Vec::<Vec<f64>>::new(), Vec::new(), 0.0);
+            let mut on_the_boundary = 0;
             let mut seed = 777u64;
             let mut rnd = || {
                 seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
                 ((seed >> 33) as f64) / (u32::MAX as f64)
             };
             for i in 0..160 {
-                let d = if i == 0 { 0.0 } else { 1.0 + 6.0 * rnd() };
+                // Quarter units, exact in a double, so some rows land
+                // exactly one window old (the boundary is inclusive).
+                let d = if i == 0 {
+                    0.0
+                } else {
+                    0.25 * (4.0 + (rnd() * 24.0).floor())
+                };
                 clock += d;
                 let u = rnd() * 4.0 - 2.0;
                 let x = vec![1e8 + u, 1e8 + 0.5 * u + rnd()];
@@ -2153,6 +2174,7 @@ mod tests {
                     );
                     let now = t[i - 1];
                     let keep: Vec<usize> = (0..i).filter(|&j| now - t[j] <= window).collect();
+                    on_the_boundary += keep.iter().filter(|&&j| now - t[j] == window).count();
                     let w: Vec<f64> = keep
                         .iter()
                         .map(|&j| 0.5_f64.powf((now - t[j]) / halflife))
@@ -2208,6 +2230,10 @@ mod tests {
                 xs.push(x);
                 t.push(clock);
             }
+            assert!(
+                on_the_boundary >= 5,
+                "window {window}: {on_the_boundary} reports had a row exactly one window old"
+            );
         }
     }
 

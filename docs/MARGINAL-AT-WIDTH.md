@@ -21,6 +21,12 @@ hold as written. Two claims do not, and each is noted where it is made:
 E72's `cov` is not exact where a target is absent on some learned rows,
 and the fixed cost E74 is built on is not in the model.*
 
+*Built the same day: E71 as task 122 and E70 as task 123, each
+bit-identical where the request said it would be. `PERFORMANCE.md` §22 and
+§23 have the measurements. E71's one-target row moved too, by a fifth,
+where the request expected no change; E70's single cross lag took 30% off
+the lags' cost, where the moment count suggested 56%.*
+
 ---
 
 ## The caller's shape, and what it reads

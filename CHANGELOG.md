@@ -43,6 +43,13 @@ carries breaking changes, and any change to the numbers a model returns.
   against it, its start the medians of the feature's first five rows, and
   started over by a first move from no spread, so a row at the input bound
   moves it by a factor of 26 at most, which a few of its halflives undo.
+- **`marginal` takes `cross_lags`**: the lags at which `lagcorr_xy` and
+  `lagcorr_yx` are kept, each one of `lags`, `[]` for none. The default
+  keeps them at every lag, as before. `n_serial` reads the
+  autocorrelations alone, which every lag keeps, and they are the same to
+  the bit. At `lags=[1, 2, 5, 10, 20, 50]` and nine targets, one cross
+  lag takes 30% off the lags' cost and 22% off the row
+  (docs/PERFORMANCE.md §23).
 
 ### Fixed
 
@@ -134,6 +141,12 @@ carries breaking changes, and any change to the numbers a model returns.
 - **`sgd`'s docstring gave the intercept an `l2` it does not get.** The
   update equations and the `l2` entry now say the ridge is on the slopes
   only, as the code has always done.
+- **`marginal`'s docs no longer promise the bins' warm-up replay to the
+  bit in every case.** A row of weight zero inside the warm-up is held as
+  its decay alone, folded into the next held row, and a product of decays
+  rounds differently from the decays one at a time: the histogram then
+  agrees with one built from the edges given up front to about 1e-15 of
+  the data's scale, as the design doc has always said.
 - **The Arrow output's docs no longer say duckdb reads it directly.**
   `fit_predict_arrow`'s docstring and the type stub named duckdb among
   its direct readers. duckdb 1.5.5 refuses the struct and takes it
@@ -141,6 +154,10 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Changed
 
+- **`marginal`'s bins cost 2.6 times less at nine targets.** Each
+  feature's bin is found once per row rather than once per target, and
+  every number is the same to the bit. One target's bins cost a fifth
+  less too (docs/PERFORMANCE.md §22).
 - **Outputs differ from 0.10.0 in their last bits** wherever a running
   mean is taken, since the means are carried as pairs now (see "A feature
   or target that stops moving keeps the fit it had", above). On the release
@@ -154,11 +171,12 @@ carries breaking changes, and any change to the numbers a model returns.
   `marginal` keeps, per slot, the value it has held since it last changed
   and the learned row that started that run, for a window to read; every
   running mean keeps what its double leaves out; and `kmeans` and `micro`
-  keep each feature's long-run reference for the metric's floor (16).
-  States saved by 0.10.0
+  keep each feature's long-run reference for the metric's floor; and
+  `marginal` keeps its `cross_lags` (16). States saved by 0.10.0
   (schema 14) still load. The clock is rebuilt as 0.10.0 did at a chunk
   boundary, the runs start at the next row, and a mean starts as the
-  double it was saved as.
+  double it was saved as, and a `marginal` keeps its cross terms at every
+  lag.
 - **`holt` reports null coefficients for a target not yet observed.** It
   reported `[0, 0]`, a level no row had given, where every other model's
   `coef` is null before it has anything to report.

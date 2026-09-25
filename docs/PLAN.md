@@ -4232,13 +4232,23 @@ decision it needs, with a recommendation where there is one.
         today it is range-checked and dropped on every model but `ewridge`,
         where `emit_error_inflation` is refused (spec.rs:2417-2433).
         *Decision: refuse (recommended) or document it as ignored.*
-      - `EwDiag::update`: drop the zero-weight loop, a no-op (`a = 1`,
-        `b = 0`), which also removes an equivalent-mutant entry whose line
-        matches the other branch too, where a real survivor would hide.
-      - The window test oracles keep `age < window` where the models keep
-        `≤` (test_window.py:219, ewcov.rs, ewridge.rs, marginal.rs tests).
-      - `po.sim` in the API snapshot; FTRL's `zz < 0` equivalent mutant
-        recorded.
+      - **Done 2026-09-25.** `EwDiag::update`: drop the zero-weight loop,
+        a no-op (`a = 1`, `b = 0`), which also removes an equivalent-mutant
+        entry whose line matches the other branch too, where a real
+        survivor would hide. Only finite values ever reached it: the
+        stream skips a row with a missing feature before a model sees it.
+      - **Done 2026-09-25.** The window test oracles keep `age < window`
+        where the models keep `≤` (test_window.py:219, ewcov.rs, ewridge.rs,
+        marginal.rs tests). None had a row exactly one window old, so none
+        could tell: the Rust oracles now step the clock in quarter units,
+        which land rows on the boundary (12 to 20 reads each, counted and
+        asserted), and failed under `<` before the fix. The Python ridge
+        oracle's data were noise-free, which hid it the same way; a noisy
+        test now puts the model 6.6e-16 from the inclusive fit and 2.2e-3
+        from the exclusive one.
+      - **Done 2026-09-25.** `po.sim` in the API snapshot, which now reads
+        the package's modules from its directory rather than a hand-kept
+        list; FTRL's `zz < 0` equivalent mutant recorded.
       - The suite at the Polars floor, 1.34.0 (last run 2026-09-02); the
         Linux CLI binaries' glibc floor before GitHub's Ubuntu 26 runners
         (2026-10-19).
@@ -4474,15 +4484,30 @@ the moments, `19.8·T` with six lags and sixteen bins, against the caller's
 `3.2·T` and `19.1·T` — and the caller's fixed 14–17 ns per feature per row
 is not, since the model alone has `0.0` and `3.5` there.
 
-- [ ] 122. **E71: bin each feature once per row.** S; no API, no state,
-      bit-identical. Verified: `update_target` runs `bin_of(&self.edges[j],
+- [x] 122. **E71: bin each feature once per row.** S; no API, no state,
+      bit-identical. **Done 2026-09-25:** `MarginalBins::update_row` forms
+      the row's indices once, in a scratch buffer outside the state, and
+      the warm-up replay goes through it too. Held to the per-target update
+      to the bit (`the_row_update_is_the_per_target_update_to_the_bit`), and
+      to the build before by `marg_bench`'s checksum, absent targets
+      included. At nine targets the bins cost 2.6 times less; at one, a
+      fifth less, which the request did not expect (PERFORMANCE §22). Found
+      on the way: the docstring promised the warm-up replay to the bit,
+      which a row of weight zero inside the warm-up breaks by about 1e-15
+      of the data's scale. That is the trade the design doc records, so
+      the docs now say it and a test pins it. Verified: `update_target` runs `bin_of(&self.edges[j],
       x[j])` once per present target (margbins.rs:253-261), and the edges
       are the feature's. Form the row's `p` indices once, before the target
       loop, and the same on the warm-up replay. Tests as the request lists,
       and `marg_bench`'s shape at `T = 1` and `T = 9`. First: the smallest,
       and exact.
 
-- [ ] 123. **E70: `marginal(cross_lags=...)`.** S–M. Verified: `n_serial`
+- [x] 123. **E70: `marginal(cross_lags=...)`.** S–M. **Done 2026-09-25**,
+      on schema 16 (unreleased), through the spec, the bank's two tables and
+      Python; refused by name at construction. The default is bit-identical
+      to the build before and 0.9% faster; one loop for both cases had made
+      it 1% slower, until the `cross_lags` loop was kept out of line
+      (PERFORMANCE §23). One cross lag of six takes 30% off the lags' cost. Verified: `n_serial`
       reads the autocorrelations alone (`serial_factor`, marginal.rs:368-420,
       from `lagcorr_xx` and `lagcorr_yy`), and `cxy`/`cyx` feed only
       `lagcorr_xy`/`lagcorr_yx`. The default, `None`, keeps every lag as

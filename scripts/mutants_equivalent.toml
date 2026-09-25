@@ -41,15 +41,6 @@ line_has = "    if ns < 0 {"
 why = "ns == 0 returns \"0s\" two lines earlier, so ns < 0 and ns <= 0 agree wherever the line runs"
 
 [[equivalent]]
-file = "crates/online-core/src/ewdiag.rs"
-function = "EwDiag::update"
-mutation = "replace + with -"
-line_has = "*ci = a * *ci + a * b * d * d;"
-why = """this is the branch a row of weight 0 takes, where b is 0: the term is \
-0 for every finite deviation, and the inputs are bounded, so a·c + 0 and \
-a·c − 0 are the same double"""
-
-[[equivalent]]
 file = "crates/online-core/src/ewcov.rs"
 function = "EwCov::skip"
 mutation = "replace * with /"
@@ -126,3 +117,12 @@ mutation = "replace > with >="
 line_has = "let v = if floor > v { floor } else { v };"
 why = """at `floor = v` both branches are the same double; neither is NaN \
 (`scale_floor` is refused unless finite, and both variances are finite)"""
+
+[[equivalent]]
+file = "crates/online-core/src/ftrl.rs"
+function = "Ftrl::weight_of"
+mutation = "replace < with <="
+line_has = "let sgn = if zz < 0.0 { -1.0 } else { 1.0 };"
+why = """the line runs only where |zz| > l1, and l1 >= 0 is validated, so zz \
+is never zero there (a NaN zz fails both comparisons alike): < 0 and <= 0 \
+agree on every value it takes"""

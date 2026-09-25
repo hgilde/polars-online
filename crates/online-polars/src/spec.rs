@@ -939,6 +939,13 @@ pub enum ModelKind {
         /// lags. Needs `lags`. Skipped when absent, as `lags` is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         serial_rule: Option<String>,
+        /// The lags to keep the cross-correlations at (E70, docs/PLAN.md
+        /// task 123): strictly increasing, each one of `lags`, empty for
+        /// none. Absent keeps them at every lag. `n_serial` reads the
+        /// autocorrelations alone, which every lag keeps. Needs `lags`.
+        /// Skipped when absent, as `lags` is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cross_lags: Option<Vec<usize>>,
         /// Bins per feature for the binned target moments
         /// (docs/ENHANCEMENTS.md E67): the feature's response curve, and the
         /// best single split of it, which is what a threshold or a V shows

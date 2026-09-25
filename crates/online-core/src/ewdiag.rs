@@ -196,19 +196,16 @@ impl EwDiag {
             .iter_mut()
             .zip(self.m.iter_mut())
             .zip(self.m_lo.iter_mut());
+        // A row of weight 0 leaves the moments as they are: `a` is 1 and `b`
+        // is 0, so there is no step to take (`crate::comp::add` says why a
+        // step of 0 is not taken either), and only the weight decays. The
+        // test is made once, outside the loop: a test in the loop kept
+        // `sgd`'s standardizing from vectorizing.
         if b > 0.0 {
             for (((ci, mi), lo), &xi) in slots.zip(x) {
                 let d = crate::comp::dev(xi, *mi, *lo);
                 *ci = a * *ci + a * b * d * d;
                 crate::comp::add(mi, lo, b * d);
-            }
-        } else {
-            // A row of weight 0 takes no step (`crate::comp::add` says why).
-            // The loop is chosen once, not the step tested in it: a test in
-            // the loop kept `sgd`'s standardizing from vectorizing.
-            for (((ci, mi), lo), &xi) in slots.zip(x) {
-                let d = crate::comp::dev(xi, *mi, *lo);
-                *ci = a * *ci + a * b * d * d;
             }
         }
         self.w_sum = w_new;

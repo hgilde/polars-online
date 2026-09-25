@@ -42,55 +42,63 @@ where
 
 #[test]
 fn marginal_round_trips_with_every_optional_part_present_or_absent() {
+    // `cross_lags` (E70) three ways: absent, one of the lags, and none.
+    let crosses = [None, Some(vec![2usize]), Some(vec![])];
     for lags in [vec![], vec![1usize, 2]] {
         for window in [None, Some(50.0)] {
             for bins in [None, Some(4usize)] {
-                // A window and bins are refused together (a snapshot of the
-                // histogram would be bins times the size of one), and so are
-                // a window and lags (the lag ring keeps no snapshot; review
-                // 2026-09-12, C18), so those pairings have no state to encode.
-                if window.is_some() && (bins.is_some() || !lags.is_empty()) {
-                    continue;
+                for cross_lags in crosses.clone() {
+                    // A window and bins are refused together (a snapshot of the
+                    // histogram would be bins times the size of one), and so are
+                    // a window and lags (the lag ring keeps no snapshot; review
+                    // 2026-09-12, C18), so those pairings have no state to encode.
+                    if window.is_some() && (bins.is_some() || !lags.is_empty()) {
+                        continue;
+                    }
+                    // `cross_lags` chooses among the lags, and is refused
+                    // without them.
+                    if lags.is_empty() && cross_lags.is_some() {
+                        continue;
+                    }
+                    let cfg = MarginalCfg {
+                        n_features: 2,
+                        n_targets: 1,
+                        decay: Decay::Halflife(10.0),
+                        min_periods: vec![0.0],
+                        lags: lags.clone(),
+                        serial_rule: None,
+                        cross_lags: cross_lags.clone(),
+                        bins: bins.map(|n| {
+                            Box::new(online_core::BinCfg {
+                                n_bins: n,
+                                edges: None,
+                                rule: online_core::BinRule::Quantile,
+                                warm_rows: 4,
+                            })
+                        }),
+                        window,
+                        window_every: window.map(|_| 1),
+                    };
+                    let mut m = online_core::Marginal::new(cfg).unwrap();
+                    // Bins have two states worth encoding: the warm-up hold with
+                    // rows in it (3 of the 4 it waits for), and the histogram
+                    // it becomes. Both must survive, or a bank saved during the
+                    // warm-up loses the rows it was holding.
+                    for i in 0..3 {
+                        let v = i as f64;
+                        OnlineModel::step(&mut m, &[v, -v], &[Some(v * 0.5)], v, 1.0);
+                    }
+                    let what = format!(
+                        "marginal lags={lags:?} cross_lags={cross_lags:?} window={window:?} \
+                     bins={bins:?}"
+                    );
+                    roundtrip(&m, &format!("{what} (held)"));
+                    for i in 3..8 {
+                        let v = i as f64;
+                        OnlineModel::step(&mut m, &[v, -v], &[Some(v * 0.5)], v, 1.0);
+                    }
+                    roundtrip(&m, &what);
                 }
-                let cfg = MarginalCfg {
-                    n_features: 2,
-                    n_targets: 1,
-                    decay: Decay::Halflife(10.0),
-                    min_periods: vec![0.0],
-                    lags: lags.clone(),
-                    serial_rule: None,
-                    bins: bins.map(|n| {
-                        Box::new(online_core::BinCfg {
-                            n_bins: n,
-                            edges: None,
-                            rule: online_core::BinRule::Quantile,
-                            warm_rows: 4,
-                        })
-                    }),
-                    window,
-                    window_every: window.map(|_| 1),
-                };
-                let mut m = online_core::Marginal::new(cfg).unwrap();
-                // Bins have two states worth encoding: the warm-up hold with
-                // rows in it (3 of the 4 it waits for), and the histogram
-                // it becomes. Both must survive, or a bank saved during the
-                // warm-up loses the rows it was holding.
-                for i in 0..3 {
-                    let v = i as f64;
-                    OnlineModel::step(&mut m, &[v, -v], &[Some(v * 0.5)], v, 1.0);
-                }
-                roundtrip(
-                    &m,
-                    &format!("marginal lags={lags:?} window={window:?} bins={bins:?} (held)"),
-                );
-                for i in 3..8 {
-                    let v = i as f64;
-                    OnlineModel::step(&mut m, &[v, -v], &[Some(v * 0.5)], v, 1.0);
-                }
-                roundtrip(
-                    &m,
-                    &format!("marginal lags={lags:?} window={window:?} bins={bins:?}"),
-                );
             }
         }
     }

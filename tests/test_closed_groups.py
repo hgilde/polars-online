@@ -250,6 +250,36 @@ def test_the_lag_and_bin_blocks_follow_the_specs_that_asked():
     assert not any(c.startswith(("pair_lagcorr", "pair_bin", "pair_split")) for c in bare.columns)
 
 
+def test_the_cross_terms_follow_the_specs_that_keep_them():
+    """``cross_lags`` (E70) under the same rule: ``pair_lagcorr_xy`` and
+    ``pair_lagcorr_yx`` are there when any closing spec keeps a cross term,
+    null on the row of one that keeps none, and absent when none does, as
+    ``marginal()`` leaves them out under ``cross_lags=[]``."""
+    common = dict(
+        targets=["y"],
+        features=["x0", "x1"],
+        halflife=HALFLIFE,
+        group="g",
+        group_close="monotone",
+        lags=[1, 2],
+    )
+    bank = po.ModelBank(
+        [
+            po.spec.marginal("none", cross_lags=[], **common),
+            po.spec.marginal("one", cross_lags=[2], **common),
+        ]
+    )
+    bank.fit_predict(frame(["a", "b"], n_per=20).with_columns(y=pl.col("x0")))
+    by_spec = {r["spec"]: r for r in bank.closed_groups().iter_rows(named=True)}
+    assert by_spec["none"]["pair_lagcorr_xy"] is None
+    assert by_spec["none"]["pair_lagcorr_xx"] is not None
+    assert [len(v) for v in by_spec["one"]["pair_lagcorr_xy"]] == [1, 1], "one per cross lag"
+    assert [len(v) for v in by_spec["one"]["pair_lagcorr_xx"]] == [2, 2], "one per lag"
+    bare = po.ModelBank([po.spec.marginal("none", cross_lags=[], **common)]).closed_groups()
+    assert "pair_lagcorr_xx" in bare.columns
+    assert not {"pair_lagcorr_xy", "pair_lagcorr_yx"} & set(bare.columns)
+
+
 def test_the_sidecar_carries_the_nested_lists(tmp_path):
     """Parquet has a form for a list of lists, so the sidecar is
     the driver's frames with the blocks in them, as it is without."""

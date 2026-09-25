@@ -32,6 +32,8 @@ are.
 | [19. Against `SGDRegressor`](#19-against-sklearnlinear_modelsgdregressor-task-72-2026-09-08) | you are comparing this library with scikit-learn | [the protocol](#the-protocol) · [accuracy](#accuracy) · [the first hundred rows](#the-first-hundred-rows-of-every-group) · [task 74](#where-sgd-lost-and-task-74) · [throughput](#throughput) · [a grid](#a-grid) · [a wide row](#a-wide-row) · [what it gave back](#what-the-comparison-gave-back) |
 | [20. `sgd`'s per-feature cost](#20-sgds-per-feature-cost-task-75-2026-09-08) | you run `sgd` on thousands of features | [the 14 ns](#where-the-14-ns-went) · [the result](#the-result) · [what is left](#what-is-left-at-k--10000) · [the scaler](#the-scaler) |
 | [21. What inspecting the plan costs `fit(lf)`](#21-what-inspecting-the-plan-costs-fitlf-2026-09-18) | `fit(lf)` seems slow on a small input | [the bisect](#the-bisect) · [what it is](#what-it-actually-is) · [the fix](#the-fix) · [the case the user has](#measure-the-case-the-user-has) |
+| [22. `marginal`'s bins at several targets](#22-marginals-bins-at-several-targets-e71-task-122-2026-09-25) | you bin `marginal`'s features against several targets | |
+| [23. `marginal`'s cross terms on request](#23-marginals-cross-terms-on-request-e70-task-123-2026-09-25) | you use `marginal`'s lags at width, or set `cross_lags` | |
 
 ## Reading this document
 
@@ -85,7 +87,7 @@ ONLINE_TIMING=1 uv run python scripts/benchmark.py
 ```
 
 The sections name the rest where they use them: `scripts/scaling_bench.py`
-(§8), `marg_bench` (§17), `scripts/sklearn_comparison.py` (§19), and
+(§8), `marg_bench` (§17, §22, §23), `scripts/sklearn_comparison.py` (§19), and
 `sgd_bench` and `sgd_signature` (§20).
 
 `ONLINE_TIMING=1` prints two kinds of line to stderr:
@@ -104,7 +106,7 @@ says how to measure a change against these numbers.
 **Every golden number was unchanged throughout: that was the contract.**
 Status as of 2026-09-06: P1–P11 all done, the numbers refreshed in §8, the
 chunk plan revisited in §12, the new families surveyed in §13, and the
-correlation families of tasks 45–56 in §15. The later sections, §16–§21,
+correlation families of tasks 45–56 in §15. The later sections, §16–§23,
 are each dated in their headings.
 
 Against the baseline in §1:
@@ -2921,3 +2923,85 @@ order-free, so since 0.7.2 it already skipped the order check, and the
 benchmark was measuring a fast path built two releases earlier rather than
 the common one. A `halflife` spec never qualifies, and that is where the
 2.3× is.
+
+## 22. `marginal`'s bins at several targets (E71, task 122, 2026-09-25)
+
+The histogram searched every feature's edges once per present target. The
+edges belong to the feature, so every target's search found the same bin.
+`MarginalBins::update_row` now finds each feature's bin once per row. It
+then updates each target's cells from those indices, in the order the
+per-target search took, so every number is the same to the bit.
+
+`marg_bench` ran one million rows of eight features with learned quantile
+edges. The build before the change (`7a20b7e`, in its own target directory)
+and this one ran interleaved, three rounds each, and the table keeps the
+best. The checksum is a hash of every number every pair reports.
+
+| shape | before | after | checksum |
+|---|---:|---:|---|
+| no bins, 1 target | 32.1 ms | 32.0 ms | equal |
+| 16 bins, 1 target | 72.8 ms | 65.1 ms | equal |
+| no bins, 9 targets | 243.7 ms | 244.3 ms | equal |
+| 16 bins, 9 targets | 533.3 ms | 354.3 ms | equal |
+| 16 bins, 9 targets, 8 of them absent on a third of rows | 421.4 ms | 294.8 ms | equal |
+
+The bins' own cost is each binned row less the unbinned row of the same
+width, per pair and row:
+
+| targets | before | after |
+|---:|---:|---:|
+| 1 | 5.1 ns | 4.1 ns |
+| 9 | 4.0 ns | 1.5 ns |
+
+**At nine targets the bins cost 2.6 times less.** The search is paid once
+per feature instead of once per pair. What is left per pair is the cell's
+own update: a division for the row's share of the bin, a compensated step
+of the bin's mean, and the squared deviation added to its spread.
+
+**At one target the bins also cost a fifth less.** The request expected no
+change there, since the number of searches is the same. The row's searches
+now run back to back before any cell is written, and none depends on
+another. That is the likely reason, inferred from the code rather than
+profiled.
+
+## 23. `marginal`'s cross terms on request (E70, task 123, 2026-09-25)
+
+`lags` kept three lagged moments per pair and lag: the feature's
+autocovariance and both cross-covariances. `n_serial` reads the two
+autocorrelations alone, so the cross terms are a by-product. `cross_lags`
+keeps them at the lags it names, and at every lag by default.
+
+`marg_bench` ran one million rows of eight features and nine targets at
+`lags=[1, 2, 5, 10, 20, 50]`. The build before the change (`7a20b7e`) and
+this one ran interleaved, three rounds each, and the table keeps the best.
+The lags' own cost is each row less the row without lags, which took
+247.1 ms before and 246.7 ms after, per pair and row.
+
+| build and `cross_lags` | row | the lags' own cost | checksum |
+|---|---:|---:|---|
+| before, every lag | 968.0 ms | 10.0 ns | the default's |
+| after, default (every lag) | 938.2 ms | 9.6 ns | the default's |
+| after, `[1]` | 733.0 ms | 6.8 ns | its own |
+| after, `[]` | 707.3 ms | 6.4 ns | its own |
+
+**One cross lag takes 30% off the lags' cost, not the 56% the moment count
+suggests.** Eight lagged moments per pair replace eighteen. But each lag
+still forms the feature's two deviations, now and `l` rows back, and reads
+the ring, and the cross terms reuse those deviations. So they were the
+cheaper part of each lag.
+
+**The default must not pay for the option, and at first it did.** One loop
+serving both cases ran the default 1.0% slower than before, over eight
+paired rounds with a spread of 0.2%. A loop of its own for the default was
+still 0.7% slower. Marking the `cross_lags` loop `#[inline(never)]` fixed
+it: the default then ran 0.9% faster than before, over eight paired rounds
+with a spread of 0.3%. That points at the caller inlining both loops, which
+the assembly was not read to confirm. Forcing both inline instead cost 14%.
+A 24-byte field added to the config alone, measured the same way, moved
+nothing.
+
+The default path's checksum equals the build before, with every target
+present and with eight targets absent on a third of the rows. Naming every
+lag in `cross_lags` runs the other loop and gives the same checksum, which
+`cross_lags_keep_the_default_cross_terms_at_their_lags` also checks
+accumulator by accumulator.

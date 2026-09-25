@@ -21,8 +21,10 @@ does too, because it changes results without an error.
 """
 
 import difflib
+import importlib
 import inspect
 import os
+import pkgutil
 from pathlib import Path
 
 import polars as pl
@@ -31,6 +33,20 @@ import polars_online as po
 from polars_online import spec as spec_mod
 
 SNAPSHOT = Path(__file__).parent / "api_surface.txt"
+
+
+def helper_modules() -> list[str]:
+    """Every public module of the package but `spec`, which has its own section.
+
+    Read from the package's directory rather than listed by hand, so a new
+    module lands in the snapshot's diff: the hand-kept list left `po.sim` out
+    (docs/PLAN.md task 109).
+    """
+    return sorted(
+        m.name
+        for m in pkgutil.iter_modules(po.__path__)
+        if not m.name.startswith("_") and m.name != "spec"
+    )
 
 
 def describe_api() -> str:
@@ -91,9 +107,9 @@ def describe_api() -> str:
     w("")
 
     w("[helper modules]  # po.<module>.<function>, the numpy-side arithmetic")
-    for mod in ("corr", "eval", "gram", "prep"):
+    for mod in helper_modules():
         w(f"  {mod}:")
-        for name in sorted(getattr(po, mod).__all__):
+        for name in sorted(importlib.import_module(f"polars_online.{mod}").__all__):
             w(f"    {name}")
     w("")
 

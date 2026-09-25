@@ -68,6 +68,22 @@ use serde::{Deserialize, Serialize};
 /// nothing.
 const RENORM_AT: f64 = 1e-150;
 
+/// A feature whose value falls in no bin on this row (it is not finite).
+const NO_BIN: usize = usize::MAX;
+
+/// Where each feature's value fell on the row being learned, as a cell
+/// offset within one target's block ([`MarginalBins::update_row`]). A
+/// reusable buffer, not state: two histograms with the same cells are the
+/// same histogram whatever is left here, and a state file carries none of it.
+#[derive(Debug, Clone, Default)]
+struct RowBins(Vec<usize>);
+
+impl PartialEq for RowBins {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 /// A histogram of target moments per (feature, target), against edges fixed
 /// before the first row.
 ///
@@ -106,6 +122,10 @@ pub struct MarginalBins {
     /// state written before it.
     #[serde(default)]
     mean_lo: Vec<f64>,
+    /// Row scratch for [`Self::update_row`]. Not part of the state -- serde
+    /// skips it and [`PartialEq`] ignores it.
+    #[serde(skip)]
+    row: RowBins,
 }
 
 /// One bin's target moments, decayed to now.
@@ -168,6 +188,7 @@ impl MarginalBins {
             scale: 1.0,
             empty: true,
             mean_lo: vec![0.0; cells],
+            row: RowBins::default(),
         })
     }
 
@@ -249,37 +270,88 @@ impl MarginalBins {
         self.empty = self.w.iter().all(|v| *v == 0.0);
     }
 
-    /// Add one row's contribution for target `t`. `O(log bins)` per feature.
+    /// Add one row's contribution for target `t` alone, searching every
+    /// feature's edges: the form the model used before [`Self::update_row`],
+    /// kept for the tests, where it is the oracle the row update is held to.
+    #[cfg(test)]
     pub fn update_target(&mut self, t: usize, x: &[f64], y: f64, w: f64) {
         if !w.is_finite() || w <= 0.0 || !y.is_finite() {
             return;
         }
         let u = w / self.scale;
         let block = t * self.off[self.p];
-        let cells = self.w.len();
         for (j, xj) in x.iter().enumerate().take(self.p) {
             let Some(b) = Self::bin_of(&self.edges[j], *xj) else {
                 continue;
             };
-            let i = block + self.off[j] + b;
-            self.empty = false;
-            if self.w[i] <= 0.0 {
-                // The bin's first row, or its first after a wipe: the mean
-                // it holds is nobody's, and `mean + (y − mean)` is not `y`
-                // to the bit when the old mean is far away.
-                self.w[i] = u;
-                self.mean[i] = y;
-                self.m2[i] = 0.0;
-                *crate::comp::lo_slot(&mut self.mean_lo, cells, i) = 0.0;
-                continue;
-            }
-            let wb = self.w[i] + u;
-            let lo = crate::comp::lo_slot(&mut self.mean_lo, cells, i);
-            let delta = crate::comp::dev(y, self.mean[i], *lo);
-            crate::comp::add(&mut self.mean[i], lo, delta * (u / wb));
-            self.m2[i] += u * delta * crate::comp::dev(y, self.mean[i], *lo);
-            self.w[i] = wb;
+            self.update_cell(block + self.off[j] + b, u, y);
         }
+    }
+
+    /// Add one row's contribution for every target it carries: `y[t]` is
+    /// target `t`'s value, `None` where the row does not carry it.
+    ///
+    /// Each feature's bin is found **once per row**, before the targets are
+    /// visited: the edges are the feature's, the same for every target, so
+    /// a search per (feature, target) found the same bin `T` times (E71,
+    /// docs/PLAN.md task 122). The cells are then updated target by target
+    /// and feature by feature, the order [`Self::update_target`] takes, so
+    /// the histogram is the same to the bit. A row that carries no target
+    /// forms no indices.
+    pub fn update_row(&mut self, x: &[f64], y: &[Option<f64>], w: f64) {
+        if !w.is_finite() || w <= 0.0 {
+            return;
+        }
+        let present = |v: &Option<f64>| v.is_some_and(f64::is_finite);
+        if !y.iter().take(self.n_targets).any(present) {
+            return;
+        }
+        let u = w / self.scale;
+        let mut row = std::mem::take(&mut self.row.0);
+        row.clear();
+        row.extend(
+            self.edges
+                .iter()
+                .zip(&self.off)
+                .zip(x)
+                .map(|((e, &o), &xj)| Self::bin_of(e, xj).map_or(NO_BIN, |b| o + b)),
+        );
+        let width = self.off[self.p];
+        for (t, yt) in y.iter().enumerate().take(self.n_targets) {
+            let Some(v) = yt.filter(|v| v.is_finite()) else {
+                continue;
+            };
+            let block = t * width;
+            for &o in &row {
+                if o != NO_BIN {
+                    self.update_cell(block + o, u, v);
+                }
+            }
+        }
+        self.row.0 = row;
+    }
+
+    /// One row of undecayed weight `u` and target value `y` into cell `i`.
+    #[inline]
+    fn update_cell(&mut self, i: usize, u: f64, y: f64) {
+        let cells = self.w.len();
+        self.empty = false;
+        if self.w[i] <= 0.0 {
+            // The bin's first row, or its first after a wipe: the mean it
+            // holds is nobody's, and `mean + (y − mean)` is not `y` to the
+            // bit when the old mean is far away.
+            self.w[i] = u;
+            self.mean[i] = y;
+            self.m2[i] = 0.0;
+            *crate::comp::lo_slot(&mut self.mean_lo, cells, i) = 0.0;
+            return;
+        }
+        let wb = self.w[i] + u;
+        let lo = crate::comp::lo_slot(&mut self.mean_lo, cells, i);
+        let delta = crate::comp::dev(y, self.mean[i], *lo);
+        crate::comp::add(&mut self.mean[i], lo, delta * (u / wb));
+        self.m2[i] += u * delta * crate::comp::dev(y, self.mean[i], *lo);
+        self.w[i] = wb;
     }
 
     /// The response curve for one pair: the target's moments in each bin.
@@ -954,5 +1026,97 @@ mod tests {
             edges_from(BinRule::Quantile, 1, &mut sample(&[1.0, 2.0])),
             Vec::<f64>::new()
         );
+    }
+
+    /// Every number a histogram holds, as bits: a comparison to the bit, and
+    /// one that a `-0.0` or a NaN cannot pass by accident.
+    fn bits(b: &MarginalBins) -> Vec<u64> {
+        b.w.iter()
+            .chain(&b.mean)
+            .chain(&b.m2)
+            .chain(&b.mean_lo)
+            .chain(std::iter::once(&b.scale))
+            .map(|v| v.to_bits())
+            .chain(std::iter::once(u64::from(b.empty)))
+            .collect()
+    }
+
+    /// E71 (docs/PLAN.md task 122): a row that finds each feature's bin once
+    /// and then visits its targets is, to the bit, the same row fed one
+    /// target at a time with a search per feature. Ragged edges (one feature
+    /// has none), targets absent on a random third of the rows or not
+    /// finite, features that are not finite, rows of weight zero, and a
+    /// decay of zero that wipes every bin, so each path a cell can take is
+    /// taken by both.
+    #[test]
+    fn the_row_update_is_the_per_target_update_to_the_bit() {
+        let edges = vec![
+            vec![-0.5, 0.0, 0.5],
+            vec![],
+            vec![-0.9, -0.1, 0.2, 0.3, 0.8],
+            vec![0.0],
+        ];
+        let (p, n_targets) = (edges.len(), 5);
+        for absent in [0.0, 1.0 / 3.0] {
+            let mut by_row = MarginalBins::new(p, n_targets, edges.clone()).unwrap();
+            let mut by_target = by_row.clone();
+            let mut seed = 21u64;
+            let mut wiped = false;
+            for i in 0..3000usize {
+                let lam = match i {
+                    0 => 1.0,
+                    1500 => 0.0,
+                    _ => 0.99,
+                };
+                let x: Vec<f64> = (0..p)
+                    .map(|j| {
+                        if i % 97 == j {
+                            f64::NAN
+                        } else {
+                            lcg(&mut seed)
+                        }
+                    })
+                    .collect();
+                let y: Vec<Option<f64>> = (0..n_targets)
+                    .map(|t| {
+                        let v = x[0].abs() * t as f64 + 0.1 * lcg(&mut seed);
+                        if (lcg(&mut seed) + 1.0) / 2.0 < absent {
+                            None
+                        } else if i % 211 == t {
+                            Some(f64::INFINITY)
+                        } else {
+                            Some(v)
+                        }
+                    })
+                    .collect();
+                let w = if i % 13 == 0 {
+                    0.0
+                } else {
+                    0.5 + (lcg(&mut seed) + 1.0) / 2.0
+                };
+                by_row.decay(lam);
+                by_target.decay(lam);
+                wiped |= by_row.empty && i > 0;
+                by_row.update_row(&x, &y, w);
+                for (t, yt) in y.iter().enumerate() {
+                    if let Some(v) = yt {
+                        by_target.update_target(t, &x, *v, w);
+                    }
+                }
+                assert_eq!(bits(&by_row), bits(&by_target), "absent {absent}, row {i}");
+            }
+            assert!(wiped, "the decay of zero must have emptied the histogram");
+            // Every target's every feature has cells with weight: the
+            // comparison above was of histograms that learned something.
+            for t in 0..n_targets {
+                for j in 0..p {
+                    let held = by_row.bins(t, j).iter().filter(|b| b.n > 0.0).count();
+                    assert!(
+                        held > 0,
+                        "absent {absent}: target {t} feature {j} learned nothing"
+                    );
+                }
+            }
+        }
     }
 }

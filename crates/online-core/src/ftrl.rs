@@ -199,6 +199,8 @@ impl Ftrl {
         if zz.abs() <= self.cfg.l1 {
             0.0
         } else {
+            // Never zero here: `|zz| > l1 >= 0`, or `zz` is NaN, so `< 0` and
+            // `<= 0` agree (scripts/mutants_equivalent.toml).
             let sgn = if zz < 0.0 { -1.0 } else { 1.0 };
             let rate = if self.forgets() {
                 self.cfg.beta / self.cfg.alpha + prox

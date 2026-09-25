@@ -28,9 +28,14 @@
 //! ```text
 //! cyy[ℓ][t]      E_w[dy_t · dy_{t−ℓ}]          T   per lag
 //! cxx[ℓ][t][j]   E_w[dx_t · dx_{t−ℓ}]          p·T per lag
-//! cxy[ℓ][t][j]   E_w[dx_t · dy_{t−ℓ}]          p·T per lag   (x now, y back)
-//! cyx[ℓ][t][j]   E_w[dy_t · dx_{t−ℓ}]          p·T per lag   (y now, x back)
+//! cxy[ℓ][t][j]   E_w[dx_t · dy_{t−ℓ}]          p·T per cross lag   (x now, y back)
+//! cyx[ℓ][t][j]   E_w[dy_t · dx_{t−ℓ}]          p·T per cross lag   (y now, x back)
 //! ```
+//!
+//! The cross lags are every lag unless `cross_lags` names fewer (E70,
+//! docs/PLAN.md task 123). `n_serial` reads the two autocorrelations alone,
+//! so the cross terms are the lead/lag by-product: worth having at the
+//! first lag or two, and two thirds of the lag work at every lag kept.
 //!
 //! # The recursion, and why it is [`crate::EwLagCov`]'s
 //!
@@ -94,12 +99,21 @@ pub struct MarginalLags {
     cyy: Vec<Vec<f64>>,
     /// `[lag][target*p + feature]`
     cxx: Vec<Vec<f64>>,
+    /// `[cross lag][target*p + feature]`: one per entry of
+    /// [`Self::cross_lags`], which is every lag unless `cross_lags` names
+    /// fewer.
     cxy: Vec<Vec<f64>>,
     cyx: Vec<Vec<f64>>,
     /// The last `max(lags)` learned rows, oldest first: the features, and
     /// each target's value where it was present.
     ring_x: VecDeque<Vec<f64>>,
     ring_y: VecDeque<Vec<Option<f64>>>,
+    /// The lags the cross moments are kept at, a subsequence of `lags`;
+    /// `None` is every lag, which is what a state written before E70 holds
+    /// (docs/PLAN.md task 123). Last, and not skipped, so both encodings
+    /// read a state without it (`tests/state_encoding.rs`).
+    #[serde(default)]
+    cross_lags: Option<Vec<usize>>,
 }
 
 /// What a lagged update must borrow from the pair update it accompanies, so
@@ -119,7 +133,15 @@ pub struct PairMix<'a> {
 }
 
 impl MarginalLags {
-    pub fn new(p: usize, t: usize, lags: Vec<usize>) -> Result<Self, String> {
+    /// `cross_lags` is `None` for a cross moment at every lag, or the lags
+    /// to keep them at: strictly increasing, each one of `lags`, and empty
+    /// for none.
+    pub fn new(
+        p: usize,
+        t: usize,
+        lags: Vec<usize>,
+        cross_lags: Option<Vec<usize>>,
+    ) -> Result<Self, String> {
         if lags.is_empty() {
             return Err("marginal: lags must not be empty".into());
         }
@@ -129,7 +151,19 @@ impl MarginalLags {
         if lags.windows(2).any(|w| w[1] <= w[0]) {
             return Err("marginal: lags must be strictly increasing".into());
         }
+        if let Some(c) = cross_lags.as_ref() {
+            if c.windows(2).any(|w| w[1] <= w[0]) {
+                return Err("marginal: cross_lags must be strictly increasing".into());
+            }
+            if let Some(bad) = c.iter().find(|l| !lags.contains(l)) {
+                return Err(format!(
+                    "marginal: cross_lags must each be one of lags, and {bad} is not: a cross \
+                     term reads the ring `lags` keeps"
+                ));
+            }
+        }
         let l = lags.len();
+        let n_cross = cross_lags.as_ref().map_or(l, Vec::len);
         let max = *lags.last().expect("lags is non-empty");
         Ok(Self {
             p,
@@ -137,10 +171,11 @@ impl MarginalLags {
             lags,
             cyy: vec![vec![0.0; t]; l],
             cxx: vec![vec![0.0; p * t]; l],
-            cxy: vec![vec![0.0; p * t]; l],
-            cyx: vec![vec![0.0; p * t]; l],
+            cxy: vec![vec![0.0; p * t]; n_cross],
+            cyx: vec![vec![0.0; p * t]; n_cross],
             ring_x: VecDeque::with_capacity(max),
             ring_y: VecDeque::with_capacity(max),
+            cross_lags,
         })
     }
 
@@ -148,19 +183,35 @@ impl MarginalLags {
         &self.lags
     }
 
+    /// The lags the cross moments are kept at, in order: `cxy` and `cyx`
+    /// are indexed by position here.
+    pub fn cross_lags(&self) -> &[usize] {
+        self.cross_lags.as_deref().unwrap_or(&self.lags)
+    }
+
     /// Whether every matrix and both rings are those of `p` features, `t`
-    /// targets and `lags`: what a restored state must hold to be updated
-    /// (review 2026-09-18, B3).
-    pub fn has_shape(&self, p: usize, t: usize, lags: &[usize]) -> bool {
+    /// targets, `lags` and `cross_lags`: what a restored state must hold to
+    /// be updated (review 2026-09-18, B3).
+    pub fn has_shape(
+        &self,
+        p: usize,
+        t: usize,
+        lags: &[usize],
+        cross_lags: Option<&[usize]>,
+    ) -> bool {
         let l = lags.len();
+        let n_cross = cross_lags.map_or(l, <[usize]>::len);
         self.p == p
             && self.t == t
             && self.lags.as_slice() == lags
+            && self.cross_lags.as_deref() == cross_lags
             && self.cyy.len() == l
             && self.cyy.iter().all(|v| v.len() == t)
+            && self.cxx.len() == l
+            && [&self.cxy, &self.cyx].iter().all(|m| m.len() == n_cross)
             && [&self.cxx, &self.cxy, &self.cyx]
                 .iter()
-                .all(|m| m.len() == l && m.iter().all(|v| v.len() == p * t))
+                .all(|m| m.iter().all(|v| v.len() == p * t))
             && self.ring_x.iter().all(|r| r.len() == p)
             && self.ring_y.iter().all(|r| r.len() == t)
     }
@@ -175,14 +226,16 @@ impl MarginalLags {
         self.cxx[li][t * self.p + j]
     }
 
-    /// `E_w[dx_t·dy_{t−ℓ}]`: the feature now against the target `ℓ` rows ago.
-    pub fn cxy(&self, li: usize, t: usize, j: usize) -> f64 {
-        self.cxy[li][t * self.p + j]
+    /// `E_w[dx_t·dy_{t−ℓ}]`: the feature now against the target `ℓ` rows
+    /// ago, at the `ci`-th of [`Self::cross_lags`].
+    pub fn cxy(&self, ci: usize, t: usize, j: usize) -> f64 {
+        self.cxy[ci][t * self.p + j]
     }
 
-    /// `E_w[dy_t·dx_{t−ℓ}]`: the target now against the feature `ℓ` rows ago.
-    pub fn cyx(&self, li: usize, t: usize, j: usize) -> f64 {
-        self.cyx[li][t * self.p + j]
+    /// `E_w[dy_t·dx_{t−ℓ}]`: the target now against the feature `ℓ` rows
+    /// ago, at the `ci`-th of [`Self::cross_lags`].
+    pub fn cyx(&self, ci: usize, t: usize, j: usize) -> f64 {
+        self.cyx[ci][t * self.p + j]
     }
 
     /// Empty the ring, keeping the moments: a session change or a clock gap
@@ -194,6 +247,19 @@ impl MarginalLags {
 
     /// One target's lagged moments, before its pair moments advance.
     pub fn update_target(&mut self, t: usize, x: &[f64], yt: f64, mix: PairMix<'_>) {
+        if self.cross_lags.is_none() {
+            self.update_every_lag(t, x, yt, mix);
+        } else {
+            self.update_some_lags(t, x, yt, mix);
+        }
+    }
+
+    /// [`Self::update_target`] with the cross terms at every lag: the loop
+    /// as it was before `cross_lags` existed (E70). One loop for both cases
+    /// measured 1% slower on the default (docs/PERFORMANCE.md §23), so the
+    /// default keeps its own, and `cross_lags_keep_the_default_cross_terms_at_their_lags`
+    /// holds the two loops to the same bits with every lag named.
+    fn update_every_lag(&mut self, t: usize, x: &[f64], yt: f64, mix: PairMix<'_>) {
         let PairMix {
             mx,
             mx_lo,
@@ -251,6 +317,101 @@ impl MarginalLags {
         }
     }
 
+    /// [`Self::update_target`] under `cross_lags`: the cross terms only at
+    /// the lags it names, each moment in the expression the loop above
+    /// gives it. Never inlined, so that the default path's caller stays the
+    /// size it was (docs/PERFORMANCE.md §23).
+    #[inline(never)]
+    fn update_some_lags(&mut self, t: usize, x: &[f64], yt: f64, mix: PairMix<'_>) {
+        let PairMix {
+            mx,
+            mx_lo,
+            my,
+            my_lo,
+            a,
+            b,
+        } = mix;
+        use crate::comp::dev;
+        let depth = self.ring_x.len();
+        let dy_now = dev(yt, my, my_lo);
+        let row = t * self.p;
+        // The next cross lag to meet, walking `lags` in order: `cross_lags`
+        // is a subsequence of it.
+        let cross = self.cross_lags.as_deref().unwrap_or(&[]);
+        let mut next_cross = 0;
+        for (li, &lag) in self.lags.iter().enumerate() {
+            let ci = (cross.get(next_cross) == Some(&lag)).then(|| {
+                next_cross += 1;
+                next_cross - 1
+            });
+            if lag > depth {
+                // Nothing that far back yet: the moments age and wait.
+                self.cyy[li][t] *= a;
+                for i in row..row + self.p {
+                    self.cxx[li][i] *= a;
+                }
+                if let Some(ci) = ci {
+                    for i in row..row + self.p {
+                        self.cxy[ci][i] *= a;
+                        self.cyx[ci][i] *= a;
+                    }
+                }
+                continue;
+            }
+            let back = depth - lag;
+            let x_lag = &self.ring_x[back];
+            let y_lag = self.ring_y[back][t];
+            debug_assert_eq!(
+                mx.len(),
+                mx_lo.len(),
+                "the means' low parts are sized first"
+            );
+            let means = x.iter().zip(mx).zip(mx_lo).enumerate();
+            // The target `lag` rows ago, against its mean now: the two
+            // moments that need it take a row where it was absent as decay
+            // alone.
+            let dy_lag = y_lag.map(|v| dev(v, my, my_lo));
+            match (ci, dy_lag) {
+                (Some(ci), Some(dy_lag)) => {
+                    for (j, ((&xj, &mxj), &lo)) in means {
+                        let i = row + j;
+                        let dx_now = dev(xj, mxj, lo);
+                        let dx_lag = dev(x_lag[j], mxj, lo);
+                        self.cxx[li][i] = a * self.cxx[li][i] + a * b * dx_now * dx_lag;
+                        self.cyx[ci][i] = a * self.cyx[ci][i] + a * b * dy_now * dx_lag;
+                        self.cxy[ci][i] = a * self.cxy[ci][i] + a * b * dx_now * dy_lag;
+                    }
+                }
+                (Some(ci), None) => {
+                    for (j, ((&xj, &mxj), &lo)) in means {
+                        let i = row + j;
+                        let dx_now = dev(xj, mxj, lo);
+                        let dx_lag = dev(x_lag[j], mxj, lo);
+                        self.cxx[li][i] = a * self.cxx[li][i] + a * b * dx_now * dx_lag;
+                        self.cyx[ci][i] = a * self.cyx[ci][i] + a * b * dy_now * dx_lag;
+                        self.cxy[ci][i] *= a;
+                    }
+                }
+                // No cross terms at this lag: the feature's autocovariance
+                // alone.
+                (None, _) => {
+                    for (j, ((&xj, &mxj), &lo)) in means {
+                        let i = row + j;
+                        let dx_now = dev(xj, mxj, lo);
+                        let dx_lag = dev(x_lag[j], mxj, lo);
+                        self.cxx[li][i] = a * self.cxx[li][i] + a * b * dx_now * dx_lag;
+                    }
+                }
+            }
+            match dy_lag {
+                Some(dy_lag) => {
+                    self.cyy[li][t] = a * self.cyy[li][t] + a * b * dy_now * dy_lag;
+                }
+                None => self.cyy[li][t] *= a,
+            }
+        }
+    }
+
     /// Push a learned row, dropping what has fallen off the deepest lag. The
     /// dropped row's buffers are reused, so a full ring allocates nothing
     /// per row.
@@ -271,5 +432,72 @@ impl MarginalLags {
         self.ring_x.push_back(bx);
         self.ring_y.push_back(by);
         debug_assert_eq!(self.ring_x.len(), self.ring_y.len());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A restored state must hold what its config asks for, or it is refused
+    /// before the first row indexes past an end (review 2026-09-18, B3). One
+    /// corruption per condition `has_shape` checks, each refused alone.
+    #[test]
+    fn a_lag_state_of_another_shape_is_refused() {
+        let (p, t, lags) = (3, 2, vec![1usize, 2, 5]);
+        let good = |cross: Option<Vec<usize>>| {
+            let mut m = MarginalLags::new(p, t, lags.clone(), cross).unwrap();
+            m.push(&[1.0, 2.0, 3.0], &[Some(1.0), None]);
+            m
+        };
+        let every = good(None);
+        assert!(every.has_shape(p, t, &lags, None));
+        let one = good(Some(vec![2]));
+        assert!(one.has_shape(p, t, &lags, Some(&[2])));
+
+        let refused = |m: &MarginalLags, cross: Option<&[usize]>, what: &str| {
+            assert!(!m.has_shape(p, t, &lags, cross), "{what}");
+        };
+        refused(
+            &every,
+            Some(&[2]),
+            "the config names cross lags the state does not keep",
+        );
+        refused(
+            &one,
+            None,
+            "the state keeps fewer cross lags than the config's every lag",
+        );
+        refused(&one, Some(&[5]), "a different cross lag");
+        assert!(!every.has_shape(p + 1, t, &lags, None), "another width");
+        assert!(!every.has_shape(p, t + 1, &lags, None), "more targets");
+        assert!(!every.has_shape(p, t, &[1, 2], None), "other lags");
+        let mut m = good(None);
+        m.cyy.pop();
+        refused(&m, None, "a lag short in cyy");
+        let mut m = good(None);
+        m.cyy[0].pop();
+        refused(&m, None, "a target short in cyy");
+        let mut m = good(None);
+        m.cxx.pop();
+        refused(&m, None, "a lag short in cxx");
+        let mut m = good(Some(vec![2]));
+        m.cxy.push(vec![0.0; p * t]);
+        refused(&m, Some(&[2]), "a cross lag too many in cxy");
+        let mut m = good(Some(vec![2]));
+        m.cyx.clear();
+        refused(&m, Some(&[2]), "no cross lag in cyx");
+        let mut m = good(None);
+        m.cxx[1].pop();
+        refused(&m, None, "a pair short in cxx");
+        let mut m = good(None);
+        m.cyx[2].push(0.0);
+        refused(&m, None, "a pair too many in cyx");
+        let mut m = good(None);
+        m.ring_x[0].pop();
+        refused(&m, None, "a ring row short of a feature");
+        let mut m = good(None);
+        m.ring_y[0].push(None);
+        refused(&m, None, "a ring row with a target too many");
     }
 }

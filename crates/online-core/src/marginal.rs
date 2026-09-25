@@ -86,6 +86,14 @@ pub struct MarginalCfg {
     /// but **not** skipped, for the reason `Marginal::lag` gives.
     #[serde(default)]
     pub bins: Option<Box<crate::BinCfg>>,
+    /// The lags to keep the cross moments at, `lagcorr_xy` and `lagcorr_yx`
+    /// (E70, docs/PLAN.md task 123): strictly increasing, each one of
+    /// `lags`. `None` keeps them at every lag, as before the option existed;
+    /// empty keeps none. `n_serial` reads the autocorrelations alone, which
+    /// every lag keeps whatever this says. `default` but not skipped, for
+    /// the reason `window` gives.
+    #[serde(default)]
+    pub cross_lags: Option<Vec<usize>>,
     /// Clock units of history the pairs are computed from, with a **hard**
     /// cutoff: a row older than this contributes nothing (docs/PLAN.md §13).
     /// Inside the window the weights are still exponential.
@@ -150,6 +158,12 @@ impl MarginalCfg {
                     .into(),
             );
         }
+        if self.lags.is_empty() && self.cross_lags.is_some() {
+            return Err(
+                "marginal: cross_lags needs `lags`; it names which of them keep the cross terms"
+                    .into(),
+            );
+        }
         if self.window.is_none() && self.window_every.is_some() {
             return Err("marginal: window_every needs `window`".into());
         }
@@ -198,10 +212,11 @@ pub struct Pair {
     /// Centred covariance.
     pub cov: f64,
     /// Per configured lag: `rho_x(l)`, the feature's own autocorrelation,
-    /// `rho_y(l)`, the target's, and the two cross-correlations —
-    /// `lagcorr_xy` is the feature *now* against the target `l` rows ago,
-    /// `lagcorr_yx` the target now against the feature `l` rows ago. Empty
-    /// without `lags`.
+    /// and `rho_y(l)`, the target's. Per cross lag -- every lag unless
+    /// `cross_lags` names fewer -- the two cross-correlations: `lagcorr_xy`
+    /// is the feature *now* against the target `l` rows ago, `lagcorr_yx`
+    /// the target now against the feature `l` rows ago. Empty without
+    /// `lags`, and the cross pair empty under `cross_lags = []`.
     ///
     /// Each is the lagged covariance over the two contemporaneous standard
     /// deviations, as `ew_cov`'s `lagcorr` is, and like it **not clamped**:
@@ -425,7 +440,12 @@ fn serial_factor(
 /// Learned edges cost nothing in accuracy: the warm-up rows are **held**, not
 /// spent, and replayed with their own decays the moment the edges are fixed,
 /// so the histogram is exactly what it would have been had the edges been
-/// known before the first row. The price is memory, which
+/// known before the first row. Exactly, to the bit, unless rows of weight
+/// zero fall inside the warm-up: each of those is held as its decay alone,
+/// folded into the next held row so that a run of them cannot grow the hold,
+/// and a product of decays rounds differently from the same decays applied
+/// one at a time -- by about 1e-15 of the data's scale
+/// (`learned_edges_lose_no_row_across_targets`). The price is memory, which
 /// `BinCfg::validate` bounds up front.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Binned {
@@ -478,11 +498,7 @@ impl Binned {
             .expect("edges_from gives one finite, strictly increasing list per feature");
         for row in &self.held {
             hist.decay(row.lam);
-            for (t, yt) in row.y.iter().enumerate().take(n_targets) {
-                if let Some(v) = yt {
-                    hist.update_target(t, &row.x, *v, row.w);
-                }
-            }
+            hist.update_row(&row.x, &row.y, row.w);
         }
         hist.decay(self.pending_lam);
         self.pending_lam = 1.0;
@@ -502,6 +518,7 @@ impl Marginal {
                 cfg.n_features,
                 cfg.n_targets,
                 cfg.lags.clone(),
+                cfg.cross_lags.clone(),
             )?))
         };
         let win = match cfg.window {
@@ -563,13 +580,7 @@ impl Marginal {
         };
         if let Some(hist) = b.hist.as_mut() {
             hist.decay(lam);
-            if weight > 0.0 && weight.is_finite() {
-                for (t, yt) in y.iter().enumerate().take(self.cfg.n_targets) {
-                    if let Some(v) = yt {
-                        hist.update_target(t, x, *v, weight);
-                    }
-                }
-            }
+            hist.update_row(x, y, weight);
             return;
         }
         if weight > 0.0 && weight.is_finite() {
@@ -763,12 +774,16 @@ impl Marginal {
             // to the bit (`tests/test_marginal_lags.py` holds them to it).
             let sd_x = var_x.sqrt();
             let sd_y = var_y.sqrt();
+            let norm = |v: f64, d: f64| if d > 0.0 { v / d } else { f64::NAN };
             for li in 0..lag.lags().len() {
-                let norm = |v: f64, d: f64| if d > 0.0 { v / d } else { f64::NAN };
                 lagcorr_xx.push(norm(lag.cxx(li, t, j), sd_x * sd_x));
                 lagcorr_yy.push(norm(lag.cyy(li, t), sd_y * sd_y));
-                lagcorr_xy.push(norm(lag.cxy(li, t, j), sd_x * sd_y));
-                lagcorr_yx.push(norm(lag.cyx(li, t, j), sd_x * sd_y));
+            }
+            // Over the cross lags, which are every lag unless `cross_lags`
+            // names fewer (E70).
+            for ci in 0..lag.cross_lags().len() {
+                lagcorr_xy.push(norm(lag.cxy(ci, t, j), sd_x * sd_y));
+                lagcorr_yx.push(norm(lag.cyx(ci, t, j), sd_x * sd_y));
             }
             if let Some(rule) = self.cfg.serial_rule {
                 let (factor, px, py) = serial_factor(rule, lag.lags(), &lagcorr_xx, &lagcorr_yy);
@@ -1082,7 +1097,7 @@ impl OnlineModel for Marginal {
                 // `t`, and the boxed parts exactly as the cfg asks (review
                 // 2026-09-18, B3).
                 let lag_ok = match &m.lag {
-                    Some(l) => l.has_shape(p, t, &m.cfg.lags),
+                    Some(l) => l.has_shape(p, t, &m.cfg.lags, m.cfg.cross_lags.as_deref()),
                     None => m.cfg.lags.is_empty(),
                 };
                 let bins_ok = match (&m.bins, &m.cfg.bins) {
@@ -1162,6 +1177,7 @@ mod tests {
             min_periods: vec![0.0; t],
             lags: Vec::new(),
             serial_rule: None,
+            cross_lags: None,
             bins: None,
             window: None,
             window_every: None,
@@ -1477,6 +1493,257 @@ mod tests {
         }
     }
 
+    /// A stream with three features and three targets that reaches every
+    /// lag event: serially dependent series, targets absent on a fifth of
+    /// the rows, unequal weights with zeros, and the ring cleared once, as a
+    /// session change clears it. The lags `[1, 2, 5, 10]`, with the cross
+    /// terms kept where `cross_lags` says.
+    fn cross_lag_run(cross_lags: Option<Vec<usize>>) -> Marginal {
+        let mut c = cfg(3, 3);
+        c.decay = Decay::Halflife(40.0);
+        c.lags = vec![1, 2, 5, 10];
+        c.serial_rule = Some(SerialRule::Geometric);
+        c.cross_lags = cross_lags;
+        let mut m = Marginal::new(c).unwrap();
+        let mut seed = 77u64;
+        let (mut x, mut y) = ([0.0_f64; 3], [0.0_f64; 3]);
+        for i in 0..600 {
+            for v in x.iter_mut() {
+                *v = 0.8 * *v + lcg(&mut seed);
+            }
+            let ys: Vec<Option<f64>> = (0..3)
+                .map(|t| {
+                    y[t] = 0.7 * y[t] + 0.5 * x[t] + lcg(&mut seed);
+                    (lcg(&mut seed) > -0.6).then_some(y[t])
+                })
+                .collect();
+            let w = if i % 11 == 4 {
+                0.0
+            } else {
+                0.5 + (lcg(&mut seed) + 1.0) / 2.0
+            };
+            if i == 300 {
+                OnlineModel::clear_lags(&mut m);
+            }
+            OnlineModel::step(&mut m, &x, &ys, step_clock(i), w);
+        }
+        m
+    }
+
+    fn bits(v: &[f64]) -> Vec<u64> {
+        v.iter().map(|x| x.to_bits()).collect()
+    }
+
+    /// Each lagged correlation is its lagged covariance over the two
+    /// contemporaneous standard deviations, the autocorrelations over one
+    /// of them squared -- `ew_cov`'s expression -- to the bit, at every lag
+    /// and every cross lag.
+    #[test]
+    fn a_lagged_correlation_is_its_covariance_over_the_two_deviations() {
+        for cross in [None, Some(vec![2, 10])] {
+            let m = cross_lag_run(cross.clone());
+            let lag = m.lag.as_ref().unwrap();
+            for t in 0..3 {
+                for j in 0..3 {
+                    let q = m.pair(t, j);
+                    let (sx, sy) = (q.var_x.sqrt(), q.var_y.sqrt());
+                    assert!(sx > 0.0 && sy > 0.0);
+                    for li in 0..4 {
+                        assert_eq!(
+                            q.lagcorr_xx[li].to_bits(),
+                            (lag.cxx(li, t, j) / (sx * sx)).to_bits()
+                        );
+                        assert_eq!(
+                            q.lagcorr_yy[li].to_bits(),
+                            (lag.cyy(li, t) / (sy * sy)).to_bits()
+                        );
+                    }
+                    for ci in 0..lag.cross_lags().len() {
+                        assert_eq!(
+                            q.lagcorr_xy[ci].to_bits(),
+                            (lag.cxy(ci, t, j) / (sx * sy)).to_bits()
+                        );
+                        assert_eq!(
+                            q.lagcorr_yx[ci].to_bits(),
+                            (lag.cyx(ci, t, j) / (sx * sy)).to_bits()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A feature constant on every row its target was present on, but not on
+    /// a row between them where the target was absent: the ring is shared,
+    /// so the target now against the feature a row back sees that row, and
+    /// the lagged covariance is not zero where the feature's spread is. Its
+    /// correlation is undefined, NaN, not the infinity the division gives.
+    #[test]
+    fn a_lagged_correlation_over_no_spread_is_nan() {
+        let mut c = cfg(1, 1);
+        c.lags = vec![1];
+        let mut m = Marginal::new(c).unwrap();
+        let mut seed = 3u64;
+        for i in 0..40 {
+            // Odd rows carry the target with the feature at 2; even rows
+            // leave the target out and move the feature.
+            let (x, y) = if i % 2 == 1 {
+                (2.0, Some(lcg(&mut seed)))
+            } else {
+                (lcg(&mut seed), None)
+            };
+            OnlineModel::step(&mut m, &[x], &[y], step_clock(i), 1.0);
+        }
+        let q = m.pair(0, 0);
+        let lag = m.lag.as_ref().unwrap();
+        assert_eq!(q.var_x, 0.0, "the feature is constant on the target's rows");
+        assert!(q.var_y > 0.0);
+        assert!(lag.cyx(0, 0, 0) != 0.0, "the ring saw the rows between");
+        assert!(q.lagcorr_yx[0].is_nan(), "{}", q.lagcorr_yx[0]);
+        assert!(q.lagcorr_xx[0].is_nan() && q.lagcorr_xy[0].is_nan());
+    }
+
+    /// E70 (docs/PLAN.md task 123): `cross_lags` chooses which cross terms
+    /// are kept and touches nothing else. The autocorrelations, `n_serial`,
+    /// `t_serial` and the fitted decays are the same to the bit whether the
+    /// cross terms are kept at every lag, at some, or at none.
+    #[test]
+    fn cross_lags_leave_the_serial_correction_to_the_bit() {
+        let all = cross_lag_run(None);
+        let mut corrected = 0;
+        for cross in [vec![1], vec![], vec![2, 10]] {
+            let some = cross_lag_run(Some(cross.clone()));
+            for t in 0..3 {
+                for j in 0..3 {
+                    let (a, b) = (all.pair(t, j), some.pair(t, j));
+                    let why = format!("cross_lags {cross:?}, target {t}, feature {j}");
+                    assert_eq!(bits(&a.lagcorr_xx), bits(&b.lagcorr_xx), "{why}");
+                    assert_eq!(bits(&a.lagcorr_yy), bits(&b.lagcorr_yy), "{why}");
+                    let serial = |q: &Pair| [q.n_serial, q.t_serial, q.phi_x, q.phi_y, q.corr, q.t];
+                    assert_eq!(bits(&serial(&a)), bits(&serial(&b)), "{why}");
+                    assert_eq!(a.lagcorr_xy.len(), 4, "{why}: every lag by default");
+                    assert_eq!(b.lagcorr_xy.len(), cross.len(), "{why}");
+                    assert_eq!(b.lagcorr_yx.len(), cross.len(), "{why}");
+                    corrected += usize::from(b.n_serial.is_finite());
+                }
+            }
+        }
+        // The correction was computed, not NaN on both sides alike.
+        assert_eq!(corrected, 27, "every pair's n_serial is a number");
+    }
+
+    /// ... and the cross terms it keeps are the default's at those lags, to
+    /// the bit: the accumulators, not only the correlations read from them.
+    /// Every lag named outright takes the general path and the default its
+    /// own loop (`MarginalLags::update_target`), so this is also what holds
+    /// the two loops to the same bits.
+    #[test]
+    fn cross_lags_keep_the_default_cross_terms_at_their_lags() {
+        let all = cross_lag_run(None);
+        let la = all.lag.as_ref().unwrap();
+        for cross in [vec![1, 5], vec![1, 2, 5, 10]] {
+            let some = cross_lag_run(Some(cross.clone()));
+            let ls = some.lag.as_ref().unwrap();
+            assert_eq!(ls.cross_lags(), cross.as_slice());
+            let at: Vec<usize> = cross
+                .iter()
+                .map(|l| [1, 2, 5, 10].iter().position(|m| m == l).unwrap())
+                .collect();
+            for t in 0..3 {
+                for j in 0..3 {
+                    for (ci, &li) in at.iter().enumerate() {
+                        assert_eq!(ls.cxy(ci, t, j).to_bits(), la.cxy(li, t, j).to_bits());
+                        assert_eq!(ls.cyx(ci, t, j).to_bits(), la.cyx(li, t, j).to_bits());
+                    }
+                    for li in 0..4 {
+                        assert_eq!(ls.cxx(li, t, j).to_bits(), la.cxx(li, t, j).to_bits());
+                        assert_eq!(ls.cyy(li, t).to_bits(), la.cyy(li, t).to_bits());
+                    }
+                    let (a, b) = (all.pair(t, j), some.pair(t, j));
+                    let pick = |v: &[f64]| at.iter().map(|&li| v[li]).collect::<Vec<_>>();
+                    assert_eq!(bits(&b.lagcorr_xy), bits(&pick(&a.lagcorr_xy)));
+                    assert_eq!(bits(&b.lagcorr_yx), bits(&pick(&a.lagcorr_yx)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_bad_cross_lags_is_refused_by_name() {
+        for (lags, cross, msg) in [
+            (
+                vec![1, 2, 5],
+                vec![3],
+                "cross_lags must each be one of lags, and 3 is not",
+            ),
+            (
+                vec![1, 2, 5],
+                vec![1, 0],
+                "cross_lags must be strictly increasing",
+            ),
+            (
+                vec![1, 2, 5],
+                vec![5, 1],
+                "cross_lags must be strictly increasing",
+            ),
+            (
+                vec![1, 2, 5],
+                vec![2, 2],
+                "cross_lags must be strictly increasing",
+            ),
+            (
+                vec![1],
+                vec![0],
+                "cross_lags must each be one of lags, and 0 is not",
+            ),
+            (vec![], vec![1], "cross_lags needs `lags`"),
+            (vec![], vec![], "cross_lags needs `lags`"),
+        ] {
+            let mut c = cfg(1, 1);
+            c.lags = lags.clone();
+            c.cross_lags = Some(cross.clone());
+            let err = Marginal::new(c).unwrap_err();
+            assert!(
+                err.contains(msg),
+                "lags {lags:?}, cross_lags {cross:?}: {err}"
+            );
+        }
+    }
+
+    /// A state written before E70 has no `cross_lags`, in the config or in
+    /// the lag moments. It loads as cross terms at every lag, which is what
+    /// it holds, and learns on exactly as the state that wrote it.
+    #[test]
+    fn a_state_without_cross_lags_loads_with_every_lag() {
+        let mut m = cross_lag_run(None);
+        let mut old = serde_json::to_value(&m).unwrap();
+        assert!(
+            old["cfg"]
+                .as_object_mut()
+                .unwrap()
+                .remove("cross_lags")
+                .is_some()
+        );
+        assert!(
+            old["lag"]
+                .as_object_mut()
+                .unwrap()
+                .remove("cross_lags")
+                .is_some()
+        );
+        let mut back: Marginal = serde_json::from_value(old).unwrap();
+        assert_eq!(back, m);
+        let mut seed = 5u64;
+        for i in 0..50 {
+            let x = [lcg(&mut seed), lcg(&mut seed), lcg(&mut seed)];
+            let y = [Some(lcg(&mut seed)), None, Some(lcg(&mut seed))];
+            OnlineModel::step(&mut m, &x, &y, step_clock(i + 1), 1.0);
+            OnlineModel::step(&mut back, &x, &y, step_clock(i + 1), 1.0);
+        }
+        assert_eq!(back, m);
+        assert_eq!(back.pair(2, 1).lagcorr_xy.len(), 4);
+    }
+
     /// E66 test 1: the lagged moments are `ew_cov(lags=)`'s, to the bit. Both
     /// centre each leg at the pre-row mean and mix with the same `a`/`b`, so
     /// there is no room for them to differ -- and if the two ever drift, one
@@ -1728,7 +1995,8 @@ mod tests {
     }
 
     /// PLAN §13.4 for `marginal`: one pair, computed directly over the rows
-    /// inside the window and nothing else.
+    /// inside the window and nothing else. The boundary is inclusive, as
+    /// `window.rs` states it: a row exactly `window` old is inside.
     #[test]
     fn a_windowed_pair_is_the_pair_of_the_rows_inside_the_window() {
         let (halflife, window) = (25.0, 70.0);
@@ -1739,13 +2007,16 @@ mod tests {
 
         let mut seed = 99u64;
         let (mut xs, mut ys, mut t, mut clock) = (vec![], vec![], vec![], 0.0);
+        let mut on_the_boundary = 0;
         for i in 0..140 {
             // `lcg` is [-1, 1): a clock increment must be its magnitude, or
             // the clock runs backwards and the window means nothing.
+            // Quarter units, exact in a double, so some rows land exactly
+            // one window old (the boundary is inclusive).
             let d = if i == 0 {
                 0.0
             } else {
-                0.5 + 2.0 * lcg(&mut seed).abs()
+                0.25 * (2.0 + (lcg(&mut seed).abs() * 8.0).floor())
             };
             clock += d;
             let x = lcg(&mut seed) * 3.0;
@@ -1757,7 +2028,8 @@ mod tests {
 
             if i >= 5 {
                 let now = clock;
-                let keep: Vec<usize> = (0..=i).filter(|&j| now - t[j] < window).collect();
+                let keep: Vec<usize> = (0..=i).filter(|&j| now - t[j] <= window).collect();
+                on_the_boundary += keep.iter().filter(|&&j| now - t[j] == window).count();
                 let w: Vec<f64> = keep
                     .iter()
                     .map(|&j| 0.5_f64.powf((now - t[j]) / halflife))
@@ -1798,6 +2070,11 @@ mod tests {
                 assert!(tol(got.cov, cov), "row {i} cov: {} vs {cov}", got.cov);
             }
         }
+        // The boundary was exercised, not only the rows either side of it.
+        assert!(
+            on_the_boundary >= 5,
+            "{on_the_boundary} reads had a row exactly one window old"
+        );
     }
 
     /// Review 2026-09-12, C17: the same pair against a feature and a target
@@ -1815,11 +2092,14 @@ mod tests {
 
         let mut seed = 4242u64;
         let (mut xs, mut ys, mut t, mut clock) = (vec![], vec![], vec![], 0.0);
+        let mut on_the_boundary = 0;
         for i in 0..160 {
+            // Quarter units, exact in a double, so some rows land exactly
+            // one window old (the boundary is inclusive).
             let d = if i == 0 {
                 0.0
             } else {
-                0.5 + 2.0 * lcg(&mut seed).abs()
+                0.25 * (2.0 + (lcg(&mut seed).abs() * 8.0).floor())
             };
             clock += d;
             let u = lcg(&mut seed) * 3.0;
@@ -1833,6 +2113,7 @@ mod tests {
             if i >= 5 {
                 let now = clock;
                 let keep: Vec<usize> = (0..=i).filter(|&j| now - t[j] <= window).collect();
+                on_the_boundary += keep.iter().filter(|&&j| now - t[j] == window).count();
                 let w: Vec<f64> = keep
                     .iter()
                     .map(|&j| 0.5_f64.powf((now - t[j]) / halflife))
@@ -1875,6 +2156,10 @@ mod tests {
                 assert!(close(got.cov, cov), "row {i} cov: {} vs {cov}", got.cov);
             }
         }
+        assert!(
+            on_the_boundary >= 5,
+            "{on_the_boundary} reads had a row exactly one window old"
+        );
     }
 
     /// A window no stream reaches leaves every pair exactly as it was.
@@ -2362,6 +2647,7 @@ mod tests {
             min_periods: vec![0.0],
             lags: Vec::new(),
             serial_rule: None,
+            cross_lags: None,
             bins,
             window: None,
             window_every: None,
@@ -2406,6 +2692,119 @@ mod tests {
         assert_eq!(got.bin_var_y, want.bin_var_y, "bin variances");
         assert_eq!(got.split_gain, want.split_gain);
         assert_eq!(got.split_at, want.split_at);
+    }
+
+    /// The same across targets, through the row update that bins each
+    /// feature once (E71, docs/PLAN.md task 122): five targets, each absent
+    /// on a random third of the rows, and three features, one of them
+    /// constant so that it keeps no edges. The replay lands on the state
+    /// given edges reach, pair by pair, every bin and split number to the
+    /// bit.
+    ///
+    /// Except by a rounding where rows of weight zero fall inside the
+    /// warm-up: each is held as its decay alone, folded into the next held
+    /// row so that a run of them cannot grow the hold, and the replay ages
+    /// the histogram by the product, `scale·(a·b)` where given edges age it
+    /// `(scale·a)·b` (docs/MARGINAL-LAGS-AND-BINS.md, "Invariance"). Measured
+    /// here, the two differ by 1.5e-15 of the data's scale; the bound below
+    /// is ten times that, and the test fails if they stop differing, since
+    /// the docs would then understate the replay.
+    #[test]
+    fn learned_edges_lose_no_row_across_targets() {
+        let (p, n_targets) = (3, 5);
+        let mk = |edges: Option<Vec<Vec<f64>>>| {
+            Marginal::new(MarginalCfg {
+                n_features: p,
+                n_targets,
+                decay: Decay::Halflife(200.0),
+                min_periods: vec![0.0; n_targets],
+                lags: Vec::new(),
+                serial_rule: None,
+                cross_lags: None,
+                bins: Some(Box::new(crate::BinCfg {
+                    n_bins: 6,
+                    edges,
+                    rule: crate::BinRule::Quantile,
+                    warm_rows: 60,
+                })),
+                window: None,
+                window_every: None,
+            })
+            .unwrap()
+        };
+        // The distance between two numbers on the data's scale, which is
+        // about 1: equal bits (a NaN for a bin or a split that has none) are
+        // 0 apart, and a NaN against a number is infinitely far.
+        let apart = |a: f64, b: f64| -> f64 {
+            if a.to_bits() == b.to_bits() {
+                0.0
+            } else if a.is_finite() && b.is_finite() {
+                (a - b).abs() / a.abs().max(b.abs()).max(1.0)
+            } else {
+                f64::INFINITY
+            }
+        };
+        let mut worst_with_zero_weights = 0.0_f64;
+        for zero_weights in [false, true] {
+            let mut seed = 31u64;
+            let rows: Vec<(Vec<f64>, Vec<Option<f64>>, f64)> = (0..500)
+                .map(|i| {
+                    let x = vec![lcg(&mut seed), 0.25, lcg(&mut seed).powi(3)];
+                    let y = (0..n_targets)
+                        .map(|t| {
+                            let v = x[0] * t as f64 + x[2].abs() + 0.1 * lcg(&mut seed);
+                            (lcg(&mut seed) >= -1.0 / 3.0).then_some(v)
+                        })
+                        .collect();
+                    let w = if zero_weights && i % 17 == 5 {
+                        0.0
+                    } else {
+                        1.0
+                    };
+                    (x, y, w)
+                })
+                .collect();
+            let run = |m: &mut Marginal| {
+                for (i, (x, y, w)) in rows.iter().enumerate() {
+                    OnlineModel::step(m, x, y, step_clock(i), *w);
+                }
+            };
+            let mut learned = mk(None);
+            run(&mut learned);
+            let edges: Vec<Vec<f64>> = (0..p).map(|j| learned.pair(0, j).bin_edges).collect();
+            assert_eq!(edges[0].len(), 5, "six bins means five edges");
+            assert!(edges[1].is_empty(), "a constant feature keeps no edges");
+            let mut given = mk(Some(edges));
+            run(&mut given);
+            for t in 0..n_targets {
+                for j in 0..p {
+                    let (a, b) = (learned.pair(t, j), given.pair(t, j));
+                    assert!(a.bin_n.iter().any(|n| *n > 0.0), "target {t} feature {j}");
+                    let numbers = |q: &Pair| {
+                        let mut v =
+                            [q.bin_n.clone(), q.bin_mean_y.clone(), q.bin_var_y.clone()].concat();
+                        v.extend([q.split_gain, q.split_at, q.split_gain_t]);
+                        v
+                    };
+                    let (na, nb) = (numbers(&a), numbers(&b));
+                    assert_eq!(na.len(), nb.len());
+                    let worst = na
+                        .iter()
+                        .zip(&nb)
+                        .map(|(x, y)| apart(*x, *y))
+                        .fold(0.0, f64::max);
+                    if zero_weights {
+                        worst_with_zero_weights = worst_with_zero_weights.max(worst);
+                    } else {
+                        assert_eq!(worst, 0.0, "target {t} feature {j}: {na:?} vs {nb:?}");
+                    }
+                }
+            }
+        }
+        assert!(
+            worst_with_zero_weights > 0.0 && worst_with_zero_weights < 1.5e-14,
+            "{worst_with_zero_weights:e} apart with rows of weight zero in the warm-up"
+        );
     }
 
     /// A zero-weight row inside the warm-up teaches nothing: its feature
@@ -2532,6 +2931,7 @@ mod tests {
                 min_periods: vec![0.0],
                 lags: Vec::new(),
                 serial_rule: None,
+                cross_lags: None,
                 bins,
                 window: Some(100.0),
                 window_every: None,
@@ -2548,6 +2948,7 @@ mod tests {
             min_periods: vec![0.0],
             lags: Vec::new(),
             serial_rule: None,
+            cross_lags: None,
             bins: Some(bins_cfg(8, 4)),
             window: None,
             window_every: None,
@@ -2567,6 +2968,7 @@ mod tests {
             min_periods: vec![0.0],
             lags: Vec::new(),
             serial_rule: None,
+            cross_lags: None,
             bins: Some(bins_cfg(4, 20)),
             window: None,
             window_every: None,

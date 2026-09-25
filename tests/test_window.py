@@ -209,19 +209,47 @@ def test_a_windowed_fit_forgets_the_regime_the_window_excludes():
     assert abs(plain_slope + 2.0) > 0.5, "the plain fit should still be contaminated"
 
 
+def windowed_wls(df, keep):
+    """The weighted least squares of the rows `keep` marks, read at the last
+    row's clock: weights `lam^age`, and the model's ridge, which sits on the
+    mean scale and on the slope alone (the intercept is not penalized)."""
+    t, x, y = df["t"].to_numpy(), df["x"].to_numpy(), df["y"].to_numpy()
+    w = (0.5 ** (1 / HALFLIFE)) ** (t[-1] - t[keep])
+    z = np.column_stack([np.ones(keep.sum()), x[keep]])
+    wz = z * w[:, None]
+    penalty = np.diag([0.0, 1e-8 * w.sum()])
+    return np.linalg.solve(wz.T @ z + penalty, wz.T @ y[keep])
+
+
 def test_the_windowed_fit_is_the_weighted_least_squares_of_its_rows():
     """Against the normal equations over exactly the rows inside the window."""
     df = regime_stream(n=260, flip=170, seed=4)
     window = 50.0
     got = fit(df, window=window)
-    t, x, y = df["t"].to_numpy(), df["x"].to_numpy(), df["y"].to_numpy()
-    now, lam = t[-1], 0.5 ** (1 / HALFLIFE)
-    keep = (now - t) < window
-    w = lam ** (now - t[keep])
-    z = np.column_stack([np.ones(keep.sum()), x[keep]])
-    wz = z * w[:, None]
-    beta = np.linalg.solve(wz.T @ z + 1e-8 * w.sum() * np.eye(2), wz.T @ y[keep])
-    assert got == pytest.approx(list(beta), rel=1e-5)
+    age = df["t"][-1] - df["t"].to_numpy()
+    assert got == pytest.approx(list(windowed_wls(df, age <= window)), rel=1e-5)
+
+
+def test_a_row_exactly_one_window_old_is_inside_it():
+    """The boundary is inclusive (`Snapshots::trim` in `window.rs`): a row
+    whose age is exactly `window` counts. Integer clocks put a row on the
+    boundary, and noise makes the fit depend on it. The noise-free regime
+    stream above cannot tell the two rules apart, which is how its oracle
+    kept `age < window` unnoticed (docs/PLAN.md task 109)."""
+    rng = np.random.default_rng(7)
+    n, window = 120, 50.0
+    x = rng.standard_normal(n)
+    df = pl.DataFrame(
+        {"t": np.arange(n, dtype=float), "x": x, "y": 1.5 * x + 0.3 + rng.standard_normal(n)}
+    )
+    got = fit(df, window=window)
+    age = df["t"][-1] - df["t"].to_numpy()
+    assert (age == window).sum() == 1, "a row must sit exactly on the boundary"
+    inside, outside = windowed_wls(df, age <= window), windowed_wls(df, age < window)
+    assert got == pytest.approx(list(inside), rel=1e-9)
+    # The rule is what the test measures: leaving the boundary row out moves
+    # the fit by orders of magnitude more than the tolerance.
+    assert np.abs(inside - outside).max() > 1e-4 * np.abs(inside).max()
 
 
 def test_a_windowed_fit_is_chunk_invariant():

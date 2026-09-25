@@ -2931,7 +2931,8 @@ mod tests {
     /// A windowed ridge fit, solved directly from the normal equations over
     /// exactly the rows inside the window. Written from the definition:
     /// `(Z'WZ + ridge·I) beta = Z'Wy` with `W = diag(lam^age)` over the rows
-    /// whose age is under the window, and nothing else.
+    /// whose age is at most the window (the boundary is inclusive, as
+    /// `window.rs` states it), and nothing else.
     fn direct_window_fit(
         xs: &[[f64; 1]],
         ys: &[f64],
@@ -2946,7 +2947,7 @@ mod tests {
         let (mut s11, mut s1x, mut sxx, mut s1y, mut sxy, mut wsum) =
             (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         for i in 0..upto {
-            if now - t[i] >= window {
+            if now - t[i] > window {
                 continue;
             }
             let w = 0.5_f64.powf((now - t[i]) / halflife);
@@ -2982,13 +2983,16 @@ mod tests {
 
         let mut s = 11u64;
         let (mut xs, mut ys, mut t, mut clock) = (vec![], vec![], vec![], 0.0);
+        let mut on_the_boundary = 0;
         for i in 0..150 {
             // `lcg` is in [-1, 1), so take its magnitude: a clock must not go
             // backwards, and one that does makes the window meaningless.
+            // Quarter units, exact in a double, so some rows land exactly
+            // one window old (the boundary is inclusive).
             let d = if i == 0 {
                 0.0
             } else {
-                0.5 + 2.0 * lcg(&mut s).abs()
+                0.25 * (2.0 + (lcg(&mut s).abs() * 8.0).floor())
             };
             clock += d;
             let x = [lcg(&mut s) * 4.0 - 2.0];
@@ -3009,9 +3013,10 @@ mod tests {
                 // rows are in, and any difference left is arithmetic.
                 let now = t[i];
                 let wsum: f64 = (0..=i)
-                    .filter(|&j| now - t[j] < window)
+                    .filter(|&j| now - t[j] <= window)
                     .map(|j| 0.5_f64.powf((now - t[j]) / halflife))
                     .sum();
+                on_the_boundary += (0..=i).filter(|&j| now - t[j] == window).count();
                 assert!(
                     (m.n_eff() - wsum).abs() < 1e-9 * wsum,
                     "row {i}: n_eff {} vs {wsum} -- the window holds different rows",
@@ -3034,6 +3039,11 @@ mod tests {
                 }
             }
         }
+        // The boundary was exercised, not only the rows either side of it.
+        assert!(
+            on_the_boundary >= 5,
+            "{on_the_boundary} fits had a row exactly one window old"
+        );
     }
 
     /// PLAN task 94, for the ridge: a feature that held one value over every

@@ -846,6 +846,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             window_budget: _,
             lags,
             serial_rule,
+            cross_lags,
             bins,
             bin_rule,
             bin_warm_rows,
@@ -860,6 +861,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                 decay,
                 min_periods: spec.min_periods_per_target(),
                 lags: lags.clone().unwrap_or_default(),
+                cross_lags: cross_lags.clone(),
                 serial_rule: match serial_rule.as_deref() {
                     None => None,
                     Some("truncated") => Some(online_core::SerialRule::Truncated),

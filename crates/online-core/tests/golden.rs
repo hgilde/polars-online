@@ -700,6 +700,7 @@ fn marginal_golden() {
         min_periods: vec![3.0],
         lags: Vec::new(),
         serial_rule: None,
+        cross_lags: None,
         bins: None,
         window: None,
         window_every: None,

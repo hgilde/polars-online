@@ -1795,6 +1795,7 @@ inside each bin, and all three become visible.
 honest = po.spec.marginal(
     "pairs", targets=["y"], features=["x0", "x1"], halflife=500.0,
     lags=[1, 2, 3, 5, 8],        # the pair's moments at each lag, in learned rows within the group
+    cross_lags=[1],              # the lead/lag terms at these lags only; the default is every lag, [] none
     serial_rule="geometric",     # how the lagged correlations become a count correction
     bins=16,                     # bin each feature and keep the target's moments inside each bin
     bin_rule="quantile",         # edges learned from the first bin_warm_rows rows (default 1,000), by weighted quantile or
@@ -1802,8 +1803,9 @@ honest = po.spec.marginal(
 )                                # exact and comparable across runs, and refuses bins, bin_rule and bin_warm_rows beside it
 # added columns of bank.marginal("pairs"):
 #   lagcorr_xx, lagcorr_yy      each series' own autocorrelation, one entry per lag
-#   lagcorr_xy, lagcorr_yx      the feature now against the target l rows back, and the reverse -- a feature whose
-#                               lagcorr_yx[0] beats its corr *leads* its target; one whose lagcorr_xy[0] does *follows* it
+#   lagcorr_xy, lagcorr_yx      the feature now against the target l rows back, and the reverse, one entry per cross
+#                               lag -- a feature whose lagcorr_yx[0] beats its corr *leads* its target; one whose
+#                               lagcorr_xy[0] does *follows* it
 #   n_serial                    n_kish divided by 1 + 2 * sum(rho_x(l) * rho_y(l)) (Bartlett 1935)
 #   t_serial                    the same statistic as t, against that count
 #   phi_x, phi_y                the fitted per-row decays, under serial_rule="geometric"

@@ -723,6 +723,7 @@ fn marginal_cfg() -> MarginalCfg {
         // in KEEPS_LAGS above.
         lags: vec![1],
         serial_rule: None,
+        cross_lags: None,
         bins: None,
         window: None,
         window_every: None,

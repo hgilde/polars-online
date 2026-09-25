@@ -132,13 +132,21 @@ def test_one_chunk_and_many_agree():
 
 
 @pytest.mark.parametrize("size", [1, 37, 400])
-def test_one_chunk_and_many_agree_through_every_event(size):
+@pytest.mark.parametrize("cross_lags", [None, [2, 8]])
+def test_one_chunk_and_many_agree_through_every_event(size, cross_lags):
     """Decay, weights with zeros, null targets, a skipped row, a session
     change and a capped gap -- each moves the ring or the moments, and none
-    may notice where a chunk ends."""
+    may notice where a chunk ends. With the cross terms at every lag, and at
+    two (E70), which runs the other loop."""
     df = eventful()
     s = po.spec.marginal(
-        "m", targets=["y"], features=["x"], lags=LAGS, serial_rule="geometric", **EVENTS
+        "m",
+        targets=["y"],
+        features=["x"],
+        lags=LAGS,
+        cross_lags=cross_lags,
+        serial_rule="geometric",
+        **EVENTS,
     )
     ref = po.ModelBank([s])
     one = ref.fit_predict(df)
@@ -256,6 +264,97 @@ def test_without_lags_the_frame_is_what_it_was():
     bank.fit_predict(df)
     cols = bank.marginal("m").columns
     assert not any(c.startswith(("lagcorr", "n_serial", "t_serial", "phi_")) for c in cols)
+
+
+# --- cross_lags (E70, docs/PLAN.md task 123) ---------------------------------
+
+
+def test_cross_lags_keep_the_default_cross_terms_and_change_nothing_else():
+    """The cross terms ``cross_lags`` keeps are the default's at those lags,
+    and everything else -- the autocorrelations, the corrected count, the
+    fitted decays -- is the same to the bit, on a stream with every event."""
+    df = eventful()
+
+    def run(**more):
+        bank = po.ModelBank(
+            [
+                po.spec.marginal(
+                    "m",
+                    targets=["y"],
+                    features=["x"],
+                    lags=LAGS,
+                    serial_rule="geometric",
+                    **EVENTS,
+                    **more,
+                )
+            ]
+        )
+        bank.fit_predict(df)
+        return bank.marginal("m").row(0, named=True)
+
+    every, some = run(), run(cross_lags=[1, 5])
+    at = [LAGS.index(1), LAGS.index(5)]
+    for key in ("lagcorr_xy", "lagcorr_yx"):
+        assert len(every[key]) == len(LAGS), key
+        assert some[key] == [every[key][i] for i in at], key
+    for key in ("lagcorr_xx", "lagcorr_yy", "n_serial", "t_serial", "phi_x", "phi_y", "corr", "t"):
+        assert some[key] == every[key], key
+    assert every["n_serial"] is not None, "the correction was computed, not null on both sides"
+
+
+def test_no_cross_lags_leaves_the_cross_columns_out():
+    df = stream(n=300, seed=19)
+    row = pairs(df, lags=[1, 2], cross_lags=[], serial_rule="truncated")
+    assert "lagcorr_xy" not in row and "lagcorr_yx" not in row
+    assert len(row["lagcorr_xx"]) == 2 and row["n_serial"] is not None
+
+
+@pytest.mark.parametrize(
+    ("kw", "msg"),
+    [
+        ({"lags": [1, 2], "cross_lags": [3]}, "cross_lags must each be one of lags, and 3 is not"),
+        ({"lags": [1, 2], "cross_lags": [2, 1]}, "cross_lags must be strictly increasing"),
+        ({"cross_lags": [1]}, "cross_lags needs `lags`"),
+        ({"cross_lags": []}, "cross_lags needs `lags`"),
+    ],
+)
+def test_a_bad_cross_lags_is_refused_by_name_at_construction(kw, msg):
+    d = dict(
+        targets=["y"],
+        features=["x"],
+        clock="t",
+        halflife=float("inf"),
+        max_dclock=1e12,
+        min_periods=2.0,
+    )
+    d.update(kw)
+    with pytest.raises(Exception, match=re.escape(msg)):
+        po.ModelBank([po.spec.marginal("m", **d)])
+
+
+def test_a_saved_bank_keeps_its_cross_lags(tmp_path):
+    df = stream(n=600, seed=17)
+    kw = dict(serial_rule="geometric", cross_lags=[2, 13])
+    whole = pairs(df, **kw)
+    spec = po.spec.marginal(
+        "m",
+        targets=["y"],
+        features=["x"],
+        clock="t",
+        halflife=float("inf"),
+        max_dclock=1e12,
+        min_periods=2.0,
+        lags=LAGS,
+        **kw,
+    )
+    bank = po.ModelBank([spec])
+    bank.fit_predict(df[:300])
+    bank.save(tmp_path / "m.state")
+    resumed = po.ModelBank.load(tmp_path / "m.state")
+    resumed.fit_predict(df[300:])
+    got = resumed.marginal("m").row(0, named=True)
+    assert len(got["lagcorr_xy"]) == 2
+    assert got == whole
 
 
 @pytest.mark.parametrize(

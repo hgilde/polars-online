@@ -59,6 +59,7 @@ learned rows per group.
 ```python
 po.spec.marginal("m", features=[...], targets=[...],
                  lags=[1, 2, 5, 10, 20, 50],   # learned rows within the group, strictly increasing, ≥ 1
+                 cross_lags=[1],               # the cross terms at these lags only (default: every lag)
                  serial_rule="geometric",     # None | "truncated" | "geometric"  (default None)
                  **common)
 ```
@@ -81,6 +82,13 @@ po.spec.marginal("m", features=[...], targets=[...],
   not be dense. It says nothing (`n_serial` null) when fewer than two kept
   lags are positive for a series, or when `φ_xφ_y ≥ 1`, where the tail does
   not sum. `None` keeps the lag moments and derives nothing.
+- `cross_lags` (E70, added 2026-09-25, docs/PLAN.md task 123): the lags
+  at which the two cross-correlations are kept. Strictly increasing, each
+  one of `lags`, `[]` for none; the default keeps them at every lag, as
+  before the option existed. `lagcorr_xy` and `lagcorr_yx` are lists over
+  `cross_lags`, and absent under `[]`. The autocorrelations, and so
+  `n_serial`, are kept at every lag whatever it says, and are the same to
+  the bit (docs/PERFORMANCE.md §23 has the cost).
 
 `label_delay` is **not** refused. The ring sits inside the model, downstream
 of the delay buffer, and is fed rows in the order they are *learned* — the
@@ -157,7 +165,8 @@ keeps it so at a halflife of twenty.
 Per target, `L` lagged target autocovariances (shared). Per pair, `L`
 feature autocovariances and `2L` cross-covariances (both orientations).
 So `3L·p·T + L·T` doubles beside today's `5·p·T` — at `p = 10,000`,
-`T = 3`, `L = 6` that is 540k doubles, under 5 MB. The ring is
+`T = 3`, `L = 6` that is 540k doubles, under 5 MB. With `C` cross lags
+(E70) the cross-covariances are `2C` per pair, so `(L + 2C)·p·T + L·T`. The ring is
 `max(lags)` rows of the `p + T` values per group: `50 × 10,003` doubles,
 4 MB per group; a full ring reuses the row it drops, so the steady state
 allocates nothing per row. Update cost `O(p·T·L)` per row (each lag is one

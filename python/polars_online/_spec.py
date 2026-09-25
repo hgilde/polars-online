@@ -2762,6 +2762,7 @@ def marginal(
     targets: list[str],
     features: list[str],
     lags: list[int] | None = None,
+    cross_lags: list[int] | None = None,
     serial_rule: str | None = None,
     bins: int | None = None,
     bin_rule: str | None = None,
@@ -2804,7 +2805,7 @@ def marginal(
 
     .. rubric:: Parameters
 
-    ``lags``, ``serial_rule``
+    ``lags``, ``cross_lags``, ``serial_rule``
         The pair's moments at those lags too, counted in learned rows within the
         group -- not in rows where that target was present, since the ring is
         shared, so for a sparsely present target the lag is a row distance, not an
@@ -2815,6 +2816,17 @@ def marginal(
         its ``corr`` leads the target, and one whose ``lagcorr_xy[0]`` does
         follows it. The pair is the same statistic ``ew_cov(lags=)`` computes, to
         the bit.
+
+        ``cross_lags`` keeps the two cross-correlations at fewer lags: strictly
+        increasing, each one of ``lags``, and ``[]`` for none, which leaves the
+        ``lagcorr_xy`` and ``lagcorr_yx`` columns out. By default they are kept at
+        every lag. ``lagcorr_xy`` and ``lagcorr_yx`` are then lists over
+        ``cross_lags``, in its order. The autocorrelations, and ``n_serial`` built
+        from them, are kept at every lag whatever it says, and are the same to the
+        bit. A lead or lag of a row or two is the usual question, and the cross
+        terms are two thirds of the lag work: ``lags=[1, 2, 5, 10, 20, 50],
+        cross_lags=[1]`` keeps the serial correction over fifty rows and the lead
+        and lag at one row, at eight lagged moments per pair instead of eighteen.
 
         ``serial_rule`` turns them into an honest count. ``t`` is built on
         ``n_kish``, which is right for unequal weights and silent about serial
@@ -2833,9 +2845,10 @@ def marginal(
         two kept lags are positive on either side. Measured on two independent
         AR(1) series with ``phi_x = 0.9`` and ``phi_y = 0.8``: ``t = 2.39``,
         significance that is not there, against ``t_serial = 1.03``, with ``n_kish
-        = 3000`` becoming ``n_serial = 557``. Cost: ``(3L + 1) * p * T + L * T``
-        doubles beside the pair moments and a ring of ``max(lags)`` learned rows
-        -- the one place ``marginal`` holds rows rather than state.
+        = 3000`` becoming ``n_serial = 557``. Cost: ``(L + 2C) * p * T + L * T``
+        doubles beside the pair moments, for ``L`` lags of which ``C`` keep the
+        cross terms, and a ring of ``max(lags)`` learned rows -- the one place
+        ``marginal`` holds rows rather than state.
     ``bins``, ``bin_rule``, ``bin_warm_rows``, ``bin_edges``
         The nonlinear view. Every statistic above is linear, and a feature can be
         strongly related to a target with ``corr`` at zero: a threshold, a V, a
@@ -2865,8 +2878,10 @@ def marginal(
         largest value seen. Those warm-up rows are held, not spent: the moment the
         edges exist every one of them is replayed with its own decay, so the
         histogram is what it would have been had the edges been known before the
-        first row, to the bit. The price is memory, ``bin_warm_rows * (features +
-        targets)`` floats, refused up front past 256 MiB. Until the edges are
+        first row: to the bit, or to about 1e-15 of the data's scale where rows of
+        weight zero fall inside the warm-up, whose decays are carried to the next
+        held row as one product. The price is memory, ``bin_warm_rows * (features
+        + targets)`` floats, refused up front past 256 MiB. Until the edges are
         fixed the bin columns are empty and the split columns null. A feature
         keeps only the bins it can support, so the lists are ragged: a binary
         feature gets two bins whatever ``bins`` says, and a constant one a single
@@ -2953,6 +2968,7 @@ def marginal(
     model: dict[str, Any] = {
         "type": "marginal",
         "lags": lags,
+        "cross_lags": cross_lags,
         "serial_rule": serial_rule,
         "bins": bins,
         "bin_rule": bin_rule,
