@@ -4456,9 +4456,9 @@ decision it needs, with a recommendation where there is one.
         comparison, and the PERFORMANCE measurements that needed it
         installed by hand (`scripts/sklearn_comparison.py`).
       - Rust `proptest` for T-D2, property tests in `online-core` beside the
-        Hypothesis ones. A dev-dependency links statically into the test
-        binaries only, never the package: raised here under hard rule 12 for
-        the user's go.
+        Hypothesis ones. A dev-dependency links into the test binaries only,
+        never the package, and hard rule 12 covers production deployments,
+        not tests (the user, 2026-09-25), so it needs no raise.
       - The rule where it lives (TESTING, "Libraries the package does not
         depend on") and a check in `tests/test_dependency_policy.py` that
         every dev-group library's metadata names an open-source licence, so

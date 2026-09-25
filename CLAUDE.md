@@ -92,6 +92,9 @@ cargo run -p online-cli -- --config examples/bank.toml
 12. **Do not add static linking of anything new without raising it first.**
     If a change would statically link a library that is not already linked,
     stop and ask. This includes vendoring a C library through a `-sys` crate.
+    The rule covers production deployments -- the wheel, the CLI binary --
+    not tests: a dev-dependency linked only into test binaries needs no
+    raise (the user, 2026-09-25).
 
 **Raised and resolved (2026-08-31): static linking here is what Polars
 prescribes, not a shortcut.** Checked against Polars' own documentation rather
