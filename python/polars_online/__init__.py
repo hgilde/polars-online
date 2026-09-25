@@ -11,7 +11,9 @@ One Rust core, reached two ways:
    the state saved and resumed between runs (``docs/RUNNER.md``).
 
 A spec names a model and the columns it reads (:mod:`polars_online.spec`);
-every way in takes a list of them and writes one struct column per spec.
+every way in takes a list of them and writes one struct column per spec. A
+target may be taken against another column of its own row, a price against
+the mid, with :func:`target`.
 Around them: :mod:`polars_online.eval` scores the output;
 :mod:`polars_online.gram` solves and diagnoses the running sums a bank
 exports; :mod:`polars_online.corr` repairs and reads correlation matrices;
@@ -54,6 +56,7 @@ from polars_online._polars_online import (
     schema_version,
     thread_pool_size,
 )
+from polars_online._spec import Target, target
 
 __version__ = "0.10.0"
 
@@ -74,6 +77,8 @@ __all__ = [
     "schema_version",
     "sim",
     "spec",
+    "target",
+    "Target",
     "thread_pool_size",
     "unnest",
 ]

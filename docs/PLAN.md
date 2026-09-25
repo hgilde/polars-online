@@ -4181,6 +4181,17 @@ note, not a task.
             layer (plain columns) and the window core (windows); the TOML
             table form. The plain-column half depends on nothing else here
             and can ship with 78a; the window half lands with 78d and 78e.
+            **The plain-column half is done, 2026-09-25:** `po.target(column,
+            *, relative_to, relative, name)` and the TOML table, one
+            `Targets` type in the spec that writes a plain target as the
+            string it always was; the three ways and their nulls, a side past
+            the input bound making the target null before the arithmetic;
+            refused by name where the targets slot is not a regression
+            target, and a target's column as a feature refused as a leak.
+            `tests/test_relative_targets.py` holds each way to the column
+            computed in polars, to the bit, in `ewridge`, `kalman`, `huber`,
+            `holt` and `marginal`, and the CLI's TOML to the Python spec.
+            The window half waits on 78 and 104.
 
       #### Tests
 

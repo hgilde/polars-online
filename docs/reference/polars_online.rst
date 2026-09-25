@@ -21,6 +21,10 @@
 
 .. autofunction:: polars_online.unnest
 
+.. autofunction:: polars_online.target
+
+.. autoclass:: polars_online.Target
+
 
 .. autofunction:: polars_online.native_version
 

@@ -24,7 +24,7 @@ use crate::arrow::{ArrowChunk, ArrowCol, ClockArray, ClockCol, chunk_from_frame,
 use crate::column::F64Column;
 use crate::rows::FeatureRows;
 use crate::spec::{ModelKind, Spec};
-use crate::stream::{AnyModel, ChunkOut, Stream, StreamState, combo_labels};
+use crate::stream::{AnyModel, ChunkOut, Stream, StreamState, combo_labels, usable};
 use crate::summary::{DataSummary, Role, SummaryRow, describe_frame, summary_frame};
 
 /// One stream's group key. A null group value is its own key, distinct from any
@@ -355,13 +355,30 @@ fn extract(
         if spec.model.compares().is_some() {
             return Ok(Vec::new());
         }
-        map_maybe_par(&spec.targets, par, |c| {
-            if optional(c) {
+        map_maybe_par(spec.targets.defs(), par, |t| {
+            let c = t.column.as_str();
+            // A scoring call may leave a target out; a relative one is out
+            // when either of its two columns is.
+            if optional(c) || t.relative_to.as_deref().is_some_and(optional) {
                 Ok(vec![f64::NAN; chunk.height()])
             } else if let ModelKind::EwClass { classes, .. } = &spec.model {
                 label_column(chunk, spec, c, classes, layout)
             } else {
-                let v = f64_column(chunk, spec, "target", c, layout)?;
+                let mut v = f64_column(chunk, spec, "target", c, layout)?;
+                // A relative target, taken against its reference at the same
+                // row (docs/PLAN.md task 107a). A side the stream cannot use
+                // makes it null, before the arithmetic: two values past the
+                // input bound must not subtract into a usable one.
+                if let Some(r) = &t.relative_to {
+                    let refs = f64_column(chunk, spec, "relative_to", r, layout)?;
+                    for (y, &r) in v.iter_mut().zip(&refs) {
+                        *y = if usable(*y) && usable(r) {
+                            t.relative.of(*y, r)
+                        } else {
+                            f64::NAN
+                        };
+                    }
+                }
                 // A `strict_binary` target is 0 or 1, and anything else is an
                 // error naming the row, as a label outside `ew_class`'s
                 // classes is -- checked here, before any stream is touched, so
@@ -1153,7 +1170,7 @@ pub(crate) fn gram_axes(spec: &Spec) -> (Vec<String>, Vec<String>) {
     let targets = if unsupervised {
         Vec::new()
     } else {
-        spec.targets.clone()
+        spec.targets.to_vec()
     };
     (columns, targets)
 }
@@ -3629,7 +3646,7 @@ pub fn coef_fields(spec: &Spec) -> Vec<CoefField> {
         // One slot per hidden state, named as `kmeans` names its centres.
         crate::ModelKind::Hmm { k, .. } => (0..*k).map(|j| format!("state{j}")).collect(),
         crate::ModelKind::EwClass { classes, .. } => classes.clone(),
-        _ => spec.targets.clone(),
+        _ => spec.targets.to_vec(),
     };
     let terms: Vec<String> = if matches!(spec.model, crate::ModelKind::Holt { .. }) {
         vec!["level".into(), "trend".into()]

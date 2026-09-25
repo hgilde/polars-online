@@ -38,7 +38,7 @@ output = "fitted.parquet"    # the input's columns, plus one column per spec
 
 [[specs]]                    # one table per spec
 name = "ridge"               # the name of the spec's output column
-targets = ["y"]
+targets = ["y"]              # or a table: { column = "p", relative_to = "mid" }, as po.target
 features = ["x0"]
 halflife = 500.0             # in rows, since the spec names no clock column
 min_periods = 5.0            # the floor, in n_eff units, below which no prediction is made

@@ -352,9 +352,14 @@ fn wanted(specs: &[Spec]) -> Vec<(PlSmallStr, Want)> {
             ModelKind::EwClass { .. } => Want::Text,
             _ => Want::Number,
         };
+        // A target's own column, and a relative target's reference, read at
+        // the same row as a number (docs/PLAN.md task 107a).
         if s.model.compares().is_none() {
-            for t in &s.targets {
-                push(t, target_want);
+            for t in s.targets.defs() {
+                push(&t.column, target_want);
+                if let Some(r) = &t.relative_to {
+                    push(r, Want::Number);
+                }
             }
         }
         if let Some(c) = &s.clock {
@@ -555,7 +560,10 @@ fn first_readers(specs: &[Spec]) -> PlHashMap<&str, (&str, &'static str)> {
             .features
             .iter()
             .map(|c| (c.as_str(), "feature"))
-            .chain(s.targets.iter().map(|c| (c.as_str(), target_role)))
+            .chain(s.targets.defs().iter().flat_map(|t| {
+                std::iter::once((t.column.as_str(), target_role))
+                    .chain(t.relative_to.as_deref().map(|r| (r, "relative_to")))
+            }))
             .chain(s.clock.as_deref().map(|c| (c, "clock")))
             .chain(s.weight.as_deref().map(|c| (c, "weight")))
             .chain(s.session.as_deref().map(|c| (c, "session")))
@@ -758,7 +766,10 @@ fn nanos_array(s: &Series) -> PolarsResult<Int64Array> {
 #[cfg(test)]
 fn reads(s: &Spec, name: &str) -> bool {
     s.features.iter().any(|f| f == name)
-        || s.targets.iter().any(|t| t == name)
+        || s.targets
+            .defs()
+            .iter()
+            .any(|t| t.column == name || t.relative_to.as_deref() == Some(name))
         || s.clock.as_deref() == Some(name)
         || s.weight.as_deref() == Some(name)
         || s.session.as_deref() == Some(name)
@@ -772,11 +783,16 @@ fn role_of(specs: &[Spec], name: &str) -> &'static str {
         if s.features.iter().any(|f| f == name) {
             return "feature";
         }
-        if s.targets.iter().any(|t| t == name) {
-            return match &s.model {
-                ModelKind::EwClass { .. } => "label",
-                _ => "target",
-            };
+        for t in s.targets.defs() {
+            if t.column == name {
+                return match &s.model {
+                    ModelKind::EwClass { .. } => "label",
+                    _ => "target",
+                };
+            }
+            if t.relative_to.as_deref() == Some(name) {
+                return "relative_to";
+            }
         }
         if s.clock.as_deref() == Some(name) {
             return "clock";
@@ -822,9 +838,19 @@ mod tests {
                 r#"{"name": "c", "model": {"type": "ew_ridge"}, "targets": ["x0"],
                     "features": ["w", "lab"], "group": "k"}"#,
             ),
+            // A relative target: its column is a target, its reference a
+            // `relative_to`, unless an earlier spec read either first.
+            spec(
+                r#"{"name": "d", "model": {"type": "ew_ridge"},
+                    "targets": [{"column": "q", "relative_to": "r"},
+                                {"column": "t2", "relative_to": "x1"}],
+                    "features": ["w"]}"#,
+            ),
         ];
         let readers = first_readers(&specs);
-        let columns = ["x0", "x1", "y", "g", "t", "w", "lab", "s", "k", "absent"];
+        let columns = [
+            "x0", "x1", "y", "g", "t", "w", "lab", "s", "k", "q", "r", "t2", "absent",
+        ];
         for name in columns {
             let want_spec = specs
                 .iter()
@@ -841,6 +867,13 @@ mod tests {
         );
         assert_eq!(readers.get("lab"), Some(&("b", "label")));
         assert_eq!(readers.get("k"), Some(&("c", "group")));
+        assert_eq!(readers.get("q"), Some(&("d", "target")));
+        assert_eq!(readers.get("r"), Some(&("d", "relative_to")));
+        assert_eq!(
+            readers.get("x1"),
+            Some(&("a", "feature")),
+            "an earlier reader wins"
+        );
         assert!(!readers.contains_key("absent"));
     }
 }

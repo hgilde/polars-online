@@ -21,7 +21,10 @@ sees a stream* is the guide to them; this is the reference.
     reads from the same row. A model with no target (``ew_cov``, ``kmeans``,
     ``micro``, ``deco``, ``bocpd``, ``corrchange``, ``hmm`` and ``rcov``)
     takes ``features`` alone. ``ew_class`` takes a ``label`` column in the
-    target's place, and ``holt`` takes no features.
+    target's place, and ``holt`` takes no features. A target may also be a
+    :func:`polars_online.target`: a column taken against another column of
+    its own row, ``po.target("price_5m", relative_to="mid")``, which the
+    model then learns and predicts on that relative scale.
 ``add_intercept``
     Whether the fit has a level of its own: a constant 1 is put in front of
     the features. Default ``True``. Without it nothing is centred, and a fit

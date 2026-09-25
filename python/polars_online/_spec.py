@@ -20,7 +20,7 @@ import types
 import typing
 from collections.abc import Callable
 from datetime import timedelta
-from typing import Any, Unpack
+from typing import Any, NotRequired, TypedDict, Unpack
 
 import polars as pl
 
@@ -125,6 +125,10 @@ def _matches(v: Any, hint: Any) -> bool:
 
 
 def _describe(hint: Any, plural: bool = False) -> str:
+    if hint == TargetList:
+        return (
+            "lists of strs or po.target tables" if plural else "a list of strs or po.target tables"
+        )
     origin = typing.get_origin(hint)
     if origin in (types.UnionType, typing.Union):
         args = [a for a in typing.get_args(hint) if a is not type(None)]
@@ -296,11 +300,106 @@ __all__ = [
 ]
 
 
+class Target(TypedDict):
+    """A target written as a table: what :func:`polars_online.target` returns,
+    and a ``[[specs]]`` target table in the CLI's TOML."""
+
+    column: str
+    relative_to: NotRequired[str]
+    relative: NotRequired[str]
+    name: NotRequired[str]
+
+
+#: What a builder's ``targets`` takes: column names, with
+#: :func:`polars_online.target` tables among them. Two lists rather than one
+#: of the union, so a ``list[str]`` a caller already has type-checks.
+TargetList = list[str] | list[str | Target]
+
+#: How a relative target is taken against its reference.
+_RELATIVE = ("difference", "ratio", "log_ratio")
+
+
+def target_name(t: str | Target) -> str:
+    """The name a target's output fields carry: a string target's own, a
+    table's ``name``, or its ``column`` when it gives none."""
+    if isinstance(t, str):
+        return t
+    return t.get("name", t["column"])
+
+
+def target(
+    column: str,
+    *,
+    relative_to: str | None = None,
+    relative: str = "difference",
+    name: str | None = None,
+) -> Target:
+    """A target column, optionally taken against another column of its own row.
+
+    A level -- a price, a VWAP -- is rarely what a regression should predict;
+    where it goes from *now* is. ``po.target("price_5m", relative_to="mid")`` in a
+    spec's ``targets`` has the model learn and predict ``price_5m - mid``, with
+    ``mid`` read at the target's own row:
+
+    .. code-block:: text
+
+        "difference"  y - r         (the default)
+        "ratio"       y / r         where y > 0 and r > 0
+        "log_ratio"   ln(y / r)     where y > 0 and r > 0
+
+    ``r`` is known when the row arrives, so a relative target is exactly as honest
+    as the column it is built from: it adds no look-ahead. A null ``y`` or ``r``,
+    one past the input bound, or for the two ratios one that is not positive,
+    makes the target null on that row: it is scored and not learned from.
+    Everything the model reports is on the relative scale -- ``pred``,
+    ``resid``, ``sigma``, the metrics and the conformal interval -- so a level
+    prediction is ``pred + r`` (``pred * r`` for a ratio), and ``r`` is on the row.
+    ``"log_ratio"`` goes through ``ln``, whose last bit can differ between
+    platforms, as any logarithm's does.
+
+    ``name`` is what the output fields are named after, ``pred_<name>`` and the
+    rest; the column's own name by default. A ``column`` with no
+    ``relative_to`` and a ``name`` of its own is the column renamed.
+
+    Only a model that regresses its targets takes a relative one: a model with
+    no target, ``ew_class``, ``seqtest`` and ``ftrl`` with its logistic loss
+    refuse it by name. A target's column used as a feature is refused, as a
+    target is; its reference may be a feature.
+
+    In the CLI's TOML the same target is a table:
+    ``targets = ["ret_5m", { column = "price_5m", relative_to = "mid" }]``.
+    """
+    if not isinstance(column, str):
+        raise TypeError(f"target: column must be a str, got {type(column).__name__}")
+    if relative not in _RELATIVE:
+        raise ValueError(
+            f"target {column!r}: relative must be one of {_RELATIVE}, got {relative!r}"
+        )
+    out: Target = {"column": column}
+    if relative_to is not None:
+        if not isinstance(relative_to, str):
+            raise TypeError(
+                f"target {column!r}: relative_to must be a str, got {type(relative_to).__name__}"
+            )
+        out["relative_to"] = relative_to
+        out["relative"] = relative
+    elif relative != "difference":
+        raise ValueError(
+            f"target {column!r}: relative={relative!r} needs relative_to, the column of the "
+            "same row the target is taken against"
+        )
+    if name is not None:
+        if not isinstance(name, str):
+            raise TypeError(f"target {column!r}: name must be a str, got {type(name).__name__}")
+        out["name"] = name
+    return out
+
+
 def _common(
     name: str,
     model: dict[str, Any],
     *,
-    targets: list[str],
+    targets: TargetList,
     features: list[str],
     add_intercept: bool = True,
     clock: str | None = None,
@@ -383,7 +482,7 @@ def _common(
 def ewridge(
     name: str,
     *,
-    targets: list[str],
+    targets: TargetList,
     features: list[str],
     ridge: float | list[float] | None = None,
     feature_sets: dict[str, list[str]] | None = None,
@@ -843,7 +942,7 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
 def rls(
     name: str,
     *,
-    targets: list[str],
+    targets: TargetList,
     features: list[str],
     ridge: float | None = None,
     coef_prior: list[list[float]] | None = None,
@@ -924,7 +1023,7 @@ def rls(
 def lasso(
     name: str,
     *,
-    targets: list[str],
+    targets: TargetList,
     features: list[str],
     lasso_path: list[float],
     l1_ratio: float | None = None,
@@ -1071,7 +1170,7 @@ def lasso(
 def kalman(
     name: str,
     *,
-    targets: list[str],
+    targets: TargetList,
     features: list[str],
     coef_halflife: float | Duration | list[float | Duration],
     q: list[float] | None = None,
@@ -1205,7 +1304,7 @@ def kalman(
 def huber(
     name: str,
     *,
-    targets: list[str],
+    targets: TargetList,
     features: list[str],
     huber_delta: float | None = None,
     ridge: float | None = None,
@@ -1308,7 +1407,7 @@ def huber(
 def quantile(
     name: str,
     *,
-    targets: list[str],
+    targets: TargetList,
     features: list[str],
     quantile: float,
     ridge: float | None = None,
@@ -1440,7 +1539,7 @@ def quantile(
 def ftrl(
     name: str,
     *,
-    targets: list[str],
+    targets: TargetList,
     features: list[str],
     alpha: float | None = None,
     beta: float | None = None,
@@ -1755,7 +1854,7 @@ def ew_cov(
 def sgd(
     name: str,
     *,
-    targets: list[str],
+    targets: TargetList,
     features: list[str],
     loss: str = "squared",
     huber_delta: float | None = None,
@@ -1947,7 +2046,7 @@ def sgd(
 def pa(
     name: str,
     *,
-    targets: list[str],
+    targets: TargetList,
     features: list[str],
     mode: str = "pa1",
     c: float | None = None,
@@ -2055,7 +2154,7 @@ def pa(
 def holt(
     name: str,
     *,
-    targets: list[str],
+    targets: TargetList,
     level_halflife: float | Duration | None = None,
     trend_halflife: float | Duration | None = None,
     features: list[str] | None = None,
@@ -2634,7 +2733,7 @@ def ew_class(
 def seqtest(
     name: str,
     *,
-    targets: list[str],
+    targets: TargetList,
     a: str | None = None,
     b: str | None = None,
     a_suffix: str | None = None,
@@ -2759,7 +2858,7 @@ def seqtest(
 def marginal(
     name: str,
     *,
-    targets: list[str],
+    targets: TargetList,
     features: list[str],
     lags: list[int] | None = None,
     cross_lags: list[int] | None = None,

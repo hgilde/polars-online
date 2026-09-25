@@ -41,7 +41,11 @@ def _spec_dict(**kw) -> dict:
 # --- the builders: wrong shapes are refused by parameter name ---------------
 
 SHAPES = [
-    (po.spec.ewridge, dict(targets="y"), "targets must be a list of strs, got str 'y'"),
+    (
+        po.spec.ewridge,
+        dict(targets="y"),
+        "targets must be a list of strs or po.target tables, got str 'y'",
+    ),
     (po.spec.ewridge, dict(features="x0"), "features must be a list of strs, got str 'x0'"),
     # A string is a duration's shape now ("10m", task 88), so a wrong
     # shape for a clock parameter is anything that is neither.

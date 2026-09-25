@@ -452,7 +452,7 @@ fn the_refusals_name_the_problem() {
     assert!(e.contains("b = \"s\" is itself a seqtest"), "{e}");
 
     let mut wrong = compare("c", "a", "b", false);
-    wrong.targets = vec!["z".into()];
+    wrong.targets = vec!["z"].into();
     let e = err(vec![
         ridge("a", 20.0, false),
         ridge("b", 200.0, false),
@@ -478,7 +478,7 @@ fn the_refusals_name_the_problem() {
     ]);
     assert!(e.contains("[\"resid_y@h20\", \"resid_y@h200\"]"), "{e}");
     let mut suffixed = compare("c", "a", "b", false);
-    suffixed.targets = vec!["y@h20".into()];
+    suffixed.targets = vec!["y@h20"].into();
     let e = err(vec![grid.clone(), ridge("b", 200.0, false), suffixed]);
     assert!(e.contains("names no residual of b = \"b\""), "{e}");
     // `a_suffix` picks the grid instance, and the target stays `y`.

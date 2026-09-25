@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use crate::span::{Span, SpanList};
+use crate::targets::Targets;
 
 fn default_true() -> bool {
     true
@@ -127,7 +128,7 @@ mod fill_tests {
                 r#"{{"name": "m", "model": {model}, "features": ["x"]}}"#
             ));
             s.fill_defaults();
-            assert_eq!(s.targets, vec![col.to_string()], "{model}");
+            assert_eq!(*s.targets, vec![col.to_string()], "{model}");
         }
     }
 
@@ -1615,12 +1616,14 @@ pub struct Spec {
     /// Output struct column name.
     pub name: String,
     pub model: ModelKind,
-    /// Columns to learn against. Optional for a model that learns from no
+    /// Columns to learn against, each a name or a table that takes it
+    /// against another column of its row ([`Targets`], docs/PLAN.md task
+    /// 107a); reads as the names. Optional for a model that learns from no
     /// target (`ModelKind::is_unsupervised`), where
     /// [`Self::fill_defaults`] mirrors `features[0]` the way the Python
     /// builders do (docs/ENHANCEMENTS.md E53); required otherwise.
     #[serde(default)]
-    pub targets: Vec<String>,
+    pub targets: Targets,
     pub features: Vec<String>,
     #[serde(default = "default_true")]
     pub add_intercept: bool,
@@ -1884,9 +1887,9 @@ impl Spec {
             // builders write it. `features[0]` went there, and was then read
             // as the hazard or the exogenous series (review 2026-09-12, C20).
             if let Some(col) = self.model.targets_slot_column() {
-                self.targets = vec![col.to_string()];
+                self.targets = vec![col.to_string()].into();
             } else if let Some(first) = self.features.first() {
-                self.targets = vec![first.clone()];
+                self.targets = vec![first.clone()].into();
             }
         }
         if self.drift_action.is_none() {
@@ -2379,8 +2382,14 @@ impl Spec {
         // row, which is what makes an ew_cov statistic or a kmeans
         // assignment safe to use as a same-row feature (E1).
         let unsupervised = self.model.is_unsupervised();
+        // A relative target's own column is its target as much as its name
+        // is (docs/PLAN.md task 107a); its reference is read at the row,
+        // which a feature may be.
+        let is_target = |f: &String| {
+            self.targets.contains(f) || self.targets.defs().iter().any(|t| &t.column == f)
+        };
         if let Some(leak) = (!unsupervised)
-            .then(|| self.features.iter().find(|f| self.targets.contains(f)))
+            .then(|| self.features.iter().find(|f| is_target(f)))
             .flatten()
         {
             return Err(format!(
@@ -2388,6 +2397,46 @@ impl Spec {
                  from the current row, so this would predict the target with itself \
                  (use a lagged copy of the column if you mean its past values)",
                 self.name
+            ));
+        }
+        // A relative target (docs/PLAN.md task 107a) is a regression target
+        // taken against another column of its row. Where the targets slot
+        // holds something else -- a column an unsupervised model mirrors, a
+        // label, a sign, a 0/1 a probability is fitted to -- it is refused
+        // by name rather than turned into a number that means nothing.
+        if self.targets.any_relative() {
+            let why = match &self.model {
+                m if m.is_unsupervised() => Some("learns from no target"),
+                ModelKind::EwClass { .. } => Some("classifies its target as a label"),
+                ModelKind::SeqTest { .. } => Some("tests the signs of its targets"),
+                ModelKind::Ftrl { loss, .. } if loss.as_deref() != Some("squared") => {
+                    Some("fits a probability to a 0/1 target (loss = \"logistic\")")
+                }
+                _ => None,
+            };
+            if let Some(why) = why {
+                return Err(format!(
+                    "spec {:?}: a relative target (relative_to) does not apply: this model {why}",
+                    self.name
+                ));
+            }
+        }
+        if let Some(t) = self
+            .targets
+            .defs()
+            .iter()
+            .find(|t| t.relative_to.as_deref() == Some(t.column.as_str()))
+        {
+            return Err(format!(
+                "spec {:?}: target {:?} is taken against its own column, which is \
+                 {} on every row",
+                self.name,
+                t.name,
+                if matches!(t.relative, crate::Relative::Difference) {
+                    "0"
+                } else {
+                    "the same"
+                }
             ));
         }
         self.decays()?;

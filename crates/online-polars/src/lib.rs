@@ -51,6 +51,7 @@ mod span;
 mod spec;
 mod stream;
 mod summary;
+mod targets;
 
 pub use arrow::{ArrowChunk, ArrowCol, ClockArray, ClockCol, chunk_from_frame, export_struct_to_c};
 // The Arrow types an `ArrowChunk` is built from and a `fit_predict_arrow`
@@ -83,3 +84,4 @@ pub use spec::{
 };
 pub use stream::{AnyModel, ChunkOut, LastRow, Stream, StreamState, build_models, combo_labels};
 pub use summary::{ColumnStats, DataSummary, Role};
+pub use targets::{Relative, TargetDef, Targets};

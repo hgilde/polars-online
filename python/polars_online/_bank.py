@@ -12,7 +12,7 @@ import polars as pl
 
 from polars_online import _polars_online as _native
 from polars_online._polars_online import ArrowStruct
-from polars_online._spec import _from_json, _json, coef_index
+from polars_online._spec import _from_json, _json, coef_index, target_name
 
 #: What `gram()` calls the constant column a spec's `add_intercept` puts in
 #: front of the features -- the `term` name `coef_index` gives it.
@@ -956,7 +956,7 @@ class ModelBank:
         columns = list(spec_dict["features"])
         if spec_dict.get("add_intercept", True) and not unsupervised:
             columns = [_INTERCEPT, *columns]
-        names = [] if unsupervised else list(spec_dict["targets"])
+        names = [] if unsupervised else [target_name(t) for t in spec_dict["targets"]]
         out = []
         for row, lag, (tidx, by_target, centred) in self._native.gram(idx, group):
             g, instance, k, n_eff, n_kish, means, como, cross, tw = row[:9]

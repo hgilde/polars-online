@@ -50,6 +50,13 @@ carries breaking changes, and any change to the numbers a model returns.
   the bit. At `lags=[1, 2, 5, 10, 20, 50]` and nine targets, one cross
   lag takes 30% off the lags' cost and 22% off the row
   (docs/PERFORMANCE.md §23).
+- **A target can be taken against another column of its own row.**
+  `po.target("price_5m", relative_to="mid")` in a spec's `targets` has the
+  model learn and predict `price_5m - mid`; `relative="ratio"` and
+  `"log_ratio"` take `y / r` and `ln(y / r)`. The reference is read at the
+  target's own row, so nothing looks ahead, and a value either side cannot
+  use makes the target null on that row. In the CLI's TOML the target is a
+  table. A spec with plain targets writes the bytes it always did.
 - **scikit-learn is a second opinion in the tests, and the Rust models are
   property-tested.** `huber` is held to `LinearRegression` and
   `HuberRegressor`, `marginal`'s split to a decision stump, and `sgd` to

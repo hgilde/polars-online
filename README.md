@@ -186,6 +186,30 @@ spec = po.spec.ewridge(
 # Columns the spec does not name pass through to the output untouched.
 ```
 
+A target can be taken against another column of its own row: a price
+against the mid, a VWAP against the last trade. `po.target` does it, and the
+model then learns and predicts on that scale.
+
+```python
+po.spec.ewridge(
+    "fwd",
+    targets=["ret_5m", po.target("price_5m", relative_to="mid")],
+    features=["x0", "x1"], halflife=600.0,
+)
+```
+
+| `relative` | the target | null where |
+|---|---|---|
+| `"difference"`, the default | `y − r` | `y` or `r` is null or past the input bound |
+| `"ratio"` | `y / r` | the same, or `y` or `r` is not positive |
+| `"log_ratio"` | `ln(y / r)` | the same as `"ratio"` |
+
+`r` is read at the target's own row, so the target adds no look-ahead.
+`pred`, `resid`, `sigma` and the metrics are on the relative scale. The
+output fields carry the target's `name`, which is its column's by default.
+In the CLI's TOML the same target is a table:
+`targets = ["ret_5m", { column = "price_5m", relative_to = "mid" }]`.
+
 Two more parameters shape the output rather than the input: `coef_every`,
 under [Coefficients](#coefficients), and `label_delay`, under [Labels that
 arrive late](#labels-that-arrive-late).
