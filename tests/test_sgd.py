@@ -301,8 +301,9 @@ class TestFeatureScaling:
         """`scripts/sklearn_comparison.py short` as a test: 500 groups of 200
         rows, `k = 20`, scored by position in the group. Before task 74 this
         read R² −6.9 at rows 25–50 and 0.11 at rows 100–200; now 0.43 and
-        0.91, against sklearn's `SGDRegressor` at 0.45 and 0.91 with the
-        same constant rate."""
+        0.91. `test_learns_a_short_history_as_sgdregressor_does` holds it to
+        sklearn's `SGDRegressor` live, where this docstring quoted 0.45 and
+        0.91."""
         n_groups, rows_per, k = 500, 200, 20
         x, y, df = self._groups(n_groups, rows_per, k)
         pos = np.tile(np.arange(rows_per), n_groups)
@@ -322,6 +323,48 @@ class TestFeatureScaling:
         late = self._r2(pred, y, (pos >= 100) & (pos < 200))
         assert early > 0.4, f"rows 25-50: R2 {early}"
         assert late > 0.85, f"rows 100-200: R2 {late}"
+
+    def test_learns_a_short_history_as_sgdregressor_does(self):
+        """The same groups, with scikit-learn's `SGDRegressor` beside it at the
+        same constant rate, one estimator and one `StandardScaler` per group
+        fed row by row, each row predicted before it is learned (task 121).
+        Statistical tier: sklearn standardizes a row against the moments
+        from before it and ours with the row in, so the two agree to a
+        tolerance. Measured 0.018 apart at rows 25-50 and 0.005 at rows
+        100-200, over three seeds and sizes from 60 to 100 groups; fewer
+        groups here, since sklearn's row-by-row loop is the slow half."""
+        from sklearn.linear_model import SGDRegressor
+        from sklearn.preprocessing import StandardScaler
+
+        n_groups, rows_per, k = 40, 200, 20
+        x, y, df = self._groups(n_groups, rows_per, k)
+        pos = np.tile(np.arange(rows_per), n_groups)
+        spec = po.spec.sgd(
+            "m",
+            targets=["y0"],
+            features=[f"x{j}" for j in range(k)],
+            group="g",
+            learning_rate=0.01,
+            halflife=float("inf"),
+            min_periods=25.0,
+            scale_features=True,
+        )
+        ours = po.ModelBank([spec]).fit_predict(df)["m"].struct.field("pred_y0").to_numpy()
+        theirs = np.full(len(y), np.nan)
+        for gi in range(n_groups):
+            lo = gi * rows_per
+            model = SGDRegressor(random_state=0, learning_rate="constant", eta0=0.01)
+            scaler = StandardScaler()
+            for i in range(lo, lo + rows_per):
+                xi = x[i : i + 1]
+                if i > lo:
+                    theirs[i] = model.predict(scaler.transform(xi))[0]
+                scaler.partial_fit(xi)
+                model.partial_fit(scaler.transform(xi), y[i : i + 1])
+        for lo, hi in ((25, 50), (100, 200)):
+            ok = (pos >= lo) & (pos < hi)
+            a, b = self._r2(ours.astype(float), y, ok), self._r2(theirs, y, ok)
+            assert abs(a - b) < 0.03, f"rows {lo}-{hi}: R2 {a} against sklearn's {b}"
 
     def test_matches_a_numpy_replica(self):
         """The model against a numpy LMS that standardizes each row against

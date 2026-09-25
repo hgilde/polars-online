@@ -425,7 +425,7 @@ separate question, and three kinds of need have come up:
 | need | libraries | example |
 |---|---|---|
 | an oracle, computed independently of this library | numpy, pandas, scipy | pandas' `ewm(times=)` against the temporal clock |
-| a second opinion from another implementation | river, statsmodels, filterpy, bayesian-changepoint-detection | `river.optim.FTRLProximal`, row for row (T-R1) |
+| a second opinion from another implementation | river, statsmodels, filterpy, bayesian-changepoint-detection, scikit-learn | `river.optim.FTRLProximal`, row for row (T-R1); `HuberRegressor` beside `huber` (T-S4) |
 | interop, the other library reading a bank's output or feeding one | pyarrow, duckdb, the ADBC SQLite driver | `pa.table(s)` on `fit_predict_arrow`'s output |
 
 Four rules keep such a library from costing the package anything:
@@ -433,9 +433,12 @@ Four rules keep such a library from costing the package anything:
 1. **Declare it in the dev group, by name.** It must not arrive through
    another package's dependencies. pandas and scipy came in through
    statsmodels until 2026-09-24, so dropping statsmodels would have broken
-   tests that never mention it. A library that must not be in every
-   contributor's environment, for its licence or its platforms, gets a
-   group of its own and a CI job of its own.
+   tests that never mention it. Its licence must be open source: one the
+   Open Source Initiative approves, or CC0. A library under source-available
+   or commercial terms is parked, not used (the user, 2026-09-25: "enable
+   every unlicensed library in tests and park using licensed libraries").
+   A library that must not be in every contributor's environment, for its
+   platforms, gets a group of its own and a CI job of its own.
 2. **Import it plainly.** The dev group is installed wherever the suite
    runs, so `pytest.importorskip` could only turn a broken environment into
    a skip. A missing library fails the test.
@@ -449,7 +452,12 @@ Four rules keep such a library from costing the package anything:
 `tests/test_dependency_policy.py` checks rules 1, 2 and 4. Every library a
 test imports must be declared in the dev group, no test may call
 `importorskip` (nor skip behind `except ImportError`), and the package must
-depend on polars alone, extras included. Rule 3 is checked in this process by
+depend on polars alone, extras included. Every library of the dev and docs
+groups, and every Rust crate's dev-dependency, must name an open licence in
+its metadata, as an SPDX expression or an "OSI Approved" classifier. A
+library whose metadata names none is listed with the licence read at its
+source and where: `bayesian-changepoint-detection`'s wheel declares none,
+and its repository's `LICENSE` is MIT. Rule 3 is checked in this process by
 `test_this_session_runs_without_pyarrow` and in the child interpreters the
 tests spawn by `test_child_interpreters_run_without_pyarrow_too`:
 `tests/child.py` puts `tests/_site/sitecustomize.py`, which installs the same
@@ -457,16 +465,18 @@ finder, on their path; only `tests/test_pyarrow_interop.py`'s children see
 pyarrow (review 2026-09-25, which found the examples' "nothing needs pyarrow"
 running with it importable). The gate checks the lock with `uv lock --check`.
 
-Two candidates the rule now admits are not yet taken:
+**scikit-learn is taken** (task 121, 2026-09-25). `tests/test_sgd.py`
+compares `sgd` with `SGDRegressor` live, where it quoted sklearn's R² from
+`scripts/sklearn_comparison.py`. `tests/test_second_opinion.py` holds
+`huber` to `LinearRegression` in the review's exact limit and to
+`HuberRegressor` under outliers (T-S4), and `marginal`'s best split to a
+`DecisionTreeRegressor` stump (T-S12).
 
-- **scikit-learn.** `tests/test_sgd.py` could compare with `SGDRegressor`
-  live, where it now quotes sklearn's R² from
-  `scripts/sklearn_comparison.py`.
-- **Pathway.** It would run the Pathway half of
-  `examples/pathway_integration.py`. Pathway is BSL-licensed, so under
-  rule 1 it would need a group of its own, and
-  `test_pathway_is_not_a_dependency` keeps it out of `pyproject.toml`
-  until the user decides (`docs/ENHANCEMENTS.md` E26).
+**Pathway is parked.** It would run the Pathway half of
+`examples/pathway_integration.py`, but it is under the Business Source
+License, which rule 1 parks. `test_pathway_is_not_a_dependency` keeps it
+out of `pyproject.toml` until the user decides (`docs/ENHANCEMENTS.md`
+E26).
 
 ### What the mutation run actually found
 
@@ -1088,7 +1098,7 @@ platforms.
 | # | P | improvement | where it stands |
 |---|---|---|---|
 | T-D1 | ~~P1~~ **done** (2026-08-31) | **Actually run the workflows once.** | the workflows have run; [What is left](#what-is-left) has the results |
-| T-D2 | ~~P2~~ **done** | **Property-based testing** (hypothesis) | `tests/test_properties.py` |
+| T-D2 | ~~P2~~ **done** | **Property-based testing** (hypothesis; proptest in Rust since 2026-09-25) | `tests/test_properties.py`; `crates/online-core/tests/model_contract.rs`, module `generated` |
 | T-D3 | ~~P2~~ **done** | Determinism across parallelism | `tests/test_portability.py` |
 | T-D4 | ~~P3~~ **done** | Coverage, and **mutation testing** | coverage reported, not gating; mutation testing in CI since 2026-09-24 (`mutants.yml`) |
 | T-D5 | | Mutation re-run | **done, three passes** |
@@ -1101,6 +1111,14 @@ installed, so `git push` could not authenticate. The unblock was any of
 scope**, since this push added `.github/workflows/`. The repo has been pushed
 since 2026-08-31, and CI runs on Windows on every push; the Windows results
 are in [What is left](#what-is-left).
+
+**T-D2 in Rust, 2026-09-25** (task 121). `model_contract.rs`'s module
+`generated` holds all 21 models to three clauses of the contract over
+streams proptest generates and shrinks: `predict_with` is the step without
+the update; a state saved and restored at any row continues exactly as the
+model that was not; and nothing is infinite, with values up to `1e50`,
+repeats, absent targets, zero and uneven weights, and clock gaps. 128
+streams a model in the suite; a run of 2,000 a model found nothing.
 
 **T-D2, extended 2026-09-24.** `tests/test_properties_temporal.py` adds 11
 properties on duration text (round trip over the whole i64 range, polars'

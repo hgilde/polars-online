@@ -38,6 +38,11 @@ serde = { version = "1.0", features = ["derive"] }
 # correctly rounded and moves a value by an ulp (docs/PLAN.md task 66).
 serde_json = { version = "1", features = ["float_roundtrip"] }
 thiserror = "2"
+# Tests only (docs/PLAN.md task 121): property tests over generated streams
+# in `online-core`'s model contract. A dev-dependency links into the test
+# binaries alone; hard rule 12 covers what ships, not tests (the user,
+# 2026-09-25). Without default features, which fork a process per case.
+proptest = { version = "1.11", default-features = false, features = ["std"] }
 clap = { version = "4.6", features = ["derive"] }
 toml = "1.1"
 

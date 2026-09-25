@@ -2189,3 +2189,183 @@ class TestQuantileIsQuantReg:
         lo = stop - window
         want = np.asarray(sm.QuantReg(y[lo:stop], sm.add_constant(x[lo:stop])).fit(q=0.5).params)
         assert np.max(np.abs(got - want)) <= 0.35, (got, want)
+
+
+class TestHuberAgainstScikitLearn:
+    """T-S4's huber half (``docs/REVIEW-2026-09-12.md``), with scikit-learn a
+    live oracle since task 121. Two tiers, as the review sets them. Exact: at
+    ``huber_delta = 1e9`` no row is down-weighted, so the fit is least
+    squares, and without an intercept and with ``standardize`` it is
+    ``LinearRegression(fit_intercept=False)`` on the raw columns -- the limit
+    case the review names for pattern B. Statistical: with one row in fifty a
+    gross error, ``huber`` at ``huber_delta = 1.35`` and ``HuberRegressor(
+    epsilon = 1.35)`` land together where least squares does not. The
+    algorithms differ -- ours reweights each row by its prior residual in
+    units of the residuals' EW spread, theirs solves for the scale jointly --
+    so they agree to a tolerance: 0.045 at this seed, at most 0.08 over eight,
+    against 0.38 to 0.47 for least squares. The spread ours measures in is
+    not itself robust (review D4, ``robust.rs``), so at one row in ten the
+    cut widens and the intercept sits halfway to least squares: 1.5 against
+    theirs at 0.66, the truth at 0.5 and least squares at 2.7."""
+
+    @staticmethod
+    def fit(df, **kw):
+        spec = po.spec.huber(
+            "h",
+            targets=["y"],
+            features=["x0", "x1"],
+            halflife=float("inf"),
+            max_rows_between_solves=1,
+            min_periods=0.0,
+            **kw,
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df)
+        return np.array(bank.coef("h")["coef"].to_list())
+
+    def test_a_huge_delta_is_least_squares(self):
+        from sklearn.linear_model import LinearRegression
+
+        rng = np.random.default_rng(3)
+        n = 600
+        x = rng.normal(0.0, 1.0, (n, 2)) + np.array([3.0, -1.0])
+        y = 0.8 * x[:, 0] - 1.7 * x[:, 1] + rng.normal(0.0, 0.5, n)
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+        got = self.fit(df, huber_delta=1e9, ridge=1e-12, standardize=True, add_intercept=False)
+        want = LinearRegression(fit_intercept=False).fit(x, y).coef_
+        np.testing.assert_allclose(got, want, rtol=1e-9)
+
+    def test_under_outliers_it_lands_where_huber_regressor_does(self):
+        from sklearn.linear_model import HuberRegressor, LinearRegression
+
+        rng = np.random.default_rng(2)
+        n = 4000
+        x = rng.normal(0.0, 1.0, (n, 2))
+        truth = np.array([0.5, 1.2, -0.7])
+        y = truth[0] + x @ truth[1:] + rng.normal(0.0, 1.0, n)
+        # One row in fifty carries a gross error, all to one side.
+        bad = rng.random(n) < 0.02
+        y[bad] += rng.uniform(15.0, 30.0, bad.sum())
+        df = pl.DataFrame({"x0": x[:, 0], "x1": x[:, 1], "y": y})
+        ours = self.fit(df, huber_delta=1.35)
+        theirs = HuberRegressor(epsilon=1.35, alpha=0.0, max_iter=1000).fit(x, y)
+        theirs = np.concatenate(([theirs.intercept_], theirs.coef_))
+        ols = LinearRegression().fit(x, y)
+        ols = np.concatenate(([ols.intercept_], ols.coef_))
+        np.testing.assert_allclose(ours, theirs, atol=0.1)
+        # The control: least squares is pulled away by the same rows.
+        assert np.abs(ols - theirs).max() > 4 * np.abs(ours - theirs).max()
+
+
+class TestTheBinsAgainstScipyAndAStump:
+    """T-S12 (``docs/REVIEW-2026-09-12.md``). With given edges, ``halflife =
+    inf`` and unit weights, ``marginal``'s bins are
+    ``scipy.stats.binned_statistic``'s -- the count, the mean -- and each
+    bin's population variance, exactly: the bins are half-open ``[a, b)``
+    in both, a value on an edge going to the bin above. The best split is a
+    regression stump's among the edges: scikit-learn's
+    ``DecisionTreeRegressor(max_depth = 1)`` chooses among every midpoint,
+    so its impurity decrease over ``var(y)`` bounds ``split_gain`` from
+    above, with equality when its threshold falls between the same two data
+    points as ``split_at``."""
+
+    def test_the_bins_are_binned_statistic_and_the_split_a_stump(self):
+        from scipy.stats import binned_statistic
+        from sklearn.tree import DecisionTreeRegressor
+
+        rng = np.random.default_rng(5)
+        n = 3000
+        edges = [-1.0, 0.0, 0.5, 1.0]
+        x = rng.uniform(-2.0, 2.0, n)
+        # Values exactly on each edge, which go to the bin above in both.
+        x[:40] = np.repeat(edges, 10)
+        y = np.where(x >= 0.5, 2.0, 0.0) + 0.3 * rng.standard_normal(n)
+        spec = po.spec.marginal(
+            "m",
+            targets=["y"],
+            features=["x"],
+            halflife=float("inf"),
+            bin_edges=[edges],
+            min_periods=2.0,
+        )
+        bank = po.ModelBank([spec])
+        bank.fit_predict(pl.DataFrame({"x": x, "y": y}))
+        row = bank.marginal("m").row(0, named=True)
+
+        full = [-np.inf, *edges, np.inf]
+        count = binned_statistic(x, y, "count", bins=full).statistic
+        mean = binned_statistic(x, y, "mean", bins=full).statistic
+        var = [np.var(y[(x >= lo) & (x < hi)]) for lo, hi in zip(full[:-1], full[1:], strict=True)]
+        np.testing.assert_array_equal(row["bin_n"], count)
+        np.testing.assert_allclose(row["bin_mean_y"], mean, rtol=1e-12)
+        np.testing.assert_allclose(row["bin_var_y"], var, rtol=1e-10)
+
+        tree = DecisionTreeRegressor(max_depth=1).fit(x[:, None], y).tree_
+        n_root, (n_l, n_r) = tree.n_node_samples[0], tree.n_node_samples[1:3]
+        drop = tree.impurity[0] - (n_l * tree.impurity[1] + n_r * tree.impurity[2]) / n_root
+        stump_gain = drop / tree.impurity[0]
+        assert stump_gain >= row["split_gain"] - 1e-12
+        # The stump cut between the same two points as the edge at 0.5, so
+        # the two gains are one number.
+        below, above = x[x < row["split_at"]].max(), x[x >= row["split_at"]].min()
+        assert row["split_at"] == 0.5 and below < tree.threshold[0] < above
+        assert stump_gain == pytest.approx(row["split_gain"], rel=1e-9)
+
+
+class TestAMeanRevertingKalmanIsFilterpy:
+    """T-S5 in full (``docs/REVIEW-2026-09-12.md``): with ``revert_halflife``
+    finite the transition is ``F = diag(2^(-d / r_i))`` and the process noise
+    is added after it, which is ``filterpy``'s ``predict`` with that ``F``.
+    Unstandardized, so the pull is toward zero in the columns' own units and
+    ``kf.x`` is our coefficient vector; a scalar ``r`` pulls every slot, and
+    ``[inf, r, r]`` leaves the intercept a random walk. Rows one clock unit
+    apart, and a gap of five, so ``F`` is not the same on every row."""
+
+    @pytest.mark.parametrize("revert", [25.0, [float("inf"), 40.0, 40.0]])
+    def test_the_reverting_filter_is_filterpy_with_a_decaying_transition(self, revert):
+        import filterpy.kalman as kalman
+
+        rng = np.random.default_rng(17)
+        n, halflife, coef_hl = 300, 30.0, 50.0
+        x = rng.normal(0.0, 1.0, (n, 2))
+        y = 0.5 + 1.5 * x[:, 0] - 0.8 * x[:, 1] + rng.normal(0.0, 0.3, n)
+        t = np.arange(n, dtype=float)
+        t[150:] += 5.0
+        frame = pl.DataFrame({"t": t, "x0": x[:, 0], "x1": x[:, 1], "y": y})
+        spec = po.spec.kalman(
+            "k",
+            targets=["y"],
+            features=["x0", "x1"],
+            clock="t",
+            coef_halflife=coef_hl,
+            revert_halflife=revert,
+            standardize=False,
+            p0=1.0,
+            halflife=halflife,
+            max_dclock=1e9,
+            min_periods=0.0,
+        )
+        got = po.ModelBank([spec]).fit_predict(frame)["k"].struct.field("pred_y").to_numpy()
+
+        r = np.broadcast_to(np.asarray(revert, dtype=float), (3,))
+        kf = kalman.KalmanFilter(dim_x=3, dim_z=1)
+        kf.x, kf.P = np.zeros((3, 1)), np.eye(3)
+        sig2 = wsig = wj = 0.0
+        want = np.full(n, np.nan)
+        for i in range(n):
+            d = 0.0 if i == 0 else t[i] - t[i - 1]
+            lam = 0.5 ** (d / halflife)
+            s2 = sig2 if sig2 > 0.0 else 1.0
+            kf.F = np.diag(0.5 ** (d / r))
+            kf.predict(Q=np.eye(3) * s2 * (np.log(2.0) / coef_hl) ** 2 * d)
+            z = np.array([1.0, x[i, 0], x[i, 1]])
+            if wj > 0.0:
+                want[i] = z @ kf.x[:, 0]
+            kf.update(y[i], R=s2, H=z[None, :])
+            if not np.isnan(want[i]):
+                res = y[i] - want[i]
+                ws_new = lam * wsig + 1.0
+                sig2 = (lam * wsig * sig2 + res * res) / ws_new
+                wsig = ws_new
+            wj = lam * wj + 1.0
+        np.testing.assert_allclose(got, want, rtol=1e-9, atol=1e-12)

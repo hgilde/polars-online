@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import ast
 import importlib.metadata
+import json
 import re
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
+
+import pytest
 
 import child
 
@@ -146,3 +149,182 @@ def test_child_interpreters_run_without_pyarrow_too() -> None:
     ).stdout.split()
     assert run(child.env()) == ["absent", "True"]
     assert run(None) == ["present"]
+
+
+#: Licences a library in the dev or docs group may carry: those the Open
+#: Source Initiative approves, as SPDX identifiers, and CC0, a public-domain
+#: dedication that asks for nothing (numpy carries it for part of its code).
+#: docs/TESTING.md, "Libraries the package does not depend on"; the user,
+#: 2026-09-25: "enable every unlicensed library in tests and park using
+#: licensed libraries". A classifier "OSI Approved" counts the same.
+OPEN = {
+    "0BSD",
+    "AGPL-3.0-only",
+    "AGPL-3.0-or-later",
+    "Apache-2.0",
+    "Artistic-2.0",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "EPL-2.0",
+    "GPL-2.0-only",
+    "GPL-2.0-or-later",
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
+    "ISC",
+    "LGPL-2.1-only",
+    "LGPL-2.1-or-later",
+    "LGPL-3.0-only",
+    "LGPL-3.0-or-later",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "PSF-2.0",
+    "Python-2.0",
+    "Unlicense",
+    "UPL-1.0",
+    "Zlib",
+}
+
+#: Words that mark a source-available or commercial licence, wherever the
+#: metadata puts them: those libraries are parked, not tested with.
+PARKED = (
+    "busl",
+    "business source",
+    "sspl",
+    "server side public",
+    "commercial",
+    "proprietary",
+    "elastic license",
+)
+
+#: Libraries whose installed metadata names no licence at all, with the
+#: licence read at the source and where. An entry goes once the metadata
+#: names one (`test_the_licence_table_holds_only_what_the_metadata_lacks`).
+READ_AT_THE_SOURCE = {
+    "bayesian-changepoint-detection": (
+        "MIT",
+        "LICENSE in github.com/hildensia/bayesian_changepoint_detection at 5b7edb6, "
+        "read 2026-09-25; the 0.2.dev1 wheel declares none",
+    ),
+}
+
+
+def _spdx_ids(expression: str) -> set[str]:
+    """The licence identifiers in an SPDX expression, operators dropped."""
+    words = re.split(r"[\s()]+", expression)
+    return {w for w in words if w and w not in {"AND", "OR", "WITH"}}
+
+
+def licence_of(metadata: importlib.metadata.PackageMetadata) -> str | None:
+    """What the metadata says the licence is, from the most exact field it
+    fills: `License-Expression` (PEP 639), then the trove classifiers, then
+    the free-text `License`. `None` when it says nothing."""
+    expression = metadata.get("License-Expression")
+    if expression:
+        return expression.strip()
+    classifiers = [
+        c.removeprefix("License :: ")
+        for c in metadata.get_all("Classifier") or []
+        if c.startswith("License ::")
+    ]
+    if classifiers:
+        return "; ".join(classifiers)
+    text = (metadata.get("License") or "").strip()
+    return text or None
+
+
+def is_open(licence: str) -> bool:
+    """Whether a licence as `licence_of` gives it is open: nothing in it is
+    `PARKED`, and it is an SPDX expression of `OPEN` identifiers or an
+    "OSI Approved" classifier. Free text is not read for a name, since
+    "permitted" contains "MIT"; a library that gives only text is in
+    `READ_AT_THE_SOURCE` or refused."""
+    if any(word in licence.lower() for word in PARKED):
+        return False
+    if "OSI Approved ::" in licence:
+        return True
+    ids = _spdx_ids(licence)
+    return bool(ids) and ids <= OPEN
+
+
+def _groups() -> list[str]:
+    return [_name(r) for group in ("dev", "docs") for r in META["dependency-groups"][group]]
+
+
+def test_every_test_library_carries_an_open_licence() -> None:
+    """Each library of the dev and docs groups names an open-source licence
+    in its metadata, or is in the table of those read at the source: a
+    licensed one is refused here rather than remembered."""
+    bad = {}
+    for name in _groups():
+        declared = licence_of(importlib.metadata.metadata(name))
+        if declared is None:
+            if name not in READ_AT_THE_SOURCE:
+                bad[name] = "no licence in its metadata, and none read at the source"
+            continue
+        if not is_open(declared):
+            bad[name] = declared
+    assert not bad, f"libraries without an open licence: {bad}"
+
+
+def test_the_licence_table_holds_only_what_the_metadata_lacks() -> None:
+    for name, (licence, where) in READ_AT_THE_SOURCE.items():
+        assert name in _groups(), f"{name} is in no group any more"
+        assert licence_of(importlib.metadata.metadata(name)) is None, (
+            f"{name}'s metadata names a licence now; drop it from the table"
+        )
+        assert is_open(licence) and where
+
+
+def test_every_rust_test_library_carries_an_open_licence() -> None:
+    """The same rule for the crates' dev-dependencies, which link into the
+    test binaries alone (hard rule 12 covers what ships, not tests: the
+    user, 2026-09-25). Their licences are read from ``cargo metadata``,
+    offline, from the lock."""
+    out = subprocess.run(
+        ["cargo", "metadata", "--format-version", "1", "--offline"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    meta = json.loads(out)
+    by_id = {p["id"]: p for p in meta["packages"]}
+    licence = {p["name"]: p.get("license") for p in meta["packages"]}
+    dev = {
+        dep["name"]
+        for member in meta["workspace_members"]
+        for dep in by_id[member]["dependencies"]
+        if dep["kind"] == "dev"
+    }
+    assert "proptest" in dev, "the property tests' library is where it was put"
+    bad = {name: licence[name] for name in sorted(dev) if not is_open(licence[name] or "")}
+    assert not bad, f"Rust test libraries without an open licence: {bad}"
+
+
+@pytest.mark.parametrize(
+    ("licence", "open_"),
+    [
+        ("MIT", True),
+        ("MIT OR Apache-2.0", True),
+        ("BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0", True),
+        ("OSI Approved :: BSD License", True),
+        ("GPL-3.0-only", True),
+        ("BSL-1.0", True),  # Boost, not the Business Source License
+        ("BSD 3-Clause License", False),  # text, not an identifier
+        ("Use is permitted within the licensed organization", False),
+        ("BUSL-1.1", False),
+        ("Business Source License 1.1", False),
+        ("SSPL-1.0", False),
+        ("MIT OR LicenseRef-Commercial", False),
+        ("Other/Proprietary License", False),
+        ("Elastic License 2.0", False),
+    ],
+)
+def test_the_licence_rule_itself(licence: str, open_: bool) -> None:
+    """The rule's own cases, so a check that passed everything would fail
+    here: the forms the installed libraries use, and the parked ones."""
+    assert is_open(licence) is open_

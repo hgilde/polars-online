@@ -4452,7 +4452,20 @@ decision it needs, with a recommendation where there is one.
       7. For 104: the planned loaders for old states are obsolete (the
          pre-1.0 waiver of 2026-09-14): confirm.
 
-- [ ] 121. **Test libraries under an open-source licence.** S–M. The user,
+- [x] 121. **Test libraries under an open-source licence.** S–M. **Done
+      2026-09-25:** scikit-learn 1.9.1 in the dev group; `huber` against
+      `LinearRegression` in the exact limit and `HuberRegressor` under
+      outliers (T-S4), `marginal`'s bins against scipy's `binned_statistic`
+      with values on the edges and its split against a stump (T-S12), the
+      reverting `kalman` against filterpy (T-S5 in full), and `sgd`
+      against `SGDRegressor` live; proptest 1.11 over all 21 models in
+      `model_contract.rs` (a deep run of 2,000 streams a model found
+      nothing); and a licence check over the dev and docs groups and the
+      crates' dev-dependencies. One measurement worth keeping: at one row
+      in ten a gross outlier, `huber`'s intercept sat halfway to least
+      squares (1.5 against `HuberRegressor`'s 0.66, truth 0.5), because
+      its scale is the plain EW residual spread -- review D4, documented in
+      `robust.rs`, not changed here. The user,
       2026-09-25: "we do want to enable every unlicensed library in tests
       and park using licensed libraries" -- read as: a library under an
       OSI-approved open-source licence (BSD, MIT, Apache, MPL, ...), which

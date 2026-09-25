@@ -135,6 +135,12 @@ dev = [
     # tests/conftest.py makes pyarrow unimportable in the rest of the suite,
     # which so runs as a user without it does. The floor is the version measured.
     "pyarrow>=25.0.1",
+    # Second opinions under an open-source licence (task 121, BSD-3-Clause):
+    # HuberRegressor and LinearRegression for `huber` (the review's T-S4),
+    # DecisionTreeRegressor for `marginal`'s split (T-S12), and SGDRegressor
+    # for `sgd`, compared live where the tests quoted it. The floor is the
+    # version measured.
+    "scikit-learn>=1.9.1",
 ]
 # The API reference: Sphinx over the docstrings, which are written in its
 # dialect (``:class:`` roles, ``::`` literal blocks). Its own group, so a

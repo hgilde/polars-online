@@ -2051,3 +2051,225 @@ fn every_model_with_a_recovery_test_has_a_predict_parity_test() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The contract over generated streams (T-D2 in Rust, docs/PLAN.md task 121).
+// ---------------------------------------------------------------------------
+
+/// `tests/test_properties.py` asserts invariants on the bank over streams
+/// Hypothesis generates. This asserts three clauses of the contract above on
+/// every model directly, over streams proptest generates and, on a failure,
+/// shrinks to a short one: `predict_with` is the step without the update; a
+/// state saved and restored at any row continues exactly as the model that
+/// was not; and nothing a model reports is infinite, whatever the inputs
+/// inside the bound. Each is checked above on one fixed stream; here the
+/// stream is the variable. 128 streams a model in the suite; 2,000 a model,
+/// run once when this was written (docs/PLAN.md task 121), found nothing.
+mod generated {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// One row: the features, each target or its absence, the clock since
+    /// the previous row, and the weight.
+    #[derive(Debug, Clone)]
+    struct GenRow {
+        x: Vec<f64>,
+        y: Vec<Option<f64>>,
+        d: f64,
+        w: f64,
+    }
+
+    /// A value a stream may carry: mostly ordinary, often a repeat that holds
+    /// a column still, sometimes wide, sometimes near the input bound.
+    fn value() -> impl Strategy<Value = f64> {
+        prop_oneof![
+            6 => -3.0..3.0f64,
+            2 => Just(0.5),
+            1 => -1e6..1e6f64,
+            1 => (-1.0..1.0f64).prop_map(|u| u * 1e50),
+        ]
+    }
+
+    /// A row of `targets` targets; `binary` targets are 0 or 1, the label a
+    /// classifier and a logistic loss read.
+    fn row(targets: usize, binary: bool) -> impl Strategy<Value = GenRow> {
+        (
+            prop::collection::vec(value(), K),
+            prop::collection::vec(prop::option::weighted(0.85, value()), targets),
+            prop_oneof![5 => Just(1.0), 1 => Just(0.0), 1 => 0.0..30.0f64],
+            prop_oneof![5 => Just(1.0), 1 => Just(0.0), 2 => 0.01..4.0f64],
+        )
+            .prop_map(move |(x, y, d, w)| GenRow {
+                x,
+                y: if binary {
+                    y.into_iter()
+                        .map(|v| v.map(|v| f64::from(v > 0.0)))
+                        .collect()
+                } else {
+                    y
+                },
+                d,
+                w,
+            })
+    }
+
+    fn stream(targets: usize, binary: bool) -> impl Strategy<Value = Vec<GenRow>> {
+        prop::collection::vec(row(targets, binary), 1..60)
+    }
+
+    fn equal(a: &Step, b: &Step) -> bool {
+        let same = |u: &f64, v: &f64| u.to_bits() == v.to_bits() || (u.is_nan() && v.is_nan());
+        a.pred.len() == b.pred.len()
+            && a.pred.iter().zip(&b.pred).all(|(u, v)| same(u, v))
+            && same(&a.n_eff, &b.n_eff)
+            && a.extra == b.extra
+    }
+
+    /// The three clauses over one stream, with the save and restore at row
+    /// `split` (past the end: never).
+    fn contract<M: OnlineModel>(
+        build: impl Fn() -> M,
+        rows: &[GenRow],
+        split: usize,
+    ) -> Result<(), TestCaseError> {
+        let (mut whole, mut parted) = (build(), build());
+        for (i, r) in rows.iter().enumerate() {
+            if i == split {
+                let bytes = rmp_serde::to_vec(&parted.state()).unwrap();
+                parted = M::restore(&rmp_serde::from_slice(&bytes).unwrap()).unwrap();
+            }
+            let d = if i == 0 { 0.0 } else { r.d };
+            let p = whole.predict_with(&r.x, &r.y, d);
+            let a = whole.step(&r.x, &r.y, d, r.w);
+            let b = parted.step(&r.x, &r.y, d, r.w);
+            prop_assert!(equal(&p, &a), "row {}: predict {:?}, step {:?}", i, p, a);
+            prop_assert!(
+                equal(&a, &b),
+                "row {}, restored at {}: {:?} against {:?}",
+                i,
+                split,
+                b,
+                a
+            );
+            prop_assert!(
+                a.pred
+                    .iter()
+                    .chain(std::iter::once(&a.n_eff))
+                    .all(|v| !v.is_infinite()),
+                "row {}: {:?}",
+                i,
+                a
+            );
+        }
+        Ok(())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
+
+        #[test]
+        fn ew_ridge(rows in stream(2, false), split in 0usize..60) {
+            contract(|| EwRidge::new(ew_ridge_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn rls(rows in stream(2, false), split in 0usize..60) {
+            contract(|| Rls::new(rls_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn lasso(rows in stream(1, false), split in 0usize..60) {
+            contract(|| Lasso::new(lasso_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn kalman(rows in stream(2, false), split in 0usize..60) {
+            contract(|| Kalman::new(kalman_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn kalman_reverting(rows in stream(2, false), split in 0usize..60) {
+            contract(|| Kalman::new(kalman_revert_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn robust(rows in stream(2, false), split in 0usize..60, which in 0usize..ROBUST_LOSSES.len()) {
+            contract(|| Robust::new(robust_cfg(ROBUST_LOSSES[which])).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn ftrl(rows in stream(2, false), split in 0usize..60) {
+            contract(|| Ftrl::new(ftrl_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn sgd(rows in stream(2, false), split in 0usize..60) {
+            contract(|| Sgd::new(sgd_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn pa(rows in stream(2, false), split in 0usize..60) {
+            contract(|| Pa::new(pa_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn holt(rows in stream(2, false), split in 0usize..60) {
+            contract(|| Holt::new(holt_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn ew_cov(rows in stream(0, false), split in 0usize..60) {
+            contract(|| EwCovModel::new(ew_cov_model_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn marginal(rows in stream(2, false), split in 0usize..60) {
+            contract(|| Marginal::new(marginal_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn kmeans(rows in stream(0, false), split in 0usize..60) {
+            contract(|| KMeans::new(kmeans_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn micro(rows in stream(0, false), split in 0usize..60) {
+            contract(|| Micro::new(micro_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn ew_class(rows in stream(1, true), split in 0usize..60) {
+            contract(|| EwClass::new(ew_class_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn seqtest(rows in stream(2, false), split in 0usize..60) {
+            contract(|| SeqTest::new(seqtest_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn bocpd(rows in stream(0, false), split in 0usize..60) {
+            contract(|| Bocpd::new(bocpd_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn corrchange(rows in stream(0, false), split in 0usize..60) {
+            contract(|| CorrChange::new(corrchange_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn hmm(rows in stream(0, false), split in 0usize..60) {
+            contract(|| Hmm::new(hmm_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn rcov(rows in stream(0, false), split in 0usize..60) {
+            contract(|| Rcov::new(rcov_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn deco(rows in stream(0, false), split in 0usize..60) {
+            contract(|| Deco::new(deco_cfg()).unwrap(), &rows, split)?;
+        }
+    }
+}

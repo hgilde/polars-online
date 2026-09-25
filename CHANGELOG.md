@@ -50,6 +50,13 @@ carries breaking changes, and any change to the numbers a model returns.
   the bit. At `lags=[1, 2, 5, 10, 20, 50]` and nine targets, one cross
   lag takes 30% off the lags' cost and 22% off the row
   (docs/PERFORMANCE.md §23).
+- **scikit-learn is a second opinion in the tests, and the Rust models are
+  property-tested.** `huber` is held to `LinearRegression` and
+  `HuberRegressor`, `marginal`'s split to a decision stump, and `sgd` to
+  `SGDRegressor`, live. proptest generates streams for all 21 models and
+  holds each to the model contract. Every test library, Python or Rust,
+  must name an open-source licence, which a test checks. The package still
+  depends on polars alone.
 
 ### Fixed
 
