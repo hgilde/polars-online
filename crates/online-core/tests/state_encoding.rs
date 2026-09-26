@@ -74,6 +74,7 @@ fn marginal_round_trips_with_every_optional_part_present_or_absent() {
                                 edges: None,
                                 rule: online_core::BinRule::Quantile,
                                 warm_rows: 4,
+                                budget_mib: None,
                             })
                         }),
                         window,
@@ -253,4 +254,51 @@ fn a_human_readable_float_does_not_move_the_msgpack() {
             );
         }
     }
+}
+
+/// A bins budget is the one field of `BinCfg` that skips, and it is last, so
+/// a model with it set and one without both round-trip in both encodings,
+/// and one without writes the bytes it did before the field existed
+/// (docs/PLAN.md task 131).
+#[test]
+fn a_bins_budget_round_trips_in_both_encodings() {
+    let build = |budget_mib| {
+        let cfg = MarginalCfg {
+            n_features: 2,
+            n_targets: 1,
+            decay: Decay::Halflife(10.0),
+            min_periods: vec![0.0],
+            lags: Vec::new(),
+            serial_rule: None,
+            cross_lags: None,
+            bins: Some(Box::new(online_core::BinCfg {
+                n_bins: 2,
+                edges: None,
+                rule: online_core::BinRule::Quantile,
+                warm_rows: 4,
+                budget_mib,
+            })),
+            window: None,
+            window_every: None,
+        };
+        let mut m = online_core::Marginal::new(cfg).unwrap();
+        for i in 0..8 {
+            let v = i as f64;
+            OnlineModel::step(&mut m, &[v, -v], &[Some(v * 0.5)], v, 1.0);
+        }
+        m
+    };
+    for budget in [None, Some(512.0), Some(f64::INFINITY)] {
+        roundtrip(&build(budget), &format!("marginal bin_budget={budget:?}"));
+    }
+    // Absent, the field is not written at all.
+    let bins = online_core::BinCfg {
+        n_bins: 2,
+        edges: None,
+        rule: online_core::BinRule::Quantile,
+        warm_rows: 4,
+        budget_mib: None,
+    };
+    let compact = rmp_serde::to_vec(&bins).unwrap();
+    assert_eq!(compact[0], 0x94, "four fields, as before the budget");
 }

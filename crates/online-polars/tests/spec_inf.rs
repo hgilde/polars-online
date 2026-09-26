@@ -24,7 +24,7 @@ fn spec(top: &str, model: &str) -> Spec {
 
 /// Where `inf` is a limit with a name: least squares, the whole history, no
 /// forgetting, a step nothing caps, the argmin.
-const MEANS_SOMETHING: [(&str, &str); 8] = [
+const MEANS_SOMETHING: [(&str, &str); 9] = [
     // The noise gate at `inf` is off: no ratio is ever above it.
     ("max_error_inflation = inf", "type = \"ew_ridge\""),
     ("", "type = \"huber\"\nhuber_delta = inf"),
@@ -43,6 +43,8 @@ const MEANS_SOMETHING: [(&str, &str); 8] = [
         "emit_averaged = true\naverage_eta = inf",
         "type = \"ew_ridge\"\nridge = [1e-6, 1.0]",
     ),
+    // No bound on the bins' memory (docs/PLAN.md task 131).
+    ("", "type = \"marginal\"\nbins = 4\nbin_budget = inf"),
 ];
 
 /// Where it is no setting: a step, a penalty, a tube or a threshold at `inf`.

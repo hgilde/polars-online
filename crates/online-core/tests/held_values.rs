@@ -902,6 +902,7 @@ fn a_held_target_leaves_no_split_in_the_bins() {
                 edges: None,
                 rule: BinRule::Quantile,
                 warm_rows: 100,
+                budget_mib: None,
             })),
             window: None,
             window_every: None,

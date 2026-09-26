@@ -263,11 +263,46 @@ def test_split_gain_t_uses_n_serial_when_it_has_one():
         (dict(bin_edges=[[0.0], [1.0]]), "one list per feature"),
         (dict(bin_edges={"z": [0.0]}), "missing"),
         (dict(bins=8, bin_warm_rows=10**9), "budget"),
+        (dict(bin_budget=64.0, bins=None, bin_warm_rows=None), "needs bins or bin_edges"),
+        (dict(bins=8, bin_budget=0.0), "bin_budget must be a positive number"),
+        (dict(bins=8, bin_budget=-5.0), "bin_budget must be a positive number"),
     ],
 )
 def test_refusals(kw, message):
     with pytest.raises(ValueError, match=re.escape(message)):
         pairs(stream(n=50), **kw)
+
+
+def test_bin_budget_sets_the_limit():
+    """``bin_budget`` moves the refusal (docs/PLAN.md task 131). A warm-up
+    hold of 100,000 rows at 400 features, 313 MiB, is refused by the default
+    256 and built under 400, or under no bound; 300 refuses it again, naming
+    the budget and the setting. Nothing that size is allocated: the hold
+    fills only as rows arrive, and none do here."""
+    features = [f"x{j}" for j in range(400)]
+
+    def bank(**kw):
+        return po.ModelBank(
+            [
+                po.spec.marginal(
+                    "m",
+                    targets=["y"],
+                    features=features,
+                    halflife=500.0,
+                    bins=8,
+                    bin_warm_rows=100_000,
+                    **kw,
+                )
+            ]
+        )
+
+    with pytest.raises(ValueError, match=re.escape("over the 256 MiB")):
+        bank()
+    bank(bin_budget=400.0)
+    bank(bin_budget=float("inf"))
+    with pytest.raises(ValueError, match=re.escape("over the 300 MiB")) as err:
+        bank(bin_budget=300.0)
+    assert "raise bin_budget" in str(err.value)
 
 
 @pytest.mark.parametrize("kw", [dict(bins=8), dict(bin_rule="fixed"), dict(bin_warm_rows=50)])

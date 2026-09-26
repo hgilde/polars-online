@@ -57,6 +57,11 @@ carries breaking changes, and any change to the numbers a model returns.
   target's own row, so nothing looks ahead, and a value either side cannot
   use makes the target null on that row. In the CLI's TOML the target is a
   table. A spec with plain targets writes the bytes it always did.
+- **`marginal(bin_budget=...)` sets the bins' memory limit.** The warm-up
+  hold and the histogram are each refused past 256 MiB per group when the
+  bank is built; `bin_budget` moves that limit, in MiB, and
+  `float("inf")` removes it. The CLI's TOML takes it as `bin_budget = 512`
+  or `"inf"`.
 - **A wide `marginal` can use every thread: `marginal(shards=...)`.** The
   bank runs groups and specs in parallel, so one wide spec on one group
   was one thread's work. `shards` splits its pairs into ranges of features,
@@ -192,6 +197,11 @@ carries breaking changes, and any change to the numbers a model returns.
   are counted in full. Each limit is per group, and per halflife of a grid,
   as it always was; the docs now say so, and that the last warm-up row
   holds both at once.
+- **A window's snapshots are counted in full against `window_budget`.**
+  `ewridge`'s, `lasso`'s and `marginal`'s hold a little more than 0.10.0's,
+  the means' low parts and each target's count of learned rows, and the
+  budget now counts it, so a ring near its limit thins or refuses a little
+  sooner than it would have.
 - **`marginal`'s row takes 7–50% less time, every number the same to the
   bit.** Its pair, lag and bin updates are each one loop over slices now,
   shared with the sharded path. With six lags at nine targets a row takes

@@ -1024,6 +1024,12 @@ pub enum ModelKind {
         /// learned kind's and refused beside it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bin_edges: Option<Vec<Vec<f64>>>,
+        /// The MiB the bins' warm-up hold and histogram may each take, per
+        /// group, before the model refuses to build (docs/PLAN.md task
+        /// 131): 256 when absent, `"inf"` no bound. Needs `bins` or
+        /// `bin_edges`. Skipped when absent, as `lags` is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bin_budget: Option<Num>,
         /// Ranges of features to split the pair work into, run on the bank's
         /// pool a batch of rows at a time (docs/PLAN.md task 126): a count,
         /// or `"auto"` for as many as the width can keep busy. The numbers
@@ -3134,6 +3140,7 @@ impl Spec {
                 bin_rule,
                 bin_warm_rows,
                 bin_edges,
+                bin_budget,
                 ..
             } => {
                 if bin_edges.is_some()
@@ -3142,6 +3149,13 @@ impl Spec {
                     return Err(format!(
                         "spec {:?}: marginal bin_edges fixes the bins outright; bins, bin_rule \
                          and bin_warm_rows describe learning them and do not apply with it",
+                        self.name
+                    ));
+                }
+                if bin_budget.is_some() && bins.is_none() && bin_edges.is_none() {
+                    return Err(format!(
+                        "spec {:?}: marginal bin_budget bounds the bins' memory and needs bins \
+                         or bin_edges",
                         self.name
                     ));
                 }

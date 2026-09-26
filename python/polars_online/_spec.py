@@ -189,6 +189,8 @@ _INF_OK: dict[str, frozenset[str]] = {
     "sgd": frozenset({"clip_gradient", "coef_min", "coef_max", "huber_delta"}),
     "pa": frozenset({"c", "coef_min", "coef_max"}),
     "holt": frozenset({"level_halflife", "trend_halflife"}),
+    # No bound on the bins' memory (docs/PLAN.md task 131).
+    "marginal": frozenset({"bin_budget"}),
 }
 
 
@@ -2868,6 +2870,7 @@ def marginal(
     bin_rule: str | None = None,
     bin_warm_rows: int | None = None,
     bin_edges: dict[str, list[float]] | list[list[float]] | None = None,
+    bin_budget: float | None = None,
     shards: int | str | None = None,
     window: float | Duration | None = None,
     window_every: int | None = None,
@@ -2950,7 +2953,7 @@ def marginal(
         doubles beside the pair moments, for ``L`` lags of which ``C`` keep the
         cross terms, and a ring of ``max(lags)`` learned rows -- the one place
         ``marginal`` holds rows rather than state.
-    ``bins``, ``bin_rule``, ``bin_warm_rows``, ``bin_edges``
+    ``bins``, ``bin_rule``, ``bin_warm_rows``, ``bin_edges``, ``bin_budget``
         The nonlinear view. Every statistic above is linear, and a feature can be
         strongly related to a target with ``corr`` at zero: a threshold, a V, a
         saturation. With ``bins = 16`` each pair also reports the target's weight,
@@ -2984,10 +2987,11 @@ def marginal(
         held row as one product. The price is memory: the hold takes about
         ``bin_warm_rows * (8 * features + 16 * targets)`` bytes until the edges
         are fixed, and the histogram about ``32 * features * targets * bins``
-        bytes for good. Each is refused up front past 256 MiB, and each is per
-        group, and per halflife when ``halflife`` is a list: every one keeps its
-        own. At the warm-up's last row the two exist at once, while the held rows
-        are replayed into the histogram, so that row's peak is their sum. Until
+        bytes for good. Each is refused up front past ``bin_budget`` MiB, 256 by
+        default and ``float("inf")`` for no bound, and each is per group, and per
+        halflife when ``halflife`` is a list: every one keeps its own. At the
+        warm-up's last row the two exist at once, while the held rows are
+        replayed into the histogram, so that row's peak is their sum. Until
         the edges are fixed the bin columns are empty and the split columns null. A feature
         keeps only the bins it can support, so the lists are ragged: a binary
         feature gets two bins whatever ``bins`` says, and a constant one a single
@@ -3065,7 +3069,8 @@ def marginal(
 
     As every builder does (:mod:`polars_online.spec`), and ``ValueError`` naming
     the problem for ``bin_edges`` that miss or add a feature, for ``bins`` beside
-    ``bin_edges``, for ``lags`` or ``bins`` beside ``window``, and for ``shards``
+    ``bin_edges``, for ``lags`` or ``bins`` beside ``window``, for ``bin_budget``
+    without bins or not above 0, for bins past ``bin_budget``, and for ``shards``
     below 1 or a string other than ``"auto"``.
     """
     edges: list[list[float]] | None
@@ -3103,6 +3108,7 @@ def marginal(
         "bin_rule": bin_rule,
         "bin_warm_rows": bin_warm_rows,
         "bin_edges": edges,
+        "bin_budget": bin_budget,
         "shards": shards,
         "window": window,
         "window_every": window_every,

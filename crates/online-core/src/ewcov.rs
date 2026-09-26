@@ -2368,6 +2368,25 @@ mod tests {
         }
     }
 
+    /// The window's snapshot counts every vector it holds in its footprint
+    /// (docs/PLAN.md task 130).
+    #[test]
+    fn the_window_footprint_counts_every_vector() {
+        let snap = |k: usize| {
+            let mut cfg = model_cfg(k, vec![EwCovStat::Mean, EwCovStat::Cov]);
+            cfg.window = Some(20.0);
+            let mut m = EwCovModel::new(cfg).unwrap();
+            let mut s = 17u64;
+            for i in 0..40 {
+                let x: Vec<f64> = (0..k).map(|_| lcg(&mut s)).collect();
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                crate::OnlineModel::step(&mut m, &x, &[], d, 1.0);
+            }
+            m.win.as_ref().unwrap().snaps.boundary().unwrap().1.clone()
+        };
+        crate::window::assert_footprint_counts_every_vector(&snap(2), &snap(5), "ew_cov");
+    }
+
     #[test]
     fn model_cfg_validation_rejects_each_bad_field() {
         use EwCovStat::*;

@@ -282,6 +282,11 @@ row the two exist at once, and that row's peak is their sum; a check on the
 sum was not taken, since it would refuse 10,000 features, 50 targets and 16
 bins, whose histogram alone fits.
 
+*Since task 131 (2026-09-26).* `bin_budget` sets the limit, in MiB, for the
+hold and the histogram alike: 256 when it is not given, and `float("inf")`
+for none. It is saved with the model, and a spec that does not set it
+writes the bytes it did before.
+
 **P² estimators are gone.** The warm-up rows have to be held anyway — that is
 what makes the replay exact — so their quantiles can be read off a sort of
 the held values directly. P² would add an approximation on top of data that

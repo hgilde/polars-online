@@ -364,6 +364,8 @@ struct MarginalMoments {
 }
 
 impl crate::Footprint for MarginalMoments {
+    /// Every vector the snapshot holds, the per-target row counts included
+    /// (docs/PLAN.md task 130).
     fn footprint(&self) -> usize {
         std::mem::size_of::<f64>()
             + [
@@ -372,6 +374,10 @@ impl crate::Footprint for MarginalMoments {
             .iter()
             .map(|v| crate::window::floats(v))
             .sum::<usize>()
+            + self
+                .rows
+                .as_ref()
+                .map_or(0, |r| std::mem::size_of_val(r.as_slice()))
     }
 }
 
@@ -3418,6 +3424,7 @@ mod tests {
             edges: None,
             rule: crate::BinRule::Quantile,
             warm_rows,
+            budget_mib: None,
         })
     }
 
@@ -3464,6 +3471,7 @@ mod tests {
             edges: Some(vec![got.bin_edges.clone()]),
             rule: crate::BinRule::Quantile,
             warm_rows: 50,
+            budget_mib: None,
         })));
         for (i, (x, y)) in rows.iter().enumerate() {
             OnlineModel::step(&mut given, &[*x], &[Some(*y)], step_clock(i), 1.0);
@@ -3508,6 +3516,7 @@ mod tests {
                     edges,
                     rule: crate::BinRule::Quantile,
                     warm_rows: 60,
+                    budget_mib: None,
                 })),
                 window: None,
                 window_every: None,
@@ -3791,6 +3800,7 @@ mod tests {
             edges: Some(vec![edges]),
             rule: crate::BinRule::Quantile,
             warm_rows: 2,
+            budget_mib: None,
         })
     }
 
@@ -4031,6 +4041,7 @@ mod tests {
                 edges: None,
                 rule: crate::BinRule::Quantile,
                 warm_rows: 40,
+                budget_mib: None,
             }))
         };
         vec![
@@ -4065,6 +4076,7 @@ mod tests {
                         edges: Some((0..p).map(|j| vec![-0.5 + j as f64 * 0.1, 0.5]).collect()),
                         rule: crate::BinRule::Quantile,
                         warm_rows: 2,
+                        budget_mib: None,
                     }))
                 }),
             ),
@@ -4433,5 +4445,26 @@ mod tests {
     fn a_shard_can_be_sent() {
         fn send<T: Send>() {}
         send::<MarginalShard<'_>>();
+    }
+
+    /// The window's snapshot counts every vector it holds in its footprint,
+    /// the per-target row counts included (docs/PLAN.md task 130).
+    #[test]
+    fn the_window_footprint_counts_every_vector() {
+        let snap = |p: usize, t: usize| {
+            let mut c = cfg(p, t);
+            c.window = Some(10.0);
+            let mut m = Marginal::new(c).unwrap();
+            let mut s = 9u64;
+            for i in 0..30 {
+                let x: Vec<f64> = (0..p).map(|_| lcg(&mut s)).collect();
+                let y: Vec<Option<f64>> = (0..t)
+                    .map(|k| (k == 0 || i % 3 != 1).then(|| lcg(&mut s)))
+                    .collect();
+                m.step(&x, &y, step_clock(i), 1.0);
+            }
+            m.win.as_ref().unwrap().snaps.boundary().unwrap().1.clone()
+        };
+        crate::window::assert_footprint_counts_every_vector(&snap(2, 1), &snap(5, 3), "marginal");
     }
 }

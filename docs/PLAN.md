@@ -4690,27 +4690,44 @@ is not, since the model alone has `0.0` and `3.5` there.
       undercounted its targets past the budget, is refused where it was
       allowed.
 
-- [ ] 130. **Two window snapshots undercount what they hold** (found
+- [x] 130. **Two window snapshots undercount what they hold** (found
       2026-09-26, checking the other memory estimates after task 129). S,
-      confirmed regressions of tasks 101 and 102, unreleased; documented,
-      not fixed. A window's ring thins or refuses past its budget
-      (`window_budget`, 256 MiB a ring by default) by adding up each
-      snapshot's `Footprint`, a sum over its fields written by hand beside
-      the struct. It reads each vector's real length, which is sturdier than
-      task 129's count, but the list of fields is kept by hand, and two
-      lists fell behind their structs:
-      - `Cross` (`gaps.rs`), which every `ewridge` and `lasso` snapshot
-        clones whole (`Acc::snapshot`), gained `m_lo` and `my_lo` in task
-        101: `k + T` doubles its footprint does not count, about a quarter
-        of the cross-moments at one target, and from 4% to 10% of a whole
-        snapshot at 20 and 5 features.
-      - `MarginalMoments` gained `rows`, one count per target, in task 102:
-        a share of `1 / (4 + 3p)` of the snapshot, uncounted.
-      A ring can therefore hold somewhat more than its budget says. Fix as
-      task 129's: a test per snapshot type that holds `footprint()` to the
-      bytes its vectors report, and one that fails when the snapshot's state
-      gains a number its footprint does not count
-      (`the_state_holds_nothing_the_budget_does_not_count` is the pattern).
+      confirmed regressions of tasks 101 and 102, unreleased. A window's
+      ring thins or refuses past its budget (`window_budget`, 256 MiB a ring
+      by default) by adding up each snapshot's `Footprint`, a sum over its
+      fields written by hand beside the struct. Two sums fell behind their
+      structs: `Cross` (`gaps.rs`), which every `ewridge` and `lasso`
+      snapshot clones whole, gained `m_lo` and `my_lo` in task 101, `k + T`
+      doubles uncounted; and `MarginalMoments` gained `rows`, one count per
+      target, in task 102. **Done 2026-09-26**, at the user's word: both
+      footprints count them. `window::assert_footprint_counts_every_vector`
+      walks a snapshot's state and holds its footprint to every vector of
+      numbers in it, from two snapshots of different sizes, so a vector left
+      out shows as a difference that grows with the vectors. That second
+      snapshot was needed: from one alone, the scalars `ewridge`'s
+      footprint counts equalled the low parts it missed, and the check
+      passed. A test per snapshot type (`ew_cov`, `ew_class`, `ewridge`,
+      `lasso`, `marginal`) fails without the fix; the spread's ring
+      (`resid_window.rs`) has its own. A ring near its budget now thins or
+      refuses a little sooner than before the fix: what it counts is what it
+      holds.
+
+- [x] 131. **`marginal(bin_budget=...)`: the bins' memory limit, set per
+      spec** (the user, 2026-09-26, after task 129). S. The warm-up hold and
+      the histogram were each refused past a fixed 256 MiB. `bin_budget`
+      sets that limit in MiB for both, per spec: 256 when absent,
+      `float("inf")` (`"inf"` in JSON and TOML) for none; it needs `bins` or
+      `bin_edges`, and a budget that is not a positive number is refused by
+      name. **Done 2026-09-26:** `BinCfg::budget_mib`, the last field and
+      the only one that skips, so a model without it keeps its bytes
+      (`a_bins_budget_round_trips_in_both_encodings`); the spec's
+      `bin_budget` a `Num`; the Python builder and the CLI's TOML take it.
+      The error names the budget and the setting. `gram_block_rows`'s cap,
+      the same kind of build-time check, stays fixed at 256 MiB: the user
+      asked about the bins'. Tests: `the_budget_can_be_set` in both
+      directions, infinity and the bad values;
+      `test_bin_budget_sets_the_limit` through the bank, with a hold of 313
+      MiB refused by default, built at 400 MiB and refused again at 300.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the

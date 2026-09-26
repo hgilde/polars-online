@@ -1861,7 +1861,10 @@ pass that gives them `corr`. A value that carries more than a bin's share,
 such as an indicator's zero, fills a bin of its own, and the rest share
 what is left, so the 5% of rows that carry the signal are not lost among
 the zeros. The warm-up rows are held and replayed, not spent: the histogram
-is what it would have been had the edges been known before the first row. A
+is what it would have been had the edges been known before the first row.
+The hold and the histogram are each refused past 256 MiB per group when the
+bank is built, and `bin_budget` moves that limit, with `float("inf")` for
+none. A
 feature keeps only the bins it can support, so a binary feature has two,
 and a constant one has a single bin and no split. Each bin's moments are
 kept the way every accumulator here is kept, so a target at `1e7` keeps its

@@ -682,11 +682,20 @@ pub struct BinCfg {
     /// own decay, so the histogram is what it would have been had the edges
     /// been known from the start.
     pub warm_rows: usize,
+    /// The MiB the warm-up hold and the histogram may each take before the
+    /// model refuses to build; `None` is [`DEFAULT_BUDGET_MIB`], and
+    /// infinity is no bound (docs/PLAN.md task 131). **Last, and the one
+    /// field that skips**, so a state written without it reads in both
+    /// encodings and a spec that does not set it keeps its bytes
+    /// (`tests/state_encoding.rs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_mib: Option<f64>,
 }
 
 /// The most a warm-up hold or a histogram may take before the model refuses
-/// to build: `p` can be 10,000 here, and silently allocating gigabytes is a
-/// worse outcome than an error that names the number.
+/// to build, unless the spec's `bin_budget` says otherwise: `p` can be
+/// 10,000 here, and silently allocating gigabytes is a worse outcome than
+/// an error that names the number.
 ///
 /// Each is held to it on its own, and per model: every group keeps its own
 /// hold and histogram, as does every halflife of a grid. At the warm-up's
@@ -695,15 +704,20 @@ pub struct BinCfg {
 /// was considered and not taken: it would refuse a spec of 10,000 features,
 /// 50 targets and 16 bins, whose histogram alone fits (docs/PLAN.md task
 /// 129).
+pub const DEFAULT_BUDGET_MIB: f64 = 256.0;
+
+/// The default in bytes, for the tests that pin the boundary.
+#[cfg(test)]
 const MEMORY_BUDGET: usize = 256 << 20;
 
-fn budget_check(what: &str, bytes: usize, detail: &str) -> Result<(), String> {
-    if bytes > MEMORY_BUDGET {
+fn budget_check(what: &str, bytes: usize, budget_mib: f64, detail: &str) -> Result<(), String> {
+    // In MiB, as the budget is given: a budget of `inf` holds every size.
+    let mib = bytes as f64 / (1u64 << 20) as f64;
+    if mib > budget_mib {
         return Err(format!(
-            "marginal: {what} would need {:.2} GiB ({detail}), over the {} MiB budget each \
-             group's model is held to; reduce it, or narrow the features",
-            bytes as f64 / (1u64 << 30) as f64,
-            MEMORY_BUDGET >> 20,
+            "marginal: {what} would need {:.2} GiB ({detail}), over the {budget_mib} MiB each \
+             group's model is held to; raise bin_budget, reduce it, or narrow the features",
+            mib / 1024.0,
         ));
     }
     Ok(())
@@ -711,6 +725,15 @@ fn budget_check(what: &str, bytes: usize, detail: &str) -> Result<(), String> {
 
 impl BinCfg {
     pub fn validate(&self, p: usize, n_targets: usize) -> Result<(), String> {
+        let budget = self.budget_mib.unwrap_or(DEFAULT_BUDGET_MIB);
+        // NaN compares false both ways, so it is named here rather than
+        // read as no bound.
+        if budget.is_nan() || budget <= 0.0 {
+            return Err(format!(
+                "marginal: bin_budget must be a positive number of MiB, or inf for no bound; \
+                 got {budget}"
+            ));
+        }
         match &self.edges {
             Some(e) => {
                 check_edges(p, e)?;
@@ -718,6 +741,7 @@ impl BinCfg {
                 budget_check(
                     "the bin histogram",
                     histogram_bytes(p, n_targets, bins),
+                    budget,
                     &format!("{bins} bins over {p} features x {n_targets} targets"),
                 )?;
             }
@@ -738,6 +762,7 @@ impl BinCfg {
                 budget_check(
                     "the bin warm-up hold",
                     hold_bytes(self.warm_rows, p, n_targets),
+                    budget,
                     &format!(
                         "bin_warm_rows {} of {p} features and {n_targets} targets",
                         self.warm_rows
@@ -748,6 +773,7 @@ impl BinCfg {
                 budget_check(
                     "the bin histogram",
                     histogram_bytes(p, n_targets, p.saturating_mul(self.n_bins)),
+                    budget,
                     &format!("{p} features x {n_targets} targets x {} bins", self.n_bins),
                 )?;
             }
@@ -1183,6 +1209,7 @@ mod tests {
             edges: None,
             rule: BinRule::Quantile,
             warm_rows,
+            budget_mib: None,
         };
         let cfg = learned(16, 1_000);
         // E73's full profile fits: 10,000 features, 50 targets, 16 bins.
@@ -1209,6 +1236,49 @@ mod tests {
         assert!(learned(2, 1_000).validate(30_000, 10).is_ok());
     }
 
+    /// `bin_budget` sets the limit: a larger one allows what the default
+    /// refuses, a smaller one refuses what it allows, infinity is no bound,
+    /// and a budget that is not a positive number is refused by name
+    /// (docs/PLAN.md task 131).
+    #[test]
+    fn the_budget_can_be_set() {
+        let with = |budget_mib| BinCfg {
+            n_bins: 16,
+            edges: None,
+            rule: BinRule::Quantile,
+            warm_rows: 1_000,
+            budget_mib,
+        };
+        // Sixty targets at 10,000 features pass 256 MiB; 512 holds them.
+        assert!(with(None).validate(10_000, 60).is_err());
+        assert!(with(Some(512.0)).validate(10_000, 60).is_ok());
+        assert!(with(Some(f64::INFINITY)).validate(10_000, 60).is_ok());
+        // E73's full profile fits the default and not 100 MiB.
+        assert!(with(None).validate(10_000, 50).is_ok());
+        let err = with(Some(100.0)).validate(10_000, 50).unwrap_err();
+        assert!(
+            err.contains("100 MiB") && err.contains("raise bin_budget"),
+            "{err}"
+        );
+        for bad in [0.0, -1.0, f64::NAN] {
+            let err = with(Some(bad)).validate(10, 1).unwrap_err();
+            assert!(
+                err.contains("bin_budget must be a positive number"),
+                "{err}"
+            );
+        }
+        // Given edges are held to it too.
+        let given = BinCfg {
+            n_bins: 0,
+            edges: Some(vec![vec![0.0, 1.0]; 10]),
+            rule: BinRule::Quantile,
+            warm_rows: 0,
+            budget_mib: Some(1e-6),
+        };
+        let err = given.validate(10, 1).unwrap_err();
+        assert!(err.contains("the bin histogram"), "{err}");
+    }
+
     /// The budget applies to explicit edges as it does to learned ones, and
     /// is checked before anything the size of the histogram is allocated.
     #[test]
@@ -1218,6 +1288,7 @@ mod tests {
             edges: Some(vec![vec![0.0, 1.0, 2.0]]),
             rule: BinRule::Quantile,
             warm_rows: 0,
+            budget_mib: None,
         };
         assert!(cfg.validate(1, 1).is_ok());
         let err = cfg.validate(1, 100_000_000).unwrap_err();

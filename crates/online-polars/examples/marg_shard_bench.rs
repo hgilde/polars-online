@@ -110,6 +110,7 @@ fn main() {
                 edges: None,
                 rule: BinRule::Quantile,
                 warm_rows: num("warm", 200),
+                budget_mib: None,
             })
         }),
         window: None,

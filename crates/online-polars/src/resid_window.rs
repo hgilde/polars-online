@@ -95,6 +95,22 @@ impl ResidWindow {
 mod tests {
     use super::*;
 
+    /// The spread's snapshot counts every vector it holds in its footprint,
+    /// and holds nothing else: a field added to it and not to the footprint
+    /// fails here, as one did in two of the models' snapshots
+    /// (docs/PLAN.md task 130).
+    #[test]
+    fn the_footprint_counts_every_vector() {
+        let snap = Spread {
+            w: vec![1.0; 3],
+            var: vec![2.0; 5],
+        };
+        let state = serde_json::to_value(&snap).unwrap();
+        let values = state.as_object().unwrap().values();
+        let numbers: usize = values.map(|v| v.as_array().map_or(1, Vec::len)).sum();
+        assert_eq!(snap.footprint(), numbers * std::mem::size_of::<f64>());
+    }
+
     /// The ring's reading is the spread of the residuals inside the window,
     /// summed directly: the rows whose age at the last learned row is at
     /// most the window, each at `0.5^(age/h)`, across an irregular clock

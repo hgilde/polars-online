@@ -79,6 +79,67 @@ pub(crate) fn floats(v: &[f64]) -> usize {
     std::mem::size_of_val(v)
 }
 
+/// Holds a snapshot type's footprint to what it holds, from two snapshots
+/// of it, `small` and `large`, whose every vector is longer in `large` and
+/// whose numbers outside the vectors are as many. The footprint must count
+/// at least the vectors, and at most the vectors and those numbers besides;
+/// and what it counts beyond the vectors must be the same in both, so a
+/// vector it leaves out shows as a difference that grows with the vectors,
+/// however many scalars the footprint happens to count (docs/PLAN.md task
+/// 130: two snapshots left fields out, and a ring held more than its budget
+/// said).
+#[cfg(test)]
+pub(crate) fn assert_footprint_counts_every_vector<S: Footprint + Serialize>(
+    small: &S,
+    large: &S,
+    what: &str,
+) {
+    use serde_json::Value;
+    fn walk(v: &Value, vectors: &mut usize, scalars: &mut usize) {
+        match v {
+            Value::Array(a) if a.iter().all(|x| x.is_number() || x.is_null()) => {
+                *vectors += a.len() * std::mem::size_of::<f64>();
+            }
+            Value::Array(a) => a.iter().for_each(|x| walk(x, vectors, scalars)),
+            Value::Object(o) => o.values().for_each(|x| walk(x, vectors, scalars)),
+            Value::Number(_) | Value::Null => *scalars += 1,
+            Value::Bool(_) | Value::String(_) => {}
+        }
+    }
+    let measure = |snap: &S| {
+        let (mut vectors, mut scalars) = (0, 0);
+        walk(
+            &serde_json::to_value(snap).unwrap(),
+            &mut vectors,
+            &mut scalars,
+        );
+        (snap.footprint(), vectors, scalars)
+    };
+    let (fs, vs, ss) = measure(small);
+    let (fl, vl, sl) = measure(large);
+    assert!(
+        vl > vs && vs > 0,
+        "{what}: the vectors must grow ({vs} to {vl} bytes)"
+    );
+    assert_eq!(
+        ss, sl,
+        "{what}: the two snapshots must hold as many scalars"
+    );
+    for (f, v) in [(fs, vs), (fl, vl)] {
+        assert!(
+            f >= v && f <= v + ss * std::mem::size_of::<f64>(),
+            "{what}: the footprint counts {f} bytes; the vectors hold {v}, and {ss} numbers \
+             besides"
+        );
+    }
+    assert_eq!(
+        fs as i64 - vs as i64,
+        fl as i64 - vl as i64,
+        "{what}: what the footprint counts beyond the vectors moved with them: a vector is \
+         left out"
+    );
+}
+
 /// Snapshots of an accumulator, oldest first, spanning at most one window.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshots<S> {

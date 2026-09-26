@@ -92,6 +92,7 @@ fn main() {
                     edges: None,
                     rule: BinRule::Quantile,
                     warm_rows: 1_000,
+                    budget_mib: None,
                 })
             }),
             window: None,

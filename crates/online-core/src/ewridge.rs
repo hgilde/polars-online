@@ -3855,4 +3855,24 @@ mod tests {
             );
         }
     }
+
+    /// The window's snapshot counts every vector it holds in its footprint,
+    /// the cross-moments' low parts included (docs/PLAN.md task 130).
+    /// Every target present on every row, so each snapshot holds one Gram.
+    #[test]
+    fn the_window_footprint_counts_every_vector() {
+        let snap = |k: usize, t: usize| {
+            let mut c = cfg(k, t);
+            c.window = Some(12.0);
+            let mut m = EwRidge::new(c).unwrap();
+            let mut s = 7u64;
+            for i in 0..40 {
+                let x: Vec<f64> = (0..k).map(|_| lcg(&mut s)).collect();
+                let y: Vec<Option<f64>> = (0..t).map(|j| Some(x[j % k] + lcg(&mut s))).collect();
+                m.step(&x, &y, if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            m.win.as_ref().unwrap().snaps.boundary().unwrap().1.clone()
+        };
+        crate::window::assert_footprint_counts_every_vector(&snap(2, 1), &snap(5, 3), "ewridge");
+    }
 }

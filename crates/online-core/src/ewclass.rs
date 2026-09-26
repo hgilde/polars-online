@@ -1362,4 +1362,24 @@ mod tests {
             );
         }
     }
+
+    /// The window's snapshot counts every vector it holds in its footprint
+    /// (docs/PLAN.md task 130).
+    #[test]
+    fn the_window_footprint_counts_every_vector() {
+        let snap = |k: usize| {
+            let mut c = cfg(k, 2, Covariance::Full);
+            c.window = Some(40.0);
+            let mut m = EwClass::new(c).unwrap();
+            let mut s = 13u64;
+            for i in 0..40 {
+                let label = f64::from(lcg(&mut s) > 0.0);
+                let x: Vec<f64> = (0..k).map(|_| lcg(&mut s)).collect();
+                let d = if i == 0 { 0.0 } else { 2.0 };
+                crate::OnlineModel::step(&mut m, &x, &[Some(label)], d, 1.0);
+            }
+            m.win.as_ref().unwrap().snaps.boundary().unwrap().1.clone()
+        };
+        crate::window::assert_footprint_counts_every_vector(&snap(2), &snap(5), "ew_class");
+    }
 }

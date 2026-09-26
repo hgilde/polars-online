@@ -892,6 +892,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
             bin_rule,
             bin_warm_rows,
             bin_edges,
+            bin_budget,
             // How the pairs are run, not what they are (`marginal_shards`).
             shards: _,
         } => {
@@ -931,6 +932,7 @@ fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
                             }
                         },
                         warm_rows: bin_warm_rows.unwrap_or(DEFAULT_BIN_WARM_ROWS),
+                        budget_mib: bin_budget.map(|n| n.0),
                     })),
                 },
                 window: window.as_ref().map(Span::value),

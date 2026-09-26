@@ -533,10 +533,14 @@ impl crate::Footprint for GramsSnap {
 }
 
 impl crate::Footprint for Cross {
+    /// Every vector a snapshot's copy holds, the means' low parts included:
+    /// `Acc::snapshot` clones the whole of it (docs/PLAN.md task 130).
     fn footprint(&self) -> usize {
         std::mem::size_of::<f64>()
             + crate::window::floats(&self.m)
             + crate::window::floats(&self.my)
+            + crate::window::floats(&self.m_lo)
+            + crate::window::floats(&self.my_lo)
             + self
                 .d
                 .iter()
