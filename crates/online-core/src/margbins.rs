@@ -71,6 +71,56 @@ const RENORM_AT: f64 = 1e-150;
 /// A feature whose value falls in no bin on this row (it is not finite).
 pub(crate) const NO_BIN: usize = usize::MAX;
 
+/// The values a cell keeps, each a double in a vector of its own: the bin's
+/// weight, its mean, its spread, and what the mean's double leaves out.
+/// [`MarginalBins::new`] takes its per-cell vectors from one array of this
+/// length, and the budget counts this many, so a vector added to the one is
+/// counted by the other. The count was kept by hand before, and stayed at
+/// three when task 101 added the fourth (docs/PLAN.md task 129).
+pub(crate) const CELL_VALUES: usize = 4;
+
+/// A held row's feature and target, as [`HeldRow`] stores them and as the
+/// hold's budget counts them: a target is an `Option<f64>`, twice a
+/// double's size.
+type HeldFeature = f64;
+type HeldTarget = Option<f64>;
+
+/// One warm-up row, kept whole so the replay can be exact
+/// ([`crate::Marginal`]'s learned edges).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct HeldRow {
+    pub x: Vec<HeldFeature>,
+    pub y: Vec<HeldTarget>,
+    pub lam: f64,
+    pub w: f64,
+}
+
+/// The bytes a full warm-up hold takes: `warm_rows` rows of `p` features and
+/// `n_targets` targets, each row's vectors and the row itself, from the
+/// types. The model reserves the hold at exactly `warm_rows` rows, so there
+/// is no growth slack to add.
+pub(crate) fn hold_bytes(warm_rows: usize, p: usize, n_targets: usize) -> usize {
+    let row = std::mem::size_of::<HeldRow>()
+        .saturating_add(p.saturating_mul(std::mem::size_of::<HeldFeature>()))
+        .saturating_add(n_targets.saturating_mul(std::mem::size_of::<HeldTarget>()));
+    warm_rows.saturating_mul(row)
+}
+
+/// The bytes a histogram's buffers take, for `p` features whose bins add up
+/// to `width` over `n_targets` targets: the cells, the edges (one fewer than
+/// the bins, per feature) and their lists, the feature offsets, and the
+/// row's bin offsets.
+pub(crate) fn histogram_bytes(p: usize, n_targets: usize, width: usize) -> usize {
+    let (f, u) = (std::mem::size_of::<f64>(), std::mem::size_of::<usize>());
+    let cells = n_targets.saturating_mul(width);
+    cells
+        .saturating_mul(CELL_VALUES.saturating_mul(f))
+        .saturating_add(width.saturating_sub(p).saturating_mul(f))
+        .saturating_add(p.saturating_mul(std::mem::size_of::<Vec<f64>>()))
+        .saturating_add(p.saturating_add(1).saturating_mul(u))
+        .saturating_add(p.saturating_mul(u))
+}
+
 /// Where each feature's value fell on the row being learned, as a cell
 /// offset within one target's block ([`MarginalBins::update_row`]). A
 /// reusable buffer, not state: two histograms with the same cells are the
@@ -167,8 +217,11 @@ fn check_edges(p: usize, edges: &[Vec<f64>]) -> Result<(), String> {
 impl MarginalBins {
     /// `edges` is one list of interior edges per feature, strictly
     /// increasing and finite; empty is allowed and means one open bin.
-    pub fn new(p: usize, n_targets: usize, edges: Vec<Vec<f64>>) -> Result<Self, String> {
+    pub fn new(p: usize, n_targets: usize, mut edges: Vec<Vec<f64>>) -> Result<Self, String> {
         check_edges(p, &edges)?;
+        // Learned edges were reserved for every edge asked for; a feature
+        // that supports fewer keeps only what it has.
+        edges.iter_mut().for_each(Vec::shrink_to_fit);
         let mut off = Vec::with_capacity(p + 1);
         let mut acc = 0usize;
         for e in &edges {
@@ -177,17 +230,21 @@ impl MarginalBins {
         }
         off.push(acc);
         let cells = acc * n_targets;
+        // Every per-cell vector, from one array of `CELL_VALUES`: the count
+        // the budget reads (`histogram_bytes`).
+        let [w, mean, m2, mean_lo]: [Vec<f64>; CELL_VALUES] =
+            std::array::from_fn(|_| vec![0.0; cells]);
         Ok(Self {
             p,
             n_targets,
             edges,
             off,
-            w: vec![0.0; cells],
-            mean: vec![0.0; cells],
-            m2: vec![0.0; cells],
+            w,
+            mean,
+            m2,
             scale: 1.0,
             empty: true,
-            mean_lo: vec![0.0; cells],
+            mean_lo,
             row: RowBins::default(),
         })
     }
@@ -308,6 +365,21 @@ impl MarginalBins {
         crate::comp::add(&mut self.mean[i], lo, delta * (u / wb));
         self.m2[i] += u * delta * crate::comp::dev(y, self.mean[i], *lo);
         self.w[i] = wb;
+    }
+
+    /// The bytes this histogram's buffers take, as each vector reports its
+    /// allocation: what [`histogram_bytes`] must count.
+    #[cfg(test)]
+    pub(crate) fn heap_bytes(&self) -> usize {
+        let (f, u) = (std::mem::size_of::<f64>(), std::mem::size_of::<usize>());
+        [&self.w, &self.mean, &self.m2, &self.mean_lo]
+            .iter()
+            .map(|v| v.capacity() * f)
+            .sum::<usize>()
+            + self.edges.capacity() * std::mem::size_of::<Vec<f64>>()
+            + self.edges.iter().map(|e| e.capacity() * f).sum::<usize>()
+            + self.off.capacity() * u
+            + self.row.0.capacity() * u
     }
 
     /// Add one row's contribution for every target it carries: `y[t]` is
@@ -615,14 +687,21 @@ pub struct BinCfg {
 /// The most a warm-up hold or a histogram may take before the model refuses
 /// to build: `p` can be 10,000 here, and silently allocating gigabytes is a
 /// worse outcome than an error that names the number.
+///
+/// Each is held to it on its own, and per model: every group keeps its own
+/// hold and histogram, as does every halflife of a grid. At the warm-up's
+/// last row the two exist at once, while the held rows are replayed into
+/// the new histogram, so that row's peak is their sum. A check on the sum
+/// was considered and not taken: it would refuse a spec of 10,000 features,
+/// 50 targets and 16 bins, whose histogram alone fits (docs/PLAN.md task
+/// 129).
 const MEMORY_BUDGET: usize = 256 << 20;
 
-fn budget_check(what: &str, cells: usize, detail: &str) -> Result<(), String> {
-    let bytes = cells.saturating_mul(std::mem::size_of::<f64>());
+fn budget_check(what: &str, bytes: usize, detail: &str) -> Result<(), String> {
     if bytes > MEMORY_BUDGET {
         return Err(format!(
-            "marginal: {what} would need {:.1} GiB ({detail}), over the {} MiB budget; \
-             reduce it, or narrow the features",
+            "marginal: {what} would need {:.2} GiB ({detail}), over the {} MiB budget each \
+             group's model is held to; reduce it, or narrow the features",
             bytes as f64 / (1u64 << 30) as f64,
             MEMORY_BUDGET >> 20,
         ));
@@ -638,8 +717,8 @@ impl BinCfg {
                 let bins: usize = e.iter().map(|f| f.len() + 1).sum();
                 budget_check(
                     "the bin histogram",
-                    3usize.saturating_mul(n_targets).saturating_mul(bins),
-                    &format!("{bins} bins over {p} features x {n_targets} targets x 3"),
+                    histogram_bytes(p, n_targets, bins),
+                    &format!("{bins} bins over {p} features x {n_targets} targets"),
                 )?;
             }
             None => {
@@ -658,22 +737,18 @@ impl BinCfg {
                 }
                 budget_check(
                     "the bin warm-up hold",
-                    self.warm_rows.saturating_mul(p + n_targets),
+                    hold_bytes(self.warm_rows, p, n_targets),
                     &format!(
-                        "bin_warm_rows {} x {p} features + {n_targets} targets",
+                        "bin_warm_rows {} of {p} features and {n_targets} targets",
                         self.warm_rows
                     ),
                 )?;
+                // A feature keeps at most the bins asked for, so this is the
+                // most a learned histogram can take.
                 budget_check(
                     "the bin histogram",
-                    3usize
-                        .saturating_mul(p)
-                        .saturating_mul(n_targets)
-                        .saturating_mul(self.n_bins),
-                    &format!(
-                        "{p} features x {n_targets} targets x {} bins x 3",
-                        self.n_bins
-                    ),
+                    histogram_bytes(p, n_targets, p.saturating_mul(self.n_bins)),
+                    &format!("{p} features x {n_targets} targets x {} bins", self.n_bins),
                 )?;
             }
         }
@@ -1026,6 +1101,112 @@ mod tests {
             MarginalBins::new(2, 1, vec![vec![0.0], vec![0.0, 1.0]]).is_ok(),
             "features keep their own bin counts"
         );
+    }
+
+    /// The histogram's budget is what its buffers take, to the byte, as the
+    /// vectors report their allocations: for given edges and for learned
+    /// ones, at one target and several, once a row has been learned
+    /// (docs/PLAN.md task 129).
+    #[test]
+    fn the_histogram_budget_is_what_its_buffers_take() {
+        // Ragged given edges, zero to five a feature, and learned ones, which
+        // were reserved for every edge asked for; one target and several.
+        let p = 23;
+        let given: Vec<Vec<f64>> = (0..p)
+            .map(|j| (0..j % 6).map(|k| k as f64).collect())
+            .collect();
+        let mut seed = 3u64;
+        let learned: Vec<Vec<f64>> = (0..p)
+            .map(|j| {
+                let mut v: Vec<(f64, f64)> = (0..200)
+                    .map(|_| ((lcg(&mut seed) * (j % 4 + 1) as f64).round(), 1.0))
+                    .collect();
+                edges_from(BinRule::Quantile, 8, &mut v)
+            })
+            .collect();
+        assert!(
+            learned.iter().any(|e| e.len() < 7),
+            "some feature supports fewer edges than asked for"
+        );
+        let x: Vec<f64> = (0..p).map(|j| j as f64 * 0.37).collect();
+        for t in [1, 3, 20] {
+            let y: Vec<Option<f64>> = (0..t).map(|k| Some(k as f64)).collect();
+            for edges in [&given, &learned] {
+                let width: usize = edges.iter().map(|e| e.len() + 1).sum();
+                let mut b = MarginalBins::new(p, t, edges.clone()).unwrap();
+                // The row's offsets are allocated by the first row.
+                b.update_row(&x, &y, 1.0);
+                assert_eq!(b.heap_bytes(), histogram_bytes(p, t, width), "{t} targets");
+                // What a learned kind is refused by bounds what it takes.
+                assert!(b.heap_bytes() <= histogram_bytes(p, t, p * 8));
+            }
+        }
+    }
+
+    /// Every number a histogram's state holds is a cell's value, an edge, a
+    /// feature offset or one of its three scalars. A vector added to the
+    /// state and not counted by `CELL_VALUES` fails here, before it can
+    /// outgrow the budget unseen, as the fourth did (docs/PLAN.md task 129).
+    #[test]
+    fn the_state_holds_nothing_the_budget_does_not_count() {
+        fn numbers(v: &serde_json::Value) -> usize {
+            match v {
+                serde_json::Value::Number(_) => 1,
+                serde_json::Value::Array(a) => a.iter().map(numbers).sum(),
+                serde_json::Value::Object(o) => o.values().map(numbers).sum(),
+                _ => 0,
+            }
+        }
+        let (p, t) = (5, 2);
+        let edges = vec![
+            vec![0.0],
+            vec![],
+            vec![-1.0, 1.0],
+            vec![2.0],
+            vec![0.5, 1.5, 2.5],
+        ];
+        let mut b = MarginalBins::new(p, t, edges.clone()).unwrap();
+        b.update_row(&[0.1, 0.2, 0.3, 0.4, 0.5], &[Some(1.0), Some(2.0)], 1.0);
+        let n_edges: usize = edges.iter().map(Vec::len).sum();
+        let cells = t * (n_edges + p);
+        let state = serde_json::to_value(&b).unwrap();
+        assert_eq!(numbers(&state), CELL_VALUES * cells + n_edges + (p + 1) + 3);
+    }
+
+    /// Refused where the buffers would pass 256 MiB, counted in full. The
+    /// three-value count let a histogram take a third more, and the hold
+    /// counted its targets at half their size (docs/PLAN.md task 129).
+    #[test]
+    fn the_budget_refuses_at_the_real_size() {
+        let learned = |n_bins, warm_rows| BinCfg {
+            n_bins,
+            edges: None,
+            rule: BinRule::Quantile,
+            warm_rows,
+        };
+        let cfg = learned(16, 1_000);
+        // E73's full profile fits: 10,000 features, 50 targets, 16 bins.
+        assert!(cfg.validate(10_000, 50).is_ok());
+        // Sixty targets passed the three-value count, and do not fit.
+        const {
+            assert!(
+                3 * 8 * 60 * 160_000 <= MEMORY_BUDGET,
+                "the old count passed it"
+            )
+        };
+        let err = cfg.validate(10_000, 60).unwrap_err();
+        assert!(err.contains("the bin histogram"), "{err}");
+        assert!(err.contains("each group's model"), "{err}");
+        // A hold of many targets passed at eight bytes a value.
+        const {
+            assert!(
+                1_000 * (30_000 + 3_500) * 8 <= MEMORY_BUDGET,
+                "the old count passed it"
+            )
+        };
+        let err = learned(2, 1_000).validate(30_000, 3_500).unwrap_err();
+        assert!(err.contains("warm-up hold"), "{err}");
+        assert!(learned(2, 1_000).validate(30_000, 10).is_ok());
     }
 
     /// The budget applies to explicit edges as it does to learned ones, and

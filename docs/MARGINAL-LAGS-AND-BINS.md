@@ -269,6 +269,19 @@ edges are learned or given: a long explicit edge list opens the same
 allocation `bins` would, and the first draft budgeted only the learned
 kind.
 
+*Since task 129 (2026-09-26).* The two estimates are counted from the
+types, where they were kept by hand. The histogram's counted three values a
+cell after task 101 gave each cell a fourth, the mean's low part, so a
+histogram could take a third more than the budget; a held target is an
+`Option<f64>`, sixteen bytes, where the hold counted eight. Both now come
+from what the model allocates: one array of `CELL_VALUES` per-cell vectors,
+and the size of a held row. A test holds each estimate to the bytes the
+buffers report. Each budget is **per model**, so every group keeps its own
+hold and histogram, as does every halflife of a grid. At the warm-up's last
+row the two exist at once, and that row's peak is their sum; a check on the
+sum was not taken, since it would refuse 10,000 features, 50 targets and 16
+bins, whose histogram alone fits.
+
 **P² estimators are gone.** The warm-up rows have to be held anyway — that is
 what makes the replay exact — so their quantiles can be read off a sort of
 the held values directly. P² would add an approximation on top of data that

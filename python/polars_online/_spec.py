@@ -2981,9 +2981,14 @@ def marginal(
         histogram is what it would have been had the edges been known before the
         first row: to the bit, or to about 1e-15 of the data's scale where rows of
         weight zero fall inside the warm-up, whose decays are carried to the next
-        held row as one product. The price is memory, ``bin_warm_rows * (features
-        + targets)`` floats, refused up front past 256 MiB. Until the edges are
-        fixed the bin columns are empty and the split columns null. A feature
+        held row as one product. The price is memory: the hold takes about
+        ``bin_warm_rows * (8 * features + 16 * targets)`` bytes until the edges
+        are fixed, and the histogram about ``32 * features * targets * bins``
+        bytes for good. Each is refused up front past 256 MiB, and each is per
+        group, and per halflife when ``halflife`` is a list: every one keeps its
+        own. At the warm-up's last row the two exist at once, while the held rows
+        are replayed into the histogram, so that row's peak is their sum. Until
+        the edges are fixed the bin columns are empty and the split columns null. A feature
         keeps only the bins it can support, so the lists are ragged: a binary
         feature gets two bins whatever ``bins`` says, and a constant one a single
         bin and no split. Decay reaches the histogram as it reaches the pair

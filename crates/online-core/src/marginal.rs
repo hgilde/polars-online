@@ -526,7 +526,7 @@ struct Binned {
     /// were given, or at the `warm_rows`-th learned row.
     hist: Option<crate::MarginalBins>,
     /// Warm-up rows in arrival order. Empty once the edges exist.
-    held: Vec<HeldRow>,
+    held: Vec<crate::margbins::HeldRow>,
     /// Decay from zero-weight rows since the last held row, which teach
     /// nothing but still age the histogram. Folded into the next held row so
     /// a run of them cannot grow `held`.
@@ -540,15 +540,6 @@ impl Binned {
         self.hist.as_ref().is_none_or(|h| h.has_shape(p, t))
             && self.held.iter().all(|r| r.x.len() == p && r.y.len() == t)
     }
-}
-
-/// One warm-up row, kept whole so the replay can be exact.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct HeldRow {
-    x: Vec<f64>,
-    y: Vec<Option<f64>>,
-    lam: f64,
-    w: f64,
 }
 
 impl Binned {
@@ -670,7 +661,13 @@ impl Marginal {
             return;
         }
         if weight > 0.0 && weight.is_finite() {
-            b.held.push(HeldRow {
+            // Reserved at exactly the rows it will hold, which is what the
+            // budget counts (`margbins::hold_bytes`); a hold restored from a
+            // state is reserved again here.
+            if b.held.capacity() < cfg.warm_rows {
+                b.held.reserve_exact(cfg.warm_rows - b.held.len());
+            }
+            b.held.push(crate::margbins::HeldRow {
                 x: x.to_vec(),
                 y: y.to_vec(),
                 lam: lam * b.pending_lam,
@@ -4364,6 +4361,71 @@ mod tests {
         // what counts.
         assert_eq!(batch_rows(10_000), 104);
         assert_eq!(batch_rows(1_000), BATCH_ROWS);
+    }
+
+    /// The warm-up hold's budget is what the held rows take, to the byte:
+    /// reserved at exactly the rows it will hold, again after a restore
+    /// partway through, with rows of weight zero taking nothing. And the
+    /// learned histogram that follows stays inside its budget
+    /// (docs/PLAN.md task 129).
+    #[test]
+    fn the_hold_budget_is_what_the_held_rows_take() {
+        use crate::margbins::{HeldRow, histogram_bytes, hold_bytes};
+        // Not a power of two, nor twice the restore point: a hold grown by
+        // doubling cannot land on it by chance.
+        let (p, t, warm, n_bins) = (9, 3, 37, 4);
+        let held_bytes = |m: &Marginal| -> usize {
+            let b = m.bins.as_ref().unwrap();
+            b.held.capacity() * std::mem::size_of::<HeldRow>()
+                + b.held
+                    .iter()
+                    .map(|r| {
+                        r.x.capacity() * std::mem::size_of::<f64>()
+                            + r.y.capacity() * std::mem::size_of::<Option<f64>>()
+                    })
+                    .sum::<usize>()
+        };
+        let mut c = cfg(p, t);
+        c.bins = Some(bins_cfg(n_bins, warm));
+        let mut m = Marginal::new(c).unwrap();
+        let mut seed = 5u64;
+        let (mut held, mut i, mut restored) = (0, 0, false);
+        let row = |seed: &mut u64| -> (Vec<f64>, Vec<Option<f64>>) {
+            let x = (0..p).map(|_| lcg(seed)).collect();
+            let y = (0..t).map(|_| Some(lcg(seed))).collect();
+            (x, y)
+        };
+        while held < warm - 1 {
+            let (x, y) = row(&mut seed);
+            let w = if i % 5 == 2 { 0.0 } else { 1.0 };
+            held += usize::from(w > 0.0);
+            OnlineModel::step(&mut m, &x, &y, step_clock(i), w);
+            i += 1;
+            if held == 20 && !restored {
+                // A restored hold has no spare room; the next push reserves.
+                let bytes = rmp_serde::to_vec(&m.state()).unwrap();
+                m = Marginal::restore(&rmp_serde::from_slice(&bytes).unwrap()).unwrap();
+                restored = true;
+            }
+        }
+        let b = m.bins.as_ref().unwrap();
+        assert!(b.hist.is_none(), "the edges are not fixed yet");
+        assert_eq!(b.held.len(), warm - 1);
+        assert_eq!(
+            b.held.capacity(),
+            warm,
+            "reserved at exactly the rows it holds"
+        );
+        // One row short of full: the hold's budget less that row's vectors.
+        let last = p * std::mem::size_of::<f64>() + t * std::mem::size_of::<Option<f64>>();
+        assert_eq!(held_bytes(&m) + last, hold_bytes(warm, p, t));
+        // The next row fixes the edges and lets the hold go.
+        let (x, y) = row(&mut seed);
+        OnlineModel::step(&mut m, &x, &y, step_clock(i), 1.0);
+        let b = m.bins.as_ref().unwrap();
+        assert!(b.held.is_empty() && b.held.capacity() == 0);
+        let hist = b.hist.as_ref().unwrap();
+        assert!(hist.heap_bytes() <= histogram_bytes(p, t, p * n_bins));
     }
 
     /// A shard is sent to a pool's threads.

@@ -181,6 +181,17 @@ carries breaking changes, and any change to the numbers a model returns.
   number.** Seven lookups by column name scanned every column. At 10,000
   features they took about 480 ms of an 800 ms call, and now take none
   that shows (docs/PERFORMANCE.md §24).
+- **`marginal`'s bins take a third more memory, and the 256 MiB check
+  counts what they take.** Each bin carries its mean as a pair now, four
+  values where 0.10.0 kept three (see "A feature or target that stops
+  moving keeps the fit it had", above), and the check had gone on counting
+  three. It counts from the types now: every value a bin keeps, and a held
+  warm-up target at its real sixteen bytes rather than eight. So a spec
+  0.10.0 built can now be refused: one whose histogram needs more than
+  256 MiB at four values a bin, or whose warm-up hold does once its targets
+  are counted in full. Each limit is per group, and per halflife of a grid,
+  as it always was; the docs now say so, and that the last warm-up row
+  holds both at once.
 - **`marginal`'s row takes 7–50% less time, every number the same to the
   bit.** Its pair, lag and bin updates are each one loop over slices now,
   shared with the sharded path. With six lags at nine targets a row takes

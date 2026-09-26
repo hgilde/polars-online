@@ -4652,39 +4652,65 @@ is not, since the model alone has `0.0` and `3.5` there.
       schema 16. Tests: a model without a window keeps no runs, one with a
       window reads a held slot as today, and the numbers are bit-identical.
 
-- [ ] 129. **`marginal`'s bins budget counts three values a cell where
+- [x] 129. **`marginal`'s bins budget counts three values a cell where
       there are four** (found 2026-09-26, checking the memory caps at the
       user's question). S, a confirmed regression of task 101, unreleased.
-      `BinCfg::validate` refuses a histogram past 256 MiB (`MEMORY_BUDGET`,
-      `margbins.rs`) and counts `3 × cells` doubles: the weight, mean and
+      `BinCfg::validate` refused a histogram past 256 MiB (`MEMORY_BUDGET`,
+      `margbins.rs`) counting `3 × cells` doubles: the weight, mean and
       spread a cell kept in 0.10.0. Task 101 gave each cell a fourth, the
-      mean's low part (`mean_lo`, allocated at `cells` in
-      `MarginalBins::new`), and left the count at three. A histogram the
-      check allows can therefore take 4/3 of the budget, 341 MiB. No test
-      holds the estimate to the allocation: the one budget test,
-      `explicit_edges_are_budgeted_too`, checks only that a hundred million
-      targets are refused, and a one-third undercount passes it.
-      Beside it, older and of the same kind, all in 0.10.0:
-      - *The warm-up hold undercounts its targets.* It counts every value
-        at 8 bytes, but a held target is an `Option<f64>`, 16 bytes, and
-        each held row also carries two `Vec` headers, its weight and its
-        decay (`HeldRow`, `marginal.rs`). Negligible at 10,000 features and
-        50 targets; about half again when the targets are as many as the
-        features.
-      - *The peak is the two budgets combined.* At the warm-up's last row the
-        replay fills the new histogram while the held rows are still held,
-        and each is allowed 256 MiB on its own.
-      - *The cap is per model, which no document says.* Every group, and
-        every instance of a halflife grid, has its own hold and histogram, so
-        nothing bounds a bank. The docstring and MARGINAL-LAGS-AND-BINS say
-        "refused past 256 MiB" and not "per group".
-      Fix, tests first: count from the types (`size_of` a cell's values and
-      a held row), so the next field cannot slip past the budget; refuse on
-      the peak, hold plus histogram; add a test that builds a model near
-      the budget, sums the bytes its buffers allocate, and holds the
-      estimate at or above them; write "per group" in the docstring and in
-      MARGINAL-LAGS-AND-BINS. A bound across a whole bank is a new limit,
-      so whether one is wanted is the user's call.
+      mean's low part (`mean_lo`), and left the count at three, so a
+      histogram the check allowed could take 4/3 of the budget, 341 MiB. No
+      test held the estimate to the allocation. Three older gaps of the same
+      kind, all in 0.10.0: the warm-up hold counted a held target at 8 bytes
+      where an `Option<f64>` takes 16, and a held row's own size not at all;
+      the peak at the warm-up's last row is hold plus histogram, each allowed
+      256 MiB; and the cap is per model, which no document said.
+      **Done 2026-09-26**, as the user approved after
+      the plan's first version: `CELL_VALUES`, the per-cell vector count,
+      is what `MarginalBins::new` takes its vectors from, in one array, and
+      what `histogram_bytes` counts, beside the edges, their lists, the
+      offsets and the row's offsets; `hold_bytes` counts a held row from its
+      types, `HeldRow` moved beside it; the hold is reserved at exactly
+      `bin_warm_rows` rows, again after a restore; learned edge lists are
+      trimmed to the edges found. The peak is documented, not refused: a
+      check on the sum would refuse 10,000 features, 50 targets and 16 bins,
+      E73's full profile, whose histogram alone fits (244 MiB). "Per group,
+      and per halflife" is in the docstring, the error message and
+      MARGINAL-LAGS-AND-BINS. A bank-wide bound was not built: groups arrive
+      with the data, so a build-time check cannot count them, and every
+      model's state grows with them, not the bins' alone. Tests:
+      `the_histogram_budget_is_what_its_buffers_take` and
+      `the_hold_budget_is_what_the_held_rows_take` hold each estimate to the
+      bytes the buffers report, to the byte;
+      `the_state_holds_nothing_the_budget_does_not_count` fails when the
+      state gains a number no count covers; `the_budget_refuses_at_the_real_size`
+      pins the boundary. Restoring the three-value count, the eight-byte
+      target or the growth by doubling each fails them. Visible: a spec
+      whose histogram needs between 256 and 341 MiB, or whose hold
+      undercounted its targets past the budget, is refused where it was
+      allowed.
+
+- [ ] 130. **Two window snapshots undercount what they hold** (found
+      2026-09-26, checking the other memory estimates after task 129). S,
+      confirmed regressions of tasks 101 and 102, unreleased; documented,
+      not fixed. A window's ring thins or refuses past its budget
+      (`window_budget`, 256 MiB a ring by default) by adding up each
+      snapshot's `Footprint`, a sum over its fields written by hand beside
+      the struct. It reads each vector's real length, which is sturdier than
+      task 129's count, but the list of fields is kept by hand, and two
+      lists fell behind their structs:
+      - `Cross` (`gaps.rs`), which every `ewridge` and `lasso` snapshot
+        clones whole (`Acc::snapshot`), gained `m_lo` and `my_lo` in task
+        101: `k + T` doubles its footprint does not count, about a quarter
+        of the cross-moments at one target, and from 4% to 10% of a whole
+        snapshot at 20 and 5 features.
+      - `MarginalMoments` gained `rows`, one count per target, in task 102:
+        a share of `1 / (4 + 3p)` of the snapshot, uncounted.
+      A ring can therefore hold somewhat more than its budget says. Fix as
+      task 129's: a test per snapshot type that holds `footprint()` to the
+      bytes its vectors report, and one that fails when the snapshot's state
+      gains a number its footprint does not count
+      (`the_state_holds_nothing_the_budget_does_not_count` is the pattern).
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
