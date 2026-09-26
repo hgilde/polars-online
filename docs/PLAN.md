@@ -4652,6 +4652,40 @@ is not, since the model alone has `0.0` and `3.5` there.
       schema 16. Tests: a model without a window keeps no runs, one with a
       window reads a held slot as today, and the numbers are bit-identical.
 
+- [ ] 129. **`marginal`'s bins budget counts three values a cell where
+      there are four** (found 2026-09-26, checking the memory caps at the
+      user's question). S, a confirmed regression of task 101, unreleased.
+      `BinCfg::validate` refuses a histogram past 256 MiB (`MEMORY_BUDGET`,
+      `margbins.rs`) and counts `3 × cells` doubles: the weight, mean and
+      spread a cell kept in 0.10.0. Task 101 gave each cell a fourth, the
+      mean's low part (`mean_lo`, allocated at `cells` in
+      `MarginalBins::new`), and left the count at three. A histogram the
+      check allows can therefore take 4/3 of the budget, 341 MiB. No test
+      holds the estimate to the allocation: the one budget test,
+      `explicit_edges_are_budgeted_too`, checks only that a hundred million
+      targets are refused, and a one-third undercount passes it.
+      Beside it, older and of the same kind, all in 0.10.0:
+      - *The warm-up hold undercounts its targets.* It counts every value
+        at 8 bytes, but a held target is an `Option<f64>`, 16 bytes, and
+        each held row also carries two `Vec` headers, its weight and its
+        decay (`HeldRow`, `marginal.rs`). Negligible at 10,000 features and
+        50 targets; about half again when the targets are as many as the
+        features.
+      - *The peak is the two budgets combined.* At the warm-up's last row the
+        replay fills the new histogram while the held rows are still held,
+        and each is allowed 256 MiB on its own.
+      - *The cap is per model, which no document says.* Every group, and
+        every instance of a halflife grid, has its own hold and histogram, so
+        nothing bounds a bank. The docstring and MARGINAL-LAGS-AND-BINS say
+        "refused past 256 MiB" and not "per group".
+      Fix, tests first: count from the types (`size_of` a cell's values and
+      a held row), so the next field cannot slip past the budget; refuse on
+      the peak, hold plus histogram; add a test that builds a model near
+      the budget, sums the bytes its buffers allocate, and holds the
+      estimate at or above them; write "per group" in the docstring and in
+      MARGINAL-LAGS-AND-BINS. A bound across a whole bank is a new limit,
+      so whether one is wanted is the user's call.
+
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the
 user lifts it:
