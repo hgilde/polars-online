@@ -24,15 +24,44 @@ pub fn dist2(c: &[f64], z: &[f64], mw: &[f64]) -> f64 {
     acc
 }
 
+/// `‖z − c‖` under the same metric, computed so that it cannot overflow
+/// where [`dist2`] does: a row at the input bound against a variance at the
+/// opposite scale squares past the double's range, and its distance,
+/// `5e199` say, does not (review 2026-09-26, G1). Every scaled deviation is
+/// taken relative to the largest, so the sum of squares stays near 1. Not
+/// the root of `dist2` to the bit, so it is read only where that root is
+/// not finite.
+pub fn dist(c: &[f64], z: &[f64], mw: &[f64]) -> f64 {
+    let mut scale = 0.0f64;
+    for i in 0..c.len() {
+        scale = scale.max(((z[i] - c[i]) * mw[i].sqrt()).abs());
+    }
+    if !scale.is_finite() || scale == 0.0 {
+        return scale;
+    }
+    let mut acc = 0.0;
+    for i in 0..c.len() {
+        let t = (z[i] - c[i]) * mw[i].sqrt() / scale;
+        acc += t * t;
+    }
+    scale * acc.sqrt()
+}
+
 /// The radius² a summary of weight `n` and radius² `r2` would have after
 /// absorbing weight `w` at squared distance `q` from its centre — the merged
 /// radius DenStream's absorption test reads, and exactly what
 /// [`ClusterSummary::absorb`] then stores. `r2` unchanged when the merged
-/// weight is not positive or `q` is not finite, as `absorb` leaves it.
+/// weight is not positive or `q` is NaN, as `absorb` leaves it; an infinite
+/// `q` -- a square that overflowed, the row infinitely far by that measure
+/// -- gives an infinite radius, so no admission test takes the row
+/// (review 2026-09-26, G1: it read as `r2`, and every such row was admitted).
 pub fn merged_radius2(n: f64, r2: f64, q: f64, w: f64) -> f64 {
     let n_new = n + w;
-    if n_new <= 0.0 || !q.is_finite() {
+    if n_new <= 0.0 || q.is_nan() {
         return r2;
+    }
+    if q.is_infinite() {
+        return f64::INFINITY;
     }
     let (a, b) = (n / n_new, w / n_new);
     a * r2 + a * b * q
@@ -484,6 +513,42 @@ mod tests {
         let big = dist2(&[0.0], &[1e200], &[1e200]);
         assert!(big.is_infinite() && big > 0.0);
         assert!(!dist2(&[1e200], &[1e200], &[1e300]).is_nan());
+    }
+
+    /// Where the square overflows the distance is still a number, close to
+    /// the root of the square wherever that exists; and an overflowed square
+    /// merges into an infinite radius, which no admission test takes
+    /// (review 2026-09-26, G1: a proptest at the input bound found `micro`
+    /// reporting `inf` and absorbing the row).
+    #[test]
+    fn an_overflowed_distance_is_far_and_still_measured() {
+        for (c, z, mw) in [
+            (vec![0.0, 0.0], vec![3.0, 4.0], vec![1.0, 1.0]),
+            (vec![1.0, 1.0], vec![3.0, 4.0], vec![0.25, 1.0]),
+            (vec![-2.07, 0.5], vec![1e6, -3.0], vec![7.0, 0.01]),
+        ] {
+            let want = dist2(&c, &z, &mw).sqrt();
+            let got = dist(&c, &z, &mw);
+            assert!(
+                (got - want).abs() <= 4.0 * f64::EPSILON * want,
+                "{got} vs {want}"
+            );
+        }
+        assert_eq!(dist(&[1.0], &[1.0], &[3.0]), 0.0);
+        let far = dist(&[-2.07, 0.0], &[1e100, 0.0], &[2.5e199, 1.0]);
+        assert!(far.is_finite(), "{far}");
+        assert!(
+            (far - 1e100 * 2.5e199f64.sqrt()).abs() <= 1e-12 * far,
+            "{far}"
+        );
+        assert!(dist2(&[-2.07, 0.0], &[1e100, 0.0], &[2.5e199, 1.0]).is_infinite());
+        assert_eq!(merged_radius2(1.0, 0.1, f64::INFINITY, 1.0), f64::INFINITY);
+        assert_eq!(merged_radius2(1.0, 0.1, f64::NAN, 1.0), 0.1);
+        assert_eq!(
+            merged_radius2(0.0, 0.1, f64::INFINITY, 0.0),
+            0.1,
+            "no weight, no merge"
+        );
     }
 
     #[test]

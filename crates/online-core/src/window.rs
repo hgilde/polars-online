@@ -79,15 +79,39 @@ pub(crate) fn floats(v: &[f64]) -> usize {
     std::mem::size_of_val(v)
 }
 
+/// Every value under a key named `key`, anywhere in a state's JSON, handed
+/// to `edit`: for a test that plays a state written by another build.
+#[cfg(test)]
+pub(crate) fn json_edit(
+    v: &mut serde_json::Value,
+    key: &str,
+    edit: &mut dyn FnMut(&mut serde_json::Value),
+) {
+    match v {
+        serde_json::Value::Object(o) => {
+            for (k, x) in o.iter_mut() {
+                if k == key {
+                    edit(x);
+                } else {
+                    json_edit(x, key, edit);
+                }
+            }
+        }
+        serde_json::Value::Array(a) => a.iter_mut().for_each(|x| json_edit(x, key, edit)),
+        _ => {}
+    }
+}
+
 /// Holds a snapshot type's footprint to what it holds, from two snapshots
-/// of it, `small` and `large`, whose every vector is longer in `large` and
-/// whose numbers outside the vectors are as many. The footprint must count
-/// at least the vectors, and at most the vectors and those numbers besides;
-/// and what it counts beyond the vectors must be the same in both, so a
-/// vector it leaves out shows as a difference that grows with the vectors,
-/// however many scalars the footprint happens to count (docs/PLAN.md task
-/// 130: two snapshots left fields out, and a ring held more than its budget
-/// said).
+/// of it, `small` and `large`, of the same shape with every vector longer
+/// in `large`. The footprint must count at least the vectors, and at most
+/// the vectors and the numbers held outside any; and what it counts beyond
+/// the vectors must be the same in both, so a vector it leaves out shows as
+/// a difference that grows with the vectors, however many scalars it
+/// happens to count. The two are walked in step, and a vector that does not
+/// grow is refused: from one snapshot, or from two that differ only in some
+/// vectors, a left-out vector can hide behind the scalars (docs/PLAN.md task
+/// 130; review 2026-09-26, B4).
 #[cfg(test)]
 pub(crate) fn assert_footprint_counts_every_vector<S: Footprint + Serialize>(
     small: &S,
@@ -95,40 +119,84 @@ pub(crate) fn assert_footprint_counts_every_vector<S: Footprint + Serialize>(
     what: &str,
 ) {
     use serde_json::Value;
-    fn walk(v: &Value, vectors: &mut usize, scalars: &mut usize) {
+    fn numeric(a: &[Value]) -> bool {
+        a.iter().all(|x| x.is_number() || x.is_null())
+    }
+    /// The vector bytes of a part the smaller snapshot lacks, which must
+    /// hold vectors and nothing else.
+    fn vectors_only(v: &Value, at: &str, vl: &mut usize) {
         match v {
-            Value::Array(a) if a.iter().all(|x| x.is_number() || x.is_null()) => {
-                *vectors += a.len() * std::mem::size_of::<f64>();
+            Value::Array(a) if numeric(a) => *vl += a.len() * std::mem::size_of::<f64>(),
+            Value::Array(a) => {
+                for (i, x) in a.iter().enumerate() {
+                    vectors_only(x, &format!("{at}[{i}]"), vl);
+                }
             }
-            Value::Array(a) => a.iter().for_each(|x| walk(x, vectors, scalars)),
-            Value::Object(o) => o.values().for_each(|x| walk(x, vectors, scalars)),
-            Value::Number(_) | Value::Null => *scalars += 1,
-            Value::Bool(_) | Value::String(_) => {}
+            Value::Object(o) => {
+                for (k, x) in o {
+                    vectors_only(x, &format!("{at}.{k}"), vl);
+                }
+            }
+            _ => panic!("{at}: a number outside any vector in a part the smaller lacks"),
         }
     }
-    let measure = |snap: &S| {
-        let (mut vectors, mut scalars) = (0, 0);
-        walk(
-            &serde_json::to_value(snap).unwrap(),
-            &mut vectors,
-            &mut scalars,
-        );
-        (snap.footprint(), vectors, scalars)
-    };
-    let (fs, vs, ss) = measure(small);
-    let (fl, vl, sl) = measure(large);
+    /// The vector bytes of each and the scalars, walking both in step.
+    fn walk(s: &Value, l: &Value, at: &str, vs: &mut usize, vl: &mut usize, scalars: &mut usize) {
+        match (s, l) {
+            (Value::Array(a), Value::Array(b)) if numeric(a) && numeric(b) => {
+                assert!(
+                    b.len() > a.len() || (a.is_empty() && b.is_empty()),
+                    "{at}: a vector of {} does not grow ({} in the larger)",
+                    a.len(),
+                    b.len()
+                );
+                *vs += a.len() * std::mem::size_of::<f64>();
+                *vl += b.len() * std::mem::size_of::<f64>();
+            }
+            (Value::Array(a), Value::Array(b)) => {
+                // A list of parts may gain parts in the larger (one vector
+                // per target, say); the parts both have are walked in step,
+                // and the extra ones must be vectors alone, since a number
+                // among them would move what the footprint counts beyond
+                // the vectors.
+                assert!(b.len() >= a.len(), "{at}: fewer parts in the larger");
+                for (i, (x, y)) in a.iter().zip(b).enumerate() {
+                    walk(x, y, &format!("{at}[{i}]"), vs, vl, scalars);
+                }
+                for (i, y) in b.iter().enumerate().skip(a.len()) {
+                    vectors_only(y, &format!("{at}[{i}]"), vl);
+                }
+            }
+            (Value::Object(o), Value::Object(q)) => {
+                let (ko, kq): (Vec<_>, Vec<_>) = (o.keys().collect(), q.keys().collect());
+                assert_eq!(ko, kq, "{at}: the same fields in both");
+                for (k, x) in o {
+                    walk(x, &q[k], &format!("{at}.{k}"), vs, vl, scalars);
+                }
+            }
+            (Value::Number(_) | Value::Null, Value::Number(_) | Value::Null) => *scalars += 1,
+            (Value::Bool(_), Value::Bool(_)) | (Value::String(_), Value::String(_)) => {}
+            _ => panic!("{at}: the two snapshots differ in shape"),
+        }
+    }
+    let (mut vs, mut vl, mut scalars) = (0, 0, 0);
+    walk(
+        &serde_json::to_value(small).unwrap(),
+        &serde_json::to_value(large).unwrap(),
+        what,
+        &mut vs,
+        &mut vl,
+        &mut scalars,
+    );
     assert!(
         vl > vs && vs > 0,
         "{what}: the vectors must grow ({vs} to {vl} bytes)"
     );
-    assert_eq!(
-        ss, sl,
-        "{what}: the two snapshots must hold as many scalars"
-    );
+    let (fs, fl) = (small.footprint(), large.footprint());
     for (f, v) in [(fs, vs), (fl, vl)] {
         assert!(
-            f >= v && f <= v + ss * std::mem::size_of::<f64>(),
-            "{what}: the footprint counts {f} bytes; the vectors hold {v}, and {ss} numbers \
+            f >= v && f <= v + scalars * std::mem::size_of::<f64>(),
+            "{what}: the footprint counts {f} bytes; the vectors hold {v}, and {scalars} numbers \
              besides"
         );
     }
@@ -235,9 +303,11 @@ impl<S: Footprint> Snapshots<S> {
         }
     }
 
-    /// Whether [`Self::offer`] at `clock` would take a snapshot: for a
-    /// caller that holds work back and must finish it before a snapshot
-    /// copies the state (`Marginal::step_sharded`).
+    /// Whether [`Self::offer`] at `clock` would form a snapshot: for a
+    /// caller that holds work back and must finish it before the snapshot
+    /// copies the state (`Marginal::step_sharded`). A refusing budget may
+    /// then keep none of what it formed, and the work finished early was
+    /// harmless.
     pub fn takes(&self, clock: f64) -> bool {
         if self.limit.over.is_some() {
             return false;
@@ -392,7 +462,9 @@ impl Moments {
 
 impl Footprint for Moments {
     fn footprint(&self) -> usize {
-        2 * std::mem::size_of::<f64>() + floats(&self.m) + floats(&self.c)
+        // The weight, the row count and the second weight sum, and the two
+        // vectors.
+        3 * std::mem::size_of::<f64>() + floats(&self.m) + floats(&self.c)
     }
 }
 
@@ -944,5 +1016,95 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A toy snapshot whose footprint leaves out a vector that is as long
+    /// in both shapes: the check must still see it (review 2026-09-26, B4).
+    #[test]
+    #[should_panic(expected = "does not grow")]
+    fn the_footprint_check_sees_a_vector_that_does_not_grow() {
+        #[derive(Serialize)]
+        struct Toy {
+            a: Vec<f64>,
+            b: Vec<f64>,
+            w: f64,
+            q: f64,
+            r: f64,
+        }
+        impl Footprint for Toy {
+            fn footprint(&self) -> usize {
+                3 * std::mem::size_of::<f64>() + floats(&self.a)
+            }
+        }
+        let toy = |n: usize| Toy {
+            a: vec![1.0; n],
+            b: vec![1.0; 2],
+            w: 0.0,
+            q: 0.0,
+            r: 0.0,
+        };
+        assert_footprint_counts_every_vector(&toy(2), &toy(6), "toy");
+    }
+
+    /// `takes` says exactly when `offer` forms a snapshot: under every
+    /// cadence, across clock gaps, with a thinning budget and a refusing
+    /// one, before and after each trips (review 2026-09-26, B missing 4).
+    #[test]
+    fn takes_says_when_offer_forms_a_snapshot() {
+        /// A snapshot of one MiB, so a budget of a few MiB trips in a few rows.
+        struct Big;
+        impl Footprint for Big {
+            fn footprint(&self) -> usize {
+                1 << 20
+            }
+        }
+        let mut seed = 5u64;
+        let mut lcg = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut tripped = 0;
+        for every in [1usize, 2, 3, 5] {
+            for budget in [
+                None,
+                Some(WindowBudget::Thin(4.0)),
+                Some(WindowBudget::Refuse(3.0)),
+            ] {
+                let mut s: Snapshots<Big> = Snapshots::new(6.0, every).unwrap();
+                s.set_budget(budget);
+                let (mut clock, mut formed, mut refused) = (0.0, 0, false);
+                for _ in 0..200 {
+                    clock += if lcg() > 0.6 { 4.0 } else { 0.5 };
+                    let said = s.takes(clock);
+                    let mut made = false;
+                    s.offer(clock, || {
+                        made = true;
+                        Big
+                    });
+                    assert_eq!(said, made, "every {every}, {budget:?}, at {clock}");
+                    formed += usize::from(made);
+                    refused |= s.over_budget().is_some();
+                    s.trim(clock);
+                }
+                // A refusing budget that trips forms nothing from then on:
+                // at least the budget's worth first (how many more depends
+                // on what the clock's gaps trimmed meanwhile), and no more;
+                // one that never trips forms as the cadence says, like the
+                // others.
+                if refused {
+                    assert!(matches!(budget, Some(WindowBudget::Refuse(_))));
+                    assert!(formed >= 3, "every {every}: {formed} then refused");
+                    tripped += 1;
+                } else {
+                    assert!(formed > 10, "every {every}, {budget:?}: {formed} snapshots");
+                }
+            }
+        }
+        assert!(
+            tripped >= 1,
+            "the refusing budget tripped at the shortest cadence"
+        );
     }
 }

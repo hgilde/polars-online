@@ -72,8 +72,10 @@ def _json(spec: dict[str, Any] | list[dict[str, Any]]) -> str:
 def _from_json(text: str) -> Any:
     """The inverse of :func:`_json`: the ``"inf"`` strings the Rust side writes
     for infinite numeric parameters become floats again, so a loaded bank's
-    ``specs`` compare equal to the dicts that built it. Only the numeric
-    parameters are touched -- a feature column may be called ``"inf"``."""
+    ``specs`` compare equal to the dicts that built it (a ``po.target`` table
+    that names its own column comes back as the column, which is what it is).
+    Only the numeric parameters are touched -- a feature column may be called
+    ``"inf"``."""
 
     def dec(v: Any, numeric: bool) -> Any:
         if isinstance(v, dict):
@@ -121,6 +123,27 @@ def _matches(v: Any, hint: Any) -> bool:
         return isinstance(v, str)
     if hint in (timedelta, pl.Expr):
         return isinstance(v, hint)
+    if typing.is_typeddict(hint):
+        # A table (`po.target`): its keys and no other, the required ones
+        # present, each value of its annotated shape (review 2026-09-26, F4:
+        # a table fell through to "not read", and a wrong entry was named
+        # by JSON path).
+        if not isinstance(v, dict):
+            return False
+        # `__required_keys__` reads every key as required under
+        # `from __future__ import annotations`; the annotations say which.
+        hints = typing.get_type_hints(hint, include_extras=True)
+        qualified = (typing.NotRequired, typing.Required)
+        required = {k for k, h in hints.items() if typing.get_origin(h) is not typing.NotRequired}
+        plain = {
+            k: typing.get_args(h)[0] if typing.get_origin(h) in qualified else h
+            for k, h in hints.items()
+        }
+        return (
+            set(v) <= set(plain)
+            and required <= set(v)
+            and all(_matches(x, plain[k]) for k, x in v.items())
+        )
     return True  # an annotation this does not read; the Rust side still checks
 
 
@@ -180,6 +203,8 @@ _INF_OK: dict[str, frozenset[str]] = {
             "average_eta",
             # The noise gate at `inf` is off: no ratio is above it.
             "max_error_inflation",
+            # A window budget at `inf` is no bound (`{"thin": inf}`).
+            "window_budget",
         }
     ),
     "ewridge": frozenset({"long_halflife"}),
@@ -205,14 +230,19 @@ def _takes_duration(hint: Any) -> bool:
 def _finite(value: Any) -> bool:
     if isinstance(value, (list, tuple)):
         return all(_finite(x) for x in value)
+    if isinstance(value, dict):
+        return all(_finite(x) for x in value.values())
     if isinstance(value, numbers.Real) and not isinstance(value, bool):
         return not math.isinf(value)
     return True
 
 
-#: The int parameters whose Rust floor is 1, not 0 (review 2026-09-12, D8).
+#: The int parameters whose Rust floor is 1, not 0 (review 2026-09-12, D8);
+#: for a list of ints, each entry's floor.
 _AT_LEAST_ONE = frozenset(
     {
+        "lags",
+        "cross_lags",
         "shards",
         "window_every",
         "pca_every",
@@ -264,6 +294,17 @@ def _checked[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
                 floor = 1 if key in _AT_LEAST_ONE else 0
                 if value < floor:
                     raise ValueError(f"{who}: {key} must be >= {floor}, got {value}")
+            # And each entry of a list of counts (review 2026-09-26, F7: a
+            # negative lag was named by serde as `model`).
+            if (
+                isinstance(value, (list, tuple))
+                and value
+                and all(isinstance(x, numbers.Integral) and not isinstance(x, bool) for x in value)
+                and list[int] in (hint, *typing.get_args(hint))
+            ):
+                floor = 1 if key in _AT_LEAST_ONE else 0
+                if min(value) < floor:
+                    raise ValueError(f"{who}: {key} must be >= {floor}, got {_got(value)}")
             if key not in inf_ok and not _finite(value):
                 raise ValueError(f"{who}: {key} must be finite, got {_got(value)}")
         # A clock parameter's duration, however it was written, is kept as
@@ -330,6 +371,15 @@ def target_name(t: str | Target) -> str:
     return t.get("name", t["column"])
 
 
+def target_columns(t: str | Target) -> list[str]:
+    """The columns a target reads: a string target's own; a table's ``column``
+    and, for a relative one, the ``relative_to`` it is taken against. What a
+    plan must keep for the bank (review 2026-09-26, D1/F1)."""
+    if isinstance(t, str):
+        return [t]
+    return [t["column"]] + ([t["relative_to"]] if "relative_to" in t else [])
+
+
 def target(
     column: str,
     *,
@@ -357,6 +407,11 @@ def target(
     Everything the model reports is on the relative scale -- ``pred``,
     ``resid``, ``sigma``, the metrics and the conformal interval -- so a level
     prediction is ``pred + r`` (``pred * r`` for a ratio), and ``r`` is on the row.
+    A ratio is positive by construction, so its ``hit_rate`` (``emit_metrics``)
+    is agreement about 1 -- did it go up or down -- where about zero two positive
+    numbers always agree; a difference and a log ratio are about zero, as a
+    plain target is. ``polars_online.eval.metrics`` tests signs about zero, so
+    hand it a ratio less 1.
     ``"log_ratio"`` goes through ``ln``, whose last bit can differ between
     platforms, as any logarithm's does.
 
@@ -374,6 +429,8 @@ def target(
     """
     if not isinstance(column, str):
         raise TypeError(f"target: column must be a str, got {type(column).__name__}")
+    if not column:
+        raise ValueError("target: column must not be empty")
     if relative not in _RELATIVE:
         raise ValueError(
             f"target {column!r}: relative must be one of {_RELATIVE}, got {relative!r}"
@@ -384,6 +441,8 @@ def target(
             raise TypeError(
                 f"target {column!r}: relative_to must be a str, got {type(relative_to).__name__}"
             )
+        if not relative_to:
+            raise ValueError(f"target {column!r}: relative_to must not be empty")
         out["relative_to"] = relative_to
         out["relative"] = relative
     elif relative != "difference":
@@ -394,6 +453,8 @@ def target(
     if name is not None:
         if not isinstance(name, str):
             raise TypeError(f"target {column!r}: name must be a str, got {type(name).__name__}")
+        if not name:
+            raise ValueError(f"target {column!r}: name must not be empty")
         out["name"] = name
     return out
 
@@ -3005,7 +3066,8 @@ def marginal(
         pairs are cut into ranges of features and each range runs on a thread of
         its own, a batch of rows at a time. Every number is the same to the bit
         whatever the count, so it is a setting and not part of the state: a
-        saved bank resumes under any count, and ``"auto"`` sizes itself to the
+        saved bank resumes under the count of the specs given to ``load``, or
+        under the saved one when given none, and ``"auto"`` sizes itself to the
         machine it runs on. ``"auto"`` estimates a batch's pair work from the
         width, the lags and the bins, and splits it into as many ranges as hold
         a tenth of a millisecond each, up to twice the pool's threads; the

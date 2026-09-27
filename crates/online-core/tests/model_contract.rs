@@ -2065,6 +2065,9 @@ fn every_model_with_a_recovery_test_has_a_predict_parity_test() {
 /// inside the bound. Each is checked above on one fixed stream; here the
 /// stream is the variable. 128 streams a model in the suite; 2,000 a model,
 /// run once when this was written (docs/PLAN.md task 121), found nothing.
+/// The streams are drawn afresh each run (proptest seeds from the OS): a
+/// failure prints the shrunk stream, which is what to keep as a fixed case,
+/// and `PROPTEST_RNG_SEED=<n>` repeats a run (review 2026-09-26, C8).
 mod generated {
     use super::*;
     use proptest::prelude::*;
@@ -2080,13 +2083,18 @@ mod generated {
     }
 
     /// A value a stream may carry: mostly ordinary, often a repeat that holds
-    /// a column still, sometimes wide, sometimes near the input bound.
+    /// a column still, sometimes wide, sometimes at the input bound itself.
     fn value() -> impl Strategy<Value = f64> {
         prop_oneof![
             6 => -3.0..3.0f64,
             2 => Just(0.5),
             1 => -1e6..1e6f64,
             1 => (-1.0..1.0f64).prop_map(|u| u * 1e50),
+            1 => prop_oneof![
+                Just(INPUT_BOUND),
+                Just(-INPUT_BOUND),
+                (-1.0..1.0f64).prop_map(|u| u * INPUT_BOUND)
+            ],
         ]
     }
 
@@ -2097,7 +2105,13 @@ mod generated {
             prop::collection::vec(value(), K),
             prop::collection::vec(prop::option::weighted(0.85, value()), targets),
             prop_oneof![5 => Just(1.0), 1 => Just(0.0), 1 => 0.0..30.0f64],
-            prop_oneof![5 => Just(1.0), 1 => Just(0.0), 2 => 0.01..4.0f64],
+            prop_oneof![
+                5 => Just(1.0),
+                1 => Just(0.0),
+                2 => 0.01..4.0f64,
+                1 => Just(1e-100),
+                1 => Just(1e100)
+            ],
         )
             .prop_map(move |(x, y, d, w)| GenRow {
                 x,
@@ -2164,12 +2178,121 @@ mod generated {
         Ok(())
     }
 
+    /// The stream the quantile `robust` failed the contract on once the
+    /// values reached the bound (review 2026-09-26, G2): a target of `1e100`,
+    /// then features of `1e100` at weights from `1e-100`, and the prediction
+    /// at `1e100` read `-inf` (`robust.rs` has the mechanism and the fix).
+    #[test]
+    fn robust_quantile_through_the_bound() {
+        let row = |x0: f64, y0: Option<f64>, w: f64| GenRow {
+            x: vec![x0, 0.0],
+            y: vec![y0, None],
+            d: 1.0,
+            w,
+        };
+        let rows = vec![
+            row(0.0, None, 1.0),
+            row(0.0, Some(0.0), 1.0),
+            row(0.0, Some(0.0), 1.0),
+            row(0.0, Some(0.0), 1.0),
+            row(0.0, Some(0.0), 1.1785268524789025),
+            row(0.0, Some(0.0), 1.0),
+            row(0.0, Some(1e100), 2.0699847121199655),
+            row(0.0, Some(0.0), 1.4511913482607992),
+            row(0.0, Some(0.0), 1.0),
+            row(1.4589775263789706, Some(0.0), 1.0),
+            row(1e100, Some(0.0), 1e-100),
+            row(0.0, Some(0.0), 3.8874731502776667),
+            row(1e100, Some(0.0), 1.0),
+            row(1e100, None, 1.0),
+        ];
+        contract(
+            || Robust::new(robust_cfg(ROBUST_LOSSES[1])).unwrap(),
+            &rows,
+            0,
+        )
+        .unwrap();
+    }
+
+    /// The stream the windowed `lasso` failed the contract on once the
+    /// values reached the bound (review 2026-09-26, G3): a target absent on
+    /// a row whose feature stood at `-2.6e99`, then rows at `1e100`, and the
+    /// prediction read `-inf` -- windowed or not, and through `ew_ridge`,
+    /// which shares the cross accumulator (`gaps.rs` has the mechanism).
+    #[test]
+    fn a_target_absent_on_a_row_at_the_bound_through_the_bound() {
+        let row = |x: [f64; 2], y0: Option<f64>, w: f64| GenRow {
+            x: x.to_vec(),
+            y: vec![y0],
+            d: 1.0,
+            w,
+        };
+        let rows = vec![
+            row([0.0, -2.570413849510098e99], None, 1.0),
+            row([0.0, 0.0], None, 1.0),
+            row([0.0, 0.0], Some(0.0), 1.0),
+            row(
+                [0.0, -0.39761046383362925],
+                Some(-5.567947375697575e49),
+                1.0,
+            ),
+            row([1.4616143340058023, 1e100], Some(0.0), 0.01),
+            row([1e100, 0.0], None, 1.0),
+        ];
+        for window in [None, Some(7.0)] {
+            contract(
+                || {
+                    let mut c = lasso_cfg();
+                    c.window = window;
+                    Lasso::new(c).unwrap()
+                },
+                &rows,
+                0,
+            )
+            .unwrap();
+        }
+        let two: Vec<GenRow> = rows
+            .iter()
+            .map(|r| GenRow {
+                y: vec![r.y[0], r.y[0]],
+                ..r.clone()
+            })
+            .collect();
+        contract(|| EwRidge::new(ew_ridge_cfg()).unwrap(), &two, 0).unwrap();
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
 
         #[test]
         fn ew_ridge(rows in stream(2, false), split in 0usize..60) {
             contract(|| EwRidge::new(ew_ridge_cfg()).unwrap(), &rows, split)?;
+        }
+
+        /// The window's ring, its snapshots and their serde, under both
+        /// cadences; and the blocked Gram with pairwise gaps, whose held
+        /// rows the state carries (review 2026-09-26, C8).
+        #[test]
+        fn ew_ridge_windowed(rows in stream(2, false), split in 0usize..60, every in 0usize..2) {
+            contract(|| {
+                let mut c = ew_ridge_cfg();
+                c.window = Some(7.0);
+                c.window_every = [None, Some(3)][every];
+                EwRidge::new(c).unwrap()
+            }, &rows, split)?;
+        }
+
+        #[test]
+        fn ew_ridge_blocked_pairwise(rows in stream(2, false), split in 0usize..60) {
+            contract(|| {
+                let mut c = ew_ridge_cfg();
+                // A block needs a solve cadence, or it never holds a second row.
+                c.gram_block_rows = 4;
+                c.solve_every = 3.0;
+                c.max_rows_between_solves = 8;
+                c.target_gaps = online_core::TargetGaps::Pairwise;
+                EwRidge::new(c).unwrap()
+            }, &rows, split)?;
         }
 
         #[test]
@@ -2180,6 +2303,16 @@ mod generated {
         #[test]
         fn lasso(rows in stream(1, false), split in 0usize..60) {
             contract(|| Lasso::new(lasso_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn lasso_windowed(rows in stream(1, false), split in 0usize..60, every in 0usize..2) {
+            contract(|| {
+                let mut c = lasso_cfg();
+                c.window = Some(7.0);
+                c.window_every = [None, Some(3)][every];
+                Lasso::new(c).unwrap()
+            }, &rows, split)?;
         }
 
         #[test]
@@ -2222,9 +2355,36 @@ mod generated {
             contract(|| EwCovModel::new(ew_cov_model_cfg()).unwrap(), &rows, split)?;
         }
 
+        /// A window keeps no lags (the two rings do not combine), so the
+        /// windowed `ew_cov` is the moments alone.
+        #[test]
+        fn ew_cov_windowed(rows in stream(0, false), split in 0usize..60, every in 0usize..2) {
+            contract(|| {
+                let mut c = ew_cov_model_cfg();
+                c.lags = vec![];
+                c.stats.retain(|s| *s != EwCovStat::LagCorr);
+                c.window = Some(7.0);
+                c.window_every = [None, Some(3)][every];
+                EwCovModel::new(c).unwrap()
+            }, &rows, split)?;
+        }
+
         #[test]
         fn marginal(rows in stream(2, false), split in 0usize..60) {
             contract(|| Marginal::new(marginal_cfg()).unwrap(), &rows, split)?;
+        }
+
+        /// A window keeps no lags, so the windowed marginal is the moments
+        /// alone.
+        #[test]
+        fn marginal_windowed(rows in stream(2, false), split in 0usize..60, every in 0usize..2) {
+            contract(|| {
+                let mut c = marginal_cfg();
+                c.lags = vec![];
+                c.window = Some(7.0);
+                c.window_every = [None, Some(3)][every];
+                Marginal::new(c).unwrap()
+            }, &rows, split)?;
         }
 
         #[test]
@@ -2240,6 +2400,16 @@ mod generated {
         #[test]
         fn ew_class(rows in stream(1, true), split in 0usize..60) {
             contract(|| EwClass::new(ew_class_cfg()).unwrap(), &rows, split)?;
+        }
+
+        #[test]
+        fn ew_class_windowed(rows in stream(1, true), split in 0usize..60, every in 0usize..2) {
+            contract(|| {
+                let mut c = ew_class_cfg();
+                c.window = Some(7.0);
+                c.window_every = [None, Some(3)][every];
+                EwClass::new(c).unwrap()
+            }, &rows, split)?;
         }
 
         #[test]

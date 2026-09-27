@@ -43,7 +43,7 @@ from polars.io.plugins import register_io_source
 
 from polars_online import _polars_online as _native
 from polars_online._bank import ModelBank
-from polars_online._spec import coef_fields, output_index
+from polars_online._spec import coef_fields, output_index, target_columns
 
 __all__ = [
     "ConsumedSourceWarning",
@@ -61,7 +61,6 @@ State = str | os.PathLike[str]
 
 # The input columns a spec reads, by key (crates/online-polars/src/bank.rs
 # `extract`); the rest of the frame is carried through.
-_COLUMN_KEYS = ("targets", "features")
 _SCALAR_COLUMN_KEYS = ("clock", "session", "weight", "group")
 
 
@@ -167,10 +166,14 @@ def _explain_kwargs(specs: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _spec_columns(specs: Iterable[dict[str, Any]]) -> set[str]:
+    """Every column the specs read, which a plan must keep: a table target's
+    column and its reference among them (review 2026-09-26, D1/F1: a table
+    was added to the set as a dict, and every LazyFrame path raised)."""
     cols: set[str] = set()
     for spec in specs:
-        for key in _COLUMN_KEYS:
-            cols.update(spec.get(key) or ())
+        for t in spec.get("targets") or ():
+            cols.update(target_columns(t))
+        cols.update(spec.get("features") or ())
         for key in _SCALAR_COLUMN_KEYS:
             if spec.get(key) is not None:
                 cols.add(spec[key])

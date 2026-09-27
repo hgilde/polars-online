@@ -111,7 +111,8 @@ pub struct EwClassCfg {
     /// msgpack encoding writes a struct as an array.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<f64>,
-    /// Learned rows between the window's snapshots.
+    /// Rows between the window's snapshots, counted on every row the model
+    /// is stepped with, rows of weight zero included.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_every: Option<usize>,
 }
@@ -648,6 +649,18 @@ impl OnlineModel for EwClass {
                     return Err(StateError::Invalid(
                         "ew_class: the state has the wrong shape".into(),
                     ));
+                }
+                // The runs follow the window, not the file (review 2026-09-26,
+                // C4; `EwCovModel::restore` says why).
+                let mut m = m;
+                match m.cfg.window {
+                    None => m.classes.iter_mut().for_each(EwCov::set_runs_off),
+                    Some(_) if !m.classes.iter().all(EwCov::keeps_runs) => {
+                        return Err(StateError::Invalid(
+                            "ew_class: a windowed state whose runs are off".into(),
+                        ));
+                    }
+                    Some(_) => {}
                 }
                 Ok(m)
             }
@@ -1381,5 +1394,37 @@ mod tests {
             m.win.as_ref().unwrap().snaps.boundary().unwrap().1.clone()
         };
         crate::window::assert_footprint_counts_every_vector(&snap(2), &snap(5), "ew_class");
+    }
+
+    /// As `ewridge`'s: the runs follow the window on restore (review
+    /// 2026-09-26, C4).
+    #[test]
+    fn restore_sets_the_runs_from_the_window() {
+        let build = |window: Option<f64>| {
+            let mut c = cfg(2, 2, Covariance::Diagonal);
+            c.window = window;
+            let mut m = EwClass::new(c).unwrap();
+            let mut s = 3u64;
+            for i in 0..30 {
+                let label = f64::from(lcg(&mut s) > 0.0);
+                let x = [lcg(&mut s), lcg(&mut s)];
+                let d = if i == 0 { 0.0 } else { 1.0 };
+                crate::OnlineModel::step(&mut m, &x, &[Some(label)], d, 1.0);
+            }
+            serde_json::to_value(crate::OnlineModel::state(&m)).unwrap()
+        };
+        let restore = |v: serde_json::Value| {
+            <EwClass as crate::OnlineModel>::restore(&serde_json::from_value(v).unwrap())
+        };
+        let mut v = build(None);
+        crate::window::json_edit(&mut v, "runs", &mut |x| {
+            *x = serde_json::json!({"x": [], "start": []});
+        });
+        assert!(restore(v).unwrap().classes.iter().all(|c| !c.keeps_runs()));
+        let mut v = build(Some(20.0));
+        crate::window::json_edit(&mut v, "runs", &mut |x| {
+            x["off"] = serde_json::json!(true);
+        });
+        assert!(matches!(restore(v), Err(crate::StateError::Invalid(_))));
     }
 }

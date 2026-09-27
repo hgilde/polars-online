@@ -330,9 +330,11 @@ class TestFeatureScaling:
         fed row by row, each row predicted before it is learned (task 121).
         Statistical tier: sklearn standardizes a row against the moments
         from before it and ours with the row in, so the two agree to a
-        tolerance. Measured 0.018 apart at rows 25-50 and 0.005 at rows
-        100-200, over three seeds and sizes from 60 to 100 groups; fewer
-        groups here, since sklearn's row-by-row loop is the slow half."""
+        tolerance (its default `l2` penalty is off, so the scaler is the
+        whole of the gap; review 2026-09-26, F9). Measured 0.018 apart at
+        rows 25-50 and 0.005 at rows 100-200, over three seeds and sizes
+        from 60 to 100 groups; fewer groups here, since sklearn's row-by-row
+        loop is the slow half."""
         from sklearn.linear_model import SGDRegressor
         from sklearn.preprocessing import StandardScaler
 
@@ -353,7 +355,7 @@ class TestFeatureScaling:
         theirs = np.full(len(y), np.nan)
         for gi in range(n_groups):
             lo = gi * rows_per
-            model = SGDRegressor(random_state=0, learning_rate="constant", eta0=0.01)
+            model = SGDRegressor(random_state=0, learning_rate="constant", eta0=0.01, penalty=None)
             scaler = StandardScaler()
             for i in range(lo, lo + rows_per):
                 xi = x[i : i + 1]

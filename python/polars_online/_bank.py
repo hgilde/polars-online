@@ -1012,7 +1012,8 @@ class ModelBank:
             column; ``""`` for a single decay instance, else the field suffix such as
             ``"@h500"``).
         ``feature``, ``target``
-            The pair's columns, by name.
+            The pair's feature column and the target's name (its column, unless
+            a ``po.target`` table gave one).
         ``n_eff``
             The target's accumulated weight ``W_t``: rows where the target was
             present, weighted and decayed. Differs from the struct's ``n_eff`` when

@@ -71,7 +71,8 @@ pub struct LassoCfg {
     /// `skip_serializing_if` field anywhere else shifts the fields after it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<f64>,
-    /// Learned rows between the window's snapshots.
+    /// Rows between the window's snapshots, counted on every row the model
+    /// is stepped with, rows of weight zero included.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_every: Option<usize>,
 }
@@ -454,16 +455,20 @@ impl Lasso {
                     .collect::<Vec<f64>>()
             })
             .collect();
-        // `m_j` as `EwRidge::solve_centred` takes it: the Gram's mean, plus
-        // the target's offset under `pairwise`.
+        // `m_j` as `EwRidge::solve_centred` takes it: the Gram's mean, or
+        // the target's own mean under `pairwise`, where the Gram is over
+        // every row.
         let pairwise = self.cfg.target_gaps == TargetGaps::Pairwise;
         let means = readers
             .iter()
             .map(|&j| {
                 (0..k)
                     .map(|i| {
-                        let offset = if pairwise { cross.d[j][i + off] } else { 0.0 };
-                        acc.mean(i + off) + offset
+                        if pairwise {
+                            cross.mj[j][i + off]
+                        } else {
+                            acc.mean(i + off)
+                        }
                     })
                     .collect()
             })
@@ -757,10 +762,29 @@ impl OnlineModel for Lasso {
                                 .all(|t| t.len() == np && t.iter().all(|c| c.len() == k))
                     })
                     && m.win.is_some() == m.cfg.window.is_some();
+                // A state written before schema 17 kept each target's own
+                // mean as an offset (`crate::gaps::Cross`).
+                if s.schema_version < 17 {
+                    m.acc.offsets_to_means();
+                    if let Some(win) = m.win.as_mut() {
+                        win.snaps.iter_mut().for_each(|s| s.acc.offsets_to_means());
+                    }
+                }
                 if !m.acc.has_shape(n, k) || !selection {
                     return Err(StateError::Invalid(
                         "lasso: the accumulators have the wrong shape".into(),
                     ));
+                }
+                // The runs follow the window, not the file (review 2026-09-26,
+                // C4; `EwCovModel::restore` says why).
+                match m.cfg.window {
+                    None => m.acc.set_runs_off(),
+                    Some(_) if !m.acc.keeps_runs() => {
+                        return Err(StateError::Invalid(
+                            "lasso: a windowed state whose runs are off".into(),
+                        ));
+                    }
+                    Some(_) => {}
                 }
                 m.zbuf = vec![0.0; k];
                 Ok(m)
@@ -811,6 +835,55 @@ mod tests {
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         ((*state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    }
+
+    /// A target absent on a row whose features stand at the input bound
+    /// (review 2026-09-26, G3, from the contract's proptest): the cross
+    /// accumulator kept each target's own feature mean as an offset from the
+    /// all-row mean, and their sum, two numbers of `1e99`, resolved nothing
+    /// below `1e83`, so the next present row's deviation of `0.4` read as
+    /// `1e83`, the cross-moment as `1e132`, and the prediction at `1e100`
+    /// as `-inf`, windowed or not. Own means are kept as their own pairs
+    /// now, and every prediction is a number.
+    #[test]
+    fn a_target_absent_on_a_row_at_the_bound_leaves_the_fit_finite() {
+        use crate::OnlineModel;
+        for window in [Some(7.0), None] {
+            let mut c = cfg(2, 1, vec![0.1, 0.0]);
+            c.decay = Decay::Halflife(20.0);
+            c.min_periods = 3.0;
+            c.max_cd_iters = 100;
+            c.cd_tol = 1e-10;
+            c.window = window;
+            let mut m = Lasso::new(c).unwrap();
+            let rows: Vec<([f64; 2], Option<f64>, f64)> = vec![
+                ([0.0, -2.570413849510098e99], None, 1.0),
+                ([0.0, 0.0], None, 1.0),
+                ([0.0, 0.0], Some(0.0), 1.0),
+                (
+                    [0.0, -0.39761046383362925],
+                    Some(-5.567947375697575e49),
+                    1.0,
+                ),
+                ([1.4616143340058023, 1e100], Some(0.0), 0.01),
+                ([1e100, 0.0], None, 1.0),
+            ];
+            for (i, (x, y0, w)) in rows.iter().enumerate() {
+                let out = m.step(x, &[*y0], if i == 0 { 0.0 } else { 1.0 }, *w);
+                assert!(
+                    out.pred.iter().all(|p| p.is_nan() || p.is_finite()),
+                    "window {window:?}, row {i}: {:?}",
+                    out.pred
+                );
+            }
+            // The own mean of `z` over the target's rows is those rows' mean
+            // -- `x0` a hundredth of `1.46` over two rows' weight, `x1` a
+            // hundredth of `1e100` over the same -- untouched by the `1e99`
+            // on the row the target was absent on.
+            let mj = &m.acc.cross.mj[0];
+            assert!(mj[1] > 0.0 && mj[1] < 0.02, "{mj:?}");
+            assert!(mj[2] > 1e97 && mj[2] < 1e98, "{mj:?}");
+        }
     }
 
     fn cfg(k: usize, m: usize, path: Vec<f64>) -> LassoCfg {
@@ -1478,10 +1551,17 @@ mod tests {
     /// The window's snapshot counts every vector it holds in its footprint,
     /// the cross-moments' low parts included (docs/PLAN.md task 130).
     /// Every target present on every row, so each snapshot holds one Gram.
+    /// The path is a dimension too (of the selection errors), so the larger
+    /// snapshot has a longer one: the check wants every vector to grow.
     #[test]
     fn the_window_footprint_counts_every_vector() {
         let snap = |k: usize, t: usize| {
-            let mut c = cfg(k, t, vec![0.1, 0.0]);
+            let path = if k > 2 {
+                vec![0.3, 0.1, 0.0]
+            } else {
+                vec![0.1, 0.0]
+            };
+            let mut c = cfg(k, t, path);
             c.window = Some(12.0);
             let mut m = Lasso::new(c).unwrap();
             let mut s = 7u64;
@@ -1493,5 +1573,71 @@ mod tests {
             m.win.as_ref().unwrap().snaps.boundary().unwrap().1.clone()
         };
         crate::window::assert_footprint_counts_every_vector(&snap(2, 1), &snap(5, 3), "lasso");
+    }
+
+    /// Two points of the path that zero every coefficient predict the same
+    /// number, so their selection errors tie to the bit, and the choice
+    /// stays with the first, the heaviest penalty (review 2026-09-26, C2: a
+    /// mutant taking the later one was excused as unreachable).
+    #[test]
+    fn a_tie_in_the_selection_error_keeps_the_first_of_the_path() {
+        let mut c = cfg(2, 1, vec![100.0, 50.0, 0.0]);
+        c.select_halflife = Some(f64::INFINITY);
+        let mut m = Lasso::new(c).unwrap();
+        let mut s = 9u64;
+        for i in 0..100 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let y = 0.3 * x[0] + lcg(&mut s);
+            m.step(&x, &[Some(y)], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        assert_eq!(
+            m.sel_err[0][0].to_bits(),
+            m.sel_err[0][1].to_bits(),
+            "the tie is real: {} vs {}",
+            m.sel_err[0][0],
+            m.sel_err[0][1]
+        );
+        assert_eq!(m.lam_selected(), vec![100.0]);
+    }
+
+    /// As `ewridge`'s: the runs follow the window on restore (review
+    /// 2026-09-26, C4).
+    #[test]
+    fn restore_sets_the_runs_from_the_window() {
+        let build = |window: Option<f64>| {
+            let mut c = cfg(2, 1, vec![0.1, 0.0]);
+            c.window = window;
+            let mut m = Lasso::new(c).unwrap();
+            let mut s = 3u64;
+            for i in 0..30 {
+                let x = [lcg(&mut s), lcg(&mut s)];
+                m.step(
+                    &x,
+                    &[Some(x[0] - x[1])],
+                    if i == 0 { 0.0 } else { 1.0 },
+                    1.0,
+                );
+            }
+            serde_json::to_value(m.state()).unwrap()
+        };
+        let restore = |v: serde_json::Value| Lasso::restore(&serde_json::from_value(v).unwrap());
+        let mut v = build(None);
+        crate::window::json_edit(&mut v, "runs", &mut |x| {
+            *x = serde_json::json!({"x": [], "start": []});
+        });
+        assert!(
+            restore(v)
+                .unwrap()
+                .acc
+                .grams
+                .grams
+                .iter()
+                .all(|g| !g.keeps_runs())
+        );
+        let mut v = build(Some(12.0));
+        crate::window::json_edit(&mut v, "runs", &mut |x| {
+            x["off"] = serde_json::json!(true);
+        });
+        assert!(matches!(restore(v), Err(StateError::Invalid(_))));
     }
 }

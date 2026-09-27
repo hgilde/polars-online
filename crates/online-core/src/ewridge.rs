@@ -157,7 +157,8 @@ pub struct EwRidgeCfg {
     /// after it when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<f64>,
-    /// Learned rows between the snapshots the window is computed from; `1`
+    /// Rows between the snapshots the window is computed from, counted on
+    /// every row the model is stepped with, rows of weight zero included; `1`
     /// (the default) is the tightest boundary, larger divides the memory and
     /// only ever shortens the effective window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1058,18 +1059,20 @@ impl EwRidge {
             system = Some((asub, factor));
         }
         // `m_j` is the Gram's mean, which under `own_rows` is over exactly the
-        // target's rows, plus the target's offset under `pairwise`, where the
-        // Gram is over every row (`crate::gaps::Cross`). Not the offset form
-        // under `own_rows` too, so that a row the target misses leaves its
-        // fit where it was to the bit: there the offset takes back the step
-        // the all-row mean took, which is exact only in exact arithmetic.
+        // target's rows (and the cross-moments' own copy of it to the bit),
+        // and the target's own mean under `pairwise`, where the Gram is over
+        // every row (`crate::gaps::Cross`).
         let pairwise = self.cfg.target_gaps == TargetGaps::Pairwise;
         for (jj, &j) in readers.iter().enumerate() {
             let mut b0 = cross.my[j];
             for i in 0..kf {
                 let z = zidx[i + 1];
-                let offset = if pairwise { cross.d[j][z] } else { 0.0 };
-                b0 -= (cov.mean(z) + offset) * out[jj * kc + i + 1];
+                let m_j = if pairwise {
+                    cross.mj[j][z]
+                } else {
+                    cov.mean(z)
+                };
+                b0 -= m_j * out[jj * kc + i + 1];
             }
             out[jj * kc] = b0;
         }
@@ -1503,11 +1506,46 @@ impl OnlineModel for EwRidge {
             ModelState::EwRidge(m) => {
                 let mut m = (**m).clone();
                 let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
+                // A state written before schema 17 kept each target's own
+                // mean as an offset (`crate::gaps::Cross`).
+                if s.schema_version < 17 {
+                    m.acc.offsets_to_means();
+                    if let Some(slow) = m.slow.as_mut() {
+                        slow.offsets_to_means();
+                    }
+                    if let Some(win) = m.win.as_mut() {
+                        win.snaps.iter_mut().for_each(|s| s.acc.offsets_to_means());
+                    }
+                }
                 let twin = m.slow.as_ref().is_none_or(|s| s.has_shape(n, k));
-                if !m.acc.has_shape(n, k) || !twin || m.wsig.len() != n || m.sig2.len() != n {
+                // A ring exactly when the cfg has a window (review 2026-09-26,
+                // C5: `ew_cov`, `lasso` and `ew_class` checked this, this one
+                // did not, and ran unwindowed without a word).
+                if !m.acc.has_shape(n, k)
+                    || !twin
+                    || m.wsig.len() != n
+                    || m.sig2.len() != n
+                    || m.win.is_some() != m.cfg.window.is_some()
+                {
                     return Err(StateError::Invalid(
                         "ew_ridge: the accumulators have the wrong shape".into(),
                     ));
+                }
+                // The runs follow the window, not the file (review 2026-09-26,
+                // C4; `EwCovModel::restore` says why).
+                match m.cfg.window {
+                    None => {
+                        m.acc.set_runs_off();
+                        if let Some(slow) = m.slow.as_mut() {
+                            slow.set_runs_off();
+                        }
+                    }
+                    Some(_) if !m.acc.keeps_runs() => {
+                        return Err(StateError::Invalid(
+                            "ew_ridge: a windowed state whose runs are off".into(),
+                        ));
+                    }
+                    Some(_) => {}
                 }
                 m.zbuf = vec![0.0; k];
                 m.refactor();
@@ -3189,23 +3227,16 @@ mod tests {
             );
         }
         let (c1, my1) = (m.acc.cross.c[1].clone(), m.acc.cross.my[1]);
-        let mean_z1: Vec<f64> = (0..2)
-            .map(|i| m.acc.cross.m[i] + m.acc.cross.d[1][i])
-            .collect();
+        let mean_z1 = m.acc.cross.mj[1].clone();
+        let m_all = m.acc.cross.m.clone();
         let st = m.step(&[0.5], &[Some(1.0), None], 1.0, 1.0);
         assert!(st.pred[1].is_finite()); // pred still emitted
-        // Target 1's own moments do not move: no data added (mean form). The
-        // mean of `z` over its rows is the all-row mean plus its offset, and
-        // the all-row mean did move, so the offset took the step back.
+        // Target 1's own moments do not move: no data added (mean form), its
+        // own mean of `z` included, to the bit; the all-row mean did move.
         assert_eq!(m.acc.cross.c[1], c1);
         assert_eq!(m.acc.cross.my[1], my1);
-        for (i, want) in mean_z1.iter().enumerate() {
-            let got = m.acc.cross.m[i] + m.acc.cross.d[1][i];
-            assert!(
-                (got - want).abs() < 1e-15,
-                "the mean of z[{i}] moved: {got} vs {want}"
-            );
-        }
+        assert_eq!(m.acc.cross.mj[1], mean_z1);
+        assert_ne!(m.acc.cross.m, m_all);
     }
 
     /// A level costs the fit nothing (review 2026-09-12, N1). The same stream
@@ -3264,12 +3295,12 @@ mod tests {
         }
     }
 
-    /// A target's offset from the all-row mean is exactly 0 while it has been
-    /// present on every row, blocked or not -- what the centred right-hand
-    /// side rests on, since `c + δ·ȳ` is then `c` and nothing level-sized
-    /// enters it -- and a genuine number for a target with gaps (N1).
+    /// A target present on every row has the all-row mean as its own, to the
+    /// bit, blocked or not -- the same steps over the same rows -- and a
+    /// target with gaps a mean of its own rows (N1; own means since review
+    /// 2026-09-26, G3).
     #[test]
-    fn a_target_present_on_every_row_has_no_offset() {
+    fn a_target_present_on_every_row_has_the_all_row_mean() {
         for block in [0, 8] {
             let mut c = cfg(2, 2);
             c.decay = Decay::Halflife(50.0);
@@ -3287,19 +3318,16 @@ mod tests {
                 let d = if i == 0 { 0.0 } else { 1.0 };
                 m.step(&x, &[Some(x[0] + x[1]), y1], d, 1.0);
             }
+            assert_eq!(m.acc.cross.mj[0], m.acc.cross.m, "block {block}");
             assert!(
-                m.acc.cross.d[0].iter().all(|&v| v == 0.0),
-                "block {block}: {:?}",
-                m.acc.cross.d[0]
-            );
-            assert!(
-                m.acc.cross.d[1][2] != 0.0,
+                m.acc.cross.mj[1][2] != m.acc.cross.m[2],
                 "block {block}: a target with gaps"
             );
             // Unblocked, the cross-moments' copy of the Gram's mean is the
             // Gram's own, to the bit.
             if block == 0 {
                 assert_eq!(m.acc.cross.m.as_slice(), m.gram(0).means());
+                assert_eq!(m.acc.cross.mj[0].as_slice(), m.gram(0).means());
             }
         }
     }
@@ -3874,5 +3902,84 @@ mod tests {
             m.win.as_ref().unwrap().snaps.boundary().unwrap().1.clone()
         };
         crate::window::assert_footprint_counts_every_vector(&snap(2, 1), &snap(5, 3), "ewridge");
+    }
+
+    /// The same, over a snapshot holding two Grams: the second target absent
+    /// on every third row from the fifth splits the Gram under `own_rows`
+    /// (the others, always present, share one), and both sizes hold two, so
+    /// a footprint summing the first Gram alone would show (review
+    /// 2026-09-26, C missing 7).
+    #[test]
+    fn the_window_footprint_counts_every_gram() {
+        let snap = |k: usize, t: usize| {
+            let mut c = cfg(k, t);
+            c.window = Some(12.0);
+            let mut m = EwRidge::new(c).unwrap();
+            let mut s = 7u64;
+            for i in 0..40 {
+                let x: Vec<f64> = (0..k).map(|_| lcg(&mut s)).collect();
+                let y: Vec<Option<f64>> = (0..t)
+                    .map(|j| (j != 1 || i < 5 || i % 3 != 1).then(|| x[j % k] + lcg(&mut s)))
+                    .collect();
+                m.step(&x, &y, if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            assert_eq!(m.acc.grams.grams.len(), 2, "the Gram split");
+            m.win.as_ref().unwrap().snaps.boundary().unwrap().1.clone()
+        };
+        crate::window::assert_footprint_counts_every_vector(
+            &snap(2, 2),
+            &snap(5, 3),
+            "ewridge, two Grams",
+        );
+    }
+
+    /// A state from before the runs' flag restored under a spec without a
+    /// window keeps no runs, as a model built under it keeps none; a state
+    /// whose runs are off under a windowed spec is refused; and a windowed
+    /// spec whose state has no ring is refused too (review 2026-09-26, C4
+    /// and C5).
+    #[test]
+    fn restore_holds_the_runs_and_the_ring_to_the_window() {
+        let build = |window: Option<f64>| {
+            let mut c = cfg(2, 1);
+            c.window = window;
+            let mut m = EwRidge::new(c).unwrap();
+            let mut s = 3u64;
+            for i in 0..30 {
+                let x = [lcg(&mut s), lcg(&mut s)];
+                m.step(
+                    &x,
+                    &[Some(x[0] - x[1])],
+                    if i == 0 { 0.0 } else { 1.0 },
+                    1.0,
+                );
+            }
+            serde_json::to_value(m.state()).unwrap()
+        };
+        let restore = |v: serde_json::Value| EwRidge::restore(&serde_json::from_value(v).unwrap());
+        let mut v = build(None);
+        crate::window::json_edit(&mut v, "runs", &mut |x| {
+            *x = serde_json::json!({"x": [], "start": []});
+        });
+        assert!(
+            restore(v)
+                .unwrap()
+                .acc
+                .grams
+                .grams
+                .iter()
+                .all(|g| !g.keeps_runs())
+        );
+        let mut v = build(Some(12.0));
+        crate::window::json_edit(&mut v, "runs", &mut |x| {
+            x["off"] = serde_json::json!(true);
+        });
+        assert!(matches!(restore(v), Err(StateError::Invalid(_))));
+        let mut v = build(Some(12.0));
+        crate::window::json_edit(&mut v, "win", &mut |x| *x = serde_json::Value::Null);
+        assert!(
+            matches!(restore(v), Err(StateError::Invalid(_))),
+            "a windowed spec without its ring"
+        );
     }
 }

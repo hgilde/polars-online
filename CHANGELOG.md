@@ -81,6 +81,95 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Fixed
 
+- **A `po.target` table on the LazyFrame paths.** `lf.online.fit_predict`
+  and `lf.online.predict` raised `unhashable type: 'dict'` on any spec with
+  a table target, relative or merely renamed, while the plan was built; the
+  projection now keeps the target's column and its reference (a fix by name
+  alone would have projected the reference away and refused the run).
+- **A row at the input bound against a vanishing spread.** A row of weight
+  `1e-100` followed by one of `1e100` leaves `kmeans` and `micro` a
+  standardized spread of `4e-200`; the next row at the bound is `5e199`
+  scaled units away, whose square overflows. `micro` reported the distance
+  as infinite and, reading the overflowed square as "no change to the
+  radius", *absorbed* the row; `kmeans` reported infinity and never set a
+  runner-up. Both report the distance now (computed without squaring where
+  the square overflows; ordinary rows keep their bits), an overflowed
+  square is infinitely far, and ties among such squares go to the nearest.
+  Found by the model contract's property test once its values reached the
+  bound, which they now do.
+- **A quantile `robust` fit no longer overshoots a row far outside its
+  band.** A row outside the band is one term of the score and none of the
+  Hessian, by design, so its nudge moved the fit at the row by the row's
+  leverage -- unbounded when the Gram holds no curvature that far out. A
+  target of `1e100` and features of `1e100` at weights from `1e-100`
+  (inside the input bound) took a slope to `1e248` and the prediction at
+  `1e100` to `-inf`. The nudge is now bounded so the fit at the row moves
+  by at most the row's residual: the row reaches its band's edge. The bound
+  binds on early rows too, where a row's leverage exceeds its share of the
+  weight: the quantile golden's three values moved by about 1e-3 of
+  themselves, and the QuantReg comparisons hold. Found by the same
+  property test.
+- **`ew_ridge` and `lasso` keep each target's own feature mean as a pair
+  of its own.** The cross accumulator kept it as an offset from the
+  all-row mean and reconstructed it as their sum: a target absent on a row
+  whose features stood at the input bound left both at `1e99`, the sum
+  resolved nothing below `1e83`, and the next present row's deviation of
+  `0.4` read as `1e83` -- the prediction at `1e100` was `-inf`, windowed
+  or not. State schema 17; a file from 14, 15 or 16 loads, its offsets
+  turned into means once. Under `own_rows` the own mean is the Gram's to
+  the bit, so a stream whose targets are present on every row is
+  unchanged; a target with gaps moves in its last bits. Found by the same
+  property test.
+- **`marginal`'s bins from a 0.10.0 state.** A histogram loaded from a
+  state written before the means' low parts panicked on its first row whose
+  features were all null with a target present (the Rust API; the bank
+  skips such a row). The low parts are sized on the first row that could
+  write a cell, on both the plain and the sharded path.
+- **Relative targets, four refusals and a message.** `sgd` under
+  `loss="logistic"` or `"poisson"` took a relative target, as `ftrl` does
+  not; a table target merely *named* like a feature was refused as a leak
+  (the column is the leak, not the name); a `bocpd`/`hmm` slot compared
+  names, so a table named like the hazard put another column in the slot
+  (the slot must be the column itself, and its message prints the names
+  again); a temporal clock read as a table target's column or reference
+  was refused later, with another message; and an empty `name`, `column`
+  or `relative_to` was refused nowhere.
+- **`hit_rate` under a ratio target.** A ratio is positive by construction,
+  so sign agreement about zero read 1.0 whatever the fit; the hit test is
+  about 1 -- did the ratio go up or down. A difference and a log ratio are
+  about zero, as before.
+- **The runs follow the window on a restore.** A state written before the
+  runs' flag (0.10.0) resumed without a window kept tracking runs for the
+  rest of its life; a windowed spec given a state whose runs are off would
+  have read every held feature as moving, with no error. Every model's
+  restore now sets the runs off without a window and refuses the other;
+  `ewridge`'s also refuses a windowed spec whose state has no ring, as its
+  siblings did; and `hmm`, a windowless owner, keeps no runs.
+- **Corrupt states refused before the first row**: a bins histogram whose
+  offsets disagree with its edges or whose low parts are the wrong length;
+  a lag ring longer than the deepest lag, which read every lag a row too
+  recent, or with fewer target rows than feature rows, which panicked.
+- **`marginal(shards=...)`, three things it did not say.** With a window at
+  the default `window_every` a sharded model flushed -- one fork-join --
+  per row, the regime measured as slower than unsplit, and `"auto"` did not
+  know: it sizes a windowed model's flush by the snapshot cadence now, and
+  a snapshot every row is never split. The bins' warm-up hold was reserved
+  whole on the first held row, 64 KB a group at the default and 640 MB
+  across ten thousand short groups: it grows by doubling, capped at the
+  hold, so the budget still counts the most it can reach. `ModelBank.load`
+  compared `shards` with the saved specs and refused a bank resumed under
+  another count, which the docstring promised: the count is the caller's
+  now, the saved one when `load` is given no specs. And a Rust caller
+  reading `state()` or `pair()` with rows held is refused in every build,
+  not only a debug one.
+- **The Python builders check a table target's shape and a list's
+  floor.** `targets=[3]`, `[None]`, `[{"col": "p"}]` and a table entry of
+  the wrong type are named by parameter, where they reached Rust and were
+  named by JSON path; `lags=[-1]` and `cross_lags=[-1]` likewise, where
+  serde named `model`; and `bin_edges={"x": [inf]}` is refused by name.
+- **`max_error_inflation` is refused by name on a model without a ridge
+  system** (every model but `ewridge`), where it was range-checked and
+  dropped.
 - **A feature that stops moving leaves no rounding artefact in the
   clusters' metric.** The feature moments' means are pairs, as every other
   running mean now is, and `kmeans` and `micro` give a stream at a level of
@@ -182,6 +271,10 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Changed
 
+- **The ridge and lasso window snapshots are `k + T` doubles smaller.** A
+  snapshot cloned the means' low parts, which the window's subtraction
+  never reads; a ring near its budget thins or refuses a little later than
+  it did in 0.10.0 + task 130.
 - **Finding a spec's columns no longer takes time quadratic in their
   number.** Seven lookups by column name scanned every column. At 10,000
   features they took about 480 ms of an 800 ms call, and now take none
@@ -214,12 +307,14 @@ carries breaking changes, and any change to the numbers a model returns.
 - **Outputs differ from 0.10.0 in their last bits** wherever a running
   mean is taken, since the means are carried as pairs now (see "A feature
   or target that stops moving keeps the fit it had", above). On the release
-  comparison that is 19 of its 30 specs, by a median of 3e-16 of the value
-  and at most 1.4e-14. The diagonal accumulator behind `sgd`, `kalman`,
+  comparison that is 21 of its 30 specs and 130 of its 291 fields, by a
+  median of 3e-16 of the value and at most 1.4e-14 (`bocpd`'s `p_change`;
+  measured again on 2026-09-26, after tasks 102 and 103). The diagonal accumulator behind `sgd`, `kalman`,
   `deco` and `corrchange` takes 6.0, 10.7 and 24 ns a row at 4, 16 and 64
   slots where it took 5.2, 6.3 and 15.5, so `sgd` steps about 16% slower at
   16 features; `ew_ridge` and `ew_cov` are unchanged.
-- **State schema 16.** A stream with a `label_delay` keeps, per model, the
+- **State schema 17.** The cross accumulator's own means (17, above). A
+  stream with a `label_delay` keeps, per model, the
   clock its held rows cover (15). A model with a window keeps, per slot of
   its accumulators, the value the slot has held since it last changed and
   the learned row that started that run, for the window to read; a model

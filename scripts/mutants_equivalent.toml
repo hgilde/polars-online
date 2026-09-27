@@ -41,23 +41,6 @@ line_has = "    if ns < 0 {"
 why = "ns == 0 returns \"0s\" two lines earlier, so ns < 0 and ns <= 0 agree wherever the line runs"
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
-function = "EwCov::skip"
-mutation = "replace * with /"
-line_has = "if self.pending.block_rows > 0 && lam * self.w_sum > 0.0 {"
-why = """lam / w_sum > 0 and lam * w_sum > 0 agree wherever w_sum > 0; at \
-w_sum = 0 the buffer refuses a row that leaves no weight and the decay has \
-nothing to age, the same empty state either way"""
-
-[[equivalent]]
-file = "crates/online-core/src/gaps.rs"
-function = "Cross::miss"
-mutation = "replace > with >="
-line_has = "if b > 0.0 {"
-why = """at b = 0 the offset takes 0·(z − m) away, which is 0 for every \
-finite z, and features reach the accumulator bounded (INPUT_BOUND)"""
-
-[[equivalent]]
 file = "crates/online-core/src/corrchange.rs"
 function = "CorrChange::long_run_sd"
 mutation = "replace > with >="
@@ -73,13 +56,6 @@ mutation = "replace && with ||"
 line_has = "if !(sx2 > 0.0 && sy2 > 0.0) {"
 why = """as above: with one column without spread the guard no longer \
 fires, and the zero standard deviation makes `ρ̂` and every `ξ` NaN"""
-
-[[equivalent]]
-file = "crates/online-core/src/lasso.rs"
-function = "<impl OnlineModel for Lasso>::step"
-mutation = "replace < with <="
-line_has = "if err[li] < err[best] {"
-why = """a strict or a loose minimum over the path's errors differ only on an exact tie, two points of the path with the same error to the bit, which outside identical fits has no measure; the oracles score every stream with distinct errors"""
 
 [[equivalent]]
 file = "crates/online-core/src/cluster/summary.rs"

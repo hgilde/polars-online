@@ -73,6 +73,28 @@ SHAPES = [
         "feature_sets must be a dict of a str -> a list of strs",
     ),
     (po.spec.quantile, dict(quantile=[0.5]), "quantile must be a number, got list [0.5]"),
+    # A table target is a TypedDict, which the check did not read: a wrong
+    # entry reached Rust and was named by JSON path (review 2026-09-26, F4).
+    (
+        po.spec.ewridge,
+        dict(targets=[3]),
+        "targets must be a list of strs or po.target tables, got list [3]",
+    ),
+    (
+        po.spec.ewridge,
+        dict(targets=[{"column": "p", "name": 1}]),
+        "targets must be a list of strs or po.target tables, got list [{'column': 'p', 'name': 1}]",
+    ),
+    (
+        po.spec.ewridge,
+        dict(targets=[{"col": "p"}]),
+        "targets must be a list of strs or po.target tables, got list [{'col': 'p'}]",
+    ),
+    (
+        po.spec.ewridge,
+        dict(targets=[None]),
+        "targets must be a list of strs or po.target tables, got list [None]",
+    ),
     (po.spec.lasso, dict(lasso_path=0.1), "lasso_path must be a list of numbers, got float"),
     (po.spec.ewridge, dict(bogus=1), "ewridge() got an unexpected keyword argument 'bogus'"),
 ]
@@ -115,6 +137,14 @@ def test_ew_class_takes_a_label_not_targets():
 
 
 VALUES = [
+    # A list's entries are held to the int floor as a scalar is (review
+    # 2026-09-26, F7: a negative lag was named by serde as `model`).
+    (po.spec.marginal, dict(lags=[-1]), "lags must be >= 1, got list [-1]"),
+    (
+        po.spec.marginal,
+        dict(lags=[1], cross_lags=[-1]),
+        "cross_lags must be >= 1, got list [-1]",
+    ),
     (po.spec.ewridge, dict(coef_every=-1), "coef_every must be >= 0, got -1"),
     (po.spec.lasso, dict(lasso_path=[0.1], max_cd_iters=-1), "max_cd_iters must be >= 0"),
     (po.spec.ewridge, dict(solve_every=INF), "solve_every must be finite, got float inf"),
@@ -410,6 +440,8 @@ def test_a_hand_built_dict_is_checked_by_path():
         ),
         (dict(halflife=10, model={"type": "ew_rdige"}), "[0].model.type: unknown variant"),
         (dict(halflife=10, model={}), "[0].model: missing field `type`"),
+        (dict(halflife=10, targets=[3]), "[0].targets[0]: invalid type: integer `3`"),
+        (dict(halflife=10, targets="y"), "[0].targets: invalid type: string"),
     ]:
         with pytest.raises(ValueError) as exc:
             po.ModelBank([{**base, **bad}])
@@ -425,6 +457,8 @@ def test_a_hand_built_dict_is_checked_by_path():
     [
         ("feature", dict(features=["nope"])),
         ("target", dict(targets=["nope"])),
+        ("target", dict(targets=[po.target("nope", relative_to="y")])),
+        ("relative_to", dict(targets=[po.target("y", relative_to="nope")])),
         ("clock", dict(clock="nope", max_dclock=5.0)),
         ("session", dict(session="nope", session_gap=1.0)),
         ("weight", dict(weight="nope")),
@@ -447,6 +481,7 @@ def test_a_missing_column_names_the_spec_the_role_and_the_frame(role, kw):
     [
         ("feature", dict(features=["s"])),
         ("target", dict(targets=["s"])),
+        ("relative_to", dict(targets=[po.target("y", relative_to="s")])),
         ("clock", dict(clock="s", max_dclock=5.0)),
         ("weight", dict(weight="s")),
     ],

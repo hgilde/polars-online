@@ -2379,7 +2379,8 @@ impl Bank {
     /// frame: one row per (group, decay instance, feature, target), sorted
     /// by group, in spec order within one, with `group`, `instance` (the
     /// halflife-grid suffix, `""` for a single instance), `feature`,
-    /// `target`, `n_eff` (the weight behind the target's pairs), `n_kish`
+    /// `target` (the target's name, which is its column unless a table
+    /// target gave one), `n_eff` (the weight behind the target's pairs), `n_kish`
     /// (Kish's effective sample size, `(Σw)²/Σw²`), `mean_x`, `var_x`,
     /// `mean_y`, `var_y`, `cov`, `corr`, `beta` (the slope of the target on
     /// the feature) and `t` (the t-statistic of the correlation at Kish's
@@ -2642,7 +2643,8 @@ impl Bank {
 
     /// Per-column statistics of what each group of `spec` has been fed
     /// (docs/PLAN.md task 35): one row per (group, input column) in spec
-    /// order -- features, then targets, then the weight column -- with
+    /// order -- features, then targets (a table target under its name),
+    /// then the weight column -- with
     /// `group`, `column`, `role` (`"feature"`, `"target"`, `"weight"`),
     /// `count`, `null_count`, `mean`, `std` (sample, `ddof = 1`; null below
     /// two values), `min`, `max`. A value counts when finite and within the
@@ -3341,13 +3343,27 @@ impl Bank {
                 s.fill_defaults();
                 s
             };
-            let exp: Vec<Spec> = exp.iter().map(fill).collect();
-            let saved: Vec<Spec> = file.specs.iter().map(fill).collect();
-            if exp != saved {
+            // `shards` is a setting, not state (docs/PLAN.md task 126): the
+            // count given here is the one the bank runs with, whatever the
+            // file was saved under, so it is left out of the comparison
+            // (review 2026-09-26, F3: it was compared, and a bank could not
+            // resume under another count).
+            let unsharded = |mut s: Spec| {
+                if let ModelKind::Marginal { shards, .. } = &mut s.model {
+                    *shards = None;
+                }
+                s
+            };
+            let exp_filled: Vec<Spec> = exp.iter().map(fill).map(unsharded).collect();
+            let saved: Vec<Spec> = file.specs.iter().map(fill).map(unsharded).collect();
+            if exp_filled != saved {
                 return Err("saved specs do not match the bank's specs; refusing to load".into());
             }
         }
-        let mut bank = Bank::new(file.specs.clone())?;
+        // The caller's specs where given, the file's otherwise: the same
+        // specs but for the shard count, which is the caller's to set.
+        let specs = expected_specs.map_or_else(|| file.specs.clone(), <[Spec]>::to_vec);
+        let mut bank = Bank::new(specs)?;
         for (si, groups) in file.states.iter().enumerate() {
             for (key, st) in groups {
                 let stream = Stream::restore(&file.specs[si], st)?;

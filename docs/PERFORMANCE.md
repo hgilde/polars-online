@@ -3213,5 +3213,12 @@ fills the pool, and holding rows only adds their copy.
 **What the held rows cost in memory.** A sharded model holds at most
 8 MB of features, 104 rows at 10,000 features, while the bank runs its
 rows, and lets go of them when the run ends. Only the models being run at
-that moment hold any: about one per thread, so on 14 threads about
-112 MB.
+that moment hold any. That is usually about one per thread, 112 MB on 14
+threads, but it is not a bound: a flush forks inside the bank's own
+fork-join over the groups, and a worker waiting on its shards takes up
+another group's run meanwhile (rayon's blocked join steals any job of the
+pool), whose model then holds a batch on top of the first. Nested that
+way, the models holding a batch at once are bounded by the sharded groups
+in the chunk, not by the threads (review 2026-09-26, E2); nothing runs on
+rayon's global pool, and the nesting cannot deadlock, every job being
+finite work over its own slices.

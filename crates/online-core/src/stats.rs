@@ -303,6 +303,16 @@ impl SlotMetrics {
     /// threshold and every row scores, where the regression reading tests
     /// sign agreement and excludes `y == 0`.
     pub fn update(&mut self, pred: f64, y: f64, lam: f64, w: f64, binary: bool) {
+        self.update_about(pred, y, lam, w, binary, 0.0);
+    }
+
+    /// [`Self::update`] with the regression hit test taken about `centre`
+    /// rather than zero: agreement on which side of it `pred` and `y` fall,
+    /// a `y` exactly there not scored. For a target that is a ratio, whose
+    /// natural centre is 1 -- about zero, two positive numbers always agree,
+    /// and the rate read 1.0 whatever the fit (review 2026-09-26, D3).
+    /// `binary` ignores the centre. Centre 0 is [`Self::update`] to the bit.
+    pub fn update_about(&mut self, pred: f64, y: f64, lam: f64, w: f64, binary: bool, centre: f64) {
         if !pred.is_finite() || !y.is_finite() || w <= 0.0 {
             // Age the estimates but do not score: a row with no prediction is
             // not evidence of a bad one. The means themselves are unchanged;
@@ -322,12 +332,12 @@ impl SlotMetrics {
             let e = y - pred;
             self.mse = ((denom - w) * self.mse + w * e * e) / denom;
         }
-        if binary || y != 0.0 {
+        if binary || y != centre {
             let hw = lam * self.hit_w + w;
             let hit = if binary {
                 f64::from((pred > 0.5) == (y > 0.5))
             } else {
-                f64::from(pred.signum() == y.signum())
+                f64::from((pred - centre).signum() == (y - centre).signum())
             };
             self.hits = (lam * self.hit_w * self.hits + w * hit) / hw;
             self.hit_w = hw;
@@ -1077,6 +1087,35 @@ mod metric_tests {
             "hit {:?}",
             m.hit_rate()
         );
+    }
+
+    /// About a centre, the hit is the side of it both fall on, a target on
+    /// the centre ages the weight without scoring, and centre 0 is `update`
+    /// to the bit (review 2026-09-26, D3).
+    #[test]
+    fn the_hit_test_is_about_the_centre() {
+        let mut m = SlotMetrics::new();
+        m.update_about(1.2, 1.1, 0.9, 1.0, false, 1.0);
+        assert_eq!(m.hit_rate(), Some(1.0), "both above 1");
+        m.update_about(0.9, 1.1, 0.9, 1.0, false, 1.0);
+        assert!(
+            (m.hit_rate().unwrap() - 0.9 / 1.9).abs() < 1e-15,
+            "{:?}",
+            m.hit_rate()
+        );
+        let before = m.clone();
+        m.update_about(0.9, 1.0, 0.5, 1.0, false, 1.0);
+        assert_eq!(m.hit_rate(), before.hit_rate(), "on the centre: not scored");
+        assert_eq!(m.hit_w, 0.5 * before.hit_w, "but aged");
+        let (mut a, mut b) = (SlotMetrics::new(), SlotMetrics::new());
+        let mut s = 5u64;
+        for i in 0..40 {
+            let (p, y) = (lcg(&mut s) - 0.5, lcg(&mut s) - 0.5);
+            let w = if i % 7 == 3 { 0.0 } else { 1.0 };
+            a.update(p, y, 0.97, w, false);
+            b.update_about(p, y, 0.97, w, false, 0.0);
+        }
+        assert_eq!(a, b);
     }
 
     #[test]

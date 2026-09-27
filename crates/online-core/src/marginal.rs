@@ -103,7 +103,8 @@ pub struct MarginalCfg {
     /// `skip_serializing_if` field anywhere else shifts what follows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<f64>,
-    /// Learned rows between the window's snapshots.
+    /// Rows between the window's snapshots, counted on every row the model
+    /// is stepped with, rows of weight zero included.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_every: Option<usize>,
 }
@@ -334,9 +335,11 @@ pub struct Marginal {
     win: Option<Windowed>,
     /// Rows whose pair work waits for a sharded flush
     /// ([`Self::step_sharded`]). Not state: serde skips it, and every reader
-    /// of the pairs flushes first.
+    /// of the pairs flushes first. Boxed, as `lag` and `bins` are and for
+    /// the same reason: its seven vectors would otherwise sit between the
+    /// ones the unsplit row reads.
     #[serde(skip)]
-    defer: Deferred,
+    defer: Box<Deferred>,
 }
 /// The window's clock and the snapshots it subtracts.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -570,8 +573,9 @@ impl Binned {
             hist.decay(row.lam);
             hist.update_row(&row.x, &row.y, row.w);
         }
-        hist.decay(self.pending_lam);
-        self.pending_lam = 1.0;
+        // `feed_bins` folded the pending decay into the row it just held
+        // before calling, so there is none left to apply.
+        debug_assert_eq!(self.pending_lam, 1.0);
         self.held = Vec::new();
         self.hist = Some(hist);
     }
@@ -642,7 +646,7 @@ impl Marginal {
             },
             rows_t: vec![0; t],
             win,
-            defer: Deferred::default(),
+            defer: Box::default(),
         })
     }
 
@@ -667,11 +671,14 @@ impl Marginal {
             return;
         }
         if weight > 0.0 && weight.is_finite() {
-            // Reserved at exactly the rows it will hold, which is what the
-            // budget counts (`margbins::hold_bytes`); a hold restored from a
-            // state is reserved again here.
-            if b.held.capacity() < cfg.warm_rows {
-                b.held.reserve_exact(cfg.warm_rows - b.held.len());
+            // Grown by doubling up to `bin_warm_rows`, never reserved whole
+            // up front: a short group holds only its rows, and the budget's
+            // count (`margbins::hold_bytes`) stays the most the hold can
+            // reach (review 2026-09-26, A2). A hold restored from a state has
+            // no spare room and grows from here.
+            if b.held.len() == b.held.capacity() {
+                let want = (2 * b.held.len()).clamp(4, cfg.warm_rows.max(4));
+                b.held.reserve_exact(want.saturating_sub(b.held.len()));
             }
             b.held.push(crate::margbins::HeldRow {
                 x: x.to_vec(),
@@ -757,7 +764,9 @@ impl Marginal {
     /// reported at any weight; `corr`, `beta` and `t` wait for
     /// `min_periods`.
     pub fn pair(&self, t: usize, j: usize) -> Pair {
-        debug_assert_eq!(
+        // Loud in every build: a pair read over held rows is wrong for good
+        // (review 2026-09-26, A3).
+        assert_eq!(
             self.defer.n, 0,
             "marginal: rows held for a sharded flush are flushed before a pair is read"
         );
@@ -1357,22 +1366,21 @@ impl Marginal {
             );
         }
         // The ring those rows leave: the rows a lag can reach, oldest first.
+        // The batch's ring keeps the newest rows of the ring as it stood, in
+        // order, and the held rows after them; the former stay where they
+        // are, the latter are pushed as `step` would have pushed them
+        // (review 2026-09-26, A8: every ring row was copied at every flush).
         if let Some(lag) = self.lag.as_deref_mut() {
-            let rows = d
-                .ring
-                .iter()
-                .map(|src| match *src {
-                    Src::Ring(i) => {
-                        let (x, y) = lag.ring_row(i);
-                        (x.to_vec(), y.to_vec())
-                    }
-                    Src::Row(r) => (
-                        d.xs[r * p..(r + 1) * p].to_vec(),
-                        d.ys[r * n_targets..(r + 1) * n_targets].to_vec(),
-                    ),
-                })
-                .collect();
-            lag.set_ring(rows);
+            let kept = d.ring.iter().filter(|s| matches!(s, Src::Ring(_))).count();
+            lag.keep_last(kept);
+            for src in &d.ring {
+                if let Src::Row(r) = *src {
+                    lag.push(
+                        &d.xs[r * p..(r + 1) * p],
+                        &d.ys[r * n_targets..(r + 1) * n_targets],
+                    );
+                }
+            }
         }
         self.defer = d;
         self.defer.clear(keep);
@@ -1494,8 +1502,9 @@ fn pair_kernel(
 
 /// The most rows a batch holds, and the bytes of features it may hold:
 /// enough rows that a fork-join is a small part of a flush (one per 64 rows
-/// ran within 6% of one per 256, docs/PERFORMANCE.md §25), few enough that
-/// a group's batch stays small beside its model.
+/// ran within 6% of one per 256 at nine targets, and 29% short of it at one,
+/// docs/PERFORMANCE.md §25), few enough that a group's batch stays small
+/// beside its model.
 const BATCH_ROWS: usize = 256;
 const BATCH_BYTES: usize = 8 << 20;
 
@@ -1524,15 +1533,23 @@ impl MarginalCfg {
     /// millisecond each, and up to twice the threads, since more ranges
     /// than threads lets the fast cores take the slow ones' share. A row
     /// with too little work for two shards is not split. The flush's work
-    /// is its rows times the row's pairs times each pair's cost, from the
-    /// moments, the lagged moments and the bins.
+    /// is its rows -- the batch's, or under a window the snapshot cadence's
+    /// where that is shorter -- times the row's pairs times each pair's
+    /// cost, from the moments, the lagged moments and the bins.
     pub fn auto_shards(&self, threads: usize) -> usize {
         let (p, t) = (self.n_features, self.n_targets);
         let lags = self.lags.len();
         let cross = self.cross_lags.as_ref().map_or(lags, Vec::len);
         let bins = if self.bins.is_some() { BIN_UNITS } else { 0.0 };
         let per_pair = PAIR_NS * (1.0 + LAG_UNITS * (lags + 2 * cross) as f64 + bins);
-        let flush = batch_rows(p) as f64 * (p * t) as f64 * per_pair;
+        // A windowed row flushes before every snapshot, so a flush holds at
+        // most the snapshot cadence's rows: every row at the default, which
+        // no width can keep busy (review 2026-09-26, A1).
+        let rows = match self.window {
+            Some(_) => batch_rows(p).min(self.window_every.unwrap_or(1)),
+            None => batch_rows(p),
+        };
+        let flush = rows as f64 * (p * t) as f64 * per_pair;
         let fits = (flush / SHARD_NS).floor() as usize;
         let most = if threads <= 1 { 1 } else { 2 * threads };
         if fits < 2 { 1 } else { fits.min(most) }
@@ -1540,8 +1557,9 @@ impl MarginalCfg {
 }
 
 /// What runs a flush's shards: every one of them, in any order and on any
-/// threads ([`Shards::run`]).
-pub type ShardRunner = dyn Fn(&mut [MarginalShard<'_>]) + Sync;
+/// threads ([`Shards::run`]). A closure may borrow what it counts with for
+/// `'r`; a bare `dyn` alias would have asked for `'static`.
+pub type ShardRunner<'r> = dyn Fn(&mut [MarginalShard<'_>]) + Sync + 'r;
 
 /// How [`Marginal::step_sharded`] splits the pair work, and what runs the
 /// parts.
@@ -1553,7 +1571,7 @@ pub struct Shards<'r> {
     /// Runs every shard of a flush, in any order and on any threads: each
     /// writes its own features' cells and nothing else, so the order cannot
     /// change a number.
-    pub run: &'r ShardRunner,
+    pub run: &'r ShardRunner<'r>,
 }
 
 impl Shards<'static> {
@@ -1835,7 +1853,9 @@ impl OnlineModel for Marginal {
     }
 
     fn state(&self) -> State {
-        debug_assert_eq!(
+        // Loud in every build: `defer` is not in the state, so a state read
+        // over held rows could never learn them (review 2026-09-26, A3).
+        assert_eq!(
             self.defer.n, 0,
             "marginal: rows held for a sharded flush are flushed before the state is read"
         );
@@ -3989,24 +4009,41 @@ mod tests {
                 // Feature 2 sits at a level, feature 4 holds one value for
                 // long runs: the cases the compensated means and the runs are
                 // for.
+                // Feature indices wrap for a row narrower than five.
                 let mut x = level.clone();
-                x[2] += 1e6;
+                x[2 % p] += 1e6;
                 if p > 4 {
                     x[4] = if (i / 40) % 2 == 0 { 3.0 } else { x[4] };
                 }
-                let y0 = x[0] - 0.5 * x[1] + 0.3 * lcg(&mut seed);
-                let y = vec![
+                // A feature that is not finite now and then, and a row with
+                // none finite: the ring must not take such a row, and the
+                // bins take no cell for the feature (review 2026-09-26).
+                if i % 89 < p {
+                    x[i % 89] = f64::NAN;
+                }
+                if i % 500 == 3 {
+                    x.iter_mut().for_each(|v| *v = f64::NAN);
+                }
+                let y0 = x[0] - 0.5 * x[1 % p] + 0.3 * lcg(&mut seed);
+                let mut y = vec![
                     Some(y0),
-                    (lcg(&mut seed) > -0.4).then(|| 2.0 * x[1] + lcg(&mut seed)),
-                    (lcg(&mut seed) > 0.0).then(|| (x[0] * x[3]).abs() + 0.1 * lcg(&mut seed)),
+                    (lcg(&mut seed) > -0.4).then(|| 2.0 * x[1 % p] + lcg(&mut seed)),
+                    (lcg(&mut seed) > 0.0).then(|| (x[0] * x[3 % p]).abs() + 0.1 * lcg(&mut seed)),
                 ];
+                // A row with no target at all, and one right after the total
+                // gap at 218, when the histogram has just been wiped.
+                if i % 101 == 9 || i == 219 {
+                    y.iter_mut().for_each(|v| *v = None);
+                }
                 let d = match i {
                     0 => 0.0,
                     _ if i % 211 == 7 => 1e6,
                     _ if i % 53 == 11 => 300.0,
                     _ => 1.0,
                 };
-                let w = if i % 13 == 5 {
+                // Row 218 is a total gap on a row of no weight: every target
+                // ages to nothing with no row to learn from.
+                let w = if i % 13 == 5 || i == 218 {
                     0.0
                 } else {
                     0.5 + (lcg(&mut seed) + 1.0) / 2.0
@@ -4016,7 +4053,9 @@ mod tests {
                     y,
                     d,
                     w,
-                    clear: i % 97 == 50,
+                    // Cleared now and then, and on the row that fills a batch
+                    // of 256, so a clear meets the flush in one step.
+                    clear: i % 97 == 50 || i == 255,
                 }
             })
             .collect()
@@ -4121,7 +4160,7 @@ mod tests {
     fn a_sharded_step_is_the_unsplit_step_to_the_bit() {
         let p = 7;
         let rows = shard_stream(700, p);
-        let runners: [(&str, &ShardRunner); 3] = [
+        let runners: [(&str, &ShardRunner<'_>); 3] = [
             ("in order", &run_in_order),
             ("threads", &threaded),
             ("reversed", &reversed),
@@ -4254,6 +4293,28 @@ mod tests {
             cleared_while_held > 2,
             "clears with rows held: {cleared_while_held}"
         );
+        // The stream's other cases, counted rather than assumed.
+        let no_finite = rows
+            .iter()
+            .filter(|r| r.x.iter().all(|v| v.is_nan()))
+            .count();
+        let some_nan = rows
+            .iter()
+            .filter(|r| r.x.iter().any(|v| v.is_nan()) && !r.x.iter().all(|v| v.is_nan()))
+            .count();
+        let no_target = rows
+            .iter()
+            .filter(|r| r.y.iter().all(Option::is_none))
+            .count();
+        let gap_of_no_weight = rows.iter().filter(|r| r.d == 1e6 && r.w == 0.0).count();
+        assert!(
+            no_finite >= 1 && some_nan > 5 && no_target > 5 && gap_of_no_weight >= 1,
+            "{no_finite} {some_nan} {no_target} {gap_of_no_weight}"
+        );
+        assert!(
+            rows[batch_rows(p) - 1].clear,
+            "a clear on the row that fills a batch"
+        );
     }
 
     /// A plain step after sharded ones learns the held rows first, and a
@@ -4326,10 +4387,11 @@ mod tests {
         }
     }
 
-    /// Reading a pair with rows held is a caller's bug, and says so in a
-    /// debug build rather than reporting pairs that miss those rows.
+    /// Reading a pair or the state with rows held is a caller's bug, and
+    /// says so in every build rather than reporting pairs that miss those
+    /// rows, or saving a state that can never learn them (review 2026-09-26,
+    /// A3).
     #[test]
-    #[cfg(debug_assertions)]
     #[should_panic(expected = "flushed before a pair is read")]
     fn a_pair_read_with_rows_held_is_refused() {
         let mut m = Marginal::new(cfg(4, 1)).unwrap();
@@ -4466,5 +4528,239 @@ mod tests {
             m.win.as_ref().unwrap().snaps.boundary().unwrap().1.clone()
         };
         crate::window::assert_footprint_counts_every_vector(&snap(2, 1), &snap(5, 3), "marginal");
+    }
+
+    #[test]
+    #[should_panic(expected = "flushed before the state is read")]
+    fn a_state_read_with_rows_held_is_refused() {
+        let mut m = Marginal::new(cfg(4, 1)).unwrap();
+        let shards = Shards {
+            count: 2,
+            run: &run_in_order,
+        };
+        m.step_sharded(&[1.0, 2.0, 3.0, 4.0], &[Some(1.0)], 0.0, 1.0, &shards);
+        let _ = m.state();
+    }
+
+    /// `"auto"` counts what a windowed row flushes: a snapshot every row
+    /// flushes every row, which no width can keep busy, so it is not split;
+    /// a coarser cadence is, and one past the batch is bounded by the batch
+    /// (review 2026-09-26, A1).
+    #[test]
+    fn auto_does_not_split_a_window_snapshotted_every_row() {
+        let mut c = cfg(10_000, 9);
+        c.window = Some(40.0);
+        assert_eq!(c.auto_shards(14), 1, "a snapshot every row");
+        c.window_every = Some(64);
+        assert!(c.auto_shards(14) > 1);
+        c.window_every = Some(1_000);
+        assert_eq!(
+            c.auto_shards(14),
+            cfg(10_000, 9).auto_shards(14),
+            "the batch bounds it"
+        );
+    }
+
+    /// `"auto"` at the Python suite's widths (`tests/test_marginal_shards.py`):
+    /// at 60 features and three targets it splits the bins alone, so the
+    /// other shapes' `"auto"` legs there compared the unsplit model with
+    /// itself (review 2026-09-26, F2); at 1,000 every shape splits on two
+    /// threads or more, the window at a snapshot every 128 rows; and the
+    /// 300-feature lag shape splits in four on two threads.
+    #[test]
+    fn auto_shards_at_the_python_suites_widths() {
+        let shapes = |p: usize, every: usize| {
+            let mut lags = cfg(p, 3);
+            lags.lags = vec![1, 3, 7];
+            lags.cross_lags = Some(vec![1]);
+            let mut bins = cfg(p, 3);
+            bins.bins = Some(bins_cfg(6, 50));
+            let mut window = cfg(p, 3);
+            window.window = Some(40.0);
+            window.window_every = Some(every);
+            [cfg(p, 3), lags, bins, window]
+        };
+        let at_60: Vec<usize> = shapes(60, 4).iter().map(|c| c.auto_shards(14)).collect();
+        assert_eq!(at_60, [1, 1, 2, 1]);
+        for threads in [2, 8, 14] {
+            for (c, name) in shapes(1_000, 128)
+                .iter()
+                .zip(["moments", "lags", "bins", "window"])
+            {
+                let n = c.auto_shards(threads);
+                assert!(
+                    n > 1 && n <= 2 * threads,
+                    "{name} on {threads} threads: {n}"
+                );
+            }
+        }
+        assert_eq!(
+            shapes(300, 4)[1].auto_shards(2),
+            4,
+            "the child test's shape"
+        );
+    }
+
+    /// A windowed model flushes before every snapshot: every row at the
+    /// default cadence, one row in eight at `window_every = 8`. Counted with
+    /// a runner of its own, so the regime is a fact and not an inference.
+    #[test]
+    fn a_window_snapshotted_every_row_flushes_every_row() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let rows = shard_stream(100, 3);
+        for (every, at_least, at_most) in [(1usize, 100, 100), (8, 12, 14)] {
+            let flushes = AtomicUsize::new(0);
+            let run = |s: &mut [MarginalShard<'_>]| {
+                flushes.fetch_add(1, Ordering::Relaxed);
+                run_in_order(s);
+            };
+            let shards = Shards {
+                count: 2,
+                run: &run,
+            };
+            let mut c = cfg(3, 3);
+            c.window = Some(30.0);
+            c.window_every = Some(every);
+            let mut m = Marginal::new(c).unwrap();
+            for r in &rows {
+                m.step_sharded(&r.x, &r.y, 1.0, r.w, &shards);
+            }
+            m.flush(&shards);
+            let n = flushes.load(Ordering::Relaxed);
+            assert!(
+                (at_least..=at_most).contains(&n),
+                "every {every}: {n} flushes"
+            );
+        }
+    }
+
+    /// A short group holds only its rows: the hold grows by doubling up to
+    /// `bin_warm_rows`, never to it up front, so a bank of many short groups
+    /// does not pay every group's full hold (review 2026-09-26, A2). The
+    /// budget's count stays an upper bound, and a full hold still meets it
+    /// (`the_hold_budget_is_what_the_held_rows_take`).
+    #[test]
+    fn a_short_group_holds_only_its_rows() {
+        let mut c = cfg(10, 1);
+        c.bins = Some(bins_cfg(4, 10_000));
+        let mut m = Marginal::new(c).unwrap();
+        for i in 0..3 {
+            m.step(&[i as f64; 10], &[Some(1.0)], step_clock(i), 1.0);
+        }
+        let held = &m.bins.as_ref().unwrap().held;
+        assert_eq!(held.len(), 3);
+        assert!(held.capacity() <= 8, "{}", held.capacity());
+    }
+
+    /// A histogram from a state written before the means' low parts, given
+    /// a row whose only feature is not finite: the plain and the sharded
+    /// path size the low parts alike, so the two states agree byte for
+    /// byte (review 2026-09-26, A7; the row itself is B1's).
+    #[test]
+    fn a_state_without_the_bins_low_parts_is_sized_the_same_by_both_paths() {
+        let mut c = cfg(1, 1);
+        c.bins = Some(given_edges(vec![0.0]));
+        let mut m = Marginal::new(c).unwrap();
+        m.step(&[0.5], &[Some(1.0)], 0.0, 1.0);
+        let mut v = serde_json::to_value(m.state()).unwrap();
+        crate::window::json_edit(&mut v, "mean_lo", &mut |x| *x = serde_json::json!([]));
+        let old = Marginal::restore(&serde_json::from_value(v).unwrap()).unwrap();
+        let (mut a, mut b) = (old.clone(), old);
+        a.step(&[f64::NAN], &[Some(1.0)], 1.0, 1.0);
+        let shards = Shards {
+            count: 2,
+            run: &run_in_order,
+        };
+        b.step_sharded(&[f64::NAN], &[Some(1.0)], 1.0, 1.0, &shards);
+        b.flush(&shards);
+        assert!(state_bytes(&a) == state_bytes(&b));
+    }
+
+    /// The sharded step's odd corners, each against the plain step: a
+    /// restore inside the bins' warm-up with the batch going on; a refusing
+    /// window budget tripped with rows held; the count changed between two
+    /// sharded steps with no flush between; one feature under two shards
+    /// (review 2026-09-26, A missing 5-8).
+    #[test]
+    fn the_sharded_steps_odd_corners_are_the_plain_step() {
+        let p = 7;
+        let rows = shard_stream(200, p);
+        let cfgs = shard_cfgs(p);
+        let find = |name: &str| cfgs.iter().find(|(n, _)| *n == name).unwrap().1.clone();
+        let plain_run = |c: &MarginalCfg, upto: usize| {
+            let mut m = Marginal::new(c.clone()).unwrap();
+            for r in &rows[..upto] {
+                if r.clear {
+                    OnlineModel::clear_lags(&mut m);
+                }
+                m.step(&r.x, &r.y, r.d, r.w);
+            }
+            m
+        };
+        let three = Shards {
+            count: 3,
+            run: &run_in_order,
+        };
+        let two = Shards {
+            count: 2,
+            run: &threaded,
+        };
+        // Restored at row 20 of a 40-row warm-up, sharded before and after.
+        let c = find("learned bins");
+        let mut m = Marginal::new(c.clone()).unwrap();
+        for (i, r) in rows.iter().enumerate() {
+            if i == 20 {
+                m.flush(&three);
+                let bytes = rmp_serde::to_vec(&m.state()).unwrap();
+                m = Marginal::restore(&rmp_serde::from_slice(&bytes).unwrap()).unwrap();
+            }
+            if r.clear {
+                OnlineModel::clear_lags(&mut m);
+            }
+            m.step_sharded(&r.x, &r.y, r.d, r.w, &three);
+        }
+        m.flush(&three);
+        assert!(state_bytes(&m) == state_bytes(&plain_run(&c, rows.len())));
+        // A refusing budget crossed with rows held: no snapshot forms after
+        // it, so nothing flushes, and both models say they are over.
+        let c = find("window every 3");
+        let mut a = Marginal::new(c.clone()).unwrap();
+        let mut b = Marginal::new(c.clone()).unwrap();
+        let tiny = Some(crate::WindowBudget::Refuse(1e-9));
+        a.set_window_budget(tiny);
+        b.set_window_budget(tiny);
+        for r in &rows {
+            a.step(&r.x, &r.y, r.d, r.w);
+            b.step_sharded(&r.x, &r.y, r.d, r.w, &three);
+        }
+        assert!(b.held_rows() > 100, "no flush once the budget refuses");
+        b.flush(&three);
+        assert!(a.window_over_budget().is_some());
+        assert_eq!(a.window_over_budget(), b.window_over_budget());
+        assert!(state_bytes(&a) == state_bytes(&b));
+        // The count changes with no flush between.
+        let c = find("lags");
+        let mut m = Marginal::new(c.clone()).unwrap();
+        for (i, r) in rows.iter().enumerate() {
+            if r.clear {
+                OnlineModel::clear_lags(&mut m);
+            }
+            m.step_sharded(&r.x, &r.y, r.d, r.w, if i < 100 { &three } else { &two });
+        }
+        m.flush(&two);
+        assert!(state_bytes(&m) == state_bytes(&plain_run(&c, rows.len())));
+        // One feature, two shards: held, and one shard at the flush.
+        let narrow = shard_stream(50, 1);
+        let mut c = cfg(1, 3);
+        c.lags = vec![1, 2];
+        let mut m = Marginal::new(c.clone()).unwrap();
+        let mut plain = Marginal::new(c).unwrap();
+        for r in &narrow {
+            m.step_sharded(&r.x, &r.y, r.d, r.w, &two);
+            plain.step(&r.x, &r.y, r.d, r.w);
+        }
+        assert!(m.held_rows() > 0);
+        m.flush(&two);
+        assert!(state_bytes(&m) == state_bytes(&plain));
     }
 }

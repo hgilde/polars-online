@@ -153,9 +153,9 @@ pub struct EwCov {
     #[serde(default, alias = "inv_scale")]
     precision_scale: f64,
     /// Per feature, the value it has held on every row learned since it last
-    /// changed, and the weight of those rows, decayed as `w_sum` is
-    /// ([`crate::Runs`]): what lets a window say that a feature held one
-    /// value over it, which its subtraction cannot (docs/PLAN.md task 94).
+    /// changed, and the learned row that started the run ([`crate::Runs`]):
+    /// what lets a window say that a feature held one value over it, which
+    /// its subtraction cannot (docs/PLAN.md task 94).
     /// Empty in a state written before schema 16: the next learned row starts
     /// them, and until one covers a window the window reads that feature's
     /// spread from the subtraction, as schema 15 did. Always written: only
@@ -224,6 +224,12 @@ impl EwCov {
         !self.runs.is_off()
     }
 
+    /// Keep no runs from here: for a restored owner without a window, whose
+    /// state may have been written before the flag (review 2026-09-26, C4).
+    pub fn set_runs_off(&mut self) {
+        self.runs = Runs::off();
+    }
+
     /// What mean `i`'s double leaves out ([`crate::comp`]).
     #[inline]
     pub(crate) fn mean_lo(&self, i: usize) -> f64 {
@@ -244,10 +250,10 @@ impl EwCov {
         crate::comp::dev(x, self.m[i], crate::comp::lo_of(&self.m_lo, i))
     }
 
-    /// The value feature `i` has held on every learned row carrying at least
-    /// `weight` of the accumulated weight, the newest rows first; `None`
-    /// where it moved inside that weight, or where the runs are unknown (a
-    /// state written before them).
+    /// The value feature `i` has held on every learned row from the `row`-th
+    /// on; `None` where it moved since, has no learned row yet, or the runs
+    /// are unknown (a state written before them). By row since the review
+    /// of 2026-09-25 (`crate::Runs`).
     pub fn held_from(&self, i: usize, row: u64) -> Option<f64> {
         self.runs.started_by(self.k, i, row)
     }
@@ -1151,7 +1157,8 @@ pub struct EwCovCfg {
     /// accumulator, which is what every state written before task 63 has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<f64>,
-    /// Learned rows between the snapshots the window is computed from; `1`
+    /// Rows between the snapshots the window is computed from, counted on
+    /// every row the model is stepped with, rows of weight zero included; `1`
     /// (the default) snapshots every row and puts the boundary as close to
     /// `window` as the data allows. Larger divides the memory by the same
     /// factor and moves the boundary *inward*, so the effective window is in
@@ -1935,6 +1942,20 @@ impl crate::OnlineModel for EwCovModel {
                         "ew_cov: the state has the wrong shape".into(),
                     ));
                 }
+                // The runs follow the window, not the file: a state written
+                // before the flag tracks them, which a model without a
+                // window never reads (task 128); and a windowed model whose
+                // runs are off would read every held slot as moving, so it
+                // is refused (review 2026-09-26, C4).
+                match m.cfg.window {
+                    None => m.cov.set_runs_off(),
+                    Some(_) if !m.cov.keeps_runs() => {
+                        return Err(crate::StateError::Invalid(
+                            "ew_cov: a windowed state whose runs are off".into(),
+                        ));
+                    }
+                    Some(_) => {}
+                }
                 Ok(m)
             }
             other => Err(crate::StateError::WrongModel {
@@ -2385,6 +2406,64 @@ mod tests {
             m.win.as_ref().unwrap().snaps.boundary().unwrap().1.clone()
         };
         crate::window::assert_footprint_counts_every_vector(&snap(2), &snap(5), "ew_cov");
+    }
+
+    /// A state from before the runs' flag (0.10.0) restored under a spec
+    /// without a window keeps no runs, as a model built under it keeps none;
+    /// and a state whose runs are off under a spec with a window is refused,
+    /// since the window would read every held slot as moving (review
+    /// 2026-09-26, C4).
+    #[test]
+    fn restore_sets_the_runs_from_the_window() {
+        let build = |window: Option<f64>| {
+            let mut cfg = model_cfg(2, vec![EwCovStat::Mean]);
+            cfg.window = window;
+            let mut m = EwCovModel::new(cfg).unwrap();
+            for i in 0..12 {
+                let x = [i as f64, 1.0];
+                crate::OnlineModel::step(&mut m, &x, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+            }
+            serde_json::to_value(crate::OnlineModel::state(&m)).unwrap()
+        };
+        let restore = |v: serde_json::Value| {
+            <EwCovModel as crate::OnlineModel>::restore(&serde_json::from_value(v).unwrap())
+        };
+        let mut v = build(None);
+        crate::window::json_edit(&mut v, "runs", &mut |x| {
+            *x = serde_json::json!({"x": [], "start": []});
+        });
+        assert!(
+            !restore(v).unwrap().cov().keeps_runs(),
+            "without the flag, under no window"
+        );
+        let mut v = build(Some(5.0));
+        crate::window::json_edit(&mut v, "runs", &mut |x| {
+            x["off"] = serde_json::json!(true);
+        });
+        assert!(matches!(restore(v), Err(crate::StateError::Invalid(_))));
+    }
+
+    /// `window_every` counts every row the model is stepped with, rows of
+    /// weight zero included: a stream alternating weight 1 and 0 under
+    /// `window_every = 2` snapshots once a row pair, not once a learned row
+    /// (review 2026-09-26, C7; the docs said learned rows).
+    #[test]
+    fn a_zero_weight_row_counts_toward_the_snapshot_cadence() {
+        let mut cfg = model_cfg(1, vec![EwCovStat::Mean]);
+        cfg.decay = crate::Decay::Halflife(30.0);
+        cfg.window = Some(1e9);
+        cfg.window_every = Some(2);
+        let mut m = EwCovModel::new(cfg).unwrap();
+        for i in 0..40 {
+            let w = if i % 2 == 0 { 1.0 } else { 0.0 };
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            crate::OnlineModel::step(&mut m, &[i as f64], &[], d, w);
+        }
+        assert_eq!(
+            m.win.as_ref().unwrap().snaps.len(),
+            20,
+            "one snapshot per two rows"
+        );
     }
 
     #[test]
@@ -3621,9 +3700,9 @@ mod tests {
     /// The runs (PLAN task 94) are the rows' business, not the Gram's: a
     /// blocked accumulator holds a row the Gram merges later, and a row it
     /// skips as a zero-weight one, and its runs are the unblocked one's to
-    /// the bit whatever it holds. Each run's weight is the weight of the
-    /// rows since its value last changed, aged as `w_sum` is aged, so a run
-    /// that covers every learned row weighs `w_sum` itself.
+    /// the bit whatever it holds. Each run starts at the learned row that
+    /// changed its value, so a run that covers every learned row started at
+    /// the first.
     #[test]
     fn the_runs_follow_the_rows_blocked_or_not() {
         let mut plain = EwCov::new(3);
@@ -4094,6 +4173,21 @@ mod block_tests {
             seq.precision_scale, blk.precision_scale,
             "precision_scale, {what}"
         );
+    }
+
+    /// A row skipped on an empty blocked accumulator ages the prior's scale
+    /// as the plain one does: `skip` takes the decay, not the buffer, at
+    /// `w_sum = 0` (review 2026-09-26, C1: the mutant that divides instead
+    /// of multiplying takes the buffer, which returns before the scalars).
+    #[test]
+    fn a_skipped_row_on_an_empty_blocked_gram_ages_the_prior_as_the_plain_one() {
+        let mut plain = EwCov::new(2);
+        let mut blocked = EwCov::new(2);
+        blocked.set_block_rows(4);
+        plain.skip(&[1.0, 2.0], 0.9);
+        blocked.skip(&[1.0, 2.0], 0.9);
+        assert_eq!(plain.prior_scale(), blocked.prior_scale());
+        assert_eq!(blocked.prior_scale(), 0.9);
     }
 
     #[test]

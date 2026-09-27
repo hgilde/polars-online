@@ -203,6 +203,24 @@ class TestMaxErrorInflation:
         first = next(i for i, p in enumerate(pred.to_list()) if p is not None)
         assert 60 < first < 90, first
 
+    def test_is_refused_by_name_where_no_ridge_system_reads_it(self):
+        """A model without a Gram to read the gate from took the setting and
+        dropped it (docs/PLAN.md task 109)."""
+        for build, kw in [
+            (po.spec.sgd, dict(learning_rate=0.01)),
+            (po.spec.huber, {}),
+            (po.spec.lasso, dict(lasso_path=[0.1, 0.0])),
+        ]:
+            with pytest.raises(ValueError, match="max_error_inflation needs a model with"):
+                build(
+                    "m",
+                    targets=["y"],
+                    features=["x0"],
+                    halflife=10.0,
+                    max_error_inflation=2.0,
+                    **kw,
+                )
+
     def test_is_a_ratio_above_one_or_off_at_inf(self):
         for bad in (1.0, 0.5, -1.0, math.nan):
             with pytest.raises(ValueError, match="max_error_inflation"):

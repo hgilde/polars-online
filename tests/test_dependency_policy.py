@@ -90,12 +90,10 @@ def _skips_on_import_error(node: ast.AST) -> bool:
     if not isinstance(node, ast.Try):
         return False
     for handler in node.handlers:
-        names = {
-            n.id
-            for n in ast.walk(handler.type)
-            if handler.type is not None
-            if isinstance(n, ast.Name)
-        }
+        # A bare `except:` has no type to walk (review 2026-09-26, F5).
+        if handler.type is None:
+            continue
+        names = {n.id for n in ast.walk(handler.type) if isinstance(n, ast.Name)}
         if not names & {"ImportError", "ModuleNotFoundError"}:
             continue
         for inner in ast.walk(handler):

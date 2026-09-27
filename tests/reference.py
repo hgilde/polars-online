@@ -863,9 +863,23 @@ def robust_ref(
                 if aged_wj > 0.0:
                     # A sum's worth of nudge over the band's weight, centred:
                     # the raw `r += nudge·z/wj` is `ȳ += nudge/wj` and
-                    # `c += nudge·(z − m)/wj`, exactly.
+                    # `c += nudge·(z − m)/wj`, exactly. Bounded so the fit
+                    # at the row moves by at most its residual, the step's
+                    # effect there being `step·(1 + Σ dev²/var)` under the
+                    # Gram's diagonal (review 2026-09-26, G2).
+                    dev = z - st["mean"][j]
+                    var = np.diag(st["C"][j])
+                    lev = 0.0
+                    for dv, vv in zip(dev[off:], var[off:], strict=True):
+                        if vv > 0.0:
+                            lev += dv * dv / vv
+                        elif dv != 0.0:
+                            lev = np.inf
+                    most = abs(Y[i, j] - p_own[j]) / (1.0 + lev)
                     step = value / aged_wj
-                    st["c"][j] = st["c"][j] + step * (z - st["mean"][j])
+                    if abs(step) > most:
+                        step = np.copysign(most, step)
+                    st["c"][j] = st["c"][j] + step * dev
                     st["ybar"][j] += step
             else:
                 ww = value

@@ -4209,6 +4209,40 @@ note, not a task.
         to the bit; `split=` with one `relative_to`; the TOML table form
         loading to the same spec as the Python one.
 
+        **Review 2026-09-26.** The IO plugin's projection set was built
+        with `set.update(spec["targets"])`, so a table target -- relative or
+        merely renamed -- raised `unhashable type: 'dict'` on every
+        LazyFrame path, and a fix by name alone would have projected the
+        reference away (D1, F1): `target_columns` gives a target's column
+        and its reference, and `_spec_columns` keeps both
+        (`test_the_lazy_plan_reads_a_relative_targets_columns`). `sgd` under
+        `"logistic"` and `"poisson"` took a relative target `ftrl` refused
+        (D2): refused by name, and `ftrl`'s guard names its default loss
+        rather than everything but `"squared"`. A ratio target is positive
+        by construction, so `hit_rate`'s sign test read 1.0 whatever the
+        fit (D3): the hit test is about 1 for a ratio, `SlotMetrics::update_about`,
+        pinned by a recursion recomputed from the output
+        (`test_hit_rate_under_a_ratio_target_is_about_one`). The `bocpd`/`hmm`
+        slot check compared names, so `{"column": "z", "name": "h"}` put
+        column `z` in the hazard slot (D4): the slot must be the plain
+        column; and the message printed `Targets`' derived `Debug` (D5).
+        The leak check matched a target's *name* against the features and
+        refused a target merely named like one (D7): the column alone. An
+        empty `name`, `column` or `relative_to` was refused nowhere (D
+        missing 5): refused by the builder and by the bank. The builders'
+        `_matches` did not read a TypedDict, so a wrong table entry reached
+        serde and was named by JSON path (F4), and a list's entries escaped
+        the int floor (F7). Docs: a result the model cannot use is null too
+        (D8); the pairs table and `describe` carry the *name* (E6); a table
+        naming its own column comes back as the column (F6). New tests: the
+        equality under a group, a label delay, both, a window and the
+        diagnostics with the reference null on row 0; `predict` before any
+        fit and with either column dropped; the specs and the JSON carry the
+        table; a saved bank held to its targets' `relative`; a renamed table
+        is the name in the fields, the Gram, `describe`, `summary`,
+        `marginal` and a closed group's pairs; two views of one column; the
+        role tables of the error-message suite name `relative_to`.
+
 **The plan of 2026-09-25.** Three audits compared every open list with the
 code (`docs/PLAN.md`, the other design docs, the release checklist, CI and
 GitHub). The user's call on the result: everything that integrates a new
@@ -4260,7 +4294,17 @@ decision it needs, with a recommendation where there is one.
       line ("tasks 1–58 done, released as 0.2.0"), task 61 fused onto task
       68, and the §3 table and §9 item 4 listing the clock policies.
 
-- [ ] 109. **Release 0.11.0.** S each; the push, tag and upload are the
+- [ ] 109. 
+
+      **Review 2026-09-26.** `max_error_inflation` is refused by name
+      on a model without a ridge system, as `emit_error_inflation` was
+      (`test_is_refused_by_name_where_no_ridge_system_reads_it`). The
+      schema: the loaders for 14 and 15 stay, as the CHANGELOG promises; the
+      test that loads a state written by the released 0.10.0 wheel is not
+      built. Task 105 is not in this release: its clock rules need the
+      user's review (task 120).
+
+**Release 0.11.0.** S each; the push, tag and upload are the
       user's. Before the tag:
       - Refuse `max_error_inflation` by name on a model that ignores it:
         today it is range-checked and dropped on every model but `ewridge`,
@@ -4486,7 +4530,69 @@ decision it needs, with a recommendation where there is one.
       7. For 104: the planned loaders for old states are obsolete (the
          pre-1.0 waiver of 2026-09-14): confirm.
 
-- [x] 121. **Test libraries under an open-source licence.** S–M. **Done
+- [x] 121. 
+
+      **Review 2026-09-26.** The proptest's `value()` said "near the
+      input bound" and reached 1e50 of 1e100, its weights never the bound,
+      and no windowed or blocked configuration was generated (C8): values
+      now sit at the bound, weights at `1e-100` and `1e100` (which
+      `INPUT_BOUND`'s doc names as legal), and `ew_ridge`, `lasso`,
+      `ew_cov`, `ew_class` and `marginal` run windowed at both cadences,
+      `ew_ridge` blocked with pairwise gaps. That found **G1**: `micro`
+      reported an infinite distance and *absorbed* the row. A row of weight
+      `1e-100` then one of `1e100` leave a standardized spread of `4e-200`;
+      the next row at the bound is `5e199` scaled units away, whose square
+      overflows to `inf`; `merged_radius2` read a non-finite square as
+      "radius unchanged", so `admits` took the row, and `dist` reported
+      `inf`. Fixed in `summary.rs`: an infinite square merges into an
+      infinite radius, and `dist` computes the distance without squaring
+      (scaled by the largest deviation), read only where the square is not
+      finite so ordinary rows keep their bits; `micro` and `kmeans` report it,
+      and break a tie of overflowed squares by it -- `kmeans`'s search
+      started from infinity, so an infinite square never won and the
+      runner-up was never set (`a_row_at_the_bound_against_a_vanishing_spread_is_far_not_absorbed`,
+      `an_overflowed_distance_is_reported_as_the_distance`,
+      `an_overflowed_distance_is_far_and_still_measured`). And **G2**, the
+      same test on the quantile `robust`: a target of `1e100` lifted the
+      mean the first off-zero row's slope was read against, the fit
+      extrapolated to `-1.5e199` at `x = 1e100`, that residual set the
+      scale to `5.8e148`, and the next row outside the band -- one term of
+      the score, none of the Hessian -- nudged the slope by `h·dev/var`
+      against a Gram holding no curvature that far out, to `1e248`; the
+      prediction at `1e100` read `-inf`. The nudge is bounded by the row's
+      leverage under the Gram's diagonal, so the fit at the row moves by at
+      most its residual (the row reaches its band's edge); the linearisation
+      holds inside the band and nothing past it is justified. The 24 robust
+      tests, the QuantReg oracles among them, hold; the quantile golden's
+      three values moved by about 1e-3 of themselves, the bound binding on
+      early rows where a row's leverage exceeds its weight share. Measured
+      on the Python oracle's stream (250 rows, halflife 300): `tau = 0.5`
+      and `0.9` unchanged to the bit; at `tau = 0.1` one row (44) is
+      bounded, and the fit that follows has the lower pinball loss, 0.10852
+      against 0.10940, at coverage 0.170 against 0.161 -- the reference
+      recursion in `tests/reference.py` mirrors the bound
+      (`a_quantile_fit_stays_finite_through_the_bound`,
+      `robust_quantile_through_the_bound`). And **G3**, the same test on the
+      windowed `lasso`, though the window had no part in it: `Cross` kept
+      each target's own feature mean as an offset `δ_j` from the all-row
+      mean `m` and reconstructed it as `m + δ_j`; a target absent on a row
+      whose feature stood at `-2.6e99` left both at `1e99`, their sum
+      resolved nothing below `1e83`, the next present row's deviation of
+      `0.4` read as `1e83`, the cross-moment as `1e132`, and the prediction
+      at `1e100` as `-inf`, through `ew_ridge` too. Each own mean is now a
+      pair of its own (`Cross::mj`), updated from the target's own rows by
+      the Gram's steps, so under `own_rows` it is the Gram's mean to the
+      bit and a row the target misses leaves it exactly where it was; the
+      `pairwise` readers take it directly. Schema 17; `offsets_to_means`
+      converts a 14-16 state's live accumulators and every window snapshot
+      once (`a_target_absent_on_a_row_at_the_bound_leaves_the_fit_finite`,
+      `a_target_absent_on_a_row_at_the_bound_through_the_bound`). The sklearn
+      comparison kept sklearn's default `l2` penalty while our spec has none
+      (F9): `penalty=None`. The licence check was read for ways round it and
+      found none (F10). The seed: proptest draws afresh each run; a failure
+      prints the shrunk stream, and `PROPTEST_RNG_SEED` repeats a run.
+
+**Test libraries under an open-source licence.** S–M. **Done
       2026-09-25:** scikit-learn 1.9.1 in the dev group; `huber` against
       `LinearRegression` in the exact limit and `HuberRegressor` under
       outliers (T-S4), `marginal`'s bins against scipy's `binned_statistic`
@@ -4531,7 +4637,29 @@ the moments, `19.8·T` with six lags and sixteen bins, against the caller's
 `3.2·T` and `19.1·T` — and the caller's fixed 14–17 ns per feature per row
 is not, since the model alone has `0.0` and `3.5` there.
 
-- [x] 122. **E71: bin each feature once per row.** S; no API, no state,
+- [x] 122. 
+
+      **Review 2026-09-26.** The row update took the low parts'
+      slice for every present target but sized the vector only when some
+      feature binned, so a histogram restored from a 0.10.0 state (which
+      carries none) panicked on its first all-NaN-feature row with a target
+      (B1, a crash from the Rust API; the bank's null rule shields the CLI
+      and Python): sized on the first row that could write a cell, which is
+      also the rule the sharded path uses, so the two paths' states agree
+      byte for byte (A7). `has_shape` now holds the offsets to the edges and
+      the low parts to the cells (B2). The scratch row's four-slot minimum
+      is counted, so `histogram_bytes` is the buffers to the byte at every
+      width (B5). The design doc's cell count, the per-feature search and the
+      "other two" said three values a cell (A4, B6). Tests: the brute-force
+      tests drive `update_row`, the production update, where they drove the
+      test-only per-target one; `the_split_gain_survives_a_fold` pins the
+      product-of-ratios claim to 1e-9; `edges_from_gives_edges_a_histogram_accepts`
+      is a proptest over junk, ties and a dominant weight;
+      `fixed_edges_collapse_against_a_large_level`; and `shard_stream` now
+      carries NaN features, all-NaN rows and all-absent targets, so the
+      sharded `NO_BIN` paths run under the bit test.
+
+**E71: bin each feature once per row.** S; no API, no state,
       bit-identical. **Done 2026-09-25:** `MarginalBins::update_row` forms
       the row's indices once, in a scratch buffer outside the state, and
       the warm-up replay goes through it too. Held to the per-target update
@@ -4549,7 +4677,20 @@ is not, since the model alone has `0.0` and `3.5` there.
       and `marg_bench`'s shape at `T = 1` and `T = 9`. First: the smallest,
       and exact.
 
-- [x] 123. **E70: `marginal(cross_lags=...)`.** S–M. **Done 2026-09-25**,
+- [x] 123. 
+
+      **Review 2026-09-26.** `MarginalLags::has_shape` let a ring longer
+      than the deepest lag, or one with fewer target rows than feature rows,
+      through: the first read every lag a row too recent for good, the second
+      panicked (B3, a corrupt state only); both refused. The module doc said
+      the cross terms were two thirds of the lag work; §23 measured 30% (A6).
+      Tests: `a_lag_state_with_an_overlong_or_uneven_ring_is_refused`,
+      `a_compact_state_without_cross_lags_reads_with_every_lag` (the
+      positional upgrade the comment claimed), the spec layer's
+      `cross_lags_write_back_as_given_and_need_lags`, and the bins test that
+      `cross_lags=[]` drops the two cross columns and moves nothing else.
+
+**E70: `marginal(cross_lags=...)`.** S–M. **Done 2026-09-25**,
       on schema 16 (unreleased), through the spec, the bank's two tables and
       Python; refused by name at construction. The default is bit-identical
       to the build before and 0.9% faster; one loop for both cases had made
@@ -4562,7 +4703,19 @@ is not, since the model alone has `0.0` and `3.5` there.
       serde default is still a layout change under hard rule 5: it rides
       schema 16 if it lands before 0.11.0, 17 after.
 
-- [x] 124. **The stream's fixed cost per feature per row at width** (from
+- [x] 124. 
+
+      **Review 2026-09-26.** The hash lookups were read against the
+      scans they replaced (`find`, `key`, `has`, `first_readers`) and found
+      the same answers; `first_readers`' doc now says where a reference
+      sits in the role order (D12). `check_clocks`' "a temporal column can
+      only be a clock" loop read target names and knew no reference, so a
+      Datetime clock used as a table target's column or as its reference was
+      refused later, with another message (D6): by column now, and a
+      reference is "a relative_to reference"
+      (`test_a_temporal_clock_is_not_a_target_or_a_reference_either`).
+
+**The stream's fixed cost per feature per row at width** (from
       E74's measurement). S–M, and it helps every wide model. **Done
       2026-09-25** (PERFORMANCE §24): it was not the cast or the transpose
       first, but seven lookups by column name that scanned every column,
@@ -4595,7 +4748,52 @@ is not, since the model alone has `0.0` and `3.5` there.
       runs go per feature (task 94's windowed read), and a `window` needs
       its own answer.
 
-- [x] 126. **E73: a wide `marginal` sharded across the pool (`shards`).**
+- [x] 126. 
+
+      **Review 2026-09-26.** Three findings changed behaviour. A window
+      with the default `window_every` made `takes()` true on every row, so a
+      sharded windowed model flushed -- one fork-join -- per row, the regime
+      §25 measured as slower than unsplit, and `"auto"` did not know (A1):
+      `auto_shards` sizes a windowed model's flush by the snapshot cadence,
+      every row at the default, which no width can keep busy
+      (`auto_does_not_split_a_window_snapshotted_every_row`, and a counting
+      runner in `a_window_snapshotted_every_row_flushes_every_row` shows the
+      per-row flush as a fact). `state()` and `pair()` with rows held were
+      `debug_assert`s: a release-build caller got a state whose targets had
+      advanced and whose pairs had not, unrecoverable after a restore (A3);
+      `assert!` in every build, and the bank cannot reach it (every exit of
+      `run_instance` flushes). `load` compared `shards` with the saved specs
+      and refused a bank resumed under another count, which the docstring
+      promised (F3): the count is left out of the comparison and the bank is
+      built from the specs given, so it runs under theirs; given none, the
+      saved one (`a_bank_saved_under_one_shard_count_loads_under_another`,
+      `test_a_saved_bank_resumes_under_another_count`). Smaller: every flush
+      copied the whole lag ring through `to_vec` and `set_ring` (A8, B7) --
+      the ring keeps its newest rows and the held ones are pushed; a dead
+      `decay(pending_lam)` in `freeze` (A9); `Deferred` is boxed like `lag`
+      and `bins` (A10); the batch-size comment's "within 6%" holds at nine
+      targets only (A5); the bench's checksum left out `lagcorr_yx` and
+      `bin_var_y` (E3) and hashes every pair field now; §25's "about one
+      held batch per thread" is not a bound under rayon's stealing, and says
+      so (E2). Tests that could not fail: `"auto"` at 60 features is one
+      range in three of the four shapes, so those legs compared the model
+      with itself (F2) -- `test_auto_splits_at_a_width_that_keeps_the_pool_busy`
+      runs at 1,000 features, where `auto_shards_at_the_python_suites_widths`
+      pins that every shape splits; the CLI test compared `n_eff` alone,
+      which no shard computes (E1) -- it saves the state and compares the
+      pairs, under `"auto"` and `4`; the Rust `"auto"` assertion failed on a
+      one-thread pool (D9, E4). A panic inside a shard leaves the model
+      inconsistent without a `broken` mark (E5); noted, not built: a panic in
+      the kernels is itself a bug. New edge tests: a label delay, a halflife
+      grid and a session reset under a window; closed groups at a session
+      change and by a monotone key; one-row chunks; forty groups on two
+      threads under `"auto"` (a child process); scoring holds no rows; a save
+      inside the bin warm-up; a cadence longer than a batch; and in Rust a
+      restore mid-warm-up, a refusing budget with rows held, the count
+      changed with no flush between, `p = 1` with two shards, a total gap
+      with rows held, all-absent targets after a wipe.
+
+**E73: a wide `marginal` sharded across the pool (`shards`).**
       **Done 2026-09-25**, as a batch of rows per fork-join, not one per
       row (§11a has why). `marginal(shards=)` takes a count or `"auto"`,
       off by default; it is a setting, not state. `Marginal::step_sharded`
@@ -4631,7 +4829,30 @@ is not, since the model alone has `0.0` and `3.5` there.
       snapshot, group close and `label_delay` replay would have to split.
       *Recommended: wait for that measurement.*
 
-- [x] 128. **`EwCov` keeps its runs without a window** (found by task 124,
+- [x] 128. 
+
+      **Review 2026-09-26.** No `restore` re-derived the flag from the
+      cfg (C4): a 0.10.0 state, which has no flag, resumed without a window
+      kept tracking for the rest of its life, this task's saving lost after
+      every resume; and a state whose runs are off restored under a window
+      read every held slot as moving, the task-94 defect back with no error.
+      Every owner's `restore` now sets the runs off without a window and
+      refuses a windowed state whose runs are off (`ew_cov`, `ewridge` and
+      its twin, `lasso`, `ew_class`, `robust`, `hmm`); `EwRidge::restore`
+      also gained the ring-against-cfg check its three siblings had (C5); and
+      `hmm`, a windowless owner this task's "every owner" missed, keeps no
+      runs (C3). The docs of `held_from`, the `runs` field and a test still
+      described the weight rule the 2026-09-25 review replaced (C6), and
+      `window_every` was documented as learned rows where the cadence counts
+      every row, weight-zero rows included (C7): the docs say so now
+      (`a_zero_weight_row_counts_toward_the_snapshot_cadence`). Two entries
+      of `scripts/mutants_equivalent.toml` excused mutants that are not
+      equivalent: `EwCov::skip`'s `*`→`/` skipped the prior's ageing on an
+      empty blocked Gram (C1), `Lasso::step`'s `<`→`<=` moved `lam_selected`
+      on a tie two saturating penalties give (C2); a test each kills them
+      and the entries are gone.
+
+**`EwCov` keeps its runs without a window** (found by task 124,
       PERFORMANCE §24). S–M, a confirmed regression of task 94, unreleased.
       **Done 2026-09-25:** `Runs::off`, a state flag read as on where a
       state lacks it, and `EwCov::without_runs`, taken by every owner
@@ -4652,7 +4873,19 @@ is not, since the model alone has `0.0` and `3.5` there.
       schema 16. Tests: a model without a window keeps no runs, one with a
       window reads a held slot as today, and the numbers are bit-identical.
 
-- [x] 129. **`marginal`'s bins budget counts three values a cell where
+- [x] 129. 
+
+      **Review 2026-09-26.** Reserving the hold at exactly `warm_rows`
+      on the first held row charged every group the whole hold up front --
+      64 KB a group at the default, 640 MB across ten thousand short groups
+      -- where doubling had cost at most twice the rows held (A2): the hold
+      grows by doubling, capped at `warm_rows`, so `hold_bytes` stays the
+      most it can reach and a short group holds only its rows
+      (`a_short_group_holds_only_its_rows`). The spec doc said the budget was
+      per group; it is per model instance, every halflife of a grid included
+      (D11).
+
+**`marginal`'s bins budget counts three values a cell where
       there are four** (found 2026-09-26, checking the memory caps at the
       user's question). S, a confirmed regression of task 101, unreleased.
       `BinCfg::validate` refused a histogram past 256 MiB (`MEMORY_BUDGET`,
@@ -4690,7 +4923,23 @@ is not, since the model alone has `0.0` and `3.5` there.
       undercounted its targets past the budget, is refused where it was
       allowed.
 
-- [x] 130. **Two window snapshots undercount what they hold** (found
+- [x] 130. 
+
+      **Review 2026-09-26.** The two-size check documented "every
+      vector longer in the larger" and did not enforce it, so a vector sized
+      by a dimension neither snapshot varied could still hide under the
+      scalar slack (B4): it walks both snapshots in step and refuses a vector
+      that does not grow (`the_footprint_check_sees_a_vector_that_does_not_grow`),
+      which made the `lasso` test vary the path and the two-Gram `ewridge`
+      test (`the_window_footprint_counts_every_gram`, C missing 7) vary the
+      targets. The ridge and lasso snapshots cloned the means' low parts,
+      which the window's subtraction never reads (C9): cleared in
+      `Acc::snapshot`, `k + T` doubles a snapshot the ring no longer holds.
+      `Moments::footprint` counts its three numbers (C10). This entry said a
+      test per snapshot type failed without the fix; `ew_cov`'s and
+      `ew_class`'s did not need one (C11).
+
+**Two window snapshots undercount what they hold** (found
       2026-09-26, checking the other memory estimates after task 129). S,
       confirmed regressions of tasks 101 and 102, unreleased. A window's
       ring thins or refuses past its budget (`window_budget`, 256 MiB a ring
@@ -4707,12 +4956,25 @@ is not, since the model alone has `0.0` and `3.5` there.
       snapshot was needed: from one alone, the scalars `ewridge`'s
       footprint counts equalled the low parts it missed, and the check
       passed. A test per snapshot type (`ew_cov`, `ew_class`, `ewridge`,
-      `lasso`, `marginal`) fails without the fix; the spread's ring
-      (`resid_window.rs`) has its own. A ring near its budget now thins or
+      `lasso`, `marginal`); the `ewridge`, `lasso` and `marginal` ones fail
+      without the fix, and `ew_cov`'s and `ew_class`'s guard a footprint
+      that needed none; the spread's ring (`resid_window.rs`) has its own. A ring near its budget now thins or
       refuses a little sooner than before the fix: what it counts is what it
       holds.
 
-- [x] 131. **`marginal(bin_budget=...)`: the bins' memory limit, set per
+- [x] 131. 
+
+      **Review 2026-09-26.** Tests at the spec layer, which had only
+      `check()` being `Err` for a budget without bins:
+      `bin_budget_is_held_to_what_it_can_mean` (zero, negative, `-inf`, NaN
+      and a string refused by name, beside given edges accepted, `"inf"` no
+      bound), `shards_read_a_count_or_auto_and_refuse_the_rest` and
+      `shards_round_trip_through_json_and_msgpack` (D missing 7, 8), and the
+      Python refusal of a tiny budget beside given edges. The builders'
+      finiteness check did not walk a dict, so `bin_edges={"x": [inf]}` was
+      named by serde as `model` (F8).
+
+**`marginal(bin_budget=...)`: the bins' memory limit, set per
       spec** (the user, 2026-09-26, after task 129). S. The warm-up hold and
       the histogram were each refused past a fixed 256 MiB. `bin_budget`
       sets that limit in MiB for both, per spec: 256 when absent,
@@ -4728,6 +4990,35 @@ is not, since the model alone has `0.0` and `3.5` there.
       directions, infinity and the bad values;
       `test_bin_budget_sets_the_limit` through the bank, with a hold of 313
       MiB refused by default, built at 400 MiB and refused again at 300.
+
+- [x] 132. **Review 2026-09-26 of the unpushed changes** (the user:
+      "a deep review iterating through each file and reviewing the code in
+      full while examining the changes as well; also examine the tests,
+      find edge cases that may be missing"). Scope: every change since
+      `ae34d91` -- tasks 101-103, 107a, 108, 109's items, 121-124, 126,
+      128-131. Protocol as docs/REVIEW-2026-09-18.md §0: six reviewers by
+      area (A `marginal.rs`; B bins, lags, runs, window; C the covariance
+      accumulators and the mutant excusals; D spec, targets, arrow; E stream
+      and bank; F the Python package and tests), each finding re-derived,
+      reproduced with a failing test before its fix, fixed in two batches
+      (core, then the crates above it), gated unpiped. **Done 2026-09-26**;
+      each finding is recorded under its task by the reviewer's letter and
+      number, with the test that now pins it. Two crashes (B1, D1), one
+      silent wrong output (D3), two infinities from inputs inside the bound
+      (G1, a row absorbed from infinitely far; G2, a quantile nudge past its
+      row; G3, an own mean rebuilt from two level-sized numbers -- schema
+      17; all found by the widened proptest), a per-row flush regime `"auto"` did
+      not know (A1), a memory charge per group (A2), a documented resume that
+      refused (F3), eight lost guards or wrong excusals (A3, B2, B3, C1, C2,
+      C4, C5, D4), four misleading messages or refusals (D2, D5, D6, D7,
+      F4, F7), a test helper that did not enforce its rule (B4), three tests
+      that could not fail (E1, F2, D9) and a dozen doc mismatches. Nothing
+      changed in the numbers a model returns but `hit_rate` under a ratio
+      target, the distances `micro` and `kmeans` report where their squares
+      overflow, a quantile `robust` fit's step on a row whose leverage
+      exceeds its weight share, and the last bits of a gappy target's fit
+      under `ew_ridge` and `lasso`. Left as noted: E5 (a panic inside a shard leaves no
+      `broken` mark) and task 105.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the

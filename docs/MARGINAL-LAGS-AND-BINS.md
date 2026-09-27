@@ -344,9 +344,10 @@ in them.
 
 ### State and cost
 
-`3·bins·p·T` doubles: at `p = 10,000`, `T = 3`, `bins = 16` that is 1.4M
-doubles, 11 MB per group. Per row: one binary search over the edges
-(`log bins`) and one Welford step per pair. The best split is computed on
+`4·bins·p·T` doubles: at `p = 10,000`, `T = 3`, `bins = 16` that is 1.9M
+doubles, 15 MB per group (the fourth is the mean's low part, task 101). Per
+row: one binary search over each feature's edges (`log bins` per feature,
+since E71) and one Welford step per pair. The best split is computed on
 read (`O(bins)` per pair), never per row.
 
 **Per-bin Welford, not raw sums.** The sketch kept `(Σw, Σwy, Σwy²)`; the
@@ -355,7 +356,8 @@ variance keeps about `1e12` in `Σwy²/Σw` and `mean²`, whose difference is
 the variance — nine of sixteen digits gone before any decay. A target at
 `1e8` reports a variance of zero or slightly negative. Each bin now carries
 `(w, mean, M2)` and updates the way every other accumulator in the crate
-does: `mean += δ·u/w'`, `M2 += u·δ·(y − mean')`. Same state size, one more
+does: `mean += δ·u/w'`, `M2 += u·δ·(y − mean')`. Three doubles a cell where
+the sums were three (the mean's low part, task 101, made it four), one more
 multiply per row, and the far-offset tests (a target of `1e6` in Rust, of
 `1e7` with noise of `1e-3` in Python) recover a variance the sums could not
 see.

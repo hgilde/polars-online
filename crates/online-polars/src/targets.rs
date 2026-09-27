@@ -18,8 +18,11 @@
 //! either side cannot use -- null, not finite, past the input bound -- or,
 //! for the two ratios, a `y` or `r` that is not positive, makes the target
 //! null on that row: not learned from, never a NaN in the state (hard rule
-//! 9). Everything downstream is on the relative scale: `pred`, `resid`,
-//! `sigma`, the metrics and the interval.
+//! 9). So does a result the model cannot use: a difference past the bound,
+//! or a ratio that over- or underflows (three hundred orders of magnitude
+//! apart, inside the bound on both sides), is null on that row too, by the
+//! same rule every target is held to. Everything downstream is on the
+//! relative scale: `pred`, `resid`, `sigma`, the metrics and the interval.
 //!
 //! On every surface a target is a string or a table: in Python
 //! `po.target("price_5m", relative_to="mid")`, in the CLI's TOML
@@ -248,6 +251,21 @@ impl<'de> Deserialize<'de> for Targets {
                              same row the target is taken against",
                             t.column
                         )));
+                    }
+                    // An empty name would give fields called `pred_`; an
+                    // empty column or reference names no column (review
+                    // 2026-09-26, D missing 5).
+                    for (what, value) in [
+                        ("column", Some(&t.column)),
+                        ("name", t.name.as_ref()),
+                        ("relative_to", t.relative_to.as_ref()),
+                    ] {
+                        if value.is_some_and(String::is_empty) {
+                            return Err(serde::de::Error::custom(format!(
+                                "target {:?}: {what} must not be empty",
+                                t.column
+                            )));
+                        }
                     }
                     TargetDef {
                         name: t.name.unwrap_or_else(|| t.column.clone()),

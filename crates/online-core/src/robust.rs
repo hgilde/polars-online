@@ -543,8 +543,43 @@ impl OnlineModel for Robust {
                     self.cov[j].decay(lam);
                     self.wj[j] = aged;
                     if nudge.is_finite() && aged > 0.0 {
-                        let step = nudge / aged;
                         let cov = &self.cov[j];
+                        // The step moves the fit at this row by
+                        // `step·(1 + Σ dev_i²/var_i)` (the row's leverage,
+                        // under the Gram's diagonal), unbounded for a row far
+                        // outside the data's spread, where the Gram holds no
+                        // curvature for it. The linearisation holds inside
+                        // the band, so a step past the row's own residual
+                        // overshoots what one term of the score can justify:
+                        // bounded to it, the row is brought to its band's
+                        // edge, not thrown past it. A target of `1e100` and
+                        // features of `1e100` at weights from `1e-100` moved
+                        // a slope to `1e248` this way, and the prediction at
+                        // `1e100` read `-inf` (review 2026-09-26, G2).
+                        let leverage: f64 = self
+                            .zbuf
+                            .iter()
+                            .enumerate()
+                            .skip(usize::from(self.cfg.add_intercept))
+                            .map(|(i, &zi)| {
+                                let d = cov.deviation(i, zi);
+                                let v = cov.cov(i, i);
+                                if v > 0.0 {
+                                    d * d / v
+                                } else if d != 0.0 {
+                                    f64::INFINITY
+                                } else {
+                                    0.0
+                                }
+                            })
+                            .sum();
+                        let most = (yj - pred[j]).abs() / (1.0 + leverage);
+                        let raw = nudge / aged;
+                        let step = if raw.abs() > most {
+                            most.copysign(raw)
+                        } else {
+                            raw
+                        };
                         for (i, (ci, &zi)) in self.cross[j].iter_mut().zip(&self.zbuf).enumerate() {
                             *ci += step * cov.deviation(i, zi);
                         }
@@ -634,6 +669,9 @@ impl OnlineModel for Robust {
                         "robust: the accumulators have the wrong shape".into(),
                     ));
                 }
+                // No window here: a state written before the runs' flag keeps
+                // none from here (review 2026-09-26, C4).
+                m.cov.iter_mut().for_each(crate::EwCov::set_runs_off);
                 m.zbuf = vec![0.0; k];
                 Ok(m)
             }
@@ -680,6 +718,55 @@ mod tests {
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         ((*state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    }
+
+    /// The stream the model contract's proptest failed on once its values
+    /// reached the input bound (review 2026-09-26, G2): a target of `1e100`
+    /// once, then features of `1e100` at weights from `1e-100` up. The fit
+    /// extrapolated to `-1.5e199` at `1e100`, that residual set the scale to
+    /// `5.8e148`, and the next row outside the band nudged the slope to
+    /// `1e248` -- one term of the score against a Gram holding no curvature
+    /// for a row that far out -- so the prediction at `1e100` read `-inf`.
+    /// Bounded by the row's leverage, the nudge brings the row to its band's
+    /// edge and every prediction is a number.
+    #[test]
+    fn a_quantile_fit_stays_finite_through_the_bound() {
+        use crate::OnlineModel;
+        let mut c = cfg(2, 2, RobustLoss::Quantile { tau: 0.5 });
+        c.decay = Decay::Halflife(20.0);
+        c.ridge = 1e-6;
+        c.min_periods = 3.0;
+        let mut m = Robust::new(c).unwrap();
+        let rows: Vec<([f64; 2], Option<f64>, f64)> = vec![
+            ([0.0, 0.0], None, 1.0),
+            ([0.0, 0.0], Some(0.0), 1.0),
+            ([0.0, 0.0], Some(0.0), 1.0),
+            ([0.0, 0.0], Some(0.0), 1.0),
+            ([0.0, 0.0], Some(0.0), 1.1785268524789025),
+            ([0.0, 0.0], Some(0.0), 1.0),
+            ([0.0, 0.0], Some(1e100), 2.0699847121199655),
+            ([0.0, 0.0], Some(0.0), 1.4511913482607992),
+            ([0.0, 0.0], Some(0.0), 1.0),
+            ([1.4589775263789706, 0.0], Some(0.0), 1.0),
+            ([1e100, 0.0], Some(0.0), 1e-100),
+            ([0.0, 0.0], Some(0.0), 3.8874731502776667),
+            ([1e100, 0.0], Some(0.0), 1.0),
+            ([1e100, 0.0], None, 1.0),
+        ];
+        for (i, (x, y0, w)) in rows.iter().enumerate() {
+            let out = m.step(x, &[*y0, None], if i == 0 { 0.0 } else { 1.0 }, *w);
+            assert!(
+                out.pred[0].is_nan() || out.pred[0].is_finite(),
+                "row {i}: {:?}",
+                out.pred
+            );
+            let beta = &m.beta.as_ref().unwrap()[0];
+            assert!(beta.iter().all(|b| b.is_finite()), "row {i}: {beta:?}");
+        }
+        // The last nudge brought the row toward its band rather than past
+        // it: the fit at `x = 1e100` is within the residual it started from.
+        let at = m.predict(&[1e100, 0.0], 1.0).pred[0];
+        assert!(at.is_finite() && at.abs() < 1e199, "{at:e}");
     }
 
     fn cfg(k: usize, m: usize, loss: RobustLoss) -> RobustCfg {
@@ -1394,6 +1481,26 @@ mod tests {
     #[test]
     fn a_robust_fit_keeps_no_runs() {
         let m = Robust::new(cfg(2, 1, RobustLoss::Huber { delta: 1.0 })).unwrap();
+        assert!(m.cov.iter().all(|c| !c.keeps_runs()));
+    }
+
+    /// A state from before the runs' flag keeps no runs once restored: this
+    /// model has no window to read them (review 2026-09-26, C4).
+    #[test]
+    fn restore_keeps_no_runs() {
+        let mut m = Robust::new(cfg(2, 1, RobustLoss::Huber { delta: 1.35 })).unwrap();
+        let mut s = 3u64;
+        for i in 0..20 {
+            let x = [lcg(&mut s), lcg(&mut s)];
+            let d = if i == 0 { 0.0 } else { 1.0 };
+            crate::OnlineModel::step(&mut m, &x, &[Some(x[0])], d, 1.0);
+        }
+        let mut v = serde_json::to_value(crate::OnlineModel::state(&m)).unwrap();
+        crate::window::json_edit(&mut v, "runs", &mut |x| {
+            *x = serde_json::json!({"x": [], "start": []});
+        });
+        let m =
+            <Robust as crate::OnlineModel>::restore(&serde_json::from_value(v).unwrap()).unwrap();
         assert!(m.cov.iter().all(|c| !c.keeps_runs()));
     }
 }

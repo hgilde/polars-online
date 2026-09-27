@@ -284,7 +284,15 @@ pub use window::{
 ///   zero, the runs start at the next learned row, a mean starts as the
 ///   double it was saved as, the references start at the next five rows,
 ///   and `scale_floor` is 0, the metric the state had.
-pub const SCHEMA_VERSION: u32 = 16;
+/// - 17: the cross accumulator behind `ew_ridge` and `lasso` keeps each
+///   target's own feature mean as a pair of its own, where it kept the
+///   offset from the all-row mean and reconstructed the mean from two
+///   level-sized numbers (review 2026-09-26, G3: a target absent on a row
+///   whose features stood at the input bound left the fit infinite). A
+///   schema-14, 15 or 16 file loads: the offsets are turned into means
+///   once, at the precision they had, in the live accumulators and in
+///   every window snapshot.
+pub const SCHEMA_VERSION: u32 = 17;
 
 /// Oldest state layout this build still loads.
 ///

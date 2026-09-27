@@ -238,4 +238,40 @@ mod tests {
             "its first row starts its run, whatever the value"
         );
     }
+
+    /// A state written before the flag is two positional fields; the third
+    /// reads as `false` -- tracking, the side that is always right -- from
+    /// a compact array of two (review 2026-09-26, B missing 5).
+    #[test]
+    fn a_compact_state_without_the_flag_reads_as_on() {
+        #[derive(Serialize)]
+        struct Before {
+            x: Vec<f64>,
+            start: Vec<u64>,
+        }
+        let bytes = rmp_serde::to_vec(&Before {
+            x: vec![1.0],
+            start: vec![4],
+        })
+        .unwrap();
+        let r: Runs = rmp_serde::from_slice(&bytes).unwrap();
+        assert!(!r.is_off() && r.is_known(1));
+        assert_eq!(r.started_by(1, 0, 4), Some(1.0));
+    }
+
+    /// Runs offered another width start over at that width, every run at
+    /// the row that offered it (`slots_mut`'s rule, B missing 8).
+    #[test]
+    fn runs_offered_another_width_start_over() {
+        let mut r = Runs::new(2);
+        r.track(&[1.0, 2.0], 1);
+        r.track(&[1.0, 2.0, 3.0], 7);
+        assert!(r.is_known(3) && !r.is_known(2));
+        assert_eq!(
+            r.get(0),
+            Some((1.0, 7)),
+            "the same value, but a run that starts here"
+        );
+        assert_eq!(r.get(2), Some((3.0, 7)));
+    }
 }

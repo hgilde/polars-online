@@ -73,7 +73,7 @@ fn main() {
     let threads = num("threads", 0);
     // `pool` (the default), `order` (every shard on this thread), or `none`
     // (no shard runs: the serial part alone, and a checksum that differs).
-    let runner: &ShardRunner = match get("runner") {
+    let runner: &ShardRunner<'_> = match get("runner") {
         None | Some("pool") => &on_the_pool,
         Some("order") => &in_order,
         Some("none") => &nothing,
@@ -144,13 +144,37 @@ fn main() {
         for k in 0..t {
             for j in 0..p {
                 let q = m.pair(k, j);
-                let lagged = q.lagcorr_xx.iter().chain(&q.lagcorr_xy);
-                let binned = q.bin_n.iter().chain(&q.bin_mean_y);
-                for v in [q.mean_x, q.var_x, q.cov, q.corr]
+                // Every number the pair reports, the shard-written ones
+                // included (review 2026-09-26, E3: `lagcorr_yx` and
+                // `bin_var_y` were left out of "every pair's numbers").
+                let scalars = [
+                    q.n_eff,
+                    q.n_kish,
+                    q.mean_x,
+                    q.var_x,
+                    q.mean_y,
+                    q.var_y,
+                    q.cov,
+                    q.corr,
+                    q.beta,
+                    q.t,
+                    q.split_gain,
+                    q.split_at,
+                    q.split_gain_t,
+                ];
+                let lagged = q
+                    .lagcorr_xx
                     .iter()
-                    .chain(lagged)
-                    .chain(binned)
-                {
+                    .chain(&q.lagcorr_yy)
+                    .chain(&q.lagcorr_xy)
+                    .chain(&q.lagcorr_yx);
+                let binned = q
+                    .bin_edges
+                    .iter()
+                    .chain(&q.bin_n)
+                    .chain(&q.bin_mean_y)
+                    .chain(&q.bin_var_y);
+                for v in scalars.iter().chain(lagged).chain(binned) {
                     for b in v.to_bits().to_le_bytes() {
                         h = (h ^ u64::from(b)).wrapping_mul(0x100000001b3);
                     }

@@ -81,7 +81,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::summary::{ClusterSummary, FeatureMoments, LONG_HALFLIVES, dist2, merged_radius2};
+use super::summary::{ClusterSummary, FeatureMoments, LONG_HALFLIVES, dist, dist2, merged_radius2};
 use crate::clock::Decay;
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
 
@@ -182,6 +182,7 @@ pub struct MicroCluster {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Decision {
     target: Option<usize>,
+    /// The nearest potential summary and the row's distance to it.
     nearest_potential: Option<(usize, f64)>,
     outlier: bool,
 }
@@ -297,20 +298,37 @@ impl Micro {
         (!rows.is_empty()).then_some(rows)
     }
 
-    /// The nearest summary of the given kind and its squared distance
-    /// (first minimum wins).
-    fn nearest(&self, z: &[f64], potential: bool) -> Option<(usize, f64)> {
+    /// The nearest summary of the given kind, its squared distance and its
+    /// distance (first minimum wins). The distance is the root of the square
+    /// where that is finite, and the overflow-free norm ([`dist`]) where the
+    /// square overflowed -- a row at the input bound against a variance at
+    /// the opposite scale -- so what is reported is a number; among squares
+    /// that all overflowed the norms decide, so the nearest is still the
+    /// nearest (review 2026-09-26, G1).
+    fn nearest(&self, z: &[f64], potential: bool) -> Option<(usize, f64, f64)> {
         let mut best: Option<(usize, f64)> = None;
         for (j, m) in self.mc.iter().enumerate() {
             if m.potential != potential {
                 continue;
             }
             let d = dist2(&m.s.c, z, &self.mw);
-            if best.is_none_or(|(_, bd)| d < bd) {
+            let closer = match best {
+                None => true,
+                Some((_, bd)) if d.is_finite() || bd.is_finite() => d < bd,
+                Some((bj, _)) => dist(&m.s.c, z, &self.mw) < dist(&self.mc[bj].s.c, z, &self.mw),
+            };
+            if closer {
                 best = Some((j, d));
             }
         }
-        best
+        best.map(|(j, d2)| {
+            let d = if d2.is_finite() {
+                d2.sqrt()
+            } else {
+                dist(&self.mc[j].s.c, z, &self.mw)
+            };
+            (j, d2, d)
+        })
     }
 
     /// Whether summary `j`, its weight decayed by `lam`, admits a unit row
@@ -325,8 +343,9 @@ impl Micro {
     /// [`step`](OnlineModel::step), which has already applied the clock,
     /// and the row's own factor in [`predict`](OnlineModel::predict).
     fn decide(&self, z: &[f64], lam: f64) -> Decision {
-        let nearest_potential = self.nearest(z, true);
-        if let Some((jp, d2)) = nearest_potential {
+        let potential = self.nearest(z, true);
+        let nearest_potential = potential.map(|(jp, _, d)| (jp, d));
+        if let Some((jp, d2, _)) = potential {
             if self.admits(jp, d2, lam) {
                 return Decision {
                     target: Some(jp),
@@ -335,7 +354,7 @@ impl Micro {
                 };
             }
         }
-        if let Some((jo, d2)) = self.nearest(z, false) {
+        if let Some((jo, d2, _)) = self.nearest(z, false) {
             if self.admits(jo, d2, lam) {
                 return Decision {
                     target: Some(jo),
@@ -356,9 +375,9 @@ impl Micro {
     fn score(&self, dec: Option<&Decision>, n_eff: f64) -> Vec<f64> {
         let mut pred = vec![f64::NAN; 6];
         if let Some(dec) = dec.filter(|_| n_eff >= self.cfg.min_periods) {
-            if let Some((jp, d2)) = dec.nearest_potential {
+            if let Some((jp, d)) = dec.nearest_potential {
                 pred[0] = self.mc[jp].label as f64;
-                pred[1] = d2.sqrt();
+                pred[1] = d;
             }
             pred[2] = match dec.target {
                 Some(j) => self.mc[j].id as f64,
@@ -713,6 +732,42 @@ mod tests {
             standardize: false,
             scale_floor: 0.0,
         }
+    }
+
+    /// A row of weight `1e-100`, then one of `1e100`, leave a standardized
+    /// spread of `4e-200`; the next row at the input bound is `5e199` scaled
+    /// units away, whose square overflows. The distance reported is that
+    /// number, the row is an outlier, and the state stays finite (review
+    /// 2026-09-26, G1: the contract's proptest at the bound found `dist`
+    /// infinite and the row absorbed into the summary it was infinitely far
+    /// from).
+    #[test]
+    fn a_row_at_the_bound_against_a_vanishing_spread_is_far_not_absorbed() {
+        use crate::OnlineModel;
+        let mut m = Micro::new(MicroCfg {
+            standardize: true,
+            scale_floor: 0.1,
+            min_periods: 3.0,
+            eps: 0.6,
+            beta_mu: 2.0,
+            decay: Decay::Halflife(20.0),
+            ..cfg()
+        })
+        .unwrap();
+        m.step(&[0.0, 0.0], &[], 0.0, 1e-100);
+        m.step(&[0.0, -2.0709248242631726], &[], 1.0, 1e100);
+        let far = m.step(&[0.0, 1e100], &[], 1.0, 1.0);
+        assert!(far.pred[1].is_finite(), "{:?}", far.pred);
+        assert!(far.pred[1] > 1e150, "{:?}", far.pred);
+        assert_eq!(far.pred[3], 1.0, "an outlier: {:?}", far.pred);
+        assert!(far.n_eff.is_finite());
+        let after = m.predict(&[0.0, -2.0], 1.0);
+        assert!(after.pred.iter().all(|v| v.is_finite()), "{:?}", after.pred);
+        assert!(
+            after.pred[1] < 1e3,
+            "the summary stayed where it was: {:?}",
+            after.pred
+        );
     }
 
     /// Two blobs of unit-ish spread around (0, 0) and (10, 10), interleaved.

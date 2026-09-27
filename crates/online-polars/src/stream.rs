@@ -3409,6 +3409,18 @@ fn run_instance(
         ModelKind::Ftrl { loss, .. } => loss.as_deref().unwrap_or("logistic") == "logistic",
         _ => false,
     };
+    // Where a target's hit test is centred: 1 for a ratio, which is positive
+    // by construction and read 1.0 about zero whatever the fit (review
+    // 2026-09-26, D3); 0 for everything else, a difference and a log ratio
+    // included.
+    let hit_centre = |target: usize| -> f64 {
+        match inst.spec.targets.defs().get(target) {
+            Some(t) if t.relative_to.is_some() && t.relative == crate::targets::Relative::Ratio => {
+                1.0
+            }
+            _ => 0.0,
+        }
+    };
     for plan in plans {
         if plan.reset {
             inst.reset();
@@ -3718,7 +3730,8 @@ fn run_instance(
                 }
                 if learn {
                     let yj = sc.ys.get(slot / nc).copied().flatten().unwrap_or(f64::NAN);
-                    met.update(step.pred[slot], yj, lam, w, binary_loss);
+                    let centre = hit_centre(slot / nc);
+                    met.update_about(step.pred[slot], yj, lam, w, binary_loss, centre);
                 }
             }
         }

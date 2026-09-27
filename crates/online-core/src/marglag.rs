@@ -35,7 +35,8 @@
 //! The cross lags are every lag unless `cross_lags` names fewer (E70,
 //! docs/PLAN.md task 123). `n_serial` reads the two autocorrelations alone,
 //! so the cross terms are the lead/lag by-product: worth having at the
-//! first lag or two, and two thirds of the lag work at every lag kept.
+//! first lag or two, and two of the three lagged moments at every lag kept,
+//! the cheaper part of each lag's work (docs/PERFORMANCE.md §23).
 //!
 //! # The recursion, and why it is [`crate::EwLagCov`]'s
 //!
@@ -214,6 +215,11 @@ impl MarginalLags {
                 .all(|m| m.iter().all(|v| v.len() == p * t))
             && self.ring_x.iter().all(|r| r.len() == p)
             && self.ring_y.iter().all(|r| r.len() == t)
+            // As many target rows as feature rows, and no more than the
+            // deepest lag reads: a deeper ring never shrinks, and reads
+            // every lag a row too recent (review 2026-09-26, B3).
+            && self.ring_x.len() == self.ring_y.len()
+            && self.ring_x.len() <= lags.last().copied().unwrap_or(0)
     }
 
     /// `E_w[dy_t·dy_{t−ℓ}]` for target `t`, at the `li`-th configured lag.
@@ -415,15 +421,13 @@ impl MarginalLags {
         (&self.ring_x[i], &self.ring_y[i])
     }
 
-    /// Replace the ring with `rows`, oldest first, as a caller that held
-    /// its rows back has since learned them ([`crate::Marginal`]'s shards).
-    pub(crate) fn set_ring(&mut self, rows: Vec<(Vec<f64>, Vec<Option<f64>>)>) {
-        debug_assert!(rows.len() <= self.max_lag());
-        self.ring_x.clear();
-        self.ring_y.clear();
-        for (x, y) in rows {
-            self.ring_x.push_back(x);
-            self.ring_y.push_back(y);
+    /// Keep the newest `n` rows of the ring and drop the rest: what a
+    /// caller that held rows back does before pushing them, so the rows the
+    /// ring already holds are not copied (review 2026-09-26, A8).
+    pub(crate) fn keep_last(&mut self, n: usize) {
+        while self.ring_x.len() > n {
+            self.ring_x.pop_front();
+            self.ring_y.pop_front();
         }
     }
 
@@ -614,5 +618,66 @@ mod tests {
         let mut m = good(None);
         m.ring_y[0].push(None);
         refused(&m, None, "a ring row with a target too many");
+    }
+
+    /// A restored ring deeper than the deepest lag, or with fewer target
+    /// rows than feature rows, is refused as the wrong shape: the first
+    /// would read every lag a row too recent for good, the second would
+    /// panic (review 2026-09-26, B3).
+    #[test]
+    fn a_lag_state_with_an_overlong_or_uneven_ring_is_refused() {
+        let mut l = MarginalLags::new(2, 1, vec![1, 2], None).unwrap();
+        for i in 0..3 {
+            l.push(&[i as f64, 0.0], &[Some(1.0)]);
+        }
+        assert!(l.has_shape(2, 1, &[1, 2], None));
+        l.ring_x.push_back(vec![9.0, 9.0]);
+        l.ring_y.push_back(vec![None]);
+        assert!(
+            !l.has_shape(2, 1, &[1, 2], None),
+            "three rows for a deepest lag of two"
+        );
+        l.ring_x.pop_back();
+        assert!(
+            !l.has_shape(2, 1, &[1, 2], None),
+            "more target rows than feature rows"
+        );
+    }
+
+    /// A state written before `cross_lags` existed is nine positional
+    /// fields; the tenth reads as `None` from a compact array of nine,
+    /// serde's rule for a defaulted trailing field, pinned here (review
+    /// 2026-09-26, B missing 5).
+    #[test]
+    fn a_compact_state_without_cross_lags_reads_with_every_lag() {
+        #[derive(Serialize)]
+        struct Before {
+            p: usize,
+            t: usize,
+            lags: Vec<usize>,
+            cyy: Vec<Vec<f64>>,
+            cxx: Vec<Vec<f64>>,
+            cxy: Vec<Vec<f64>>,
+            cyx: Vec<Vec<f64>>,
+            ring_x: VecDeque<Vec<f64>>,
+            ring_y: VecDeque<Vec<Option<f64>>>,
+        }
+        let before = Before {
+            p: 1,
+            t: 1,
+            lags: vec![1],
+            cyy: vec![vec![0.5]],
+            cxx: vec![vec![0.25]],
+            cxy: vec![vec![0.1]],
+            cyx: vec![vec![0.2]],
+            ring_x: VecDeque::from(vec![vec![1.0]]),
+            ring_y: VecDeque::from(vec![vec![Some(2.0)]]),
+        };
+        let bytes = rmp_serde::to_vec(&before).unwrap();
+        let l: MarginalLags = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(l.cross_lags, None);
+        assert_eq!(l.cross_lags(), &[1]);
+        assert!(l.has_shape(1, 1, &[1], None));
+        assert_eq!(l.cxy(0, 0, 0), 0.1);
     }
 }

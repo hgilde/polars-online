@@ -80,7 +80,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::summary::{ClusterSummary, FeatureMoments, LONG_HALFLIVES, SplitMix64, dist2};
+use super::summary::{ClusterSummary, FeatureMoments, LONG_HALFLIVES, SplitMix64, dist, dist2};
 use crate::clock::Decay;
 use crate::model::{ModelState, OnlineModel, State, StateError, Step, check_schema};
 
@@ -307,41 +307,70 @@ impl KMeans {
             .then(|| self.clusters.iter().map(|c| c.c.clone()).collect())
     }
 
-    /// Nearest and runner-up: `(j*, d²_j*, d²_second)`. First minimum wins;
-    /// the runner-up is NaN when `k = 1`.
-    fn nearest2(&self, z: &[f64]) -> (usize, f64, f64) {
+    /// Nearest and runner-up: `(j*, d²_j*, d²_second, j_second)`. First
+    /// minimum wins; the runner-up is NaN, and `None`, when `k = 1`. Among
+    /// squares that overflowed the overflow-free norms decide, so a row at
+    /// the input bound still has a nearest and a runner-up (review
+    /// 2026-09-26, G1: an infinite square never won against the infinity
+    /// the search starts from, and the runner-up was never set).
+    fn nearest2(&self, z: &[f64]) -> (usize, f64, f64, Option<usize>) {
+        let closer = |d: f64, j: usize, bd: f64, bj: usize| {
+            if d.is_finite() || bd.is_finite() {
+                d < bd
+            } else {
+                dist(&self.clusters[j].c, z, &self.mw) < dist(&self.clusters[bj].c, z, &self.mw)
+            }
+        };
         let mut best = 0;
         let mut best_d = f64::INFINITY;
         let mut second = f64::INFINITY;
+        let mut second_j = None;
         for (j, c) in self.clusters.iter().enumerate() {
             let d = dist2(&c.c, z, &self.mw);
-            if d < best_d {
+            if j == 0 || closer(d, j, best_d, best) {
                 second = best_d;
+                second_j = (j > 0).then_some(best);
                 best_d = d;
                 best = j;
-            } else if d < second {
+            } else if second_j.is_none_or(|sj| closer(d, j, second, sj)) {
                 second = d;
+                second_j = Some(j);
             }
         }
         if self.clusters.len() < 2 {
             second = f64::NAN;
+            second_j = None;
         }
-        (best, best_d, second)
+        (best, best_d, second, second_j)
+    }
+
+    /// The distance to centre `j` from its squared distance: the root where
+    /// that is finite, the overflow-free norm where the square overflowed
+    /// (review 2026-09-26, G1; `summary::dist`).
+    fn reported(&self, d2: f64, j: usize, z: &[f64]) -> f64 {
+        if d2.is_finite() || d2.is_nan() {
+            d2.sqrt()
+        } else {
+            dist(&self.clusters[j].c, z, &self.mw)
+        }
     }
 
     fn score(&self, x: &[f64], valid: bool, n_eff: f64) -> Vec<f64> {
         let mut pred = vec![f64::NAN; 3];
         if valid && self.seeded() && n_eff >= self.cfg.min_periods {
-            let (j, d2, d2_second) = self.nearest2(x);
+            let (j, d2, d2_second, second_j) = self.nearest2(x);
             pred[0] = j as f64;
-            pred[1] = d2.sqrt();
-            pred[2] = d2_second.sqrt();
+            pred[1] = self.reported(d2, j, x);
+            pred[2] = match second_j {
+                Some(sj) => self.reported(d2_second, sj, x),
+                None => f64::NAN,
+            };
         }
         pred
     }
 
     fn learn_row(&mut self, x: &[f64], w: f64) {
-        let (j, d2, _) = self.nearest2(x);
+        let (j, d2, _, _) = self.nearest2(x);
         let far = self.cfg.split_merge > 0.0 && self.is_far(d2);
         self.absorb(j, x, w, d2, far);
         self.since += 1;
@@ -619,7 +648,7 @@ impl KMeans {
         let buf = std::mem::take(&mut self.buf);
         let buf_w = std::mem::take(&mut self.buf_w);
         for (z, &w) in buf.iter().zip(&buf_w) {
-            let (j, d2, _) = self.nearest2(z);
+            let (j, d2, _, _) = self.nearest2(z);
             let far = self.cfg.split_merge > 0.0 && dist2(&self.moments.mean, z, &self.mw) > cut;
             self.absorb(j, z, w, d2, far);
         }
@@ -949,6 +978,40 @@ mod tests {
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         ((*state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+    }
+
+    /// The two distances reported are numbers where their squares overflow:
+    /// a metric weight of `2.5e199` (a spread of `4e-200`, which a row of
+    /// weight `1e-100` followed by one of `1e100` leaves) against a row at
+    /// the input bound (review 2026-09-26, G1).
+    #[test]
+    fn an_overflowed_distance_is_reported_as_the_distance() {
+        use crate::OnlineModel;
+        let mut m = KMeans::new(cfg(2)).unwrap();
+        let mut s = 11u64;
+        for i in 0..12 {
+            let x = [lcg(&mut s) + f64::from(i % 2) * 10.0, lcg(&mut s)];
+            m.step(&x, &[], if i == 0 { 0.0 } else { 1.0 }, 1.0);
+        }
+        assert!(m.seeded());
+        m.mw = vec![2.5e199, 2.5e199];
+        let far = m.predict(&[0.0, 1e100], 1.0);
+        assert!(
+            far.pred[1].is_finite() && far.pred[2].is_finite(),
+            "{:?}",
+            far.pred
+        );
+        assert!(
+            far.pred[1] > 1e150 && far.pred[1] <= far.pred[2],
+            "{:?}",
+            far.pred
+        );
+        let near = m.predict(&[0.2, 0.1], 1.0);
+        assert!(
+            near.pred[1] <= near.pred[2] && near.pred[2].is_finite(),
+            "{:?}",
+            near.pred
+        );
     }
 
     fn cfg(k: usize) -> KMeansCfg {

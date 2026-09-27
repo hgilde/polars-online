@@ -67,8 +67,9 @@ pub(crate) fn row_share(decayed: f64, w: f64) -> f64 {
 /// 2026-09-12, N1), and the weight and mean of `z` over every row. Over the
 /// rows target `j` was present on: its EW mean `ȳ_j` (`my`), the centred
 /// cross-moment `c_j = E[(z − m_j)(y_j − ȳ_j)]` (`c`), and the mean `m_j` of
-/// `z` there, kept as its offset `δ_j = m_j − m` (`d`) from the mean `m` of
-/// `z` over every row (`m`), whose weight is `w`.
+/// `z` there (`mj`). `m` and `w` are over every row whatever the Grams
+/// learn: `w` is the model's `n_eff` (hard rule 8), and `m` is what a
+/// `pairwise` Gram, which is over every row, is centred on.
 ///
 /// They were kept raw, `r_j = E[z·y_j]`, and the solves with an intercept
 /// formed `E[z·y] − m·ȳ` from them, or read the raw normal equations: two
@@ -76,19 +77,26 @@ pub(crate) fn row_share(decayed: f64, w: f64) -> f64 {
 /// covariance, which at `1e8` left nothing of the fit. The raw moment,
 /// `r_j = c_j + m_j·ȳ_j`, is one step away for what still reads it.
 ///
-/// `δ_j` is a number of its own, updated from deviations, rather than a
-/// difference formed from two means: it is exactly 0 while the target has
-/// been present on every row, where two level-sized means would differ by
-/// `level·ε`. `m` and `w` are over every row whatever the Grams learn: `w` is
-/// the model's `n_eff` (hard rule 8), and `m` is what the offsets are kept
-/// against. A Gram over every row takes the same steps, so unblocked the two
-/// agree with it to the bit; a blocked Gram brings its own mean up to date
-/// only at a flush, and the offsets need one on every row.
+/// `m_j` was kept as an offset `δ_j = m_j − m` until schema 17, a number of
+/// its own that was exactly 0 while the target had been present on every
+/// row. Reconstructed as `m + δ_j`, it lost `level·ε` of whatever level `m`
+/// sat at: a target absent on a row whose features stood at the input
+/// bound left `m` and `δ_j` at `1e99` each, their sum resolved nothing
+/// below `1e83`, and the next present row's deviation of `0.4` read as
+/// `1e83` (review 2026-09-26, G3, from the contract's proptest). Each own
+/// mean is now its own pair, updated from the target's own rows by the
+/// steps a Gram over those rows takes, so under `own_rows` it is the Gram's
+/// mean to the bit, and a row the target misses leaves it exactly where it
+/// was.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Cross {
     pub(crate) w: f64,
     pub(crate) m: Vec<f64>,
-    pub(crate) d: Vec<Vec<f64>>,
+    /// Each target's mean of `z` over its own rows. Read as the offset
+    /// `δ_j` from a state written before schema 17 ([`Self::offsets_to_means`]
+    /// turns it into the mean on load; the field keeps the offset's place).
+    #[serde(alias = "d")]
+    pub(crate) mj: Vec<Vec<f64>>,
     pub(crate) my: Vec<f64>,
     pub(crate) c: Vec<Vec<f64>>,
     /// What `m` and `my` leave out: each mean is a pair no step is rounded
@@ -98,6 +106,9 @@ pub(crate) struct Cross {
     pub(crate) m_lo: Vec<f64>,
     #[serde(default)]
     pub(crate) my_lo: Vec<f64>,
+    /// What each `mj` leaves out; empty in a state written before schema 17.
+    #[serde(default)]
+    pub(crate) mj_lo: Vec<Vec<f64>>,
 }
 
 impl Cross {
@@ -105,12 +116,25 @@ impl Cross {
         Self {
             w: 0.0,
             m: vec![0.0; k],
-            d: vec![vec![0.0; k]; n_targets],
+            mj: vec![vec![0.0; k]; n_targets],
             my: vec![0.0; n_targets],
             c: vec![vec![0.0; k]; n_targets],
             m_lo: vec![0.0; k],
             my_lo: vec![0.0; n_targets],
+            mj_lo: vec![vec![0.0; k]; n_targets],
         }
+    }
+
+    /// A state written before schema 17 kept each own mean as its offset
+    /// from the all-row mean: `m_j = m + δ_j`, formed once here, at the
+    /// precision the offset form had.
+    pub(crate) fn offsets_to_means(&mut self) {
+        for mj in &mut self.mj {
+            for (v, m) in mj.iter_mut().zip(&self.m) {
+                *v += m;
+            }
+        }
+        self.mj_lo = vec![vec![0.0; self.m.len()]; self.mj.len()];
     }
 
     /// A row's share of the weight over every row, at decay `lam` and
@@ -121,51 +145,32 @@ impl Cross {
     }
 
     /// Target `j` present on a row, with the `a_j`/`b_j` of its own weight's
-    /// update and the row's share `b` of the all-row weight. With `u = z − m`
-    /// against the old all-row mean, `m_j` takes `b_j` of `z − m_j = u − δ_j`
-    /// and `m` takes `b` of `u`, so
-    ///
-    /// ```text
-    /// δ_j' = (1 − b_j)·δ_j + (b_j − b)·u
-    /// ```
-    ///
-    /// written so that a target's first row (`b_j = 1`) drops the old offset
-    /// outright and a target present on every row (`b_j = b`) leaves 0 at 0,
-    /// both exactly. The deviations are from the means before the row, so
-    /// this comes before [`Cross::advance`].
-    pub(crate) fn learn(&mut self, j: usize, z: &[f64], y: f64, aj: f64, bj: f64, b: f64) {
+    /// update: the cross-moment from the deviations `z − m_j` and `y − ȳ_j`
+    /// against the means before the row, then each mean takes `b_j` of its
+    /// deviation -- the steps `EwCov::update` takes for a Gram over the same
+    /// rows. A row the target is absent on touches none of this; the
+    /// all-row mean takes every row in [`Cross::advance`].
+    pub(crate) fn learn(&mut self, j: usize, z: &[f64], y: f64, aj: f64, bj: f64) {
         use crate::comp::{add, dev, lo_of, lo_slot};
+        let n = self.my.len();
+        let k = self.m.len();
+        // A state written before the own means kept their low parts.
+        if self.mj_lo.len() != n {
+            self.mj_lo = vec![Vec::new(); n];
+        }
         let dy = dev(y, self.my[j], lo_of(&self.my_lo, j));
         let ab_dy = aj * bj * dy;
-        let (d, c) = (&mut self.d[j], &mut self.c[j]);
-        let m_lo = &self.m_lo;
-        for (i, (((dji, cji), &zi), &mi)) in d
-            .iter_mut()
-            .zip(c.iter_mut())
-            .zip(z)
-            .zip(&self.m)
-            .enumerate()
-        {
-            let u = dev(zi, mi, lo_of(m_lo, i));
-            *cji = aj * *cji + ab_dy * (u - *dji);
-            *dji = (1.0 - bj) * *dji + (bj - b) * u;
+        let (mj, c, mj_lo) = (&mut self.mj[j], &mut self.c[j], &mut self.mj_lo[j]);
+        for i in 0..k {
+            let u = dev(z[i], mj[i], lo_of(mj_lo, i));
+            c[i] = aj * c[i] + ab_dy * u;
+            // A row of weight 0 takes no step (`crate::comp::add` says why).
+            if bj > 0.0 {
+                add(&mut mj[i], lo_slot(mj_lo, k, i), bj * u);
+            }
         }
-        let n = self.my.len();
-        // A row of weight 0 takes no step (`crate::comp::add` says why).
         if bj > 0.0 {
             add(&mut self.my[j], lo_slot(&mut self.my_lo, n, j), bj * dy);
-        }
-    }
-
-    /// Target `j` absent from a row -- null, or nothing to learn from -- that
-    /// moves the all-row mean by `b·u`: its own mean stays, so its offset
-    /// takes the step back.
-    pub(crate) fn miss(&mut self, j: usize, z: &[f64], b: f64) {
-        if b > 0.0 {
-            let m_lo = &self.m_lo;
-            for (i, ((dji, &zi), &mi)) in self.d[j].iter_mut().zip(z).zip(&self.m).enumerate() {
-                *dji -= b * crate::comp::dev(zi, mi, crate::comp::lo_of(m_lo, i));
-            }
         }
     }
 
@@ -187,14 +192,13 @@ impl Cross {
         }
     }
 
-    /// Target `j`'s uncentred `E[z·y_j] = c_j + (m + δ_j)·ȳ_j`.
+    /// Target `j`'s uncentred `E[z·y_j] = c_j + m_j·ȳ_j`.
     pub(crate) fn raw(&self, j: usize) -> Vec<f64> {
         let my = self.my[j];
         self.c[j]
             .iter()
-            .zip(&self.d[j])
-            .zip(&self.m)
-            .map(|((c, d), m)| c + (m + d) * my)
+            .zip(&self.mj[j])
+            .map(|(c, m)| c + m * my)
             .collect()
     }
 
@@ -202,9 +206,8 @@ impl Cross {
     /// over every row, with `w_new` the mixed all-row weight, and `per[j] =
     /// (a_j, b_j)` over target `j`'s own rows (`None` where neither side has
     /// any). The centred mixture, `c = a_j·c + b_j·c' + a_j·b_j·(m_j −
-    /// m_j')(ȳ − ȳ')`, as the co-moments' (C16); and since `m_j = m + δ_j` on
-    /// both sides, the offsets mix as `δ = a_j·δ + b_j·δ' + (b_j − b)·(m' −
-    /// m)`.
+    /// m_j')(ȳ − ȳ')`, as the co-moments' (C16), and each mean mixes as a
+    /// mean does.
     pub(crate) fn blend(
         &mut self,
         other: &Self,
@@ -213,28 +216,26 @@ impl Cross {
         w_new: f64,
         per: &[Option<(f64, f64)>],
     ) {
-        // `m' − m`, the twin's all-row mean from this one's.
-        let dm: Vec<f64> = other.m.iter().zip(&self.m).map(|(o, s)| o - s).collect();
+        let (n, k) = (self.my.len(), self.m.len());
         for (j, p) in per.iter().enumerate() {
             let Some((aj, bj)) = *p else { continue };
             let dy = self.my[j] - other.my[j];
-            let mine = self.c[j].iter_mut().zip(self.d[j].iter_mut());
-            let theirs = other.c[j].iter().zip(&other.d[j]);
-            for (((c, d), (oc, od)), &dmi) in mine.zip(theirs).zip(&dm) {
-                // `m_j − m_j' = (δ_j − δ_j') − (m' − m)`.
-                let dz = (*d - od) - dmi;
+            let mine = self.c[j].iter_mut().zip(self.mj[j].iter_mut());
+            let theirs = other.c[j].iter().zip(&other.mj[j]);
+            for ((c, m), (oc, om)) in mine.zip(theirs) {
+                let dz = *m - om;
                 *c = aj * *c + bj * oc + aj * bj * dz * dy;
-                *d = aj * *d + bj * od + (bj - b) * dmi;
+                *m = aj * *m + bj * om;
             }
             self.my[j] = aj * self.my[j] + bj * other.my[j];
-            let n = self.my.len();
             *crate::comp::lo_slot(&mut self.my_lo, n, j) = 0.0;
         }
         for (m, om) in self.m.iter_mut().zip(&other.m) {
             *m = a * *m + b * om;
         }
         // The mixed means are doubles, with nothing left out of them.
-        self.m_lo = vec![0.0; self.m.len()];
+        self.m_lo = vec![0.0; k];
+        self.mj_lo = vec![vec![0.0; k]; n];
         self.w = w_new;
     }
 
@@ -244,9 +245,8 @@ impl Cross {
     /// `per[j] = (ratio_j, g_j)` -- `W_u,j/W_R,j` and `W_j/W_R,j` -- over
     /// target `j`'s own (`None` where nothing of it is left), the pooling
     /// identity again, `c_R = g_j·c − ratio_j·c_u − ratio_j·g_j·(m_j,u −
-    /// m_j)(ȳ_u − ȳ)`; the means by `x_R = x − ratio·(x_u − x)`; and the
-    /// offset from offsets, `δ_R = δ − ratio_j·(δ_u − δ) + (ratio −
-    /// ratio_j)·(m_u − m)`.
+    /// m_j)(ȳ_u − ȳ)`, and every mean by `x_R = x − ratio·(x_u − x)` at its
+    /// own ratio. The snapshot's means are read as the doubles it holds.
     pub(crate) fn truncated(&self, old: &Self, f: f64, per: &[Option<(f64, f64)>]) -> Option<Self> {
         let w_old = f * old.w;
         let w = self.w - w_old;
@@ -256,36 +256,34 @@ impl Cross {
         let ratio = w_old / w;
         let mut out = Self::new(self.my.len(), self.m.len());
         out.w = w;
-        // `m_u − m`.
-        let du: Vec<f64> = old.m.iter().zip(&self.m).map(|(u, m)| u - m).collect();
-        for ((o, m), dui) in out.m.iter_mut().zip(&self.m).zip(&du) {
-            *o = m - ratio * dui;
+        for ((o, m), mu) in out.m.iter_mut().zip(&self.m).zip(&old.m) {
+            *o = m - ratio * (mu - m);
         }
         for (j, p) in per.iter().enumerate() {
             let Some((rj, gj)) = *p else { continue };
             let dy = old.my[j] - self.my[j];
-            let into = out.c[j].iter_mut().zip(out.d[j].iter_mut());
-            let now = self.c[j].iter().zip(&self.d[j]);
-            let then = old.c[j].iter().zip(&old.d[j]);
-            for ((((oc, od), (c, d)), (cu, du_j)), &dui) in into.zip(now).zip(then).zip(&du) {
-                // `δ_u − δ`, and `m_j,u − m_j` from it.
-                let dd = du_j - d;
-                let dz = dui + dd;
+            let into = out.c[j].iter_mut().zip(out.mj[j].iter_mut());
+            let now = self.c[j].iter().zip(&self.mj[j]);
+            let then = old.c[j].iter().zip(&old.mj[j]);
+            for (((oc, om), (c, m)), (cu, mu)) in into.zip(now).zip(then) {
+                let dz = mu - m;
                 *oc = gj * c - rj * cu - rj * gj * dz * dy;
-                *od = d - rj * dd + (ratio - rj) * dui;
+                *om = m - rj * dz;
             }
             out.my[j] = self.my[j] - rj * dy;
         }
         Some(out)
     }
 
-    /// Whether the moments are those of `n_targets` targets over `k` slots.
+    /// Whether the moments are those of `n_targets` targets over `k` slots;
+    /// the low parts absent (a state written before them) or shaped alike.
     fn has_shape(&self, n_targets: usize, k: usize) -> bool {
         self.m.len() == k
             && self.my.len() == n_targets
-            && self.d.len() == n_targets
+            && self.mj.len() == n_targets
             && self.c.len() == n_targets
-            && self.d.iter().chain(&self.c).all(|v| v.len() == k)
+            && self.mj.iter().chain(&self.c).all(|v| v.len() == k)
+            && (self.mj_lo.is_empty() || self.mj_lo.len() == n_targets)
     }
 }
 
@@ -542,9 +540,10 @@ impl crate::Footprint for Cross {
             + crate::window::floats(&self.m_lo)
             + crate::window::floats(&self.my_lo)
             + self
-                .d
+                .mj
                 .iter()
                 .chain(&self.c)
+                .chain(&self.mj_lo)
                 .map(|v| crate::window::floats(v))
                 .sum::<usize>()
     }
@@ -607,7 +606,7 @@ impl Acc {
                 Some(yj) if lam * *wj + w > 0.0 => {
                     let wj_new = lam * *wj + w;
                     let (a, b) = (lam * *wj / wj_new, w / wj_new);
-                    self.cross.learn(j, z, yj, a, b, b_all);
+                    self.cross.learn(j, z, yj, a, b);
                     // The other half of the sufficient statistic, on the same
                     // `a`/`b` as the cross-moments (E45).
                     self.tm.learn(j, yj, a, b, lam, w);
@@ -615,7 +614,6 @@ impl Acc {
                 }
                 Some(_) => {}
                 None => {
-                    self.cross.miss(j, z, b_all);
                     self.tm.age(j, lam);
                     *wj *= lam;
                 }
@@ -630,11 +628,34 @@ impl Acc {
     pub(crate) fn snapshot(&self, lam: f64) -> AccSnap {
         let mut cross = self.cross.clone();
         cross.w *= lam;
+        // The window's subtraction reads the means' doubles alone
+        // (`Cross::truncated`), so a snapshot carries no low parts: `k + T`
+        // doubles a snapshot the ring would otherwise hold for nothing
+        // (review 2026-09-26, C9).
+        cross.m_lo = Vec::new();
+        cross.my_lo = Vec::new();
+        cross.mj_lo = Vec::new();
         AccSnap {
             grams: self.grams.snapshot(lam),
             wj: self.wj.iter().map(|w| w * lam).collect(),
             cross,
         }
+    }
+
+    /// A state written before schema 17: the own means from their offsets
+    /// ([`Cross::offsets_to_means`]).
+    pub(crate) fn offsets_to_means(&mut self) {
+        self.cross.offsets_to_means();
+    }
+
+    /// Whether every Gram keeps runs for a window to read.
+    pub(crate) fn keeps_runs(&self) -> bool {
+        self.grams.grams.iter().all(EwCov::keeps_runs)
+    }
+
+    /// Keep no runs in any Gram from here (review 2026-09-26, C4).
+    pub(crate) fn set_runs_off(&mut self) {
+        self.grams.grams.iter_mut().for_each(EwCov::set_runs_off);
     }
 
     /// The accumulators with everything before the row the snapshot `old`
@@ -796,6 +817,14 @@ pub(crate) struct AccSnap {
     cross: Cross,
 }
 
+impl AccSnap {
+    /// A snapshot written before schema 17 ([`Cross::offsets_to_means`]).
+    pub(crate) fn offsets_to_means(&mut self) {
+        self.cross.offsets_to_means();
+        self.cross.mj_lo = Vec::new();
+    }
+}
+
 /// The accumulators inside a window ([`Acc::window`]): one Gram per live
 /// Gram, in the same order, so the live `Grams::of` indexes them.
 pub(crate) struct AccView {
@@ -845,12 +874,7 @@ pub(crate) fn gram_parts(
                 .iter()
                 .map(|&j| match gaps {
                     TargetGaps::OwnRows => cov.means().to_vec(),
-                    TargetGaps::Pairwise => cov
-                        .means()
-                        .iter()
-                        .zip(&cross.d[j])
-                        .map(|(m, d)| m + d)
-                        .collect(),
+                    TargetGaps::Pairwise => cross.mj[j].clone(),
                 })
                 .collect();
             GramPart {

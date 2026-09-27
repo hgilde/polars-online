@@ -1114,16 +1114,84 @@ fn a_sharded_marginal_reads_the_unsplit_pairs() {
     ] {
         let split = spec(shards);
         let resolved = count(&split);
+        // A pool of one thread never splits (review 2026-09-26, D9/E4: the
+        // assertion failed on a one-core runner with nothing wrong).
+        let threads = online_polars::thread_pool_size().unwrap();
         match expect {
             Some(c) => assert_eq!(resolved, c),
-            None => assert!(
+            None if threads > 1 => assert!(
                 resolved > 1,
-                "auto splits lags and bins at 1,500 features: {resolved}"
+                "auto splits lags and bins at 1,500 features on {threads} threads: {resolved}"
             ),
+            None => assert_eq!(resolved, 1, "one thread: no split"),
         }
         for chunks in [1, 3] {
             let got = read(split.clone(), chunks);
             assert!(got.equals_missing(&want), "{shards}, {chunks} chunks");
         }
     }
+}
+
+/// `shards` is a setting, not state: a bank saved under one count loads
+/// under the count of the specs given to `load`, which is the count it then
+/// runs with, and keeps the saved one when given none (review 2026-09-26,
+/// F3: the load compared the counts and refused the specs).
+#[test]
+fn a_bank_saved_under_one_shard_count_loads_under_another() {
+    let spec = |shards: &str| -> Spec {
+        serde_json::from_str(&format!(
+            r#"{{"name": "m", "model": {{"type": "marginal", "lags": [1, 2]{shards}}},
+                "targets": ["y"], "features": ["x0", "x1", "x2"], "halflife": 20.0}}"#
+        ))
+        .unwrap()
+    };
+    let n = 40;
+    let x0: Vec<f64> = (0..n).map(|i| (i as f64 * 0.37).sin()).collect();
+    let x1: Vec<f64> = (0..n).map(|i| (i as f64 * 0.11).cos()).collect();
+    let x2: Vec<f64> = (0..n).map(|i| (i % 5) as f64 - 2.0).collect();
+    let y: Vec<f64> = (0..n).map(|i| x0[i] - x2[i] * 0.5).collect();
+    let df = DataFrame::new(
+        n,
+        vec![
+            Column::new("x0".into(), x0),
+            Column::new("x1".into(), x1),
+            Column::new("x2".into(), x2),
+            Column::new("y".into(), y),
+        ],
+    )
+    .unwrap();
+    let mut bank = Bank::new(vec![spec(r#", "shards": 3"#)]).unwrap();
+    bank.fit_predict(&df.slice(0, 25)).unwrap();
+    let bytes = bank.save_bytes().unwrap();
+    let mut want = Bank::new(vec![spec("")]).unwrap();
+    want.fit_predict(&df).unwrap();
+    for given in [r#", "shards": "auto""#, "", r#", "shards": 2"#] {
+        let expected = vec![spec(given)];
+        let mut loaded = Bank::load_bytes(&bytes, Some(&expected)).unwrap();
+        // A bank fills its specs' defaults; the count is the one given.
+        let mut filled = expected[0].clone();
+        filled.fill_defaults();
+        assert_eq!(
+            loaded.specs()[0],
+            filled,
+            "the count given is the count run"
+        );
+        loaded.fit_predict(&df.slice(25, 15)).unwrap();
+        assert!(
+            loaded
+                .marginal(0, None)
+                .unwrap()
+                .equals_missing(&want.marginal(0, None).unwrap()),
+            "{given}"
+        );
+    }
+    let kept = Bank::load_bytes(&bytes, None).unwrap();
+    let mut saved = spec(r#", "shards": 3"#);
+    saved.fill_defaults();
+    assert_eq!(kept.specs()[0], saved, "no specs given: the saved count");
+    let other = vec![spec(r#", "cross_lags": [1]"#)];
+    assert!(
+        Bank::load_bytes(&bytes, Some(&other)).is_err(),
+        "a real difference still refuses"
+    );
 }

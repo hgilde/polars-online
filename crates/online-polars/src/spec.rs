@@ -133,7 +133,9 @@ mod fill_tests {
     }
 
     /// And a spec that lists another column in that slot is refused, naming
-    /// both: the model reads `targets[0]` whatever `hazard_col` says.
+    /// both: the model reads `targets[0]` whatever `hazard_col` says. The
+    /// message prints the names (review 2026-09-26, D5: `Targets`' derived
+    /// `Debug` printed every field).
     #[test]
     fn a_hazard_column_beside_another_target_is_refused() {
         let s = spec(
@@ -142,6 +144,50 @@ mod fill_tests {
         );
         let err = s.validate().unwrap_err();
         assert!(err.contains("hazard_col") && err.contains("\"h\""), "{err}");
+        assert!(err.contains("(got [\"y\"])"), "{err}");
+    }
+
+    /// The slot is the column itself: a table named like the hazard but
+    /// reading another column is refused, and so is the hazard column under
+    /// another name, for `bocpd` and `hmm` alike (review 2026-09-26, D4: the
+    /// names were compared, and the first put column `z` in the slot).
+    #[test]
+    fn a_renamed_table_cannot_smuggle_another_column_into_the_hazard_slot() {
+        // `hmm` wants its `k`, a prior, the tvtp coefficients and a
+        // halflife, which `bocpd` refuses.
+        for (model, key, top) in [
+            ("\"bocpd\"", "hazard_col", ""),
+            (
+                "\"hmm\", \"k\": 2, \"precision_prior\": 1.0, \
+                 \"tvtp_coef\": [[0.0, 0.0, 0.0, 0.0], [0.5, 0.5, 0.5, 0.5]]",
+                "exog_tvtp",
+                ", \"halflife\": 20.0",
+            ),
+        ] {
+            for targets in [
+                r#"[{"column": "z", "name": "h"}]"#,
+                r#"[{"column": "h", "name": "hz"}]"#,
+            ] {
+                let s = spec(&format!(
+                    r#"{{"name": "m", "model": {{"type": {model}, "{key}": "h"}},
+                        "targets": {targets}, "features": ["x"]{top}}}"#
+                ));
+                let err = s.validate().unwrap_err();
+                assert!(
+                    err.contains(key) && err.contains("the column itself"),
+                    "{err}"
+                );
+            }
+            let s = spec(&format!(
+                r#"{{"name": "m", "model": {{"type": {model}, "{key}": "h"}},
+                    "targets": ["h"], "features": ["x"]{top}}}"#
+            ));
+            assert!(
+                s.validate().is_ok(),
+                "{model}: the column itself: {:?}",
+                s.validate()
+            );
+        }
     }
 }
 
@@ -972,9 +1018,10 @@ pub enum ModelKind {
     /// t-statistic of the correlation at that size. A pair's correlation
     /// is the one an `ew_cov` over the two columns reports, to the bit. A
     /// null target ages that target's pairs and moves nothing else; a
-    /// null feature drops the row for every pair, as everywhere. No
-    /// parameters of its own: `halflife`/`lam`, `weight`, `clock` and
-    /// `min_periods` are the spec's. `min_periods` (default 3) is the
+    /// null feature drops the row for every pair, as everywhere.
+    /// `halflife`/`lam`, `weight`, `clock` and `min_periods` are the spec's;
+    /// the lags, the bins, the window and the shards below are its own.
+    /// `min_periods` (default 3) is the
     /// weight a target needs before its pairs' `corr`, `beta` and `t` are
     /// reported -- a correlation of two rows is ±1 whatever the data.
     #[serde(rename = "marginal")]
@@ -1025,9 +1072,10 @@ pub enum ModelKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bin_edges: Option<Vec<Vec<f64>>>,
         /// The MiB the bins' warm-up hold and histogram may each take, per
-        /// group, before the model refuses to build (docs/PLAN.md task
-        /// 131): 256 when absent, `"inf"` no bound. Needs `bins` or
-        /// `bin_edges`. Skipped when absent, as `lags` is.
+        /// model instance -- every group keeps its own, and so does every
+        /// halflife of a grid -- before the model refuses to build
+        /// (docs/PLAN.md task 131): 256 when absent, `"inf"` no bound. Needs
+        /// `bins` or `bin_edges`. Skipped when absent, as `lags` is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bin_budget: Option<Num>,
         /// Ranges of features to split the pair work into, run on the bank's
@@ -1809,6 +1857,12 @@ pub struct Spec {
     /// log loss here; `polars_online.eval.metrics(..., binary=True)` adds
     /// it over the collected frame (a streaming version would put a `ln`
     /// result into the state, which `docs/PLAN.md` §11a's B4 rule forbids).
+    ///
+    /// A target taken as a ratio (`relative = "ratio"`) is positive by
+    /// construction, so its `hit_rate` is agreement about 1 -- did the
+    /// ratio go up or down -- where about zero it read 1.0 whatever the fit
+    /// (review 2026-09-26, D3); a difference and a log ratio are centred at
+    /// zero as a plain target is.
     #[serde(default)]
     pub emit_metrics: bool,
     /// Emit `pred_lo_<slot>`, `pred_hi_<slot>` and `coverage_<slot>`: an
@@ -2452,12 +2506,12 @@ impl Spec {
         // row, which is what makes an ew_cov statistic or a kmeans
         // assignment safe to use as a same-row feature (E1).
         let unsupervised = self.model.is_unsupervised();
-        // A relative target's own column is its target as much as its name
-        // is (docs/PLAN.md task 107a); its reference is read at the row,
-        // which a feature may be.
-        let is_target = |f: &String| {
-            self.targets.contains(f) || self.targets.defs().iter().any(|t| &t.column == f)
-        };
+        // The leak is a feature that is a target's *column* (a relative
+        // target's as much as a plain one's, docs/PLAN.md task 107a); a
+        // target merely named like a feature reads another column, and its
+        // reference is read at the row, which a feature may be (review
+        // 2026-09-26, D7: the names were matched too, and refused that).
+        let is_target = |f: &String| self.targets.defs().iter().any(|t| &t.column == f);
         if let Some(leak) = (!unsupervised)
             .then(|| self.features.iter().find(|f| is_target(f)))
             .flatten()
@@ -2479,8 +2533,18 @@ impl Spec {
                 m if m.is_unsupervised() => Some("learns from no target"),
                 ModelKind::EwClass { .. } => Some("classifies its target as a label"),
                 ModelKind::SeqTest { .. } => Some("tests the signs of its targets"),
-                ModelKind::Ftrl { loss, .. } if loss.as_deref() != Some("squared") => {
+                ModelKind::Ftrl { loss, .. }
+                    if loss.as_deref().unwrap_or("logistic") == "logistic" =>
+                {
                     Some("fits a probability to a 0/1 target (loss = \"logistic\")")
+                }
+                // `sgd` fits the same probability under the same loss, and a
+                // log rate to a count under "poisson" (review 2026-09-26, D2).
+                ModelKind::Sgd { loss, .. } if loss.as_deref() == Some("logistic") => {
+                    Some("fits a probability to a 0/1 target (loss = \"logistic\")")
+                }
+                ModelKind::Sgd { loss, .. } if loss.as_deref() == Some("poisson") => {
+                    Some("fits a log rate to a count (loss = \"poisson\")")
                 }
                 _ => None,
             };
@@ -2546,6 +2610,16 @@ impl Spec {
                     "spec {:?}: max_error_inflation must be a ratio above 1 -- how much \
                      estimation error may inflate a prediction's error over the noise floor \
                      (sqrt(2) is the default; inf switches the gate off), got {r}",
+                    self.name
+                ));
+            }
+            // Range-checked and then dropped on every other model until
+            // release 0.11.0 (docs/PLAN.md task 109): refused by name, as
+            // `emit_error_inflation` is.
+            if !self.has_error_inflation() {
+                return Err(format!(
+                    "spec {:?}: max_error_inflation needs a model with a ridge system to gate \
+                     on (ewridge); this model is held by min_periods alone",
                     self.name
                 ));
             }
@@ -3167,12 +3241,17 @@ impl Spec {
                 // The model reads `targets[0]` as the hazard whatever the name
                 // here says, so the two must be one column (review
                 // 2026-09-12, C20).
+                // The slot is the column itself, not a table: a table's name
+                // means nothing here, and its column is what the model would
+                // read (review 2026-09-26, D4: the names were compared, so a
+                // table named like the hazard put another column in the slot).
                 if let Some(h) = hazard_col {
-                    if self.targets.as_slice() != std::slice::from_ref(h) {
+                    if self.targets.defs() != [crate::targets::TargetDef::plain(h.clone())] {
                         return Err(format!(
                             "spec {:?}: bocpd reads hazard_col {h:?} from the targets slot, so \
-                             targets must be [{h:?}] (got {:?})",
-                            self.name, self.targets
+                             targets must be [{h:?}], the column itself (got {:?})",
+                            self.name,
+                            self.targets.as_slice()
                         ));
                     }
                 }
@@ -3199,11 +3278,12 @@ impl Spec {
             ModelKind::Hmm { exog_tvtp, .. } => {
                 // As `bocpd`'s `hazard_col` (review 2026-09-12, C20).
                 if let Some(z) = exog_tvtp {
-                    if self.targets.as_slice() != std::slice::from_ref(z) {
+                    if self.targets.defs() != [crate::targets::TargetDef::plain(z.clone())] {
                         return Err(format!(
                             "spec {:?}: hmm reads exog_tvtp {z:?} from the targets slot, so \
-                             targets must be [{z:?}] (got {:?})",
-                            self.name, self.targets
+                             targets must be [{z:?}], the column itself (got {:?})",
+                            self.name,
+                            self.targets.as_slice()
                         ));
                     }
                 }

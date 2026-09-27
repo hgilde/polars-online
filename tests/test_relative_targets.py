@@ -153,11 +153,240 @@ def test_scoring_leaves_out_what_the_frame_does_not_have():
     bank = po.ModelBank([spec])
     bank.fit_predict(df[:400])
     full = bank.predict(df[400:])
-    without = bank.predict(df[400:].drop("mid"))
-    np.testing.assert_array_equal(
-        full["m"].struct.field("pred_p").to_numpy(), without["m"].struct.field("pred_p").to_numpy()
+    # Either side missing: the reference, or the column itself (review
+    # 2026-09-26, E missing 9).
+    for dropped in ["mid", "p"]:
+        without = bank.predict(df[400:].drop(dropped))
+        np.testing.assert_array_equal(
+            full["m"].struct.field("pred_p").to_numpy(),
+            without["m"].struct.field("pred_p").to_numpy(),
+        )
+        assert without["m"].struct.field("resid_p").null_count() == len(without), dropped
+
+
+def test_predict_before_any_fit_scores_nothing():
+    """``predict`` on a bank that has learned nothing: an all-null struct,
+    with the reference in the frame or not (review 2026-09-26, F missing 3)."""
+    df = frame()
+    spec = po.spec.ewridge("m", targets=[po.target("p", relative_to="mid")], **common())
+    for frame_ in [df, df.drop("mid")]:
+        out = po.ModelBank([spec]).predict(frame_)
+        assert out["m"].struct.field("pred_p").null_count() == len(df)
+
+
+def test_the_lazy_plan_reads_a_relative_targets_columns():
+    """The IO plugin's projection keeps a table target's column and its
+    reference: ``lf.online.fit_predict`` under a ``.select``,
+    ``lf.online.predict``, and a renamed plain column (review 2026-09-26,
+    D1/F1: every LazyFrame path raised ``unhashable type: 'dict'``, and a fix
+    by name alone would have projected the reference away)."""
+    df = frame()
+    for target in [po.target("p", relative_to="mid"), po.target("p", name="price")]:
+        spec = po.spec.ewridge("m", targets=[target], **common())
+        want = po.ModelBank([spec]).fit_predict(df)["m"]
+        got = df.lazy().online.fit_predict([spec]).select("m").collect()["m"]
+        assert got.equals(want, null_equal=True)
+        bank = po.ModelBank([spec])
+        bank.fit_predict(df[:400])
+        want_scores = bank.predict(df[400:])["m"]
+        scored = df[400:].lazy().online.predict(bank).select("m").collect()["m"]
+        assert scored.equals(want_scores, null_equal=True)
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        dict(group="g"),
+        dict(label_delay=3.0),
+        dict(group="g", label_delay=3.0),
+        dict(window=60.0),
+        dict(conformal=0.9, emit_metrics=True, resid_quantiles=[0.5]),
+    ],
+    ids=["group", "label_delay", "both", "window", "diagnostics"],
+)
+def test_the_equality_holds_under_what_the_stream_does_around_the_model(kw):
+    """The same equality under a group, a label delay, both, a window and the
+    diagnostics, with the reference null on the first row (review
+    2026-09-26, F missing 2)."""
+    i = pl.int_range(pl.len())
+    df = frame().with_columns(
+        g=pl.when(i % 2 == 0).then(pl.lit("a")).otherwise(pl.lit("b")),
+        mid=pl.when(i == 0).then(None).otherwise(pl.col("mid")),
     )
-    assert without["m"].struct.field("resid_p").null_count() == len(without)
+    target = po.target("p", relative_to="mid")
+    got = po.ModelBank([po.spec.ewridge("m", targets=[target], **common(**kw))])
+    want = po.ModelBank([po.spec.ewridge("m", targets=["d"], **common(**kw))])
+    a = fields(got.fit_predict(df), "m", "p")
+    b = fields(want.fit_predict(df.with_columns(d=HOW["difference"])), "m", "d")
+    assert a.columns == b.columns
+    assert a.equals(b, null_equal=True)
+
+
+def test_hit_rate_under_a_ratio_target_is_about_one():
+    """A ratio target is positive by construction, so sign agreement about
+    zero read 1.0 whatever the fit; its hit test is about 1 -- did the ratio
+    go up or down (review 2026-09-26, D3). The rate is the exponentially
+    weighted agreement over the scored rows, recomputed here from the
+    output, read before each row scores, and a ratio of exactly 1 not
+    scored, as a signed target of exactly 0 is not."""
+    df = frame()
+    target = po.target("p", relative_to="mid", relative="ratio")
+    spec = po.spec.ewridge("m", targets=[target], **common(emit_metrics=True))
+    out = fields(po.ModelBank([spec]).fit_predict(df), "m", "p")
+    pred, y = out["pred_T"].to_numpy(), (df["p"] / df["mid"]).to_numpy()
+    lam = 0.5 ** (1.0 / 80.0)
+    hits, hw, want = 0.0, 0.0, []
+    for i in range(len(df)):
+        want.append(hits if hw > 0 else np.nan)
+        if np.isfinite(pred[i]) and np.isfinite(y[i]) and y[i] != 1.0:
+            hit = float((pred[i] > 1.0) == (y[i] > 1.0))
+            hits = (lam * hw * hits + hit) / (lam * hw + 1.0)
+            hw = lam * hw + 1.0
+        else:
+            hw *= lam
+    got = out["hit_rate_T"].to_numpy()
+    np.testing.assert_allclose(got, want, rtol=1e-12, equal_nan=True)
+    assert 0.3 < got[-1] < 0.95, "a rate, not the sign test's 1.0"
+
+
+def test_the_specs_carry_the_table():
+    """What built the bank comes back as it was written: a table with what
+    it said, a plain column as the string (review 2026-09-26, D missing 3,
+    F6: a table naming its own column is the column)."""
+    table = po.target("p", relative_to="mid", relative="log_ratio", name="r")
+    bank = po.ModelBank([po.spec.ewridge("m", targets=[table, "x1"], **common(features=["x0"]))])
+    assert bank.specs[0]["targets"] == [table, "x1"]
+    assert '"relative_to": "mid"' in bank.to_json()
+    plain = po.ModelBank([po.spec.ewridge("m", targets=[po.target("p", name="p")], **common())])
+    assert plain.specs[0]["targets"] == ["p"]
+
+
+def test_a_saved_bank_is_held_to_its_targets(tmp_path):
+    """``load(path, specs=...)`` with a target taken another way is refused:
+    the state was learned on the other scale (review 2026-09-26, D missing 3)."""
+    df = frame()
+
+    def build(relative: str):
+        target = po.target("p", relative_to="mid", relative=relative)
+        return po.spec.ewridge("m", targets=[target], **common())
+
+    bank = po.ModelBank([build("ratio")])
+    bank.fit_predict(df)
+    bank.save(tmp_path / "r.state")
+    same = po.ModelBank.load(tmp_path / "r.state", specs=[build("ratio")])
+    assert same.specs == bank.specs
+    with pytest.raises(ValueError, match="saved specs do not match"):
+        po.ModelBank.load(tmp_path / "r.state", specs=[build("log_ratio")])
+
+
+def test_a_renamed_table_is_the_name_everywhere():
+    """The output fields, the Gram's targets, ``describe``'s rows,
+    ``summary``'s counts, ``marginal``'s target and a closed group's pairs
+    all carry the name (review 2026-09-26, D missing 4, E missing 9)."""
+    i = pl.int_range(pl.len())
+    df = frame().with_columns(g=pl.lit("a"), mid=pl.when(i < 5).then(None).otherwise(pl.col("mid")))
+    target = po.target("p", relative_to="mid", relative="log_ratio", name="ret")
+    bank = po.ModelBank([po.spec.ewridge("m", targets=[target], **common())])
+    out = bank.fit_predict(df)
+    assert "pred_ret" in out["m"].struct.fields
+    assert bank.gram("m")[0]["targets"] == ["ret"]
+    desc = bank.describe("m").filter(pl.col("role") == "target")
+    assert desc["column"].to_list() == ["ret"]
+    assert desc["null_count"].to_list() == [5], "a null reference is a null target"
+    assert bank.summary("m")["rows_learned"].item() == len(df) - 5
+    screen = po.ModelBank(
+        [
+            po.spec.marginal(
+                "m", targets=[target], group="g", group_close="monotone", **common(emit_sigma=False)
+            )
+        ]
+    )
+    screen.fit_predict(df)
+    assert screen.marginal("m")["target"].unique().to_list() == ["ret"]
+    screen.fit_predict(df.with_columns(g=pl.lit("b")))
+    closed = screen.closed_groups("m")
+    assert closed.height == 1
+    assert set(closed["pair_target"][0].to_list()) == {"ret"}
+
+
+def test_a_target_cannot_be_named_nothing():
+    """An empty name would give fields called ``pred_``; an empty column or
+    reference names no column. Refused by the builder and by the bank
+    (review 2026-09-26, D missing 5)."""
+    with pytest.raises(ValueError, match="column must not be empty"):
+        po.target("")
+    with pytest.raises(ValueError, match="name must not be empty"):
+        po.target("p", name="")
+    with pytest.raises(ValueError, match="relative_to must not be empty"):
+        po.target("p", relative_to="")
+    base = po.spec.ewridge("m", targets=["p"], **common())
+    for table, what in [
+        ({"column": "p", "name": ""}, "name"),
+        ({"column": "", "name": "p"}, "column"),
+        ({"column": "p", "relative_to": ""}, "relative_to"),
+    ]:
+        with pytest.raises(ValueError, match=f"{what} must not be empty"):
+            po.ModelBank([{**base, "targets": [table]}])
+
+
+def test_a_target_named_like_a_feature_is_not_a_leak():
+    """The leak is a feature that *is* a target's column; a target merely
+    named like a feature reads another column and builds (review 2026-09-26,
+    D7: it was refused as 'both a target and a feature')."""
+    df = frame()
+    spec = po.spec.ewridge("m", targets=[po.target("p", name="x0")], **common())
+    out = po.ModelBank([spec]).fit_predict(df)
+    assert "pred_x0" in out["m"].struct.fields
+
+
+@pytest.mark.parametrize(
+    ("model", "loss", "refused"),
+    [
+        ("ftrl", None, "logistic"),
+        ("ftrl", "logistic", "logistic"),
+        ("ftrl", "squared", None),
+        ("sgd", "logistic", "logistic"),
+        ("sgd", "poisson", "poisson"),
+        ("sgd", "squared", None),
+        ("sgd", "huber", None),
+    ],
+)
+def test_a_relative_target_is_refused_where_the_loss_wants_a_label_or_a_count(model, loss, refused):
+    """``sgd`` fits a probability under ``"logistic"`` and a log rate under
+    ``"poisson"`` exactly as ``ftrl`` does under its default, and a relative
+    target means nothing to either (review 2026-09-26, D2: only ``ftrl`` was
+    refused)."""
+    kw = {} if loss is None else {"loss": loss}
+    if model == "sgd" or loss == "squared":
+        kw["halflife"] = 10.0
+    target = po.target("p", relative_to="mid")
+    build = getattr(po.spec, model)
+    if refused is None:
+        po.ModelBank([build("m", targets=[target], features=["x0"], **kw)])
+    else:
+        with pytest.raises(ValueError, match=re.escape(f'loss = "{refused}"')):
+            po.ModelBank([build("m", targets=[target], features=["x0"], **kw)])
+
+
+def test_two_views_of_one_column_are_two_targets():
+    """The same column taken against two references is two targets, named
+    apart; a plain column beside its own relative view is a name twice,
+    refused (review 2026-09-26, D missing 10)."""
+    df = frame().with_columns(mid2=pl.col("mid") * 1.001)
+    spec = po.spec.ewridge(
+        "m",
+        targets=[
+            po.target("p", relative_to="mid"),
+            po.target("p", relative_to="mid2", name="p_mid2"),
+        ],
+        **common(),
+    )
+    out = po.ModelBank([spec]).fit_predict(df)
+    assert {"pred_p", "pred_p_mid2"} <= set(out["m"].struct.fields)
+    with pytest.raises(ValueError, match=re.escape('targets lists "p" more than once')):
+        po.ModelBank(
+            [po.spec.ewridge("m", targets=["p", po.target("p", relative_to="mid")], **common())]
+        )
 
 
 def with_targets(spec: dict, *targets) -> dict:

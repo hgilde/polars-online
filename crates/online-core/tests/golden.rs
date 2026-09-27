@@ -910,7 +910,15 @@ const GOLDEN_HUBER: &[f64] = &[
     2.2047028651324143,
     -0.06446675716780813,
 ];
-const GOLDEN_QUANTILE: &[f64] = &[0.257219577793527, 2.228471287911235, -0.02104553077613472];
+// Regenerated 2026-09-26 (review, G2): the quantile nudge is bounded by the
+// row's leverage, which binds on this stream's early rows; the three values
+// moved by 1.4e-3, 1.3e-3 and 4e-4 of themselves, and the QuantReg oracles
+// in `robust.rs` hold.
+const GOLDEN_QUANTILE: &[f64] = &[
+    0.25684864702988286,
+    2.2256269819422743,
+    -0.02113573617058477,
+];
 // Regenerated for the code review's C24 (2026-09-15), this and the next:
 // under a halflife the proximal term is a decayed sum of its own, where `n`
 // was decayed inside its square root and every coefficient shrank.

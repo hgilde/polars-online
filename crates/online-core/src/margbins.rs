@@ -9,7 +9,8 @@
 //!
 //! A stump needs only, per feature, the target's weight, mean and centred
 //! second moment inside each of a fixed set of bins -- a histogram of target
-//! moments, `O(bins)` state per pair and `O(log bins)` per pair per row. So
+//! moments, `O(bins)` state per pair, one search of the edges per feature
+//! per row and `O(1)` per pair. So
 //! the whole wide input gets a nonlinear relevance number in the pass that
 //! gives it `corr`, and the histogram itself is the feature's
 //! one-dimensional response curve.
@@ -97,8 +98,8 @@ pub(crate) struct HeldRow {
 
 /// The bytes a full warm-up hold takes: `warm_rows` rows of `p` features and
 /// `n_targets` targets, each row's vectors and the row itself, from the
-/// types. The model reserves the hold at exactly `warm_rows` rows, so there
-/// is no growth slack to add.
+/// types. The model grows the hold by doubling, capped at `warm_rows`, so
+/// its capacity never passes what this counts.
 pub(crate) fn hold_bytes(warm_rows: usize, p: usize, n_targets: usize) -> usize {
     let row = std::mem::size_of::<HeldRow>()
         .saturating_add(p.saturating_mul(std::mem::size_of::<HeldFeature>()))
@@ -109,7 +110,8 @@ pub(crate) fn hold_bytes(warm_rows: usize, p: usize, n_targets: usize) -> usize 
 /// The bytes a histogram's buffers take, for `p` features whose bins add up
 /// to `width` over `n_targets` targets: the cells, the edges (one fewer than
 /// the bins, per feature) and their lists, the feature offsets, and the
-/// row's bin offsets.
+/// row's bin offsets, which take at least four slots, a vector's smallest
+/// non-zero capacity.
 pub(crate) fn histogram_bytes(p: usize, n_targets: usize, width: usize) -> usize {
     let (f, u) = (std::mem::size_of::<f64>(), std::mem::size_of::<usize>());
     let cells = n_targets.saturating_mul(width);
@@ -118,7 +120,7 @@ pub(crate) fn histogram_bytes(p: usize, n_targets: usize, width: usize) -> usize
         .saturating_add(width.saturating_sub(p).saturating_mul(f))
         .saturating_add(p.saturating_mul(std::mem::size_of::<Vec<f64>>()))
         .saturating_add(p.saturating_add(1).saturating_mul(u))
-        .saturating_add(p.saturating_mul(u))
+        .saturating_add(p.max(4).saturating_mul(u))
 }
 
 /// Where each feature's value fell on the row being learned, as a cell
@@ -151,7 +153,7 @@ pub struct MarginalBins {
     /// long, so `off[p]` is the block's width.
     off: Vec<usize>,
     /// `[t·off[p] + off[j] + bin]`: the bin's weight, undecayed (see the
-    /// module doc). Zero is an empty bin, whatever the other two hold.
+    /// module doc). Zero is an empty bin, whatever the other three hold.
     w: Vec<f64>,
     /// The bin's weighted mean of the target: a ratio of two decayed sums,
     /// so scale-free.
@@ -249,18 +251,28 @@ impl MarginalBins {
         })
     }
 
-    /// Whether the edges, the offsets and the three cell vectors are those
-    /// of `p` features and `n_targets` targets: what a restored state must
-    /// hold to be updated (review 2026-09-18, B3).
+    /// Whether the edges, the offsets and the cell vectors are those of `p`
+    /// features and `n_targets` targets: the offsets the edges' own, and the
+    /// means' low parts absent (a state written before them) or at the
+    /// cells' length. What a restored state must hold to be updated (review
+    /// 2026-09-18, B3; the offsets and the low parts since review
+    /// 2026-09-26, B2).
     pub fn has_shape(&self, p: usize, n_targets: usize) -> bool {
         let cells = self.off.last().map_or(0, |&o| o * n_targets);
         self.p == p
             && self.n_targets == n_targets
             && self.edges.len() == p
             && self.off.len() == p + 1
+            && self.off[0] == 0
+            && self
+                .edges
+                .iter()
+                .enumerate()
+                .all(|(j, e)| self.off[j + 1] == self.off[j] + e.len() + 1)
             && self.w.len() == cells
             && self.mean.len() == cells
             && self.m2.len() == cells
+            && (self.mean_lo.is_empty() || self.mean_lo.len() == cells)
     }
 
     /// Bins feature `j` actually has, which is one more than its edges.
@@ -400,9 +412,13 @@ impl MarginalBins {
         self.bin_offsets(0, x, &mut row);
         let (cells, width) = (self.w.len(), self.off[self.p]);
         // What each mean leaves out, at the length of the cells, which a
-        // state written before it does not carry: sized where the row writes
-        // a cell, as the cell update sized it before it took slices.
-        if self.mean_lo.len() != cells && row.iter().any(|&o| o != NO_BIN) {
+        // state written before it does not carry: sized on the first row
+        // that could write a cell, whether it does or not. Sized before the
+        // slices below are taken, since a row whose features bin nothing
+        // still takes them (review 2026-09-26, B1), and by the rule the
+        // sharded path sizes it (`cell_parts`, on a row with a weight), so
+        // the two paths' states agree byte for byte (A7).
+        if self.mean_lo.len() != cells {
             self.mean_lo = vec![0.0; cells];
         }
         for (t, yt) in y.iter().enumerate().take(self.n_targets) {
@@ -716,7 +732,8 @@ fn budget_check(what: &str, bytes: usize, budget_mib: f64, detail: &str) -> Resu
     if mib > budget_mib {
         return Err(format!(
             "marginal: {what} would need {:.2} GiB ({detail}), over the {budget_mib} MiB each \
-             group's model is held to; raise bin_budget, reduce it, or narrow the features",
+             group's model is held to; raise bin_budget, or ask for fewer bins, targets or \
+             features",
             mib / 1024.0,
         ));
     }
@@ -890,7 +907,9 @@ mod tests {
                     }
                 }
             }
-            b.update_target(0, &[x], y, w);
+            // The production row update, not the test-only per-target one
+            // (review 2026-09-26, B missing 2).
+            b.update_row(&[x], &[Some(y)], w);
             let k = edges.partition_point(|e| *e <= x);
             sums[k][0] += w;
             sums[k][1] += w * y;
@@ -952,7 +971,7 @@ mod tests {
             b.bins(0, 0)
         );
         assert!(b.best_split(0, 0).is_none());
-        b.update_target(0, &[0.5], 2.0, 3.0);
+        b.update_row(&[0.5], &[Some(2.0)], 3.0);
         let bins = b.bins(0, 0);
         assert_eq!(bins[0].n, 0.0);
         assert_eq!((bins[1].n, bins[1].mean_y, bins[1].var_y), (3.0, 2.0, 0.0));
@@ -969,8 +988,8 @@ mod tests {
         b.decay(1e-200);
         b.decay(1e-200);
         assert_eq!(b.scale, 1.0);
-        b.update_target(0, &[-0.5], 1.0, 2.0);
-        b.update_target(0, &[-0.5], 3.0, 2.0);
+        b.update_row(&[-0.5], &[Some(1.0)], 2.0);
+        b.update_row(&[-0.5], &[Some(3.0)], 2.0);
         let bins = b.bins(0, 0);
         assert_eq!((bins[0].n, bins[0].mean_y, bins[0].var_y), (4.0, 2.0, 1.0));
         assert_eq!(bins[1].n, 0.0);
@@ -996,7 +1015,7 @@ mod tests {
             let y = lcg(&mut seed);
             for b in [&mut aged, &mut fresh] {
                 b.decay(0.93);
-                b.update_target(0, &x, y, 1.0);
+                b.update_row(&x, &[Some(y)], 1.0);
             }
         }
         assert_eq!(aged, fresh);
@@ -1019,7 +1038,7 @@ mod tests {
         for _ in 0..1000 {
             let y = 1e6 + 1e-3 * lcg(&mut seed);
             b.decay(0.999);
-            b.update_target(0, &[-1.0], y, 1.0);
+            b.update_row(&[-1.0], &[Some(y)], 1.0);
             ys.push(y);
         }
         // The undecayed reference is close enough at lam = 0.999 over 1000
@@ -1049,7 +1068,7 @@ mod tests {
             let x = lcg(&mut seed);
             // A threshold: linear correlation near zero, a large split gain.
             let y = if x > 0.0 { 1.0 } else { -1.0 } + 0.3 * lcg(&mut seed);
-            b.update_target(0, &[x], y, 1.0);
+            b.update_row(&[x], &[Some(y)], 1.0);
             rows.push((x, y));
         }
         let var_of = |rs: &[(f64, f64)]| {
@@ -1087,11 +1106,11 @@ mod tests {
     #[test]
     fn edge_values_and_junk() {
         let mut b = MarginalBins::new(1, 1, vec![vec![0.0, 1.0]]).unwrap();
-        b.update_target(0, &[0.0], 5.0, 1.0);
-        b.update_target(0, &[f64::NAN], 5.0, 1.0);
-        b.update_target(0, &[f64::INFINITY], 5.0, 1.0);
-        b.update_target(0, &[0.5], f64::NAN, 1.0);
-        b.update_target(0, &[0.5], 5.0, 0.0);
+        b.update_row(&[0.0], &[Some(5.0)], 1.0);
+        b.update_row(&[f64::NAN], &[Some(5.0)], 1.0);
+        b.update_row(&[f64::INFINITY], &[Some(5.0)], 1.0);
+        b.update_row(&[0.5], &[Some(f64::NAN)], 1.0);
+        b.update_row(&[0.5], &[Some(5.0)], 0.0);
         b.decay(f64::NAN);
         b.decay(-1.0);
         b.decay(f64::INFINITY);
@@ -1155,6 +1174,13 @@ mod tests {
             "some feature supports fewer edges than asked for"
         );
         let x: Vec<f64> = (0..p).map(|j| j as f64 * 0.37).collect();
+        // The row's offsets take at least four slots however narrow the row
+        // (review 2026-09-26, B5).
+        for p in 1..4 {
+            let mut b = MarginalBins::new(p, 1, vec![vec![0.0]; p]).unwrap();
+            b.update_row(&vec![0.5; p], &[Some(1.0)], 1.0);
+            assert_eq!(b.heap_bytes(), histogram_bytes(p, 1, 2 * p), "{p} features");
+        }
         for t in [1, 3, 20] {
             let y: Vec<Option<f64>> = (0..t).map(|k| Some(k as f64)).collect();
             for edges in [&given, &learned] {
@@ -1304,7 +1330,7 @@ mod tests {
         let mut b = MarginalBins::new(1, 1, vec![vec![0.0]]).unwrap();
         assert!(b.best_split(0, 0).is_none(), "nothing seen");
         for _ in 0..10 {
-            b.update_target(0, &[-1.0], 4.0, 1.0);
+            b.update_row(&[-1.0], &[Some(4.0)], 1.0);
         }
         assert!(b.best_split(0, 0).is_none(), "one bin, constant target");
     }
@@ -1501,6 +1527,163 @@ mod tests {
                         "absent {absent}: target {t} feature {j} learned nothing"
                     );
                 }
+            }
+        }
+    }
+
+    /// A histogram from a state written before the means' low parts
+    /// (`mean_lo` empty, which a schema 14 or 15 state carries) takes a row
+    /// whose features bin nothing -- every one not finite -- as the
+    /// per-target update takes it: nothing written, no panic (review
+    /// 2026-09-26, B1: the row update sliced `mean_lo` for every present
+    /// target before it could skip). The low parts are then sized wherever
+    /// the row could have written, which is what the sharded path does too
+    /// (A7), so the two paths' states agree byte for byte.
+    #[test]
+    fn a_histogram_without_low_parts_takes_a_row_that_bins_nothing() {
+        let mut a = MarginalBins::new(2, 1, vec![vec![0.0], vec![1.0]]).unwrap();
+        a.update_row(&[0.5, 2.0], &[Some(1.0)], 1.0);
+        a.mean_lo = Vec::new();
+        let mut b = a.clone();
+        a.update_row(&[f64::NAN, f64::NAN], &[Some(1.0)], 1.0);
+        b.update_target(0, &[f64::NAN, f64::NAN], 1.0, 1.0);
+        let cells = |h: &MarginalBins| -> Vec<u64> {
+            h.w.iter()
+                .chain(&h.mean)
+                .chain(&h.m2)
+                .map(|v| v.to_bits())
+                .collect()
+        };
+        assert_eq!(cells(&a), cells(&b), "nothing was written");
+        assert_eq!(
+            a.mean_lo.len(),
+            a.w.len(),
+            "sized where the row could have written"
+        );
+        assert!(
+            b.mean_lo.is_empty(),
+            "the per-target update never reached a cell"
+        );
+        a.update_row(&[0.5, 2.0], &[Some(2.0)], 1.0);
+        b.update_target(0, &[0.5, 2.0], 2.0, 1.0);
+        assert_eq!(bits(&a), bits(&b));
+    }
+
+    /// A restored histogram whose offsets disagree with its edges, or whose
+    /// low parts are neither absent nor at the cells' length, is refused as
+    /// the wrong shape rather than written through (review 2026-09-26, B2).
+    #[test]
+    fn a_bin_state_whose_offsets_or_low_parts_disagree_is_refused() {
+        let good = MarginalBins::new(3, 2, vec![vec![0.0], vec![], vec![1.0, 2.0]]).unwrap();
+        assert!(good.has_shape(3, 2));
+        let mut off = good.clone();
+        off.off[1] += 1;
+        assert!(!off.has_shape(3, 2), "an offset past its feature's bins");
+        let mut lo = good.clone();
+        lo.mean_lo.pop();
+        assert!(!lo.has_shape(3, 2), "low parts at the wrong length");
+        lo.mean_lo = Vec::new();
+        assert!(
+            lo.has_shape(3, 2),
+            "absent low parts are a state written before them"
+        );
+    }
+
+    /// The best split read after the scale folded is the split of the same
+    /// weights unfolded: the stump's gain from the brute-force sums, which
+    /// never fold (review 2026-09-26, B missing 3).
+    #[test]
+    fn the_split_gain_survives_a_fold() {
+        let stump = |sums: &[[f64; 3]]| -> f64 {
+            let w: f64 = sums.iter().map(|s| s[0]).sum();
+            let sy: f64 = sums.iter().map(|s| s[1]).sum();
+            let mean = sy / w;
+            let total = sums.iter().map(|s| s[2]).sum::<f64>() - w * mean * mean;
+            let (mut best, mut wl, mut sl) = (0.0f64, 0.0, 0.0);
+            for s in &sums[..sums.len() - 1] {
+                wl += s[0];
+                sl += s[1];
+                let (wr, sr) = (w - wl, sy - sl);
+                if wl > 0.0 && wr > 0.0 {
+                    let between = wl * (sl / wl - mean).powi(2) + wr * (sr / wr - mean).powi(2);
+                    best = best.max(between / total);
+                }
+            }
+            best
+        };
+        for (lam, rows, folded) in [(0.9, 300, false), (0.74, 2000, true)] {
+            let (b, sums) = brute(lam, rows, &[-0.5, 0.0, 0.5]);
+            assert_eq!(b.scale < 1e-100, folded, "scale {}", b.scale);
+            let got = b.best_split(0, 0).unwrap().gain;
+            let want = stump(&sums);
+            assert!(want > 0.5, "the cut explains most of a line: {want}");
+            assert!(
+                (got - want).abs() <= 1e-9 * want,
+                "lam {lam}: {got} vs {want}"
+            );
+        }
+    }
+
+    /// `Fixed` edges against a level the widths round away at: the sweep
+    /// leaves the one distinct edge, strictly increasing and above the
+    /// smallest value, which `MarginalBins::new` takes.
+    #[test]
+    fn fixed_edges_collapse_against_a_large_level() {
+        let mut vals = vec![(1e16, 1.0), (1e16 + 2.0, 1.0)];
+        let edges = edges_from(BinRule::Fixed, 8, &mut vals);
+        assert_eq!(edges, vec![1e16 + 2.0]);
+        assert!(MarginalBins::new(1, 1, vec![edges]).is_ok());
+    }
+
+    mod generated {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// A warm-up sample as a stream can give it: values mostly ordinary,
+        /// with repeats, junk and the input bound; weights mostly ordinary,
+        /// with zeros, subnormals, huge ones and junk.
+        fn sample() -> impl Strategy<Value = Vec<(f64, f64)>> {
+            let value = prop_oneof![
+                5 => -3.0..3.0f64,
+                2 => Just(0.0),
+                1 => Just(f64::NAN),
+                1 => Just(f64::INFINITY),
+                1 => (-1.0..1.0f64).prop_map(|u| u * 1e100),
+            ];
+            let weight = prop_oneof![
+                5 => 0.1..2.0f64,
+                1 => Just(0.0),
+                1 => Just(5e-324),
+                1 => Just(1e300),
+                1 => Just(f64::NAN),
+            ];
+            prop::collection::vec((value, weight), 0..60)
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+            /// Whatever the sample, the edges are finite, strictly
+            /// increasing, above the smallest usable value, no more than
+            /// asked for, and a histogram takes them (review 2026-09-26, B
+            /// missing 6).
+            #[test]
+            fn edges_from_gives_edges_a_histogram_accepts(
+                mut s in sample(),
+                n_bins in 2usize..12,
+                fixed in any::<bool>(),
+            ) {
+                let rule = if fixed { BinRule::Fixed } else { BinRule::Quantile };
+                let lo = s
+                    .iter()
+                    .filter(|(v, w)| v.is_finite() && w.is_finite() && *w > 0.0)
+                    .map(|(v, _)| *v)
+                    .fold(f64::INFINITY, f64::min);
+                let edges = edges_from(rule, n_bins, &mut s);
+                prop_assert!(edges.len() < n_bins);
+                prop_assert!(edges.iter().all(|e| e.is_finite() && *e > lo), "{edges:?}");
+                prop_assert!(edges.windows(2).all(|w| w[1] > w[0]), "{edges:?}");
+                prop_assert!(MarginalBins::new(1, 1, vec![edges]).is_ok());
             }
         }
     }

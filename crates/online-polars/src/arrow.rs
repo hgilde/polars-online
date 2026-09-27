@@ -545,7 +545,8 @@ pub fn chunk_from_frame(df: &DataFrame, specs: &[Spec]) -> PolarsResult<ArrowChu
 
 /// Each column's first reader, for the errors a cast can raise: the first
 /// spec, in bank order, that reads the column in any role, and the first of
-/// its roles in the order features, targets, clock, weight, session, group.
+/// its roles in the order features, targets (each target's column, then the
+/// reference it is taken against), clock, weight, session, group.
 /// Built once, where a scan of every spec's lists per column was quadratic
 /// in the columns (docs/PERFORMANCE.md §24).
 fn first_readers(specs: &[Spec]) -> PlHashMap<&str, (&str, &'static str)> {
@@ -674,15 +675,20 @@ fn check_clocks(df: &DataFrame, specs: &[Spec]) -> PolarsResult<()> {
             // Read in seconds, a temporal column would feed any other
             // numeric role a number the spec never asked for.
             for other in specs {
+                // By column, not name, and the reference of a relative target
+                // is a numeric role too (review 2026-09-26, D6).
+                let defs = other.targets.defs();
                 let role = if other.features.iter().any(|f| f == clock) {
                     "a feature"
                 } else if other.weight.as_deref() == Some(clock) {
                     "a weight"
-                } else if other.targets.iter().any(|t| t == clock)
+                } else if defs.iter().any(|t| t.column == *clock)
                     && other.model.compares().is_none()
                     && !matches!(other.model, ModelKind::EwClass { .. })
                 {
                     "a target"
+                } else if defs.iter().any(|t| t.relative_to.as_deref() == Some(clock)) {
+                    "a relative_to reference"
                 } else {
                     continue;
                 };

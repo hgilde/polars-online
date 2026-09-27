@@ -257,8 +257,10 @@ impl Hmm {
     pub fn new(cfg: HmmCfg) -> Result<Self, String> {
         cfg.validate()?;
         let (k, d) = (cfg.k, cfg.n_features);
+        // No window reads a run here, so none is kept (docs/PLAN.md task
+        // 128; review 2026-09-26, C3).
         let mut states = (0..k)
-            .map(|_| EwCov::with_precision_prior(d, cfg.precision_prior))
+            .map(|_| EwCov::with_precision_prior(d, cfg.precision_prior).map(EwCov::without_runs))
             .collect::<Result<Vec<_>, _>>()?;
         let seeded = cfg.means.is_some();
         if let (Some(m), Some(c)) = (&cfg.means, &cfg.covs) {
@@ -269,7 +271,8 @@ impl Hmm {
                     &m[i * d..(i + 1) * d],
                     &c[i * d * d..(i + 1) * d * d],
                     cfg.precision_prior,
-                )?;
+                )?
+                .without_runs();
             }
         }
         Ok(Self {
@@ -705,7 +708,7 @@ impl crate::OnlineModel for Hmm {
         crate::check_schema(s)?;
         match &s.model {
             crate::ModelState::Hmm(m) => {
-                let m = (**m).clone();
+                let mut m = (**m).clone();
                 // `k` states at the cfg's width, `k` marginals, a `k×k`
                 // transition matrix and buffered rows `d` long (review
                 // 2026-09-18, B3).
@@ -720,6 +723,8 @@ impl crate::OnlineModel for Hmm {
                         "hmm: the state has the wrong shape".into(),
                     ));
                 }
+                // No window reads a run here (review 2026-09-26, C3 and C4).
+                m.states.iter_mut().for_each(EwCov::set_runs_off);
                 Ok(m)
             }
             other => Err(crate::StateError::WrongModel {
@@ -1234,5 +1239,14 @@ mod tests {
             },
             "means and covs must be finite",
         );
+    }
+
+    /// An `hmm` has no window, so its states' accumulators keep no runs, as
+    /// every other owner without a window keeps none (docs/PLAN.md task 128;
+    /// review 2026-09-26, C3).
+    #[test]
+    fn an_hmm_keeps_no_runs() {
+        let m = Hmm::new(cfg(2, 2)).unwrap();
+        assert!(m.states.iter().all(|s| !s.keeps_runs()));
     }
 }

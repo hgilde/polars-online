@@ -266,6 +266,8 @@ def test_split_gain_t_uses_n_serial_when_it_has_one():
         (dict(bin_budget=64.0, bins=None, bin_warm_rows=None), "needs bins or bin_edges"),
         (dict(bins=8, bin_budget=0.0), "bin_budget must be a positive number"),
         (dict(bins=8, bin_budget=-5.0), "bin_budget must be a positive number"),
+        # The budget holds given edges too (review 2026-09-26, F missing 8).
+        (dict(bin_edges=[[0.0]], bin_budget=1e-9), "the bin histogram would need"),
     ],
 )
 def test_refusals(kw, message):
@@ -512,3 +514,8 @@ def test_the_columns_are_there_before_any_row_and_for_a_group_never_seen():
     assert bank.marginal("m").columns == want
     assert bank.marginal("m", group="never").columns == want
     assert bank.marginal("m", group="never").height == 0
+    # `cross_lags=[]` drops the two cross columns and moves nothing else
+    # (review 2026-09-26, F missing 9).
+    none = po.ModelBank([spec(lags=[1, 2], serial_rule="truncated", cross_lags=[], group="g")])
+    assert none.marginal("m").columns == [c for c in want if c not in ("lagcorr_xy", "lagcorr_yx")]
+    assert none.specs[0]["model"]["cross_lags"] == []

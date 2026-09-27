@@ -425,10 +425,12 @@ GOLDEN: dict[str, float | str | None] = {
     "huber.withheld_reason@119": None,
     "quantile.pred_y0@25": -4.684375830329454,
     "quantile.pred_y0@60": -0.19342194783921984,
-    "quantile.pred_y0@119": -0.11291822930615636,
+    # @119 regenerated 2026-09-26 (review, G2): the quantile nudge is bounded
+    # by the row's leverage; 6e-5 of the value, the pinball loss lower.
+    "quantile.pred_y0@119": -0.11298514216026335,
     "quantile.resid_y0@25": -0.16722999390526194,
     "quantile.resid_y0@60": -0.2786191809778581,
-    "quantile.resid_y0@119": 0.062219458347927525,
+    "quantile.resid_y0@119": 0.06228637120203452,
     "quantile.n_eff@25": 7.999488060097996,
     "quantile.n_eff@60": 12.473100285951407,
     "quantile.n_eff@119": 15.110060335371337,

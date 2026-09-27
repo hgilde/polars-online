@@ -1158,7 +1158,11 @@ label rather than a signed target. Under their usual names, `hit_rate` is
 the accuracy at a 0.5 threshold, `r2` the Brier skill score against the
 running base rate, and `ic` the point-biserial correlation between the
 probability and the label. There is no streaming log loss;
-`po.eval.metrics(..., binary=True)` adds it over a collected frame.
+`po.eval.metrics(..., binary=True)` adds it over a collected frame. A
+target taken as a ratio (`po.target(..., relative="ratio")`) is positive by
+construction, so its `hit_rate` is agreement about 1, whether the ratio went
+up or down; a difference and a log ratio are about zero, as a plain target
+is.
 
 ### Conformal intervals
 
