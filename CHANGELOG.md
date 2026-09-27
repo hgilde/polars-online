@@ -21,11 +21,28 @@ carries breaking changes, and any change to the numbers a model returns.
   changes. Found by a test of the coverage against the frame's own
   columns.
 
+- **`po.eval.seqtest` with `by` works on Polars 1.34.0, the declared
+  floor.** Its log wealth was a running sum over the groups of a bet sized
+  by running sums over the groups, a window inside a window, which Polars
+  1.34.0 refuses and 1.44.2 accepts. It is computed in two passes now, with the same
+  numbers. Found by running the suite at the floor.
+
 ### Changed
 
 - **State schema 18.** Under `label_delay` with a conformal interval, each
   held row keeps the radius it was shown. 0.11.1 files (17) load, and their
   held rows are scored against the radius at release, as before.
+
+### Performance
+
+- **`ew_cov(lags=...)` and a multi-target `ewridge` run at 0.10.0's speed
+  again.** 0.11.0's compensated means put a two-part deviation inside the
+  lagged co-moments' innermost loop, `k * k` times a lag where `k` would
+  do, and the own means that 0.11.0's review gave each target checked their
+  low parts' length once a feature. Each is now taken once. At k = 20,
+  `ew_cov` with lags 1 to 5 runs 1.14M rows a second, against 0.58M in
+  0.11.1 and 1.06M in 0.10.0, and `ewridge` with 10 targets 1.49M, against
+  1.02M and 1.59M. Outputs are unchanged to the bit.
 
 ### Documentation
 

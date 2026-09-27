@@ -3631,7 +3631,14 @@ note, not a task.
       `EwCov::update` is unchanged at 64 slots; `EwDiag::update` takes 6.0,
       10.7 and 24 ns a row at 4, 16 and 64 slots, against 5.2, 6.3 and 15.5;
       and `sgd`'s step 57 ns at 16 features, against 49. `ewridge`'s step is
-      unchanged, its solve dominating.
+      unchanged, its solve dominating. *2026-09-27: not so at scale.* The benchmark,
+      0.11.1 against 0.10.0, read `ew_cov(lags=[1..5])` at 0.53 and a
+      10-target `ewridge` at 0.64; a bisect put the first and 15 % of the
+      second on this task (the pair's deviation inside the lagged
+      co-moments' `k * k` loop) and the rest on task 132's own means, whose
+      low parts' length was checked once a feature. Both now take each
+      deviation once, bit for bit the same, and are back at 1.07 and 0.94 of
+      0.10.0 (PERFORMANCE §26).
       **Found by the sweep of every running mean, and fixed here:** a
       windowed `marginal` pair did not get task 94's zero spread for a slot
       held over the window, and `beta` divided a remainder by itself.
@@ -4390,7 +4397,13 @@ decision it needs, with a recommendation where there is one.
       built, `tests/test_released_state.py`, for 0.10.0 (schema 14) and
       0.11.1 (schema 17); `scripts/release_probe.py --states` writes the
       files under the released build (RELEASE-READINESS, "Compare with the
-      last release").
+      last release"). The Linux CLI's glibc floor is measured: 2.39, a
+      decision now (task 115 (i)). The suite at the Polars floor, 1.34.0, ran
+      again: 3,408 of 3,425 passed, and the one failure in the package,
+      `po.eval.seqtest` with `by` (a window inside a window, which 1.34.0
+      refuses), is fixed; the rest are `scan_arrow_c_stream` (1.43.0 on,
+      now said in ARROW-SOURCES), two duration oracles and the two version
+      pins (RELEASE-READINESS, "The floor and the ceiling").
 
 - [x] 110. **This week's review leftovers, as tests.** S. Held-value tests
       for `ew_class` and `hmm`; weight-0 rows for `bocpd`, `deco` and `hmm`;
@@ -4441,7 +4454,7 @@ decision it needs, with a recommendation where there is one.
       import the registry that imports it -- and is held by
       `test_the_builder_list_covers_every_builder`, which EXTENDING now names.
 
-- [ ] 112. **Older review items that need no decision.** S each. C16's raw
+- [x] 112. **Older review items that need no decision.** S each. C16's raw
       oracles; C21's r2 and coverage under a delay; S23's docs; D9, the dead
       `LassoCfg::combo_labels`; REVIEW-2026-09-18 §6 (a constant column in
       `deco`, `bocpd`'s 1e5-row truncation and its gaussian at d ≥ 3); T2's
@@ -4451,8 +4464,21 @@ decision it needs, with a recommendation where there is one.
       Epps sweep that ends at its best point; PERFORMANCE: the measurements
       owed (prefetch limits, §19's state sizes, §21's trivial scan, task
       101's cost) and a re-run of its timings. **The tests and fixes done
-      2026-09-27; the REGIMES experiments and the PERFORMANCE measurements
-      are not tests, and stay open.** C16: both blend oracles are the
+      2026-09-27, and the rest the same day.** REGIMES (run on 2026-09-27,
+      every earlier figure unchanged): `hmm` through a switch holds each new
+      state in a median of 12 rows from the true covariances and follows
+      none seeded from the rows; `deco` settles at `E[u]`, two-thirds of the
+      truth, and crosses in one halflife; `rcov`'s estimators each win one
+      condition; the size study at 20,000 draws a cell puts the shared-scale
+      `t_5` within 0.004 of WKD in every cell, so the 0.024 was noise and
+      the independent reading is the one that misses; the Epps sweep to
+      `L = 1024` levels off at 0.775 between 256 and 512. PERFORMANCE §26:
+      the benchmark under 0.10.0, 0.11.1 and this build found two slowdowns
+      0.11.0 shipped, bisected to tasks 101 and 132 and fixed bit for bit
+      (task 101's record corrected); `micro`/`kmeans`' cost is task 102's
+      default floor, kept; the CSV and NDJSON read-ahead limits change
+      nothing on either surface; §19's two states measured; §21 re-measured
+      by `scripts/plan_inspection_bench.py`. C16: both blend oracles are the
       centred mixture, run at 0 and 1e8. C21: `r2_y` under a delay is
       scikit-learn's `r2_score` over the matured rows, to 1e-9; and
       **`coverage_y` was not** -- a held row was scored, at release, against
@@ -4541,7 +4567,18 @@ decision it needs, with a recommendation where there is one.
       (`test_a_constant_column_poisons_nothing_and_every_block_learns_once_it_moves`
       pins that much). Whether the other blocks should go on learning, and
       the constant column's own block too (from its other columns), is the
-      decision.
+      decision. (i) The Linux CLI's glibc floor (task 109's leftover,
+      measured 2026-09-27 on 0.11.1's assets): both binaries need
+      `GLIBC_2.39`, the runner's own -- `pidfd_getpid` and `pidfd_spawnp`
+      from Rust's standard library, weak symbols under a version requirement
+      that is not -- and hard `2.34` and `2.35` (`__libc_start_main`,
+      `hypot`); so no Ubuntu 22.04, Debian 12 or RHEL 9, and the floor rises
+      with `ubuntu-latest` (RELEASE-READINESS has the table). Options: build
+      the CLI in the manylinux2014 container the wheels use (glibc 2.17,
+      still dynamic, nothing newly linked; recommended); build it on
+      `ubuntu-22.04` (2.35, until that image retires); or a static musl
+      binary (static linking, rule 12, a raise). Each changes the release
+      job, which only a dispatched run tests.
 
 - [ ] 116. **Readiness beyond `ewridge`** (WARMUP-AND-CONVERGENCE §7). M–L;
       defaults move, so *the scope is the user's*. A readiness statistic for

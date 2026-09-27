@@ -151,15 +151,26 @@ impl EwLagCov {
         let a = lam * w_sum / w_new;
         let b = w / w_new;
         let k = self.k;
+        // Each deviation is taken once, not once per cell it enters: the
+        // row's `k` for every lag, and a past row's `k` per lag rather than
+        // `k * k`. The same arithmetic in the same order, so the matrices
+        // are the bits they were; what it saves is the `k * k` pair
+        // subtractions per lag that task 101 put in the inner loop, which
+        // also kept it from vectorising (0.11.1 ran `ew_cov(lags=[1..5])`
+        // at k = 20 at 0.53 of 0.10.0's rows a second; PERFORMANCE §26).
+        let now: Vec<f64> = (0..k).map(|i| a * b * dev(i, x[i])).collect();
+        let mut then = vec![0.0; k];
         for (li, &lag) in self.lags.iter().enumerate() {
             let block = &mut self.c[li * k * k..(li + 1) * k * k];
             match self.ring.len().checked_sub(lag).map(|i| &self.ring[i]) {
                 Some(past) => {
-                    for i in 0..k {
-                        let ab_di = a * b * dev(i, x[i]);
+                    for (j, (dj, &pj)) in then.iter_mut().zip(past.iter()).enumerate() {
+                        *dj = dev(j, pj);
+                    }
+                    for (i, &ab_di) in now.iter().enumerate() {
                         let row = &mut block[i * k..(i + 1) * k];
-                        for (j, (cj, &pj)) in row.iter_mut().zip(past.iter()).enumerate() {
-                            *cj = a * *cj + ab_di * dev(j, pj);
+                        for (cj, &dj) in row.iter_mut().zip(&then) {
+                            *cj = a * *cj + ab_di * dj;
                         }
                     }
                 }

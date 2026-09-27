@@ -35,6 +35,8 @@ are.
 | [22. `marginal`'s bins at several targets](#22-marginals-bins-at-several-targets-e71-task-122-2026-09-25) | you bin `marginal`'s features against several targets | |
 | [23. `marginal`'s cross terms on request](#23-marginals-cross-terms-on-request-e70-task-123-2026-09-25) | you use `marginal`'s lags at width, or set `cross_lags` | |
 | [24. A wide `marginal` through the bank](#24-a-wide-marginal-through-the-bank-the-cost-that-was-not-the-models-task-124-2026-09-25) | a wide spec's call costs far more than its model | |
+| [25. A wide `marginal` split across the pool](#25-a-wide-marginal-split-across-the-pool-e73-task-126-2026-09-25) | a wide `marginal` spec, and whether `shards` splits its flush | |
+| [26. 0.11.1 against 0.10.0](#26-0111-against-0100-two-slowdowns-fixed-and-what-the-readers-hold-2026-09-27) | you want the current numbers against the last two releases, the two slowdowns 0.11.0 shipped, or what the CSV and NDJSON readers hold | [three builds](#the-benchmark-three-builds) · [threads](#thread-scaling) · [memory](#peak-memory-re-measured) · [read-ahead](#the-csv-and-ndjson-read-ahead) · [plan inspection](#the-plan-inspection-re-measured) |
 
 ## Reading this document
 
@@ -107,8 +109,9 @@ says how to measure a change against these numbers.
 **Every golden number was unchanged throughout: that was the contract.**
 Status as of 2026-09-06: P1–P11 all done, the numbers refreshed in §8, the
 chunk plan revisited in §12, the new families surveyed in §13, and the
-correlation families of tasks 45–56 in §15. The later sections, §16–§24,
-are each dated in their headings.
+correlation families of tasks 45–56 in §15. The later sections, §16–§26,
+are each dated in their headings; §26 re-runs the benchmark against 0.10.0
+and 0.11.1 (2026-09-27).
 
 Against the baseline in §1:
 
@@ -1045,7 +1048,7 @@ The settings that move it are all Polars' own:
 | `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | the row groups read ahead | the CLI on 12M rows, 0.75 GB → **0.15 GB at the same 3.2 s**: the bank, not the reader, is the bound, and a local SSD needs no read-ahead. `=2` is 0.28 GB. The bank loop and `po.run` keep a few more chunks in flight in py-polars' `collect_batches` and the FFI hand-off: 0.31 / 0.46 GB with prefetch 1 |
 | `POLARS_MAX_THREADS` | the same term, because the prefetch is sized from the thread count | 4 threads: 0.45 GB; 1 thread: 0.18 GB |
 | `POLARS_ROW_GROUP_PREFETCH_KBYTES_BUDGET` | the byte budget, in compressed bytes, which for a memory-mapped local file cost nothing | lowering it changed nothing here |
-| `POLARS_CSV_CHUNK_PREFETCH_LIMIT`, `POLARS_NDJSON_CHUNK_PREFETCH_LIMIT` | CSV's and NDJSON's own read-ahead | not measured |
+| `POLARS_CSV_CHUNK_PREFETCH_LIMIT`, `POLARS_NDJSON_CHUNK_PREFETCH_LIMIT` | CSV's and NDJSON's own read-ahead | nothing, on the command line or the lazy path: 1 and 2 read within 0.04 GB of the default (§26, 2026-09-27) |
 
 **`chunk_rows` is the term the caller owns.** `po.run` at 500k is 1.38 GB
 on 3M rows, against 0.95 GB at 100k: three chunks in flight, each five
@@ -2579,7 +2582,7 @@ the run of 2026-09-08 after task 75 (§20). Its first version had `sgd` at
 | `SGDRegressor`, batches of 1,000 | 1,000 | 175,298 | 0.8687 | 0.03 MB |
 | `po.spec.sgd`, `scale_features=False` | 1,000 | 407,925 | 0.8516 | 0.09 MB |
 | `po.spec.sgd`, `scale_features=True`, before task 74 | 1,000 | 264,444 | 0.8221 | 0.11 MB |
-| `po.spec.sgd`, `scale_features=True`, after task 74 | 1,000 | 269,264 | 0.8512 | |
+| `po.spec.sgd`, `scale_features=True`, after task 74 | 1,000 | 269,264 | 0.8512 | 0.11 MB |
 | `po.spec.ewridge`, solve every 1,000 rows | 1,000 | 6,236 | 0.9274 | 8.71 MB |
 | `po.spec.ewridge`, `gram_block_rows=256` | 1,000 | 33,914 | 0.9274 | 10.27 MB |
 | `po.spec.ewridge`, `gram_block_rows=1024` | 1,000 | 37,065 | 0.9274 | 16.89 MB |
@@ -2587,7 +2590,7 @@ the run of 2026-09-08 after task 75 (§20). Its first version had `sgd` at
 | `SGDRegressor`, batches of 1,000 | 10,000 | 20,007 | 0.0338 | 0.31 MB |
 | `po.spec.sgd`, `scale_features=False` | 10,000 | 33,271 | 0.0319 | 0.89 MB |
 | `po.spec.sgd`, `scale_features=True`, before task 74 | 10,000 | 21,682 | 0.0209 | 1.06 MB |
-| `po.spec.sgd`, `scale_features=True`, after task 74 | 10,000 | 22,989 | 0.0321 | |
+| `po.spec.sgd`, `scale_features=True`, after task 74 | 10,000 | 22,989 | 0.0321 | 1.06 MB |
 | `po.spec.ewridge`, solve every 1,000 rows | 10,000 | 53 | 0.0412 | 859.54 MB |
 | `po.spec.ewridge`, `gram_block_rows=256` | 10,000 | 269 | 0.0412 | 875.16 MB |
 | `po.spec.ewridge`, `gram_block_rows=1024` | 10,000 | 379 | 0.0412 | 941.10 MB |
@@ -2595,8 +2598,11 @@ the run of 2026-09-08 after task 75 (§20). Its first version had `sgd` at
 *The rows marked "before task 74" were measured before that task. This
 table was run for task 75, and task 74 landed after it the same day
 (commits `072d42e` and `0343b24`), recording its own figures only in the
-prose further down. The "after task 74" rows copy those figures; their
-state was not measured.*
+prose further down. The "after task 74" rows copy those figures. Their
+state was measured on 2026-09-27, with the same streams and specs, under
+the 0.10.0 wheel, which has task 74 and not task 101: the same 0.11 and
+1.06 MB as before it. At 0.11.1 the same banks save 0.12 and 1.15 MB, since
+task 101 gives the scaler's mean a low part per feature, 8 bytes each.*
 
 **An LMS step is stable only while `eta · |z|² < 2`, and a standardised row
 has `|z|² ≈ k`,** so the rate has to fall as `1/k`. Both libraries run at
@@ -2909,7 +2915,8 @@ The JSON path's own shape says the same thing. By plan, `serialize` /
 
 *The trivial-scan row's parts (0.190 + 0.024 + 0.037 ms) exceed its
 0.074 ms total, so one of its numbers is misrecorded. Both are kept as
-recorded.*
+recorded; §26 re-measures the path with a committed script, whose parts
+sum to its totals.*
 
 It scales with schema width, and the **walk** dominates there (1.28 ms of
 2.13), not the serialization, so trimming the serializer would have been
@@ -3222,3 +3229,140 @@ way, the models holding a batch at once are bounded by the sharded groups
 in the chunk, not by the threads (review 2026-09-26, E2); nothing runs on
 rayon's global pool, and the nesting cannot deadlock, every job being
 finite work over its own slices.
+
+## 26. 0.11.1 against 0.10.0, two slowdowns fixed, and what the readers hold (2026-09-27)
+
+Task 112 owed a re-run of this document's timings, and three measurements
+left open: CSV's and NDJSON's read-ahead (§11), two states (§19) and a row
+of §21. The re-run found two slowdowns 0.11.0 shipped, and they are fixed.
+
+### The benchmark, three builds
+
+`scripts/benchmark.py --markdown` at 200,000 rows, best of three within a
+run and the better of two runs, under the 0.10.0 and 0.11.1 wheels from
+PyPI and under this build, interleaved on one idle machine (Apple M4 Pro,
+Python 3.12.13, Polars 1.44.2). A row moved by more than 8 % between
+0.10.0 and 0.11.1; the median run-to-run spread is 1 %:
+
+| configuration | 0.10.0 | 0.11.1 | this build | this build / 0.10.0 |
+|---|---:|---:|---:|---:|
+| `ew_cov`, k=20, lags 1–5 | 1,083,788 | 576,572 | 1,113,662 | 1.03 |
+| `ew_ridge` k=20, 10 targets | 1,623,669 | 1,038,981 | 1,517,848 | 0.93 |
+| `ew_ridge` k=20, 1 target | 2,673,238 | 2,421,573 | 2,582,531 | 0.97 |
+| `micro`, 4 features | 11,064,497 | 8,892,182 | 9,251,264 | 0.84 |
+| `kmeans`, 4 features, K=8 | 5,211,217 | 4,677,998 | 4,636,199 | 0.89 |
+| `kmeans`, k=20, K=8 | 2,754,620 | 2,445,129 | 2,421,303 | 0.88 |
+| `corrchange`, monitor | 364,772 | 452,703 | 449,680 | 1.23 |
+
+The other 31 rows are within 0.9 and 1.1 of 0.10.0 in this build.
+
+**A bisect put each slowdown on one commit.** A worktree built six commits
+between the two releases, and a benchmark of the moved cases ran on each:
+
+| commit | what it did | what moved |
+|---|---|---|
+| `4ee7c3b`, task 101 | every running mean a compensated pair | `ew_cov` lags 1.09M → 0.58M rows/s; a 10-target `ew_ridge` −15 % |
+| `ae34d91`, task 102 | the cluster metric's floor, on a long-run reference | `micro` −16 %, `kmeans` −6 % |
+| `16ee5ab`, task 132 | each target's own means, as pairs (the review's G3) | a 10-target `ew_ridge` another −23 % |
+
+**Two were a deviation computed where it was not needed.** Task 101 put
+the pair's deviation, `(x − hi) − lo`, inside the lagged co-moments'
+innermost loop, so a past row's `k` deviations were taken `k` times each,
+for every lag, and the loop no longer vectorised. Task 132's own means
+checked their low parts' length once a feature, target by target. Each
+deviation is now taken once and each length checked once, in the same
+arithmetic and order. `scripts/compare_release.py --against 0.11.1` finds
+all 291 fields of its 30 specs identical to the bit, and the specs include
+lagged `ew_cov` and a two-target `ewridge`.
+
+**The third is the price of a default.** `micro` and `kmeans` keep a
+second set of moments per feature at eight times the halflife, and their
+decay factor, every row: the reference `scale_floor` reads, and it is on
+by default, at 0.1 (task 102). That is kept.
+
+**`corrchange`'s monitor gained 23 %** with task 103, which took its
+long-run deviation on the span centred.
+
+### Thread scaling
+
+`scripts/scaling_bench.py --markdown`, the grouped `ewridge` of P8:
+
+| threads | rows/sec | speedup |
+|---|---:|---:|
+| 1 | 522,984 | 1.0× |
+| 2 | 1,038,346 | 2.0× |
+| 4 | 1,911,813 | 3.7× |
+| 8 | 3,555,819 | 6.8× |
+| 14 | 4,398,367 | 8.4× |
+
+§4 recorded 6.2× on the ten performance cores. Here 8 threads give 6.8×,
+and 14, which reach the efficiency cores, 8.4×.
+
+### Peak memory, re-measured
+
+**The command line still holds O(state).** Its peak footprint, measured as
+§11 measures it, is flat across three lengths of the same stream, with the
+row-group prefetch at 1:
+
+| rows | parquet file | peak footprint | peak resident size |
+|---:|---:|---:|---:|
+| 750,000 | 0.13 GB | 0.25 GB | 0.49 GB |
+| 3,000,000 | 0.53 GB | 0.27 GB | 1.20 GB |
+| 6,000,000 | 1.05 GB | 0.26 GB | 1.83 GB |
+
+The resident size grows with the mapped input, which is why §11 does not
+read it. The stream is §10's shape, generated here: 20 features, 32
+groups, a sorted clock and weights, `ewridge` with `min_periods`,
+`chunk_rows=100k`. §11 read 0.15 GB at 12M rows with the prefetch at 1;
+this file reads about 0.1 GB more. The files differ, and the gap was not
+bisected.
+
+### The CSV and NDJSON read-ahead
+
+**The CSV and NDJSON read-ahead settings change nothing, on either
+surface.** Polars sizes each read-ahead at twice its pipeline count, 28
+chunks on 14 threads (`polars-stream` 0.55.2, `nodes/io_sources/*/builder.rs`).
+The same 3,000,000 rows as CSV (1.35 GB) and NDJSON (1.74 GB), median of
+three runs each:
+
+| surface | input | setting | peak footprint | wall |
+|---|---|---|---:|---:|
+| the command line | parquet | default | 0.73 GB | 1.29 s |
+| the command line | parquet | `POLARS_ROW_GROUP_PREFETCH_SIZE=1` | 0.23 GB | 1.14 s |
+| the command line | CSV | default | 0.17 GB | 2.00 s |
+| the command line | CSV | `POLARS_CSV_CHUNK_PREFETCH_LIMIT=1` | 0.19 GB | 2.08 s |
+| the command line | NDJSON | default | 0.20 GB | 1.60 s |
+| the command line | NDJSON | `POLARS_NDJSON_CHUNK_PREFETCH_LIMIT=1` | 0.23 GB | 1.60 s |
+| `lf.online.fit_predict` | parquet | default | 0.86 GB | 1.05 s |
+| `lf.online.fit_predict` | CSV | default | 0.85 GB | 1.15 s |
+| `lf.online.fit_predict` | CSV | `POLARS_CSV_CHUNK_PREFETCH_LIMIT=1` | 0.87 GB | 1.20 s |
+| `lf.online.fit_predict` | NDJSON | default | 0.63 GB | 1.38 s |
+| `lf.online.fit_predict` | NDJSON | `POLARS_NDJSON_CHUNK_PREFETCH_LIMIT=1` | 0.63 GB | 1.42 s |
+
+A limit of 2 read within 0.04 GB of the default in every case. The command line reads CSV
+and NDJSON in 0.17 to 0.23 GB whatever the setting. The lazy path holds
+0.6 to 0.9 GB whatever the format and the setting, so its constant is not
+the reader's read-ahead. The parquet row-group prefetch is still the one
+reader setting that moves the command line, from 0.73 to 0.23 GB.
+
+### The plan inspection, re-measured
+
+**§21's trivial-scan row could not be reconciled, and the re-measurement
+agrees with itself.** `scripts/plan_inspection_bench.py` times the JSON
+path's three parts, the path whole, and `explain`, each as the fastest of
+2,000 calls, so the parts can be held against the total:
+
+| plan | JSON bytes | serialize | loads | walk | sum of parts | total | `explain` |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| trivial scan | 1,449 | 0.005 ms | 0.004 | 0.004 | 0.013 | 0.013 ms | 0.003 ms |
+| with a join | 3,224 | 0.007 ms | 0.007 | 0.008 | 0.022 | 0.023 ms | 0.008 ms |
+| 50 `with_columns` | 7,139 | 0.011 ms | 0.027 | 0.058 | 0.096 | 0.102 ms | 0.090 ms |
+| 200-column schema | 73,737 | 0.133 ms | 0.727 | 1.304 | 2.165 | 2.266 ms | 0.003 ms |
+
+Polars 1.44.2, Python 3.12.13, two runs within 5 % of each other. The
+three scans read small parquet files; the wide plan is a one-row frame of
+200 columns, the only one of the four whose schema is in the JSON. §21's
+plans cannot be rebuilt from its record, so its figures stay as recorded.
+What §21 concluded holds: at width the walk is most of the path, 1.3 ms of
+2.3, and `explain` reads the wide plan in 0.003 ms, which is why the
+filter that skips the JSON saves nearly all of it.

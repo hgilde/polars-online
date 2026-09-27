@@ -461,19 +461,43 @@ def seqtest(
         """The running sum of ``e`` over the rows before this one."""
         return over(e.cum_sum().shift(1, fill_value=0))
 
-    n_eff = over(pl.int_range(pl.len())).cast(pl.Float64)
-    ready = n_eff >= min_periods
-    fields: list[pl.Expr] = []
-    for t, d in signs.items():
+    # Two passes, so that no window sits inside another: the log wealth is a
+    # running sum over the rows before, of a bet sized by counts that are
+    # themselves running sums. Polars 1.34.0 refuses a window inside a
+    # window ("window expression not allowed in aggregation"; 1.44.2 takes
+    # it), which failed every `by` at the declared floor (task 109's floor run,
+    # 2026-09-27). The counts go into columns first, then the wealth reads
+    # them; the arithmetic is the same.
+    taken = set(df.columns)
+
+    def temp(label: str) -> str:
+        column = f"__po_seqtest_{label}"
+        while column in taken:
+            column = "_" + column
+        taken.add(column)
+        return column
+
+    n_eff_col = temp("n_eff")
+    first: list[pl.Expr] = [over(pl.int_range(pl.len())).cast(pl.Float64).alias(n_eff_col)]
+    staged: dict[str, tuple[str, str, str]] = {}
+    for i, (t, d) in enumerate(signs.items()):
         # What the bank does not learn from -- null, NaN, an infinity, a
         # magnitude beyond its input bound (docs/PLAN.md section 3) -- is no
         # sign here either. Polars orders NaN above every float, so without
         # this `NaN > 0` would be a positive sign.
         d = d.cast(pl.Float64)
         d = pl.when(d.is_finite() & (d.abs() <= _INPUT_BOUND)).then(d)
-        s = pl.when(d > 0).then(1.0).when(d < 0).then(-1.0).otherwise(0.0)
-        n_pos = before((d > 0).cast(pl.Int64).fill_null(0))
-        n_neg = before((d < 0).cast(pl.Int64).fill_null(0))
+        cols = (temp(f"s_{i}"), temp(f"n_pos_{i}"), temp(f"n_neg_{i}"))
+        first += [
+            pl.when(d > 0).then(1.0).when(d < 0).then(-1.0).otherwise(0.0).alias(cols[0]),
+            before((d > 0).cast(pl.Int64).fill_null(0)).alias(cols[1]),
+            before((d < 0).cast(pl.Int64).fill_null(0)).alias(cols[2]),
+        ]
+        staged[t] = cols
+    ready = pl.col(n_eff_col) >= min_periods
+    fields: list[pl.Expr] = []
+    for t, (s_col, pos_col, neg_col) in staged.items():
+        s, n_pos, n_neg = pl.col(s_col), pl.col(pos_col), pl.col(neg_col)
         n1 = (n_pos + n_neg + 1).cast(pl.Float64)
         lam_pos = pl.max_horizontal((n_pos - n_neg).cast(pl.Float64) / n1, 0.0)
         lam_neg = pl.max_horizontal((n_neg - n_pos).cast(pl.Float64) / n1, 0.0)
@@ -481,8 +505,9 @@ def seqtest(
         log_e_neg = before((-lam_neg * s).log1p())
         for label, e in zip(names, (log_e_pos, log_e_neg, n_pos, n_neg), strict=True):
             fields.append(pl.when(ready).then(e).alias(f"{label}_{t}"))
-    fields.append(n_eff.alias("n_eff"))
-    return df.with_columns(pl.struct(fields).alias(name))
+    fields.append(pl.col(n_eff_col).alias("n_eff"))
+    temps = [n_eff_col, *(c for cols in staged.values() for c in cols)]
+    return df.with_columns(first).with_columns(pl.struct(fields).alias(name)).drop(temps)
 
 
 def sums(

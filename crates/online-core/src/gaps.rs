@@ -161,12 +161,28 @@ impl Cross {
         let dy = dev(y, self.my[j], lo_of(&self.my_lo, j));
         let ab_dy = aj * bj * dy;
         let (mj, c, mj_lo) = (&mut self.mj[j], &mut self.c[j], &mut self.mj_lo[j]);
-        for i in 0..k {
-            let u = dev(z[i], mj[i], lo_of(mj_lo, i));
-            c[i] = aj * c[i] + ab_dy * u;
-            // A row of weight 0 takes no step (`crate::comp::add` says why).
-            if bj > 0.0 {
-                add(&mut mj[i], lo_slot(mj_lo, k, i), bj * u);
+        debug_assert_eq!(z.len(), k);
+        // The low parts' length is settled once, not checked per feature, so
+        // the loop is straight arithmetic (task 132's own means cost a
+        // 10-target `ewridge` a quarter of its rows a second with the checks
+        // inside; PERFORMANCE §26). The same steps in the same order: a row
+        // that steps sizes the vector as `lo_slot` did at its first feature,
+        // and a row of weight 0 takes no step (`crate::comp::add` says why)
+        // and leaves the vector as it found it.
+        if bj > 0.0 {
+            if mj_lo.len() != k {
+                *mj_lo = vec![0.0; k];
+            }
+            for (((m, lo), ci), &zi) in mj.iter_mut().zip(mj_lo.iter_mut()).zip(c.iter_mut()).zip(z)
+            {
+                let u = dev(zi, *m, *lo);
+                *ci = aj * *ci + ab_dy * u;
+                add(m, lo, bj * u);
+            }
+        } else {
+            for (i, (ci, &zi)) in c.iter_mut().zip(z).enumerate() {
+                let u = dev(zi, mj[i], lo_of(mj_lo, i));
+                *ci = aj * *ci + ab_dy * u;
             }
         }
         if bj > 0.0 {
@@ -179,11 +195,15 @@ impl Cross {
     /// of a row that would leave no weight at all.
     pub(crate) fn advance(&mut self, z: &[f64], lam: f64, w: f64, b: f64) {
         if b > 0.0 {
-            use crate::comp::{add, dev, lo_of, lo_slot};
+            use crate::comp::{add, dev};
+            // Sized once, as `learn` does, then straight arithmetic.
             let k = self.m.len();
-            for (i, (mi, &zi)) in self.m.iter_mut().zip(z).enumerate() {
-                let u = dev(zi, *mi, lo_of(&self.m_lo, i));
-                add(mi, lo_slot(&mut self.m_lo, k, i), b * u);
+            if self.m_lo.len() != k {
+                self.m_lo = vec![0.0; k];
+            }
+            for ((mi, lo), &zi) in self.m.iter_mut().zip(self.m_lo.iter_mut()).zip(z) {
+                let u = dev(zi, *mi, *lo);
+                add(mi, lo, b * u);
             }
         }
         let w_new = lam * self.w + w;

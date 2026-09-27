@@ -81,8 +81,18 @@ def same(a: pl.Series, b: pl.Series) -> bool:
     if isinstance(a.dtype, pl.List) and a.dtype.inner == pl.Float64:
         if not a.list.len().equals(b.list.len(), null_equal=True):
             return False
-        return same(a.explode(empty_as_null=True), b.explode(empty_as_null=True))
+        return same(_explode(a), _explode(b))
     return a.equals(b, null_equal=True)
+
+
+def _explode(s: pl.Series) -> pl.Series:
+    """A list column's values, an empty list as one null: the keyword keeps
+    that behaviour past polars 2.0, and py-polars before it, down to the
+    floor 1.34.0, has no keyword and already does it."""
+    try:
+        return s.explode(empty_as_null=True)
+    except TypeError:
+        return s.explode()
 
 
 def first_difference(a: pl.Series, b: pl.Series) -> str:

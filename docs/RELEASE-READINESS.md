@@ -128,12 +128,25 @@ in its tree, and the test is pure Rust. The sixth is why the Linux jobs had
 never once restored a cache. Rehearsal one never reached it, because the
 sccache wrapper failed first and hid it.
 
-**The rehearsals do not measure the glibc floor of the Linux CLI binaries.**
-Those are built on the runner's own glibc (Ubuntu 24.04, 2.39), not in the
-manylinux2014 container the wheels come from. So their glibc floor is
-whatever the toolchain emits, and nothing checks it. The wheels are
-`manylinux_2_17`. A deployment on an older glibc builds the CLI from a
-checkout, or the release job grows a container step for it.
+**The Linux CLI binaries need glibc 2.39, the build runner's own.**
+Measured on 0.11.1's release assets on 2026-09-27, from each binary's
+version requirements (`.gnu.version_r`), for x86_64 and aarch64 alike:
+
+| requirement | from | binding |
+|---|---|---|
+| `GLIBC_2.34` | `__libc_start_main` and the pthread functions | hard |
+| `GLIBC_2.35` | `hypot`, in libm | hard |
+| `GLIBC_2.39` | `pidfd_getpid` and `pidfd_spawnp`, which Rust's standard library uses to spawn a process | weak symbols, but the version requirement is not marked weak, so the loader refuses the binary without it |
+
+So the CLI starts on Ubuntu 24.04, Debian 13 or newer, and not on Ubuntu
+22.04 (2.35), Debian 12 (2.36) or RHEL 9 (2.34). This was read from the
+files, not run on an older glibc: the machine that measured it has no
+container runtime. The binaries are built on the runner's own image, not
+in the manylinux2014 container the wheels come from (the wheels are
+`manylinux_2_17`), so the floor follows the image and rises when
+`ubuntu-latest` moves to 26.04. Until the release job changes
+([PLAN](PLAN.md) task 115 (i)), a deployment on an older glibc builds the
+CLI from a checkout.
 
 ### Compare with the last release, bit for bit (2026-09-24)
 
@@ -261,6 +274,19 @@ form `lf.online.fit_predict` (E33). py-polars added `collect_batches` in
 not see this. It was found while checking E33 against the floor, and the
 floor now says what the package needs. The whole suite (1037 tests) passed
 on 1.34.0, 1.38.1 and 1.44.1 with identical numbers.
+
+**The whole suite on 1.34.0 again, 2026-09-27: one bug in the package,
+fixed.** A venv with the locked dev and docs groups, `polars` and
+`polars-runtime-32` at 1.34.0, and this build's wheel ran 3,425 tests:
+3,408 passed and 17 failed.
+
+| failures | cause | now |
+|---|---|---|
+| 4 | `po.eval.seqtest` with `by`, the README's example among them: a window inside a window, which 1.34.0 refuses ("window expression not allowed in aggregation") | fixed: two passes, the same arithmetic; all 208 of those files' tests pass on 1.34.0 |
+| 1 | `scripts/compare_release.py` passed `explode(empty_as_null=True)`, a keyword 1.34.0 has not got | fixed: the keyword where it exists |
+| 8 | `pl.scan_arrow_c_stream`, in py-polars from 1.43.0: the DuckDB, ADBC and pyarrow paths' tests and examples | the docs say 1.43.0 ([ARROW-SOURCES](ARROW-SOURCES.md)); the package itself only names it in a warning |
+| 2 | durations: 1.34.0's parser refuses a leading `+`, which the text oracle compares against, and its `pl.duration` wraps past an i64 before the package can see it | recorded: the promise that a `pl.duration` past 292 years is refused holds on a newer polars |
+| 2 | the development environment's version pin (`tests/test_scaffold.py`) and `docs/VALIDATION.md`, which records 1.44.2 | expected |
 
 **The floor has not moved since, though `po.run` has gone.** It left Python
 in task 83 (`7d23a80`, 2026-09-17), and the command line kept the runner.

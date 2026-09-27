@@ -21,6 +21,9 @@ dependency of the package, so it is installed wherever the test suite runs:
 
 The example checks itself: it exits non-zero if a streamed fit stops equalling
 an in-memory one, or if the trap stops reproducing.
+
+``pl.scan_arrow_c_stream`` is in py-polars from 1.43.0 (docs/ARROW-SOURCES.md);
+this example needs that or later.
 """
 
 from __future__ import annotations

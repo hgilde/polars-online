@@ -31,6 +31,13 @@ for out in bank.fit_predict_batches(pl.scan_arrow_c_stream(rel), chunk_rows=100_
     ...
 ```
 
+**`pl.scan_arrow_c_stream` needs py-polars 1.43.0 or later.** It is in no
+release from 1.34.0, this package's floor, to 1.42.1 (read from each
+release's wheel, 2026-09-27). On those, `pl.DataFrame(rel)` reads the same
+stream without pyarrow, on 1.34.0 with duckdb 1.5.5, but whole, into
+memory: nothing streams. Everything below that names it assumes 1.43.0 or
+later.
+
 Two corrections to what this block used to say, both measured on duckdb 1.5.5
 rather than recalled. `rel.record_batch(...)` is **not** a method — a relation
 resolves an unknown attribute as a column name, so it raises
