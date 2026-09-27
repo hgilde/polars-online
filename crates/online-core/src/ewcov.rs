@@ -4066,12 +4066,22 @@ mod tests {
         assert_eq!(tm.n_kish(&[w_t])[0], ew.n_kish(), "Kish n");
     }
 
+    /// At a level of 1e8 as well as 0 (review 2026-09-12, C16; docs/PLAN.md
+    /// task 112): the blend takes centred moments, so blending with a copy
+    /// changes nothing at any level, which a blend through the raw second
+    /// moment could not keep at 1e8.
     #[test]
     fn blending_target_moments_with_a_copy_is_the_identity() {
+        for level in [0.0, 1e8] {
+            blending_a_copy_at(level);
+        }
+    }
+
+    fn blending_a_copy_at(level: f64) {
         let mut tm = TargetMoments::new(1);
         let mut w_t = 0.0;
         for i in 0..100 {
-            let y = (i as f64 * 0.11).cos();
+            let y = level + (i as f64 * 0.11).cos();
             let (lam, w) = (0.95, 1.0);
             let w_new = lam * w_t + w;
             tm.learn(0, y, lam * w_t / w_new, w / w_new, lam, w);
@@ -4080,8 +4090,14 @@ mod tests {
         let twin = tm.clone();
         let want = tm.clone();
         tm.blend(&twin, 0, 0.5, 0.5);
-        assert!((tm.means()[0] - want.means()[0]).abs() < 1e-12);
-        assert!((tm.vars()[0] - want.vars()[0]).abs() < 1e-12);
+        assert!((tm.means()[0] - want.means()[0]).abs() <= 1e-12 * (1.0 + level));
+        // The variance is about 0.5 at any level, and must stay it.
+        assert!(
+            (tm.vars()[0] - want.vars()[0]).abs() < 1e-12,
+            "level {level}: {} vs {}",
+            tm.vars()[0],
+            want.vars()[0]
+        );
         // `Q` too: a union of the two row sets would report the blend as
         // twice as informative as the state it blended with itself.
         assert!((tm.q()[0] - want.q()[0]).abs() < 1e-12);

@@ -1,7 +1,8 @@
 # Simplification review
 
 Status as of 2026-08-31: **S1, S2, S3 and S4 are done. S5 and S6 are declined
-on their own stated grounds; S7 has not met its own bar.** A read of the
+on their own stated grounds; S7 has not met its own bar.** S7 met it later, at
+five callers, and was done on 2026-09-27 (below). A read of the
 codebase after the P1–P8 performance work, looking for complexity that can go
 without costing features, performance, stability, or any stated goal.
 
@@ -233,6 +234,16 @@ when debugging CI. **Worth doing at the third caller, or now if the release
 workflow ends up needing it too.**
 
 **Expected:** ~10 lines and one class of "why did the new workflow break?".
+
+**Done 2026-09-27 (docs/PLAN.md task 113), at five callers:** `ci.yml`,
+`leakcheck.yml`, `mutants.yml`, `polars-canary.yml` and `release.yml` each
+call `.github/actions/linux-build-prep`, and the copies differed already:
+two printed the disk, one refreshed apt's lists for valgrind. The action
+takes that as `packages` and `update-lists`, refuses a runner that is not
+Linux, and carries the reasons each part exists.
+`tests/test_ci_cost_policy.py` holds every "free disk" step to calling it,
+every local action to following the checkout, and the action's order: free
+the disk, install, then write the linker.
 
 ---
 

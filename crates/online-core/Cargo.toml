@@ -31,4 +31,7 @@ proptest.workspace = true
 # Tests only: a readable way to feed a config that omits a `#[serde(default)]`
 # field, which is what a state file written before that field existed looks like.
 serde_json.workspace = true
+# Tests only: a state edited in msgpack itself, infinities intact
+# (tests/model_contract.rs, states written before the means' low parts).
+rmpv.workspace = true
 

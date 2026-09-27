@@ -300,7 +300,11 @@ The diagnostics add, per slot:
        error as a ratio to the best slot's, so ``average_eta`` (default
        1) means the same thing whatever the target's units; ``inf`` is
        ``emit_selected``'s argmin, a tie shared. Hedges where selection
-       commits.
+       commits. The weights come from each slot's EW *mean* error, so
+       they stay bounded and do not sharpen as rows accumulate, as a
+       weighting by summed losses (river's ``EWARegressor``) does. A slot
+       with no prediction or no ``sigma`` on the row is left out of that
+       row's average; the field is null only when every slot is.
    * - ``emit_metrics``
      - ``ic_<slot>``, ``r2_<slot>``, ``hit_rate_<slot>``
      - Exponentially weighted correlation of prediction with target,

@@ -52,18 +52,12 @@ jobs:
       # in place before anything compiles.
       - name: free disk and use a leaner linker (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-                      /usr/local/share/boost /usr/local/.ghcup || true
-          df -h /
-          # The image's package lists go stale between image builds: valgrind
-          # pulls libc6-dbg from noble-updates, whose listed version 404'd on
-          # 2026-09-14 until the lists were refreshed.
-          sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends lld valgrind
-          mkdir -p .cargo
-          printf '[target.x86_64-unknown-linux-gnu]\nrustflags = ["-C", "link-arg=-fuse-ld=lld"]\n' \
-            >> .cargo/config.toml
+        uses: ./.github/actions/linux-build-prep
+        with:
+          # valgrind pulls libc6-dbg from noble-updates, whose listed version
+          # 404'd on 2026-09-14 until the stale lists were refreshed.
+          packages: valgrind
+          update-lists: "true"
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:

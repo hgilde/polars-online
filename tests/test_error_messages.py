@@ -17,6 +17,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
+from conftest import run_online
 from polars_online import _spec
 
 INF = float("inf")
@@ -253,7 +254,31 @@ BUILDERS = {
     po.spec.kmeans: dict(features=["x0", "y"], targets=None, k=2),
     po.spec.ew_class: dict(targets=None, label="y", classes=["a", "b"], precision_prior=1.0),
     po.spec.marginal: {},
+    # The seven the sweeps below never saw until task 111.
+    po.spec.micro: dict(features=["x0", "y"], targets=None, eps=0.3),
+    po.spec.seqtest: dict(features=None, halflife=None),
+    po.spec.deco: dict(features=["x0", "y"], targets=None),
+    po.spec.rcov: dict(
+        features=["x0", "y"],
+        targets=None,
+        halflife=None,
+        group="g",
+        group_close="monotone",
+        block_rows=100,
+    ),
+    po.spec.hmm: dict(features=["x0", "y"], targets=None, k=2, precision_prior=0.1),
+    po.spec.corrchange: dict(features=["x0", "y"], targets=None, halflife=None, span_rows=20),
+    po.spec.bocpd: dict(features=["x0", "y"], targets=None, halflife=None),
 }
+
+
+def test_the_float_sweeps_name_every_builder():
+    """``BUILDERS`` named fourteen of the twenty-one builders, so the two
+    sweeps below never tried an infinite or NaN float on the other seven
+    (docs/PLAN.md task 111); it is held to the registry now."""
+    from test_model_registry import MINIMAL
+
+    assert {b.__name__ for b in BUILDERS} == set(MINIMAL)
 
 
 def _members(hint) -> tuple:
@@ -601,6 +626,34 @@ def test_a_narrow_dtype_gives_the_same_answer_as_float64(dtype):
     want = po.ModelBank([spec]).fit_predict(df)
     got = po.ModelBank([spec]).fit_predict(df.with_columns(pl.col("x0").cast(dtype)))
     assert want.equals(got, null_equal=True)
+
+
+def test_a_decimal_parquet_runs_through_the_cli(tmp_path, online_cli):
+    """Prices in parquet are commonly ``Decimal`` and small codes ``UInt8``. A
+    ``Decimal`` once aborted the process at the boundary (IMPROVEMENTS U5),
+    which for the CLI meant a file it could not open at all; its test went
+    with ``po.run`` in task 83, and the ``ModelBank`` test above never reached
+    the CLI's parquet reader (docs/PLAN.md task 112). The CLI's output is the
+    bank's on the same numbers as ``Float64``, to the bit."""
+    n = 400
+    rng = np.random.default_rng(83)
+    x = rng.normal(size=n)
+    src, out = tmp_path / "in.parquet", tmp_path / "out.parquet"
+    df = pl.DataFrame(
+        {
+            "price": pl.Series(np.round(100.0 + x, 4)).cast(pl.Decimal(12, 4)),
+            "code": pl.Series(np.arange(n) % 3).cast(pl.UInt8),
+            "y": 2.0 * x + 0.1 * rng.normal(size=n),
+        }
+    )
+    df.write_parquet(src)
+    spec = po.spec.ewridge("m", targets=["y"], features=["price", "code"], halflife=50.0)
+    run_online(online_cli, tmp_path, [spec], input=src, output=out)
+    plain = df.with_columns(pl.col("price", "code").cast(pl.Float64))
+    want = po.ModelBank([spec]).fit_predict(plain)["m"]
+    got = pl.read_parquet(out)["m"]
+    assert got.struct.field("pred_y").drop_nulls().len() > n // 2
+    assert got.equals(want, null_equal=True)
 
 
 def test_a_spec_named_like_an_input_column_is_refused():

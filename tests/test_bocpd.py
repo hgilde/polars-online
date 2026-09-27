@@ -109,6 +109,80 @@ def test_the_posterior_is_the_longhand_algorithm_one():
     assert out["run_mean"].to_list()[1:] == pytest.approx(mean[:-1], abs=1e-10)
 
 
+def longhand_gaussian(x, hazard, k0=1.0):
+    """Algorithm 1 again, with the ``gaussian`` emission: a normal-inverse-
+    Wishart run whose predictive is a multivariate Student-t, written from the
+    textbook -- raw sums, ``numpy.linalg.solve`` and ``slogdet`` -- where the
+    model keeps centred sums and a Cholesky factor. The prior is the spec's
+    default: ``mu0 = 0``, ``nu0 = d + 2``, ``Psi0 = I``. Returns the row's log
+    score and ``P(r <= 1)`` after it, per row."""
+    x = np.asarray(x, dtype=float)
+    d = x.shape[1]
+    nu0, psi0, mu0 = d + 2.0, np.eye(d), np.zeros(d)
+    h = 1.0 / hazard
+    runs = [(0.0, np.zeros(d), np.zeros((d, d)))]
+    joint = np.array([1.0])
+    scores, p_change = [], []
+    for row in x:
+        pi = []
+        for n, sx, sxx in runs:
+            kn, nun = k0 + n, nu0 + n
+            xbar = sx / n if n > 0 else np.zeros(d)
+            scatter = sxx - n * np.outer(xbar, xbar)
+            mun = (k0 * mu0 + n * xbar) / kn
+            psin = psi0 + scatter + k0 * n / kn * np.outer(xbar - mu0, xbar - mu0)
+            dof = nun - d + 1.0
+            sigma = psin * (kn + 1.0) / (kn * dof)
+            delta = row - mun
+            q = delta @ np.linalg.solve(sigma, delta)
+            _, logdet = np.linalg.slogdet(sigma)
+            ln = (
+                lgamma((dof + d) / 2.0)
+                - lgamma(dof / 2.0)
+                - 0.5 * d * np.log(dof * np.pi)
+                - 0.5 * logdet
+                - 0.5 * (dof + d) * np.log1p(q / dof)
+            )
+            pi.append(np.exp(ln))
+        pi = np.array(pi)
+        pre = joint / joint.sum()
+        scores.append(np.log((pre * pi).sum()))
+        new = np.empty(len(runs) + 1)
+        new[1:] = joint * pi * (1.0 - h)
+        new[0] = (joint * pi * h).sum()
+        post = new / new.sum()
+        p_change.append(post[0] + (post[1] if len(post) > 1 else 0.0))
+        zero = (0.0, np.zeros(d), np.zeros((d, d)))
+        runs = [zero] + [(n + 1, sx + row, sxx + np.outer(row, row)) for n, sx, sxx in runs]
+        joint = new
+    return np.array(scores), np.array(p_change)
+
+
+def test_the_gaussian_emission_is_the_longhand_at_three_features():
+    """The full normal-inverse-Wishart emission at ``d = 3`` against the
+    textbook multivariate-t predictive in Algorithm 1, at every row, with the
+    truncation off (REVIEW-2026-09-18 §6; docs/PLAN.md task 112: it had a
+    smoke test and a shift invariance, no oracle). The columns are
+    correlated and shift together at row 60, so the covariance is what the
+    predictive turns on: the diagonal emission's numbers differ here, which
+    is what makes the comparison a test of the full one."""
+    rng = np.random.default_rng(7)
+    cov = np.array([[1.0, 0.8, 0.3], [0.8, 1.0, 0.5], [0.3, 0.5, 1.0]])
+    x = np.concatenate(
+        [
+            rng.multivariate_normal(np.zeros(3), cov, 60),
+            rng.multivariate_normal([2.0, -1.0, 1.5], cov, 60),
+        ]
+    )
+    common = dict(hazard=50.0, prune_below=0.0)
+    out = run(x, emission="gaussian", **common)
+    scores, p_change = longhand_gaussian(x, 50.0)
+    assert out["logscore"].to_list()[1:] == pytest.approx(list(scores[1:]), abs=1e-10)
+    assert out["p_change"].to_list()[1:] == pytest.approx(list(p_change[1:]), abs=1e-10)
+    diag = run(x, emission="diag", **common)["logscore"].to_numpy()[1:]
+    assert np.max(np.abs(diag - scores[1:])) > 1e-2, "the covariance matters here"
+
+
 def test_the_mass_at_run_length_zero_is_exactly_the_hazard():
     """Why `p_change` is `P(r <= 1)` and not `P(r = 0)`: the changepoint
     branch and the growth branch share the same predictive, so the

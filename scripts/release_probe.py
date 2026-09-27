@@ -8,6 +8,13 @@ output field of every spec, and the frame `closed_groups` drains, to a
 parquet file, and what ran to a JSON manifest:
 
     python scripts/release_probe.py OUT.parquet MANIFEST.json
+
+With ``--states``, it fits each spec on the first half of the stream and
+saves the bank under the spec's name instead, for
+``tests/test_released_state.py``: a released build writes the files, and
+this build loads them and goes on:
+
+    python scripts/release_probe.py --states DIR MANIFEST.json
 """
 
 from __future__ import annotations
@@ -58,6 +65,9 @@ def stream(n: int = 400, seed: int = 7) -> pl.DataFrame:
         }
     ).with_columns(pl.col("x0", "y").fill_nan(None))
 
+
+#: Where `states` stops: the first half of `stream()`.
+HALF = 200
 
 CLOCK = dict(clock="t", max_dclock=6.0, weight="w")
 FIT = dict(targets=["y"], features=["x0", "x1", "x2"], group="g", halflife=25.0, **CLOCK)
@@ -202,5 +212,37 @@ def main(out_path: str, manifest_path: str) -> None:
         json.dump(manifest, fh, indent=1)
 
 
+def states(out_dir: str, manifest_path: str) -> None:
+    """Each spec fitted on the first half of `stream()` and saved to
+    ``<out_dir>/<name>.state``, with the specs it reads in the same bank. The
+    manifest names what was saved and the schema this build writes."""
+    warnings.simplefilter("ignore")
+    first = stream().head(HALF)
+    saved: list[str] = []
+    refused: dict[str, str] = {}
+    built: dict[str, dict] = {}
+    for name, builder, kw, reads in WORKLOAD:
+        try:
+            built[name] = getattr(po.spec, builder)(name, **kw)
+            bank = po.ModelBank([built[r] for r in reads] + [built[name]])
+            bank.fit_predict(first)
+            bank.save(f"{out_dir}/{name}.state")
+        except Exception as e:  # a spec this build does not have
+            refused[name] = f"{type(e).__name__}: {e}"[:300]
+            continue
+        saved.append(name)
+    manifest = {
+        "version": po.__version__,
+        "schema": po.schema_version(),
+        "saved": saved,
+        "refused": refused,
+    }
+    with open(manifest_path, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=1)
+
+
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    if sys.argv[1] == "--states":
+        states(sys.argv[2], sys.argv[3])
+    else:
+        main(sys.argv[1], sys.argv[2])

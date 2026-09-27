@@ -47,7 +47,7 @@ The steps at a glance:
 | [12](#step-12--per-model-sweeps) | four sweep lists | one entry each | `test_the_sweeps_cover_every_regression_model` |
 | [13](#step-13--teststest_model_registrypy) | `tests/test_model_registry.py` | the `MINIMAL` entry | `test_minimal_names_every_builder` |
 | [14](#step-14--teststest_golden_pipelinepy) | `tests/test_golden_pipeline.py` | a spec in `specs()`, and its lines in `GOLDEN` | `test_the_golden_pipeline_pins_every_model` |
-| [15](#step-15--readmemd) | `README.md` | the model's heading, and its row in the model table | `test_the_readme_documents_every_model` |
+| [15](#step-15--readmemd) | `README.md`, `docs/OUTPUTS.md`, `llms.txt` | the model's heading, its row and its API links; its family and field meanings in the OUTPUTS generator; the model count | `test_the_readme_documents_every_model`, the `test_api_links` pair, the `test_outputs_doc` trio, `test_it_says_how_many_models_there_are` |
 | [16](#step-16--changelogmd-and-the-design-note) | `CHANGELOG.md`, and the design note | an entry | **no check** |
 
 ## The recursion — `crates/online-core`
@@ -166,11 +166,17 @@ on the first `step`'s indexing. The nested accumulators (`EwCov`, `EwLagCov`,
 `MarginalLags`, `MarginalBins`, `FeatureMoments`) carry a `has_shape` for it.
 
 **Check:** the model's own `a_state_of_the_wrong_shape_is_refused` unit test,
-which 17 of the 20 model modules carry, and
-`crates/online-polars/tests/summary.rs`'s bit-flip fuzz, which runs
-`fit_predict` on every state that loads and fails on a panic. `ewridge`, `sgd`
-and `kalman` refuse a wrong shape in `restore` without a unit test of that
-name.
+which every model module carries since task 111 (`sgd` and `kalman` check the
+shape in their `TryFrom`, as a saved state is read, so their tests go through
+the encoding), and `crates/online-polars/tests/summary.rs`'s corruption
+sweeps, which cut and bit-flip a saved state of every model kind and run
+`fit_predict` on every one that loads, failing on a panic
+(`every_model_kind_refuses_or_loads_a_corrupt_file_never_panics`, held to
+`ModelKind::KINDS`). A state from before the means' low parts must load and go
+on as the whole one does: `model_contract.rs`'s
+`every_model_resumes_from_a_state_without_the_low_parts` drops every `_lo`
+field of every model's state and compares the two, so a new `_lo` field needs
+`#[serde(default)]`.
 
 ### Step 2 — `src/lib.rs`
 
@@ -383,7 +389,9 @@ reads another's output goes through the same two switches, not a third phase.
 compares the declared field names with the struct the bank actually produces,
 for every model in its list, times four output combinations (three when
 written). `test_coef.test_every_model_lays_out_as_coef_index` checks each
-model's `coef` list is as long as its named slots.
+model's `coef` list is as long as its named slots: add a spec to
+`COEF_SPECS` there, which `test_the_layout_test_covers_every_kind_with_a_coef`
+holds to every builder `coef_index` lays out.
 
 **`crates/online-cli` and `crates/online-py` need nothing**: both build from
 the spec.
@@ -409,7 +417,8 @@ Then in **`spec.py`**, the import and `__all__`.
 |---|---|
 | `test_model_registry::test_every_rust_kind_has_exactly_one_builder` | fails while a kind has no builder; `test_minimal_names_every_builder` then sends you to step 13 |
 | `test_temporal_clock::TestEveryClockParameterTakesADuration` | the annotations to `CLOCK_FIELDS`; it fits each clock parameter both ways on a temporal clock |
-| `test_error_messages::test_the_inf_table_matches_the_rust_side` | `_INF_OK` to what Rust's parser and `validate` accept |
+| `test_error_messages::test_the_inf_table_matches_the_rust_side` | `_INF_OK` to what Rust's parser and `validate` accept, for each builder in that file's `BUILDERS`, which `test_the_float_sweeps_name_every_builder` holds to `MINIMAL` |
+| `test_kwargs_typing::test_each_builder_takes_common_as_the_typed_dict` | `**common` typed `Unpack[CommonKwargs]`; add the name to that file's `BUILDERS`, which `test_model_registry::test_the_builder_list_covers_every_builder` holds to the builders |
 | `crates/online-polars/tests/spec_inf.rs` | `validate` to the same verdicts from TOML, where it is the only gate |
 
 ### Step 10 — `tests/api_surface.txt`
@@ -502,7 +511,24 @@ classification; and sequential tests and regimes. Add a row under the same
 family in the model table.
 
 **Check:** `test_model_registry::test_the_readme_documents_every_model`.
-`huber` and `quantile` share a heading; the regex knows.
+`huber` and `quantile` share a heading; the regex knows. And
+`test_api_links`: `test_the_model_table_links_every_builder_to_its_page` wants
+the table row to link `` [`<name>`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.<name>) ``,
+and `test_every_model_section_links_its_builder_and_its_source` wants the
+heading's section to carry an `*API:*` link to the builder and a `*Rust:*`
+link to `crates/online-core/src/<file>.rs`, which must exist.
+
+**`docs/OUTPUTS.md`** is generated. In `scripts/outputs_doc.py`, place the
+model in its family in `FAMILIES`, give each new field stem a `MEANING` line,
+and a `STATE_ONLY` note if the model writes only `n_eff`; then
+`uv run python scripts/outputs_doc.py > docs/OUTPUTS.md`. **Check:**
+`test_outputs_doc`'s `test_the_document_is_what_the_generator_writes`,
+`test_every_model_has_a_section` and `test_no_field_is_left_undocumented`.
+
+**`llms.txt`** says how many models there are ("all 21"): bump it. **Check:**
+`test_llms_txt::test_it_says_how_many_models_there_are`, and
+`test_it_warns_about_the_one_name_spelled_two_ways`, which fails when a new
+builder's name differs from its kind.
 
 ### Step 16 — `CHANGELOG.md` and the design note
 

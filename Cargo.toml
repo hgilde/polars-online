@@ -43,6 +43,9 @@ thiserror = "2"
 # binaries alone; hard rule 12 covers what ships, not tests (the user,
 # 2026-09-25). Without default features, which fork a process per case.
 proptest = { version = "1.11", default-features = false, features = ["std"] }
+# Tests only: a msgpack value to edit a saved state in the encoding a bank
+# writes, where serde_json would turn an infinite parameter into null.
+rmpv = "1"
 clap = { version = "4.6", features = ["derive"] }
 toml = "1.1"
 

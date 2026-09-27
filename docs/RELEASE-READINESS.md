@@ -162,6 +162,19 @@ Measured when it was written: this build against 0.10.0 and against
 0.9.1, all 291 fields identical. Against 0.8.0, 112 fields differ, all
 from 0.9.0's declared readiness gates, which is the evidence it can fail.
 
+**A released build's state files load, and the model goes on as this
+build's would.** `tests/test_released_state.py` installs 0.10.0 and 0.11.1
+into the same cache and runs `scripts/release_probe.py --states` under
+each: the workload's 30 specs, fitted on the first half of the stream and
+saved. This build loads each file and fits the second half beside a bank
+of its own that saw both halves, and compares every float, the
+coefficients, the closed groups and `marginal`'s table. Measured
+2026-09-27: 0.11.1's files, at schema 17, go on bit for bit; 0.10.0's, at
+schema 14, within 2.2e-13 relative, since schema 14 carries no low parts
+for the means and they restart at zero. It runs in the suite, and offline
+it is skipped (hard rule 1). When a release adds a schema, add its version
+to `RELEASES` there.
+
 The steps of a release, in order:
 
 | step | how |

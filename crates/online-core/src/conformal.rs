@@ -97,6 +97,21 @@ impl Conformal {
     /// emitted for it. Every later row is scored against the radius it was
     /// given, then moves it.
     pub fn update(&mut self, resid: f64, sigma: f64, lam: f64, w: f64) {
+        self.update_against(resid, sigma, lam, w, None);
+    }
+
+    /// [`Self::update`] for a row whose label arrives after the row was
+    /// shown its interval (`label_delay`): the row is scored against the
+    /// radius it was *shown*, `shown`, not the radius the recursion has
+    /// reached since, and the step moves the current radius by that error --
+    /// the delayed-feedback form of adaptive conformal inference. Scored
+    /// against the radius at release, the coverage described intervals
+    /// nobody was shown (review 2026-09-12, C21's other half; docs/PLAN.md
+    /// task 112). `None` is the current radius, which is what `shown` is
+    /// with no delay; `Some(NaN)`, a row shown no interval because none
+    /// existed yet, is no evidence either way: it ages the coverage and
+    /// takes no step.
+    pub fn update_against(&mut self, resid: f64, sigma: f64, lam: f64, w: f64, shown: Option<f64>) {
         if !resid.is_finite() || w <= 0.0 {
             self.cov_w *= lam;
             return;
@@ -109,8 +124,13 @@ impl Conformal {
             self.cov_w *= lam;
             return;
         }
+        let against = shown.unwrap_or(self.q);
+        if !against.is_finite() {
+            self.cov_w *= lam;
+            return;
+        }
         let s = resid.abs();
-        let miss = s > self.q;
+        let miss = s > against;
         let cw = lam * self.cov_w + w;
         self.cov = (lam * self.cov_w * self.cov + w * f64::from(!miss)) / cw;
         self.cov_w = cw;
@@ -279,6 +299,38 @@ mod tests {
         }
         assert_eq!(c.radius(), Some(0.0));
         assert_eq!(c.coverage(), Some(1.0));
+    }
+
+    /// Against the radius it was shown: a row inside the interval it was
+    /// shown counts as covered however the radius has moved since, the step
+    /// moves the current radius, a row shown no interval is no evidence, and
+    /// `None` is `update` to the bit (docs/PLAN.md task 112).
+    #[test]
+    fn a_delayed_row_is_scored_against_the_radius_it_was_shown() {
+        let mut c = Conformal::new(0.9, 0.1).unwrap();
+        c.update(0.5, 1.0, 1.0, 1.0); // the warm start: q = 1.645
+        let q0 = c.radius().unwrap();
+        // |resid| 1.2 against a shown radius of 1.3: covered, though 1.2 is
+        // past a radius of 1.0 it might have moved to since.
+        let mut shown = c.clone();
+        shown.update_against(1.2, 1.0, 1.0, 1.0, Some(1.3));
+        assert_eq!(shown.coverage(), Some(1.0));
+        assert!((shown.radius().unwrap() - (q0 - 0.1 * 0.1)).abs() < 1e-15);
+        let mut missed = c.clone();
+        missed.update_against(1.2, 1.0, 1.0, 1.0, Some(1.1));
+        assert_eq!(missed.coverage(), Some(0.0));
+        assert!((missed.radius().unwrap() - (q0 + 0.1 * 0.9)).abs() < 1e-15);
+        // Shown nothing: no evidence, no step.
+        let mut none = c.clone();
+        none.update_against(9.0, 1.0, 0.5, 1.0, Some(f64::NAN));
+        assert_eq!((none.coverage(), none.radius()), (None, Some(q0)));
+        // `None` is the current radius, which is `update`.
+        let (mut a, mut b) = (c.clone(), c);
+        for (r, w) in [(0.3, 1.0), (2.5, 0.5), (-1.7, 2.0), (0.0, 1.0)] {
+            a.update(r, 1.1, 0.97, w);
+            b.update_against(r, 1.1, 0.97, w, None);
+        }
+        assert_eq!(a, b);
     }
 
     #[test]

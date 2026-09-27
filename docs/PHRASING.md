@@ -48,7 +48,7 @@ are uncommon enough that we need at least to state that "Three ways to run
 a signal bank" and the words signal bank should link to the signalbank api
 to make it totally clear.
 
-**Status:** fixed (`README.md:65`, "Three ways to run a [model bank](...)").
+**Status:** fixed (`README.md:65`, "Three ways to run a \[model bank\](...)").
 
 **Note:** the library has no API named `SignalBank` / `signalbank` — the
 class this sentence refers to is [`ModelBank`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank).

@@ -111,7 +111,7 @@ columns:
 |---|---|
 | `lagcorr_xx` | list, one entry per lag: `ρ_x(ℓ) = C_xx(ℓ) / (sd_x · sd_x)`, the feature's own autocorrelation |
 | `lagcorr_yy` | `ρ_y(ℓ)`, the target's (accumulated once per target, reported on each of its pairs) |
-| `lagcorr_xy` | `C(x_t, y_{t−ℓ}) / (sd_x · sd_y)` — the feature *now* against the target ℓ rows *ago*: how much of the contemporaneous correlation is the feature reacting to the target's past (a nowcast) rather than leading it |
+| `lagcorr_xy` | `C(x_t, y_{t−ℓ}) / (sd_x · sd_y)` — the feature *now* against the target ℓ rows *ago*. For two series that describe the same moment, how far the feature follows the target. Against a forward-looking target it also holds what the two share: the target ℓ rows ago is built partly from the feature's newest ℓ rows (E75) |
 | `lagcorr_yx` | `C(y_t, x_{t−ℓ}) / (sd_x · sd_y)` — the target now against the feature ℓ rows ago: the lead. Both orientations, because a lagged matrix is not symmetric |
 | `n_serial` | `n_kish / [1 + 2 Σ_ℓ ρ_x(ℓ) ρ_y(ℓ)]` per `serial_rule`; null without one, and null where `"geometric"` cannot fit |
 | `t_serial` | `corr · sqrt((n_serial − 2) / (1 − corr²))`, `±inf` where `t` is |
@@ -128,10 +128,16 @@ So the eight numbers a pair and `ew_cov(lags=, stats=["lagcorr"])` report
 for the same two columns agree to the bit, and a test holds them to it
 through weights, a session change and a capped gap.
 
-`t` stays as it is. The lead/lag pair (`lagcorr_yx` vs `lagcorr_xy`) is the
-by-product worth having: for a forward-looking target, a feature whose
-`lagcorr_xy[0]` exceeds its `corr` is one that *follows* the target — a
-late-sampled column — and the caller can see it without a second pass.
+`t` stays as it is. The lead/lag pair (`lagcorr_yx` vs `lagcorr_xy`) is a
+by-product worth having, and it is read with the target's construction in
+hand. For two series that describe the same moment, `lagcorr_xy[0]` above
+`corr` means the feature follows the target. Against a forward-looking
+target it says nothing about the feature's timing: every timely feature
+built from the target's own news shows it. Telling a late-sampled feature
+from a timely one takes more offsets and a judgment over independent
+blocks. One caller keeps the terms at lags 1 and 2 (`cross_lags=[1, 2]`)
+and asks where the slope of the correlation jumps (E75, 2026-09-27: this
+paragraph first read the inequality as a late-sampled column).
 
 ### The recursion, and why a missing target holds
 
@@ -325,7 +331,7 @@ Nothing per row. In `marginal()` and the closed-group row, per pair:
 | `split_at` | the edge that achieves it, in the feature's units |
 | `split_gain_t` | `√((n − 2)·g/(1 − g))`: the `t` a `corr` would need to match that gain, against `n_serial` where `serial_rule` gives one and `n_kish` otherwise; `+inf` at a gain of one, as `t` is at `corr = ±1`. **Optimistic**, because the cut was chosen by maximising over `bins − 1` candidates and the statistic does not know that — a ranking, not a p-value |
 | `bin_edges` | the fixed edges (list) |
-| `bin_n`, `bin_mean_y`, `bin_var_y` | the histogram: the response curve `E[y | x ∈ bin]`, its weight and its dispersion. A bin no row has landed in is *present* with `bin_n = 0` and null moments — a `"fixed"` bin over a gap in the feature's support is empty, not absent, and the lists stay aligned with `bin_edges` |
+| `bin_n`, `bin_mean_y`, `bin_var_y` | the histogram: the response curve `E[y \| x ∈ bin]`, its weight and its dispersion. A bin no row has landed in is *present* with `bin_n = 0` and null moments — a `"fixed"` bin over a gap in the feature's support is empty, not absent, and the lists stay aligned with `bin_edges` |
 
 The columns appear whenever the spec asked for bins, holding empty lists and
 nulls until the edges are fixed. The lists are **ragged**: a feature keeps

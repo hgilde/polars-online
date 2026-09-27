@@ -342,3 +342,64 @@ class TestTheRustTestsLinkNoPython:
         left = self._packages("--workspace", *self.EXCLUDE.split())
         assert "online-cli" in left and "online-polars" in left
         assert not {"pyo3", "pyo3-ffi"} & left, sorted({"pyo3", "pyo3-ffi"} & left)
+
+
+PREP = "./.github/actions/linux-build-prep"
+PREP_ACTION = WORKFLOWS[0].parents[1] / "actions/linux-build-prep/action.yml"
+
+
+def _every_step():
+    for name, workflow in sorted(ALL.items()):
+        for job, spec in workflow.get("jobs", {}).items():
+            yield name, job, spec, spec.get("steps", [])
+
+
+class TestTheLinuxPrepIsOneAction:
+    """The step that frees the runner's disk and swaps in lld was five copies
+    of the same ten lines (docs/SIMPLIFICATION.md, S7). One composite action
+    now, so a sixth workflow calls it rather than copying whichever version
+    it finds first."""
+
+    def test_every_prep_step_calls_the_action_and_none_copies_it(self):
+        callers = []
+        for name, job, _, steps in _every_step():
+            for step in steps:
+                if "free disk" in step.get("name", ""):
+                    assert step.get("uses") == PREP, f"{name}:{job} does not call {PREP}"
+                    callers.append(f"{name}:{job}")
+                run = str(step.get("run", ""))
+                assert "fuse-ld=lld" not in run and "/usr/share/dotnet" not in run, (
+                    f"{name}:{job} copies the prep again"
+                )
+        assert len(callers) == 5, callers
+
+    def test_a_local_action_follows_the_checkout(self):
+        """A local action is read from the checked-out tree."""
+        for name, job, _, steps in _every_step():
+            uses = [str(s.get("uses", "")) for s in steps]
+            for i, u in enumerate(uses):
+                if u.startswith("./"):
+                    assert any(x.startswith("actions/checkout@") for x in uses[:i]), (
+                        f"{name}:{job} calls {u} before the checkout"
+                    )
+
+    def test_it_runs_on_linux_alone(self):
+        """The action refuses another OS, so a matrix job guards the call."""
+        for name, job, spec, steps in _every_step():
+            for step in steps:
+                if step.get("uses") != PREP:
+                    continue
+                if str(spec.get("runs-on", "")).startswith("ubuntu-"):
+                    continue
+                assert step.get("if") == "runner.os == 'Linux'", f"{name}:{job} is unguarded"
+
+    def test_the_action_frees_the_disk_then_installs_then_writes_the_linker(self):
+        action = yaml.safe_load(PREP_ACTION.read_text(encoding="utf-8"))
+        assert action["runs"]["using"] == "composite"
+        (step,) = action["runs"]["steps"]
+        run = step["run"]
+        at = [run.index(x) for x in ("RUNNER_OS", "rm -rf", "apt-get install", "fuse-ld=lld")]
+        assert at == sorted(at), "out of order"
+        # Inputs reach the script through its environment, never pasted in.
+        assert "${{" not in run
+        assert set(action["inputs"]) == {"packages", "update-lists"}

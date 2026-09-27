@@ -1038,10 +1038,16 @@ class ModelBank:
         ``lagcorr_xx``, ``lagcorr_yy``
             Each series' own autocorrelation at the configured lags.
         ``lagcorr_xy``, ``lagcorr_yx``
-            The feature now against the target ``l`` rows back, and the reverse, at
-            each of ``cross_lags`` (every lag by default). A feature whose
-            ``lagcorr_yx[0]`` exceeds its ``corr`` leads the target; one whose
-            ``lagcorr_xy[0]`` does follows it. Absent under ``cross_lags=[]``.
+            The feature now against the target ``l`` rows back, and the target now
+            against the feature ``l`` rows back, at each of ``cross_lags`` (every lag
+            by default). For two series that describe the same moment, a feature
+            whose ``lagcorr_yx[0]`` exceeds its ``corr`` leads the target, and one
+            whose ``lagcorr_xy[0]`` does follows it. That reading does not hold
+            against a forward-looking target, one built from the rows after its own.
+            There the target ``l`` rows back is built partly from the feature's
+            newest ``l`` rows, so a feature built from the same news shows
+            ``lagcorr_xy`` above ``corr`` however it is sampled. Absent under
+            ``cross_lags=[]``.
         ``n_serial``, ``t_serial``
             ``n_kish`` divided by Bartlett's serial-dependence factor, and the
             statistic against it. Null without ``serial_rule``.

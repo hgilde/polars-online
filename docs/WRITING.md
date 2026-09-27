@@ -293,7 +293,7 @@ that has not been drawn yet. §7 has the shapes.
 
 **Name a thing in full on first use, and link it.** *A bank*, to a reader
 who has not met `ModelBank`, is an English word with several meanings.
-*A [model bank](...)* is the class (PHRASING: "Three ways to run a bank").
+*A \[model bank\](...)* is the class (PHRASING: "Three ways to run a bank").
 A term from a domain the reader may not share is glossed where it first
 appears, or replaced by what it handles. *Session* is a capital-markets
 word, so it became *market-data-like sessions, with their boundaries,
@@ -323,10 +323,10 @@ on rereading (PHRASING: "the task 89 rewrite"):
 | 2. map | plan every section, and where each piece of the current text lands (§2) | the map is in `docs/PLAN.md` before any prose changes |
 | 3. draft | rewrite one section at a time | each section's code blocks run as it is finished |
 | 4. account | lose nothing | every number, backticked name and link target in the old text is in the new, or in the document it moved to: a diff, not a reading |
-| 5. structure | break nothing | every table row has its header's cell count; every in-page link lands on a heading; every anchor another file uses survives; a link to moved text points where it went |
+| 5. structure | break nothing | every table row has its header's cell count; every in-page link lands on a heading; every anchor another file uses survives; a link to moved text points where it went. `uv run python scripts/doc_structure.py [FILE.md ...]` runs all four as GitHub renders the file, and reports a table GitHub shows as code or text |
 | 6. measure again | compare | the same counts as step 1, side by side |
 | 7. render | read it as the repository will show it | GitHub's API renders it: `POST /markdown` with `mode=markdown` |
-| 8. gate | run the tests that read the README | `tests/test_production_hardening.py` runs every python block, `tests/test_llms_txt.py` checks every anchor `llms.txt` uses, and `tests/test_api_links.py` resolves every API link and walks every model section |
+| 8. gate | run the tests that read the README | `tests/test_production_hardening.py` runs every python block, `tests/test_llms_txt.py` checks every anchor `llms.txt` uses, `tests/test_api_links.py` resolves every API link and walks every model section, and `tests/test_doc_structure.py` runs step 5 over every Markdown file git tracks |
 
 The counts, taken outside code blocks, tables and headings:
 

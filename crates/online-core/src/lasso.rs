@@ -107,10 +107,6 @@ impl LassoCfg {
         }
         Ok(())
     }
-
-    pub fn combo_labels(&self) -> Vec<String> {
-        self.lasso_path.iter().map(|l| format!("l{l}")).collect()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

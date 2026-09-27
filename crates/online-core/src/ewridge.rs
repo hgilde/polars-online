@@ -2036,6 +2036,11 @@ mod tests {
 
     /// A model with a slow twin, fed `n` rows of a deterministic stream.
     fn blended_pair(shrink: f64) -> EwRidge {
+        blended_pair_at(shrink, 0.0)
+    }
+
+    /// [`blended_pair`] with every feature, and so the target, at `level`.
+    fn blended_pair_at(shrink: f64, level: f64) -> EwRidge {
         let mut c = cfg(2, 1);
         c.session_shrink = Some(shrink);
         c.long_halflife = Some(400.0);
@@ -2044,7 +2049,7 @@ mod tests {
         let mut m = EwRidge::new(c).unwrap();
         let mut s = 23u64;
         for i in 0..200 {
-            let x = [lcg(&mut s), 0.5 + lcg(&mut s)];
+            let x = [level + lcg(&mut s), level + 0.5 + lcg(&mut s)];
             // A relationship that flips halfway, so fast and slow genuinely
             // disagree by the time the session boundary arrives.
             let sign = if i < 100 { 1.0 } else { -1.0 };
@@ -2650,9 +2655,21 @@ mod tests {
         // Every arithmetic step of `blend_toward_long_run` is checked against
         // the same quantities recomputed by hand from the pre-blend state, so
         // a factor applied to the wrong side, a missing re-centering, or a
-        // swapped index all show up.
+        // swapped index all show up. At the origin and at 1e8: the oracle is
+        // the centred mixture, which a level costs nothing, where it was the
+        // raw one re-centred, which at 1e8 has no digits left to compare
+        // (review 2026-09-12, C16; docs/PLAN.md task 112).
+        for level in [0.0, 1e8] {
+            blend_is_the_weight_respecting_mixture_at(level);
+        }
+    }
+
+    fn blend_is_the_weight_respecting_mixture_at(level: f64) {
+        // The rounding the means' difference carries at the level: the one
+        // input the mixture takes from level-sized numbers.
+        let tol = 1e-10 + 64.0 * f64::EPSILON * level;
         let f = 0.3;
-        let mut m = blended_pair(f);
+        let mut m = blended_pair_at(f, level);
         let before = m.clone();
         let slow = before.slow.as_ref().unwrap();
         let k = m.cfg.k_total();
@@ -2665,29 +2682,31 @@ mod tests {
         m.blend_toward_long_run();
 
         assert!((m.gram(0).n_eff() - w_new).abs() < 1e-12);
+        let (fast, twin) = (before.gram(0), &slow.grams.grams[0]);
         for i in 0..k {
-            let want = af * before.gram(0).mean(i) + as_ * slow.grams.grams[0].mean(i);
+            let want = af * fast.mean(i) + as_ * twin.mean(i);
             assert!(
-                (m.gram(0).mean(i) - want).abs() < 1e-12,
-                "mean {i}: {} vs {want}",
+                (m.gram(0).mean(i) - want).abs() <= 1e-12 * (1.0 + want.abs()),
+                "level {level}, mean {i}: {} vs {want}",
                 m.gram(0).mean(i)
             );
         }
         for i in 0..k {
             for j in 0..k {
-                // Raw moments mix linearly; the centered moment must then be
-                // re-derived against the *mixed* mean, not either input's.
-                let raw = af * before.gram(0).raw(i, j) + as_ * slow.grams.grams[0].raw(i, j);
-                let want = raw - m.gram(0).mean(i) * m.gram(0).mean(j);
+                // The centred mixture: each side's co-moment about its own
+                // mean, and the spread between the two means about the mixed
+                // one, `a·C_f + b·C_s + a·b·(m_f − m_s)(m_f − m_s)ᵀ`.
+                let (di, dj) = (fast.mean(i) - twin.mean(i), fast.mean(j) - twin.mean(j));
+                let want = af * fast.cov(i, j) + as_ * twin.cov(i, j) + af * as_ * di * dj;
                 assert!(
-                    (m.gram(0).cov(i, j) - want).abs() < 1e-10,
-                    "cov {i},{j}: {} vs {want}",
+                    (m.gram(0).cov(i, j) - want).abs() <= tol,
+                    "level {level}, cov {i},{j}: {} vs {want}",
                     m.gram(0).cov(i, j)
                 );
             }
         }
         // The raw cross-moments mix linearly, whatever split the centred ones
-        // were mixed in.
+        // were mixed in; at a level they are level-sized, so held relatively.
         for (j, got) in m.cross_moments().iter().enumerate() {
             let (wf, ws) = (before.acc.wj[j], slow.wj[j]);
             let w_new = (1.0 - f) * wf + f * ws;
@@ -2696,7 +2715,10 @@ mod tests {
             let (fast_r, slow_r) = (before.acc.cross.raw(j), slow.cross.raw(j));
             for i in 0..k {
                 let want = af * fast_r[i] + as_ * slow_r[i];
-                assert!((got[i] - want).abs() < 1e-12, "r[{j}][{i}]");
+                assert!(
+                    (got[i] - want).abs() <= 1e-12 * (1.0 + want.abs()),
+                    "level {level}, r[{j}][{i}]"
+                );
             }
         }
     }
@@ -3981,5 +4003,28 @@ mod tests {
             matches!(restore(v), Err(StateError::Invalid(_))),
             "a windowed spec without its ring"
         );
+    }
+
+    /// A state whose vectors are not the cfg's is refused by `restore`, where
+    /// it loaded and panicked on the first `step` (review 2026-09-18, B3;
+    /// docs/PLAN.md task 111: every other model had this test).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        let m = EwRidge::new(cfg(2, 1)).unwrap();
+        for shorten in [0usize, 1] {
+            let mut s = m.state();
+            let ModelState::EwRidge(inner) = &mut s.model else {
+                unreachable!()
+            };
+            if shorten == 0 {
+                inner.wsig.pop();
+            } else {
+                inner.sig2.pop();
+            }
+            match EwRidge::restore(&s) {
+                Err(StateError::Invalid(e)) => assert!(e.contains("wrong shape"), "{e}"),
+                other => panic!("{other:?}"),
+            }
+        }
     }
 }

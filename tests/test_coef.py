@@ -111,28 +111,45 @@ def test_mistakes_and_edges_are_named():
         cov.coef("c")
 
 
+#: One spec of every kind with a ``coef`` (docs/PLAN.md task 111).
+COEF_SPECS = [
+    po.spec.ewridge(
+        "m",
+        targets=["y", "y2"],
+        features=["x1", "x2"],
+        halflife=30,
+        feature_sets={"one": ["x1"], "all": ["x1", "x2"]},
+        ridge=[0.0, 1.0],
+    ),
+    po.spec.lasso("m", targets=["y"], features=["x1", "x2"], halflife=30, lasso_path=[0.1, 0.0]),
+    po.spec.rls("m", targets=["y"], features=["x1", "x2"], halflife=30),
+    po.spec.kalman("m", targets=["y"], features=["x1", "x2"], halflife=30, coef_halflife=100),
+    po.spec.huber("m", targets=["y"], features=["x1", "x2"], halflife=30),
+    po.spec.ftrl("m", targets=["b"], features=["x1", "x2"], halflife=30),
+    po.spec.sgd("m", targets=["y"], features=["x1", "x2"], halflife=30),
+    po.spec.pa("m", targets=["y"], features=["x1", "x2"], halflife=30),
+    po.spec.holt("m", targets=["y"], halflife=30),
+    # The five it missed until task 111; the test below holds the list
+    # to every kind `coef_index` lays out.
+    po.spec.quantile("m", targets=["y"], features=["x1", "x2"], halflife=30, quantile=0.5),
+    # Seeded well inside the 200 rows, so there are centres to lay out.
+    po.spec.kmeans("m", features=["x1", "x2"], halflife=30, k=2, warm_rows=50),
+    po.spec.ew_class(
+        "m",
+        label="c",
+        classes=["a", "b"],
+        features=["x1", "x2"],
+        halflife=30,
+        precision_prior=1.0,
+    ),
+    po.spec.hmm("m", features=["x1", "x2"], halflife=30, k=2, precision_prior=0.1),
+    po.spec.deco("m", features=["x1", "x2"], halflife=30),
+]
+
+
 @pytest.mark.parametrize(
     "spec",
-    [
-        po.spec.ewridge(
-            "m",
-            targets=["y", "y2"],
-            features=["x1", "x2"],
-            halflife=30,
-            feature_sets={"one": ["x1"], "all": ["x1", "x2"]},
-            ridge=[0.0, 1.0],
-        ),
-        po.spec.lasso(
-            "m", targets=["y"], features=["x1", "x2"], halflife=30, lasso_path=[0.1, 0.0]
-        ),
-        po.spec.rls("m", targets=["y"], features=["x1", "x2"], halflife=30),
-        po.spec.kalman("m", targets=["y"], features=["x1", "x2"], halflife=30, coef_halflife=100),
-        po.spec.huber("m", targets=["y"], features=["x1", "x2"], halflife=30),
-        po.spec.ftrl("m", targets=["b"], features=["x1", "x2"], halflife=30),
-        po.spec.sgd("m", targets=["y"], features=["x1", "x2"], halflife=30),
-        po.spec.pa("m", targets=["y"], features=["x1", "x2"], halflife=30),
-        po.spec.holt("m", targets=["y"], halflife=30),
-    ],
+    COEF_SPECS,
     ids=lambda s: (
         s["model"]["type"]
         + ("+grid" if "feature_sets" in s["model"] and s["model"]["feature_sets"] else "")
@@ -148,6 +165,7 @@ def test_every_model_lays_out_as_coef_index(spec):
             "y": rng.normal(size=n),
             "y2": rng.normal(size=n),
             "b": (rng.random(n) > 0.5).astype(float),
+            "c": np.where(rng.random(n) > 0.5, "a", "b"),
         }
     )
     spec = {**spec, "coef_every": 1}
@@ -227,3 +245,20 @@ def test_coef_of_a_bank_with_no_coefficients_is_an_empty_frame():
     bank.fit_predict(_grouped())
     got = bank.coef()
     assert got.height == 0 and got.columns[0] == "spec" and "coef" in got.columns
+
+
+def test_the_layout_test_covers_every_kind_with_a_coef():
+    """``COEF_SPECS`` named nine kinds while fourteen emit ``coef``; the set is
+    now every builder ``coef_index`` lays out, and the others refuse it by
+    name (docs/PLAN.md task 111)."""
+    from test_model_registry import MINIMAL, _build
+
+    with_coef = set()
+    for name in MINIMAL:
+        spec = _build(name)
+        try:
+            po.spec.coef_index(spec)
+        except ValueError:
+            continue
+        with_coef.add(spec["model"]["type"])
+    assert {s["model"]["type"] for s in COEF_SPECS} == with_coef

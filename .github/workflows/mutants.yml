@@ -63,13 +63,7 @@ jobs:
       # disk as it comes: the same step, in the same place, as ci.yml's test
       # job (before the cache restore and before anything compiles).
       - name: free disk and use a leaner linker
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-                      /usr/local/share/boost /usr/local/.ghcup || true
-          sudo apt-get install -y --no-install-recommends lld
-          mkdir -p .cargo
-          printf '[target.x86_64-unknown-linux-gnu]\nrustflags = ["-C", "link-arg=-fuse-ld=lld"]\n' \
-            >> .cargo/config.toml
+        uses: ./.github/actions/linux-build-prep
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:

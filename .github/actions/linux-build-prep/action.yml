@@ -1,0 +1,62 @@
+# The Linux runner prep every workflow that builds this workspace needs
+# (docs/SIMPLIFICATION.md, S7). It was five copies of the same ten lines, in
+# ci.yml, leakcheck.yml, mutants.yml, polars-canary.yml and release.yml.
+#
+# Why each part exists:
+# - Disk. The Ubuntu image starts with 9.3 GB free, and the restored target/
+#   does not fit: the job died with "No space left on device" inside
+#   rust-cache, so hard that the runner could not write its own log.
+#   Removing the unused Android SDK, .NET and GHC recovers 21 GB.
+# - Linker. Linking the workspace's ~10 polars-laden test binaries with the
+#   default ld exhausts the runner (`ld terminated with signal 7`); lld does
+#   not.
+#
+# Where it goes: right after checkout (a local action needs the checkout),
+# before the cache restore, which needs the disk, and before anything
+# compiles, because rustflags are part of cargo's fingerprint -- written
+# after `uv sync`, they made `maturin develop --release` recompile the
+# workspace, 18 minutes a Linux run. tests/test_ci_cost_policy.py pins all
+# three orders.
+name: free disk and use a leaner linker
+description: >-
+  Linux only. Deletes the runner image's unused SDKs, installs lld and any
+  extra packages, and points cargo's x86_64 Linux target at lld.
+inputs:
+  packages:
+    description: Packages to install beside lld, space-separated.
+    required: false
+    default: ""
+  update-lists:
+    description: >-
+      "true" refreshes apt's package lists first. The image's lists go stale
+      between image builds: valgrind pulls libc6-dbg from noble-updates, whose
+      listed version 404'd on 2026-09-14 until the lists were refreshed.
+    required: false
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: free disk and use a leaner linker
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+        UPDATE_LISTS: ${{ inputs.update-lists }}
+      run: |
+        if [ "$RUNNER_OS" != "Linux" ]; then
+          echo "::error::linux-build-prep runs on Linux only, not $RUNNER_OS"
+          exit 1
+        fi
+        echo "--- disk before ---"; df -h /
+        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                    /usr/local/share/boost /usr/local/.ghcup || true
+        echo "--- disk after ---"; df -h /
+        free -m || true
+        if [ "$UPDATE_LISTS" = "true" ]; then
+          sudo apt-get update -q
+        fi
+        # Unquoted on purpose: one word per package.
+        # shellcheck disable=SC2086
+        sudo apt-get install -y --no-install-recommends lld $PACKAGES
+        mkdir -p .cargo
+        printf '[target.x86_64-unknown-linux-gnu]\nrustflags = ["-C", "link-arg=-fuse-ld=lld"]\n' \
+          >> .cargo/config.toml

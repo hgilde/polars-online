@@ -50,16 +50,7 @@ jobs:
       # canary that cries wolf weekly is worse than no canary, because the
       # signal it exists to carry gets ignored.
       - name: free disk and use a leaner linker
-        run: |
-          echo "--- disk before ---"; df -h /
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-                      /usr/local/share/boost /usr/local/.ghcup || true
-          echo "--- disk after ---"; df -h /
-          free -m || true
-          sudo apt-get install -y --no-install-recommends lld
-          mkdir -p .cargo
-          printf '[target.x86_64-unknown-linux-gnu]\nrustflags = ["-C", "link-arg=-fuse-ld=lld"]\n' \
-            >> .cargo/config.toml
+        uses: ./.github/actions/linux-build-prep
 
       # The Python side only. The wheel carries its own, statically linked
       # copy of polars (`polars = "=0.55.2"` in Cargo.toml) that never meets

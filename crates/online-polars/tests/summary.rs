@@ -6,7 +6,7 @@
 //! ignore `predict`, and that a file whose summary is not its spec's is
 //! refused rather than reported.
 
-use online_polars::{Bank, Spec, Stream};
+use online_polars::{Bank, ModelKind, Spec, Stream};
 use polars::prelude::*;
 
 /// The input bound the models apply (`online_core::INPUT_BOUND`): a
@@ -861,4 +861,213 @@ fn truncated_and_bit_flipped_files_are_refused_or_loaded_never_panic() {
     );
     // Still the same bank after all that.
     assert_eq!(bank.save_bytes().unwrap(), bytes);
+}
+
+/// The same sweep for every model kind, thinned -- every 7th prefix and a
+/// flip every 5th byte -- where it ran on one `ew_ridge` spec (docs/PLAN.md
+/// task 111): each kind's state has its own framing, lengths and nested
+/// accumulators, and a panic in any of them on a corrupt file is the same
+/// defect. Held to `ModelKind::KINDS`, so a new kind cannot be left out.
+#[test]
+fn every_model_kind_refuses_or_loads_a_corrupt_file_never_panics() {
+    let df = make_df(60);
+    // (kind, model, targets, features, halflife): what runs on `make_df`.
+    let kinds: &[(&str, &str, &str, &str, bool)] = &[
+        (
+            "ew_ridge",
+            r#"{"type": "ew_ridge", "ridge": 1e-6}"#,
+            r#"["y"]"#,
+            r#"["x0", "x1"]"#,
+            true,
+        ),
+        (
+            "lasso",
+            r#"{"type": "lasso", "lasso_path": [0.1]}"#,
+            r#"["y"]"#,
+            r#"["x0", "x1"]"#,
+            true,
+        ),
+        (
+            "kalman",
+            r#"{"type": "kalman", "coef_halflife": 100.0}"#,
+            r#"["y"]"#,
+            r#"["x0", "x1"]"#,
+            true,
+        ),
+        (
+            "huber",
+            r#"{"type": "huber"}"#,
+            r#"["y"]"#,
+            r#"["x0", "x1"]"#,
+            true,
+        ),
+        (
+            "quantile",
+            r#"{"type": "quantile", "quantile": 0.5}"#,
+            r#"["y"]"#,
+            r#"["x0", "x1"]"#,
+            true,
+        ),
+        (
+            "ftrl",
+            r#"{"type": "ftrl", "loss": "squared"}"#,
+            r#"["y"]"#,
+            r#"["x0", "x1"]"#,
+            true,
+        ),
+        (
+            "ew_cov",
+            r#"{"type": "ew_cov", "stats": ["mean", "var"]}"#,
+            "[]",
+            r#"["x0", "x1"]"#,
+            true,
+        ),
+        (
+            "sgd",
+            r#"{"type": "sgd", "learning_rate": 0.01}"#,
+            r#"["y"]"#,
+            r#"["x0", "x1"]"#,
+            true,
+        ),
+        (
+            "pa",
+            r#"{"type": "pa"}"#,
+            r#"["y"]"#,
+            r#"["x0", "x1"]"#,
+            true,
+        ),
+        ("holt", r#"{"type": "holt"}"#, r#"["y"]"#, "[]", true),
+        (
+            "rls",
+            r#"{"type": "rls"}"#,
+            r#"["y"]"#,
+            r#"["x0", "x1"]"#,
+            true,
+        ),
+        (
+            "kmeans",
+            r#"{"type": "kmeans", "k": 2, "warm_rows": 10}"#,
+            "[]",
+            r#"["x0", "x1"]"#,
+            true,
+        ),
+        (
+            "micro",
+            r#"{"type": "micro", "eps": 1.0}"#,
+            "[]",
+            r#"["x0", "x1"]"#,
+            true,
+        ),
+        (
+            "ew_class",
+            r#"{"type": "ew_class", "classes": ["up", "down"], "precision_prior": 1.0}"#,
+            r#"["lbl"]"#,
+            r#"["x0", "x1"]"#,
+            true,
+        ),
+        ("seqtest", r#"{"type": "seqtest"}"#, r#"["y"]"#, "[]", false),
+        (
+            "marginal",
+            r#"{"type": "marginal"}"#,
+            r#"["y"]"#,
+            r#"["x0", "x1"]"#,
+            true,
+        ),
+        ("deco", r#"{"type": "deco"}"#, "[]", r#"["x0", "x1"]"#, true),
+        (
+            "rcov",
+            r#"{"type": "rcov", "block_rows": 100}"#,
+            "[]",
+            r#"["x0", "x1"]"#,
+            false,
+        ),
+        (
+            "hmm",
+            r#"{"type": "hmm", "k": 2, "precision_prior": 0.1}"#,
+            "[]",
+            r#"["x0", "x1"]"#,
+            true,
+        ),
+        (
+            "corrchange",
+            r#"{"type": "corrchange", "span_rows": 20}"#,
+            "[]",
+            r#"["x0", "x1"]"#,
+            false,
+        ),
+        (
+            "bocpd",
+            r#"{"type": "bocpd"}"#,
+            "[]",
+            r#"["x0", "x1"]"#,
+            false,
+        ),
+    ];
+    let mut seen = Vec::new();
+    for &(kind, model, targets, features, halflife) in kinds {
+        let halflife = if halflife {
+            r#", "halflife": 10.0"#
+        } else {
+            ""
+        };
+        // `rcov` closes its block at each session; the others run grouped.
+        let close = if kind == "rcov" {
+            r#", "session": "sess", "group_close": "session""#
+        } else {
+            ""
+        };
+        // `seqtest` counts every learned row as one trial, and `rcov` sums
+        // returns: neither takes a weight that moves.
+        let weight = if matches!(kind, "seqtest" | "rcov") {
+            ""
+        } else {
+            r#", "weight": "w""#
+        };
+        let specs = vec![spec(&format!(
+            r#"{{"name": "m", "model": {model}, "targets": {targets}, "features": {features},
+                "clock": "t", "group": "g", "max_dclock": 30.0{weight}{halflife}{close}}}"#
+        ))];
+        assert_eq!(specs[0].model.kind_name(), kind);
+        let mut bank = Bank::new(specs.clone()).unwrap_or_else(|e| panic!("{kind}: {e}"));
+        let _ = feed(&mut bank, &df, 2);
+        let bytes = bank.save_bytes().unwrap();
+        let survives = |b: &[u8], what: &str| {
+            if let Ok(mut loaded) = Bank::load_bytes(b, Some(&specs)) {
+                let _ = loaded.summary(0, None).unwrap();
+                let _ = loaded.last_row(0, None).unwrap();
+                loaded
+                    .save_bytes()
+                    .unwrap_or_else(|e| panic!("{kind}, {what}: re-save: {e}"));
+                let _ = loaded.fit_predict(&df.slice(0, 1));
+            }
+        };
+        for n in (0..bytes.len()).step_by(7) {
+            assert!(
+                Bank::load_bytes(&bytes[..n], Some(&specs)).is_err(),
+                "{kind}: a file cut at {n} of {} loaded",
+                bytes.len()
+            );
+        }
+        let (mut loaded_flipped, mut tried) = (0, 0);
+        for pos in (0..bytes.len()).step_by(5) {
+            for bit in [0, 7] {
+                let mut b = bytes.clone();
+                b[pos] ^= 1 << bit;
+                tried += 1;
+                if Bank::load_bytes(&b, Some(&specs)).is_ok() {
+                    loaded_flipped += 1;
+                }
+                survives(&b, &format!("byte {pos} bit {bit}"));
+            }
+        }
+        assert!(
+            loaded_flipped > 0 && loaded_flipped < tried,
+            "{kind}: {loaded_flipped} of {tried} flipped files loaded"
+        );
+        seen.push(kind);
+    }
+    seen.sort_unstable();
+    let mut all = ModelKind::KINDS.to_vec();
+    all.sort_unstable();
+    assert_eq!(seen, all, "every ModelKind needs a spec here");
 }

@@ -1416,4 +1416,48 @@ mod tests {
         stray["g2"] = with["g2"].clone();
         assert!(!loads(&stray), "sums a constant rate does not keep");
     }
+
+    /// The named msgpack of `value` with `edit` applied, read back: the path
+    /// a saved state takes into the model, whose check is in its `TryFrom`.
+    fn reread<T: serde::Serialize + serde::de::DeserializeOwned>(
+        value: &T,
+        edit: impl FnOnce(&mut rmpv::Value),
+    ) -> Result<T, String> {
+        let bytes = rmp_serde::to_vec_named(value).unwrap();
+        let mut v = rmpv::decode::read_value(&mut bytes.as_slice()).unwrap();
+        edit(&mut v);
+        let mut out = Vec::new();
+        rmpv::encode::write_value(&mut out, &v).unwrap();
+        rmp_serde::from_slice(&out).map_err(|e| e.to_string())
+    }
+
+    /// The first coefficient vector of the state, one entry short.
+    fn shorten_first(v: &mut rmpv::Value, field: &str) {
+        let rmpv::Value::Map(entries) = v else {
+            panic!("a map")
+        };
+        let (_, x) = entries
+            .iter_mut()
+            .find(|(k, _)| k.as_str() == Some(field))
+            .unwrap_or_else(|| panic!("no {field}"));
+        let rmpv::Value::Array(rows) = x else {
+            panic!("{field} is a list")
+        };
+        let rmpv::Value::Array(first) = &mut rows[0] else {
+            panic!("{field}[0] is a list")
+        };
+        first.pop();
+    }
+
+    /// A state whose coefficients are not its cfg's shape is refused as it is
+    /// read, which is how a saved state reaches `restore`, where it loaded and
+    /// panicked on the first step (review 2026-09-18, B3; docs/PLAN.md task
+    /// 111: every other model had this test).
+    #[test]
+    fn a_state_of_the_wrong_shape_is_refused() {
+        let m = Sgd::new(cfg(2, SgdLoss::Squared)).unwrap();
+        assert!(reread(&m, |_| {}).is_ok(), "the control");
+        let err = reread(&m, |v| shorten_first(v, "beta")).unwrap_err();
+        assert!(err.contains("wrong shape"), "{err}");
+    }
 }

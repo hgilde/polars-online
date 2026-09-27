@@ -889,6 +889,49 @@ class TestLabelDelayFoldsWhatWasScored:
             matured = matured[np.isfinite(matured)]
             assert sigma[t] ** 2 == pytest.approx(np.mean(matured**2), rel=1e-9), t
 
+    def test_r2_is_sklearns_over_the_matured_rows(self):
+        """C21's other half: ``r2_y`` folds the prediction the row was scored
+        with, released with its label, so at row ``t`` -- read before the row,
+        under no forgetting -- it is scikit-learn's ``r2_score`` of the scored
+        predictions over every row at least ``delay`` behind (docs/PLAN.md
+        task 112)."""
+        from sklearn.metrics import r2_score
+
+        y = self._rows()
+        n = len(y)
+        df = pl.DataFrame({"zero": np.zeros(n), "y": y})
+        out = po.ModelBank([self._spec(emit_metrics=True)]).fit_predict(df)["m"].struct.unnest()
+        pred, r2 = out["pred_y"].to_numpy(), out["r2_y"].to_numpy()
+        checked = 0
+        for t in range(3 * self.DELAY, n, 7):
+            rows = np.arange(t - self.DELAY + 1)
+            rows = rows[np.isfinite(pred[rows])]
+            want = r2_score(y[rows], pred[rows])
+            assert r2[t] == pytest.approx(want, rel=1e-9, abs=1e-12), t
+            checked += 1
+        assert checked > 50
+
+    def test_coverage_is_the_share_of_matured_rows_inside_their_interval(self):
+        """And ``coverage_y``, with ``conformal``: at row ``t`` it is the share of
+        the matured rows whose target fell inside the interval the frame
+        showed for them, ``[lo_y, hi_y]`` as scored, not as the replay would
+        have drawn it (C21; docs/PLAN.md task 112)."""
+        y = self._rows()
+        n = len(y)
+        df = pl.DataFrame({"zero": np.zeros(n), "y": y})
+        out = po.ModelBank([self._spec(conformal=0.9)]).fit_predict(df)["m"].struct.unnest()
+        lo, hi, cov = (out[c].to_numpy() for c in ("lo_y", "hi_y", "coverage_y"))
+        inside = (lo <= y) & (y <= hi)
+        checked = 0
+        for t in range(3 * self.DELAY, n, 7):
+            rows = np.arange(t - self.DELAY + 1)
+            rows = rows[np.isfinite(lo[rows]) & np.isfinite(hi[rows])]
+            if len(rows) == 0:
+                continue
+            assert cov[t] == pytest.approx(inside[rows].mean(), rel=1e-9, abs=1e-12), t
+            checked += 1
+        assert checked > 50
+
     def test_the_record_survives_a_save_in_the_middle(self):
         y = self._rows()
         n = len(y)

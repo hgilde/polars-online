@@ -918,7 +918,9 @@ note, not a task.
       factor and reports `n_serial`, `t_serial`, `phi_x`, `phi_y`, plus the
       four `lagcorr_*` list columns — of which `lagcorr_xy` against
       `lagcorr_yx` says whether a feature leads or follows its target, which
-      is worth having on its own. Two independent AR(1) series at
+      is worth having on its own (2026-09-27: the lead/follow reading holds
+      for two series that describe the same moment, not against a
+      forward-looking target, E75). Two independent AR(1) series at
       `phi = 0.9` and `0.8` give `t = 2.39` and `t_serial = 1.03`. Three
       names changed from the sketch; see the enhancement's row for which and
       why. No schema bump: the bank file is a msgpack *map*, so a key with a
@@ -1591,11 +1593,11 @@ note, not a task.
       whatever the fit does**. Measured, 20,000 rows, `k = 2`, `y` drawn from
       `sigmoid(1.2·x0 − 0.8·x1)`:
 
-      | fit | `hit_rate` | `r2` | `ic` | accuracy at 0.5 |
-      |---|---:|---:|---:|---:|
-      | `sgd`, `loss="logistic"` | 1.0000 | 0.2719 | 0.5216 | 0.7268 |
-      | `ftrl`, `loss="logistic"` | 1.0000 | 0.2784 | 0.5278 | 0.7304 |
-      | `sgd` logistic on pure-noise features | **1.0000** | −0.0159 | 0.0189 | — |
+    | fit | `hit_rate` | `r2` | `ic` | accuracy at 0.5 |
+    |---|---:|---:|---:|---:|
+    | `sgd`, `loss="logistic"` | 1.0000 | 0.2719 | 0.5216 | 0.7268 |
+    | `ftrl`, `loss="logistic"` | 1.0000 | 0.2784 | 0.5278 | 0.7304 |
+    | `sgd` logistic on pure-noise features | **1.0000** | −0.0159 | 0.0189 | — |
 
       A model that knows nothing reports a perfect hit rate, in the streaming
       metric and in `po.eval.metrics` alike. The other two survive the
@@ -2126,10 +2128,10 @@ note, not a task.
       `label_delay=3`, `session_gap="reset"`, the first row of the new
       session carrying a null feature. `n_eff` per row:
 
-      | row | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
-      |---|---|---|---|---|---|---|---|---|---|---|---|---|
-      | reset row skipped | 0 | 0 | 0 | 1 | 2 | — | **1** | **2** | **3** | 4 | 5 | **6** |
-      | reset row accepted (null target) | 0 | 0 | 0 | 1 | 2 | 0 | 0 | 0 | 1 | 2 | 3 | 4 |
+    | row | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
+    |---|---|---|---|---|---|---|---|---|---|---|---|---|
+    | reset row skipped | 0 | 0 | 0 | 1 | 2 | — | **1** | **2** | **3** | 4 | 5 | **6** |
+    | reset row accepted (null target) | 0 | 0 | 0 | 1 | 2 | 0 | 0 | 0 | 1 | 2 | 3 | 4 |
 
       The fresh model has learned a row by row 6 and ends two rows ahead:
       two rows of the old session leaked across the reset.
@@ -2209,16 +2211,16 @@ note, not a task.
       streams as a native `rolling-group-by` node, output identical to the
       in-memory engine. Its memory is bounded by the window, not the stream:
 
-      | rows | window | direction | threads | peak RSS | time |
-      |---:|---:|---|---:|---:|---:|
-      | 1M | 60 s | forward | 14 | 2.9 GB | 1.4 s |
-      | 4M | 60 s | forward | 14 | 3.9 GB | 3.7 s |
-      | 16M | 60 s | forward | 14 | 4.0 GB | 15.8 s |
-      | 4M | 120 s | forward | 14 | 7.9 GB | 9.2 s |
-      | 4M | 240 s | forward | 14 | 14.6 GB | 18.5 s |
-      | 4M | 60 s | forward | 4 | 1.3 GB | 5.0 s |
-      | 4M | 60 s | forward | 1 | 0.44 GB | 12.7 s |
-      | 4M | 60 s | backward | 14 | 3.5 GB | 3.05 s |
+    | rows | window | direction | threads | peak RSS | time |
+    |---:|---:|---|---:|---:|---:|
+    | 1M | 60 s | forward | 14 | 2.9 GB | 1.4 s |
+    | 4M | 60 s | forward | 14 | 3.9 GB | 3.7 s |
+    | 16M | 60 s | forward | 14 | 4.0 GB | 15.8 s |
+    | 4M | 120 s | forward | 14 | 7.9 GB | 9.2 s |
+    | 4M | 240 s | forward | 14 | 14.6 GB | 18.5 s |
+    | 4M | 60 s | forward | 4 | 1.3 GB | 5.0 s |
+    | 4M | 60 s | forward | 1 | 0.44 GB | 12.7 s |
+    | 4M | 60 s | backward | 14 | 3.5 GB | 3.05 s |
 
       And what Polars *can* do cheaply, for scale — neither is this
       quantity: `ewm_mean_by` (exponential, no cutoff) 262 MB / 0.05 s;
@@ -2860,14 +2862,14 @@ note, not a task.
       (`Par::Seq`), one core, this machine; rows per second and the ratio
       to the per-row update:
 
-      | k | solve | per row | block 64 | block 256 |
-      |---|---|---|---|---|
-      | 256 | never | 91,214 | 372,772 (4.1×) | 464,135 (5.1×) |
-      | 256 | every 512 rows | 85,578 | 288,352 (3.4×) | 347,461 (4.1×) |
-      | 1,000 | never | 5,650 | 28,593 (5.1×) | 37,167 (6.6×) |
-      | 1,000 | every 512 rows | 5,711 | 20,863 (3.7×) | 23,719 (4.2×) |
-      | 2,000 | never | 1,415 | 6,544 (4.6×) | 8,380 (5.9×) |
-      | 2,000 | every 512 rows | 1,309 | 4,435 (3.4×) | 5,644 (4.3×) |
+    | k | solve | per row | block 64 | block 256 |
+    |---|---|---|---|---|
+    | 256 | never | 91,214 | 372,772 (4.1×) | 464,135 (5.1×) |
+    | 256 | every 512 rows | 85,578 | 288,352 (3.4×) | 347,461 (4.1×) |
+    | 1,000 | never | 5,650 | 28,593 (5.1×) | 37,167 (6.6×) |
+    | 1,000 | every 512 rows | 5,711 | 20,863 (3.7×) | 23,719 (4.2×) |
+    | 2,000 | never | 1,415 | 6,544 (4.6×) | 8,380 (5.9×) |
+    | 2,000 | every 512 rows | 1,309 | 4,435 (3.4×) | 5,644 (4.3×) |
 
       The `never` rows are the update alone, which is what the block
       changes; a real cadence puts the same `O(k³)` solve on both sides and
@@ -3028,17 +3030,17 @@ note, not a task.
       pl.duration", and to reject a duration that is incompatible with the
       data. The open questions, as the build settled them:
 
-      | question | settled |
-      |---|---|
-      | the forms Python takes | three: a `pl.duration(...)` that reads no column (evaluated once, at the builder), a `timedelta`, and polars' duration text (`"10m"`, `"1h30m"`), so a spec reads the same in Python and TOML |
-      | what the spec keeps | the text: a `timedelta` or an expression is written by the Rust formatter (`timedelta(minutes=90)` is `"1h30m"`), and text is kept as written (`"90m"` stays `"90m"`), so `bank.specs` equals the dict that built it |
-      | units | whole numbers of `ns`, `us`, `ms`, `s`, `m`, `h`, `d`, `w`; `mo`, `q` and `y` are refused (no fixed length), and so is `i` (it counts rows) |
-      | a `Duration` column | a clock, like a `Datetime`: elapsed time is time |
-      | a `Time` column | refused: a time of day starts again at midnight |
-      | `0` and `inf` | unit-free, so they may stay numbers beside durations |
-      | a rate per clock unit | `lam` and `kalman`'s `q` have no duration form, so a temporal clock refuses them and names the halflife to give instead |
-      | the internal scale | the column's own integer nanoseconds (`ArrowCol::Nanos`), and the gap between two rows taken in integers before it becomes seconds (`ClockValue`), so one instant in ms, µs or ns is the same value and a nanosecond gap is exact whatever the stream's age; the previous row's instant is the clock state; a value past what nanoseconds in an `i64` hold (the years 1677 to 2262) is refused by row; a zone-aware column is read as its UTC instants |
-      | outputs in clock units | seconds: `holt`'s trend is per second; `summary()`, `groups()` and `closed_groups()` give clock values as seconds since 1970 (`ClockValue::seconds`); `output_index`'s `halflife` is seconds; a grid's field names keep the text (`@h10m`) |
+    | question | settled |
+    |---|---|
+    | the forms Python takes | three: a `pl.duration(...)` that reads no column (evaluated once, at the builder), a `timedelta`, and polars' duration text (`"10m"`, `"1h30m"`), so a spec reads the same in Python and TOML |
+    | what the spec keeps | the text: a `timedelta` or an expression is written by the Rust formatter (`timedelta(minutes=90)` is `"1h30m"`), and text is kept as written (`"90m"` stays `"90m"`), so `bank.specs` equals the dict that built it |
+    | units | whole numbers of `ns`, `us`, `ms`, `s`, `m`, `h`, `d`, `w`; `mo`, `q` and `y` are refused (no fixed length), and so is `i` (it counts rows) |
+    | a `Duration` column | a clock, like a `Datetime`: elapsed time is time |
+    | a `Time` column | refused: a time of day starts again at midnight |
+    | `0` and `inf` | unit-free, so they may stay numbers beside durations |
+    | a rate per clock unit | `lam` and `kalman`'s `q` have no duration form, so a temporal clock refuses them and names the halflife to give instead |
+    | the internal scale | the column's own integer nanoseconds (`ArrowCol::Nanos`), and the gap between two rows taken in integers before it becomes seconds (`ClockValue`), so one instant in ms, µs or ns is the same value and a nanosecond gap is exact whatever the stream's age; the previous row's instant is the clock state; a value past what nanoseconds in an `i64` hold (the years 1677 to 2262) is refused by row; a zone-aware column is read as its UTC instants |
+    | outputs in clock units | seconds: `holt`'s trend is per second; `summary()`, `groups()` and `closed_groups()` give clock values as seconds since 1970 (`ClockValue::seconds`); `output_index`'s `halflife` is seconds; a grid's field names keep the text (`@h10m`) |
 
       *Incompatible, and refused.* A temporal clock with a clock parameter
       as a plain number (naming the column, the parameter, the duration fix
@@ -3147,18 +3149,18 @@ note, not a task.
       *The map.* Seventeen top-level sections become ten, each holding the
       subsections listed; `←` says where moved content comes from.
 
-      | section | subsections |
-      |---|---|
-      | Introduction | The idea · Four words · Install (← Install, and the Polars-version note from the top) · A first fit (the two examples) · What you can rely on (← Two guarantees, Mistakes are named, And the rest, as a table) |
-      | How a bank sees a stream | What a spec names · Time and decay · A local fit along any feature · Convergence without a decay · Groups · Weights · Warm-up · Labels that arrive late (← Preparing a stream: a spec parameter every model shares) · Nulls, and three ways to hold a row back · Row order and the two guarantees |
-      | Running a bank | As a query · In a loop · Output as Arrow (← a paragraph inside In a loop) · Outside a live Python process · Series that tick at their own times (← Preparing a stream) |
-      | Saving, loading and serving | Save and load · Serving without learning · What a state file holds · Reading a state without this library |
-      | Reading the fit | Coefficients · Output field names · The running sums behind a fit · One row per finished group · Reading a correlation matrix |
-      | Diagnostics, selection and evaluation | Per-row diagnostics · Conformal intervals · Evaluating an output frame · Evaluating a stream too large to hold · Data whose truth is known |
-      | Models | the model table, grouped by family · Linear models (`ewridge`, `rls`, `lasso`, `kalman`, `huber`/`quantile`, `sgd`, `pa`, `ftrl`, `holt`) · Moments and correlation (`ew_cov`, `marginal`, `deco`, `rcov`) · Clustering and classification (`kmeans`, `micro`, `ew_class`) · Sequential tests and regimes (`seqtest`, `corrchange`, `hmm`, `bocpd`); each model one level below its family |
-      | Performance | Throughput · Memory: which calls stream · Tuning memory with Polars' own settings · Chunk size (← a paragraph inside Tuning memory) · Parallelism · Against scikit-learn (← its own top-level section) |
-      | Scope and integrations | What this is not (its bullets → a table) · Pathway · Databases: DuckDB and ADBC |
-      | Versions, testing and development | Versioning and the Polars pin (its four parts one level down) · Testing · Development · License |
+    | section | subsections |
+    |---|---|
+    | Introduction | The idea · Four words · Install (← Install, and the Polars-version note from the top) · A first fit (the two examples) · What you can rely on (← Two guarantees, Mistakes are named, And the rest, as a table) |
+    | How a bank sees a stream | What a spec names · Time and decay · A local fit along any feature · Convergence without a decay · Groups · Weights · Warm-up · Labels that arrive late (← Preparing a stream: a spec parameter every model shares) · Nulls, and three ways to hold a row back · Row order and the two guarantees |
+    | Running a bank | As a query · In a loop · Output as Arrow (← a paragraph inside In a loop) · Outside a live Python process · Series that tick at their own times (← Preparing a stream) |
+    | Saving, loading and serving | Save and load · Serving without learning · What a state file holds · Reading a state without this library |
+    | Reading the fit | Coefficients · Output field names · The running sums behind a fit · One row per finished group · Reading a correlation matrix |
+    | Diagnostics, selection and evaluation | Per-row diagnostics · Conformal intervals · Evaluating an output frame · Evaluating a stream too large to hold · Data whose truth is known |
+    | Models | the model table, grouped by family · Linear models (`ewridge`, `rls`, `lasso`, `kalman`, `huber`/`quantile`, `sgd`, `pa`, `ftrl`, `holt`) · Moments and correlation (`ew_cov`, `marginal`, `deco`, `rcov`) · Clustering and classification (`kmeans`, `micro`, `ew_class`) · Sequential tests and regimes (`seqtest`, `corrchange`, `hmm`, `bocpd`); each model one level below its family |
+    | Performance | Throughput · Memory: which calls stream · Tuning memory with Polars' own settings · Chunk size (← a paragraph inside Tuning memory) · Parallelism · Against scikit-learn (← its own top-level section) |
+    | Scope and integrations | What this is not (its bullets → a table) · Pathway · Databases: DuckDB and ADBC |
+    | Versions, testing and development | Versioning and the Polars pin (its four parts one level down) · Testing · Development · License |
 
       The Contents line becomes a table: one row per section, its
       subsections linked beside it.
@@ -3186,16 +3188,16 @@ note, not a task.
       text across headings, tables and code blocks, and reported 82 → 50
       long sentences, most of them artefacts.
 
-      | measure | before | after |
-      |---|---:|---:|
-      | prose words | 13,496 | 11,590 |
-      | sentences of 45+ words | 44 | 2, both two sentences the count merges |
-      | sentences of 35+ words | 100 | 33 |
-      | mean sentence, in words | 23.4 | 19.9 |
-      | cost words | 16 | 0 |
-      | tables, as rendered | 15 | 37 |
-      | top-level sections | 17 | 10 |
-      | python blocks, all running | 59 | 59 |
+    | measure | before | after |
+    |---|---:|---:|
+    | prose words | 13,496 | 11,590 |
+    | sentences of 45+ words | 44 | 2, both two sentences the count merges |
+    | sentences of 35+ words | 100 | 33 |
+    | mean sentence, in words | 23.4 | 19.9 |
+    | cost words | 16 | 0 |
+    | tables, as rendered | 15 | 37 |
+    | top-level sections | 17 | 10 |
+    | python blocks, all running | 59 | 59 |
 
       Checked mechanically rather than by reading: every in-page link lands
       on a heading (107 written, resolved against the rendered ids); every
@@ -3230,9 +3232,9 @@ note, not a task.
       records, so the guides are rewritten and the records are not, with the
       top-level documents a user reads beside them:
 
-      | rewritten | not rewritten, and why |
-      |---|---|
-      | `docs/PERFORMANCE.md`, `docs/RELEASE-READINESS.md`, `docs/TESTING.md`, `docs/EXTENDING.md`, `docs/STATE-WORKFLOW.md`, `docs/RUNNER.md`, `docs/REGIMES.md`, `docs/OUTPUTS.md` (through `scripts/outputs_doc.py`, which writes it), `docs/README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `llms.txt` | the records: `PLAN.md`, `ENHANCEMENTS.md`, `CLUSTERING.md`, `ANSWERS-E54-E64.md`, the reviews, `IMPROVEMENTS.md`, `SIMPLIFICATION.md`, `BEYOND-O-STATE.md`, `BOOSTED-TREES.md`, `MARGINAL-LAGS-AND-BINS.md`, `WARMUP-AND-CONVERGENCE.md` and `ARROW-SOURCES.md` (the last three a design, a design and a plan); `CHANGELOG.md`, history; `PHRASING.md`, a running log kept verbatim; `VALIDATION.md`, generated and never edited by hand; `CODE_OF_CONDUCT.md`, the Contributor Covenant as adopted; `README.md` and `WRITING.md`, rewritten to the guide in task 89 |
+    | rewritten | not rewritten, and why |
+    |---|---|
+    | `docs/PERFORMANCE.md`, `docs/RELEASE-READINESS.md`, `docs/TESTING.md`, `docs/EXTENDING.md`, `docs/STATE-WORKFLOW.md`, `docs/RUNNER.md`, `docs/REGIMES.md`, `docs/OUTPUTS.md` (through `scripts/outputs_doc.py`, which writes it), `docs/README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `llms.txt` | the records: `PLAN.md`, `ENHANCEMENTS.md`, `CLUSTERING.md`, `ANSWERS-E54-E64.md`, the reviews, `IMPROVEMENTS.md`, `SIMPLIFICATION.md`, `BEYOND-O-STATE.md`, `BOOSTED-TREES.md`, `MARGINAL-LAGS-AND-BINS.md`, `WARMUP-AND-CONVERGENCE.md` and `ARROW-SOURCES.md` (the last three a design, a design and a plan); `CHANGELOG.md`, history; `PHRASING.md`, a running log kept verbatim; `VALIDATION.md`, generated and never edited by hand; `CODE_OF_CONDUCT.md`, the Contributor Covenant as adopted; `README.md` and `WRITING.md`, rewritten to the guide in task 89 |
 
       *How.* One agent per document or pair, each first returning a map and
       the claims it found false or stale, with evidence from the code; the
@@ -3244,19 +3246,19 @@ note, not a task.
 
       *The maps.*
 
-      | document | reader | new structure ← what moves |
-      |---|---|---|
-      | `PERFORMANCE.md` | someone who hit a slower run or a bigger process, or a contributor measuring a hot-path change | the 21 numbered sections stay H2 with their numbers; a new *Reading this document* opens it (a contents table with a "read it when" column ← the "where to look" paragraph; *How the numbers are made* ← the machine and regenerate paragraph; *The headline* ← the status block, as a table; *Words this document uses*); §3's P1–P11 become a status table and one H3 each, their `<details>` plans kept; §5 gains an index of the rejections recorded in later sections; long sentences in §10–§13 and §19 become tables of their figures |
-      | `RELEASE-READINESS.md` | whoever cuts a release, or asks which Polars versions are promised | five sections replace two parts of 22 H2s: *Cutting a release* (← the release gate and the rehearsal), *Which Polars versions are promised* (← the pin, 2.0.0rc1 measured, raising the ceiling, whose numbered steps stay), *Keeping the API stable* (← Part 2's API sections), *CI cost while the repo was private* (← the quota and cost sections), *Going public, as recorded* (← R1–R6 and the open-source preparation); cited headings keep their text |
-      | `STATE-WORKFLOW.md` | a user about to rely on a state file across runs; second, whoever re-checks a guarantee on a new Polars | a guide section first, *The workflow in four steps* (← the four bold paragraphs, as a table, and a table of R1–R7 with the F and C evidence for each), then the research record of 2026-09-03 with §0–§9 one level down, numbers and headings unchanged |
-      | `RUNNER.md` | someone running a bank with no live Python | four sections replace six: *Running it* (a first run; saving, resuming and scoring; a run whose product is its state; closed groups), *The configuration file* (a flag and key table; files; specs in TOML; clocks that are times), *Memory, threads and chunk size*, *From Rust, and the Polars it needs*; every executed `sh` line unchanged, since the tests run them |
-      | `REGIMES.md` | someone about to trust `hmm`, `corrchange` or `bocpd` | §0–§7 keep their numbers; §0's six findings become bold-led paragraphs; each section states its conditions before its table; §7 becomes one commented code block and an experiment-to-section table |
-      | `OUTPUTS.md` | someone who has found a model's record column and wants each field's meaning | a contents table by family; *Reading this reference* (the field-name parts; the four fields most models write, stated once; what is not listed; how the page is made); the 21 model sections and their anchors unchanged |
-      | `docs/README.md` | someone looking for the one document that answers a question, or following a citation | *Guides* and *Records* as tables with family rows; the ten documents neither table listed get rows; the top-level documents get a table |
-      | `TESTING.md` | someone deciding whether to trust the library, or choosing what to test next; or following a `T-` ID | five sections replace five unrelated ones: *What the suite proves* (← the scorecard and the backlog's hardening rows, as tables), *What it has found* (an index of every defect, linked to its entry), *Where it is thin, and what is left*, *How the suite looks for defects* (← the oracle rule, the mutation run, the FFI audit), *The entries, by ID* (the lettered tables A–E, each ID once, the backlog rows merged in); every T-ID and section letter kept |
-      | `EXTENDING.md` | a contributor adding a model kind, following the steps in order | a checklist table up front (step, file, what you add, the check that fails if you skip it); the 16 steps as `### Step N` headings under their layer, numbers and subjects unchanged; long sentences in steps 1, 6 and 8 become tables of what each kind of model needs |
-      | `CONTRIBUTING.md`, `SECURITY.md` | a developer who wants a change merged; someone reporting a vulnerability | same sections; the gate's steps become a numbered list, long sentences split, cited sentences verbatim |
-      | `llms.txt` | a coding agent reading it in one pass | the llmstxt.org order: summary, details (the rules as bold-led bullets, a surface table), then file lists, one link per item |
+    | document | reader | new structure ← what moves |
+    |---|---|---|
+    | `PERFORMANCE.md` | someone who hit a slower run or a bigger process, or a contributor measuring a hot-path change | the 21 numbered sections stay H2 with their numbers; a new *Reading this document* opens it (a contents table with a "read it when" column ← the "where to look" paragraph; *How the numbers are made* ← the machine and regenerate paragraph; *The headline* ← the status block, as a table; *Words this document uses*); §3's P1–P11 become a status table and one H3 each, their `<details>` plans kept; §5 gains an index of the rejections recorded in later sections; long sentences in §10–§13 and §19 become tables of their figures |
+    | `RELEASE-READINESS.md` | whoever cuts a release, or asks which Polars versions are promised | five sections replace two parts of 22 H2s: *Cutting a release* (← the release gate and the rehearsal), *Which Polars versions are promised* (← the pin, 2.0.0rc1 measured, raising the ceiling, whose numbered steps stay), *Keeping the API stable* (← Part 2's API sections), *CI cost while the repo was private* (← the quota and cost sections), *Going public, as recorded* (← R1–R6 and the open-source preparation); cited headings keep their text |
+    | `STATE-WORKFLOW.md` | a user about to rely on a state file across runs; second, whoever re-checks a guarantee on a new Polars | a guide section first, *The workflow in four steps* (← the four bold paragraphs, as a table, and a table of R1–R7 with the F and C evidence for each), then the research record of 2026-09-03 with §0–§9 one level down, numbers and headings unchanged |
+    | `RUNNER.md` | someone running a bank with no live Python | four sections replace six: *Running it* (a first run; saving, resuming and scoring; a run whose product is its state; closed groups), *The configuration file* (a flag and key table; files; specs in TOML; clocks that are times), *Memory, threads and chunk size*, *From Rust, and the Polars it needs*; every executed `sh` line unchanged, since the tests run them |
+    | `REGIMES.md` | someone about to trust `hmm`, `corrchange` or `bocpd` | §0–§7 keep their numbers; §0's six findings become bold-led paragraphs; each section states its conditions before its table; §7 becomes one commented code block and an experiment-to-section table |
+    | `OUTPUTS.md` | someone who has found a model's record column and wants each field's meaning | a contents table by family; *Reading this reference* (the field-name parts; the four fields most models write, stated once; what is not listed; how the page is made); the 21 model sections and their anchors unchanged |
+    | `docs/README.md` | someone looking for the one document that answers a question, or following a citation | *Guides* and *Records* as tables with family rows; the ten documents neither table listed get rows; the top-level documents get a table |
+    | `TESTING.md` | someone deciding whether to trust the library, or choosing what to test next; or following a `T-` ID | five sections replace five unrelated ones: *What the suite proves* (← the scorecard and the backlog's hardening rows, as tables), *What it has found* (an index of every defect, linked to its entry), *Where it is thin, and what is left*, *How the suite looks for defects* (← the oracle rule, the mutation run, the FFI audit), *The entries, by ID* (the lettered tables A–E, each ID once, the backlog rows merged in); every T-ID and section letter kept |
+    | `EXTENDING.md` | a contributor adding a model kind, following the steps in order | a checklist table up front (step, file, what you add, the check that fails if you skip it); the 16 steps as `### Step N` headings under their layer, numbers and subjects unchanged; long sentences in steps 1, 6 and 8 become tables of what each kind of model needs |
+    | `CONTRIBUTING.md`, `SECURITY.md` | a developer who wants a change merged; someone reporting a vulnerability | same sections; the gate's steps become a numbered list, long sentences split, cited sentences verbatim |
+    | `llms.txt` | a coding agent reading it in one pass | the llmstxt.org order: summary, details (the rules as bold-led bullets, a surface table), then file lists, one link per item |
 
       *Decisions taken on the maps.* Stale measurements are replaced by a
       fresh run of the repository's own script, the old figures kept as a
@@ -3285,17 +3287,17 @@ note, not a task.
       checked independently for lost numbers, names, links and IDs, table
       cell counts, in-page links and wrapped code spans:
 
-      | document | 45+-word sentences | 35+-word sentences | mean sentence |
-      |---|---:|---:|---:|
-      | `PERFORMANCE.md` | 107 → 0 | 193 → 0 | 27.3 → 16.6 |
-      | `RELEASE-READINESS.md` | 17 → 0 | 45 → 2, both merges | 19.9 → 15.4 |
-      | `TESTING.md` | 9 → 0 | 16 → 0 | 21.2 → 13.5 |
-      | `EXTENDING.md` | 20 → 1, task 88's paragraph kept whole | 39 → 1 | 28.1 → 14.8 |
-      | `STATE-WORKFLOW.md` | 11 → 0 | 23 → 0 | 22.3 → 16.1 |
-      | `RUNNER.md` | 0 → 0 | 5 → 0 | 22.3 → 16.7 |
-      | `REGIMES.md` | 3 → 0 | 15 → 0 | 21.3 → 17.1 |
-      | `OUTPUTS.md` | 0 → 0 | 1 → 0 | 21.1 → 15.9 |
-      | `docs/README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `llms.txt` | 2 → 0 | 4 → 0 | 13–22 → 11–13 |
+    | document | 45+-word sentences | 35+-word sentences | mean sentence |
+    |---|---:|---:|---:|
+    | `PERFORMANCE.md` | 107 → 0 | 193 → 0 | 27.3 → 16.6 |
+    | `RELEASE-READINESS.md` | 17 → 0 | 45 → 2, both merges | 19.9 → 15.4 |
+    | `TESTING.md` | 9 → 0 | 16 → 0 | 21.2 → 13.5 |
+    | `EXTENDING.md` | 20 → 1, task 88's paragraph kept whole | 39 → 1 | 28.1 → 14.8 |
+    | `STATE-WORKFLOW.md` | 11 → 0 | 23 → 0 | 22.3 → 16.1 |
+    | `RUNNER.md` | 0 → 0 | 5 → 0 | 22.3 → 16.7 |
+    | `REGIMES.md` | 3 → 0 | 15 → 0 | 21.3 → 17.1 |
+    | `OUTPUTS.md` | 0 → 0 | 1 → 0 | 21.1 → 15.9 |
+    | `docs/README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `llms.txt` | 2 → 0 | 4 → 0 | 13–22 → 11–13 |
 
       Every in-page link in the twelve resolves, no code span is wrapped,
       and every table row has its header's cell count. What the loss check
@@ -4038,12 +4040,12 @@ note, not a task.
       `ClockState::advance` (`crates/online-core/src/clock.rs`) and
       `apply_label_delay`, per `on_clock_reset`:
 
-      | policy (today) | a waiting row today | as a session break |
-      |---|---|---|
-      | `"max"` | `capped = true` — the buffer releases, the window ends | unchanged |
-      | `"reset_state"` | the buffer is discarded; the model starts over | unchanged — a reset, as `session_gap="reset"` is at a session change |
-      | `"zero"` | a zero step, not capped: the buffer keeps waiting, and a window would run on across the jump, counting the rows after it as the row's own clock | **the buffer releases and every window ends** |
-      | `"error"` | the run stops | unchanged |
+    | policy (today) | a waiting row today | as a session break |
+    |---|---|---|
+    | `"max"` | `capped = true` — the buffer releases, the window ends | unchanged |
+    | `"reset_state"` | the buffer is discarded; the model starts over | unchanged — a reset, as `session_gap="reset"` is at a session change |
+    | `"zero"` | a zero step, not capped: the buffer keeps waiting, and a window would run on across the jump, counting the rows after it as the row's own clock | **the buffer releases and every window ends** |
+    | `"error"` | the run stops | unchanged |
 
       - **In both forms, a backward step on a group's clock does to the
         waiting rows what a session change does**: every open forward
@@ -4384,21 +4386,60 @@ decision it needs, with a recommendation where there is one.
       schema: the loaders for 14 and 15 stay, as the CHANGELOG promises; the
       test that loads a state written by the released 0.10.0 wheel is not
       built. Task 105 is not in this release: its clock rules need the
-      user's review (task 120).
+      user's review (task 120). **2026-09-27, after 0.11.1:** the state test is
+      built, `tests/test_released_state.py`, for 0.10.0 (schema 14) and
+      0.11.1 (schema 17); `scripts/release_probe.py --states` writes the
+      files under the released build (RELEASE-READINESS, "Compare with the
+      last release").
 
-- [ ] 110. **This week's review leftovers, as tests.** S. Held-value tests
+- [x] 110. **This week's review leftovers, as tests.** S. Held-value tests
       for `ew_class` and `hmm`; weight-0 rows for `bocpd`, `deco` and `hmm`;
       each model's state saved before the low parts, loaded; `ew_class`'s
       window reading a held feature; two targets under pairwise gaps with a
-      held feature (task 101's review).
+      held feature (task 101's review). **Done 2026-09-27.** In
+      `held_values.rs`: `ew_class` classifies and `hmm` filters the same at
+      every level (measured a thousandth of `steps_of` and less; `hmm`'s
+      state spread decays at its share of the rows, 2.7e-22 of the stop,
+      so it is held to level 0.5's rather than to `ew_cov`'s 1e-30); a row
+      of no weight moves nothing in `bocpd`, `deco` or `hmm`, to the bit;
+      two targets under `pairwise` keep their slopes at every level -- the
+      second target's slope wanders under `pairwise` at every level,
+      level 0.5 included, from before the feature stops (the all-row Gram
+      against a third fewer cross-moments), so it is held to 0.5's. In
+      `model_contract.rs`: `every_model_resumes_from_a_state_without_the_low_parts`
+      drops every `_lo` field of every model's state, in msgpack (`rmpv`,
+      a test-only dev-dependency, MIT: serde_json turns an infinite cfg
+      value into null), and holds the continuation to the whole state's
+      within 1e-11 (3.7e-13 measured), with each of the 15 models that
+      keep a mean shown to have dropped parts; and
+      `a_schema_16_state_of_offsets_loads_as_own_means`, the G3
+      conversion's first test on a real schema-16 shape. In `ewclass.rs`:
+      `the_window_reads_a_held_feature_as_no_spread_in_every_class`.
 
-- [ ] 111. **The model contract, checked where it is only listed.** S–M.
+- [x] 111. **The model contract, checked where it is only listed.** S–M.
       EXTENDING's checklist misses four places a test checks (`BUILDERS`,
       the OUTPUTS meanings, llms.txt's count, the README's API lines);
       `ewridge`, `sgd` and `kalman` lack a wrong-shape refusal test; the
       bit-flip fuzz covers one spec; the save/load and realized-struct
       sweeps cover the regressions only; lists kept by hand stand in for
-      checks (test_bank.py:330, test_coef.py:114-141).
+      checks (test_bank.py:330, test_coef.py:114-141). **Done 2026-09-27.**
+      EXTENDING names all four and the new sweeps. Every model module has
+      its wrong-shape test (`sgd` and `kalman` check in their `TryFrom`, so
+      theirs go through the encoding). `summary.rs`'s
+      `every_model_kind_refuses_or_loads_a_corrupt_file_never_panics` cuts
+      and bit-flips a state of every kind (thinned: every 7th prefix, every
+      5th byte), held to `ModelKind::KINDS`: no kind panics. `tests/test_every_kind.py`
+      runs the realized-struct and the mid-stream save/load checks over the
+      registry's `MINIMAL` itself -- `rcov`, `hmm`, `corrchange` and `bocpd`
+      had neither. The hand lists: `test_coef`'s `COEF_SPECS` gained the five
+      kinds with a `coef` it missed (`quantile`, `kmeans`, `ew_class`, `hmm`,
+      `deco`) and a check against `coef_index`; the sparse-target test runs
+      every regression model, so its per-target set is checked by the
+      others; `test_error_messages.BUILDERS` gained the seven builders its
+      inf and NaN sweeps never saw, held to `MINIMAL` (all seven were
+      right). `test_kwargs_typing.BUILDERS` stays a list -- deriving it would
+      import the registry that imports it -- and is held by
+      `test_the_builder_list_covers_every_builder`, which EXTENDING now names.
 
 - [ ] 112. **Older review items that need no decision.** S each. C16's raw
       oracles; C21's r2 and coverage under a delay; S23's docs; D9, the dead
@@ -4409,13 +4450,60 @@ decision it needs, with a recommendation where there is one.
       regime switch, `deco` and `rcov` experiments, WKD's size at t5, the
       Epps sweep that ends at its best point; PERFORMANCE: the measurements
       owed (prefetch limits, §19's state sizes, §21's trivial scan, task
-      101's cost) and a re-run of its timings.
+      101's cost) and a re-run of its timings. **The tests and fixes done
+      2026-09-27; the REGIMES experiments and the PERFORMANCE measurements
+      are not tests, and stay open.** C16: both blend oracles are the
+      centred mixture, run at 0 and 1e8. C21: `r2_y` under a delay is
+      scikit-learn's `r2_score` over the matured rows, to 1e-9; and
+      **`coverage_y` was not** -- a held row was scored, at release, against
+      the conformal radius reached by then rather than the radius its
+      interval was shown with (C21's other half): the record of a held row
+      now carries the radius it was shown, `Conformal::update_against`
+      scores against it and steps the current radius by that error
+      (delayed-feedback ACI), and a row shown no interval counts for
+      neither; schema 18, and a 17 file's rows are scored as before
+      (`a_delayed_row_is_scored_against_the_radius_it_was_shown`,
+      `test_coverage_is_the_share_of_matured_rows_inside_their_interval`).
+      S23: `emit_averaged`'s docs say its weights are a mean loss ratio that
+      does not sharpen, and a slot without a prediction drops out of the
+      row's average. D9: deleted. §6: a constant column in `deco` freezes
+      every block (a decision now, task 115 (h)); `bocpd` in a stationary
+      stream prunes little -- 2,001 runs kept after 2,000 rows and 7,036 at
+      most by 20,000 under the defaults, so `max_run` (10,000) is the real
+      bound on its memory and its per-row cost, now in its docs -- and a
+      test holds a stream at `max_run = 1,000` for 3,000 rows, finite
+      throughout, with a 4σ shift found by `run_mode` within 3 rows (the
+      pruned and exact runs agree after the shift; `p_change`, `P(r ≤ 1)`,
+      peaks at the shifted row and falls, so it is not the reading to wait
+      on). A 100,000-row test would take four minutes a debug run. Its
+      `gaussian` emission at d = 3 is a textbook
+      multivariate-t longhand in Algorithm 1, to 1e-10. T2: every kind is
+      read off a real model's state. U5: a Decimal and a `UInt8` column
+      through the CLI give the bank's numbers on the same `Float64`s.
 
 - [ ] 113. **CI and tooling.** S–M. S7, one composite action for the Linux
       prep step (five copies now); a coverage run, and whether Rust coverage
       joins CI; a fresh mutation baseline and its triage (the weekly job
       starts 2026-09-27; `lasso` and `ewridge` first); WRITING's step-5
-      structure checks as a script.
+      structure checks as a script. **S7 and the script done 2026-09-27.**
+      S7: `.github/actions/linux-build-prep`, called by all five workflows
+      (SIMPLIFICATION S7 has the rest). The script:
+      `scripts/doc_structure.py` parses each file as CommonMark with
+      GitHub's tables (markdown-it-py, a new dev dependency), counts a row's
+      cells on its source line as GFM splits it, and makes GitHub's anchors;
+      its anchors, tables and rows matched GitHub's own rendering of every
+      tracked file (1,066 anchors, 373 tables), and its tests' expectations
+      were each rendered by GitHub first. `tests/test_doc_structure.py`
+      runs it over every tracked file. It found three rows whose unescaped
+      `|` dropped cells (ENHANCEMENTS E23 and E54, MARGINAL-LAGS-AND-BINS'
+      `E[y | x]`, escaped now), two example links whose target was `...`
+      (PHRASING, WRITING, escaped), and eleven tables in this plan that
+      GitHub showed as code, moved from six spaces to four. **For the
+      user:** the same cause shows most of this plan as code on GitHub. An
+      entry's text starts at column 2, after `- `, so a paragraph that
+      follows a blank line at six spaces is an indented code block: 35
+      blocks, 2,662 lines. Four spaces would render them as text; the diff
+      is whitespace across the whole file, so it is not made without a word.
 
 - [ ] 114. **Four formulas checked against their papers.** S–M; needs the
       papers (none is in `.cache/research/papers`). WKD 2012's Bartlett
@@ -4443,7 +4531,17 @@ decision it needs, with a recommendation where there is one.
       weights for `serial_rule`; S19, windowed target moments; C18, a
       windowed lag ring — record as tasks or decline. (g) C8, the CLI's
       NDJSON on the system allocator: write it from one thread (the
-      mimalloc option is parked with the new libraries).
+      mimalloc option is parked with the new libraries). (h) `deco` with a
+      column that has no spread (found by task 112's test, 2026-09-27): a
+      row learns only when every standardized value is finite, so while one
+      column is constant -- from its first row, the only way its variance is
+      exactly zero -- no block's `rho` moves, its own or any other, and `u`
+      and `loglik` are null for every block; `n_eff` advances and every block
+      learns again once the column moves
+      (`test_a_constant_column_poisons_nothing_and_every_block_learns_once_it_moves`
+      pins that much). Whether the other blocks should go on learning, and
+      the constant column's own block too (from its other columns), is the
+      decision.
 
 - [ ] 116. **Readiness beyond `ewridge`** (WARMUP-AND-CONVERGENCE §7). M–L;
       defaults move, so *the scope is the user's*. A readiness statistic for
@@ -5074,6 +5172,81 @@ is not, since the model alone has `0.0` and `3.5` there.
       nothing to undo. The rehearsal stays for testing a change to the
       workflow. Neither tries `tag` or `release`, which run after the
       upload; a failed one is re-run on the same sha.
+
+- [x] 134. **E75: `marginal`'s lead/follow reading does not hold against a
+      forward-looking target — correct the docs, change no code.** S; no
+      decision. **Done 2026-09-27:** (1)–(6) below as written, the test as
+      `test_a_timely_feature_beats_corr_one_row_on_against_a_forward_target`
+      in `tests/test_marginal_lags.py`, and the dated note in
+      MARGINAL-AT-WIDTH's table. Asked 2026-09-27 by the caller of MARGINAL-LAGS-AND-BINS and
+      MARGINAL-AT-WIDTH (factor_selection, `~/dev/model`), in a request file
+      that was checked, recorded here and deleted. **The reading:** seven
+      places say a feature whose `lagcorr_xy[0]` exceeds its `corr` follows
+      the target (a late-sampled column): the README's comment on
+      `bank.marginal()`'s columns (1842–1843), the `marginal()` docstring in
+      `_bank.py` (1042–1044), the spec's docstring in `_spec.py`
+      (2980–2982), MARGINAL-LAGS-AND-BINS' table of columns (114) and its
+      paragraph after the tests (131–134), E66's entry in this plan
+      (919–921) and E66's row in ENHANCEMENTS (497). **Why it fails:** a
+      forward-looking target is built from the rows after its own,
+      `y_t = Σ_{k≥1} w_k r_{t+k}`, and a timely feature holds each row's
+      news from that row on, `x_t = Σ_{k≥0} v_k r_{t−k}`. `corr` is
+      `C(x_t, y_t)` and shares no return; `lagcorr_xy[0]` is
+      `C(x_t, y_{t−1})`, and `y_{t−1}` starts with `r_t`, so it gains
+      `v_0 w_1 Var(r)`. Every timely feature built from the target's own
+      news shows `lagcorr_xy[0]` above `corr`, at any halflife, so the
+      inequality separates nothing. It holds for two series that describe
+      the same moment. **What it did:** the caller's late-sampling screen
+      flagged 527 of 6,015 pairs on sixty days of Binance one-second klines,
+      every one a correctly sampled return or signed-flow factor (BTC's 2 s
+      return average against the 10 s target: `lagcorr_yx[0]` 0.075, `corr`
+      0.105, `lagcorr_xy[0]` 0.305); read at four offsets for where the
+      slope jumps, it flags none. **Checked here 2026-09-27:** the algebra;
+      each of the seven places says what the request quotes; and its test
+      passes against this build, in 0.75 s, with the closed forms 0.2544
+      and 0.4173 it quotes.
+      **To do.** (1) The README comment and both docstrings, one text: "the
+      feature now against the target `l` rows back, and the target now
+      against the feature `l` rows back, at each of `cross_lags` (every lag
+      by default). For two series that describe the same moment, a feature
+      whose `lagcorr_yx[0]` exceeds its `corr` leads the target, and one
+      whose `lagcorr_xy[0]` does follows it. That reading does not hold
+      against a forward-looking target, one built from the rows after its
+      own. There the target `l` rows back is built partly from the
+      feature's newest `l` rows, so a feature built from the same news shows
+      `lagcorr_xy` above `corr` however it is sampled. Absent under
+      `cross_lags=[]`." (2) MARGINAL-LAGS-AND-BINS' row for `lagcorr_xy`:
+      "`C(x_t, y_{t−ℓ}) / (sd_x · sd_y)` — the feature *now* against the
+      target ℓ rows *ago*. For two series that describe the same moment, how
+      far the feature follows the target. Against a forward-looking target
+      it also holds what the two share: the target ℓ rows ago is built
+      partly from the feature's newest ℓ rows." (3) Its paragraph after the
+      tests: the pair is read with the target's construction in hand; for
+      two series of the same moment `lagcorr_xy[0]` above `corr` means the
+      feature follows; against a forward-looking target it says nothing
+      about timing, since every timely feature built from the target's news
+      shows it; telling late from timely takes more offsets and a judgment
+      over independent blocks, and one caller keeps `cross_lags=[1, 2]` and
+      asks where the slope of the correlation jumps. (4) A dated note, not a
+      rewrite, in E66's entry here and its ENHANCEMENTS row: "2026-09-27:
+      the lead/follow reading holds for two series that describe the same
+      moment, not against a forward-looking target (E75)." (5) A test, the
+      caller's: `r` i.i.d. normal; `x` the EW average
+      `x_t = (1 − a) x_{t−1} + a r_t`, `a = 1 − 2^(−1/2)`; `y_t =
+      Σ_{k=1..L} w_k r_{t+k}`, `w_k = (1 − λ) λ^(k−1)`, `λ = 2^(−1/10)`,
+      `L = 70`, seven of its halflives; 100,000 rows through `marginal(lam=1.0, lags=[1, 2],
+      cross_lags=[1, 2])`; then `|corr| < 4/√n`, `lagcorr_xy[0]` within
+      that of `√(a(2 − a)(1 − λ²)/(1 − λ^(2L)))` (0.2544),
+      `lagcorr_xy[1]` of that times `1 − a + λ` (0.4173), and every
+      `lagcorr_yx` below it. (6) A Docs line in the CHANGELOG. **Not
+      asked:** a late-sampling statistic in the library (the rule needs a
+      block design and a multiple-testing margin, the caller's choices), a
+      change to the terms or their orientation (they are right, and the
+      test holds them to the closed form), or a new `cross_lags` default.
+      **On the caller's side:** MARGINAL-AT-WIDTH line 66 says it reads
+      `lagcorr_xy[0]` and `lagcorr_yx[0]`; it now runs `cross_lags=[1, 2]`,
+      about 3 % more state a pair at its defaults, the time not yet
+      measured. A dated note there fits.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the

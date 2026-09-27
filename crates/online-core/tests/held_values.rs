@@ -1090,3 +1090,301 @@ fn a_row_of_no_weight_moves_no_mean() {
         .unwrap()
     });
 }
+
+// --- task 110: the models the week's review left out -----------------------
+
+/// A label from the stream's target: which side of its middle it fell.
+fn label_of(y: f64) -> f64 {
+    f64::from(y > 1.0)
+}
+
+/// `ew_class`: the class posteriors at every level are those at 0.5, and the
+/// stopped feature's spread inside each class decays with its history rather
+/// than settling on a floor (docs/PLAN.md task 110). A Gaussian classifier's
+/// posterior does not move when a feature is shifted by a constant, so the
+/// level is invisible in exact arithmetic.
+#[test]
+fn ew_class_classifies_the_same_at_every_level() {
+    let make = || {
+        EwClass::new(EwClassCfg {
+            n_features: 3,
+            n_classes: 2,
+            decay: decay(),
+            min_periods: 10.0,
+            covariance: Covariance::Full,
+            precision_prior: 1e-3,
+            window: None,
+            window_every: None,
+        })
+        .unwrap()
+    };
+    let run = |level: f64| {
+        let mut m = make();
+        let (mut post, mut at_stop) = (Vec::new(), [0.0; 2]);
+        for (i, (x, y)) in stream(level).iter().enumerate() {
+            let out = m.step(x, &[Some(label_of(*y))], d(i), 1.0);
+            post.push(out.pred[1]);
+            if i == MOVING - 1 {
+                at_stop = [m.class_cov(0).var(2), m.class_cov(1).var(2)];
+            }
+        }
+        (
+            post,
+            at_stop,
+            [m.class_cov(0).var(2), m.class_cov(1).var(2)],
+        )
+    };
+    let (base, _, _) = run(0.5);
+    for level in LEVELS {
+        let (post, at_stop, end) = run(level);
+        for c in 0..2 {
+            assert!(
+                end[c] <= 1e-30 * at_stop[c],
+                "level {level}, class {c}: variance {:e} of {:e}",
+                end[c],
+                at_stop[c]
+            );
+        }
+        let worst = (MOVING..post.len())
+            .filter(|&i| base[i].is_finite())
+            .map(|i| (post[i] - base[i]).abs())
+            .fold(0.0, f64::max);
+        // Measured: 9.5e-15 at 1e3, 1.8e-9 at 1e8, 1.5e-5 at 1e12, about a
+        // thousandth of `steps_of`.
+        assert!(
+            worst <= steps_of(level),
+            "level {level}: posteriors {worst:e} from 0.5's"
+        );
+    }
+}
+
+/// `hmm`, seeded from its own warm-up rows: the filtered state probabilities
+/// and the row's log-likelihood at every level are those at 0.5, and each
+/// state's spread in the stopped feature decays (task 110). A Gaussian
+/// emission shifted with its data is the same density.
+#[test]
+fn hmm_filters_the_same_at_every_level() {
+    let make = || {
+        Hmm::new(HmmCfg {
+            n_features: 3,
+            k: 2,
+            decay: decay(),
+            covariance: Covariance::Full,
+            precision_prior: 1e-3,
+            min_periods: 10.0,
+            learn: true,
+            transition_prior: 1.0,
+            transition: None,
+            means: None,
+            covs: None,
+            warm_rows: 40,
+            seed_rule: SeedRule::First,
+            seed: 3,
+            tvtp: None,
+        })
+        .unwrap()
+    };
+    let run = |level: f64| {
+        let mut m = make();
+        let (mut out, mut at_stop) = (Vec::new(), [0.0; 2]);
+        for (i, (x, _)) in stream(level).iter().enumerate() {
+            let s = m.step(x, &[], d(i), 1.0);
+            out.push((s.pred[0], s.pred[s.pred.len() - 1]));
+            if i == MOVING - 1 {
+                at_stop = [m.state_cov(0).var(2), m.state_cov(1).var(2)];
+            }
+        }
+        (out, at_stop, [m.state_cov(0).var(2), m.state_cov(1).var(2)])
+    };
+    // Each state's weight is its share of the rows, so its spread decays at
+    // that share of the rate: 2.7e-22 of its value at the stop, measured at
+    // 0.5. What a stall would leave is a floor that grows with the level
+    // (the gap squared: 5e-8 at 1e12), so each level is held to 0.5's.
+    let (base, _, base_end) = run(0.5);
+    for level in LEVELS {
+        let (out, at_stop, end) = run(level);
+        for s in 0..2 {
+            assert!(
+                end[s] <= 1e-15 * at_stop[s] && end[s] <= 4.0 * base_end[s] + 1e-300,
+                "level {level}, state {s}: variance {:e} of {:e}, against {:e} at 0.5",
+                end[s],
+                at_stop[s],
+                base_end[s]
+            );
+        }
+        let (mut worst_p, mut worst_ll) = (0.0f64, 0.0f64);
+        for i in MOVING..out.len() {
+            let ((p, ll), (bp, bll)) = (out[i], base[i]);
+            if bp.is_finite() {
+                worst_p = worst_p.max((p - bp).abs());
+            }
+            if bll.is_finite() {
+                worst_ll = worst_ll.max((ll - bll).abs() / (1.0 + bll.abs()));
+            }
+        }
+        // Measured: p 3.7e-14 at -0.37, 1.0e-12 at 1e3, 1.1e-7 at 1e8,
+        // 5.9e-4 at 1e12 -- a twentieth of `steps_of` and less, but for the
+        // levels near zero, where `steps_of` floors at 100 eps and the
+        // filter's softmax lifts the data's own last bits past it; a stall
+        // moved these fits by 4e-2 and more at 1e12.
+        let tol = steps_of(level).max(1e-12);
+        assert!(worst_p <= tol, "level {level}: p {worst_p:e}");
+        assert!(worst_ll <= tol, "level {level}: loglik {worst_ll:e}");
+    }
+}
+
+/// [`no_weight_moves_nothing`] for a model with no target: a row of weight 0
+/// whose features are elsewhere changes nothing any later row reports, to
+/// the bit (hard rule 9; task 110).
+fn no_weight_moves_nothing_unsupervised<M: OnlineModel>(name: &str, make: impl Fn() -> M) {
+    let zero = |i: usize| i >= MOVING && i % 7 == 3;
+    for level in [0.5, 1e3, 1e8] {
+        let rows = stream_of(level, 400);
+        let run = |far: bool| -> Vec<Vec<f64>> {
+            let mut m = make();
+            rows.iter()
+                .enumerate()
+                .map(|(i, (x, _))| {
+                    let mut x = *x;
+                    if far && zero(i) {
+                        x[2] += 5.0;
+                        x[0] -= 3.0;
+                    }
+                    let w = if zero(i) { 0.0 } else { 1.0 };
+                    let s = m.step(&x, &[], d(i), w);
+                    s.pred.iter().copied().chain([s.n_eff]).collect()
+                })
+                .collect()
+        };
+        let (near, far) = (run(false), run(true));
+        for i in (0..rows.len()).filter(|&i| !zero(i)) {
+            let same = near[i]
+                .iter()
+                .zip(&far[i])
+                .all(|(a, b)| a.to_bits() == b.to_bits());
+            assert!(
+                same,
+                "{name}, level {level}: row {i}, {:?} against {:?}",
+                far[i], near[i]
+            );
+        }
+    }
+}
+
+#[test]
+fn a_row_of_no_weight_moves_nothing_without_a_target() {
+    no_weight_moves_nothing_unsupervised("bocpd", || {
+        Bocpd::new(BocpdCfg {
+            n_features: 3,
+            hazard: 50.0,
+            hazard_from_row: false,
+            emission: BocpdEmission::Diag,
+            prior_mean: None,
+            prior_kappa: 1.0,
+            prior_nu: Some(2.0),
+            prior_scale: Some(vec![1.0]),
+            robust_beta: 0.0,
+            prune_below: 1e-6,
+            max_run: 200,
+            min_periods: 0.0,
+        })
+        .unwrap()
+    });
+    no_weight_moves_nothing_unsupervised("deco", || {
+        Deco::new(DecoCfg {
+            n_features: 3,
+            decay: decay(),
+            dynamics: DecoDynamics::Ew,
+            alpha: None,
+            beta: None,
+            blocks: Vec::new(),
+            min_periods: 3.0,
+        })
+        .unwrap()
+    });
+    no_weight_moves_nothing_unsupervised("hmm", || {
+        Hmm::new(HmmCfg {
+            n_features: 3,
+            k: 2,
+            decay: decay(),
+            covariance: Covariance::Full,
+            precision_prior: 1e-3,
+            min_periods: 10.0,
+            learn: true,
+            transition_prior: 1.0,
+            transition: None,
+            means: None,
+            covs: None,
+            warm_rows: 40,
+            seed_rule: SeedRule::First,
+            seed: 3,
+            tvtp: None,
+        })
+        .unwrap()
+    });
+}
+
+/// Two targets under `pairwise` gaps, the second absent on every third row,
+/// and a feature that stops: each target keeps the slope it learned on the
+/// stopped feature, and predicts at every level what it does at 0.5 (task
+/// 101's review; task 110). Under `pairwise` the Gram is over every row and
+/// each target's own feature mean is kept beside it (`gaps.rs`, `Cross`),
+/// the arrangement the stall would have hit twice.
+#[test]
+fn two_targets_under_pairwise_gaps_keep_their_slopes() {
+    let make = || {
+        let mut c = ridge(true);
+        c.n_targets = 2;
+        c.target_gaps = TargetGaps::Pairwise;
+        EwRidge::new(c).unwrap()
+    };
+    let run = |level: f64| {
+        let mut m = make();
+        let (mut pred, mut slope) = (Vec::new(), Vec::new());
+        for (i, (x, y)) in stream(level).iter().enumerate() {
+            let second = (i % 3 != 1).then_some(0.5 * y + 0.2);
+            let out = m.step(x, &[Some(*y), second], d(i), 1.0);
+            pred.push([out.pred[0], out.pred[1]]);
+            slope.push(
+                m.coefficients()
+                    .map_or([f64::NAN; 2], |b| [b[0][3], b[1][3]]),
+            );
+        }
+        (pred, slope)
+    };
+    // The first target, on every row, keeps the slope it learned. The
+    // second's slope under `pairwise` wanders at every level, 0.5 included,
+    // from before the feature stops: the Gram is over every row and its
+    // cross-moments over a third fewer, and the two samples' mismatch leaks
+    // between slopes (under `own_rows` it holds 0.19 to 0.29). What a stall
+    // would do is move it with the level, so it is held to 0.5's.
+    let (base, base_slope) = run(0.5);
+    for level in LEVELS {
+        let (pred, slope) = run(level);
+        let mut worst_slope = 0.0f64;
+        for (i, s) in slope.iter().enumerate().skip(MOVING) {
+            assert!(
+                s[0].is_nan() || (0.2..0.8).contains(&s[0]),
+                "level {level}, row {i}: slope {}",
+                s[0]
+            );
+            if s[1].is_finite() {
+                worst_slope = worst_slope.max((s[1] - base_slope[i][1]).abs());
+            }
+        }
+        // Measured: 4.8e-6 at 1e12, 9.7e-10 at 1e8.
+        assert!(
+            worst_slope <= steps_of(level),
+            "level {level}: second slope {worst_slope:e}"
+        );
+        let worst = (MOVING..pred.len())
+            .flat_map(|i| (0..2).map(move |t| (i, t)))
+            .filter(|&(i, t)| base[i][t].is_finite())
+            .map(|(i, t)| (pred[i][t] - base[i][t]).abs() / (1.0 + base[i][t].abs()))
+            .fold(0.0, f64::max);
+        assert!(
+            worst <= steps_of(level),
+            "level {level}: {worst:e} from 0.5's"
+        );
+    }
+}

@@ -737,6 +737,43 @@ mod tests {
         assert_eq!(m.n_eff(), 0.0, "n_eff is a crumb, not 0");
     }
 
+    /// A feature that held one value over every row inside the window has no
+    /// spread there in any class, and the window's class covariances say so
+    /// exactly, where the subtraction left a remainder at the level of the
+    /// feature (docs/PLAN.md tasks 94 and 110; `ew_cov`'s window has the same
+    /// test). The other feature keeps its spread.
+    #[test]
+    fn the_window_reads_a_held_feature_as_no_spread_in_every_class() {
+        for covariance in [Covariance::Full, Covariance::Diagonal] {
+            let mut c = cfg(2, 2, covariance);
+            c.decay = Decay::Halflife(10.0);
+            c.window = Some(30.0);
+            let mut m = EwClass::new(c).unwrap();
+            let mut s = 9u64;
+            for i in 0..120 {
+                let x1 = if i < 60 {
+                    1e6 + lcg(&mut s)
+                } else {
+                    1e6 + 0.37
+                };
+                let label = f64::from(i % 2 == 0);
+                OnlineModel::step(
+                    &mut m,
+                    &[lcg(&mut s), x1],
+                    &[Some(label)],
+                    if i == 0 { 0.0 } else { 1.0 },
+                    1.0,
+                );
+            }
+            let view = m.view().expect("rows have aged out of the window");
+            for (class, cov) in view.iter().enumerate() {
+                assert_eq!(cov.var(1), 0.0, "{covariance:?}, class {class}");
+                assert_eq!(cov.cov(0, 1), 0.0, "{covariance:?}, class {class}");
+                assert!(cov.var(0) > 0.0, "{covariance:?}, class {class}");
+            }
+        }
+    }
+
     fn cfg(k: usize, nc: usize, covariance: Covariance) -> EwClassCfg {
         EwClassCfg {
             n_features: k,

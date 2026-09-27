@@ -1452,7 +1452,9 @@ pub struct StreamState {
     /// Per model instance, the prediction each row in `pending` was *scored*
     /// with, in the same order (review 2026-09-12, C21): the one thing a
     /// replay cannot recompute, and what the residual diagnostics fold when
-    /// the row's label matures. Skipped when there is none, so a spec
+    /// the row's label matures. With a conformal interval, each record goes
+    /// on with the radius every slot's interval was shown with (schema 18),
+    /// which the release scores the row against. Skipped when there is none, so a spec
     /// without a delay writes the same bytes it always did.
     #[serde(default, skip_serializing_if = "no_score_preds")]
     pub score_pred: Vec<Vec<Vec<f64>>>,
@@ -3569,11 +3571,28 @@ fn run_instance(
         // described a prediction nobody was shown (review 2026-09-12, C21).
         // The score keeps its prediction; the replay takes it back. The
         // model's own update above stands.
+        //
+        // With a conformal interval the record also keeps the radius each
+        // slot's interval was shown with, after the predictions, so the
+        // release scores the interval the row was shown rather than the one
+        // the radius has reached since (C21's other half; docs/PLAN.md task
+        // 112). A record without it -- a state saved before it was kept --
+        // is scored against the radius at release, as it was.
+        let mut shown_radius: Option<Vec<f64>> = None;
         if plan.buffered {
-            inst.score_pred.push_back(step.pred.clone());
+            let mut record = step.pred.clone();
+            if let Some(cs) = inst.conformal.as_deref() {
+                record.extend(cs.iter().map(|c| c.radius().unwrap_or(f64::NAN)));
+            }
+            inst.score_pred.push_back(record);
         } else if !plan.direct() {
+            let n = step.pred.len();
             match inst.score_pred.pop_front() {
-                Some(p) if p.len() == step.pred.len() => step.pred = p,
+                Some(p) if p.len() == n => step.pred = p,
+                Some(p) if p.len() == 2 * n && inst.conformal.is_some() => {
+                    shown_radius = Some(p[n..].to_vec());
+                    step.pred.copy_from_slice(&p[..n]);
+                }
                 // No record of the score -- a state saved before it was kept:
                 // fold nothing rather than the prediction that peeks.
                 _ => step.pred.fill(f64::NAN),
@@ -3750,7 +3769,8 @@ fn run_instance(
                     inst.o_conformal[2 * block + at] = c.coverage().unwrap_or(f64::NAN);
                 }
                 if learn {
-                    c.update(sc.r[slot], sc.sig[slot], lam, w);
+                    let shown = shown_radius.as_ref().map(|q| q[slot]);
+                    c.update_against(sc.r[slot], sc.sig[slot], lam, w, shown);
                 }
             }
         }

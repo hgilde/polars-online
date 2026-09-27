@@ -292,7 +292,14 @@ pub use window::{
 ///   schema-14, 15 or 16 file loads: the offsets are turned into means
 ///   once, at the precision they had, in the live accumulators and in
 ///   every window snapshot.
-pub const SCHEMA_VERSION: u32 = 17;
+/// - 18: a stream under `label_delay` with a conformal interval keeps, beside
+///   each held row's score-time prediction, the radius every slot's interval
+///   was shown with, and the release scores the row against it (docs/PLAN.md
+///   task 112, C21's other half). The file's types do not change, what a
+///   record holds does, so a 17 build would misread it and is refused. A
+///   17 file loads: its records carry no radius, and those rows are scored
+///   against the radius at release, as 17 scored them.
+pub const SCHEMA_VERSION: u32 = 18;
 
 /// Oldest state layout this build still loads.
 ///

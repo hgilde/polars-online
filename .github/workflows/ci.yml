@@ -185,16 +185,7 @@ jobs:
       # step. One position satisfies both.
       - name: free disk and use a leaner linker (Linux)
         if: runner.os == 'Linux'
-        run: |
-          echo "--- disk before ---"; df -h /
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
-                      /usr/local/share/boost /usr/local/.ghcup || true
-          echo "--- disk after ---"; df -h /
-          free -m || true
-          sudo apt-get install -y --no-install-recommends lld
-          mkdir -p .cargo
-          printf '[target.x86_64-unknown-linux-gnu]\nrustflags = ["-C", "link-arg=-fuse-ld=lld"]\n' \
-            >> .cargo/config.toml
+        uses: ./.github/actions/linux-build-prep
 
       # Also before the cache: real-time scanning inspects every file the
       # restore unpacks and every one of the ~100k a cargo build writes.

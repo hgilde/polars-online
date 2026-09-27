@@ -36,7 +36,13 @@
 //! The run vector would grow by one every row, so runs whose normalised
 //! mass falls below `truncate` are dropped and the rest renormalised, and
 //! `max_run` folds the tail into the last kept run. Both are approximations
-//! with a knob, and a test measures what the knob costs.
+//! with a knob, and a test measures what the knob costs. In a stationary
+//! stream the pruning bounds little: one regime makes every "it began `j`
+//! rows ago" hypothesis about as likely as the next, and the posterior
+//! spreads over thousands of run lengths -- 2,001 kept after 2,000 rows and
+//! 7,036 at most by 20,000 under the defaults (`prune_below = 1e-6`,
+//! measured 2026-09-27). `max_run` is then the bound on the vector and on
+//! the `O(runs·d²)` work a row costs; a shift collapses it to a few dozen.
 //!
 //! # The emissions
 //!
@@ -1171,6 +1177,58 @@ mod tests {
         // has seen more than `max_run - 1` of them.
         let longest = m.runs.iter().map(|r| r.len).fold(0.0, f64::max);
         assert_eq!(longest, 19.0, "the fold keeps the youngest of the group");
+    }
+
+    /// A stationary stream keeps its run vector at `max_run`, and a shift
+    /// after it is still found at once (REVIEW-2026-09-18 §6; docs/PLAN.md
+    /// task 112). Pruning at `1e-6` bounds little here: one regime makes
+    /// every "it began `j` rows ago" hypothesis about as likely as the next,
+    /// so the posterior spreads over thousands of run lengths (measured
+    /// under the spec's defaults: 2,001 runs after 2,000 rows, 7,036 at most
+    /// by 20,000), and `max_run` is the bound -- here 1,000, so the fold is
+    /// reached within the stream. Every output stays finite, and a 4σ shift
+    /// after 3,000 rows takes the most likely run length to at most 3
+    /// within 3 rows. (`p_change`, `P(r ≤ 1)`, peaks at the shifted row --
+    /// 0.47 after 3,000 rows, measured -- and falls as the new run ages, so
+    /// it is not the reading to wait on.)
+    #[test]
+    fn a_long_stationary_stream_is_held_to_max_run_and_still_sees_a_shift() {
+        let max_run = 1_000;
+        let mut m = Bocpd::new(BocpdCfg {
+            hazard: 250.0,
+            prune_below: 1e-6,
+            max_run,
+            ..cfg(1)
+        })
+        .unwrap();
+        let mut n = Normals::new(29);
+        let steady = 3_000;
+        let mut longest = 0;
+        let mut modes = Vec::new();
+        for i in 0..steady + 3 {
+            let x = if i < steady {
+                n.normal()
+            } else {
+                4.0 + n.normal()
+            };
+            let out = m.step(&[x], &[], 1.0, 1.0);
+            longest = longest.max(m.runs.len());
+            assert!(m.runs.len() <= max_run, "row {i}: {} runs", m.runs.len());
+            if i > 1 {
+                assert!(
+                    out.pred.iter().all(|v| v.is_finite()),
+                    "row {i}: {:?}",
+                    out.pred
+                );
+            }
+            if i >= steady {
+                modes.push(out.pred[1]);
+            }
+        }
+        assert_eq!(longest, max_run, "the fold was reached");
+        // `run_mode` is read before the row, so the first shifted row still
+        // reports the old regime; the next ones do not.
+        assert!(modes[2] <= 3.0, "run_mode after the shift: {modes:?}");
     }
 
     /// The robust emission's whole purpose: a single 20-σ row restarts the

@@ -10,11 +10,13 @@ significance that is not there. `n_serial` divides by Bartlett's factor
 
 from __future__ import annotations
 
+import math
 import re
 
 import numpy as np
 import polars as pl
 import pytest
+from scipy.signal import lfilter
 
 import polars_online as po
 
@@ -378,3 +380,48 @@ def test_a_bad_lag_spec_is_refused_by_name(kw, msg):
     d.update(kw)
     with pytest.raises(Exception, match=re.escape(msg)):
         po.ModelBank([po.spec.marginal("m", **d)]).fit_predict(stream(50))
+
+
+def test_a_timely_feature_beats_corr_one_row_on_against_a_forward_target():
+    """E75: the lead/follow reading does not carry over to a forward-looking
+    target. The feature holds each row's news from that row on and forecasts
+    nothing; the target is built from the rows after its own. Nothing is
+    late, ``corr`` is zero, and ``lagcorr_xy`` is the share of the returns
+    the two hold in common, in closed form: with ``x_t = (1 - a) x_{t-1} +
+    a r_t`` and ``y_t = sum_{k=1..L} w_k r_{t+k}``, ``w_k = (1 - lam)
+    lam^(k-1)``, the covariance of ``x_t`` with ``y_{t-1}`` is ``a (1 -
+    lam)`` against variances ``a / (2 - a)`` and ``(1 - lam)^2 (1 -
+    lam^(2L)) / (1 - lam^2)``. From the caller who found the reading wrong
+    (docs/PLAN.md task 134)."""
+    rng = np.random.default_rng(0)
+    n, h_x, h_y = 100_000, 2.0, 10.0
+    r = rng.standard_normal(n + 80)  # the news: one return a row
+    a = 1.0 - 2.0 ** (-1.0 / h_x)
+    x = lfilter([a], [1.0, -(1.0 - a)], r)  # x_t = (1 - a) x_(t-1) + a r_t
+    lam = 2.0 ** (-1.0 / h_y)
+    big_l = math.ceil(7 * h_y)
+    w = (1.0 - lam) * lam ** np.arange(big_l)
+    y = lfilter(np.concatenate([[0.0], w]), [1.0], r[::-1])[::-1]  # sum_(k=1..L) w_k r_(t+k)
+    df = pl.DataFrame({"c": np.arange(n, dtype=float), "x": x[:n], "y": y[:n]})
+    spec = po.spec.marginal(
+        "m",
+        features=["x"],
+        targets=["y"],
+        clock="c",
+        max_dclock=1e9,
+        lam=1.0,
+        lags=[1, 2],
+        cross_lags=[1, 2],
+    )
+    bank = po.ModelBank([spec])
+    bank.fit(df)
+    m = bank.marginal("m").row(0, named=True)
+    shared = math.sqrt(a * (2 - a) * (1 - lam**2) / (1 - lam ** (2 * big_l)))
+    assert shared == pytest.approx(0.2544, abs=1e-4)
+    tol = 4 / math.sqrt(n)
+    assert abs(m["corr"]) < tol
+    assert m["lagcorr_xy"][0] == pytest.approx(shared, abs=tol)
+    # Two rows back, the target shares the next row's return as well.
+    assert m["lagcorr_xy"][1] == pytest.approx(shared * (1 - a + lam), abs=tol)
+    # The feature one or two rows back shares nothing with the target now.
+    assert max(abs(v) for v in m["lagcorr_yx"]) < tol

@@ -7,7 +7,38 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **`coverage_<slot>` under `label_delay` counts the intervals the frame
+  showed.** A held row was scored, when its label arrived, against the
+  conformal radius reached by then rather than the radius its interval was
+  shown with, so the coverage described intervals nobody was shown (the
+  residuals had the same fault, fixed in 0.8.0 as C21). The row is now
+  scored against the radius it was shown, and the radius steps on that
+  error -- adaptive conformal inference with delayed feedback -- so `lo_`
+  and `hi_` move too under a delay. A row shown no interval, because the
+  radius had not started yet, counts for neither. Without a delay nothing
+  changes. Found by a test of the coverage against the frame's own
+  columns.
+
+### Changed
+
+- **State schema 18.** Under `label_delay` with a conformal interval, each
+  held row keeps the radius it was shown. 0.11.1 files (17) load, and their
+  held rows are scored against the radius at release, as before.
+
+### Documentation
+
+- **`marginal`'s lead/follow reading is limited to series of the same
+  moment.** The docs read a feature whose `lagcorr_xy[0]` exceeds its
+  `corr` as one that follows its target, a late-sampled column. Against a
+  forward-looking target, one built from the rows after its own, every
+  timely feature built from the same news shows that, since the target one
+  row back starts with the return the feature already holds. The README,
+  both docstrings and MARGINAL-LAGS-AND-BINS say so now, and a test holds
+  the terms to their closed form on such a target. The terms themselves
+  are unchanged. Reported by a caller whose late-sampling screen flagged
+  527 correctly sampled pairs on the old reading (E75).
 
 ## [0.11.1] — 2026-09-27
 

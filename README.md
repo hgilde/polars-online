@@ -1839,8 +1839,10 @@ honest = po.spec.marginal(
 # added columns of bank.marginal("pairs"):
 #   lagcorr_xx, lagcorr_yy      each series' own autocorrelation, one entry per lag
 #   lagcorr_xy, lagcorr_yx      the feature now against the target l rows back, and the reverse, one entry per cross
-#                               lag -- a feature whose lagcorr_yx[0] beats its corr *leads* its target; one whose
-#                               lagcorr_xy[0] does *follows* it
+#                               lag. For two series of the same moment, a feature whose lagcorr_yx[0] beats its corr
+#                               *leads* its target, and one whose lagcorr_xy[0] does *follows* it. Not against a
+#                               forward-looking target: the target l rows back is built partly from the feature's
+#                               newest l rows, so every timely feature built from the same news beats corr there
 #   n_serial                    n_kish divided by 1 + 2 * sum(rho_x(l) * rho_y(l)) (Bartlett 1935)
 #   t_serial                    the same statistic as t, against that count
 #   phi_x, phi_y                the fitted per-row decays, under serial_rule="geometric"

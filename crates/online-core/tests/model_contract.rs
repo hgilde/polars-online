@@ -613,38 +613,67 @@ fn every_state_kind_is_distinct_and_named() {
         assert!(!k.is_empty());
         assert!(seen.insert(k), "duplicate kind {k}");
     }
-    // And the names really come from the states, not this list.
-    assert_eq!(
-        State::new(ModelState::Holt(Box::new(
-            Holt::new(HoltCfg {
-                n_targets: 1,
-                level_halflife: 1.0,
-                trend_halflife: 1.0,
-                min_periods: 0.0,
-            })
+    // And the names really come from the states, not this list: every one
+    // read off a real model's state, where four of them were (review
+    // 2026-09-18, T2; docs/PLAN.md task 112). `robust` covers both of its
+    // losses, and the two `kalman` configurations are one kind.
+    let from_states = [
+        EwRidge::new(ew_ridge_cfg()).unwrap().state().model.kind(),
+        Rls::new(rls_cfg()).unwrap().state().model.kind(),
+        Lasso::new(lasso_cfg()).unwrap().state().model.kind(),
+        Kalman::new(kalman_cfg()).unwrap().state().model.kind(),
+        Robust::new(robust_cfg(ROBUST_LOSSES[0]))
             .unwrap()
-        )))
-        .model
-        .kind(),
-        "holt"
+            .state()
+            .model
+            .kind(),
+        Ftrl::new(ftrl_cfg()).unwrap().state().model.kind(),
+        Sgd::new(sgd_cfg()).unwrap().state().model.kind(),
+        Pa::new(pa_cfg()).unwrap().state().model.kind(),
+        Holt::new(holt_cfg()).unwrap().state().model.kind(),
+        EwCovModel::new(ew_cov_model_cfg())
+            .unwrap()
+            .state()
+            .model
+            .kind(),
+        KMeans::new(kmeans_cfg()).unwrap().state().model.kind(),
+        Micro::new(micro_cfg()).unwrap().state().model.kind(),
+        EwClass::new(ew_class_cfg()).unwrap().state().model.kind(),
+        SeqTest::new(seqtest_cfg()).unwrap().state().model.kind(),
+        Marginal::new(marginal_cfg()).unwrap().state().model.kind(),
+        Deco::new(deco_cfg()).unwrap().state().model.kind(),
+        Rcov::new(rcov_cfg()).unwrap().state().model.kind(),
+        Hmm::new(hmm_cfg()).unwrap().state().model.kind(),
+        CorrChange::new(corrchange_cfg())
+            .unwrap()
+            .state()
+            .model
+            .kind(),
+        Bocpd::new(bocpd_cfg()).unwrap().state().model.kind(),
+    ];
+    assert_eq!(from_states, kinds);
+    assert_eq!(
+        Robust::new(robust_cfg(ROBUST_LOSSES[1]))
+            .unwrap()
+            .state()
+            .model
+            .kind(),
+        "robust"
     );
+    assert_eq!(
+        Kalman::new(kalman_revert_cfg())
+            .unwrap()
+            .state()
+            .model
+            .kind(),
+        "kalman"
+    );
+    // The accumulator an `ew_cov` state nests has a kind of its own.
     assert_eq!(
         State::new(ModelState::EwCov(Box::new(EwCov::new(1))))
             .model
             .kind(),
         "ew_cov_accumulator"
-    );
-    assert_eq!(
-        KMeans::new(kmeans_cfg()).unwrap().state().model.kind(),
-        "kmeans"
-    );
-    assert_eq!(
-        Micro::new(micro_cfg()).unwrap().state().model.kind(),
-        "micro"
-    );
-    assert_eq!(
-        Marginal::new(marginal_cfg()).unwrap().state().model.kind(),
-        "marginal"
     );
 }
 
@@ -2055,6 +2084,335 @@ fn every_model_with_a_recovery_test_has_a_predict_parity_test() {
 // ---------------------------------------------------------------------------
 // The contract over generated streams (T-D2 in Rust, docs/PLAN.md task 121).
 // ---------------------------------------------------------------------------
+
+// --- states written before a representation grew ---------------------------
+
+/// A state as a msgpack value, edited, and read back: in the named encoding a
+/// bank writes, where an infinite parameter stays infinite (serde_json would
+/// write it as null and refuse it on the way back).
+fn edit_state(state: &State, edit: impl FnOnce(&mut rmpv::Value)) -> State {
+    let bytes = rmp_serde::to_vec_named(state).unwrap();
+    let mut v = rmpv::decode::read_value(&mut bytes.as_slice()).unwrap();
+    edit(&mut v);
+    let mut out = Vec::new();
+    rmpv::encode::write_value(&mut out, &v).unwrap();
+    rmp_serde::from_slice(&out).unwrap()
+}
+
+/// Every map entry whose key ends in `_lo`, removed, at any depth: the
+/// means' low parts (docs/PLAN.md task 101), which a state written before
+/// them does not carry. The count removed.
+fn strip_low_parts(v: &mut rmpv::Value) -> usize {
+    match v {
+        rmpv::Value::Map(entries) => {
+            let before = entries.len();
+            entries.retain(|(k, _)| !k.as_str().is_some_and(|k| k.ends_with("_lo")));
+            let mut n = before - entries.len();
+            for (_, x) in entries.iter_mut() {
+                n += strip_low_parts(x);
+            }
+            n
+        }
+        rmpv::Value::Array(a) => a.iter_mut().map(strip_low_parts).sum(),
+        _ => 0,
+    }
+}
+
+/// A stream at a level, so the means carry something below their doubles,
+/// with a target now and then absent and weights that move.
+fn leveled(targets: usize, binary: bool) -> Vec<Row> {
+    let mut s = 20260927u64;
+    (0..160)
+        .map(|i| {
+            let x: Vec<f64> = (0..K)
+                .map(|j| 1e3 * (j as f64 + 1.0) + lcg(&mut s))
+                .collect();
+            let y = (0..targets)
+                .map(|j| {
+                    let v = 3.0 + x[0] - 0.5 * x[1] + 0.3 * lcg(&mut s);
+                    (i % 9 != 4 + j).then_some(if binary { f64::from(v > 3.0) } else { v })
+                })
+                .collect();
+            Row {
+                x,
+                y,
+                w: 0.5 + (lcg(&mut s) + 1.0) / 2.0,
+                extreme: false,
+            }
+        })
+        .collect()
+}
+
+/// A model restored at row 80 from its state with every low part removed --
+/// a state written before them -- next to the model restored whole: the
+/// number of low parts the state had, and the worst gap between the two
+/// afterwards, relative to `1 + |v|`. Each low part starts again at zero, so
+/// the two part by the few rounding steps the dropped parts held.
+fn resumes_without_low_parts<M: OnlineModel>(make: impl Fn() -> M, rows: &[Row]) -> (usize, f64) {
+    let mut m = make();
+    for (i, r) in rows.iter().enumerate().take(80) {
+        m.step(&r.x, &r.y, if i == 0 { 0.0 } else { 1.0 }, r.w);
+    }
+    let state = m.state();
+    let mut stripped = 0;
+    let old = edit_state(&state, |v| stripped = strip_low_parts(v));
+    let (mut whole, mut before) = (M::restore(&state).unwrap(), M::restore(&old).unwrap());
+    let mut worst = 0.0f64;
+    for r in &rows[80..] {
+        let (a, b) = (
+            whole.step(&r.x, &r.y, 1.0, r.w),
+            before.step(&r.x, &r.y, 1.0, r.w),
+        );
+        let (u_all, v_all): (Vec<f64>, Vec<f64>) = (
+            a.pred.iter().copied().chain([a.n_eff]).collect(),
+            b.pred.iter().copied().chain([b.n_eff]).collect(),
+        );
+        for (u, v) in u_all.iter().zip(&v_all) {
+            assert_eq!(u.is_nan(), v.is_nan(), "{u} against {v}");
+            if u.is_finite() {
+                worst = worst.max((u - v).abs() / (1.0 + u.abs()));
+            }
+        }
+    }
+    (stripped, worst)
+}
+
+/// Every model loads a state written before the means' low parts and goes on
+/// as it would have (docs/PLAN.md task 110).
+#[test]
+fn every_model_resumes_from_a_state_without_the_low_parts() {
+    let two = leveled(2, false);
+    let one = leveled(1, false);
+    let label = leveled(1, true);
+    let label2 = leveled(2, true);
+    let none = leveled(0, false);
+    let results: Vec<(&str, (usize, f64))> = vec![
+        (
+            "ew_ridge",
+            resumes_without_low_parts(|| EwRidge::new(ew_ridge_cfg()).unwrap(), &two),
+        ),
+        (
+            "rls",
+            resumes_without_low_parts(|| Rls::new(rls_cfg()).unwrap(), &two),
+        ),
+        (
+            "lasso",
+            resumes_without_low_parts(|| Lasso::new(lasso_cfg()).unwrap(), &one),
+        ),
+        (
+            "kalman",
+            resumes_without_low_parts(|| Kalman::new(kalman_cfg()).unwrap(), &two),
+        ),
+        (
+            "kalman_revert",
+            resumes_without_low_parts(|| Kalman::new(kalman_revert_cfg()).unwrap(), &two),
+        ),
+        (
+            "huber",
+            resumes_without_low_parts(|| Robust::new(robust_cfg(ROBUST_LOSSES[0])).unwrap(), &two),
+        ),
+        (
+            "quantile",
+            resumes_without_low_parts(|| Robust::new(robust_cfg(ROBUST_LOSSES[1])).unwrap(), &two),
+        ),
+        (
+            "ftrl",
+            resumes_without_low_parts(|| Ftrl::new(ftrl_cfg()).unwrap(), &label2),
+        ),
+        (
+            "sgd",
+            resumes_without_low_parts(|| Sgd::new(sgd_cfg()).unwrap(), &two),
+        ),
+        (
+            "pa",
+            resumes_without_low_parts(|| Pa::new(pa_cfg()).unwrap(), &two),
+        ),
+        (
+            "holt",
+            resumes_without_low_parts(|| Holt::new(holt_cfg()).unwrap(), &two),
+        ),
+        (
+            "ew_cov",
+            resumes_without_low_parts(|| EwCovModel::new(ew_cov_model_cfg()).unwrap(), &none),
+        ),
+        (
+            "kmeans",
+            resumes_without_low_parts(|| KMeans::new(kmeans_cfg()).unwrap(), &none),
+        ),
+        (
+            "micro",
+            resumes_without_low_parts(|| Micro::new(micro_cfg()).unwrap(), &none),
+        ),
+        (
+            "ew_class",
+            resumes_without_low_parts(|| EwClass::new(ew_class_cfg()).unwrap(), &label),
+        ),
+        (
+            "seqtest",
+            resumes_without_low_parts(|| SeqTest::new(seqtest_cfg()).unwrap(), &two),
+        ),
+        (
+            "marginal",
+            resumes_without_low_parts(|| Marginal::new(marginal_cfg()).unwrap(), &two),
+        ),
+        (
+            "deco",
+            resumes_without_low_parts(|| Deco::new(deco_cfg()).unwrap(), &none),
+        ),
+        (
+            "rcov",
+            resumes_without_low_parts(|| Rcov::new(rcov_cfg()).unwrap(), &none),
+        ),
+        (
+            "hmm",
+            resumes_without_low_parts(|| Hmm::new(hmm_cfg()).unwrap(), &none),
+        ),
+        (
+            "corrchange",
+            resumes_without_low_parts(|| CorrChange::new(corrchange_cfg()).unwrap(), &none),
+        ),
+        (
+            "bocpd",
+            resumes_without_low_parts(|| Bocpd::new(bocpd_cfg()).unwrap(), &none),
+        ),
+    ];
+    for (name, (stripped, worst)) in &results {
+        eprintln!("{name:>14}: {stripped:>3} low parts dropped, worst gap {worst:.2e}");
+    }
+    // Measured 2026-09-27: 3.7e-13 at worst (`deco`), 1.6e-13 for the rest.
+    for (name, (_, worst)) in &results {
+        assert!(
+            *worst <= 1e-11,
+            "{name}: {worst:e} from the model restored whole"
+        );
+    }
+    // Each model that keeps a mean had parts to drop, so its load was a real
+    // one: a model that lost its means, or a renamed field, shows here.
+    let keeps_means = [
+        "ew_ridge",
+        "lasso",
+        "kalman",
+        "kalman_revert",
+        "huber",
+        "quantile",
+        "ew_cov",
+        "kmeans",
+        "micro",
+        "ew_class",
+        "marginal",
+        "deco",
+        "hmm",
+        "corrchange",
+        "bocpd",
+    ];
+    for (name, (stripped, _)) in &results {
+        if keeps_means.contains(name) {
+            assert!(*stripped > 0, "{name}: no low part in its state");
+        }
+    }
+}
+
+/// A windowed `ew_ridge` or `lasso` saved at schema 16, when each target's
+/// own feature mean was kept as its offset `d` from the all-row mean,
+/// loads at 17 with the offsets made means once, in the live accumulator
+/// and in every window snapshot, and goes on as the model restored whole
+/// does (review 2026-09-27, G3). The state is rewritten to 16's shape: the
+/// field named `d`, holding `mj - m`, and no `mj_lo`.
+#[test]
+fn a_schema_16_state_of_offsets_loads_as_own_means() {
+    fn to_offsets(v: &mut rmpv::Value, n: &mut usize) {
+        match v {
+            rmpv::Value::Map(entries) => {
+                let m: Option<Vec<f64>> = entries
+                    .iter()
+                    .find(|(k, _)| k.as_str() == Some("m"))
+                    .and_then(|(_, v)| v.as_array())
+                    .map(|a| a.iter().map(|v| v.as_f64().unwrap()).collect());
+                entries.retain(|(k, _)| k.as_str() != Some("mj_lo"));
+                for (k, x) in entries.iter_mut() {
+                    if k.as_str() == Some("mj") {
+                        let m = m.as_ref().expect("mj sits beside m");
+                        let rmpv::Value::Array(rows) = x else {
+                            panic!("mj is a list of lists")
+                        };
+                        for row in rows {
+                            let rmpv::Value::Array(row) = row else {
+                                panic!("mj is a list of lists")
+                            };
+                            for (i, e) in row.iter_mut().enumerate() {
+                                *e = rmpv::Value::F64(e.as_f64().unwrap() - m[i]);
+                            }
+                        }
+                        *k = rmpv::Value::from("d");
+                        *n += 1;
+                    } else {
+                        to_offsets(x, n);
+                    }
+                }
+            }
+            rmpv::Value::Array(a) => a.iter_mut().for_each(|x| to_offsets(x, n)),
+            _ => {}
+        }
+    }
+    fn schema_16(state: &State) -> (State, usize) {
+        let mut n = 0;
+        let old = edit_state(state, |v| {
+            if let rmpv::Value::Map(entries) = v {
+                for (k, x) in entries.iter_mut() {
+                    if k.as_str() == Some("schema_version") {
+                        *x = rmpv::Value::from(16u32);
+                    }
+                }
+            }
+            to_offsets(v, &mut n);
+        });
+        (old, n)
+    }
+    fn check<M: OnlineModel>(name: &str, make: impl Fn() -> M, rows: &[Row]) {
+        let mut m = make();
+        for (i, r) in rows.iter().enumerate().take(80) {
+            m.step(&r.x, &r.y, if i == 0 { 0.0 } else { 1.0 }, r.w);
+        }
+        let state = m.state();
+        let (old, converted) = schema_16(&state);
+        // The live accumulator, and the window's snapshots besides.
+        assert!(converted >= 2, "{name}: {converted} offset vectors written");
+        let (mut whole, mut loaded) = (M::restore(&state).unwrap(), M::restore(&old).unwrap());
+        for r in &rows[80..] {
+            let (a, b) = (
+                whole.step(&r.x, &r.y, 1.0, r.w),
+                loaded.step(&r.x, &r.y, 1.0, r.w),
+            );
+            for (u, v) in a.pred.iter().zip(&b.pred) {
+                assert_eq!(u.is_nan(), v.is_nan(), "{name}: {u} against {v}");
+                if u.is_finite() {
+                    let gap = (u - v).abs() / (1.0 + u.abs());
+                    assert!(gap <= 1e-9, "{name}: {u} against {v}, {gap:e}");
+                }
+            }
+        }
+    }
+    let rows = leveled(2, false);
+    for gaps in [TargetGaps::OwnRows, TargetGaps::Pairwise] {
+        let ridge = || {
+            let mut c = ew_ridge_cfg();
+            c.window = Some(30.0);
+            c.window_every = Some(4);
+            c.target_gaps = gaps;
+            EwRidge::new(c).unwrap()
+        };
+        check(&format!("ew_ridge {gaps:?}"), ridge, &rows);
+    }
+    let one = leveled(1, false);
+    let lasso = || {
+        let mut c = lasso_cfg();
+        c.window = Some(30.0);
+        c.window_every = Some(4);
+        c.target_gaps = TargetGaps::Pairwise;
+        Lasso::new(c).unwrap()
+    };
+    check("lasso", lasso, &one);
+}
 
 /// `tests/test_properties.py` asserts invariants on the bank over streams
 /// Hypothesis generates. This asserts three clauses of the contract above on

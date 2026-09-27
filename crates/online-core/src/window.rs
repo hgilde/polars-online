@@ -522,7 +522,7 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
         // takes a hair below zero is zero (review V3).
         let ii = i * k + i;
         cen[ii] = cen[ii].max(0.0);
-        // And a variance no larger than the rounding of the three terms it
+        // And a variance no larger than the rounding of the terms it
         // is formed from carries no digit of the window's spread: the live
         // accumulator itself resolves the window's rows only to `ε` of its
         // co-moment, so when rows far outside the window dominate it -- a
@@ -530,8 +530,13 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
         // inside it -- the difference is that rounding, `1e84` against a
         // spread of `1e-99` (review 2026-09-27, G5). Read as no spread, as a
         // held feature is below. On a window over ordinary rows the variance
-        // is many orders above this.
-        let terms = g * c_now[ii] + ratio * old.c[ii] + ratio * g * d[i] * d[i];
+        // is many orders above this. The third term, `ratio·g·d²`, needs no
+        // place of its own: the variance kept is `g·C − ratio·C_u −
+        // ratio·g·d² ≥ 0`, so that term is at most `g·C`, and leaving it out
+        // moves the bound by a factor of two at most, inside the 64 (and a
+        // bound no test could hold that term to, the mutants of 2026-09-27
+        // showed).
+        let terms = g * c_now[ii] + ratio * old.c[ii];
         unresolved[i] = cen[ii] <= 64.0 * f64::EPSILON * terms;
     }
     for i in (0..k).filter(|&i| unresolved[i]) {
@@ -808,6 +813,120 @@ mod tests {
         let f = Decay::Halflife(h).factor(t - u);
         let out = truncated(&cov, old, f).expect("the window holds rows");
         (out, c, inside)
+    }
+
+    /// Feature rows fed through an accumulator and its snapshot ring, one row
+    /// per clock unit, and the accumulator truncated to the last `window`
+    /// units, beside the longhand variance of each feature over the rows
+    /// inside, each weighted by its decay: what the guard in [`truncated`] is
+    /// held to (review 2026-09-27, G5).
+    fn truncated_beside_longhand<const K: usize>(
+        rows: &[[f64; K]],
+        window: f64,
+        h: f64,
+    ) -> (EwCov, [f64; K]) {
+        let lam = (-(1.0 / h)).exp2();
+        let mut cov = EwCov::new(K);
+        let mut snaps = Snapshots::new(window, 1).unwrap();
+        for (i, x) in rows.iter().enumerate() {
+            let (t, l) = (i as f64, if i == 0 { 1.0 } else { lam });
+            snaps.offer(t, || Moments::of(&cov, l));
+            snaps.trim(t);
+            cov.update(x, l, 1.0);
+        }
+        let now = (rows.len() - 1) as f64;
+        let (u, old) = snaps.boundary().unwrap();
+        let out = truncated(&cov, old, lam.powf(now - u)).expect("rows inside");
+        let inside: Vec<(f64, [f64; K])> = rows
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| now - i as f64 <= window)
+            .map(|(i, x)| (lam.powf(now - i as f64), *x))
+            .collect();
+        let w: f64 = inside.iter().map(|(w, _)| w).sum();
+        let mut var = [0.0; K];
+        for (j, v) in var.iter_mut().enumerate() {
+            let m = inside.iter().map(|(w, x)| w * x[j]).sum::<f64>() / w;
+            *v = inside
+                .iter()
+                .map(|(w, x)| w * (x[j] - m).powi(2))
+                .sum::<f64>()
+                / w;
+        }
+        (out, var)
+    }
+
+    /// A window over ordinary rows at a tiny scale keeps its spread: the
+    /// guard reads a variance as no spread only where it is below the
+    /// rounding of the terms it is formed from, and a variance of 1e-18 over
+    /// rows of 1e-9 is many orders above theirs (G5). A guard that added an
+    /// O(1) term to that rounding bound read it as nothing.
+    #[test]
+    fn a_window_at_a_tiny_scale_keeps_its_spread() {
+        let mut s = 31u64;
+        let rows: Vec<[f64; 2]> = (0..120)
+            .map(|_| [1e-9 * lcg(&mut s), 1e-9 * lcg(&mut s)])
+            .collect();
+        let (out, want) = truncated_beside_longhand(&rows, 30.0, 10.0);
+        for (j, want) in want.iter().enumerate() {
+            let got = out.var(j);
+            assert!(got > 0.0, "feature {j}: read as no spread");
+            assert!(
+                (got - want).abs() <= 1e-8 * want,
+                "feature {j}: {got:e} against {want:e}"
+            );
+        }
+    }
+
+    /// One feature the live state cannot resolve inside the window -- rows
+    /// far past the window's own before it, ordinary ones inside -- beside
+    /// two it can: the first reads as no spread, its covariance with each
+    /// other feature is nothing in both halves of the matrix, and the others
+    /// keep the spread they have (G5). At `1e100` and at `1e-40` against
+    /// `1e-60`: the guard is a ratio, and holds at any scale.
+    #[test]
+    fn an_unresolved_feature_beside_resolved_ones() {
+        for (far, near) in [(1e100, 1.0), (1e-40, 1e-60)] {
+            let mut s = 37u64;
+            let rows: Vec<[f64; 3]> = (0..120)
+                .map(|i| {
+                    let x2 = if i < 60 { far } else { near } * lcg(&mut s);
+                    [near * lcg(&mut s), near * lcg(&mut s), x2]
+                })
+                .collect();
+            let (out, want) = truncated_beside_longhand(&rows, 30.0, 10.0);
+            assert_eq!(out.var(2), 0.0, "{far:e}: the unresolved feature");
+            for (j, &w) in want.iter().enumerate().take(2) {
+                assert_eq!(out.cov(j, 2), 0.0, "{far:e}: its column, row {j}");
+                assert_eq!(out.cov(2, j), 0.0, "{far:e}: its row, column {j}");
+                let got = out.var(j);
+                assert!(
+                    (got - w).abs() <= 1e-9 * w,
+                    "{far:e}, feature {j}: {got:e} against {w:e}"
+                );
+            }
+        }
+    }
+
+    /// A window the snapshot cannot be told apart from: the rows before it
+    /// carry nearly all the spread the live state holds, so its co-moment
+    /// and the snapshot's cancel to their rounding, and the window's own
+    /// spread is below it. The difference of the two terms is not a bound
+    /// on that rounding; their sum is (G5).
+    #[test]
+    fn a_window_cancelling_to_its_rounding_reads_as_no_spread() {
+        let mut s = 41u64;
+        // A long halflife keeps the old rows' share of the live state near
+        // one, so `g·C` and `ratio·C_u` are nearly equal.
+        let rows: Vec<[f64; 3]> = (0..400)
+            .map(|i| {
+                let x2 = if i < 370 { 1e60 } else { 1.0 } * lcg(&mut s);
+                [lcg(&mut s), lcg(&mut s), x2]
+            })
+            .collect();
+        let (out, _) = truncated_beside_longhand(&rows, 20.0, 5e3);
+        assert_eq!(out.var(2), 0.0);
+        assert!(out.var(0) > 0.0 && out.var(1) > 0.0);
     }
 
     /// Weights that move, as a bank's `weight` column does.

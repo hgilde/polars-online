@@ -9,6 +9,14 @@ import pytest
 
 import polars_online as po
 from data import synthetic
+from test_model_registry import REGRESSIONS
+
+#: The regression models that check each target's ``min_periods`` against
+#: that target's own weight (review 2026-09-12, S2); the rest check it against
+#: the shared weight. Held to the code by the test below, which runs every
+#: regression model: one listed here that waits on the shared weight, or one
+#: missing that waits on its own, fails there (docs/PLAN.md task 111).
+PER_TARGET_WEIGHT = {"ewridge", "lasso", "kalman", "huber", "quantile", "holt"}
 
 HL = 300.0
 MAXD = 50.0
@@ -327,15 +335,17 @@ class TestPerTargetMinPeriods:
         out = self._out(20.0)
         assert self._first(out, "pred_y0") == self._first(out, "pred_y1") == 21
 
-    @pytest.mark.parametrize("kind", ["ewridge", "lasso", "kalman", "huber", "quantile", "holt"])
+    @pytest.mark.parametrize("kind", sorted(REGRESSIONS))
     def test_a_sparse_target_warms_up_on_its_own_weight(self, kind):
         """Each target's threshold is checked against that target's own weight
-        -- the rows it was present on -- where it was checked against the
-        shared ``n_eff``, the feature side's, the same for every target (review
-        2026-09-12, S2). ``y1`` is present on every tenth row, so under
-        ``min_periods=[5, 5]`` its first prediction is the row after its fifth
-        observation, row 41, not row 5; ``y0``, present on every row, is
-        unchanged, and the emitted ``n_eff`` stays the shared weight."""
+        -- the rows it was present on -- where the model keeps one, and it was
+        checked against the shared ``n_eff``, the feature side's, the same for
+        every target (review 2026-09-12, S2). ``y1`` is present on every tenth
+        row, so under ``min_periods=[5, 5]`` its first prediction is the row
+        after its fifth observation, row 41, not row 5, for the models of
+        ``PER_TARGET_WEIGHT``; for the rest it is row 5, with ``y0``. ``y0``,
+        present on every row, is unchanged, and the emitted ``n_eff`` stays the
+        shared weight."""
         n = 120
         x = np.random.default_rng(2).standard_normal(n)
         df = pl.DataFrame(
@@ -353,6 +363,10 @@ class TestPerTargetMinPeriods:
             "huber": lambda: po.spec.huber("m", **solves, **common),
             "quantile": lambda: po.spec.quantile("m", quantile=0.5, **solves, **common),
             "holt": lambda: po.spec.holt("m", **common),
+            "rls": lambda: po.spec.rls("m", features=["x0"], **common),
+            "ftrl": lambda: po.spec.ftrl("m", features=["x0"], loss="squared", **common),
+            "sgd": lambda: po.spec.sgd("m", features=["x0"], learning_rate=0.01, **common),
+            "pa": lambda: po.spec.pa("m", features=["x0"], **common),
         }[kind]()
         out = po.ModelBank([spec]).fit_predict(df)
         names = out["m"].struct.fields
@@ -363,7 +377,7 @@ class TestPerTargetMinPeriods:
             for t in ("y0", "y1")
         }
         assert self._first(out, pred["y0"]) == 5
-        assert self._first(out, pred["y1"]) == 41
+        assert self._first(out, pred["y1"]) == (41 if kind in PER_TARGET_WEIGHT else 5)
         assert out["m"].struct.field("n_eff").to_list()[41] == pytest.approx(41.0)
 
     def test_a_late_target_has_no_residual_or_sigma_either(self):

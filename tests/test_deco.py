@@ -343,6 +343,37 @@ def test_a_null_feature_skips_the_row_and_a_zero_weight_learns_nothing():
     assert z["rho"][100] == want["rho"][100]
 
 
+def test_a_constant_column_poisons_nothing_and_every_block_learns_once_it_moves():
+    """A column without spread has no standardized value, and ``deco`` learns
+    only from a row whose every standardized value is finite, so while one
+    column is constant -- here from the first row, the only way its variance
+    is exactly zero -- no block's ``rho`` moves, in its block or the other
+    (REVIEW-2026-09-18 §6; whether the other blocks should go on learning is
+    a decision, docs/PLAN.md task 115). What holds either way: ``n_eff``
+    advances, nothing NaN reaches the state, and once the column moves every
+    block learns again (task 112)."""
+    df = frame(n=900)
+    i = pl.int_range(pl.len())
+    df = df.with_columns(x3=pl.when(i < 300).then(pl.lit(2.0)).otherwise(pl.col("x3")))
+    spec = po.spec.deco(
+        "d",
+        features=cols(4),
+        halflife=HALFLIFE,
+        min_periods=0.0,
+        blocks={"a": ["x0", "x1"], "b": ["x2", "x3"]},
+    )
+    out = run(spec, df)
+    n_eff = out["n_eff"].to_numpy()
+    assert (np.diff(n_eff) > 0).all(), "the clock and the weight move on"
+    frozen = out["rho_a"][10:300]
+    assert frozen.n_unique() == 1, "no block learned while a column was constant"
+    for col in ("rho_a", "rho_b", "rho_a_b"):
+        late = out[col][400:].to_numpy()
+        assert np.isfinite(late).all(), col
+        assert np.ptp(late) > 1e-3, f"{col} learns again once the column moves"
+    assert out["loglik"][400:].is_finite().all()
+
+
 def test_a_zero_weight_first_row_is_legal():
     df = frame(n=100).with_columns(w=pl.when(pl.int_range(pl.len()) == 0).then(0.0).otherwise(1.0))
     spec = po.spec.deco("d", features=cols(4), halflife=HALFLIFE, min_periods=0.0, weight="w")

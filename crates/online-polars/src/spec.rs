@@ -1918,7 +1918,12 @@ pub struct Spec {
     /// (ENHANCEMENTS E14; a ratio since the code review's S23, so `eta` does
     /// not depend on the target's units). The soft counterpart of
     /// `emit_selected`: averaging hedges where selection commits, which is
-    /// usually the better trade when several slots are close.
+    /// usually the better trade when several slots are close. The weights
+    /// come from each slot's EW *mean* squared error, so they stay bounded
+    /// and do not sharpen as rows accumulate, as a weighting by summed
+    /// losses (river's `EWARegressor`) does; and a slot with no prediction
+    /// or no `sigma` on the row is left out of that row's average, which is
+    /// null only when every slot is (code review of 2026-09-12, S23).
     #[serde(default)]
     pub emit_averaged: bool,
     /// Sharpness of the averaging weights, `exp(−eta · (σ²/σ²_best − 1))`:

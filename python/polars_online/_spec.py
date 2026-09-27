@@ -2977,10 +2977,15 @@ def marginal(
         observation distance. They add four list columns per pair to the table:
         ``lagcorr_xx`` and ``lagcorr_yy``, the two series' own autocorrelations,
         and ``lagcorr_xy`` and ``lagcorr_yx``, the feature now against the target
-        ``l`` rows back and the reverse. A feature whose ``lagcorr_yx[0]`` exceeds
-        its ``corr`` leads the target, and one whose ``lagcorr_xy[0]`` does
-        follows it. The pair is the same statistic ``ew_cov(lags=)`` computes, to
-        the bit.
+        ``l`` rows back and the target now against the feature ``l`` rows back. For
+        two series that describe the same moment, a feature whose
+        ``lagcorr_yx[0]`` exceeds its ``corr`` leads the target, and one whose
+        ``lagcorr_xy[0]`` does follows it. That reading does not hold against a
+        forward-looking target, one built from the rows after its own. There the
+        target ``l`` rows back is built partly from the feature's newest ``l``
+        rows, so a feature built from the same news shows ``lagcorr_xy`` above
+        ``corr`` however it is sampled. The pair is the same statistic
+        ``ew_cov(lags=)`` computes, to the bit.
 
         ``cross_lags`` keeps the two cross-correlations at fewer lags: strictly
         increasing, each one of ``lags``, and ``[]`` for none, which leaves the

@@ -63,7 +63,7 @@ decision reads exactly these:
 | `corr` | the Fama–MacBeth t over blocks on Fisher's z, and every descriptive |
 | `n_serial` (`n_kish` where null) | the honest count behind that t (Bartlett) |
 | `split_gain` | the nonlinear route, paired against the null targets' gains |
-| `lagcorr_xy[0]`, `lagcorr_yx[0]` | the first lag only: the shift test (is a feature sampled late) |
+| `lagcorr_xy[0]`, `lagcorr_yx[0]` | the first lag only: the shift test (is a feature sampled late). *2026-09-27 (E75): the caller now reads `lagcorr_xy` at lag 1 and `lagcorr_yx` at lags 1 and 2, `cross_lags=[1, 2]`, about 3 % more state a pair* |
 | `n_eff`, `n_kish` | counts |
 
 Not read anywhere: the cross terms past the first lag, the `lagcorr_xx` /
