@@ -2613,8 +2613,8 @@ impl Spec {
                     self.name
                 ));
             }
-            // Range-checked and then dropped on every other model until
-            // release 0.11.0 (docs/PLAN.md task 109): refused by name, as
+            // Range-checked and then dropped on every other model before
+            // release 0.11.1 (docs/PLAN.md task 109): refused by name, as
             // `emit_error_inflation` is.
             if !self.has_error_inflation() {
                 return Err(format!(

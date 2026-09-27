@@ -512,6 +512,7 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
     let mut mean: Vec<f64> = (0..k).map(|i| cov.mean(i) - ratio * d[i]).collect();
     let c_now = cov.comoments();
     let mut cen = vec![0.0; k * k];
+    let mut unresolved = vec![false; k];
     for i in 0..k {
         for j in 0..k {
             let ij = i * k + j;
@@ -519,7 +520,25 @@ pub fn truncated(cov: &EwCov, old: &Moments, f: f64) -> Option<EwCov> {
         }
         // What is left to lose is a difference of positives; a variance it
         // takes a hair below zero is zero (review V3).
-        cen[i * k + i] = cen[i * k + i].max(0.0);
+        let ii = i * k + i;
+        cen[ii] = cen[ii].max(0.0);
+        // And a variance no larger than the rounding of the three terms it
+        // is formed from carries no digit of the window's spread: the live
+        // accumulator itself resolves the window's rows only to `ε` of its
+        // co-moment, so when rows far outside the window dominate it -- a
+        // feature at `1e100` before the window, a row of weight `1e100`
+        // inside it -- the difference is that rounding, `1e84` against a
+        // spread of `1e-99` (review 2026-09-27, G5). Read as no spread, as a
+        // held feature is below. On a window over ordinary rows the variance
+        // is many orders above this.
+        let terms = g * c_now[ii] + ratio * old.c[ii] + ratio * g * d[i] * d[i];
+        unresolved[i] = cen[ii] <= 64.0 * f64::EPSILON * terms;
+    }
+    for i in (0..k).filter(|&i| unresolved[i]) {
+        for j in 0..k {
+            cen[i * k + j] = 0.0;
+            cen[j * k + i] = 0.0;
+        }
     }
     // A feature that held one value over every row inside the window has no
     // spread there, and the subtraction cannot say so: it leaves a remainder

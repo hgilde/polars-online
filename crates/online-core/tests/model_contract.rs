@@ -2261,6 +2261,65 @@ mod generated {
         contract(|| EwRidge::new(ew_ridge_cfg()).unwrap(), &two, 0).unwrap();
     }
 
+    /// The stream the windowed `lasso` failed the contract on (review
+    /// 2026-09-27, G5): rows at `1e100` before the window, one of weight
+    /// `1e100` inside it, and the prediction at `x1 = 1e100` read `-inf`
+    /// (`crate::truncated` has the mechanism). Through `ew_ridge` too.
+    #[test]
+    fn a_window_the_live_state_cannot_resolve_through_the_bound() {
+        let row = |x: [f64; 2], y0: Option<f64>, d: f64, w: f64| GenRow {
+            x: x.to_vec(),
+            y: vec![y0],
+            d,
+            w,
+        };
+        let rows = vec![
+            row([0.0, 0.0], Some(0.0), 1.0, 1.0),
+            row([0.0, 1e100], Some(1e100), 0.0, 1.0),
+            row([0.0, 0.0], Some(0.0), 1.0, 0.714463635904142),
+            row([0.0, 0.0], Some(0.0), 1.0, 1.0),
+            row([0.0, 0.0], None, 1.0, 1.0),
+            row([0.0, 0.0], None, 1.0, 1.0),
+            row([1e100, -7.726806526869417e99], Some(0.0), 1.0, 1.0),
+            row([0.0, 0.0], Some(0.0), 12.875843092015453, 0.01),
+            row([0.0, 0.0], Some(0.0), 1.0, 1.0),
+            row([0.0, 0.0], Some(0.0), 1.0, 1.0),
+            row(
+                [-2.9807652788918353, 1.021121247753338],
+                Some(0.0),
+                1.0,
+                1e100,
+            ),
+            row([0.0, 0.0], None, 1.0, 1.0),
+            row([0.0, 0.0], None, 0.0, 1.0),
+            row([0.0, 0.0], None, 1.0, 1.0),
+            row([0.0, 1e100], None, 1.0, 1.0),
+        ];
+        let build = || {
+            let mut c = lasso_cfg();
+            c.window = Some(7.0);
+            Lasso::new(c).unwrap()
+        };
+        contract(build, &rows, 0).unwrap();
+        let two: Vec<GenRow> = rows
+            .iter()
+            .map(|r| GenRow {
+                y: vec![r.y[0], r.y[0]],
+                ..r.clone()
+            })
+            .collect();
+        contract(
+            || {
+                let mut c = ew_ridge_cfg();
+                c.window = Some(7.0);
+                EwRidge::new(c).unwrap()
+            },
+            &two,
+            0,
+        )
+        .unwrap();
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
 

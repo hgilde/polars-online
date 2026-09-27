@@ -43,13 +43,20 @@ on:
   schedule:
     - cron: "23 5 * * 1"
   workflow_dispatch:
+  # release.yml runs this whole workflow before it publishes; a call takes
+  # the caller's event, so a dispatched release gets the macOS and Windows
+  # legs.
+  workflow_call:
 
 # Least privilege: no token scope by default, granted per job. This matters more
 # once the repo is public, when a fork's pull request can trigger these.
 permissions: {}
 
+# Per calling workflow as well as per ref: called from release.yml,
+# `github.workflow` is "Release", so a release on main and a push's CI on
+# main are two groups, and neither cancels the other.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -222,8 +229,11 @@ jobs:
       # through the extension. The CLI is also tested as it ships, since
       # `cargo build -p online-cli` has no Python in it either.
       # tests/test_ci_cost_policy.py holds every workflow and the gate to this.
+      # `--no-fail-fast`: one failing test binary stopped the step there, so
+      # on the 0.11.0 tag a unit test that failed on Linux and Windows hid
+      # every integration test after it, and Windows never reached pytest.
       - name: cargo test
-        run: uv run cargo test --workspace --exclude online-py
+        run: uv run cargo test --workspace --exclude online-py --no-fail-fast
 
       - name: disk after the build
         if: always() && runner.os == 'Linux'

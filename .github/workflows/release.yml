@@ -1,9 +1,23 @@
 name: Release
 
+# A release is dispatched, never tagged by hand (the user, 2026-09-27, after
+# the 0.11.0 tag: CI first met the branch on the tag, failed there, and the
+# tag could not be moved). Dispatched on `main` with `publish` off it is the
+# rehearsal: CI on all three OSes, every wheel and the CLI, the state
+# hand-off and the suite on the newest Polars, and nothing tagged or uploaded.
+# With `publish` on, the same run then waits for approval, uploads to PyPI,
+# and only then creates the tag `v<version>` on the sha it tested and the
+# GitHub release. So a tag always names what was published, and a version
+# whose tag exists is refused before anything is built (`version`, below).
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: >-
+          Publish: after every job passes, upload to PyPI (on approval), then
+          tag v<version> and make the GitHub release. Off: a rehearsal.
+        type: boolean
+        default: false
 
 # Least privilege: no token scope by default, granted per job. This matters more
 # once the repo is public, when a fork's pull request can trigger these.
@@ -21,11 +35,57 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The version this run would publish, checked before anything is built:
+  # agreed in all six places, a CHANGELOG section for it, and -- publishing --
+  # a tag that does not exist yet, since release tags are immutable, and
+  # only from `main` (scripts/release_version.py).
+  version:
+    name: the version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      # What the README's links point at on PyPI: the tag a published run
+      # creates on this sha, and the sha itself for a rehearsal.
+      readme_ref: ${{ inputs.publish && steps.v.outputs.tag || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - name: publishing is from main only
+        if: inputs.publish && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::a release is published from main, not ${{ github.ref }}"
+          exit 1
+      - id: v
+        name: the version agrees everywhere, and its tag is new
+        run: >-
+          uv run --no-project --python 3.12 python scripts/release_version.py
+          ${{ inputs.publish && '--publish' || '' }} >> "$GITHUB_OUTPUT"
+
+  # CI itself, on all three OSes (a dispatch takes its macOS and Windows
+  # legs): the unit and integration tests and pytest, which none of the jobs
+  # below run. The 0.11.0 tag failed there. `docs` in ci.yml asks for
+  # `pages` and `id-token`, and a called workflow may ask for no more than
+  # its caller grants, checked at start whether the job runs or not; it runs
+  # only on a push to main, so under this call it is skipped and the grant is
+  # inert (tests/test_release_workflow.py holds both to that).
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
   # A source distribution, so a platform with no wheel above can still build
   # from source (it needs a Rust toolchain, which is exactly why the wheel
   # matrix is wide).
   sdist:
     name: build the sdist
+    needs: version
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -35,11 +95,12 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       # PyPI shows README.md as the project page, where a relative link to
       # another file resolves against pypi.org and is a 404. Rewritten to the
-      # repository at this ref before maturin reads the file into the package
-      # metadata; the README on GitHub keeps its relative links
-      # (scripts/pypi_readme.py). `--no-project`: no sync, no extension build.
+      # repository at the tag this run will create (the sha, rehearsing)
+      # before maturin reads the file into the package metadata; the README
+      # on GitHub keeps its relative links (scripts/pypi_readme.py).
+      # `--no-project`: no sync, no extension build.
       - name: the README's links point at GitHub, at this ref
-        run: uv run --no-project --python 3.12 python scripts/pypi_readme.py --ref "${{ github.ref_name }}"
+        run: uv run --no-project --python 3.12 python scripts/pypi_readme.py --ref "${{ needs.version.outputs.readme_ref }}"
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           command: sdist
@@ -62,6 +123,7 @@ jobs:
   # rather than one per interpreter version.
   build:
     name: build (${{ matrix.target }})
+    needs: version
     runs-on: ${{ matrix.os }}
     # Cold, the slowest runner (Intel macOS) needs ~40 min for the wheel and
     # ~30 for the CLI; Windows ~35 and ~25. 90 was cut by the first rehearsal.
@@ -124,11 +186,12 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       # PyPI shows README.md as the project page, where a relative link to
       # another file resolves against pypi.org and is a 404. Rewritten to the
-      # repository at this ref before maturin reads the file into the package
-      # metadata; the README on GitHub keeps its relative links
-      # (scripts/pypi_readme.py). `--no-project`: no sync, no extension build.
+      # repository at the tag this run will create (the sha, rehearsing)
+      # before maturin reads the file into the package metadata; the README
+      # on GitHub keeps its relative links (scripts/pypi_readme.py).
+      # `--no-project`: no sync, no extension build.
       - name: the README's links point at GitHub, at this ref
-        run: uv run --no-project --python 3.12 python scripts/pypi_readme.py --ref "${{ github.ref_name }}"
+        run: uv run --no-project --python 3.12 python scripts/pypi_readme.py --ref "${{ needs.version.outputs.readme_ref }}"
 
       # maturin-action supplies the manylinux/musllinux container and the
       # cross-compilation toolchain; on macOS and Windows it is a thin wrapper
@@ -262,7 +325,7 @@ jobs:
     # version until `polars-canary.yml` runs on the following Monday. That is
     # up to six days of a published wheel nobody has run on the newest
     # Polars. This job closes the window by running the same check at the one
-    # moment it matters -- the tag.
+    # moment it matters -- the release.
     #
     # Two legs, because "newest" means two different things and only one of
     # them is a promise we made:
@@ -275,7 +338,7 @@ jobs:
     #   *Versioning and the Polars pin*), decided before publishing.
     # - *The next major* is advisory. It unpins entirely and allows
     #   prereleases, so it is the early warning the canary gives weekly,
-    #   taken again at the tag. A 3.0 beta that breaks us is worth knowing
+    #   taken again at the release. A 3.0 beta that breaks us is worth knowing
     #   about and is not a reason to withhold a patch release for a range
     #   that ends below 3.
     #
@@ -332,10 +395,87 @@ jobs:
       # the marker's description in pyproject.toml.
       - run: uv run pytest -q -m "not soak and not pins"
 
+  # THE HUMAN GATE IS HERE. Since 2026-09-06 the `pypi` environment has the
+  # owner as a required reviewer (self-review allowed -- with one reviewer,
+  # preventing it would deadlock every release), so this job parks on "Review
+  # deployments" until someone approves, and it only ever asks once every
+  # other job is green. That is deliberate: the gate sits in front of the one
+  # step nothing can undo, and in front of nothing else. PyPI never lets a
+  # version number be reused, and `v*` tags cannot be deleted or moved
+  # (ruleset "release tags are immutable", no bypass), so a broken release is
+  # superseded by the next version rather than replaced; declined here, the
+  # run creates no tag, and the version can be dispatched again.
+  #
+  # Trusted publishing (OIDC), so there is no API token to store or rotate.
+  # Registered on PyPI on 2026-09-03 as a pending trusted publisher for
+  # `polars-online` (owner hgilde, repository polars-online, workflow
+  # release.yml, environment pypi); the first publish claimed the name.
+  publish:
+    name: publish to PyPI
+    needs: [version, ci, sdist, build, read-state, next-polars]
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: pypi
+    permissions:
+      # PyPI trusted publishing (OIDC). This job does not check out, so it
+      # needs no `contents` scope at all.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+      - name: collect the wheels
+        run: |
+          mkdir -p dist
+          find artifacts \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp {} dist/ \;
+          ls -la dist
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: dist
+
+  # The tag, once what it names is on PyPI: on the sha every job above
+  # tested, never a moving `HEAD`. Annotated, with the CHANGELOG's section.
+  tag:
+    name: tag the release
+    needs: [version, publish]
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: the CHANGELOG's section for this version
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          python3 - <<'PY' > notes.md
+          import os, re, pathlib
+          v = os.environ["VERSION"]
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          m = re.search(rf"^## \[{re.escape(v)}\] .*?$(.*?)(?=^## \[|\Z)", text, re.M | re.S)
+          assert m, f"no CHANGELOG section for {v}"
+          print(f"polars-online {v}\n{m.group(1).rstrip()}")
+          PY
+          head -5 notes.md
+      - name: create and push the tag
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -F notes.md "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: notes
+          path: notes.md
+
   release:
     name: publish the release
-    needs: [sdist, build, read-state, next-polars]
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [version, tag]
+    if: inputs.publish
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -358,48 +498,6 @@ jobs:
           ls -la release
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          body_path: artifacts/notes/notes.md
           files: release/*
-          generate_release_notes: true
-
-  # Publishing is a separate job so that a tag can build and attach artifacts
-  # without also pushing to PyPI. Uses trusted publishing (OIDC), so there is
-  # no API token to store or rotate.
-  #
-  # THE HUMAN GATE IS HERE. Since 2026-09-06 the `pypi` environment has the
-  # owner as a required reviewer (self-review allowed -- with one reviewer,
-  # preventing it would deadlock every release), so this job parks on "Review
-  # deployments" until someone approves, and it only ever asks once every
-  # other job is green. That is deliberate: the gate sits in front of the one
-  # step nothing can undo, and in front of nothing else. A failed wheel is
-  # re-run, a docs deploy needs no approval, and a tag that turns out wrong is
-  # simply never approved -- `v*` tags cannot be deleted or moved (ruleset
-  # "release tags are immutable", no bypass), and PyPI never lets a version
-  # number be reused, so a broken release is superseded by the next version
-  # rather than replaced.
-  #
-  # Registered on PyPI on 2026-09-03 as a pending trusted publisher for
-  # `polars-online` (owner hgilde, repository polars-online, workflow
-  # release.yml, environment pypi); the first publish claims the name.
-  publish:
-    name: publish to PyPI
-    needs: [sdist, build, read-state, next-polars]
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment: pypi
-    permissions:
-      # PyPI trusted publishing (OIDC). This job does not check out, so it
-      # needs no `contents` scope at all.
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          path: artifacts
-      - name: collect the wheels
-        run: |
-          mkdir -p dist
-          find artifacts \( -name '*.whl' -o -name '*.tar.gz' \) -exec cp {} dist/ \;
-          ls -la dist
-      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
-        with:
-          packages-dir: dist

@@ -70,7 +70,9 @@
 //!
 //! (The one-block case of that *is* the closed form above; a unit test says
 //! so.) `ρ` is clamped into `(−1/(n−1) + 1e-9, 1 − 1e-9)` **for the density
-//! only** — the emitted `ρ` is never clamped.
+//! only** — the emitted `ρ` is never clamped. Near that edge `R⁻¹` is large,
+//! and a row far past the standardiser's spread can put the density below
+//! the double's range: `loglik` is then NaN, no reading, as `hmm`'s is.
 
 use serde::{Deserialize, Serialize};
 
@@ -311,8 +313,9 @@ impl Deco {
     }
 
     /// `−½[n·ln 2π + ln det R + r'R⁻¹r]` for the row, under `rho`. See the
-    /// module docs for the block algebra; `NaN` when `rho` is, or when the
-    /// `K × K` factorization fails.
+    /// module docs for the block algebra; `NaN` when `rho` is, when the
+    /// `K × K` factorization fails, or when the density is past the
+    /// double's range.
     fn loglik(&self, rho: &[f64], s1: &[f64], s2: &[f64]) -> f64 {
         let k = self.blocks.len();
         if rho.iter().any(|v| !v.is_finite()) {
@@ -361,7 +364,12 @@ impl Deco {
         log_det += f.log_det();
         quad += sinv - yy;
         // TAU is 2 pi, so `TAU.ln()` is the `ln 2 pi` of the density.
-        -0.5 * (n_total * std::f64::consts::TAU.ln() + log_det + quad)
+        let ll = -0.5 * (n_total * std::f64::consts::TAU.ln() + log_det + quad);
+        // A density below the double's range is no reading, as `hmm`'s is: a
+        // row far past the spread under a `ρ` clamped to the edge of
+        // singular overflowed the quadratic form and said `-inf` (review
+        // 2026-09-27, G4).
+        if ll.is_finite() { ll } else { f64::NAN }
     }
 
     /// The row standardised against the pre-row moments.
@@ -862,6 +870,34 @@ mod tests {
             let _ = before;
         }
         assert!(rho.is_finite());
+    }
+
+    /// A row far past the standardiser's spread, under a `ρ` at the edge of
+    /// what a correlation matrix allows, has a log-density below the
+    /// double's range (review 2026-09-27, G4, from the contract's proptest):
+    /// weights of `0.01`, `0.01` and `1e100` leave `x0` a spread near
+    /// `5e-52`, the next row at `1e100` standardises to about `2e151`, `ρ` is
+    /// `-1`, the density clamps it to `1e-9` of singular, and the quadratic
+    /// form reaches `1e311`. `loglik` was `-inf`; it is NaN, no reading, as
+    /// `hmm`'s is when its densities leave the range.
+    #[test]
+    fn a_log_density_past_the_range_is_no_reading() {
+        use crate::OnlineModel;
+        let mut m = Deco::new(DecoCfg {
+            min_periods: 3.0,
+            ..cfg(2)
+        })
+        .unwrap();
+        m.step(&[0.5, 0.0], &[], 0.0, 0.01);
+        m.step(&[0.0, 1e100], &[], 1.0, 0.01);
+        m.step(&[0.5, 0.0], &[], 1.0, 1e100);
+        let out = m.step(&[1e100, 0.0], &[], 1.0, 1.0);
+        assert!(out.pred.iter().all(|v| !v.is_infinite()), "{:?}", out.pred);
+        assert!(out.pred[2].is_nan(), "{:?}", out.pred);
+        assert_eq!(out.pred[1], -1.0, "the emitted rho is never clamped");
+        // An ordinary row still has its density.
+        let near = m.predict(&[0.5, 0.0], 1.0);
+        assert!(near.pred[2].is_finite(), "{:?}", near.pred);
     }
 
     #[test]

@@ -3903,6 +3903,60 @@ mod tests {
         assert!(w.var(0) > 0.0);
     }
 
+    /// A window whose rows the live accumulator no longer resolves reads the
+    /// feature as having no spread, where it read the rounding (review
+    /// 2026-09-27, G5, from the contract's proptest). Rows at `1e100` of
+    /// weight 1 before the window, then one of weight `1e100` inside it at
+    /// an ordinary value: the live co-moments are about `1e100`, the
+    /// window's own contribution is below their last digit, and the
+    /// subtraction returned noise near `1e84`, which the lasso fitted to a
+    /// prediction of `-inf`. A variance smaller than the rounding of the
+    /// terms it is formed from carries no digits of it. An ordinary window
+    /// is untouched: the held-feature test above and every window oracle.
+    #[test]
+    fn a_window_the_live_state_cannot_resolve_reads_as_no_spread() {
+        let mut m = EwCovModel::new(EwCovCfg {
+            n_features: 2,
+            decay: crate::Decay::Halflife(20.0),
+            stats: vec![EwCovStat::Var, EwCovStat::Corr],
+            min_periods: 0.0,
+            precision_prior: None,
+            mahal_quantiles: Vec::new(),
+            pca: 0,
+            pca_every: 0,
+            lags: Vec::new(),
+            window: Some(7.0),
+            window_every: None,
+        })
+        .unwrap();
+        // `(x, clock step, weight)`; the step of 12.9 puts every row at
+        // `1e100` outside the window of 7.
+        let rows: [([f64; 2], f64, f64); 12] = [
+            ([0.0, 0.0], 0.0, 1.0),
+            ([0.0, 1e100], 1.0, 1.0),
+            ([0.0, 0.0], 1.0, 0.7),
+            ([0.0, 0.0], 1.0, 1.0),
+            ([0.0, 0.0], 1.0, 1.0),
+            ([0.0, 0.0], 1.0, 1.0),
+            ([1e100, -7.7e99], 1.0, 1.0),
+            ([0.0, 0.0], 12.9, 0.01),
+            ([0.0, 0.0], 1.0, 1.0),
+            ([0.0, 0.0], 1.0, 1.0),
+            ([-2.98, 1.02], 1.0, 1e100),
+            ([0.0, 0.0], 1.0, 1.0),
+        ];
+        for (x, d, w) in rows {
+            crate::OnlineModel::step(&mut m, &x, &[], d, w);
+        }
+        let w = m.windowed_cov();
+        for i in 0..2 {
+            // The true spread inside the window is about 9e-100 of the
+            // weight: nothing a double resolves against 1e100.
+            assert!(w.var(i) < 1e-50, "var {i}: {:e}", w.var(i));
+        }
+        assert!(w.cov(0, 1).abs() < 1e-50, "{:e}", w.cov(0, 1));
+    }
+
     /// Every learned row counts for the runs, a row of weight 0 does not,
     /// and nor does a row whose weight is `EMPTY_FRACTION` of the live
     /// weight or less, the window's own notion of nothing: it neither

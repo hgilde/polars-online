@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "polars-online"
-version = "0.11.0"
+version = "0.11.1"
 description = "Streaming / online regression models for Polars"
 readme = "README.md"
 license = "Apache-2.0"
@@ -150,6 +150,14 @@ docs = [
     "sphinx>=8.2",
     "furo>=2024.8",
 ]
+
+[tool.uv]
+# Both groups on every `uv sync`, so every environment a test runs in holds
+# every library tests/test_dependency_policy.py reads the licence of. With
+# `dev` alone, CI's test jobs lacked sphinx and the licence check failed
+# there, while the gate, whose Sphinx step installs `docs`, passed (the
+# 0.11.0 tag's first run).
+default-groups = ["dev", "docs"]
 
 [tool.mypy]
 # The package only: it must type-check against its own stub with nothing

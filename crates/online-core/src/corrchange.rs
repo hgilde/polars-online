@@ -998,37 +998,66 @@ mod tests {
 
     /// `bandwidth` overrides `⌊ln T⌋`: the statistic is the one `long_run_sd`
     /// gives at that bandwidth, and two bandwidths give two statistics.
+    ///
+    /// Over thirty streams, because the one that stood here alone passed on
+    /// macOS and failed on Linux and Windows (found by CI on the 0.11.0 tag):
+    /// at `usize::MAX` every Bartlett weight is about 1, so the long-run
+    /// variance is about `(Σξ)²/T`, which is 0 but for rounding -- `ξ` has
+    /// span mean 0 by construction -- and its sign is that rounding's. The
+    /// streams come from Box–Muller, whose `ln` and `cos` differ in their last
+    /// bits between Apple's libm and the others, so a variance that rounded
+    /// positive here rounded to 0 or below there, where the model says NaN,
+    /// no verdict. The longhand folded its NaNs away with `f64::max` and said
+    /// 0.0. It takes the model's rule now (a long-run sd that is NaN or not
+    /// positive is no statistic), and NaN equals NaN.
     #[test]
     fn the_bandwidth_override_reaches_the_kernel() {
+        let same = |a: f64, b: f64| a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan());
         let t = 60usize;
-        let mut n = Normals::new(11);
-        let rows: Vec<Vec<f64>> = (0..t).map(|_| n.pair(0.4)).collect();
-        let stat_at = |bandwidth: usize| {
-            let m = CorrChange::new(CorrChangeCfg {
-                span_rows: t,
-                bandwidth: Some(bandwidth),
-                ..cfg(2, CorrChangeKind::Monitor)
-            })
-            .unwrap();
-            m.monitor_stat(&rows, 0, 1)
-        };
-        let longhand = |gamma: usize| {
-            let sd = CorrChange::long_run_sd(&rows, 0, 1, gamma);
-            let rho_t = CorrChange::corr_of(&rows, t, 0, 1);
-            (2..=t)
-                .map(|j| {
-                    (j as f64 / (t as f64).sqrt())
-                        * (CorrChange::corr_of(&rows, j, 0, 1) - rho_t).abs()
-                        / sd
+        for seed in 11..=40 {
+            let mut n = Normals::new(seed);
+            let rows: Vec<Vec<f64>> = (0..t).map(|_| n.pair(0.4)).collect();
+            let stat_at = |bandwidth: usize| {
+                let m = CorrChange::new(CorrChangeCfg {
+                    span_rows: t,
+                    bandwidth: Some(bandwidth),
+                    ..cfg(2, CorrChangeKind::Monitor)
                 })
-                .fold(0.0f64, f64::max)
-        };
-        assert_eq!(stat_at(1), longhand(1));
-        assert_eq!(stat_at(20), longhand(20));
-        assert_ne!(stat_at(1), stat_at(20));
-        // A bandwidth past the span weights every lag at nearly 1, which is
-        // the kernel's answer, not an overflow (`gamma.saturating_add(1)`).
-        assert_eq!(stat_at(usize::MAX), longhand(usize::MAX));
+                .unwrap();
+                m.monitor_stat(&rows, 0, 1)
+            };
+            let longhand = |gamma: usize| {
+                let sd = CorrChange::long_run_sd(&rows, 0, 1, gamma);
+                if sd.is_nan() || sd <= 0.0 {
+                    return f64::NAN;
+                }
+                let rho_t = CorrChange::corr_of(&rows, t, 0, 1);
+                (2..=t)
+                    .map(|j| {
+                        (j as f64 / (t as f64).sqrt())
+                            * (CorrChange::corr_of(&rows, j, 0, 1) - rho_t).abs()
+                            / sd
+                    })
+                    .fold(0.0f64, f64::max)
+            };
+            for gamma in [1, 20, usize::MAX] {
+                let (got, want) = (stat_at(gamma), longhand(gamma));
+                assert!(
+                    same(got, want),
+                    "seed {seed}, bandwidth {gamma}: {got} vs {want}"
+                );
+            }
+            // At the two bandwidths a span of 60 can support, a statistic,
+            // and not the same one.
+            assert!(
+                stat_at(1).is_finite() && stat_at(20).is_finite(),
+                "seed {seed}"
+            );
+            assert_ne!(stat_at(1), stat_at(20), "seed {seed}");
+            // A bandwidth past the span is the kernel's answer, not an
+            // overflow (`gamma.saturating_add(1)`): a number or no verdict.
+            assert!(!stat_at(usize::MAX).is_infinite(), "seed {seed}");
+        }
     }
 
     /// A pair within rounding of `|ρ̂| = 1` has no verdict: the delta

@@ -9,7 +9,13 @@ carries breaking changes, and any change to the numbers a model returns.
 
 Nothing yet.
 
-## [0.11.0] — 2026-09-26
+## [0.11.1] — 2026-09-27
+
+0.11.0 was tagged (`v0.11.0`) and never published: its release run failed
+in CI, and a release tag cannot be moved. 0.11.1 is everything below. From
+this release on, the release workflow creates the tag itself, after every
+job has passed and the upload is done (docs/RELEASE-READINESS.md, "Cutting a
+release").
 
 ### Added
 
@@ -124,6 +130,19 @@ Nothing yet.
   the bit, so a stream whose targets are present on every row is
   unchanged; a target with gaps moves in its last bits. Found by the same
   property test.
+- **`deco`'s `loglik` is NaN where the density is past the double's
+  range**, as `hmm`'s is, where it reported `-inf`: a row far past the
+  standardiser's spread, under a `ρ` the density clamps to the edge of
+  singular, overflowed the quadratic form. Found by the same property test.
+- **A window no longer fits the rounding of rows it cannot resolve.** Rows
+  at `1e100` before a window and a row of weight `1e100` inside it leave
+  the live co-moments near `1e100`, with the window's own spread below
+  their last digit; the subtraction that removes the older rows returned
+  noise near `1e84`, and a windowed `lasso` fitted it to a prediction of
+  `-inf`. A windowed variance no larger than the rounding of the terms it
+  is formed from is read as no spread, as a held feature's is, so the
+  feature gets no slope. Every window oracle and the held-feature tests are
+  unchanged. Found by the same property test.
 - **`marginal`'s bins from a 0.10.0 state.** A histogram loaded from a
   state written before the means' low parts panicked on its first row whose
   features were all null with a target present (the Rust API; the bank

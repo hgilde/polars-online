@@ -4294,14 +4294,51 @@ decision it needs, with a recommendation where there is one.
       line ("tasks 1–58 done, released as 0.2.0"), task 61 fused onto task
       68, and the §3 table and §9 item 4 listing the clock policies.
 
-- [x] 109. **Release 0.11.0.** S each; the push, tag and upload are the
-      user's. **Released 2026-09-26** on the user's word ("merge, push and
-      tag the next minor"), after the review of task 132: the version in
-      the six places and both locks, the comparison against 0.10.0 measured
-      again (21 of 30 specs, 130 fields, median 3e-16, at most 1.4e-14), the
-      CHANGELOG promoted. Not done: the suite at the Polars floor 1.34.0
+- [x] 109. **Release 0.11.1** (planned as 0.11.0). S each; the push and
+      the approval are the user's. **Tagged `v0.11.0` on 2026-09-26** on the
+      user's word ("merge, push and tag the next minor"), after the review of
+      task 132: the version in the six places and both locks, the
+      comparison against 0.10.0 measured again (21 of 30 specs, 130 fields,
+      median 3e-16, at most 1.4e-14), the CHANGELOG promoted. **Never
+      published** (below); **the release is 0.11.1**, dispatched by the
+      workflow of task 133, with the same changes and the fixes below. Not done: the suite at the Polars floor 1.34.0
       (last run 2026-09-02), the glibc floor, the 0.10.0-wheel state test,
-      S6 and task 105. Before the tag, the list as it stood:
+      S6 and task 105. **The tag's first run failed, and nothing was
+      published** (2026-09-27): the rehearsal on `main` (RELEASE-READINESS
+      step 2) was skipped, and the branch's 21 commits reached CI for the
+      first time on the tag. Two tests, both the tests' fault:
+      `the_bandwidth_override_reaches_the_kernel` (task 103) failed on Linux
+      and Windows -- at a bandwidth of `usize::MAX` the long-run variance is
+      rounding, its sign set by Box–Muller's libm bits, and where it rounded
+      to 0 the model said NaN (no verdict) and the longhand, folding with
+      `f64::max`, said 0.0; it runs thirty streams now and takes the model's
+      NaN rule (reproduced here at seed 13). And the licence check (task
+      121) read sphinx's metadata where CI's `uv sync` installs `dev` alone:
+      `docs` is a default group now. Because `cargo test` stopped at the
+      first failing binary, Linux and Windows ran none of the integration
+      tests and Windows no pytest; CI passes `--no-fail-fast` now. The
+      Mutants jobs failed on the same unit test in their baseline. The gate
+      of that fix found **G4** in the contract's proptest: `deco`'s
+      `loglik` was `-inf` after rows weighted `0.01, 0.01, 1e100` and one at
+      `1e100` (a spread near `5e-52` standardised the row to `2e151`, the
+      density's `ρ` sat `1e-9` from singular, the quadratic form reached
+      `1e311`); it is NaN now, no reading, as `hmm`'s is
+      (`a_log_density_past_the_range_is_no_reading`). A randomly seeded
+      proptest that finds such cases can fail CI at random, so the fix was
+      followed by more runs before any push, and they found **G5**: rows at
+      `1e100` before a window and one of weight `1e100` inside it left the
+      live co-moments near `1e100` with the window's spread below their
+      last digit, the subtraction returned noise near `1e84`, and the
+      windowed `lasso` predicted `-inf`. `crate::truncated` now reads a
+      variance no larger than `64ε` of the terms it is formed from as no
+      spread, zeroing its row and column as a held feature's are
+      (`a_window_the_live_state_cannot_resolve_reads_as_no_spread`, which
+      read `1.3e84` without it, and
+      `a_window_the_live_state_cannot_resolve_through_the_bound`). The tag
+      could not be moved -- `v*` tags are immutable, by the ruleset -- so
+      the user decided (2026-09-27) that the release ships as **0.11.1**
+      and that the workflow creates the tag after everything runs (task
+      133). Before the tag, the list as it stood:
       - Refuse `max_error_inflation` by name on a model that ignores it:
         today it is range-checked and dropped on every model but `ewridge`,
         where `emit_error_inflation` is refused (spec.rs:2417-2433).
@@ -4534,7 +4571,50 @@ decision it needs, with a recommendation where there is one.
       7. For 104: the planned loaders for old states are obsolete (the
          pre-1.0 waiver of 2026-09-14): confirm.
 
-- [x] 121. 
+- [x] 121. **Test libraries under an open-source licence.** S–M. **Done
+      2026-09-25:** scikit-learn 1.9.1 in the dev group; `huber` against
+      `LinearRegression` in the exact limit and `HuberRegressor` under
+      outliers (T-S4), `marginal`'s bins against scipy's `binned_statistic`
+      with values on the edges and its split against a stump (T-S12), the
+      reverting `kalman` against filterpy (T-S5 in full), and `sgd`
+      against `SGDRegressor` live; proptest 1.11 over all 21 models in
+      `model_contract.rs` (a deep run of 2,000 streams a model found
+      nothing); and a licence check over the dev and docs groups and the
+      crates' dev-dependencies. One measurement worth keeping: at one row
+      in ten a gross outlier, `huber`'s intercept sat halfway to least
+      squares (1.5 against `HuberRegressor`'s 0.66, truth 0.5), because
+      its scale is the plain EW residual spread -- review D4, documented in
+      `robust.rs`, not changed here. The user,
+      2026-09-25: "we do want to enable every unlicensed library in tests
+      and park using licensed libraries" -- read as: a library under an
+      OSI-approved open-source licence (BSD, MIT, Apache, MPL, ...), which
+      asks for nothing to be bought or accepted, may be used in tests; one
+      under source-available or commercial terms (the Business Source
+      License, the SSPL, a commercial licence) is parked. Already in the dev
+      group and open source: numpy, pandas, statsmodels, river, hypothesis,
+      pyarrow, duckdb, the ADBC drivers.
+      - scikit-learn as a live oracle: the T-S second opinions (T-S4's
+        `HuberRegressor`, T-S12, T-S5 in full), TESTING's scikit-learn
+        comparison, and the PERFORMANCE measurements that needed it
+        installed by hand (`scripts/sklearn_comparison.py`).
+      - Rust `proptest` for T-D2, property tests in `online-core` beside the
+        Hypothesis ones. A dev-dependency links into the test binaries only,
+        never the package, and hard rule 12 covers production deployments,
+        not tests (the user, 2026-09-25), so it needs no raise.
+      - The rule where it lives (TESTING, "Libraries the package does not
+        depend on") and a check in `tests/test_dependency_policy.py` that
+        every dev-group library's metadata names an open-source licence, so
+        a licensed one is refused rather than remembered.
+
+**Requests of 2026-09-25 for `marginal` at width** (E70–E74,
+`docs/MARGINAL-AT-WIDTH.md`, from the same caller as E66–E67; the user:
+"examine its feature requests and integrate them into the current
+planning cycle"). Examined against the code, and against a benchmark of
+the model alone at `p = 10,000` (a scratch crate outside the repository):
+the per-target cost is the model's — `3.3·T` ns per feature per row for
+the moments, `19.8·T` with six lags and sixteen bins, against the caller's
+`3.2·T` and `19.1·T` — and the caller's fixed 14–17 ns per feature per row
+is not, since the model alone has `0.0` and `3.5` there.
 
       **Review 2026-09-26.** The proptest's `value()` said "near the
       input bound" and reached 1e50 of 1e100, its weights never the bound,
@@ -4596,52 +4676,23 @@ decision it needs, with a recommendation where there is one.
       found none (F10). The seed: proptest draws afresh each run; a failure
       prints the shrunk stream, and `PROPTEST_RNG_SEED` repeats a run.
 
-**Test libraries under an open-source licence.** S–M. **Done
-      2026-09-25:** scikit-learn 1.9.1 in the dev group; `huber` against
-      `LinearRegression` in the exact limit and `HuberRegressor` under
-      outliers (T-S4), `marginal`'s bins against scipy's `binned_statistic`
-      with values on the edges and its split against a stump (T-S12), the
-      reverting `kalman` against filterpy (T-S5 in full), and `sgd`
-      against `SGDRegressor` live; proptest 1.11 over all 21 models in
-      `model_contract.rs` (a deep run of 2,000 streams a model found
-      nothing); and a licence check over the dev and docs groups and the
-      crates' dev-dependencies. One measurement worth keeping: at one row
-      in ten a gross outlier, `huber`'s intercept sat halfway to least
-      squares (1.5 against `HuberRegressor`'s 0.66, truth 0.5), because
-      its scale is the plain EW residual spread -- review D4, documented in
-      `robust.rs`, not changed here. The user,
-      2026-09-25: "we do want to enable every unlicensed library in tests
-      and park using licensed libraries" -- read as: a library under an
-      OSI-approved open-source licence (BSD, MIT, Apache, MPL, ...), which
-      asks for nothing to be bought or accepted, may be used in tests; one
-      under source-available or commercial terms (the Business Source
-      License, the SSPL, a commercial licence) is parked. Already in the dev
-      group and open source: numpy, pandas, statsmodels, river, hypothesis,
-      pyarrow, duckdb, the ADBC drivers.
-      - scikit-learn as a live oracle: the T-S second opinions (T-S4's
-        `HuberRegressor`, T-S12, T-S5 in full), TESTING's scikit-learn
-        comparison, and the PERFORMANCE measurements that needed it
-        installed by hand (`scripts/sklearn_comparison.py`).
-      - Rust `proptest` for T-D2, property tests in `online-core` beside the
-        Hypothesis ones. A dev-dependency links into the test binaries only,
-        never the package, and hard rule 12 covers production deployments,
-        not tests (the user, 2026-09-25), so it needs no raise.
-      - The rule where it lives (TESTING, "Libraries the package does not
-        depend on") and a check in `tests/test_dependency_policy.py` that
-        every dev-group library's metadata names an open-source licence, so
-        a licensed one is refused rather than remembered.
-
-**Requests of 2026-09-25 for `marginal` at width** (E70–E74,
-`docs/MARGINAL-AT-WIDTH.md`, from the same caller as E66–E67; the user:
-"examine its feature requests and integrate them into the current
-planning cycle"). Examined against the code, and against a benchmark of
-the model alone at `p = 10,000` (a scratch crate outside the repository):
-the per-target cost is the model's — `3.3·T` ns per feature per row for
-the moments, `19.8·T` with six lags and sixteen bins, against the caller's
-`3.2·T` and `19.1·T` — and the caller's fixed 14–17 ns per feature per row
-is not, since the model alone has `0.0` and `3.5` there.
-
-- [x] 122. 
+- [x] 122. **E71: bin each feature once per row.** S; no API, no state,
+      bit-identical. **Done 2026-09-25:** `MarginalBins::update_row` forms
+      the row's indices once, in a scratch buffer outside the state, and
+      the warm-up replay goes through it too. Held to the per-target update
+      to the bit (`the_row_update_is_the_per_target_update_to_the_bit`), and
+      to the build before by `marg_bench`'s checksum, absent targets
+      included. At nine targets the bins cost 2.6 times less; at one, a
+      fifth less, which the request did not expect (PERFORMANCE §22). Found
+      on the way: the docstring promised the warm-up replay to the bit,
+      which a row of weight zero inside the warm-up breaks by about 1e-15
+      of the data's scale. That is the trade the design doc records, so
+      the docs now say it and a test pins it. Verified: `update_target` runs `bin_of(&self.edges[j],
+      x[j])` once per present target (margbins.rs:253-261), and the edges
+      are the feature's. Form the row's `p` indices once, before the target
+      loop, and the same on the warm-up replay. Tests as the request lists,
+      and `marg_bench`'s shape at `T = 1` and `T = 9`. First: the smallest,
+      and exact.
 
       **Review 2026-09-26.** The row update took the low parts'
       slice for every present target but sized the vector only when some
@@ -4663,38 +4714,7 @@ is not, since the model alone has `0.0` and `3.5` there.
       carries NaN features, all-NaN rows and all-absent targets, so the
       sharded `NO_BIN` paths run under the bit test.
 
-**E71: bin each feature once per row.** S; no API, no state,
-      bit-identical. **Done 2026-09-25:** `MarginalBins::update_row` forms
-      the row's indices once, in a scratch buffer outside the state, and
-      the warm-up replay goes through it too. Held to the per-target update
-      to the bit (`the_row_update_is_the_per_target_update_to_the_bit`), and
-      to the build before by `marg_bench`'s checksum, absent targets
-      included. At nine targets the bins cost 2.6 times less; at one, a
-      fifth less, which the request did not expect (PERFORMANCE §22). Found
-      on the way: the docstring promised the warm-up replay to the bit,
-      which a row of weight zero inside the warm-up breaks by about 1e-15
-      of the data's scale. That is the trade the design doc records, so
-      the docs now say it and a test pins it. Verified: `update_target` runs `bin_of(&self.edges[j],
-      x[j])` once per present target (margbins.rs:253-261), and the edges
-      are the feature's. Form the row's `p` indices once, before the target
-      loop, and the same on the warm-up replay. Tests as the request lists,
-      and `marg_bench`'s shape at `T = 1` and `T = 9`. First: the smallest,
-      and exact.
-
-- [x] 123. 
-
-      **Review 2026-09-26.** `MarginalLags::has_shape` let a ring longer
-      than the deepest lag, or one with fewer target rows than feature rows,
-      through: the first read every lag a row too recent for good, the second
-      panicked (B3, a corrupt state only); both refused. The module doc said
-      the cross terms were two thirds of the lag work; §23 measured 30% (A6).
-      Tests: `a_lag_state_with_an_overlong_or_uneven_ring_is_refused`,
-      `a_compact_state_without_cross_lags_reads_with_every_lag` (the
-      positional upgrade the comment claimed), the spec layer's
-      `cross_lags_write_back_as_given_and_need_lags`, and the bins test that
-      `cross_lags=[]` drops the two cross columns and moves nothing else.
-
-**E70: `marginal(cross_lags=...)`.** S–M. **Done 2026-09-25**,
+- [x] 123. **E70: `marginal(cross_lags=...)`.** S–M. **Done 2026-09-25**,
       on schema 16 (unreleased), through the spec, the bank's two tables and
       Python; refused by name at construction. The default is bit-identical
       to the build before and 0.9% faster; one loop for both cases had made
@@ -4707,19 +4727,18 @@ is not, since the model alone has `0.0` and `3.5` there.
       serde default is still a layout change under hard rule 5: it rides
       schema 16 if it lands before 0.11.0, 17 after.
 
-- [x] 124. 
+      **Review 2026-09-26.** `MarginalLags::has_shape` let a ring longer
+      than the deepest lag, or one with fewer target rows than feature rows,
+      through: the first read every lag a row too recent for good, the second
+      panicked (B3, a corrupt state only); both refused. The module doc said
+      the cross terms were two thirds of the lag work; §23 measured 30% (A6).
+      Tests: `a_lag_state_with_an_overlong_or_uneven_ring_is_refused`,
+      `a_compact_state_without_cross_lags_reads_with_every_lag` (the
+      positional upgrade the comment claimed), the spec layer's
+      `cross_lags_write_back_as_given_and_need_lags`, and the bins test that
+      `cross_lags=[]` drops the two cross columns and moves nothing else.
 
-      **Review 2026-09-26.** The hash lookups were read against the
-      scans they replaced (`find`, `key`, `has`, `first_readers`) and found
-      the same answers; `first_readers`' doc now says where a reference
-      sits in the role order (D12). `check_clocks`' "a temporal column can
-      only be a clock" loop read target names and knew no reference, so a
-      Datetime clock used as a table target's column or as its reference was
-      refused later, with another message (D6): by column now, and a
-      reference is "a relative_to reference"
-      (`test_a_temporal_clock_is_not_a_target_or_a_reference_either`).
-
-**The stream's fixed cost per feature per row at width** (from
+- [x] 124. **The stream's fixed cost per feature per row at width** (from
       E74's measurement). S–M, and it helps every wide model. **Done
       2026-09-25** (PERFORMANCE §24): it was not the cast or the transpose
       first, but seven lookups by column name that scanned every column,
@@ -4734,6 +4753,16 @@ is not, since the model alone has `0.0` and `3.5` there.
       cast, the tiled transpose (`feature_rows`, bank.rs:169), the per-row
       validity check, the data summary, the output — and fix what
       dominates; at `T = 1` it is four fifths of the row.
+
+      **Review 2026-09-26.** The hash lookups were read against the
+      scans they replaced (`find`, `key`, `has`, `first_readers`) and found
+      the same answers; `first_readers`' doc now says where a reference
+      sits in the role order (D12). `check_clocks`' "a temporal column can
+      only be a clock" loop read target names and knew no reference, so a
+      Datetime clock used as a table target's column or as its reference was
+      refused later, with another message (D6): by column now, and a
+      reference is "a relative_to reference"
+      (`test_a_temporal_clock_is_not_a_target_or_a_reference_either`).
 
 - [ ] 125. **E72: `feature_moments="shared"` — a decision first.** M–L. The
       request says only `var_x` changes where a target is absent; not so.
@@ -4752,7 +4781,27 @@ is not, since the model alone has `0.0` and `3.5` there.
       runs go per feature (task 94's windowed read), and a `window` needs
       its own answer.
 
-- [x] 126. 
+- [x] 126. **E73: a wide `marginal` sharded across the pool (`shards`).**
+      **Done 2026-09-25**, as a batch of rows per fork-join, not one per
+      row (§11a has why). `marginal(shards=)` takes a count or `"auto"`,
+      off by default; it is a setting, not state. `Marginal::step_sharded`
+      advances every target's own numbers as the row arrives and holds
+      each pair's share of it; a flush steps the pairs through the held
+      rows in order, one `MarginalShard` per range of features, which the
+      stream runs on the bank's pool. `online-core` keeps no threads: the
+      caller passes the runner. Flushed when 256 rows (or 8 MB of features)
+      are held, before a window snapshot, before the bins fold their scale,
+      and at the end of each run of rows. The pair update, the lag updates
+      and the bins' cell update became slice kernels shared by both paths,
+      and the unsplit row got 7–50% faster with every checksum equal. Tests:
+      `a_sharded_step_is_the_unsplit_step_to_the_bit` and four more in
+      `marginal.rs`, `a_sharded_marginal_reads_the_unsplit_pairs` through
+      the bank, and `tests/test_marginal_shards.py` (every count, chunked,
+      saved and resumed, `fit(lf)`, the CLI). Measured (PERFORMANCE §25):
+      at 10,000 features the model alone ran 1.8× at one target, 4.6× at
+      nine and 5.4× with lags and bins; through the bank, 1.2×, 2.0× and
+      4.9×, where the bank's own row work does not split. Not split: the
+      bins' warm-up replay, once per group.
 
       **Review 2026-09-26.** Three findings changed behaviour. A window
       with the default `window_every` made `takes()` true on every row, so a
@@ -4797,28 +4846,6 @@ is not, since the model alone has `0.0` and `3.5` there.
       changed with no flush between, `p = 1` with two shards, a total gap
       with rows held, all-absent targets after a wipe.
 
-**E73: a wide `marginal` sharded across the pool (`shards`).**
-      **Done 2026-09-25**, as a batch of rows per fork-join, not one per
-      row (§11a has why). `marginal(shards=)` takes a count or `"auto"`,
-      off by default; it is a setting, not state. `Marginal::step_sharded`
-      advances every target's own numbers as the row arrives and holds
-      each pair's share of it; a flush steps the pairs through the held
-      rows in order, one `MarginalShard` per range of features, which the
-      stream runs on the bank's pool. `online-core` keeps no threads: the
-      caller passes the runner. Flushed when 256 rows (or 8 MB of features)
-      are held, before a window snapshot, before the bins fold their scale,
-      and at the end of each run of rows. The pair update, the lag updates
-      and the bins' cell update became slice kernels shared by both paths,
-      and the unsplit row got 7–50% faster with every checksum equal. Tests:
-      `a_sharded_step_is_the_unsplit_step_to_the_bit` and four more in
-      `marginal.rs`, `a_sharded_marginal_reads_the_unsplit_pairs` through
-      the bank, and `tests/test_marginal_shards.py` (every count, chunked,
-      saved and resumed, `fit(lf)`, the CLI). Measured (PERFORMANCE §25):
-      at 10,000 features the model alone ran 1.8× at one target, 4.6× at
-      nine and 5.4× with lags and bins; through the bank, 1.2×, 2.0× and
-      4.9×, where the bank's own row work does not split. Not split: the
-      bins' warm-up replay, once per group.
-
 - [ ] 127. **E74: a chunk run pair-major — not as specified.** Its reason
       is the intercept, which is not the model's (task 124, which took it
       from 13.1 to 2.8 ns per feature per row); the bank
@@ -4833,7 +4860,26 @@ is not, since the model alone has `0.0` and `3.5` there.
       snapshot, group close and `label_delay` replay would have to split.
       *Recommended: wait for that measurement.*
 
-- [x] 128. 
+- [x] 128. **`EwCov` keeps its runs without a window** (found by task 124,
+      PERFORMANCE §24). S–M, a confirmed regression of task 94, unreleased.
+      **Done 2026-09-25:** `Runs::off`, a state flag read as on where a
+      state lacks it, and `EwCov::without_runs`, taken by every owner
+      without a window (`ew_cov`, `ewridge`, `lasso` and `ew_class` without
+      one; `huber`, `quantile` and the slot metrics always); `marginal`
+      builds its runs off too, so a wide one without a window no longer
+      allocates 16 bytes a pair for them. A test per owner pins the choice.
+      `core_bench`'s `ewridge`: +15% at 5 features, +17% at 20, +4% at 50,
+      +10% solving every 25 rows; the goldens are unchanged.
+      Every covariance accumulator tracks each slot's run on every learned
+      row, and only a window reads them (`crate::truncated`); `core_bench`'s
+      `ewridge` is 18–20% faster at 5 and 20 features without the tracking,
+      4% at 50. The owner knows whether it has a window, the accumulator
+      does not: a state flag with a default of *on* (so an old state keeps
+      tracking, the safe side), set off at construction by every owner
+      without a window, kept through resets and the blend's rebuild
+      (`gaps.rs`'s `empty`), ahead of `pending`, which must stay last. Rides
+      schema 16. Tests: a model without a window keeps no runs, one with a
+      window reads a held slot as today, and the numbers are bit-identical.
 
       **Review 2026-09-26.** No `restore` re-derived the flag from the
       cfg (C4): a 0.10.0 state, which has no flag, resumed without a window
@@ -4856,40 +4902,7 @@ is not, since the model alone has `0.0` and `3.5` there.
       on a tie two saturating penalties give (C2); a test each kills them
       and the entries are gone.
 
-**`EwCov` keeps its runs without a window** (found by task 124,
-      PERFORMANCE §24). S–M, a confirmed regression of task 94, unreleased.
-      **Done 2026-09-25:** `Runs::off`, a state flag read as on where a
-      state lacks it, and `EwCov::without_runs`, taken by every owner
-      without a window (`ew_cov`, `ewridge`, `lasso` and `ew_class` without
-      one; `huber`, `quantile` and the slot metrics always); `marginal`
-      builds its runs off too, so a wide one without a window no longer
-      allocates 16 bytes a pair for them. A test per owner pins the choice.
-      `core_bench`'s `ewridge`: +15% at 5 features, +17% at 20, +4% at 50,
-      +10% solving every 25 rows; the goldens are unchanged.
-      Every covariance accumulator tracks each slot's run on every learned
-      row, and only a window reads them (`crate::truncated`); `core_bench`'s
-      `ewridge` is 18–20% faster at 5 and 20 features without the tracking,
-      4% at 50. The owner knows whether it has a window, the accumulator
-      does not: a state flag with a default of *on* (so an old state keeps
-      tracking, the safe side), set off at construction by every owner
-      without a window, kept through resets and the blend's rebuild
-      (`gaps.rs`'s `empty`), ahead of `pending`, which must stay last. Rides
-      schema 16. Tests: a model without a window keeps no runs, one with a
-      window reads a held slot as today, and the numbers are bit-identical.
-
-- [x] 129. 
-
-      **Review 2026-09-26.** Reserving the hold at exactly `warm_rows`
-      on the first held row charged every group the whole hold up front --
-      64 KB a group at the default, 640 MB across ten thousand short groups
-      -- where doubling had cost at most twice the rows held (A2): the hold
-      grows by doubling, capped at `warm_rows`, so `hold_bytes` stays the
-      most it can reach and a short group holds only its rows
-      (`a_short_group_holds_only_its_rows`). The spec doc said the budget was
-      per group; it is per model instance, every halflife of a grid included
-      (D11).
-
-**`marginal`'s bins budget counts three values a cell where
+- [x] 129. **`marginal`'s bins budget counts three values a cell where
       there are four** (found 2026-09-26, checking the memory caps at the
       user's question). S, a confirmed regression of task 101, unreleased.
       `BinCfg::validate` refused a histogram past 256 MiB (`MEMORY_BUDGET`,
@@ -4927,23 +4940,17 @@ is not, since the model alone has `0.0` and `3.5` there.
       undercounted its targets past the budget, is refused where it was
       allowed.
 
-- [x] 130. 
+      **Review 2026-09-26.** Reserving the hold at exactly `warm_rows`
+      on the first held row charged every group the whole hold up front --
+      64 KB a group at the default, 640 MB across ten thousand short groups
+      -- where doubling had cost at most twice the rows held (A2): the hold
+      grows by doubling, capped at `warm_rows`, so `hold_bytes` stays the
+      most it can reach and a short group holds only its rows
+      (`a_short_group_holds_only_its_rows`). The spec doc said the budget was
+      per group; it is per model instance, every halflife of a grid included
+      (D11).
 
-      **Review 2026-09-26.** The two-size check documented "every
-      vector longer in the larger" and did not enforce it, so a vector sized
-      by a dimension neither snapshot varied could still hide under the
-      scalar slack (B4): it walks both snapshots in step and refuses a vector
-      that does not grow (`the_footprint_check_sees_a_vector_that_does_not_grow`),
-      which made the `lasso` test vary the path and the two-Gram `ewridge`
-      test (`the_window_footprint_counts_every_gram`, C missing 7) vary the
-      targets. The ridge and lasso snapshots cloned the means' low parts,
-      which the window's subtraction never reads (C9): cleared in
-      `Acc::snapshot`, `k + T` doubles a snapshot the ring no longer holds.
-      `Moments::footprint` counts its three numbers (C10). This entry said a
-      test per snapshot type failed without the fix; `ew_cov`'s and
-      `ew_class`'s did not need one (C11).
-
-**Two window snapshots undercount what they hold** (found
+- [x] 130. **Two window snapshots undercount what they hold** (found
       2026-09-26, checking the other memory estimates after task 129). S,
       confirmed regressions of tasks 101 and 102, unreleased. A window's
       ring thins or refuses past its budget (`window_budget`, 256 MiB a ring
@@ -4966,19 +4973,21 @@ is not, since the model alone has `0.0` and `3.5` there.
       refuses a little sooner than before the fix: what it counts is what it
       holds.
 
-- [x] 131. 
+      **Review 2026-09-26.** The two-size check documented "every
+      vector longer in the larger" and did not enforce it, so a vector sized
+      by a dimension neither snapshot varied could still hide under the
+      scalar slack (B4): it walks both snapshots in step and refuses a vector
+      that does not grow (`the_footprint_check_sees_a_vector_that_does_not_grow`),
+      which made the `lasso` test vary the path and the two-Gram `ewridge`
+      test (`the_window_footprint_counts_every_gram`, C missing 7) vary the
+      targets. The ridge and lasso snapshots cloned the means' low parts,
+      which the window's subtraction never reads (C9): cleared in
+      `Acc::snapshot`, `k + T` doubles a snapshot the ring no longer holds.
+      `Moments::footprint` counts its three numbers (C10). This entry said a
+      test per snapshot type failed without the fix; `ew_cov`'s and
+      `ew_class`'s did not need one (C11).
 
-      **Review 2026-09-26.** Tests at the spec layer, which had only
-      `check()` being `Err` for a budget without bins:
-      `bin_budget_is_held_to_what_it_can_mean` (zero, negative, `-inf`, NaN
-      and a string refused by name, beside given edges accepted, `"inf"` no
-      bound), `shards_read_a_count_or_auto_and_refuse_the_rest` and
-      `shards_round_trip_through_json_and_msgpack` (D missing 7, 8), and the
-      Python refusal of a tiny budget beside given edges. The builders'
-      finiteness check did not walk a dict, so `bin_edges={"x": [inf]}` was
-      named by serde as `model` (F8).
-
-**`marginal(bin_budget=...)`: the bins' memory limit, set per
+- [x] 131. **`marginal(bin_budget=...)`: the bins' memory limit, set per
       spec** (the user, 2026-09-26, after task 129). S. The warm-up hold and
       the histogram were each refused past a fixed 256 MiB. `bin_budget`
       sets that limit in MiB for both, per spec: 256 when absent,
@@ -4994,6 +5003,16 @@ is not, since the model alone has `0.0` and `3.5` there.
       directions, infinity and the bad values;
       `test_bin_budget_sets_the_limit` through the bank, with a hold of 313
       MiB refused by default, built at 400 MiB and refused again at 300.
+
+      **Review 2026-09-26.** Tests at the spec layer, which had only
+      `check()` being `Err` for a budget without bins:
+      `bin_budget_is_held_to_what_it_can_mean` (zero, negative, `-inf`, NaN
+      and a string refused by name, beside given edges accepted, `"inf"` no
+      bound), `shards_read_a_count_or_auto_and_refuse_the_rest` and
+      `shards_round_trip_through_json_and_msgpack` (D missing 7, 8), and the
+      Python refusal of a tiny budget beside given edges. The builders'
+      finiteness check did not walk a dict, so `bin_edges={"x": [inf]}` was
+      named by serde as `model` (F8).
 
 - [x] 132. **Review 2026-09-26 of the unpushed changes** (the user:
       "a deep review iterating through each file and reviewing the code in
@@ -5023,6 +5042,38 @@ is not, since the model alone has `0.0` and `3.5` there.
       exceeds its weight share, and the last bits of a gappy target's fit
       under `ew_ridge` and `lasso`. Left as noted: E5 (a panic inside a shard leaves no
       `broken` mark) and task 105.
+
+- [x] 133. **The release workflow tags what it published, after
+      everything ran** (the user, 2026-09-27, after the 0.11.0 tag failed:
+      "change the release workflow so that GitHub tags a release after
+      everything runs. We want to keep the rehearsal for testing"). S–M.
+      **Done 2026-09-27.** `release.yml` has no tag trigger any more: it is
+      dispatched on `main`, and a `publish` input (off by default) turns
+      the rehearsal into a release. A `version` job runs first
+      (`scripts/release_version.py`): the six places agree, the CHANGELOG
+      has the section, and, publishing, the run is on `main` and the tag is
+      new -- refused before the hour and a half of builds, since the tag of
+      a spent version can never be reused. A `ci` job calls the whole of
+      `ci.yml` (now `workflow_call`-able, its concurrency group per calling
+      workflow so a release and a push on `main` do not cancel each other),
+      so the suites that failed 0.11.0 hold back the upload with the wheels,
+      the state hand-off and the Polars legs. The PyPI upload keeps its
+      approval; the `tag` job then tags the tested sha, annotated with the
+      CHANGELOG's section, and `release` makes the GitHub release from the
+      same notes. So a tag names exactly what was published. The README's
+      PyPI links point at the tag the run will create (the sha when
+      rehearsing). `docs` in `ci.yml` needs `pages` and `id-token`, which
+      the call must grant; it runs on a push alone, so the grant is inert,
+      and `tests/test_release_workflow.py` holds the workflow's shape and
+      the version script to all of this (the schema check with
+      `check-jsonschema` passed). RELEASE-READINESS's steps now read:
+      compare, version, changelog, gate, commit and push, dispatch with
+      `publish`, approve, verify. No rehearsal before a release (the user
+      asked whether one was needed, and it is not): the publishing run does
+      all a rehearsal does before the approval, and a failure there leaves
+      nothing to undo. The rehearsal stays for testing a change to the
+      workflow. Neither tries `tag` or `release`, which run after the
+      upload; a failed one is re-run on the same sha.
 
 **Parked by the user on 2026-09-25: integration with new libraries, Arrow,
 and licensed libraries in tests.** Nothing here is to be built until the

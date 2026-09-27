@@ -49,6 +49,10 @@ class TestEveryJobIsBounded:
     @pytest.mark.parametrize("name", sorted(ALL))
     def test_every_job_has_a_timeout(self, name):
         for job, spec in ALL[name].get("jobs", {}).items():
+            # A job that calls a reusable workflow takes no timeout; the
+            # called workflow's jobs carry theirs, and are checked here too.
+            if "uses" in spec:
+                continue
             assert "timeout-minutes" in spec, f"{name}:{job} has no timeout-minutes"
             assert 0 < spec["timeout-minutes"] <= 120, f"{name}:{job} timeout is not sane"
 

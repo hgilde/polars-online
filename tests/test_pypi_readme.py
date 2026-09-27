@@ -67,7 +67,8 @@ def test_the_readme_leaves_no_relative_link_and_links_no_missing_file():
 
 def test_every_release_build_rewrites_the_readme_before_maturin_reads_it():
     """Both jobs that write package metadata -- the sdist and every wheel --
-    run the rewrite first, pinned to the ref the release runs at."""
+    run the rewrite first, pinned to the tag the run creates (the sha when
+    rehearsing), which the `version` job names before anything is built."""
     release = yaml.safe_load((REPO / ".github/workflows/release.yml").read_text(encoding="utf-8"))
     for job in ("sdist", "build"):
         steps = release["jobs"][job]["steps"]
@@ -75,4 +76,4 @@ def test_every_release_build_rewrites_the_readme_before_maturin_reads_it():
         rewrite = next(i for i, x in enumerate(labels) if "pypi_readme.py" in x)
         maturin = next(i for i, x in enumerate(labels) if "maturin-action" in x)
         assert rewrite < maturin, job
-        assert '--ref "${{ github.ref_name }}"' in labels[rewrite], job
+        assert '--ref "${{ needs.version.outputs.readme_ref }}"' in labels[rewrite], job

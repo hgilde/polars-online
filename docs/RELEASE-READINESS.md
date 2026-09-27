@@ -21,10 +21,22 @@ with its evidence.
 
 ## Cutting a release
 
-A release starts when a `v*` tag is pushed, and
-`.github/workflows/release.yml` does the rest. Two things make it safe: a
-gate in front of the one step nothing can undo, and a rehearsal that finds a
-broken workflow before a tag does. Which version number a change needs is in
+A release is dispatched, and `.github/workflows/release.yml` does the rest:
+dispatched on `main` with `publish` on, it runs CI on all three OSes, builds
+every wheel and the CLI, runs the state hand-off and the suite on the newest
+Polars, waits for approval, uploads to PyPI, and only then creates the tag
+`v<version>` on the sha it tested, and the GitHub release. With `publish`
+off, the same run is the rehearsal, and tags and uploads nothing. A tag
+pushed by hand starts nothing. Three things make it safe: a gate in front of
+the one step nothing can undo, a tag that exists only once the release does,
+and a rehearsal that finds a broken workflow before a publishing run does.
+
+**Why the tag comes last (2026-09-27).** Until then a release started when a
+`v*` tag was pushed. 0.11.0 was tagged on a branch whose 21 commits had never
+run on Linux or Windows; CI failed there on the tag, the publish jobs were
+skipped, and the tag could not be moved (below). So the release now runs
+everything first, CI included, and a version whose tag exists is refused
+before anything is built (`scripts/release_version.py`). Which version number a change needs is in
 [Policy to write down](#policy-to-write-down). Widening the Polars range is
 a minor release, as step 5 of
 [Raising the ceiling to a new major](#raising-the-ceiling-to-a-new-major)
@@ -41,18 +53,20 @@ deadlock every release. The click is a button on the run page, and GitHub
 emails when one is waiting.
 
 **The job asks for approval only after every job it needs is green.** On
-2026-09-06 that list read `needs: [sdist, build, read-state]`, and since
+2026-09-06 that list read `needs: [sdist, build, read-state]`; since
 2026-09-10 (`e6da97c`) it also names `next-polars`, which tests the newest
-Polars at the tag:
+Polars at the release, and since 2026-09-27 `version` and `ci`:
 
 | job in `release.yml` | what it checks or makes | holds back the upload |
 |---|---|---|
+| `version` | the version agrees in its six places, the CHANGELOG has its section, and, publishing, the tag is new and the run is on `main` | yes, and it runs before anything is built |
+| `ci` | the whole of `ci.yml`, called: lint, and the Rust and Python suites on Linux, macOS and Windows | yes |
 | `sdist` | the source distribution | yes |
 | `build` | all six wheels, and the command-line binaries | yes |
 | `write-state`, then `read-state` | the cross-OS state hand-off: a state written on macOS is loaded, and its stream continued, on Windows and Linux | yes |
 | `next-polars` | the whole suite, in two legs: on the newest Polars the declared range admits, and on the next major | the first leg only; the second is advisory |
-| `release` | the GitHub release page, with the wheels and CLI binaries attached | no: it runs while the approval waits |
 | `publish to PyPI` | the upload | it is the gate |
+| `tag`, then `release` | the tag `v<version>` on the tested sha, annotated with the CHANGELOG's section, then the GitHub release page with the wheels and CLI binaries | no: they run after the upload |
 
 **Everything before the approval can be retried, and nothing after it
 can.** That is why the gate sits where it does: in front of the one step
@@ -60,31 +74,38 @@ nothing can undo, and in front of nothing else.
 
 | side of the gate | what happens there | can it be undone |
 |---|---|---|
-| before | dispatching a rehearsal, re-running a failed wheel, cancelling a run, pushing the tag | yes: all of it is retryable, and none of it reaches a user |
-| after | nothing: the upload is the last step | no: PyPI never allows a version number to be reused, even after a yank |
+| before | dispatching a rehearsal or a release, re-running a failed job, cancelling a run, declining the approval | yes: all of it is retryable, none of it reaches a user, and none of it creates a tag |
+| after | the upload, then the tag and the GitHub release | no: PyPI never allows a version number to be reused, even after a yank, and a `v*` tag cannot be moved or deleted |
 
 **A tag that turns out to be wrong is *not* fixed by moving it.** The
 `release tags are immutable` ruleset covers `refs/tags/v*` with `deletion`
-and `update` rules and an empty bypass list, so the owner is bound too. A
-bad tag is left unapproved, and the fix ships as the next version. That
-agrees with PyPI's rule rather than fighting it: version numbers are
-single-use on both sides.
+and `update` rules and an empty bypass list, so the owner is bound too. It
+allows *creating* a tag, which is all the workflow does. The fix ships as
+the next version, which agrees with PyPI's rule rather than fighting it:
+version numbers are single-use on both sides. `v0.11.0` is such a tag: it
+names a commit whose CI failed, and nothing was ever published from it.
 
-**Two things are deliberately *not* gated.** The GitHub release job runs
-before the approval, so the wheels and CLI binaries are attached to the
-release page while the decision is being made. It can be deleted and
-recreated if wrong. The Pages deploy in `ci.yml` republishes the API
-reference on every push to `main`, and is as reversible as the next push.
-`github-pages` briefly carried a required reviewer on 2026-09-06, and no
-longer does.
+**One thing is deliberately *not* gated.** The Pages deploy in `ci.yml`
+republishes the API reference on every push to `main`, and is as reversible
+as the next push. `github-pages` briefly carried a required reviewer on
+2026-09-06, and no longer does. The release's call of `ci.yml` grants the
+deploy's scopes, since a called workflow may ask for no more than its caller
+grants, but the deploy runs on a push alone, so under a release it is
+skipped (`tests/test_release_workflow.py`).
 
 ### Rehearse before tagging
 
-**Rehearse `release.yml` before pushing a tag, because a tag runs the
-workflow file *at the tag*.** A fault in the workflow therefore ships inside
-the tagged commit. A `workflow_dispatch` rehearsal of `release.yml` on
-`main` builds every wheel and publishes nothing. The rehearsal is not
-optional.
+**Rehearse `release.yml` before a publishing run, because a run uses the
+workflow file at the commit it runs on.** A fault in the workflow therefore
+ships inside the released commit. A rehearsal is a dispatch on `main` with
+`publish` off: the same jobs, CI included, and nothing tagged or uploaded.
+Since 2026-09-27 a publishing run also stops before the upload and creates
+no tag when any job fails, so a failed release costs a rerun rather than a
+version, and a release needs no rehearsal first: its own run is one, up to
+the approval. The rehearsal stays the way to test a change to the workflow
+without releasing. Neither can try the two jobs that run after the upload,
+`tag` and `release`, since a rehearsal skips them; if one fails, re-running
+it tags the same sha.
 
 Six faults were found on 2026-09-03, and every fix is in the tagged commit.
 The first was found before the first rehearsal ran, and is one a rehearsal
@@ -146,20 +167,20 @@ The steps of a release, in order:
 | step | how |
 |---|---|
 | 1. compare | `uv run python scripts/compare_release.py`; every difference declared in the CHANGELOG, or its cause pinned by a test |
-| 2. rehearse | dispatch `release.yml` on `main`, which builds every wheel and publishes nothing ([Rehearse before tagging](#rehearse-before-tagging)) |
-| 3. version | the version in six places: `pyproject.toml`, `Cargo.toml` three times, `python/polars_online/__init__.py`, and `docs/VALIDATION.md`, regenerated with `uv run python scripts/validate.py > docs/VALIDATION.md`; then `Cargo.lock` and `uv.lock` refreshed |
-| 4. changelog | `[Unreleased]` promoted to `## [X.Y.Z] — <date>` |
-| 5. gate | `bash scripts/gate.sh`, unpiped, until its last line says PASS |
-| 6. commit | on `main` itself, not on a branch |
-| 7. push and tag | `git push`, then `git tag -a vX.Y.Z -F <message> <sha>` on the gated sha, never a bare `HEAD`, and `git push origin vX.Y.Z` |
-| 8. approve | the `publish to PyPI` job, in the `Pypi` environment ([The release gate](#the-release-gate-2026-09-06)) |
-| 9. verify | install from PyPI into a clean venv outside the repository, and check `po.__file__`, the three versions and a fit |
+| 2. version | the version in six places: `pyproject.toml`, `Cargo.toml` three times, `python/polars_online/__init__.py`, and `docs/VALIDATION.md`, regenerated with `uv run python scripts/validate.py > docs/VALIDATION.md`; then `Cargo.lock` and `uv.lock` refreshed. `uv run --no-project --python 3.12 python scripts/release_version.py --publish` says whether they agree and the tag is new |
+| 3. changelog | `[Unreleased]` promoted to `## [X.Y.Z] — <date>`; the tag's message and the GitHub release are that section |
+| 4. gate | `bash scripts/gate.sh`, unpiped, until its last line says PASS |
+| 5. commit and push | on `main` itself, not on a branch; then wait for CI on the pushed sha |
+| 6. release | dispatch `release.yml` on `main` with `publish` on (`gh workflow run release.yml --ref main -f publish=true`); never push a tag by hand. No rehearsal first: this run does everything a rehearsal does before it asks for approval, and a failure there leaves nothing to undo -- dispatch again ([Rehearse before tagging](#rehearse-before-tagging)) |
+| 7. approve | the `publish to PyPI` job, in the `Pypi` environment, once every job is green ([The release gate](#the-release-gate-2026-09-06)); the tag and the GitHub release follow the upload |
+| 8. verify | install from PyPI into a clean venv outside the repository, and check `po.__file__`, the three versions and a fit |
 
 The workflow itself rewrites the README's links for PyPI. PyPI shows the
 README as the project page, where a relative link to another file resolves
 against pypi.org and is a 404. So both jobs that build a package first run
-`scripts/pypi_readme.py --ref <the tag>`, which points each such link at the
-file on GitHub as it was at the tag. The README in the repository keeps its
+`scripts/pypi_readme.py --ref <the tag the run will create>` (the sha, in a
+rehearsal), which points each such link at the file on GitHub as it is at
+the released commit. The README in the repository keeps its
 relative links.
 
 ## Which Polars versions are promised

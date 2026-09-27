@@ -1,8 +1,8 @@
 # Suggested enhancements
 
-Status as of 2026-09-25: **E1 to E68, E70 and E71 are built, declined or
-noted**; E69 (PLAN tasks 78, 104, 105 and 107) and E72 to E74 (tasks 125 to
-127) are open. The latest release is 0.10.0. The exceptions among the done
+Status as of 2026-09-27: **E1 to E68, E70, E71 and E73 are built, declined
+or noted**; E69 (PLAN tasks 78, 104, 105 and 107), E72 and E74 (tasks 125
+and 127) are open. The latest release is 0.11.1. The exceptions among the done
 rows are recorded decisions, not gaps: E28/E29 (declined), E63 (a note); E51
 and E52 closed on 2026-09-08 (E51 built as task 71, E52 superseded by E54). Twenty-one models — the ten regressions and smoothers (`ewridge`,
 `rls`, `lasso`, `kalman`, `huber`, `quantile`, `sgd`, `pa`, `ftrl`, `holt`),

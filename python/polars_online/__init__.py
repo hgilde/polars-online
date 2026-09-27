@@ -58,7 +58,7 @@ from polars_online._polars_online import (
 )
 from polars_online._spec import Target, target
 
-__version__ = "0.11.0"
+__version__ = "0.11.1"
 
 __all__ = [
     "ArrowStruct",

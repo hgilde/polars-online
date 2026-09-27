@@ -1,0 +1,181 @@
+"""The release workflow tags what it published, after everything ran.
+
+The user, 2026-09-27: the 0.11.0 tag was pushed by hand, CI met the branch
+there for the first time and failed, and a release tag cannot be moved. So a
+release is dispatched on ``main``: with ``publish`` off it is the rehearsal;
+on, it runs CI and every build and suite, waits for approval, uploads to
+PyPI, and only then creates the tag and the GitHub release. These tests hold
+the workflow's shape to that, and ``scripts/release_version.py`` -- the check
+that runs before anything is built -- to its rules.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import shutil
+from pathlib import Path
+
+import pytest
+import yaml
+
+REPO = Path(__file__).resolve().parents[1]
+WORKFLOWS = REPO / ".github" / "workflows"
+
+
+def _load(name: str) -> dict:
+    return yaml.safe_load((WORKFLOWS / name).read_text(encoding="utf-8"))
+
+
+RELEASE = _load("release.yml")
+CI = _load("ci.yml")
+# PyYAML reads the key `on` as the boolean True.
+TRIGGERS = RELEASE.get("on", RELEASE.get(True))
+JOBS = RELEASE["jobs"]
+
+
+def _needs(job: str) -> set[str]:
+    n = JOBS[job].get("needs", [])
+    return {n} if isinstance(n, str) else set(n)
+
+
+def test_a_release_is_dispatched_never_tagged_by_hand():
+    """No tag trigger: a tag pushed by hand starts nothing, and the only
+    trigger is a dispatch whose ``publish`` input is off unless asked."""
+    assert set(TRIGGERS) == {"workflow_dispatch"}
+    publish = TRIGGERS["workflow_dispatch"]["inputs"]["publish"]
+    assert publish["type"] == "boolean"
+    assert publish["default"] is False
+
+
+def test_the_version_is_checked_before_anything_is_built():
+    for job in ("sdist", "build"):
+        assert "version" in _needs(job), job
+    steps = " ".join(str(s.get("run", "")) for s in JOBS["version"]["steps"])
+    assert "scripts/release_version.py" in steps
+    assert "--publish" in steps
+    main_only = next(s for s in JOBS["version"]["steps"] if "main only" in s.get("name", ""))
+    assert "refs/heads/main" in main_only["if"]
+
+
+def test_ci_runs_inside_the_release_on_every_os():
+    """The 0.11.0 tag failed in CI, which the release did not run."""
+    assert JOBS["ci"]["uses"] == "./.github/workflows/ci.yml"
+    ci_triggers = CI.get("on", CI.get(True))
+    assert "workflow_call" in ci_triggers
+    # A call takes the caller's event: a dispatch, whose clause of the
+    # matrix brings macOS and Windows.
+    matrix = " ".join(str(CI["jobs"]["test"]["strategy"]["matrix"]["os"]).split())
+    clause = next(c for c in matrix.split("||") if "workflow_dispatch" in c)
+    assert "macos-latest" in clause and "windows-latest" in clause
+
+
+def test_the_pages_grant_to_ci_is_inert():
+    """A called workflow may ask for no more than its caller grants, so the
+    release grants ``docs``'s scopes; ``docs`` runs on a push to main alone,
+    never under the release's dispatch, so the grant deploys nothing."""
+    grant = JOBS["ci"]["permissions"]
+    assert set(grant) == {"contents", "pages", "id-token"}
+    assert grant["contents"] == "read"
+    docs_if = CI["jobs"]["docs"]["if"]
+    assert "github.event_name == 'push'" in docs_if
+    for job, spec in CI["jobs"].items():
+        if job != "docs":
+            assert spec["permissions"] == {"contents": "read"}, job
+
+
+def test_ci_groups_per_caller_so_a_release_and_a_push_do_not_cancel():
+    assert "github.workflow" in CI["concurrency"]["group"]
+
+
+def test_publishing_waits_for_every_job_and_the_tag_waits_for_publishing():
+    assert _needs("publish") == {"version", "ci", "sdist", "build", "read-state", "next-polars"}
+    assert JOBS["publish"]["environment"] == "pypi"
+    assert _needs("tag") == {"version", "publish"}
+    assert _needs("release") == {"version", "tag"}
+    for job in ("publish", "tag", "release"):
+        assert JOBS[job]["if"] == "inputs.publish", job
+
+
+def test_the_tag_is_on_the_tested_sha():
+    run = next(s["run"] for s in JOBS["tag"]["steps"] if "create and push" in s.get("name", ""))
+    assert 'git tag -a "$TAG" -F notes.md "$GITHUB_SHA"' in run
+    assert JOBS["tag"]["permissions"] == {"contents": "write"}
+    gh_release = next(
+        s for s in JOBS["release"]["steps"] if "action-gh-release" in s.get("uses", "")
+    )
+    assert gh_release["with"]["tag_name"] == "${{ needs.version.outputs.tag }}"
+
+
+def test_only_the_release_jobs_write():
+    for job, spec in JOBS.items():
+        perms = spec.get("permissions", {})
+        if job in ("tag", "release"):
+            assert perms == {"contents": "write"}, job
+        elif job == "publish":
+            assert perms == {"id-token": "write"}, job
+        elif job != "ci":
+            assert perms == {"contents": "read"}, job
+
+
+# --- scripts/release_version.py --------------------------------------------
+
+_spec = importlib.util.spec_from_file_location(
+    "release_version", REPO / "scripts/release_version.py"
+)
+release_version = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(release_version)
+
+PLACES = [
+    "pyproject.toml",
+    "Cargo.toml",
+    "python/polars_online/__init__.py",
+    "docs/VALIDATION.md",
+    "CHANGELOG.md",
+]
+
+
+@pytest.fixture
+def copy(tmp_path):
+    for rel in PLACES:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(REPO / rel, tmp_path / rel)
+    return tmp_path
+
+
+def test_the_repository_agrees_with_itself():
+    found = release_version.versions()
+    assert len(set(found.values())) == 1, found
+    assert release_version.problems() == []
+
+
+def test_a_place_that_disagrees_is_named(copy):
+    init = copy / "python/polars_online/__init__.py"
+    v = release_version.versions(copy)["pyproject.toml"]
+    init.write_text(init.read_text(encoding="utf-8").replace(f'"{v}"', '"9.9.9"'), encoding="utf-8")
+    (bad,) = release_version.problems(copy)
+    assert "python/polars_online/__init__.py = 9.9.9" in bad
+
+
+def test_a_version_without_a_changelog_section_is_refused(copy):
+    log = copy / "CHANGELOG.md"
+    v = release_version.versions(copy)["pyproject.toml"]
+    log.write_text(
+        log.read_text(encoding="utf-8").replace(f"## [{v}]", "## [0.0.0]"), encoding="utf-8"
+    )
+    assert release_version.problems(copy) == [f"CHANGELOG.md has no `## [{v}]` section"]
+
+
+def test_publishing_a_version_whose_tag_exists_is_refused(copy):
+    v = release_version.versions(copy)["pyproject.toml"]
+    asked = []
+
+    def exists(tag):
+        asked.append(tag)
+        return True
+
+    (bad,) = release_version.problems(copy, publish=True, tag_exists=exists)
+    assert asked == [f"v{v}"]
+    assert "immutable" in bad
+    assert release_version.problems(copy, publish=True, tag_exists=lambda t: False) == []
+    # Rehearsing never asks.
+    assert release_version.problems(copy, tag_exists=exists) == []
