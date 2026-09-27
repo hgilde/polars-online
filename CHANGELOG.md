@@ -7,6 +7,10 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.11.0] — 2026-09-26
+
 ### Added
 
 - **Python 3.14 is declared, and CI tests every supported version on

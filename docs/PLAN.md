@@ -4294,18 +4294,14 @@ decision it needs, with a recommendation where there is one.
       line ("tasks 1–58 done, released as 0.2.0"), task 61 fused onto task
       68, and the §3 table and §9 item 4 listing the clock policies.
 
-- [ ] 109. 
-
-      **Review 2026-09-26.** `max_error_inflation` is refused by name
-      on a model without a ridge system, as `emit_error_inflation` was
-      (`test_is_refused_by_name_where_no_ridge_system_reads_it`). The
-      schema: the loaders for 14 and 15 stay, as the CHANGELOG promises; the
-      test that loads a state written by the released 0.10.0 wheel is not
-      built. Task 105 is not in this release: its clock rules need the
-      user's review (task 120).
-
-**Release 0.11.0.** S each; the push, tag and upload are the
-      user's. Before the tag:
+- [x] 109. **Release 0.11.0.** S each; the push, tag and upload are the
+      user's. **Released 2026-09-26** on the user's word ("merge, push and
+      tag the next minor"), after the review of task 132: the version in
+      the six places and both locks, the comparison against 0.10.0 measured
+      again (21 of 30 specs, 130 fields, median 3e-16, at most 1.4e-14), the
+      CHANGELOG promoted. Not done: the suite at the Polars floor 1.34.0
+      (last run 2026-09-02), the glibc floor, the 0.10.0-wheel state test,
+      S6 and task 105. Before the tag, the list as it stood:
       - Refuse `max_error_inflation` by name on a model that ignores it:
         today it is range-checked and dropped on every model but `ewridge`,
         where `emit_error_inflation` is refused (spec.rs:2417-2433).
@@ -4344,6 +4340,14 @@ decision it needs, with a recommendation where there is one.
         Linux 3.13/3.14, macOS 3.14 and Windows; the Mutants job will likely
         time out on a 3,700-line diff and does not gate a release), the
         rehearsal, the tag, the upload's approval; then a clean-venv install.
+
+      **Review 2026-09-26.** `max_error_inflation` is refused by name
+      on a model without a ridge system, as `emit_error_inflation` was
+      (`test_is_refused_by_name_where_no_ridge_system_reads_it`). The
+      schema: the loaders for 14 and 15 stay, as the CHANGELOG promises; the
+      test that loads a state written by the released 0.10.0 wheel is not
+      built. Task 105 is not in this release: its clock rules need the
+      user's review (task 120).
 
 - [ ] 110. **This week's review leftovers, as tests.** S. Held-value tests
       for `ew_class` and `hmm`; weight-0 rows for `bocpd`, `deco` and `hmm`;
