@@ -80,7 +80,9 @@ carries breaking changes, and any change to the numbers a model returns.
 - **`refresh_time` compares a temporal clock exactly.** It read the clock
   as a double, which on a `Datetime` in nanoseconds resolves 256 ns, so a
   step back smaller than that passed as a tie. It reads the column's
-  integer now; the output column is unchanged.
+  integer now, in nanoseconds, so an instant nanoseconds cannot hold
+  (before 1677 or after 2262) is refused by row, as a bank refuses it; the
+  output column is unchanged.
 
 - **The plan check warns about a sort by several keys without
   `maintain_order=True`.** It took any sort as settling the order, but such

@@ -403,3 +403,34 @@ def test_a_temporal_clock_is_ordered_to_the_nanosecond():
     )
     with pytest.raises(Exception, match="row 2.*clock order"):
         stream.refresh_time(df, series="series", names=["a", "b"], clock="t", value="v")
+
+
+def test_a_state_resumes_only_under_the_grouping_it_was_saved_with(tmp_path):
+    """Review 2026-09-28: the file recorded names and pairs but not whether
+    the sampler was grouped, so an ungrouped state loaded under group= and
+    its rows were never checked against the saved clock."""
+    df = poisson_obs(n=60).with_columns(g=pl.lit("x"))
+    kw = dict(series="series", names=NAMES, clock="t", value="v")
+    state = tmp_path / "grid.state"
+    stream.refresh_time(df, save_state=state, **kw)
+    with pytest.raises(ValueError, match="grouped"):
+        stream.refresh_time(df, load_state=state, group="g", **kw)
+    grouped = tmp_path / "grouped.state"
+    stream.refresh_time(df, save_state=grouped, group="g", **kw)
+    with pytest.raises(ValueError, match="grouped"):
+        stream.refresh_time(df, load_state=grouped, **kw)
+
+
+def test_a_state_of_the_other_kind_of_clock_is_refused_on_any_row(tmp_path):
+    """Review 2026-09-28: the clock-kind check ran only for a group with a
+    prior, so a temporal state resumed on a numeric clock passed when the
+    chunk held new groups only, and the saved file then mixed the two."""
+    df = poisson_obs(n=60).with_columns(g=pl.lit("x"))
+    kw = dict(series="series", names=NAMES, clock="t", value="v", group="g")
+    state = tmp_path / "grid.state"
+    stream.refresh_time(df, save_state=state, **kw)
+    temporal = df.with_columns(
+        t=pl.from_epoch(pl.col("t").cast(pl.Int64), time_unit="s"), g=pl.lit("y")
+    )
+    with pytest.raises(Exception, match="temporal.*numeric|numeric.*temporal"):
+        stream.refresh_time(temporal, load_state=state, **kw)

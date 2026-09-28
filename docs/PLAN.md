@@ -4598,7 +4598,11 @@ decision it needs, with a recommendation where there is one.
       (`test_a_constant_column_poisons_nothing_and_every_block_learns_once_it_moves`
       pins that much). Whether the other blocks should go on learning, and
       the constant column's own block too (from its other columns), is the
-      decision. (i) The Linux CLI's glibc floor (task 109's leftover,
+      decision. Also (review 2026-09-28, pre-existing): under `dynamics =
+      "linear"` a zero-weight row moves `rho` (`deco.rs`: `(1-α-β)·bar +
+      α·u + β·rho` is recomputed whether or not `b` is 0), against hard
+      rule 9; whether the linear form should hold `rho` still on such a row
+      is a decision. (i) The Linux CLI's glibc floor (task 109's leftover,
       measured 2026-09-27 on 0.11.1's assets): both binaries need
       `GLIBC_2.39`, the runner's own -- `pidfd_getpid` and `pidfd_spawnp`
       from Rust's standard library, weak symbols under a version requirement
@@ -4818,6 +4822,16 @@ decision it needs, with a recommendation where there is one.
         refuses the result by default, so it is not silent.
       - V14's session-change test and the stepping-back property tests
         (`test_properties.py`) are written.
+      - Reviewed 2026-09-28 (two readers over both commits): the clock and
+        accumulator changes held; three fixes followed in the review commit:
+        `skip_learned` compared a temporal clock scaled to nanoseconds in
+        polars integer arithmetic, which wraps past 2262 (compared in the
+        column's own unit now); `refresh_time`'s state did not record its
+        grouping, nor check the clock's kind on a new group's row (both in
+        the file now, held on load and on every row). One divergence for the
+        user: under a pushed-down `head()` with `save_state`, the bank saves
+        the state after the rows the query pulled while `refresh_time` feeds
+        the whole input and saves that; task 105 asks for one rule.
 
 - [x] 121. **Test libraries under an open-source licence.** S–M. **Done
       2026-09-25:** scikit-learn 1.9.1 in the dev group; `huber` against

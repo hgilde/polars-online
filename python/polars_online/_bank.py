@@ -1401,10 +1401,18 @@ def _unlearned(
             raise ValueError(msg)
     dtype = schema[clock]
     value: pl.Expr
+    # A temporal column is compared in its own unit, its physical integer
+    # against the saved nanoseconds scaled down: `v * per > last` is
+    # `v > last // per` for integers, and scaling the column up instead
+    # wrapped past 2262 in polars arithmetic, so such a row was dropped
+    # where the bank refuses it by name (review 2026-09-28).
+    per = 1
     if dtype == pl.Date:
-        value = pl.col(clock).cast(pl.Int64) * _NANOS_PER_DAY
+        per = _NANOS_PER_DAY
+        value = pl.col(clock).cast(pl.Int64)
     elif isinstance(dtype, pl.Datetime | pl.Duration):
-        value = pl.col(clock).cast(pl.Int64) * _NANOS_PER[dtype.time_unit or "us"]
+        per = _NANOS_PER[dtype.time_unit or "us"]
+        value = pl.col(clock).cast(pl.Int64)
     elif dtype.is_numeric():
         value = pl.col(clock).cast(pl.Float64)
     else:
@@ -1423,8 +1431,12 @@ def _unlearned(
                 f"{was} in the bank"
             )
             raise ValueError(msg)
-        seen = nanos if nanos is not None else number
-        assert seen is not None
+        seen: float | int
+        if nanos is not None:
+            seen = nanos // per
+        else:
+            assert number is not None
+            seen = number
         lasts[key] = seen
     last: pl.Expr
     if group is None:

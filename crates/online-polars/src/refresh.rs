@@ -125,6 +125,12 @@ pub struct RefreshTime {
     states: HashMap<GroupKey, Vec<GridState>>,
     /// The last `time` seen per group, so a backwards clock is refused.
     last_time: HashMap<GroupKey, Instant>,
+    /// Whether the input has a `group` column, once a chunk was fed; a
+    /// state resumes only under the grouping it was saved with.
+    grouped: Option<bool>,
+    /// The kind of clock, once a row was fed; the other kind is refused on
+    /// every row, not only where a group has a prior.
+    kind: Option<ClockKind>,
     /// Rows fed before this chunk, so an error names the input's row, not
     /// the chunk's (task 120).
     rows_fed: usize,
@@ -165,10 +171,10 @@ impl Instant {
         }
     }
 
-    fn kind(self) -> &'static str {
+    fn kind(self) -> ClockKind {
         match self {
-            Self::Number(_) => "numeric",
-            Self::Nanos(_) => "temporal",
+            Self::Number(_) => ClockKind::Numeric,
+            Self::Nanos(_) => ClockKind::Temporal,
         }
     }
 }
@@ -181,9 +187,31 @@ struct RefreshFile {
     version: u32,
     names: Vec<String>,
     pairs: bool,
+    /// Whether the input had a `group` column: an ungrouped state holds the
+    /// one key `""`, which a grouped input never checks against.
+    grouped: bool,
+    /// The kind of clock the state was fed, once a row was: the other kind
+    /// cannot be ordered against it.
+    kind: Option<ClockKind>,
     /// Sorted by key, so one state is one file, byte for byte.
     states: Vec<(GroupKey, Vec<GridState>)>,
     last_time: Vec<(GroupKey, Instant)>,
+}
+
+/// Which kind of clock a sampler has been fed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum ClockKind {
+    Numeric,
+    Temporal,
+}
+
+impl ClockKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Numeric => "numeric",
+            Self::Temporal => "temporal",
+        }
+    }
 }
 
 const REFRESH_MAGIC: &str = "polars-online refresh_time";
@@ -236,6 +264,8 @@ impl RefreshTime {
             pairs,
             states: HashMap::new(),
             last_time: HashMap::new(),
+            grouped: None,
+            kind: None,
             rows_fed: 0,
         })
     }
@@ -262,6 +292,8 @@ impl RefreshTime {
             version: REFRESH_VERSION,
             names: self.names.clone(),
             pairs: !self.pairs.is_empty(),
+            grouped: self.grouped.unwrap_or(false),
+            kind: self.kind,
             states,
             last_time,
         };
@@ -283,7 +315,12 @@ impl RefreshTime {
     ///
     /// Bytes that are not a refresh_time state, a version this build does
     /// not read, or other `names` or `pairs`.
-    pub fn load_bytes(bytes: &[u8], names: Vec<String>, pairs: bool) -> Result<Self, String> {
+    pub fn load_bytes(
+        bytes: &[u8],
+        names: Vec<String>,
+        pairs: bool,
+        grouped: bool,
+    ) -> Result<Self, String> {
         let file: RefreshFile =
             rmp_serde::from_slice(bytes).map_err(|e| format!("not a refresh_time state ({e})"))?;
         if file.magic != REFRESH_MAGIC {
@@ -302,9 +339,19 @@ impl RefreshTime {
                 file.names, file.pairs, names, pairs
             ));
         }
+        if file.grouped != grouped {
+            return Err(format!(
+                "refresh_time: the state was saved {} a group column and is resumed {} one; \
+                 a grouped state holds a grid per key, an ungrouped one a single grid",
+                if file.grouped { "with" } else { "without" },
+                if grouped { "with" } else { "without" }
+            ));
+        }
         let mut rt = Self::new(names, pairs)?;
         rt.states = file.states.into_iter().collect();
         rt.last_time = file.last_time.into_iter().collect();
+        rt.grouped = Some(grouped);
+        rt.kind = file.kind;
         Ok(rt)
     }
 
@@ -360,6 +407,15 @@ impl RefreshTime {
         let time_col = df.column(cols.clock)?;
         let time_dtype = time_col.dtype().clone();
         let base = self.rows_fed;
+        let grouped = cols.group.is_some();
+        match self.grouped {
+            Some(g) if g != grouped => polars_bail!(ComputeError:
+                "refresh_time: fed {} a group column after being fed {} one",
+                if grouped { "with" } else { "without" },
+                if g { "with" } else { "without" }
+            ),
+            _ => self.grouped = Some(grouped),
+        }
         let (numbers, nanos) = if time_dtype.is_temporal() {
             let ns = crate::arrow::nanos_array(time_col.as_materialized_series(), base)?;
             (None, Some(ns))
@@ -408,6 +464,16 @@ impl RefreshTime {
                 polars_bail!(ComputeError:
                     "refresh_time: row {at} has a null or non-finite {:?}", cols.clock);
             };
+            // The other kind of clock cannot be ordered against a saved one,
+            // on any row, a new group's included.
+            match self.kind {
+                Some(k) if k != t.kind() => polars_bail!(ComputeError:
+                    "refresh_time: clock column {:?} is {}, and the state it resumes is \
+                     {}; resume a state on the kind of clock that wrote it",
+                    cols.clock, t.kind().name(), k.name()
+                ),
+                _ => self.kind = Some(t.kind()),
+            }
             let key = GroupKey(
                 by.map_or_else(|| Some(String::new()), |b| b.get(row).map(str::to_string)),
             );
@@ -416,16 +482,6 @@ impl RefreshTime {
             // (review 2026-09-18, minor).
             match self.last_time.get_mut(&key) {
                 Some(prev) => {
-                    // A state from the other kind of clock (a resumed run):
-                    // the two cannot be ordered, and would be compared by
-                    // variant.
-                    if t.kind() != prev.kind() {
-                        polars_bail!(ComputeError:
-                            "refresh_time: clock column {:?} is {}, and the state it resumes \
-                             is {}; resume a state on the kind of clock that wrote it",
-                            cols.clock, t.kind(), prev.kind()
-                        );
-                    }
                     if t < *prev {
                         polars_bail!(ComputeError:
                             "refresh_time: row {at} has {:?} = {}, below the previous row's \
@@ -903,7 +959,8 @@ mod tests {
                 let mut first = RefreshTime::new(names.clone(), pairs).unwrap();
                 let a = first.feed(&long(&rows[..split]), &cols(&[])).unwrap();
                 let bytes = first.save_bytes().unwrap();
-                let mut resumed = RefreshTime::load_bytes(&bytes, names.clone(), pairs).unwrap();
+                let mut resumed =
+                    RefreshTime::load_bytes(&bytes, names.clone(), pairs, false).unwrap();
                 assert_eq!(resumed.save_bytes().unwrap(), bytes, "split {split}");
                 let b = resumed.feed(&long(&rows[split..]), &cols(&[])).unwrap();
                 let mut both = a.clone();
@@ -921,22 +978,22 @@ mod tests {
         let bytes = rt.save_bytes().unwrap();
         let other = vec!["a".to_string(), "c".to_string()];
         assert!(
-            RefreshTime::load_bytes(&bytes, other, false)
+            RefreshTime::load_bytes(&bytes, other, false, false)
                 .unwrap_err()
                 .contains("names")
         );
         assert!(
-            RefreshTime::load_bytes(&bytes, names.clone(), true)
+            RefreshTime::load_bytes(&bytes, names.clone(), true, false)
                 .unwrap_err()
                 .contains("pairs")
         );
         assert!(
-            RefreshTime::load_bytes(b"nope", names.clone(), false)
+            RefreshTime::load_bytes(b"nope", names.clone(), false, false)
                 .unwrap_err()
                 .contains("not a refresh_time state")
         );
         // Resumed on the other kind of clock, or before its last clock.
-        let mut resumed = RefreshTime::load_bytes(&bytes, names.clone(), false).unwrap();
+        let mut resumed = RefreshTime::load_bytes(&bytes, names.clone(), false, false).unwrap();
         let temporal = df!(
             "series" => ["b"],
             "t" => Series::new("t".into(), [5i64]).cast(&DataType::Datetime(TimeUnit::Nanoseconds, None)).unwrap(),
@@ -945,7 +1002,7 @@ mod tests {
         .unwrap();
         let e = resumed.feed(&temporal, &cols(&[])).unwrap_err().to_string();
         assert!(e.contains("temporal") && e.contains("numeric"), "{e}");
-        let mut resumed = RefreshTime::load_bytes(&bytes, names, false).unwrap();
+        let mut resumed = RefreshTime::load_bytes(&bytes, names, false, false).unwrap();
         let e = resumed
             .feed(&long(&[("b", 0.5, 1.0)]), &cols(&[]))
             .unwrap_err()
@@ -979,18 +1036,57 @@ mod tests {
         )
         .unwrap();
         let mut resumed =
-            RefreshTime::load_bytes(&rt.save_bytes().unwrap(), names.clone(), false).unwrap();
+            RefreshTime::load_bytes(&rt.save_bytes().unwrap(), names.clone(), false, false)
+                .unwrap();
         resumed
             .feed(
                 &frame(&[2_001, 2_002], TimeUnit::Nanoseconds, &["b", "a"]),
                 &cols(&[]),
             )
             .unwrap();
-        let mut resumed = RefreshTime::load_bytes(&rt.save_bytes().unwrap(), names, false).unwrap();
+        let mut resumed =
+            RefreshTime::load_bytes(&rt.save_bytes().unwrap(), names, false, false).unwrap();
         let e = resumed
             .feed(&frame(&[1_999], TimeUnit::Nanoseconds, &["b"]), &cols(&[]))
             .unwrap_err()
             .to_string();
         assert!(e.contains("clock order"), "{e}");
+    }
+
+    /// Review 2026-09-28: the file records the grouping and the clock kind,
+    /// and both are held on load and on every row, a new group's included.
+    #[test]
+    fn a_state_holds_its_grouping_and_its_clock_kind() {
+        let names: Vec<String> = ["a", "b"].map(str::to_string).to_vec();
+        let mut rt = RefreshTime::new(names.clone(), false).unwrap();
+        rt.feed(&long(&[("a", 1.0, 1.0)]), &cols(&[])).unwrap();
+        let bytes = rt.save_bytes().unwrap();
+        let e = RefreshTime::load_bytes(&bytes, names.clone(), false, true).unwrap_err();
+        assert!(
+            e.contains("without a group column") && e.contains("resumed with"),
+            "{e}"
+        );
+        // Fed a new group only, the other kind of clock is still refused.
+        let grouped = df!("series" => ["a"], "t" => [1.0], "v" => [1.0], "g" => ["x"]).unwrap();
+        let gcols = RefreshCols {
+            series: "series",
+            clock: "t",
+            value: "v",
+            group: Some("g"),
+            keep: &[],
+        };
+        let mut rt = RefreshTime::new(names.clone(), false).unwrap();
+        rt.feed(&grouped, &gcols).unwrap();
+        let mut resumed =
+            RefreshTime::load_bytes(&rt.save_bytes().unwrap(), names, false, true).unwrap();
+        let other = df!(
+            "series" => ["a"],
+            "t" => Series::new("t".into(), [5i64]).cast(&DataType::Datetime(TimeUnit::Nanoseconds, None)).unwrap(),
+            "v" => [1.0],
+            "g" => ["y"],
+        )
+        .unwrap();
+        let e = resumed.feed(&other, &gcols).unwrap_err().to_string();
+        assert!(e.contains("temporal") && e.contains("numeric"), "{e}");
     }
 }

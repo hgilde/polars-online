@@ -626,7 +626,7 @@ impl PyRefreshTime {
         keep: Option<Vec<String>>,
     ) -> PyResult<Self> {
         Ok(Self {
-            inner: online_polars::RefreshTime::load_bytes(state, names, pairs)
+            inner: online_polars::RefreshTime::load_bytes(state, names, pairs, group.is_some())
                 .map_err(PyValueError::new_err)?,
             series,
             clock,

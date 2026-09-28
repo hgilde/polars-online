@@ -151,3 +151,25 @@ def test_what_it_refuses():
 def test_an_empty_bank_keeps_everything():
     df = frame()
     assert po.ModelBank([spec(group="g")]).skip_learned(df).equals(df)
+
+
+def test_an_instant_nanoseconds_cannot_hold_is_kept_for_the_bank_to_refuse():
+    """Review 2026-09-28: the frame's clock was scaled to nanoseconds in polars
+    integer arithmetic, which wraps, so a Datetime("ms") past 2262 fell below
+    every saved clock and was dropped silently, where fit_predict refuses it
+    by name. The comparison is in the column's own unit now."""
+    t = pl.Series("t", [1_700_000_000_000 + i for i in range(4)]).cast(pl.Datetime("ms"))
+    df = pl.DataFrame({"t": t, "x0": np.arange(4.0), "y": np.arange(4.0)})
+    bank = po.ModelBank([spec(halflife="1s", max_dclock="1s")])
+    bank.fit_predict(df.head(2))
+    far = pl.DataFrame(
+        {
+            "t": pl.Series([datetime(3000, 1, 1, tzinfo=UTC)]).cast(pl.Datetime("ms")),
+            "x0": [0.0],
+            "y": [0.0],
+        }
+    )
+    kept = bank.skip_learned(pl.concat([df.slice(2), far]))
+    assert kept.height == 3
+    with pytest.raises(ValueError, match="nanoseconds cannot hold"):
+        bank.fit_predict(kept)
