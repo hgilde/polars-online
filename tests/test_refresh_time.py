@@ -337,14 +337,33 @@ def test_two_runs_through_a_saved_state_give_the_one_runs_grid(tmp_path, split):
     assert state.read_bytes() == whole.read_bytes()
 
 
-def test_a_slice_of_the_output_still_saves_the_whole_inputs_state(tmp_path):
-    df = poisson_obs(n=200)
-    kw = dict(series="series", names=NAMES, clock="t", value="v", chunk_rows=10)
-    sliced, whole = tmp_path / "sliced.state", tmp_path / "whole.state"
-    head = stream.refresh_time(df.lazy(), save_state=sliced, **kw).head(3).collect()
-    assert head.height == 3
-    stream.refresh_time(df, save_state=whole, **kw)
-    assert sliced.read_bytes() == whole.read_bytes()
+# `head(0)` is left out: whether polars runs the source for it at all is
+# polars' choice; a limit of 0 is `refresh.rs`'s own test.
+@pytest.mark.parametrize("n", [1, 3, 17])
+def test_a_slice_saves_the_state_after_the_tick_behind_its_last_point(tmp_path, n):
+    """Under `.head(n)`, the input is read up to the tick that completed the
+    n-th point and no further: the state saved is the same whatever the chunk
+    size, and a run resumed on the input after that tick goes on with point
+    n + 1, so the two runs give the one run's grid. It saved the whole input's
+    state once, and the points after the slice could then never be produced
+    (the user's call, 2026-09-28: the bank's rule, the state after the input
+    behind the rows returned)."""
+    df = poisson_obs(n=200)  # sorted, continuous clock: one tick per clock value
+    kw = dict(series="series", names=NAMES, clock="t", value="v")
+    whole = stream.refresh_time(df, **kw)
+    states = []
+    for size in (1, 7, 100_000):
+        path = tmp_path / f"head{size}.state"
+        head = (
+            stream.refresh_time(df.lazy(), save_state=path, chunk_rows=size, **kw).head(n).collect()
+        )
+        assert head.equals(whole.head(n)), size
+        states.append(path.read_bytes())
+    assert states[0] == states[1] == states[2]
+    # The input behind the slice ends at the tick of its last point.
+    rest = df.filter(pl.col("t") > head["time_refresh"][-1])
+    resumed = stream.refresh_time(rest, load_state=tmp_path / "head1.state", **kw)
+    assert pl.concat([head, resumed]).equals(whole)
 
 
 def test_a_state_is_read_when_the_plan_is_built(tmp_path):

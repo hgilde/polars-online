@@ -644,8 +644,11 @@ impl PyRefreshTime {
             .map_err(|e| os_err(e.kind(), format!("{path}: {e}")))
     }
 
-    /// The grid points completed by this chunk, in order.
-    fn feed(slf: &Bound<'_, Self>, df: PyDataFrame) -> PyResult<PyDataFrame> {
+    /// The grid points completed by this chunk, in order; with `limit`, the
+    /// rows after the one that completed the `limit`-th are not read
+    /// (`RefreshTime::feed_limited`).
+    #[pyo3(signature = (df, limit=None))]
+    fn feed(slf: &Bound<'_, Self>, df: PyDataFrame, limit: Option<usize>) -> PyResult<PyDataFrame> {
         let mut this = slf.try_borrow_mut().map_err(|_| busy("feed"))?;
         // Destructured so the sampler and the column names are separate
         // borrows: `feed` needs `&mut` on the one and `&` on the others.
@@ -665,7 +668,9 @@ impl PyRefreshTime {
             keep,
         };
         Ok(PyDataFrame(
-            inner.feed(&df.0, &cols).map_err(|e| run_err(&e))?,
+            inner
+                .feed_limited(&df.0, &cols, limit)
+                .map_err(|e| run_err(&e))?,
         ))
     }
 }

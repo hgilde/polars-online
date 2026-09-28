@@ -401,6 +401,22 @@ impl RefreshTime {
     /// misspelling), a null or non-finite `time`, or a `time` below the
     /// previous row's within a group -- each naming the row.
     pub fn feed(&mut self, df: &DataFrame, cols: &RefreshCols<'_>) -> PolarsResult<DataFrame> {
+        self.feed_limited(df, cols, None)
+    }
+
+    /// [`Self::feed`], stopping once `limit` grid points are out: the rows
+    /// after the one that completed the last of them are not read, so the
+    /// state is the state after that row, wherever the chunk ends. That is
+    /// what a slice of the output saves (task 105): the state after the
+    /// input behind the rows returned, the same whatever the chunk size.
+    /// One row can complete several pairs' points at once; it is taken
+    /// whole, so the points may pass `limit` by the rest of that row's.
+    pub fn feed_limited(
+        &mut self,
+        df: &DataFrame,
+        cols: &RefreshCols<'_>,
+        limit: Option<usize>,
+    ) -> PolarsResult<DataFrame> {
         let n = df.height();
         let series = df.column(cols.series)?.cast(&DataType::String)?;
         let series = series.str()?;
@@ -447,7 +463,12 @@ impl RefreshTime {
         let m = self.names.len();
         // Rows of the output, as (group, pair index, row index, ticks).
         let mut points: Vec<Point> = Vec::new();
+        let mut consumed = n;
         for row in 0..n {
+            if limit.is_some_and(|l| points.len() >= l) {
+                consumed = row;
+                break;
+            }
             let at = base + row;
             let Some(name) = series.get(row) else {
                 polars_bail!(ComputeError:
@@ -539,7 +560,7 @@ impl RefreshTime {
                 }
             }
         }
-        self.rows_fed += n;
+        self.rows_fed += consumed;
         self.frame(df, cols, points)
     }
 
@@ -1088,5 +1109,40 @@ mod tests {
         .unwrap();
         let e = resumed.feed(&other, &gcols).unwrap_err().to_string();
         assert!(e.contains("temporal") && e.contains("numeric"), "{e}");
+    }
+
+    /// A limited feed stops after the row that completed its last point: the
+    /// state is the state after exactly those rows, and the rows after it are
+    /// neither read nor counted, a bad one included.
+    #[test]
+    fn a_limited_feed_stops_after_the_row_of_its_last_point() {
+        let names: Vec<String> = ["a", "b"].map(str::to_string).to_vec();
+        // Points complete at rows 1, 3 and 5; row 6 names an unknown series.
+        let rows = [
+            ("a", 1.0, 1.0),
+            ("b", 2.0, 2.0),
+            ("a", 3.0, 3.0),
+            ("b", 4.0, 4.0),
+            ("b", 5.0, 5.0),
+            ("a", 6.0, 6.0),
+            ("z", 7.0, 7.0),
+        ];
+        for (limit, through) in [(0, 0), (1, 2), (2, 4)] {
+            let mut limited = RefreshTime::new(names.clone(), false).unwrap();
+            let out = limited
+                .feed_limited(&long(&rows), &cols(&[]), Some(limit))
+                .unwrap();
+            assert_eq!(out.height(), limit);
+            let mut exact = RefreshTime::new(names.clone(), false).unwrap();
+            exact.feed(&long(&rows[..through]), &cols(&[])).unwrap();
+            assert_eq!(
+                limited.save_bytes().unwrap(),
+                exact.save_bytes().unwrap(),
+                "{limit}"
+            );
+            assert_eq!(limited.rows_fed, through);
+        }
+        let mut unlimited = RefreshTime::new(names, false).unwrap();
+        assert!(unlimited.feed(&long(&rows), &cols(&[])).is_err());
     }
 }

@@ -4832,6 +4832,12 @@ decision it needs, with a recommendation where there is one.
         user: under a pushed-down `head()` with `save_state`, the bank saves
         the state after the rows the query pulled while `refresh_time` feeds
         the whole input and saves that; task 105 asks for one rule.
+        **Decided 2026-09-28 (the user: "Yes") and built after 0.12.0:** the
+        bank's rule for both, the state after the input behind the rows
+        returned. `refresh_time` stops at the tick that completed the n-th
+        point (`RefreshTime::feed_limited`), so the state is the same at any
+        chunk size and a resumed run goes on with point n + 1; with
+        `pairs=True` a tick completing several points is taken whole.
 
 - [x] 121. **Test libraries under an open-source licence.** S–M. **Done
       2026-09-25:** scikit-learn 1.9.1 in the dev group; `huber` against

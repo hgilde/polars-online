@@ -316,12 +316,17 @@ def refresh_time(
     the result chunk-invariant; sort the input by ``clock`` and by the order you
     want within a clock value.
 
-    **It resumes.** ``save_state`` writes the sampler's state once the input's
-    last row is fed: every group's grid, part-way through an interval or not, and
-    its last clock, whole or not at all. With it set, a slice of the output does
-    not stop the input early, since the state is the whole input's. ``load_state``
-    is read when the plan is built and goes on from there, so feeding a stream in
-    two runs gives the grid one run gives. It must have been saved with the same
+    **It resumes.** ``save_state`` writes the sampler's state once the input is
+    fed: every group's grid, part-way through an interval or not, and its last
+    clock, whole or not at all. Under a slice of the output (``.head(n)``), the
+    input is read up to the tick that completed the last point returned and no
+    further, so the state saved is the state after that tick, whatever the chunk
+    size, as a bank's is after the rows a ``head(n)`` pulled: a run resumed on the
+    input after that tick goes on with the next point. With ``pairs=True`` one
+    tick can complete several pairs' points at once; if the slice ends among
+    them, the rest are in the state and not in the output. ``load_state`` is read
+    when the plan is built and goes on from there, so feeding a stream in two runs
+    gives the grid one run gives. It must have been saved with the same
     ``names`` and ``pairs``, on the same kind of clock (a temporal state resumes
     on any unit), and a row before its group's saved clock is refused like any
     other step back.
@@ -376,17 +381,16 @@ def refresh_time(
         # Polars does not re-apply the three pushdowns after a Python source,
         # so each is honoured here, and in the order `_frame.py` explains:
         # the slice counts *output* rows, since the grid is what the query
-        # sliced. With `save_state` the whole input is fed all the same, so
-        # the state saved is the input's, not the chunk's where the slice
-        # ran out.
+        # sliced. Under a slice the sampler stops at the tick that completed
+        # the last point wanted (`feed(limit=)`), so the state is the state
+        # after the input behind the rows returned, as a bank's is after a
+        # `head(n)`, and the same whatever the chunk size.
         rt = build()
         seen = 0
-        sliced = False
         for chunk in lazy.collect_batches(chunk_size=rows, maintain_order=True):
-            out = rt.feed(chunk)
-            if sliced:
-                continue  # fed for the state alone
+            out = rt.feed(chunk, None if n_rows is None else n_rows - seen)
             if n_rows is not None:
+                # A tick that completes several pairs' points is taken whole.
                 out = out.head(n_rows - seen)
             seen += out.height
             if predicate is not None:
@@ -395,10 +399,8 @@ def refresh_time(
                 out = out.select(with_columns)
             yield out
             if n_rows is not None and seen >= n_rows:
-                if save_path is None:
-                    break
-                sliced = True
-        # Reached only once the input's last row is fed: not on a run the
+                break
+        # Reached once the input is fed, or the slice is: not on a run the
         # caller abandons, nor one the sampler ended with an error.
         if save_path is not None:
             rt.save(save_path)

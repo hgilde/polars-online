@@ -5,6 +5,20 @@ All notable changes to this project are documented here. The format follows
 [semantic versioning](https://semver.org/) — while pre-1.0, the minor version
 carries breaking changes, and any change to the numbers a model returns.
 
+## [Unreleased]
+
+### Fixed
+
+- **`po.stream.refresh_time` under `.head(n)` saves the state behind the
+  rows returned.** With `save_state`, it read the whole input and saved
+  that, so the points after the slice were computed and thrown away, and a
+  run resumed on the rest of the input refused every row. It now stops at
+  the tick that completed the n-th point and saves the state after that
+  tick, the same whatever the chunk size, as a bank saves the state after
+  the rows a `head(n)` pulled: a run resumed on the input after that tick
+  goes on with point n + 1. With `pairs=True`, a tick that completes several
+  pairs' points at once is taken whole.
+
 ## [0.12.0] — 2026-09-28
 
 ### Changed (breaking)
