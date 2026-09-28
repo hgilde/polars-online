@@ -106,6 +106,81 @@ def test_the_tag_is_on_the_tested_sha():
     assert gh_release["with"]["tag_name"] == "${{ needs.version.outputs.tag }}"
 
 
+def _build_steps() -> list[dict]:
+    return JOBS["build"]["steps"]
+
+
+def _step(name_part: str) -> tuple[int, dict]:
+    return next((i, s) for i, s in enumerate(_build_steps()) if name_part in s.get("name", ""))
+
+
+def test_the_linux_cli_is_built_in_the_wheels_manylinux2014_image():
+    """docs/PLAN.md task 115 (i): built on the runner, 0.11.1's Linux CLI took
+    the runner's glibc, 2.39. In the image the wheels come from, it is 2.17;
+    the image is chosen by the runner's architecture, so arm64 stays native."""
+    _, linux = _step("build the CLI (Linux")
+    assert linux["if"] == "matrix.cli && runner.os == 'Linux'"
+    run = linux["run"]
+    assert '"quay.io/pypa/manylinux2014_$(uname -m)"' in run
+    assert "cargo build --release --locked -p online-cli" in run
+    assert "CARGO_TARGET_DIR=/io/target-cli" in run
+    # The runner's own build is for macOS and Windows alone.
+    host = next(s for s in _build_steps() if s.get("name") == "build the CLI")
+    assert host["if"] == "matrix.cli && runner.os != 'Linux'"
+
+
+def test_the_linux_cli_is_held_to_glibc_2_17_before_it_is_uploaded():
+    """The floor is read from the binary and refused above 2.17 in the build
+    job, which the publish job needs: a regression stops the release before
+    anything reaches PyPI."""
+    at_build, _ = _step("build the CLI (Linux")
+    at_check, check = _step("needs glibc 2.17")
+    at_upload = next(
+        i for i, s in enumerate(_build_steps()) if "cli-" in str(s.get("with", {}).get("name", ""))
+    )
+    assert at_build < at_check < at_upload
+    assert check["run"].split() == [
+        "python3",
+        "scripts/glibc_floor.py",
+        "target-cli/release/${{",
+        "matrix.bin",
+        "}}",
+        "--max",
+        "2.17",
+    ]
+    upload = _build_steps()[at_upload]
+    assert (
+        "target-cli" in upload["with"]["path"] and "runner.os == 'Linux'" in upload["with"]["path"]
+    )
+    assert "build" in _needs("publish")
+
+
+_glibc = importlib.util.spec_from_file_location("glibc_floor", REPO / "scripts" / "glibc_floor.py")
+assert _glibc and _glibc.loader
+glibc_floor = importlib.util.module_from_spec(_glibc)
+_glibc.loader.exec_module(glibc_floor)
+
+
+def test_glibc_versions_are_ordered_as_numbers():
+    """2.9 is older than 2.17, and 2.2.5 older than both: a sort of the
+    strings says otherwise. The text is `objdump -p`'s, as 0.11.1's x86_64
+    CLI printed it, trimmed."""
+    text = """Version References:
+  required from libgcc_s.so.1:
+    0x0b792650 0x00 05 GCC_3.0
+  required from libc.so.6:
+    0x06969195 0x00 04 GLIBC_2.17
+    0x06969199 0x00 03 GLIBC_2.9
+    0x09691a75 0x00 02 GLIBC_2.2.5
+    0x069691b9 0x02 09 GLIBC_2.39
+    0x069691b9 0x00 07 GLIBC_PRIVATE
+"""
+    got = glibc_floor.versions(text)
+    assert got == [(2, 2, 5), (2, 9), (2, 17), (2, 39)]
+    assert glibc_floor.dotted(got[-1]) == "2.39"
+    assert glibc_floor.versions("GCC_3.0 only") == []
+
+
 def test_only_the_release_jobs_write():
     for job, spec in JOBS.items():
         perms = spec.get("permissions", {})

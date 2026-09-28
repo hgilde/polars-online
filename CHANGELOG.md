@@ -29,6 +29,12 @@ carries breaking changes, and any change to the numbers a model returns.
 
 ### Changed
 
+- **The Linux CLI binaries run on glibc 2.17 and later.** 0.11.1's were
+  built on the release runner and needed its glibc, 2.39, so they did not
+  start on Ubuntu 22.04, Debian 12 or RHEL 9. They are built in the
+  manylinux2014 image the wheels come from now, and the release refuses a
+  binary that needs more than 2.17.
+
 - **State schema 18.** Under `label_delay` with a conformal interval, each
   held row keeps the radius it was shown. 0.11.1 files (17) load, and their
   held rows are scored against the radius at release, as before.

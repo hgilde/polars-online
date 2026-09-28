@@ -144,9 +144,21 @@ files, not run on an older glibc: the machine that measured it has no
 container runtime. The binaries are built on the runner's own image, not
 in the manylinux2014 container the wheels come from (the wheels are
 `manylinux_2_17`), so the floor follows the image and rises when
-`ubuntu-latest` moves to 26.04. Until the release job changes
-([PLAN](PLAN.md) task 115 (i)), a deployment on an older glibc builds the
-CLI from a checkout.
+`ubuntu-latest` moves to 26.04.
+
+**From the next release the Linux CLI is built in that manylinux2014
+image, at glibc 2.17** (the user's decision, 2026-09-28; [PLAN](PLAN.md)
+task 115 (i)). `release.yml`'s build job runs `cargo build` in
+`quay.io/pypa/manylinux2014_<arch>`, the image for the runner's own
+architecture, with Rust installed inside it as maturin-action installs it
+there; a `docker run` step, since the image's glibc is too old for the
+actions' JavaScript to run as a job container. `scripts/glibc_floor.py`
+then reads the binary's version requirements and fails the job above 2.17,
+before anything is uploaded. On 0.11.1's x86_64 binary it reports 2.39 and
+refuses it. **No run on GitHub has built it yet**: the change is untested
+until a dispatched run, and a rehearsal (`publish` off) is the way to try
+it first. Until a release carries it, a deployment on an older glibc builds
+the CLI from a checkout.
 
 ### Compare with the last release, bit for bit (2026-09-24)
 

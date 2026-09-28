@@ -4595,7 +4595,14 @@ decision it needs, with a recommendation where there is one.
       still dynamic, nothing newly linked; recommended); build it on
       `ubuntu-22.04` (2.35, until that image retires); or a static musl
       binary (static linking, rule 12, a raise). Each changes the release
-      job, which only a dispatched run tests.
+      job, which only a dispatched run tests. **Decided 2026-09-28 (the
+      user: "follow your recommendation on the next release") and built:**
+      the Linux CLI is built by `docker run` in
+      `quay.io/pypa/manylinux2014_$(uname -m)`, and
+      `scripts/glibc_floor.py` fails the build job above 2.17 before any
+      upload (`tests/test_release_workflow.py` holds the shape; the script
+      refuses 0.11.1's binary at 2.39). Untested on GitHub until the next
+      dispatched run; a rehearsal first is the way to try it.
 
 - [ ] 116. **Readiness beyond `ewridge`** (WARMUP-AND-CONVERGENCE §7). M–L;
       defaults move, so *the scope is the user's*. A readiness statistic for

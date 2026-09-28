@@ -204,21 +204,56 @@ jobs:
           args: --release --out dist -m crates/online-py/Cargo.toml
           sccache: "true"
 
-      # On Linux the wheel was built inside maturin-action's manylinux
-      # container, which runs as root with the workspace bind-mounted, so
-      # `target/` comes back root-owned. The host `cargo build` below then
-      # fails to open `target/release/.cargo-build-lock`, and rust-cache's
-      # post step cannot tar the tree, so every Linux job ran cold (the
-      # fourth rehearsal showed both). Passwordless sudo is a given on the
-      # hosted Ubuntu images.
-      - name: take back ownership of the build tree
-        if: runner.os == 'Linux'
-        run: sudo chown -R "$(id -u):$(id -g)" target
-
       # Only on targets the runner builds natively. The musl wheel is
       # cross-compiled and ships without a prebuilt CLI; `cargo build
       # --release -p online-cli` from a checkout covers it, and the wheel is
       # the artifact that matters for `pip install`.
+      #
+      # On Linux the CLI is built in the manylinux2014 image the wheel comes
+      # from (docs/PLAN.md task 115 (i)). Built on the runner, it took the
+      # runner's glibc: 0.11.1's binaries needed 2.39, so they did not start
+      # on Ubuntu 22.04, Debian 12 or RHEL 9, and the floor would have risen
+      # with `ubuntu-latest`. In the image it is 2.17, the wheels' own
+      # `manylinux_2_17`. A `docker run` step, not a job `container:`: the
+      # image's glibc is too old for the actions' own JavaScript. Rust is
+      # installed inside it as maturin-action installs it there. The image
+      # is `manylinux2014_<arch>` for the runner's own architecture, so the
+      # arm64 build stays native (see the matrix note). As root, into the
+      # bind-mounted workspace; the ownership step below takes it back.
+      - name: build the CLI (Linux, in the manylinux2014 image)
+        if: matrix.cli && runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD":/io -w /io \
+            -e CARGO_TARGET_DIR=/io/target-cli \
+            "quay.io/pypa/manylinux2014_$(uname -m)" bash -euxc '
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
+                | sh -s -- -y --profile minimal --default-toolchain stable
+              . "$HOME/.cargo/env"
+              cargo build --release --locked -p online-cli
+            '
+
+      # maturin-action's container runs as root with the workspace
+      # bind-mounted, and so does the CLI's build above, so `target/` and
+      # `target-cli/` come back root-owned: rust-cache's post step could not
+      # tar the tree, and every Linux job ran cold (the fourth rehearsal).
+      # Passwordless sudo is a given on the hosted Ubuntu images.
+      - name: take back ownership of the build tree
+        if: runner.os == 'Linux'
+        run: |
+          for d in target target-cli; do
+            if [ -d "$d" ]; then sudo chown -R "$(id -u):$(id -g)" "$d"; fi
+          done
+
+      # The binary's floor, read from its version requirements, refused above
+      # the wheels' 2.17: a weak symbol under a requirement that is not weak
+      # still stops the loader, which is how 0.11.1's `pidfd_*` set 2.39.
+      # Before any upload: the publish job needs this one.
+      - name: the Linux CLI needs glibc 2.17 at most
+        if: matrix.cli && runner.os == 'Linux'
+        run: python3 scripts/glibc_floor.py target-cli/release/${{ matrix.bin }} --max 2.17
+
+      # macOS and Windows build the CLI on the runner, which is what their
+      # binaries are for.
       #
       # maturin-action exports `RUSTC_WRAPPER=sccache` into the job, but for a
       # container build it installs sccache inside the container, not on the
@@ -226,7 +261,7 @@ jobs:
       # (the first rehearsal failed exactly there). An empty wrapper is treated
       # as none — measured on cargo 1.98, the stable this workflow installs.
       - name: build the CLI
-        if: matrix.cli
+        if: matrix.cli && runner.os != 'Linux'
         env:
           RUSTC_WRAPPER: ""
         run: cargo build --release -p online-cli
@@ -240,7 +275,7 @@ jobs:
         if: matrix.cli
         with:
           name: cli-${{ matrix.target }}
-          path: target/release/${{ matrix.bin }}
+          path: ${{ runner.os == 'Linux' && 'target-cli' || 'target' }}/release/${{ matrix.bin }}
 
   # docs/PLAN.md §9 class 7: a state written on macOS must load on Windows.
   write-state:
