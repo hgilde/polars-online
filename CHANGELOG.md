@@ -33,6 +33,14 @@ carries breaking changes, and any change to the numbers a model returns.
   such a row, `"reset_state"` scored it as a fresh stream, and `"max"`
   scored it a whole cap on.
 
+- **`po.prep` is `po.stream`, and `refresh_time` speaks the specs'
+  vocabulary.** The module is renamed with no alias, and
+  `refresh_time`'s `time=` and `by=` are `clock=` and `group=`.
+  `po.stream.embargo` and `po.stream.refresh_time` give back the kind of
+  frame they are given: a `DataFrame` for a `DataFrame`, where both
+  returned a `LazyFrame` before. Chain them with
+  `lf.pipe(po.stream.embargo, ...)`.
+
 - **A bank file from before this release is refused, by its version.**
   Every one names an `on_clock_reset` that no longer exists (`"max"` was
   written whether or not a spec had a clock). The bank now loads schema 19
@@ -40,6 +48,12 @@ carries breaking changes, and any change to the numbers a model returns.
   loads.
 
 ### Added
+
+- **`po.stream.refresh_time` resumes.** `save_state=` writes the sampler's
+  state once the input's last row is fed, every group's grid part-way
+  through an interval included, and `load_state=` goes on from it, so a
+  stream fed in two runs gives the grid one run gives. A temporal state
+  resumes on any unit.
 
 - **`ModelBank.skip_learned(frame)`, for resuming on input that overlaps a
   saved state.** It keeps each row after its group's last clock, in every

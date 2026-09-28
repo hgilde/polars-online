@@ -626,7 +626,7 @@ def _docstring_blocks() -> list[tuple[str, int, str]]:
     import inspect
 
     modules = [po, po.spec, po._bank, po._frame]
-    modules += [po.gram, po.eval, po.corr, po.prep, po.sim]
+    modules += [po.gram, po.eval, po.corr, po.stream, po.sim]
     seen: set[int] = set()
     out: list[tuple[str, int, str]] = []
     for mod in modules:

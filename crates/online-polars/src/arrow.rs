@@ -764,7 +764,7 @@ fn nanos_per_unit(dtype: &DataType) -> PolarsResult<i64> {
 /// the clock. A `Date` or a coarse `Datetime` can reach past what
 /// nanoseconds in an `i64` hold, and such a value is refused by row. A
 /// nanosecond column is taken as it is, without a pass over it.
-fn nanos_array(s: &Series, row_base: usize) -> PolarsResult<Int64Array> {
+pub(crate) fn nanos_array(s: &Series, row_base: usize) -> PolarsResult<Int64Array> {
     let per = nanos_per_unit(s.dtype())?;
     let phys = s.to_physical_repr();
     let too_far = |i: usize| {

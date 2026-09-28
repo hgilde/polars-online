@@ -696,11 +696,11 @@ the helper modules**, as counted on 2026-09-06. All are keyword-only, so
 positional order is not API, but every *name* is. On that date 29 of the
 parameters were the `CommonKwargs` every spec shares; today it holds 33
 (`python/polars_online/_kwargs.py`). The four helper modules named then were
-`po.corr`, `po.sim`, `po.gram` and `po.prep`, whose functions are read the
-same way. `tests/api_surface.txt` pins the constructors and their keyword
-names. Of the helper modules it pins `corr`, `eval`, `gram` and `prep`
-(`tests/test_api_surface.py`), so `po.sim`'s one function, `regimes`, is not
-pinned.
+`po.corr`, `po.sim`, `po.gram` and `po.prep` (`po.stream` since task 105),
+whose functions are read the same way. `tests/api_surface.txt` pins the constructors and their keyword
+names. It pins every helper module the package has (`corr`, `eval`, `gram`,
+`sim` and `stream`), read from the package's directory
+(`tests/test_api_surface.py`, since task 109).
 
 **3. Defaults, which are API in the worst way.** They are
 `solve_every = halflife/50`, `standardize` true for lasso and false for
@@ -761,7 +761,7 @@ What the snapshot renders, as the proposal asked for it, as it was built on
 | constructors | every spec constructor's **full signature including default values** | every constructor signature *including defaults*, the shared `**common` parameters listed once, explicitly | |
 | the namespace | the expression-namespace method list | the expression namespace | the `lf.online` and `df.online` namespaces; the expression namespace went with task 85 |
 | `ModelBank` | | | its name and signature |
-| helper modules | | | `corr`, `eval`, `gram` and `prep`, since the 2026-09 batch |
+| helper modules | | | every one: `corr`, `eval`, `gram`, `sim` and `stream` (`prep` until task 105) |
 | output fields | `output_fields()` for a canonical matrix of ~12 spec shapes: each model, plus grids, feature sets, multi-target, and every `emit_*` combination | `output_fields()` across a 14-case matrix covering every model, the full grid/emit combinations, and the float-rendering extremes | 28 cases |
 | versions | `SCHEMA_VERSION` and the bank `format_version` | `schema_version` | |
 | length of `tests/api_surface.txt` | | 416 lines | 904 lines |

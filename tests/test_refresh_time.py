@@ -12,7 +12,7 @@ import polars as pl
 import pytest
 
 import polars_online as po
-from polars_online import prep
+from polars_online import stream
 
 NAMES = ["a", "b", "c"]
 
@@ -65,9 +65,9 @@ def oracle(df, names, pairs=False):
 def run(df, **kw):
     kw.setdefault("series", "series")
     kw.setdefault("names", NAMES)
-    kw.setdefault("time", "t")
+    kw.setdefault("clock", "t")
     kw.setdefault("value", "v")
-    return prep.refresh_time(df, **kw).collect()
+    return stream.refresh_time(df, **kw)
 
 
 def test_the_grid_is_the_longhand_loop():
@@ -163,8 +163,8 @@ def test_the_eight_nine_ten_example_gives_seven_points_and_21_of_27():
 def test_the_same_grid_from_one_chunk_and_from_a_thousand(size):
     df = poisson_obs(n=200)
     want = run(df)
-    got = prep.refresh_time(
-        df, series="series", names=NAMES, time="t", value="v", chunk_rows=size
+    got = stream.refresh_time(
+        df.lazy(), series="series", names=NAMES, clock="t", value="v", chunk_rows=size
     ).collect()
     assert want.equals(got)
 
@@ -173,7 +173,7 @@ def test_groups_keep_their_own_grids():
     a = poisson_obs(n=120, seed=2).with_columns(g=pl.lit("x"))
     b = poisson_obs(n=120, seed=3).with_columns(g=pl.lit("y"))
     both = pl.concat([a, b]).sort("t")
-    out = run(both, by="g")
+    out = run(both, group="g")
     for key, part in (("x", a), ("y", b)):
         want = pl.DataFrame(oracle(part, NAMES))
         got = out.filter(pl.col("g") == key).drop("g")
@@ -183,7 +183,7 @@ def test_groups_keep_their_own_grids():
 @pytest.mark.parametrize(
     "dtype", [pl.Int64, pl.UInt32, pl.String, pl.Categorical, pl.Enum(["x", "y"])]
 )
-def test_the_by_column_comes_back_in_the_dtype_it_went_in_as(dtype):
+def test_the_group_column_comes_back_in_the_dtype_it_went_in_as(dtype):
     """The keys are held as text inside, but the column goes back out in the
     dtype it came in as -- so the result joins to the frame it came from,
     and matches the schema the lazy plan declared
@@ -194,7 +194,9 @@ def test_the_by_column_comes_back_in_the_dtype_it_went_in_as(dtype):
         for i, k in enumerate(labels)
     ]
     df = pl.concat(parts).sort("t")
-    lazy = prep.refresh_time(df, series="series", names=NAMES, time="t", value="v", by="g")
+    lazy = stream.refresh_time(
+        df.lazy(), series="series", names=NAMES, clock="t", value="v", group="g"
+    )
     out = lazy.collect()
     assert out.schema["g"] == dtype
     assert lazy.collect_schema()["g"] == dtype
@@ -215,7 +217,7 @@ def test_a_tie_at_a_grid_point_belongs_to_the_next_interval():
             "v": [1.0, 2.0, 2.5, 3.0, 4.0, 5.0],
         }
     )
-    out = prep.refresh_time(df, series="series", names=["a", "b"], time="t", value="v").collect()
+    out = stream.refresh_time(df, series="series", names=["a", "b"], clock="t", value="v")
     # Three points. The first closes on b's tick at t = 1 with b = 2.0; b's
     # *second* tick at t = 1 is after that point, so it belongs to the next
     # interval -- which a then completes at t = 2, carrying b = 2.5, a
@@ -251,7 +253,7 @@ def test_a_null_value_is_a_tick_that_observed_nothing():
 
 def test_the_pushdowns_are_honoured():
     df = poisson_obs(n=200)
-    plan = prep.refresh_time(df, series="series", names=NAMES, time="t", value="v")
+    plan = stream.refresh_time(df.lazy(), series="series", names=NAMES, clock="t", value="v")
     full = plan.collect()
     assert plan.head(5).collect().equals(full.head(5))
     assert plan.select("time_refresh").collect().equals(full.select("time_refresh"))
@@ -281,9 +283,9 @@ def test_the_output_feeds_a_bank_of_the_wide_frame():
         ({"names": ["a"]}, "at least two series"),
         ({"names": ["a", "a"]}, "more than once"),
         ({"series": "nope"}, "no series column"),
-        ({"time": "nope"}, "no time column"),
+        ({"clock": "nope"}, "no clock column"),
         ({"value": "nope"}, "no value column"),
-        ({"by": "nope"}, "no by column"),
+        ({"group": "nope"}, "no group column"),
         ({"keep": ["nope"]}, "no keep column"),
     ],
 )
@@ -292,10 +294,112 @@ def test_a_bad_call_is_refused_while_the_plan_is_built(kw, message):
         run(poisson_obs(n=10), **kw)
 
 
-def test_an_unknown_series_and_a_backwards_time_are_refused_naming_the_row():
+def test_an_unknown_series_and_a_backwards_clock_are_refused_naming_the_row():
     df = pl.DataFrame({"series": ["a", "b", "z"], "t": [1.0, 2.0, 3.0], "v": [1.0, 2.0, 3.0]})
     with pytest.raises(Exception, match="row 2.*'z'|row 2.*\"z\""):
         run(df, names=["a", "b"])
     back = pl.DataFrame({"series": ["a", "b", "a"], "t": [1.0, 5.0, 2.0], "v": [1.0, 2.0, 3.0]})
-    with pytest.raises(Exception, match="row 2.*time order"):
+    with pytest.raises(Exception, match="row 2.*clock order"):
         run(back, names=["a", "b"])
+
+
+# --- task 105: the rules of `po.stream` ---------------------------------------
+
+
+def test_the_same_kind_of_frame_comes_back():
+    df = poisson_obs(n=80)
+    kw = dict(series="series", names=NAMES, clock="t", value="v")
+    eager = stream.refresh_time(df, **kw)
+    lazy = stream.refresh_time(df.lazy(), **kw)
+    assert isinstance(eager, pl.DataFrame) and isinstance(lazy, pl.LazyFrame)
+    assert eager.equals(lazy.collect())
+
+
+@pytest.mark.parametrize("split", [1, 37, 150, 239])
+def test_two_runs_through_a_saved_state_give_the_one_runs_grid(tmp_path, split):
+    """Rule 5, a stateful transform resumes: the state holds each group's
+    grid part-way through an interval and its last clock, so a stream fed in
+    two runs is the stream fed in one, however it is split."""
+    a = poisson_obs(n=120, seed=6).with_columns(g=pl.lit("x"))
+    b = poisson_obs(n=120, seed=7).with_columns(g=pl.lit("y"))
+    df = pl.concat([a, b]).sort("t")
+    kw = dict(series="series", names=NAMES, clock="t", value="v", group="g")
+    want = stream.refresh_time(df, **kw)
+    state = tmp_path / "grid.state"
+    first = stream.refresh_time(df.head(split).lazy(), save_state=state, chunk_rows=7, **kw)
+    assert not state.exists(), "a plan writes nothing until it runs"
+    first = first.collect()
+    second = stream.refresh_time(df.slice(split), load_state=state, save_state=state, **kw)
+    assert pl.concat([first, second]).equals(want)
+    # And the state after the second run is the one run's, byte for byte.
+    whole = tmp_path / "whole.state"
+    stream.refresh_time(df, save_state=whole, **kw)
+    assert state.read_bytes() == whole.read_bytes()
+
+
+def test_a_slice_of_the_output_still_saves_the_whole_inputs_state(tmp_path):
+    df = poisson_obs(n=200)
+    kw = dict(series="series", names=NAMES, clock="t", value="v", chunk_rows=10)
+    sliced, whole = tmp_path / "sliced.state", tmp_path / "whole.state"
+    head = stream.refresh_time(df.lazy(), save_state=sliced, **kw).head(3).collect()
+    assert head.height == 3
+    stream.refresh_time(df, save_state=whole, **kw)
+    assert sliced.read_bytes() == whole.read_bytes()
+
+
+def test_a_state_is_read_when_the_plan_is_built(tmp_path):
+    df = poisson_obs(n=200)
+    kw = dict(series="series", names=NAMES, clock="t", value="v")
+    state = tmp_path / "grid.state"
+    stream.refresh_time(df.head(100), save_state=state, **kw)
+    plan = stream.refresh_time(df.slice(100).lazy(), load_state=state, **kw)
+    first = plan.collect()
+    stream.refresh_time(df.head(50), save_state=state, **kw)
+    assert plan.collect().equals(first)
+
+
+def test_what_a_state_refuses(tmp_path):
+    df = poisson_obs(n=100)
+    kw = dict(series="series", clock="t", value="v")
+    state = tmp_path / "grid.state"
+    stream.refresh_time(df.head(60), names=NAMES, save_state=state, **kw)
+    with pytest.raises(ValueError, match="saved with names"):
+        stream.refresh_time(df, names=NAMES[:2], load_state=state, **kw)
+    with pytest.raises(ValueError, match="pairs"):
+        stream.refresh_time(df, names=NAMES, pairs=True, load_state=state, **kw)
+    # The rows the state has learned, again: a step back, refused by row.
+    with pytest.raises(Exception, match="row 0.*clock order"):
+        stream.refresh_time(df, names=NAMES, load_state=state, **kw)
+    with pytest.raises(FileNotFoundError):
+        stream.refresh_time(df, names=NAMES, load_state=tmp_path / "none.state", **kw)
+    with pytest.raises(FileNotFoundError, match="is not a directory"):
+        stream.refresh_time(df, names=NAMES, save_state=tmp_path / "no" / "x.state", **kw)
+    (tmp_path / "junk.state").write_bytes(b"junk")
+    with pytest.raises(ValueError, match="not a refresh_time state"):
+        stream.refresh_time(df, names=NAMES, load_state=tmp_path / "junk.state", **kw)
+
+
+def test_a_run_that_fails_writes_no_state(tmp_path):
+    df = poisson_obs(n=100)
+    back = df.with_columns(t=pl.when(pl.int_range(pl.len()) == 70).then(0.0).otherwise("t"))
+    state = tmp_path / "grid.state"
+    with pytest.raises(Exception, match="clock order"):
+        stream.refresh_time(
+            back, series="series", names=NAMES, clock="t", value="v", save_state=state
+        )
+    assert not state.exists()
+
+
+def test_a_temporal_clock_is_ordered_to_the_nanosecond():
+    """Task 120: read as a double of epoch nanoseconds, a step back of under
+    256 ns was a tie at today's dates."""
+    ns = 1_727_000_000_000_000_000
+    df = pl.DataFrame(
+        {
+            "series": ["a", "b", "a"],
+            "t": pl.Series([ns + 100, ns + 101, ns + 100 - 1]).cast(pl.Datetime("ns")),
+            "v": [1.0, 2.0, 3.0],
+        }
+    )
+    with pytest.raises(Exception, match="row 2.*clock order"):
+        stream.refresh_time(df, series="series", names=["a", "b"], clock="t", value="v")

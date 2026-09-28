@@ -26,7 +26,7 @@ regime and the size study at ten times the draws.
 | [3. And is it the power its paper says?](#3-and-is-it-the-power-its-paper-says) | how often it rejects a real break | `corrchange`, `kind="monitor"` |
 | [4. Where the heavy tails go: `D-hat`](#4-where-the-heavy-tails-go-d-hat) | how well the statistic's denominator is estimated | `corrchange`, `kind="monitor"` |
 | [5. Two changepoint detectors on the same break](#5-two-changepoint-detectors-on-the-same-break) | false alarms on a quiet stream, and the delay to a real break | `corrchange(window)`, `bocpd` |
-| [6. The Epps effect, and the two ways out](#6-the-epps-effect-and-the-two-ways-out) | what asynchrony does to a correlation, and what recovers it | `po.prep.refresh_time`, `ew_cov(lags=...)` |
+| [6. The Epps effect, and the two ways out](#6-the-epps-effect-and-the-two-ways-out) | what asynchrony does to a correlation, and what recovers it | `po.stream.refresh_time`, `ew_cov(lags=...)` |
 | [7. `deco`: an equicorrelation that moves](#7-deco-an-equicorrelation-that-moves) | where `rho` settles, and how fast it follows a switch | `deco` |
 | [8. `rcov`: three estimators against each block's truth](#8-rcov-three-estimators-against-each-blocks-truth) | each estimator's error under noise and asynchrony | `rcov` |
 | [9. Running them](#9-running-them) | how to reproduce every number, and how long it takes | |
@@ -410,7 +410,7 @@ they read:
 
 | remedy | what it reads | correlation |
 |---|---|---|
-| refresh-time sampling, `po.prep.refresh_time` | a grid point at the first row by which both series have ticked since the last point: 19157 returns, 16 % of the 119991 at the finest interval. On average a grid point kept 81 % of the ticks since the one before | 0.543 |
+| refresh-time sampling, `po.stream.refresh_time` | a grid point at the first row by which both series have ticked since the last point: 19157 returns, 16 % of the 119991 at the finest interval. On average a grid point kept 81 % of the ticks since the one before | 0.543 |
 | lag inversion, `ew_cov(lags=...)` read through `po.corr.epps_invert` | every one of the 119991 fine returns, with no grid: the correlation at a scale of `L` rows, from the lagged co-moments at one row | 0.772 at `L` = 192 |
 
 The lag inversion is read at 15 values of `L`, on this stream and on four
@@ -493,7 +493,7 @@ and 0.8, under four conditions:
 | clean | nothing: the returns are the latent ones |
 | noise | noise with a standard deviation of 0.5 on each observed level (`noise=0.5`), which makes each return an MA(1) with a negative first autocorrelation, −0.17 here |
 | noise, half observed, previous tick | the noise, and each series observed on half the rows (`async_rates=[0.5, 0.5]`), its last value carried forward within the block |
-| noise, half observed, refresh time | the same rows through `po.prep.refresh_time`, block by block |
+| noise, half observed, refresh time | the same rows through `po.stream.refresh_time`, block by block |
 
 Each cell is the bias of the block's correlation, its standard error, and
 the root-mean-square error, over 190 blocks: 10 seeds of 20 blocks, less

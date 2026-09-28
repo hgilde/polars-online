@@ -581,33 +581,67 @@ impl PyModelBank {
 struct PyRefreshTime {
     inner: online_polars::RefreshTime,
     series: String,
-    time: String,
+    clock: String,
     value: String,
-    by: Option<String>,
+    group: Option<String>,
     keep: Vec<String>,
 }
 
 #[pymethods]
 impl PyRefreshTime {
     #[new]
-    #[pyo3(signature = (names, series, time, value, by=None, pairs=false, keep=None))]
+    #[pyo3(signature = (names, series, clock, value, group=None, pairs=false, keep=None))]
     fn new(
         names: Vec<String>,
         series: String,
-        time: String,
+        clock: String,
         value: String,
-        by: Option<String>,
+        group: Option<String>,
         pairs: bool,
         keep: Option<Vec<String>>,
     ) -> PyResult<Self> {
         Ok(Self {
             inner: online_polars::RefreshTime::new(names, pairs).map_err(PyValueError::new_err)?,
             series,
-            time,
+            clock,
             value,
-            by,
+            group,
             keep: keep.unwrap_or_default(),
         })
+    }
+
+    /// A sampler that goes on from a saved state (`RefreshTime::load_bytes`):
+    /// `names` and `pairs` must be the ones it was saved with.
+    #[staticmethod]
+    #[pyo3(signature = (state, names, series, clock, value, group=None, pairs=false, keep=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn load_bytes(
+        state: &[u8],
+        names: Vec<String>,
+        series: String,
+        clock: String,
+        value: String,
+        group: Option<String>,
+        pairs: bool,
+        keep: Option<Vec<String>>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: online_polars::RefreshTime::load_bytes(state, names, pairs)
+                .map_err(PyValueError::new_err)?,
+            series,
+            clock,
+            value,
+            group,
+            keep: keep.unwrap_or_default(),
+        })
+    }
+
+    /// The state, written to `path` whole or not at all.
+    fn save(slf: &Bound<'_, Self>, path: &str) -> PyResult<()> {
+        let this = slf.try_borrow().map_err(|_| busy("save"))?;
+        this.inner
+            .save(std::path::Path::new(path))
+            .map_err(|e| os_err(e.kind(), format!("{path}: {e}")))
     }
 
     /// The grid points completed by this chunk, in order.
@@ -618,16 +652,16 @@ impl PyRefreshTime {
         let PyRefreshTime {
             inner,
             series,
-            time,
+            clock,
             value,
-            by,
+            group,
             keep,
         } = &mut *this;
         let cols = online_polars::RefreshCols {
             series,
-            time,
+            clock,
             value,
-            by: by.as_deref(),
+            group: group.as_deref(),
             keep,
         };
         Ok(PyDataFrame(

@@ -481,13 +481,13 @@ spec = po.spec.ewridge("fwd", targets=["ret_5m"], features=["x0", "x1"],
 #     row inside the delay, per group
 ```
 
-[`po.prep.embargo`](https://hgilde.github.io/polars-online/prep.html#polars_online.prep.embargo)
+[`po.stream.embargo`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.embargo)
 writes the same delay out as data, for when it has to be visible in the
 frame, or for an engine other than this one:
 
 ```python
-doubled = po.prep.embargo(lf, clock="t", delay=300.0)   # every row twice: a zero-weight copy to score at t,
-                                                          # and a copy to learn from at t + delay, in clock order
+doubled = po.stream.embargo(lf, clock="t", delay=300.0)   # every row twice: a zero-weight copy to score at t,
+                                                            # and a copy to learn from at t + delay, in clock order
 ```
 
 The built-in delay agrees with the doubled stream field by field, to the
@@ -760,17 +760,15 @@ from a file to a file: [docs/RUNNER.md](docs/RUNNER.md) has the standalone
 Two series observed at different instants cannot be correlated directly. A
 fine common grid pushes the correlation toward zero, the Epps effect, and
 filling values forward invents observations that were never made.
-[`po.prep.refresh_time`](https://hgilde.github.io/polars-online/prep.html#polars_online.prep.refresh_time)
+[`po.stream.refresh_time`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.refresh_time)
 puts them on the grid Barndorff-Nielsen, Hansen, Lunde and Shephard
 defined: a point wherever **every** series has ticked at least once since
 the last point, each carrying its last observed value.
 
 ```python
-from polars_online import prep
-
-grid = prep.refresh_time(ticks,                  # long input: one row per tick, the series named in a column
-                         series="symbol", names=["AAA", "BBB", "CCC"],
-                         time="t", value="px").collect()
+grid = po.stream.refresh_time(ticks,             # long input: one row per tick, the series named in a column
+                              series="symbol", names=["AAA", "BBB", "CCC"],
+                              clock="t", value="px")   # a DataFrame in, a DataFrame out
 # one row per grid point:
 #   time_refresh        the grid point
 #   AAA_value, ...      each series' last observed value at that point
@@ -781,8 +779,10 @@ grid = prep.refresh_time(ticks,                  # long input: one row per tick,
 The grid runs at the pace of the slowest series, so a fast one loses most
 of its ticks, and `retained_fraction` says how many. `pairs=True` runs an
 independent two-series grid for each pair instead, which keeps far more
-when one series is slow. Rows must be in time order: a backwards time is an
-error naming the row, and nothing is interpolated. The output looks
+when one series is slow. Rows must be in clock order within each `group`:
+a step back is an error naming the row, and nothing is interpolated. With
+`save_state=` and `load_state=` the grid resumes where a run stopped, part-way
+through an interval or not, as a bank does. The output looks
 synchronous and is not. Each value is up to one of its own inter-tick
 intervals old, and the series with the largest `n_obs` is the one holding
 the grid up.

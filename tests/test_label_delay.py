@@ -3,7 +3,7 @@
 The claim is that a row is *scored* where it sits and *learned from* only
 once its label would really have been known. Two things have to be earned:
 
-1. It is the doubled stream, not something like it. `po.prep.embargo` builds
+1. It is the doubled stream, not something like it. `po.stream.embargo` builds
    the recipe E47 names -- every row twice, a zero-weight prediction at `t`
    and a lesson at `t + delay` -- and the native path is held against it
    **bit for bit** on everything it predicts, not approximately. Not on what
@@ -26,7 +26,7 @@ import pytest
 
 import polars_online as po
 from conftest import run_online
-from polars_online import prep
+from polars_online import stream
 
 HALFLIFE = 50.0
 
@@ -70,11 +70,11 @@ def spec(name="m", *, features=("x",), **kw):
 
 
 def doubled(df, delay, **kw):
-    """The same fit through `po.prep.embargo`: the oracle E47 names."""
-    frame_ = prep.embargo(df, clock="t", delay=delay).collect()
-    bank = po.ModelBank([spec(weight=prep.ROLE + "_weight", **kw)])
+    """The same fit through `po.stream.embargo`: the oracle E47 names."""
+    frame_ = stream.embargo(df, clock="t", delay=delay)
+    bank = po.ModelBank([spec(weight=stream.ROLE + "_weight", **kw)])
     out = bank.fit_predict(frame_)
-    return out.filter(pl.col(prep.ROLE) == "predict"), bank
+    return out.filter(pl.col(stream.ROLE) == "predict"), bank
 
 
 class TestItIsTheDoubledStream:
@@ -282,11 +282,11 @@ class TestTheStreamContract:
             x=pl.when(pl.int_range(pl.len()) % 17 == 3).then(None).otherwise(pl.col("x"))
         )
         native = po.ModelBank([spec(label_delay=8.0)]).fit_predict(holes)
-        oracle_frame = prep.embargo(holes, clock="t", delay=8.0).collect()
+        oracle_frame = stream.embargo(holes, clock="t", delay=8.0)
         oracle = (
-            po.ModelBank([spec(weight=prep.ROLE + "_weight")])
+            po.ModelBank([spec(weight=stream.ROLE + "_weight")])
             .fit_predict(oracle_frame)
-            .filter(pl.col(prep.ROLE) == "predict")
+            .filter(pl.col(stream.ROLE) == "predict")
         )
         a = native["m"].struct.field("pred_y").to_numpy()
         b = oracle["m"].struct.field("pred_y").to_numpy()
@@ -460,25 +460,25 @@ class TestRefusals:
     def test_embargo_refuses_the_same_delays(self, bad):
         df = frame(n=10)
         with pytest.raises(ValueError, match="delay must be finite and > 0"):
-            prep.embargo(df, clock="t", delay=bad)
+            stream.embargo(df, clock="t", delay=bad)
 
     def test_embargo_needs_the_columns_it_names(self):
         df = frame(n=10)
         with pytest.raises(ValueError, match="no clock column 'nope'"):
-            prep.embargo(df, clock="nope", delay=1.0)
+            stream.embargo(df, clock="nope", delay=1.0)
         with pytest.raises(ValueError, match="no weight column 'nope'"):
-            prep.embargo(df, clock="t", delay=1.0, weight="nope")
+            stream.embargo(df, clock="t", delay=1.0, weight="nope")
         with pytest.raises(ValueError, match="already has a column named 'x'"):
-            prep.embargo(df, clock="t", delay=1.0, role="x")
+            stream.embargo(df, clock="t", delay=1.0, role="x")
 
 
 class TestEmbargoItself:
     def test_the_shape_and_the_order(self):
         df = pl.DataFrame({"t": [0.0, 1.0, 2.0], "x": [1.0, 2.0, 3.0]})
-        out = prep.embargo(df, clock="t", delay=2.0).collect()
+        out = stream.embargo(df, clock="t", delay=2.0)
         assert out.height == 6
         assert out["t"].to_list() == [0.0, 1.0, 2.0, 2.0, 3.0, 4.0]
-        assert out[prep.ROLE].to_list() == [
+        assert out[stream.ROLE].to_list() == [
             "predict",
             "predict",
             "learn",
@@ -487,13 +487,13 @@ class TestEmbargoItself:
             "learn",
         ]
         assert out["_online_role_weight"].to_list() == [0.0, 0.0, 1.0, 0.0, 1.0, 1.0]
-        assert out.columns == ["t", "x", "_online_role_weight", prep.ROLE]
+        assert out.columns == ["t", "x", "_online_role_weight", stream.ROLE]
 
     def test_an_existing_weight_is_zeroed_not_replaced(self):
         df = pl.DataFrame({"t": [0.0, 1.0], "x": [1.0, 2.0], "w": [3.0, 4.0]})
-        out = prep.embargo(df, clock="t", delay=1.0, weight="w").collect()
+        out = stream.embargo(df, clock="t", delay=1.0, weight="w")
         assert out["w"].to_list() == [0.0, 3.0, 0.0, 4.0]
-        assert out.columns == ["t", "x", "w", prep.ROLE]
+        assert out.columns == ["t", "x", "w", stream.ROLE]
 
     def test_it_needs_the_clock_order_across_groups(self):
         """Task 120, measured first: the copies are merged by the clock alone,
@@ -509,17 +509,17 @@ class TestEmbargoItself:
             }
         )
         s = spec(group="g", weight="_online_role_weight", max_dclock=5.0)
-        out = prep.embargo(by_group, clock="t", delay=3.0).collect()
+        out = stream.embargo(by_group, clock="t", delay=3.0)
         assert out.filter(pl.col("g") == "b")["t"].is_sorted() is False
         with pytest.raises(ValueError, match="goes backwards"):
             po.ModelBank([s]).fit_predict(out)
-        fixed = prep.embargo(by_group.sort("t", maintain_order=True), clock="t", delay=3.0)
-        fixed = fixed.collect()
+        fixed = stream.embargo(by_group.sort("t", maintain_order=True), clock="t", delay=3.0)
         for g in ("a", "b"):
             assert fixed.filter(pl.col("g") == g)["t"].is_sorted()
         assert po.ModelBank([s]).fit_predict(fixed).height == 40
 
-    def test_it_stays_lazy(self):
+    def test_it_gives_back_the_kind_of_frame_it_was_given(self):
         df = pl.DataFrame({"t": [0.0, 1.0], "x": [1.0, 2.0]})
-        assert isinstance(prep.embargo(df.lazy(), clock="t", delay=1.0), pl.LazyFrame)
-        assert isinstance(prep.embargo(df, clock="t", delay=1.0), pl.LazyFrame)
+        # Task 105, rule 1: a LazyFrame stays lazy, a DataFrame is collected.
+        assert isinstance(stream.embargo(df.lazy(), clock="t", delay=1.0), pl.LazyFrame)
+        assert isinstance(stream.embargo(df, clock="t", delay=1.0), pl.DataFrame)

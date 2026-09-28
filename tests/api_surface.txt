@@ -14,10 +14,10 @@
   gram
   native_version
   predict
-  prep
   schema_version
   sim
   spec
+  stream
   target
   thread_pool_size
   unnest
@@ -416,11 +416,11 @@
     solve
     subset
     vif
-  prep:
-    embargo
-    refresh_time
   sim:
     regimes
+  stream:
+    embargo
+    refresh_time
 
 [output field grammar]  # the strings users index the output struct by
   ewridge minimal:

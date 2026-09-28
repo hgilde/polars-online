@@ -430,17 +430,16 @@ def test_label_delay_is_the_doubled_stream_here_too():
     """A row is learned only once its label has matured, and the rows are
     learned in clock order downstream of the delay buffer: so the warm-up
     counts them there, and the histogram, the edges and the lag ring all
-    agree with the doubled stream `po.prep.embargo` builds, to the bit."""
-    from polars_online import prep
+    agree with the doubled stream `po.stream.embargo` builds, to the bit."""
 
     df = stream(n=1200, shape="threshold", seed=9)
     kw = dict(halflife=200.0, bin_warm_rows=300, lags=[1, 2, 3], serial_rule="geometric")
     native = po.ModelBank([spec(label_delay=7.0, **kw)])
     native.fit_predict(df)
-    doubled = po.ModelBank([spec(weight=prep.ROLE + "_weight", **kw)])
+    doubled = po.ModelBank([spec(weight=po.stream.ROLE + "_weight", **kw)])
     # The doubled stream carries the last rows' lessons past the end of the
     # clock; the native bank is still holding those, so stop where it stops.
-    twice = prep.embargo(df, clock="t", delay=7.0).collect()
+    twice = po.stream.embargo(df, clock="t", delay=7.0)
     doubled.fit_predict(twice.filter(pl.col("t") <= df["t"].max()))
     assert native.marginal("m").equals(doubled.marginal("m"))
 

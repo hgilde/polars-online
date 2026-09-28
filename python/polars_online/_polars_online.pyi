@@ -12,12 +12,24 @@ class RefreshTime:
         self,
         names: list[str],
         series: str,
-        time: str,
+        clock: str,
         value: str,
-        by: str | None = None,
+        group: str | None = None,
         pairs: bool = False,
         keep: list[str] | None = None,
     ) -> None: ...
+    @staticmethod
+    def load_bytes(
+        state: bytes,
+        names: list[str],
+        series: str,
+        clock: str,
+        value: str,
+        group: str | None = None,
+        pairs: bool = False,
+        keep: list[str] | None = None,
+    ) -> RefreshTime: ...
+    def save(self, path: str) -> None: ...
     def feed(self, df: pl.DataFrame) -> pl.DataFrame: ...
 
 class ArrowStruct:

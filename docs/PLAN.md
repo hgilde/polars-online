@@ -3971,8 +3971,20 @@ note, not a task.
         a backward step with a finite `session_gap` and with `"reset"`, several
         groups whose clocks restart together, and rows at one clock value.
 
-- [ ] 105. **`po.prep` renamed `po.stream`, and the rules every function in
-      it follows — split from task 78 on 2026-09-25, not built.** The user,
+- [x] 105. **`po.prep` renamed `po.stream`, and the rules every function in
+      it follows — split from task 78 on 2026-09-25; built 2026-09-28** (the
+      user: "Do 105"). The rename (105a), and the rules applied to the two
+      functions there are: both give back the kind of frame they are given
+      (rule 1; `embargo` returned a `LazyFrame` for a `DataFrame`);
+      `refresh_time` takes `clock=` and `group=` and refuses a step back, as a
+      spec's default `on_clock_reset` does, comparing a temporal clock in
+      nanoseconds (rule 2; task 120 settled its clock); and it resumes (rule
+      5), with `load_state` read when the plan is built and `save_state`
+      written once the input's last row is fed, atomically, a slice of the
+      output not stopping the input early. Its state is its own file
+      (`RefreshFile`, versioned msgpack with `names` and `pairs`, which a
+      load must match), with a temporal clock kept in nanoseconds so it
+      resumes on any unit. Rules 3 and 4 are the windows' (task 78). The user,
       2026-09-11: `po.prep` is to be renamed and its API defined "the way
       it should be done" — pre-1.0, so no aliases and no compatibility. No
       behaviour change; the one breaking change queued, so it belongs in a
@@ -4021,7 +4033,7 @@ note, not a task.
 
       #### Sub-tasks
 
-      - [ ] 105a. (was 78a) **The rename**, alone, first: `po.prep` →
+      - [x] 105a. (was 78a) **The rename**, alone, first: `po.prep` →
             `po.stream`, `time=` → `clock=` and `by=` → `group=` in
             `refresh_time`, its tests, the reference page, the README,
             `llms.txt`, and the API surface file. No behaviour change, so
@@ -4637,7 +4649,7 @@ decision it needs, with a recommendation where there is one.
       merged into `origin/main` (three point at release tags) and about 40
       local branches, all merged.
 
-- [ ] 120. **Rows out of order and clocks that go back: what an audit of
+- [x] 120. **Rows out of order and clocks that go back: what an audit of
       2026-09-25 found. Needs extra review before any of it is built (the
       user, 2026-09-25).** One read-only audit traced every mechanism that
       detects or absorbs disorder — `on_clock_reset` in `ClockState::advance`,

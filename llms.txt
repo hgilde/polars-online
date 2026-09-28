@@ -114,7 +114,7 @@ Windows alike.
 - [Evaluation](https://hgilde.github.io/polars-online/eval.html)
 - [Gram accessors](https://hgilde.github.io/polars-online/gram.html)
 - [Correlation toolkit](https://hgilde.github.io/polars-online/corr.html)
-- [Stream preparation](https://hgilde.github.io/polars-online/prep.html)
+- [Stream transforms](https://hgilde.github.io/polars-online/stream.html)
 - [Simulation](https://hgilde.github.io/polars-online/sim.html)
 
 ## Guides

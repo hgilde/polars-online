@@ -3855,7 +3855,7 @@ def rcov(
     tick) and attenuated by asynchrony. Both are estimated away by published
     estimators that are sums over lags, which is exactly what a stream can
     accumulate. Rows are returns: difference upstream (``.diff().over(by)`` after
-    :func:`polars_online.prep.refresh_time`). There is no decay and no per-row
+    :func:`polars_online.stream.refresh_time`). There is no decay and no per-row
     output but ``n_eff``, because the value is the block: ``rcov`` requires
     ``group`` and ``group_close``, and the estimate rides in the row that close
     emits.

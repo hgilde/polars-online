@@ -243,7 +243,7 @@ def test_async_rates_drop_ticks_and_the_epps_curve_rises():
 
 
 def test_the_output_feeds_refresh_time():
-    from polars_online import prep
+    from polars_online import stream
 
     out = sim.regimes(
         3,
@@ -261,9 +261,9 @@ def test_the_output_feeds_refresh_time():
         .drop_nulls()
         .sort("t")
     )
-    grid = prep.refresh_time(
-        long, series="series", names=["x_1", "x_2", "x_3"], time="t", value="px"
-    ).collect()
+    grid = stream.refresh_time(
+        long, series="series", names=["x_1", "x_2", "x_3"], clock="t", value="px"
+    )
     assert grid.height > 100
     assert grid["retained_fraction"].max() <= 1.0
 

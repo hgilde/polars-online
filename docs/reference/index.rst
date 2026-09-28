@@ -22,5 +22,5 @@ workflow, and performance. Install with ``pip install polars-online``.
    eval
    gram
    corr
-   prep
+   stream
    sim

@@ -94,7 +94,7 @@ po.spec.marginal("m", features=[...], targets=[...],
 of the delay buffer, and is fed rows in the order they are *learned* — the
 order the delay releases them in — so the lag it counts is the lag `corr`
 would count. `tests/test_marginal_bins.py::test_label_delay_is_the_doubled_stream_here_too`
-holds a spec with lags and bins to `prep.embargo`'s doubled stream to the
+holds a spec with lags and bins to `stream.embargo`'s doubled stream to the
 bit.
 
 **Names, against the sketch.** `serial_n` became `serial_rule`: it picks a

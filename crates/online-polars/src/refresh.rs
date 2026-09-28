@@ -47,18 +47,19 @@
 //! depends on every row before it. No window expression writes that, and a
 //! per-row Python loop over a tick stream is exactly the cost this library
 //! exists to avoid. So the scan is here, per `by` key, `O(m)` a row (or
-//! `O(m²)` with `pairs`), and `polars_online.prep.refresh_time` wraps it as a
+//! `O(m²)` with `pairs`), and `polars_online.stream.refresh_time` wraps it as a
 //! lazy source the way the bank is wrapped.
 
 use std::collections::HashMap;
 
 use polars::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::bank::GroupKey;
 
 /// One series' state within a group: its last value, whether it has ticked
 /// since the last grid point, and how many times.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct SeriesState {
     last: f64,
     seen: bool,
@@ -66,7 +67,7 @@ struct SeriesState {
 }
 
 /// One group's (or one pair's) refresh state.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct GridState {
     series: Vec<SeriesState>,
     /// Series still to tick before the next grid point; `m` after a point.
@@ -129,35 +130,64 @@ pub struct RefreshTime {
     rows_fed: usize,
 }
 
-/// A `time` value as the order check compares it: a number as itself, a
-/// temporal value as its physical integer, exactly. Read as a double, a
-/// `Datetime` in nanoseconds resolves 256 ns at today's dates, and a step
-/// back smaller than that was a tie (task 120).
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+/// A clock value as the order check compares it: a number as itself, a
+/// temporal value in integer nanoseconds since the epoch, exactly, whatever
+/// the column's unit. Read as a double, a `Datetime` in nanoseconds resolves
+/// 256 ns at today's dates, and a step back smaller than that was a tie
+/// (task 120). In nanoseconds, a state saved from one unit resumes on
+/// another (task 105).
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
 enum Instant {
     Number(f64),
-    Physical(i64),
+    Nanos(i64),
 }
 
 impl Instant {
-    /// The value as the column shows it: a temporal one in its own dtype.
+    /// The value as the column shows it: a temporal one in its own kind.
     fn show(self, dtype: &DataType) -> String {
+        const DAY: i64 = 86_400 * 1_000_000_000;
         match (self, dtype) {
             (Self::Number(v), _) => format!("{v}"),
-            (Self::Physical(v), DataType::Datetime(tu, tz)) => {
-                format!("{}", AnyValue::Datetime(v, *tu, tz.as_ref()))
+            (Self::Nanos(v), DataType::Datetime(_, tz)) => {
+                format!(
+                    "{}",
+                    AnyValue::Datetime(v, TimeUnit::Nanoseconds, tz.as_ref())
+                )
             }
-            (Self::Physical(v), DataType::Date) => match i32::try_from(v) {
+            (Self::Nanos(v), DataType::Date) => match i32::try_from(v.div_euclid(DAY)) {
                 Ok(d) => format!("{}", AnyValue::Date(d)),
-                Err(_) => format!("{v}"),
+                Err(_) => format!("{v} ns"),
             },
-            (Self::Physical(v), DataType::Duration(tu)) => {
-                format!("{}", AnyValue::Duration(v, *tu))
+            (Self::Nanos(v), DataType::Duration(_)) => {
+                format!("{}", AnyValue::Duration(v, TimeUnit::Nanoseconds))
             }
-            (Self::Physical(v), _) => format!("{v}"),
+            (Self::Nanos(v), _) => format!("{v} ns"),
+        }
+    }
+
+    fn kind(self) -> &'static str {
+        match self {
+            Self::Number(_) => "numeric",
+            Self::Nanos(_) => "temporal",
         }
     }
 }
+
+/// What [`RefreshTime::save_bytes`] writes: the sampler's state, and what
+/// it was built from, which a load must match.
+#[derive(Serialize, Deserialize)]
+struct RefreshFile {
+    magic: String,
+    version: u32,
+    names: Vec<String>,
+    pairs: bool,
+    /// Sorted by key, so one state is one file, byte for byte.
+    states: Vec<(GroupKey, Vec<GridState>)>,
+    last_time: Vec<(GroupKey, Instant)>,
+}
+
+const REFRESH_MAGIC: &str = "polars-online refresh_time";
+const REFRESH_VERSION: u32 = 1;
 
 /// One completed grid point, as the scan collects it: the group it belongs
 /// to, which pair (0 for the joint grid), the row of the completing tick,
@@ -168,9 +198,9 @@ type Point = (GroupKey, usize, usize, Vec<u64>, Vec<f64>);
 /// The columns [`RefreshTime::feed`] reads.
 pub struct RefreshCols<'a> {
     pub series: &'a str,
-    pub time: &'a str,
+    pub clock: &'a str,
     pub value: &'a str,
-    pub by: Option<&'a str>,
+    pub group: Option<&'a str>,
     /// Columns carried through at their value on the completing tick.
     pub keep: &'a [String],
 }
@@ -210,11 +240,79 @@ impl RefreshTime {
         })
     }
 
+    /// The sampler's state as bytes: every group's grid, part-way through
+    /// an interval or not, and its last clock, with the `names` and `pairs`
+    /// it was built from, which a load must match. Versioned msgpack, one
+    /// state one file (task 105: a stateful transform resumes).
+    pub fn save_bytes(&self) -> Result<Vec<u8>, String> {
+        let mut states: Vec<_> = self
+            .states
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        states.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut last_time: Vec<_> = self
+            .last_time
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        last_time.sort_by(|a, b| a.0.cmp(&b.0));
+        let file = RefreshFile {
+            magic: REFRESH_MAGIC.into(),
+            version: REFRESH_VERSION,
+            names: self.names.clone(),
+            pairs: !self.pairs.is_empty(),
+            states,
+            last_time,
+        };
+        rmp_serde::to_vec_named(&file).map_err(|e| e.to_string())
+    }
+
+    /// [`Self::save_bytes`] to `path`, replacing it whole or not at all.
+    pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let bytes = self.save_bytes().map_err(std::io::Error::other)?;
+        crate::atomic::write(path, &bytes)
+    }
+
+    /// A sampler that goes on from a saved state. `names` and `pairs` must
+    /// be the ones it was saved with: they decide the output's columns and
+    /// what each grid holds. Rows are counted from the start of the new
+    /// input.
+    ///
+    /// # Errors
+    ///
+    /// Bytes that are not a refresh_time state, a version this build does
+    /// not read, or other `names` or `pairs`.
+    pub fn load_bytes(bytes: &[u8], names: Vec<String>, pairs: bool) -> Result<Self, String> {
+        let file: RefreshFile =
+            rmp_serde::from_slice(bytes).map_err(|e| format!("not a refresh_time state ({e})"))?;
+        if file.magic != REFRESH_MAGIC {
+            return Err("not a refresh_time state".into());
+        }
+        if file.version != REFRESH_VERSION {
+            return Err(format!(
+                "refresh_time state version {} not supported (this build reads {REFRESH_VERSION})",
+                file.version
+            ));
+        }
+        if file.names != names || file.pairs != pairs {
+            return Err(format!(
+                "refresh_time: the state was saved with names = {:?} and pairs = {}, not {:?} \
+                 and {}; a state resumes only the grid it holds",
+                file.names, file.pairs, names, pairs
+            ));
+        }
+        let mut rt = Self::new(names, pairs)?;
+        rt.states = file.states.into_iter().collect();
+        rt.last_time = file.last_time.into_iter().collect();
+        Ok(rt)
+    }
+
     /// The output schema, which a lazy source has to declare before a row is
     /// read -- the reason `names` is required rather than discovered.
     pub fn schema(&self, cols: &RefreshCols<'_>, input: &Schema) -> Schema {
         let mut out = Schema::default();
-        if let Some(by) = cols.by {
+        if let Some(by) = cols.group {
             out.insert(
                 by.into(),
                 input.get(by).cloned().unwrap_or(DataType::String),
@@ -259,27 +357,26 @@ impl RefreshTime {
         let n = df.height();
         let series = df.column(cols.series)?.cast(&DataType::String)?;
         let series = series.str()?;
-        let time_col = df.column(cols.time)?;
+        let time_col = df.column(cols.clock)?;
         let time_dtype = time_col.dtype().clone();
-        let (numbers, physical) = if time_dtype.is_temporal() {
-            let p = time_col.to_physical_repr().cast(&DataType::Int64)?;
-            (None, Some(p))
+        let base = self.rows_fed;
+        let (numbers, nanos) = if time_dtype.is_temporal() {
+            let ns = crate::arrow::nanos_array(time_col.as_materialized_series(), base)?;
+            (None, Some(ns))
         } else {
             (Some(time_col.cast(&DataType::Float64)?), None)
         };
         let numbers = numbers.as_ref().map(|c| c.f64()).transpose()?;
-        let physical = physical.as_ref().map(|c| c.i64()).transpose()?;
         let instant = |row: usize| -> Option<Instant> {
-            match (numbers, physical) {
+            match (numbers, nanos.as_ref()) {
                 (Some(n), _) => n.get(row).filter(|t| t.is_finite()).map(Instant::Number),
-                (_, Some(p)) => p.get(row).map(Instant::Physical),
+                (_, Some(p)) => p.get(row).map(Instant::Nanos),
                 _ => None,
             }
         };
-        let base = self.rows_fed;
         let value = df.column(cols.value)?.cast(&DataType::Float64)?;
         let value = value.f64()?;
-        let by = match cols.by {
+        let by = match cols.group {
             Some(b) => Some(df.column(b)?.cast(&DataType::String)?),
             None => None,
         };
@@ -309,7 +406,7 @@ impl RefreshTime {
             };
             let Some(t) = instant(row) else {
                 polars_bail!(ComputeError:
-                    "refresh_time: row {at} has a null or non-finite {:?}", cols.time);
+                    "refresh_time: row {at} has a null or non-finite {:?}", cols.clock);
             };
             let key = GroupKey(
                 by.map_or_else(|| Some(String::new()), |b| b.get(row).map(str::to_string)),
@@ -319,11 +416,21 @@ impl RefreshTime {
             // (review 2026-09-18, minor).
             match self.last_time.get_mut(&key) {
                 Some(prev) => {
+                    // A state from the other kind of clock (a resumed run):
+                    // the two cannot be ordered, and would be compared by
+                    // variant.
+                    if t.kind() != prev.kind() {
+                        polars_bail!(ComputeError:
+                            "refresh_time: clock column {:?} is {}, and the state it resumes \
+                             is {}; resume a state on the kind of clock that wrote it",
+                            cols.clock, t.kind(), prev.kind()
+                        );
+                    }
                     if t < *prev {
                         polars_bail!(ComputeError:
                             "refresh_time: row {at} has {:?} = {}, below the previous row's \
-                             {} in the same group; the input must be in time order",
-                            cols.time,
+                             {} in the same group; the input must be in clock order",
+                            cols.clock,
                             t.show(&time_dtype),
                             prev.show(&time_dtype)
                         );
@@ -388,10 +495,10 @@ impl RefreshTime {
         points: Vec<Point>,
     ) -> PolarsResult<DataFrame> {
         let h = points.len();
-        let time = df.column(cols.time)?.cast(&DataType::Float64)?;
+        let time = df.column(cols.clock)?.cast(&DataType::Float64)?;
         let time = time.f64()?;
         let mut out: Vec<Column> = Vec::new();
-        if let Some(b) = cols.by {
+        if let Some(b) = cols.group {
             // The keys are held as text, because that is what a group key
             // is here -- but the column goes back out in the dtype it came
             // in as, so the result joins to the input it came from
@@ -504,9 +611,9 @@ mod tests {
     fn cols<'a>(keep: &'a [String]) -> RefreshCols<'a> {
         RefreshCols {
             series: "series",
-            time: "t",
+            clock: "t",
             value: "v",
-            by: None,
+            group: None,
             keep,
         }
     }
@@ -707,7 +814,7 @@ mod tests {
             .feed(&long(&[("a", 5.0, 1.0), ("b", 2.0, 2.0)]), &cols(&[]))
             .unwrap_err()
             .to_string();
-        assert!(e.contains("row 1") && e.contains("time order"), "{e}");
+        assert!(e.contains("row 1") && e.contains("clock order"), "{e}");
 
         assert!(
             RefreshTime::new(vec!["a".into()], false)
@@ -738,9 +845,9 @@ mod tests {
                 &df,
                 &RefreshCols {
                     series: "series",
-                    time: "t",
+                    clock: "t",
                     value: "v",
-                    by: Some("g"),
+                    group: Some("g"),
                     keep: &keep,
                 },
             )
@@ -765,5 +872,125 @@ mod tests {
                 .collect::<Vec<_>>(),
             [1.0, 2.0]
         );
+    }
+
+    /// Task 105, rule 5: a stateful transform resumes. Saved at every split
+    /// of a stream -- grids part-way through an interval included -- and
+    /// loaded, the sampler gives the grid one uninterrupted run gives, and
+    /// the bytes are the same whichever split they were taken at.
+    #[test]
+    fn a_saved_state_resumes_where_it_stopped() {
+        let names: Vec<String> = ["a", "b", "c"].map(str::to_string).to_vec();
+        let rows: Vec<(&str, f64, f64)> = (0..40)
+            .map(|i| {
+                let s = ["a", "b", "a", "c", "b", "a", "c"][i % 7];
+                (s, i as f64, (i * i % 11) as f64)
+            })
+            .collect();
+        let whole = RefreshTime::new(names.clone(), false)
+            .unwrap()
+            .feed(&long(&rows), &cols(&[]))
+            .unwrap();
+        for pairs in [false, true] {
+            let one = RefreshTime::new(names.clone(), pairs)
+                .unwrap()
+                .feed(&long(&rows), &cols(&[]))
+                .unwrap();
+            if !pairs {
+                assert!(one.equals(&whole));
+            }
+            for split in [1, 5, 17, 39] {
+                let mut first = RefreshTime::new(names.clone(), pairs).unwrap();
+                let a = first.feed(&long(&rows[..split]), &cols(&[])).unwrap();
+                let bytes = first.save_bytes().unwrap();
+                let mut resumed = RefreshTime::load_bytes(&bytes, names.clone(), pairs).unwrap();
+                assert_eq!(resumed.save_bytes().unwrap(), bytes, "split {split}");
+                let b = resumed.feed(&long(&rows[split..]), &cols(&[])).unwrap();
+                let mut both = a.clone();
+                both.vstack_mut(&b).unwrap();
+                assert!(both.equals(&one), "pairs {pairs}, split {split}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_state_loads_only_into_the_grid_it_holds() {
+        let names: Vec<String> = ["a", "b"].map(str::to_string).to_vec();
+        let mut rt = RefreshTime::new(names.clone(), false).unwrap();
+        rt.feed(&long(&[("a", 1.0, 1.0)]), &cols(&[])).unwrap();
+        let bytes = rt.save_bytes().unwrap();
+        let other = vec!["a".to_string(), "c".to_string()];
+        assert!(
+            RefreshTime::load_bytes(&bytes, other, false)
+                .unwrap_err()
+                .contains("names")
+        );
+        assert!(
+            RefreshTime::load_bytes(&bytes, names.clone(), true)
+                .unwrap_err()
+                .contains("pairs")
+        );
+        assert!(
+            RefreshTime::load_bytes(b"nope", names.clone(), false)
+                .unwrap_err()
+                .contains("not a refresh_time state")
+        );
+        // Resumed on the other kind of clock, or before its last clock.
+        let mut resumed = RefreshTime::load_bytes(&bytes, names.clone(), false).unwrap();
+        let temporal = df!(
+            "series" => ["b"],
+            "t" => Series::new("t".into(), [5i64]).cast(&DataType::Datetime(TimeUnit::Nanoseconds, None)).unwrap(),
+            "v" => [1.0],
+        )
+        .unwrap();
+        let e = resumed.feed(&temporal, &cols(&[])).unwrap_err().to_string();
+        assert!(e.contains("temporal") && e.contains("numeric"), "{e}");
+        let mut resumed = RefreshTime::load_bytes(&bytes, names, false).unwrap();
+        let e = resumed
+            .feed(&long(&[("b", 0.5, 1.0)]), &cols(&[]))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("row 0") && e.contains("clock order"), "{e}");
+    }
+
+    /// Kept in nanoseconds, a temporal clock resumes on another unit: saved
+    /// from microseconds, one nanosecond after the last instant is after it.
+    #[test]
+    fn a_temporal_state_resumes_on_another_unit() {
+        let names: Vec<String> = ["a", "b"].map(str::to_string).to_vec();
+        let frame = |ns: &[i64], unit: TimeUnit, series: &[&str]| {
+            let per = match unit {
+                TimeUnit::Nanoseconds => 1,
+                TimeUnit::Microseconds => 1_000,
+                TimeUnit::Milliseconds => 1_000_000,
+            };
+            let t: Vec<i64> = ns.iter().map(|v| v / per).collect();
+            df!(
+                "series" => series,
+                "t" => Series::new("t".into(), t).cast(&DataType::Datetime(unit, None)).unwrap(),
+                "v" => vec![1.0; ns.len()],
+            )
+            .unwrap()
+        };
+        let mut rt = RefreshTime::new(names.clone(), false).unwrap();
+        rt.feed(
+            &frame(&[1_000, 2_000], TimeUnit::Microseconds, &["a", "b"]),
+            &cols(&[]),
+        )
+        .unwrap();
+        let mut resumed =
+            RefreshTime::load_bytes(&rt.save_bytes().unwrap(), names.clone(), false).unwrap();
+        resumed
+            .feed(
+                &frame(&[2_001, 2_002], TimeUnit::Nanoseconds, &["b", "a"]),
+                &cols(&[]),
+            )
+            .unwrap();
+        let mut resumed = RefreshTime::load_bytes(&rt.save_bytes().unwrap(), names, false).unwrap();
+        let e = resumed
+            .feed(&frame(&[1_999], TimeUnit::Nanoseconds, &["b"]), &cols(&[]))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("clock order"), "{e}");
     }
 }

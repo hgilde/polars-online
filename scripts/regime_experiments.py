@@ -35,7 +35,7 @@ import numpy as np
 import polars as pl
 
 import polars_online as po
-from polars_online import corr, prep, sim
+from polars_online import corr, sim, stream
 
 
 def _seed(*parts: object) -> int:
@@ -615,9 +615,7 @@ def epps() -> None:
         .drop_nulls()
         .sort("t")
     )
-    grid = prep.refresh_time(
-        long, series="series", names=["x_1", "x_2"], time="t", value="px"
-    ).collect()
+    grid = stream.refresh_time(long, series="series", names=["x_1", "x_2"], clock="t", value="px")
     g = grid.select(pl.col("x_1_value", "x_2_value").diff()).drop_nulls().to_numpy()
     kept = float(grid["retained_fraction"].mean())
     print(
@@ -789,9 +787,9 @@ def _block_returns(frame: pl.DataFrame, block: pl.Series, how: str) -> pl.DataFr
         .drop_nulls("px")
         .sort("t")
     )
-    grid = prep.refresh_time(
-        long, series="series", names=["x_1", "x_2"], time="t", value="px", by="block"
-    ).collect()
+    grid = stream.refresh_time(
+        long, series="series", names=["x_1", "x_2"], clock="t", value="px", group="block"
+    )
     rets = grid.sort("block", "time_refresh").with_columns(
         pl.col("x_1_value", "x_2_value").diff().over("block")
     )

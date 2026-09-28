@@ -170,7 +170,7 @@ def regimes(
         Expected observations per row, per series: a row where series ``i``
         reported nothing carries ``null`` for ``x_i``. Last-observation sampling
         is one ``forward_fill`` away, and ``unpivot`` over the non-null rows is
-        :func:`polars_online.prep.refresh_time`'s long input.
+        :func:`polars_online.stream.refresh_time`'s long input.
     ``noise``
         The standard deviation of the noise added to each observed level. Noise on
         the level is what the literature models, and it makes the observed return

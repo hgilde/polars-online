@@ -581,10 +581,10 @@ class TestTheHelpersMeasureTheClockTheSameWay:
     def test_embargo_takes_a_duration_on_a_temporal_clock(self):
         df = _frame()
         spec = dict(weight="_online_role_weight")
-        numbers = po.prep.embargo(df.lazy(), clock="t_s", delay=300.0).collect()
+        numbers = po.stream.embargo(df.lazy(), clock="t_s", delay=300.0).collect()
         numbers = _fit(numbers, _ridge("t_s", halflife=600.0, max_dclock=1_800.0, **spec))
         for form in ("5m", timedelta(minutes=5), pl.duration(minutes=5)):
-            doubled = po.prep.embargo(_temporal(df).lazy(), clock="t", delay=form).collect()
+            doubled = po.stream.embargo(_temporal(df).lazy(), clock="t", delay=form).collect()
             assert doubled["t"].dtype == pl.Datetime("us")
             got = _fit(doubled, _ridge("t", halflife="10m", max_dclock="30m", **spec))
             assert got.equals(numbers, null_equal=True), form
@@ -607,7 +607,7 @@ class TestTheHelpersMeasureTheClockTheSameWay:
             "date": _temporal(df).with_columns(d=pl.col("t").dt.date()),
         }
         with pytest.raises(ValueError, match=says):
-            po.prep.embargo(frames[frame].lazy(), clock=clock, delay=delay)
+            po.stream.embargo(frames[frame].lazy(), clock=clock, delay=delay)
 
     def test_rolling_metrics_buckets_a_temporal_clock_by_a_duration(self):
         df = _frame()
@@ -822,7 +822,7 @@ class TestTheClockColumnInOtherRoles:
         rng = np.random.default_rng(6)
         x = rng.normal(size=len(days))
         df = pl.DataFrame({"d": days, "x0": x, "y": 2.0 * x + rng.normal(0.0, 0.1, len(days))})
-        doubled = po.prep.embargo(df.lazy(), clock="d", delay="2d").collect()
+        doubled = po.stream.embargo(df.lazy(), clock="d", delay="2d").collect()
         assert doubled["d"].dtype == pl.Date
         learn = doubled.filter(pl.col("_online_role") == "learn")
         assert (learn["d"] - df["d"]).unique().to_list() == [timedelta(days=2)]

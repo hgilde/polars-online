@@ -8,7 +8,7 @@
 //! is exactly what a stream can accumulate.
 //!
 //! Rows are **returns**: the caller differences upstream, which for a
-//! refresh-time grid ([`crate`]'s sibling `po.prep.refresh_time`) is
+//! refresh-time grid ([`crate`]'s sibling `po.stream.refresh_time`) is
 //! `.diff().over(by)`. There is no decay and no per-row output -- the model's
 //! value is its state at the group's close, and the block is what a
 //! `group_close` row carries.

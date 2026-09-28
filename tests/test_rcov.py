@@ -250,7 +250,7 @@ def test_the_correlation_is_the_covariance_scaled():
 def test_the_block_survives_a_refresh_time_grid():
     """The pipeline E57 is for: asynchronous ticks, a refresh-time grid,
     differences, then a block estimate."""
-    from polars_online import prep
+    from polars_online import stream
 
     rng = np.random.default_rng(4)
     rows = []
@@ -262,9 +262,7 @@ def test_the_block_survives_a_refresh_time_grid():
             )
         )
     long = pl.concat(rows).sort("t")
-    grid = prep.refresh_time(
-        long, series="series", names=["a", "b"], time="t", value="px"
-    ).collect()
+    grid = stream.refresh_time(long, series="series", names=["a", "b"], clock="t", value="px")
     ret = grid.select(
         pl.col("a_value").diff().fill_null(0.0).alias("x0"),
         pl.col("b_value").diff().fill_null(0.0).alias("x1"),
